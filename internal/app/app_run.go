@@ -17,7 +17,9 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -71,6 +73,15 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 		return nil, err
 	}
 	defer cancel()
+	// R12-H2 §1.2: the OUTER release of the SDK invocation's Call owner —
+	// released when the invocation finishes (setup failures already rolled
+	// back inside prepareExecuteRun). Only this owner releases; root and
+	// execution owners are independent.
+	defer func() {
+		if setup.callBindingRelease != nil {
+			setup.callBindingRelease()
+		}
+	}()
 	stdout := setup.stdout
 	stderr := setup.stderr
 	credsRunner := setup.credsRunner
@@ -259,10 +270,15 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	// Persist reasoning effort onto the active slot. We pass the current
 	// stored value for the *other* slot through so we don't clobber it —
 	// UpdateReasoningEffort takes both fields as a single transaction.
+	// A worker/reviewer role run persists NOTHING: the role model itself is
+	// not persisted (plan D2) and the explicit effort rides the role-slot
+	// resolution for this invocation only (plan R6).
 	if err := checkHoldCanceled(); err != nil {
 		return nil, err
 	}
-	if overrides.ReasoningEffort != "" && !req.mutationFree() {
+	rolePersistable := overrides.ModelRole != config.SelectedModelTypeWorker &&
+		overrides.ModelRole != config.SelectedModelTypeReviewer
+	if overrides.ReasoningEffort != "" && rolePersistable && !req.mutationFree() {
 		smart := sess.SmartModelReasoningEffort
 		fast := sess.FastModelReasoningEffort
 		if overrides.RoleSmart {
@@ -371,7 +387,18 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	// is setup-free, as before.
 	if !req.mutationFree() {
 		sessID := sess.ID
+		providerIntent := setup.providerIntent
+		customFenceEnabled := setup.callBindingRelease != nil
+		var requirement *session.SessionExecutionRequirement
+		if setup.callOpts != nil && setup.callOpts.Requirement != nil {
+			requirementCopy := *setup.callOpts.Requirement
+			requirement = &requirementCopy
+		}
+		ctx = agent.WithExecutionProviderIntent(ctx, sessID, agent.ExecutionProviderIntent(providerIntent))
 		ctx = agent.WithAdmissionSetup(ctx, func(actx context.Context) error {
+			if err := persistSessionExecutionIntent(actx, app, sessID, providerIntent, requirement, customFenceEnabled); err != nil {
+				return err
+			}
 			app.prepareAdmittedRun(actx, sessID, overrides)
 			return nil
 		})

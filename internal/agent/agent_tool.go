@@ -44,11 +44,15 @@ func (c *coordinator) agentTool(ctx context.Context) (fantasy.AgentTool, error) 
 		return nil, err
 	}
 
-	agent, err := c.buildAgent(ctx, prompt, agentCfg, true)
+	agentCtx, childScope := pctChildToolBuildContext(ctx) // pct: isolate this child's captured tool build scope.
+	agent, err := c.buildAgent(agentCtx, prompt, agentCfg, true)
 	if err != nil {
+		if childScope != nil {
+			childScope.pctRelease()
+		}
 		return nil, err
 	}
-	return fantasy.NewParallelAgentTool(
+	tool := fantasy.NewParallelAgentTool(
 		AgentToolName,
 		agentToolDescription,
 		func(ctx context.Context, params AgentParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
@@ -66,6 +70,7 @@ func (c *coordinator) agentTool(ctx context.Context) (fantasy.AgentTool, error) 
 				return fantasy.ToolResponse{}, errors.New("agent message id missing from context")
 			}
 
+			handoff := pctHandoffFrom(ctx)
 			return c.runSubAgent(ctx, subAgentParams{
 				Agent:           agent,
 				SessionID:       sessionID,
@@ -74,7 +79,16 @@ func (c *coordinator) agentTool(ctx context.Context) (fantasy.AgentTool, error) 
 				Prompt:          params.Prompt,
 				SessionTitle:    "New Agent Session",
 				ResumeSessionID: params.ResumeSessionID,
+				// slotModel: this agent's model came from the buildAgent
+				// cascade (config role slots) — the only dispatch path the
+				// dispatch-time slot refresh may rebuild.
+				slotModel:  true,
+				pctHandoff: handoff,
 			})
 		},
-	), nil
+	)
+	if childScope != nil {
+		return &pctCapturedAgentTool{AgentTool: tool, scope: childScope}, nil
+	}
+	return tool, nil
 }

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -68,13 +69,38 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		// "delegating", crashed -> "crashed", ended -> "done", idle -> blank
 		// (at rest). In-process knowledge (the coordinator's parked-delegation
 		// registry) is deliberately not consulted: a parked delegation keeps
-		// its own async_jobs row live, so another process sees the same
+		// its own live batch root, so another process sees the same
 		// verdict (decision 9).
-		activities, err := a.SessionActivityBatch(cmd.Context(), idsOf(sessions))
-		if err != nil {
-			return fmt.Errorf("failed to classify sessions: %w", err)
+		ids := idsOf(sessions)
+		batchFacts := batchRuntimeFacts(cmd.Context(), a, a.Config().Options.DataDirectory, ids)
+		var statusByID map[string]string
+		var awaitingByID map[string]session.ChildQuestion
+		activities, actErr := a.SessionActivityBatch(cmd.Context(), ids)
+		if actErr != nil {
+			return fmt.Errorf("failed to classify sessions: %w", actErr)
 		}
-		statusByID, awaitingByID := listStatusesWithAwaiting(cmd.Context(), a.AsyncJobStore(), activities, idsOf(sessions))
+		statusByID, awaitingByID = listStatusesWithAwaiting(cmd.Context(), sessionQuestionReaderForApp(a), activities, ids)
+		for _, id := range ids {
+			bf := batchFacts[id]
+			st := statusByID[id]
+			if bf.Unknown {
+				st += " (batch unknown)"
+			} else if bf.Live {
+				st += " (batch live)"
+			}
+			// A held batch question annotates the status with the
+			// same "(awaiting answer)" substate the legacy path used to print.
+			// The fallback also surfaces when the status is empty (at
+			// rest), so a held question never renders as blank/at rest.
+			if bf.HasQuestion {
+				if st == "" {
+					st = "batch question awaiting answer"
+				} else if !strings.Contains(st, "awaiting answer") {
+					st += " (awaiting answer)"
+				}
+			}
+			statusByID[id] = st
+		}
 
 		if asJSON {
 			enc := json.NewEncoder(os.Stdout)
@@ -87,6 +113,22 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 					item.AwaitingAnswer = true
 					item.AwaitingChild = q.ChildSessionID
 					item.AwaitingQuestion = q.Question
+				}
+				if bf, ok := batchFacts[s.ID]; ok {
+					// A held question with no visible root and a complete read
+					// must still surface, so the answer flag sits outside the
+					// roots/unknown guard (false in the common no-question
+					// case, so the omitempty wire shape is unchanged).
+					item.BatchAwaitingAnswer = bf.awaitingAnswer()
+					if len(bf.Roots) > 0 || bf.Unknown {
+						item.BatchRoots = len(bf.Roots)
+						item.BatchDebt = bf.Debt
+						if bf.Unknown {
+							item.BatchStatus = "unknown"
+						} else {
+							item.BatchStatus = "live"
+						}
+					}
 				}
 				if err := enc.Encode(item); err != nil {
 					return err
@@ -116,12 +158,30 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 	},
 }
 
+type pendingChildQuestionReader interface {
+	PendingChildQuestions(context.Context, string) ([]session.ChildQuestion, error)
+}
+
+func sessionQuestionReaderForApp(a *app.App) pendingChildQuestionReader {
+	if a == nil {
+		return nil
+	}
+	if a.DB == nil {
+		return nil
+	}
+	conn := a.DB()
+	if conn == nil {
+		return nil
+	}
+	return session.NewSessionNoticeStore(conn)
+}
+
 // listStatusesWithAwaiting maps the classifier's verdicts to the STATUS
 // column, adding the awaiting-answer substate (#1158): each listed root's
 // pending child_question notices re-classify its verdict (read-only; a
 // failed notice read leaves the plain verdict) and become the
 // "(awaiting answer)" annotation plus the JSON wire fields.
-func listStatusesWithAwaiting(ctx context.Context, store *session.AsyncJobStore, activities app.SessionActivityBatchResult, ids []string) (map[string]string, map[string]session.ChildQuestion) {
+func listStatusesWithAwaiting(ctx context.Context, store pendingChildQuestionReader, activities app.SessionActivityBatchResult, ids []string) (map[string]string, map[string]session.ChildQuestion) {
 	questionsByRoot := map[string][]session.ChildQuestion{}
 	if store != nil {
 		for _, id := range ids {
@@ -218,6 +278,14 @@ type sessionListItem struct {
 	AwaitingAnswer   bool   `json:"awaiting_answer,omitempty"`
 	AwaitingChild    string `json:"awaiting_child,omitempty"`
 	AwaitingQuestion string `json:"awaiting_question,omitempty"`
+	// Batch read fields: BatchStatus is
+	// "live" (held batch root) or "unknown" (incomplete/failed read).
+	BatchRoots  int    `json:"batch_roots,omitempty"`
+	BatchDebt   int64  `json:"batch_debt,omitempty"`
+	BatchStatus string `json:"batch_status,omitempty"`
+	// BatchAwaitingAnswer marks a held batch question (or undelivered batch
+	// notice) awaiting an answer; additive, flag ON only.
+	BatchAwaitingAnswer bool `json:"batch_awaiting_answer,omitempty"`
 }
 
 // makeSessionListItem projects a session.Session into the wire-stable

@@ -21,18 +21,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestP1267_LockBusyCompactionRequeuedAndRuns exercises the REAL sessionAgent
-// path agent_compaction.go runSummarize lock-busy branch: with the OS session
-// lock held by "another process" (the test itself), Summarize must return an
-// error wrapping ErrSummarizeQueued, keep the snapshot in summarizeQueue
-// (SummarizeQueued true), and the next owner of the session (a Run whose
-// cleanup defer drains the queue) must execute the compaction once the lock
-// is released.
+// TestP1267_LockBusyCompactionRequeuedAndRuns exercises the lock-busy branch,
+// then releases the lock so the next owner can run the queued compaction.
 //
-// REVERT CHECK: removing the a.requeueSummarizeSnapshot(sessionID, snapshot)
-// call in runSummarize's SessionLockBusyError branch makes this test fail at
-// the SummarizeQueued assertion (the snapshot is dropped, SummarizeQueued
-// stays false, and no summary message is ever written).
+// REVERT CHECK: removing the requeue in runSummarize's SessionLockBusyError
+// branch makes the queued-state assertion fail before the next owner runs.
 func TestP1267_LockBusyCompactionRequeuedAndRuns(t *testing.T) {
 	t.Parallel()
 
@@ -90,6 +83,14 @@ func TestP1267_LockBusyCompactionRequeuedAndRuns(t *testing.T) {
 	sessionAgent := sa.(*sessionAgent)
 
 	ctx := context.Background()
+	var otherProcLock *session.SessionLock
+	t.Cleanup(func() {
+		if otherProcLock != nil {
+			_ = otherProcLock.Release()
+		}
+		sessionAgent.CancelAll()
+		sessionAgent.runWg.Wait()
+	})
 
 	sess, err := env.sessions.Create(ctx, "p1267-lock-busy-requeue")
 	require.NoError(t, err)
@@ -109,64 +110,101 @@ func TestP1267_LockBusyCompactionRequeuedAndRuns(t *testing.T) {
 	// Seed turn: establishes the session in a normal, completed state.
 	_, err = sa.Run(ctx, SessionAgentCall{SessionID: sess.ID, Prompt: "seed turn"})
 	require.NoError(t, err)
+	sessionAgent.runWg.Wait()
 	require.False(t, sessionAgent.IsSessionBusy(sess.ID), "session must be idle after the seed turn")
+
+	// Snapshot before taking the lock route; the queue is empty at this point.
+	snapshot := sessionAgent.testBuildSummarizeSnapshot()
+	require.False(t, sessionAgent.SummarizeQueued(sess.ID))
 
 	// Hold the OS session lock, simulating ANOTHER process owning the
 	// session. The byte-range/flock file lock blocks the in-process agent
 	// exactly as it would a foreign process.
-	otherProcLock, err := session.TryAcquireSessionLock(env.workingDir, sess.ID)
+	otherProcLock, err = session.TryAcquireSessionLock(env.workingDir, sess.ID)
 	require.NoError(t, err)
 
-	// Snapshot before taking the lock route; the queue is empty at this point,
-	// exactly as it is for the detached Summarize spawned by Run's cleanup
-	// defer — the same empty-queue precondition the busy branch must survive.
-	snapshot := sessionAgent.testBuildSummarizeSnapshot()
-	require.False(t, sessionAgent.SummarizeQueued(sess.ID))
+	// Install after seed: this trace counts only compaction ownership releases.
+	busyReleases := make(chan int64, 8)
+	var idleReleases atomic.Int64
+	sessionAgent.onSessionIdle = func(string) {
+		count := idleReleases.Add(1)
+		select {
+		case busyReleases <- count:
+		default:
+		}
+	}
 
-	// Manual Summarize on the idle mailbox reaches runSummarize and loses
-	// the lock race to the held lock.
-	summarizeErr := sa.Summarize(ctx, sess.ID, snapshot)
+	require.ErrorIs(t, sa.Summarize(ctx, sess.ID, snapshot), ErrSummarizeQueued)
+	select {
+	case count := <-busyReleases:
+		require.Equal(t, int64(1), count, "direct lock-busy attempt must release ownership once")
+	case <-time.After(10 * time.Second):
+		t.Fatal("direct lock-busy attempt did not release ownership")
+	}
+	// Busy branch returned without a provider request, and queue ownership stays parked.
+	require.Equal(t, int64(1), totalCalls.Load())
+	require.True(t, sessionAgent.SummarizeQueued(sess.ID))
+	firstQueued, queued := sessionAgent.summarizeQueue.Get(sess.ID)
+	require.True(t, queued)
+	require.Same(t, snapshot, firstQueued, "direct busy attempt must queue its original snapshot")
 
-	// Release the lock: from here the session is free again, and the
-	// re-queued compaction must be runnable by the next owner.
+	// The foreign lock remains held: ReserveExclusive does not acquire it,
+	// so its release deterministically invokes the queued summarize handoff.
+	_, reserveEpoch, reserveCancel, ok := sessionAgent.ReserveExclusive(ctx, sess.ID)
+	require.True(t, ok)
+	sessionAgent.ReleaseExclusive(sess.ID, reserveEpoch, reserveCancel)
+	select {
+	case count := <-busyReleases:
+		require.Equal(t, int64(2), count, "exclusive release must trigger queued summarize handoff")
+	case <-time.After(10 * time.Second):
+		t.Fatal("exclusive release did not hand off queued summarize")
+	}
+	select {
+	case count := <-busyReleases:
+		require.Equal(t, int64(3), count, "detached lock-busy summarize attempt must release ownership")
+	case <-time.After(10 * time.Second):
+		t.Fatal("detached lock-busy summarize attempt did not release ownership")
+	}
+	// Join the admitted detached attempt: it can return only after its lock-busy
+	// branch has re-queued the exact snapshot, making this a structural barrier.
+	sessionAgent.runWg.Wait()
+	require.Equal(t, int64(3), idleReleases.Load())
+	require.Equal(t, int64(1), totalCalls.Load())
+	require.True(t, sessionAgent.SummarizeQueued(sess.ID))
+	requeued, queued := sessionAgent.summarizeQueue.Get(sess.ID)
+	require.True(t, queued)
+	require.Same(t, snapshot, requeued, "the same snapshot must remain queued")
+
+	// The foreign owner releases the OS lock; the next normal owner drains the queue.
 	require.NoError(t, otherProcLock.Release())
+	otherProcLock = nil
 
-	require.Error(t, summarizeErr, "Summarize must report the lock failure")
-	require.ErrorIs(t, summarizeErr, ErrSummarizeQueued,
-		"the failed compaction must be reported as re-queued, not lost")
-
-	// The defect: pre-fix, the busy path dropped the snapshot and
-	// SummarizeQueued stayed false forever.
-	require.True(t, sessionAgent.SummarizeQueued(sess.ID),
-		"compaction must stay queued after a lock-busy failure")
-
-	// No busy retry loop: the queue must not self-drain while the compaction
-	// is merely parked (nothing spawned on the lock-busy path).
-	time.Sleep(200 * time.Millisecond)
-	require.True(t, sessionAgent.SummarizeQueued(sess.ID),
-		"re-queued compaction must wait for the next owner, not spin")
-
-	// Next owner of the session: a Run whose cleanup defer drains the
-	// summarize queue and executes the compaction.
 	_, err = sa.Run(ctx, SessionAgentCall{SessionID: sess.ID, Prompt: "next owner turn"})
 	require.NoError(t, err)
 
-	// The re-queued compaction runs detached; wait for the summary message
-	// itself, not for the queue to drain (the queue empties when the
-	// compaction is spawned, not when it completes).
+	// Require a successfully committed summary, not merely its pre-stream row.
 	require.Eventually(t, func() bool {
-		msgs, err := env.messages.List(ctx, sess.ID)
-		if err != nil {
+		updated, getErr := env.sessions.Get(ctx, sess.ID)
+		if getErr != nil || updated.SummaryMessageID == "" {
+			return false
+		}
+		msgs, listErr := env.messages.List(ctx, sess.ID)
+		if listErr != nil {
 			return false
 		}
 		for _, msg := range msgs {
-			if msg.IsSummaryMessage {
-				return true
+			if msg.ID == updated.SummaryMessageID {
+				if finish := msg.FinishPart(); finish != nil && finish.Reason == message.FinishReasonEndTurn {
+					return true
+				}
 			}
 		}
 		return false
 	}, 15*time.Second, 50*time.Millisecond,
-		"summary message must exist after the re-queued compaction ran")
+		"summary must be committed and finished")
+
+	// The agent run wait also joins the detached Summarize goroutine.
+	sessionAgent.runWg.Wait()
 
 	require.False(t, sessionAgent.SummarizeQueued(sess.ID),
 		"summarize queue must be empty once the compaction has run")

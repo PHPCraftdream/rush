@@ -132,7 +132,7 @@ type ActivityFacts struct {
 	// DeadHostDriver: a session_drivers row names a provably dead host (a
 	// crash fact: the loop died before its marker was purged).
 	DeadHostDriver bool
-	// DeadHostRunningJobs: the session owns running async_jobs rows on a
+	// DeadHostRunningJobs: the session owns running batch work on a
 	// provably dead host.
 	DeadHostRunningJobs int
 	// EndedReason is the session row's ended_reason: the last `rush run`'s

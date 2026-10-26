@@ -21,12 +21,17 @@ type BatchInlineAnnouncement struct {
 // A pull/ack/inline loser inserts no history. Call only with the actual elected
 // completion envelope, not with a generic control/stop-intent answer.
 func (s *BatchStore) BatchAnnounceInlineResult(ctx context.Context, messages message.Service, owner, root string, params message.CreateMessageParams) (BatchInlineAnnouncement, error) {
+	// See batch_tool_result.go: prepare before the tx holds the pool's only
+	// connection.
+	if err := db.PdaBatchEnsure(ctx, s.writer); err != nil {
+		return BatchInlineAnnouncement{}, err
+	}
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return BatchInlineAnnouncement{}, err
 	}
 	defer tx.Rollback()
-	q := db.New(tx)
+	q := db.PdaBatchTxQueries(ctx, s.writer, tx)
 	_, err = q.BatchOutboxInlineElect(ctx, db.BatchOutboxInlineElectParams{Owner: owner, RootID: root, UpdatedAt: time.Now().Unix()})
 	if errors.Is(err, sql.ErrNoRows) {
 		return BatchInlineAnnouncement{}, ErrBatchAnnouncementLost
@@ -34,7 +39,7 @@ func (s *BatchStore) BatchAnnounceInlineResult(ctx context.Context, messages mes
 	if err != nil {
 		return BatchInlineAnnouncement{}, err
 	}
-	msg, err := messages.CreateTx(ctx, tx, owner, params)
+	msg, err := pdcCreateTx(ctx, q, tx, messages, owner, params)
 	if err != nil {
 		return BatchInlineAnnouncement{}, err
 	}

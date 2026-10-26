@@ -56,7 +56,11 @@ func TestToolBridgeMediaEndToEnd(t *testing.T) {
 			result := callMCPTool(t, client, "Bash", map[string]any{"command": "media"})
 			expected, err := bridgeMCPResult(response)
 			require.NoError(t, err)
-			require.Equal(t, expected, result, "MCP transport preserves media bytes/type and IsError")
+			// go-sdk v1.8 stamps transport metadata (Meta serverInfo, resultType)
+			// on every result; the bridge's own contract is content + IsError.
+			require.Equal(t, expected.Content, result.Content, "MCP transport preserves media bytes/type")
+			require.Equal(t, expected.IsError, result.IsError, "MCP transport preserves IsError")
+			require.Equal(t, expected.StructuredContent, result.StructuredContent)
 		})
 	}
 }

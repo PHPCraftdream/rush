@@ -31,6 +31,26 @@ func tryLockFile(f *os.File) error {
 	return err
 }
 
+// tryLockFileShared takes a SHARED non-blocking lock on the entire file
+// using Windows LockFileEx. Returns an error (non-nil) if another
+// process holds the lock exclusively.
+func tryLockFileShared(f *os.File) error {
+	// LOCKFILE_FAIL_IMMEDIATELY without LOCKFILE_EXCLUSIVE_LOCK: shared
+	// AND don't block — failure means an exclusive holder, not IO.
+	flags := uint32(windows.LOCKFILE_FAIL_IMMEDIATELY)
+	// Same whole-file range as tryLockFile.
+	var overlapped windows.Overlapped
+	err := windows.LockFileEx(
+		windows.Handle(f.Fd()),
+		flags,
+		0,          // reserved, must be 0
+		^uint32(0), // nNumberOfBytesToLockLow
+		^uint32(0), // nNumberOfBytesToLockHigh
+		&overlapped,
+	)
+	return err
+}
+
 // unlockFile releases the lock taken by tryLockFile.
 func unlockFile(f *os.File) error {
 	var overlapped windows.Overlapped

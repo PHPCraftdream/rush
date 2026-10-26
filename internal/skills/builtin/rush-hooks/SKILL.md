@@ -1,11 +1,13 @@
 ---
 name: rush-hooks
-description: Use when the user wants to add, write, debug, or configure a Rush hook — gating or blocking tool calls, approving or rewriting tool input before execution, injecting context into tool results, or troubleshooting hook behavior in rush.json.
+description: Use when the user wants to add, write, debug, or configure a Rush hook — gating or blocking tool calls, approving or rewriting tool input before execution, injecting context into tool results, or troubleshooting hook behavior in rush.ktav (or legacy rush.json).
 ---
 
 # Rush Hooks
 
-Hooks are user-defined commands in `rush.json` that fire at specific points
+Hooks are user-defined commands in `rush.ktav` (Rush prefers `rush.ktav`;
+a legacy `rush.json` is still read when no `rush.ktav` exists) that fire at
+specific points
 during execution, giving deterministic control over tool behavior. They run
 **before** permission checks and **only on the top-level agent's** tool calls —
 sub-agent calls (task tool, agentic_fetch, etc.) are not intercepted, though
@@ -21,17 +23,23 @@ accept snake_case (`PreToolUse`, `pretooluse`, `pre_tool_use` all work).
 
 ## Configuration
 
-```jsonc
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "^bash$",              // regex against tool name (optional; omit to match all)
-        "command": "./hooks/my-hook.sh",   // required: shell command to run
-        "timeout": 10                     // optional: seconds, default 30
-      }
+Hook configuration lives in `rush.ktav` (or legacy `rush.json`), while the
+hook stdin/stdout wire protocol remains JSON.
+
+```ktav
+hooks: {
+    PreToolUse: [
+        {
+            ## regex against tool name (optional; omit to match all)
+            matcher: ^bash$
+
+            ## required: shell command to run
+            command: ./hooks/my-hook.sh
+
+            ## optional: seconds, default 30
+            timeout: 10
+        }
     ]
-  }
 }
 ```
 
@@ -135,12 +143,15 @@ if echo "$RUSH_TOOL_INPUT_COMMAND" | grep -qE 'rm\s+-(rf|fr)\s+/'; then
 fi
 ```
 
-Config: `{"matcher": "^bash$", "command": "./hooks/no-rm-rf.sh"}`
+Config: `{ matcher: ^bash$, command: ./hooks/no-rm-rf.sh }`
 
 ### Auto-approve read-only tools (inline, no script)
 
-```jsonc
-{"matcher": "^(view|ls|grep|glob)$", "command": "echo '{\"decision\":\"allow\"}'"}
+One hook entry (multi-line form: the command contains `}`, which would close an inline object early):
+
+```ktav
+matcher: ^(view|ls|grep|glob)$
+command: echo '{"decision":"allow"}'
 ```
 
 Every `view`/`ls`/`grep`/`glob` call now runs without prompting.
@@ -160,7 +171,7 @@ else
 fi
 ```
 
-Config: `{"matcher": "^(edit|write|multiedit)$", "command": "./hooks/go-context.sh"}`
+Config: `{ matcher: ^(edit|write|multiedit)$, command: ./hooks/go-context.sh }`
 
 ### Rewrite tool input (shallow merge)
 
@@ -187,7 +198,8 @@ preserved.
 
 1. Add `#!/usr/bin/env bash` and `set -euo pipefail` (for shell scripts).
 2. `chmod +x` the script.
-3. Add the entry under `hooks.PreToolUse` in `rush.json` with the right matcher.
+3. Add the entry under `hooks.PreToolUse` in `rush.ktav` (or legacy
+   `rush.json`) with the right matcher.
 4. Decide intent: inject context (omit `decision`), auto-approve (`"allow"`),
    block (`exit 2`), or halt (`exit 49`).
 5. If rewriting input, remember `updated_input` is a shallow merge — only

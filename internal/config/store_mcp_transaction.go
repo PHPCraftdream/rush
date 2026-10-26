@@ -331,6 +331,14 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 		if record == nil || record.selectedPath == "" {
 			return fmt.Errorf("MCP transaction record %q has no selected destination", key)
 		}
+		// record.data is the JSON-shaped transaction document. The physical
+		// commit bytes are encoded for the target slot's format: Ktav for a
+		// rush.ktav target, byte-identical JSON for everything else. The
+		// commit expectation stays the ORIGINAL raw fingerprint.
+		physicalData, encodeErr := encodeSettingsDocument(record.data, settingsDocumentFormatOf(record.selectedPath))
+		if encodeErr != nil {
+			return fmt.Errorf("failed to encode config file %s: %w", record.selectedPath, encodeErr)
+		}
 		if !record.expectation.exists {
 			parentPath := filepath.Dir(record.commitPath)
 			if currentParent := configDiscoveryFingerprint(filepath.Dir(record.selectedPath)); currentParent != record.expectation.parentDiscovery {
@@ -354,7 +362,7 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 			return guardErr
 		}
 		audit.event = ev
-		committed, commitErr := commitConfigFile(record.selectedPath, record.commitPath, record.data, 0o600, record.expectation, owner, enforce)
+		committed, commitErr := commitConfigFile(record.selectedPath, record.commitPath, physicalData, 0o600, record.expectation, owner, enforce)
 		commitReturnedNil := commitErr == nil
 		if commitReturnedNil {
 			s.diskWriteGeneration++
@@ -367,7 +375,7 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 				// bytes are reconciled into the transaction so its caller can
 				// publish a fresh snapshot, but the durability uncertainty is
 				// returned after that publication and must not be retried blindly.
-				reconciled, ok := s.reconcileMCPCommit(record)
+				reconciled, ok := s.reconcileMCPCommit(record, physicalData)
 				if !ok {
 					return &mcpCommitUncertainError{cause: commitErr}
 				}
@@ -394,7 +402,7 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 					!errors.Is(outcome, errConfigCommitDurabilityUncertain) {
 					commitErr = nil
 				} else {
-					reconciled, ok := s.reconcileMCPCommit(record)
+					reconciled, ok := s.reconcileMCPCommit(record, physicalData)
 					if !ok {
 						return &mcpCommitUncertainError{cause: commitErr}
 					}
@@ -432,14 +440,14 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 	return nil
 }
 
-func (s *ConfigStore) reconcileMCPCommit(record *mcpFileRecord) (reloadFileFingerprint, bool) {
+func (s *ConfigStore) reconcileMCPCommit(record *mcpFileRecord, physicalData []byte) (reloadFileFingerprint, bool) {
 	owner, enforce, err := s.mcpOwnerPolicy(record.selectedPath)
 	if err != nil {
 		return reloadFileFingerprint{}, false
 	}
-	runConfigBeforeMCPReconcileHook(record.selectedPath, record.data)
+	runConfigBeforeMCPReconcileHook(record.selectedPath, physicalData)
 	data, fingerprint, err := readStableConfigFileOwned(record.selectedPath, owner, enforce)
-	if err != nil || !sameBytesFingerprint(data, sha256.Sum256(record.data)) {
+	if err != nil || !sameBytesFingerprint(data, sha256.Sum256(physicalData)) {
 		return reloadFileFingerprint{}, false
 	}
 	return fingerprint, true
@@ -626,6 +634,13 @@ func (s *ConfigStore) mcpPathData(files *mcpLockedFiles, path string) ([]byte, b
 		}
 		return nil, false, err
 	}
+	// Rush documents may be Ktav on disk: decode to JSON-shaped bytes for
+	// the semantic work while the fingerprint stays bound to the RAW bytes.
+	// A decode failure is an error, never "no servers".
+	data, decodeErr := decodeConfigDocument(path, data)
+	if decodeErr != nil {
+		return nil, false, decodeErr
+	}
 	record := files.bindMCPPath(path, data, fingerprint.exists, fingerprint)
 	return record.data, fingerprint.exists, nil
 }
@@ -652,7 +667,7 @@ func (s *ConfigStore) mcpOwnerPolicy(path string) (int, bool, error) {
 	if systemPath := s.systemConfigPathValue(); systemPath != "" && canonical == normalizeReloadPath(systemPath) {
 		return systemConfigOwner(), true, nil
 	}
-	if canonical == normalizeReloadPath(GlobalConfig()) || canonical == normalizeReloadPath(s.globalDataPath) {
+	if matchesLogicalSlot(canonical, GlobalConfig()) || matchesLogicalSlot(canonical, s.globalDataPath) {
 		return homeConfigOwner(), true, nil
 	}
 	if canonical == normalizeReloadPath(filepath.Join(home.Dir(), ".claude", ".mcp.json")) {
@@ -686,12 +701,17 @@ func entryOrigins(origins map[string]MCPOrigin, path, workspacePath, globalPath,
 			continue
 		}
 		origin := MCPOrigin{Kind: MCPOriginProject, Path: path, Scope: ScopeGlobal, Writable: false}
-		switch path {
-		case workspacePath:
+		// matchesLogicalSlot treats the legacy JSON spelling and its Ktav
+		// sibling as one logical slot: a mid-session migration renames
+		// rush.json to rush.ktav while globalDataPath still anchors the
+		// legacy name, and the slot must stay writable through either
+		// spelling.
+		switch {
+		case matchesLogicalSlot(path, workspacePath):
 			origin.Kind, origin.Scope, origin.Writable = MCPOriginWorkspace, ScopeWorkspace, true
-		case globalPath:
+		case matchesLogicalSlot(path, globalPath):
 			origin.Kind, origin.Scope, origin.Writable = MCPOriginGlobal, ScopeGlobal, true
-		case systemPath:
+		case matchesLogicalSlot(path, systemPath):
 			origin.Kind = MCPOriginSystem
 		}
 		if current, ok := origins[name]; !ok || mcpOriginPriority(origin) >= mcpOriginPriority(current) {

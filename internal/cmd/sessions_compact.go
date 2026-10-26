@@ -1,7 +1,7 @@
 package cmd
 
 // `rush sessions compact` (task #1161): explicit SQLite VACUUM of the
-// shared rush.db. Deletions (`sessions gc`/`purge`, `sessions delete`)
+// shared session store. Deletions (`sessions gc`/`purge`, `sessions delete`)
 // hand pages back to SQLite's freelist but never shrink the file; this
 // command rebuilds it. Nothing runs automatically — every invocation is
 // an explicit operator request.
@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
@@ -24,12 +25,12 @@ import (
 
 var sessionsCompactCmd = &cobra.Command{
 	Use:   "compact",
-	Short: "Reclaim free space in rush.db (SQLite VACUUM)",
-	Long: `Rebuild rush.db with SQLite VACUUM to return freed pages to the
+	Short: "Reclaim free space in the session store (SQLite VACUUM)",
+	Long: `Rebuild the session store with SQLite VACUUM to return freed pages to the
 filesystem.
 
 Deleting sessions ("sessions gc", "sessions purge", "sessions delete")
-moves their pages to the database's freelist; the rush.db file itself does
+moves their pages to the database's freelist; the store file itself does
 not shrink. This command rebuilds the file in place so its size matches
 the live data. It never runs automatically: not on startup, not on a
 timer, and not as a side effect of gc/purge.
@@ -54,8 +55,8 @@ startup until the compaction finishes. Refusals:
 Known blind spot: a rush process that holds an open database pool but
 registers no host lock and no session lock is invisible to the liveness
 gates. As of this writing the web server registers its host lock lazily —
-only when its async job store first claims work (internal/app/app.go,
-AsyncJobStore) — so an IDLE web server with no claimed jobs is exactly
+only when it first claims batch work (internal/app) — so an IDLE web server
+with no claimed work is exactly
 such an invisible process. SQLite still protects the file itself (the
 idle server's writers get SQLITE_BUSY after the 30s busy timeout), and
 the checkpoint gate catches an open transaction, but a wedged idle server
@@ -121,7 +122,7 @@ func sessionsCompactCmdRun(cmd *cobra.Command, args []string) error {
 
 	ctx := cmd.Context()
 	dataDir := a.Config().Options.DataDirectory
-	dbPath := filepath.Join(dataDir, "rush.db")
+	dbPath := storepath.ActivePath(dataDir)
 	conn := a.DB()
 
 	before, err := db.Stats(ctx, conn)
@@ -156,6 +157,18 @@ func sessionsCompactCmdRun(cmd *cobra.Command, args []string) error {
 	// reported.
 	hostOffenders, hostErr := compactLiveHosts(dataDir)
 	sessionOffenders, sessionErr := compactLiveSessionLocks(dataDir)
+	// Flag ON (R12-B part 2): sessions owning live or unknown batch work are
+	// a gate of their own. It is NEVER bypassed -- not by --force (whose
+	// documented scope is host and session locks only) and not in a real run;
+	// in a dry run it is only reported.
+	batchOffenders, batchGateErr := compactBatchLiveSessions(ctx, a, dataDir)
+	if batchGateErr != nil {
+		return batchGateErr
+	}
+	if !dryRun && len(batchOffenders) > 0 {
+		return fmt.Errorf("refusing to compact: %d session(s) own live or unknown batch work: %s; resolve the batch work first (e.g. `rush sessions jobs <id>` / `rush batch stop`)",
+			len(batchOffenders), strings.Join(batchOffenders, ", "))
+	}
 	if !dryRun && !force {
 		if err := compactGateRefusal(hostErr, hostOffenders, sessionErr, sessionOffenders); err != nil {
 			return err
@@ -198,6 +211,13 @@ func sessionsCompactCmdRun(cmd *cobra.Command, args []string) error {
 				compactGateVerdict(hostErr, hostOffenders),
 				compactGateVerdict(sessionErr, sessionOffenders),
 				compactGateVerdict(busyErr, nil))
+			if batchOffenders != nil {
+				if len(batchOffenders) > 0 {
+					fmt.Printf("batch gate: LIVE (%s)\n", strings.Join(batchOffenders, ", "))
+				} else {
+					fmt.Println("batch gate: clear")
+				}
+			}
 		} else {
 			result.AfterBytes = live
 			if dfErr == nil {
@@ -385,7 +405,7 @@ func compactHint(ctx context.Context, conn *sql.DB) {
 	if float64(free) < compactHintMinFraction*float64(stats.Bytes) {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "rush.db: %s of %s is free pages; run 'rush sessions compact' to reclaim\n",
+	fmt.Fprintf(os.Stderr, "session store: %s of %s is free pages; run 'rush sessions compact' to reclaim\n",
 		humanBytes(free), humanBytes(stats.Bytes))
 }
 

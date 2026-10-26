@@ -35,6 +35,8 @@ type Runner struct {
 	final               chan struct{}
 	host                context.Context
 	attempts            map[uint64]*runnerAttempt
+	attemptsByRoot      map[ID]map[uint64]bool
+	frozenSnapshots     map[ID]BatchView
 	batches             map[ID]*Batch
 	released            map[ID]bool
 	closing             bool
@@ -132,7 +134,7 @@ func newRunnerWithClockAndHooks(ctx context.Context, cfg RunnerConfig, clock run
 		engine: engine, executor: cfg.Executor, controlTimeout: cfg.ControlTimeout, requestHooks: hooks,
 		maxDepth: cfg.Limits.MaxDepth, maxNodes: cfg.Limits.MaxNodes, clock: clock,
 		containmentRequests: make(chan *runnerRequest), requests: make(chan *runnerRequest), wake: make(chan struct{}, 1), exited: make(chan struct{}), final: make(chan struct{}), host: ctx,
-		attempts: make(map[uint64]*runnerAttempt), batches: make(map[ID]*Batch), released: make(map[ID]bool),
+		attempts: make(map[uint64]*runnerAttempt), attemptsByRoot: make(map[ID]map[uint64]bool), frozenSnapshots: make(map[ID]BatchView), batches: make(map[ID]*Batch), released: make(map[ID]bool),
 		views: make(map[ID]NodeView), snapshots: make(map[ID]BatchView), cleanupChanged: make(chan struct{}),
 	}
 	if cfg.CommitHook != nil {
@@ -270,8 +272,13 @@ func (r *Runner) loop() {
 		if r.isClosed() && len(r.publicationQueue) == 0 {
 			// §3.4 preserves frozen views, not attempts or Launch payloads.
 			clear(r.attempts)
+			clear(r.attemptsByRoot)
+			clear(r.frozenSnapshots)
 			clear(r.batches)
 			clear(r.feed.known)
+			// Final snapshots are frozen in the Runtime maps; the Engine's own
+			// TaskSpec payloads are dropped here, after the last apply.
+			r.engine.dropTaskPayloads()
 			// No further engine access after this point. Lifetime locks remain live.
 			close(r.exited)
 			r.inboxMu.Lock()
@@ -322,9 +329,9 @@ func (r *Runner) apply(e Event) (Transition, error) {
 		r.mu.Lock()
 		r.released[e.Root] = true
 		// §4.5: only a root tombstone and cleanup metadata survive Release.
+		r.pruneRootAttempts(e.Root)
 		for id, v := range r.views {
 			if v.Root == e.Root {
-				delete(r.attempts, v.Token)
 				delete(r.views, id)
 				delete(r.snapshots, id)
 				delete(r.feed.known, id)

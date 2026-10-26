@@ -10,9 +10,9 @@ import (
 	"context"
 	"database/sql"
 	"os"
-	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/stretchr/testify/require"
 )
 
@@ -98,7 +98,7 @@ func TestCompactReclaimsFreelist(t *testing.T) {
 // tests below therefore assert on os.Stat.
 func dbFileSize(t *testing.T, dataDir string) int64 {
 	t.Helper()
-	st, err := os.Stat(filepath.Join(dataDir, "rush.db"))
+	st, err := os.Stat(storepath.ActivePath(dataDir))
 	require.NoError(t, err)
 	return st.Size()
 }
@@ -145,7 +145,7 @@ func TestCompactRefusesWhileReaderHoldsTransaction(t *testing.T) {
 	bloatTable(t, conn, 1<<20)
 	sizeBefore := dbFileSize(t, dataDir)
 
-	reader, err := sql.Open("sqlite", filepath.Join(dataDir, "rush.db"))
+	reader, err := sql.Open("sqlite", storepath.ActivePath(dataDir))
 	require.NoError(t, err)
 	defer reader.Close()
 	tx, err := reader.BeginTx(ctx, nil)
@@ -174,7 +174,7 @@ func TestStatsWALBytes(t *testing.T) {
 	// Touch the WAL so Stats must report a non-zero sidecar size.
 	_, err = conn.ExecContext(ctx, "CREATE TABLE compact_wal_probe (id INTEGER PRIMARY KEY)")
 	require.NoError(t, err)
-	walSt, err := os.Stat(filepath.Join(dataDir, "rush.db-wal"))
+	walSt, err := os.Stat(storepath.ActivePath(dataDir) + "-wal")
 	require.NoError(t, err)
 	require.Greater(t, walSt.Size(), int64(0))
 

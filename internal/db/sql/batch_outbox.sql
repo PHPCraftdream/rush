@@ -31,6 +31,18 @@ WHERE batch_nodes.owner_session_id = @owner AND batch_nodes.root_id = @root_id A
 UPDATE batch_nodes SET announce_message_id = @message_id, updated_at = @updated_at
 WHERE owner_session_id = @owner AND root_id = @root_id AND node_id = root_id AND announced = 1;
 
+-- name: BatchOutboxConsumeWithToolResult :execrows
+-- Persist the actual Tool result as both durable delivery identities under the full root incarnation fence.
+UPDATE batch_nodes SET announced = 1, announce_message_id = @message_id, notice_message_id = @message_id,
+  delivery = 'done', wake = 0, reacted = 1, updated_at = @updated_at
+WHERE batch_nodes.owner_session_id = @owner AND batch_nodes.root_id = @root_id AND batch_nodes.node_id = @node_id
+  AND batch_nodes.node_id = batch_nodes.root_id AND batch_nodes.host_id = @host_id AND batch_nodes.runner_id = @runner_id
+  AND batch_nodes.tool_call_id = @tool_call_id
+  AND batch_nodes.announced = 0 AND batch_nodes.notice_selected = 1 AND batch_nodes.delivery = 'pending'
+  AND batch_nodes.state IN ('completed', 'failed', 'cancelled', 'timed_out', 'interrupted', 'skipped')
+  AND (SELECT count(*) FROM batch_nodes c WHERE c.root_id = batch_nodes.root_id AND c.node_id != c.root_id) = 1
+  AND EXISTS (SELECT 1 FROM batch_nodes c WHERE c.parent_id = batch_nodes.root_id AND c.kind = 'task');
+
 -- name: BatchOutboxInlineElect :one
 -- Only an unannounced one-task root can elect its result as completion.
 UPDATE batch_nodes SET delivery = 'done', wake = 0, reacted = 1, updated_at = @updated_at

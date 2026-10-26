@@ -34,7 +34,7 @@ func TestRebuildSessionAgentCall_RestoresRunAllowlistFromSpec(t *testing.T) {
 		},
 	}
 
-	call, err := coord.RebuildSessionAgentCall(t.Context(), data)
+	call, err := coord.RebuildSessionAgentCall(t.Context(), "", data)
 	require.NoError(t, err)
 
 	// (1) The rebuilt call carries a compiled, RESTRICTED matcher.

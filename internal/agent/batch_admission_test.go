@@ -53,6 +53,10 @@ var batchExpectedIOTools = []string{
 	"download", "web_fetch", "web_search", "run_command", "bash", "sourcegraph",
 	"git_read", "fs_read", "fs_list", "fs_find", "fs_grep", "fs_write",
 	"fs_write_lines", "fs_replace", "fs_delete",
+	// Round-2 completeness (KNOWING tripwire update): todos MUTATES session
+	// state, so batchIOTools classifies it WORK/io — the literal expectation
+	// must include it or the symmetry test fails.
+	"todos",
 }
 
 func TestBatchClassifyIOTable(t *testing.T) {
@@ -87,7 +91,7 @@ func TestBatchClassifyIOTableSymmetry(t *testing.T) {
 	for name := range literal {
 		require.True(t, production[name], "literal expectation %q absent from the allowlist", name)
 	}
-	require.Len(t, batchExpectedIOTools, 23)
+	require.Len(t, batchExpectedIOTools, 24)
 }
 
 func TestBatchClassifyKinds(t *testing.T) {

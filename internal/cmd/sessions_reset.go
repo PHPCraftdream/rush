@@ -5,8 +5,6 @@ package cmd
 // first.
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -103,81 +101,56 @@ rush sessions reset pr-42 --force
 			defer lk.Release()
 		}
 
-		outcome, err := resetSessionHistory(cmd.Context(), a, sess.ID, force)
+		// F8: the live-loop gate first -- the batch reset's atomic refusal
+		// covers batch work, but a live `rush run` loop between turns
+		// holds no batch root and no lock, so it must refuse exactly like
+		// the legacy path did (the R8A-3 bug).
+		if err := resetLiveLoopRefusal(cmd.Context(), a, sess.ID); err != nil {
+			return err
+		}
+		// History (messages and batch rows) goes through the
+		// R10c batch reset, which refuses atomically while the owner
+		// has any nonterminal root.
+		batchOutcome, err := batchResetSessionHistory(cmd.Context(), a, sess.ID)
 		if err != nil {
 			return err
 		}
-		// Zero the per-session usage counters so a follow-up run starts
-		// from an honest "empty context" estimate. cost_self is never
-		// lowered (it is monotonic, #1130): the reset freezes the node's
-		// budget instead — cost_base = subtree_spent, so the budget
-		// (subtree minus base) starts from zero again.
-		if err := a.Sessions.SetSummaryAndUsage(cmd.Context(), sess.ID, "", 0, 0); err != nil {
-			return fmt.Errorf("failed to reset session counters for %s: %w", sess.ID, err)
-		}
-		if err := a.Sessions.ResetCostBase(cmd.Context(), sess.ID); err != nil {
-			return fmt.Errorf("failed to reset session cost for %s: %w", sess.ID, err)
-		}
-		fmt.Fprintf(os.Stderr, "reset session %s (%s)\n", sess.ID, short(session.HashID(sess.ID)))
-		if outcome.JobsVoided+outcome.NoticesVoided > 0 {
-			fmt.Fprintf(os.Stderr, "voided %d background job notice(s) and %d session notice(s) of the wiped history\n",
-				outcome.JobsVoided, outcome.NoticesVoided)
-		}
-		// Task #1153: --force proved the previous holder dead; its queued runs
-		// and injects must not survive the reset either.
-		if force {
-			purgeQueuedWorkAfterStop(cmd, sess.ID)
-		}
-		return nil
+		return finishSessionReset(cmd, a, sess.ID, force, fmt.Sprintf(
+			"batch reset: deleted %d message(s), %d batch node(s), voided %d notice(s), cancelled %d schedule(s)",
+			batchOutcome.MessagesDeleted, batchOutcome.NodesDeleted, batchOutcome.NoticesVoided, batchOutcome.SchedulesCancelled))
 	},
 }
 
-// resetSessionHistory is the wipe itself (R8A-3): it refuses while the session
-// is still worked on, then deletes the messages and voids the session's
-// async notice rows in one transaction, so the next run starts from a truly
-// clean slate. Refusal, not stopping, because the live work belongs to other
-// processes this command cannot stop safely: voiding a running job would
-// leave its process editing the workspace with its result silently dropped,
-// and a loop between turns would run its next Drain on the wiped history.
-func resetSessionHistory(ctx context.Context, a *app.App, sessionID string, force bool) (session.ResetOutcome, error) {
-	store := a.AsyncJobStore()
-	if store == nil {
-		// No async data can exist without a store: the plain wipe is all there is.
-		if err := a.Messages.DeleteSessionMessages(ctx, sessionID); err != nil {
-			return session.ResetOutcome{}, fmt.Errorf("failed to reset session %s: %w", sessionID, err)
-		}
-		return session.ResetOutcome{}, nil
+// finishSessionReset is the shared tail of both reset paths: zero the
+// per-session usage counters, print the standard reset line plus the
+// path-specific outcome summary, and purge queued work after --force.
+func finishSessionReset(cmd *cobra.Command, a *app.App, sessID string, force bool, summary string) error {
+	// Zero the per-session usage counters so a follow-up run starts
+	// from an honest "empty context" estimate. cost_self is never
+	// lowered (it is monotonic, #1130): the reset freezes the node's
+	// budget instead — cost_base = subtree_spent, so the budget
+	// (subtree minus base) starts from zero again.
+	if err := a.Sessions.SetSummaryAndUsage(cmd.Context(), sessID, "", 0, 0); err != nil {
+		return fmt.Errorf("failed to reset session counters for %s: %w", sessID, err)
 	}
-	// Dead-host rows (a force-killed run) become 'interrupted' first: only
-	// rows on a live host still count as running.
-	store.RecoverOwnerScope(ctx, sessionID, a.Messages)
-	// The classifier decides "still being worked on". --force skips only the
-	// LOCK half of it: the caller has just killed/proven the lock holder and
-	// holds the real OS lock across the wipe -- but a live driver, running
-	// job or delegation is work --force cannot safely drop, and still refuses
-	// (conscious R-ACT-2 change: a plain reset now refuses mid-turn too,
-	// where it used to be lock-blind and wipe under a live holder).
-	act, actErr := a.SessionActivity(ctx, sessionID)
-	if actErr != nil {
-		return session.ResetOutcome{}, resetRefusedError(sessionID, "live-work state could not be read (fail closed)")
+	if err := a.Sessions.ResetCostBase(cmd.Context(), sessID); err != nil {
+		return fmt.Errorf("failed to reset session cost for %s: %w", sessID, err)
 	}
-	if f := act.Facts; force {
-		if f.Driver != nil || f.OwnRunningJobs > 0 || f.LiveDelegations > 0 || len(f.OpenSchedules) > 0 || len(f.Unreadable) > 0 {
-			return session.ResetOutcome{}, resetRefusedError(sessionID, act.Verdict.Description)
-		}
-	} else if kindIsLive(act.Verdict.Kind) {
-		return session.ResetOutcome{}, resetRefusedError(sessionID, act.Verdict.Description)
+	fmt.Fprintf(os.Stderr, "reset session %s (%s)\n", sessID, short(session.HashID(sessID)))
+	if summary != "" {
+		fmt.Fprintln(os.Stderr, summary)
 	}
-	outcome, err := store.ResetOwnerHistory(ctx, a.Messages, sessionID)
-	if errors.Is(err, session.ErrResetJobsRunning) {
-		return session.ResetOutcome{}, resetRefusedError(sessionID, err.Error())
+	// Task #1153: --force proved the previous holder dead; its queued runs
+	// and injects must not survive the reset either.
+	if force {
+		purgeQueuedWorkAfterStop(cmd, sessID)
 	}
-	if err != nil {
-		return session.ResetOutcome{}, fmt.Errorf("failed to reset session %s: %w", sessionID, err)
-	}
-	return outcome, nil
+	return nil
 }
 
+// resetRefusedError is the shared reset-refusal shape: the batch reset's
+// atomic refusal and the live-loop gate render their "still being worked
+// on" reason through it.
 func resetRefusedError(sessionID, what string) error {
 	return fmt.Errorf("session %s is still being worked on (%s); nothing was reset. "+
 		"Stop it first (`rush sessions cancel %s`: a waiting rush run exits at its next wake; a hung one can be ended by its PID, shown by `rush sessions jobs %s`, "+

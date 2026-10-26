@@ -19,7 +19,11 @@ func naturalWorkspaceSettingsPath(workingDir string) string {
 		return ""
 	}
 	dataDir, _ := defaultDataDirForWorkspace(workingDir)
-	return filepath.Join(dataDir, "rush.json")
+	// The natural workspace settings file is a LOGICAL slot: select the
+	// active sibling (rush.ktav when present) so a lock living only in the
+	// Ktav document is visible. readSlotOf passes an already-selected .ktav
+	// path through unchanged.
+	return readSlotOf(filepath.Join(dataDir, "rush.json"))
 }
 
 // checkExternalSettingsSources checks locks in settings sources outside the
@@ -60,9 +64,9 @@ func (s *ConfigStore) checkExternalSettingsSources(path string, data []byte) err
 		globalHashes = append(globalHashes, canonicalGlobalHash)
 	}
 	if len(globalHashes) != 0 {
-		password := processPasswordHash()
+		password := processPassword()
 		for _, hash := range globalHashes {
-			if !sameSettingsHash(password, hash) {
+			if !VerifyPassword(password, hash) {
 				return ErrSettingsLocked
 			}
 		}
@@ -91,9 +95,9 @@ func (s *ConfigStore) checkExternalSettingsSources(path string, data []byte) err
 	if len(localHashes) == 0 {
 		return nil
 	}
-	password := processPasswordHash()
+	password := processPassword()
 	for _, hash := range localHashes {
-		if !sameSettingsHash(password, hash) {
+		if !VerifyPassword(password, hash) {
 			return ErrSettingsLocked
 		}
 	}

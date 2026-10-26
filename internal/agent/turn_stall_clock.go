@@ -89,9 +89,19 @@ const stallSamplerTick = 15 * time.Second
 // (armed at the top of runTurn, disarmed in runTurn's defer).
 var armedStallClocks sync.Map // string -> *stallClock
 
-// stallNow is the clock the sampler and phase stamps read. A package
-// variable so tests can inject a fake clock deterministically.
-var stallNow = time.Now
+// stallNowFn is the injectable clock behind stallNow. A package seam so
+// tests can drive a fake clock deterministically; atomic because the
+// process-wide sampler goroutine (started by the first armed turn of any
+// test) reads it while a later test swaps it.
+var stallNowFn atomic.Pointer[func() time.Time]
+
+// stallNow is the clock the sampler and phase stamps read.
+func stallNow() time.Time {
+	if fn := stallNowFn.Load(); fn != nil {
+		return (*fn)()
+	}
+	return time.Now()
+}
 
 // SetTurnStallPolicy installs the stall-policy seam invoked by the
 // sampler on every threshold crossing. The default (nil) policy means

@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/google/uuid"
 )
 
 // Batch leaf kinds. R11 owns the tool-name -> kind -> group -> rank mapping;
@@ -22,17 +26,53 @@ const (
 
 // batchLeafPayload is the JSON carried in jobbatch.TaskSpec.Payload for every
 // kind. Input is the model's tool input exactly as the policy leaf expects it.
+// RegistryID and Policy are the R11C ingress transport: when set, leaf
+// resolution is keyed by the invocation's pinned registry identity, never by
+// session, and Policy carries the invocation's immutable executor context.
 type batchLeafPayload struct {
-	Tool       string          `json:"tool"`
-	ToolCallID string          `json:"tool_call_id"`
-	SessionID  string          `json:"session_id"`
-	Input      json.RawMessage `json:"input"`
+	Tool            string                  `json:"tool"`
+	ToolCallID      string                  `json:"tool_call_id"`
+	SessionID       string                  `json:"session_id"`
+	Input           json.RawMessage         `json:"input"`
+	RegistryID      string                  `json:"registry_id,omitempty"`
+	Policy          *batchLeafPolicyContext `json:"policy,omitempty"`
+	CallCredentials bool                    `json:"call_credentials,omitempty"`
+	// Timeout carries a normalized direct/explicit-leaf wake_only timeout
+	// intent: the originally requested seconds. The ABSOLUTE call-start due
+	// time is deliberately NOT carried: a now()-derived field would make
+	// the canonical spec hash (batch_invocation.go batchInvocationHash,
+	// mirroring internal/session/batch_commit.go batchCommitSpecHash)
+	// nondeterministic across retries of one logical call, breaking
+	// in-flight singleflight matching and live-root attach. The durable
+	// call-start anchor is batch_nodes.created_at (set once at reservation,
+	// never updated); the session-package check-in scanner
+	// (batch_timeout_checkin.go) computes due = created_at + seconds. The
+	// scanner reads this JSON shape from batch_nodes.task_payload; the json
+	// tags are a cross-package contract, do not rename them.
+	Timeout *batchLeafTimeoutSpec `json:"timeout,omitempty"`
+	// diskProvider is the in-process resolution of Policy.DiskBindingID,
+	// stamped by the executor router before family start; never serialized.
+	diskProvider tools.DiskProvider `json:"-"`
 }
 
-// batchLeafEnv gives a family its pinned, policy-wrapped targets.
+// batchLeafTimeoutSpec is the durable payload form of a wake_only intent.
+type batchLeafTimeoutSpec struct {
+	Kind    string `json:"kind"`    // always "wake_only" today
+	Seconds int    `json:"seconds"` // originally requested duration
+}
+
 type batchLeafEnv struct {
-	// Leaves returns the registry of the session's pinned toolset.
-	Leaves func(sessionID string) (*policyLeafRegistry, error)
+	OutputCache *batchOutputCache
+	// Leaves resolves a pinned policy-leaf registry by identity.
+	Leaves       func(sessionID string) (*policyLeafRegistry, error)
+	DiskBindings *DiskProviderRegistry
+	// Ingress lazily resolves the App-owned BatchWorkIngress (R12-H2 P1-4):
+	// the agent family passes it onto the run request so the driver resolves
+	// pinned leaves through the invocation's authority, never the process
+	// global. It is a function because the ingress is bound to the runtime
+	// only after install (BindRuntimeIngress); an eager value copy would
+	// capture nil forever.
+	Ingress func() BatchWorkIngress
 }
 
 // batchLeafFamily executes one kind. start follows jobbatch.Executor.Start:
@@ -47,6 +87,9 @@ const (
 	batchCodeBadPayload  = "bad_payload"
 	batchCodeUnknownKind = "unknown_kind"
 	batchCodeNoLeaf      = "tool_unavailable"
+	// batchCodeNoBinding marks a required process-bound disk binding that
+	// is no longer available (batchLeafPayload.Policy.DiskBindingID).
+	batchCodeNoBinding = "binding_unavailable"
 )
 
 // batchStartError carries a safe machine code for the Runner's code rule.
@@ -62,8 +105,9 @@ func (e *batchStartError) Unwrap() error { return e.err }
 // batchExecutor is the Rush jobbatch.Executor: it routes a launch to the family
 // registered for its kind. It is inert until R11 wires it to a Runner.
 type batchExecutor struct {
-	env      batchLeafEnv
-	families map[string]batchLeafFamily
+	env               batchLeafEnv
+	families          map[string]batchLeafFamily
+	decorateExecution func(jobbatch.Execution) jobbatch.Execution
 }
 
 var _ jobbatch.Executor = (*batchExecutor)(nil)
@@ -81,7 +125,92 @@ func (e *batchExecutor) Start(ctx context.Context, l jobbatch.Launch, report fun
 	if err := json.Unmarshal(l.Task.Payload, &p); err != nil || p.Tool == "" || p.SessionID == "" {
 		return nil, &batchStartError{batchCodeBadPayload, errors.New("payload needs tool, session_id and input")}
 	}
-	return family.start(ctx, e.env, l, p, report)
+	// A required provider dependency is never accepted with only the
+	// legacy boolean/free-text marker; this avoids OS-disk promotion.
+	if p.Policy != nil && (p.Policy.DiskProvider || strings.TrimSpace(p.Policy.CustomDisk) != "") && p.Policy.DiskBindingID == "" {
+		return nil, &batchStartError{batchCodeNoBinding, ErrDiskProviderUnavailable}
+	}
+	// Execution owner (R12-H2 §1.2): acquired BEFORE resolving leaves or
+	// starting any side effect. One key per accepted execution — instance
+	// is a fresh unique id, the key names the construction the execution
+	// needs and retains the binding. It is released ONLY by the
+	// interface-preserving physical-Dispose wrapper (batch_exec_binding.go),
+	// after provider operations/readers and the child-driver exit drain;
+	// never on Stop acknowledgement. A disposal timeout/error retains the
+	// owner, so start-error paths are the only early releasers here.
+	var execRelease func()
+	if p.RegistryID != "" {
+		if e.env.DiskBindings == nil {
+			return nil, &batchStartError{batchCodeNoBinding, ErrDiskProviderUnavailable}
+		}
+		bindingID := ""
+		if p.Policy != nil {
+			bindingID = p.Policy.DiskBindingID
+			if bindingID != "" {
+				if _, err := e.env.DiskBindings.Lookup(bindingID); err != nil {
+					return nil, &batchStartError{batchCodeNoBinding, err}
+				}
+			}
+		}
+		execKey := diskOwnerKey{kind: diskOwnerExecution, instance: uuid.NewString(), bindingID: bindingID, registryID: p.RegistryID}
+		if err := e.env.DiskBindings.acquire(execKey); err != nil {
+			return nil, &batchStartError{batchCodeNoBinding, err}
+		}
+		var once sync.Once
+		execRelease = func() { once.Do(func() { e.env.DiskBindings.release(execKey) }) }
+		if bindingID != "" {
+			registry, err := e.env.Leaves(p.RegistryID)
+			if err != nil || registry == nil || !registry.hasToolset(p.Policy.RestrictedToolset) {
+				if err == nil {
+					err = ErrDiskProviderUnavailable
+				}
+				execRelease()
+				return nil, &batchStartError{batchCodeNoBinding, err}
+			}
+			leaf, err := registry.resolve(p.Tool)
+			if err != nil {
+				execRelease()
+				return nil, &batchStartError{batchCodeNoBinding, err}
+			}
+			_ = leaf
+			provider, err := e.env.DiskBindings.Lookup(bindingID)
+			if err != nil {
+				execRelease()
+				return nil, &batchStartError{batchCodeNoBinding, err}
+			}
+			p.diskProvider = provider
+		}
+	}
+	execution, err := family.start(ctx, e.env, l, p, report)
+	if err != nil {
+		if execRelease != nil {
+			execRelease()
+		}
+		return nil, err
+	}
+	if execution == nil {
+		if execRelease != nil {
+			execRelease()
+		}
+		return nil, &batchStartError{batchCodeNoBinding, ErrDiskProviderUnavailable}
+	}
+	if e.decorateExecution != nil {
+		execution = e.decorateExecution(execution)
+	}
+	if execRelease != nil {
+		return newBatchBindingExecution(execution, execRelease), nil
+	}
+	return execution, nil
+}
+
+// batchLeafLookupID returns the identity leaf resolution is keyed under: the
+// invocation's pinned registry identity when present, else the legacy
+// session-keyed lookup.
+func batchLeafLookupID(p batchLeafPayload) string {
+	if p.RegistryID != "" {
+		return p.RegistryID
+	}
+	return p.SessionID
 }
 
 // resolveLeaf returns the pinned policy leaf for the payload's tool.
@@ -89,7 +218,7 @@ func (env batchLeafEnv) resolveLeaf(p batchLeafPayload) (fantasy.AgentTool, erro
 	if env.Leaves == nil {
 		return nil, &batchStartError{batchCodeNoLeaf, errors.New("no toolset provider")}
 	}
-	registry, err := env.Leaves(p.SessionID)
+	registry, err := env.Leaves(batchLeafLookupID(p))
 	if err != nil {
 		return nil, &batchStartError{batchCodeNoLeaf, err}
 	}

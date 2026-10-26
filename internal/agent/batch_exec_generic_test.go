@@ -309,72 +309,9 @@ func TestBatchGenericStartLifetime(t *testing.T) {
 	require.Equal(t, jobbatch.StateCompleted, batchGenericTestReport(t, reports).State)
 }
 
-func TestBatchGenericDirectStall(t *testing.T) {
-	for _, managed := range []bool{false, true} {
-		t.Run(map[bool]string{false: "unmarked", true: "managed"}[managed], func(t *testing.T) {
-			ctx := context.WithValue(context.Background(), tools.SessionIDContextKey, t.Name())
-			if managed {
-				ctx = withBatchManagedCall(ctx)
-			}
-			entered, release, returned := make(chan struct{}), make(chan struct{}), make(chan struct{})
-			defer func() {
-				select {
-				case <-release:
-				default:
-					close(release)
-				}
-			}()
-			key := stallDetachKey(t.Name(), "call")
-			defer stallDetachPending.Delete(key)
-			defer stallDetachJobs.Delete(key)
-			tool := &batchGenericTestTool{name: "mcp_dynamic_slow", run: func(context.Context, fantasy.ToolCall) (fantasy.ToolResponse, error) {
-				close(entered)
-				<-release
-				return fantasy.NewTextResponse("final"), nil
-			}}
-			responses := make(chan fantasy.ToolResponse, 1)
-			go func() {
-				resp, _ := (&stallDetacherTool{inner: tool}).Run(ctx, fantasy.ToolCall{ID: "call"})
-				responses <- resp
-				close(returned)
-			}()
-			batchWait(t, entered)
-			id := stallToolStalled(t.Name(), "call", time.Minute)
-			if !managed {
-				require.Equal(t, "stall-call", id)
-				batchWait(t, returned)
-				require.Contains(t, (<-responses).Content, "continues in the background")
-			} else {
-				require.Empty(t, id)
-				select {
-				case <-returned:
-					t.Fatal("managed call detached")
-				case <-time.After(30 * time.Millisecond):
-				}
-			}
-			close(release)
-			batchWait(t, returned)
-			if managed {
-				require.Equal(t, "final", (<-responses).Content)
-			}
-		})
-	}
-}
-
-func TestBatchGenericManagedStallBypass(t *testing.T) {
-	tool := &batchGenericTestTool{name: "mcp_dynamic_call", run: func(ctx context.Context, c fantasy.ToolCall) (fantasy.ToolResponse, error) {
-		if !isBatchManagedCall(ctx) {
-			return fantasy.NewTextErrorResponse("marker missing"), nil
-		}
-		key := stallDetachKey(tools.GetSessionFromContext(ctx), c.ID)
-		if _, ok := stallDetachPending.Load(key); ok {
-			return fantasy.NewTextErrorResponse("stall pending identity"), nil
-		}
-		if _, ok := stallDetachJobs.Load(key); ok {
-			return fantasy.NewTextErrorResponse("stall job identity"), nil
-		}
-		return fantasy.NewTextResponse("managed"), nil
-	}}
-	_, reports := batchGenericTestStart(t, batchGenericTestExecutor(&stallDetacherTool{inner: tool}), batchKindMCP, tool.name)
-	require.Equal(t, jobbatch.StateCompleted, batchGenericTestReport(t, reports).State)
-}
+// TestBatchGenericDirectStall and TestBatchGenericManagedStallBypass were
+// DELETEd with the stall-detach authority (turn_stall_tool_detach.go,
+// stallDetacherTool, the stallDetach* maps): there is no detach action left
+// to pin, managed or otherwise. The generic stall clock's spacing and
+// zero-timeout policy remain pinned by turn_stall_policy_spacing_test.go and
+// turn_stall_zero_timeout_test.go.

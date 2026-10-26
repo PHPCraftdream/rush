@@ -33,26 +33,36 @@ import (
 // then paced (wake_attempts=1) instead of untouched, and the
 // `wake_attempts == 0` assertion FAILED. Restored the exemption; re-ran, passed.
 func TestCLIDrainTurn_CtrlCMidFlight_NoSettleNoMarkerCorrectExitReason(t *testing.T) {
+	detachedReached := make(chan struct{})
 	drainReqReached := make(chan struct{})
 	var drainOnce sync.Once
+	var detachedOnce sync.Once
 	jobCommand, jobRelease := recoveryJobCommand(t)
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		_, _, lastTool := lastTurnParts(body)
 		switch {
-		case strings.Contains(string(body), "call-1 (bash)"):
+		case strings.Contains(string(body), "Async job call-1"):
 			// The loop's own automatic Drain turn, reacting to the finished
 			// job's notice. Checked FIRST (see scenario E's own doc): once
 			// this text is in history it stays there, so lastTool alone
 			// would keep matching the "yield" branch below on every later
-			// request too. Bounded regardless of the client so this
+			// request too. The batch completion notice carries an empty tool
+			// name (agent_notice_pull.go sets ToolName ""), so the drain body
+			// matches on "Async job call-1" (batch: "call-1 () finished"); the
+			// yield texts ("batch root ... started; ...") never contain that
+			// substring. Bounded regardless of the client so this
 			// handler always returns and httptest.Server.Close never hangs.
 			drainOnce.Do(func() { close(drainReqReached) })
 			select {
 			case <-r.Context().Done():
 			case <-time.After(5 * time.Second):
 			}
-		case strings.Contains(lastTool, "Async bash job call-1 started"):
+		case strings.Contains(lastTool, "completions arrive as selected notices"):
+			// The batch detached-start tool result reads "batch root <id>
+			// started; completions arrive as selected notices."
+			// (batch_delivery.go batchStartedResponse).
+			detachedOnce.Do(func() { close(detachedReached) })
 			admissionWriteSSE(w, []string{admissionSSEText("yield", "root yielded"), admissionSSEStop("yield", "stop")})
 		default:
 			admissionWriteSSE(w, []string{
@@ -81,14 +91,19 @@ func TestCLIDrainTurn_CtrlCMidFlight_NoSettleNoMarkerCorrectExitReason(t *testin
 			Origin: message.OriginCLI,
 		}, true, RunModeJSON, sessionID, false)
 	}()
-
-	// The Drain turn only fires once the job finishes, so release the
-	// sentinel as soon as the job has been claimed: the completion is then
-	// deterministic (one poll iteration), not a wall-clock race.
+	// The job must be claimed first, and the sentinel is released only
+	// after detached delivery is an OBSERVED FACT: the started tool result
+	// reached the provider (batch: after the 3s escape window,
+	// batch_delivery.go deliverWithEscapeWindow). Releasing earlier lets the
+	// job finish INLINE inside the window and the Drain never fires.
 	require.Eventually(t, func() bool {
-		row, err := app.asyncJobStore.Get(context.Background(), sessionID, "call-1")
-		return err == nil && row.State == "running"
+		return f6a3JobRunning(t, app, sessionID, "call-1")
 	}, 10*time.Second, 20*time.Millisecond, "the job must be claimed and running before it is released")
+	select {
+	case <-detachedReached:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the job's delivery never detached: no started tool result reached the provider")
+	}
 	releaseRecoveryJob(t, jobRelease)
 
 	select {
@@ -107,14 +122,12 @@ func TestCLIDrainTurn_CtrlCMidFlight_NoSettleNoMarkerCorrectExitReason(t *testin
 	require.NotNil(t, res)
 	require.Equal(t, "canceled", res.ExitReason, "Ctrl-C during a CLI Drain must report exit_reason=canceled, not error/end_turn")
 
-	debtStillOpen, err := app.asyncJobStore.ReactionDebtExists(context.Background(), sessionID)
-	require.NoError(t, err)
+	debtStillOpen := f6a3ReactionDebtExists(t, app, sessionID)
 	require.True(t, debtStillOpen, "Ctrl-C mid-Drain must never settle the debt")
-	row, err := app.asyncJobStore.Get(context.Background(), sessionID, "call-1")
-	require.NoError(t, err)
-	require.EqualValues(t, 0, row.WakeAttempts, "an interrupted Drain is not evidence about the debt: not counted")
+	require.EqualValues(t, 0, f6a3JobWakeAttempts(t, app, sessionID, "call-1"),
+		"an interrupted Drain is not evidence about the debt: not counted")
 
-	notices, err := app.asyncJobStore.ListSessionNotices(context.Background(), sessionID)
+	notices, err := app.BatchNoticeStore().ListSessionNotices(context.Background(), sessionID)
 	require.NoError(t, err)
 	for _, n := range notices {
 		require.NotEqual(t, "wake_failed", n.Kind, "Ctrl-C mid-Drain must never write a settle marker")

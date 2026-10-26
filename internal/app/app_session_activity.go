@@ -76,37 +76,31 @@ func (app *App) SessionActivityBatch(ctx context.Context, ids []string) (Session
 	// no durable facts at all: that is "no facts", not "unreadable facts" --
 	// the same answer the removed per-command live-work reader gave a nil
 	// store. A real query error stays fail-open (decision 8).
-	store := app.AsyncJobStore()
+	//
+	// The debt, live-work facts come ONLY from batch node state
+	// (app_batch_cutover_facts.go); host liveness is the shared lock probe.
+	hostLiveness := app.batchCutoverHostLiveness()
 	liveDrivers := map[string]session.SessionDriver{}
 	deadDrivers := map[string]bool{}
 	driversFailed := false
 	if app.activityConn() != nil {
 		var driversErr error
-		liveDrivers, deadDrivers, driversErr = app.sessionDriverFacts(ctx, ids, store)
+		liveDrivers, deadDrivers, driversErr = app.sessionDriverFacts(ctx, ids, hostLiveness)
 		driversFailed = driversErr != nil
 	}
 
 	// Fact kind 2: reaction debt, one statement (same predicates as the
 	// single-owner query, decision 13).
-	debts, debtErr := map[string]bool{}, error(nil)
-	if store != nil {
-		debts, debtErr = store.ReactionDebtOwners(ctx, ids)
-	}
+	debts, debtErr := app.batchCutoverDebtOwners(ctx, ids)
 
 	// Fact kind 3: live own jobs and descendant delegations, one batched
 	// walk (one query per BFS level, one probe per distinct host).
-	var work map[string]session.RootLiveWork
-	if store != nil {
-		work = store.LiveWorkForRoots(ctx, ids)
-	}
+	work := app.batchCutoverLiveWork(ctx, ids)
 
-	// Fact kind 4: RUNNING rows on provably DEAD hosts (decision 5), one
-	// statement over the owners; live-host rows are already covered by the
-	// walk above.
-	deadRows, deadRowsErr := map[string]int{}, error(nil)
-	if store != nil {
-		deadRows, deadRowsErr = app.deadHostRunningJobs(ctx, store, ids)
-	}
+	// Fact kind 4: RUNNING rows on provably DEAD hosts: the batch authority
+	// has no such fact -- host death never settles batch nodes -- so the
+	// count stays zero.
+	deadRows := map[string]int{}
 
 	// Fact kind 5: open once wake schedules, one statement.
 	schedules, wakeErr := map[string][]session.OpenWakeSchedule{}, error(nil)
@@ -139,30 +133,18 @@ func (app *App) SessionActivityBatch(ctx context.Context, ids []string) (Session
 		default:
 			f.DriverOwes = debts[id]
 		}
-		if store != nil {
-			if rw, ok := work[id]; ok {
-				f.OwnRunningJobs = len(rw.Own)
-				f.LiveDelegations = len(rw.Descendants)
-				seen := make(map[string]struct{}, len(rw.Descendants))
-				for _, j := range rw.Descendants {
-					if _, dup := seen[j.ChildSessionID]; dup {
-						continue
-					}
-					seen[j.ChildSessionID] = struct{}{}
-					f.LiveDescendantSessionIDs = append(f.LiveDescendantSessionIDs, j.ChildSessionID)
-				}
-				if rw.OwnIncomplete {
-					f.Unreadable = append(f.Unreadable, "the session's own jobs")
-				}
-				if rw.DescendantsIncomplete {
-					f.Unreadable = append(f.Unreadable, "the session's delegations")
-				}
+		if wf, ok := work[id]; ok {
+			f.OwnRunningJobs = wf.Own
+			f.LiveDelegations = wf.Descendants
+			f.LiveDescendantSessionIDs = wf.DescendantSessionIDs
+			if wf.OwnIncomplete {
+				f.Unreadable = append(f.Unreadable, "the session's own jobs")
+			}
+			if wf.DescendantsIncomplete {
+				f.Unreadable = append(f.Unreadable, "the session's delegations")
 			}
 		}
 		f.DeadHostRunningJobs = deadRows[id]
-		if deadRowsErr != nil {
-			f.Unreadable = append(f.Unreadable, "the session's running jobs")
-		}
 		if wakeErr != nil {
 			f.Unreadable = append(f.Unreadable, "the session's wake schedules")
 		} else {
@@ -183,9 +165,10 @@ func (app *App) SessionActivityBatch(ctx context.Context, ids []string) (Session
 }
 
 // sessionDriverFacts splits the marker rows into live drivers (keyed by
-// session id) and dead-host markers (decision 5), deciding each distinct
-// host's liveness once.
-func (app *App) sessionDriverFacts(ctx context.Context, ids []string, store *session.AsyncJobStore) (live map[string]session.SessionDriver, dead map[string]bool, err error) {
+// session id) and dead-host markers, deciding each distinct
+// host's liveness once. The liveness predicate is injected: the shared
+// host probe.
+func (app *App) sessionDriverFacts(ctx context.Context, ids []string, hostLiveness func(string) session.HostLockStatus) (live map[string]session.SessionDriver, dead map[string]bool, err error) {
 	live = map[string]session.SessionDriver{}
 	dead = map[string]bool{}
 	conn := app.activityConn()
@@ -202,8 +185,8 @@ func (app *App) sessionDriverFacts(ctx context.Context, ids []string, store *ses
 			return st
 		}
 		st := session.HostStatusUnknown
-		if store != nil {
-			st = store.HostLiveness(hostID)
+		if hostLiveness != nil {
+			st = hostLiveness(hostID)
 		}
 		hostStatus[hostID] = st
 		return st
@@ -219,31 +202,6 @@ func (app *App) sessionDriverFacts(ctx context.Context, ids []string, store *ses
 		}
 	}
 	return live, dead, nil
-}
-
-// deadHostRunningJobs counts the session's own RUNNING rows whose host is
-// provably dead (decision 5), one statement over the owners.
-func (app *App) deadHostRunningJobs(ctx context.Context, store *session.AsyncJobStore, ids []string) (map[string]int, error) {
-	rows, err := store.ListRunningAsyncJobsForOwners(ctx, ids)
-	if err != nil {
-		return nil, fmt.Errorf("session activity: running jobs: %w", err)
-	}
-	out := map[string]int{}
-	seen := map[string]map[string]bool{}
-	for _, row := range rows {
-		if store.HostLiveness(row.HostID) != session.HostStatusDead {
-			continue
-		}
-		if seen[row.OwnerSessionID] == nil {
-			seen[row.OwnerSessionID] = map[string]bool{}
-		}
-		if seen[row.OwnerSessionID][row.HostID] {
-			continue
-		}
-		seen[row.OwnerSessionID][row.HostID] = true
-		out[row.OwnerSessionID]++
-	}
-	return out, nil
 }
 
 // sessionEndReasons reads ended_reason for every requested id in one

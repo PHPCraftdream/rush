@@ -1,16 +1,16 @@
 package server
 
 // Batch-work snapshot handler + push (R15a): structured batch_nodes trees
-// delivered as session_batch_work, INERT unless RUSH_BATCH_RUNTIME is on.
+// delivered as session_batch_work. Batch selection is UNCONDITIONAL: the
+// handler is always registered and the snapshot is always built from
+// batch_nodes.
 //
 // Revert-check: forcing Complete=true in buildBatchWorkSnapshot fails
 // TestBatchWorkSnapshot_IncompleteKeepsRoots and the unknown-host test;
 // deriving completions from a parsed summary string fails
 // TestBatchWorkSnapshot_StructuredCompletions; sorting nodes by NodeID
-// fails TestBatchWorkSnapshot_NodesOrderedByOrdinal; dropping the flag
-// guard in handleIncoming's dispatch fails
-// TestHandleGetSessionBatchWork_FlagOffIsUnknownCommand; treating an
-// unknown host as dead fails TestBatchWorkSnapshot_UnknownHostIsConservative.
+// fails TestBatchWorkSnapshot_NodesOrderedByOrdinal; treating an unknown
+// host as dead fails TestBatchWorkSnapshot_UnknownHostIsConservative.
 
 import (
 	"context"
@@ -27,10 +27,20 @@ import (
 )
 
 // fakeBatchSource serves canned node rows per owner list; failOn makes the
-// corresponding fetch return an error (a failed chunk).
+// corresponding fetch return an error (a failed chunk). history serves the
+// R12-C terminal-root read; failHistory fails every history read. levels
+// serves the per-(owner, root) node read, keyed by root_id; a missing entry
+// returns no rows and no error.
 type fakeBatchSource struct {
-	rows   []db.BatchNode
-	failOn map[string]bool
+	rows        []db.BatchNode
+	failOn      map[string]bool
+	history     []db.BatchNode
+	failHistory bool
+	levels      map[string][]db.BatchNode
+	// historyByOwner, when non-nil, serves the terminal-root read per owner
+	// (the history BFS visits owners the live walk never reached); it takes
+	// precedence over the shared history slice.
+	historyByOwner map[string][]db.BatchNode
 }
 
 func (f *fakeBatchSource) BatchLiveNodesForOwners(_ context.Context, owners []string) ([]db.BatchNode, error) {
@@ -40,6 +50,20 @@ func (f *fakeBatchSource) BatchLiveNodesForOwners(_ context.Context, owners []st
 		}
 	}
 	return f.rows, nil
+}
+
+func (f *fakeBatchSource) BatchHistoryRootsForOwner(_ context.Context, owner string) ([]db.BatchNode, error) {
+	if f.failHistory {
+		return nil, errors.New("history read failed")
+	}
+	if f.historyByOwner != nil {
+		return f.historyByOwner[owner], nil
+	}
+	return f.history, nil
+}
+
+func (f *fakeBatchSource) BatchLevelNodes(_ context.Context, arg db.BatchLevelNodesParams) ([]db.BatchNode, error) {
+	return f.levels[arg.RootID], nil
 }
 
 // withBatchSeams swaps the production seams for fakes and restores them.
@@ -145,18 +169,20 @@ func TestBatchWorkSnapshot_UnknownHostIsConservative(t *testing.T) {
 }
 
 func TestBatchWorkSnapshot_NodesOrderedByOrdinal(t *testing.T) {
-	// Rows arrive deliberately out of ordinal order.
+	// Rows arrive deliberately out of ordinal order, and the ids are chosen
+	// so NodeID lexical order (r1, r1-b, r1-m) ALSO differs from ordinal
+	// order: only an ordinal sort yields 0,1,2.
 	root := batchNode("r1", "r1", "s1", "running", "tc-root", 0)
-	c := batchNode("r1-c", "r1", "s1", "running", "tc-c", 2)
-	a := batchNode("r1-a", "r1", "s1", "running", "tc-a", 1)
-	withBatchSeams(t, &fakeBatchSource{rows: []db.BatchNode{root, c, a}}, probeAlive, nil)
+	b := batchNode("r1-b", "r1", "s1", "running", "tc-b", 2)
+	m := batchNode("r1-m", "r1", "s1", "running", "tc-m", 1)
+	withBatchSeams(t, &fakeBatchSource{rows: []db.BatchNode{root, b, m}}, probeAlive, nil)
 
 	snap := buildBatchWorkSnapshot(t.Context(), nil, "s1")
-	got := []int64{}
+	got := []string{}
 	for _, n := range snap.Roots[0].Nodes {
-		got = append(got, n.Ordinal)
+		got = append(got, n.NodeID)
 	}
-	require.Equal(t, []int64{0, 1, 2}, got, "nodes must be ordered by ordinal, not arrival or NodeID")
+	require.Equal(t, []string{"r1", "r1-m", "r1-b"}, got, "nodes must be ordered by ordinal, not arrival or NodeID")
 }
 
 func TestBatchWorkSnapshot_StructuredCompletions(t *testing.T) {
@@ -180,38 +206,6 @@ func TestBatchWorkSnapshot_StructuredCompletions(t *testing.T) {
 	require.NotContains(t, string(raw), "summary")
 }
 
-func TestHandleGetSessionBatchWork_FlagOffIsUnknownCommand(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "")
-	require.False(t, batchRuntimeEnabled())
-	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
-	hub := newHub()
-	go hub.Run(t.Context())
-	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
-
-	payload, _ := json.Marshal(GetSessionBatchWorkPayload{SessionID: "whatever"})
-	require.NoError(t, handleIncomingSync(t, a, client, payload))
-
-	var gotErr bool
-	var text string
-	deadline := time.Now().Add(2 * time.Second)
-	for !gotErr && time.Now().Before(deadline) {
-		select {
-		case raw := <-client.send:
-			var env WSMessage
-			require.NoError(t, json.Unmarshal(raw, &env))
-			if env.Type == EventError {
-				gotErr = true
-				text = env.Error
-			}
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-	require.True(t, gotErr, "flag off must answer the plain unknown-command error")
-	require.Contains(t, text, "unknown command: get_session_batch_work")
-}
-
 // handleIncomingSync runs the dispatcher inline (dispatch runs handlers on
 // the calling goroutine through the semaphore, so a single reply arrives
 // synchronously enough for the channel drain above).
@@ -226,9 +220,7 @@ func handleIncomingSync(t *testing.T, a *app.App, client *Client, payload []byte
 	return nil
 }
 
-func TestHandleGetSessionBatchWork_FlagOnRepliesSnapshot(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
-	require.True(t, batchRuntimeEnabled())
+func TestHandleGetSessionBatchWork_RepliesSnapshot(t *testing.T) {
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	hub := newHub()
 	go hub.Run(t.Context())
@@ -265,7 +257,6 @@ func TestHandleGetSessionBatchWork_FlagOnRepliesSnapshot(t *testing.T) {
 }
 
 func TestHandleGetSessionBatchWork_UnknownSessionRefused(t *testing.T) {
-	t.Setenv("RUSH_BATCH_RUNTIME", "1")
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	hub := newHub()
 	go hub.Run(t.Context())

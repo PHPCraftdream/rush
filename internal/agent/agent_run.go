@@ -28,6 +28,18 @@ import (
 // hadn't run yet), and got rejected with "already in use". runTurn below is
 // the extracted single-turn body; Run just loops it.
 func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+	// Package L round 4, invariant I1: a retained (marked) call handed to
+	// this Run — the manual-compaction handoff pops it and re-runs it via a
+	// fresh Run (agent_compaction.go:295) — must be released on EVERY return
+	// of THIS invocation, including the pre-turn refusals below (inter-
+	// process lock :482-510, shutdown :61-62, admission setup :559-563)
+	// that return before the end-of-turn release at :724. The helper
+	// captures the scope pointer at entry; for the sender's own first Run
+	// (unmarked parameter — arming happens on the queued COPY) this defer is
+	// a no-op. The later end-of-turn close stays a harmless second release
+	// (idempotent). Evaluated immediately so the captured scope cannot be
+	// affected by any later field mutation.
+	defer deferReleaseRetainedRunScope(&call)()
 	// R7-1: capture the DIRECT caller's admission recorder, then detach it
 	// for everything downstream. A queued admission is only this Run
 	// invocation's own outcome; a nested Run reached through this turn's
@@ -616,6 +628,18 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 	// acquired once above instead of re-acquiring them. runCtx (not the
 	// original ctx) is passed through so runCancel — registered as the
 	// busy slot's CancelFunc — actually reaches every turn's genCtx.
+	// R12-H2a round 2: the Run's FIRST call's build scope is closed by the
+	// entry-point defers; any call this loop POPS from the mailbox drain (a
+	// queued `next` or an interrupt replacement) carries its OWN scope,
+	// closed at that turn's end below.
+	// The loop's carried outcome: the last iteration that produced a real
+	// result or error. A trailing refused no-turn Drain leg returns
+	// (nil, nil) (agent_turn.go's drain-refusal branch) and must never
+	// overwrite it — runOwned's caller maps a bare (nil, nil) to the
+	// "queued" contract, which would misreport a finished turn.
+	var carriedResult *fantasy.AgentResult
+	var carriedErr error
+	originCallOpts := call.CallOptions
 	for {
 		// Test-only seam (#289): fires strictly after any end-of-turn drain
 		// has already released mb.mu and strictly before this iteration's
@@ -704,17 +728,67 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		att := a.newDrainAttempt(call)
 		result, next, hasNext, err := a.runTurn(turnCtx, call, lk, epoch, runCancel, att)
 		err = a.afterTurn(call, att, err, turnCtx.Err() != nil)
+		// A real result or error replaces the carry; a (nil, nil)
+		// iteration (a refused no-turn Drain leg) leaves it untouched.
+		carriedResult, carriedErr, _ = mergeTurnOutcome(carriedResult, carriedErr, result, err)
+		// R12-H2a round 2: a popped replacement/queued call carries its OWN
+		// build-resource scope; close it when this turn finishes so its
+		// constructions release with the turn that used them (the durable
+		// path already does this in RunSessionAgentCall). The retained-
+		// marker rule (Package L round 3) also closes a retained scope even
+		// when the call is the dispatcher's FIRST call — the manual-
+		// compaction handoff (agent_compaction.go:295) re-runs the popped
+		// queued call via a fresh Run, so originCallOpts equals its own copy
+		// and a pointer-inequality-only test would leak the scope. The
+		// helper clears the marker afterwards so a re-queued closed-scope
+		// copy is freshly armed by submit (armQueuedBuildRetention skips
+		// only while buildScopeRetained is true).
+		turnEndRelease(&call, originCallOpts)
 		if call.onQueueResolved != nil {
 			call.onQueueResolved(result, err)
 		}
 		mb.clearCurrentCall(epoch)
 		turnCancel()
+		// A trailing refused no-turn Drain leg (nil result, nil error,
+		// hasNext=false) must not clobber the carried outcome of an earlier
+		// real turn in this loop; a loop that never produced a real outcome
+		// still returns (nil, nil), which is the mailbox queueing contract's
+		// own shape and is untouched (a queued loser returns before runOwned
+		// is ever entered).
 		if !hasNext {
-			return result, err
+			return finalTurnOutcome(result, err, carriedResult, carriedErr)
 		}
 		inheritReplacementIdentityCallback(&call, &next)
 		call = next
 	}
+}
+
+// mergeTurnOutcome folds one loop iteration's outcome into the carried
+// outcome: a real result or error replaces the carry; a (nil, nil)
+// iteration (a refused no-turn Drain leg) leaves it untouched.
+func mergeTurnOutcome(carried *fantasy.AgentResult, carriedErr error, result *fantasy.AgentResult, err error) (*fantasy.AgentResult, error, bool) {
+	if result != nil || err != nil {
+		return result, err, true
+	}
+	return carried, carriedErr, false
+}
+
+// finalTurnOutcome is the loop's exit rule: a trailing (nil, nil) iteration
+// returns the carried outcome of the last real turn; anything else returns
+// its own outcome unchanged.
+//
+// Carry rule (documented observable): runOwned returns the LAST REAL TURN's
+// outcome — legacy dispatcher behavior. When a queued call (a Drain or a
+// mailbox message) legitimately runs after the owner's turn, its result IS
+// the documented observable for the owner's ExecuteRun (internal/app's
+// legacy-queueing test tolerates exactly that: the queued turn's result is
+// returned to the owner). Only a REFUSED (nil, nil) leg — a Drain that found
+// no turn to run — is ignored, letting the earlier real outcome carry.
+func finalTurnOutcome(result *fantasy.AgentResult, err error, carried *fantasy.AgentResult, carriedErr error) (*fantasy.AgentResult, error) {
+	if result == nil && err == nil && (carried != nil || carriedErr != nil) {
+		return carried, carriedErr
+	}
+	return result, err
 }
 
 func inheritReplacementIdentityCallback(previous, next *SessionAgentCall) {

@@ -24,7 +24,9 @@ type SessionAgentOptions struct {
 	Sessions             session.Service
 	Messages             message.Service
 	Tools                []fantasy.AgentTool
-	AsyncJobs            *workLedger
+	// Coord is the owning coordinator (batch facts, reaction store, notice
+	// pull route through it). Nil on bare fixtures.
+	Coord *coordinator
 	// OnSessionIdle -- see sessionAgent.onSessionIdle's doc. Nil in every
 	// test that builds a bare sessionAgent directly (no coordinator to
 	// notify).
@@ -100,6 +102,12 @@ type SessionAgentOptions struct {
 	// rationale. 0 = use the built-in default; primarily exposed for tests
 	// that want a short bound instead of waiting out the real one.
 	SessionPreambleMaxDuration time.Duration
+	// diskCaps is the coordinator's App-owned capability manager
+	// (R12-H2b §2.4), wired unexported at construction: the durable enqueue
+	// producer on this agent (restartOrphanedWithRetry) holds row-keyed
+	// Continuation owners through it. Nil on bare fixtures — those never
+	// enqueue provider-carrying calls.
+	diskCaps *DiskProviderRegistry
 	// TitleGenerationMaxDuration overrides titleGenerationMaxDurationDefault
 	// when > 0 — the bound on the background title-generation goroutine. See
 	// titleGenerationMaxDurationDefault's doc for the full rationale. 0 = use

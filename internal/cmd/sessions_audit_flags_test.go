@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/projects"
 	"github.com/stretchr/testify/require"
 )
@@ -65,7 +66,7 @@ func TestSessionsAudit_WorktreesScansEveryRegisteredDatabase(t *testing.T) {
 	linkedDB := seedAuditFixtureDB(t, linkedDir)
 
 	// The way `rush` registers a checkout on startup: its working directory
-	// and the data directory it keeps its own .rush/rush.db in.
+	// and the data directory it keeps its own session store file in.
 	require.NoError(t, projects.Register(filepath.Join(linkedDir, "checkout"), linkedDir))
 	require.Equal(t, []string{linkedDir}, auditWorktreeDataDirs(dataDir),
 		"the linked worktree's data dir is the only extra database to scan")
@@ -88,7 +89,7 @@ func TestSessionsAudit_WorktreesScansEveryRegisteredDatabase(t *testing.T) {
 	require.Equal(t, dataDir, reports[0].DataDir, "the current database is scanned first")
 	require.Equal(t, linkedDir, reports[1].DataDir)
 	for _, report := range reports {
-		require.Equal(t, filepath.Join(report.DataDir, "rush.db"), report.DBPath)
+		require.Equal(t, storepath.ActivePath(report.DataDir), report.DBPath)
 		require.NotNil(t, report.Health, "every scanned database reports its health")
 		require.NotEmpty(t, report.Sessions, "every scanned database reports its sessions")
 	}
@@ -97,15 +98,15 @@ func TestSessionsAudit_WorktreesScansEveryRegisteredDatabase(t *testing.T) {
 		"--worktrees must not modify the current database")
 	require.Equal(t, beforeLinked, auditFileSHA256(t, linkedDB),
 		"--worktrees must not modify the linked worktree's database")
-	require.Equal(t, []string{"rush.db"}, auditDirNames(t, linkedDir),
+	require.Equal(t, []string{storepath.ActiveFilename}, auditDirNames(t, linkedDir),
 		"scanning a linked worktree must not create a sidecar in its data dir")
 
-	// A registered checkout whose rush.db is gone is skipped rather than
+	// A registered checkout whose store file is gone is skipped rather than
 	// reported as an error, so the scan still covers exactly two databases.
 	vanishedDir := t.TempDir()
 	require.NoError(t, projects.Register(filepath.Join(vanishedDir, "checkout"), vanishedDir))
 	require.Equal(t, []string{linkedDir}, auditWorktreeDataDirs(dataDir),
-		"a registered checkout without a rush.db is skipped")
+		"a registered checkout without a store file is skipped")
 	jsonStdout, _, err = runAuditCmd(t, "--data-dir", dataDir, "--worktrees", "--all", "--json")
 	require.NoError(t, err)
 	require.NoError(t, json.Unmarshal([]byte(jsonStdout), &reports))

@@ -18,8 +18,9 @@ client, err := sdk.Open(ctx, sdk.Options{
 ```
 
 This is exactly what `rush run` does internally: `WorkingDir` is
-required, and Rush discovers and loads `rush.json` (project, workspace,
-global) and `.mcp.json` from it, the same way the CLI does. If
+required, and Rush discovers and loads `rush.ktav` (project, workspace,
+global — legacy `rush.json` is still read when no `rush.ktav` exists)
+and `.mcp.json` from it, the same way the CLI does. If
 `WorkingDir` doesn't exist yet, `Open` creates it — it stays a required
 parameter (there is no fallback to the process's own working directory
 or a temp directory), but the caller doesn't have to `mkdir` a
@@ -27,7 +28,7 @@ freshly-provisioned workspace by hand first.
 
 Use this mode when your host process manages a real, persistent project
 directory — the credentials, models, and tool settings all come from
-`rush.json` as usual. Opening an application-mode Client acquires an MCP
+`rush.ktav` (or legacy `rush.json`) as usual. Opening an application-mode Client acquires an MCP
 owner: the first client in the process takes the process-wide owner; a
 second concurrent application-mode `Open` reserves a standalone owner
 instead of failing, so two application-mode Clients coexist, each routing
@@ -61,9 +62,11 @@ client, err := sdk.Open(ctx, sdk.Options{
 
 `Options.Mode` defaults to `ModeApplication` (the zero value) — every
 existing caller that never sets `Mode` is completely unaffected.
-`ModeLibrary` skips config-file discovery entirely: no `rush.json`, no
-`.mcp.json`, no global config. Every provider and model role comes from
-`LibraryConfig` instead. `LibraryConfig.Models` must define at least the
+`ModeLibrary` skips config-file discovery entirely: no `rush.ktav`
+(or legacy `rush.json`), no `.mcp.json`, no global config. Library
+mode never reads or migrates disk config — only application mode
+discovers and loads `rush.ktav`/`rush.json`. Every provider and model
+role comes from `LibraryConfig` instead. `LibraryConfig.Models` must define at least the
 `smart` role; the others (`fast`, `worker`, `reviewer`) are optional.
 Library mode also calls `app.SkipMCP()`: it starts no MCP servers and does
 not acquire the process-wide MCP owner. It can therefore coexist with an
@@ -99,7 +102,7 @@ one another.
   real OS temp path, exactly what an ephemeral session promises not to
   touch.)
   There is no real working directory to point them at, so — unlike a
-  missing `rush.json` field silently falling back to a default — Rush
+  missing config field silently falling back to a default — Rush
   refuses to hand out tools whose only fallback would be the real host
   filesystem. If you need file access from an ephemeral session, opt in
   **per call** with `RunOverrides.FolderScopes` **and**
@@ -112,7 +115,8 @@ one another.
   disk.
 - **Given** → the directory is created if missing (same as application
   mode), and session data persists under `<WorkingDir>/.rush` — but
-  `rush.json` is still never read. `LibraryConfig` remains the only
+  no disk config (`rush.ktav` or legacy `rush.json`) is ever read, and
+  nothing is migrated. `LibraryConfig` remains the only
   config source; only the *persistence* differs from the ephemeral case.
   Because there **is** a real working directory here, the default
   toolset behaves exactly like application mode: file and command tools
@@ -126,7 +130,8 @@ are not loaded.
 ## `Run` vs `RunWithCredentials`
 
 `Client.Run` is the "normal" call: model and provider come from however
-the Client was opened (`rush.json` in application mode, `LibraryConfig`
+the Client was opened (`rush.ktav`, or legacy `rush.json`, in
+application mode; `LibraryConfig`
 in library mode).
 
 `Client.RunWithCredentials(ctx, req, creds)` is for genuine multi-tenant
@@ -311,8 +316,7 @@ res, err := client.Run(ctx, sdk.RunRequest{
 })
 ```
 
-`sdk.OSDiskProvider()` returns the real-filesystem implementation `nil`
-falls back to — wrap it (e.g. to log every write) instead of
+`sdk.OSDiskProvider()` returns the real-filesystem implementation. `nil` falls back to it; wrap it (e.g. to log every write) instead of
 reimplementing ripgrep dispatch and gitignore-aware directory walking
 from scratch.
 
@@ -344,21 +348,28 @@ Boundaries to know:
   to do, and is not a defence against a hostile model that has other
   tools. The `FolderScope` ACL is still what limits which paths the
   model may name.
-- **Per-call only, never persisted** — same as `FolderScopes` above: a
-  later run on the same `ContinueSessionID` without `DiskProvider` is an
-  ordinary run against the real disk.
-- **Never survives a durable restart, by design — unlike `FolderScopes`
-  above.** A `DiskProvider` is arbitrary in-process Go code (often a
-  closure over host state — an open DB handle, an HTTP client, an
-  in-memory map) with no serializable form at all, so there is nothing
-  to persist and recompile the way a folder scope's spec is. A call
-  carrying one is refused outright rather than durably queued: if it
-  cannot execute immediately (in-process) it is dropped with an error
-  wrapping `sdk.ErrDiskProviderNotDurable`, never silently replayed
-  onto the real disk after a restart. Combine with
-  `FailIfSessionBusy` semantics (`Client.Run`/`RunWithCredentials` set
-  it already) so you get a fast, synchronous refusal instead of a
-  swallowed one.
+- **Per-call provider identity.** A run without an explicit provider is
+  never assumed safe to continue an earlier provider-backed session. A
+  provider-backed SDK run persists a session execution requirement (the
+  fence) at admission; same-process continuations (durable queued turns,
+  drains/wakes, reviewer follow-ups) restore the exact binding, never
+  "the latest provider for the session". The same-process root
+  drain/wake continuation ALSO restores the persisted folder-scope/command-tool
+  and restricted-run baseline from the fence, so the continued turn is judged
+  by the same policy the fenced run was admitted under.
+- By default, SDK runs use the batch execution runtime. Rush borrows the provider and does not close it. Provider-backed runs retain a process-bound provider binding until associated work terminates; a process restart cannot restore that in-memory capability, so provider-dependent continuations fail closed with `sdk.ErrDiskProviderUnavailable` rather than falling back to the OS filesystem. Keep it usable until
+  associated executions—including detached work and held delegations—
+  have actually terminated and disposed. Cancellation requests are not
+  proof that provider operations stopped; SDK Run/wait returning does
+  not end detached work. Concurrent calls may overlap, so providers
+  need concurrency safety. Crashes never resume old provider-backed
+  work: after a restart, provider-dependent continuations fail closed
+  with `sdk.ErrDiskProviderUnavailable` — terminally for durable rows,
+  never replayed onto the OS disk — and a new SDK run supplying a
+  provider establishes a new epoch. Ordinary turns and unmarked
+  continuations of a fenced session are refused, never downgraded to
+  the real disk. FolderScope and command-tool safety floors above
+  remain in force.
 - **An ephemeral library-mode session (see "Library mode" above) has no
   "real disk" to fall back to at all.** With no `WorkingDir`, every
   legacy file/command tool listed above as "NOT affected" is simply

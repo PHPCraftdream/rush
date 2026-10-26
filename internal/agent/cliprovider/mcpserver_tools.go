@@ -137,6 +137,9 @@ func registerBashTool(srv *mcp.Server, perms permission.Service, sessionID strin
 		// was doing. Both guards now live behind agentguard.CheckAll, the
 		// single entry point shared with the built-in Bash tool so the two
 		// surfaces cannot diverge again. See internal/agent/agentguard.
+		if policyErr := agentguard.CheckCommandPolicy(input.Command); policyErr != nil {
+			return toolError(policyErr.Error()), nil, nil
+		}
 		if guardErr := agentguard.CheckAll(input.Command); guardErr != nil {
 			return toolError(guardErr.Error()), nil, nil
 		}
@@ -176,6 +179,13 @@ func registerBashTool(srv *mcp.Server, perms permission.Service, sessionID strin
 			return toolError("command denied by user"), nil, nil
 		}
 
+		if testMCPBashSpawn != nil {
+			out, spawnErr := testMCPBashSpawn(ctx, "Bash", input.Command)
+			if spawnErr != nil {
+				return toolError(spawnErr.Error()), nil, nil
+			}
+			return toolText(out), nil, nil
+		}
 		out, runErr := runShell(ctx, input.Command, wd)
 		slog.Debug("cliprovider: MCP Bash executed", "command", input.Command, "output_len", len(out), "err", runErr)
 		if runErr != nil {
@@ -562,6 +572,12 @@ func resolvePath(path, workingDir string) string {
 }
 
 func runShell(ctx context.Context, command, dir string) (string, error) {
+	if policyErr := agentguard.CheckCommandPolicy(command); policyErr != nil {
+		return "", policyErr
+	}
+	if testRunShellSpawn != nil {
+		return testRunShellSpawn(ctx, command, dir)
+	}
 	var buf bytes.Buffer
 	env := append(os.Environ(), shell.RushEnvMarkers()...)
 	err := shell.Run(ctx, shell.RunOptions{

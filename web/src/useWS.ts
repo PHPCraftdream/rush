@@ -465,9 +465,9 @@ export function useWS() {
         applyWakeSchedulesSnapshot(msg.payload as SessionWakeSchedulesPayload);
       }),
 
-      // Batch work (R15a): structured batch-node snapshots. Harmless no-op
-      // when the server runs with RUSH_BATCH_RUNTIME off -- the event
-      // simply never arrives.
+      // Batch work (R15a): structured batch-node snapshots. Unconditional
+      // since the H4 cutover -- batch is the only runtime, so the event
+      // always arrives for live sessions.
       ws.on("session_batch_work", (msg: WSMessage) => {
         applyBatchWorkSnapshot(msg.payload as BatchWorkSnapshot);
       }),

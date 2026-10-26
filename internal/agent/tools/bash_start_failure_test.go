@@ -20,7 +20,7 @@ import (
 // everything else in Start is infallible). That cap fails the invariance
 // test for fatal errors: it is session state that changes on its own as
 // jobs finish (activeJobs is decremented from each job's completion
-// goroutine) and that the model can change on purpose via job_kill. The cap
+// goroutine) and that the model can change on purpose via batch_stop. The cap
 // message even says "Please terminate or wait for some jobs to complete" —
 // an instruction that can only be followed if it reaches the model.
 //
@@ -32,7 +32,7 @@ import (
 // model never learning why and nothing written to the session log.
 //
 // The assertion that matters is runErr == nil; message checks only confirm
-// the model is told which of its options (wait vs job_kill) applies.
+// the model is told which of its options (wait vs batch_stop) applies.
 //
 // NOT t.Parallel: it tops up and then drains the process-wide background
 // shell manager singleton, which sequential tests share.
@@ -89,7 +89,7 @@ func TestBashTool_BackgroundShellStartLimitIsModelVisibleNotFatal(t *testing.T) 
 		require.NoError(t, runErr,
 			"a returned error is what fantasy escalates to isCriticalError — it would "+
 				"abort the whole agent loop over a condition the model can fix "+
-				"(job_kill, waiting, or a foreground command)")
+				"(batch_stop, waiting, or a foreground command)")
 		require.True(t, resp.IsError, "the model still has to be told why nothing ran")
 		require.Contains(t, resp.Content, "error starting background shell")
 		require.Contains(t, resp.Content, "maximum number of background jobs",

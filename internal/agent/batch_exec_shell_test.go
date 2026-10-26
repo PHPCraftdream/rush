@@ -130,8 +130,22 @@ func (h *batchShellHeld) Stop(context.Context) error {
 	return h.stopErr
 }
 func (h *batchShellHeld) GetOutput() (string, string, bool, error) { return "", "", false, nil }
-func (h *batchShellHeld) ReadOutput(context.Context, uint64) (shell.ExecutionOutput, error) {
-	return h.output, nil
+func (h *batchShellHeld) ReadOutput(_ context.Context, cursor uint64) (shell.ExecutionOutput, error) {
+	c := h.output
+	if cursor > c.Next {
+		cursor = c.Next
+	}
+	start := cursor
+	if start < c.Oldest {
+		start = c.Oldest
+	}
+	offset := start - c.Oldest
+	if offset > uint64(len(c.Data)) {
+		offset = uint64(len(c.Data))
+	}
+	c.Data = append([]byte(nil), c.Data[offset:]...)
+	c.Truncated = c.Truncated || cursor < c.Oldest
+	return shell.ExecutionOutput{Data: c.Data, Oldest: c.Oldest, Next: c.Next, EOF: c.EOF, Truncated: c.Truncated}, nil
 }
 func (h *batchShellHeld) Dispose(context.Context) error { h.disposals++; return nil }
 

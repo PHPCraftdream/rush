@@ -39,10 +39,9 @@ func TestRunNonInteractive_AskQuestionWithRunningOwnJob_ContinuesRun(t *testing.
 			// loop would rightly wait on open work forever.
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			_, err := h.app.asyncJobStore.Transition(ctx, session.TransitionParams{
-				Owner: h.sessionID, ToolCallID: "bg-1", State: "completed", ResultSummary: "heavy run done", Wake: false,
-			})
-			require.NoError(h.t, err)
+			// Batch completion projection; wake=false so the
+			// finished own job stays debt-free.
+			f6a2CompleteDelegation(h.t, ctx, h.app, h.sessionID, "bg-1", "heavy run done", false)
 			loopText(w, "c", "continued after hint", 5, 5)
 		default:
 			t.Errorf("unexpected provider request #%d", n)
@@ -51,10 +50,8 @@ func TestRunNonInteractive_AskQuestionWithRunningOwnJob_ContinuesRun(t *testing.
 	})
 
 	ctx := loopCtx(t)
-	_, err := h.app.asyncJobStore.Claim(ctx, session.ClaimParams{
-		Owner: h.sessionID, ToolCallID: "bg-1", Kind: session.JobKindCommand, Input: "heavy", ToolName: "bash",
-	})
-	require.NoError(t, err)
+	// Batch seed: a live own background job (a "command" batch root).
+	f6ClaimOwnJob(t, ctx, h.app, h.sessionID, "bg-1")
 
 	res, _, runErr := h.run(ctx, RunOverrides{})
 

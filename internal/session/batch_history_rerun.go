@@ -13,21 +13,26 @@
 // returned here; every entry carries its exact root_id so the stop stays
 // incarnation-scoped.
 //
-// D-R10c-live: the batch_nodes CHECK constraint forbids delivery='void' on a
-// notice_selected=0 row, and ordinary live roots (pending/starting/running/
-// cancelling) have no selected terminal notice — a void WRITE to them is a
-// schema violation. Live old incarnations are therefore collected with pure
-// SELECTs (BatchRerunLiveRootsBy{AnnounceMessage,ToolCall}IDs) and included
-// in the Voided set with their exact root_id, retiring them via post-commit
-// stop routing instead of delivery (mirrors legacy TruncateForRerun, which
-// voids running rows regardless of state). Entries are kept distinct by
-// root_id: a root matching both arms appears once.
+// D-R10c-live (R12-F round 4): live old incarnations (pending/starting/
+// running/cancelling) are ALSO VOIDED IN THE SAME TRANSACTION. After the
+// live-root SELECTs collect them, the caller writes BatchVoidRetiredRoot's
+// synthetic select+void (notice_kind='root', notice_state='cancelled',
+// notice_cause='stop', notice_sequence=1, notice_ordinal=0, delivery='void',
+// wake=0) for exactly those root ids — CHECK-legal because the notice_* SET
+// satisfies the notice_selected=1 branch. The write runs BEFORE
+// BatchRerunVoidNodesOfVoidedRoots, so the already-selected descendants of
+// now-void roots are voided by that existing pass keyed off root
+// delivery='void'. Any SQL error rolls back the whole reconcile: the durable
+// void is not best-effort here. The Voided set entries remain — they are for
+// STOP ROUTING ONLY (the stop goroutine never writes delivery state).
 package session
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -41,6 +46,40 @@ type BatchRerunVoidedNode struct {
 	RootID, NodeID, ToolCallID string
 	State                      string
 	ChildSessionID, HostID     string
+}
+
+// ErrRerunTargetGone means the target message was already deleted (e.g. by a
+// concurrent rerun): the reconcile changed nothing.
+var ErrRerunTargetGone = errors.New("rerun: target message no longer exists")
+
+// RerunTruncateParams names what a reconcile deletes: the target user message
+// plus the tail of messages after it, all owned by Owner.
+type RerunTruncateParams struct {
+	Owner    string
+	TargetID string
+	TailIDs  []string
+}
+
+// rerunChunk is the IN (...) chunk size for the post-delete reconciliation
+// passes (re-declared here after the legacy async_job_rerun.go was removed).
+const rerunChunk = 500
+
+// chunkStrings splits ids into consecutive chunks of at most n entries.
+func chunkStrings(ids []string, n int) [][]string {
+	var out [][]string
+	for start := 0; start < len(ids); start += n {
+		out = append(out, ids[start:min(start+n, len(ids))])
+	}
+	return out
+}
+
+// nullStrings lifts ids into valid sql.NullStrings for IN (...) queries.
+func nullStrings(ids []string) []sql.NullString {
+	out := make([]sql.NullString, len(ids))
+	for i, id := range ids {
+		out[i] = sql.NullString{String: id, Valid: true}
+	}
+	return out
 }
 
 // BatchRerunTruncation is the committed outcome: the message rows actually
@@ -107,8 +146,11 @@ func (s *BatchStore) BatchRerunReconcile(ctx context.Context, messages message.S
 			voided = batchRerunAddDistinct(voided, batchRerunVoidedNode(r))
 		}
 	}
-	// Live old incarnations (D-R10c-live): a void WRITE is impossible for
-	// unselected rows (schema CHECK), so they retire via stop routing only.
+	// Live old incarnations (D-R10c-live): collected first (below), then
+	// voided in-tx by batchRerunVoidLiveRoots BEFORE
+	// BatchRerunVoidNodesOfVoidedRoots, so the descendants pass sees the
+	// roots' delivery='void' and voids their selected nodes too.
+	var liveRootIDs []string
 	for _, chunk := range chunkStrings(deletedIDs, rerunChunk) {
 		rows, err := q.BatchRerunLiveRootsByAnnounceMessageIDs(ctx, db.BatchRerunLiveRootsByAnnounceMessageIDsParams{
 			Owner: p.Owner, MessageIds: nullStrings(chunk),
@@ -117,6 +159,7 @@ func (s *BatchStore) BatchRerunReconcile(ctx context.Context, messages message.S
 			return BatchRerunTruncation{}, fmt.Errorf("batch rerun: live roots by announce message: %w", err)
 		}
 		for _, r := range rows {
+			liveRootIDs = append(liveRootIDs, r.RootID)
 			voided = batchRerunAddDistinct(voided, batchRerunVoidedNode(r))
 		}
 	}
@@ -139,8 +182,20 @@ func (s *BatchStore) BatchRerunReconcile(ctx context.Context, messages message.S
 			return BatchRerunTruncation{}, fmt.Errorf("batch rerun: live roots by tool call: %w", err)
 		}
 		for _, r := range rows {
+			liveRootIDs = append(liveRootIDs, r.RootID)
 			voided = batchRerunAddDistinct(voided, batchRerunVoidedNode(r))
 		}
+	}
+	// Void the live roots IN THIS TRANSACTION (R12-F round 4, folds the
+	// former post-commit BatchVoidRetiredRoot into reconcile). Only UPDATE
+	// (1) — the synthetic select+void — is needed: a live root collected by
+	// the SELECTs above cannot already carry notice_selected=1, and any
+	// already-selected row of a now-void root (root itself included) is
+	// covered by BatchRerunVoidNodesOfVoidedRoots further below, which is
+	// why this write precedes it. Best-effort semantics are NOT acceptable
+	// in-tx: any error rolls back the whole reconcile.
+	if err = batchRerunVoidLiveRoots(ctx, tx, p.Owner, now, liveRootIDs); err != nil {
+		return BatchRerunTruncation{}, err
 	}
 	// Re-pend: a node whose own notice message was deleted re-pends, unless
 	// its ROOT was voided — the void pass below then voids it again, keyed by
@@ -151,6 +206,21 @@ func (s *BatchStore) BatchRerunReconcile(ctx context.Context, messages message.S
 		}); err != nil {
 			return BatchRerunTruncation{}, fmt.Errorf("batch rerun: repend nodes: %w", err)
 		}
+		// R12-EF fix F2: the session_notices half of the legacy truncation
+		// (TruncateForRerun's step 3, async_job_rerun.go) -- session_notices
+		// stays live under the flag (R12-D), so a delivered notice whose
+		// message the rerun deleted is re-pended for the new branch, and a
+		// wake_failed marker of the deleted branch is voided instead.
+		if _, err = q.RependSessionNoticesByMessageIDs(ctx, db.RependSessionNoticesByMessageIDsParams{
+			UpdatedAt: now, Owner: p.Owner, MessageIds: nullStrings(chunk),
+		}); err != nil {
+			return BatchRerunTruncation{}, fmt.Errorf("batch rerun: repend session notices: %w", err)
+		}
+		if _, err = q.VoidWakeFailedNoticesByMessageIDs(ctx, db.VoidWakeFailedNoticesByMessageIDsParams{
+			UpdatedAt: now, Owner: p.Owner, MessageIds: nullStrings(chunk),
+		}); err != nil {
+			return BatchRerunTruncation{}, fmt.Errorf("batch rerun: void wake_failed notices: %w", err)
+		}
 	}
 	// Voided roots ONCE, after the repend loop: void every selected, not-yet-
 	// void node inside a voided root regardless of its (cleared) message id.
@@ -159,11 +229,45 @@ func (s *BatchStore) BatchRerunReconcile(ctx context.Context, messages message.S
 	}); err != nil {
 		return BatchRerunTruncation{}, fmt.Errorf("batch rerun: void nodes of voided roots: %w", err)
 	}
+	// R12-EF fix F3: the question channel of a retired subtree ends void too
+	// -- a child_question notice of a void-delivery root is never delivered
+	// by the new branch. Runs after the node void above, so roots this very
+	// transaction retired are matched; any SQL error rolls the reconcile back.
+	if err = batchRerunVoidChildQuestionsOfVoidRoots(ctx, tx, p.Owner, now); err != nil {
+		return BatchRerunTruncation{}, err
+	}
 	if err = tx.Commit(); err != nil {
 		return BatchRerunTruncation{}, fmt.Errorf("batch rerun: commit: %w", err)
 	}
 	publish()
 	return BatchRerunTruncation{Deleted: deleted, Voided: voided}, nil
+}
+
+// batchRerunVoidLiveRoots voids the collected live root incarnations inside
+// the reconcile transaction: one chunked UPDATE per id list, mirroring the
+// former BatchVoidRetiredRoot UPDATE (1) exactly — synthetic select+void with
+// the CHECK-legal notice identity (kind 'root', state 'cancelled', cause
+// 'stop', sequence 1, ordinal 0), delivery='void', wake=0.
+func batchRerunVoidLiveRoots(ctx context.Context, tx *sql.Tx, owner string, now int64, rootIDs []string) error {
+	for _, chunk := range chunkStrings(rootIDs, rerunChunk) {
+		query := `UPDATE batch_nodes SET
+		notice_selected = 1, notice_kind = 'root', notice_state = 'cancelled',
+		notice_cause = 'stop', notice_sequence = 1, notice_ordinal = 0,
+		delivery = 'void', wake = 0, updated_at = ?
+	WHERE owner_session_id = ? AND node_id = root_id
+		AND notice_selected = 0
+		AND state IN ('pending', 'starting', 'running', 'cancelling')
+		AND root_id IN (` + strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",") + `)`
+		args := make([]any, 0, len(chunk)+2)
+		args = append(args, now, owner)
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+			return fmt.Errorf("batch rerun: void live roots: %w", err)
+		}
+	}
+	return nil
 }
 
 // batchRerunAddDistinct appends n unless a root_id entry already exists: a
@@ -178,6 +282,7 @@ func batchRerunAddDistinct(set []BatchRerunVoidedNode, n BatchRerunVoidedNode) [
 }
 
 // BatchRerunVoidedRoots returns the exact incarnations a committed rerun
-// voided; the agent's post-commit stop iterates these and never widens the
-// key to a tool_call_id.
+// voided. The durable void was already written in the truncation
+// transaction; the agent's post-commit stop iterates these ONLY to stop
+// executors, and never widens the key to a tool_call_id.
 func BatchRerunVoidedRoots(res BatchRerunTruncation) []BatchRerunVoidedNode { return res.Voided }

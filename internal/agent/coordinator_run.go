@@ -108,7 +108,11 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 	// queued replacement (InterruptAndSend) keeps its own policy when it
 	// eventually starts, however long the queue delay is.
 	callOpts := callOptionsFrom(ctx)
+	if callOpts != nil {
+		EnsureCallBuildScope(callOpts)
+	}
 	autoResumed, backgroundJobNotice := noticeFlagsFrom(ctx)
+
 	call := SessionAgentCall{
 		SessionID:            sessionID,
 		Prompt:               prompt,
@@ -138,6 +142,12 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 	// drained much later under a DIFFERENT turn's context, so the sender's
 	// origin must travel on the call struct itself.
 	call.Origin = CallOriginFrom(ctx)
+	// R12-H2b §2.2: a run armed with an execution requirement envelope
+	// stamps it onto the built call so durable producers can persist and
+	// carry it (diskRequirementForCall reads this field first).
+	if callOpts != nil && callOpts.Requirement != nil {
+		call.DiskRequirement = callOpts.Requirement
+	}
 	// Pinning matters more here than in runInternal: this call is QUEUED as a
 	// replacement and may not start for a while, so the gap between "options
 	// computed" and "turn starts" is unbounded rather than a few lines.
@@ -170,7 +180,6 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// child's mailbox and OS lock are already released by this point (see
 	// runOwned's deferred abandonOwnershipWithHandoff).
 	defer c.noteSubAgentChildRunEnded(sessionID)
-	defer stallDetachCleanupSession(sessionID)
 
 	// R8-3: capture the DIRECT caller's call-result recorder, then detach
 	// it for everything downstream -- a nested runInternal reached through
@@ -200,6 +209,28 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// the Set and this read. nil = legacy caller — the fallback paths keep
 	// the historical read-and-reset behavior byte-for-byte.
 	callOpts := callOptionsFrom(ctx)
+	// R12-H2b §2.4 ordinary/idle rebuilt calls — do not rely on the
+	// request carrying options: a session with a persisted fence must not
+	// run a turn that cannot name a live binding. Before any
+	// provider-sensitive model/tool resolution.
+	if err := c.guardTurnDiskFence(ctx, sessionID, callOpts); err != nil {
+		return nil, c.drainRefused(ctx, sessionID, err)
+	}
+	// R12-H2a (P1-1): the NORMAL run path builds its tools into this call's
+	// build-resource scope (resolveSessionModels → pinCallTools → buildTools
+	// → newBatchWorkToolBuild registers construction pins in the scope), and
+	// nothing below closes it. Release it on EVERY return from runInternal —
+	// success, error and panic. Closing is idempotent, so a nested
+	// runInternal that shares the same CallOptions pointer closes the same
+	// scope harmlessly. Known accepted consequence: an InterruptAndSend
+	// queued call copied these CallOptions (buildCall above) and inherits
+	// this scope pointer; if it is drained after this run closed the scope,
+	// its stale tools fail closed at the executor (RegistryID unknown). That
+	// is the intended fail-closed direction — a drained queued call rebuilds
+	// under RunSessionAgentCall's own fresh scope.
+	if callOpts != nil {
+		defer callOpts.buildScope.close()
+	}
 	// A human-initiated turn (web/SDK: no per-call options, not a Drain) spends
 	// a stale `sessions cancel` request AT ADMISSION (#1101, R8A-2): runOwned
 	// runs the callback once the mailbox and session lock are ours, so a turn
@@ -693,7 +724,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 				"wait", wait.String(),
 				"wait_until", deadline.Format("15:04"),
 			)
-			c.notifyRateLimitWait(sessionID, deadline, rateLimitWaits+1)
+			c.notifyRateLimitWaitContext(ctx, sessionID, deadline, rateLimitWaits+1)
 			heartbeat.SetRateLimitedUntilFor(sessionID, deadline)
 			err := c.waitRateLimit(ctx, sessionID, wait, &rateLimitSpent)
 			heartbeat.SetRateLimitedUntilFor(sessionID, time.Time{})
@@ -740,6 +771,15 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 // RunWithOverrides implements Coordinator. It is like Run but uses the given
 // smart/fast model overrides instead of the global config defaults.
 func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt string, smart, fast *ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	// R12-H2a round 2: resolution builds this call's toolset into the
+	// trusted call state's build-resource scope before runInternal runs, so
+	// every return from here — resolution failure included — must release
+	// it. Close is idempotent; runInternal's own defer double-closes
+	// harmlessly. Captured from the ORIGINAL ctx: the later
+	// WithModelOverrides re-arm carries the same CallOptions pointer.
+	if callOpts := callOptionsFrom(ctx); callOpts != nil {
+		defer callOpts.buildScope.close()
+	}
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, c.drainRefused(ctx, sessionID, err)
 	}
@@ -772,7 +812,7 @@ func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt st
 	// resolutions agree.
 	ctx = WithModelOverrides(ctx, smart, fast)
 
-	pinned, err := c.applyModelOverrides(ctx, smart, fast)
+	pinned, err := c.applyModelOverrides(ctx, sessionID, smart, fast)
 	if err != nil {
 		return nil, c.drainRefused(ctx, sessionID, err)
 	}
@@ -843,6 +883,13 @@ func (c *coordinator) ReleaseExclusive(sessionID string, epoch uint64, cancel co
 // immediately before the handoff to runOwned. It is used by callers (e.g.
 // handleRerunMessage) to transfer release responsibility exactly when the
 // handoff occurs.
+//
+// R12-H2a round 2: model resolution here builds the call's toolset into
+// the trusted call state's build-resource scope (via buildCall and
+// resolveSessionModels/applyModelOverrides -> pinCallTools). The defer
+// added below the readyWg.Wait closes that scope on every return — early
+// errors included — and on the final handoff return, which is safe because
+// this function returns only after the whole reserved run completes.
 func (c *coordinator) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, onHandoff func(), smart, fast *ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	// R8-3 residual (round-9 audit): this entry point never went through
 	// runInternal, so it never reported into the caller's CallResultRecorder
@@ -858,6 +905,15 @@ func (c *coordinator) RunWithReservedOwnership(ctx context.Context, sessionID, p
 	ctx = withoutCallResultRecorder(ctx)
 	ctx = session.WithoutExecutionAssistantIdentity(ctx)
 
+	// R12-H2a round 2: resolution builds this call's toolset into the
+	// trusted call state's build-resource scope before the reserved run
+	// starts, so every return from here — resolution failure included —
+	// must release it. This function returns only after the whole reserved
+	// run completes, so the defer fires at true call end. Close is
+	// idempotent.
+	if callOpts := callOptionsFrom(ctx); callOpts != nil {
+		defer callOpts.buildScope.close()
+	}
 	if err := c.readyWg.Wait(); err != nil {
 		c.currentAgent.ReleaseExclusive(sessionID, epoch, cancel)
 		return nil, err
@@ -879,7 +935,7 @@ func (c *coordinator) RunWithReservedOwnership(ctx context.Context, sessionID, p
 	var pinned *resolvedOverrides
 	var err error
 	if smart != nil || fast != nil {
-		pinned, err = c.applyModelOverrides(ctx, smart, fast)
+		pinned, err = c.applyModelOverrides(ctx, sessionID, smart, fast)
 	} else {
 		pinned, err = c.resolveSessionModels(ctx, sessionID)
 	}

@@ -171,25 +171,56 @@ func withNonInteractiveEnv(env []string) []string {
 // next handler in the chain.
 type execMiddleware = func(next interp.ExecHandlerFunc) interp.ExecHandlerFunc
 
+// testInnermostHandler is a test-only seam: when non-nil it is installed as
+// the innermost exec handler of the standard chain so package tests can run
+// the real middleware stack (panic guard, builtins, script dispatch, block
+// list, xargs normaliser, Go coreutils) with a fake command behind it. It is
+// always nil outside tests, and tests only set it from sequential (never
+// parallel) test code, restoring it via t.Cleanup.
+var testInnermostHandler interp.ExecHandlerFunc
+
 // standardHandlers returns the exec-handler middleware chain used by both
 // [Run] and [Shell]. Order matters:
-//  1. builtins first (so Rush's in-process jq wins over any PATH binary);
-//  2. script dispatch (shebang / binary / shell-source for path-prefixed
+//  1. panic guard (outermost — a panic in any layer below becomes one failed
+//     command with exit status 2);
+//  2. CI-only command policy (before builtins and every execution handler);
+//  3. builtins first (so Rush's in-process jq wins over any PATH binary);
+//  4. script dispatch (shebang / binary / shell-source for path-prefixed
 //     argv[0], no-op for bare commands) — runs before the block list so
 //     that deny rules see the already-resolved argv of anything the
 //     script exec's rather than the outer path-prefixed wrapper;
-//  3. block list;
-//  4. optional Go coreutils (only when useGoCoreUtils is on).
+//  5. block list;
+//  6. when the Go coreutils are on: the xargs argument normaliser
+//     immediately before the coreutils handler, then the optional Go
+//     coreutils themselves.
 func standardHandlers(blockFuncs []BlockFunc) []execMiddleware {
 	handlers := []execMiddleware{
+		panicGuardHandler(),
+		ciOnlyPolicyHandler(),
 		builtinHandler(),
 		scriptDispatchHandler(blockFuncs),
 		blockHandler(blockFuncs),
 	}
 	if useGoCoreUtils && coreUtilsExecHandler != nil {
-		handlers = append(handlers, coreUtilsExecHandler)
+		handlers = append(handlers, xargsArgsHandler(), coreUtilsExecHandler)
+	}
+	if testInnermostHandler != nil {
+		handlers = append(handlers, func(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
+			return testInnermostHandler
+		})
 	}
 	return handlers
+}
+
+func ciOnlyPolicyHandler() execMiddleware {
+	return func(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
+		return func(ctx context.Context, args []string) error {
+			if err := checkRegisteredCommandPolicy(args); err != nil {
+				return err
+			}
+			return next(ctx, args)
+		}
+	}
 }
 
 // builtinHandler returns middleware that dispatches recognized Rush

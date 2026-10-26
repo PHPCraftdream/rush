@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"time"
 
+	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/google/uuid"
@@ -24,8 +25,10 @@ import (
 // --interrupt` feels near-immediate to an operator (worst case one tick of
 // latency), slow enough that the extra SELECT is negligible even across a
 // long multi-step turn. The ticker only lives for the duration of a turn (see
-// startInterruptTicker), so there is no idle-process polling.
-const interruptInjectTick = 3 * time.Second
+// startInterruptTicker), so there is no idle-process polling. It is a var so
+// tests can shrink it to drive the real loop at test timescale, restoring it
+// with t.Cleanup (precedent: recheckPassIntervalNS in coordinator_recheck.go).
+var interruptInjectTick = 3 * time.Second
 
 // interruptTickOperationTimeout is the per-tick deadline for the
 // handleInterruptTick operation. If a tick's DB operations or downstream
@@ -55,20 +58,34 @@ func (c *coordinator) CancelTurn(sessionID string) {
 // auto-resume suspension and wake zeroing. Rerun also uses it for the child
 // tree of a voided delegation.
 func (c *coordinator) stopTree(sessionID string) {
-	// Phase-4 step 4 (doc sec.3.8): Stop is transitive -- cancelTree walks
-	// sessionID's current delegation tree (via still-RUNNING delegation
-	// rows) and, for EACH id, runs the same "jobs it owns AND delegations
-	// armed on it as a child" cancellation cancelSession always did
-	// (sessionID is usually the PARENT whose tool call started a
+	// Phase-4 step 4 (doc sec.3.8): Stop is transitive -- the batch
+	// delegation-tree walk collects sessionID's live delegation child ids
+	// from the batch facts and, for EACH id, cancels the owner scope the
+	// same way (sessionID is usually the PARENT whose tool call started a
 	// delegation, but Cancel is also called on a child session id
 	// directly). A session with no running delegation children degenerates
-	// to the pre-existing single-id behavior.
-	var ids []string
-	if c.asyncJobs != nil {
-		ids = c.asyncJobs.cancelTree(sessionID)
-	} else {
-		ids = []string{sessionID}
+	// to the single-id behavior. The root stays in the set even if the fact
+	// read is incomplete.
+	ids := []string{sessionID}
+	{
+		facts := coordinatorBatchCutoverFacts(c)
+		readCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		nodes, err := facts.LiveDelegationNodes(readCtx, sessionID)
+		cancel()
+		seen := map[string]struct{}{sessionID: {}}
+		for _, node := range nodes {
+			if node.ChildSessionID != "" {
+				if _, exists := seen[node.ChildSessionID]; !exists {
+					seen[node.ChildSessionID] = struct{}{}
+					ids = append(ids, node.ChildSessionID)
+				}
+			}
+		}
+		if err != nil {
+			slog.Error("coordinator.Cancel: failed to read batch delegation owners", "session_id", sessionID, "err", err)
+		}
 	}
+	c.stopBatchOwners(ids)
 	for _, id := range ids {
 		// Task #1054: a delegated child session's live generation runs on
 		// its registered driver, never c.currentAgent (task #1049) --
@@ -93,26 +110,22 @@ func (c *coordinator) stopTree(sessionID string) {
 	}
 	// Doc sec.3.4/3.8: zero the wake bit on every already-terminal
 	// (pending/done) debt row across the whole stopped tree, closing the
-	// race where a job finished with wake=1 a moment before Stop but its
+	// race where work finished with wake=1 a moment before Stop but its
 	// notice was not yet reacted to -- a stopped delegation's child must
-	// never get a turn out of that race.
-	if c.asyncJobs != nil && c.asyncJobs.store != nil {
+	// never get a turn out of that race. Batch-only: every owner captured
+	// from the union above.
+	if store := batchCutoverReactionStore(c); store != nil {
 		zeroCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := c.asyncJobs.store.SetWakeZeroForOwners(zeroCtx, ids); err != nil {
-			slog.Error("coordinator.Cancel: failed to zero wake for stopped tree", "session_id", sessionID, "err", err)
+		if err := store.BatchReactionSetWakeZeroForOwners(zeroCtx, ids); err != nil {
+			slog.Error("coordinator.Cancel: failed to zero batch wake for stopped tree", "session_id", sessionID, "err", err)
 		}
+		cancel()
 	}
-	// R7B-2: a stopped child parked on its own job is not re-checked by any
-	// other trigger (the job is dropped silently, the idle mailbox fires no
-	// release hook), so its driver record and allowlist entry would outlive
-	// the Stop. After the wake zeroing, so debt a racing completion left is
-	// no longer owed; a child still running a turn is released by that turn's
-	// own end.
-	if c.asyncJobs != nil {
-		for _, id := range ids {
-			c.asyncJobs.recheckChild(id)
-		}
+	// A stopped child is registered for the recheck pass (the retained
+	// release-shaped retry): its own work is cancelled silently and the idle
+	// mailbox may fire no release hook.
+	for _, id := range ids {
+		c.addToRecheckSet(id)
 	}
 }
 
@@ -121,23 +134,15 @@ func (c *coordinator) CancelAll() (stillBusy bool) {
 	c.StopWakeScheduler()
 	// Stop timer admission before closing callback admission. Detached timer
 	// deliveries and recheck wakes remain separate lifecycle backlog.
-	if c.asyncJobs != nil {
-		c.asyncJobs.timeouts.close()
-	}
+	c.timeouts.close()
 	// Close admission before cancelling agent work: releases during unwind
 	// must not create new DB readers. Ownership cleanup already happened in
-	// agent_ownership.go; recheckChild intentionally does nothing on a closed
-	// ledger, so refused callbacks need no replacement bookkeeping.
+	// agent_ownership.go.
 	c.callbackMu.Lock()
 	c.callbackClosing = true
 	c.callbackContextLocked()
 	cancelCallbacks := c.callbackCancel
 	c.callbackMu.Unlock()
-	// close() leaves rows running for recovery and suppresses shutdown-caused
-	// delegation completion before cancelled agents start releasing ownership.
-	if c.asyncJobs != nil {
-		c.asyncJobs.close()
-	}
 	cancelCallbacks()
 	stillBusy = c.currentAgent.CancelAll()
 	// B18 fix: a delegated child's driver is a SEPARATE SessionAgent from
@@ -187,6 +192,15 @@ func (c *coordinator) joinShutdownCallbacks() bool {
 
 func (c *coordinator) ClearQueue(sessionID string) {
 	c.currentAgent.ClearQueue(sessionID)
+}
+
+// interruptTickStopsFor reports whether a tick error must STOP the
+// interrupt-inject ticker (gh#11a): a permanently non-durable dependency
+// and a lost process-bound binding can never succeed on a later tick. The
+// peeked inject row stays in place for an explicit operator action or a
+// newly admitted epoch instead of spinning refusals until shutdown.
+func interruptTickStopsFor(err error) bool {
+	return errors.Is(err, ErrDiskProviderNotDurable) || errors.Is(err, ErrDiskProviderUnavailable)
 }
 
 // startInterruptTicker launches a goroutine that polls pending_injects for an
@@ -239,9 +253,8 @@ func (c *coordinator) startInterruptTicker(ctx context.Context, sessionID string
 				tickCancel()
 
 				if err != nil {
-					if errors.Is(err, ErrDiskProviderNotDurable) {
-						slog.Error("coordinator: interrupt-inject cannot cross the durable queue for this DiskProvider-backed run; retry after the active run ends",
-							"session_id", sessionID, "err", err)
+					if interruptTickStopsFor(err) {
+						slog.Error("coordinator: interrupt-inject cannot cross the durable queue; the dependency is permanently unavailable for this epoch", "session_id", sessionID, "err", err)
 						return
 					}
 					if errors.Is(err, context.DeadlineExceeded) {
@@ -327,6 +340,11 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 	}
 
 	var call SessionAgentCall
+	// idlePrep is the fence resolution of the idle branch (R12-H2b §2.4):
+	// kept held across a successful enqueue (the row-keyed holder then
+	// covers the binding), released on every failure path so a refused
+	// tick never leaks the Continuation owner.
+	var idlePrep *preparedContinuation
 	if owned && published {
 		// The ticker context belongs to the dispatcher that started the active
 		// turn. It is not the policy context of that turn, and may already be
@@ -340,6 +358,14 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 	} else {
 		// An idle session has no active policy snapshot. Resolve a fresh call
 		// from the tick context, as the normal detached path does.
+		// An independently owned scope is needed only while building the durable
+		// record. No live tool registry crosses serialization, so it is released
+		// on every exit after the scope is created.
+		if callOptionsFrom(ctx) != nil {
+			ownedCtx, ownedScope := ownDeferredCallScope(ctx)
+			ctx = ownedCtx
+			defer ownedScope.close()
+		}
 		pinned, resolveErr := c.resolveSessionModels(ctx, sessionID)
 		if resolveErr != nil {
 			return false, fmt.Errorf("failed to resolve session models for interrupt tick: %w", resolveErr)
@@ -348,6 +374,15 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 		if err != nil {
 			return false, err
 		}
+		// R12-H2b §2.4: an idle session's replacement must carry the
+		// session's persisted fence. Peek did not consume the row, so a
+		// resolution failure leaves it for the next tick untouched.
+		prep, prepErr := c.PrepareContinuation(ctx, sessionID, nil)
+		if prepErr != nil {
+			return false, prepErr
+		}
+		prep.applyTo(&call)
+		idlePrep = prep
 	}
 
 	// Layer 1 (T9 shape, design doc §7.3): refuse outright, BEFORE the
@@ -357,9 +392,14 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 	// instead of losing the message with no trace — consuming it here
 	// would durably enqueue a row that a restart could only replay onto
 	// the REAL disk.
-	if callCarriesDiskProvider(call) {
-		slog.Error("coordinator: refusing to durably enqueue an interrupt-inject call carrying a caller-supplied disk provider",
-			"session_id", sessionID, "logical_call_id", call.LogicalCallID)
+	// R12-H2b §2.4: only a live provider WITHOUT an execution requirement
+	// envelope is refused here — an envelope-carrying call is durably
+	// queued below with a row-keyed Continuation owner pinning its
+	// binding until the pump rebuild releases it in either outcome.
+	if callCarriesDiskProvider(call) && requirementFromCall(call) == nil {
+		if call.CallOptions.DiskBindingID != "" {
+			return false, fmt.Errorf("%w: provider-dependent session continuation cannot be durably queued", ErrDiskProviderUnavailable)
+		}
 		return false, fmt.Errorf("%w (session=%s)", ErrDiskProviderNotDurable, sessionID)
 	}
 
@@ -385,10 +425,29 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 		idempotencyKey = fmt.Sprintf("%s-%s", call.SessionID, call.InjectID)
 	}
 
+	// R12-H2b §2.4: hold the row-keyed Continuation owner for the window
+	// between this durable enqueue and the pump's rebuild (which releases
+	// it in both outcomes). A lost binding means the row could never
+	// succeed — refuse typed and leave the peeked row untouched.
+	var holdRelease func()
+	if req := requirementFromCall(call); req != nil {
+		rel, ok := holdDurableContinuationOwner(c.diskCaps, req.BindingID, idempotencyKey)
+		if !ok {
+			return false, fmt.Errorf("%w: interrupt replacement's disk provider binding %s is already lost (session=%s)", ErrDiskProviderUnavailable, req.BindingID, sessionID)
+		}
+		holdRelease = rel
+	}
+
 	// Convert to SessionAgentCallData for serialization
 	callData := ToSessionAgentCallData(call)
 	callDataJSON, marshalErr := json.Marshal(callData)
 	if marshalErr != nil {
+		if holdRelease != nil {
+			holdRelease()
+		}
+		if idlePrep != nil {
+			idlePrep.release()
+		}
 		return false, fmt.Errorf("failed to serialize call data for interrupt inject: %w", marshalErr)
 	}
 
@@ -398,11 +457,27 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 	// consume a different row than the one callData was built from.
 	enqueuedPi, enqueueErr := c.sessions.ConsumeInterruptInjectAndEnqueue(ctx, sessionID, pi.ID, idempotencyKey, callDataJSON)
 	if enqueueErr != nil {
-		// Transaction rolled back, so row still exists for retry
+		// Transaction rolled back, so row still exists for retry; the
+		// row-keyed holder dies with it (a later tick re-holds).
+		if holdRelease != nil {
+			holdRelease()
+		}
+		if idlePrep != nil {
+			idlePrep.release()
+		}
 		return false, fmt.Errorf("failed to enqueue interrupt inject: %w", enqueueErr)
 	}
 	if enqueuedPi == nil {
 		// Row vanished between peek and enqueue — handled gracefully
+		// (the transaction rolled back, so no durable row exists):
+		// release the holders exactly as the enqueue-error branch
+		// above, or the binding pin and the prep token leak.
+		if holdRelease != nil {
+			holdRelease()
+		}
+		if idlePrep != nil {
+			idlePrep.release()
+		}
 		return false, nil
 	}
 
@@ -414,6 +489,17 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 		// The generation fence lost after the durable transaction committed.
 		// Remove only this candidate and restore the exact source row; a newer
 		// generation's queue entry is never selected by this reconciliation.
+		// The durable row is removed again, so the row-keyed holder must
+		// go with it (R12-H2b §2.4); a later tick re-holds a fresh one.
+		if req := requirementFromCall(call); req != nil {
+			releaseDurableContinuationOwner(c.diskCaps, req.BindingID, idempotencyKey)
+		}
+		// The durable row is gone too, so the idle prep token's owner
+		// has nothing left to cover; leaving it held pins the binding
+		// until the next tick's re-resolution.
+		if idlePrep != nil {
+			idlePrep.release()
+		}
 		if reconcileErr := c.reconcileInterruptInjectEnqueue(ctx, *enqueuedPi, idempotencyKey); reconcileErr != nil {
 			return false, fmt.Errorf("failed to reconcile undelivered interrupt inject: %w", reconcileErr)
 		}
@@ -427,6 +513,11 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 
 	// Notify only after ownership delivery succeeds, or after an idle durable
 	// enqueue has become the authoritative owner of the message.
+	// The row-keyed holder now owns the wait window; the idle prep
+	// token's random owner must not pin the binding past dispatch.
+	if idlePrep != nil {
+		idlePrep.release()
+	}
 	c.messages.Notify(injMsg)
 	return true, nil
 }
@@ -518,9 +609,18 @@ func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt st
 	if err := c.readyWg.Wait(); err != nil {
 		return err
 	}
+	var scopeTransferred bool
+	ctx, ownedScope := ownDeferredCallScope(ctx)
+	if ownedScope != nil {
+		defer func() {
+			if !scopeTransferred {
+				ownedScope.close()
+			}
+		}()
+	}
 	var pinned *resolvedOverrides
 	if smart != nil || fast != nil {
-		resolved, applyErr := c.applyModelOverrides(ctx, smart, fast)
+		resolved, applyErr := c.applyModelOverrides(ctx, sessionID, smart, fast)
 		if applyErr != nil {
 			return applyErr
 		}
@@ -539,6 +639,11 @@ func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt st
 	if err != nil {
 		return err
 	}
+	if ownedScope != nil {
+		call.onQueueResolved = func(_ *fantasy.AgentResult, _ error) { ownedScope.close() }
+	}
+	// The owned scope was established before resolution and is carried through
+	// buildCall; do not replace it with a fresh, empty scope here.
 	// InterruptAndReplace atomically records call as the replacement the
 	// current owner runs next and cancels only the in-flight generation
 	// (design §4) — replacing the QueueMessage+Cancel two-step that P0-2
@@ -550,6 +655,8 @@ func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt st
 		if err := c.startDetachedRun(ctx, call); err != nil {
 			return fmt.Errorf("failed to enqueue interrupt for idle session %s: %w", sessionID, err)
 		}
+	} else {
+		scopeTransferred = true
 	}
 	return nil
 }
@@ -604,8 +711,12 @@ func (c *coordinator) startDetachedRun(ctx context.Context, call SessionAgentCal
 	// restartOrphanedWithRetry's finalizer, this error DOES reach the
 	// original caller (InterruptAndSend wraps and returns it), so "Run
 	// reports the refusal" holds for this producer.
-	if callCarriesDiskProvider(call) {
-		slog.Error("coordinator: refusing to durably enqueue a call carrying a caller-supplied disk provider",
+	// R12-H2b §2.4: keep the legacy refusal (before ANY destructive step)
+	// only for a live provider WITHOUT an execution requirement envelope;
+	// an envelope-carrying call is durably queued below with a row-keyed
+	// Continuation owner the pump rebuild releases in both outcomes.
+	if callCarriesDiskProvider(call) && requirementFromCall(call) == nil {
+		slog.Error("coordinator: refusing to durably enqueue a call carrying a caller-supplied disk provider with no execution requirement envelope",
 			"session_id", call.SessionID, "logical_call_id", call.LogicalCallID)
 		return fmt.Errorf("%w (session=%s)", ErrDiskProviderNotDurable, call.SessionID)
 	}
@@ -613,6 +724,36 @@ func (c *coordinator) startDetachedRun(ctx context.Context, call SessionAgentCal
 		slog.Error("coordinator: refusing to durably enqueue a call carrying per-call credentials",
 			"session_id", call.SessionID, "logical_call_id", call.LogicalCallID)
 		return fmt.Errorf("%w (session=%s)", ErrCredentialSetNotDurable, call.SessionID)
+	}
+
+	// P2-1: Generate idempotency key from LogicalCallID (stable per logical
+	// request) instead of timestamp (which changes on every retry). Fallback
+	// to timestamp with warning if LogicalCallID is empty (should not happen
+	// in normal flow). For the interrupt inject path, the InjectID joins the
+	// key. Computed BEFORE the pending_injects delete (R12-H2b §2.4): the
+	// row-keyed Continuation holder below must be taken before any
+	// destructive step, and released on EVERY failure path after it.
+	var idempotencyKey string
+	if call.LogicalCallID != "" {
+		idempotencyKey = fmt.Sprintf("%s-%s", call.SessionID, call.LogicalCallID)
+	} else if call.InjectID != "" {
+		idempotencyKey = fmt.Sprintf("%s-%s", call.SessionID, call.InjectID)
+	} else {
+		slog.Warn("coordinator: LogicalCallID is empty, falling back to timestamp-based idempotency key (non-idempotent retries)",
+			"session_id", call.SessionID)
+		idempotencyKey = fmt.Sprintf("%s-%d", call.SessionID, time.Now().UnixNano())
+	}
+
+	// R12-H2b §2.4: hold the row-keyed Continuation owner for the wait
+	// window; the pump rebuild releases it in both outcomes. A lost
+	// binding refuses typed, before the delete below.
+	var holdRelease func()
+	if req := requirementFromCall(call); req != nil {
+		rel, ok := holdDurableContinuationOwner(c.diskCaps, req.BindingID, idempotencyKey)
+		if !ok {
+			return fmt.Errorf("%w: detached replacement's disk provider binding %s is already lost (session=%s)", ErrDiskProviderUnavailable, req.BindingID, call.SessionID)
+		}
+		holdRelease = rel
 	}
 
 	// P0-2 fix: delete the pending_injects row at the START to prevent
@@ -626,6 +767,12 @@ func (c *coordinator) startDetachedRun(ctx context.Context, call SessionAgentCal
 				// durable handoff is authoritative; do not enqueue a duplicate.
 				slog.Debug("coordinator: detached run inject was already consumed; skipping duplicate",
 					"inject_id", call.InjectID)
+				// gh#10c: another detached consumer won ownership of this inject and THIS
+				// consumer enqueued nothing — its row-keyed holder must die with the
+				// abandoned attempt, or the binding stays pinned until process exit.
+				if holdRelease != nil {
+					holdRelease()
+				}
 				return nil
 			}
 			slog.Error("coordinator: detached run failed to delete pending_injects row at start",
@@ -637,21 +784,6 @@ func (c *coordinator) startDetachedRun(ctx context.Context, call SessionAgentCal
 			slog.Debug("coordinator: detached run deleted pending_injects row at start",
 				"inject_id", call.InjectID)
 		}
-	}
-
-	// P2-1: Generate idempotency key from LogicalCallID (stable per logical request)
-	// instead of timestamp (which changes on every retry). Fallback to timestamp
-	// with warning if LogicalCallID is empty (should not happen in normal flow).
-	// For interrupt inject path, we can use the InjectID as part of the key.
-	var idempotencyKey string
-	if call.LogicalCallID != "" {
-		idempotencyKey = fmt.Sprintf("%s-%s", call.SessionID, call.LogicalCallID)
-	} else if call.InjectID != "" {
-		idempotencyKey = fmt.Sprintf("%s-%s", call.SessionID, call.InjectID)
-	} else {
-		slog.Warn("coordinator: LogicalCallID is empty, falling back to timestamp-based idempotency key (non-idempotent retries)",
-			"session_id", call.SessionID)
-		idempotencyKey = fmt.Sprintf("%s-%d", call.SessionID, time.Now().UnixNano())
 	}
 
 	// Convert to SessionAgentCallData for serialization
@@ -666,6 +798,9 @@ func (c *coordinator) startDetachedRun(ctx context.Context, call SessionAgentCal
 				slog.Error("coordinator: also failed to recreate pending_injects row during marshal recovery",
 					"inject_id", call.InjectID, "recreate_err", recreateErr, "marshal_err", err)
 			}
+		}
+		if holdRelease != nil {
+			holdRelease()
 		}
 		return fmt.Errorf("failed to serialize call data for durable enqueue: %w", err)
 	}
@@ -685,6 +820,9 @@ func (c *coordinator) startDetachedRun(ctx context.Context, call SessionAgentCal
 		// For non-inject interrupts, there is no fallback — the call is lost.
 		// Return error so the caller can handle it (e.g., surface to HTTP response).
 		// For inject interrupts, we've recreated the row so a future tick will retry.
+		if holdRelease != nil {
+			holdRelease()
+		}
 		return fmt.Errorf("failed to durably enqueue call for recovery: %w", enqueueErr)
 	}
 

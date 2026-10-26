@@ -25,6 +25,21 @@ var logDir atomic.Value // string
 // counter is enough — the PID already disambiguates across processes.
 var dumpSeq atomic.Uint64
 
+// pfkInflightDumps counts WriteGoroutineDumpNamed calls currently in
+// flight, from function entry (BEFORE the delay hook runs, so a write
+// parked in a test hook is still counted) until the write attempt
+// completes. SetLogDirForTest drains it so a dump dispatched by one
+// test cannot land in a later test's directory: the resolution of
+// logDir happens once, before the hook, and the drain bounds the
+// window in which a not-yet-scheduled write goroutine could still
+// observe a directory that is no longer its own test's.
+var pfkInflightDumps atomic.Int64
+
+// pfkInflightDrainTimeout bounds how long SetLogDirForTest waits for
+// in-flight dump writes. It must stay finite: a write parked in a
+// never-released test hook must not hang the next test forever.
+const pfkInflightDrainTimeout = 2 * time.Second
+
 // skipUnsetDirInTests drops a dump in a test binary when no log dir is set;
 // the fallback test turns it off.
 var skipUnsetDirInTests = testing.Testing()
@@ -40,9 +55,21 @@ var errNoDumpDirInTest = errors.New("goroutine dump: no log dir set in a test bi
 // directly. Safe to call from any test package; not for production use.
 func SetLogDirForTest(t testingTB, dir string) {
 	t.Helper()
+	// Drain writes still in flight against the CURRENT directory
+	// before repointing it, so a late write cannot follow the global
+	// into the caller's fresh directory. Bounded: a write parked in a
+	// leaked test hook only delays this by pfkInflightDrainTimeout.
+	pfkWaitForInflightDumps()
 	prev := logDir.Load()
 	logDir.Store(dir)
 	t.Cleanup(func() {
+		// Registered after t.TempDir's cleanup in the normal call
+		// order (SetLogDirForTest is invoked after t.TempDir), so
+		// this runs BEFORE the TempDir RemoveAll: draining here is
+		// what makes that RemoveAll safe against a write goroutine
+		// that already resolved this directory but has not written
+		// its file yet.
+		pfkWaitForInflightDumps()
 		if s, ok := prev.(string); ok {
 			logDir.Store(s)
 		} else {
@@ -84,6 +111,21 @@ func SetWriteDelayHookForTest(t testingTB, hook func()) {
 			writeDelayHook.Store(zero)
 		}
 	})
+}
+
+// pfkWaitForInflightDumps blocks until every in-flight dump write has
+// finished, or pfkInflightDrainTimeout elapses. It reports whether the
+// drain completed. Bounded polling, never an unbounded sleep: the
+// caller is a test lifecycle hook and must not hang the suite.
+func pfkWaitForInflightDumps() bool {
+	deadline := time.Now().Add(pfkInflightDrainTimeout)
+	for pfkInflightDumps.Load() > 0 {
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(200 * time.Microsecond)
+	}
+	return true
 }
 
 // testingTB is the minimal subset of testing.TB this package needs, so
@@ -161,13 +203,22 @@ func WriteGoroutineDump(buf []byte) (string, error) {
 // session-scoped dumps are greppable separately from the generic ones).
 // An empty prefix falls back to the legacy "goroutines-".
 func WriteGoroutineDumpNamed(buf []byte, prefix string) (string, error) {
+	pfkInflightDumps.Add(1)
+	defer pfkInflightDumps.Add(-1)
 	if prefix == "" {
 		prefix = "goroutines-"
 	}
+	// The target directory is resolved BEFORE the delay hook runs, not
+	// after: a write dispatched asynchronously (or parked in a test
+	// hook) must land in the directory that was current when this
+	// function was ENTERED, never in whatever directory some later
+	// test's SetLogDirForTest installed by the time the write resumes.
+	// With no hook installed the observable behaviour is identical —
+	// the hook never runs and the dir read merely moved a few lines up.
+	dir, _ := logDir.Load().(string)
 	if h, ok := writeDelayHook.Load().(func()); ok && h != nil {
 		h()
 	}
-	dir, _ := logDir.Load().(string)
 	if dir == "" {
 		// A test binary with no log dir must not litter the shared temp dir.
 		if skipUnsetDirInTests {

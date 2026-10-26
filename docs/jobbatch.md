@@ -1,13 +1,43 @@
-# Job batches: autonomous engine and batchlab
+# Job batches in Rush: current runtime and standalone engine
 
-The delivery boundary is the standalone engine/runtime and laboratory in
-[the design](plans/2026-10-07-job-batches-design.md), section 0. This is not
-Rush tool registration, coordinator replacement, persistence, or wake routing.
-Observed acceptance and outstanding subvariants are in
-[jobbatch-acceptance.md](jobbatch-acceptance.md); a passing suite is not a claim
-that every design row or every platform is complete.
+Rush selects the batch-only runtime unconditionally; since the H4 cutover there
+is no legacy runtime and no selector variable. Active persistence is
+`.rush/rush_store_v1.db`, initialized from one embedded initial migration. A
+one-time import from untouched `.rush/rush.db` occurs before destination open.
+
+## Runtime behavior, controls, and rollout
+
+Import durable history, settings, queues and schedules; discard old and
+preparation-era execution/control state rather than resuming it. Existing
+`rush_store_v1.db` always wins and is never overwritten/refreshed, even if
+malformed. Import failure does not fall back to `rush.db`.
+
+Stop old processes and automatic restarts throughout import: host enumeration is
+not a registration fence. Drain/stop all preparation hosts before upgrade.
+Pre-SF bare-UUID owner-stop fences have no safely inferable provenance, and
+there is no hot continuity. Requeued imported work can repeat external side
+effects; this is not exactly-once execution.
+
+Rollback requires stopping new hosts, then running the previous binary against
+untouched `rush.db`; that restores the old snapshot, not post-import activity.
+Preserve `rush_store_v1.db` and sidecars. There is no reverse importer or
+merge-back.
+
+Current model controls are `batch_stop` and `batch_output`; stop is a durable
+cancellation request, not termination confirmation. Do not describe current
+ownership using `job_kill`/`job_output` or invent cross-session controls.
+For migrating configurations and prompts off the removed legacy tools, and the
+semantics of the three tool-name lists (`AllowedTools`,
+`permissions.allowed_tools`, `options.disabled_tools`), see
+[batch-runtime-migration.md](batch-runtime-migration.md).
+Historical transcript display and presentation promises remain; no signoff
+reductions are implied. Detailed rollout is also summarized in the
+[README](../README.md#batch-runtime-rollout-and-data).
 
 ## Layout and ownership
+
+The standalone engine, laboratory and `batchlab` remain as documented below;
+this section covers only that half of the project.
 
 | Location | Responsibility |
 |---|---|
@@ -72,18 +102,9 @@ are invalid. Run validates the complete scenario before opening the events
 file. Replay validates metadata and applies recorded events to a fresh Engine;
 it constructs no executor and does not execute scenario programs.
 
-Repository heavy commands must be bounded and serialized. Portable examples
-below use an operator-supplied wrapper location, not a machine-specific path:
-
-```sh
-bash <repo-root>/.rush/audit/heavy.sh capm 2g go test -race -p 1 -parallel 1 -count=1 -timeout 900s -run 'TestAcceptance' ./internal/jobbatch/... ./cmd/batchlab/
-bash <repo-root>/.rush/audit/heavy.sh capm 2g go test -race -p 1 -parallel 1 -count=1 -timeout 900s -run 'Test' ./internal/jobbatch/... ./cmd/batchlab/
-```
-
-`<repo-root>` denotes the checkout providing the wrapper; a worktree may use
-that wrapper from its parent checkout. These commands are verification examples,
-not evidence that an external batchlab executable was run. No build/run/Go-env
-override is implied by this documentation.
+All current execution and verification are GitHub CI only. Prior local command examples have been removed; do not run verification locally. Current
+acceptance evidence required for rollout is listed in
+[jobbatch-acceptance.md](jobbatch-acceptance.md).
 
 ### Exit precedence
 
@@ -165,6 +186,14 @@ NotifyAll suppression, with sole-child elision per level; Wait is not another
 notification. The public feed contains already-selected notices, not a request
 for consumers to reapply policy.
 
+## Rush detached terminal output cache
+
+The Rush integration captures terminal output before a leaf reports completion and before its handle can be disposed. This cache is App-scoped and stores only copied bytes plus task/root, cursor/truncation, and finish metadata; it does not persist output or retain execution handles. Generic leaves cache the leaf `ToolResponse.Content`; shell/argv leaves cache the process merged byte stream; agent leaves cache the terminal `jobbatch.Result` summary, which is the same bytes the live `ReadOutput` returns at completion.
+
+Each entry expires at `finished_at + 10m` (the exact boundary is expired). It retains the newest 1 MiB of task output. `oldest_cursor` is the absolute byte offset of that suffix and `next_cursor` is the absolute end offset, so callers continue by passing the returned cursor. Pages are capped at 16 KiB; `truncated` reports that earlier bytes are unavailable. The App cache is capped at 32 MiB and evicts the entry with the oldest finish time under pressure. A 1,024-entry metadata bound also limits empty outputs. Expiry is lazy on cache access; there is no expiry goroutine. Cursor semantics are per family: generic, agent and shell clamp over-end cursors to the retained end, while argv restarts from offset 0 when a cursor exceeds MaxInt64 or the retained end.
+
+`batch_output` first uses live Runner output and falls back only when the Runner reports `ErrReleased`; successful live output is never replaced by cache data. It returns `output_expired` when no cached entry remains and `output_truncated` when the requested data starts before the retained suffix. Capture is best-effort, so pressure eviction or process exit can end availability before ten minutes. `internal/jobbatch` remains independent of this Rush-owned policy.
+
 ## Journal and replay limits
 
 JSONL is a header, public records, and footer. The header hashes the decoded
@@ -188,7 +217,12 @@ recorded outcome normally. Physical Stop/Dispose counters, cleanup results,
 held-call return labels and output expectations are not recoverable from feed
 metadata. An explicit exit-code oracle can still yield a replay mismatch.
 
-## Verification limits
+## Historical verification limits
+
+The execution observations recorded in the following section are historical,
+not runs performed for the current H4 documentation update. They do not certify
+the current integrated runtime or any platform beyond the evidence explicitly
+recorded. Current gates are CI-only; see the acceptance ledger.
 
 Observed native execution is Windows. Process tests exercise real isolated
 process trees, but standalone external CLI run/replay, Unix runtime behavior,

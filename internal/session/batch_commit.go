@@ -24,6 +24,15 @@ var ErrBatchValueOverflow = errors.New("batch commit: uint64 value exceeds sql i
 // whose Submit reservations this Runner creates (one Runner, one owner).
 type BatchCommitIdentity struct {
 	Host, Runner, Owner string
+
+	// R11F (P1-1), minimal additive hunk: optional per-Submit owner
+	// resolver. When non-nil, the Submit reservation is written under the
+	// returned owner — the INVOKING session carried in the one-item spec
+	// payload — instead of the fixed Owner (which remains only a dormant
+	// default). An empty return keeps the fixed Owner. Non-Submit
+	// transitions are unaffected: batchCommitProject already resolves each
+	// root's owner from the row (RootOwner).
+	OwnerFor func(spec jobbatch.Spec) string
 }
 
 // NewBatchCommitHook returns a RunnerConfig.CommitHook adapter. It maps one
@@ -79,6 +88,15 @@ func batchCommitTransition(ctx context.Context, store *BatchStore, id BatchCommi
 // mismatched Specs are refused with ErrBatchInputMismatch.
 func batchCommitSubmit(ctx context.Context, store *BatchStore, id BatchCommitIdentity, t jobbatch.Transition) error {
 	e := t.Event
+	// P1-1: the reservation's owner_session_id REFERENCES sessions(id), so
+	// it must be the invoking session, never the host UUID. The resolver
+	// reads the owner out of the accepted spec (batchLeafPayload.SessionID).
+	owner := id.Owner
+	if id.OwnerFor != nil {
+		if resolved := id.OwnerFor(e.Spec); resolved != "" {
+			owner = resolved
+		}
+	}
 	views := make(map[jobbatch.ID]jobbatch.NodeView, len(t.Changed))
 	for _, v := range t.Changed {
 		views[v.ID] = v
@@ -99,7 +117,7 @@ func batchCommitSubmit(ctx context.Context, store *BatchStore, id BatchCommitIde
 		notices[i] = p
 	}
 	res, err := store.ReserveIdentity(ctx, BatchReservation{
-		Owner: id.Owner, Host: id.Host, RunnerID: id.Runner, RootID: string(e.Root),
+		Owner: owner, Host: id.Host, RunnerID: id.Runner, RootID: string(e.Root),
 		ToolCallID: e.Ref, InputHash: batchCommitSpecHash(e.Spec),
 		Sequence: int64(t.Sequence), Root: root, Notices: notices,
 		Checkpoint: &db.UpdateBatchRunnerCheckpointParams{
@@ -352,7 +370,8 @@ func batchCommitFlag(b bool) int64 {
 
 // batchNodeUpdate maps a NodeView onto ProjectBatchNodeParams. Envelope,
 // reference and child-session fields stay NULL: the SQL COALESCEs preserve
-// facts written by earlier events.
+// facts written outside the projection — the durable child-link bind
+// (BatchBindChildSession) and response envelopes.
 func batchNodeUpdate(v jobbatch.NodeView) (db.ProjectBatchNodeParams, error) {
 	token, err := batchCommitUint64(v.Token)
 	if err != nil {
@@ -416,7 +435,11 @@ type batchCommitEnvelope struct {
 // transitions (admission, Release) project under the row's owner, never the
 // hook identity's owner. It is a single read, not a lock across writer I/O.
 func (s *BatchStore) RootOwner(ctx context.Context, root string) (string, error) {
-	row, err := db.New(s.writer).GetBatchRootIdentity(ctx, root)
+	q, err := db.PdaBatchWriterQueries(ctx, s.writer)
+	if err != nil {
+		return "", err
+	}
+	row, err := q.GetBatchRootIdentity(ctx, root)
 	if err != nil {
 		return "", err
 	}

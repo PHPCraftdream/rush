@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sync"
+
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 )
 
 var pragmas = map[string]string{
@@ -232,7 +234,7 @@ func connect(ctx context.Context, dataDir string, migrationOpts ...MigrateOption
 	beginLifecycleOperation()
 	defer endLifecycleOperation()
 
-	dbPath := filepath.Join(dataDir, "rush.db")
+	dbPath := storepath.DataDirPath(dataDir, storepath.ActiveFilename)
 
 	// Resolve to an absolute path so that different relative paths to
 	// the same file share a single connection.
@@ -269,6 +271,26 @@ func connect(ctx context.Context, dataDir string, migrationOpts ...MigrateOption
 		onOpenNew(absPath)
 	}
 
+	// Resolve the migration decision inputs BEFORE the destination file is
+	// created or opened: the legacy-store import must run first, so a fresh
+	// Connect over a data dir that only holds the legacy rush.db imports it
+	// into the store-v1 destination instead of migrating an empty file past
+	// it. ImportLegacyStore acquires the store-v1 import lock itself (never
+	// re-acquire it here) and is a self-contained no-op when the destination
+	// already exists or no legacy source exists; with MayMigrate false the
+	// permission gate also suppresses the import.
+	migrateFS, err := migrationFS()
+	if err != nil {
+		return nil, fmt.Errorf("failed to locate embedded migrations: %w", err)
+	}
+	migrateOpts := newMigrateOptions(migrationOpts, dbPath)
+	migrateOpts.MigrationLockPath = filepath.Join(dataDir, "migrate.lock")
+	if migrateOpts.MayMigrate {
+		if _, err := ImportLegacyStore(ctx, dataDir, LegacyImportOptions{Schema: migrateFS}); err != nil {
+			return nil, fmt.Errorf("legacy import: %w", err)
+		}
+	}
+
 	conn, err := openDB(dbPath)
 	if err != nil {
 		return nil, err
@@ -293,13 +315,6 @@ func connect(ctx context.Context, dataDir string, migrationOpts ...MigrateOption
 	// twice ("duplicate column name"). The lock is taken even when no
 	// migration is needed, because the version read that produces that
 	// decision is part of the sequence being protected.
-	migrateFS, err := migrationFS()
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to locate embedded migrations: %w", err)
-	}
-	migrateOpts := newMigrateOptions(migrationOpts, dbPath)
-	migrateOpts.MigrationLockPath = filepath.Join(dataDir, "migrate.lock")
 	if err := migrateLocked(ctx, conn, dbPath, migrateFS, migrateOpts); err != nil {
 		conn.Close()
 		slog.Error("Failed to apply migrations", "error", err)
@@ -385,7 +400,7 @@ func ReleaseConn(conn *sql.DB) error {
 }
 
 func releasePath(dataDir string) error {
-	dbPath := filepath.Join(dataDir, "rush.db")
+	dbPath := storepath.DataDirPath(dataDir, storepath.ActiveFilename)
 	absPath, err := filepath.Abs(dbPath)
 	if err != nil {
 		absPath = dbPath
@@ -464,7 +479,7 @@ func ReleaseAll(dataDir string) error {
 	beginLifecycleOperation()
 	defer endLifecycleOperation()
 
-	dbPath := filepath.Join(dataDir, "rush.db")
+	dbPath := storepath.DataDirPath(dataDir, storepath.ActiveFilename)
 	absPath, err := filepath.Abs(dbPath)
 	if err != nil {
 		absPath = dbPath
@@ -507,6 +522,10 @@ func ReleaseAll(dataDir string) error {
 // principle any future caller that intentionally shares one *sql.DB between
 // both roles) by only closing the reader when it is a distinct handle.
 func closeEntry(entry *connEntry) error {
+	// Drop the batch prepared-statement cache (pda_batch_prepare.go) before
+	// the pool handles die; its close errors are merged without masking the
+	// DB close errors.
+	dropErr := pdaDropBatchStmts(entry.db)
 	var readErr error
 	if entry.readDB != nil && entry.readDB != entry.db {
 		readErr = entry.readDB.Close()
@@ -514,6 +533,9 @@ func closeEntry(entry *connEntry) error {
 	writeErr := entry.db.Close()
 	if writeErr != nil {
 		return writeErr
+	}
+	if dropErr != nil {
+		return dropErr
 	}
 	return readErr
 }

@@ -175,15 +175,34 @@ func lockPulseStatus(ageSec int64) string {
 //     sessionsLocksCmdRun's doc comment for the fuller default-behavior
 //     tradeoff.
 func lockHolderProvablyDead(dataDir, sessionID string) bool {
-	lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
+	cleanupDone := make(chan struct{})
+	opts := append([]session.LockOption{session.WithCleanupDone(cleanupDone)}, lockProbeOptions...)
+	lk, err := session.TryAcquireSessionLockWithOptions(dataDir, sessionID, opts...)
 	if err != nil {
 		// Busy (a real holder exists) or an unidentified probe failure —
 		// neither is proof of death. Do not delete.
 		return false
 	}
 	_ = lk.Release()
+	// Release waits only releaseMetadataCleanupBound for the PID/sidecar
+	// cleanup; past that bound the cleanup goroutine keeps the file open,
+	// and the caller's os.Remove then hits a Windows sharing violation
+	// (a spurious "could not remove" warning and a lock left behind).
+	// Join the cleanup, bounded so a hung FS/AV/SMB cannot stall the CLI.
+	select {
+	case <-cleanupDone:
+	case <-time.After(lockProbeCleanupJoinBound):
+	}
 	return true
 }
+
+// lockProbeCleanupJoinBound bounds how long lockHolderProvablyDead waits for
+// the probe's metadata cleanup after Release returns.
+const lockProbeCleanupJoinBound = 2 * time.Second
+
+// lockProbeOptions is a test-only seam: extra options for the death probe's
+// acquire (e.g. a slow metadata cleanup). Always nil in production.
+var lockProbeOptions []session.LockOption
 
 // preAutoDeleteRemoveHook is a test-only seam for sessionsLocksCmdRun's
 // auto-delete branch. When non-nil, it is called synchronously between

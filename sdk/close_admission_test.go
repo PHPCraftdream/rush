@@ -513,7 +513,14 @@ func TestCloseWaitsForAdmittedReadsBeforeShutdown(t *testing.T) {
 		ch := <-subDone
 		select {
 		case _, ok := <-ch:
-			require.True(t, ok, "an admitted Subscribe must return a live channel, not a closed one")
+			// Shutdown runs concurrently and may close the broker's channels
+			// before this read; what must never happen is a channel closed
+			// because the call was REJECTED, i.e. one that never reached the
+			// real service.
+			if !ok {
+				require.GreaterOrEqual(t, seq.indexOf("subscribeMessages:delegating"), 0,
+					"an admitted Subscribe must reach the service, not return a channel closed at admission")
+			}
 		default:
 			// no event pending — the channel is live
 		}
@@ -552,7 +559,14 @@ func TestCloseWaitsForAdmittedReadsBeforeShutdown(t *testing.T) {
 		ch := <-subDone
 		select {
 		case _, ok := <-ch:
-			require.True(t, ok, "an admitted Subscribe must return a live channel, not a closed one")
+			// Shutdown runs concurrently and may close the broker's channels
+			// before this read; what must never happen is a channel closed
+			// because the call was REJECTED, i.e. one that never reached the
+			// real service.
+			if !ok {
+				require.GreaterOrEqual(t, seq.indexOf("subscribeSessions:delegating"), 0,
+					"an admitted Subscribe must reach the service, not return a channel closed at admission")
+			}
 		default:
 			// no event pending — the channel is live
 		}

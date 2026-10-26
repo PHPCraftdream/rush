@@ -24,14 +24,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// rerunTruncate is the Rerun truncation transaction (session.TruncateForRerun);
-// a package var so tests can inject a failing one. Production never reassigns.
-var rerunTruncate = session.TruncateForRerun
-
-// rerunPostTruncateSeam is a test-only hook: fires right after the truncation
-// transaction committed (the commit point) and before the voided jobs are
-// stopped, so a test can cancel the hold or the request there and prove the
-// handler still proceeds to the replacement turn. nil in every production path.
+// rerunPostTruncateSeam fires after the batch truncation commits and before
+// voided incarnations are stopped. nil in production.
 var rerunPostTruncateSeam func()
 
 // rerunPostIdlePollSeam is a test-only hook (task #614): see its call site in
@@ -215,10 +209,10 @@ func handleSendMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMess
 
 	// Check payload first
 	if p.SmartModel != nil {
-		smartOverride = &agent.ModelOverride{Provider: p.SmartModel.Provider, Model: p.SmartModel.Model}
+		smartOverride = &agent.ModelOverride{Provider: p.SmartModel.Provider, Model: p.SmartModel.Model, ReasoningEffort: p.SmartModel.ReasoningEffort}
 	}
 	if p.FastModel != nil {
-		fastOverride = &agent.ModelOverride{Provider: p.FastModel.Provider, Model: p.FastModel.Model}
+		fastOverride = &agent.ModelOverride{Provider: p.FastModel.Provider, Model: p.FastModel.Model, ReasoningEffort: p.FastModel.ReasoningEffort}
 	}
 
 	// If no payload override, check DB
@@ -321,10 +315,10 @@ func handleInterruptAndSend(ctx context.Context, a *appPkg.App, c *Client, msg W
 	// payload > DB session record > global defaults.
 	var smartOverride, fastOverride *agent.ModelOverride
 	if p.SmartModel != nil {
-		smartOverride = &agent.ModelOverride{Provider: p.SmartModel.Provider, Model: p.SmartModel.Model}
+		smartOverride = &agent.ModelOverride{Provider: p.SmartModel.Provider, Model: p.SmartModel.Model, ReasoningEffort: p.SmartModel.ReasoningEffort}
 	}
 	if p.FastModel != nil {
-		fastOverride = &agent.ModelOverride{Provider: p.FastModel.Provider, Model: p.FastModel.Model}
+		fastOverride = &agent.ModelOverride{Provider: p.FastModel.Provider, Model: p.FastModel.Model, ReasoningEffort: p.FastModel.ReasoningEffort}
 	}
 	if smartOverride == nil || fastOverride == nil {
 		if sess, err := a.Sessions.Get(ctx, p.SessionID); err == nil {

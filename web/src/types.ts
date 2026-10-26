@@ -297,9 +297,13 @@ export interface SessionLiveWorkPayload {
   sessionID: string;
   commands: LiveWorkItem[];
   agents: LiveWorkItem[];
+  // R12-C, additive, mirrors the server's *bool omitempty field: set ONLY
+  // on the batch-runtime ON path (true = full read, false = partial read).
+  // Absent = flag-off server, whose wire bytes carry no `complete` at all.
+  complete?: boolean;
 }
 
-// ─── Batch work (R15a, inert unless RUSH_BATCH_RUNTIME is on) ───────────────
+// ─── Batch work (R15a, unconditional since the H4 cutover) ──────────────────
 //
 // Structured batch-node wire, mirroring internal/server/handlers_batch.go's
 // BatchWorkSnapshotWire (v: 1). Consumed by web/src/batchWork.ts. No UI
@@ -363,6 +367,16 @@ export interface BatchWorkCompletion {
   nodeID: string;
   outcomeCode: string;
   outcomeRef: string;
+  // R12-C, root completions only (BatchCompletionWire's omitempty pair):
+  // the terminal root's state and result summary, read from the structured
+  // batch_nodes history projection. Absent on node completions inside live
+  // roots.
+  state?: string;
+  outcomeSummary?: string;
+  // R12-C, root completions only (the Go field is omitempty): the terminal
+  // root's own tool call identity, used to join when no legacy prose
+  // metadata exists for the root. Absent on node completions.
+  toolCallID?: string;
 }
 
 export interface BatchWorkSnapshot {

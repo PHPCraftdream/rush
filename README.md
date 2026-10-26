@@ -104,9 +104,29 @@ That document is also the survival guide for merging upstream `main`
 into the fork — every divergence is annotated with a `// Fork patch:`
 comment in the code so conflicts surface at the right line.
 
+## Batch runtime rollout and data
+
+Batch execution is the current runtime, unconditionally since the H4 cutover;
+there is no legacy selector. Active data uses `.rush/rush_store_v1.db` with one embedded
+initial migration. On first startup, durable history, settings, queues and
+schedules are imported once from the untouched `.rush/rush.db` before the new
+destination is opened. Old and preparation-era execution/control state is
+discarded, not resumed. An existing destination always wins—even if malformed—
+and import errors do not fall back to the old database.
+
+For import, stop old processes and automatic restarts for the full quiescence
+window; host enumeration is not a registration fence. Drain and stop every
+preparation host before upgrading. Pre-SF bare-UUID owner-stop fences cannot
+safely have their provenance inferred; there is no hot-continuity guarantee.
+Requeued imported work may repeat external side effects, so this is not an
+exactly-once execution promise. For rollback, stop new hosts and run the previous
+binary against untouched `.rush/rush.db`: this restores the old snapshot, not
+post-import activity. Preserve `rush_store_v1.db` and its sidecars; there is no
+reverse importer or merge-back. See [job-batch rollout and controls](docs/jobbatch.md).
+
 ## Protecting settings
 
-Use `rush lock <password>` to protect global settings, or `rush lock --local <password>` for the current workspace; use the matching `rush unlock` command to remove protection. A local protection applies to that workspace, while a global protection takes priority. `--password <password>` authorizes settings changes for a command. Do not expose this value to agent sessions: command-line arguments may appear in process listings, shell history, or transcripts. Models can only be changed with the `rush models` commands; direct edits of the settings file are detected at start-up. `rush web --password <password>` authorizes settings changes from every web client connected to that server for the server's lifetime. A forgotten password cannot be reset by rush; the owner of the machine can only remove the protection by hand from the settings file whose path `rush lock` printed. That is an operator action: agents are told on every refusal to ask the user instead.
+Use `rush lock <password>` to protect global settings, or `rush lock --local <password>` for the current workspace; use the matching `rush unlock` command to remove protection. A local protection applies to that workspace, while a global protection takes priority. `--password <password>` authorizes settings changes for a command. Do not expose this value to agent sessions: command-line arguments may appear in process listings, shell history, or transcripts. Models can only be changed with the `rush models` commands; direct edits of the settings file are detected at start-up. `rush web --password <password>` authorizes settings changes from every web client connected to that server for the server's lifetime. A forgotten password cannot be reset by rush; the owner of the machine can only remove the protection by hand from the settings file whose path `rush lock` printed. That is an operator action: agents are told on every refusal to ask the user instead. The stored protection value is a salted PBKDF2-SHA-256 hash of the password (600000 iterations), not the password or an unsalted digest; protection values written by older versions are not recognized — remove the stored value from the settings file by hand and run `rush lock` again.
 
 ## Security — `rush run` has no permission gating at all
 
@@ -144,7 +164,7 @@ rush web                            # default port + open browser
 rush web --port 8080 --no-open      # for a remote workstation
 ```
 
-A long-lived process. Sessions live in `.rush/rush.db`, the UI loads
+A long-lived process. Sessions live in `.rush/rush_store_v1.db`; the UI loads
 the React bundle from inside the binary, the WebSocket is local-only +
 token-authed. This replaces upstream's TUI.
 
@@ -178,7 +198,7 @@ jq -r '.error' "$out"         # error.message if non-success
   reviewer auto-pass below, which uses the configured reviewer model
   for an automatic follow-up turn after a successful `--role smart`
   run). `worker`/`reviewer` are
-  configured via the web UI or `rush.json`'s `models.worker` /
+  configured via the web UI or the config file's `models.worker` /
   `models.reviewer` (`rush models use` manages smart/fast; see
   `--worker`/`--reviewer` flags below for the other two). No silent
   default to the expensive model either way.
@@ -267,15 +287,18 @@ jq -r '.error' "$out"         # error.message if non-success
 
 #### Background shell ownership
 
-When `bash` runs a long-lived command in the background, it returns a shell
-ID for `job_output` and `job_kill`. The job belongs to the session that
-started it, and those tools can address only jobs owned by the current
-session. This is intentional per-App/session ownership: a sub-agent runs
-under a child session ID, so a job started by that child is not addressable
-by the parent session's `job_output` or `job_kill`, even if the child reports
-the shell ID in its result. There is no cross-session job handoff API; the
-child must inspect or terminate its own jobs before returning, or the host
-must arrange another explicit coordination path.
+The batch controls identify work directly. `batch_run` returns the batch
+`root_id`; `batch_status` reports the root and its task `node_id`s.
+`batch_output` takes a `root_id`, a task `node_id` of that root and a
+`cursor`, and serves best-effort output from the detached cache (10-minute
+TTL; pressure eviction or process exit may end it sooner). `batch_stop`
+takes a `root_id`, or a `root_id` plus a `node_id` to stop one descendant.
+An accepted `batch_stop` is a cancellation intent, not a termination
+confirmation. The legacy `job_output` / `job_kill` controls are removed in
+the batch-only runtime. See
+[batch-runtime-migration.md](docs/batch-runtime-migration.md) for the
+native replacements and how stale names behave in `AllowedTools`,
+`permissions.allowed_tools` and `options.disabled_tools`.
 
 #### Envelope fields worth knowing
 
@@ -713,10 +736,10 @@ the per-scope breakdown so you always know whether your `--local` workspace
 overrides your global default or vice versa.
 
 **The cascade has a third level: session.** `--global`/`--local` (system/
-workspace) both live in a `rush.json` file and are what `models state`
-reports. On top of that, the **web UI** lets each open session pin its own
+workspace) both live in the config file (`rush.ktav`, or legacy `rush.json`)
+and are what `models state` reports. On top of that, the **web UI** lets each open session pin its own
 smart/fast/worker/reviewer, stored in that session's DB row, not in any
-`rush.json` — so it's invisible to `models state` and to other sessions.
+config file — so it's invisible to `models state` and to other sessions.
 Resolution order is always **system → folder → session**: a session with no
 override inherits whatever `models state` would show; setting one there
 wins for that session only, and clearing it (the model picker's "Inherit"
@@ -981,6 +1004,17 @@ handle automatically, then follow its final report for anything it can't.
   `auth.json`, etc.) are also moved into the target directory, one item at a
   time, refusing only the specific items whose names already conflict there
 
+> [!NOTE]
+> Rush-owned config now lives as `rush.ktav` (the preferred spelling);
+> `rush.json` keeps working until Rush's automatic migration converts it. To
+> convert by hand, write the Ktav equivalent of the JSON content into
+> `rush.ktav` — never merely rename a `rush.json` to `rush.ktav` (a `.ktav`
+> file is decoded as Ktav, and JSON bytes under that name are an error with
+> no fallback). If `rush.json` is a symbolic link (a dotfiles-managed
+> repository), migration publishes `rush.ktav` beside the link and removes
+> only the link — the physical target is left untouched and acts as the
+> backup (no `.bak`). See [docs/ktav-config.md](./docs/ktav-config.md).
+
 By default it operates on the current working directory (or `--cwd` if set)
 and always attempts the global/system locations above; `--recursive` walks
 the entire directory tree from the given root, including the root itself.
@@ -1013,7 +1047,9 @@ refresh includes all three delegation Skills: `rush`, `rush-fallback` and
 
 Also update scripts that reference the old names directly: commands like
 `crush run` → `rush run`, paths like `.crush/` → `.rush/`, `crush.json` →
-`rush.json`, and `crush.db` → `rush.db`.
+`rush.json` (Rush prefers the `rush.ktav` spelling once Ktav config is
+active; the legacy `rush.json` name is still read), and `crush.db` →
+`rush.db`.
 
 ## Configuration
 
@@ -1025,22 +1061,35 @@ Rush runs great with no configuration. That said, if you do need or want to
 customize Rush, configuration can be added either local to the project itself,
 or globally, with the following priority:
 
-1. `.rush.json`
-2. `rush.json`
-3. `$HOME/.config/rush/rush.json`
+1. `rush.ktav` / `.rush.ktav` (Ktav; preferred)
+2. `$HOME/.config/rush/rush.ktav`
 
-Items 1 and 2 are searched by name in the project root, walking up the
-directory tree from `cwd` — a file at `./.rush/rush.json` (inside the
+Items in group 1 are searched by name in the project root, walking up the
+directory tree from `cwd` — a file at `./.rush/rush.ktav` (inside the
 `.rush/` subdirectory) is not discovered; that directory holds ephemeral
-data, not config.
+data, not config. At a single directory, the visible `rush.ktav` beats the
+hidden `.rush.ktav`.
 
-Configuration itself is stored as a JSON object:
+Rush prefers `rush.ktav` per location: when both `rush.ktav` and
+`rush.json` exist in the same place, the Ktav file wins and one warning is
+logged. The legacy JSON spelling (`rush.json` / `.rush.json`, including
+`$HOME/.config/rush/rush.json`) is still valid input and is read when no
+Ktav sibling exists — but an invalid `rush.ktav` is an error with no
+fallback to `rush.json`.
 
-```json
-{
-  "this-setting": { "this": "that" },
-  "that-setting": ["ceci", "cela"]
+> See [docs/ktav-config.md](./docs/ktav-config.md) for the full Ktav
+> configuration guide (migration, discovery, rollback).
+
+Configuration itself is stored as a Ktav object:
+
+```ktav
+this-setting: {
+    this: that
 }
+that-setting: [
+    ceci
+    cela
+]
 ```
 
 As an additional note, Rush also stores ephemeral data, such as application
@@ -1048,11 +1097,13 @@ state, in one additional location:
 
 ```bash
 # Unix
-$HOME/.local/share/rush/rush.json
+$HOME/.local/share/rush/rush.ktav
 
 # Windows
-%LOCALAPPDATA%\rush\rush.json
+%LOCALAPPDATA%\rush\rush.ktav
 ```
+
+(The legacy `rush.json` names at these paths are still read.)
 
 > [!TIP]
 > You can override the user and data config locations by setting:
@@ -1071,24 +1122,23 @@ skipped during discovery.
 Rush can use LSPs for additional context to help inform its decisions, just
 like you would. LSPs can be added manually like so:
 
-```json
-{
-  "$schema": "https://charm.land/crush.json",
-  "lsp": {
-    "go": {
-      "command": "gopls",
-      "env": {
-        "GOTOOLCHAIN": "go1.24.5"
-      }
-    },
-    "typescript": {
-      "command": "typescript-language-server",
-      "args": ["--stdio"]
-    },
-    "nix": {
-      "command": "nil"
+```ktav
+lsp: {
+    go: {
+        command: gopls
+        env: {
+            GOTOOLCHAIN: go1.24.5
+        }
     }
-  }
+    typescript: {
+        command: typescript-language-server
+        args: [
+            --stdio
+        ]
+    }
+    nix: {
+        command: nil
+    }
 }
 ```
 
@@ -1108,8 +1158,8 @@ Unset variables expand to the empty string by default, matching bash. For
 required credentials, use `${VAR:?message}` so an unset variable fails loudly
 at load time with `message` instead of silently resolving to empty:
 
-```json
-{ "api_key": "${CODEBERG_TOKEN:?set CODEBERG_TOKEN}" }
+```ktav
+api_key: ${CODEBERG_TOKEN:?set CODEBERG_TOKEN}
 ```
 
 Headers (both MCP `headers` and provider `extra_headers`) whose value
@@ -1121,45 +1171,50 @@ Provider `extra_body` is a non-expanding JSON passthrough; put env-driven
 values in `extra_headers` or the provider's `api_key` / `base_url`, all of
 which do expand.
 
-> **Security note:** `rush.json` is trusted code. Any `$(...)` in it runs at
+> **Security note:** the config file (`rush.ktav`, or legacy `rush.json`) is
+> trusted code. Any `$(...)` in it runs at
 > load time with your shell's privileges, before the UI appears. Don't launch
-> Rush in a directory whose `rush.json` you haven't reviewed.
+> Rush in a directory whose config file you haven't reviewed.
 
-```json
-{
-  "$schema": "https://charm.land/crush.json",
-  "mcp": {
-    "filesystem": {
-      "type": "stdio",
-      "command": "node",
-      "args": ["/path/to/mcp-server.js"],
-      "timeout": 120,
-      "disabled": false,
-      "disabled_tools": ["some-tool-name"],
-      "env": {
-        "NODE_ENV": "production"
-      }
-    },
-    "github": {
-      "type": "http",
-      "url": "https://api.githubcopilot.com/mcp/",
-      "timeout": 120,
-      "disabled": false,
-      "disabled_tools": ["create_issue", "create_pull_request"],
-      "headers": {
-        "Authorization": "Bearer $GH_PAT"
-      }
-    },
-    "streaming-service": {
-      "type": "sse",
-      "url": "https://example.com/mcp/sse",
-      "timeout": 120,
-      "disabled": false,
-      "headers": {
-        "API-Key": "$(echo $API_KEY)"
-      }
+```ktav
+mcp: {
+    filesystem: {
+        type: stdio
+        command: node
+        args: [
+            /path/to/mcp-server.js
+        ]
+        timeout: 120
+        disabled: false
+        disabled_tools: [
+            some-tool-name
+        ]
+        env: {
+            NODE_ENV: production
+        }
     }
-  }
+    github: {
+        type: http
+        url: https://api.githubcopilot.com/mcp/
+        timeout: 120
+        disabled: false
+        disabled_tools: [
+            create_issue
+            create_pull_request
+        ]
+        headers: {
+            Authorization: Bearer $GH_PAT
+        }
+    }
+    streaming-service: {
+        type: sse
+        url: https://example.com/mcp/sse
+        timeout: 120
+        disabled: false
+        headers: {
+            API-Key: $(echo $API_KEY)
+        }
+    }
 }
 ```
 
@@ -1183,15 +1238,13 @@ Rush automatically includes two files for cross-project instructions.
 You can customize these paths using the `global_context_paths` option in your
 configuration:
 
-```jsonc
-{
-  "$schema": "https://charm.land/crush.json",
-  "options": {
-    "global_context_paths": [
-      "~/path/to/custom/context/file.md",
-      "/full/path/to/folder/of/files/" // recursively load all .md files in folder
+```ktav
+options: {
+    global_context_paths: [
+        ~/path/to/custom/context/file.md
+        ## recursively load all .md files in folder:
+        /full/path/to/folder/of/files/
     ]
-  }
 }
 ```
 
@@ -1211,18 +1264,15 @@ By default, Rush will ask you for permission before running tool calls. If
 you'd like, you can allow tools to be executed without prompting you for
 permissions. Use this with care.
 
-```json
-{
-  "$schema": "https://charm.land/crush.json",
-  "permissions": {
-    "allowed_tools": [
-      "view",
-      "ls",
-      "grep",
-      "edit",
-      "mcp_context7_get-library-doc"
+```ktav
+permissions: {
+    allowed_tools: [
+        view
+        ls
+        grep
+        edit
+        mcp_context7_get-library-doc
     ]
-  }
 }
 ```
 
@@ -1238,20 +1288,20 @@ Set `permissions.run.restrict` to `true`, then list the non-bash tools
 bash command patterns (`allow_bash`) the run may use. Anything outside those
 lists is denied cleanly.
 
-```json
-{
-  "$schema": "https://charm.land/crush.json",
-  "permissions": {
-    "run": {
-      "restrict": true,
-      "allow_tools": ["view", "edit:write"],
-      "allow_bash": [
-        "git diff",
-        "glob:ls *",
-        "regex:^go (test|build)"
-      ]
+```ktav
+permissions: {
+    run: {
+        restrict: true
+        allow_tools: [
+            view
+            edit:write
+        ]
+        allow_bash: [
+            git diff
+            glob:ls *
+            regex:^go (test|build)
+        ]
     }
-  }
 }
 ```
 
@@ -1294,12 +1344,12 @@ If you'd like to prevent Rush from using certain built-in tools entirely, you
 can disable them via the `options.disabled_tools` list. Disabled tools are
 completely hidden from the agent.
 
-```json
-{
-  "$schema": "https://charm.land/crush.json",
-  "options": {
-    "disabled_tools": ["bash", "sourcegraph"]
-  }
+```ktav
+options: {
+    disabled_tools: [
+        bash
+        sourcegraph
+    ]
 }
 ```
 
@@ -1311,12 +1361,11 @@ If you'd like to prevent Rush from using certain skills entirely, you can
 disable them via the `options.disabled_skills` list. Disabled skills are hidden
 from the agent, including builtin skills and skills discovered from disk.
 
-```json
-{
-  "$schema": "https://charm.land/crush.json",
-  "options": {
-    "disabled_skills": ["rush-config"]
-  }
+```ktav
+options: {
+    disabled_skills: [
+        rush-config
+    ]
 }
 ```
 
@@ -1349,15 +1398,13 @@ relative paths:
 
 Skills from other tools' directories are loaded and available as slash commands, but only Rush's own and Agent Skills spec directories are advertised in the agent system prompt.
 
-```jsonc
-{
-  "$schema": "https://charm.land/crush.json",
-  "options": {
-    "skills_paths": [
-      "~/.config/rush/skills", // Windows: "%LOCALAPPDATA%\\rush\\skills",
-      "./project-skills",
-    ],
-  },
+```ktav
+options: {
+    skills_paths: [
+        ## Windows: %LOCALAPPDATA%\rush\skills
+        ~/.config/rush/skills
+        ./project-skills
+    ]
 }
 ```
 
@@ -1416,12 +1463,10 @@ Rush sends desktop notifications when a tool call requires permission and when
 the agent finishes its turn. They're only sent when the terminal window isn't
 focused _and_ your terminal supports reporting the focus state.
 
-```jsonc
-{
-  "$schema": "https://charm.land/crush.json",
-  "options": {
-    "disable_notifications": false, // default
-  },
+```ktav
+options: {
+    ## default:
+    disable_notifications: false
 }
 ```
 
@@ -1436,12 +1481,9 @@ a context file that helps it work more effectively in future sessions.
 By default, this file is named `AGENTS.md`, but you can customize the
 name and location with the `initialize_as` option:
 
-```json
-{
-  "$schema": "https://charm.land/crush.json",
-  "options": {
-    "initialize_as": "AGENTS.md"
-  }
+```ktav
+options: {
+    initialize_as: AGENTS.md
 }
 ```
 
@@ -1456,15 +1498,12 @@ initialization.
 By default, Rush adds attribution information to Git commits and pull requests
 it creates. You can customize this behavior with the `attribution` option:
 
-```json
-{
-  "$schema": "https://charm.land/crush.json",
-  "options": {
-    "attribution": {
-      "trailer_style": "co-authored-by",
-      "generated_with": true
+```ktav
+options: {
+    attribution: {
+        trailer_style: co-authored-by
+        generated_with: true
     }
-  }
 }
 ```
 
@@ -1493,28 +1532,25 @@ Anthropic-compatible APIs.
 Here’s an example configuration for Deepseek, which uses an OpenAI-compatible
 API. Don't forget to set `DEEPSEEK_API_KEY` in your environment.
 
-```json
-{
-  "$schema": "https://charm.land/crush.json",
-  "providers": {
-    "deepseek": {
-      "type": "openai-compat",
-      "base_url": "https://api.deepseek.com/v1",
-      "api_key": "$DEEPSEEK_API_KEY",
-      "models": [
-        {
-          "id": "deepseek-chat",
-          "name": "Deepseek V3",
-          "cost_per_1m_in": 0.27,
-          "cost_per_1m_out": 1.1,
-          "cost_per_1m_in_cached": 0.07,
-          "cost_per_1m_out_cached": 1.1,
-          "context_window": 64000,
-          "default_max_tokens": 5000
-        }
-      ]
+```ktav
+providers: {
+    deepseek: {
+        type: openai-compat
+        base_url: https://api.deepseek.com/v1
+        api_key: $DEEPSEEK_API_KEY
+        models: [
+            {
+                id: deepseek-chat
+                name: Deepseek V3
+                cost_per_1m_in: 0.27
+                cost_per_1m_out: 1.1
+                cost_per_1m_in_cached: 0.07
+                cost_per_1m_out_cached: 1.1
+                context_window: 64000
+                default_max_tokens: 5000
+            }
+        ]
     }
-  }
 }
 ```
 
@@ -1522,33 +1558,30 @@ API. Don't forget to set `DEEPSEEK_API_KEY` in your environment.
 
 Custom Anthropic-compatible providers follow this format:
 
-```json
-{
-  "$schema": "https://charm.land/crush.json",
-  "providers": {
-    "custom-anthropic": {
-      "type": "anthropic",
-      "base_url": "https://api.anthropic.com/v1",
-      "api_key": "$ANTHROPIC_API_KEY",
-      "extra_headers": {
-        "anthropic-version": "2023-06-01"
-      },
-      "models": [
-        {
-          "id": "claude-sonnet-4-20250514",
-          "name": "Claude Sonnet 4",
-          "cost_per_1m_in": 3,
-          "cost_per_1m_out": 15,
-          "cost_per_1m_in_cached": 3.75,
-          "cost_per_1m_out_cached": 0.3,
-          "context_window": 200000,
-          "default_max_tokens": 50000,
-          "can_reason": true,
-          "supports_attachments": true
+```ktav
+providers: {
+    custom-anthropic: {
+        type: anthropic
+        base_url: https://api.anthropic.com/v1
+        api_key: $ANTHROPIC_API_KEY
+        extra_headers: {
+            anthropic-version: 2023-06-01
         }
-      ]
+        models: [
+            {
+                id: claude-sonnet-4-20250514
+                name: Claude Sonnet 4
+                cost_per_1m_in: 3
+                cost_per_1m_out: 15
+                cost_per_1m_in_cached: 3.75
+                cost_per_1m_out_cached: 0.3
+                context_window: 200000
+                default_max_tokens: 50000
+                can_reason: true
+                supports_attachments: true
+            }
+        ]
     }
-  }
 }
 ```
 
@@ -1571,27 +1604,24 @@ gcloud auth application-default login
 
 To add specific models to the configuration, configure as such:
 
-```json
-{
-  "$schema": "https://charm.land/crush.json",
-  "providers": {
-    "vertexai": {
-      "models": [
-        {
-          "id": "claude-sonnet-4@20250514",
-          "name": "VertexAI Sonnet 4",
-          "cost_per_1m_in": 3,
-          "cost_per_1m_out": 15,
-          "cost_per_1m_in_cached": 3.75,
-          "cost_per_1m_out_cached": 0.3,
-          "context_window": 200000,
-          "default_max_tokens": 50000,
-          "can_reason": true,
-          "supports_attachments": true
-        }
-      ]
+```ktav
+providers: {
+    vertexai: {
+        models: [
+            {
+                id: claude-sonnet-4@20250514
+                name: VertexAI Sonnet 4
+                cost_per_1m_in: 3
+                cost_per_1m_out: 15
+                cost_per_1m_in_cached: 3.75
+                cost_per_1m_out_cached: 0.3
+                context_window: 200000
+                default_max_tokens: 50000
+                can_reason: true
+                supports_attachments: true
+            }
+        ]
     }
-  }
 }
 ```
 
@@ -1599,20 +1629,17 @@ To add specific models to the configuration, configure as such:
 
 Outbound LLM provider connections can be routed through a proxy and/or use a
 custom DNS resolver instead of the operating system's. This is configured
-entirely in `rush.json` — there is no CLI flag. It applies to every provider
+entirely in the config file (`rush.ktav`, or legacy `rush.json`) — there is no CLI flag. It applies to every provider
 type that makes outbound HTTP calls (Anthropic, OpenAI, OpenRouter, Vercel,
 Azure, Bedrock, Google, Vertex, OpenAI-compatible and custom providers).
 
 **Global default** — `options.network` applies to every provider:
 
-```json
-{
-  "$schema": "https://charm.land/crush.json",
-  "options": {
-    "network": {
-      "proxy": "socks5://127.0.0.1:1080"
+```ktav
+options: {
+    network: {
+        proxy: socks5://127.0.0.1:1080
     }
-  }
 }
 ```
 
@@ -1621,25 +1648,22 @@ over the global block: a provider that only sets `proxy` still inherits the
 global `dns_server`/`doh_url`, and vice versa. A field set on both uses the
 provider's value.
 
-```json
-{
-  "$schema": "https://charm.land/crush.json",
-  "options": {
-    "network": {
-      "dns_server": "1.1.1.1"
+```ktav
+options: {
+    network: {
+        dns_server: 1.1.1.1
     }
-  },
-  "providers": {
-    "my-provider": {
-      "type": "openai-compat",
-      "base_url": "https://api.example.com/v1",
-      "api_key": "$EXAMPLE_API_KEY",
-      "network": {
-        "proxy": "http://proxy.corp.internal:8080"
-      },
-      "models": []
+}
+providers: {
+    my-provider: {
+        type: openai-compat
+        base_url: https://api.example.com/v1
+        api_key: $EXAMPLE_API_KEY
+        network: {
+            proxy: http://proxy.corp.internal:8080
+        }
+        models: []
     }
-  }
 }
 ```
 
@@ -1647,15 +1671,12 @@ provider's value.
 tunneled through the proxy, so no hostname ever resolves on the local
 network:
 
-```json
-{
-  "$schema": "https://charm.land/crush.json",
-  "options": {
-    "network": {
-      "proxy": "socks5://user:pass@10.0.0.2:1080",
-      "doh_url": "https://cloudflare-dns.com/dns-query"
+```ktav
+options: {
+    network: {
+        proxy: socks5://user:pass@10.0.0.2:1080
+        doh_url: https://cloudflare-dns.com/dns-query
     }
-  }
 }
 ```
 
@@ -1683,45 +1704,41 @@ Local models can also be configured via OpenAI-compatible API. Here are two comm
 
 #### Ollama
 
-```json
-{
-  "providers": {
-    "ollama": {
-      "name": "Ollama",
-      "base_url": "http://localhost:11434/v1/",
-      "type": "openai-compat",
-      "models": [
-        {
-          "name": "Qwen 3 30B",
-          "id": "qwen3:30b",
-          "context_window": 256000,
-          "default_max_tokens": 20000
-        }
-      ]
+```ktav
+providers: {
+    ollama: {
+        name: Ollama
+        base_url: http://localhost:11434/v1/
+        type: openai-compat
+        models: [
+            {
+                name: Qwen 3 30B
+                id: qwen3:30b
+                context_window: 256000
+                default_max_tokens: 20000
+            }
+        ]
     }
-  }
 }
 ```
 
 #### LM Studio
 
-```json
-{
-  "providers": {
-    "lmstudio": {
-      "name": "LM Studio",
-      "base_url": "http://localhost:1234/v1/",
-      "type": "openai-compat",
-      "models": [
-        {
-          "name": "Qwen 3 30B",
-          "id": "qwen/qwen3-30b-a3b-2507",
-          "context_window": 256000,
-          "default_max_tokens": 20000
-        }
-      ]
+```ktav
+providers: {
+    lmstudio: {
+        name: LM Studio
+        base_url: http://localhost:1234/v1/
+        type: openai-compat
+        models: [
+            {
+                name: Qwen 3 30B
+                id: qwen/qwen3-30b-a3b-2507
+                context_window: 256000
+                default_max_tokens: 20000
+            }
+        ]
     }
-  }
 }
 ```
 
@@ -1746,13 +1763,10 @@ rush logs --follow
 Want more logging? Run `rush` with the `--debug` flag, or enable it in the
 config:
 
-```json
-{
-  "$schema": "https://charm.land/crush.json",
-  "options": {
-    "debug": true,
-    "debug_lsp": true
-  }
+```ktav
+options: {
+    debug: true
+    debug_lsp: true
 }
 ```
 
@@ -1771,14 +1785,11 @@ air-gapped environments, this might not be want you want, and this feature can
 be disabled.
 
 To disable automatic provider updates, set `disable_provider_auto_update` into
-your `rush.json` config:
+your config file (`rush.ktav`, or legacy `rush.json`):
 
-```json
-{
-  "$schema": "https://charm.land/crush.json",
-  "options": {
-    "disable_provider_auto_update": true
-  }
+```ktav
+options: {
+    disable_provider_auto_update: true
 }
 ```
 
@@ -1870,7 +1881,7 @@ Notes:
   `--peak-hours off` clears both.
 - The message requires a window — set `--peak-hours` first.
 - Like the other provider fields, `--local` writes only to the
-  workspace config (`./.rush/rush.json`); the default is the global
+  workspace config (`./.rush/rush.ktav`, or legacy `./.rush/rush.json`); the default is the global
   config.
 - `rush providers show <id>` prints the configured message.
 
@@ -1945,11 +1956,9 @@ export RUSH_DISABLE_METRICS=1
 
 Or by setting the following in your config:
 
-```json
-{
-  "options": {
-    "disable_metrics": true
-  }
+```ktav
+options: {
+    disable_metrics: true
 }
 ```
 

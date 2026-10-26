@@ -6,10 +6,10 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -18,7 +18,6 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/message"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -193,14 +192,12 @@ func TestDrain_WakeNoticeCallsProviderWithNoticeAndNoTextPrompt(t *testing.T) {
 	model := newProbeModel(t, srv)
 
 	env := testEnv(t)
-	asyncStore := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "test")
-	ledger := newWorkLedger(nil)
-	ledger.store = asyncStore
+	coord := a2AttachBatchFacts(t, env)
 
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, AsyncJobs: ledger,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coord,
 	})
 	sessionAgent := sa.(*sessionAgent)
 
@@ -208,15 +205,8 @@ func TestDrain_WakeNoticeCallsProviderWithNoticeAndNoTextPrompt(t *testing.T) {
 	sess, err := env.sessions.Create(ctx, "drain-wake-test")
 	require.NoError(t, err)
 
-	_, err = asyncStore.Claim(ctx, session.ClaimParams{
-		Owner: sess.ID, ToolCallID: "call-1", Kind: session.JobKindCommand, Input: "x", ToolName: "bash",
-	})
-	require.NoError(t, err)
-	require.NoError(t, asyncStore.MarkAnnounced(ctx, sess.ID, "call-1"))
-	_, err = asyncStore.Transition(ctx, session.TransitionParams{
-		Owner: sess.ID, ToolCallID: "call-1", State: "completed", ResultSummary: "job output", Wake: true,
-	})
-	require.NoError(t, err)
+	a2ClaimJob(t, env.conn, sess.ID, "call-1", true)
+	a2CompleteJob(t, env.conn, sess.ID, "call-1", "job output")
 
 	drainCall := newDrainCall(SessionAgentCall{SessionID: sess.ID})
 	result, err := sessionAgent.Run(ctx, drainCall)
@@ -225,25 +215,28 @@ func TestDrain_WakeNoticeCallsProviderWithNoticeAndNoTextPrompt(t *testing.T) {
 
 	msgs, err := env.messages.List(ctx, sess.ID)
 	require.NoError(t, err)
-	var userMsgs, noticeMsgs int
+	var emptyPromptRows, noticeMsgs int
 	for _, m := range msgs {
-		if m.Role == message.User {
-			userMsgs++
+		if m.Role == message.User && !m.BackgroundJobNotice {
+			emptyPromptRows++
 		}
 		if m.BackgroundJobNotice {
 			noticeMsgs++
 		}
 	}
-	require.Equal(t, 1, userMsgs, "exactly one user-role message (the pulled notice) -- no separate empty prompt row")
-	require.Equal(t, 1, noticeMsgs)
+	// The oracle: the ONLY user-role rows are the pulled notice itself (plus
+	// the batch seed's own durable started announce) -- never a separate
+	// empty prompt row from createUserMessage.
+	require.Zero(t, emptyPromptRows, "no separate empty prompt row")
+	wantNotices := 2 // the completion notice plus the batch seed's started announce
+	require.Equal(t, wantNotices, noticeMsgs)
 
 	mu.Lock()
 	body := string(capturedBody)
 	mu.Unlock()
 	require.Contains(t, body, "job output", "the provider must see the notice text")
 
-	row, err := asyncStore.Get(ctx, sess.ID, "call-1")
-	require.NoError(t, err)
+	row := readFixtureJobDebt(t, env.conn, sess.ID, "call-1")
 	require.Equal(t, "done", row.Delivery)
 }
 
@@ -269,14 +262,12 @@ func TestDrain_NothingPendingSkipsProviderAndFinishesTurn(t *testing.T) {
 	model := newProbeModel(t, srv)
 
 	env := testEnv(t)
-	asyncStore := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "test")
-	ledger := newWorkLedger(nil)
-	ledger.store = asyncStore
+	coord := a2AttachBatchFacts(t, env)
 
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, AsyncJobs: ledger,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coord,
 	})
 	sessionAgent := sa.(*sessionAgent)
 
@@ -323,18 +314,12 @@ func TestDrain_NoticeBetweenTwoToolCalls_OnlyAtStepBoundaryAndCarriesForward(t *
 	t.Parallel()
 
 	env := testEnv(t)
-	asyncStore := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "test")
-	ledger := newWorkLedger(nil)
-	ledger.store = asyncStore
+	coord := a2AttachBatchFacts(t, env)
 
 	ctx := context.Background()
 	sess, err := env.sessions.Create(ctx, "dur3a-carryforward-test")
 	require.NoError(t, err)
-	_, err = asyncStore.Claim(ctx, session.ClaimParams{
-		Owner: sess.ID, ToolCallID: "call-1", Kind: session.JobKindCommand, Input: "x", ToolName: "bash",
-	})
-	require.NoError(t, err)
-	require.NoError(t, asyncStore.MarkAnnounced(ctx, sess.ID, "call-1"))
+	a2ClaimJob(t, env.conn, sess.ID, "call-1", true)
 
 	var mu sync.Mutex
 	var bodies []string
@@ -369,13 +354,13 @@ func TestDrain_NoticeBetweenTwoToolCalls_OnlyAtStepBoundaryAndCarriesForward(t *
 	t.Cleanup(srv.Close)
 	model := newProbeModel(t, srv)
 
-	toolA := &completionTriggerTool{name: "tool_a", store: asyncStore, owner: sess.ID, toolCallID: "call-1"}
+	toolA := &completionTriggerTool{name: "tool_a", conn: env.conn, owner: sess.ID, toolCallID: "call-1"}
 	toolB := &completionTriggerTool{name: "tool_b"}
 
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{toolA, toolB}, DisableAutoSummarize: true, AsyncJobs: ledger,
+		Tools: []fantasy.AgentTool{toolA, toolB}, DisableAutoSummarize: true, Coord: coord,
 		IsYolo: true,
 	})
 	sessionAgent := sa.(*sessionAgent)
@@ -440,7 +425,7 @@ func TestDrain_NoticeBetweenTwoToolCalls_OnlyAtStepBoundaryAndCarriesForward(t *
 // between that tool's own call and its result.
 type completionTriggerTool struct {
 	name       string
-	store      *session.AsyncJobStore
+	conn       *sql.DB
 	owner      string
 	toolCallID string
 }
@@ -448,10 +433,8 @@ type completionTriggerTool struct {
 func (c *completionTriggerTool) Info() fantasy.ToolInfo { return fantasy.ToolInfo{Name: c.name} }
 
 func (c *completionTriggerTool) Run(ctx context.Context, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	if c.store != nil {
-		if _, err := c.store.Transition(ctx, session.TransitionParams{
-			Owner: c.owner, ToolCallID: c.toolCallID, State: "completed", ResultSummary: "job output", Wake: true,
-		}); err != nil {
+	if c.conn != nil {
+		if err := a2CompleteJobErr(ctx, c.conn, c.owner, c.toolCallID, "job output"); err != nil {
 			return fantasy.ToolResponse{}, err
 		}
 	}

@@ -527,7 +527,12 @@ func (l *cliLoop) closePhase() cliStepResult {
 // turnCanceled ends the run after a turn that ran while the run's ctx was
 // cancelled (Ctrl-C, --timeout). Its usage is kept; a turn that had already
 // committed cleanly (result, no error) keeps its answer as the run's final one
-// (R3C-4); the run still exits canceled.
+// (R3C-4); the run still exits canceled. A committed result whose clean error
+// was only afterwards turned into a *RunTimeoutError by classifyRunTimeout
+// (the owned deadline landed between the turn's commit and ExecuteRun's
+// return) is adopted the same way, with the timeout error kept as the run's
+// error so the exit still reports the timeout -- a failed or envelope-less
+// turn is never adopted.
 func (l *cliLoop) turnCanceled(result *RunResult, buffered *bytes.Buffer, err error, usageBefore usageMark) (*RunResult, error) {
 	l.tot.add(result)
 	if result == nil {
@@ -535,8 +540,8 @@ func (l *cliLoop) turnCanceled(result *RunResult, buffered *bytes.Buffer, err er
 		// session totals gained meanwhile.
 		l.tot.addSince(usageBefore, l.sessionUsage())
 	}
-	if err == nil && result != nil {
-		l.final, l.lastBuffered, l.runErr, l.lastFailed = result, buffered, nil, nil
+	if result != nil && (err == nil || runTimeoutCommitted(err)) {
+		l.final, l.lastBuffered, l.runErr, l.lastFailed = result, buffered, err, nil
 	}
 	return l.exitCanceled()
 }
@@ -789,6 +794,10 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 		}
 		state, stateErr := l.source.CLIScope(l.ctx, l.sessionID)
 		if stateErr != nil {
+			if errors.Is(stateErr, agent.ErrBatchFactsSourceUnavailable) {
+				fmt.Fprintf(l.errOut(), "rush run: session %q's batch fact source is unavailable; giving up: %v\n", l.sessionID, stateErr)
+				return stepExit, "", fmt.Errorf("rush run: batch fact source unavailable: %w", stateErr)
+			}
 			slog.Warn("rush run: scope check failed; retrying", "session_id", l.sessionID, "err", stateErr)
 			if dbErrorRetryStart.IsZero() {
 				dbErrorRetryStart = time.Now()

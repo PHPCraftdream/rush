@@ -127,6 +127,7 @@ func (h *runnerHandle) unpin() {
 }
 
 func (h *runnerHandle) maybeDispose() {
+	r := h.runner
 	h.mu.Lock()
 	if !h.terminated || !h.givenUp || h.pins != 0 || h.disposing || h.disposeDone {
 		h.mu.Unlock()
@@ -137,12 +138,12 @@ func (h *runnerHandle) maybeDispose() {
 		h.disposeDone = true
 		h.execution = nil
 		h.mu.Unlock()
+		r.compactHandle(h)
 		h.runner.cleanupNotify()
 		return
 	}
 	h.disposing = true
 	h.mu.Unlock()
-	r := h.runner
 	ctx, cancel := context.WithCancel(context.WithoutCancel(r.host))
 	var answered atomic.Bool
 	answer := func(code string) {
@@ -154,6 +155,7 @@ func (h *runnerHandle) maybeDispose() {
 			// a logical timeout need not retain it in Runtime metadata.
 			h.execution = nil
 			h.mu.Unlock()
+			r.compactHandle(h)
 			r.cleanupNotify()
 		}
 	}
@@ -185,8 +187,47 @@ func (r *Runner) cleanupNotify() {
 	r.mu.Unlock()
 }
 
+func (r *Runner) compactHandlesLocked() {
+	kept := r.handles[:0]
+	for _, h := range r.handles {
+		h.mu.Lock()
+		cleaned := h.terminated && h.givenUp && h.disposeDone && (!h.disposeRequired || h.disposeCode == "")
+		h.mu.Unlock()
+		if cleaned {
+			continue
+		}
+		kept = append(kept, h)
+	}
+	for i := len(kept); i < len(r.handles); i++ {
+		r.handles[i] = nil
+	}
+	r.handles = kept
+}
+
+// compactHandle removes one handle from the ledger when its cleanup fully
+// succeeded; failed or pending disposal evidence is kept. Safe on any
+// goroutine; no locks are held by the caller.
+func (r *Runner) compactHandle(h *runnerHandle) {
+	h.mu.Lock()
+	cleaned := h.terminated && h.givenUp && h.disposeDone && (!h.disposeRequired || h.disposeCode == "")
+	h.mu.Unlock()
+	if !cleaned {
+		return
+	}
+	r.mu.Lock()
+	for i, hh := range r.handles {
+		if hh == h {
+			r.handles = append(r.handles[:i], r.handles[i+1:]...)
+			clear(r.handles[len(r.handles):cap(r.handles)])
+			break
+		}
+	}
+	r.mu.Unlock()
+}
+
 func (r *Runner) cleanupStatus() ([]DisposeFailure, bool, <-chan struct{}) {
 	r.mu.Lock()
+	r.compactHandlesLocked()
 	handles := append([]*runnerHandle(nil), r.handles...)
 	changed := r.cleanupChanged
 	r.mu.Unlock()

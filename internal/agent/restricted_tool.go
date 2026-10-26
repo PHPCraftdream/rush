@@ -9,11 +9,19 @@ import (
 	"github.com/PHPCraftdream/rush/internal/permission"
 )
 
+// Native batch controls classify like the legacy names they replace;
+// batch_run/batch_add delegate execution to the batch runtime (their leaves
+// stay individually gated).
 var restrictedToolActions = map[string]string{
 	"agent":                      "delegate",
 	"agentic_fetch":              "fetch",
 	"ask_question":               "ask",
 	"await_tasks":                "read",
+	"batch_add":                  "delegate",
+	"batch_output":               "read",
+	"batch_run":                  "delegate",
+	"batch_status":               "read",
+	"batch_stop":                 "delete",
 	"download":                   "download",
 	"edit":                       "write",
 	"fetch":                      "fetch",
@@ -30,8 +38,6 @@ var restrictedToolActions = map[string]string{
 	"grep":                       "read",
 	"inject_agent":               "write",
 	"inspect_agent":              "read",
-	"job_kill":                   "delete",
-	"job_output":                 "read",
 	"list_mcp_resources":         "list",
 	"ls":                         "list",
 	"multiedit":                  "write",
@@ -89,9 +95,6 @@ type restrictedRunMarker interface{ restrictedRunWrapped() }
 func restrictedRunWrapped(tool fantasy.AgentTool) bool {
 	if hooked, ok := tool.(*hookedTool); ok {
 		return restrictedRunWrapped(hooked.inner)
-	}
-	if detacher, ok := tool.(*stallDetacherTool); ok {
-		return restrictedRunWrapped(detacher.inner)
 	}
 	_, ok := tool.(restrictedRunMarker)
 	return ok

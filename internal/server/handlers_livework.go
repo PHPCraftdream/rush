@@ -1,31 +1,18 @@
 package server
 
-// Live-work snapshot emitter (task #1058): the read-only server half of the
-// web panel's Commands/Agents tabs. Data comes from the durable async_jobs
-// table through session.AsyncJobStore's readers (JobsInTree, the read-pool
-// reader), never from this process's memory — work hosted by another process
-// (a live `rush run`) reads exactly the same way. Schedules are NOT part of
-// this snapshot (a separate stage).
-//
-// Push path: the message-event forwarder only MARKS a session dirty; a
-// dedicated worker coalesces marks per session (one ~250ms window = one
-// snapshot, however many tool messages arrived) and does the DB reads off
-// the broadcast hot path. The worker exits with the server ctx.
+// Batch-derived live-work snapshot emitter for the existing flat web panel.
 
 import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
-	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // titleMaxLen bounds the abbreviated command/prompt shown in the panel
@@ -72,114 +59,24 @@ func handleGetSessionLiveWork(ctx context.Context, a *appPkg.App, c *Client, msg
 	c.reply(msg.ID, EventSessionLiveWork, snap, "")
 }
 
-// buildSessionLiveWork reads every async_jobs row in the session's
-// delegation tree (ANY state — the panel distinguishes running from finished
-// with its cause) and splits them into commands and sub-agent delegations.
-// A 'running' row whose host is provably dead is reported AS RUNNING until
-// dead-host recovery transitions it (DUR-6): this read-only snapshot never
-// probes hosts itself, so a stale 'running' can be visible for up to the
-// recovery sweep interval — by design, not a defect.
+// buildSessionLiveWork reads the flat projection from batch_nodes and
+// session_notices. A partial read is marked incomplete and is never used to
+// replace a previously shown snapshot.
 func buildSessionLiveWork(ctx context.Context, a *appPkg.App, cache *titleCache, sessionID string) (SessionLiveWorkPayload, error) {
-	snap := SessionLiveWorkPayload{SessionID: sessionID, Commands: []LiveWorkItemWire{}, Agents: []LiveWorkItemWire{}}
-	store := a.AsyncJobStore()
-	if store == nil {
-		return snap, nil
-	}
-	jobs, incomplete := store.JobsInTree(ctx, sessionID)
-	if incomplete {
-		// Same rule as every other reader of this walk (ASYNC-02): a short
-		// result may only mean "possibly more", never "nothing". A partial
-		// list is still a valid snapshot; the next change event re-sends it.
-		slog.Warn("live_work: the delegation-tree walk was incomplete")
-	}
-	if len(jobs) == 0 {
-		return snap, nil
-	}
-
-	// Awaiting-answer badges (#1158): the owner's pending child_question
-	// notices are matched to their held delegation rows by the notice's
-	// job_tool_call_id. No new polling: the snapshot is built on the same
-	// marks and on-demand requests as before.
-	questions := map[string]session.ChildQuestion{}
-	if qs, err := store.PendingChildQuestions(ctx, sessionID); err == nil {
-		for _, q := range qs {
-			if q.DelegationToolCallID != "" {
-				questions[q.DelegationToolCallID] = q
-			}
-		}
-	}
-
-	commands := capLiveWorkRows(jobs, string(session.JobKindCommand))
-	agents := capLiveWorkRows(jobs, string(session.JobKindAgent))
-	fetches := capLiveWorkRows(jobs, string(session.JobKindFetch))
-	agents = append(agents, fetches...)
-	titles := cache.titles(ctx, a, append(append([]db.AsyncJob{}, commands...), agents...))
-
-	fill := func(rows []db.AsyncJob) []LiveWorkItemWire {
-		items := make([]LiveWorkItemWire, 0, len(rows))
-		for _, row := range rows {
-			title := titles[liveWorkTitleKey{row.OwnerSessionID, row.ToolCallID, row.InputHash}]
-			item := LiveWorkItemWire{
-				ToolCallID:     row.ToolCallID,
-				ToolName:       row.ToolName,
-				Title:          title,
-				ChildSessionID: row.ChildSessionID.String,
-				StartedAt:      row.CreatedAt * 1000,
-				Status:         row.State,
-				Reason:         row.NoticeKind,
-				LastActivityAt: row.UpdatedAt * 1000,
-			}
-			if item.Title == "" {
-				item.Title = row.ResultSummary.String
-			}
-			if q, ok := questions[row.ToolCallID]; ok {
-				item.AwaitingAnswer = true
-				item.AwaitingQuestion = q.Question
-			}
-			if row.State != "running" {
-				item.FinishedAt = row.UpdatedAt * 1000
-			}
-			items = append(items, item)
-		}
-		return items
-	}
-	snap.Commands = fill(commands)
-	snap.Agents = fill(agents)
-	return snap, nil
+	return buildSessionLiveWorkFromBatch(ctx, a, cache, sessionID)
 }
 
-// capLiveWorkRows selects one kind's rows: every 'running' row plus the
-// liveWorkTerminalLimit most recently updated finished rows, the whole
-// result sorted newest-first (deterministic tie-break on tool_call_id, so
-// rows updated in the same second keep a stable order).
-func capLiveWorkRows(rows []db.AsyncJob, kind string) []db.AsyncJob {
-	sameKind := make([]db.AsyncJob, 0, len(rows))
-	for _, row := range rows {
-		if row.Kind == kind {
-			sameKind = append(sameKind, row)
-		}
-	}
-	sort.Slice(sameKind, func(i, j int) bool {
-		if sameKind[i].UpdatedAt != sameKind[j].UpdatedAt {
-			return sameKind[i].UpdatedAt > sameKind[j].UpdatedAt
-		}
-		return sameKind[i].ToolCallID < sameKind[j].ToolCallID
-	})
-	kept := make([]db.AsyncJob, 0, len(sameKind))
-	terminal := 0
-	for _, row := range sameKind {
-		if row.State != "running" {
-			terminal++
-			if terminal > liveWorkTerminalLimit {
-				continue
-			}
-		}
-		kept = append(kept, row)
-	}
-	return kept
+// liveWorkTitleJob is the batch-root identity a title lookup is for: the
+// owner session, the root's tool call id and input hash (the same three
+// facts the old async_jobs row carried — the batch root row carries them
+// as tool_call_id / input_hash).
+type liveWorkTitleJob struct {
+	owner      string
+	toolCallID string
+	inputHash  string
 }
 
-// liveWorkTitleKey identifies ONE async_jobs row's title. tool_call_id is
+// liveWorkTitleKey identifies ONE live-work row's title. tool_call_id is
 // NOT unique (providers number calls per response, and a reused id is
 // archived and re-claimed), so the key carries the owner session AND the
 // row's input_hash: input_hash changes exactly when a row is re-claimed
@@ -232,14 +129,14 @@ func (c *titleCache) put(key liveWorkTitleKey, title string) {
 // titles fills the requested rows' titles from the cache and, ONLY for
 // keys the cache is missing, reads the owner sessions' history (the
 // command/prompt text a job was started with lives only in the assistant
-// message's tool_call part — async_jobs stores just its hash). Missing
+// message's tool_call part — the batch root row stores just its hash). Missing
 // text (no message, or an input shape with nothing readable) falls back to
 // the row's result_summary at the caller.
-func (c *titleCache) titles(ctx context.Context, a *appPkg.App, jobs []db.AsyncJob) map[liveWorkTitleKey]string {
+func (c *titleCache) titles(ctx context.Context, a *appPkg.App, jobs []liveWorkTitleJob) map[liveWorkTitleKey]string {
 	out := make(map[liveWorkTitleKey]string, len(jobs))
 	missing := make(map[liveWorkTitleKey]struct{})
 	for _, j := range jobs {
-		key := liveWorkTitleKey{j.OwnerSessionID, j.ToolCallID, j.InputHash}
+		key := liveWorkTitleKey(j)
 		if t, ok := c.get(key); ok {
 			out[key] = t
 		} else {
@@ -398,16 +295,19 @@ func (p *liveWorkPusher) pushOne(sessionID string) {
 		slog.Warn("live_work: could not build the change snapshot", "session", sessionID, "err", err)
 		return
 	}
-	p.h.Broadcast(EventSessionLiveWork, snap)
-	// R15a: the same coalescing window also carries the structured
-	// batch-node snapshot (handlers_batch.go). Additive only: flag off this
-	// is a no-op and the live-work push above is unchanged. No new
-	// goroutines, no new channels -- the read happens inline in this
-	// already-off-hot-path worker.
-	if batchRuntimeEnabled() {
-		if bsnap := buildBatchWorkSnapshot(p.ctx, p.a, sessionID); bsnap.SessionID != "" {
-			p.h.Broadcast(EventSessionBatchWork, bsnap)
-		}
+	// R12-C: an incomplete ON-path read is not broadcast — the client KEEPS
+	// the work it already shows instead of replacing it with a partial
+	// snapshot (a partial read never silently drops active work). Complete
+	// is a pointer: nil means the flag-OFF path built the snapshot, which is
+	// always broadcast unchanged.
+	if snap.Complete != nil && !*snap.Complete {
+		slog.Warn("live_work: skipping an incomplete batch-read snapshot", "session", sessionID)
+	} else {
+		p.h.Broadcast(EventSessionLiveWork, snap)
+	}
+	// The flat batch projection also carries structured snapshots in the same coalescing window.
+	if bsnap := buildBatchWorkSnapshot(p.ctx, p.a, sessionID); bsnap.SessionID != "" {
+		p.h.Broadcast(EventSessionBatchWork, bsnap)
 	}
 	// Stage 5b: the same coalescing window also carries the wake-schedule
 	// snapshot — a schedule's create/fire/cancel always arrives as a notice

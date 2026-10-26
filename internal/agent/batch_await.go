@@ -18,10 +18,13 @@ var batchAwaitPollInterval = time.Second
 // workerAwaitBlockCap; it must stay under the single-tool watchdog.
 var batchAwaitWorkerCap = 40 * time.Minute
 
+// batchAwaitMinWaitSeconds is the injected bounds' default floor of 60
+// seconds, mirroring awaitTasksMinWaitSeconds. A var so tests can shrink it.
+var batchAwaitMinWaitSeconds = 60
+
 const (
-	// batchAwaitMinWaitSeconds and batchAwaitMaxWaitSeconds are the injected
-	// bounds' defaults, mirroring awaitTasksMaxWaitBounds (60..21600).
-	batchAwaitMinWaitSeconds = 60
+	// batchAwaitMaxWaitSeconds is the injected bounds' default ceiling,
+	// mirroring awaitTasksMaxWaitSeconds (six hours).
 	batchAwaitMaxWaitSeconds = 21600
 
 	// batchAwaitRefusal mirrors awaitTasksWorker's empty-read refusal.

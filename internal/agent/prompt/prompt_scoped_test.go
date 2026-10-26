@@ -57,7 +57,6 @@ func TestBuild_UnscopedPrompt_ByteIdentical(t *testing.T) {
 
 	got, err := p.Build(context.Background(), "smart-provider", "smart-model", store, store.Config(), false)
 	require.NoError(t, err)
-
 	goldenPath := filepath.Join("testdata", "coder_unscoped_prompt.golden")
 	if *update {
 		require.NoError(t, os.MkdirAll(filepath.Dir(goldenPath), 0o755))

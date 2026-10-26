@@ -1,8 +1,9 @@
 // The arbiter's mutable state (docs/plans/2026-10-01-turn-arbiter.md
 // sec.2.3, R-ARB-2): ONE struct per session under ONE mutex, aggregating what
 // used to be the coordinator maps (auto-resume counter, over-cap set,
-// suspension set, rerun holds, the reaction-chain trio) plus the workLedger
-// launch gate. Writers: accountDrainAttempt, noteDrainRefused, the
+// suspension set, rerun holds, the reaction-chain trio) plus the launch gate
+// (originally the workLedger's; rehomed with the arbiter). Writers:
+// accountDrainAttempt, noteDrainRefused, the
 // human-message reset, HoldAutomaticTurns, suspendAutoResume, the reaction
 // chain accounting and the bg-shell arrival. Readers go through
 // arbiter.snapshot -- one capture, copied to a value (never two owner locks
@@ -19,12 +20,17 @@ import (
 // arbiterState is one session's launch-decision state. gate.RetryAt zero
 // means the gate is open (Paced is derived on the snapshot).
 type arbiterState struct {
-	holds           int // nested rerun holds (HoldAutomaticTurns)
-	suspended       bool
-	autoResumes     int
-	overCap         map[int64]struct{}
-	chainLinks      int
-	chainClaims     map[string]struct{}
+	holds       int // nested rerun holds (HoldAutomaticTurns)
+	suspended   bool
+	autoResumes int
+	overCap     map[int64]struct{}
+	chainLinks  int
+	chainClaims map[string]struct{}
+	// chainBatchRoots is the batch twin of chainClaims: the root
+	// tool_call_ids of the pure-wait batch launches the recorded legs
+	// started (each launched root's selected completion becomes a node debt
+	// row keyed by the root id).
+	chainBatchRoots map[string]struct{}
 	chainNoticed    bool
 	chainLastLaunch string
 	// sleepAll is await_tasks' "until: all" sleep (#1270): armed by the
@@ -37,9 +43,18 @@ type arbiterState struct {
 }
 
 // arbiter owns every arbiterState. The zero value is ready to use.
+// Clock is installed before use; nil uses wall time.
 type arbiter struct {
 	mu        sync.Mutex
 	bySession map[string]*arbiterState
+	clock     func() time.Time
+}
+
+func (a *arbiter) now() time.Time {
+	if a.clock != nil {
+		return a.clock()
+	}
+	return time.Now()
 }
 
 func (a *arbiter) state(sid string) *arbiterState {
@@ -64,15 +79,16 @@ func (a *arbiter) stateLocked(sid string) *arbiterState {
 // The sets are copied: the caller compares them against DB reads outside the
 // lock.
 type arbiterSnapshot struct {
-	Held         bool
-	Suspended    bool
-	AutoResumes  int
-	OverCap      map[int64]struct{}
-	ChainLinks   int
-	ChainClaims  map[string]struct{}
-	ChainNoticed bool
-	SleepAll     bool
-	Gate         GateFacts
+	Held            bool
+	Suspended       bool
+	AutoResumes     int
+	OverCap         map[int64]struct{}
+	ChainLinks      int
+	ChainClaims     map[string]struct{}
+	ChainBatchRoots map[string]struct{}
+	ChainNoticed    bool
+	SleepAll        bool
+	Gate            GateFacts
 }
 
 // snapshot copies sid's state under ONE lock capture.
@@ -105,6 +121,12 @@ func (a *arbiter) snapshot(sid string) arbiterSnapshot {
 			out.ChainClaims[claim] = struct{}{}
 		}
 	}
+	if len(s.chainBatchRoots) > 0 {
+		out.ChainBatchRoots = make(map[string]struct{}, len(s.chainBatchRoots))
+		for root := range s.chainBatchRoots {
+			out.ChainBatchRoots[root] = struct{}{}
+		}
+	}
 	return out
 }
 
@@ -120,7 +142,7 @@ func (a *arbiter) hold(sid string) (release func()) {
 			a.mu.Lock()
 			if s := a.bySession[sid]; s != nil && s.holds > 0 {
 				s.holds--
-				if s.holds == 0 && s.idle(time.Now()) {
+				if s.holds == 0 && s.idle(a.now()) {
 					delete(a.bySession, sid)
 				}
 			}
@@ -232,7 +254,7 @@ func (a *arbiter) pruneOverCapLocked(sid string, notices []session.PendingNotice
 			delete(s.overCap, id)
 		}
 	}
-	if s.idle(time.Now()) {
+	if s.idle(a.now()) {
 		delete(a.bySession, sid)
 	}
 }
@@ -255,7 +277,7 @@ func (a *arbiter) pace(sid string, hintAt uint64, wait time.Duration, hintOpens 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	g := &a.stateLocked(sid).gate
-	g.RetryAt = time.Now().Add(wait)
+	g.RetryAt = a.now().Add(wait)
 	g.HintSeen = hintAt
 	g.HintOpens = hintOpens
 	switch kind {
@@ -304,7 +326,7 @@ func (a *arbiter) resetForHumanMessage(sid string) {
 // answering another fact start a fresh chain at 1; anything else leaves the
 // count as it is. A successful reaction deliberately does NOT reset the count
 // -- closing the chain's own completions is the event that masks the chain.
-func (a *arbiter) chainLink(sid string, att *drainAttempt, snap session.DebtSnapshot) {
+func (a *arbiter) chainLink(sid string, att *drainAttempt, snap session.BatchDebtSnapshot) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	s := a.stateLocked(sid)
@@ -314,22 +336,27 @@ func (a *arbiter) chainLink(sid string, att *drainAttempt, snap session.DebtSnap
 		s.chainLastLaunch = last
 		return
 	}
-	if len(att.chainIdleClaims) == 0 {
+	if len(att.chainIdleClaims) == 0 && len(att.chainBatchRoots) == 0 {
 		return // a text-only or neutral-tool leg breaks nothing and adds nothing
 	}
-	claims := s.chainClaims
-	if claims == nil {
-		claims = make(map[string]struct{}, len(att.chainIdleClaims))
-		s.chainClaims = claims
+	// Batch: the chain's own completions are keyed by the launched ROOT
+	// tool_call_ids. The debt rows compared are the leg's OWN acted-on rows
+	// resolved to their ROOT tool_call_ids (att.batchDebtCallIDs, computed
+	// by the accounting): every row must be a completion of a root the
+	// chain launched.
+	roots := s.chainBatchRoots
+	if roots == nil {
+		roots = make(map[string]struct{}, len(att.chainBatchRoots))
+		s.chainBatchRoots = roots
 	}
 	selfSustaining := true
-	for _, ref := range snap.Jobs {
-		if _, ok := claims[ref.ClaimID]; !ok {
+	for _, call := range att.batchDebtCallIDs {
+		if _, ok := roots[call]; !ok {
 			selfSustaining = false
 			break
 		}
 	}
-	if len(snap.Notices) > 0 {
+	if len(att.batchSnapshot.Notices) > 0 {
 		selfSustaining = false // another fact (bg-shell done, supervision, ...)
 	}
 	if selfSustaining {
@@ -339,14 +366,15 @@ func (a *arbiter) chainLink(sid string, att *drainAttempt, snap session.DebtSnap
 	}
 	// A recorded launch must survive this launch-only leg so the next leg can
 	// compare its command. A launch mixed with real action is not a chain link.
-	for _, claim := range att.chainIdleClaims {
-		claims[claim] = struct{}{}
+	for _, root := range att.chainBatchRoots {
+		roots[root] = struct{}{}
 	}
 }
 
 func (a *arbiter) resetChainLocked(sid string, s *arbiterState) {
 	s.chainLinks = 0
 	s.chainClaims = nil
+	s.chainBatchRoots = nil
 	s.chainNoticed = false
 	s.chainLastLaunch = ""
 }
@@ -443,6 +471,7 @@ func (s *arbiterState) idle(now time.Time) bool {
 	pauseOver := s.gate.RetryAt.IsZero() || !s.gate.RetryAt.After(now)
 	return s.holds == 0 && !s.suspended && s.autoResumes == 0 &&
 		len(s.overCap) == 0 && s.chainLinks == 0 && len(s.chainClaims) == 0 &&
+		len(s.chainBatchRoots) == 0 &&
 		!s.sleepAll && s.maxWaitWakeID == "" &&
 		pauseOver && s.gate.FreeStreak == 0 && s.gate.PaidStreak == 0
 }
@@ -456,6 +485,18 @@ func (a *arbiter) overCapCount(sid string) int {
 		return 0
 	}
 	return len(s.overCap)
+}
+
+// gateHoldsHint reports whether sid's arbiter entry carries a launch gate
+// with recorded hint state (HintSeen set or HintOpens): while it does,
+// dropping the coordinator's hint counter would desynchronize gateShut's
+// newer-hint comparison -- a counter that restarts at zero reads as "any
+// inequality = a newer fact" and reopens a dormant gate with no fact at all.
+func (a *arbiter) gateHoldsHint(sid string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s := a.bySession[sid]
+	return s != nil && (s.gate.HintSeen != 0 || s.gate.HintOpens)
 }
 
 // dropSession deletes sid's entry entirely (the sweep of a deleted session:

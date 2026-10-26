@@ -22,11 +22,56 @@ var (
 	ErrBatchRunnerMismatch = errors.New("batch store: live root held by another runner incarnation")
 )
 
+// pdcBatchRootFenceSQL is the root stop-fence probe executed inside the
+// projection transactions (batchProjectRoot). Package-level so the PD11C
+// registration below and the equivalence test pin the exact production text.
+var pdcBatchRootFenceSQL = `SELECT EXISTS(SELECT 1 FROM batch_control_requests WHERE owner_session_id = ? AND host_id = ? AND root_id = ? AND node_id = ? AND runner_id = ? AND ` + psfOwnerStopSQLPredicate("") + `)`
+
+// PD11C (e): register the fixed-text statements the batch transactions
+// execute outside the generated layer so PdaBatchEnsure prepares them with
+// the rest. Dynamic chunked IN (...) statements stay raw by design.
+func init() {
+	db.PdbBatchRegisterSQL(pdcBatchRootFenceSQL)
+	db.PdbBatchRegisterSQL(batchOutboxPullVoidAware)
+	db.PdbBatchRegisterSQL(pdcBatchDirectChildOutcomesSQL)
+	db.PdbBatchRegisterSQL(batchOutboxReactNodesVoidAware)
+}
+
 // BatchStore is inert persistence. It neither executes work nor chooses outcomes.
 // The supplied DB is the single-connection writer; no store locks span I/O.
-type BatchStore struct{ writer *sql.DB }
+type BatchStore struct {
+	writer *sql.DB
+	// reader is the optional read pool for pure read snapshots. nil (or
+	// equal to writer, the degraded mode where the read pool failed to
+	// open) keeps the pre-PD11B behaviour exactly: read txs on the writer.
+	reader *sql.DB
+}
 
 func NewBatchStore(writer *sql.DB) *BatchStore { return &BatchStore{writer: writer} }
+
+// NewBatchStoreWithReader returns a BatchStore that routes pure read
+// snapshots to the optional read pool. A nil reader, or a reader identical
+// to the writer, keeps writer-routed reads. The reader pool must be a WAL
+// read handle for the same database file, as returned by db.ConnectRead;
+// WAL read-your-committed-write guarantees a read tx that begins after a
+// writer Commit returned observes it.
+func NewBatchStoreWithReader(writer, reader *sql.DB) *BatchStore {
+	if reader == nil || reader == writer {
+		return &BatchStore{writer: writer}
+	}
+	return &BatchStore{writer: writer, reader: reader}
+}
+
+// beginReadTx opens the read-only transaction used by pure read paths: on
+// the reader pool when one is wired, else on the writer (pre-PD11B
+// behavior).
+func (s *BatchStore) beginReadTx(ctx context.Context) (*sql.Tx, error) {
+	pool := s.writer
+	if s.reader != nil {
+		pool = s.reader
+	}
+	return pool.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+}
 
 // BatchReservationNode contains accepted values; identity and times are assigned by the store.
 type BatchReservationNode struct {
@@ -77,12 +122,20 @@ func (s *BatchStore) Reserve(ctx context.Context, p BatchReservation) (BatchRese
 // projects initial views and notices in ONE transaction. Live attachment
 // compares input hash, owning host and Runner incarnation before reuse.
 func (s *BatchStore) ReserveIdentity(ctx context.Context, p BatchReservation) (BatchReservationResult, error) {
+	// Prepare the batch statement cache BEFORE opening the tx: the writer pool
+	// has exactly one connection, and preparing while the tx holds it would
+	// deadlock (PdaBatchTxQueries itself never prepares; on a miss it falls
+	// back to raw SQL, which would only happen if a pool release raced with
+	// the Ensure above).
+	if err := db.PdaBatchEnsure(ctx, s.writer); err != nil {
+		return BatchReservationResult{}, err
+	}
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return BatchReservationResult{}, err
 	}
 	defer tx.Rollback()
-	q := db.New(tx)
+	q := db.PdaBatchTxQueries(ctx, s.writer, tx)
 	live, err := q.GetLiveBatchRoot(ctx, db.GetLiveBatchRootParams{OwnerSessionID: p.Owner, ToolCallID: sql.NullString{String: p.ToolCallID, Valid: true}})
 	attached := err == nil
 	root := live.RootID
@@ -185,12 +238,17 @@ func batchRequireRow(n int64, err error) error {
 // Project commits one accepted transition, including the (host, incarnation)
 // sequence checkpoint. Any missing update rolls everything back.
 func (s *BatchStore) Project(ctx context.Context, p BatchProjection) error {
+	// See ReserveIdentity: prepare before the tx holds the pool's only
+	// connection.
+	if err := db.PdaBatchEnsure(ctx, s.writer); err != nil {
+		return err
+	}
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	q := db.New(tx)
+	q := db.PdaBatchTxQueries(ctx, s.writer, tx)
 	if p.Checkpoint != nil {
 		if err = batchRequireRow(q.UpdateBatchRunnerCheckpoint(ctx, *p.Checkpoint)); err != nil {
 			return err
@@ -236,6 +294,32 @@ func batchProjectRoot(ctx context.Context, q *db.Queries, host, runner string, p
 		v.RootID, v.HostID, v.OwnerSessionID, v.RunnerID = p.Root, host, p.Owner, runner
 		v.NoticeSequence = sql.NullInt64{Int64: sequence, Valid: true}
 		v.UpdatedAt = time.Now().Unix()
+		// R12-F round 4: read the target node's ROOT row first. If that root
+		// was durably retired by a rerun (BatchRerunReconcile's in-tx void,
+		// delivery='void'), its subtree can never select notices — the
+		// selection is a tolerated no-op. This is the ONLY tolerance: every
+		// other zero-row SelectBatchNodeNotice stays a hard
+		// ErrBatchProjectionConflict.
+		root, err := q.GetBatchNode(ctx, db.GetBatchNodeParams{RootID: p.Root, NodeID: p.Root, OwnerSessionID: p.Owner})
+		if err != nil {
+			return err
+		}
+		if root.Delivery == "void" {
+			continue
+		}
+		var fenced int
+		if err := q.PdbBatchRawQueryRow(ctx, pdcBatchRootFenceSQL, p.Owner, host, p.Root, p.Root, root.RunnerID).Scan(&fenced); err != nil {
+			return err
+		}
+		if fenced != 0 {
+			v.Wake = 0
+		}
+		// Every selected notice names a settled node, and settled nodes are
+		// always in the same transition's Changed set (engine.go), so the
+		// preceding ProjectBatchNode update already moved the row to exactly
+		// this projection_sequence. 0 rows therefore means notice_selected
+		// was already 1 — a projection identity conflict the commit path
+		// must surface, never silently tolerate.
 		if err := batchRequireRow(q.SelectBatchNodeNotice(ctx, v)); err != nil {
 			return err
 		}
@@ -248,7 +332,7 @@ func batchStateLive(state string) bool {
 }
 
 func (s *BatchStore) Read(ctx context.Context, owner, root string) (BatchSnapshot, error) {
-	tx, err := s.writer.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.beginReadTx(ctx)
 	if err != nil {
 		return BatchSnapshot{}, err
 	}
@@ -280,5 +364,9 @@ func (s *BatchStore) AnswerControl(ctx context.Context, p db.AnswerBatchControlR
 }
 
 func (s *BatchStore) DeleteRoot(ctx context.Context, owner, host, root string) error {
-	return batchRequireRow(db.New(s.writer).DeleteBatchSubtree(ctx, db.DeleteBatchSubtreeParams{OwnerSessionID: owner, HostID: host, RootID: root, NodeID: root}))
+	q, err := db.PdaBatchWriterQueries(ctx, s.writer)
+	if err != nil {
+		return err
+	}
+	return batchRequireRow(q.DeleteBatchSubtree(ctx, db.DeleteBatchSubtreeParams{OwnerSessionID: owner, HostID: host, RootID: root, NodeID: root}))
 }

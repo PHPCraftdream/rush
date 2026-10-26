@@ -4,7 +4,6 @@ package cmd
 import (
 	"encoding/json"
 	"maps"
-	"os"
 	"slices"
 	"strings"
 
@@ -30,9 +29,11 @@ type psSlots struct {
 
 // readPsSlots reads the four slots straight from the global settings file.
 // Deliberately the lightest read-only path: `rush ps` must not open the
-// config store or the sessions DB. Any failure degrades to known=false.
+// config store, the sessions DB, or any migration. The active slot spelling
+// (rush.ktav when present) is selected and its Ktav bytes decoded to JSON
+// before parsing. Any failure degrades to known=false.
 func readPsSlots() psSlots {
-	data, err := os.ReadFile(config.GlobalConfigData())
+	data, err := config.ReadConfigDocumentLight(config.GlobalConfigData())
 	if err != nil {
 		return psSlots{}
 	}

@@ -39,8 +39,10 @@ const (
 	auditRuleUnfinishedJobs  = "unfinished_jobs"
 )
 
-// auditFindings reports the rules each selected session tripped.
-func auditFindings(ctx context.Context, db *sql.DB, schema auditSchema, ids []string, since time.Duration) ([]auditFinding, error) {
+// auditFindings reports the rules each selected session tripped. The batch
+// scan is always provided: unfinished_jobs counts held batch roots and no
+// legacy async_jobs table is read.
+func auditFindings(ctx context.Context, db *sql.DB, schema auditSchema, ids []string, since time.Duration, batch *auditBatchScan) ([]auditFinding, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -49,8 +51,8 @@ func auditFindings(ctx context.Context, db *sql.DB, schema auditSchema, ids []st
 	if err := auditScanMessages(ctx, db, schema, ids, since, tally); err != nil {
 		return nil, err
 	}
-	if err := auditScanAsyncJobs(ctx, db, schema, ids, tally); err != nil {
-		return nil, err
+	for _, id := range ids {
+		tally.unfinishedJobs[id] = batch.unfinishedEntries(id)
 	}
 	return tally.findings(ids), nil
 }
@@ -70,8 +72,8 @@ type auditTally struct {
 	toolErrors map[string]map[string]int
 	// notices counts, per session, each supervision/wake_failed notice.
 	notices map[string]map[string]int
-	// unfinishedJobs lists, per session, the never-finished async jobs as
-	// "tool_call_id:kind" pairs.
+	// unfinishedJobs lists, per session, the never-finished batch work as
+	// "tool_call_id:state" pairs.
 	unfinishedJobs map[string][]string
 	// parseFailures counts the rows the audit could not read. It is
 	// deliberately not a finding: a few broken rows are noise, and the rules

@@ -45,7 +45,7 @@ test("every terminal cause gets a distinct badge on an async command block", asy
     { id: "c-fin", notice: "Async job c-fin (bash) finished.\n\nok out", badge: "done" },
     { id: "c-fail", notice: "Async job c-fail (bash) failed.\n\nboom", badge: "error" },
     { id: "c-to", notice: "Async job c-to (bash) timed out after 60s and was stopped. Partial output:\n\npartial", badge: "timed out" },
-    { id: "c-stop", notice: "Async job c-stop (bash) was stopped (job_kill). Partial output before the stop:\n\npartial", badge: "stopped by user" },
+    { id: "c-stop", notice: "Async job c-stop (bash) was stopped (batch_stop). Partial output before the stop:\n\npartial", badge: "stopped by user" },
     { id: "c-can", notice: "Async job c-can (run_command) was cancelled (session stopped). Partial output:\n\npartial", badge: "cancelled" },
   ];
 

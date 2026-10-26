@@ -12,39 +12,10 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
-
-// newWakeTestDB is newTestDB plus the wake_schedules table (the cmd-level
-// test schema predates stage 4a; same columns as migration
-// 20260929000005_add_wake_schedules.sql).
-func newWakeTestDB(t *testing.T) (*sql.DB, *db.Queries) {
-	t.Helper()
-	conn, q := newTestDB(t)
-	_, err := conn.ExecContext(context.Background(), `
-		CREATE TABLE IF NOT EXISTS wake_schedules (
-			id               TEXT PRIMARY KEY,
-			owner_session_id TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
-			kind             TEXT NOT NULL CHECK (kind IN ('once', 'loop')),
-			message          TEXT NOT NULL,
-			next_run_at      INTEGER NOT NULL,
-			every_ms         INTEGER NOT NULL DEFAULT 0,
-			max_runs         INTEGER,
-			until_at         INTEGER,
-			state            TEXT NOT NULL CHECK (state IN ('active', 'done', 'cancelled')),
-			occurrence       INTEGER NOT NULL DEFAULT 0,
-			lease_owner      TEXT,
-			lease_expires_at INTEGER,
-			created_at       INTEGER NOT NULL,
-			updated_at       INTEGER NOT NULL
-		);
-	`)
-	require.NoError(t, err)
-	return conn, q
-}
 
 // wakeWhyFixture builds an App (messages + sessions + wake store) with one
 // session whose last assistant message finished cleanly and one ACTIVE once
@@ -52,7 +23,7 @@ func newWakeTestDB(t *testing.T) (*sql.DB, *db.Queries) {
 // holds it" shape.
 func wakeWhyFixture(t *testing.T, in time.Duration) (*app.App, *session.WakeScheduleStore, string, string) {
 	t.Helper()
-	conn, q := newWakeTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 	wake := session.NewWakeScheduleStore(conn)
@@ -72,7 +43,7 @@ func wakeWhyFixture(t *testing.T, in time.Duration) (*app.App, *session.WakeSche
 	}, time.Now())
 	require.NoError(t, err)
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	a.SetWakeScheduleStoreForTest(wake)
 	return a, wake, sess.ID, row.ID
 }
@@ -93,7 +64,7 @@ func TestExplainSessionStatus_OpenWakeScheduleHoldsSessionOpen(t *testing.T) {
 // A session whose only schedule is a loop is NOT held open (the CLI cancels
 // loop schedules at close, so they are not live work).
 func TestExplainSessionStatus_LoopScheduleIsNotLiveWork(t *testing.T) {
-	conn, q := newWakeTestDB(t)
+	conn, q := newSessionFactsTestDB(t)
 	s := session.NewService(q, conn)
 	m := message.NewService(q)
 	wake := session.NewWakeScheduleStore(conn)
@@ -112,7 +83,7 @@ func TestExplainSessionStatus_LoopScheduleIsNotLiveWork(t *testing.T) {
 	}, time.Now())
 	require.NoError(t, err)
 
-	a := &app.App{Messages: m, Sessions: s}
+	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	a.SetWakeScheduleStoreForTest(wake)
 	var buf bytes.Buffer
 	require.NoError(t, explainWhy(a, t.TempDir(), sess.ID, &buf))

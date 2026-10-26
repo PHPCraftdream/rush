@@ -15,8 +15,13 @@ type batchTestFamily struct{ got batchLeafPayload }
 
 func (f *batchTestFamily) start(_ context.Context, _ batchLeafEnv, _ jobbatch.Launch, p batchLeafPayload, _ func(jobbatch.Result)) (jobbatch.Execution, error) {
 	f.got = p
-	return nil, nil
+	return batchTestExecution{}, nil
 }
+
+// batchTestExecution is a minimal accepted execution; Start rejects a nil one.
+type batchTestExecution struct{}
+
+func (batchTestExecution) Stop(context.Context) error { return nil }
 
 func batchTestLaunch(kind string, payload string) jobbatch.Launch {
 	return jobbatch.Launch{ID: "r.1", Token: 1, Task: jobbatch.TaskSpec{Kind: kind, Payload: json.RawMessage(payload)}}

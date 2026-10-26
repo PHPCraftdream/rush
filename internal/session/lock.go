@@ -123,8 +123,9 @@ func WithClearHolderMetadataFn(fn func(path string, expectedGeneration string)) 
 }
 
 // WithCleanupDone closes done after Release's metadata cleanup function has
-// returned. It is a test-only ordering seam for callers that must join the
-// complete primary-file and sidecar cleanup, including deferred file close.
+// returned. It is an ordering seam for callers that must join the complete
+// primary-file and sidecar cleanup, including deferred file close (tests, and
+// the `sessions locks` death probe before it removes the lock file).
 func WithCleanupDone(done chan<- struct{}) LockOption {
 	return func(lk *SessionLock) {
 		lk.cleanupDone = done

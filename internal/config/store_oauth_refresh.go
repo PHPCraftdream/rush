@@ -67,7 +67,7 @@ func (s *ConfigStore) codexRefreshAlreadyCurrent(ctx context.Context, scope Scop
 	record, predecessor := s.codexOAuthAuthorityRecord(path, provider)
 	if record == nil {
 		// Equal-live callers leave all WAL retries to locked recovery.
-		record, _ = readOAuthJournalWithRetry(ctx, oauthJournalPath(path, provider))
+		record, _ = readOAuthJournalWithRetry(ctx, selectOAuthJournalPath(path, provider, false))
 	}
 	if ctx.Err() != nil {
 		return false
@@ -131,7 +131,7 @@ func (s *ConfigStore) adoptCodexDiskAuthority(ctx context.Context, path, provide
 	}
 	if record == nil {
 		// Consult WAL only for a disk publication, preserving bounded read retries.
-		journal, journalErr := readOAuthJournalWithRetry(ctx, oauthJournalPath(path, provider))
+		journal, journalErr := readOAuthJournalWithRetry(ctx, selectOAuthJournalPath(path, provider, false))
 		if err := ctx.Err(); err != nil {
 			return true, err
 		}
@@ -286,6 +286,9 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 		return fmt.Errorf("OAuth refresh for provider %s returned no valid token", pc.ID)
 	}
 	refreshed = normalizeOAuthRefresh(descriptor, pc.OAuthToken, refreshed)
+	if done, err := s.preflightCodexDiskAuthority(ctx, scope, pc.ID, used); done || err != nil {
+		return err
+	}
 	// Install ownership before publication or I/O; failed CAS cannot lose rotation.
 	record := &oauthJournalRecord{PredecessorRefreshTokenSHA256: oauthRotationDigest(pc.OAuthToken, refreshed), Token: refreshed}
 	known, _ := s.codexOAuthAuthorityRecord(path, pc.ID)
@@ -298,10 +301,11 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 	}
 	entry := s.installOAuthOutbox(path, scope, pc.ID, record)
 	applyErr := s.applyOAuthTokenWithPending(pc.ID, pc.OAuthToken, entry.record.Token, true)
-	if err := writeOAuthJournalUntilDurable(ctx, oauthJournalPath(path, pc.ID), &entry.record); err == nil {
+	journalPath := selectOAuthJournalPath(path, pc.ID, true)
+	if err := writeOAuthJournalUntilDurable(ctx, journalPath, &entry.record); err == nil {
 		s.clearOAuthOutbox(path, pc.ID, entry)
 	} else {
-		logOAuthJournalFailure(oauthJournalPath(path, pc.ID), "handoff", "OAuth journal write deferred to background persistence")
+		logOAuthJournalFailure(journalPath, "handoff", "OAuth journal write deferred to background persistence")
 	}
 	s.startOAuthJournalWorker(scope, pc.ID)
 	if applyErr != nil && !s.codexRefreshAlreadyCurrent(ctx, scope, pc.ID, pc.OAuthToken) {

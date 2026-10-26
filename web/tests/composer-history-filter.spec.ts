@@ -104,7 +104,7 @@ const TRANSCRIPT = [
   makeMessage({
     ID: "u-notice-via-inject", SessionID: SESSION_ID, Role: "user", Origin: "web",
     AutoResumed: false, BackgroundJobNotice: false, NoticeKind: "job_stopped", HumanTyped: false,
-    Parts: [{ type: "text", Text: "Async job call-4 (bash) was stopped (job_kill). Partial output before the stop:\n\npartial" }],
+    Parts: [{ type: "text", Text: "Async job call-4 (bash) was stopped (batch_stop). Partial output before the stop:\n\npartial" }],
   }),
   // Human web inject (ChatInput's "inject" / "interrupt & send") — travels
   // through the SAME InjectMessage call as the notice above, but carries NO

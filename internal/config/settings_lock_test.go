@@ -3,8 +3,6 @@ package config
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -24,6 +22,18 @@ import (
 
 const secretHash = "24a5cfa44bee3072cadb1fea7af9a0ed638d118d63e21d8f5d6979e314b5318e"
 
+// pinKtavAutoMigrateOffForLegacyTest pins the package-level Ktav
+// auto-migration gate OFF for a legacy-JSON test and restores the previous
+// value via t.Cleanup. Such tests must NOT call t.Parallel: the gate is a
+// package-level global, and their fixtures/assertions are legacy-JSON
+// semantics (raw rush.json bytes, hard links, sidecar locks on rush.json).
+func pinKtavAutoMigrateOffForLegacyTest(t *testing.T) {
+	t.Helper()
+	prev := ktavAutoMigrate
+	ktavAutoMigrate = false
+	t.Cleanup(func() { ktavAutoMigrate = prev })
+}
+
 func lockStore(t *testing.T, path string) *ConfigStore {
 	t.Helper()
 	t.Cleanup(func() { SetProcessPassword("") })
@@ -40,25 +50,9 @@ func fileBytes(t *testing.T, path string) []byte {
 	return b
 }
 
-func TestHashPasswordVectors(t *testing.T) {
-	got := HashPassword("secret")
-	require.Equal(t, secretHash, got)
-	recompute := func(s string) string {
-		d := []byte(s)
-		for i := 0; i < 10; i++ {
-			h := sha256.New()
-			_, _ = h.Write(d)
-			d = h.Sum(nil)
-		}
-		return hex.EncodeToString(d)
-	}
-	require.Equal(t, recompute("secret"), got)
-	require.Equal(t, "f65afaf57ea8a40281d0e5a0eab8c510edf01b054c672c416649eeb2e9fb6e1e", HashPassword("pässwörd"))
-	require.Equal(t, recompute(""), HashPassword(""))
-}
-
 // revert-check RC8: injecting a key into Reason must fail the explicit audit-field checks.
 func TestSettingsLock_SlogRedactsEventDetails(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	var output bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&output, nil))
 	p := filepath.Join(t.TempDir(), "global.json")
@@ -138,6 +132,7 @@ func TestSettingsLock_RecentModelRemovalHasNoAudit(t *testing.T) {
 }
 
 func TestSettingsLock_BlocksSetConfigFieldWhileLocked(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	p := filepath.Join(t.TempDir(), "global.json")
 	s := lockStore(t, p)
 	require.NoError(t, s.SetConfigField(ScopeGlobal, "foo", "bar"))
@@ -146,7 +141,9 @@ func TestSettingsLock_BlocksSetConfigFieldWhileLocked(t *testing.T) {
 	require.NoError(t, e)
 	require.True(t, locked)
 	b := fileBytes(t, p)
-	require.Equal(t, secretHash, gjsonString(b, "sync_rev"))
+	// revert-check RC: reverting VerifyPassword to expect the legacy unsalted
+	// digest makes this red — a salted hash can never equal the old hex value.
+	require.True(t, VerifyPassword("secret", gjsonString(b, "sync_rev")))
 	err := s.SetConfigField(ScopeGlobal, "models.smart", SelectedModel{Provider: "x", Model: "y"})
 	require.ErrorIs(t, err, ErrSettingsLocked)
 	require.Equal(t, b, fileBytes(t, p))
@@ -187,6 +184,7 @@ func TestSettingsLock_AuthorizedProcessWrites(t *testing.T) {
 
 // revert-check RC4: removing the recent-model exemption must fail this test.
 func TestSettingsLock_RecentModelsExemptWhileLocked(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	p := filepath.Join(t.TempDir(), "g.json")
 	s := lockStore(t, p)
 	require.NoError(t, s.LockSettings(ScopeGlobal, "secret"))
@@ -200,6 +198,7 @@ func TestSettingsLock_RecentModelsExemptWhileLocked(t *testing.T) {
 }
 
 func TestSettingsLock_OAuthRefreshExemptWhileLocked(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	isolateAllGlobalConfigPaths(t)
 	path := GlobalConfigData()
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
@@ -217,6 +216,7 @@ func TestSettingsLock_OAuthRefreshExemptWhileLocked(t *testing.T) {
 }
 
 func TestSettingsLock_SettingsLockKeyProtection(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	p := filepath.Join(t.TempDir(), "g.json")
 	s := lockStore(t, p)
 	require.NoError(t, s.SetConfigField(ScopeGlobal, "seed", 1))
@@ -229,13 +229,14 @@ func TestSettingsLock_SettingsLockKeyProtection(t *testing.T) {
 		require.ErrorIs(t, f(), errSettingsLockKeyReserved)
 	}
 	require.NoError(t, s.LockSettings(ScopeGlobal, "new"))
-	require.Equal(t, HashPassword("new"), gjsonString(fileBytes(t, p), "sync_rev"))
+	require.True(t, VerifyPassword("new", gjsonString(fileBytes(t, p), "sync_rev")))
 	empty := newTestConfigStore(testStoreOpts{globalDataPath: filepath.Join(t.TempDir(), "x")})
 	require.ErrorIs(t, empty.LockSettings(ScopeWorkspace, "x"), ErrNoWorkspaceConfig)
 }
 
 // revert-check RC3: removing the MCP transaction guard must fail this test.
 func TestSettingsLock_MCPPersistRefusedWhileLocked(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	s, _ := isolatedMCPConfigStore(t)
 	p := GlobalConfigData()
 	require.NoError(t, s.PersistMCPConfig(ScopeGlobal, "srv", MCPConfig{Type: MCPHttp, URL: "http://x"}))

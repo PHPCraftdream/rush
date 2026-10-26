@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -104,7 +105,7 @@ func TestDrainAttempt_SwallowedReactionWrite_SettlesAtK(t *testing.T) {
 
 	for i := 1; i <= 2; i++ {
 		_, _ = f.drainRun(ctx)
-		f.ledger.resetDrainGate(f.sessID) // the retry pause elapses
+		f.coord.arb.resetGate(f.sessID) // the retry pause elapses
 		row := f.row(ctx, "call-1")
 		require.EqualValues(t, i, row.WakeAttempts, "attempt %d is counted", i)
 		require.EqualValues(t, 0, row.Reacted, "attempt %d must not close the debt yet", i)
@@ -150,7 +151,7 @@ func TestDrainAttempt_ShutdownIsExempt(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() { _, err := f.drainRun(ctx); done <- err }()
-	require.Eventually(t, func() bool { return f.requests.Load() == 1 }, 10*time.Second, 10*time.Millisecond)
+	f.waitRequest()
 	f.coord.CancelAll()
 	select {
 	case err := <-done:
@@ -178,7 +179,7 @@ func TestDrainAttempt_CancelTurnIsExempt(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() { _, err := f.drainRun(ctx); done <- err }()
-	require.Eventually(t, func() bool { return f.requests.Load() == 1 }, 10*time.Second, 10*time.Millisecond)
+	f.waitRequest()
 	f.sa.Cancel(f.sessID)
 	select {
 	case err := <-done:
@@ -225,7 +226,7 @@ func TestDrainAttempt_QueuedUserTurnFailureNotCharged(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() { _, err := f.drainRun(ctx); done <- err }()
-	require.Eventually(t, func() bool { return f.requests.Load() == 1 }, 10*time.Second, 10*time.Millisecond)
+	f.waitRequest()
 	res, err := f.sa.Run(ctx, SessionAgentCall{SessionID: f.sessID, Prompt: "hello"})
 	require.NoError(t, err)
 	require.Nil(t, res, "the user call queues behind the running Drain")
@@ -255,11 +256,13 @@ func TestSettleDrainDebt_MarkerNamesSnapshotToolCallIDs(t *testing.T) {
 	f := newAttemptFixture(t, "attempt-marker-ids", attemptFixtureOpts{noIdle: true})
 	f.seedDebt(ctx, "call-1", true)
 	f.seedDebt(ctx, "call-2", true)
-	snap, err := f.store.CaptureDebtSnapshot(ctx, f.sessID)
-	require.NoError(t, err)
-	require.Len(t, snap.Jobs, 2)
-
-	require.NoError(t, f.coord.settleDrainDebt(ctx, f.sessID, snap, "boom"))
+	boom := &fantasy.ProviderError{Title: "request too large", Message: "boom", StatusCode: http.StatusRequestEntityTooLarge}
+	batchSnap, batchCaptured := a1CaptureDebtSnapshot(t, f, ctx)
+	require.Len(t, batchSnap.Nodes, 2)
+	f.coord.accountDrainAttempt(ctx, &drainAttempt{
+		sessionID: f.sessID, snapshot: batchSnap,
+		batchSnapshot: batchSnap, batchCaptured: batchCaptured, outcome: drainAttempted,
+	}, boom)
 
 	notices, err := f.store.ListSessionNotices(ctx, f.sessID)
 	require.NoError(t, err)
@@ -288,14 +291,15 @@ func TestDrainAttempt_CommitRefusalKeepsTheGateAndRechecks(t *testing.T) {
 	ctx := context.Background()
 	f := newAttemptFixture(t, "attempt-commit-refused", attemptFixtureOpts{noIdle: true})
 	f.seedDebt(ctx, "call-1", true) // visible debt: the commit was refused over it
-	snap, err := f.store.CaptureDebtSnapshot(ctx, f.sessID)
-	require.NoError(t, err)
-	require.False(t, snap.Empty())
+	batchSnap, batchCaptured := a1CaptureDebtSnapshot(t, f, ctx)
+	require.False(t, batchSnap.Empty())
 
-	require.False(t, f.ledger.paceDrainGate(f.sessID, 0, time.Hour, false, pacePaidUnreacted))
+	require.False(t, f.coord.arb.pace(f.sessID, 0, time.Hour, false, pacePaidUnreacted))
 
 	att := &drainAttempt{
-		sessionID: f.sessID, snapshot: snap, outcome: drainNoTurn,
+		sessionID: f.sessID, snapshot: batchSnap,
+		batchSnapshot: batchSnap, batchCaptured: batchCaptured,
+		outcome:  drainNoTurn,
 		commitNo: drainVerdict{kind: drainPaced, recheck: true, reason: "retry pause after an unreacted attempt"},
 	}
 	f.coord.accountDrainAttempt(ctx, att, nil)
@@ -311,7 +315,9 @@ func TestDrainAttempt_CommitRefusalKeepsTheGateAndRechecks(t *testing.T) {
 	delete(f.coord.recheckSet, f.sessID)
 	f.coord.recheckMu.Unlock()
 	att = &drainAttempt{
-		sessionID: f.sessID, snapshot: snap, outcome: drainNoTurn,
+		sessionID: f.sessID, snapshot: batchSnap,
+		batchSnapshot: batchSnap, batchCaptured: batchCaptured,
+		outcome:  drainNoTurn,
 		commitNo: drainVerdict{kind: drainDeferred, reason: "automatic turns suspended"},
 	}
 	f.coord.accountDrainAttempt(ctx, att, nil)

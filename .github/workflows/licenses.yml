@@ -1,0 +1,147 @@
+name: licenses
+
+# Dependency license compatibility gate. The project is FSL-1.1-MIT, so every
+# dependency that ships in the Go binary or the embedded web bundle has to be
+# permissive (or file-level MPL-2.0); see .github/license-policy.toml for the
+# allowed list and tools/license_check.py for the evaluator.
+#
+# The scan runs only when the dependencies changed since the last run that
+# passed:
+#   * the `paths` filters keep the workflow from starting at all unless a
+#     dependency manifest, the policy or the checker was touched;
+#   * inside the job a fingerprint of those inputs is looked up in the Actions
+#     cache (`license-ok-v1-<hash>`). A hit means this exact dependency set was
+#     already verified, so the scan is skipped; a miss runs it and, only when it
+#     passes, stores the marker for the next run. A cache saved on the
+#     integration branch is visible to the pull requests that target it.
+# Changing the policy or the checker changes the fingerprint, so the next run
+# re-checks everything.
+
+on:
+  pull_request:
+    paths:
+      - go.mod
+      - go.sum
+      - web/package.json
+      - web/pnpm-lock.yaml
+      - .github/license-policy.toml
+      - .github/workflows/licenses.yml
+      - tools/license_check.py
+      - tools/test_license_check.py
+  push:
+    branches: [main, ci/job-batches]
+    paths:
+      - go.mod
+      - go.sum
+      - web/package.json
+      - web/pnpm-lock.yaml
+      - .github/license-policy.toml
+      - .github/workflows/licenses.yml
+      - tools/license_check.py
+      - tools/test_license_check.py
+  # Manual run: the fingerprint is still honoured, so a dispatch on an already
+  # verified dependency set is a no-op. Bump the `v1` in the cache key to force
+  # a full re-scan.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: licenses-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: checker unit tests
+        run: python3 -I -m unittest discover -s tools -p test_license_check.py
+
+      - name: dependency fingerprint
+        id: fp
+        run: echo "key=license-ok-v1-${{ hashFiles('go.mod', 'go.sum', 'web/package.json', 'web/pnpm-lock.yaml', '.github/license-policy.toml', 'tools/license_check.py') }}" >> "$GITHUB_OUTPUT"
+
+      - name: already verified since the last run?
+        id: seen
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .license-verified
+          key: ${{ steps.fp.outputs.key }}
+          lookup-only: true
+
+      - name: skipped, dependencies unchanged since the last verified run
+        if: steps.seen.outputs.cache-hit == 'true'
+        run: |
+          {
+            echo "### Dependency license check"
+            echo
+            echo "Skipped: the dependency fingerprint \`${{ steps.fp.outputs.key }}\` was already verified by an earlier run."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.seen.outputs.cache-hit != 'true'
+        with:
+          go-version-file: go.mod
+
+      - name: Enable pnpm via corepack
+        if: steps.seen.outputs.cache-hit != 'true'
+        run: corepack enable
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.seen.outputs.cache-hit != 'true'
+        with:
+          node-version: "22"
+
+      - name: Go dependency licenses
+        if: steps.seen.outputs.cache-hit != 'true'
+        run: |
+          go install github.com/google/go-licenses/v2@v2.0.1
+          go mod download
+          mkdir -p "$RUNNER_TEMP/licenses"
+          # Build constraints decide which platform-specific dependencies are
+          # linked, so every shipped GOOS is reported and the results merged.
+          for goos in linux windows darwin; do
+            GOOS="$goos" "$(go env GOPATH)/bin/go-licenses" report ./... \
+              --ignore github.com/PHPCraftdream/rush \
+              > "$RUNNER_TEMP/licenses/go-$goos.csv" 2> "$RUNNER_TEMP/licenses/go-$goos.err" || {
+              echo "::error::go-licenses failed for GOOS=$goos"
+              tail -n 60 "$RUNNER_TEMP/licenses/go-$goos.err"
+              exit 1
+            }
+          done
+
+      - name: npm dependency licenses (production bundle)
+        if: steps.seen.outputs.cache-hit != 'true'
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm licenses list --prod --json > "$RUNNER_TEMP/licenses/pnpm.json"
+
+      - name: license compatibility
+        if: steps.seen.outputs.cache-hit != 'true'
+        run: |
+          python3 -I tools/license_check.py \
+            --policy .github/license-policy.toml \
+            --go-csv "$RUNNER_TEMP/licenses/go-linux.csv" \
+            --go-csv "$RUNNER_TEMP/licenses/go-windows.csv" \
+            --go-csv "$RUNNER_TEMP/licenses/go-darwin.csv" \
+            --pnpm-json "$RUNNER_TEMP/licenses/pnpm.json" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: remember that this dependency set passed
+        if: steps.seen.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .license-verified
+          printf 'verified %s at %s\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > .license-verified/marker
+
+      - name: save the verified marker
+        if: steps.seen.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .license-verified
+          key: ${{ steps.fp.outputs.key }}

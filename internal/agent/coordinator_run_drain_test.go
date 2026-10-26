@@ -84,9 +84,7 @@ func TestRunInternal_DrainIsOneAttempt(t *testing.T) {
 // Revert-check: returning err unwrapped (or pacing for every call kind) turns
 // an assertion red.
 func TestDrainRefused_TypedAndPacesOnlyDrainCalls(t *testing.T) {
-	coord := &coordinator{}
-	coord.asyncJobs = newWorkLedger(nil)
-	coord.asyncJobs.coord = coord // the gate lives in the coordinator's arbiter
+	coord := newBatchRuntimeCoordinator()
 	cause := errModelProviderNotConfigured
 
 	err := coord.drainRefused(t.Context(), "s-ordinary", cause)

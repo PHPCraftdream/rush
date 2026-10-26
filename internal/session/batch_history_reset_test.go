@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
 )
@@ -46,7 +47,7 @@ func newBatchResetFx(t *testing.T) *batchResetFx {
 		// Same shape as the production writer DSN (connect.go): BEGIN
 		// IMMEDIATE and a busy timeout, so a racing tx waits for the writer
 		// lock instead of failing a deferred upgrade with SQLITE_BUSY.
-		c, e := sql.Open("sqlite", "file:"+dir+"/rush.db?_txlock=immediate&_pragma=busy_timeout(30000)&_pragma=foreign_keys(ON)")
+		c, e := sql.Open("sqlite", "file:"+storepath.DataDirPath(dir, storepath.ActiveFilename)+"?_txlock=immediate&_pragma=busy_timeout(30000)&_pragma=foreign_keys(ON)")
 		require.NoError(t, e)
 		c.SetMaxOpenConns(1)
 		t.Cleanup(func() { require.NoError(t, c.Close()) })

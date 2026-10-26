@@ -18,13 +18,9 @@ func ListDirectoryFSBounded(ctx context.Context, fsys fs.FS, start, displayRoot 
 	if _, err := fs.Stat(fsys, start); err != nil {
 		return nil, false, "", nil
 	}
-	// The walker counts the start dir itself as depth 1, so depth+1
-	// reproduces "list dirs up to rel depth `depth`" without descending past
-	// it; dirs AT the boundary are still listed (visited) but not descended.
-	var maxDepth int
-	if depth > 0 {
-		maxDepth = depth + 1
-	}
+	// The walker counts the start dir itself as depth 1; MaxDepth matches the
+	// legacy listing boundary, which skips descendants at relative depth depth.
+	maxDepth := depth
 	var visited int
 	opts := BoundedWalkOptions{MaxDepth: maxDepth, Visited: &visited}
 	found := csync.NewSlice[string]()

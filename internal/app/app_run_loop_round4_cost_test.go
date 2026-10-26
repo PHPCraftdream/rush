@@ -7,7 +7,10 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -67,7 +70,115 @@ func (h *loopHarness) sessionCost(t *testing.T) float64 {
 //
 // Revert-check: summing the turns' cost deltas again (loopTotals.cost) drops
 // the child: delta_cost_usd stays at the root's own fraction of a cent.
+func testBatchCostIncludesAsyncChildSpentBetweenTurns(t *testing.T) {
+	gate := make(chan struct{})
+	started := make(chan struct{})
+	var startedRequests, childRequests, completionCount atomic.Int32
+	var launchCount atomic.Int32
+	var startedOnce sync.Once
+	var gateRelease sync.Once
+	release := func() { gateRelease.Do(func() { close(gate) }) }
+	var h *loopHarness
+	var runCtx context.Context
+	runCtx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	defer cancel()
+	h = newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, body []byte, _ bool, _ int) {
+		_, lastUser, lastTool := lastTurnParts(body)
+		switch {
+		case strings.Contains(lastUser, "Generate a concise title"):
+			// The child's title request quotes the worker prompt. Classify it
+			// FIRST so it never counts as child traffic, waits on the gate,
+			// or spends: answer plainly with zero tokens.
+			loopText(w, "child-title", "child title", 0, 0)
+		case strings.Contains(lastUser, "Async job call-agent () finished"):
+			completionCount.Add(1)
+			loopText(w, "root-final", "R4-ROOT-DONE", 11, 3)
+		case strings.Contains(lastTool, "batch root"):
+			startedRequests.Add(1)
+			startedOnce.Do(func() { close(started) })
+			loopText(w, "root-yield", "root waiting", 11, 3)
+		case strings.Contains(lastUser, "WORKER-MARKER"):
+			childRequests.Add(1)
+			select {
+			case <-gate:
+			case <-runCtx.Done():
+				return
+			}
+			loopText(w, "child", "child done", 100000, 0)
+		default:
+			launchCount.Add(1)
+			admissionWriteSSE(w, []string{admissionSSEToolCall("delegate", "call-agent", "agent", `{"prompt":"WORKER-MARKER build it"}`), admissionSSEStop("delegate", "tool_calls")})
+		}
+	})
+	r4Models(t, h.app, 10)
+	events := h.app.Sessions.Subscribe(runCtx)
+	old := cliLoopTurnDoneSeam
+	var once sync.Once
+	cliLoopTurnDoneSeam = func() {
+		once.Do(func() {
+			select {
+			case <-started:
+			case <-runCtx.Done():
+				t.Errorf("started response missing")
+				return
+			}
+			release()
+			for {
+				children, err := h.app.Sessions.ListSubSessions(runCtx, h.sessionID)
+				if err != nil {
+					t.Errorf("ListSubSessions: %v", err)
+					return
+				}
+				if len(children) == 1 && children[0].OwnCost >= r4ChildCost {
+					break
+				}
+				select {
+				case <-runCtx.Done():
+					t.Errorf("child cost did not persist before next turn")
+					return
+				case <-events:
+				}
+			}
+		})
+	}
+	t.Cleanup(func() { cliLoopTurnDoneSeam = old; release() })
+	res, _, err := h.run(runCtx, RunOverrides{})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	select {
+	case <-runCtx.Done():
+		t.Fatal("child cost was not persisted")
+	default:
+	}
+	require.EqualValues(t, 1, launchCount.Load())
+	require.EqualValues(t, 1, startedRequests.Load())
+	require.EqualValues(t, 1, childRequests.Load())
+	require.EqualValues(t, 1, completionCount.Load())
+	total := h.sessionCost(t)
+	require.InDelta(t, total, res.Usage.DeltaCostUSD, 1e-9)
+	children, err := h.app.Sessions.ListSubSessions(runCtx, h.sessionID)
+	require.NoError(t, err)
+	require.Len(t, children, 1)
+	require.InDelta(t, r4ChildCost, children[0].OwnCost, 1e-9)
+	// Only the selected terminal completion carries NoticeKind "root"; the
+	// started announcement is a BackgroundJobNotice without a kind. Do not
+	// infer double billing from a notice count.
+	require.Equal(t, 1, countBackgroundNotices(t, h.app, h.sessionID, "root"))
+	messages, err := h.app.Messages.List(runCtx, h.sessionID)
+	require.NoError(t, err)
+	for _, item := range messages {
+		if item.BackgroundJobNotice && item.NoticeKind == "root" {
+			require.Contains(t, item.FullText(), "child done")
+		}
+	}
+	require.Equal(t, "R4-ROOT-DONE", res.FinalText)
+}
+
 func TestRunNonInteractive_CostIncludesAsyncChildSpentBetweenTurns(t *testing.T) {
+	if f6BatchOn() {
+		testBatchCostIncludesAsyncChildSpentBetweenTurns(t)
+		return
+	}
 	h, release := newDelegatingCostHarness(t)
 	h.afterFirstTurn(release)
 

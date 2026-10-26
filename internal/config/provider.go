@@ -107,6 +107,10 @@ func UpdateProviders(pathOrURL string) error {
 		if err != nil {
 			return fmt.Errorf("failed to read file: %w", err)
 		}
+		content, err = decodeConfigDocument(pathOrURL, content)
+		if err != nil {
+			return fmt.Errorf("failed to decode Ktav provider data: %w", err)
+		}
 		if err := json.Unmarshal(content, &providers); err != nil {
 			return fmt.Errorf("failed to unmarshal provider data: %w", err)
 		}
@@ -142,6 +146,10 @@ func UpdateHyper(pathOrURL string) error {
 		content, err := os.ReadFile(pathOrURL)
 		if err != nil {
 			return fmt.Errorf("failed to read file: %w", err)
+		}
+		content, err = decodeConfigDocument(pathOrURL, content)
+		if err != nil {
+			return fmt.Errorf("failed to decode Ktav provider data: %w", err)
 		}
 		if err := json.Unmarshal(content, &provider); err != nil {
 			return fmt.Errorf("failed to unmarshal provider data: %w", err)
@@ -281,8 +289,18 @@ func newCache[T any](path string) cache[T] {
 // the network round-trip when the cache is fresh, so a read-only
 // `rush models show` does not spend ~3s on two HTTP requests every
 // invocation. See CHANGELOG.fork.md (Section 4.J).
+//
+// Ktav note: freshness is mtime-based because these documents carry no
+// timestamp field. Any later migration or read-through conversion
+// (KTAV-4b) MUST preserve the source file's mtime on the newly created
+// <name>.ktav sibling (os.Chtimes) — a conversion that resets mtime would
+// wrongly mark stale cache content fresh.
 func (c cache[T]) Age() (time.Duration, error) {
-	fi, err := os.Stat(c.path)
+	path := c.path
+	if ktav := ktavSiblingOf(c.path); ktavEntryExists(ktav) {
+		path = ktav
+	}
+	fi, err := os.Stat(path)
 	if err != nil {
 		return 1<<62 - 1, err
 	}
@@ -291,7 +309,7 @@ func (c cache[T]) Age() (time.Duration, error) {
 
 func (c cache[T]) Get() (T, string, error) {
 	var v T
-	data, err := os.ReadFile(c.path)
+	data, err := readCacheDocument(c.path)
 	if err != nil {
 		return v, "", fmt.Errorf("failed to read provider cache file: %w", err)
 	}
@@ -314,7 +332,7 @@ func (c cache[T]) Store(v T) error {
 		return fmt.Errorf("failed to marshal provider data: %w", err)
 	}
 
-	if err := os.WriteFile(c.path, data, 0o644); err != nil {
+	if err := writeCacheDocument(c.path, data, 0o644, os.WriteFile); err != nil {
 		return fmt.Errorf("failed to write provider data to cache: %w", err)
 	}
 	return nil

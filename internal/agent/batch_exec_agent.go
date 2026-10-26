@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 )
 
@@ -19,14 +20,38 @@ type batchAgentRunRequest struct {
 	SessionID  string
 	ToolCallID string
 	Input      json.RawMessage
+	// R11F (M3): the invocation's pinned registry identity (leaf resolution
+	// through the ingress) and enclosing message id (child-session creation).
+	RegistryID      string
+	MessageID       string
+	DiskBindingID   string
+	Policy          *batchLeafPolicyContext
+	pctHandoff      *pctDelegationHandoff // pct: owned by the executor through confirmed disposal.
+	CallCredentials bool
+	// R11F round-2 (P1-3): the RECORDED tool name of the delegation leaf.
+	// Dispatch resolves the pinned leaf by this name and names the call
+	// with it, so an "agentic_fetch" payload reaches its OWN leaf, never
+	// the "agent" leaf. Empty fails closed in the driver.
+	Tool            string
+	ChildSessionID  string
+	NoChildSelected bool
+	// R12-H2 P1-4: the App-owned ingress carried in the leaf env, so the
+	// driver resolves the pinned leaf through THIS invocation's authority —
+	// never the process-global binding. Nil keeps the driver's flag-off
+	// fallback (tests), except on the provider path where it fails closed.
+	Ingress BatchWorkIngress
 }
 
 // batchAgentHost is the per-incarnation control surface handed to the run
 // factory. Ask parks the ask_question tool call on a held question until an
 // injected answer at the same depth arrives; the tool turns it into a
 // successful question-shaped response, keeping the node live meanwhile.
+// BindChildSession records the delegation child session; the returned error
+// is fatal to the launch — the child must not run.
 type batchAgentHost struct {
-	Ask func(ctx context.Context, depth int, question string) (json.RawMessage, error)
+	Ask              func(ctx context.Context, depth int, question string) (json.RawMessage, error)
+	BindChildSession func(ctx context.Context, childSessionID string) error
+	NoChildSelected  func()
 }
 
 // batchAgentTurnResult is one turn loop's outcome.
@@ -69,7 +94,24 @@ type batchAgentDeps struct {
 	Descendants batchAgentDescendantReader
 	// Poll is the descendant re-read interval while the scope stays open.
 	// Zero means a single read after the turn ends.
-	Poll time.Duration
+	Poll              time.Duration
+	QuestionPublisher batchChildQuestionPublisher
+	// Host and RunnerID are the install's commit-hook identity; the bind
+	// closure fences the durable child-link write on them. Zero on
+	// flag-off and test installs.
+	Host, RunnerID string
+	// Bind persists the delegation child-session link durably BEFORE the
+	// child runs (task #1490). Non-nil, the lifecycle bind callback calls
+	// it and only on success updates req.ChildSessionID; an error is fatal
+	// to the launch. Nil keeps the flag-off memory-only behavior
+	// byte-identical.
+	Bind func(ctx context.Context, owner, root, node string, token uint64, child string) error
+	// ChildFacts (package S, jb/psc): the delegation child's
+	// completion-reaction seam. Non-nil, the watcher keeps the scope open
+	// through the child's actionable/paced reaction debt and ownership
+	// and refreshes the settled result with the child's final outcome at
+	// confirmed closure. Nil keeps the previous behavior byte-identical.
+	ChildFacts BatchChildReactionFacts
 }
 
 // batchAgentFamily implements the engine executor contract for the agent
@@ -82,20 +124,42 @@ func newBatchAgentFamily(deps batchAgentDeps) batchLeafFamily {
 
 var _ batchLeafFamily = batchAgentFamily{}
 
-func (f batchAgentFamily) start(ctx context.Context, _ batchLeafEnv, l jobbatch.Launch, p batchLeafPayload, report func(jobbatch.Result)) (jobbatch.Execution, error) {
+// callIngress resolves the env's lazy ingress nil-safely: non-agent-family
+// envs may carry no Ingress at all.
+func callIngress(env batchLeafEnv) BatchWorkIngress {
+	if env.Ingress == nil {
+		return nil
+	}
+	return env.Ingress()
+}
+
+func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatch.Launch, p batchLeafPayload, report func(jobbatch.Result)) (jobbatch.Execution, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	messageID := ""
+	if p.Policy != nil {
+		messageID = p.Policy.MessageID
+	}
 	req := batchAgentRunRequest{
-		NodeID:     l.ID,
-		Token:      l.Token,
-		SessionID:  p.SessionID,
-		ToolCallID: p.ToolCallID,
-		Input:      p.Input,
+		NodeID: l.ID, Token: l.Token, SessionID: p.SessionID,
+		ToolCallID: p.ToolCallID, Input: p.Input,
+		RegistryID: p.RegistryID, MessageID: messageID,
+		DiskBindingID: func() string {
+			if p.Policy != nil {
+				return p.Policy.DiskBindingID
+			}
+			return ""
+		}(),
+		Policy: p.Policy, Tool: p.Tool, CallCredentials: p.CallCredentials,
+		pctHandoff: pctClaimCapturedHandoff(env, p), // pct: claim the captured outer handoff once at executor start.
+		Ingress:    callIngress(env),
 	}
 	e := &batchAgentExecution{
+		cache: env.OutputCache, nodeID: l.ID, rootID: batchOutputRoot(l.ID),
 		deps:        f.deps,
 		req:         req,
+		pctHandoff:  req.pctHandoff,
 		scope:       newBatchAgentScope(),
 		driverDone:  make(chan struct{}),
 		watcherDone: make(chan struct{}),
@@ -103,9 +167,39 @@ func (f batchAgentFamily) start(ctx context.Context, _ batchLeafEnv, l jobbatch.
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	e.cancel = cancel
+	if p.Policy != nil && p.Policy.DiskBindingID != "" && p.diskProvider == nil {
+		cancel()
+		if e.pctHandoff != nil {
+			e.pctHandoff.pctRelease()
+		}
+		return nil, ErrDiskProviderUnavailable
+	}
+	// R12-H2 P1-4: carry the App-owned binding registry into the driver so
+	// WithCallOptions/diskBinding and any re-registration resolve
+	// through the SAME instance (never a process global). env.DiskBindings
+	// is injected by the runtime's LeafEnv.
+	runCtx = withDiskProviderRegistry(runCtx, env.DiskBindings)
+	if p.diskProvider != nil && p.Policy != nil {
+		runCtx = WithCallOptions(runCtx, boundCallOptions(p.diskProvider, p.Policy.DiskBindingID, env.DiskBindings))
+		// R12-H2 P1-4: stamp the provider the way generic leaves do
+		// (batchLeafRunContext), so batchDiskProviderFrom(runCtx) works in
+		// the driver. NOT batchLeafRunContext — it would re-stamp
+		// session/message, which the agent family sets below.
+		runCtx = context.WithValue(runCtx, batchDiskProviderContextKey{}, p.diskProvider)
+	}
+	runCtx = context.WithValue(runCtx, tools.SessionIDContextKey, p.SessionID)
+	runCtx = context.WithValue(runCtx, tools.MessageIDContextKey, messageID)
+	runCtx = withBatchBridgeInvocation(runCtx, batchBridgeInvocation{RegistryID: p.RegistryID, MessageID: messageID})
+	if e.pctHandoff != nil {
+		// pct: carry this executor's handoff into the child agent run context.
+		runCtx = context.WithValue(runCtx, pctDelegationHandoffKey{}, e.pctHandoff)
+	}
 	turn, err := e.launch(runCtx)
 	if err != nil {
 		cancel()
+		if e.pctHandoff != nil {
+			e.pctHandoff.pctRelease()
+		}
 		return nil, err
 	}
 	e.mu.Lock()
@@ -124,35 +218,68 @@ func (f batchAgentFamily) start(ctx context.Context, _ batchLeafEnv, l jobbatch.
 	return e, nil
 }
 
-// launch calls the run factory with panic containment; a panic means no
-// execution exists.
+func (e *batchAgentExecution) requestSnapshot() batchAgentRunRequest {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.req
+}
+
+func (e *batchAgentExecution) bindChildSession(ctx context.Context, id string) error {
+	if e.deps.Bind == nil {
+		e.mu.Lock()
+		e.req.ChildSessionID = id
+		e.mu.Unlock()
+		return nil
+	}
+	if err := e.deps.Bind(ctx, e.req.SessionID, string(e.rootID), string(e.nodeID), e.req.Token, id); err != nil {
+		return fmt.Errorf("batch bind child session: %w", err)
+	}
+	e.mu.Lock()
+	e.req.ChildSessionID = id
+	e.mu.Unlock()
+	return nil
+}
+
+func (e *batchAgentExecution) markNoChildSelected() {
+	e.mu.Lock()
+	e.req.NoChildSelected = true
+	e.mu.Unlock()
+}
+
+// launch calls the run factory with panic containment; a panic means no execution exists.
 func (e *batchAgentExecution) launch(runCtx context.Context) (turn batchAgentTurn, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			turn, err = nil, &batchStartError{"agent_start_panic", fmt.Errorf("%v", r)}
 		}
 	}()
-	return e.deps.Runs.StartAgentTurn(runCtx, e.req, batchAgentHost{Ask: e.ask})
+	return e.deps.Runs.StartAgentTurn(runCtx, e.requestSnapshot(), batchAgentHost{
+		Ask: e.askBatchQuestion, BindChildSession: e.bindChildSession, NoChildSelected: e.markNoChildSelected,
+	})
 }
 
 type batchAgentExecution struct {
+	cache  *batchOutputCache
+	nodeID jobbatch.ID
+	rootID jobbatch.ID
 	deps   batchAgentDeps
 	req    batchAgentRunRequest
 	scope  *batchAgentScope
 	cancel context.CancelFunc
 
-	mu       sync.Mutex
-	turn     batchAgentTurn
-	stopped  bool
-	disposed bool
-	content  []byte
-	result   jobbatch.Result
-	reported bool
-
-	driverDone  chan struct{} // Driver goroutine exit: late kill barrier.
-	watcherDone chan struct{}
-	finished    chan struct{}  // Closed once, when the scope result is fixed.
-	internal    sync.WaitGroup // Adapter goroutines; zero again after Dispose.
+	mu               sync.Mutex
+	turn             batchAgentTurn
+	stopped          bool
+	disposed         bool
+	content          []byte
+	result           jobbatch.Result
+	reported         bool
+	pctHandoff       *pctDelegationHandoff
+	driverDone       chan struct{} // Driver goroutine exit: late kill barrier.
+	watcherDone      chan struct{}
+	finished         chan struct{}  // Closed once, when the scope result is fixed.
+	internal         sync.WaitGroup // Adapter goroutines; zero again after Dispose.
+	questionSequence uint64
 }
 
 var (
@@ -173,9 +300,13 @@ func (e *batchAgentExecution) heldDepth() (int, bool) {
 }
 
 // ask implements the host question channel of one incarnation.
-func (e *batchAgentExecution) ask(ctx context.Context, depth int, question string) (json.RawMessage, error) {
+func (e *batchAgentExecution) askBatchQuestion(ctx context.Context, depth int, question string) (json.RawMessage, error) {
 	h, err := e.scope.hold(depth)
 	if err != nil {
+		return nil, err
+	}
+	if err := e.publishQuestion(ctx, depth, question); err != nil {
+		e.scope.discardHold(h)
 		return nil, err
 	}
 	select {
@@ -187,8 +318,19 @@ func (e *batchAgentExecution) ask(ctx context.Context, depth int, question strin
 	}
 }
 
-// watch runs the scope watcher: it waits for the turn to end, then for a
-// confirmed scope closure, and reports exactly once.
+func (e *batchAgentExecution) publishQuestion(ctx context.Context, depth int, question string) error {
+	if e.deps.QuestionPublisher == nil {
+		return errors.New("batch question: publisher unavailable")
+	}
+	req := e.requestSnapshot()
+	e.scope.mu.Lock()
+	e.scope.questionSequence++
+	sequence := e.scope.questionSequence
+	e.scope.mu.Unlock()
+	return e.deps.QuestionPublisher.PublishChildQuestion(context.WithoutCancel(ctx), batchChildQuestionNotice{Owner: req.SessionID, ChildSessionID: req.ChildSessionID, NodeID: string(req.NodeID), Token: req.Token, Depth: depth, Sequence: sequence, Question: question})
+}
+
+// watch waits for turn completion, then confirmed scope closure, and reports exactly once.
 func (e *batchAgentExecution) watch(ctx context.Context, turn batchAgentTurn, report func(jobbatch.Result)) {
 	defer close(e.watcherDone)
 	select {
@@ -206,7 +348,11 @@ func (e *batchAgentExecution) watch(ctx context.Context, turn batchAgentTurn, re
 		// Reads survive a stop cancellation: confirmed closure is a fact,
 		// not an acknowledgement.
 		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), poll)
-		live, complete := e.deps.Descendants.DescendantsLive(dctx, e.req)
+		req := e.requestSnapshot()
+		live, complete := e.deps.Descendants.DescendantsLive(dctx, req)
+		if req.NoChildSelected {
+			live, complete = false, true
+		}
 		e.scope.descendants(live, complete)
 		if e.scope.closedNow() {
 			cancel()
@@ -221,7 +367,10 @@ func (e *batchAgentExecution) watch(ctx context.Context, turn batchAgentTurn, re
 	if !e.scope.markClosed() {
 		return // Another path closed it; report exactly once.
 	}
-	e.finish(batchAgentScopeResult(turn.Result(), turn.Err(), e.scope.stop()), report)
+	// Package S (jb/psc): settle with the child's refreshed final outcome
+	// for this delegation, never the captured initial (pre-reaction)
+	// answer.
+	e.finish(batchAgentScopeResult(pscRefreshedTurnResult(e.deps.ChildFacts, e.requestSnapshot(), turn.Result(), turn.Err()), turn.Err(), e.scope.stop()), report)
 }
 
 // finish fixes the terminal result once, retains the output and reports.
@@ -231,9 +380,12 @@ func (e *batchAgentExecution) finish(result jobbatch.Result, report func(jobbatc
 		e.mu.Unlock()
 		return
 	}
+	e.content = []byte(result.Summary)
+	if e.cache != nil {
+		e.cache.putFor(e.nodeID, e.rootID, jobbatch.OutputChunk{Data: e.content, Next: uint64(len(e.content)), EOF: true})
+	}
 	e.reported = true
 	e.result = result
-	e.content = []byte(result.Summary)
 	close(e.finished)
 	e.mu.Unlock()
 	report(result)
@@ -303,11 +455,14 @@ func (e *batchAgentExecution) ReadOutput(ctx context.Context, cursor uint64) (jo
 	if cursor > next {
 		cursor = next
 	}
-	return jobbatch.OutputChunk{Data: append([]byte(nil), e.content[cursor:]...), Next: next, EOF: true}, nil
+	return jobbatch.OutputChunk{Data: append([]byte(nil), e.content[cursor:]...), Next: next, Oldest: 0, EOF: true}, nil
 }
 
 // Dispose waits for the late kill (driver exit) and the watcher, then
-// releases the generation state: the question channel and retained output.
+// releases generation state. It deliberately does NOT release the
+// execution owner: the interface-preserving physical-Dispose wrapper
+// (batch_exec_binding.go) is the ONLY execution-owner releaser, and only
+// after this disposal — including the child-driver exit drain — succeeded.
 func (e *batchAgentExecution) Dispose(ctx context.Context) error {
 	select {
 	case <-e.finished:
@@ -332,6 +487,10 @@ func (e *batchAgentExecution) Dispose(ctx context.Context) error {
 	}
 	e.disposed = true
 	e.content = nil
+	if e.pctHandoff != nil {
+		// pct: release the executor-owned handoff on confirmed disposal.
+		e.pctHandoff.pctRelease()
+	}
 	return nil
 }
 
@@ -363,4 +522,34 @@ func batchAgentScopeResult(res batchAgentTurnResult, turnErr error, stopped bool
 	}
 	r.Details = batchEnvelope(res.Response)
 	return r
+}
+
+// pscRefreshTimeout bounds one child final-outcome refresh at closure.
+const pscRefreshTimeout = 5 * time.Second
+
+// pscRefreshedTurnResult (package S, jb/psc) replaces the captured initial
+// response with the child's refreshed final outcome at confirmed closure.
+// A leaf-run infrastructure error (turnErr non-nil) is never refreshed —
+// the run failed before a child outcome exists. No child selected (or no
+// facts wired): nothing to refresh. A refreshed failed initial keeps
+// failing: the facts' marker-aware refresh (refreshSubAgentCompletion)
+// checks reaction-failure markers FIRST, so a permanently failed reaction
+// settlement delivers its failure, never a stale success.
+func pscRefreshedTurnResult(facts BatchChildReactionFacts, req batchAgentRunRequest, res batchAgentTurnResult, turnErr error) batchAgentTurnResult {
+	if facts == nil || req.ChildSessionID == "" || req.NoChildSelected || turnErr != nil {
+		return res
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pscRefreshTimeout)
+	defer cancel()
+	refreshed, ok := facts.ChildFinalOutcome(ctx, req.ChildSessionID, AsyncCompletion{
+		SessionID: req.ChildSessionID, ToolCallID: req.ToolCallID, ToolName: req.Tool,
+		Content: res.Response.Content, IsError: res.Response.IsError,
+	})
+	if !ok {
+		return res
+	}
+	// A refreshed outcome replaces the captured response entirely; the
+	// initial turn's task_outcome declaration is not carried over — the
+	// child's final turn supersedes it.
+	return batchAgentTurnResult{Response: fantasy.ToolResponse{Content: refreshed.Content, IsError: refreshed.IsError}}
 }

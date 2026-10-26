@@ -47,12 +47,12 @@ type mailboxLikeCoordinator struct {
 	epoch       uint64
 	reserveHits int // counts every ReserveExclusive call, successful or not.
 
-	// Recorded under mu: rerun must call CancelTurn (never the full Stop) and,
-	// after a committed truncation, StopRerunJobs with the voided set.
+	// Recorded under mu: rerun must call CancelTurn (never the full Stop).
+	// (The post-commit stop of the voided batch incarnations goes to the
+	// OPTIONAL agent.BatchRerunStopper surface on a detached goroutine; stop
+	// observations live on batchStopCoordinator, not on this fake.)
 	cancelTurnCalls int
 	stopCalls       int
-	stopRerunCalls  int
-	stopRerunVoided []session.VoidedAsyncJob
 
 	runSideEffect func()
 }
@@ -125,7 +125,7 @@ func (m *mailboxLikeCoordinator) SetAllowPeakHours(allow bool)                  
 func (m *mailboxLikeCoordinator) SetPersistentMode(persistent bool)                {}
 func (m *mailboxLikeCoordinator) ResetAutoResumeCounter(sessionID string)          {}
 
-func (m *mailboxLikeCoordinator) RebuildSessionAgentCall(ctx context.Context, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
+func (m *mailboxLikeCoordinator) RebuildSessionAgentCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
 	return agent.SessionAgentCall{}, nil
 }
 
@@ -136,13 +136,6 @@ func (m *mailboxLikeCoordinator) RunSessionAgentCall(ctx context.Context, call a
 func (m *mailboxLikeCoordinator) CancelTurn(sessionID string) {
 	m.mu.Lock()
 	m.cancelTurnCalls++
-	m.mu.Unlock()
-}
-
-func (m *mailboxLikeCoordinator) StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob) {
-	m.mu.Lock()
-	m.stopRerunCalls++
-	m.stopRerunVoided = append(m.stopRerunVoided, voided...)
 	m.mu.Unlock()
 }
 

@@ -173,6 +173,7 @@ func TestRestoreCommands_Table(t *testing.T) {
 // TestRestoreCommands_EmptyState covers the nothing-set-anywhere case: the
 // section still prints with the placeholder, and --json carries [] not null.
 func TestRestoreCommands_EmptyState(t *testing.T) {
+	ktavGateOn(t)
 	isolatedModelsEnv(t)
 
 	resetModelsStateFlags(t)
@@ -195,6 +196,7 @@ func TestRestoreCommands_EmptyState(t *testing.T) {
 // must be re-creatable byte-for-byte by replaying the emitted commands
 // through the REAL command tree (rootCmd.Execute) in a fresh store.
 func TestRestoreCommands_RoundTrip(t *testing.T) {
+	ktavGateOn(t)
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
@@ -286,6 +288,7 @@ RESTORE (run these to re-create this state)
 // against the literal golden above: any byte changed in EFFECTIVE, SCOPES,
 // the separator, the heading or the command lines turns this red.
 func TestRestoreCommands_TextPrefixByteIdentical(t *testing.T) {
+	ktavGateOn(t)
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
@@ -306,6 +309,7 @@ func TestRestoreCommands_TextPrefixByteIdentical(t *testing.T) {
 // TestRestoreCommands_JSONShape pins the --json contract: restore_commands
 // is an array of strings and every pre-existing key is still present.
 func TestRestoreCommands_JSONShape(t *testing.T) {
+	ktavGateOn(t)
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
@@ -330,6 +334,7 @@ func TestRestoreCommands_JSONShape(t *testing.T) {
 // ever carry provider/model/effort: a fake api key in the provider fixture
 // must not appear in any output, text or JSON.
 func TestRestoreCommands_NoSecretLeakage(t *testing.T) {
+	ktavGateOn(t)
 	globalPath := isolatedModelsEnv(t)
 
 	fixture := `{"providers":{"zai":{"api_key":"sk-FAKE-SECRET-abc123"}},` +

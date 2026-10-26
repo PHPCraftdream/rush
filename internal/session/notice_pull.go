@@ -1,46 +1,29 @@
-// The phase-4 durable-core notice pull (DUR-3, docs/plans/2026-09-28-async-
-// phase4-durable-core.md sec.3.3, step 3): the driver (package agent) calls
-// PullJobNotices/PullSessionNotices at turn start (before history loads)
-// and at each step boundary of a normal turn (PrepareStep) -- never during
-// a compaction step. Each pending row is pulled in its OWN transaction:
-// CAS delivery pending->done (voiding instead, for a session_notices row
-// whose task-still-running condition fails), INSERT the history message via
-// message.Service.CreateTx in the SAME transaction, record
-// notice_message_id, commit, then publish the CreatedEvent (PublishCreated)
-// AFTER the commit. A pull error never fails the caller's turn -- the row
-// stays pending and is retried on the next pull.
-//
-// Exposes only lightweight snapshot types (JobNoticeRow/SessionNoticeRow),
-// never the raw generated db.AsyncJob/db.SessionNotice: package agent does
-// not import internal/db anywhere, and this keeps it that way.
+// Retained session-notice snapshot types (H4 cutover extraction from the
+// legacy notice-pull machinery, doc sec.3.3): the lightweight row snapshots
+// and the session-notice kind vocabulary every consumer shares. The pull
+// itself lives on SessionNoticeStore (session_notice_store.go) and on the
+// batch outbox (batch_pull.go); the raw generated db rows never cross this
+// package boundary (package agent does not import internal/db anywhere,
+// and this keeps it that way).
 package session
 
 import (
-	"context"
-	"database/sql"
-	"errors"
-	"fmt"
-	"log/slog"
-	"time"
-
-	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
 )
 
 // Session-notice kind vocabulary (doc sec.2/3.4): shared between the
 // inserter (supervision.go, work_ledger_timeout.go, coordinator_background.go
-// in package agent) and pullOneSessionNotice's own void-condition switch
-// below, so both sides agree on the exact string without duplicating a
-// magic constant. NoticeKindWakeOnly/NoticeKindSupervision double as the
-// message-level NoticeKind value too (message.NoticeKind's existing
-// vocabulary); NoticeKindBGShellDone does NOT (see its own doc).
+// in package agent) and the pull-side void-condition switches, so both sides
+// agree on the exact string without duplicating a magic constant.
+// NoticeKindWakeOnly/NoticeKindSupervision double as the message-level
+// NoticeKind value too (message.NoticeKind's existing vocabulary);
+// NoticeKindBGShellDone does NOT (see its own doc).
 const (
 	// NoticeKindWakeOnly matches message.NoticeKind's existing
-	// "timeout_wake_only" value directly (work_ledger_timeout.go already
-	// used this exact string before step 3).
+	// "timeout_wake_only" value directly.
 	NoticeKindWakeOnly = "timeout_wake_only"
 	// NoticeKindSupervision matches message.NoticeKind's existing
-	// "supervision" value directly (supervision.go's noticeKindSupervision).
+	// "supervision" value directly.
 	NoticeKindSupervision = "supervision"
 	// NoticeKindWakeFailed matches message.NoticeKind's existing
 	// "wake_failed" value directly.
@@ -55,9 +38,9 @@ const (
 	NoticeKindBGShellDone = "bg_shell_done"
 	// NoticeKindChildQuestion announces a delegated child paused on a
 	// question it asked while its delegation is still held (#1157). Bound to
-	// the delegation row via job_tool_call_id and voided exactly like
-	// wake_only: if the delegation reached terminal before the pull, the
-	// release itself carries the question.
+	// the work row via job_tool_call_id and voided exactly like wake_only:
+	// if the work reached terminal before the pull, the release itself
+	// carries the question.
 	NoticeKindChildQuestion = "child_question"
 	// NoticeKindReactionChain is the marker persisted once when the reaction
 	// chain guard (#1113) stops a session's automatic turns: like
@@ -66,10 +49,9 @@ const (
 	NoticeKindReactionChain = "reaction_chain"
 )
 
-// JobNoticeRow is what a pulled async_jobs row hands its caller's build
-// callback: everything agent.FormatAsyncCompletion needs, taken from the
-// row itself (tool_name/timeout_seconds, step 3) rather than recomputed
-// elsewhere.
+// JobNoticeRow is what a pulled work row hands its caller's build callback:
+// everything agent.FormatAsyncCompletion needs, taken from the row itself
+// (tool_name/timeout_seconds) rather than recomputed elsewhere.
 type JobNoticeRow struct {
 	ToolCallID string
 	ToolName   string
@@ -97,448 +79,15 @@ type SessionNoticeRow struct {
 type PulledNotice struct {
 	Message message.Message
 	Wake    bool
-	// ClaimID is the async_jobs row's claim_id (empty for session_notices
-	// rows): the reaction chain guard's key for its idle launches.
+	// ClaimID is the work row's claim_id (empty for session_notices rows):
+	// the reaction chain guard's key for its idle launches.
 	ClaimID string
 }
 
-// PullJobNotices pulls every pending, announced async_jobs notice row for
-// owner (oldest first) into session history. A row another leader already
-// won (0 rows from the CAS) is silently skipped. A per-row error is logged
-// and skipped -- the row stays pending, never failing the whole pull.
-func (s *AsyncJobStore) PullJobNotices(ctx context.Context, messages message.Service, owner string, build func(JobNoticeRow) message.CreateMessageParams) ([]PulledNotice, error) {
-	rows, err := s.q.ListPendingAsyncJobNoticesForOwner(ctx, owner)
-	if err != nil {
-		return nil, err
-	}
-	var out []PulledNotice
-	for _, row := range rows {
-		pulled, ok, err := s.pullOneJobNotice(ctx, messages, owner, row, build)
-		if err != nil {
-			slog.Warn("async job store: pull job notice failed; row stays pending",
-				"session_id", owner, "tool_call_id", row.ToolCallID, "err", err)
-			continue
-		}
-		if ok {
-			out = append(out, pulled)
-		}
-	}
-	return out, nil
-}
-
-func (s *AsyncJobStore) pullOneJobNotice(ctx context.Context, messages message.Service, owner string, row db.AsyncJob, build func(JobNoticeRow) message.CreateMessageParams) (PulledNotice, bool, error) {
-	tx, err := s.sqlDB.BeginTx(ctx, nil)
-	if err != nil {
-		return PulledNotice{}, false, err
-	}
-	defer func() { _ = tx.Rollback() }() // no-op once committed
-	q := db.New(tx)
-
-	pulledRow, err := q.PullPendingAsyncJobNotice(ctx, db.PullPendingAsyncJobNoticeParams{
-		UpdatedAt: time.Now().Unix(), OwnerSessionID: owner, ToolCallID: row.ToolCallID,
-	})
-	if errors.Is(err, sql.ErrNoRows) {
-		return PulledNotice{}, false, nil // another leader already won this row
-	}
-	if err != nil {
-		return PulledNotice{}, false, err
-	}
-
-	params := build(JobNoticeRow{
-		ToolCallID: displayToolCallID(pulledRow.ToolCallID), ToolName: pulledRow.ToolName,
-		ClaimID: pulledRow.ClaimID, NoticeKind: pulledRow.NoticeKind, TimeoutSeconds: int(pulledRow.TimeoutSeconds),
-		State: pulledRow.State, ResultContent: pulledRow.ResultSummary.String,
-		ResultIsError: pulledRow.ResultIsError.Int64 != 0, OriginCLI: pulledRow.OriginCli != 0,
-	})
-	msg, err := messages.CreateTx(ctx, tx, owner, params)
-	if err != nil {
-		return PulledNotice{}, false, err
-	}
-	if _, err := q.SetAsyncJobNoticeMessageID(ctx, db.SetAsyncJobNoticeMessageIDParams{
-		NoticeMessageID: sql.NullString{String: msg.ID, Valid: true}, UpdatedAt: time.Now().Unix(),
-		OwnerSessionID: owner, ToolCallID: pulledRow.ToolCallID,
-	}); err != nil {
-		return PulledNotice{}, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return PulledNotice{}, false, err
-	}
-	// Publish AFTER commit (doc sec.3.3), exactly like message.Service.
-	// Create's own Publish call -- a subscriber must never see an event for
-	// a row that could still roll back.
-	messages.PublishCreated(msg)
-	return PulledNotice{Message: msg, Wake: pulledRow.Wake != 0, ClaimID: pulledRow.ClaimID}, true, nil
-}
-
-// PullSessionNotices pulls every pending session_notices row for owner
-// (oldest first). A row with a job_tool_call_id whose void condition (doc
-// sec.3.4) fails is marked void instead of delivered, in the same
-// transaction, and produces no message.
-func (s *AsyncJobStore) PullSessionNotices(ctx context.Context, messages message.Service, owner string, build func(SessionNoticeRow) message.CreateMessageParams) ([]PulledNotice, error) {
-	// Captured before any transaction opens (R2A-2): nothing a writer
-	// transaction runs may wait on store state.
-	ownHostID := s.HostID()
-	rows, err := s.q.ListPendingSessionNoticesForOwner(ctx, owner)
-	if err != nil {
-		return nil, err
-	}
-	var out []PulledNotice
-	for _, row := range rows {
-		pulled, ok, err := s.pullOneSessionNotice(ctx, messages, owner, ownHostID, row, build)
-		if err != nil {
-			slog.Warn("async job store: pull session notice failed; row stays pending",
-				"session_id", owner, "notice_id", row.ID, "err", err)
-			continue
-		}
-		if ok {
-			out = append(out, pulled)
-		}
-	}
-	return out, nil
-}
-
-func (s *AsyncJobStore) pullOneSessionNotice(ctx context.Context, messages message.Service, owner, ownHostID string, row db.SessionNotice, build func(SessionNoticeRow) message.CreateMessageParams) (PulledNotice, bool, error) {
-	tx, err := s.sqlDB.BeginTx(ctx, nil)
-	if err != nil {
-		return PulledNotice{}, false, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	q := db.New(tx)
-
-	pulledRow, err := q.PullPendingSessionNotice(ctx, db.PullPendingSessionNoticeParams{
-		UpdatedAt: time.Now().Unix(), ID: row.ID,
-	})
-	if errors.Is(err, sql.ErrNoRows) {
-		return PulledNotice{}, false, nil // another leader already won this row
-	}
-	if err != nil {
-		return PulledNotice{}, false, err
-	}
-
-	void, err := s.sessionNoticeVoidCondition(ctx, q, owner, ownHostID, pulledRow)
-	if err != nil {
-		return PulledNotice{}, false, err
-	}
-	if void {
-		// Downgrades the delivery='done' this same transaction's pull CAS
-		// above just set to 'void' -- see VoidPendingSessionNotice's own doc
-		// for why the guard is 'done', not 'pending'. rows==0 here would mean
-		// our own just-committed-in-tx write vanished, which cannot happen
-		// short of DB corruption -- treated as a hard error rather than a
-		// silent no-op so it is never mistaken for a benign lost race.
-		rows, err := q.VoidPendingSessionNotice(ctx, db.VoidPendingSessionNoticeParams{
-			UpdatedAt: time.Now().Unix(), ID: pulledRow.ID,
-		})
-		if err != nil {
-			return PulledNotice{}, false, err
-		}
-		if rows == 0 {
-			return PulledNotice{}, false, fmt.Errorf("void: row %d not in expected delivery='done' state within its own transaction", pulledRow.ID)
-		}
-		if err := tx.Commit(); err != nil {
-			return PulledNotice{}, false, err
-		}
-		return PulledNotice{}, false, nil
-	}
-
-	params := build(SessionNoticeRow{ID: pulledRow.ID, Kind: pulledRow.Kind, Text: pulledRow.Text})
-	msg, err := messages.CreateTx(ctx, tx, owner, params)
-	if err != nil {
-		return PulledNotice{}, false, err
-	}
-	if _, err := q.SetSessionNoticeMessageID(ctx, db.SetSessionNoticeMessageIDParams{
-		NoticeMessageID: sql.NullString{String: msg.ID, Valid: true}, UpdatedAt: time.Now().Unix(), ID: pulledRow.ID,
-	}); err != nil {
-		return PulledNotice{}, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return PulledNotice{}, false, err
-	}
-	messages.PublishCreated(msg)
-	return PulledNotice{Message: msg, Wake: pulledRow.Wake != 0}, true, nil
-}
-
-// sessionNoticeVoidCondition voids invalid wake_only/child_question jobs and supervision
-// without a non-void running job on a nonempty host not definitely dead.
-func (s *AsyncJobStore) sessionNoticeVoidCondition(ctx context.Context, q *db.Queries, owner, ownHostID string, row db.SessionNotice) (bool, error) {
-	switch row.Kind {
-	case NoticeKindWakeOnly, NoticeKindChildQuestion:
-		if !row.JobToolCallID.Valid {
-			return false, nil
-		}
-		job, err := q.GetAsyncJob(ctx, db.GetAsyncJobParams{OwnerSessionID: owner, ToolCallID: row.JobToolCallID.String})
-		if errors.Is(err, sql.ErrNoRows) {
-			return true, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		// A job voided by a Rerun never surfaces its check-in either, even while
-		// its (possibly unreachable) executor is still running.
-		return job.State != "running" || job.Delivery == "void", nil
-	case NoticeKindSupervision:
-		// A15: a running row on a PROVABLY DEAD host is not open scope --
-		// reuse the same liveness predicate the rest of the scope logic uses
-		// (HostNotDead, doc sec.3.5/3.6), rather than counting any running
-		// row regardless of whether its host is still alive.
-		running, err := q.ListRunningAsyncJobsForOwners(ctx, []string{owner})
-		if err != nil {
-			return false, err
-		}
-		for _, r := range running {
-			// A job voided by a Rerun is not open scope either, even while its
-			// (possibly unreachable) executor still runs (R2A-9).
-			if r.Delivery == "void" {
-				continue
-			}
-			if s.hostNotDeadFor(ownHostID, r.HostID) {
-				return false, nil
-			}
-		}
-		return true, nil
-	default:
-		return false, nil
-	}
-}
-
-// InsertSessionNotice persists a session_notices row with delivery='pending'
-// (doc sec.2/3.2): supervision, the wake_failed marker, SDK background-shell
-// completion, and the wake_only timeout check-in all go through this instead
-// of InjectMessage (step 3 removes that path for these four notice kinds --
-// see the NoticeKind* constants above for the kind vocabulary). jobToolCallID,
-// when non-empty, names the async_jobs row sessionNoticeVoidCondition checks
-// at pull time; pass "" for a notice with no such condition (wake_failed,
-// bg_shell_done).
-func (s *AsyncJobStore) InsertSessionNotice(ctx context.Context, owner, kind, text string, wake bool, jobToolCallID string) error {
-	wakeInt := int64(0)
-	if wake {
-		wakeInt = 1
-	}
-	var jobToolCallIDParam sql.NullString
-	if jobToolCallID != "" {
-		jobToolCallIDParam = sql.NullString{String: jobToolCallID, Valid: true}
-	}
-	now := time.Now().Unix()
-	_, err := s.q.InsertSessionNotice(ctx, db.InsertSessionNoticeParams{
-		Owner: owner, Kind: kind, Text: text, Wake: wakeInt,
-		JobToolCallID: jobToolCallIDParam, CreatedAt: now, UpdatedAt: now,
-	})
-	return err
-}
-
-// AnnounceStarted is the ack gate's fused transaction (DUR-7, doc sec.3.8):
-// the "started" tool-result message and announced=1 commit TOGETHER, with
-// no condition on the row's state -- a job that races to terminal before
-// its own "started" write commits must still be marked announced, so its
-// already-pending notice becomes pullable. rows==0 (ErrAsyncJobGone) means
-// the row no longer exists (its owner session was deleted; Rerun never
-// deletes rows): a benign no-op for the caller, mirroring MarkAnnounced's
-// own doc. The caller
-// (workLedger.acknowledgeWithMessageTx) is responsible for the in-memory
-// tail (announced flag, delivery via the existing wake-hint machinery) --
-// this function only owns the durable half.
-func (s *AsyncJobStore) AnnounceStarted(ctx context.Context, messages message.Service, owner, toolCallID string, params message.CreateMessageParams) (message.Message, error) {
-	tx, err := s.sqlDB.BeginTx(ctx, nil)
-	if err != nil {
-		return message.Message{}, fmt.Errorf("async job store: announce started: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() // no-op once committed
-	q := db.New(tx)
-
-	msg, err := messages.CreateTx(ctx, tx, owner, params)
-	if err != nil {
-		return message.Message{}, fmt.Errorf("async job store: announce started: create message: %w", err)
-	}
-	rows, err := q.MarkAsyncJobAnnounced(ctx, db.MarkAsyncJobAnnouncedParams{
-		UpdatedAt: time.Now().Unix(), OwnerSessionID: owner, ToolCallID: toolCallID,
-	})
-	if err != nil {
-		return message.Message{}, fmt.Errorf("async job store: announce started: mark announced: %w", err)
-	}
-	if rows == 0 {
-		return message.Message{}, ErrAsyncJobGone
-	}
-	// Record the announcing message: Rerun voids the row by the message id it
-	// deleted, not by a possibly provider-reused tool_call_id.
-	if _, err := q.SetAsyncJobAnnounceMessageID(ctx, db.SetAsyncJobAnnounceMessageIDParams{
-		AnnounceMessageID: sql.NullString{String: msg.ID, Valid: true}, UpdatedAt: time.Now().Unix(),
-		OwnerSessionID: owner, ToolCallID: toolCallID,
-	}); err != nil {
-		return message.Message{}, fmt.Errorf("async job store: announce started: set announce message id: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return message.Message{}, fmt.Errorf("async job store: announce started: commit: %w", err)
-	}
-	// Publish AFTER commit (doc sec.3.3's same rule applied to the ack gate):
-	// a subscriber must never observe an event for a row that could still
-	// roll back.
-	messages.PublishCreated(msg)
-	return msg, nil
-}
-
-// AnnounceJobKillResult is job_kill's own fused transaction (A3, doc
-// sec.3.2's law "delivery='done' => the row names the message that carries
-// its result"): job_kill's Transition call (causeJobKill) already set
-// delivery='done'/reacted=1 directly, bypassing the ordinary pull -- so
-// nothing else ever writes notice_message_id for that row. This mirrors
-// AnnounceStarted's pattern: the tool-result message insert and the
-// notice_message_id write commit in ONE transaction, so a crash between them
-// can never leave the row 'done' with no named message.
-//
-// killedClaimID is the claim_id of the TARGET async_jobs row (the job that was
-// killed; the claim job_kill's own transition won) -- never its tool_call_id:
-// a new claim under a reused id archives the killed row while job_kill is
-// still running (R3A-2), and a claim id names one incarnation of a job.
-// params' own tool_call_id is job_kill's own call. The guarded write
-// (SetAsyncJobNoticeMessageIDForClaimIfDone) is defensive: killedClaimID is
-// passed only after job_kill's own Transition won, and no other writer
-// re-pends or names a done job_kill row (Rerun re-pends by notice_message_id,
-// which an unnamed row never matches). The one reachable 0-rows cause is
-// deletion (the owner session's cascade); it is not an error -- job_kill's
-// tool-result message is persisted regardless, since a tool_use must always
-// get a tool_result.
-func (s *AsyncJobStore) AnnounceJobKillResult(ctx context.Context, messages message.Service, owner, killedClaimID string, params message.CreateMessageParams) (message.Message, error) {
-	if killedClaimID == "" {
-		return message.Message{}, errors.New("async job store: announce job_kill result: empty claim id")
-	}
-	tx, err := s.sqlDB.BeginTx(ctx, nil)
-	if err != nil {
-		return message.Message{}, fmt.Errorf("async job store: announce job_kill result: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() // no-op once committed
-	q := db.New(tx)
-
-	msg, err := messages.CreateTx(ctx, tx, owner, params)
-	if err != nil {
-		return message.Message{}, fmt.Errorf("async job store: announce job_kill result: create message: %w", err)
-	}
-	if _, err := q.SetAsyncJobNoticeMessageIDForClaimIfDone(ctx, db.SetAsyncJobNoticeMessageIDForClaimIfDoneParams{
-		NoticeMessageID: sql.NullString{String: msg.ID, Valid: true}, UpdatedAt: time.Now().Unix(),
-		OwnerSessionID: owner, ClaimID: killedClaimID,
-	}); err != nil {
-		return message.Message{}, fmt.Errorf("async job store: announce job_kill result: set notice message id: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return message.Message{}, fmt.Errorf("async job store: announce job_kill result: commit: %w", err)
-	}
-	// Publish AFTER commit (doc sec.3.3's same rule applied here).
-	messages.PublishCreated(msg)
-	return msg, nil
-}
-
-// InlineAnnouncement is AnnounceInlineResult's outcome: the committed
-// tool-result message plus how many rows the delivery CAS closed.
-type InlineAnnouncement struct {
-	Msg message.Message
-	// DeliveryRows is DeliverAsyncJobInline's rows-affected. 1 = the row's
-	// delivery closed as 'done' in the same transaction (the normal case).
-	// 0 = the row was already voided by a Rerun (or deleted): the announce
-	// half (announced=1, announce_message_id) still committed -- the tool
-	// result must exist in history -- but there is no pending delivery to
-	// close; the caller takes the ordinary in-memory tail and never waits
-	// for a wake.
-	DeliveryRows int64
-}
-
-// AnnounceInlineResult is the A14 inline window's Tx2 (docs/plans/2026-10-
-// 01-inline-window.md), the inline counterpart of AnnounceStarted beside
-// which it lives: the inline tool-result message (which already carries the
-// job's output) and the row's delivery close in ONE transaction, so a crash
-// can never leave the row 'pending' with its result already in history.
-// Shape is job_kill's DUR-11 fusion: insert message -> DeliverAsyncJobInline
-// CAS (claim-keyed, terminal, delivery='pending' -> done/wake=0/reacted=1).
-//
-// ErrAsyncJobGone (MarkAsyncJobAnnounced's 0 rows, same key as
-// AnnounceStarted) rolls the whole transaction back; the caller falls back
-// to a plain messages.Create exactly like the B15 path. A 0 from the
-// delivery CAS is NOT an error (only a Rerun's void or a delete reaches it
-// -- the caller checked the committed terminal state under the ledger lock
-// moments earlier): the announce half commits so the result stays in
-// history, and the caller takes the ordinary tail with no delivery to
-// wait for.
-func (s *AsyncJobStore) AnnounceInlineResult(ctx context.Context, messages message.Service, owner, toolCallID, claimID string, params message.CreateMessageParams) (InlineAnnouncement, error) {
-	tx, err := s.sqlDB.BeginTx(ctx, nil)
-	if err != nil {
-		return InlineAnnouncement{}, fmt.Errorf("async job store: announce inline result: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() // no-op once committed
-	q := db.New(tx)
-
-	msg, err := messages.CreateTx(ctx, tx, owner, params)
-	if err != nil {
-		return InlineAnnouncement{}, fmt.Errorf("async job store: announce inline result: create message: %w", err)
-	}
-	rows, err := q.MarkAsyncJobAnnounced(ctx, db.MarkAsyncJobAnnouncedParams{
-		UpdatedAt: time.Now().Unix(), OwnerSessionID: owner, ToolCallID: toolCallID,
-	})
-	if err != nil {
-		return InlineAnnouncement{}, fmt.Errorf("async job store: announce inline result: mark announced: %w", err)
-	}
-	if rows == 0 {
-		return InlineAnnouncement{}, ErrAsyncJobGone
-	}
-	// Same Rerun-by-message rule as AnnounceStarted: the row is voided by
-	// the message id it deleted, and this inline result IS that message.
-	if _, err := q.SetAsyncJobAnnounceMessageID(ctx, db.SetAsyncJobAnnounceMessageIDParams{
-		AnnounceMessageID: sql.NullString{String: msg.ID, Valid: true}, UpdatedAt: time.Now().Unix(),
-		OwnerSessionID: owner, ToolCallID: toolCallID,
-	}); err != nil {
-		return InlineAnnouncement{}, fmt.Errorf("async job store: announce inline result: set announce message id: %w", err)
-	}
-	deliveryRows, err := q.DeliverAsyncJobInline(ctx, db.DeliverAsyncJobInlineParams{
-		NoticeMessageID: sql.NullString{String: msg.ID, Valid: true}, UpdatedAt: time.Now().Unix(),
-		OwnerSessionID: owner, ClaimID: claimID,
-	})
-	if err != nil {
-		return InlineAnnouncement{}, fmt.Errorf("async job store: announce inline result: deliver: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return InlineAnnouncement{}, fmt.Errorf("async job store: announce inline result: commit: %w", err)
-	}
-	// Publish AFTER commit (doc sec.3.3's same rule as every other fused
-	// write): a subscriber must never observe an event for a row that could
-	// still roll back.
-	messages.PublishCreated(msg)
-	return InlineAnnouncement{Msg: msg, DeliveryRows: deliveryRows}, nil
-}
-
-// (the full `sessions why`/`sessions jobs` reader is doc sec.5 step 7's
-// job) -- every row for owner, oldest first, regardless of delivery state.
-func (s *AsyncJobStore) ListSessionNotices(ctx context.Context, owner string) ([]SessionNoticeRow, error) {
-	rows, err := s.q.ListSessionNoticesForOwner(ctx, owner)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]SessionNoticeRow, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, SessionNoticeRow{ID: row.ID, Kind: row.Kind, Text: row.Text})
-	}
-	return out, nil
-}
-
-// RependJobKillRowWithoutNotice is R2A-8's live-process repair for job_kill
-// (DUR-11): causeJobKill commits delivery='done', reacted=1 first and
-// AnnounceJobKillResult names the result message later -- when that fused
-// write does not happen (an error result, a cancelled context, a failed
-// transaction) the row is 'done' with no notice_message_id: never pulled,
-// invisible to Rerun's re-pend, its output lost. This puts exactly that row
-// back to a plain pending, wake=0 notice so the owner's next pull shows the
-// result (a crash between the two writes is repaired by dead-host recovery
-// instead). claimID must be the claim the caller's own transition won; it is
-// the only key (R3A-2): the row may already have been renamed out of its
-// tool_call_id by a later claim under a reused id, and that later claim is
-// never touched. An empty claimID matches nothing. Reports whether a row was
-// re-pended; false is normal (the fused write succeeded, or the row is not a
-// job_kill row awaiting its message).
-func (s *AsyncJobStore) RependJobKillRowWithoutNotice(ctx context.Context, owner, claimID string) (bool, error) {
-	if claimID == "" {
-		return false, nil
-	}
-	rows, err := s.q.RependJobKillRowWithoutNotice(ctx, db.RependJobKillRowWithoutNoticeParams{
-		UpdatedAt: time.Now().Unix(), Owner: owner, ClaimID: claimID,
-	})
-	if err != nil {
-		return false, fmt.Errorf("async job store: re-pend job_kill row without notice: %w", err)
-	}
-	return rows > 0, nil
+// DebtNoticeRef is one session_notices debt row reference (the row id is
+// AUTOINCREMENT, never reused): the settle-by-failure accounting acts only
+// on rows still matching this identity.
+type DebtNoticeRef struct {
+	ID              int64
+	NoticeMessageID string
 }

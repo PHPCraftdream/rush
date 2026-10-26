@@ -61,12 +61,33 @@ func callFromActive(active SessionAgentCall) SessionAgentCall {
 	return call
 }
 
-// drainCallFor builds sessionID's Drain call: a delegated child uses its
-// driver's own frozen template (same model/provider/sampling shape the
-// delegation launched with, doc sec.3.4), a root/non-driver session
-// resolves its own pinned models exactly like an ordinary wake turn does
-// today (wakeNoticeCall's non-driver branch, which this replaces).
-func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (SessionAgentCall, error) {
+func applyDrainModelOptions(call SessionAgentCall, model Model) SessionAgentCall {
+	call.SmartModel = &model
+	call.MaxOutputTokens = model.CatwalkCfg.DefaultMaxTokens
+	if model.ModelCfg.MaxTokens != 0 {
+		call.MaxOutputTokens = model.ModelCfg.MaxTokens
+	}
+	call.Temperature = model.ModelCfg.Temperature
+	call.TopP = model.ModelCfg.TopP
+	call.TopK = model.ModelCfg.TopK
+	call.FrequencyPenalty = model.ModelCfg.FrequencyPenalty
+	call.PresencePenalty = model.ModelCfg.PresencePenalty
+	return call
+}
+
+// drainCallFor builds sessionID's Drain call. Slot-derived child drivers
+// resolve their live role slot per new automatic turn; explicit/non-slot
+// drivers keep the frozen model. Root sessions resolve their own pins as usual.
+// R12-H2b §2.3: both branches resolve the session's execution fence
+// FIRST — the returned preparedContinuation holds the Continuation owner
+// across the dispatch window (the caller releases it after Run returns),
+// and its requirement is stamped onto the drain call (and, on the root
+// branch, onto the ctx so the pinned toolset is provider-backed). The root
+// branch cleans up after itself on every failure: a defer releases the
+// Continuation owner and closes the build scope unless the ownership was
+// transferred to the successful return. A lost binding fails closed typed
+// before anything runs.
+func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (SessionAgentCall, *preparedContinuation, error) {
 	if driver, ok := c.subAgentDrivers.get(sessionID); ok {
 		// §6.2 (preserved from the old wakeNoticeCall driver branch): every
 		// wake re-inherits the driver's parentSessionID's allowlist baseline
@@ -78,12 +99,71 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 			mgr.InheritSessionRunAllowlistForGeneration(driver.parentSessionID, sessionID, driver.generation)
 		}
 		call := newDrainCall(driver.callFor(""))
+		if driver.slotRole != "" && call.Credentials == nil {
+			if refreshed, providerCfg, ok := c.refreshDrainModel(ctx, driver.slotRole); ok {
+				call = applyDrainModelOptions(call, refreshed)
+				call.ProviderOptions = getProviderOptions(sessionID, refreshed, providerCfg)
+			}
+		}
 		c.freshenDrainClient(ctx, &call)
-		return call, nil
+		prep, prepErr := c.PrepareContinuation(ctx, sessionID, requirementFromCall(call))
+		if prepErr != nil {
+			return SessionAgentCall{}, nil, prepErr
+		}
+		prep.applyTo(&call)
+		return call, prep, nil
+	}
+	// Root branch: resolve the fence BEFORE model resolution so the pinned
+	// toolset is built with the provider already on the ctx (R12-H2b §2.3).
+	// Failure cleanup (gh#10b): every error return below that does not hand
+	// the Continuation owner to a caller must release it (and close the
+	// build scope it registered pins on) — the deferred abandon below runs
+	// unless the ownership is transferred at the final return.
+	prep, prepErr := c.PrepareContinuation(ctx, sessionID, nil)
+	if prepErr != nil {
+		return SessionAgentCall{}, nil, prepErr
+	}
+	var capOpts *CallOptions
+	transferred := false
+	defer func() {
+		if !transferred && prep != nil {
+			if capOpts != nil {
+				capOpts.buildScope.close()
+			}
+			prep.release()
+		}
+	}()
+	if prep != nil {
+		capOpts = &CallOptions{}
+		prep.applyToOptions(capOpts)
+		runSpec, policyErr := prep.restorePolicyBaseline(ctx, sessionID, capOpts)
+		if policyErr != nil {
+			return SessionAgentCall{}, nil, policyErr
+		}
+		ctx = WithCallOptions(ctx, capOpts)
+		// Carry the fence's folder-scope spec on the ctx too, mirroring
+		// ExecuteRun's per-call arming: its presence is what lets the
+		// durable queue re-serialize the scope.
+		if prep.requirement.FolderScopeSpec != nil {
+			ctx = WithFolderScopeSpec(ctx, fromSessionFolderScopeSpec(prep.requirement.FolderScopeSpec))
+		}
+		// Arm the fence's restricted-run policy in both forms: compiled for
+		// this turn's enforcement, spec for the durable re-serialization.
+		// Degrade-on-pattern-error, like the rebuild (T12): invalid patterns
+		// are dropped with a warning and the compiled allowlist stays
+		// restricted — the spec itself is still armed verbatim.
+		if runSpec != nil {
+			compiled, compileErr := permission.BuildRunAllowlist(*runSpec)
+			if compileErr != nil {
+				slog.Warn("drainCallFor: dropped invalid restricted-run patterns from the fence policy spec", "session_id", sessionID, "err", compileErr)
+			}
+			ctx = WithRunAllowlist(ctx, &compiled)
+			ctx = WithRunAllowlistSpec(ctx, runSpec)
+		}
 	}
 	pinned, err := c.resolveSessionModels(ctx, sessionID)
 	if err != nil {
-		return SessionAgentCall{}, err
+		return SessionAgentCall{}, nil, err
 	}
 	// A reaction after a long job may find the OAuth token expired: refresh it
 	// BEFORE the call is built (the web and child Drains bypass runInternal,
@@ -93,14 +173,21 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 		slog.Warn("Drain: OAuth token refresh failed; proceeding with the existing token", "session_id", sessionID, "error", refreshErr)
 	} else if refreshed {
 		if pinned, err = c.resolveSessionModels(ctx, sessionID); err != nil {
-			return SessionAgentCall{}, err
+			return SessionAgentCall{}, nil, err
 		}
 	}
 	call, err := c.buildCall(ctx, sessionID, "", pinned, nil)
 	if err != nil {
-		return SessionAgentCall{}, err
+		return SessionAgentCall{}, nil, err
 	}
-	return newDrainCall(call), nil
+	call = newDrainCall(call)
+	// Idempotent stamping: keeps DiskRequirement on the struct itself even
+	// though the ctx-carried options already carry it (R12-H2b §2.3).
+	prep.applyTo(&call)
+	// The Continuation owner now belongs to the caller, which releases it
+	// after Run returns; the deferred abandon must not fire.
+	transferred = true
+	return call, prep, nil
 }
 
 // reminderBeforeTail moves preparePrompt's trailing todo reminder in front

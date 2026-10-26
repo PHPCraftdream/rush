@@ -41,13 +41,15 @@ func TestHandleRerunMessage_OwnSessionStillReruns(t *testing.T) {
 	mockCoord := &cancellableHoldCoordinator{}
 	f.a.AgentCoordinator = mockCoord
 
+	// Rebind the batch reconcile seam to count commits (the only truncation
+	// leg left: the legacy rerunTruncate seam died with the flag gate).
 	var truncateCalls int
-	prev := rerunTruncate
-	rerunTruncate = func(context.Context, *sql.DB, message.Service, session.RerunTruncateParams) (session.RerunTruncation, error) {
+	prevReconcile := batchRerunReconcile
+	t.Cleanup(func() { batchRerunReconcile = prevReconcile })
+	batchRerunReconcile = func(context.Context, *sql.DB, message.Service, session.RerunTruncateParams) (session.BatchRerunTruncation, error) {
 		truncateCalls++
-		return session.RerunTruncation{}, nil
+		return session.BatchRerunTruncation{}, nil
 	}
-	t.Cleanup(func() { rerunTruncate = prev })
 
 	env := f.run(t)
 
@@ -82,12 +84,12 @@ func TestHandleRerunMessage_ForeignWorkspaceRefusedHistoryIntact(t *testing.T) {
 	require.NoError(t, err)
 
 	truncateCalls := 0
-	prev := rerunTruncate
-	rerunTruncate = func(context.Context, *sql.DB, message.Service, session.RerunTruncateParams) (session.RerunTruncation, error) {
+	prevReconcile := batchRerunReconcile
+	batchRerunReconcile = func(context.Context, *sql.DB, message.Service, session.RerunTruncateParams) (session.BatchRerunTruncation, error) {
 		truncateCalls++
-		return session.RerunTruncation{}, nil
+		return session.BatchRerunTruncation{}, nil
 	}
-	t.Cleanup(func() { rerunTruncate = prev })
+	t.Cleanup(func() { batchRerunReconcile = prevReconcile })
 
 	env := f.run(t)
 
@@ -95,8 +97,8 @@ func TestHandleRerunMessage_ForeignWorkspaceRefusedHistoryIntact(t *testing.T) {
 	require.Contains(t, env.Error, "belongs to", "the refusal states the ownership condition")
 	require.Contains(t, env.Error, foreignRoot, "the refusal names the owning workspace")
 	require.Contains(t, env.Error, "rush sessions fork", "the refusal offers the sanctioned way forward")
-	require.Zero(t, truncateCalls, "TruncateForRerun must NOT run for a foreign session — history stays intact")
-	cancelTurn, _, _, _, _ := mockCoord.counters()
+	require.Zero(t, truncateCalls, "BatchRerunReconcile must NOT run for a foreign session — history stays intact")
+	cancelTurn, _, _ := mockCoord.counters()
 	require.Zero(t, cancelTurn, "not even the live turn is cancelled for a foreign session")
 
 	require.True(t, f.exists(t, f.target.ID), "the target message must survive a refused rerun")
@@ -256,13 +258,15 @@ func TestWS1_LegacyRowsAreOwnedByGitCheckoutServer(t *testing.T) {
 		require.NoError(t, err)
 		require.Empty(t, row.WorkspaceRoot, "fixture: the rerun target is a legacy row")
 
+		// Rebind the batch reconcile seam to count commits (the only truncation
+		// leg left: the legacy rerunTruncate seam died with the flag gate).
 		var truncateCalls int
-		prev := rerunTruncate
-		rerunTruncate = func(context.Context, *sql.DB, message.Service, session.RerunTruncateParams) (session.RerunTruncation, error) {
+		prevReconcile := batchRerunReconcile
+		t.Cleanup(func() { batchRerunReconcile = prevReconcile })
+		batchRerunReconcile = func(context.Context, *sql.DB, message.Service, session.RerunTruncateParams) (session.BatchRerunTruncation, error) {
 			truncateCalls++
-			return session.RerunTruncation{}, nil
+			return session.BatchRerunTruncation{}, nil
 		}
-		t.Cleanup(func() { rerunTruncate = prev })
 
 		env := f.run(t)
 		require.Equal(t, EventResponse, env.Type,

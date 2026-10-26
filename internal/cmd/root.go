@@ -438,24 +438,32 @@ func connectAppDB(ctx context.Context, store *config.ConfigStore, cfg *config.Co
 	return db.Connect(ctx, cfg.Options.DataDirectory, opts...)
 }
 
+func initCommandConfig(cmd *cobra.Command) (*config.ConfigStore, string, bool, error) {
+	setSettingsAudit(cmd)
+	password, _ := cmd.Flags().GetString("password")
+	config.SetProcessPassword(password)
+	cwd, err := ResolveCwd(cmd)
+	if err != nil {
+		return nil, "", false, err
+	}
+	dataDir, _ := cmd.Flags().GetString("data-dir")
+	debug, _ := cmd.Flags().GetBool("debug")
+	store, err := config.Init(cwd, dataDir, debug)
+	if err != nil {
+		return nil, "", false, err
+	}
+	if err := checkAppPassword(cmd, store); err != nil {
+		return nil, "", false, err
+	}
+	return store, cwd, debug, nil
+}
+
 // setupApp handles the common setup logic for both interactive and non-interactive modes.
 // It returns the app instance, config, cleanup function, and any error.
 func setupApp(cmd *cobra.Command) (*app.App, error) {
-	debug, _ := cmd.Flags().GetBool("debug")
-	dataDir, _ := cmd.Flags().GetString("data-dir")
 	ctx := cmd.Context()
-
-	cwd, err := ResolveCwd(cmd)
+	store, cwd, debug, err := initCommandConfig(cmd)
 	if err != nil {
-		return nil, err
-	}
-
-	store, err := config.Init(cwd, dataDir, debug)
-	if err != nil {
-		return nil, err
-	}
-	store.StartOAuthDiskSync()
-	if err := checkAppPassword(cmd, store); err != nil {
 		return nil, err
 	}
 	if err := store.ModelsIntegrity(); err != nil {
@@ -527,20 +535,9 @@ func setupApp(cmd *cobra.Command) (*app.App, error) {
 // recoverInterruptedTurns keeps sane, even though they too skip
 // InitCoderAgent). Those must keep calling setupApp.
 func setupAppLite(cmd *cobra.Command) (*app.App, error) {
-	debug, _ := cmd.Flags().GetBool("debug")
-	dataDir, _ := cmd.Flags().GetString("data-dir")
 	ctx := cmd.Context()
-
-	cwd, err := ResolveCwd(cmd)
+	store, cwd, debug, err := initCommandConfig(cmd)
 	if err != nil {
-		return nil, err
-	}
-
-	store, err := config.Init(cwd, dataDir, debug)
-	if err != nil {
-		return nil, err
-	}
-	if err := checkAppPassword(cmd, store); err != nil {
 		return nil, err
 	}
 

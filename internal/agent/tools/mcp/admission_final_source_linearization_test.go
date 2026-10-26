@@ -14,6 +14,12 @@ import (
 )
 
 func TestMCPAdmissionFinalSourceLinearizationRejectsInPlaceChanges(t *testing.T) {
+	// Legacy JSON semantics: this test mutates the project rush.json bytes in
+	// place and requires the final-source linearization gate to observe them.
+	// With Ktav auto-migration on, config.Load renames rush.json to
+	// rush.ktav, so the fixture must stay in the legacy format.
+	restore := config.SetKtavAutoMigrateForTest(false)
+	t.Cleanup(restore)
 	t.Run("project and external sources", func(t *testing.T) {
 		store := isolatedMCPStore(t)
 		const name = "final-source-linearization"

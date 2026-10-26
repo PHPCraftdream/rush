@@ -295,15 +295,18 @@ func TestReleaseGate_P350_QueuedNotExecutedNeitherAcksNorSpamRetries(t *testing.
 
 	coord := &queuedNotExecutedCoordinator{}
 
-	// Fake TTL, so the pump's local backoff (one TTL) is an hour of fake time.
+	// Fake TTL, so the pump's local backoff (one TTL) is an hour of fake
+	// time. pumpTick is the tick period; see the backs-off test below for why
+	// period + epsilon advances are required after a coalescing jump.
 	const ttl = time.Hour
+	const pumpTick = ttl / 10
 	clk := newFakePumpClock(fakePumpEpoch)
 	probe := newFakeClockService(svc, clk)
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       probe,
 		Coordinator:    coord,
 		PumpInstanceID: "queued-not-executed-pump",
-		TestTick:       func() time.Duration { return ttl / 10 },
+		TestTick:       func() time.Duration { return pumpTick },
 		TestLeaseTTL:   ttl,
 		TestClock:      clk,
 	})
@@ -338,9 +341,22 @@ func TestReleaseGate_P350_QueuedNotExecutedNeitherAcksNorSpamRetries(t *testing.
 	require.Equal(t, int64(0), pending[0].Attempts, "must not have incurred an attempt penalty for external contention")
 
 	// The backoff is bounded: once a full TTL of fake time has passed the
-	// entry is attempted again.
+	// entry is attempted again. Advance a full tick period + epsilon per
+	// probe: Advance(ttl) coalesces and leaves next = now + period, so small
+	// advances would fire nothing. Never advance while the row is leased —
+	// a cleanup tick whose cutoff overtakes the lease stamp would reap it
+	// mid-execution and charge an attempt.
 	clk.Advance(ttl)
-	awaitPump(t, func() bool { return coord.calls.Load() >= 2 }, "the entry must be retried once its backoff window elapsed")
+	awaitPump(t, func() bool {
+		if coord.calls.Load() >= 2 {
+			return true
+		}
+		if e, getErr := svc.GetRunQueueEntry(ctx, "queued-not-executed-probe"); getErr == nil && e != nil && e.Status == "leased" {
+			return false // execution in flight; do not move fake time
+		}
+		clk.Advance(pumpTick + time.Millisecond)
+		return false
+	}, "the entry must be retried once its backoff window elapsed")
 }
 
 // slowCoordinator blocks every call until release is closed, tracking how
@@ -528,13 +544,14 @@ func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *test
 	coord := &queuedNotExecutedThenSuccessCoordinator{busyUntilCall: 25}
 
 	const ttl = time.Hour // fake time; also the local backoff length
+	const pumpTick = ttl / 10
 	clk := newFakePumpClock(fakePumpEpoch)
 	probe := newFakeClockService(svc, clk)
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       probe,
 		Coordinator:    coord,
 		PumpInstanceID: "queued-backoff-pump",
-		TestTick:       func() time.Duration { return ttl / 10 },
+		TestTick:       func() time.Duration { return pumpTick },
 		TestLeaseTTL:   ttl,
 		TestClock:      clk,
 	})
@@ -552,16 +569,47 @@ func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *test
 		require.NotNil(t, entry)
 		require.Equal(t, int64(0), entry.Attempts, "cycle %d: ErrCallQueuedNotExecuted must never cost an attempt", cycle)
 
-		// Elapse the local backoff. The tick that consumes this may run
-		// before the previous execution has released its in-flight slot
-		// (a few instructions after the Nack), and is then skipped; keep
-		// ticking by a millisecond until the retry lands.
+		// Elapse the local backoff. The single tick buffered by Advance(ttl)
+		// can be skipped two ways: the previous execution's in-flight
+		// admission slot (run_queue_admission.go:351, released only after
+		// executeEntrySync returns) is still held when processEntry runs and
+		// defers; or the test's pending observation lands between the Nack
+		// (run_queue_entry_exec.go:702) and the busyBackoffUntil write
+		// (exec.go:705-707), so the deadline is stamped on the ALREADY
+		// advanced fake now and is still in the future when the tick fires.
+		// fakePumpClock.Advance fires AT MOST ONE tick per ticker and, after
+		// the coalesced jump, sets next = now + period; the old 1ms loop then
+		// delivered ZERO further ticks (the whole window contained exactly
+		// one tick — the macOS CI flake). Advancing period + epsilon is
+		// deterministic: after any fire next <= now + period, so every
+		// Advance crosses the next fire.
+		//
+		// The loop must not advance past a cycle while that cycle's outcome
+		// write is still in flight: calls is incremented at Run ENTRY, but
+		// the Nack (and row release) come a few real microseconds later, and
+		// the next cycle's Advance(ttl) must never fire inside that window.
+		// It must also not advance while the row is LEASED at all: a cleanup
+		// tick whose cutoff overtakes lease_expires_at (one full TTL of fake
+		// time past the lease stamp) would reap the row mid-execution,
+		// charge an attempt (the penalty this test forbids) and make the
+		// in-flight Nack match zero rows. A leased row just needs real
+		// scheduling time, never fake time.
 		clk.Advance(ttl)
 		awaitPump(t, func() bool {
 			if coord.calls.Load() > cycle {
-				return true
+				// The call has started; wait out its outcome write. On the
+				// final cycle the call SUCCEEDS and acks (deletes) the row,
+				// so a vanished row is a done wait too.
+				e, getErr := svc.GetRunQueueEntry(ctx, entryID)
+				if getErr != nil || e == nil {
+					return true
+				}
+				return e.Status == "pending"
 			}
-			clk.Advance(time.Millisecond)
+			if e, getErr := svc.GetRunQueueEntry(ctx, entryID); getErr == nil && e != nil && e.Status == "leased" {
+				return false // execution in flight; do not move fake time
+			}
+			clk.Advance(pumpTick + time.Millisecond)
 			return false
 		}, "the entry must be attempted again once its backoff elapsed")
 	}
@@ -572,4 +620,108 @@ func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *test
 		return checkErr == nil && gone
 	}, "entry should be acked once the external owner frees up")
 	require.Greater(t, coord.calls.Load(), coord.busyUntilCall)
+}
+
+// postNackAdvancingService forces the bad interleaving that starved the
+// pre-fix wait loops: it advances the fake clock by a full TTL the instant
+// the pump's NackRunQueueEntryNoAttemptPenalty returns — i.e. BEFORE the
+// pump writes busyBackoffUntil (run_queue_entry_exec.go:705-707) and BEFORE
+// the in-flight admission slot is released (run_queue_admission.go:351).
+type postNackAdvancingService struct {
+	session.Service
+	clk *fakePumpClock
+	ttl time.Duration
+}
+
+func (s *postNackAdvancingService) NackRunQueueEntryNoAttemptPenalty(ctx context.Context, id, leasedBy, lastError string) error {
+	err := s.Service.NackRunQueueEntryNoAttemptPenalty(ctx, id, leasedBy, lastError)
+	if err == nil {
+		s.clk.Advance(s.ttl)
+	}
+	return err
+}
+
+// TestReleaseGate_P350_BackoffRetryMustSurvivePostNackBackoffWrite pins the
+// retry loop against the exact interleaving behind the macOS CI flake in
+// TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty:
+//
+// fakePumpClock.Advance fires AT MOST ONE tick per ticker per call, and a
+// coalescing jump (Advance(ttl) = 10 tick periods) leaves the ticker's next
+// fire a full period away — so a loop advancing 1ms per probe delivers ZERO
+// further ticks. Whether the single buffered tick lands uselessly is decided
+// by a race between the pump and the test:
+//
+//  1. The wrapper's Nack returns; the wrapper advances the clock by one
+//     full TTL, firing the ONLY tick of the jump — while the just-Nacked
+//     execution still holds its in-flight admission slot (released only
+//     after executeEntrySync returns), so processEntry defers.
+//  2. The pump then writes busyBackoffUntil = advanced_now + TTL, i.e. a
+//     deadline still in the FUTURE on the already-advanced fake clock.
+//  3. The test observes the row pending.
+//  4. The pre-fix loop (Advance(time.Millisecond)) then fires no tick at
+//     all and the test times out; the fixed loop advances one full period +
+//     epsilon per probe, which always crosses the ticker's next fire (next
+//     <= now + period after any fire), so the retry lands deterministically.
+//
+// REVERT CHECK: replacing the loop's `pumpTick + time.Millisecond` with
+// `time.Millisecond` (the pre-fix shape) makes this test FAIL
+// deterministically with "Condition never satisfied"; the new loop PASSes.
+func TestReleaseGate_P350_BackoffRetryMustSurvivePostNackBackoffWrite(t *testing.T) {
+	t.Parallel()
+	limitParallel(t)
+	sess, svc := setupTestSession(t, "test-session-post-nack-advance")
+	ctx := t.Context()
+
+	const entryID = "post-nack-advance-probe"
+	callData := map[string]any{"SessionID": sess.ID, "Prompt": "test prompt"}
+	callDataJSON, err := json.Marshal(callData)
+	require.NoError(t, err)
+	require.NoError(t, svc.EnqueueRunQueueEntry(ctx, entryID, sess.ID, callDataJSON))
+
+	coord := &queuedNotExecutedThenSuccessCoordinator{busyUntilCall: 1}
+
+	const ttl = time.Hour // fake time; also the local backoff length
+	const pumpTick = ttl / 10
+	clk := newFakePumpClock(fakePumpEpoch)
+	probe := &postNackAdvancingService{Service: newFakeClockService(svc, clk), clk: clk, ttl: ttl}
+	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+		Sessions:       probe,
+		Coordinator:    coord,
+		PumpInstanceID: "post-nack-advance-pump",
+		TestTick:       func() time.Duration { return pumpTick },
+		TestLeaseTTL:   ttl,
+		TestClock:      clk,
+	})
+	pump.Start()
+	t.Cleanup(func() { pump.Stop() })
+
+	awaitPump(t, func() bool { return coord.calls.Load() >= 1 }, "the entry must be leased and attempted once")
+	// The forced interleaving: the wrapper has already jumped the clock past
+	// the whole backoff window, so the row must be pending (and its
+	// busyBackoffUntil still in the future — see the doc comment).
+	awaitPump(t, func() bool {
+		e, getErr := svc.GetRunQueueEntry(ctx, entryID)
+		return getErr == nil && e != nil && e.Status == "pending"
+	}, "a busy outcome must release the row back to pending")
+
+	// With the pre-fix 1ms advance this loop can never succeed: the single
+	// tick of the wrapper's jump was skipped (in-flight slot), and no
+	// further tick fires until a full fake period passes.
+	awaitPump(t, func() bool {
+		if coord.calls.Load() >= 2 {
+			return true
+		}
+		if e, getErr := svc.GetRunQueueEntry(ctx, entryID); getErr == nil && e != nil && e.Status == "leased" {
+			return false // execution in flight; do not move fake time
+		}
+		clk.Advance(pumpTick + time.Millisecond)
+		return false
+	}, "the entry must be retried despite the post-Nack backoff write")
+
+	// The retry succeeds (call 2 > busyUntilCall 1), so the row is acked.
+	awaitPump(t, func() bool {
+		gone, checkErr := runQueueGoneEverywhere(ctx, svc)
+		return checkErr == nil && gone
+	}, "entry should be acked once the retry succeeds")
+	require.Equal(t, int64(2), coord.calls.Load())
 }

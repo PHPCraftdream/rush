@@ -6,10 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/stretchr/testify/require"
 )
 
-// Revert-check: limitwords.Classify's Codex type branch must latch provider_limit.
+// Revert-check: the Codex-shaped response latches provider_limit through
+// status, reset, and classification.
 func TestCLIProviderLimit1282CodexShape(t *testing.T) {
 	// https://github.com/acmiyaguchi/fen/issues/583; not reproduced locally.
 	h := newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, _ []byte, _ bool, _ int) {
@@ -25,5 +27,6 @@ func TestCLIProviderLimit1282CodexShape(t *testing.T) {
 	reset, parseErr := time.Parse(time.RFC3339, result.QuotaResetAt)
 	require.NoError(t, parseErr)
 	require.True(t, reset.After(before.Add(29*time.Minute)))
-	require.EqualValues(t, 3, h.requests.Load())
+	// initial attempt + 2 pinned retries.
+	require.EqualValues(t, agent.ProviderMaxRetries+1, h.requests.Load())
 }
