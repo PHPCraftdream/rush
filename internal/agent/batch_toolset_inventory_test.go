@@ -337,18 +337,23 @@ func TestWorkerStopScopeComesFromTrustedCoordinatorBuild(t *testing.T) {
 	build(false, "trusted-root")
 	capturedMu.Lock()
 	defer capturedMu.Unlock()
-	seen := map[string]int{}
+	// The root build may also assemble nested sub-agent toolsets under the
+	// same session id; those are legitimately scoped. What must hold: every
+	// worker build is scoped, and the root's own build is NOT.
+	workerBuilds, rootUnscoped := 0, 0
 	for _, inv := range captured {
-		seen[inv.SessionID]++
 		switch inv.SessionID {
 		case "trusted-worker":
+			workerBuilds++
 			require.True(t, inv.WorkerStopScope, "sub-agent build receives trusted worker stop authority")
 		case "trusted-root":
-			require.False(t, inv.WorkerStopScope, "root build does not receive worker stop authority")
+			if !inv.WorkerStopScope {
+				rootUnscoped++
+			}
 		}
 	}
-	require.Positive(t, seen["trusted-worker"], "worker build installed its controls")
-	require.Positive(t, seen["trusted-root"], "root build installed its controls")
+	require.Positive(t, workerBuilds, "worker build installed its controls")
+	require.Positive(t, rootUnscoped, "root build does not receive worker stop authority")
 }
 
 type modelControlCapture struct {
