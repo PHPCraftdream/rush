@@ -69,15 +69,18 @@ func (f *fakeBatchSource) BatchLevelNodes(_ context.Context, arg db.BatchLevelNo
 // withBatchSeams swaps the production seams for fakes and restores them.
 func withBatchSeams(t *testing.T, src batchNodeSource, probe func(dataDir, host string) session.HostLockStatus, own func(string) bool) {
 	t.Helper()
-	oldSrc, oldDir, oldProbe, oldOwn := batchSourceFor, batchDataDir, batchProbeHost, batchIsOwnHost
+	oldSrc, oldDir, oldProbe, oldOwn, oldQuestions := batchSourceFor, batchDataDir, batchProbeHost, batchIsOwnHost, batchPendingQuestionsFor
 	batchSourceFor = func(*app.App) batchNodeSource { return src }
 	batchDataDir = func(*app.App) string { return "/fake-data-dir" }
 	batchProbeHost = probe
 	if own != nil {
 		batchIsOwnHost = own
 	}
+	batchPendingQuestionsFor = func(context.Context, *app.App, []string) (map[string]session.ChildQuestion, bool) {
+		return map[string]session.ChildQuestion{}, true
+	}
 	t.Cleanup(func() {
-		batchSourceFor, batchDataDir, batchProbeHost, batchIsOwnHost = oldSrc, oldDir, oldProbe, oldOwn
+		batchSourceFor, batchDataDir, batchProbeHost, batchIsOwnHost, batchPendingQuestionsFor = oldSrc, oldDir, oldProbe, oldOwn, oldQuestions
 	})
 }
 
@@ -101,12 +104,19 @@ func batchNode(nodeID, rootID, owner, state, toolCall string, ordinal int64) db.
 
 func TestBatchWorkSnapshot_GoldenShape(t *testing.T) {
 	root := batchNode("r1", "r1", "s1", "running", "tc-root", 0)
+	root.NoticeSelected = 1
+	root.NoticeState = sql.NullString{String: "pending", Valid: true}
 	root.TaskKind = sql.NullString{String: "run", Valid: true}
 	child := batchNode("r1-c", "r1", "s1", "completed", "tc-c1", 2)
 	child.OutcomeCode = "done"
 	child.ResponseEnvelopeRef = sql.NullString{String: "env-1", Valid: true}
 	mid := batchNode("r1-b", "r1", "s1", "running", "tc-b1", 1)
 	withBatchSeams(t, &fakeBatchSource{rows: []db.BatchNode{root, child, mid}}, probeAlive, nil)
+	oldQuestions := batchPendingQuestionsFor
+	batchPendingQuestionsFor = func(context.Context, *app.App, []string) (map[string]session.ChildQuestion, bool) {
+		return map[string]session.ChildQuestion{"r1": {Question: "Continue?"}}, true
+	}
+	t.Cleanup(func() { batchPendingQuestionsFor = oldQuestions })
 
 	snap := buildBatchWorkSnapshot(t.Context(), nil, "s1")
 	require.True(t, snap.Complete)
@@ -140,6 +150,13 @@ func TestBatchWorkSnapshot_GoldenShape(t *testing.T) {
 	require.Equal(t, "r1-c", comp["nodeID"])
 	require.Equal(t, "done", comp["outcomeCode"])
 	require.Equal(t, "env-1", comp["outcomeRef"])
+	first := rootWire["nodes"].([]any)[0].(map[string]any)
+	require.Equal(t, true, first["noticeSelected"])
+	require.Equal(t, "pending", first["noticeState"])
+	require.Equal(t, "Continue?", first["heldQuestion"])
+	delivery := rootWire["delivery"].(map[string]any)
+	require.Equal(t, float64(1), delivery["selected"])
+	require.Equal(t, float64(1), delivery["pending"])
 }
 
 func TestBatchWorkSnapshot_IncompleteKeepsRoots(t *testing.T) {

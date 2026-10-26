@@ -1,273 +1,56 @@
-// Unit tests for the batch-work store slice (web/src/batchWork.ts), run
-// with `node --test` (Node >= 23 strips erasable TypeScript natively).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  $batchWorkBySession,
-  applyBatchWorkSnapshot,
-  pickBatchWork,
-  pickMergedLiveWork,
-} from "./batchWork.ts";
-import type { BatchWorkSnapshot, SessionLiveWork } from "./types.ts";
-import type { BatchWorkState } from "./batchWork.ts";
+import { $batchWorkBySession, applyBatchWorkSnapshot, buildBatchTree, pickBatchWork } from "./batchWork.ts";
+import type { BatchWorkNode, BatchWorkRoot, BatchWorkSnapshot } from "./types.ts";
 
-function snap(partial: Partial<BatchWorkSnapshot>): BatchWorkSnapshot {
-  return {
-    v: 1,
-    sessionID: "s1",
-    complete: true,
-    roots: [],
-    completions: [],
-    ...partial,
-  };
+function node(nodeID: string, parentID: string, ordinal: number, patch: Partial<BatchWorkNode> = {}): BatchWorkNode {
+  return { nodeID, parentID, kind: "task", taskKind: nodeID, toolCallID: "", state: "running", cause: "", ordinal, depth: 0, childSessionID: "", host: "alive", outcomeCode: "", outcomeSummary: "", outcomeRef: "", noticeSelected: false, ...patch };
 }
-
-function root(rootID: string, toolCallID: string, state = "running") {
-  return {
-    rootID,
-    ownerSessionID: "s1",
-    toolCallID,
-    kind: "task",
-    taskKind: "run",
-    state,
-    cause: "",
-    startedAt: 1,
-    host: "alive",
-    complete: true,
-    counts: {
-      pending: 0,
-      starting: 0,
-      running: 1,
-      cancelling: 0,
-      completed: 0,
-      failed: 0,
-      cancelled: 0,
-      timed_out: 0,
-      interrupted: 0,
-      skipped: 0,
-      active: 1,
-    },
-    delivery: { selected: 0, pending: 0, delivered: 0 },
-    nodes: [
-      {
-        nodeID: rootID,
-        parentID: "",
-        kind: "task",
-        taskKind: "run",
-        toolCallID,
-        state,
-        cause: "",
-        ordinal: 0,
-        depth: 0,
-        childSessionID: "",
-        host: "alive",
-        outcomeCode: "",
-        outcomeSummary: "",
-        outcomeRef: "",
-      },
-    ],
-  };
+function root(rootID: string, nodes: BatchWorkNode[]): BatchWorkRoot {
+  return { rootID, ownerSessionID: "s1", toolCallID: "", kind: "batch", taskKind: "", state: "running", cause: "", startedAt: 1, host: "alive", complete: true, counts: { pending: 0, starting: 0, running: nodes.length, cancelling: 0, completed: 0, failed: 0, cancelled: 0, timed_out: 0, interrupted: 0, skipped: 0, active: nodes.length }, delivery: { selected: 0, pending: 0, delivered: 0 }, nodes };
 }
+function snap(partial: Partial<BatchWorkSnapshot>): BatchWorkSnapshot { return { v: 1, sessionID: "s1", complete: true, roots: [], completions: [], ...partial }; }
 
-test("complete snapshot replaces the last good one", () => {
-  applyBatchWorkSnapshot(snap({ roots: [root("r1", "tc1")] }));
-  applyBatchWorkSnapshot(snap({ roots: [root("r2", "tc2")] }));
-  const state = pickBatchWork($batchWorkBySession.get(), "s1");
-  assert.deepEqual(
-    state.lastGood.roots.map((r) => r.rootID),
-    ["r2"],
-  );
-});
-
-test("incomplete snapshot merges by rootID and never drops live roots", () => {
-  applyBatchWorkSnapshot(snap({ roots: [root("r1", "tc1")] }));
-  applyBatchWorkSnapshot(snap({ complete: false, roots: [root("r2", "tc2")] }));
-  const state = pickBatchWork($batchWorkBySession.get(), "s1");
-  assert.equal(state.lastGood.complete, false);
-  assert.deepEqual(
-    [...state.lastGood.roots.map((r) => r.rootID)].sort(),
-    ["r1", "r2"],
-  );
-  // A later COMPLETE snapshot still replaces.
-  applyBatchWorkSnapshot(snap({ complete: true, roots: [root("r3", "tc3")] }));
-  assert.deepEqual(
-    pickBatchWork($batchWorkBySession.get(), "s1").lastGood.roots.map((r) => r.rootID),
-    ["r3"],
-  );
-});
-
-test("incomplete snapshot never drops previously live nodes within a root", () => {
-  const r1 = root("r1", "tc1");
-  r1.nodes.push({
-    nodeID: "nB",
-    parentID: "r1",
-    kind: "task",
-    taskKind: "run",
-    toolCallID: "tcB",
-    state: "running",
-    cause: "",
-    ordinal: 1,
-    depth: 1,
-    childSessionID: "",
-    host: "alive",
-    outcomeCode: "",
-    outcomeSummary: "",
-    outcomeRef: "",
-  });
-  applyBatchWorkSnapshot(snap({ roots: [r1] }));
-  // Incomplete snapshot carries only nA (the root node).
-  applyBatchWorkSnapshot(snap({ complete: false, roots: [root("r1", "tc1")] }));
-  const state = pickBatchWork($batchWorkBySession.get(), "s1");
-  const merged = state.lastGood.roots.find((r) => r.rootID === "r1");
-  assert.deepEqual(
-    merged.nodes.map((n) => n.nodeID),
-    ["r1", "nB"],
-  );
-  assert.equal(merged.nodes[0].toolCallID, "tc1");
-});
-
-test("covered flat rows are replaced by structured nodes; structured-only nodes appear", () => {
-  const live = new Map<string, SessionLiveWork>([
-    [
-      "s1",
-      {
-        sessionID: "s1",
-        commands: [
-          { toolCallID: "tc1", toolName: "bash", title: "flat cmd", startedAt: 1 },
-          { toolCallID: "tc9", toolName: "bash", title: "plain cmd", startedAt: 1 },
-        ],
-        agents: [
-          { toolCallID: "tc2", toolName: "agent", title: "flat agent", startedAt: 1 },
-          { toolCallID: "tcX", toolName: "agent", title: "uncovered agent", startedAt: 1 },
-        ],
-      },
-    ],
-  ]);
-  // Structured-only node: no flat counterpart anywhere.
-  const r3 = root("r3", "tc3");
-  const r2 = root("r2", "tc2");
-  // r2 is a delegation: its node lands in agents instead of commands.
-  r2.nodes[0].childSessionID = "child-2";
-  const batch = new Map<string, BatchWorkState>();
-  // Flag off: no snapshot state -> flat rows unchanged.
-  const flatOnly = pickMergedLiveWork(live, batch, "s1");
-  assert.deepEqual(
-    flatOnly.commands.map((r) => r.toolCallID),
-    ["tc1", "tc9"],
-  );
-  applyBatchWorkSnapshot(snap({ roots: [root("r1", "tc1"), r2, r3] }));
-  const merged = pickMergedLiveWork(live, $batchWorkBySession.get(), "s1");
-  const tc1 = merged.commands.find((r) => r.toolCallID === "tc1");
-  assert.equal(tc1.status, "running");
-  // Flat tc1 covered and replaced by the structured node (appended after
-  // the kept flat tc9); structured-only tc3 appended at the end.
-  assert.deepEqual(
-    merged.commands.map((r) => r.toolCallID),
-    ["tc9", "tc1", "tc3"],
-  );
-  // Flat tc2 covered and replaced by the structured delegation node;
-  // uncovered flat agent tcX survives.
-  assert.deepEqual(
-    merged.agents.map((r) => [r.toolCallID, r.childSessionID]),
-    [["tcX", undefined], ["tc2", "child-2"]],
-  );
-  // Empty toolCallIDs: uncovered, so kept.
-  const withEmpty = {
-    ...live.get("s1"),
-    commands: [
-      ...live.get("s1").commands,
-      { toolCallID: "", toolName: "bash", title: "anon", startedAt: 1 },
-    ],
-  };
-  const live2 = new Map<string, SessionLiveWork>([["s1", withEmpty]]);
-  const merged2 = pickMergedLiveWork(live2, $batchWorkBySession.get(), "s1");
-  const emptyRows = merged2.commands.filter((r) => r.toolCallID === "");
-  assert.equal(emptyRows.length, 1);
-});
-
-test("covered flat agent row keeps its classification and awaiting badge under a root node", () => {
+test("complete snapshots replace, incomplete snapshots preserve roots, nodes and completions", () => {
   $batchWorkBySession.set(new Map());
-  // Flat agents row fully covered by a structural ROOT node: the root node
-  // carries toolCallID but no childSessionID/awaiting state of its own.
-  const live = new Map<string, SessionLiveWork>([
-    [
-      "s1",
-      {
-        sessionID: "s1",
-        commands: [],
-        agents: [
-          {
-            toolCallID: "tcA",
-            toolName: "agent",
-            title: "flat agent",
-            childSessionID: "child-9",
-            startedAt: 1,
-            awaitingAnswer: true,
-            awaitingQuestion: "q?",
-          },
-        ],
-      },
-    ],
-  ]);
-  const rA = root("rA", "tcA");
-  rA.nodes[0].childSessionID = ""; // root node: no child link on the node
-  applyBatchWorkSnapshot(snap({ roots: [rA] }));
-  const merged = pickMergedLiveWork(live, $batchWorkBySession.get(), "s1");
-  const carried = merged.agents.find((r) => r.toolCallID === "tcA");
-  assert.ok(carried, "the carried childSessionID must classify the row as an agent");
-  assert.equal(carried.childSessionID, "child-9");
-  assert.equal(carried.awaitingAnswer, true);
-  assert.equal(carried.awaitingQuestion, "q?");
-  assert.deepEqual(
-    merged.commands.map((r) => r.toolCallID),
-    [],
-    "a covered delegation row must not fall into commands",
-  );
+  applyBatchWorkSnapshot(snap({ roots: [root("a", [node("a", "", 0), node("child", "a", 1)])], completions: [{ rootID: "old", nodeID: "old", outcomeCode: "ok", outcomeRef: "", state: "completed", outcomeSummary: "done" }] }));
+  applyBatchWorkSnapshot(snap({ complete: false, roots: [root("b", [node("b", "", 0)])] }));
+  const merged = pickBatchWork($batchWorkBySession.get(), "s1")!.lastGood!;
+  assert.deepEqual(merged.roots.map((r) => r.rootID), ["a", "b"]);
+  assert.deepEqual(merged.roots[0].nodes.map((n) => n.nodeID), ["a", "child"]);
+  assert.equal(merged.completions.length, 1);
+  applyBatchWorkSnapshot(snap({ roots: [root("c", [node("c", "", 0)])] }));
+  assert.deepEqual(pickBatchWork($batchWorkBySession.get(), "s1")!.lastGood!.roots.map((r) => r.rootID), ["c"]);
 });
 
-test("unknown session picks nothing and merged view falls back to flat rows", () => {
+test("incomplete snapshot with SAME root id preserves prior nodes via mergeRoots", () => {
+  $batchWorkBySession.set(new Map());
+  applyBatchWorkSnapshot(snap({ roots: [root("r1", [node("r1", "", 0), node("nB", "r1", 1)])] }));
+  applyBatchWorkSnapshot(snap({ complete: false, roots: [root("r1", [node("r1", "", 0)])] }));
+  const merged = pickBatchWork($batchWorkBySession.get(), "s1")!.lastGood!;
+  assert.deepEqual(merged.roots[0].nodes.map((n) => n.nodeID), ["r1", "nB"]);
+});
+
+test("builds ordinal-sorted nested hierarchy and attaches delegated root beneath childSessionID link", () => {
+  const outer = root("outer", [node("root-node", "", 0, { childSessionID: "child-session" }), node("later", "root-node", 4), node("first", "root-node", 2)]);
+  const inner = { ...root("inner", [node("inner-root", "", 0), node("deep", "inner-root", 1)]), ownerSessionID: "child-session" };
+  const forest = buildBatchTree([inner, outer]);
+  assert.deepEqual(forest.map((entry) => entry.root.rootID), ["outer"]);
+  assert.deepEqual(forest[0].nodes[0].children.map((item) => item.node.nodeID), ["first", "later"]);
+  assert.deepEqual(forest[0].nodes[0].childBatches.map((batch) => batch.root.rootID), ["inner"]);
+  assert.equal(forest[0].nodes[0].childBatches[0].nodes[0].children[0].node.nodeID, "deep");
+});
+
+test("malformed parents and cycles are retained without recursive loops", () => {
+  const batch = root("r", [node("orphan", "missing", 0), node("a", "b", 1), node("b", "a", 2), node("valid", "", 3)]);
+  const tree = buildBatchTree([batch]);
+  assert.deepEqual(tree[0].nodes.map((item) => item.node.nodeID), ["orphan", "a", "b", "valid"]);
+  assert.equal(tree[0].nodes.every((item) => item.children.length === 0), true);
+  const cyclicRoots = buildBatchTree([root("x", [node("xnode", "", 0, { childSessionID: "s1" })])]);
+  assert.deepEqual(cyclicRoots.map((item) => item.root.rootID), ["x"]);
+});
+
+test("unknown session and absent snapshot are empty", () => {
   assert.equal(pickBatchWork($batchWorkBySession.get(), null), null);
-  assert.equal(pickBatchWork($batchWorkBySession.get(), "nope"), null);
-  const live = new Map<string, SessionLiveWork>([["s2", { sessionID: "s2", commands: [], agents: [] }]]);
-  const merged = pickMergedLiveWork(live, $batchWorkBySession.get(), "s2");
-  assert.deepEqual(merged, { commands: [], agents: [] });
-});
-
-test("incomplete snapshot merges structured completions, never drops prior roots", () => {
-  $batchWorkBySession.set(new Map());
-  applyBatchWorkSnapshot(
-    snap({
-      complete: true,
-      completions: [
-        { rootID: "root-a", nodeID: "root-a", outcomeCode: "ok", outcomeRef: "", state: "completed", outcomeSummary: "done" },
-      ],
-    }),
-  );
-  applyBatchWorkSnapshot(
-    snap({
-      complete: false,
-      completions: [
-        { rootID: "root-b", nodeID: "root-b", outcomeCode: "boom", outcomeRef: "", state: "failed", outcomeSummary: "nope" },
-      ],
-    }),
-  );
-  const completions = pickBatchWork($batchWorkBySession.get(), "s1")?.lastGood.completions ?? [];
-  assert.deepEqual(
-    completions.map((c) => c.rootID),
-    ["root-a", "root-b"],
-  );
-  // A complete snapshot is authoritative: it replaces wholesale.
-  applyBatchWorkSnapshot(
-    snap({
-      complete: true,
-      completions: [
-        { rootID: "root-c", nodeID: "root-c", outcomeCode: "ok", outcomeRef: "", state: "completed", outcomeSummary: "fresh" },
-      ],
-    }),
-  );
-  const replaced = pickBatchWork($batchWorkBySession.get(), "s1")?.lastGood.completions ?? [];
-  assert.deepEqual(
-    replaced.map((c) => c.rootID),
-    ["root-c"],
-  );
+  assert.equal(pickBatchWork($batchWorkBySession.get(), "missing"), null);
 });

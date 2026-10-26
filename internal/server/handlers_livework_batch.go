@@ -69,7 +69,7 @@ func buildSessionLiveWorkFromBatch(ctx context.Context, a *appPkg.App, cache *ti
 	roots = append(roots, historyRoots...)
 	roots = capBatchRoots(roots)
 
-	questions, questionsComplete := batchPendingQuestions(ctx, a, visited)
+	questions, questionsComplete := batchPendingQuestionsFor(ctx, a, visited)
 	if !questionsComplete {
 		complete = false
 	}
@@ -326,6 +326,10 @@ func batchRootItem(m batchRootMeta, titles map[liveWorkTitleKey]string, question
 // leaves 'pending' with reacted=1 only via the pull CAS to 'done'. The
 // Reacted != 0 skip is defensive: a pending+reacted row is schema-valid and
 // must never badge — its question was already answered.
+var batchPendingQuestionsFor = func(ctx context.Context, a *appPkg.App, visited []string) (map[string]session.ChildQuestion, bool) {
+	return batchPendingQuestions(ctx, a, visited)
+}
+
 func batchPendingQuestions(ctx context.Context, a *appPkg.App, visited []string) (map[string]session.ChildQuestion, bool) {
 	questions := map[string]session.ChildQuestion{}
 	if a == nil || a.DB == nil {

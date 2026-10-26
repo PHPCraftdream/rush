@@ -190,7 +190,7 @@ func TestHandleGetSessionLiveWork_TerminalCausesAreDistinct(t *testing.T) {
 
 	// The batch cause vocabulary is why a row left "running": one cause per
 	// terminal state family (timeout / stop / stop_on_fail). The legacy
-	// per-notice-kind reason mapping (session_cancel, job_kill) is an
+	// per-notice-kind reason mapping (session_cancel, stopped command) is an
 	// obsolete contract: batch nodes carry a single stop cause for every
 	// cancellation.
 	seed := func(id, state string) {

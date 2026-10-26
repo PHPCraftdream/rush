@@ -273,16 +273,13 @@ export interface LiveWorkItem {
   // Set only for a sub-agent delegation -- the child session's own ID.
   childSessionID?: string;
   startedAt: number; // unix ms
-  // Durable async_jobs.state: "running" | "completed" | "failed" |
-  // "timed_out" | "cancelled" | "interrupted". Always set by the #1058
-  // server emitter; absent on synthetic client-side items.
+  // Kept for transcript indexing only; live batch UI uses BatchWorkNode.
   status?: string;
-  // The row's notice_kind for a terminal state ("job_kill" = user killed
-  // the command, "session_cancel" = session-level stop, ...).
+  // Terminal cause, when provided by the server.
   reason?: string;
   // Terminal finish time, unix ms; 0/absent while running.
   finishedAt?: number;
-  // Last async_jobs row update, unix ms.
+  // Last activity timestamp for retained transcript-index metadata.
   lastActivityAt?: number;
   // A running delegation whose child paused on a question (#1158); set only
   // together with awaitingQuestion (the display-capped question text).
@@ -305,9 +302,7 @@ export interface SessionLiveWorkPayload {
 
 // ─── Batch work (R15a, unconditional since the H4 cutover) ──────────────────
 //
-// Structured batch-node wire, mirroring internal/server/handlers_batch.go's
-// BatchWorkSnapshotWire (v: 1). Consumed by web/src/batchWork.ts. No UI
-// component renders these yet (R15b).
+// Structured batch-node wire, including per-node controls, questions, and notices.
 
 export interface BatchWorkCounts {
   pending: number;
@@ -344,6 +339,9 @@ export interface BatchWorkNode {
   outcomeCode: string;
   outcomeSummary: string;
   outcomeRef: string;
+  heldQuestion?: string;
+  noticeSelected: boolean;
+  noticeState?: string;
 }
 
 export interface BatchWorkRoot {
