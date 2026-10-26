@@ -459,29 +459,114 @@ func expiredBatchOutput(cursor uint64) any {
 	return map[string]any{"output_status": "output_expired", "reason": "expired_or_evicted", "data": "", "next_cursor": cursor, "oldest_cursor": uint64(0), "eof": true, "truncated": false, "total_bytes": uint64(0), "retained_bytes": 0}
 }
 
+type batchWorkerStopScopeKey struct{}
+
+func stopBatchWorkerScopeFromContext(ctx context.Context) bool {
+	scope, _ := ctx.Value(batchWorkerStopScopeKey{}).(bool)
+	return scope
+}
+
+func (c *installedBatchModelControl) isSessionDescendant(ctx context.Context, owner, ancestor string) bool {
+	if owner == "" || ancestor == "" || c.sessions == nil {
+		return false
+	}
+	ancestorSession, err := c.sessions.Get(ctx, ancestor)
+	if err != nil || ancestorSession.ID != ancestor {
+		return false
+	}
+	seen := make(map[string]struct{})
+	for current, steps := owner, 0; current != "" && steps < 128; steps++ {
+		if current == ancestor {
+			return true
+		}
+		if _, exists := seen[current]; exists {
+			return false
+		}
+		seen[current] = struct{}{}
+		sess, err := c.sessions.Get(ctx, current)
+		if err != nil || sess.ID != current {
+			return false
+		}
+		current = sess.ParentSessionID
+	}
+	return false
+}
+
+func (c *installedBatchModelControl) readStopRoot(ctx context.Context, caller, root string) (session.BatchSnapshot, error) {
+	if c.store == nil || root == "" || c.host == "" {
+		return session.BatchSnapshot{}, errors.New("batch_stop root access unavailable")
+	}
+	roots, err := c.store.LiveRootsForHost(ctx, c.host)
+	if err != nil {
+		return session.BatchSnapshot{}, err
+	}
+	for _, candidate := range roots {
+		if candidate.RootID != root {
+			continue
+		}
+		return c.readStopCandidate(ctx, candidate, root)
+	}
+	// Terminal roots are excluded by LiveRootsForHost. Retain idempotence
+	// for the caller's existing owned-root ancestry without scanning all sessions.
+	if snapshot, readErr := c.readAuthorized(ctx, caller, root); readErr == nil {
+		return c.readStopCandidate(ctx, snapshot.Root, root)
+	} else if !errors.Is(readErr, sql.ErrNoRows) {
+		return session.BatchSnapshot{}, readErr
+	}
+	return session.BatchSnapshot{}, errors.New("batch_stop root not found among live local batches")
+}
+
+func (c *installedBatchModelControl) readStopCandidate(ctx context.Context, candidate db.BatchNode, root string) (session.BatchSnapshot, error) {
+	if candidate.OwnerSessionID == "" || candidate.HostID != c.host || candidate.RunnerID == "" || candidate.RunnerID != c.runnerID {
+		return session.BatchSnapshot{}, errors.New("batch_stop root has unknown or stale runner incarnation")
+	}
+	if c.sessions == nil {
+		return session.BatchSnapshot{}, errors.New("batch_stop owner lookup unavailable")
+	}
+	owner, err := c.sessions.Get(ctx, candidate.OwnerSessionID)
+	if err != nil || owner.ID != candidate.OwnerSessionID {
+		return session.BatchSnapshot{}, errors.New("batch_stop root owner is unknown")
+	}
+	return c.store.Read(ctx, candidate.OwnerSessionID, root)
+}
+
 func (c *installedBatchModelControl) Stop(ctx context.Context, caller, root, node string) (any, error) {
 	if c.runner == nil || c.store == nil {
 		return nil, errors.New("batch runtime unavailable")
 	}
 	if caller == "" || root == "" {
-		return nil, errors.New("batch_stop requires root id")
+		return nil, errors.New("batch_stop requires caller and root id")
 	}
 	if node == "" {
 		node = root
 	}
-	s, err := c.readAuthorized(ctx, caller, root)
+	s, err := c.readStopRoot(ctx, caller, root)
 	if err != nil {
 		return nil, err
 	}
-	if s.Root.RootID != root || s.Root.Kind != "batch" || s.Root.HostID != c.host || !batchModelNodeInSnapshot(s.Nodes, node, "", root) {
-		return nil, errors.New("batch_stop requires owned local root or descendant")
+	if stopBatchWorkerScopeFromContext(ctx) {
+		if !c.isSessionDescendant(ctx, caller, caller) || !c.isSessionDescendant(ctx, s.Root.OwnerSessionID, caller) {
+			return nil, errors.New("batch_stop is limited to batches owned by this worker or its descendants")
+		}
+	} else if !c.isSessionDescendant(ctx, caller, caller) || (!c.isSessionDescendant(ctx, caller, s.Root.OwnerSessionID) && !c.isSessionDescendant(ctx, s.Root.OwnerSessionID, caller)) {
+		return nil, errors.New("batch_stop caller must own the root or be related to its owner")
+	}
+	if s.Root.RootID != root || s.Root.Kind != "batch" || s.Root.OwnerSessionID == "" || s.Root.HostID != c.host || s.Root.RunnerID == "" || s.Root.RunnerID != c.runnerID || !batchModelNodeInSnapshot(s.Nodes, node, "", root) {
+		return nil, errors.New("batch_stop requires an owned local root or descendant in the current runner incarnation")
+	}
+	if c.sessions == nil {
+		return nil, errors.New("batch_stop owner lookup unavailable")
+	}
+	ownerSession, ownerErr := c.sessions.Get(ctx, s.Root.OwnerSessionID)
+	if ownerErr != nil || ownerSession.ID != s.Root.OwnerSessionID {
+		return nil, errors.New("batch_stop root owner is unknown")
 	}
 	if terminalBatchStoreState(s.Root.State) {
 		return map[string]any{"accepted": false, "terminal": true, "state": s.Root.State}, nil
 	}
 	before, found := findBatchNode(s.Nodes, node)
-	if !found {
-		return nil, errors.New("batch_stop target disappeared before runner request")
+	if !found || before.HostID != c.host || before.RunnerID == "" || before.RunnerID != c.runnerID {
+		return nil, errors.New("batch_stop target has unknown or stale runner incarnation")
 	}
 	req, err := c.store.CreateControl(ctx, s.Root.OwnerSessionID, c.host, root, node)
 	if err != nil {

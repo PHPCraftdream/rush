@@ -138,7 +138,10 @@ func newBatchModelTools(c batchModelControl, inv BatchInvocation, reg *policyLea
 				return nil, errors.New("batch output returned invalid chunk")
 			}
 		}),
-		mk("batch_stop", "Request durable stop of an owned root or descendant. Accepted is cancellation intent, not termination.", func(ctx context.Context, p batchModelParams, _ fantasy.ToolCall) (any, error) {
+		mk("batch_stop", "Request durable stop of an owned root or descendant. Workers are restricted to their own batch trees; accepted is cancellation intent, not termination.", func(ctx context.Context, p batchModelParams, _ fantasy.ToolCall) (any, error) {
+			if inv.WorkerStopScope {
+				ctx = context.WithValue(ctx, batchWorkerStopScopeKey{}, true)
+			}
 			return c.Stop(ctx, tools.GetSessionFromContext(ctx), p.Root, p.Node)
 		}),
 	}

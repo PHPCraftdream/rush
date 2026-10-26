@@ -8,6 +8,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Workers may use `batch_stop` only on batches they own or that are owned by descendants; orchestrators retain existing worker-stop authority, while unknown owners and stale runner incarnations are refused.
 - The `RUSH_BATCH_RUNTIME` switch is removed and has no effect: the batch-only runtime is the only runtime since the H4 cutover.
 - The batch-only runtime is the only runtime. Startup imports durable history, settings, queues and schedules once from untouched `.rush/rush.db` into active `.rush/rush_store_v1.db` before opening it; old/preparation execution and control state is discarded. Stop old processes and automatic restarts throughout import; drain/stop preparation hosts before upgrade. Requeued work may repeat external side effects. Rollback means stopping new hosts and using the previous binary with untouched `rush.db` (old snapshot only); preserve the new store and sidecars, with no reverse import/merge-back. See [job-batch rollout](docs/jobbatch.md). This note records intended current behavior, not evidence of CI gates passing.
 - Breaking: settings protection values (`rush lock`) are now salted PBKDF2-SHA-256 hashes (600000 iterations). Protection values written by older versions are no longer recognized and the settings stay protected: remove the stored protection value from the settings file by hand and run `rush lock` again.
