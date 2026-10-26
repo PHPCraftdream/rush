@@ -160,7 +160,8 @@ Two reasons, and the second is not theoretical:
 One thing the command's own body gets wrong if read literally: the
 `smart` role has **no write tools** and always delegates to a worker.
 Do not instruct such an agent not to spawn sub-agents — it will obey and
-be unable to do the task. Constrain it to one worker at a time instead.
+be unable to do the task. Give it the task and wait; how it delegates is
+its own business.
 
 ### The memory ceiling is shared, not per-process
 
