@@ -64,9 +64,9 @@ func (s *ConfigStore) checkExternalSettingsSources(path string, data []byte) err
 		globalHashes = append(globalHashes, canonicalGlobalHash)
 	}
 	if len(globalHashes) != 0 {
-		password := processPasswordHash()
+		password := processPassword()
 		for _, hash := range globalHashes {
-			if !sameSettingsHash(password, hash) {
+			if !VerifyPassword(password, hash) {
 				return ErrSettingsLocked
 			}
 		}
@@ -95,9 +95,9 @@ func (s *ConfigStore) checkExternalSettingsSources(path string, data []byte) err
 	if len(localHashes) == 0 {
 		return nil
 	}
-	password := processPasswordHash()
+	password := processPassword()
 	for _, hash := range localHashes {
-		if !sameSettingsHash(password, hash) {
+		if !VerifyPassword(password, hash) {
 			return ErrSettingsLocked
 		}
 	}

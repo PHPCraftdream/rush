@@ -3,8 +3,6 @@ package config
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -50,23 +48,6 @@ func fileBytes(t *testing.T, path string) []byte {
 	}
 	require.NoError(t, e)
 	return b
-}
-
-func TestHashPasswordVectors(t *testing.T) {
-	got := HashPassword("secret")
-	require.Equal(t, secretHash, got)
-	recompute := func(s string) string {
-		d := []byte(s)
-		for i := 0; i < 10; i++ {
-			h := sha256.New()
-			_, _ = h.Write(d)
-			d = h.Sum(nil)
-		}
-		return hex.EncodeToString(d)
-	}
-	require.Equal(t, recompute("secret"), got)
-	require.Equal(t, "f65afaf57ea8a40281d0e5a0eab8c510edf01b054c672c416649eeb2e9fb6e1e", HashPassword("pässwörd"))
-	require.Equal(t, recompute(""), HashPassword(""))
 }
 
 // revert-check RC8: injecting a key into Reason must fail the explicit audit-field checks.
@@ -160,7 +141,9 @@ func TestSettingsLock_BlocksSetConfigFieldWhileLocked(t *testing.T) {
 	require.NoError(t, e)
 	require.True(t, locked)
 	b := fileBytes(t, p)
-	require.Equal(t, secretHash, gjsonString(b, "sync_rev"))
+	// revert-check RC: reverting VerifyPassword to expect the legacy unsalted
+	// digest makes this red — a salted hash can never equal the old hex value.
+	require.True(t, VerifyPassword("secret", gjsonString(b, "sync_rev")))
 	err := s.SetConfigField(ScopeGlobal, "models.smart", SelectedModel{Provider: "x", Model: "y"})
 	require.ErrorIs(t, err, ErrSettingsLocked)
 	require.Equal(t, b, fileBytes(t, p))
@@ -246,7 +229,7 @@ func TestSettingsLock_SettingsLockKeyProtection(t *testing.T) {
 		require.ErrorIs(t, f(), errSettingsLockKeyReserved)
 	}
 	require.NoError(t, s.LockSettings(ScopeGlobal, "new"))
-	require.Equal(t, HashPassword("new"), gjsonString(fileBytes(t, p), "sync_rev"))
+	require.True(t, VerifyPassword("new", gjsonString(fileBytes(t, p), "sync_rev")))
 	empty := newTestConfigStore(testStoreOpts{globalDataPath: filepath.Join(t.TempDir(), "x")})
 	require.ErrorIs(t, empty.LockSettings(ScopeWorkspace, "x"), ErrNoWorkspaceConfig)
 }

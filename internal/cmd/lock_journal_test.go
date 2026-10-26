@@ -26,6 +26,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // TestLockJournal_LocalWrongPasswordJournaled: a wrong --password against a
@@ -77,7 +78,7 @@ func TestUnlock_HintsAtLocalLockWhenGlobalUnlocked(t *testing.T) {
 	require.Contains(t, err.Error(), "--local")
 	data, readErr := os.ReadFile(dataDir + string(os.PathSeparator) + "rush.json")
 	require.NoError(t, readErr)
-	require.Contains(t, string(data), config.HashPassword("localpw"), "the refused unlock must not change the lock")
+	require.True(t, config.VerifyPassword("localpw", gjson.GetBytes(data, "sync_rev").String()), "the refused unlock must not change the lock")
 }
 
 // TestUnlock_EmptyArgumentRefused: `rush unlock ""` fails like `rush lock ""`.

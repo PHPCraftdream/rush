@@ -29,7 +29,7 @@ func TestF8OAuthDiskTokenWinsExpiredMemoryUnderGlobalLock(t *testing.T) {
 	got, ok := store.Config().Providers.Get("hyper")
 	require.True(t, ok)
 	require.Equal(t, "disk-access", got.OAuthToken.AccessToken)
-	require.Equal(t, HashPassword(hash), gjsonString(fileBytes(t, path), "sync_rev"))
+	require.True(t, VerifyPassword(hash, gjsonString(fileBytes(t, path), "sync_rev")))
 }
 
 func TestF8OAuthRefreshCASPersistsFreshTokenUnderGlobalLock(t *testing.T) {
