@@ -11,7 +11,7 @@ type fakeLLM struct{ URL string }
 
 func (f *fakeLLM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(w, "POST required", 405)
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
 	_, _ = io.Copy(io.Discard, r.Body)

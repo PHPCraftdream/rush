@@ -16,11 +16,11 @@ export function BatchTree({ sessionID }: { sessionID: string }) {
     try {
       const reply = await requestBatchControl("status", { sessionID });
       if (reply.type !== "session_batch_work") { setMessage("Unexpected status response."); return null; }
-      const snapshot = reply.payload as BatchWorkSnapshot;
-      if (snapshot.sessionID !== sessionID) { setMessage("Status response belongs to another session."); return null; }
-      applyBatchWorkSnapshot(snapshot);
+      const next = reply.payload as BatchWorkSnapshot;
+      if (next.sessionID !== sessionID) { setMessage("Status response belongs to another session."); return null; }
+      applyBatchWorkSnapshot(next);
       setMessage("");
-      return snapshot;
+      return next;
     } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); return null; }
   }
 
@@ -38,7 +38,7 @@ export function BatchTree({ sessionID }: { sessionID: string }) {
       <button type="button" disabled={draining} onClick={() => void drain()}>{draining ? "Draining…" : "Drain"}</button>
       <button type="button" onClick={() => void refresh()}>Refresh status</button>
     </div>
-    {message && <div role="status" data-test-id="batch-tree-message">{message}</div>}
+    {message && <output data-test-id="batch-tree-message">{message}</output>}
     {tree.map((root) => <section key={root.root.rootID} data-batch-root={root.root.rootID} className="py-1">{root.nodes.map((item) => <BatchNode key={item.node.nodeID} item={item} target={{ sessionID: root.root.ownerSessionID, rootID: root.root.rootID }} refresh={refresh} />)}</section>)}
     {tree.length === 0 && <div className="text-text-subtle">No batches.</div>}
   </div>;
@@ -112,7 +112,7 @@ function BatchNode({ item, target, refresh }: { item: BatchTreeNode; target: Bat
     {node.heldQuestion && <div data-test-id="held-question" data-held-question={node.nodeID} className="ml-4 border-l border-accent px-2">{node.heldQuestion}</div>}
     <textarea aria-label={`Items to add under ${node.nodeID}`} data-batch-add={node.nodeID} value={items} onChange={(event) => setItems(event.target.value)} rows={2} disabled={!addAllowed} />
     <button type="button" data-test-id={`batch-add-${node.nodeID}`} disabled={!!busy || !addAllowed} onClick={() => void add()}>{busy === "add" ? "Adding…" : "Add"}</button>
-    {message && <div role="status" data-batch-node-message={node.nodeID}>{message}</div>}
+    {message && <output data-batch-node-message={node.nodeID}>{message}</output>}
     {output && <div data-test-id="batch-output"><pre>{output}</pre>{outputRef && <code>Reference: {outputRef}</code>}</div>}
     {open && children.map((child) => <BatchNode key={child.node.nodeID} item={child} target={target} refresh={refresh} />)}
     {open && childBatches.map((batch) => <section key={batch.root.rootID} data-batch-root={batch.root.rootID}>{batch.nodes.map((nested) => <BatchNode key={nested.node.nodeID} item={nested} target={{ sessionID: batch.root.ownerSessionID, rootID: batch.root.rootID }} refresh={refresh} />)}</section>)}

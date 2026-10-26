@@ -83,7 +83,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fixture/reset", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "POST required", 405)
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
 			return
 		}
 		reset(w, r, a)
@@ -104,7 +104,7 @@ func main() {
 	})
 	mux.HandleFunc("/fixture/notices", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "POST required", 405)
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
 			return
 		}
 		notices(w, r, a)
@@ -141,7 +141,7 @@ func reset(w http.ResponseWriter, r *http.Request, a *app.App) {
 	mu.Lock()
 	defer mu.Unlock()
 	if rootID != "" {
-		http.Error(w, "fixture batch already submitted", 409)
+		http.Error(w, "fixture batch already submitted", http.StatusConflict)
 		return
 	}
 	sess, err := a.Sessions.Create(r.Context(), "r15b fixture")
@@ -188,11 +188,11 @@ func notices(w http.ResponseWriter, r *http.Request, a *app.App) {
 	mu.Lock()
 	defer mu.Unlock()
 	if rootID == "" {
-		http.Error(w, "fixture batch not submitted", 409)
+		http.Error(w, "fixture batch not submitted", http.StatusConflict)
 		return
 	}
 	if noticesSet {
-		http.Error(w, "fixture notices already projected", 409)
+		http.Error(w, "fixture notices already projected", http.StatusConflict)
 		return
 	}
 	ctx := r.Context()

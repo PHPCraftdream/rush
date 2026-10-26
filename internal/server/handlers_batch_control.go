@@ -110,7 +110,7 @@ func batchControlStop(ctx context.Context, a *appPkg.App, c *Client, msg WSMessa
 		return
 	}
 	target := session.BatchControlTarget{Owner: identity.Owner, Host: identity.Host, Root: identity.Root, Node: nodeID}
-	req, err := fac.Store.BatchRequestStop(ctx, target, session.BatchSharedHostProbe(fac.Reader.DataDir))
+	req, err := fac.Store.BatchRequestStop(ctx, target, batchControlHostProbe(fac.Reader.DataDir))
 	if err != nil {
 		batchControlReply(c, msg, p, err.Error(), false)
 		return
@@ -161,4 +161,17 @@ func batchControlAdd(ctx context.Context, a *appPkg.App, c *Client, msg WSMessag
 		return
 	}
 	c.reply(msg.ID, EventBatchControlResult, BatchControlResult{SessionID: p.SessionID, RootID: identity.Root, NodeID: nodeID, Action: msg.Type, Result: "added", OK: true}, "")
+}
+
+// batchControlHostProbe reports this process's own host as alive (the shared
+// probe refuses an own host by design) and probes every other host through
+// its OS lock.
+func batchControlHostProbe(dataDir string) session.BatchHostProbe {
+	shared := session.BatchSharedHostProbe(dataDir)
+	return func(host string) (session.HostLockStatus, error) {
+		if session.IsOwnHostID(host) {
+			return session.HostStatusAlive, nil
+		}
+		return shared(host)
+	}
 }

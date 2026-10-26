@@ -16,5 +16,5 @@ test('real runtime hierarchy survives reload; Add and subtree Stop preserve sibl
  await projectNotices(request);await page.reload();const current=await openApp(page,request);await page.getByTestId('live-work-tab-batches').click();await expect(page.locator(`[data-batch-root="${batch.root}"]`)).toBeVisible();
  await expect(page.locator(`[data-batch-node="${fixture.noticeNode}"]`)).toContainText('Delayed notice');await expect(page.locator(`[data-batch-node="${fixture.suppressedNode}"]`)).toContainText('Notice suppressed');
  const start=Date.now();await page.getByRole('button',{name:'Drain'}).click();await expect(page.getByTestId('batch-tree-message')).toContainText(/no public session-scoped automatic reaction drain API/i);expect(Date.now()-start).toBeLessThan(3000);
- for(const id of current.children)await release(request,id);
+ await Promise.all(current.children.map((id)=>release(request,id)));
 });
