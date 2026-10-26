@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,11 +22,14 @@ import (
 type readAuthPermissionService struct {
 	mockViewPermissionService
 	granted  bool
+	mu       sync.Mutex // parallel subtests share one service
 	requests []permission.CreatePermissionRequest
 }
 
 func (s *readAuthPermissionService) Request(_ context.Context, req permission.CreatePermissionRequest) (bool, error) {
+	s.mu.Lock()
 	s.requests = append(s.requests, req)
+	s.mu.Unlock()
 	return s.granted, nil
 }
 
