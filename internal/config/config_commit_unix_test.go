@@ -36,6 +36,7 @@ func TestUnixCommitExpectedAbsentNoReplaceClosesCheckCommitRace(t *testing.T) {
 }
 
 func TestGenericConfigMutationRejectsHardLink(t *testing.T) {
+	pinKtavAutoMigrateOffForLegacyTest(t)
 	root := t.TempDir()
 	path := filepath.Join(root, "rush.json")
 	alias := filepath.Join(root, "alias.json")

@@ -42,7 +42,8 @@ type runCommandOutputBuffer struct {
 	mu       sync.Mutex
 	data     []byte
 	maxBytes int
-	total    int64 // monotonic count of all bytes ever written
+	total    int64         // monotonic count of all bytes ever written
+	changed  chan struct{} // Optional leaf-only write notification.
 	// lastWriteNS is the nanosecond Unix timestamp of the last non-empty
 	// Write (0 = never written).
 	lastWriteNS atomic.Int64
@@ -64,6 +65,10 @@ func (b *runCommandOutputBuffer) Write(p []byte) (int, error) {
 	// Record the last-output time only for real output; empty writes don't count.
 	if len(p) > 0 {
 		b.lastWriteNS.Store(time.Now().UnixNano())
+		if b.changed != nil {
+			close(b.changed)
+			b.changed = make(chan struct{})
+		}
 	}
 	b.data = append(b.data, p...)
 	if excess := len(b.data) - b.maxBytes; excess > 0 {

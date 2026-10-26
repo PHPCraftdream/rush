@@ -359,6 +359,12 @@ func TestInitializeClosesBarrierBeforeInitWaitGroup(t *testing.T) {
 	}
 }
 
+// forcedStaleWatchdog only catches a retry loop that never ends. Each of the
+// maxAdmissionRetries attempts durably persists the config from the hook, so
+// the wall-clock cost is disk-bound (seconds on a busy machine); the retry bound
+// itself is asserted through the exact hook call count.
+const forcedStaleWatchdog = 30 * time.Second
+
 func TestInitializeBoundsForcedStaleSkippedAdmission(t *testing.T) {
 	runForcedStaleSkippedInitialize(t, false)
 }
@@ -416,7 +422,7 @@ func runForcedStaleSkippedInitialize(t *testing.T, single bool) {
 		select {
 		case err := <-done:
 			require.ErrorIs(t, err, config.ErrMCPMutationStale)
-		case <-time.After(2 * time.Second):
+		case <-time.After(forcedStaleWatchdog):
 			t.Fatal("InitializeSingle did not terminate after bounded stale retries")
 		}
 	} else {
@@ -427,11 +433,11 @@ func runForcedStaleSkippedInitialize(t *testing.T, single bool) {
 		}()
 		select {
 		case <-done:
-		case <-time.After(2 * time.Second):
+		case <-time.After(forcedStaleWatchdog):
 			t.Fatal("Initialize did not terminate after bounded stale retries")
 		}
 	}
-	require.Less(t, time.Since(started), 2*time.Second)
+	require.Less(t, time.Since(started), forcedStaleWatchdog)
 	require.Equal(t, int32(maxAdmissionRetries), calls.Load())
 	select {
 	case persistErr := <-hookErrors:
@@ -458,6 +464,12 @@ func runForcedStaleSkippedInitialize(t *testing.T, single bool) {
 }
 
 func TestAdmissionRejectsDirectProjectRushSourceReplaceBeforePublication(t *testing.T) {
+	// Legacy JSON semantics: the test replaces the project rush.json source
+	// in place and requires the admission to observe the change. With Ktav
+	// auto-migration on, config.Load renames rush.json to rush.ktav, so the
+	// fixture must stay in the legacy format.
+	restore := config.SetKtavAutoMigrateForTest(false)
+	t.Cleanup(restore)
 	runDirectAdmissionSourceMutation(t, false, false)
 }
 

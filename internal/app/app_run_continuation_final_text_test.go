@@ -1,20 +1,11 @@
 package app
 
-// F3 (2026-09-21 weekly audit): a continuation after a partial response
-// must return BOTH halves of the answer. The audit repro, end to end:
-// the provider streams "Section 1: Introduction" then the connection
-// dies mid-stream (transient), the coordinator's continuation retry
-// re-asks, and the continuation attempt returns "Section 2: Conclusion"
-// with a clean finish. The run's RETURNED final_text (the JSON/SDK
-// envelope) must contain both sections — before the fix it carried only
-// the continuation's tail.
+// F3 (2026-09-21 weekly audit): an interrupted response followed by a
+// continuation must return BOTH halves in the run's final_text envelope.
 //
-// The stub needs three behaviors because the openai provider stack
-// retries internally (fantasy MaxRetries=2) before the coordinator's
-// own continuation loop engages: request 1 streams the partial text and
-// aborts, requests 2-3 (fantasy's internal step retries) answer 500 so
-// the step ultimately fails, and request 4 (the coordinator's
-// continuation) completes cleanly.
+// The stub needs to outlast fantasy's configured internal retries before
+// the coordinator's continuation loop engages: request 1 streams partial
+// text and aborts; every internal retry fails; the next request completes.
 
 import (
 	"context"
@@ -31,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
@@ -78,11 +70,28 @@ func newContinuationApp(t *testing.T, withReviewer bool) *App {
 	return newContinuationAppWithStub(t, withReviewer, defaultContinuationSmartStub)
 }
 
+func continuationFirstCoordinatorRequest() int {
+	// 2 = partial-text attempt + the coordinator continuation; retries are
+	// the pinned fantasy count.
+	return agent.ProviderMaxRetries + 2
+}
+
+func continuationRetryFailure(n int, w http.ResponseWriter) bool {
+	if n < 2 || n >= continuationFirstCoordinatorRequest() {
+		return false
+	}
+	w.WriteHeader(http.StatusInternalServerError)
+	_, _ = fmt.Fprint(w, `{"error":{"message":"transient stub failure","type":"server_error"}}`)
+	return true
+}
+
 // defaultContinuationSmartStub is the audit-repro provider behavior for
-// the smart slot: attempt 1 streams the partial text and dies mid-stream,
-// requests 2-3 fail fast (fantasy's internal step retries), and request 4
-// — the coordinator's continuation attempt — completes cleanly.
+// the smart slot: attempt 1 streams partial text and dies; all configured
+// Fantasy retries fail; the coordinator's continuation then completes.
 func defaultContinuationSmartStub(n int, w http.ResponseWriter, _ *http.Request) {
+	if continuationRetryFailure(n, w) {
+		return
+	}
 	switch n {
 	case 1:
 		// The turn's first attempt: stream the partial text, give the
@@ -94,12 +103,6 @@ func defaultContinuationSmartStub(n int, w http.ResponseWriter, _ *http.Request)
 		}
 		time.Sleep(300 * time.Millisecond)
 		panic(http.ErrAbortHandler)
-	case 2, 3:
-		// fantasy's internal step retries: fail fast so the step
-		// ultimately errors out and the coordinator's own
-		// continuation retry takes over.
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = fmt.Fprint(w, `{"error":{"message":"transient stub failure","type":"server_error"}}`)
 	default:
 		// The coordinator's continuation attempt: clean finish.
 		_, _ = fmt.Fprint(w, sseChunk(contFinalText))
@@ -555,24 +558,23 @@ func TestExecuteRunContinuationChainWithToolStepReturnsFullText(t *testing.T) {
 	require.NoError(t, err)
 
 	app := newContinuationAppWithStub(t, false, func(n int, w http.ResponseWriter, r *http.Request) {
-		switch n {
-		case 1:
+		if n == 1 {
 			_, _ = fmt.Fprint(w, sseChunk(contPartialText))
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
 			}
 			time.Sleep(300 * time.Millisecond)
 			panic(http.ErrAbortHandler)
-		case 2, 3:
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = fmt.Fprint(w, `{"error":{"message":"transient stub failure","type":"server_error"}}`)
-		case 4:
-			// The continuation attempt first calls a tool — a clean
-			// tool-loop round, not a failure.
+		}
+		if continuationRetryFailure(n, w) {
+			return
+		}
+		if n == continuationFirstCoordinatorRequest() {
+			// The continuation attempt first calls a tool — a clean tool-loop round.
 			_, _ = fmt.Fprint(w, sseToolCallChunk("view", string(toolArgs)))
 			_, _ = fmt.Fprint(w, sseToolCallsFinishChunk())
 			_, _ = fmt.Fprint(w, sseDone)
-		default:
+		} else {
 			// The round after the view result: clean finish.
 			_, _ = fmt.Fprint(w, sseChunk(contFinalText))
 			_, _ = fmt.Fprint(w, sseStopChunk)
@@ -599,22 +601,20 @@ func TestExecuteRunContinuationMidJSONStringJoinsWithoutSeparator(t *testing.T) 
 	const tail = ` world"}`
 
 	app := newContinuationAppWithStub(t, false, func(n int, w http.ResponseWriter, r *http.Request) {
-		switch n {
-		case 1:
+		if n == 1 {
 			_, _ = fmt.Fprint(w, sseChunk(partial))
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
 			}
 			time.Sleep(300 * time.Millisecond)
 			panic(http.ErrAbortHandler)
-		case 2, 3:
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = fmt.Fprint(w, `{"error":{"message":"transient stub failure","type":"server_error"}}`)
-		default:
-			_, _ = fmt.Fprint(w, sseChunk(tail))
-			_, _ = fmt.Fprint(w, sseStopChunk)
-			_, _ = fmt.Fprint(w, sseDone)
 		}
+		if continuationRetryFailure(n, w) {
+			return
+		}
+		_, _ = fmt.Fprint(w, sseChunk(tail))
+		_, _ = fmt.Fprint(w, sseStopChunk)
+		_, _ = fmt.Fprint(w, sseDone)
 	})
 
 	result, err := runContinuationExecuteRun(t, app)
@@ -712,31 +712,26 @@ func TestContinuationChainTextJoinsByteExact(t *testing.T) {
 	}
 }
 
-// runByteCutContinuationE2E drives the audit repro with the stream
-// severed at an arbitrary byte cut: attempt 1 streams partial and dies
-// mid-stream, requests 2-3 fail fast (fantasy's internal step retries),
-// and the coordinator's continuation attempt streams tail to a clean
-// finish.
+// runByteCutContinuationE2E drives the continuation repro at arbitrary
+// byte cuts. Internal retries fail before the continuation streams the tail.
 func runByteCutContinuationE2E(t *testing.T, partial, tail string) *RunResult {
 	t.Helper()
 
 	app := newContinuationAppWithStub(t, false, func(n int, w http.ResponseWriter, r *http.Request) {
-		switch n {
-		case 1:
+		if n == 1 {
 			_, _ = fmt.Fprint(w, sseChunk(partial))
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
 			}
 			time.Sleep(300 * time.Millisecond)
 			panic(http.ErrAbortHandler)
-		case 2, 3:
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = fmt.Fprint(w, `{"error":{"message":"transient stub failure","type":"server_error"}}`)
-		default:
-			_, _ = fmt.Fprint(w, sseChunk(tail))
-			_, _ = fmt.Fprint(w, sseStopChunk)
-			_, _ = fmt.Fprint(w, sseDone)
 		}
+		if continuationRetryFailure(n, w) {
+			return
+		}
+		_, _ = fmt.Fprint(w, sseChunk(tail))
+		_, _ = fmt.Fprint(w, sseStopChunk)
+		_, _ = fmt.Fprint(w, sseDone)
 	})
 
 	result, err := runContinuationExecuteRun(t, app)

@@ -300,6 +300,7 @@ func (a *sessionAgent) fireCacheKeepAliveHB(hb heartbeat.Context, sessionID stri
 		fantasy.WithStopConditions(fantasy.StepCountIs(2)),
 	)
 	result, err := replayAgent.Stream(ctx, fantasy.AgentStreamCall{
+		MaxRetries:      &ProviderMaxRetries,
 		Messages:        messages,
 		Headers:         sessionHeaders(sessionID),
 		ProviderOptions: providerOptions,

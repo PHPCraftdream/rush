@@ -97,11 +97,18 @@ func touchesModelsKey(keys []string) bool {
 // A read error counts as "lock exists" and fails closed.
 func (s *ConfigStore) anySettingsLockExists() bool {
 	sources := []settingsLockSource{
+		// The process-global data config AND the store's own global path:
+		// readSettingsDocument selects the active slot for either spelling,
+		// so a lock living only in rush.ktav is seen through both.
 		{path: GlobalConfigData(), global: true},
+		{path: s.globalDataPath, global: true},
+		// canonicalGlobalDataPath() and naturalWorkspaceSettingsPath() are
+		// slot-selected inside their source helpers; the raw workspace join
+		// still needs selection.
 		{path: canonicalGlobalDataPath(), global: true},
 		{path: s.loadSnapshot().workspacePath},
 		{path: naturalWorkspaceSettingsPath(s.workingDir)},
-		{path: filepath.Join(s.workingDir, "rush.json")},
+		{path: readSlotOf(filepath.Join(s.workingDir, "rush.json"))},
 	}
 	globals, locals, err := collectSettingsSourceHashes(sources)
 	if err != nil {
@@ -129,28 +136,14 @@ func (s *ConfigStore) verifyModelsIntegrityAtLoad() {
 			mismatch = true
 			break
 		}
-		canonical, present, err := canonicalModelsJSON(gjson.GetBytes(data, "models").Raw)
+		doc, err := decodeSettingsDocument(path, data, reloadFileFingerprint{})
 		if err != nil {
+			// An undecodable document fails closed: it counts as a
+			// mismatch, never as an absent models field.
 			mismatch = true
 			break
 		}
-		if !present {
-			continue
-		}
-		rev := gjson.GetBytes(data, cacheRevKey)
-		if !rev.Exists() {
-			// Genuinely absent: legacy file. Accepted only when unlocked.
-			if s.anySettingsLockExists() {
-				mismatch = true
-			}
-			continue
-		}
-		// Present but not a valid signature string: a mismatch, locked or not.
-		if rev.Type != gjson.String || rev.String() == "" {
-			mismatch = true
-			break
-		}
-		if rev.String() != modelsIntegritySignature(canonical) {
+		if modelsIntegrityOf(doc.jsonBytes, s.anySettingsLockExists()) != nil {
 			mismatch = true
 			break
 		}
@@ -159,6 +152,46 @@ func (s *ConfigStore) verifyModelsIntegrityAtLoad() {
 		s.modelsIntegrity = ErrModelsEditedDirectly
 		slog.Warn("model settings were changed outside rush")
 	}
+}
+
+// modelsIntegrityOf checks one config document's JSON-shaped bytes against the
+// models-integrity rule: a models block must carry a valid cache_rev
+// signature. A models block with no cache_rev at all is a legacy file,
+// accepted only when no settings lock exists. data unreadable (nil or
+// garbage) fails closed. Reload reuses this on the candidate's stable
+// bytes, so a hand-edited models block never reaches a running process.
+//
+// data is the decoded JSON for .ktav documents (decodeConfigDocument ->
+// ktavcodec.DecodeKtav + ToJSON), so no extra number normalization is
+// needed before canonicalModelsJSON: the codec re-tokenizes every float
+// through strconv.FormatFloat('g', -1, 64) and integers through
+// strconv.FormatInt, and ToJSON emits those normalized lexemes, so a
+// cache_rev computed over Ktav-normalized values at migration time
+// verifies here unchanged.
+func modelsIntegrityOf(data []byte, lockExists bool) error {
+	canonical, present, err := canonicalModelsJSON(gjson.GetBytes(data, "models").Raw)
+	if err != nil {
+		return ErrModelsEditedDirectly
+	}
+	if !present {
+		return nil
+	}
+	rev := gjson.GetBytes(data, cacheRevKey)
+	if !rev.Exists() {
+		// Genuinely absent: legacy file. Accepted only when unlocked.
+		if lockExists {
+			return ErrModelsEditedDirectly
+		}
+		return nil
+	}
+	// Present but not a valid signature string: a mismatch, locked or not.
+	if rev.Type != gjson.String || rev.String() == "" {
+		return ErrModelsEditedDirectly
+	}
+	if rev.String() != modelsIntegritySignature(canonical) {
+		return ErrModelsEditedDirectly
+	}
+	return nil
 }
 
 // ModelsIntegrity returns the one-time startup check result. It is computed

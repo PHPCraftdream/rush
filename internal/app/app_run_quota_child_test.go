@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -10,9 +11,11 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,10 +25,26 @@ func TestCLIQuotaLiveChildAndBash(t *testing.T) {
 	t.Run("question", func(t *testing.T) { testCLIQuotaLiveChildAndBash(t, true) })
 }
 
+// quotaRetryWait mirrors fantasy's exponential backoff (retry.go) over the
+// pinned retry count: 5s + 10s = 15s with ProviderMaxRetries = 2.
+func quotaRetryWait() time.Duration {
+	retry := fantasy.DefaultRetryOptions()
+	retryWait := time.Duration(0)
+	delay := retry.InitialDelayIn
+	for range agent.ProviderMaxRetries {
+		retryWait += delay
+		delay = time.Duration(float64(delay) * retry.BackoffFactor)
+	}
+	return retryWait
+}
+
+// workMargin keeps each live-work fixture comfortably past the quota latch.
+const workMargin = 4 * time.Second
+
+// quotaBashSeconds sizes the root bash job to span the latch (rounded up).
+var quotaBashSeconds = int((quotaRetryWait() + workMargin) / time.Second)
+
 func testCLIQuotaLiveChildAndBash(t *testing.T, question bool) {
-	var resumed atomic.Bool
-	var resumeSawQuestion atomic.Bool
-	var resumeChildID string
 	var rootRequests, childRequests atomic.Int32
 	var childStarted atomic.Bool
 	var workerModel atomic.Bool
@@ -36,26 +55,14 @@ func testCLIQuotaLiveChildAndBash(t *testing.T, question bool) {
 			loopText(w, "title", "quota child", 1, 1)
 			return
 		}
-		if resumed.Load() {
-			if strings.Contains(system, "an agent for Rush") {
-				loopText(w, "answered", "child used port 8080", 1, 1)
-				return
-			}
-			if strings.Contains(string(body), "which port?") {
-				resumeSawQuestion.Store(true)
-			}
-			if !strings.Contains(string(body), "child used port 8080") {
-				admissionWriteSSE(w, []string{admissionSSEToolCall("answer", "answer-child", "agent", `{"resume_session_id":`+jsonString(resumeChildID)+`,"prompt":"use 8080"}`), admissionSSEStop("answer", "tool_calls")})
-			} else {
-				loopText(w, "resumed", "answered child", 1, 1)
-			}
-			return
-		}
 		if strings.Contains(system, "an agent for Rush") {
 			childStarted.Store(true)
 			workerModel.Store(strings.Contains(string(body), `"model":"worker-probe"`))
 			childRequests.Add(1)
-			time.Sleep(8 * time.Second)
+			// The latch fires only after the root turn exhausts its
+			// pinned retries, so the child must outlive retryWait to be
+			// collected as live work after the latch.
+			time.Sleep(quotaRetryWait() + workMargin)
 			if question {
 				admissionWriteSSE(w, []string{
 					admissionSSEToolCall("child", "ask", "ask_question", `{"question":"which port?","options":["8080"]}`),
@@ -69,7 +76,7 @@ func testCLIQuotaLiveChildAndBash(t *testing.T, question bool) {
 		switch rootRequests.Add(1) {
 		case 1:
 			admissionWriteSSE(w, []string{
-				admissionSSEToolCall("root", "bash-job", "bash", `{"command":"sleep 10 && echo quota-bash-output","description":"quota job","run_in_background":true}`),
+				admissionSSEToolCall("root", "bash-job", "bash", fmt.Sprintf(`{"command":"sleep %d && echo quota-bash-output","description":"quota job","run_in_background":true}`, quotaBashSeconds)),
 				admissionSSEStop("root", "tool_calls"),
 			})
 		case 2:
@@ -78,6 +85,8 @@ func testCLIQuotaLiveChildAndBash(t *testing.T, question bool) {
 				admissionSSEStop("root", "tool_calls"),
 			})
 		case 3, 4, 5:
+			// Requests 1–2 start bash/delegation; requests 3..5 = 2 setup
+			// + initial attempt + 2 pinned retries, all quota-latched.
 			require.Eventually(t, childStarted.Load, 10*time.Second, 10*time.Millisecond)
 			quotaResponse(w)
 		default:
@@ -92,13 +101,22 @@ func testCLIQuotaLiveChildAndBash(t *testing.T, question bool) {
 	application.config.SetSelectedModelRuntime(config.SelectedModelTypeWorker, config.SelectedModel{Provider: "openaicompat", Model: "worker-probe"})
 	grantChildBackgroundShellTools(t, application)
 	grantChildWakeTools(t, application)
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	// retryWait = InitialDelayIn * (BackoffFactor^i - 1) summed over the
+	// pinned retries = 5s+10s = 15s with ProviderMaxRetries = 2.
+	retryWait := quotaRetryWait()
+	// Bash runs workMargin longer than the child handler sleep, so the
+	// budget is the pre-latch wait plus the longest live work plus a
+	// scheduling margin.
+	const schedulingMargin = 15 * time.Second
+	timeout := retryWait + (retryWait + workMargin) + schedulingMargin
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 	var out syncBuffer
 	res, err := application.RunNonInteractiveWithResult(ctx, &out, "delegate and run bash", RunOverrides{Origin: message.OriginCLI}, true, RunModeJSON, sid, false)
 	require.Error(t, err)
 	require.Equal(t, "provider_limit", res.ExitReason)
-	require.EqualValues(t, 5, rootRequests.Load())
+	// 2 setup + initial attempt + 2 pinned retries.
+	require.EqualValues(t, int32(2+agent.ProviderMaxRetries+1), rootRequests.Load())
 	require.EqualValues(t, 1, childRequests.Load())
 	require.True(t, workerModel.Load())
 	require.Contains(t, out.String(), "quota-bash-output")
@@ -108,24 +126,37 @@ func testCLIQuotaLiveChildAndBash(t *testing.T, question bool) {
 	} else {
 		require.Contains(t, out.String(), "different-model child finished")
 	}
-	rows, listErr := application.asyncJobStore.ListAsyncJobsForOwner(ctx, sid)
-	require.NoError(t, listErr)
-	require.NotEmpty(t, rows)
 	if question {
-		resumeChildID = res.PendingChildQuestions[0].SessionID
-		store, dataDir := application.config, application.dataDir
-		application.Shutdown()
-		conn, e := db.Connect(ctx, dataDir)
-		require.NoError(t, e)
-		t.Cleanup(func() { _ = db.ReleaseConn(conn) })
-		fresh, e := New(ctx, conn, store)
-		require.NoError(t, e)
-		t.Cleanup(fresh.Shutdown)
-		resumed.Store(true)
-		var resumedOut syncBuffer
-		again, e := fresh.RunNonInteractiveWithResult(ctx, &resumedOut, "answer the pending child question", RunOverrides{Origin: message.OriginCLI}, true, RunModeJSON, sid, false)
-		require.NoError(t, e)
-		require.Equal(t, "answered child", again.FinalText)
-		require.True(t, resumeSawQuestion.Load())
+		// The run must have exited provider_limit with the pending
+		// question (shared assertions above), and the HELD identity must
+		// survive the host: the fenced LiveHeldQuestions row, its marker
+		// notice, and a child still inside its held Ask (no finished
+		// assistant message). No cross-host continuation is claimed: the
+		// design requires interruption after host shutdown.
+		facts := agent.NewBatchCutoverNodeFacts(session.NewBatchStore(application.DB()), nil, application.DB())
+		held, heldErr := facts.LiveHeldQuestions(ctx, sid)
+		require.NoError(t, heldErr)
+		require.Len(t, held, 1)
+		require.Equal(t, res.PendingChildQuestions[0].SessionID, held[0].ChildSessionID)
+		var noticeText string
+		require.NoError(t, application.DB().QueryRowContext(ctx,
+			`SELECT text FROM session_notices WHERE id = ? AND owner = ?`, held[0].ID, sid).Scan(&noticeText))
+		parsed, ok := session.ParseBatchChildQuestionNotice(noticeText)
+		require.True(t, ok)
+		require.Equal(t, held[0].NodeID, parsed.NodeID)
+		require.Equal(t, held[0].ChildSessionID, parsed.ChildSessionID)
+		childMsgs, msgErr := application.Messages.List(ctx, held[0].ChildSessionID)
+		require.NoError(t, msgErr)
+		for _, msg := range childMsgs {
+			require.False(t, msg.Role == message.Assistant && msg.IsFinished(),
+				"the child remains inside its held Ask")
+		}
+	} else {
+		// The finished subtest only: the delegation COMPLETED here, so its
+		// root is terminal (the question subtest's delegation is HELD/live
+		// and must never be asserted completed). The two logical jobs are
+		// terminal in the batch tables -- one completed root per tool call id.
+		e3BatchJobIdentityPresent(t, application, sid, "bash-job", "quota-bash-output")
+		e3BatchJobIdentityPresent(t, application, sid, "delegation", "")
 	}
 }

@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "limits": {
+    "max_concurrent": 2,
+    "max_depth": 8,
+    "max_nodes": 64
+  },
+  "runner": {
+    "control_timeout_ms": 1000,
+    "record_retention": 128
+  },
+  "wait_bound_ms": 10000,
+  "payloads": {
+    "p": {
+      "kind": "controlled"
+    }
+  },
+  "script": [
+    {
+      "action": "submit",
+      "ref": "",
+      "root": "R",
+      "spec": {
+        "batch": {
+          "mode": "parallel",
+          "notify": "each",
+          "items": [
+            {
+              "task": {
+                "payload_ref": "p"
+              }
+            },
+            {
+              "batch": {
+                "mode": "parallel",
+                "notify": "all",
+                "items": [
+                  {
+                    "task": {
+                      "payload_ref": "p"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "action": "await_start",
+      "node": "R.1",
+      "bind": "r1"
+    },
+    {
+      "action": "release_start",
+      "attempt": "r1",
+      "decision": "accept"
+    },
+    {
+      "action": "await_state",
+      "node": "R.1",
+      "state": "running"
+    },
+    {
+      "action": "await_start",
+      "node": "R.2.1",
+      "bind": "r21"
+    },
+    {
+      "action": "release_start",
+      "attempt": "r21",
+      "decision": "accept"
+    },
+    {
+      "action": "await_state",
+      "node": "R.2.1",
+      "state": "running"
+    },
+    {
+      "action": "close",
+      "async": "c",
+      "expect": "ok"
+    },
+    {
+      "action": "await_record",
+      "type": "host_closing"
+    },
+    {
+      "action": "await_stop",
+      "attempt": "r1",
+      "call": 1
+    },
+    {
+      "action": "await_stop",
+      "attempt": "r21",
+      "call": 1
+    },
+    {
+      "action": "complete",
+      "attempt": "r1",
+      "state": "interrupted"
+    },
+    {
+      "action": "await_record",
+      "type": "settled",
+      "node": "R.1"
+    },
+    {
+      "action": "complete",
+      "attempt": "r21",
+      "state": "interrupted"
+    },
+    {
+      "action": "await_record",
+      "type": "settled",
+      "node": "R.2.1"
+    },
+    {
+      "action": "join",
+      "name": "c"
+    }
+  ],
+  "expect": {
+    "exit_code": 2
+  }
+}

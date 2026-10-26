@@ -45,6 +45,26 @@ func shrinkDrainRetry(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { drainRetryAfterNS.Store(old) })
 }
 
+// elapseDrainPause checks both sides of the exact recorded pacing boundary
+// with the arbiter's input clock, then expires only RetryAt for the real pass.
+// Streaks and hint state survive; resetting the gate would erase the budget.
+func (f *attemptFixture) elapseDrainPause(ctx context.Context) {
+	f.t.Helper()
+	facts, err := f.coord.readTurnFacts(ctx, f.sessID, siteTick)
+	require.NoError(f.t, err)
+	require.True(f.t, facts.Gate.Paced)
+	facts.Now = facts.Gate.RetryAt.Add(-time.Nanosecond)
+	v, shut := gateShut(facts)
+	require.True(f.t, shut)
+	require.Equal(f.t, VDefer, v.Kind)
+	facts.Now = facts.Gate.RetryAt
+	_, shut = gateShut(facts)
+	require.False(f.t, shut, "the pause ends at RetryAt, not later")
+	f.coord.arb.mu.Lock()
+	f.coord.arb.stateLocked(f.sessID).gate.RetryAt = time.Unix(1, 0)
+	f.coord.arb.mu.Unlock()
+}
+
 // countingAgent counts the Run calls (Drain launches) a session's driver gets.
 type countingAgent struct {
 	SessionAgent
@@ -71,19 +91,20 @@ func (f *attemptFixture) countRuns() *countingAgent {
 // first attempt exceeds 1 and this test goes red.
 func TestDrainAttempt_EmptyStreamPacedThenSettledAtK(t *testing.T) {
 	ctx := context.Background()
-	const retry = 300 * time.Millisecond
+	const retry = time.Hour
 	shrinkDrainRetry(t, retry)
-	f := newAttemptFixture(t, "attempt-paced", attemptFixtureOpts{handler: emptyReplyResponse})
+	f := newAttemptFixture(t, "attempt-paced", attemptFixtureOpts{noIdle: true, handler: emptyReplyResponse})
 	f.seedDebt(ctx, "call-1", false)
 
 	require.NoError(t, f.wake(ctx, true))
 	require.EqualValues(t, 1, f.row(ctx, "call-1").WakeAttempts)
-	time.Sleep(retry / 2)
+	f.coord.afterRelease(f.sessID)
 	require.EqualValues(t, 1, f.requests.Load(), "the release of an unreacted attempt must not relaunch a paid turn")
 
 	for want := int32(2); want <= 3; want++ {
-		time.Sleep(retry)
+		f.elapseDrainPause(ctx)
 		f.pass(ctx)
+		f.coord.afterRelease(f.sessID)
 		require.Equal(t, want, f.requests.Load(), "the gate reopens for one attempt per pause")
 	}
 	row := f.row(ctx, "call-1")
@@ -92,7 +113,6 @@ func TestDrainAttempt_EmptyStreamPacedThenSettledAtK(t *testing.T) {
 	require.EqualValues(t, 1, row.ReactedFailed)
 	require.Equal(t, 1, f.markers(ctx))
 
-	time.Sleep(retry)
 	f.pass(ctx)
 	require.EqualValues(t, 3, f.requests.Load(), "a closed debt launches nothing")
 }
@@ -117,12 +137,20 @@ func TestDrainAttempt_AskQuestionReactsAndSuspends(t *testing.T) {
 	require.True(t, f.coord.autoResumeSuspended(f.sessID))
 
 	f.seedDebt(ctx, "call-2", false)
+	// Under the batch runtime the release path can tear the driver down (see
+	// ensureDrainDriver); the final wake below must take the driver branch
+	// (the root branch dereferences the fixture's nil cfg). The wake above
+	// stays gated by the suspension either way, so re-registering here does
+	// not disturb the no-turn assertion it precedes.
+	f.ensureDrainDriver()
 	require.NoError(t, f.wake(ctx, true))
-	time.Sleep(300 * time.Millisecond)
+	f.waitReleases() // no wait-out needed: the gate is suspension-, not pacing-, shut
 	require.EqualValues(t, 1, f.requests.Load(), "no automatic turn while the question waits")
 
 	f.coord.ResetAutoResumeCounter(f.sessID)
+	f.ensureDrainDriver()
 	require.ErrorAs(t, f.wake(ctx, true), &awaiting)
+	f.waitReleases()
 	require.EqualValues(t, 2, f.requests.Load(), "a human message resumes automatic turns")
 }
 
@@ -135,15 +163,16 @@ func TestDrainAttempt_ReactionAndSettleFail_DormantAfterThree(t *testing.T) {
 	ctx := context.Background()
 	const retry = 100 * time.Millisecond
 	shrinkDrainRetry(t, retry)
-	f := newAttemptFixture(t, "attempt-dormant", attemptFixtureOpts{})
+	f := newAttemptFixture(t, "attempt-dormant", attemptFixtureOpts{manualClock: true})
 	f.seedDebt(ctx, "call-1", false)
 	f.blockReactionsAndSettles(ctx)
-
 	require.NoError(t, f.wake(ctx, true))
 	for range 6 {
-		time.Sleep(retry + 50*time.Millisecond)
+		f.waitReleases() // the attempt must finish and pace the gate first
+		f.advanceDrainClock(retry + time.Millisecond)
 		f.pass(ctx)
 	}
+	f.waitReleases()
 
 	require.EqualValues(t, 3, f.requests.Load(), "three counted attempts, then dormant")
 	row := f.row(ctx, "call-1")
@@ -162,18 +191,18 @@ func TestDrainAttempt_PermanentPullFailure_BoundedNoTurns(t *testing.T) {
 	ctx := context.Background()
 	const retry = 100 * time.Millisecond
 	shrinkDrainRetry(t, retry)
-	f := newAttemptFixture(t, "attempt-pull-fail", attemptFixtureOpts{})
+	f := newAttemptFixture(t, "attempt-pull-fail", attemptFixtureOpts{manualClock: true})
 	launches := f.countRuns()
 	f.seedDebt(ctx, "call-1", false)
-	f.exec(ctx, `CREATE TRIGGER fx_block_pull BEFORE UPDATE OF delivery ON async_jobs
-		WHEN NEW.delivery = 'done'
-		BEGIN SELECT RAISE(ABORT, 'fx: pull blocked'); END`)
+	a1BlockPull(t, f.env.conn)
 
 	require.NoError(t, f.wake(ctx, true))
 	for range 6 {
-		time.Sleep(retry + 50*time.Millisecond)
+		f.waitReleases() // the attempt must finish and pace the gate first
+		f.advanceDrainClock(retry + time.Millisecond)
 		f.pass(ctx)
 	}
+	f.waitReleases()
 
 	require.Zero(t, f.requests.Load(), "a pull that never succeeds never reaches the provider")
 	require.EqualValues(t, 3, launches.runs.Load(), "bounded no-turn launches")
@@ -195,7 +224,7 @@ func TestAdmissionRefusal_NonBusyLockError_NoHotLoop(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(f.env.workingDir, "locks"), []byte("not a directory"), 0o644))
 
 	_ = f.wake(ctx, true)
-	time.Sleep(500 * time.Millisecond)
+	f.waitReleases() // the wake is synchronous; the wait only guards the counter read
 
 	require.EqualValues(t, 1, launches.runs.Load(), "a refused launch must not relaunch itself")
 	require.True(t, f.inRecheckSet(), "the refusal keeps the wake for the next tick")
@@ -221,12 +250,17 @@ func TestReleaseHook_NonChildSession_DoesNotBlockOnDB(t *testing.T) {
 	f := newAttemptFixture(t, "attempt-hook-db", attemptFixtureOpts{noIdle: true})
 	plain, err := f.env.sessions.Create(ctx, "a plain session, never a delegation driver")
 	require.NoError(t, err)
-	require.False(t, f.ledger.hasArmedOrDriver(plain.ID), "precondition: nothing armed, no driver")
+	_, registered := f.coord.subAgentDrivers.get(plain.ID)
+	require.False(t, registered, "precondition: no driver")
+	live, liveErr := f.coord.runningWorkOpen(ctx, plain.ID)
+	require.NoError(t, liveErr)
+	require.False(t, live, "precondition: nothing armed")
 	conn, err := f.env.conn.Conn(ctx)
 	require.NoError(t, err)
 	_, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE")
 	require.NoError(t, err)
 
+	// This test asserts NON-BLOCKING wall-clock behavior and must stay real-time.
 	start := time.Now()
 	f.coord.onSessionIdleHook(plain.ID)
 	elapsed := time.Since(start)
@@ -282,7 +316,21 @@ func TestDrainPolicy_ReadErrorFailsClosed(t *testing.T) {
 			f.exec(ctx, `ALTER TABLE session_drivers RENAME TO fx_session_drivers`)
 		}},
 		{"delegation state", "launch decision input unreadable", func(f *attemptFixture) {
-			f.exec(ctx, `ALTER TABLE async_jobs RENAME TO fx_async_jobs`)
+			// Dual-mode injector. Previously, with the flag OFF, the
+			// delegation-state input was the async_jobs row, renamed here.
+			// Since the H4 cutover this case can no longer isolate the
+			// delegation-state input, and that is a recorded limitation:
+			// every facts input is read from the ONE batch_nodes source
+			// through one binding (batch_cutover_facts.go: PendingInclusiveDebt
+			// is read first at :496, the delegation-state read
+			// LiveDelegationChildOf only runs later at :535 and only for a
+			// session with a parent), and SQLite offers no read-failure seam --
+			// a table rename fails the earlier debt read first. A child-session
+			// fixture would additionally change the policy context the other
+			// three cases pin. What stays pinned is the fail-closed
+			// contract itself: deferred + recheck + error + the shared
+			// "launch decision input unreadable" reason.
+			f.exec(ctx, `ALTER TABLE batch_nodes RENAME TO fx_batch_nodes`)
 		}},
 		{"delegation identity", "launch decision input unreadable", func(f *attemptFixture) {
 			f.coord.sessions = failingGetSessions{Service: f.env.sessions, failID: f.sessID}

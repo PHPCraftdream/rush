@@ -25,7 +25,9 @@ import (
 // populated, entries live forever" lifetime — see mailbox.go and
 // docs/plans/2026-08-04-session-owner-mailbox-design.md §1.
 func (a *sessionAgent) getMailbox(sessionID string) *mailbox {
-	return a.mailboxes.GetOrSet(sessionID, func() *mailbox { return &mailbox{} })
+	return a.mailboxes.GetOrSet(sessionID, func() *mailbox {
+		return &mailbox{armQueuedBuild: a.armQueuedBuildRetention}
+	})
 }
 
 // tryReserveSession is now a thin wrapper around mailbox.submit (design §3,
@@ -426,6 +428,13 @@ func (a *sessionAgent) restartOrphaned(calls []SessionAgentCall) error {
 // instead of blocking indefinitely.
 func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error {
 	calls = splitCallsWithoutWaiters(calls, "the sub-agent session's previous turn ended with an error before this queued turn could run; resume it again")
+	// Package L round 2: a retained queued call is NOT a waiter (its
+	// onQueueResolved is nil), so splitCallsWithoutWaiters above correctly
+	// KEPT it for durable re-enqueue -- the pump rebuilds a fresh call with
+	// its own build scope, so the in-process retention must be released at
+	// the handoff, exactly once. This is the waiters-classification-preserving
+	// release point (round-1 flaw B fixed: the hook is never touched).
+	releaseQueuedCallsBuildOwnership(calls)
 	if len(calls) == 0 {
 		return nil
 	}
@@ -479,10 +488,18 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 			// dropped rather than replayed onto the wrong filesystem: the
 			// fail-closed direction, since the host is still in-process
 			// and can retry.
-			if callCarriesDiskProvider(call) {
-				slog.Error("agent: refusing to durably enqueue a call carrying a caller-supplied disk provider",
+			// R12-H2b §2.4: only a live provider WITHOUT an execution
+			// requirement envelope is unserializable — a call carrying the
+			// envelope is carried forward below with its binding pinned by
+			// a row-keyed Continuation owner.
+			if callCarriesDiskProvider(call) && requirementFromCall(call) == nil {
+				slog.Error("agent: refusing to durably enqueue a call carrying a caller-supplied disk provider with no execution requirement envelope",
 					"session_id", call.SessionID, "logical_call_id", call.LogicalCallID)
-				callErrs[i] = fmt.Errorf("%w (session=%s)", ErrDiskProviderNotDurable, call.SessionID)
+				if call.CallOptions.DiskBindingID != "" {
+					callErrs[i] = fmt.Errorf("%w: provider-dependent session continuation cannot be durably queued (session=%s)", ErrDiskProviderUnavailable, call.SessionID)
+				} else {
+					callErrs[i] = fmt.Errorf("%w (session=%s)", ErrDiskProviderNotDurable, call.SessionID)
+				}
 				return
 			}
 			if call.Credentials != nil {
@@ -504,6 +521,23 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 				idempotencyKey = fmt.Sprintf("%s-%d", call.SessionID, time.Now().UnixNano())
 			}
 
+			// R12-H2b §2.4: while the durable row waits for the pump, the
+			// row-keyed Continuation owner keeps its binding alive. A lost
+			// binding means the row could never succeed — refuse here
+			// (typed) instead of enqueueing a dead row, mirroring the
+			// Layer-1 refusal above.
+			var holdRelease func()
+			if req := requirementFromCall(call); req != nil {
+				rel, ok := holdDurableContinuationOwner(a.diskCapsRef(), req.BindingID, idempotencyKey)
+				if !ok {
+					slog.Error("agent: refusing to durably enqueue a call whose disk provider binding is already lost",
+						"session_id", call.SessionID, "logical_call_id", call.LogicalCallID, "binding_id", req.BindingID)
+					callErrs[i] = fmt.Errorf("%w: orphaned call's disk provider binding %s is already lost (session=%s)", ErrDiskProviderUnavailable, req.BindingID, call.SessionID)
+					return
+				}
+				holdRelease = rel
+			}
+
 			// Convert to SessionAgentCallData for serialization
 			callData := ToSessionAgentCallData(call)
 			callDataJSON, err := json.Marshal(callData)
@@ -511,6 +545,9 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 				slog.Error("agent: failed to serialize call data for durable enqueue",
 					"session_id", call.SessionID, "err", err)
 				callErrs[i] = fmt.Errorf("failed to serialize call data: %w", err)
+				if holdRelease != nil {
+					holdRelease()
+				}
 				return
 			}
 
@@ -539,6 +576,16 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 				}
 
 				slog.Error("agent: failed to durably enqueue call for recovery", logFields...)
+
+				// R12-H2b §2.4: the OUTBOX-keyed holder must be acquired
+				// BEFORE releasing the original — gh#10e: releasing the
+				// original first could prune a sole-owner binding before the
+				// replacement exists, leaving the record pinned to a dead
+				// provider. Acquire first, then transfer under the OUTBOX id
+				// the pump will actually see; if the replacement cannot be
+				// acquired, keep the original holder and refuse the fallback.
+				// In every other failure path the holders are released so a
+				// refused enqueue never leaks the binding pin.
 
 				// P0-3 fix: write to orphan outbox for durability. The outbox provides
 				// a minimal durable record that can be recovered by the pump. This
@@ -571,6 +618,23 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 				// goroutine that is about to exit either way.
 				outboxCtx, outboxCancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer outboxCancel()
+				var outboxRelease func()
+				if req := requirementFromCall(call); req != nil {
+					// gh#10e: acquire the OUTBOX-keyed holder BEFORE releasing the
+					// original, so a sole-owner binding survives the transfer. If the
+					// replacement cannot be acquired, keep the ORIGINAL holder (the
+					// primary row id stays the recoverable key) and refuse the fallback
+					// instead of persisting a record whose provider is already gone.
+					rel, ok := holdDurableContinuationOwner(a.diskCapsRef(), req.BindingID, outboxID)
+					if !ok {
+						callErrs[i] = fmt.Errorf("%w: orphan outbox fallback could not retain disk provider binding %s (session=%s); the original row-keyed holder is preserved", ErrDiskProviderUnavailable, req.BindingID, call.SessionID)
+						return
+					}
+					outboxRelease = rel
+					if holdRelease != nil {
+						holdRelease()
+					}
+				}
 				if outboxErr := a.sessions.WriteToOrphanOutbox(outboxCtx, outboxID, call.SessionID, callDataJSON); outboxErr != nil {
 					logFields := []any{
 						"session_id", call.SessionID,
@@ -585,9 +649,15 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 						logFields = append(logFields, "prompt", call.Prompt)
 					}
 					slog.Error("agent: failed to write orphan call to outbox (data loss)", logFields...)
+					if outboxRelease != nil {
+						outboxRelease()
+					}
 					callErrs[i] = fmt.Errorf("failed to durably enqueue call and outbox write also failed: %w (enqueue error: %v)", outboxErr, enqueueErr)
 					return
 				}
+				// The outbox write succeeded: its id is now the durable id
+				// the pump rebuilds from, so the outbox-keyed holder stays
+				// (the pump releases it); the original was released above.
 				slog.Warn("agent: call written to orphan outbox for recovery",
 					"session_id", call.SessionID,
 					"prompt_length", len(call.Prompt),

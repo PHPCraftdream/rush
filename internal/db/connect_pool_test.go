@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,7 +23,7 @@ const slowOpenBudget = 30 * time.Second
 
 func absDBPath(t *testing.T, dataDir string) string {
 	t.Helper()
-	abs, err := filepath.Abs(filepath.Join(dataDir, "rush.db"))
+	abs, err := filepath.Abs(storepath.ActivePath(dataDir))
 	require.NoError(t, err)
 	return abs
 }

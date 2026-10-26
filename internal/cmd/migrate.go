@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -577,6 +576,11 @@ func migrateDir(cmd *cobra.Command, oldDir string, dryRun bool, prefix string) (
 	// After the directory is renamed, check for the inner config at the new path.
 	innerConfigPath := filepath.Join(newDir, "crush.json")
 	newInnerConfigPath := filepath.Join(newDir, "rush.json")
+	// Dry-run only names the target; the real-run path goes through
+	// migrateFile, which derives the produced spelling from the same gate.
+	if config.KtavAutoMigrateEnabled() {
+		newInnerConfigPath = migrateKtavSibling(newInnerConfigPath)
+	}
 	configPrefix := formatPrefix(prefix, "(config inside migrated directory)")
 
 	// Check if the legacy inner config exists (at new path after rename, or old path in dry-run).
@@ -594,9 +598,10 @@ func migrateDir(cmd *cobra.Command, oldDir string, dryRun bool, prefix string) (
 
 	// In dry-run mode, report the migration with the correct target path.
 	if dryRun {
-		// Check for conflict with target file in the new directory.
-		if _, err := os.Stat(newInnerConfigPath); err == nil {
-			cmd.Printf("CONFLICT %s%s  ->  %s: target already exists — resolve manually (merge by hand, then delete the old path); refusing to touch either\n", configPrefix, legacyInnerConfig, newInnerConfigPath)
+		// Check for conflict with either spelling of the target file in the
+		// new directory.
+		if existing := migrateExistingInnerConfig(newDir); existing != "" {
+			cmd.Printf("CONFLICT %s%s  ->  %s: target already exists — resolve manually (merge by hand, then delete the old path); refusing to touch either\n", configPrefix, legacyInnerConfig, existing)
 			return dirStatus, statusRefused, newDir
 		}
 		cmd.Printf("would rename %s%s  ->  %s\n", configPrefix, legacyInnerConfig, newInnerConfigPath)
@@ -617,20 +622,30 @@ func migrateFile(cmd *cobra.Command, oldFile string, dryRun bool, prefix string)
 		return statusNone, ""
 	}
 
-	// Build the new file path.
+	// Build the new file path. The produced spelling follows the same gate
+	// config's writeTargetSlot applies to created config files: rush.ktav
+	// when newly created config files default to the Ktav format, rush.json
+	// otherwise. crush.json itself is only ever an INPUT — it is never
+	// written back under its legacy name.
 	parent := filepath.Dir(oldFile)
 	base := filepath.Base(oldFile)
 	var newFile string
 	if base == "crush.json" {
 		newFile = filepath.Join(parent, "rush.json")
+		if config.KtavAutoMigrateEnabled() {
+			newFile = migrateKtavSibling(newFile)
+		}
 	} else {
 		// Unexpected file name - this shouldn't happen in normal use.
 		return statusFailed, ""
 	}
 
-	// Check for conflict: new file already exists.
-	if _, err := os.Stat(newFile); err == nil {
-		cmd.Printf("CONFLICT %s%s  ->  %s: target already exists — resolve manually (merge by hand, then delete the old path); refusing to touch either\n", formatPrefix(prefix), oldFile, newFile)
+	// Check for conflict: EITHER spelling of the target slot already
+	// exists. The conflict message names the file that is actually there,
+	// so the user is told the true occupied path rather than the spelling
+	// this run would have produced.
+	if existing := migrateExistingInnerConfig(parent); existing != "" {
+		cmd.Printf("CONFLICT %s%s  ->  %s: target already exists — resolve manually (merge by hand, then delete the old path); refusing to touch either\n", formatPrefix(prefix), oldFile, existing)
 		return statusRefused, ""
 	}
 
@@ -639,6 +654,14 @@ func migrateFile(cmd *cobra.Command, oldFile string, dryRun bool, prefix string)
 		cmd.Printf("would rename %s%s  ->  %s\n", formatPrefix(prefix), oldFile, newFile)
 		rewriteLegacyConfigContent(cmd, oldFile, newFile, dryRun, prefix)
 		return statusRenamed, newFile
+	}
+
+	// Gate-on real run: write the converted Ktav document directly to the
+	// newFile spelling (rush.ktav) and only then remove the source, so a
+	// conversion or write failure leaves the original crush.json in place.
+	// Gate off keeps the rename+rewrite flow below.
+	if config.KtavAutoMigrateEnabled() {
+		return migrateToKtavTarget(cmd, oldFile, newFile, prefix), newFile
 	}
 
 	if err := os.Rename(oldFile, newFile); err != nil {
@@ -695,6 +718,14 @@ const currentContextFileName = "RUSH.md"
 // "crush" for unrelated reasons (e.g. a hook command string, or a project
 // description) is left alone.
 //
+// This function is JSON-only: it reads and writes JSON bytes and never
+// converts to (or inspects) the Ktav format. Gate-on real runs no longer
+// pass through here at all - they go through migrateToKtavTarget, which
+// applies the same applyLegacyRewrites core before converting. This
+// function remains for the gate-off real run and every dry-run preview
+// (where it only prints "would rewrite" notes, never writes or converts,
+// even when reportAs spells .ktav).
+//
 // readFrom is the path to read current content from: in a real run this is
 // the already-renamed newFile; in dry-run, nothing has moved yet, so the
 // caller passes the still-in-place oldFile instead (same convention
@@ -703,13 +734,13 @@ const currentContextFileName = "RUSH.md"
 // target.
 //
 // Returns statusFailed only for an actual I/O error while writing the
-// rewritten content back (see the atomic-write step at the end of this
-// function) - by that point the caller's rename has already happened and
-// there is no fallback copy left, so the caller folds this into its own
-// overall status rather than reporting success. Errors reading or parsing
-// readFrom, or there being nothing to rewrite, are reported as statusNone:
-// non-fatal, since the file has already been renamed (the primary goal) and
-// there is nothing this function could have written anyway.
+// rewritten content back - by that point the caller's rename has already
+// happened and there is no fallback copy left, so the caller folds this
+// into its own overall status rather than reporting success. Errors reading
+// or parsing readFrom, or there being nothing to rewrite, are reported as
+// statusNone: non-fatal, since the file has already been renamed (the
+// primary goal) and there is nothing this function could have written
+// anyway.
 func rewriteLegacyConfigContent(cmd *cobra.Command, readFrom, reportAs string, dryRun bool, prefix string) migrateStatus {
 	raw, err := os.ReadFile(readFrom)
 	if err != nil {
@@ -718,93 +749,12 @@ func rewriteLegacyConfigContent(cmd *cobra.Command, readFrom, reportAs string, d
 		return statusNone
 	}
 
-	var top map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &top); err != nil {
-		// Not a JSON object we understand - leave content untouched.
-		return statusNone
-	}
-
-	optionsRaw, ok := top["options"]
-	if !ok {
-		return statusNone
-	}
-
-	var options map[string]json.RawMessage
-	if err := json.Unmarshal(optionsRaw, &options); err != nil {
+	newRaw, notes, changed := applyLegacyRewrites(raw)
+	if !changed {
 		return statusNone
 	}
 
 	contentPrefix := formatPrefix(prefix, "(content inside migrated config)")
-	changed := false
-	var notes []string
-
-	// disabled_skills: exact-match rewrite of known legacy skill IDs.
-	if rawSkills, ok := options["disabled_skills"]; ok {
-		var skills []string
-		if err := json.Unmarshal(rawSkills, &skills); err == nil {
-			rewritten := false
-			for i, name := range skills {
-				if newName, isLegacy := legacySkillRenames[name]; isLegacy {
-					skills[i] = newName
-					rewritten = true
-					notes = append(notes, fmt.Sprintf("disabled_skills: %q -> %q", name, newName))
-				}
-			}
-			if rewritten {
-				if newRaw, err := json.Marshal(skills); err == nil {
-					options["disabled_skills"] = newRaw
-					changed = true
-				}
-			}
-		}
-	}
-
-	// skills_paths, global_context_paths: path-segment-aware .crush ->
-	// .rush rewrite, plus CRUSH.md -> RUSH.md for the context-file case.
-	for _, field := range []string{"skills_paths", "global_context_paths"} {
-		rawPaths, ok := options[field]
-		if !ok {
-			continue
-		}
-		var paths []string
-		if err := json.Unmarshal(rawPaths, &paths); err != nil {
-			continue
-		}
-		rewritten := false
-		for i, p := range paths {
-			newPath := rewriteLegacyConfigPath(p)
-			if newPath != p {
-				paths[i] = newPath
-				rewritten = true
-				notes = append(notes, fmt.Sprintf("%s: %q -> %q", field, p, newPath))
-			}
-		}
-		if rewritten {
-			if newRaw, err := json.Marshal(paths); err == nil {
-				options[field] = newRaw
-				changed = true
-			}
-		}
-	}
-
-	// data_directory: same .crush-path-segment rewrite, only if set.
-	if rawDataDir, ok := options["data_directory"]; ok {
-		var dataDir string
-		if err := json.Unmarshal(rawDataDir, &dataDir); err == nil && dataDir != "" {
-			newDataDir := rewriteLegacyConfigPath(dataDir)
-			if newDataDir != dataDir {
-				if newRaw, err := json.Marshal(newDataDir); err == nil {
-					options["data_directory"] = newRaw
-					changed = true
-					notes = append(notes, fmt.Sprintf("data_directory: %q -> %q", dataDir, newDataDir))
-				}
-			}
-		}
-	}
-
-	if !changed {
-		return statusNone
-	}
 
 	if dryRun {
 		for _, note := range notes {
@@ -812,20 +762,6 @@ func rewriteLegacyConfigContent(cmd *cobra.Command, readFrom, reportAs string, d
 		}
 		return statusNone
 	}
-
-	newOptionsRaw, err := json.Marshal(options)
-	if err != nil {
-		cmd.Printf("failed to rewrite content %s%s: %v\n", contentPrefix, reportAs, err)
-		return statusFailed
-	}
-	top["options"] = newOptionsRaw
-
-	newRaw, err := json.MarshalIndent(top, "", "  ")
-	if err != nil {
-		cmd.Printf("failed to rewrite content %s%s: %v\n", contentPrefix, reportAs, err)
-		return statusFailed
-	}
-	newRaw = append(newRaw, '\n')
 
 	// Preserve the target's existing permission bits where practical (this
 	// file's own writes elsewhere - e.g. in tests seeding fixtures - use
@@ -851,7 +787,7 @@ func rewriteLegacyConfigContent(cmd *cobra.Command, readFrom, reportAs string, d
 	}
 	tmpPath := tmpFile.Name()
 
-	if _, err := tmpFile.Write(newRaw); err != nil {
+	if _, err := tmpFile.Write(append(newRaw, '\n')); err != nil {
 		tmpFile.Close()
 		os.Remove(tmpPath)
 		cmd.Printf("failed to rewrite content %s%s: %v\n", contentPrefix, reportAs, err)

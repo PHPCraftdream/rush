@@ -11,9 +11,10 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 )
 
 // Columns an audited schema must have. Anything else is reported as an
@@ -26,12 +27,17 @@ var (
 // auditSchema records the optional capabilities the analysis may use. Their
 // presence is discovered through PRAGMA table_info, never assumed: a
 // database older than a migration is audited with the reduced set instead
-// of failing.
+// of failing. HasAsyncJobs only reports whether a leftover legacy table
+// exists; no rule reads it.
 type auditSchema struct {
 	MessagesNoticeKind     bool
 	MessagesBackgroundJobs bool
 	HasAsyncJobs           bool
 	AsyncJobColumns        []string
+	// HasBatchNodes reports whether the batch_nodes table exists. With the
+	// batch runtime flag on its absence is a schema issue (the migrations
+	// create it); with the flag off nothing reads it.
+	HasBatchNodes bool
 }
 
 // auditDBHealth is the file-level picture of one database.
@@ -56,17 +62,17 @@ type auditSessionRow struct {
 }
 
 // auditDataDir audits one data directory. It never writes: a missing
-// rush.db is a notice, a foreign schema is a notice, and both exit
+// store is a notice, a foreign schema is a notice, and both exit
 // successfully.
 func auditDataDir(ctx context.Context, dataDir string, args []string, all bool, since time.Duration) (auditDBReport, error) {
 	report := auditDBReport{DataDir: dataDir, Sessions: []auditSessionRow{}, Findings: []auditFinding{}}
-	dbPath := filepath.Join(dataDir, "rush.db")
+	dbPath := storepath.ActivePath(dataDir)
 	report.DBPath = dbPath
 
 	if _, err := os.Stat(dbPath); err != nil {
 		if os.IsNotExist(err) {
 			report.Notices = append(report.Notices,
-				fmt.Sprintf("no rush.db found in %s; audit is read-only and does not create anything", dataDir))
+				fmt.Sprintf("no session store found in %s; audit is read-only and does not create anything", dataDir))
 			return report, nil
 		}
 		return report, fmt.Errorf("stat %s: %w", dbPath, err)
@@ -83,6 +89,15 @@ func auditDataDir(ctx context.Context, dataDir string, args []string, all bool, 
 		// Not a Rush schema (someone else's database, or one too old to
 		// reason about). Report and leave it untouched.
 		report.SchemaIssues = issues
+		return report, nil
+	}
+
+	// batch_nodes is not optional: the migrations create it, so a database
+	// without it is reported as a schema issue and
+	// left untouched rather than audited against missing facts.
+	if !schema.HasBatchNodes {
+		report.SchemaIssues = append(report.SchemaIssues,
+			"unrecognized schema: no batch_nodes table")
 		return report, nil
 	}
 
@@ -106,7 +121,15 @@ func auditDataDir(ctx context.Context, dataDir string, args []string, all bool, 
 	for _, row := range rows {
 		ids = append(ids, row.ID)
 	}
-	findings, err := auditFindings(ctx, db, schema, ids, since)
+	// The batch facts come from batch_nodes over the same
+	// read-only handle, and the unfinished_jobs rule counts held roots; a
+	// leftover legacy async_jobs table is reported, not read.
+	batch, err := auditScanBatchFacts(ctx, db, dataDir, ids)
+	if err != nil {
+		return report, fmt.Errorf("read batch facts of %s: %w", dataDir, err)
+	}
+	report.Batch = batch.report()
+	findings, err := auditFindings(ctx, db, schema, ids, since, batch)
 	if err != nil {
 		return report, err
 	}
@@ -161,6 +184,11 @@ func auditInspectSchema(ctx context.Context, db *sql.DB) (auditSchema, []string)
 			schema.AsyncJobColumns = append(schema.AsyncJobColumns, column)
 		}
 		sort.Strings(schema.AsyncJobColumns)
+	}
+
+	batchColumns, err := auditTableColumns(ctx, db, "batch_nodes")
+	if err == nil {
+		schema.HasBatchNodes = len(batchColumns) > 0
 	}
 
 	return schema, issues
@@ -308,7 +336,7 @@ func auditQuerySessions(ctx context.Context, db *sql.DB, query string, params []
 }
 
 // auditFormatUnix renders a Unix-seconds timestamp (the unit every created_at /
-// updated_at column of rush.db holds) for the text output.
+// updated_at column of the session store holds) for the text output.
 func auditFormatUnix(sec int64) string {
 	if sec <= 0 {
 		return "-"

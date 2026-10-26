@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,16 +47,12 @@ import (
 func TestOrphanedDrain_ReleaseTimeRecheckConverges(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	f := newWakeDebtFixture(t, "orphaned-drain-converges")
+	f := newA2WakeDebtFixture(t, "orphaned-drain-converges", true)
 
-	// A running job, claimed and announced but NOT yet terminal -- the
-	// memory-side bookkeeping claimAndFinish also does, minus the terminal
-	// transition itself (that happens inside raceRelease below, "during the
-	// release window").
-	_, existing, err := f.ledger.Start(f.sessID, "call-1", "call-1", "bash", "", false, false, nil, func() {})
-	require.NoError(t, err)
-	require.False(t, existing)
-	require.NoError(t, f.store.MarkAnnounced(ctx, f.sessID, "call-1"))
+	// A running root, reserved and announced but NOT yet terminal -- the
+	// terminal projection itself happens inside raceRelease below, "during
+	// the release window".
+	seedBatchDelegation(t, f.env.conn, f.sessID, "call-1", "", "command", "running", false)
 
 	// Hand-craft the mailbox into "mid-turn" (mbOwned, epoch 1) exactly like
 	// run_orphaned_release_race_test.go's own full-path test, so
@@ -76,11 +71,9 @@ func TestOrphanedDrain_ReleaseTimeRecheckConverges(t *testing.T) {
 	// 'pending') at the exact moment a Drain call races into the
 	// now-being-vacated mailbox.
 	raceRelease := func() error {
-		_, err := f.store.Transition(ctx, session.TransitionParams{
-			Owner: f.sessID, ToolCallID: "call-1", State: "completed",
-			ResultSummary: "output", Wake: true,
-		})
-		require.NoError(t, err)
+		if err := a2CompleteJobErr(ctx, f.conn, f.sessID, "call-1", "output"); err != nil {
+			return err
+		}
 		mb.mu.Lock()
 		mb.submitted = append(mb.submitted, newDrainCall(SessionAgentCall{SessionID: f.sessID}))
 		mb.mu.Unlock()
@@ -96,9 +89,7 @@ func TestOrphanedDrain_ReleaseTimeRecheckConverges(t *testing.T) {
 	// The plain (not Visible-only) predicate: the row is still
 	// delivery='pending' at this point (nothing has pulled it into history
 	// yet) -- exactly the shape afterRelease itself reads.
-	debtNow, err := f.store.ReactionDebtExists(ctx, f.sessID)
-	require.NoError(t, err)
-	require.True(t, debtNow, "the race's own transition must have made the debt real before anything else runs")
+	require.True(t, f.a2DebtExists(t, ctx), "the race's own transition must have made the debt real before anything else runs")
 
 	// Exactly what drainOrReleaseMerged does with drainOrReleaseFinal's own
 	// `orphaned` return: restart it. For a Drain, agent_ownership.go's
@@ -117,6 +108,6 @@ func TestOrphanedDrain_ReleaseTimeRecheckConverges(t *testing.T) {
 	require.Eventually(t, func() bool { return f.requests.Load() > 0 }, 2*time.Second, 10*time.Millisecond,
 		"the release-time recheck must independently discover the same debt and submit a fresh Drain that runs")
 	require.EqualValues(t, 1, f.requests.Load(), "exactly one provider turn must result -- no loss, no loop")
-	require.Eventually(t, func() bool { return !f.debtVisible(t, ctx) }, 2*time.Second, 10*time.Millisecond,
+	require.Eventually(t, func() bool { return !f.a2DebtVisible(t, ctx) }, 2*time.Second, 10*time.Millisecond,
 		"the fresh Drain's own turn must react to the notice and clear the debt")
 }

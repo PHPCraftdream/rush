@@ -3,10 +3,14 @@ package app
 import (
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
 )
+
+// The notices below are the literal batch completion texts production
+// persists for each terminal state ("Async job <id> (<tool>) finished." /
+// "failed.", with the job's own output appended), so the fixture carries no
+// dependency on the retired legacy formatter.
 
 func TestCommandResultsAsyncRealNoticeShapes(t *testing.T) {
 	t.Parallel()
@@ -58,42 +62,39 @@ func TestCommandResultsAsyncRealNoticeShapes(t *testing.T) {
 	}{
 		{
 			name: "header call id wins over the shell id in the body", jobID: "call-async",
-			// Real shape: the FormatAsyncCompletion header names the call id, the
-			// body is backgroundJobSummary's headline naming the shell id "001".
+			// Real shape: the completion header names the call id, the body is
+			// backgroundJobSummary's headline naming the shell id "001".
 			// Revert check: trying the Background-job regex first keys the notice
 			// under "001", so the lookup by call id misses (exit unknown).
-			notice: agent.FormatAsyncCompletion(agent.AsyncCompletion{
-				ToolCallID: "call-async", ToolName: "bash", IsError: true,
-				Content: "Background job 001 (`go test ./...`) finished: exit 3, ran 2s.\n\nFAIL",
-			}),
-			exit: 3, known: true,
+			notice: "Async job call-async (bash) failed.\n\nBackground job 001 (`go test ./...`) finished: exit 3, ran 2s.\n\nFAIL",
+			exit:   3, known: true,
 		},
 		{
 			name: "finished header content ending Exit code 2", jobID: "call-async",
 			// Revert check: preserves finished-header tail parsing.
-			notice: agent.FormatAsyncCompletion(agent.AsyncCompletion{ToolCallID: "call-async", ToolName: "bash", Content: "result\nExit code 2"}),
+			notice: "Async job call-async (bash) finished.\n\nresult\nExit code 2",
 			exit:   2, known: true,
 		},
 		{
 			name: "finished uses final code after middle code", jobID: "call-async",
 			// Revert check: middle output code must not override the tail.
-			notice: agent.FormatAsyncCompletion(agent.AsyncCompletion{ToolCallID: "call-async", ToolName: "bash", Content: "Exit code 0\nmore output\nExit code 5"}),
+			notice: "Async job call-async (bash) finished.\n\nExit code 0\nmore output\nExit code 5",
 			exit:   5, known: true,
 		},
 		{
 			name: "plain finished success without tail", jobID: "call-async",
 			// Revert check: finished notices without a tail remain known-zero.
-			notice: agent.FormatAsyncCompletion(agent.AsyncCompletion{ToolCallID: "call-async", ToolName: "bash", Content: "ok"}),
+			notice: "Async job call-async (bash) finished.\n\nok",
 			exit:   0, known: true,
 		},
 		{
 			name: "formatted failed with Bash exit tail", jobID: "call-async",
-			notice: agent.FormatAsyncCompletion(agent.AsyncCompletion{ToolCallID: "call-async", ToolName: "bash", IsError: true, Content: "failed\nExit code 7"}),
+			notice: "Async job call-async (bash) failed.\n\nfailed\nExit code 7",
 			exit:   7, known: true,
 		},
 		{
 			name: "exit mention before the final tail is not trusted", jobID: "call-async",
-			notice: agent.FormatAsyncCompletion(agent.AsyncCompletion{ToolCallID: "call-async", ToolName: "bash", IsError: true, Content: "Exit code 4\ncrashed"}),
+			notice: "Async job call-async (bash) failed.\n\nExit code 4\ncrashed",
 			known:  false,
 		},
 	}

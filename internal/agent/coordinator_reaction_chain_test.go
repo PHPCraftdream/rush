@@ -19,24 +19,37 @@ import (
 )
 
 // chainLink feeds one finished leg through the real accounting path:
-// outcome=drainAttempted, no error, the leg's snapshot naming the rows of
-// snapClaims (the claims of PREVIOUS legs' launches -- each leg reacts to the
-// completions that arrived before it) and the leg's own idle-launch claims.
-func (f *attemptFixture) chainLink(ctx context.Context, toolCallID string, snapClaims []string, idle, progress bool) string {
+// outcome=drainAttempted, no error, the batch snapshot naming the rows of
+// snapCalls (the acted-on set is the pending-inclusive debt rows whose root
+// tool_call_id is in snapCalls -- a3BatchDebtSnapshotForCalls -- each leg
+// reacts to the completions that arrived before it) and the leg's own
+// idle-launch identity.
+// The snapshot is captured BEFORE this leg's own row is seeded, batchCaptured
+// set so accountDrainAttempt resolves batchDebtCallIDs itself, and the
+// launched root's call id recorded into chainBatchRoots (batch launches carry
+// no claim ids).
+func (f *attemptFixture) chainLink(ctx context.Context, toolCallID string, snapCalls []string, idle, progress bool) string {
 	f.t.Helper()
+	att := &drainAttempt{sessionID: f.sessID, outcome: drainAttempted, chainProgress: progress}
+	att.batchSnapshot = a3BatchDebtSnapshotForCalls(f.t, ctx, f.env.conn, f.sessID, snapCalls)
+	att.batchCaptured = true
+	// The leg models a link whose model actually REACTED to the rows it
+	// saw: in production the reaction marks the acted-on rows reacted=1
+	// during the turn, BEFORE closeDrainAttempt accounts the leg -- so
+	// the accounting finds them no longer in debt (decideAccount A5:
+	// "all rows reacted: gate reset"), never as unreacted paid attempts
+	// (A7) that would pace the gate behind the chain guard. Mark the
+	// snapshot's rows before the real accounting entry point.
+	for _, call := range snapCalls {
+		a3MarkRowsReacted(f.t, ctx, f.env.conn, f.sessID, call)
+	}
 	f.seedDebt(ctx, toolCallID, true)
-	row := f.row(ctx, toolCallID)
-	snap := session.DebtSnapshot{}
-	for _, c := range snapClaims {
-		snap.Jobs = append(snap.Jobs, session.DebtJobRef{ClaimID: c})
-	}
-	att := &drainAttempt{sessionID: f.sessID, outcome: drainAttempted, snapshot: snap}
+	identity := f.row(ctx, toolCallID).ToolCallID
 	if idle {
-		att.chainIdleClaims = []string{row.ClaimID}
+		att.chainBatchRoots = []string{identity}
 	}
-	att.chainProgress = progress
 	f.coord.accountDrainAttempt(ctx, att, nil)
-	return row.ClaimID
+	return identity
 }
 
 func (f *attemptFixture) chainCount() int {
@@ -101,7 +114,7 @@ func TestReactionChain_Resets(t *testing.T) {
 	c2 := f.chainLink(ctx, "chain2", []string{c1}, true, false)
 	f.chainLink(ctx, "chain3", []string{c2}, true, true)
 	require.Zero(t, f.chainCount())
-	require.False(t, f.coord.reactionChainHasClaim(f.sessID, c1))
+	require.False(t, a3ChainHasIdentity(f.coord, f.sessID, c1))
 
 	// bash `cat f`: a real command is progress (same reset path, covered by
 	// classification below); text + echo is a LINK: a leg with an idle
@@ -109,7 +122,7 @@ func TestReactionChain_Resets(t *testing.T) {
 	// Revert-check: counting the leg's text as progress makes this zero.
 	c4 := f.chainLink(ctx, "chain4", []string{"foreign-claim"}, true, false)
 	require.Equal(t, 1, f.chainCount())
-	require.True(t, f.coord.reactionChainHasClaim(f.sessID, c4))
+	require.True(t, a3ChainHasIdentity(f.coord, f.sessID, c4))
 
 	// Two more links: the guard fires; a human message re-arms.
 	c5 := f.chainLink(ctx, "chain5", []string{c4}, true, false)
@@ -117,7 +130,7 @@ func TestReactionChain_Resets(t *testing.T) {
 	// The progress leg above really reacted the rows it saw (the model's own
 	// step does); model that, or those stale rows (claims outside the chain's
 	// set) rightly keep the policy out of the way.
-	f.exec(ctx, `UPDATE async_jobs SET reacted=1 WHERE owner_session_id='`+f.sessID+`' AND tool_call_id IN ('chain1','chain2','chain3')`)
+	a3MarkRowsReacted(f.t, ctx, f.env.conn, f.sessID, "chain1", "chain2", "chain3")
 	v := f.coord.drainPermitted(ctx, f.sessID, false)
 	require.Equal(t, drainDeferred, v.kind)
 	f.coord.ResetAutoResumeCounter(f.sessID)
@@ -144,7 +157,6 @@ func TestReactionChain_SurvivesIdleSweep(t *testing.T) {
 	f.coord.seedArbiterState(f.sessID, func(s *arbiterState) {
 		s.gate.RetryAt = time.Now().Add(-time.Second)
 	})
-	f.ledger.sweepIdleSessions()
 	f.coord.sweepArbiterEntries()
 	require.Equal(t, 3, f.coord.reactionChainCount(f.sessID), "the sweep must not free the guard's state")
 	require.Equal(t, drainDeferred, f.coord.drainPermitted(ctx, f.sessID, false).kind)
@@ -187,12 +199,11 @@ func TestReactionChain_WebWakeStopsAfterThree(t *testing.T) {
 func TestReactionChain_PulledLinkDoesNotResetSupervision(t *testing.T) {
 	ctx := context.Background()
 	f := newAttemptFixture(t, "reaction-chain-supervision", attemptFixtureOpts{noIdle: true, noDriver: true})
-	l := f.ledger
-	l.supervision = newSupervisionRegistry()
-	l.noteWorkStarted(ctx, f.sessID)
+	f.coord.supervision = newSupervisionRegistry()
+	f.coord.noteWorkStarted(ctx, f.sessID)
 
 	claim := f.chainLink(ctx, "chain1", nil, true, false)
-	sr := l.supervision
+	sr := f.coord.supervision
 	sr.mu.Lock()
 	sr.byRoot[f.sessID].tickCount = 5
 	sr.mu.Unlock()
@@ -212,7 +223,7 @@ func TestReactionChain_PulledLinkDoesNotResetSupervision(t *testing.T) {
 }
 
 // Step classification: a bash sleep/echo launch is an idle claim, a real
-// command is progress, run_command sleep is idle, job_output/todos are
+// command is progress, run_command sleep is idle, batch_output/todos are
 // neutral, text-only is nothing. Revert-check: counting a redirect-bearing or
 // substituted command as idle turns the `echo x > f` case red; counting the
 // leg's text as progress turns the text-only case red.
@@ -253,11 +264,11 @@ func TestRecordChainEvidence_ClassifiesSteps(t *testing.T) {
 	require.Empty(t, ts.att.chainIdleClaims)
 	require.True(t, ts.att.chainProgress)
 
-	// sleep 5 && echo done IS idle; run_command sleep is; job_output and
+	// sleep 5 && echo done IS idle; run_command sleep is; batch_output and
 	// todos are neutral; a text-only step is nothing.
 	ts.att = &drainAttempt{}
 	ts.recordChainEvidence(mk(
-		[]fantasy.ToolCallContent{call("c1", "bash", `{"command":"sleep 5 && echo done"}`), call("c2", "run_command", `{"program":"sleep","args":["90"]}`), call("c3", "job_output", `{}`), call("c4", "todos", `{}`)},
+		[]fantasy.ToolCallContent{call("c1", "bash", `{"command":"sleep 5 && echo done"}`), call("c2", "run_command", `{"program":"sleep","args":["90"]}`), call("c3", "batch_output", `{}`), call("c4", "todos", `{}`)},
 		[]fantasy.ToolResultContent{res("c1", startedTag), res("c2", startedTag)},
 	))
 	require.Equal(t, []string{"claim-A", "claim-A"}, ts.att.chainIdleClaims)

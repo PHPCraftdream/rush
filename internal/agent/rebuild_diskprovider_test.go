@@ -40,10 +40,10 @@ func TestRebuildSessionAgentCall_RefusesRowMarkedHostDiskProvider(t *testing.T) 
 		HostDiskProvider: true,
 	}
 
-	call, err := coord.RebuildSessionAgentCall(t.Context(), data)
+	call, err := coord.RebuildSessionAgentCall(t.Context(), "", data)
 	require.Error(t, err,
-		"a row marked HostDiskProvider must never rebuild into a runnable call")
-	require.ErrorIs(t, err, ErrDiskProviderNotDurable)
+		"a row marked HostDiskProvider with no envelope must never rebuild into a runnable call")
+	require.ErrorIs(t, err, ErrDiskProviderUnavailable)
 	require.Equal(t, SessionAgentCall{}, call)
 
 	// Terminal, not retryable: the pump distinguishes the two via the
@@ -71,7 +71,7 @@ func TestRebuildSessionAgentCall_RebuildsPlainRowsWithoutHostDiskProvider(t *tes
 		Prompt:        "hello",
 	}
 
-	call, err := coord.RebuildSessionAgentCall(t.Context(), data)
+	call, err := coord.RebuildSessionAgentCall(t.Context(), "", data)
 	require.NoError(t, err)
 	require.Equal(t, "disk-provider-rebuild-control", call.SessionID)
 }
@@ -119,4 +119,38 @@ func TestSessionAgentCallDataHostDiskProviderJSONRoundTrip(t *testing.T) {
 	}
 	optionsNoProviderData := ToSessionAgentCallData(optionsNoProvider)
 	require.False(t, optionsNoProviderData.HostDiskProvider)
+}
+
+// TestRebuildSessionAgentCall_RowWithEnvelopeAndHostMarker_Rebuilds is the
+// R12-H2b §2.2 control for the legacy refusal: a row marked
+// HostDiskProvider that ALSO carries a resolvable DiskRequirement envelope
+// takes the fence-rebuild path, not the legacy typed refusal — the
+// envelope is exactly what makes the provider restorable.
+//
+// Mutation caught: gating the legacy refusal on HostDiskProvider alone
+// (dropping the `data.DiskRequirement == nil` conjunct) would terminally
+// refuse every envelope-carrying row the new producers write, stranding
+// durable continuations forever.
+func TestRebuildSessionAgentCall_RowWithEnvelopeAndHostMarker_Rebuilds(t *testing.T) {
+	env := testEnv(t)
+	coord := newRoleModelTestCoordinator(t, env, false)
+	caps := newDiskCapabilityManager()
+	bindingID, err := caps.RegisterProvider(newFakeDiskProvider(nil))
+	require.NoError(t, err)
+	coord.diskCaps = caps
+
+	data := session.SessionAgentCallData{
+		SessionID:        "disk-provider-rebuild-envelope",
+		LogicalCallID:    "logical-envelope-1",
+		Prompt:           "hello",
+		HostDiskProvider: true,
+		DiskRequirement:  &session.SessionExecutionRequirement{BindingID: bindingID},
+	}
+
+	call, err := coord.RebuildSessionAgentCall(t.Context(), "row-envelope-1", data)
+	require.NoError(t, err, "an envelope-carrying row must take the fence-rebuild path, not the legacy refusal")
+	require.NotNil(t, call.CallOptions)
+	require.Equal(t, bindingID, call.CallOptions.DiskBindingID)
+	require.NotNil(t, call.CallOptions.Requirement)
+	require.Equal(t, bindingID, call.CallOptions.Requirement.BindingID)
 }

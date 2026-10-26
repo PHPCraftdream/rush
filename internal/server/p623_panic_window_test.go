@@ -328,8 +328,8 @@ func (p *panicWindowCoordinator) ResetAutoResumeCounter(sessionID string) {
 	p.coordinator.ResetAutoResumeCounter(sessionID)
 }
 
-func (p *panicWindowCoordinator) RebuildSessionAgentCall(ctx context.Context, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
-	return p.coordinator.RebuildSessionAgentCall(ctx, data)
+func (p *panicWindowCoordinator) RebuildSessionAgentCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
+	return p.coordinator.RebuildSessionAgentCall(ctx, rowID, data)
 }
 
 func (p *panicWindowCoordinator) RunSessionAgentCall(ctx context.Context, call agent.SessionAgentCall) (*fantasy.AgentResult, error) {
@@ -340,8 +340,14 @@ func (p *panicWindowCoordinator) CancelTurn(sessionID string) {
 	p.coordinator.CancelTurn(sessionID)
 }
 
-func (p *panicWindowCoordinator) StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob) {
-	p.coordinator.StopRerunJobs(ctx, sessionID, voided)
+// BatchRerunStopVoided implements the OPTIONAL agent.BatchRerunStopper
+// surface when the wrapped coordinator does: the rerun handler's detached
+// post-commit stop runs through here, so a panic in it stays inside the
+// handler's own recover and the panic-window contract is unchanged.
+func (p *panicWindowCoordinator) BatchRerunStopVoided(ctx context.Context, sessionID string, voided []session.BatchRerunVoidedNode) {
+	if stopper, ok := p.coordinator.(agent.BatchRerunStopper); ok {
+		stopper.BatchRerunStopVoided(ctx, sessionID, voided)
+	}
 }
 
 func (p *panicWindowCoordinator) ReserveExclusive(ctx context.Context, sessionID string) (context.Context, uint64, context.CancelFunc, bool) {

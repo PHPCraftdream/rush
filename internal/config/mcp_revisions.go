@@ -15,28 +15,37 @@ func mcpInputFingerprints(rush, external []stableConfigDocument) map[string][sha
 	type document struct {
 		path    string
 		entries map[string]json.RawMessage
+		// rawDigest is the RAW disk digest of a Ktav rush document. It is
+		// mixed into every entry hash so two Ktav documents that decode to
+		// identical JSON but differ in raw bytes still produce different
+		// revisions (JSON documents keep the legacy entry-only hash).
+		rawDigest []byte
 	}
 	documentsByPath := make(map[string]document, len(rush)+len(external))
 	names := make(map[string]struct{})
-	addDocument := func(sourceDocument stableConfigDocument, entries map[string]json.RawMessage) {
+	addDocument := func(sourceDocument stableConfigDocument, entries map[string]json.RawMessage, rawDigest []byte) {
 		path := normalizeReloadPath(sourceDocument.path)
 		if path == "" {
 			path = normalizeDiscoveryPath(sourceDocument.path)
 		}
 		if existing, ok := documentsByPath[path]; ok {
 			if len(existing.entries) == 0 && len(entries) != 0 {
-				documentsByPath[path] = document{path: path, entries: entries}
+				documentsByPath[path] = document{path: path, entries: entries, rawDigest: rawDigest}
 			}
 			return
 		}
-		documentsByPath[path] = document{path: path, entries: entries}
+		documentsByPath[path] = document{path: path, entries: entries, rawDigest: rawDigest}
 	}
 	for _, sourceDocument := range rush {
+		var rawDigest []byte
+		if isKtavConfigPath(sourceDocument.path) && sourceDocument.fingerprint.exists {
+			rawDigest = append([]byte(nil), sourceDocument.fingerprint.digest[:]...)
+		}
 		var root struct {
 			MCP map[string]json.RawMessage `json:"mcp"`
 		}
 		if json.Unmarshal(sourceDocument.data, &root) == nil {
-			addDocument(sourceDocument, root.MCP)
+			addDocument(sourceDocument, root.MCP, rawDigest)
 			for name := range root.MCP {
 				names[name] = struct{}{}
 			}
@@ -47,7 +56,7 @@ func mcpInputFingerprints(rush, external []stableConfigDocument) map[string][sha
 			MCPServers map[string]json.RawMessage `json:"mcpServers"`
 		}
 		if json.Unmarshal(sourceDocument.data, &root) == nil {
-			addDocument(sourceDocument, root.MCPServers)
+			addDocument(sourceDocument, root.MCPServers, nil)
 			for name := range root.MCPServers {
 				names[name] = struct{}{}
 			}
@@ -67,6 +76,9 @@ func mcpInputFingerprints(rush, external []stableConfigDocument) map[string][sha
 				path = normalizeDiscoveryPath(document.path)
 			}
 			hash.Write([]byte(path))
+			if len(document.rawDigest) > 0 {
+				hash.Write(document.rawDigest)
+			}
 			if raw, ok := document.entries[name]; ok {
 				hash.Write([]byte{1})
 				hash.Write(raw)

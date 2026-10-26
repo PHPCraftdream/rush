@@ -72,9 +72,9 @@ const (
 	// toolExecutionMaxDefault is the never-freeze backstop: the maximum
 	// wall-clock a single tool may run while the stream watchdog is paused
 	// (between OnToolCall and OnToolResult) before the watchdog force-
-	// cancels the turn. Bash auto-backgrounds at 60s and Phase 1b bounds
-	// job_output, so this only catches truly stuck tools (hung MCP tools,
-	// blocking job_output --wait on a deadlocked process, or a sub-agent
+	// cancels the turn. Bash auto-backgrounds at 60s and batch output
+	// polling is bounded, so this only catches truly stuck tools (hung MCP
+	// tools, a blocked polling wait on a deadlocked process, or a sub-agent
 	// delegation via the "agent" tool that never returns).
 	// Configurable via Options.StreamToolTimeoutSeconds.
 	//
@@ -369,6 +369,16 @@ type SessionAgentCall struct {
 	// legacy in-process callers, and pre-migration durable rows.
 	FolderScopeSpec *permission.FolderScopeSpec
 
+	// DiskRequirement is the process-bound execution requirement THIS call
+	// must run under (R12-H2b): the opaque binding ID (with the
+	// serializable policy baseline) a continuation restores or refuses.
+	// It is stamped at admission and round-trips through
+	// SessionAgentCallData so every continuation carries its own identity
+	// instead of inheriting "the latest provider for the session". nil for
+	// ordinary OS-disk calls. Unlike CallOptions (json:"-") this IS
+	// serialized: ToSessionAgentCallData persists it on the durable row.
+	DiskRequirement *session.SessionExecutionRequirement
+
 	// FromDurableQueue is true when this call originates from the durable
 	// run queue (task #340). When true and the session's mailbox is already
 	// owned by another in-process turn, mailbox.submit does NOT append this
@@ -591,8 +601,12 @@ type sessionAgent struct {
 	systemPromptPrefix *csync.Value[string]
 	systemPrompt       *csync.Value[string]
 	tools              *csync.Slice[fantasy.AgentTool]
-	asyncJobs          *workLedger
-	config             *config.ConfigStore
+	// coord is the owning coordinator (nil on bare fixtures): the batch
+	// facts, reaction store and notice pull all route through it. The
+	// deleted workLedger's remaining retained state (hint counter, external
+	// driver mirror, supervision) lives on the coordinator too.
+	coord  *coordinator
+	config *config.ConfigStore
 
 	// wsHomeOverride is the WS-1 test seam (#1142 step C): when non-nil it
 	// replaces config.WorkspaceHome() in processWorkspace, so a test can
@@ -831,6 +845,33 @@ type sessionAgent struct {
 	// ever armed.
 	runAllowlists  permission.SessionRunAllowlistManager
 	restrictedRuns permission.RestrictedRunAuthorizer
+
+	// diskCaps is the coordinator's App-owned capability manager, wired at
+	// construction via SessionAgentOptions.diskCaps (R12-H2b §2.4): the
+	// durable enqueue producer (restartOrphanedWithRetry) holds row-keyed
+	// Continuation owners through it so a queued provider-backed call's
+	// binding cannot be pruned before the pump rebuilds. Nil on bare
+	// fixtures.
+	diskCaps *DiskProviderRegistry
+
+	// capsMu guards diskCaps, which is bound once at batch install,
+	// possibly after construction.
+	capsMu sync.Mutex
+}
+
+// bindDiskCaps binds the App-owned capability manager onto an
+// already-constructed session agent (batch install path).
+func (a *sessionAgent) bindDiskCaps(caps *DiskProviderRegistry) {
+	a.capsMu.Lock()
+	defer a.capsMu.Unlock()
+	a.diskCaps = caps
+}
+
+// diskCapsRef returns the bound capability manager (nil until bound).
+func (a *sessionAgent) diskCapsRef() *DiskProviderRegistry {
+	a.capsMu.Lock()
+	defer a.capsMu.Unlock()
+	return a.diskCaps
 }
 
 // SessionAgentOptions is defined in agent_options.go (pure move, phase-4
@@ -849,8 +890,8 @@ func NewSessionAgent(
 		sessions:                   opts.Sessions,
 		messages:                   opts.Messages,
 		disableAutoSummarize:       opts.DisableAutoSummarize,
-		tools:                      csync.NewSliceFrom(wrapToolsWithErrorLogging(wrapToolsWithRestrictedRun(opts.Tools, opts.RestrictedRuns))),
-		asyncJobs:                  opts.AsyncJobs,
+		tools:                      csync.NewSliceFrom(decorateSessionTools(opts.Tools, opts.RestrictedRuns)),
+		coord:                      opts.Coord,
 		onSessionIdle:              opts.OnSessionIdle,
 		isYolo:                     opts.IsYolo,
 		notify:                     opts.Notify,
@@ -876,6 +917,7 @@ func NewSessionAgent(
 		sessionPreambleMaxDuration: opts.SessionPreambleMaxDuration,
 		titleGenerationMaxDuration: opts.TitleGenerationMaxDuration,
 		titleGens:                  newTitleGenRegistry(),
+		diskCaps:                   opts.diskCaps,
 	}
 }
 
@@ -888,7 +930,7 @@ func (a *sessionAgent) SetModels(smart Model, fast Model) {
 // for error logging: these two are the only doors tools have into a
 // sessionAgent, so covering both means no assembly site can forget to.
 func (a *sessionAgent) SetTools(tools []fantasy.AgentTool) {
-	a.tools.SetSlice(wrapToolsWithErrorLogging(wrapToolsWithRestrictedRun(tools, a.restrictedRuns)))
+	a.tools.SetSlice(decorateSessionTools(tools, a.restrictedRuns))
 }
 
 func (a *sessionAgent) SetSystemPrompt(systemPrompt string) {

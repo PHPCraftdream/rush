@@ -5,31 +5,29 @@ import (
 	"database/sql"
 	"io/fs"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/require"
 )
 
-// laggingMigration is the migration the "one ALTER behind" fixtures drop: an
-// ALTER that no later migration builds on, so removing it leaves a database
-// this binary is happy to bring forward, one whose maximum applied version
-// still exceeds the missing one. It must not be a migration a later rebuild
-// copies columns from: the bg_shell rebuild of async_jobs (20261005) selects
-// announce_message_id, so the announce_message_id ALTER (20260929000003) can
-// no longer be the one dropped -- the fixture would fail while building.
-const laggingMigration = "20261002000001_add_workspace_to_sessions.sql"
-
-// laggingTable and laggingColumn are what laggingMigration adds.
-const (
-	laggingTable  = "sessions"
-	laggingColumn = "workspace_root"
-)
+// The "pending migration" fixtures are built on the inline gate-probe seam
+// from migrate_live_hosts_test.go: a database fully migrated through the
+// EMBEDDED set (applied = the store-v1 initial migration) plus a synthetic
+// test-only migration file (r12aGateProbeFile, version r12aSyntheticVersion,
+// creating table r12a_gate_probe) that is never embedded and never applied
+// outside these tests. Every subtest therefore has a genuinely pending
+// migration: applied=set(initial), pending={probe}.
+//
+// NOTE: unlike the old "one ALTER behind" fixture, the pending version here
+// is NEWER than the single applied version, not older -- the decision matrix
+// under test (unknown vs pending vs neither) does not depend on relative
+// ordering, only on set membership, so every scenario keeps its outcome.
 
 // embeddedMigrationsFS copies the embedded migration set into a MapFS,
 // optionally dropping files skipFn rejects. It is how a database that does
@@ -78,16 +76,14 @@ func openTestDB(t *testing.T, dbPath string) *sql.DB {
 	return conn
 }
 
-// newLaggingDB builds a database holding every embedded migration except
-// laggingMigration, i.e. one ALTER behind this binary with a maximum applied
-// version higher than the missing one.
-func newLaggingDB(t *testing.T) (string, *sql.DB) {
+// newPendingProbeDB builds a database fully migrated through the embedded
+// set: applied=set(initial), pending={} -- the probe migration is injected
+// per test via r12aSyntheticFS, making it the pending version.
+func newPendingProbeDB(t *testing.T) (string, *sql.DB) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "rush.db")
 	conn := openTestDB(t, dbPath)
-	applyFS(t, conn, embeddedMigrationsFS(t, func(name string) bool {
-		return name == laggingMigration
-	}))
+	require.NoError(t, Migrate(context.Background(), conn))
 	return dbPath, conn
 }
 
@@ -109,30 +105,6 @@ func dbVersionSet(t *testing.T, conn *sql.DB) map[int64]bool {
 	return out
 }
 
-// hasColumn reports whether table has the named column.
-func hasColumn(t *testing.T, conn *sql.DB, table, column string) bool {
-	t.Helper()
-	rows, err := conn.QueryContext(context.Background(), "PRAGMA table_info("+table+")")
-	require.NoError(t, err)
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			cid     int
-			name    string
-			typ     string
-			notNull int
-			dflt    any
-			pk      int
-		)
-		require.NoError(t, rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk))
-		if name == column {
-			return true
-		}
-	}
-	require.NoError(t, rows.Err())
-	return false
-}
-
 // recordUnknownVersion marks version as applied in the database without any
 // file backing it, which is exactly what an older/newer binary leaves behind.
 func recordUnknownVersion(t *testing.T, conn *sql.DB, version int64) {
@@ -148,11 +120,11 @@ func recordUnknownVersion(t *testing.T, conn *sql.DB, version int64) {
 // decide the same pending migration is still unapplied.
 //
 // The revert check is checked in manually: with the lock acquisition removed,
-// both processes see the same pending ALTER, both apply it, and the second
-// fails with "duplicate column name".
+// both processes see the same pending probe migration, both apply it, and
+// the second fails on the already-created table.
 func TestMigrate_LockSerializesConcurrentMigrations(t *testing.T) {
-	dbPath, first := newLaggingDB(t)
-	fsys := embeddedMigrationsFS(t, nil)
+	dbPath, first := newPendingProbeDB(t)
+	fsys := r12aSyntheticFS(t)
 	lockPath := filepath.Join(filepath.Dir(dbPath), "migrate.lock")
 	second := openTestDB(t, dbPath)
 	opts := MigrateOptions{MayMigrate: true, MigrationLockPath: lockPath}
@@ -210,8 +182,10 @@ func TestMigrate_LockSerializesConcurrentMigrations(t *testing.T) {
 		t.Fatal("timed out waiting for the second migrate")
 	}
 
-	require.True(t, hasColumn(t, first, laggingTable, laggingColumn),
-		"the pending ALTER must have been applied exactly once")
+	// The pending probe migration must have been applied exactly once: the
+	// table exists and the version is recorded.
+	requireTableExists(t, context.Background(), first, "r12a_gate_probe", true)
+	require.True(t, dbVersionSet(t, first)[r12aSyntheticVersion])
 }
 
 // TestMigrate_VersionSetRules covers the decision matrix: which combination
@@ -221,20 +195,19 @@ func TestMigrate_VersionSetRules(t *testing.T) {
 	full := embeddedMigrationsFS(t, nil)
 
 	t.Run("unknown_and_pending_diverges", func(t *testing.T) {
-		dbPath, conn := newLaggingDB(t)
+		dbPath, conn := newPendingProbeDB(t)
 		recordUnknownVersion(t, conn, 29990101000000)
 
 		before := dbVersionSet(t, conn)
 
 		var diverged *SchemaDivergedError
-		err := migrate(context.Background(), conn, dbPath, full, MigrateOptions{MayMigrate: true})
+		err := migrate(context.Background(), conn, dbPath, r12aSyntheticFS(t), MigrateOptions{MayMigrate: true})
 		require.ErrorAs(t, err, &diverged)
 		require.Contains(t, diverged.Unknown, int64(29990101000000))
-		require.Contains(t, diverged.Pending, laggingVersion())
+		require.Contains(t, diverged.Pending, r12aSyntheticVersion)
 
+		requireTableExists(t, context.Background(), conn, "r12a_gate_probe", false)
 		require.Equal(t, before, dbVersionSet(t, conn), "a diverged schema must not be touched")
-		require.False(t, hasColumn(t, conn, laggingTable, laggingColumn),
-			"a diverged schema must not be migrated")
 	})
 
 	t.Run("unknown_only_opens_without_migrating", func(t *testing.T) {
@@ -251,19 +224,15 @@ func TestMigrate_VersionSetRules(t *testing.T) {
 			"a database ahead of this binary must keep its versions")
 	})
 
-	t.Run("pending_below_db_max_applies_out_of_order", func(t *testing.T) {
-		dbPath, conn := newLaggingDB(t)
+	t.Run("pending_applies", func(t *testing.T) {
+		dbPath, conn := newPendingProbeDB(t)
 
-		require.NoError(t, migrate(context.Background(), conn, dbPath, full,
+		require.NoError(t, migrate(context.Background(), conn, dbPath, r12aSyntheticFS(t),
 			MigrateOptions{MayMigrate: true}))
 
-		require.True(t, hasColumn(t, conn, laggingTable, laggingColumn),
-			"the out-of-order pending migration must be applied")
-		emitted, err := embeddedVersions(full)
-		require.NoError(t, err)
-		for _, v := range emitted {
-			require.True(t, dbVersionSet(t, conn)[v], "version %d must be applied", v)
-		}
+		requireTableExists(t, context.Background(), conn, "r12a_gate_probe", true)
+		require.True(t, dbVersionSet(t, conn)[r12aSyntheticVersion],
+			"the pending probe migration's version must be recorded")
 	})
 
 	t.Run("up_to_date_is_a_noop", func(t *testing.T) {
@@ -279,31 +248,20 @@ func TestMigrate_VersionSetRules(t *testing.T) {
 	})
 }
 
-// laggingVersion parses the numeric prefix of the dropped migration file.
-func laggingVersion() int64 {
-	prefix := strings.SplitN(laggingMigration, "_", 2)[0]
-	v, err := strconv.ParseInt(prefix, 10, 64)
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
 // TestMigrate_NotAllowedRefusesPending proves a caller that opts out of
 // migration gets a typed error and an untouched schema, so a dev build can be
 // pointed at a shared data directory without writing to it.
 func TestMigrate_NotAllowedRefusesPending(t *testing.T) {
-	dbPath, conn := newLaggingDB(t)
+	dbPath, conn := newPendingProbeDB(t)
 
 	var notAllowed *SchemaMigrationNotAllowedError
-	err := migrate(context.Background(), conn, dbPath, embeddedMigrationsFS(t, nil),
+	err := migrate(context.Background(), conn, dbPath, r12aSyntheticFS(t),
 		MigrateOptions{MayMigrate: false})
 	require.ErrorAs(t, err, &notAllowed)
-	require.Contains(t, notAllowed.Pending, laggingVersion())
+	require.Contains(t, notAllowed.Pending, r12aSyntheticVersion)
 
-	require.False(t, hasColumn(t, conn, laggingTable, laggingColumn),
-		"refusing to migrate must leave the schema untouched")
-	require.Len(t, dbVersionSet(t, conn), len(mustEmbeddedVersions(t))-1)
+	requireTableExists(t, context.Background(), conn, "r12a_gate_probe", false)
+	require.Len(t, dbVersionSet(t, conn), len(mustEmbeddedVersions(t)))
 }
 
 func mustEmbeddedVersions(t *testing.T) []int64 {
@@ -313,25 +271,28 @@ func mustEmbeddedVersions(t *testing.T) []int64 {
 	return v
 }
 
-// TestConnect_MigratesLaggingDatabase is the integration check: the default
-// Connect applies the pending migration and creates the cross-process lock
-// file next to the database.
-func TestConnect_MigratesLaggingDatabase(t *testing.T) {
+// TestConnect_OpenUpToDateDatabase is the integration check: the default
+// Connect opens an already fully migrated database without touching it
+// (applied=set(initial), no pending version) and creates the cross-process
+// lock file next to the database. The pending-migration path itself is
+// covered by TestMigrate_LockSerializesConcurrentMigrations; Connect cannot
+// see the test-only probe because it migrates with the embedded set.
+func TestConnect_OpenUpToDateDatabase(t *testing.T) {
 	dataDir := t.TempDir()
-	dbPath := filepath.Join(dataDir, "rush.db")
+	// Seed the ACTIVE store file: Connect opens storepath.StoreV1Path, and
+	// seeding the legacy name instead would silently exercise the legacy
+	// import path, not the up-to-date open this test pins.
+	dbPath := storepath.StoreV1Path(dataDir)
 	seed := openTestDB(t, dbPath)
-	applyFS(t, seed, embeddedMigrationsFS(t, func(name string) bool {
-		return name == laggingMigration
-	}))
+	require.NoError(t, Migrate(context.Background(), seed))
 
 	conn, err := Connect(context.Background(), dataDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ReleaseConn(conn) })
 
-	require.True(t, hasColumn(t, conn, laggingTable, laggingColumn),
-		"Connect must apply the pending migration")
+	before := dbVersionSet(t, seed)
+	require.Equal(t, before, dbVersionSet(t, conn), "Connect must not record versions on an up-to-date database")
 
 	lockPath := filepath.Join(dataDir, "migrate.lock")
 	require.FileExists(t, lockPath, "the lock file must live next to the database")
-	_ = seed
 }

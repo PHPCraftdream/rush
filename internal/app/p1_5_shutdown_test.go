@@ -142,7 +142,7 @@ func (m *mockCoordinatorForShutdown) ResetAutoResumeCounter(sessionID string) {
 	panic("unexpected: Shutdown does not call ResetAutoResumeCounter")
 }
 
-func (m *mockCoordinatorForShutdown) RebuildSessionAgentCall(ctx context.Context, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
+func (m *mockCoordinatorForShutdown) RebuildSessionAgentCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
 	panic("unexpected: Shutdown does not call RebuildSessionAgentCall")
 }
 
@@ -154,8 +154,8 @@ func (m *mockCoordinatorForShutdown) CancelTurn(sessionID string) {
 	panic("unexpected: Shutdown does not call CancelTurn")
 }
 
-func (m *mockCoordinatorForShutdown) StopRerunJobs(ctx context.Context, sessionID string, voided []session.VoidedAsyncJob) {
-	panic("unexpected: Shutdown does not call StopRerunJobs")
+func (m *mockCoordinatorForShutdown) BatchRerunStopVoided(ctx context.Context, sessionID string, voided []session.BatchRerunVoidedNode) {
+	panic("unexpected: Shutdown does not call BatchRerunStopVoided")
 }
 
 // TestP1_5_ShutdownBoundedTimeout_ReturnsEvenWithBlockingCleanup proves the

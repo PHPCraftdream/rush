@@ -340,10 +340,18 @@ func (s *ConfigStore) withMCPLocksUsingCaseSensitivity(
 			}
 			return fmt.Errorf("failed to read config file: %w", readErr)
 		}
+		// The locked document is decoded through the settings-document
+		// layer before binding: record.data is always JSON-shaped, the
+		// fingerprint stays bound to the RAW bytes as read off disk. A
+		// decode failure aborts the transaction; it is never "no servers".
+		decoded, decodeErr := decodeConfigDocument(path, data)
+		if decodeErr != nil {
+			return decodeErr
+		}
 		if err := verifyConfigTargetBinding(target, fingerprint, nil); err != nil {
 			return fmt.Errorf("%w: config target %q changed while reading", ErrMCPStale, path)
 		}
-		files.bindMCPPath(path, data, true, fingerprint)
+		files.bindMCPPath(path, decoded, true, fingerprint)
 	}
 	return fn(files)
 }

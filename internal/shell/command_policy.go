@@ -127,6 +127,20 @@ func CommandCandidatesForPlatform(args []string, windows bool) [][]string {
 	return commandCandidates(args, 0, windows)
 }
 
+// ParseCommandCandidates extracts shell calls and recursively expands wrappers.
+func ParseCommandCandidates(command string) ([][]string, error) {
+	file, err := syntax.NewParser().Parse(strings.NewReader(command), "")
+	if err != nil {
+		return nil, err
+	}
+	calls, _ := commandCalls(file)
+	var out [][]string
+	for _, call := range calls {
+		out = append(out, CommandCandidatesForPlatform(call, true)...)
+	}
+	return out, nil
+}
+
 // CommandBlocked performs the textual portion of the canonical policy. The
 // shell runtime remains authoritative: it catches values produced by runtime
 // expansion after this preflight has necessarily run.
@@ -382,6 +396,45 @@ func unwrapCommand(tokens []string, windows bool) commandView {
 		head = canonicalExecutableForPlatform(rest[0], windows)
 		rest = rest[1:]
 	}
+}
+
+// SkipLauncherPrefixes returns the tokens that follow known transparent
+// launcher prefixes (env, nice, timeout, command, builtin, exec, nohup,
+// time) and their options, using the same option rules as unwrapCommand.
+// It returns nil when no command follows the prefixes.
+func SkipLauncherPrefixes(tokens []string) []string {
+	i := 0
+	for i < len(tokens) && isEnvAssignment(tokens[i]) {
+		i++
+	}
+	for i < len(tokens) {
+		head := canonicalExecutableForPlatform(tokens[i], true)
+		var rest []string
+		switch head {
+		case "env":
+			rest, _ = consumeEnv(tokens[i+1:])
+		case "nice":
+			rest = consumeOptions(tokens[i+1:], map[string]bool{"-n": true, "--adjustment": true})
+		case "timeout":
+			rest = consumeOptions(tokens[i+1:], map[string]bool{"-k": true, "--kill-after": true, "-s": true, "--signal": true})
+			if len(rest) > 0 {
+				rest = rest[1:] // GNU timeout duration.
+			}
+		case "command", "builtin":
+			rest = consumeOptions(tokens[i+1:], map[string]bool{})
+		case "exec", "nohup":
+			rest = consumeOptions(tokens[i+1:], map[string]bool{"-a": true})
+		case "time":
+			rest = consumeOptions(tokens[i+1:], map[string]bool{"-f": true, "--format": true, "-o": true, "--output": true})
+		default:
+			return tokens[i:]
+		}
+		if len(rest) == 0 {
+			return nil
+		}
+		i = len(tokens) - len(rest)
+	}
+	return nil
 }
 
 func shellCommandView(head string, rest []string) commandView {

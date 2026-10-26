@@ -7,14 +7,12 @@ package app
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
-	"os"
-	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
@@ -134,27 +132,6 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 	if coderAgentCfg.ID == "" {
 		return fmt.Errorf("coder agent configuration is missing")
 	}
-	// Phase-4 durable job store (docs/plans/2026-09-28-async-phase4-durable-
-	// core.md sec.5 step 2/7): App.New already builds this unconditionally
-	// (step 7: read-only status surfaces need it even when no provider is
-	// configured and InitCoderAgent never runs) -- this is now just the
-	// fallback for a test fixture that constructed *App by hand without
-	// going through App.New. A pump-only App with no data dir (dataDir ==
-	// "") still gets no store -- InitCoderAgent is never called on that
-	// shape in production (it has no coder agent to init), but a test
-	// fixture reaching this with dataDir == "" would get a coordinator that
-	// fails closed on the first non-sync async tool call, not a crash.
-	if app.asyncJobStore == nil && app.dataDir != "" {
-		// label is display-only (shown by `sessions jobs`, doc
-		// sec.3.6) -- this App type drives both `rush run` and the web
-		// server, and does not know which at construction time, so "app"
-		// is used uniformly rather than guessing "cli"/"web" wrong.
-		app.asyncJobStore = session.NewAsyncJobStore(app.DB(), app.dataDir, os.Getpid(), "app")
-		// Doc sec.3.7: the first-registration dead-host sweep (ensureHost)
-		// reads a recovered delegation's child text via this -- wired once,
-		// before the first Claim can happen.
-		app.asyncJobStore.SetMessages(app.Messages)
-	}
 	var err error
 	app.AgentCoordinator, err = agent.NewCoordinator(
 		ctx,
@@ -166,12 +143,74 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 		app.FileTracker,
 		app.agentNotifications,
 		app.mcpOwner,
-		app.asyncJobStore,
 		app.BackgroundShellManager,
 	)
 	if err != nil {
 		slog.Error("Failed to create coder agent", "err", err)
 		return err
+	}
+	// R12-H2b §2.3: wire the durable session-execution-fence store so
+	// continuations resolve the fence through the same session service; a
+	// service that does not implement the store simply means no fence.
+	if reqStore, ok := app.Sessions.(session.SessionExecutionRequirementStore); ok {
+		if err := agent.SetCoordinatorExecutionRequirementStore(app.AgentCoordinator, reqStore); err != nil {
+			slog.Error("Failed to bind session execution requirement store", "err", err)
+			return err
+		}
+	}
+	// F7b: an ephemeral App (dataDir == "") never installs the batch
+	// runtime, so BindCoordinatorBatchControls below never runs and
+	// the coordinator is left with NO capability manager. Its run path
+	// (coordinator.PrepareContinuation) then fails closed with
+	// agent.ErrDiskProviderUnavailable ("no capability manager is bound")
+	// for every custom-DiskProvider run whose admission persisted a
+	// session execution requirement — even though app_run_setup.go bound
+	// the Call owner against the App's own in-memory registry. Bind the
+	// SAME registry so continuations resolve through it. Persisted Apps
+	// are untouched: app.New constructs ephemeralDiskBindings only on the
+	// ephemeral branch.
+	if app.ephemeralDiskBindings != nil {
+		if err := agent.SetCoordinatorDiskCapabilityManager(app.AgentCoordinator, app.ephemeralDiskBindings); err != nil {
+			slog.Error("Failed to bind ephemeral disk capability manager", "err", err)
+			return err
+		}
+	}
+	// R11F (M3): bind the coordinator to the batch runtime. After
+	// this every tool build re-arms its work tools through the ONE ingress
+	// authority and the old async/stall wrappers are not installed.
+	if app.batchWorkIngress != nil {
+		if err := agent.BindCoordinatorBatchControls(app.AgentCoordinator, app.batchWorkIngress, app.batchModelControl, app.batchLiveReader); err != nil {
+			slog.Error("Failed to bind batch runtime", "err", err)
+			return err
+		}
+	}
+	// Held-question inject bridge: bind the App-owned sink to THIS
+	// coordinator (never a process global) so non-interrupt inject_agent
+	// releases a child's committed held question through Runner.Inject.
+	if app.batchHeldAnswerSink != nil {
+		agent.SetCoordinatorBatchHeldAnswerSink(app.AgentCoordinator, app.batchHeldAnswerSink)
+	}
+	// The CLI loop's durable driver markers route through the
+	// job-independent HostStore (released by the shutdown drain gate), so
+	// no legacy store ever ensures a host or creates a hosts/<id>.lock.
+	if app.batchWorkIngress != nil && app.batchHostStore() != nil {
+		if err := agent.SetBatchDriverClaimer(app.AgentCoordinator, app.batchHostStore()); err != nil {
+			slog.Error("Failed to set batch driver claimer", "err", err)
+			return err
+		}
+	}
+	// Bind the node-backed cutover facts so every App that runs turns reads
+	// batch_nodes instead of the conservative unknown fail-safe (its
+	// permanent "node source unavailable" error made the CLI
+	// loop retry a wiring defect for the full retry bound).
+	if writer := app.batchCutoverWriter(); writer != nil {
+		live := app.batchLiveReader
+		if live == nil {
+			live = session.NewBatchLiveReader(db.New(writer), app.dataDir)
+			// TxStarter: every live read runs in ONE read-only tx on the writer.
+			live.TxStarter = writer
+		}
+		agent.BindCoordinatorBatchCutoverFacts(app.AgentCoordinator, agent.NewBatchCutoverNodeFacts(session.NewBatchStoreWithReader(writer, app.batchCutoverReader(writer)), live, writer))
 	}
 	// Stage 4b: start the durable wake-schedule worker over this App's
 	// store. Optional-interface assertion (agent.WakeScheduleController):
@@ -182,17 +221,14 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 			ctrl.SetWakeScheduleStore(app.wakeScheduleStore)
 		}
 	}
-	// Optional-interface assertion (agent.RateLimitNotifier), same shape
-	// as above: each rate-limit wait is echoed to the run loop's stderr.
-	if rn, ok := app.AgentCoordinator.(agent.RateLimitNotifier); ok {
-		rn.SetRateLimitNotify(func(sessionID string, until time.Time, attempt int) {
-			out := io.Writer(os.Stderr)
-			if cliLoopStderr != nil {
-				out = cliLoopStderr
-			}
-			fmt.Fprintf(out, "rush run: session %q waiting for provider rate limit until %s (attempt %d)\n",
-				sessionID, until.Format("15:04"), attempt)
-		})
+	if app.batchTimeoutWake != nil {
+		app.batchTimeoutWake.Attach(app.AgentCoordinator)
 	}
+	// Rate-limit wait diagnostics are run-scoped now: prepareExecuteRun
+	// attaches a CLI-origin-gated sink (agent.WithRateLimitNotifySink) to
+	// each run's context and the coordinator's notifier call site consumes
+	// it, so an embedded/API run's diagnostics go to that run's stderr
+	// instead of the process stderr, and non-CLI runs get none. The former
+	// app-wide SetRateLimitNotify(os.Stderr/cliLoopStderr) callback is gone.
 	return nil
 }

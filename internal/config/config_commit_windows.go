@@ -15,7 +15,7 @@ import (
 // commitConfigFile keeps the staged file open through publication. Windows
 // file identity is a handle property, so resolving the staged pathname after
 // closing it would reintroduce a reparse-point substitution race.
-func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.FileMode, expected reloadFileFingerprint, expectedOwner int, enforceOwner bool) (reloadFileFingerprint, error) {
+func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.FileMode, expected reloadFileFingerprint, expectedOwner int, enforceOwner bool, migrationHooks ...func(string) error) (reloadFileFingerprint, error) {
 	if expected.exists && (!expected.identity.valid || expected.nlink == 0 || expected.nlink > 1) {
 		if expected.nlink > 1 {
 			return reloadFileFingerprint{}, ErrConfigHardLink
@@ -47,13 +47,18 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 
 	runConfigBeforeCommitCheckHook()
 	base := filepath.Base(publicationPath)
+	if len(migrationHooks) > 0 && migrationHooks[0] != nil {
+		if err := migrationHooks[0]("before-staging"); err != nil {
+			return reloadFileFingerprint{}, err
+		}
+	}
 	if err := verifyWindowsCommitParent(parent, publicationPath, expected); err != nil {
 		return reloadFileFingerprint{}, errConfigCommitVerification
 	}
 	if err := verifyWindowsCommitDestinationHandle(parent, base, expected, expectedOwner, enforceOwner, selectedPath); err != nil {
 		return reloadFileFingerprint{}, err
 	}
-	staged, err := stageConfigFileHandleAt(parent, publicationPath, data, perm)
+	staged, err := stageConfigFileHandleAt(parent, publicationPath, data, perm, migrationHooks...)
 	if err != nil {
 		return reloadFileFingerprint{}, err
 	}
@@ -83,11 +88,21 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	if err := verifyWindowsCommitDestinationHandle(parent, base, expected, expectedOwner, enforceOwner, selectedPath); err != nil {
 		return reloadFileFingerprint{}, err
 	}
+	if len(migrationHooks) > 0 && migrationHooks[0] != nil {
+		if err := migrationHooks[0]("before-rename"); err != nil {
+			return reloadFileFingerprint{}, err
+		}
+	}
 	renameErr := renameConfigTempHandle(staged.file, staged.path, parent, base, expected.exists, expected, expectedOwner, enforceOwner, selectedPath)
 	if renameErr != nil {
 		return reloadFileFingerprint{}, classifyWindowsRenameFailure(publicationPath, parent, data, expected, expectedOwner, enforceOwner, staged, renameErr, &removeTemp, &stagedClosed)
 	}
 	removeTemp = false
+	if len(migrationHooks) > 0 && migrationHooks[0] != nil {
+		if err := migrationHooks[0]("after-rename"); err != nil {
+			return reloadFileFingerprint{}, newCommitOutcome(commitPath, true, false, errAtomicWriteCommitted, err)
+		}
+	}
 	flushErr := flushWindowsConfigHandle(staged.file)
 	stagedData, stagedFingerprint, stagedReadErr := readStableConfigHandle(staged.file, expectedOwner, enforceOwner)
 	_ = staged.file.Close()

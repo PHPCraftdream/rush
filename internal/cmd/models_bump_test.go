@@ -152,6 +152,7 @@ func TestModelsBump_GLM53FullStepDown(t *testing.T) {
 // clean, non-error exit with an informational message — not a crash or Go
 // error return.
 func TestModelsBump_TopBoundary_UpIsInformationalNotError(t *testing.T) {
+	ktavGateOn(t)
 	setupBumpEnv(t)
 
 	resetModelsUseFlags(t)
@@ -173,6 +174,7 @@ func TestModelsBump_TopBoundary_UpIsInformationalNotError(t *testing.T) {
 // bottom-boundary case: stepping "down" while already at the lowest defined
 // level ("low").
 func TestModelsBump_BottomBoundary_DownIsInformationalNotError(t *testing.T) {
+	ktavGateOn(t)
 	setupBumpEnv(t)
 
 	resetModelsUseFlags(t)

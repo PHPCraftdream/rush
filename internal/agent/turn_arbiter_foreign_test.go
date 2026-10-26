@@ -34,7 +34,7 @@ func TestDecide_ForeignWorkspaceDefersWithoutRecheck(t *testing.T) {
 	require.Equal(t, foreignWorkspaceReason, v.Reason)
 	require.True(t, v.RecheckAt.IsZero(), "nothing to recheck: the debt is the owner's")
 	require.False(t, v.ReopenOnHint)
-	require.Empty(t, v.Rows.Jobs)
+	require.Empty(t, v.Rows.Nodes, "a defer settles no batch node rows")
 	require.Empty(t, v.Rows.Notices, "a defer settles nothing")
 
 	// Every launch site, not just siteFact.
@@ -104,7 +104,7 @@ func TestDecideAccount_ForeignWorkspaceDoesNotPaceOrSettle(t *testing.T) {
 	require.NotEqual(t, "launch refused", v.Reason,
 		"a foreign refusal is not a launch refusal worth pacing our own gate for")
 	require.True(t, v.RecheckAt.IsZero(), "no recheck: the debt is the owner's")
-	require.Empty(t, v.Rows.Jobs)
+	require.Empty(t, v.Rows.Nodes, "a defer settles no batch node rows")
 	require.Empty(t, v.Rows.Notices, "a defer settles nothing")
 }
 
@@ -170,10 +170,10 @@ func TestAccountDrainAttempt_ForeignLegLeavesTheDebtAlone(t *testing.T) {
 	require.Zero(t, gate.PaidStreak, "a foreign refusal is not a paid unreacted attempt")
 	require.False(t, f.inRecheckSet(), "a foreign workspace is not worth a tick")
 
-	// The debt is untouched, so the owner process still sees it.
-	hasJobDebt, notices, _, err := f.store.PendingInclusiveDebtRows(ctx, f.sessID)
+	// The debt is untouched, so the owner process still sees it (read through
+	// the batch authority).
+	snap, err := coordinatorBatchCutoverFacts(f.coord).CaptureVisibleDebt(ctx, f.sessID)
 	require.NoError(t, err)
-	require.True(t, hasJobDebt || len(notices) > 0,
-		"a foreign leg must not settle the debt by failure")
+	require.False(t, snap.Empty(), "a foreign leg must not settle the debt by failure")
 	require.Zero(t, f.markers(ctx), "a foreign leg writes no wake_failed marker")
 }

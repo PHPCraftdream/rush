@@ -41,6 +41,12 @@ func TestCheckPeakHours_CarriesOperatorMessage(t *testing.T) {
 // agent runs (what `rush providers set --local ...` does to a running
 // session) and must pick up the message too, not just the window.
 func TestCheckLivePeakHours_CarriesMessageFromEditedConfig(t *testing.T) {
+	// Legacy-JSON fixture test: it rewrites rush.json at its literal path
+	// after config.Init and expects the live reload to see it, so the gate
+	// must be off (after migration the active file is rush.ktav).
+	restore := config.SetKtavAutoMigrateForTest(false)
+	t.Cleanup(restore)
+
 	workDir := t.TempDir()
 	configPath := filepath.Join(workDir, "rush.json")
 	base := `{"options":{"disable_default_providers":true},"providers":{"custom":{"api_key":"k","base_url":"https://api.example.test/v1","models":[{"id":"model"}]%s}}}`

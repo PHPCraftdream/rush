@@ -392,3 +392,143 @@ func TestOAuthDiskSync12IdleConvergence(t *testing.T) {
 	require.EqualValues(t, 1, calls.Load())
 	f.store.stopOAuthJournalWorkers()
 }
+
+func TestOAuthDiskSync13StopJoinsPollerAndJournalWorkers(t *testing.T) {
+	// Revert-check: a StopOAuthDiskSync that neither cancels nor joins leaves
+	// the poller and journal workers running past its return. Both workers
+	// park AFTER cancellation until explicitly released, so the PUBLIC
+	// StopOAuthDiskSync must not return before either join completes
+	// (oauth-poller-stop#2). Catches: removing the poller join or the
+	// oauthWorkerWG.Wait from StopOAuthDiskSync lets it return while a
+	// worker is still parked → returnedEarly fires.
+	s := newTestConfigStore(testStoreOpts{globalDataPath: "fixture-unused", config: &Config{Providers: csync.NewMap[string, ProviderConfig]()}})
+	var waits atomic.Int32
+	pollerEntered, pollerCancelled, pollerExited := make(chan struct{}, 2), make(chan struct{}, 2), make(chan struct{}, 2)
+	workerEntered, workerCancelled, workerExited := make(chan struct{}, 2), make(chan struct{}, 2), make(chan struct{}, 2)
+	releasePollerCh := make(chan struct{})
+	releaseWorkerCh := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseBoth := func() {
+		releaseOnce.Do(func() { close(releasePollerCh); close(releaseWorkerCh) })
+	}
+	oldWait := oauthDiskSyncWait
+	oldBefore, oldDone := oauthJournalBeforeWorker, oauthJournalWorkerDone
+	oauthDiskSyncWait = func(ctx context.Context, _ time.Duration) error {
+		defer func() { pollerExited <- struct{}{} }()
+		waits.Add(1)
+		pollerEntered <- struct{}{}
+		<-ctx.Done()
+		pollerCancelled <- struct{}{}
+		<-releasePollerCh
+		return ctx.Err()
+	}
+	oauthJournalBeforeWorker = func(ctx context.Context) {
+		workerEntered <- struct{}{}
+		<-ctx.Done()
+		workerCancelled <- struct{}{}
+		<-releaseWorkerCh
+		workerExited <- struct{}{}
+	}
+	oauthJournalWorkerDone = func(_ *ConfigStore, _ string) {}
+	// Register before assertions: even a failing body releases both workers
+	// and joins them through the hook-exit signals before the global hooks
+	// are restored.
+	t.Cleanup(func() {
+		releaseBoth()
+		s.stopOAuthJournalWorkers()
+		awaitCodexSignal(t, pollerExited)
+		awaitCodexSignal(t, workerExited)
+		oauthDiskSyncWait = oldWait
+		oauthJournalBeforeWorker, oauthJournalWorkerDone = oldBefore, oldDone
+	})
+	s.StartOAuthDiskSync()
+	s.startOAuthJournalWorker(ScopeGlobal, task1292Provider)
+	awaitCodexSignal(t, pollerEntered)
+	awaitCodexSignal(t, workerEntered)
+	stopped := make(chan struct{})
+	go func() { defer close(stopped); s.StopOAuthDiskSync() }()
+	awaitCodexSignal(t, pollerCancelled)
+	awaitCodexSignal(t, workerCancelled)
+	returnedEarly := false
+	select {
+	case <-stopped:
+		returnedEarly = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	require.False(t, returnedEarly, "StopOAuthDiskSync returned while a cancelled worker was still parked")
+	releaseBoth()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("StopOAuthDiskSync did not return after both workers were released")
+	}
+	require.EqualValues(t, 1, waits.Load())
+	select {
+	case <-pollerEntered:
+		t.Fatal("poller ticked after StopOAuthDiskSync returned")
+	case <-time.After(100 * time.Millisecond):
+	}
+	s.StopOAuthDiskSync() // Idempotent.
+	require.False(t, s.OAuthDiskSyncRunning())
+	s.StartOAuthDiskSync() // Refused after a stop.
+	s.startOAuthJournalWorker(ScopeGlobal, task1292Provider)
+	s.oauthWorkerMu.Lock()
+	workers := len(s.oauthWorkers)
+	s.oauthWorkerMu.Unlock()
+	require.EqualValues(t, 1, waits.Load(), "start after stop must be refused")
+	require.Zero(t, workers, "journal worker start after stop must be refused")
+	require.False(t, s.OAuthDiskSyncRunning())
+}
+
+func TestOAuthDiskSync14StopFlushesPendingRotationOutbox(t *testing.T) {
+	// Revert-check: a StopOAuthDiskSync without the post-join outbox drain
+	// leaves the rotation WAL unwritten; the provider has already burned the
+	// old refresh token, so the next process would force a re-login.
+	task1292Descriptor(t, false, nil)
+	f, _ := diskSyncPair(t, task1292Provider)
+	record := &oauthJournalRecord{PredecessorRefreshTokenSHA256: oauthRotationDigest(f.used.OAuthToken, f.next), Token: f.next}
+	entry := f.store.installOAuthOutbox(f.path, ScopeGlobal, task1292Provider, record)
+	f.store.StopOAuthDiskSync()
+	flushed, err := readOAuthJournal(oauthJournalPath(f.path, task1292Provider))
+	require.NoError(t, err)
+	require.NotNil(t, flushed, "StopOAuthDiskSync must flush a pending rotation outbox to the journal WAL")
+	require.Equal(t, &entry.record, flushed)
+}
+
+func TestOAuthDiskSync15StopJoinsBlockedJournalWorker(t *testing.T) {
+	// Revert-check: a StopOAuthDiskSync that cancels without joining
+	// returns while the journal worker is still blocked after cancellation.
+	s := newTestConfigStore(testStoreOpts{globalDataPath: "fixture-unused", config: &Config{Providers: csync.NewMap[string, ProviderConfig]()}})
+	entered, cancelled := make(chan struct{}, 2), make(chan struct{}, 2)
+	var releaseOnce sync.Once
+	release := make(chan struct{})
+	releaseWorker := func() { releaseOnce.Do(func() { close(release) }) }
+	oldBefore := oauthJournalBeforeWorker
+	oauthJournalBeforeWorker = func(ctx context.Context) {
+		entered <- struct{}{}
+		<-ctx.Done()
+		cancelled <- struct{}{}
+		<-release
+	}
+	// Register before assertions: even a failing body releases the worker
+	// through the hook before the global hook is restored.
+	t.Cleanup(func() {
+		releaseWorker()
+		s.stopOAuthJournalWorkers()
+		oauthJournalBeforeWorker = oldBefore
+	})
+	s.startOAuthJournalWorker(ScopeGlobal, task1292Provider)
+	awaitCodexSignal(t, entered)
+	stopped := make(chan struct{})
+	go func() { defer close(stopped); s.StopOAuthDiskSync() }()
+	awaitCodexSignal(t, cancelled)
+	returnedEarly := false
+	select {
+	case <-stopped:
+		returnedEarly = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	require.False(t, returnedEarly, "StopOAuthDiskSync returned before the blocked journal worker was released")
+	releaseWorker()
+	awaitCodexSignal(t, stopped)
+}

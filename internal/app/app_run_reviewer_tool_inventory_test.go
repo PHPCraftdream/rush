@@ -38,30 +38,27 @@ func TestExecuteRunReviewerPassToolCallsSpanBothPhases(t *testing.T) {
 	require.NoError(t, err)
 
 	app := newContinuationAppWithStub(t, true, func(n int, w http.ResponseWriter, r *http.Request) {
-		switch n {
-		case 1:
+		if n == 1 {
 			_, _ = fmt.Fprint(w, sseChunk(contPartialText))
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
 			}
 			time.Sleep(300 * time.Millisecond)
 			panic(http.ErrAbortHandler)
-		case 2, 3:
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = fmt.Fprint(w, `{"error":{"message":"transient stub failure","type":"server_error"}}`)
-		case 4:
-			// The primary turn's continuation attempt calls view once
-			// — the tool call that must survive into the final
-			// envelope across the reviewer pass.
+		}
+		if continuationRetryFailure(n, w) {
+			return
+		}
+		if n == continuationFirstCoordinatorRequest() {
+			// The coordinator's continuation attempt makes the primary view call.
 			_, _ = fmt.Fprint(w, sseToolCallChunk("view", string(toolArgs)))
 			_, _ = fmt.Fprint(w, sseToolCallsFinishChunk())
 			_, _ = fmt.Fprint(w, sseDone)
-		default:
-			// The round after the view tool result: clean finish.
-			_, _ = fmt.Fprint(w, sseChunk(contFinalText))
-			_, _ = fmt.Fprint(w, sseStopChunk)
-			_, _ = fmt.Fprint(w, sseDone)
+			return
 		}
+		_, _ = fmt.Fprint(w, sseChunk(contFinalText))
+		_, _ = fmt.Fprint(w, sseStopChunk)
+		_, _ = fmt.Fprint(w, sseDone)
 	})
 
 	result, err := app.ExecuteRun(context.Background(), RunRequest{

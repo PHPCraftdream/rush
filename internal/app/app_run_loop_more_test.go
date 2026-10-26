@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -179,8 +178,10 @@ func TestRunNonInteractive_ReviewerRunsWithDeferredDebt(t *testing.T) {
 		}
 		if n == 1 {
 			// The shell finished while the turn ran, after its last pull.
-			require.NoError(h.t, h.app.asyncJobStore.InsertSessionNotice(context.Background(), h.sessionID,
-				session.NoticeKindBGShellDone, "background shell finished: exit 0", true, ""))
+			if err := h.app.BatchNoticeStore().InsertSessionNotice(context.Background(), h.sessionID,
+				session.NoticeKindBGShellDone, "background shell finished: exit 0", true, ""); err != nil {
+				h.t.Errorf("seed the bg-shell-done notice: %v", err)
+			}
 		}
 		loopText(w, "a", "PRIMARY ANSWER", 11, 3)
 	})
@@ -204,60 +205,143 @@ func TestRunNonInteractive_ReviewerRunsWithDeferredDebt(t *testing.T) {
 // failed child Drain in a recheck set nothing drains and the run hits its
 // deadline.
 func TestRunNonInteractive_ChildFailedDrainRetriedByTick(t *testing.T) {
+	testRunNonInteractiveChildFailedDrainRetriedByTickBatch(t)
+}
+
+// testRunNonInteractiveChildFailedDrainRetriedByTickBatch is the B5 body:
+// the 403 lands on the CHILD's own reaction turn (the
+// turn carrying the selected command notice), and the recheck tick must retry
+// the SAME child session until the reaction succeeds. The child's identity is
+// proven through the delegation's child_session_id link and the persisted
+// messages of that child session, never through a parent-side fabrication.
+func testRunNonInteractiveChildFailedDrainRetriedByTickBatch(t *testing.T) {
 	defer agent.SetDrainPacingForTest(100*time.Millisecond, 0, 200*time.Millisecond)()
-	childJobKilled := make(chan struct{})
-	// closeGate closes childJobKilled exactly once from either post-kill
-	// child branch: which of them serves the child's last turn is a
-	// scheduling race (the completion Drain can merge into the post-job_kill
-	// continuation, or that merged turn can be restarted detached after an
-	// ownership handoff), so neither branch alone may hold the gate.
-	var closeGate sync.Once
+	command, release := recoveryJobCommand(t)
+	defer releaseRecoveryJob(t, release)
+	var commandRoot, delegateRoot, childID atomic.Value
+	commandRoot.Store("")
+	delegateRoot.Store("")
+	childID.Store("")
+	var order safeRequestOrder
 	var failedOnce atomic.Bool
+	var childReactionCount, childNoticeCount, parentFinalCount atomic.Int32
+	var liveApp atomic.Pointer[App]
+	var liveSession atomic.Value
+	router := newRBRouter()
 	application, sessionID := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		switch routeModelRequest(body) {
+		system, lastUser, lastTool := lastTurnParts(body)
+		route, seqErr := router.route(body)
+		if seqErr != "" {
+			http.Error(w, "out-of-sequence batch request: "+seqErr, http.StatusBadRequest)
+			return
+		}
+		switch route {
 		case "title":
 			admissionWriteSSE(w, []string{admissionSSEText("title", "Retry Child"), admissionSSEStop("title", "stop")})
-		case "root:final":
-			select {
-			case <-childJobKilled:
-			case <-time.After(30 * time.Second):
-				http.Error(w, "root resumed before the child's reaction", http.StatusServiceUnavailable)
+		case "root:delegate":
+			order.add("root:delegate")
+			admissionWriteSSE(w, []string{admissionSSEToolCall("delegate", "call-agent", "agent", `{"prompt":"WORKER-MARKER do the task"}`), admissionSSEStop("delegate", "tool_calls")})
+		case "child:bash":
+			order.add("child:bash")
+			var id string
+			err := liveApp.Load().DB().QueryRowContext(r.Context(), `
+SELECT t.child_session_id
+FROM batch_nodes r
+JOIN batch_nodes t
+  ON t.owner_session_id = r.owner_session_id
+ AND t.root_id = r.root_id AND t.host_id = r.host_id
+ AND t.kind = 'task'
+WHERE r.owner_session_id = ? AND r.tool_call_id = 'call-agent'
+  AND r.node_id = r.root_id AND r.kind = 'batch'
+ORDER BY t.ordinal LIMIT 1`, liveSession.Load().(string)).Scan(&id)
+			if err != nil {
+				http.Error(w, "delegation child lookup failed: "+err.Error(), http.StatusServiceUnavailable)
 				return
 			}
-			admissionWriteSSE(w, []string{admissionSSEText("root-final", "root final answer"), admissionSSEStop("root-final", "stop")})
+			if id == "" {
+				http.Error(w, "delegation child lookup returned an empty child id", http.StatusServiceUnavailable)
+				return
+			}
+			childID.Store(id)
+			admissionWriteSSE(w, []string{admissionSSEToolCall("child-bash", "call-bash", "bash", `{"command":`+jsonString(command)+`,"description":"held child command","run_in_background":true}`), admissionSSEStop("child-bash", "tool_calls")})
+		case "child:started":
+			id := batchStartedRootID(lastTool)
+			if id == "" {
+				t.Errorf("child started tool result has no batch root id: %q", lastTool)
+				http.Error(w, "no batch root id", http.StatusServiceUnavailable)
+				return
+			}
+			commandRoot.Store(id)
+			admissionWriteSSE(w, []string{admissionSSEToolCall("stop", "call-stop", "batch_stop", `{"root_id":`+jsonString(id)+`}`), admissionSSEStop("stop", "tool_calls")})
+		case "child:stop":
+			if !strings.Contains(lastTool, `"accepted":true`) || !strings.Contains(lastTool, `"terminal":false`) {
+				http.Error(w, "batch_stop must expose cancellation intent: "+lastTool, http.StatusServiceUnavailable)
+				return
+			}
+			if err := releaseRecoveryJobAsync(release); err != nil {
+				t.Errorf("release the recovery job: %v", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			admissionWriteSSE(w, []string{admissionSSEText("stop-yield", "stop intent acknowledged; command released"), admissionSSEStop("stop-yield", "stop")})
+		case "child:stopAck":
+			// The stop-ack tool result stays in history; the router replays
+			// repeats here so the child can yield until its completion is
+			// pulled.
+			admissionWriteSSE(w, []string{admissionSSEText("stop-ack", "stop intent already recorded"), admissionSSEStop("stop-ack", "stop")})
 		case "child:final":
-			closeGate.Do(func() { close(childJobKilled) })
+			// The child's reaction turn: the FIRST one fails with the exact
+			// legacy 403 body; the recheck tick must retry this same child
+			// session and land here again.
+			childReactionCount.Add(1)
 			if failedOnce.CompareAndSwap(false, true) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write([]byte(`{"error":{"message":"forbidden by the fronting balancer","type":"x"}}`))
 				return
 			}
-			admissionWriteSSE(w, []string{admissionSSEText("child-result", "child final: gate job reported"), admissionSSEStop("child-result", "stop")})
-		case "child:yield":
-			closeGate.Do(func() { close(childJobKilled) })
-			admissionWriteSSE(w, []string{admissionSSEText("child-yield", "child yielded: gate still running"), admissionSSEStop("child-yield", "stop")})
-		case "child:kill":
-			admissionWriteSSE(w, []string{
-				admissionSSEToolCall("child-kill", "call-kill", "job_kill", `{"shell_id":"001"}`),
-				admissionSSEStop("child-kill", "tool_calls"),
-			})
-		case "child:bash":
-			admissionWriteSSE(w, []string{
-				admissionSSEToolCall("child-bash", "call-bash", "bash",
-					`{"command":`+jsonString(longRunningCommand())+`,"description":"hold the gate open","run_in_background":true}`),
-				admissionSSEStop("child-bash", "tool_calls"),
-			})
+			var state string
+			err := liveApp.Load().DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, childID.Load().(string), commandRoot.Load().(string)).Scan(&state)
+			if err != nil || state != "cancelled" {
+				http.Error(w, "reaction succeeded before the child command was terminal: "+state, http.StatusServiceUnavailable)
+				return
+			}
+			order.add("child:final")
+			childNoticeCount.Add(1)
+			admissionWriteSSE(w, []string{admissionSSEText("child-result", "child final: retried reaction completed"), admissionSSEStop("child-result", "stop")})
+		case "child:wait":
+			// A replayed started announcement (also persisted as user history):
+			// the child just yields until its completion is pulled.
+			admissionWriteSSE(w, []string{admissionSSEText("child-wait", "child waiting for build"), admissionSSEStop("child-wait", "stop")})
+		case "root:wait":
+			// A replayed started announcement on the root side.
+			admissionWriteSSE(w, []string{admissionSSEText("root-wait", "waiting for child completion"), admissionSSEStop("root-wait", "stop")})
 		case "root:yield":
+			id := batchStartedRootID(lastTool)
+			if id == "" {
+				t.Errorf("root started notice has no batch root id: %q", lastTool)
+				http.Error(w, "no batch root id", http.StatusServiceUnavailable)
+				return
+			}
+			delegateRoot.Store(id)
 			admissionWriteSSE(w, []string{admissionSSEText("root-yield", "root yielded: delegation parked"), admissionSSEStop("root-yield", "stop")})
+		case "root:final":
+			parentFinalCount.Add(1)
+			var state string
+			err := liveApp.Load().DB().QueryRowContext(r.Context(), `SELECT state FROM batch_nodes WHERE owner_session_id = ? AND root_id = ? AND task_kind = 'shell'`, childID.Load().(string), commandRoot.Load().(string)).Scan(&state)
+			if err != nil || state != "cancelled" || childNoticeCount.Load() != 1 {
+				http.Error(w, "parent final before the child's retried reaction", http.StatusServiceUnavailable)
+				return
+			}
+			order.add("root:final")
+			admissionWriteSSE(w, []string{admissionSSEText("root-final", "root final answer"), admissionSSEStop("root-final", "stop")})
 		default:
-			admissionWriteSSE(w, []string{
-				admissionSSEToolCall("delegate", "call-agent", "agent", `{"prompt":"WORKER-MARKER do the task"}`),
-				admissionSSEStop("delegate", "tool_calls"),
-			})
+			http.Error(w, "unexpected batch retry route system="+pr2Excerpt(system)+" lastUser="+pr2Excerpt(lastUser)+" lastTool="+pr2Excerpt(lastTool), http.StatusBadRequest)
 		}
 	})
+	liveApp.Store(application)
+	liveSession.Store(sessionID)
 	grantChildBackgroundShellTools(t, application)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
@@ -266,18 +350,48 @@ func TestRunNonInteractive_ChildFailedDrainRetriedByTick(t *testing.T) {
 	res, err := application.RunNonInteractiveWithResult(ctx, &out, "start a worker", RunOverrides{Origin: message.OriginCLI},
 		true, RunModeJSON, sessionID, false)
 
-	require.NoError(t, err, "the run completes; it must not hang until the deadline")
+	require.NoError(t, err, "the recheck tick must retry the failed child drain; the run must not hang")
 	require.NoError(t, ctx.Err())
 	require.NotNil(t, res)
-	require.True(t, failedOnce.Load(), "the child's first reaction turn failed")
+	require.True(t, failedOnce.Load(), "the child's first reaction turn failed with the injected 403")
+	require.GreaterOrEqual(t, childReactionCount.Load(), int32(2), "the recheck tick retried the SAME child's reaction after the 403")
+	require.EqualValues(t, 1, childNoticeCount.Load())
+	require.EqualValues(t, 1, parentFinalCount.Load())
 	require.Equal(t, "root final answer", res.FinalText)
-	msgs, listErr := application.Messages.List(t.Context(), sessionID)
+	seen := order.snapshot()
+	require.Equal(t, 1, countLabel(seen, "root:delegate"))
+	require.Equal(t, 1, countLabel(seen, "child:bash"))
+	require.Equal(t, 1, countLabel(seen, "child:final"))
+	require.Equal(t, 1, countLabel(seen, "root:final"))
+	require.Less(t, indexOf(seen, "child:bash"), indexOf(seen, "child:final"))
+	require.Less(t, indexOf(seen, "child:final"), indexOf(seen, "root:final"))
+	// Same-child proof: the delegation's child_session_id link, then that
+	// child session's own persisted messages must carry BOTH the failed
+	// marker evidence (the pulled command notice) and the successful
+	// reaction text.
+	child := childID.Load().(string)
+	require.NotEmpty(t, child)
+	childMsgs, listErr := application.Messages.List(t.Context(), child)
 	require.NoError(t, listErr)
-	found := false
-	for _, m := range msgs {
-		if m.BackgroundJobNotice && strings.Contains(m.FullText(), "child final") {
-			found = true
+	var sawNotice, sawReaction bool
+	for _, m := range childMsgs {
+		text := m.FullText()
+		if strings.HasPrefix(text, "Async job call-bash () was stopped (batch_stop)") {
+			sawNotice = true
+		}
+		if strings.Contains(text, "retried reaction completed") {
+			sawReaction = true
 		}
 	}
-	require.True(t, found, "the parent's delegation notice carries the child's retried reaction")
+	require.True(t, sawNotice, "the child session pulled its own stopped-completion notice")
+	require.True(t, sawReaction, "the SAME child session recorded the successful retried reaction")
+	msgs, listErr := application.Messages.List(t.Context(), sessionID)
+	require.NoError(t, listErr)
+	parentNotice := false
+	for _, m := range msgs {
+		if m.BackgroundJobNotice && strings.Contains(m.FullText(), "retried reaction completed") {
+			parentNotice = true
+		}
+	}
+	require.True(t, parentNotice, "the parent's selected delegation notice carries the child's actual retried reaction")
 }

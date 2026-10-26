@@ -176,7 +176,7 @@ to surface re-auth and out-of-credits events to the user.
 - `internal/cmd/server.go`, `internal/cmd/server_other.go`,
   `internal/cmd/server_windows.go` (CLI plumbing)
 - `internal/cmd/session.go`, `internal/cmd/clientserverrace/`,
-  `internal/cmd/spawnlock_*.go` (TUI ↔ daemon coordination)
+  `internal/cmd/spawnlock_*.go` (TUI ↔ angel coordination)
 
 Our replacement: `internal/server/{server,handlers,protocol,events,
 hub,auth,wire}.go` — a WebSocket server with token auth, mounted at

@@ -19,6 +19,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// waitDone bounds a background operation's completion receive so a deadlock
+// fails the test in 10s instead of consuming the 40-minute package timeout.
+func waitDone(t *testing.T, done <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for background operation; possible deadlock")
+		return nil
+	}
+}
+
 func TestPendingAddRemoveUsesOneConditionalWriteWithoutEnabledWindow(t *testing.T) {
 	store := isolatedMCPStore(t)
 	owner, err := Acquire()
@@ -75,7 +88,7 @@ func TestPendingAddRemoveUsesOneConditionalWriteWithoutEnabledWindow(t *testing.
 	require.False(t, runtime)
 
 	close(releaseInitializer)
-	require.ErrorIs(t, <-addDone, ErrOwnerBusy)
+	require.ErrorIs(t, waitDone(t, addDone), ErrOwnerBusy)
 }
 
 func TestPendingAddRemoveRejectsDurableCollision(t *testing.T) {
@@ -133,7 +146,7 @@ func TestPendingAddRemoveRejectsDurableCollision(t *testing.T) {
 	require.Equal(t, winner, persisted)
 
 	close(releaseInitializer)
-	require.ErrorIs(t, <-addDone, config.ErrMCPTargetExists)
+	require.ErrorIs(t, waitDone(t, addDone), config.ErrMCPTargetExists)
 }
 
 func TestPendingAddDisableUsesOneWriteAndPreservesConcurrentWriter(t *testing.T) {
@@ -218,7 +231,7 @@ func TestPendingAddDisableUsesOneWriteAndPreservesConcurrentWriter(t *testing.T)
 	}
 	require.NoError(t, store.PersistMCPConfig(config.ScopeGlobal, concurrentName, concurrentConfig))
 	close(releasePersistence)
-	require.NoError(t, <-disableDone)
+	require.NoError(t, waitDone(t, disableDone))
 	require.Equal(t, int32(1), persistenceCalls.Load())
 
 	disk := diskMCP(t)
@@ -230,7 +243,7 @@ func TestPendingAddDisableUsesOneWriteAndPreservesConcurrentWriter(t *testing.T)
 	require.Equal(t, concurrentConfig, persistedConcurrent)
 
 	close(releaseInitializer)
-	require.ErrorIs(t, <-addDone, ErrOwnerBusy)
+	require.ErrorIs(t, waitDone(t, addDone), ErrOwnerBusy)
 	require.False(t, hasPendingGlobalAdd(name))
 }
 
@@ -277,13 +290,14 @@ func TestStaleAddRollbackPreservesNewerSameNameServer(t *testing.T) {
 	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return newServer }, nil))
 	cleanupTestMCPServer(t, newServer, httpServer)
 	defer func() {
+		releaseOldOnce.Do(func() { close(releaseOld) })
 		require.NoError(t, owner.Close(context.Background()))
 	}()
 	replacement := config.MCPConfig{Type: config.MCPHttp, URL: httpServer.URL, Timeout: 60}
 	require.NoError(t, AddServer(context.Background(), store, name, replacement))
 
 	releaseOldOnce.Do(func() { close(releaseOld) })
-	require.ErrorIs(t, <-oldDone, oldFailure)
+	require.ErrorIs(t, waitDone(t, oldDone), oldFailure)
 	currentConfig, exists := store.MCPConfig(name)
 	require.True(t, exists)
 	require.Equal(t, replacement, currentConfig)

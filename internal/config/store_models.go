@@ -6,6 +6,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -41,7 +42,13 @@ func (s *ConfigStore) ReadAllModelsAtScope(scope Scope) (map[SelectedModelType]*
 		// "nothing set". Not an error.
 		return map[SelectedModelType]*SelectedModel{}, nil
 	}
-	data, rerr := os.ReadFile(path)
+	// Read through the format-aware document layer: under Ktav activation
+	// the slot's active file may be rush.ktav (raw Ktav bytes are NOT JSON),
+	// and a legacy rush.json may have been archived as rush.json.bak during
+	// migration. ReadConfigDocumentLight selects the active slot and decodes
+	// Ktav to JSON-shaped bytes; JSON documents come back byte-identical.
+	// An os.IsNotExist still means "the slot has no document".
+	data, rerr := ReadConfigDocumentLight(path)
 	if rerr != nil {
 		if os.IsNotExist(rerr) {
 			return map[SelectedModelType]*SelectedModel{}, nil
@@ -87,6 +94,9 @@ func (s *ConfigStore) UpdatePreferredModels(scope Scope, models map[SelectedMode
 		fields[fmt.Sprintf("models.%s", modelType)] = model
 	}
 	if err := s.SetConfigFields(scope, fields); err != nil {
+		if errors.Is(err, ErrSettingsLocked) || errors.Is(err, ErrWrongPassword) {
+			return err
+		}
 		return fmt.Errorf("failed to update preferred models: %w", err)
 	}
 	s.updateConfig(func(cfgCopy *Config) {

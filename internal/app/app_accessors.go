@@ -39,37 +39,31 @@ func (app *App) AgentNotifications() *pubsub.Broker[notify.Notification] {
 	return app.agentNotifications
 }
 
-// AsyncJobStore returns the phase-4 durable job store App.New builds
-// unconditionally whenever this App has a data dir (docs/plans/2026-09-28-
-// async-phase4-durable-core.md sec.5 step 7's readers: `sessions jobs`, the
-// LiveJobs-based STATUS surfaces) -- available even when no provider is
-// configured, since it is a pure DB/lock-file reader, not the agent
-// runtime. nil under SkipAgentSetup or when this App has no data dir;
-// callers must treat a nil store as "no async job data available", not
-// panic.
-func (app *App) AsyncJobStore() *session.AsyncJobStore {
-	return app.asyncJobStore
+// BatchHostStore returns the App host store
+// (session.HostStore): the job-independent host identity the batch
+// runtime install registers and releases. Nil without a database writer
+// or without a data dir; callers treat nil as "no batch host identity",
+// never panic.
+func (app *App) BatchHostStore() *session.HostStore {
+	return app.batchHostStore()
 }
 
-// SetAsyncJobStoreForTest wires an AsyncJobStore into an App built WITHOUT
-// InitCoderAgent -- a lightweight &App{...} literal, the pattern several
-// `sessions why`/`sessions list` unit tests use to test the command's own
-// logic without standing up a full agent coordinator. Test-only; mirrors
-// AsyncJobStore's own SimulateCrashForTest seam.
-func (app *App) SetAsyncJobStoreForTest(s *session.AsyncJobStore) {
-	app.asyncJobStore = s
+// BatchNoticeStore returns the job-independent session-notice store
+// (session.SessionNoticeStore) wired to the BatchHostStore identity and
+// liveness. Nil without a database writer.
+func (app *App) BatchNoticeStore() *session.SessionNoticeStore {
+	return app.batchNoticeStore()
 }
 
 // WakeScheduleStore returns the stage-4b durable wake-schedule store
-// (same construction rules as AsyncJobStore: nil under SkipAgentSetup or
-// without a data dir; readers treat nil as "no schedule data available").
+// (same construction rules: nil under SkipAgentSetup or without a data
+// dir; readers treat nil as "no schedule data available").
 func (app *App) WakeScheduleStore() *session.WakeScheduleStore {
 	return app.wakeScheduleStore
 }
 
 // SetWakeScheduleStoreForTest wires a WakeScheduleStore into an App built
-// WITHOUT InitCoderAgent (the &App{...} literal pattern); mirrors
-// SetAsyncJobStoreForTest.
+// WITHOUT InitCoderAgent (the &App{...} literal pattern); test-only.
 func (app *App) SetWakeScheduleStoreForTest(s *session.WakeScheduleStore) {
 	app.wakeScheduleStore = s
 }

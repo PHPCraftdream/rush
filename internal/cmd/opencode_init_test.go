@@ -1,4 +1,4 @@
-// Revert-check manifest: TestOpenCodeInitScopesAndConflict → opencode_init.go:21-68 and ResolveCwd (global/local paths/conflicts); TestOpenCodeInitWritesValidCommandsAndHarnessGuidance → opencode_init.go:75-132, multi_cli_convert.go:383-426, claude_slash_command.yaml block 1 (rush.md target fallback wording), claude_crush_fallback_command.yaml blocks 1-2 (rush-fallback single limitation), multi_cli_convert.go opencodeWrushLaunchGuidance (wrush absolute redirect); TestOpenCodeInitRefreshAndForeignPreservation → multi_cli_convert.go:327-354; TestOpenCodeInitSkillWarningScopesDeduplicate → opencode_init.go:53-73; TestOpenCodeDelScopesOwnershipAndIdempotence → opencode_del.go:18-59, multi_cli_convert.go:350-379; TestOpenCodeSourcesRejectMarkersAcrossTargets → multi_cli_convert.go:101-145.
+// Revert-check manifest: TestOpenCodeInitScopesAndConflict → runOpenCodeInitWithHome, ResolveCwd; TestOpenCodeInitWritesValidCommandsAndHarnessGuidance → installMarkdownCommands, nativeFrontMatter, loadSkillSource; TestOpenCodeInitRefreshAndForeignPreservation → writeNativeMarkdownCommand, writeSentinelledFile; TestOpenCodeInitSkillWarningScopesDeduplicate → hasRushSkillSentinel; TestOpenCodeDelScopesOwnershipAndIdempotence → runOpenCodeDel, removeMarkdownCommands; TestOpenCodeSourcesRejectMarkersAcrossTargets → parseStructuredSkillSource.
 package cmd
 
 import (
@@ -15,38 +15,58 @@ import (
 
 // Revert check: runOpenCodeInit and runOpenCodeDel scope flags and target directories.
 func TestOpenCodeInitScopesAndConflict(t *testing.T) {
-	home, cwd := t.TempDir(), t.TempDir()
-	orig, err := os.Getwd()
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.Chdir(orig) })
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	for _, tc := range []struct {
-		args []string
-		want string
-	}{
-		{[]string{}, filepath.Join(home, ".config", "opencode", "commands")},
-		{[]string{"--global"}, filepath.Join(home, ".config", "opencode", "commands")},
-		{[]string{"--local"}, filepath.Join(cwd, opencodeCommandsDir)},
-		{[]string{"--cwd", cwd}, filepath.Join(cwd, opencodeCommandsDir)},
-	} {
-		if containsFlag(tc.args, "--local") || containsFlag(tc.args, "--cwd") {
+	for _, scope := range []string{"default", "global", "local", "cwd"} {
+		t.Run(scope, func(t *testing.T) {
+			home, cwd, explicit := t.TempDir(), t.TempDir(), t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
 			t.Chdir(cwd)
-			cmd := nativeTestCommand(tc.args, cwd)
+			args := map[string][]string{"default": nil, "global": {"--global"}, "local": {"--local"}, "cwd": {"--cwd", explicit}}[scope]
+			cmd := nativeTestCommand(args, explicit)
+			if scope == "cwd" {
+				_ = cmd.Flags().Set("cwd", explicit)
+			}
 			require.NoError(t, runOpenCodeInitWithHome(cmd, home))
-			require.NoError(t, os.Chdir(orig))
-		} else {
-			cmd := nativeTestCommand(tc.args, cwd)
-			require.NoError(t, runOpenCodeInitWithHome(cmd, home))
-		}
-		for _, n := range nativeCommandNames {
-			require.FileExists(t, filepath.Join(tc.want, n))
-		}
+			dest := filepath.Join(home, ".config", "opencode", "commands")
+			switch scope {
+			case "local":
+				dest = filepath.Join(cwd, ".opencode", "commands")
+			case "cwd":
+				dest = filepath.Join(explicit, ".opencode", "commands")
+			}
+			assertOpenCodeFiles(t, dest)
+			for _, other := range []string{filepath.Join(home, ".config", "opencode", "commands"), filepath.Join(cwd, ".opencode", "commands"), filepath.Join(explicit, ".opencode", "commands")} {
+				if other != dest {
+					assertOpenCodeFilesAbsent(t, other)
+				}
+			}
+		})
 	}
-	cmd := nativeTestCommand([]string{"--global", "--local"}, cwd)
-	require.ErrorContains(t, runOpenCodeInitWithHome(cmd, home), "mutually exclusive")
-	cmd = nativeTestCommand([]string{"--global", "--cwd", cwd}, cwd)
-	require.ErrorContains(t, runOpenCodeInitWithHome(cmd, home), "mutually exclusive")
+	t.Run("conflicting flags", func(t *testing.T) {
+		home, explicit := t.TempDir(), t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		require.ErrorContains(t, runOpenCodeInitWithHome(nativeTestCommand([]string{"--global", "--local"}, explicit), home), "mutually exclusive")
+		cmd := nativeTestCommand([]string{"--global", "--cwd", explicit}, explicit)
+		_ = cmd.Flags().Set("cwd", explicit)
+		require.ErrorContains(t, runOpenCodeInitWithHome(cmd, home), "mutually exclusive")
+		assertOpenCodeFilesAbsent(t, filepath.Join(home, ".config", "opencode", "commands"))
+		assertOpenCodeFilesAbsent(t, filepath.Join(explicit, ".opencode", "commands"))
+	})
+}
+
+func assertOpenCodeFiles(t *testing.T, dir string) {
+	t.Helper()
+	for _, name := range []string{"rush.md", "rush-fallback.md", "wrush.md", "wcrush.md"} {
+		require.FileExists(t, filepath.Join(dir, name))
+	}
+}
+
+func assertOpenCodeFilesAbsent(t *testing.T, dir string) {
+	t.Helper()
+	for _, name := range []string{"rush.md", "rush-fallback.md", "wrush.md", "wcrush.md"} {
+		assert.NoFileExists(t, filepath.Join(dir, name))
+	}
 }
 
 // Revert check: installMarkdownCommands writes frontmatter/ownership and nativeFrontMatter moves the sentinel after YAML.
@@ -68,8 +88,8 @@ func TestOpenCodeInitWritesValidCommandsAndHarnessGuidance(t *testing.T) {
 		if name == "rush.md" {
 			assert.Contains(t, got, "timeout: 36000000")
 			assert.Contains(t, got, "MILLISECONDS")
-			assert.NotContains(t, got, "switch to that agent immediately and silently")
-			assert.Contains(t, got, "cannot arm an automatic switch")
+			assert.NotContains(t, strings.Join(strings.Fields(got), " "), "switch to that agent immediately and silently")
+			assert.Contains(t, strings.Join(strings.Fields(got), " "), "cannot arm an automatic switch")
 		}
 		fm := strings.SplitN(strings.TrimPrefix(got, "---\n"), "\n---\n", 2)
 		require.Len(t, fm, 2)
@@ -179,10 +199,10 @@ func TestOpenCodeDelScopesOwnershipAndIdempotence(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chdir(orig) })
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	for _, dir := range []string{filepath.Join(home, ".config", "opencode", "commands"), filepath.Join(cwd, opencodeCommandsDir)} {
+	for _, dir := range []string{filepath.Join(home, ".config", "opencode", "commands"), filepath.Join(cwd, ".opencode", "commands")} {
 		require.NoError(t, installMarkdownCommands(dir, skillTargetOpenCode))
 	}
-	foreign := filepath.Join(cwd, opencodeCommandsDir, "rush.md")
+	foreign := filepath.Join(cwd, ".opencode", "commands", "rush.md")
 	require.NoError(t, os.WriteFile(foreign, []byte("foreign"), 0o644))
 	cmd := nativeTestCommand([]string{"--local"}, cwd)
 	_ = cmd.Flags().Set("cwd", cwd)
@@ -205,6 +225,22 @@ func TestOpenCodeDelScopesOwnershipAndIdempotence(t *testing.T) {
 	cmd = nativeTestCommand([]string{"--global", "--cwd", cwd}, cwd)
 	_ = cmd.Flags().Set("cwd", cwd)
 	require.ErrorContains(t, runOpenCodeDel(cmd, nil), "mutually exclusive")
+}
+
+func TestFallbackPolicyRenderedForEveryNonClaudeTarget(t *testing.T) {
+	for _, target := range []skillTarget{skillTargetCodex, skillTargetGemini, skillTargetGrok, skillTargetQwen, skillTargetOpenCode, skillTargetOmp} {
+		t.Run(string(target), func(t *testing.T) {
+			_, got, err := loadSkillSource("claude_slash_command", target)
+			require.NoError(t, err)
+			normalized := strings.Join(strings.Fields(got), " ")
+			assert.Contains(t, normalized, "cannot arm an automatic switch", target)
+			assert.Contains(t, normalized, "report the exact error, the provider, and any retry time", target)
+			assert.NotContains(t, normalized, "switch to that agent immediately and silently", target)
+		})
+	}
+	_, claude, err := loadSkillSource("claude_slash_command", skillTargetClaude)
+	require.NoError(t, err)
+	assert.Contains(t, strings.Join(strings.Fields(claude), " "), "switch to that agent immediately and silently")
 }
 
 // Revert check: parseStructuredSkillSource rejects markers for each current target dialect.

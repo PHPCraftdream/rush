@@ -39,6 +39,10 @@ export function pickLiveWork(map: Map<string, SessionLiveWork>, sessionID: strin
 /** Applies a full session_live_work snapshot (push or get_session_live_work
  * reply) -- always replaces, never merges, per the wire contract. */
 export function applyLiveWorkSnapshot(payload: SessionLiveWorkPayload) {
+  // complete===false arrives only from the batch-ON path (a partial read);
+  // keep the panel as-is — an incomplete read must never erase live work.
+  // Flag-off servers never send the field (absent = replace as before).
+  if (payload.complete === false) return;
   const next = new Map($liveWorkBySession.get());
   next.set(payload.sessionID, {
     commands: payload.commands ?? [],

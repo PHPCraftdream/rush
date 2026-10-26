@@ -2,15 +2,18 @@ package config
 
 import (
 	"context"
+	"crypto/pbkdf2"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -23,12 +26,12 @@ const syncRevKey = "sync_rev"
 var reservedSettingsKeys = []string{syncRevKey, cacheRevKey}
 
 var (
-	ErrSettingsLocked           = errors.New("settings change is forbidden by the user (settings are locked). Do not try to change models or any other settings and do not look for a way around this; ask the user instead")
-	ErrWrongPassword            = errors.New("wrong password: settings change is forbidden by the user. Do not guess or retry; ask the user instead")
-	ErrNotLocked                = errors.New("settings are not locked")
-	errSettingsLockKeyReserved  = ErrSettingsLocked
-	processSettingsPasswordHash atomic.Value
-	settingsAuditSink           atomic.Pointer[func(SettingsEvent)]
+	ErrSettingsLocked          = errors.New("settings change is forbidden by the user (settings are locked). Do not try to change models or any other settings and do not look for a way around this; ask the user instead")
+	ErrWrongPassword           = errors.New("wrong password: settings change is forbidden by the user. Do not guess or retry; ask the user instead")
+	ErrNotLocked               = errors.New("settings are not locked")
+	errSettingsLockKeyReserved = ErrSettingsLocked
+	processSettingsPassword    atomic.Value
+	settingsAuditSink          atomic.Pointer[func(SettingsEvent)]
 )
 
 type SettingsEvent struct {
@@ -49,54 +52,112 @@ func (e SettingsEvent) LogValue() slog.Value {
 	)
 }
 
+const (
+	settingsPasswordHashPrefix    = "pbkdf2-sha256"
+	maxSettingsPasswordIterations = 10_000_000
+)
+
+var settingsPasswordIterations atomic.Int64
+
+func init() { settingsPasswordIterations.Store(600_000) }
+
+// SetSettingsPasswordIterationsForTest is a test seam ONLY: it sets the
+// PBKDF2 iteration count used by HashPassword and returns a func restoring
+// the previous value.
+func SetSettingsPasswordIterationsForTest(n int) (restore func()) {
+	prev := settingsPasswordIterations.Load()
+	settingsPasswordIterations.Store(int64(n))
+	return func() { settingsPasswordIterations.Store(prev) }
+}
+
 type settingsWriteAudit struct {
 	event     *SettingsEvent
 	refusedBy string
 }
 
 func HashPassword(password string) string {
-	digest := sha256.Sum256([]byte(password))
-	for range 9 {
-		digest = sha256.Sum256(digest[:])
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		panic(fmt.Sprintf("failed to generate settings password salt: %v", err))
 	}
-	return hex.EncodeToString(digest[:])
+	iterations := int(settingsPasswordIterations.Load())
+	key, err := pbkdf2.Key(sha256.New, password, salt, iterations, 32)
+	if err != nil {
+		panic(fmt.Sprintf("failed to derive settings password hash: %v", err))
+	}
+	return fmt.Sprintf("%s$%d$%s$%s",
+		settingsPasswordHashPrefix, iterations,
+		base64.RawStdEncoding.EncodeToString(salt),
+		base64.RawStdEncoding.EncodeToString(key))
+}
+
+// VerifyPassword reports whether password matches the stored PBKDF2 hash.
+// An unparseable, unrecognized or legacy (plain hex) stored value does NOT
+// match: the lock fails closed.
+func VerifyPassword(password, stored string) bool {
+	parts := strings.Split(stored, "$")
+	if len(parts) != 4 || parts[0] != settingsPasswordHashPrefix {
+		return false
+	}
+	iterations, err := strconv.Atoi(parts[1])
+	if err != nil || iterations < 1 || iterations > maxSettingsPasswordIterations {
+		return false
+	}
+	salt, err := base64.RawStdEncoding.DecodeString(parts[2])
+	if err != nil || len(salt) == 0 {
+		return false
+	}
+	want, err := base64.RawStdEncoding.DecodeString(parts[3])
+	if err != nil || len(want) == 0 {
+		return false
+	}
+	key, err := pbkdf2.Key(sha256.New, password, salt, iterations, len(want))
+	if err != nil {
+		return false
+	}
+	return subtle.ConstantTimeCompare(key, want) == 1
 }
 
 func SetProcessPassword(password string) {
-	hash := ""
-	if password != "" {
-		hash = HashPassword(password)
-	}
-	processSettingsPasswordHash.Store(hash)
+	processSettingsPassword.Store(password)
 }
 
-func processPasswordHash() string {
-	value := processSettingsPasswordHash.Load()
-	hash, _ := value.(string)
-	return hash
+func processPassword() string {
+	value := processSettingsPassword.Load()
+	password, _ := value.(string)
+	return password
 }
 
 // CheckPasswordAgainstDisk checks only the global file because the workspace is unknown before Init.
 func CheckPasswordAgainstDisk(password string) error {
-	data, _, err := readStableConfigFile(GlobalConfigData())
+	// The global path is a logical slot: readSettingsDocument selects the
+	// active file (rush.ktav when present), fails closed on a backup-only
+	// slot, and decodes through the settings-document layer — the same
+	// discipline as freshSettingsHash. A literal read of the legacy name
+	// would miss a global rush.ktav entirely, and a backup-only slot would
+	// silently read as unlocked.
+	doc, err := readSettingsDocument(GlobalConfigData())
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return ErrSettingsLocked
 	}
-	hash := settingsHash(data)
+	hash := settingsHash(doc.jsonBytes)
 	if hash == "" {
 		return nil
 	}
-	if !sameSettingsHash(HashPassword(password), hash) {
+	if !VerifyPassword(password, hash) {
 		return ErrWrongPassword
 	}
 	return nil
 }
 
+// canonicalGlobalDataPath() and naturalWorkspaceSettingsPath() select their
+// own slots; the raw legacy joins below are slot-selected by
+// readSettingsDocument inside freshSettingsHash.
 func SettingsWriteAllowed(workspaceDir string) error {
-	process := processPasswordHash()
+	process := processPassword()
 	globals, locals, err := collectSettingsSourceHashes([]settingsLockSource{
 		{path: GlobalConfigData(), global: true},
 		{path: canonicalGlobalDataPath(), global: true},
@@ -111,7 +172,7 @@ func SettingsWriteAllowed(workspaceDir string) error {
 		checks = locals
 	}
 	for _, hash := range checks {
-		if !sameSettingsHash(process, hash) {
+		if !VerifyPassword(process, hash) {
 			return ErrSettingsLocked
 		}
 	}
@@ -136,7 +197,7 @@ func (s *ConfigStore) SettingsLocked() (bool, error) {
 }
 
 func (s *ConfigStore) CheckProcessPassword() error {
-	process := processPasswordHash()
+	process := processPassword()
 	global, local, err := s.currentLockHashes()
 	if err != nil {
 		return ErrSettingsLocked
@@ -149,7 +210,7 @@ func (s *ConfigStore) CheckProcessPassword() error {
 		checks = local
 	}
 	for _, hash := range checks {
-		if !sameSettingsHash(process, hash) {
+		if !VerifyPassword(process, hash) {
 			return ErrWrongPassword
 		}
 	}
@@ -173,22 +234,22 @@ func freshSettingsHash(path string) (string, error) {
 	if path == "" {
 		return "", nil
 	}
-	data, _, err := readStableConfigFile(path)
+	// readSettingsDocument slot-selects ANY input spelling and fails closed
+	// on a backup-only slot (a protection source whose logical location
+	// holds only a retained backup must never read as "no lock"), so an
+	// os.IsNotExist here means neither spelling of the slot exists.
+	doc, err := readSettingsDocument(path)
 	if os.IsNotExist(err) {
 		return "", nil
 	}
 	if err != nil {
 		return "", err
 	}
-	return settingsHash(data), nil
+	return settingsHash(doc.jsonBytes), nil
 }
 
 func settingsHash(data []byte) string {
 	return gjson.GetBytes(data, syncRevKey).String()
-}
-
-func sameSettingsHash(a, b string) bool {
-	return len(a) == len(b) && subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 func touchesReservedKey(key string) bool {
@@ -231,17 +292,22 @@ func readSettingsHash(candidate, path string, data []byte) (string, error) {
 	if candidate == "" {
 		return "", nil
 	}
+	// Same fail-closed discipline as freshSettingsHash (slot selection and
+	// the backup-only rule live inside readSettingsDocument): this guard is
+	// the write-path source reader (checkExternalSettingsSources,
+	// lockHashesForTarget) and must never read a backup-only slot as
+	// "no lock".
 	if normalizeReloadPath(candidate) == normalizeReloadPath(path) {
 		return settingsHash(data), nil
 	}
-	contents, _, err := readStableConfigFile(candidate)
+	doc, err := readSettingsDocument(candidate)
 	if os.IsNotExist(err) {
 		return "", nil
 	}
 	if err != nil {
 		return "", err
 	}
-	return settingsHash(contents), nil
+	return settingsHash(doc.jsonBytes), nil
 }
 
 func pathWithinDirectory(directory, path string) bool {
@@ -295,6 +361,7 @@ func (s *ConfigStore) LockSettings(scope Scope, password string) error {
 	if err != nil {
 		return err
 	}
+	path = writeTargetSlot(path)
 	refusedBy := ""
 	err = s.writeSettingsLockRaw(path, func(data []byte) (string, error) {
 		if err := s.checkExternalSettingsSources(path, data); err != nil {
@@ -315,6 +382,7 @@ func (s *ConfigStore) UnlockSettings(scope Scope, password string) error {
 	if err != nil {
 		return err
 	}
+	path = writeTargetSlot(path)
 	refusedBy := ""
 	err = s.writeSettingsLockRaw(path, func(data []byte) (string, error) {
 		globals, locals, hashErr := s.lockHashesForTarget(path, data)
@@ -325,16 +393,16 @@ func (s *ConfigStore) UnlockSettings(scope Scope, password string) error {
 		if hash == "" {
 			return "", ErrNotLocked
 		}
-		if !sameSettingsHash(HashPassword(password), hash) {
+		if !VerifyPassword(password, hash) {
 			return "", ErrWrongPassword
 		}
-		process := processPasswordHash()
+		process := processPassword()
 		checks := globals
 		if len(checks) == 0 && !(normalizeReloadPath(path) == normalizeReloadPath(s.globalDataPath) && hash != "") {
 			checks = locals
 		}
 		for _, sourceHash := range checks {
-			if !sameSettingsHash(process, sourceHash) {
+			if !VerifyPassword(process, sourceHash) {
 				refusedBy = "change refused"
 				return "", ErrSettingsLocked
 			}
@@ -349,22 +417,32 @@ func (s *ConfigStore) UnlockSettings(scope Scope, password string) error {
 func (s *ConfigStore) writeSettingsLockRaw(path string, mutate func(data []byte) (string, error)) error {
 	var committedErr error
 	err := s.withConfigWriteLock(path, func(target configWriteTarget) error {
-		data, expected, readErr := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+		raw, expected, readErr := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+		var doc settingsDocument
 		if readErr != nil {
 			if os.IsNotExist(readErr) {
-				data = []byte("{}")
+				doc = settingsDocument{jsonBytes: []byte("{}"), format: settingsDocumentFormatOf(target.selectedPath)}
 			} else {
 				return ErrSettingsLocked
 			}
+		} else {
+			var decodeErr error
+			doc, decodeErr = decodeSettingsDocument(target.selectedPath, raw, expected)
+			if decodeErr != nil {
+				return decodeErr
+			}
 		}
-		newValue, err := mutate(data)
+		newJSON, err := mutate(doc.jsonBytes)
 		if err != nil {
 			return err
 		}
 		if err := os.MkdirAll(filepath.Dir(target.path), 0o755); err != nil {
 			return fmt.Errorf("failed to create config directory %q: %w", path, err)
 		}
-		written := []byte(newValue)
+		written, err := encodeSettingsDocument([]byte(newJSON), doc.format)
+		if err != nil {
+			return err
+		}
 		if !expected.exists {
 			_, expected, err = readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
 			if err != nil && !os.IsNotExist(err) {

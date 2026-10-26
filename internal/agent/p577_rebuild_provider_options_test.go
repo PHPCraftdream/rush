@@ -102,7 +102,7 @@ func TestRebuildSessionAgentCall_ProviderOptionsMatchModelGeneration(t *testing.
 		Prompt:    "hello",
 	}
 
-	call, err := coord.RebuildSessionAgentCall(t.Context(), data)
+	call, err := coord.RebuildSessionAgentCall(t.Context(), "", data)
 	require.NoError(t, err)
 	require.NotNil(t, call.SmartModel)
 	require.Equal(t, int64(100_000), call.SmartModel.CatwalkCfg.ContextWindow)
@@ -111,7 +111,7 @@ func TestRebuildSessionAgentCall_ProviderOptionsMatchModelGeneration(t *testing.
 
 	registerSmartProviderGen(coord.cfg, 1)
 
-	call2, err := coord.RebuildSessionAgentCall(t.Context(), data)
+	call2, err := coord.RebuildSessionAgentCall(t.Context(), "", data)
 	require.NoError(t, err)
 	require.Equal(t, int64(200_000), call2.SmartModel.CatwalkCfg.ContextWindow)
 	require.Equal(t, "gen1", providerOptionsUser(t, call2),
@@ -175,7 +175,7 @@ func TestRebuildSessionAgentCall_ProviderOptionsNeverTearFromModelGeneration(t *
 	}
 
 	for i := 0; i < 2000; i++ {
-		call, err := coord.RebuildSessionAgentCall(t.Context(), data)
+		call, err := coord.RebuildSessionAgentCall(t.Context(), "", data)
 		require.NoError(t, err)
 		require.NotNil(t, call.SmartModel)
 

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -84,10 +85,20 @@ func TestReloadFromDisk_CancelAbortsCandidateSubstitution(t *testing.T) {
 	go func() {
 		done <- store.ReloadFromDisk(ctx)
 	}()
-	<-entered
+	// Belt-and-braces timeout: a regression must fail the test, not hang
+	// the whole package.
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for the candidate expander to be entered")
+	}
 	cancel()
 
-	err = <-done
+	select {
+	case err = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for ReloadFromDisk to return after cancel")
+	}
 	require.Error(t, err)
 	require.True(t, errors.Is(err, context.Canceled), "reload must retain cancellation cause: %v", err)
 	require.Same(t, before, store.Config(), "cancelled candidate must not be published")

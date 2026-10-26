@@ -202,7 +202,7 @@ test("timed out and user-stopped async commands get distinct badges", async ({ p
       { type: "text", Text: "Async job call-timeout (bash) timed out after 60s and was stopped. Partial output:\n\n(no output)" },
     ] }),
     makeMessage({ ID: "notice-stop", SessionID: "ws-badges", Role: "user", BackgroundJobNotice: true, Parts: [
-      { type: "text", Text: "Async job call-stop (run_command) was stopped (job_kill). Partial output before the stop:\n\nline one" },
+      { type: "text", Text: "Async job call-stop (run_command) was stopped (batch_stop). Partial output before the stop:\n\nline one" },
     ] }),
   ] } });
 

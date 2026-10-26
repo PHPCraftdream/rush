@@ -42,6 +42,27 @@ func TestBuild_AwaitTasksRule_TracksWorkerAvailable(t *testing.T) {
 
 	without, err := p.Build(context.Background(), "smart-provider", "smart-model", store, store.Config(), false)
 	require.NoError(t, err)
-	require.NotContains(t, without, "await_tasks",
+	require.NotContains(t, without, awaitTasksRuleLine,
 		"without a worker the whole orchestrator block (the rule with it) is absent")
+	require.NotContains(t, without, "Orchestrator mode",
+		"without a worker the whole orchestrator block (the rule with it) is absent")
+}
+
+// TestBuild_WorkerWaitRule_NamesNativePollTool pins the unconditional
+// batch-world coder.md.tpl wait rule: the orchestrator wait rule names the
+// native poll tool (batch_output) and the legacy job_output name never
+// renders.
+func TestBuild_WorkerWaitRule_NamesNativePollTool(t *testing.T) {
+	store := testConfigStore(t)
+	cfg := store.Config()
+	cfg.Models[config.SelectedModelTypeWorker] = registerProvider(cfg, "worker-provider", "worker-model", 200_000)
+
+	p := newTestCoderPrompt(t, store.WorkingDir())
+
+	got, err := p.Build(context.Background(), "smart-provider", "smart-model", store, store.Config(), true)
+	require.NoError(t, err)
+	require.Contains(t, got, "never repeated `inspect_agent`/`batch_output` polling",
+		"with the batch runtime on the orchestrator wait rule must name the native poll tool")
+	require.NotContains(t, got, "`job_output` polling",
+		"the legacy poll tool name must not render while the batch runtime is on")
 }

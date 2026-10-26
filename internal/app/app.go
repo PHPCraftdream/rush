@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
-	"os"
 	"sync"
 	"time"
 
@@ -63,7 +62,10 @@ func (a *coordinatorAdapterImpl) Run(ctx context.Context, callData session.Sessi
 	// This requires rebuilding the full Model from the serialized ModelCfg,
 	// which only the coordinator can do (it has access to provider configs
 	// and catwalk registry). Delegate to coordinator.RebuildSessionAgentCall.
-	call, err := coord.RebuildSessionAgentCall(ctx, callData)
+	// The pump stamps the leased row's durable id onto the context
+	// (R12-H2b §2.4) so the rebuild can release the row-keyed Continuation
+	// holder; callers outside the pump pass "".
+	call, err := coord.RebuildSessionAgentCall(ctx, session.RunQueueRowIDFrom(ctx), callData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to rebuild session agent call: %w", err)
 	}
@@ -98,19 +100,45 @@ type App struct {
 
 	AgentCoordinator agent.Coordinator
 
-	// asyncJobStore is the phase-4 durable job store (docs/plans/2026-09-28-
-	// async-phase4-durable-core.md sec.5 step 2), built once in
-	// InitCoderAgent and handed to agent.NewCoordinator. Its host identity
-	// is released in releaseResources, after agent work is cancelled. Read
-	// externally via AsyncJobStore(); nil under SkipAgentSetup or when
-	// dataDir=="".
-	asyncJobStore *session.AsyncJobStore
-
 	// wakeScheduleStore is the stage-4b durable wake-schedule store
-	// (internal/agent/wake_scheduler.go is the worker over it), built next
-	// to asyncJobStore below and handed to the coordinator in
-	// InitCoderAgent. Nil under SkipAgentSetup or when dataDir=="".
+	// (internal/agent/wake_scheduler.go is the worker over it), built below
+	// and handed to the coordinator in InitCoderAgent. Nil under
+	// SkipAgentSetup or when dataDir=="".
 	wakeScheduleStore *session.WakeScheduleStore
+
+	// batchRuntime is the R11F app-owned batch runtime owner. Nil unless
+	// the App installed the batch runtime at New (SkipAgentSetup and
+	// dataDir=="" Apps never install).
+	batchRuntime *BatchRuntime
+	batchInstall *agent.BatchInstall
+
+	// ephemeralDiskBindings is the capability registry for an ephemeral
+	// library-mode App (dataDir == ""): such an App never installs the
+	// batch runtime whose DiskBindings normally serve custom-DiskProvider
+	// runs (app_run_setup.go's BindCallDiskProvider). The registry is
+	// purely process-local in-memory state (internal/agent/
+	// disk_provider_capability.go: no hosts/ dir, no lock files, no
+	// database tables), so nothing touches the filesystem and there is no
+	// Close to call — it has none (GC-managed) and is closed implicitly
+	// with the App itself. Nil on persisted (dataDir != "") Apps, which bind
+	// through the batch runtime install's registry; read only via
+	// resolveDiskBindings.
+	ephemeralDiskBindings *agent.DiskProviderRegistry
+
+	// batchWorkIngress is the R11F (M3) exported one-authority seam over the
+	// installed batch runtime. Nil when no runtime was installed; set
+	// together with batchRuntime and bound to the coordinator in
+	// InitCoderAgent.
+	batchWorkIngress  agent.BatchWorkIngress
+	batchModelControl agent.BatchModelControl
+	batchLiveReader   *session.BatchLiveReader
+	batchTimeoutWake  *batchTimeoutWakeDispatcher
+	// batchHeldAnswerSink is the inject_agent held-question bridge over the
+	// installed batch Runner (agent.NewBatchHeldAnswerSink). Nil on an App
+	// without an installed runtime or a runnerless install; bound to the
+	// coordinator in agent setup and cleared on shutdown with the rest of
+	// the batch wiring.
+	batchHeldAnswerSink agent.BatchHeldAnswerSink
 
 	// RunQueuePump is the background pump for durable orphaned/detached calls (task #340).
 	// It scans session_run_queue periodically and executes pending work.
@@ -167,6 +195,15 @@ type App struct {
 	mcpOwner           *mcp.Owner
 	agentNotifications *pubsub.Broker[notify.Notification]
 	events             *pubsub.Broker[any]
+
+	// modelsSyncSubs are the coalescing (buffer 1) EventConfig fan-out
+	// subscribers for poll-driven model changes.
+	modelsSyncSubsMu sync.Mutex
+	modelsSyncSubs   []chan struct{}
+	modelsSyncClosed bool
+	modelsSyncStop   chan struct{}
+	modelsSyncSubsWG sync.WaitGroup
+	modelsSyncWG     sync.WaitGroup
 
 	// shutdownOnce makes the full App shutdown, including database release,
 	// safe to repeat when a caller has both an explicit shutdown and a cleanup
@@ -354,36 +391,51 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		events:             pubsub.NewBroker[any](),
 	}
 
-	// Phase-4 durable job store (docs/plans/2026-09-28-async-phase4-durable-
-	// core.md sec.5 step 7): constructed here, unconditionally (whenever
-	// this App has a data dir and isn't a config-only SkipAgentSetup
-	// command), NOT deferred to InitCoderAgent -- read-only status surfaces
-	// (`sessions jobs/why/list/gc`) must be able to read async_jobs/
-	// async_hosts/session_notices even when no provider is configured yet
-	// and InitCoderAgent therefore never runs (cfg.IsConfigured()==false
-	// below). Constructing the struct does no I/O and registers no host
-	// lock -- RegisterHost only happens lazily, on this store's first Claim or
-	// ClaimSessionDriver (see AsyncJobStore's own doc), so building it
-	// unconditionally here is free for every caller that never starts an
-	// async job or a driver. InitCoderAgent reuses this same instance (its own nil-guard already handles that).
+	// Stage 4b: the durable wake-schedule store over the writer pool,
+	// built whenever this App has a data dir and isn't a config-only
+	// SkipAgentSetup command. Construction does no I/O; the worker is
+	// started by InitCoderAgent's SetWakeScheduleStore (a config-only App
+	// never needs the timer).
 	if !o.skipAgentSetup && dataDir != "" {
-		app.asyncJobStore = session.NewAsyncJobStore(conn, dataDir, os.Getpid(), "app")
-		app.asyncJobStore.SetMessages(messages)
-		// Stage 4b: the durable wake-schedule store over the same writer
-		// pool. Construction does no I/O; the worker is started by
-		// InitCoderAgent's SetWakeScheduleStore (a config-only App never
-		// needs the timer).
 		app.wakeScheduleStore = session.NewWakeScheduleStoreWithWorkspace(conn, workspaceRoot, workingDir, home)
-		// A8/C9 (docs/reviews/2026-09-29-async-phase4-round1.md): reuse the
-		// SAME read-only pool session/message already share above, so
-		// LiveJobs/LiveWorkForRoots/JobsInTree/ReactionDebtExists/
-		// ListAsyncJobsForOwner (the `sessions jobs`/`sessions why`/web
-		// session-list readers) run concurrently with the single writer
-		// connection instead of stalling behind a write transaction.
-		// readConn is nil if the pool failed to open (logged above) --
-		// SetReadConn no-ops and readers keep using the writer, exactly like
-		// before this fix.
-		app.asyncJobStore.SetReadConn(readConn)
+	} else if !o.skipAgentSetup && dataDir == "" {
+		// Ephemeral library-mode App (sdk.ModeLibrary with no WorkingDir):
+		// no persisted batch install runs here, hence no
+		// batchInstall.DiskBindings for app_run_setup.go's per-call
+		// BindCallDiskProvider. A custom-DiskProvider run still needs an
+		// App-owned binding registry, so build one here: purely in-memory
+		// (no hosts/ dir, no lock files, no database), process-local,
+		// dying with the App. Persisted Apps are untouched: their runs keep
+		// binding through the batch runtime install's registry via
+		// resolveDiskBindings.
+		app.ephemeralDiskBindings = newEphemeralDiskBindings()
+	}
+
+	// R11F (M2): install of the batch runtime. The install is
+	// unconditional for every persisted, agent-setup App. The M1 factory
+	// fails closed, so a missing App resource aborts New instead of
+	// silently continuing with a half-installed runtime (mirror of the
+	// InitCoderAgent failure path: release the reader reference New owns,
+	// close the MCP owner, return no App).
+	if !o.skipAgentSetup && dataDir != "" {
+		if err := app.installBatchRuntime(ctx); err != nil {
+			// PE: the install may have failed AFTER the host identity was
+			// ensured (half-installed runtime). Release what New owns --
+			// runtime state and host identity -- before giving up; the DB
+			// references below keep their task #778 ownership split.
+			app.peReleaseBatchRuntimeOnNewError(context.Background())
+			if app.mcpOwner != nil {
+				if closeErr := app.mcpOwner.Close(context.Background()); closeErr != nil {
+					slog.Error("Failed to close MCP owner after batch runtime install failure", "error", closeErr)
+				}
+			}
+			if readConn != nil {
+				if relErr := db.ReleaseConn(readConn); relErr != nil {
+					slog.Error("app: failed to release read-only DB reference after batch install failure", "error", relErr)
+				}
+			}
+			return nil, fmt.Errorf("failed to install batch runtime: %w", err)
+		}
 	}
 
 	// NOTE: the restricted-run allowlist is deliberately NOT armed here.
@@ -400,6 +452,9 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 			var err error
 			mcpOwner, err = mcp.Acquire()
 			if err != nil {
+				// PE: the install already ran above; tear its
+				// runtime and host identity down before returning nil.
+				app.peReleaseBatchRuntimeOnNewError(context.Background())
 				if readConn != nil {
 					if relErr := db.ReleaseConn(readConn); relErr != nil {
 						slog.Error("Failed to release read-only DB reference after MCP owner acquisition failure", "error", relErr)
@@ -469,6 +524,13 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		return app, nil
 	}
 	if err := app.InitCoderAgent(ctx); err != nil {
+		// PE: installBatchRuntime already ran above and holds the batch
+		// host identity (hosts/<uuid>.lock) plus the runtime goroutines.
+		// No *App is returned, so Shutdown will never run: tear the
+		// runtime and host identity down here (bounded, idempotent, and
+		// WITHOUT touching the DB references -- readConn is released just
+		// below and conn is the caller's, per the ownership split above).
+		app.peReleaseBatchRuntimeOnNewError(context.Background())
 		if app.mcpOwner != nil {
 			if closeErr := app.mcpOwner.Close(context.Background()); closeErr != nil {
 				slog.Error("Failed to close MCP owner after app initialization failure", "error", closeErr)
@@ -523,6 +585,21 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	// "coordinator not ready" as an ordinary retryable failure and
 	// eventually dead-letter (delete) durably-accepted work it was never
 	// going to get a chance to run anyway.
+
+	// D6 (docs/plans/2026-10-15-role-models-hot-reload.md): start the OAuth
+	// disk-sync poller and its journal workers under the App-owned lifecycle.
+	// Starting here, right after InitCoderAgent, covers rush (web), rush run,
+	// and SDK application mode; SkipAgentSetup Apps return above and stay
+	// without it. releaseResources stops and joins the poller before the
+	// parallel cleanupFuncs batch.
+	app.config.StartOAuthDiskSync()
+
+	// Package B (docs/plans/2026-10-15-role-models-hot-reload.md §3.4): start
+	// the config disk-sync poller under the same App-owned lifecycle. Same
+	// placement rules as the OAuth poller above; releaseResources stops and
+	// joins it before the parallel cleanupFuncs batch.
+	app.startConfigDiskSync()
+
 	if dataDir != "" {
 		app.RunQueuePump = session.NewRunQueuePump(session.RunQueuePumpConfig{
 			Sessions:    app.Sessions,

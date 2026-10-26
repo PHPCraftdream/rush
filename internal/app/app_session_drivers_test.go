@@ -27,11 +27,11 @@ func TestLiveSessionDrivers_OwnSiblingAndDeadHosts(t *testing.T) {
 	}
 	own, sibling, dead, none := mk("own"), mk("sibling"), mk("dead"), mk("none")
 
-	require.NoError(t, h.app.asyncJobStore.ClaimSessionDriver(ctx, own))
-	siblingStore := session.NewAsyncJobStore(h.app.DB(), h.dataDir, 5151, "sibling")
+	require.NoError(t, h.app.BatchHostStore().ClaimSessionDriver(ctx, own))
+	siblingStore := session.NewHostStore(h.app.DB(), h.dataDir, 5151, "sibling")
 	t.Cleanup(func() { _ = siblingStore.Close(context.Background()) })
 	require.NoError(t, siblingStore.ClaimSessionDriver(ctx, sibling))
-	deadStore := session.NewAsyncJobStore(h.app.DB(), h.dataDir, 4242, "dead")
+	deadStore := session.NewHostStore(h.app.DB(), h.dataDir, 4242, "dead")
 	require.NoError(t, deadStore.ClaimSessionDriver(ctx, dead))
 	require.NoError(t, deadStore.SimulateCrashForTest())
 

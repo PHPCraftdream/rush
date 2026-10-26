@@ -6,16 +6,11 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
-	"charm.land/fantasy/providers/openrouter"
-	"github.com/PHPCraftdream/rush/internal/agent/prompt"
-	"github.com/PHPCraftdream/rush/internal/agent/tools"
+
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
@@ -135,6 +130,22 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 		}
 	}
 
+	// D2 (docs/plans/2026-10-15-role-models-hot-reload.md §2.2): a
+	// role-derived value is not an explicit choice. When the call carries a
+	// non-smart ModelRole and the session has no explicit smart override,
+	// the smart slot resolves through the SHARED roleSlotOverride resolver
+	// (session pin tier first, then the role's config slot) — re-read on
+	// EVERY turn from this pinned snapshot, so a hot-reloaded role model
+	// reaches the next request. roleReasoningEffortFrom carries the explicit
+	// --effort of a non-smart role run onto the resolved slot (plan R6).
+	roleSource := ""
+	if smartOverride == nil {
+		if ovr, src, ok := roleSlotOverride(cfg, sess, callModelRole(ctx), roleReasoningEffortFrom(ctx)); ok {
+			smartOverride = ovr
+			roleSource = src
+		}
+	}
+
 	// Where each slot's model came from is recorded for heartbeat
 	// attribution (design pt. 3); the labels ride the returned snapshot.
 
@@ -220,6 +231,9 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 	}
 	resolved.smartSource = hbOverrideSource(smartOverride != nil)
 	resolved.fastSource = hbOverrideSource(fastOverride != nil)
+	if roleSource != "" {
+		resolved.smartSource = roleSource
+	}
 	resolved.persistSmartModel, resolved.persistFastModel = sessionModelPersistenceFrom(ctx)
 
 	// Resolve prompt prefix from provider config using the same atomic snapshot.
@@ -280,6 +294,9 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 	// was ExecuteRun's per-run UpdateModels, whose SetTools overwrote the
 	// ONE shared toolset every in-flight turn re-read at every step.
 	if wantTools {
+		if opts := callOptionsFrom(ctx); opts != nil {
+			EnsureCallBuildScope(opts)
+		}
 		tools, err := c.pinCallTools(ctx, cfg)
 		if err != nil {
 			return nil, err
@@ -354,7 +371,7 @@ func (c *coordinator) resolveSubAgentModelOverride(ctx context.Context, sessionI
 //
 // The returned snapshot is what makes a TURN immune to the shared state moving
 // underneath it — no turn reads shared state after this point.
-func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *ModelOverride) (*resolvedOverrides, error) {
+func (c *coordinator) applyModelOverrides(ctx context.Context, sessionID string, smart, fast *ModelOverride) (*resolvedOverrides, error) {
 	// Atomically capture config and generation up front (task #341, P1-1) so
 	// largeCfg/smallCfg below, the buildModelsFromCfg call further down, and
 	// the provider/prompt reads at the end of this function all agree on one
@@ -364,6 +381,15 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *Mode
 	// landing between the two could hand back a smart/fast model selection
 	// from one generation built against provider config from another.
 	cfg, _ := c.cfg.Snapshot()
+	// The role-slot cascade needs the session's worker/reviewer/fast pins;
+	// a failed load resolves no pins (the caller decides whether that is
+	// fatal — the explicit overrides below still apply).
+	sess := session.Session{}
+	if sessionID != "" {
+		if loaded, getErr := c.sessions.Get(ctx, sessionID); getErr == nil {
+			sess = loaded
+		}
+	}
 	smartCfg := cfg.Models[config.SelectedModelTypeSmart]
 	fastCfg := cfg.Models[config.SelectedModelTypeFast]
 	// Where each slot came from is recorded for heartbeat attribution;
@@ -378,6 +404,28 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *Mode
 		smartCfg.Model = smart.Model
 		if smart.ReasoningEffort != "" {
 			smartCfg.ReasoningEffort = smart.ReasoningEffort
+		}
+	}
+
+	// D2 (plan §2.2) via the SHARED roleSlotOverride resolver: an omitted
+	// smart override on a non-smart role run takes the role's session pin,
+	// else the role's config slot, from the same pinned snapshot — the pin
+	// tier applies here too, so a fast override riding along never buries
+	// a worker pin (plan P1-2). roleReasoningEffortFrom carries the explicit
+	// --effort of a non-smart role run onto the resolved slot (plan R6).
+	roleSource := ""
+	if smart == nil {
+		if ovr, src, ok := roleSlotOverride(cfg, sess, callModelRole(ctx), roleReasoningEffortFrom(ctx)); ok {
+			if smartCfg.Provider != ovr.Provider || smartCfg.Model != ovr.Model {
+				smartCfg.Think = false
+				smartCfg.ReasoningEffort = ""
+			}
+			smartCfg.Provider = ovr.Provider
+			smartCfg.Model = ovr.Model
+			if ovr.ReasoningEffort != "" {
+				smartCfg.ReasoningEffort = ovr.ReasoningEffort
+			}
+			roleSource = src
 		}
 	}
 	if fast != nil {
@@ -408,6 +456,9 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, smart, fast *Mode
 	resolved := &resolvedOverrides{smart: smartModel, fast: fastModel}
 	resolved.smartSource = hbCallSource(smart != nil)
 	resolved.fastSource = hbCallSource(fast != nil)
+	if roleSource != "" {
+		resolved.smartSource = roleSource
+	}
 	resolved.persistSmartModel, resolved.persistFastModel = sessionModelPersistenceFrom(ctx)
 
 	if smartProviderCfg, ok := cfg.Providers.Get(smartModel.ModelCfg.Provider); ok {
@@ -517,464 +568,4 @@ func (c *coordinator) resolveSessionSystemPrompt(ctx context.Context, sessionID 
 		slog.Warn("coordinator: failed to save system prompt to session", "sessionID", sessionID, "err", saveErr)
 	}
 	return built
-}
-
-// ErrScopedCallToolsUnavailable is returned by resolveSessionModelsInternal/
-// applyModelOverrides/resolveCredentialsModels/RunSessionAgentCall when
-// pinCallTools fails to build a distinct toolset for a call whose
-// CallOptions carries FolderScope, DiskProvider, DisableSubAgents, or a
-// tool-shaping ModelRole (R5-1, P0; widened R6-3, P1). Every one of those
-// options exists specifically to change the shared toolset's composition —
-// FolderScope/DiskProvider strip the legacy view/write/edit/glob/grep/ls
-// tools, MCP tools, and (usually) sub-agent tools down to a
-// restricted/redirected set; DisableSubAgents strips the delegation tools
-// (agent, agentic_fetch); a non-empty ModelRole decides worker-tool
-// layering/orchestrator-tool stripping via workerSubAgentActiveForCall. A
-// build failure for any of them means the CALLER-REQUESTED composition
-// could not be built, and the shared toolset is never guaranteed to match
-// it (it is built from the coordinator-wide activeModelRole/UpdateModels
-// state, not this call's policy). Since an SDK run auto-approves every tool
-// call, nothing downstream would catch the mismatched toolset before the
-// model could use it — so the call must fail here instead of silently
-// falling back, mirroring RunSessionAgentCall's existing "refuse the row"
-// pattern (coordinator_interrupt.go, T12) for the durable-restart path.
-var ErrScopedCallToolsUnavailable = errors.New(
-	"agent: failed to build this call's tool-shaping toolset (folder-scope/disk-provider/disable-sub-agents/model-role); refusing to fall back to the shared toolset")
-
-// scopedCallToolsRequired reports whether ctx carries per-call options that
-// make a failed pinCallTools build unsafe to silently fall back from (R5-1;
-// widened R6-3): FolderScope and DiskProvider mean the caller specifically
-// asked for a restricted/redirected toolset; DisableSubAgents and a
-// non-empty ModelRole ALSO decide this call's tool composition (see
-// applyCallDisableSubAgents and workerSubAgentActiveForCall/
-// buildToolsAgentConfigForCall) — a build failure for either must fail the
-// call closed instead of widening/narrowing it to whatever the shared
-// toolset happens to be. A legacy call (no CallOptions, or one with none of
-// these fields set) keeps today's fallback behavior. Mirrors the trigger
-// predicate RunSessionAgentCall uses for the durable-replay rebind
-// (coordinator_interrupt.go) — kept as a single shared definition via
-// scopedCallOptionsRequireDistinctTools so the two can never drift apart
-// again.
-func scopedCallToolsRequired(ctx context.Context) bool {
-	return scopedCallOptionsRequireDistinctTools(callOptionsFrom(ctx))
-}
-
-// scopedCallOptionsRequireDistinctTools is scopedCallToolsRequired's
-// struct-based form, usable before a CallOptions has been attached to a
-// context (RunSessionAgentCall inspects the durable call's CallOptions
-// directly, ahead of calling WithCallOptions).
-func scopedCallOptionsRequireDistinctTools(opts *CallOptions) bool {
-	return opts != nil && (opts.FolderScope != nil || tools.HasDiskProvider(opts.DiskProvider) ||
-		opts.DisableSubAgents || opts.ModelRole != "")
-}
-
-// pinCallToolsReadyGateSeam is a test-only hook: fires immediately after the
-// buildTools call below, before the readyWg.Wait() drain, letting a test
-// register a task on c.readyWg — simulating a concurrent agent build (or
-// this call's own async sub-agent build) failing — at exactly the window
-// this call's OWN Wait() is about to observe, deterministically and on this
-// same goroutine, without a real race. Mirrors runTurnToolsSnapshotSeam's
-// pattern (agent_turn.go). nil (a no-op) in every production path.
-var pinCallToolsReadyGateSeam func()
-
-// pinCallTools builds the per-call coder toolset (R3-1) from the caller's
-// already-pinned cfg snapshot and THIS call's context, then drains any
-// agent-build tasks registered on the ready gate. buildTools reads the
-// per-call CallOptions (DisableSubAgents, ModelRole) from ctx, so the
-// returned slice is scoped to exactly one call; the caller pins it onto the
-// SessionAgentCall via resolvedOverrides.pin instead of publishing it to the
-// shared agent.
-//
-// Return contract (R6-3, P1): a (nil, nil) result means "no per-call
-// toolset was required — fall back to the shared toolset", the ONLY
-// legitimate reason being ctx carries no CallOptions that
-// scopedCallOptionsRequireDistinctTools would flag. Every other failure —
-// the coder agent unconfigured, buildTools itself erroring, or a
-// registered agent build failing on the ready gate — returns a non-nil
-// error INSTEAD of a bare nil slice whenever ctx's CallOptions requires a
-// distinct toolset (FolderScope, DiskProvider, DisableSubAgents, or a
-// tool-shaping ModelRole): a nil slice was ambiguous between "no override
-// requested" and "override failed", and R5-1's original version of this
-// function pushed that disambiguation onto every caller individually
-// (three call sites had to remember to call scopedCallToolsRequired(ctx)
-// themselves) — R6-3 found that RunSessionAgentCall's durable-replay call
-// site had NOT been widened to do so for DisableSubAgents/ModelRole. Moving
-// the check in here means every caller gets the same answer from one place:
-// err != nil always means "refuse the call", nil error always means "safe
-// to use whatever slice (possibly nil) came back".
-//
-// For a genuinely legacy call (ctx carries no CallOptions, or one with none
-// of those fields set), the same build/ready-gate failures still return
-// (nil, nil) — log-only — preserving the pre-R6-3 "fall back to the shared
-// toolset" behavior for callers that never asked for a distinct one.
-func (c *coordinator) pinCallTools(ctx context.Context, cfg *config.Config) ([]fantasy.AgentTool, error) {
-	required := scopedCallToolsRequired(ctx)
-	fail := func(err error) ([]fantasy.AgentTool, error) {
-		slog.Warn("Coordinator: failed to build per-call tools", "err", err, "distinct_toolset_required", required)
-		if required {
-			return nil, fmt.Errorf("%w: %v", ErrScopedCallToolsUnavailable, err)
-		}
-		return nil, nil
-	}
-
-	agentCfg, ok := cfg.Agents[config.AgentCoder]
-	if !ok {
-		return fail(errCoderAgentNotConfigured)
-	}
-	tools, err := c.buildTools(ctx, cfg, agentCfg, false)
-	if err != nil {
-		return fail(err)
-	}
-	if pinCallToolsReadyGateSeam != nil {
-		pinCallToolsReadyGateSeam()
-	}
-	if required && len(tools) == 0 {
-		return fail(errors.New("per-call toolset is empty"))
-	}
-	// The toolset embeds a freshly built sub-agent (buildTools -> agentTool
-	// -> buildAgent), whose prompt/tool builds run asynchronously on the
-	// ready gate. Drain the gate before returning so the turn cannot
-	// dispatch a still-under-construction sub-agent — the same ordering the
-	// removed per-run UpdateModels publisher used to get from the run entry
-	// points' readyWg.Wait.
-	if waitErr := c.readyWg.Wait(); waitErr != nil {
-		return fail(waitErr)
-	}
-	return tools, nil
-}
-
-// withoutCallOptions returns ctx with any per-call CallOptions removed, so
-// downstream builds cannot consume a caller's per-call policy (R3-1).
-// UpdateModels is a GLOBAL refresh (config reloads, credential refreshes)
-// and must publish only global state even when the caller's context — e.g.
-// runWithUnauthorizedRetry's 401-rebuild ctx — carries CallOptions.
-func withoutCallOptions(ctx context.Context) context.Context {
-	// The mirrored prompt-side scope flag must go with the CallOptions:
-	// a stale true here would render the global refresh's sub-builds
-	// (an embedded agent tool's prompt, for instance) from a caller's
-	// per-call scope, exactly what this function exists to prevent.
-	return prompt.WithFolderScoped(
-		context.WithValue(ctx, callOptionsContextKey{}, (*CallOptions)(nil)),
-		false)
-}
-
-// workerSubAgentActiveForCall is the per-call form of workerSubAgentActive
-// (R1-1): the active role comes from the context's CallOptions when present,
-// and only falls back to the coordinator-wide activeModelRole field for
-// legacy callers whose context carries none. The fallback read keeps the
-// existing mutex discipline; the per-call read is race-free by construction
-// (an immutable value bound to the context before the build started).
-func (c *coordinator) workerSubAgentActiveForCall(ctx context.Context, cfg *config.Config) bool {
-	if creds := callCredentialsFrom(ctx); creds != nil {
-		if opts := callOptionsFrom(ctx); opts != nil && opts.ModelRole != "" {
-			if opts.ModelRole != config.SelectedModelTypeSmart {
-				return false
-			}
-		}
-		// An explicit tenant worker always enables worker/orchestrator
-		// policy. When it is omitted, retain the established smart-run
-		// orchestration policy driven by the configured worker slot; the
-		// actual credentialed sub-agent model still falls back to tenant
-		// smart and never uses that operator worker.
-		if _, covered := creds.Models[RoleWorker]; covered {
-			return true
-		}
-		workerModelCfg, ok := cfg.Models[config.SelectedModelTypeWorker]
-		return ok && workerModelCfg.Model != ""
-	}
-	if opts := callOptionsFrom(ctx); opts != nil && opts.ModelRole != "" {
-		if opts.ModelRole != config.SelectedModelTypeSmart {
-			return false
-		}
-		workerModelCfg, ok := cfg.Models[config.SelectedModelTypeWorker]
-		return ok && workerModelCfg.Model != ""
-	}
-	return c.workerSubAgentActive(cfg)
-}
-
-// workerSubAgentActive reports whether a sub-agent being built right now is
-// acting as a "worker": the parent run is driven by the Smart slot
-// — or the active role is unknown, which for the interactive TUI/web path is
-// equivalent to smart — AND a Worker model is actually configured. This is
-// the single shared predicate for "the sub-agent should behave like a
-// worker", used both to pick the sub-agent's model (buildAgentModels, below)
-// and to pick its tool set (buildTools): a sub-agent that gets the Worker
-// model but stays read-only, or vice versa, would defeat the point of the
-// feature. isSubAgent must be checked by the caller first — this method
-// assumes it's already true and only re-checks the role/config gate.
-//
-// cfg MUST be the same *config.Config the caller already pinned via
-// Snapshot() for the rest of its build/resolve operation (task #341, P1-1).
-// This method used to take no cfg argument and read c.cfg.Config() live
-// instead — a torn read: buildAgentModels captured one generation via
-// Snapshot() for the smart/fast/worker model lookups, then this method
-// re-read Models[Worker] from whatever generation happened to be published
-// at the moment it ran. A reload landing in between could hand back a
-// worker slot from a DIFFERENT generation than the one buildAgentModels
-// otherwise built from, up to and including a zero-value model or a
-// provider lookup that no longer resolves. Threading the same *config.Config
-// through closes that gap: every reader of "is worker active" within one
-// resolve/build operation now agrees on exactly one generation.
-//
-// Mirrors the semantics documented on buildAgentModels below: falls through
-// to false (today's behavior) when Worker isn't configured, or when the
-// operator explicitly chose a non-smart role (fast/worker/reviewer) for the
-// whole run — we don't second-guess that choice by force-upgrading/
-// downgrading sub-agents. Fork patch (reviewer/worker roles).
-func (c *coordinator) workerSubAgentActive(cfg *config.Config) bool {
-	c.activeModelRoleMu.Lock()
-	activeRole := c.activeModelRole
-	c.activeModelRoleMu.Unlock()
-
-	if activeRole != "" && activeRole != config.SelectedModelTypeSmart {
-		return false
-	}
-
-	workerModelCfg, ok := cfg.Models[config.SelectedModelTypeWorker]
-	return ok && workerModelCfg.Model != ""
-}
-
-// TODO: when we support multiple agents we need to change this so that we pass in the agent specific model config
-func (c *coordinator) buildAgentModels(ctx context.Context, isSubAgent bool) (Model, Model, error) {
-	// Single atomic snapshot for every config read below (task #341/P1-3;
-	// gap found by independent review — this function used to read
-	// smart/fast/worker each via a separate c.cfg.Config() call, then take
-	// a fourth, separate Snapshot() just for buildModelsFromCfg's provider
-	// lookups. A reload landing between any of those reads could produce a
-	// cross-generation mix, exactly what Snapshot() exists to prevent.
-	cfg, _ := c.cfg.Snapshot()
-	return c.buildAgentModelsFromCfg(ctx, cfg, isSubAgent)
-}
-
-// buildAgentModelsFromCfg is buildAgentModels' body, taking the config
-// snapshot as a parameter instead of capturing its own (task #576/P1-3).
-// buildAgent (coordinator_tools.go) pins ONE *config.Config for its entire
-// build -- models, prompt, and tools -- and passes it here so the models it
-// builds always agree with the prompt/toolset built from the same call. A
-// caller with nothing to pin (buildAgentModels above) takes its own fresh
-// Snapshot() and delegates here, so behavior for those callers is unchanged.
-func (c *coordinator) buildAgentModelsFromCfg(ctx context.Context, cfg *config.Config, isSubAgent bool) (Model, Model, error) {
-	if creds := callCredentialsFrom(ctx); creds != nil {
-		choice := creds.Models[RoleSmart]
-		if isSubAgent {
-			// A worker choice is the only tenant worker slot. When it is
-			// omitted, dispatch deliberately falls back to tenant smart.
-			if workerChoice, ok := creds.Models[RoleWorker]; ok {
-				choice = workerChoice
-			}
-		}
-		smart, _, err := c.buildCredentialModel(ctx, cfg, creds, choice)
-		if err != nil {
-			return Model{}, Model{}, err
-		}
-		fast := smart
-		if fastChoice, ok := creds.Models[RoleFast]; ok {
-			fast, _, err = c.buildCredentialModel(ctx, cfg, creds, fastChoice)
-			if err != nil {
-				return Model{}, Model{}, err
-			}
-		}
-		return smart, fast, nil
-	}
-	smartModelCfg, ok := cfg.Models[config.SelectedModelTypeSmart]
-	if !ok {
-		return Model{}, Model{}, errSmartModelNotSelected
-	}
-	fastModelCfg, ok := cfg.Models[config.SelectedModelTypeFast]
-	if !ok {
-		return Model{}, Model{}, errFastModelNotSelected
-	}
-
-	// Fork patch (reviewer/worker roles): when spawning a sub-agent acting as
-	// a worker (see workerSubAgentActive), prefer the cheaper Worker slot for
-	// the sub-agent's smart-model slot. This never touches the fast-model
-	// slot, and falls through to today's behavior (Smart for everything)
-	// otherwise.
-	if isSubAgent && c.workerSubAgentActiveForCall(ctx, cfg) {
-		smartModelCfg = cfg.Models[config.SelectedModelTypeWorker]
-	}
-
-	return c.buildModelsFromCfg(ctx, cfg, smartModelCfg, fastModelCfg, isSubAgent)
-}
-
-// buildModelsFromCfg builds Model objects from explicit SelectedModel configs.
-// The cfg parameter must be from a single atomic Snapshot() call to ensure
-// consistency across all provider reads (task #341, P1-3).
-func (c *coordinator) buildModelsFromCfg(ctx context.Context, cfg *config.Config, smartModelCfg, fastModelCfg config.SelectedModel, isSubAgent bool) (Model, Model, error) {
-	smartProviderCfg, ok := cfg.Providers.Get(smartModelCfg.Provider)
-	if !ok {
-		return Model{}, Model{}, errSmartModelProviderNotConfigured
-	}
-
-	smartProvider, err := c.buildProvider(cfg, smartProviderCfg, smartModelCfg, isSubAgent)
-	if err != nil {
-		return Model{}, Model{}, err
-	}
-
-	fastProviderCfg, ok := cfg.Providers.Get(fastModelCfg.Provider)
-	if !ok {
-		return Model{}, Model{}, errFastModelProviderNotConfigured
-	}
-
-	fastProvider, err := c.buildProvider(cfg, fastProviderCfg, fastModelCfg, true)
-	if err != nil {
-		return Model{}, Model{}, err
-	}
-
-	var smartCatwalkModel *catwalk.Model
-	var fastCatwalkModel *catwalk.Model
-
-	for _, m := range smartProviderCfg.Models {
-		if m.ID == smartModelCfg.Model {
-			smartCatwalkModel = &m
-		}
-	}
-	for _, m := range fastProviderCfg.Models {
-		if m.ID == fastModelCfg.Model {
-			fastCatwalkModel = &m
-		}
-	}
-
-	// Unverified model: the operator's config names a model id this
-	// provider's cached catalog doesn't know about (see findModels' doc
-	// comment in internal/app/provider.go — `rush models use`/`rush run
-	// --model` accept this explicitly, with a warning, for a just-announced
-	// model the catalog hasn't synced yet). Synthesize a minimal catwalk.Model
-	// (zero-value cost/context-window/reasoning fields) rather than refusing
-	// to build the agent at all — every CatwalkCfg reader downstream already
-	// treats a zero ContextWindow/CostPer1M*/CanReason as "unknown, don't
-	// assume" (see agent_turn.go's `if cw > 0` gate before any context-window
-	// budget logic runs), so this degrades to "no proactive trimming, cost
-	// shows as free/unknown, no reasoning params sent" instead of crashing or
-	// refusing to start.
-	if smartCatwalkModel == nil {
-		slog.Warn("smart model not found in provider's known catalog; using unverified minimal metadata (cost/context-window unknown)",
-			"provider", smartModelCfg.Provider, "model", smartModelCfg.Model)
-		smartCatwalkModel = &catwalk.Model{ID: smartModelCfg.Model, Name: smartModelCfg.Model}
-	}
-
-	if fastCatwalkModel == nil {
-		slog.Warn("fast model not found in provider's known catalog; using unverified minimal metadata (cost/context-window unknown)",
-			"provider", fastModelCfg.Provider, "model", fastModelCfg.Model)
-		fastCatwalkModel = &catwalk.Model{ID: fastModelCfg.Model, Name: fastModelCfg.Model}
-	}
-
-	smartModelID := smartModelCfg.Model
-	fastModelID := fastModelCfg.Model
-
-	if smartModelCfg.Provider == openrouter.Name && isExactoSupported(smartModelID) {
-		smartModelID += ":exacto"
-	}
-
-	if fastModelCfg.Provider == openrouter.Name && isExactoSupported(fastModelID) {
-		fastModelID += ":exacto"
-	}
-
-	smartModel, err := smartProvider.LanguageModel(ctx, smartModelID)
-	if err != nil {
-		return Model{}, Model{}, err
-	}
-	fastModel, err := fastProvider.LanguageModel(ctx, fastModelID)
-	if err != nil {
-		return Model{}, Model{}, err
-	}
-
-	smart := Model{
-		Model:      smartModel,
-		CatwalkCfg: *smartCatwalkModel,
-		ModelCfg:   smartModelCfg,
-		FlatRate:   smartProviderCfg.FlatRate,
-	}
-	fast := Model{
-		Model:      fastModel,
-		CatwalkCfg: *fastCatwalkModel,
-		ModelCfg:   fastModelCfg,
-		FlatRate:   fastProviderCfg.FlatRate,
-	}
-	return smart, fast, nil
-}
-
-// Model returns the globally configured smart model from config.
-// This is used for display/status queries and does NOT reflect any per-session
-// model overrides. After the per-session model isolation fix, callers that need
-// the actual model for a specific session should use resolveSessionModels instead.
-func (c *coordinator) Model() Model {
-	// Build the default smart model from config without caching (this is
-	// called infrequently, mostly for status display).
-	cfg, _ := c.cfg.Snapshot()
-	smartCfg := cfg.Models[config.SelectedModelTypeSmart]
-	fastCfg := cfg.Models[config.SelectedModelTypeFast]
-
-	// Create a temporary context for model building.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	smartModel, _, err := c.buildModelsFromCfg(ctx, cfg, smartCfg, fastCfg, false)
-	if err != nil {
-		// Return a zero-value model rather than panicking on status queries.
-		slog.Error("coordinator.Model: failed to build default smart model", "err", err)
-		return Model{}
-	}
-	return smartModel
-}
-
-// UpdateModels refreshes the coordinator-wide default agent (models, prompt
-// prefix, toolset) from the LATEST config: config reloads (SetupAgents) and
-// credential refreshes use it to republish clients and tools — including
-// live MCP tool-list changes — for LEGACY callers whose turns still read the
-// shared state. It is NOT a per-run hook (R3-1): any CallOptions carried by
-// ctx are stripped first, so a single run's DisableSubAgents/ModelRole can
-// never decide what every other in-flight turn sees. Per-call toolsets are
-// built and pinned by resolveSessionModels/applyModelOverrides instead.
-func (c *coordinator) UpdateModels(ctx context.Context) error {
-	ctx = withoutCallOptions(ctx)
-	c.clearModelCache()
-
-	// build the models again so we make sure we get the latest config
-	cfg, _ := c.cfg.Snapshot()
-	smart, fast, err := c.buildAgentModelsFromCfg(ctx, cfg, false)
-	if err != nil {
-		return err
-	}
-	c.currentAgent.SetModels(smart, fast)
-
-	// Update prompt prefix for the new smart model provider
-	if smartProviderCfg, ok := cfg.Providers.Get(smart.ModelCfg.Provider); ok {
-		c.currentAgent.SetSystemPromptPrefix(smartProviderCfg.SystemPromptPrefix)
-	}
-
-	agentCfg, ok := cfg.Agents[config.AgentCoder]
-	if !ok {
-		return errCoderAgentNotConfigured
-	}
-
-	tools, err := c.buildTools(ctx, cfg, agentCfg, false)
-	if err != nil {
-		return err
-	}
-	c.currentAgent.SetTools(tools)
-	return nil
-}
-
-// clearModelCache empties the model cache, forcing the next resolveSessionModels
-// call to rebuild models from the current config. This is called after credential
-// updates (OAuth token refresh, API key re-resolution) to ensure cached models
-// with stale clients are not reused (task #341, P1-3).
-func (c *coordinator) clearModelCache() {
-	c.modelCacheMu.Lock()
-	defer c.modelCacheMu.Unlock()
-
-	c.modelCacheEpoch++
-	if c.modelCache == nil {
-		return
-	}
-	if cache, ok := c.modelCache.(*boundedModelPairCache); ok {
-		cache.clear()
-		return
-	}
-	if cache, ok := c.modelCache.(interface {
-		Reset(map[string]cachedModelPair)
-	}); ok {
-		cache.Reset(make(map[string]cachedModelPair))
-	}
 }

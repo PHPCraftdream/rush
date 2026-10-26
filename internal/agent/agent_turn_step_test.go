@@ -35,7 +35,7 @@ func TestOnStepFinishRecordsLoopDetectionOnTheTrippingStep(t *testing.T) {
 	// against those exact values, matching TestLoopDetection_OnStepFinishOrdering's
 	// own sequence shape.
 	mkRepeat := func() fantasyStepFinishFixture {
-		return fantasyStepFinishFixture{name: "job_output", input: `{"id":"j1"}`, output: "running"}
+		return fantasyStepFinishFixture{name: "batch_output", input: `{"id":"j1"}`, output: "running"}
 	}
 
 	var sequence []fantasyStepFinishFixture
@@ -79,7 +79,7 @@ func TestOnStepFinishRecordsLoopDetectionOnTheTrippingStep(t *testing.T) {
 
 	fin, ok := lastFinishPart(assistant)
 	require.True(t, ok)
-	require.Contains(t, fin.Message, "job_output", "the loop-detected finish text must name the repeated tool")
+	require.Contains(t, fin.Message, "batch_output", "the loop-detected finish text must name the repeated tool")
 }
 
 type fantasyStepFinishFixture struct {

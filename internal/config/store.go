@@ -147,6 +147,19 @@ type ConfigStore struct {
 	oauthWorkerWG        sync.WaitGroup
 	oauthDiskSyncStarted bool // Guarded by oauthWorkerMu.
 
+	// Config disk sync worker (role-model hot reload poller). Kept separate
+	// from the OAuth worker block so its lifecycle stays independent.
+	configSyncMu      sync.Mutex
+	configSyncCtx     context.Context
+	configSyncCancel  context.CancelFunc
+	configSyncWG      sync.WaitGroup
+	configSyncStarted bool // Guarded by configSyncMu.
+	// configSyncStopped is the terminal stop state: set unconditionally by
+	// StopConfigDiskSync (even with nothing started), so a later Start can
+	// never resurrect a stopped store. Guarded by configSyncMu.
+	configSyncStopped bool
+	configSyncOpts    ConfigDiskSyncOptions
+
 	// diskWriteMu serialises the on-disk read-modify-write cycle
 	// (os.ReadFile → sjson.Set/Delete → atomicWriteFile) in
 	// SetConfigFields, RemoveConfigField, and MCP lifecycle transactions.

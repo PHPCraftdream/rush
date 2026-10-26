@@ -101,7 +101,9 @@ func TestChildRunEnd_ReleaseChargesNothing(t *testing.T) {
 	_, err = c.env.sessions.IncrementCost(ctx, c.childID, 0.30)
 	require.NoError(t, err)
 	c.coord.Cancel(c.parentID)
-	require.False(t, c.ledger.hasParked(), "the stopped delegation is terminal")
+	// The deleted ledger half asserted hasParked() here ("the stopped
+	// delegation is terminal"); the batch world has no process-local park,
+	// and the driver record's lifecycle is asserted directly below.
 	_, registered := c.coord.subAgentDrivers.get(c.childID)
 	require.True(t, registered, "the child's shell still holds its scope: the driver stays until the run end")
 	require.InDelta(t, 0.40, c.subtreeBudget(c.parentID), 1e-9, "the budget never waited for a transfer")

@@ -382,13 +382,31 @@ func TestBuildTools_WorkerResolvedToolsetByName(t *testing.T) {
 	names := buildSubAgentToolNames(t, coord)
 
 	// The worker's complete expected toolset, by name: read-only base
-	// (resolveReadOnlyTools) plus workerToolNames.
+	// (resolveReadOnlyTools) plus the worker layering
+	// (workerLayeredToolNames -> workerToolNamesBatch,
+	// batch_allowed_controls.go), which grants the native
+	// batch_status/batch_output read names in AllowedTools on top of the
+	// base list.
 	expected := []string{
 		"glob", "grep", "ls", "sourcegraph", "view", // read-only base
 		"edit", "multiedit", "write", "bash", // hands-on
 		"todos", "download", "fetch", tools.AskQuestionToolName,
-		tools.AwaitTasksToolName, tools.JobOutputToolName, // #1271
+		tools.AwaitTasksToolName,
 	}
+	// The native batch controls' absence from THIS resolved list is the
+	// production design, not a gap: the shared default toolset build is
+	// DEFERRED (no trusted call state -> finishToolAssembly's `deferred`
+	// path, coordinator_tools.go:884-885), and a deferred build strips
+	// the control placeholders (withoutBatchControlPlaceholders,
+	// coordinator_tools.go:862) and installs the model controls PER CALL
+	// (:908, gated on !deferred). So the native grants live in
+	// AllowedTools, not in the deferred build's names; the deleted legacy
+	// poll/stop controls are genuinely gone from the worker's resolved
+	// toolset.
+	assert.NotContains(t, names, "job_output",
+		"the deleted legacy poll control must not reappear in the worker toolset")
+	assert.NotContains(t, names, "job_kill",
+		"the deleted legacy stop control must not reappear in the worker toolset")
 	for _, name := range expected {
 		assert.Contains(t, names, name, "worker must have %q in its resolved toolset", name)
 	}
@@ -580,8 +598,6 @@ func TestAllToolNames_CoversUnconditionallyBuiltTools(t *testing.T) {
 		// rush_logs is no longer unconditionally constructed: buildTools
 		// skips it when Options.DataDirectory is empty (R15-1), so it is
 		// not part of the set this slice mirrors.
-		"job_output",
-		"job_kill",
 		"download",
 		"edit",
 		"multiedit",

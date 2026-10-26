@@ -1,0 +1,266 @@
+{
+  "version": 1,
+  "limits": {
+    "max_concurrent": 1,
+    "max_depth": 8,
+    "max_nodes": 64
+  },
+  "runner": {
+    "control_timeout_ms": 1000,
+    "record_retention": 128
+  },
+  "wait_bound_ms": 10000,
+  "payloads": {
+    "p": {
+      "kind": "controlled"
+    }
+  },
+  "script": [
+    {
+      "action": "submit",
+      "ref": "l3-A",
+      "root": "A",
+      "spec": {
+        "batch": {
+          "mode": "parallel",
+          "notify": "each",
+          "items": [
+            {
+              "task": {
+                "payload_ref": "p"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "action": "await_start",
+      "node": "A.1",
+      "bind": "a0"
+    },
+    {
+      "action": "release_start",
+      "attempt": "a0",
+      "decision": "refuse_capacity"
+    },
+    {
+      "action": "await_record",
+      "type": "start_rejected",
+      "node": "A.1"
+    },
+    {
+      "action": "add",
+      "ref": "l3-add",
+      "parent": "A",
+      "items": [
+        {
+          "batch": {
+            "mode": "sequential",
+            "notify": "all",
+            "items": [
+              {
+                "task": {
+                  "payload_ref": "p"
+                }
+              },
+              {
+                "task": {
+                  "payload_ref": "p"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "action": "submit",
+      "ref": "l3-N",
+      "root": "N",
+      "spec": {
+        "batch": {
+          "mode": "parallel",
+          "notify": "each",
+          "items": [
+            {
+              "batch": {
+                "mode": "parallel",
+                "notify": "all",
+                "items": [
+                  {
+                    "task": {
+                      "payload_ref": "p"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "task": {
+                "payload_ref": "p"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "action": "stop",
+      "node": "N.1"
+    },
+    {
+      "action": "stop",
+      "node": "N.2"
+    },
+    {
+      "action": "await_state",
+      "node": "N",
+      "state": "cancelled"
+    },
+    {
+      "action": "capacity_available",
+      "group": ""
+    },
+    {
+      "action": "await_start",
+      "node": "A.1",
+      "bind": "a1"
+    },
+    {
+      "action": "release_start",
+      "attempt": "a1",
+      "decision": "accept"
+    },
+    {
+      "action": "await_state",
+      "node": "A.1",
+      "state": "running"
+    },
+    {
+      "action": "complete",
+      "attempt": "a1",
+      "state": "completed"
+    },
+    {
+      "action": "await_record",
+      "type": "settled",
+      "node": "A.1"
+    },
+    {
+      "action": "await_start",
+      "node": "A.2.1",
+      "bind": "a21"
+    },
+    {
+      "action": "release_start",
+      "attempt": "a21",
+      "decision": "accept"
+    },
+    {
+      "action": "await_state",
+      "node": "A.2.1",
+      "state": "running"
+    },
+    {
+      "action": "complete",
+      "attempt": "a21",
+      "state": "failed"
+    },
+    {
+      "action": "await_record",
+      "type": "settled",
+      "node": "A.2.1"
+    },
+    {
+      "action": "await_state",
+      "node": "A",
+      "state": "failed"
+    },
+    {
+      "action": "close",
+      "expect": "ok"
+    }
+  ],
+  "expect": {
+    "roots": [
+      {
+        "id": "A",
+        "state": "failed"
+      },
+      {
+        "id": "N",
+        "state": "cancelled"
+      }
+    ],
+    "nodes": [
+      {
+        "id": "A.1",
+        "attempts": 2,
+        "starts": 2,
+        "accepted": 1,
+        "stops": 0,
+        "disposes": 1
+      },
+      {
+        "id": "A.2.1",
+        "starts": 1,
+        "accepted": 1
+      },
+      {
+        "id": "A.2.2",
+        "starts": 0,
+        "accepted": 0,
+        "state": "skipped"
+      },
+      {
+        "id": "N.1.1",
+        "starts": 0,
+        "accepted": 0
+      },
+      {
+        "id": "N.2",
+        "starts": 0,
+        "accepted": 0
+      }
+    ],
+    "notices": {
+      "A": [
+        {
+          "node": "A.1",
+          "state": "completed"
+        },
+        {
+          "node": "A.2",
+          "state": "failed"
+        },
+        {
+          "node": "A",
+          "state": "failed"
+        }
+      ],
+      "N": [
+        {
+          "node": "N.1",
+          "state": "cancelled"
+        },
+        {
+          "node": "N.2",
+          "state": "cancelled"
+        },
+        {
+          "node": "N",
+          "state": "cancelled"
+        }
+      ]
+    },
+    "before": [
+      [
+        "N:notice",
+        "A.1:settled"
+      ]
+    ],
+    "max_active": 1,
+    "exit_code": 1
+  }
+}

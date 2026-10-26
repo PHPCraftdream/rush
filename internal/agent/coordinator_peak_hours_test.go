@@ -181,7 +181,11 @@ func TestSetAllowPeakHours_OneShotReset(t *testing.T) {
 }
 
 func TestCheckLivePeakHours_ReloadsDirtyConfig(t *testing.T) {
-	t.Parallel()
+	// Legacy-JSON fixture test: it rewrites rush.json at its literal path
+	// after config.Init and expects the live reload to see it, so the gate
+	// must be off (after migration the active file is rush.ktav).
+	restore := config.SetKtavAutoMigrateForTest(false)
+	t.Cleanup(restore)
 
 	workDir := t.TempDir()
 	configPath := filepath.Join(workDir, "rush.json")

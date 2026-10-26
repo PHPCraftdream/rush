@@ -22,15 +22,12 @@ var sessionsGcCmd = &cobra.Command{
   3. Child sessions (parent_id != "") whose parent no longer exists,
      older than 24h.
 
-With --jobs-older-than, ALSO purges terminal (not 'running'), delivered-or-
-voided rows from the phase-4 durable async job ledger (async_jobs and
-session_notices) older than the given age. A 'running' row, an undelivered
-('pending') row and delivered-but-unreacted debt (a notice whose reaction turn
-is still owed) are NEVER purged regardless of age, nor is a delegation row whose
-child session still has running work or unreacted debt -- this only removes
-rows whose async command/delegation already finished (or was voided by a
-Rerun), whose notice was delivered and owes no reaction, and stayed in that
-state past the age.
+With --jobs-older-than, ALSO purges terminal, delivered-and-debt-free batch
+work older than the given age (through the batch retention API). Live batch
+work and unreacted delivery debt are NEVER purged regardless of age, nor is a
+session whose child still has running work or unreacted debt -- this only
+removes finished work whose notices were delivered and reacted to, past the
+age.
 Without --jobs-older-than, job retention runs only with its own
 fixed 7-day window, and only where a rush process is running: the web
 server purges every 60s (together with its dead-host sweep), and each
@@ -43,9 +40,8 @@ Use --dry-run to print what would be deleted (or purged) without deleting.
 Use --max-sessions to cap the number of SESSION deletions per run (does not
 bound --jobs-older-than's purge).
 Use --json to emit one JSON object per deleted (or would-be-deleted) session;
-with --jobs-older-than a first line {"kind":"async_jobs","dry_run":...,
-"async_jobs":N,"session_notices":M} reports the purged (or would-be-purged)
-row counts.`,
+with --jobs-older-than a first line {"kind":"batch_retention","dry_run":...,
+"batch_nodes":N} reports the purged (or would-be-purged) batch node count.`,
 	Example: `
 # Dry run: show what would be collected
 rush sessions gc --dry-run
@@ -56,7 +52,7 @@ rush sessions gc
 # Collect sessions older than 3 days, max 50 deletions
 rush sessions gc --older-than 3d --max-sessions 50
 
-# Also purge terminal async job/notice rows older than 3 days
+# Also purge finished batch work older than 3 days
 rush sessions gc --jobs-older-than 3d
 
 # Machine-readable output
@@ -72,15 +68,13 @@ type gcItem struct {
 	Reason   string  `json:"reason"`
 }
 
-// gcJobsSummary is the --json line for --jobs-older-than: how many terminal
-// async_jobs and session_notices rows were purged (or, with --dry-run, would
-// be).
-type gcJobsSummary struct {
-	Kind           string `json:"kind"`
-	DryRun         bool   `json:"dry_run"`
-	OlderThan      string `json:"older_than"`
-	AsyncJobs      int64  `json:"async_jobs"`
-	SessionNotices int64  `json:"session_notices"`
+// gcBatchRetentionSummary is the --json line for --jobs-older-than: how many
+// expired batch node rows were purged (or, with --dry-run, would be).
+type gcBatchRetentionSummary struct {
+	Kind       string `json:"kind"`
+	DryRun     bool   `json:"dry_run"`
+	OlderThan  string `json:"older_than"`
+	BatchNodes int64  `json:"batch_nodes"`
 }
 
 func sessionsGcCmdRun(cmd *cobra.Command, args []string) error {
@@ -158,47 +152,39 @@ func sessionsGcCmdRun(cmd *cobra.Command, args []string) error {
 		toDelete = toDelete[:maxSessions]
 	}
 
+	// Never collect a session that owns live or unknown batch work (or
+	// unreacted batch debt); each keep is reported.
+	toDelete = gcDropBatchProtected(a, toDelete)
+
 	// --jobs-older-than: independent of the session-collection rules above
 	// and of --max-sessions (which only bounds SESSION deletions) -- runs
 	// regardless of whether any session was collected, so `sessions gc
 	// --jobs-older-than` with nothing to collect on the session side still
-	// performs job retention.
-	var jobsAffected, noticesAffected int64
+	// performs job retention. The batch retention API (R10c) owns the
+	// cutoff policy; no legacy ledger table is queried.
 	if purgeJobs {
-		store := a.AsyncJobStore()
-		if store == nil {
-			return fmt.Errorf("--jobs-older-than: no async job store available (SkipAgentSetup or no data dir)")
-		}
-		if dryRun {
-			jobsAffected, noticesAffected, err = store.CountJobsOlderThan(cmd.Context(), jobsOlderThan)
-		} else {
-			jobsAffected, noticesAffected, err = store.PurgeJobsOlderThan(cmd.Context(), jobsOlderThan)
-		}
-		if err != nil {
-			return fmt.Errorf("--jobs-older-than: %w", err)
+		batchAffected, batchErr := gcBatchRetention(cmd.Context(), a, dryRun, jobsOlderThan)
+		if batchErr != nil {
+			return fmt.Errorf("--jobs-older-than (batch retention): %w", batchErr)
 		}
 		if asJSON {
-			// C19: --json used to report nothing for the job purge. One summary
-			// line (no "id"; "kind":"async_jobs") precedes the per-session lines.
-			if err := json.NewEncoder(os.Stdout).Encode(gcJobsSummary{
-				Kind: "async_jobs", DryRun: dryRun, OlderThan: jobsOlderThanStr,
-				AsyncJobs: jobsAffected, SessionNotices: noticesAffected,
+			if err := json.NewEncoder(os.Stdout).Encode(gcBatchRetentionSummary{
+				Kind: "batch_retention", DryRun: dryRun, OlderThan: jobsOlderThanStr, BatchNodes: batchAffected,
 			}); err != nil {
 				return err
 			}
 		}
-		if !asJSON && (jobsAffected > 0 || noticesAffected > 0) {
+		if !asJSON && batchAffected > 0 {
 			verb := "would purge"
 			if !dryRun {
 				verb = "purged"
 			}
-			fmt.Fprintf(os.Stderr, "%s %d async job row(s) and %d notice row(s) older than %s\n",
-				verb, jobsAffected, noticesAffected, jobsOlderThanStr)
+			fmt.Fprintf(os.Stderr, "%s %d expired batch node row(s)\n", verb, batchAffected)
 		}
 	}
 
 	if len(toDelete) == 0 {
-		if !asJSON && jobsAffected == 0 && noticesAffected == 0 {
+		if !asJSON {
 			fmt.Println("(nothing to collect)")
 		}
 		return nil
@@ -300,7 +286,7 @@ func parseDurationDays(s string) (time.Duration, error) {
 func init() {
 	sessionsGcCmd.Flags().Bool("dry-run", false, "Print what would be deleted without deleting")
 	sessionsGcCmd.Flags().String("older-than", "7d", "Delete empty sessions older than this (e.g. 7d, 24h, 30m)")
-	sessionsGcCmd.Flags().String("jobs-older-than", "", "Also purge terminal async_jobs/session_notices rows (phase-4 ledger) older than this (e.g. 3d, 12h); empty = only the fixed 7-day retention (web server every 60s, each rush run at start and every 60s while it runs)")
+	sessionsGcCmd.Flags().String("jobs-older-than", "", "Also purge finished, debt-free batch work older than this (e.g. 3d, 12h); empty = only the fixed 7-day retention (web server every 60s, each rush run at start and every 60s while it runs)")
 	sessionsGcCmd.Flags().Int("max-sessions", 0, "Maximum number of sessions to delete (0 = unlimited)")
 	sessionsGcCmd.Flags().Bool("json", false, "Emit one JSON object per deleted session (plus a job-count summary line with --jobs-older-than)")
 }

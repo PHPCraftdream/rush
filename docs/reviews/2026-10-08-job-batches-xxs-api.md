@@ -53,7 +53,7 @@
 - записанный ordered command descriptor (`kind`, node, token; без payload) либо эквивалентный сравнимый эталон;
 - использование только этой проекции при записи, не JSON-кодирование полного `Transition`/`NodeView`.
 
-Это уточнение журнала существующего lab, не Store, daemon или механизм recovery.
+Это уточнение журнала существующего lab, не Store, angel или механизм recovery.
 
 **Acceptance:** real Runner принимает два разных Add вокруг контролируемого завершения; journal однозначно восстанавливает именно accepted наборы и порядок. Перестановка двух записанных command descriptors делает replay ошибочным. Sentinels в argv, Payload, Inject, Summary и Details отсутствуют в журнале. Replay получает только scenario+journal и core Engine; даже сценарий с записывающим файл процессом не создаёт этот файл и не конструирует executor.
 
@@ -144,7 +144,7 @@ Runner явно копирует specs/results, а snapshots не должны �
 - `Start(ctx, Launch, report) → Execution` позволяет принять работу и закончить её позже, в том числе сообщить completion до возврата Start. Tokens и latched cancellation сохраняют эту модель пригодной для будущих process/MCP/agent adapters. Optional OutputReader/Messenger лучше обязательных no-op capabilities.
 - §2.1:234–251 фиксирует single-task ingress без повторного wrapping листьев и machine-independent limits. Kind/payload validation у consumer не требует agent/MCP ветвей в Engine.
 - §§2, 5:210–220, 438–448 правильно отделяют explicit inspection от diagnostic logging и pure replay от повторного исполнения. Необходимо закрыть producer/schema контракты, но исходный privacy и no-side-effects принцип верен.
-- Запрет обязательного Store (§2:224), daemon/RPC/второго CLI (§5:450) и pre-refactoring (§0:29–33) стоит сохранить. Не нужны plugin registry, observer callback hierarchy, retry framework или универсальный persistence layer для устранения перечисленных проблем. Различие Snapshot/Wait полезно только при определённой роли subtree snapshot и маленького immutable Summary.
+- Запрет обязательного Store (§2:224), angel/RPC/второго CLI (§5:450) и pre-refactoring (§0:29–33) стоит сохранить. Не нужны plugin registry, observer callback hierarchy, retry framework или универсальный persistence layer для устранения перечисленных проблем. Различие Snapshot/Wait полезно только при определённой роли subtree snapshot и маленького immutable Summary.
 - `MaxNodes` — per-root, вывод ограничен executor cap, records имеют bounded retention. План **не обещает глобально ограниченную память Runner**: unreleased roots и lifetime root-ID tombstones растут с числом submissions (§2:124–128; §4:391–394). Это явное ограничение выбранной модели, не повод добавлять незаказанную eviction policy; Release должен освобождать именно своё retained владение, сохраняя намеренные tombstones.
 
 ## Границы покрытия

@@ -1,6 +1,27 @@
 package agent
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
+
+// readyGateContextKey names the context value used to scope asynchronous
+// construction tasks to one rebuild or per-call tool build.
+type readyGateContextKey struct{}
+
+// withReadyGate installs gate as the context-local asynchronous build group.
+func withReadyGate(ctx context.Context, gate *readyGate) context.Context {
+	return context.WithValue(ctx, readyGateContextKey{}, gate)
+}
+
+// readyGateFor returns the context-local build group when present, otherwise
+// the coordinator's initialization gate.
+func readyGateFor(ctx context.Context, fallback *readyGate) *readyGate {
+	if gate, ok := ctx.Value(readyGateContextKey{}).(*readyGate); ok && gate != nil {
+		return gate
+	}
+	return fallback
+}
 
 // readyGate is the coordinator's "agent build still in flight" barrier: every
 // asynchronous piece of agent construction (buildAgent's system-prompt build
@@ -90,6 +111,16 @@ func (g *readyGate) Go(f func() error) {
 		}()
 		err = f()
 	}()
+}
+
+// pendingCount reports how many tasks are currently registered and not yet
+// returned. Test-support accessor only (e.g. asserting that exactly the
+// held task remains pending before cancelling under it); production code
+// must rely on Wait, not on polling this counter.
+func (g *readyGate) pendingCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.pending
 }
 
 // Wait blocks until no task is pending and returns the first error any task

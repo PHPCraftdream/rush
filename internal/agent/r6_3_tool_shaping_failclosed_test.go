@@ -100,7 +100,7 @@ func TestR6_3_RunSessionAgentCall_DisableSubAgentsOnly_ReadyGateFailure_FailsClo
 	require.NotNil(t, decoded.CallOptionsSpec)
 	assert.True(t, decoded.CallOptionsSpec.DisableSubAgents)
 
-	rebuilt, err := coord.RebuildSessionAgentCall(t.Context(), decoded)
+	rebuilt, err := coord.RebuildSessionAgentCall(t.Context(), "", decoded)
 	require.NoError(t, err)
 	require.NotNil(t, rebuilt.CallOptions)
 	require.True(t, rebuilt.CallOptions.DisableSubAgents)
@@ -146,7 +146,7 @@ func TestR6_3_RunSessionAgentCall_DisableSubAgentsTrue_SmartWorkerBypass_BuildTo
 	require.NoError(t, json.Unmarshal(raw, &decoded))
 	require.Nil(t, decoded.FolderScopeSpec)
 
-	rebuilt, err := coord.RebuildSessionAgentCall(t.Context(), decoded)
+	rebuilt, err := coord.RebuildSessionAgentCall(t.Context(), "", decoded)
 	require.NoError(t, err)
 	require.NotNil(t, rebuilt.CallOptions)
 	require.True(t, rebuilt.CallOptions.DisableSubAgents)
@@ -186,7 +186,7 @@ func TestR6_3_RunSessionAgentCall_ModelRoleOnly_BuildToolsFailure_FailsClosed(t 
 	require.NoError(t, json.Unmarshal(raw, &decoded))
 	require.Equal(t, "fast", decoded.CallOptionsSpec.ModelRole)
 
-	rebuilt, err := coord.RebuildSessionAgentCall(t.Context(), decoded)
+	rebuilt, err := coord.RebuildSessionAgentCall(t.Context(), "", decoded)
 	require.NoError(t, err)
 	require.NotNil(t, rebuilt.CallOptions)
 	require.False(t, rebuilt.CallOptions.DisableSubAgents)

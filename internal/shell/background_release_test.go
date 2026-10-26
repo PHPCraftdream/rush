@@ -174,7 +174,7 @@ func TestBackgroundShell_BufferReleaseTimer_FiresWithoutCleanup(t *testing.T) {
 
 	// TotalWrittenBytes must still report the real total after release
 	// (writtenBytes is preserved, not zeroed) — this guards the
-	// WaitForChange baseline path used by job_output.
+	// WaitForChange baseline path used by batch_output.
 	require.Positive(t, bgShell.TotalWrittenBytes(),
 		"TotalWrittenBytes must survive timer-based buffer release")
 }

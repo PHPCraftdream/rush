@@ -15,31 +15,67 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
 )
+
+// wakeTestOwner is the seeded owner session every wake-schedule test runs
+// against (self-contained since the async-job rerun fixture was removed).
+const wakeTestOwner = "wake-owner"
 
 // wakeFx is the wake-schedule test fixture: a real migrated SQLite DB plus
 // a seeded owner session and an injected clock origin.
 type wakeFx struct {
-	t    *testing.T
-	fx   *rerunFx
-	wake *WakeScheduleStore
-	q    *db.Queries
-	ctx  context.Context
-	base time.Time
+	t        *testing.T
+	sqlDB    *sql.DB
+	wake     *WakeScheduleStore
+	q        *db.Queries
+	messages message.Service
+	ctx      context.Context
+	base     time.Time
 }
 
 func newWakeFx(t *testing.T) *wakeFx {
 	t.Helper()
-	f := &wakeFx{t: t, fx: newRerunFx(t), ctx: context.Background(), base: time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)}
-	f.wake = NewWakeScheduleStore(f.fx.store.sqlDB)
-	f.q = f.fx.q
-	return f
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	conn, err := db.Connect(ctx, dataDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)) })
+	q := db.New(conn)
+	require.NoError(t, seedSession(ctx, q, wakeTestOwner))
+	return &wakeFx{
+		t: t, sqlDB: conn, wake: NewWakeScheduleStore(conn),
+		q: q, messages: message.NewService(q),
+		ctx: ctx, base: time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC),
+	}
+}
+
+// sessionNoticeParams is the minimal build callback for PullSessionNotices
+// used by the surviving session-notice/batch tests (re-declared here after
+// the legacy notice_pull_test.go was removed; the real ones live behind the
+// agent package boundary these tests exercise from the other side).
+func sessionNoticeParams(row SessionNoticeRow) message.CreateMessageParams {
+	return message.CreateMessageParams{
+		Role:                message.User,
+		Parts:               []message.ContentPart{message.TextContent{Text: row.Text}},
+		BackgroundJobNotice: true,
+		NoticeKind:          row.Kind,
+	}
+}
+
+// countMessages returns the number of messages rows for sessionID (shared
+// by the surviving batch pull/tool-result tests).
+func countMessages(t *testing.T, q *db.Queries, ctx context.Context, sessionID string) int64 {
+	t.Helper()
+	n, err := q.CountMessagesBySession(ctx, sessionID)
+	require.NoError(t, err)
+	return n
 }
 
 func (f *wakeFx) create(kind WakeKind, runAt time.Time, mut func(*CreateWakeScheduleParams)) db.WakeSchedule {
 	f.t.Helper()
-	p := CreateWakeScheduleParams{Owner: rerunOwner, Kind: kind, Message: "check on it", RunAt: runAt}
+	p := CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: kind, Message: "check on it", RunAt: runAt}
 	if kind == WakeKindLoop {
 		p.Every = 300 * time.Second
 	}
@@ -56,7 +92,7 @@ func (f *wakeFx) get(id string) (db.WakeSchedule, error) {
 }
 
 func (f *wakeFx) noticeCount() int {
-	rows, err := f.fx.q.ListSessionNoticesForOwner(f.ctx, rerunOwner)
+	rows, err := f.q.ListSessionNoticesForOwner(f.ctx, wakeTestOwner)
 	require.NoError(f.t, err)
 	n := 0
 	for _, r := range rows {
@@ -76,15 +112,15 @@ func TestWakeScheduleStore_CreateValidation(t *testing.T) {
 		p    CreateWakeScheduleParams
 	}{
 		{"no owner", CreateWakeScheduleParams{Kind: WakeKindOnce, Message: "m", RunAt: later}},
-		{"empty message", CreateWakeScheduleParams{Owner: rerunOwner, Kind: WakeKindOnce, RunAt: later}},
-		{"long message", CreateWakeScheduleParams{Owner: rerunOwner, Kind: WakeKindOnce, Message: string(make([]rune, MaxWakeMessageLength+1)), RunAt: later}},
-		{"once too soon", CreateWakeScheduleParams{Owner: rerunOwner, Kind: WakeKindOnce, Message: "m", RunAt: f.base.Add(time.Second)}},
-		{"once in the past", CreateWakeScheduleParams{Owner: rerunOwner, Kind: WakeKindOnce, Message: "m", RunAt: f.base.Add(-time.Minute)}},
-		{"once over horizon", CreateWakeScheduleParams{Owner: rerunOwner, Kind: WakeKindOnce, Message: "m", RunAt: f.base.Add(MaxWakeHorizon + time.Hour)}},
-		{"loop interval too tight", CreateWakeScheduleParams{Owner: rerunOwner, Kind: WakeKindLoop, Message: "m", RunAt: later, Every: time.Minute}},
-		{"loop max_runs too big", CreateWakeScheduleParams{Owner: rerunOwner, Kind: WakeKindLoop, Message: "m", RunAt: later, Every: 300 * time.Second, MaxRuns: MaxLoopRuns + 1}},
-		{"loop until in the past", CreateWakeScheduleParams{Owner: rerunOwner, Kind: WakeKindLoop, Message: "m", RunAt: later, Every: 300 * time.Second, Until: &f.base}},
-		{"unknown kind", CreateWakeScheduleParams{Owner: rerunOwner, Kind: WakeKind("cron"), Message: "m", RunAt: later}},
+		{"empty message", CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: WakeKindOnce, RunAt: later}},
+		{"long message", CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: WakeKindOnce, Message: string(make([]rune, MaxWakeMessageLength+1)), RunAt: later}},
+		{"once too soon", CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: WakeKindOnce, Message: "m", RunAt: f.base.Add(time.Second)}},
+		{"once in the past", CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: WakeKindOnce, Message: "m", RunAt: f.base.Add(-time.Minute)}},
+		{"once over horizon", CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: WakeKindOnce, Message: "m", RunAt: f.base.Add(MaxWakeHorizon + time.Hour)}},
+		{"loop interval too tight", CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: WakeKindLoop, Message: "m", RunAt: later, Every: time.Minute}},
+		{"loop max_runs too big", CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: WakeKindLoop, Message: "m", RunAt: later, Every: 300 * time.Second, MaxRuns: MaxLoopRuns + 1}},
+		{"loop until in the past", CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: WakeKindLoop, Message: "m", RunAt: later, Every: 300 * time.Second, Until: &f.base}},
+		{"unknown kind", CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: WakeKind("cron"), Message: "m", RunAt: later}},
 	}
 	for _, tc := range cases {
 		_, err := f.wake.CreateSchedule(f.ctx, tc.p, f.base)
@@ -104,13 +140,13 @@ func TestWakeScheduleStore_LimitTwentyActive(t *testing.T) {
 		}
 	}
 	_, err := f.wake.CreateSchedule(f.ctx, CreateWakeScheduleParams{
-		Owner: rerunOwner, Kind: WakeKindOnce, Message: "m", RunAt: f.base.Add(time.Hour),
+		Owner: wakeTestOwner, Kind: WakeKindOnce, Message: "m", RunAt: f.base.Add(time.Hour),
 	}, f.base)
 	require.ErrorIs(t, err, ErrWakeScheduleLimit)
 
-	require.NoError(t, f.wake.CancelSchedule(f.ctx, rerunOwner, firstID, f.base))
+	require.NoError(t, f.wake.CancelSchedule(f.ctx, wakeTestOwner, firstID, f.base))
 	_, err = f.wake.CreateSchedule(f.ctx, CreateWakeScheduleParams{
-		Owner: rerunOwner, Kind: WakeKindOnce, Message: "m", RunAt: f.base.Add(time.Hour),
+		Owner: wakeTestOwner, Kind: WakeKindOnce, Message: "m", RunAt: f.base.Add(time.Hour),
 	}, f.base)
 	require.NoError(t, err, "a cancelled schedule frees a slot")
 }
@@ -317,8 +353,8 @@ func TestWakeScheduleStore_CancelIdempotentAndOwned(t *testing.T) {
 	due := f.base.Add(time.Minute)
 	row := f.create(WakeKindOnce, due, nil)
 
-	require.NoError(t, f.wake.CancelSchedule(f.ctx, rerunOwner, row.ID, f.base))
-	require.NoError(t, f.wake.CancelSchedule(f.ctx, rerunOwner, row.ID, f.base), "second cancel is a no-op")
+	require.NoError(t, f.wake.CancelSchedule(f.ctx, wakeTestOwner, row.ID, f.base))
+	require.NoError(t, f.wake.CancelSchedule(f.ctx, wakeTestOwner, row.ID, f.base), "second cancel is a no-op")
 	require.ErrorIs(t, f.wake.CancelSchedule(f.ctx, "other-session", row.ID, f.base), ErrWakeScheduleNotOwned)
 
 	claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", due, 10, WakeLeaseTTL)
@@ -351,20 +387,20 @@ func TestWakeScheduleStore_CancelReportIsTheCAS(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, fire.Fired)
 
-	cancelled, err := f.wake.CancelScheduleReport(f.ctx, rerunOwner, fired.ID, due)
+	cancelled, err := f.wake.CancelScheduleReport(f.ctx, wakeTestOwner, fired.ID, due)
 	require.NoError(t, err)
 	require.False(t, cancelled, "a schedule that already fired is not 'cancelled' by this call")
 
-	cancelled, err = f.wake.CancelScheduleReport(f.ctx, rerunOwner, live.ID, due)
+	cancelled, err = f.wake.CancelScheduleReport(f.ctx, wakeTestOwner, live.ID, due)
 	require.NoError(t, err)
 	require.True(t, cancelled)
-	cancelled, err = f.wake.CancelScheduleReport(f.ctx, rerunOwner, live.ID, due)
+	cancelled, err = f.wake.CancelScheduleReport(f.ctx, wakeTestOwner, live.ID, due)
 	require.NoError(t, err)
 	require.False(t, cancelled, "the second cancel moves nothing")
 
 	_, err = f.wake.CancelScheduleReport(f.ctx, "other-session", live.ID, due)
 	require.ErrorIs(t, err, ErrWakeScheduleNotOwned)
-	cancelled, err = f.wake.CancelScheduleReport(f.ctx, rerunOwner, "wake_missing", due)
+	cancelled, err = f.wake.CancelScheduleReport(f.ctx, wakeTestOwner, "wake_missing", due)
 	require.NoError(t, err)
 	require.False(t, cancelled)
 }
@@ -373,7 +409,7 @@ func TestWakeScheduleStore_CancelReportIsTheCAS(t *testing.T) {
 func TestWakeScheduleStore_CancelUnknownAndClaimLimit(t *testing.T) {
 	t.Parallel()
 	f := newWakeFx(t)
-	require.NoError(t, f.wake.CancelSchedule(f.ctx, rerunOwner, "wake_missing", f.base))
+	require.NoError(t, f.wake.CancelSchedule(f.ctx, wakeTestOwner, "wake_missing", f.base))
 
 	f.create(WakeKindOnce, f.base.Add(time.Minute), nil)
 	f.create(WakeKindOnce, f.base.Add(2*time.Minute), nil)
@@ -391,7 +427,7 @@ func TestWakeScheduleStore_SessionDeleteCascades(t *testing.T) {
 	f := newWakeFx(t)
 	row := f.create(WakeKindLoop, f.base.Add(time.Minute), nil)
 
-	require.NoError(t, f.q.DeleteSession(f.ctx, rerunOwner))
+	require.NoError(t, f.q.DeleteSession(f.ctx, wakeTestOwner))
 	_, err := f.get(row.ID)
 	require.ErrorIs(t, err, sql.ErrNoRows, "the schedule is gone with its session")
 }
@@ -413,7 +449,9 @@ func TestWakeScheduleStore_ResetCancelsActive(t *testing.T) {
 	_, err = f.wake.FireOccurrence(f.ctx, done.ID, "worker-1", f.base.Add(2*time.Minute))
 	require.NoError(t, err)
 
-	out, err := f.fx.store.ResetOwnerHistory(f.ctx, f.fx.messages, rerunOwner)
+	// `sessions reset` is the batch reset in the final world: it cancels
+	// every ACTIVE wake schedule of the owner inside the reset transaction.
+	out, err := NewBatchStore(f.sqlDB).BatchResetOwnerHistory(f.ctx, f.messages, wakeTestOwner)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, out.SchedulesCancelled, "only the active one")
 

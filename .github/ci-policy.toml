@@ -1,0 +1,90 @@
+# Tiered CI policy — shadow mode (phase 1).
+# All thresholds and path lists for the selector live here.
+
+# Design section 3: any changed file under these prefixes requires native
+# (macOS/Windows) lanes, independent of the fan-out / full-fallback decision.
+native_required_prefixes = [
+  "internal/shell/",
+  "internal/platform/",
+  "internal/procinfo/",
+  "internal/heartbeat/",
+  "internal/audit/",
+  "internal/filelock/",
+  "internal/app/",
+  "internal/session/",
+  "internal/db/",
+  "internal/config/",
+  "internal/cmd/",
+  "internal/server/",
+  "internal/filetracker/",
+  "internal/agent/cliprovider/",
+  "internal/agent/tools/",
+  "internal/agent/notify/",
+  "internal/jobbatch/",
+  "cmd/batchlab/",
+  "sdk/",
+  "npm/",
+]
+
+# Design section 2 (core blanket rule): production (non-test-only) changes
+# under these prefixes force full Ubuntu.
+core_prefixes = [
+  "internal/config/",
+  "internal/db/",
+  "internal/message/",
+  "internal/session/",
+  "internal/pubsub/",
+  "internal/csync/",
+]
+
+# Race selection = selected closure intersecting these roots (prefix match,
+# descendants included). All verified to exist in the repo.
+race_roots = [
+  "internal/agent",
+  "internal/hooks",
+  "internal/session",
+  "internal/jobbatch",
+  "internal/jobbatch/lab",
+  "internal/tasktree",
+  "internal/csync",
+  "cmd/batchlab",
+  "cmd/tasklab",
+]
+
+# Design section 2 step 13: fan-out thresholds (counted from the linux graph).
+fanout_max_packages = 25
+fanout_max_ratio = 0.40
+
+# Explicit non-Go input mappings: changed file (glob) -> owning package(s).
+# `*` matches any path segment(s) within one level; `**` crosses levels.
+[[non_go_mappings]]
+patterns = ["internal/db/sql/*.sql", "internal/db/migrations/*", "sqlc.yaml"]
+owners = ["internal/db"]
+
+[[non_go_mappings]]
+patterns = ["internal/agent/templates/*"]
+owners = ["internal/agent"]
+
+[[non_go_mappings]]
+patterns = ["internal/agent/tools/*.md", "internal/agent/tools/*.md.tpl"]
+owners = ["internal/agent/tools"]
+
+[[non_go_mappings]]
+patterns = ["internal/skills/**/*.md", "internal/skills/**/*"]
+owners = ["internal/skills", "internal/agent"]
+
+# Guard list: changes here always run planning + guards — guard changes force
+# full mode, and the guards themselves run in phase 2.
+always_run = [
+  ".githooks/",
+  ".github/scripts/",
+  ".github/workflows/ci-plan.yml",
+  ".github/ci-policy.toml",
+]
+
+# Native constraint filename suffixes used as GOOS/GOARCH evidence when a
+# changed .go file suggests platform-specific code.
+native_suffixes = [
+  "_windows", "_darwin", "_linux", "_unix", "_posix",
+  "_amd64", "_arm64", "_386", "_mips64",
+]

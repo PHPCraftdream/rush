@@ -7,7 +7,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -36,15 +36,12 @@ func TestCompaction_DoesNotPullNotices(t *testing.T) {
 	model := newProbeModel(t, srv)
 
 	env := testEnv(t)
-	asyncStore := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "test")
-	t.Cleanup(func() { _ = asyncStore.Close(context.Background()) })
-	ledger := newWorkLedger(nil)
-	ledger.store = asyncStore
+	coord := a2AttachBatchFacts(t, env)
 
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, AsyncJobs: ledger,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coord,
 	})
 	agent := sa.(*sessionAgent)
 
@@ -56,20 +53,11 @@ func TestCompaction_DoesNotPullNotices(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = asyncStore.Claim(ctx, session.ClaimParams{
-		Owner: sess.ID, ToolCallID: "call-1", Kind: session.JobKindCommand, Input: "x", ToolName: "bash",
-	})
-	require.NoError(t, err)
-	require.NoError(t, asyncStore.MarkAnnounced(ctx, sess.ID, "call-1"))
-	_, err = asyncStore.Transition(ctx, session.TransitionParams{
-		Owner: sess.ID, ToolCallID: "call-1", State: "completed", ResultSummary: "job output", Wake: true,
-	})
-	require.NoError(t, err)
+	seedFixtureJobDebt(t, env.conn, sess.ID, "call-1", false)
 
 	require.NoError(t, agent.runSummarizeBody(ctx, sess.ID, nil, model, ""))
 
-	row, err := asyncStore.Get(ctx, sess.ID, "call-1")
-	require.NoError(t, err)
+	row := readFixtureJobDebt(t, env.conn, sess.ID, "call-1")
 	require.Equal(t, "pending", row.Delivery, "compaction must never pull a notice")
 
 	msgs, err := env.messages.List(ctx, sess.ID)
@@ -181,13 +169,14 @@ func TestSpliceCarried_KeepsOriginalPositions(t *testing.T) {
 // bg-shell notice was pulled). Restored; re-ran, passed.
 func TestPullPendingNotices_RecordsProgressExceptSupervision(t *testing.T) {
 	env := testEnv(t)
-	store := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "test")
-	t.Cleanup(func() { _ = store.Close(context.Background()) })
-	ledger := newWorkLedger(nil)
-	ledger.store = store
-	ledger.supervision = newSupervisionRegistry()
+	coord := a2AttachBatchFacts(t, env)
+	notices := coord.noticeStore
+	if notices == nil {
+		notices = session.NewSessionNoticeStore(env.conn)
+		coord.noticeStore = notices
+	}
 	sa := NewSessionAgent(SessionAgentOptions{
-		Sessions: env.sessions, Messages: env.messages, DataDirectory: env.workingDir, AsyncJobs: ledger,
+		Sessions: env.sessions, Messages: env.messages, DataDirectory: env.workingDir, Coord: coord,
 	})
 	agent := sa.(*sessionAgent)
 
@@ -195,23 +184,22 @@ func TestPullPendingNotices_RecordsProgressExceptSupervision(t *testing.T) {
 	sess, err := env.sessions.Create(ctx, "pull-progress")
 	require.NoError(t, err)
 	// A running job keeps the supervision notice deliverable (not voided).
-	_, err = store.Claim(ctx, session.ClaimParams{Owner: sess.ID, ToolCallID: "call-1", Kind: session.JobKindCommand, Input: "x", ToolName: "bash"})
-	require.NoError(t, err)
+	a2ClaimJob(t, env.conn, sess.ID, "call-1", false)
 
 	cfg := SupervisionConfig{Enabled: true, Interval: time.Hour, MaxInterval: 4 * time.Hour, MaxNoProgress: 6}
-	ledger.supervision.byRoot[sess.ID] = &supervisionState{rootSessionID: sess.ID, cfg: cfg, interval: 2 * time.Hour, tickCount: 2, generation: 1}
+	coord.supervision.byRoot[sess.ID] = &supervisionState{rootSessionID: sess.ID, cfg: cfg, interval: 2 * time.Hour, tickCount: 2, generation: 1}
 	tickCount := func() int {
-		ledger.supervision.mu.Lock()
-		defer ledger.supervision.mu.Unlock()
-		return ledger.supervision.byRoot[sess.ID].tickCount
+		coord.supervision.mu.Lock()
+		defer coord.supervision.mu.Unlock()
+		return coord.supervision.byRoot[sess.ID].tickCount
 	}
 
-	require.NoError(t, store.InsertSessionNotice(ctx, sess.ID, session.NoticeKindSupervision, "check-in", true, ""))
+	require.NoError(t, notices.InsertSessionNotice(ctx, sess.ID, session.NoticeKindSupervision, "check-in", true, ""))
 	pulled := agent.pullPendingNotices(ctx, sess.ID)
 	require.Len(t, pulled, 1)
 	require.Equal(t, 2, tickCount(), "a supervision check-in must not reset its own backoff")
 
-	require.NoError(t, store.InsertSessionNotice(ctx, sess.ID, session.NoticeKindBGShellDone, "shell done", true, ""))
+	require.NoError(t, notices.InsertSessionNotice(ctx, sess.ID, session.NoticeKindBGShellDone, "shell done", true, ""))
 	pulled = agent.pullPendingNotices(ctx, sess.ID)
 	require.Len(t, pulled, 1)
 	require.Zero(t, tickCount(), "any other notice moving into history is progress")
@@ -238,14 +226,11 @@ func TestDrain_CommittedRetryReachesProviderWithNothingToPull(t *testing.T) {
 	model := newProbeModel(t, srv)
 
 	env := testEnv(t)
-	store := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "test")
-	t.Cleanup(func() { _ = store.Close(context.Background()) })
-	ledger := newWorkLedger(nil)
-	ledger.store = store
+	coord := a2AttachBatchFacts(t, env)
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, AsyncJobs: ledger,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coord,
 	})
 
 	ctx := context.Background()
@@ -269,7 +254,7 @@ func TestDrain_CommittedRetryReachesProviderWithNothingToPull(t *testing.T) {
 }
 
 // TestWebAsyncJob_EndToEnd_OneNoticeOneTurn drives the whole step-3 path for a
-// non-CLI (web/child) session: a real ledger job finishes -> transition
+// non-CLI (web/child) session: a real batch completion wakes the driver
 // commits delivery='pending' -> onWebDone hint -> wakeSession submits a Drain
 // to the session's driver -> the Drain's turn-start pull inserts the notice
 // -> exactly one provider turn. The session ends with exactly ONE notice
@@ -291,30 +276,32 @@ func TestWebAsyncJob_EndToEnd_OneNoticeOneTurn(t *testing.T) {
 	model := newProbeModel(t, srv)
 
 	env := testEnv(t)
-	store := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "test")
-	t.Cleanup(func() { _ = store.Close(context.Background()) })
-
-	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry(), sessions: env.sessions, messages: env.messages}
-	ledger := newWorkLedger(coord.notifyAsyncCompletion)
-	ledger.store = store
-	ledger.coord = coord
-	coord.asyncJobs = ledger
-	t.Cleanup(ledger.close)
+	coord := newBatchRuntimeCoordinator()
+	coord.sessions, coord.messages = env.sessions, env.messages
+	coord.noticeStore = session.NewSessionNoticeStore(env.conn)
+	bindBatchNodeFacts(t, coord, env.conn, env.workingDir)
 
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, AsyncJobs: ledger,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coord,
 	})
 	ctx := context.Background()
 	sess, err := env.sessions.Create(ctx, "web-async-e2e")
 	require.NoError(t, err)
 	coord.subAgentDrivers.register(sess.ID, subAgentDriver{agent: sa, call: SessionAgentCall{SessionID: sess.ID}})
 
-	_, _, err = ledger.Start(sess.ID, "call-1", "{}", "bash", "", false, false, nil, func() {})
-	require.NoError(t, err)
-	ledger.acknowledged(jobOf(ledger, sess.ID, "call-1"))
-	ledger.finish(jobOf(ledger, sess.ID, "call-1"), jobResult{content: "job output"})
+	// The completion lives in the batch store: the wake below is answered
+	// from the batch debt.
+	seedBatchJobDebt(t, env.conn, sess.ID, "call-1", false)
+
+	// H4: the ledger-era seed's dual-mode branch invoked the onWebDone
+	// delivery callback; the batch seed is static. Production batch
+	// delivery wakes the owner through notifyAsyncCompletion once its
+	// wake=1 row is committed -- drive that same wake here (the Drain hint
+	// the coordinator_background.go doc describes), then wait it out.
+	coord.notifyAsyncCompletion(AsyncCompletion{SessionID: sess.ID, Wake: true})
+	coord.waitRecheckWakes()
 
 	require.Eventually(t, func() bool {
 		mu.Lock()
@@ -325,28 +312,35 @@ func TestWebAsyncJob_EndToEnd_OneNoticeOneTurn(t *testing.T) {
 
 	msgs, err := env.messages.List(ctx, sess.ID)
 	require.NoError(t, err)
-	var notices, users, assistants int
+	// The batch notice resolves by payload, not tool identity.
+	completionText := "Async job call-1 () finished."
+	// The batch seed's durable started announce is one extra user-role
+	// notice row; the oracle (no empty prompt, no duplicate) is unchanged.
+	wantNotices, wantUsers := 2, 2
+	var notices, users, assistants, completions int
 	for _, m := range msgs {
 		switch m.Role {
 		case message.User:
 			users++
 			if m.BackgroundJobNotice {
 				notices++
-				require.Contains(t, m.FullText(), "Async job call-1 (bash) finished.")
+				if strings.Contains(m.FullText(), completionText) {
+					completions++
+				}
 			}
 		case message.Assistant:
 			assistants++
 		}
 	}
-	require.Equal(t, 1, notices, "exactly one notice message")
-	require.Equal(t, 1, users, "no other user-role row (no empty Drain prompt, no duplicate)")
+	require.Equal(t, wantNotices, notices, "exactly the completion notice (plus the batch seed's started announce)")
+	require.Equal(t, wantUsers, users, "no other user-role row (no empty Drain prompt, no duplicate)")
+	require.Equal(t, 1, completions, "exactly one completion notice carrying the job's outcome")
 	require.Equal(t, 1, assistants, "exactly one turn")
 	mu.Lock()
 	require.Equal(t, 1, calls)
 	mu.Unlock()
 
-	row, err := store.Get(ctx, sess.ID, "call-1")
-	require.NoError(t, err)
+	row := readFixtureJobDebt(t, env.conn, sess.ID, "call-1")
 	require.Equal(t, "done", row.Delivery)
 }
 
@@ -400,15 +394,12 @@ func TestNoTurnDrain_QueuedRealCallRunsNextInSameLoop(t *testing.T) {
 	model := newProbeModel(t, srv)
 
 	env := testEnv(t)
-	store := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "test")
-	t.Cleanup(func() { _ = store.Close(context.Background()) })
-	ledger := newWorkLedger(nil)
-	ledger.store = store
+	coord := a2AttachBatchFacts(t, env)
 
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, AsyncJobs: ledger,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coord,
 	})
 	agent := sa.(*sessionAgent)
 

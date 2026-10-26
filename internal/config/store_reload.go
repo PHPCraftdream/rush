@@ -13,9 +13,11 @@ import (
 	"hash"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/env"
@@ -307,6 +309,14 @@ func (s *ConfigStore) ReloadFromDisk(ctx context.Context) error {
 	if s.workingDir == "" {
 		return fmt.Errorf("cannot reload: working directory not set")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, ktavMigrationBudget)
+		defer cancel()
+	}
 	return s.reloadFromDiskUnlocked(ctx)
 }
 
@@ -342,6 +352,26 @@ func (s *ConfigStore) reloadFromDiskUnlocked(ctx context.Context) error {
 // writer finishes after the candidate was published but before reloadMu is
 // released.
 func (s *ConfigStore) runReloadLocked(ctx context.Context) error {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, ktavMigrationBudget)
+		defer cancel()
+	}
+	if err := ktavMigrateStartupSlots(ctx, s.workingDir); err != nil {
+		s.releaseReloadLock()
+		return err
+	}
+	prev := s.loadSnapshot()
+	dataDir := ""
+	if prev.config != nil && prev.config.Options != nil {
+		dataDir = prev.config.Options.DataDirectory
+	}
+	if dataDir != "" {
+		if err := ktavMigrateWorkspaceIfNeeded(ctx, s.workingDir, dataDir); err != nil {
+			s.releaseReloadLock()
+			return err
+		}
+	}
 	expectedUncertainty := s.MCPUncertaintyVersions()
 	for attempt := 1; attempt <= reloadMaxAttempts; attempt++ {
 		err := s.buildAndPublishReload(ctx, expectedUncertainty)
@@ -400,6 +430,11 @@ func (s *ConfigStore) releaseReloadLock() {
 // double-locking reloadMu (sync.Mutex is not reentrant).
 func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncertainty map[string]uint64) error {
 	configPaths := lookupConfigCandidates(s.workingDir)
+	// Mirror the initial-load fail-closed rule: an authoritative slot that
+	// holds only a backup must never reload into an unlocked, empty config.
+	if err := checkAuthoritativeBackupOnly(s.workingDir); err != nil {
+		return err
+	}
 	externalPaths := mcpJSONCandidatePaths(s.workingDir)
 	cfg, loadedPaths, fingerprints, configDocuments, err := loadConfigCandidateStableForWorkingDir(configPaths, s.workingDir)
 	if err != nil {
@@ -418,14 +453,24 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	}
 	cfg.setDefaults(s.workingDir, dataDir)
 
-	workspaceDiscoveryPath := normalizeDiscoveryPath(filepath.Join(cfg.Options.DataDirectory, fmt.Sprintf("%s.json", appName)))
+	workspaceDiscoveryPath := normalizeDiscoveryPath(workspaceConfigPath(cfg.Options.DataDirectory))
 	workspacePath := normalizeReloadPath(workspaceDiscoveryPath)
+	if err := checkBackupOnlySlot(filepath.Join(cfg.Options.DataDirectory, appName+".json")); err != nil {
+		return err
+	}
 	if !pathAlreadyLoaded(loadedPaths, workspacePath) && s.workingDir != "" {
 		expectedOwner, enforceOwner, ownerErr := configOwnerForWorkingDir(s.workingDir)
 		if ownerErr != nil {
 			return fmt.Errorf("failed to determine workspace config owner: %w", ownerErr)
 		}
 		wsData, fingerprint, readErr := readStableConfigFileOwned(workspaceDiscoveryPath, expectedOwner, enforceOwner)
+		if readErr == nil {
+			var decodeErr error
+			wsData, decodeErr = decodeConfigDocument(workspaceDiscoveryPath, wsData)
+			if decodeErr != nil {
+				return fmt.Errorf("failed to decode workspace config %s: %w", workspacePath, decodeErr)
+			}
+		}
 		if readErr == nil {
 			fingerprints[workspaceDiscoveryPath] = fingerprint
 			configDocuments = append(configDocuments, stableConfigDocument{
@@ -459,6 +504,15 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	}
 	if hook := s.reloadAfterDiskRead; hook != nil {
 		hook()
+	}
+	// Re-verify the models-integrity rule on the candidate's stable bytes
+	// (plan §3.8, P1: without this a running process systematically adopts
+	// a hand-edited models block within one poll interval). On a mismatch
+	// (operator decision D4) the candidate keeps the PREVIOUS role models
+	// while the rest of it still publishes. This lives in
+	// buildAndPublishReload, so every reload path is covered.
+	if reloadModelsIntegrityMismatch(s, configDocuments) {
+		cfg.Models = prevModelsSelections(prev)
 	}
 
 	// Keep .mcp.json discovery and the literal disabled-override merge
@@ -507,6 +561,17 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	// publishMu — a hung shell substitution here no longer blocks
 	// SetSkipPermissionRequests/SetProviderRuntimeConfig/other readers.
 	if err := cfg.configureProviders(ctx, s, baseEnv, candidateResolver, providers); err != nil {
+		return fmt.Errorf("failed to configure providers during reload: %w", err)
+	}
+
+	// Reject a candidate that would silently drop a live custom provider
+	// because its base_url is missing or empty (see
+	// store_reload_providers.go): publishing such a snapshot would leave
+	// role pins resolving to a provider that no longer exists. On error
+	// nothing below runs, so the previous snapshot, models, provider map
+	// and generation stay untouched. The initial Load keeps the
+	// warn-and-skip behaviour.
+	if err := rejectLiveProviderEndpointDrops(prev.config, cfg, providers); err != nil {
 		return fmt.Errorf("failed to configure providers during reload: %w", err)
 	}
 
@@ -579,6 +644,65 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	s.clearMCPUncertainty(expectedUncertainty)
 
 	return nil
+}
+
+// prevModelsSelections snapshots the previous snapshot's raw role-model
+// selections for the integrity-mismatch carry-forward.
+func prevModelsSelections(prev *storeSnapshot) map[SelectedModelType]SelectedModel {
+	if prev == nil || prev.config == nil {
+		return nil
+	}
+	return maps.Clone(prev.config.Models)
+}
+
+// reloadModelsIntegrityMismatch re-verifies the models-integrity rule on
+// the candidate's stable bytes for the global-data and workspace paths.
+// A warning is logged once per distinct offending fingerprint.
+func reloadModelsIntegrityMismatch(s *ConfigStore, docs []stableConfigDocument) bool {
+	lockExists := s.anySettingsLockExists()
+	mismatch := false
+	for _, path := range []string{s.globalDataPath, s.loadSnapshot().workspacePath} {
+		if path == "" {
+			continue
+		}
+		doc := stableConfigDocumentForPath(docs, path)
+		if doc == nil || !doc.present {
+			continue
+		}
+		if modelsIntegrityOf(doc.data, lockExists) != nil {
+			mismatch = true
+			warnModelsIntegrityFingerprintOnce(path, doc.fingerprint.digest)
+		}
+	}
+	return mismatch
+}
+
+// stableConfigDocumentForPath finds the candidate document for path.
+func stableConfigDocumentForPath(docs []stableConfigDocument, path string) *stableConfigDocument {
+	canonical := normalizeReloadPath(path)
+	for i := range docs {
+		if normalizeReloadPath(docs[i].path) == canonical {
+			return &docs[i]
+		}
+	}
+	return nil
+}
+
+var (
+	modelsIntegrityWarnMu sync.Mutex
+	modelsIntegrityWarned = map[[sha256.Size]byte]struct{}{}
+)
+
+// warnModelsIntegrityFingerprintOnce logs the unsigned-models warning at
+// most once per distinct file fingerprint.
+func warnModelsIntegrityFingerprintOnce(path string, digest [sha256.Size]byte) {
+	modelsIntegrityWarnMu.Lock()
+	defer modelsIntegrityWarnMu.Unlock()
+	if _, done := modelsIntegrityWarned[digest]; done {
+		return
+	}
+	modelsIntegrityWarned[digest] = struct{}{}
+	slog.Warn("Model settings were changed outside rush; keeping the previous role models", "path", path)
 }
 
 func mcpConfig(cfg *Config, name string) (MCPConfig, bool) {
@@ -766,6 +890,7 @@ func normalizeReloadPath(path string) string {
 }
 
 func reloadStalenessState(paths []string, fingerprints map[string]reloadFileFingerprint) ([]string, map[string]fileSnapshot) {
+	paths = expandConfigSlotSiblings(paths)
 	trackedSet := make(map[string]struct{}, len(paths))
 	for _, path := range paths {
 		if path != "" {
@@ -780,7 +905,15 @@ func reloadStalenessState(paths []string, fingerprints map[string]reloadFileFing
 
 	snapshots := make(map[string]fileSnapshot, len(tracked))
 	for _, path := range tracked {
-		fingerprint := reloadFingerprintForPath(fingerprints, path)
+		// The fingerprints map only holds SELECTED documents; an unselected
+		// slot sibling that exists on disk (rush.ktav selected, ignored
+		// rush.json present) must still contribute its real on-disk
+		// fingerprint, or the snapshot would publish Exists:false for an
+		// existing file and ConfigStaleness would report Dirty forever.
+		fingerprint, fpErr := trackedSlotFingerprint(path, fingerprints)
+		if fpErr != nil {
+			fingerprint = reloadFileFingerprint{}
+		}
 		snapshots[path] = fileSnapshot{
 			Path:        path,
 			Exists:      fingerprint.exists,
@@ -791,6 +924,20 @@ func reloadStalenessState(paths []string, fingerprints map[string]reloadFileFing
 		}
 	}
 	return tracked, snapshots
+}
+
+// trackedSlotFingerprint is the single disk-fingerprint accessor for
+// tracked slot paths: it returns the captured reload fingerprint when one
+// exists for the path (selected documents, plus canonical/normalized
+// aliases via reloadFingerprintForPath), and falls back to a REAL on-disk
+// fingerprint (raw bytes: existence plus identity/digest, no decoding,
+// never applied to the config) for tracked paths the selected set does not
+// cover — an unselected slot sibling that exists must not look absent.
+func trackedSlotFingerprint(path string, fingerprints map[string]reloadFileFingerprint) (reloadFileFingerprint, error) {
+	if fingerprint := reloadFingerprintForPath(fingerprints, path); fingerprint != (reloadFileFingerprint{}) {
+		return fingerprint, nil
+	}
+	return readReloadFingerprint(path)
 }
 
 func reloadFingerprintForPath(fingerprints map[string]reloadFileFingerprint, path string) reloadFileFingerprint {

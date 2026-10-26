@@ -61,6 +61,10 @@ func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 		}
 		platform.HideConsoleWindow(&cmd)
 
+		if stops, ok := ctx.Value(retainedStopKey{}).(*retainedStops); ok {
+			err = runRetainedProcess(ctx, &cmd, stops, func() error { return killRetainedProcess(cmd.Process.Pid) }, registerProcess)
+			return retainedCommandResult(ctx, hc.Stderr, err)
+		}
 		err = cmd.Start()
 		if err == nil {
 			if registerProcess != nil && cmd.Process != nil {
@@ -117,6 +121,12 @@ func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 		}
 		return windowsCommandResult(ctx, hc.Stderr, err, false)
 	}
+}
+
+func killRetainedProcess(pid int) error { return session.KillProcess(pid) }
+
+func retainedCommandResult(ctx context.Context, stderr io.Writer, err error) error {
+	return windowsCommandResult(ctx, stderr, err, ctx.Err() != nil)
 }
 
 func windowsCommandResult(ctx context.Context, stderr io.Writer, err error, cancellationWon bool) error {

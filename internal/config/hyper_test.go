@@ -67,8 +67,12 @@ func TestHyperSync_GetFreshProvider(t *testing.T) {
 	require.Equal(t, "Hyper", provider.Name)
 	require.Equal(t, 1, client.callCount)
 
-	// Verify cache was written.
-	fileInfo, err := os.Stat(path)
+	// Verify cache was written (active generation: .ktav sibling or legacy .json).
+	active := path
+	if ktav := ktavSiblingOf(path); ktavEntryExists(ktav) {
+		active = ktav
+	}
+	fileInfo, err := os.Stat(active)
 	require.NoError(t, err)
 	require.False(t, fileInfo.IsDir())
 }

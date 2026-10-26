@@ -1,0 +1,17 @@
+{
+ "version":1,"limits":{"max_concurrent":1,"max_depth":8,"max_nodes":64},
+ "runner":{"control_timeout_ms":1000,"record_retention":128},"wait_bound_ms":10000,
+ "payloads":{"p":{"kind":"controlled"}},
+ "script":[
+  {"action":"submit","ref":"fd-A","root":"A","spec":{"batch":{"mode":"parallel","notify":"all","items":[{"task":{"payload_ref":"p"}}]}}},
+  {"action":"await_start","node":"A.1","bind":"a1","timeout_ms":1000},
+  {"action":"release_start","attempt":"a1","decision":"accept"},
+  {"action":"await_state","node":"A.1","state":"running","timeout_ms":1000},
+  {"action":"complete","attempt":"a1","state":"completed"},
+  {"action":"await_record","type":"settled","node":"A.1","timeout_ms":1000},
+  {"action":"await_state","node":"A","state":"completed","timeout_ms":1000},
+  {"action":"capacity_available","group":"g"},
+  {"action":"close","expect":"ok","timeout_ms":1000}
+ ],
+ "expect":{"roots":[{"id":"A","state":"completed"}],"nodes":[{"id":"A.1","starts":1,"accepted":1,"stops":0,"disposes":1}],"notices":{"A":[{"node":"A","state":"completed"}]},"max_active":1,"exit_code":0}
+}

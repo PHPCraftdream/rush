@@ -7,10 +7,9 @@
 // an unknown host's rows are never treated as reapable.
 //
 // This file only implements the primitive (registration, probe, the two
-// deletion paths); AsyncJobStore.ensureHost wires it lazily into the first
-// Claim of a job or ClaimSessionDriver. async_hosts rows stay display-only
-// bookkeeping throughout -- no FK from async_jobs, no timestamp used for
-// liveness.
+// deletion paths); a store's ensure path wires it lazily into the first
+// claim. async_hosts rows stay display-only bookkeeping throughout -- no FK
+// from work rows, no timestamp used for liveness.
 package session
 
 import (
@@ -91,7 +90,7 @@ var (
 )
 
 // retainedHostLocks pins OS host locks whose owner store was closed on the
-// forced-shutdown path (AsyncJobStore.CloseKeepLock). An *os.File is closed by
+// forced-shutdown path (CloseKeepLock). An *os.File is closed by
 // its finalizer once unreachable, which would silently release the lock at the
 // next GC; the lock must live until the process exits.
 var (
@@ -212,8 +211,17 @@ func ProbeHost(dataDir, hostID string) (HostLockStatus, *FileLock, error) {
 // db.New), without this package importing anything beyond the generated
 // param/row types.
 type AsyncHostStore interface {
-	RegisterAsyncHost(ctx context.Context, arg db.RegisterAsyncHostParams) (db.AsyncHost, error)
+	RegisterAsyncHost(ctx context.Context, arg db.RegisterAsyncHostRowParams) (db.AsyncHost, error)
 	DeleteAsyncHostIfNoJobs(ctx context.Context, id string) (int64, error)
+}
+
+// hostLockStatusFromLockStatus maps a filelock.LockStatus verdict onto
+// session.HostLockStatus. The two types have IDENTICAL ordering and
+// meaning (Unknown=0, Alive, Dead); this adapter exists only because
+// the probe primitive itself lives in internal/filelock (internal/db
+// needs it and cannot import internal/session).
+func hostLockStatusFromLockStatus(s filelock.LockStatus) HostLockStatus {
+	return HostLockStatus(s)
 }
 
 // ProbeHostLockShared answers "is the process behind lockPath alive?" via
@@ -224,38 +232,19 @@ type AsyncHostStore interface {
 // anyone else. Winning the SHARED lock is kernel-attested proof no
 // exclusive holder exists right now (dead); contention
 // (EWOULDBLOCK/EAGAIN on POSIX, ERROR_LOCK_VIOLATION/ERROR_SHARING_VIOLATION
-// on Windows -- isLockContentionError) means alive; anything else is
-// unknown. The probe does not create the file, and releases its own shared
-// lock before returning in every case -- callers never receive a lock to
-// manage, and a genuine holder is never disturbed.
+// on Windows) means alive; anything else is unknown. The probe does not
+// create the file, and releases its own shared lock before returning --
+// callers never receive a lock to manage, and a genuine holder is never
+// disturbed.
+//
+// The primitive itself lives in filelock.ProbeShared; this wrapper only
+// translates the verdict type and returns the error unchanged.
 func ProbeHostLockShared(lockPath string) (HostLockStatus, error) {
-	// A14: same read-only rationale as ProbeHostLock.
-	f, err := os.OpenFile(lockPath, os.O_RDONLY, 0o644)
+	status, err := filelock.ProbeShared(lockPath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return HostStatusDead, nil
-		}
-		return HostStatusUnknown, fmt.Errorf("host lock probe (shared): open %s: %w", lockPath, err)
+		return HostStatusUnknown, err
 	}
-	defer f.Close()
-	// See ProbeHostLock's identical guard for why this check matters now
-	// that both probes open read-only.
-	if info, statErr := f.Stat(); statErr == nil && info.IsDir() {
-		return HostStatusUnknown, fmt.Errorf("host lock probe (shared): %s is a directory", lockPath)
-	}
-	if err := tryLockFileShared(f); err != nil {
-		if isLockContentionError(err) {
-			return HostStatusAlive, nil
-		}
-		return HostStatusUnknown, fmt.Errorf("host lock probe (shared): lock %s: %w", lockPath, err)
-	}
-	// Won the shared lock: no exclusive holder exists right now. Release
-	// immediately (doc: "release the shared lock right after the probe") --
-	// this probe never holds anything past its own return.
-	if err := unlockFile(f); err != nil {
-		return HostStatusUnknown, fmt.Errorf("host lock probe (shared): unlock %s: %w", lockPath, err)
-	}
-	return HostStatusDead, nil
+	return hostLockStatusFromLockStatus(status), nil
 }
 
 // ProbeHostShared is ProbeHostLockShared scoped to dataDir/hostID, with the
@@ -344,8 +333,8 @@ func acquireFreshHostLock(lockPath string) (*FileLock, error) {
 // id and lock file, even if this process already holds one. Doc sec.3.6's
 // "lazy at first claim" means calling this ONCE, the first time a process
 // needs a host identity, and reusing the result -- that lazy-once wrapper is
-// AsyncJobStore.ensureHost (memoized per store); this function is the
-// unconditional primitive it calls.
+// each store's memoized ensure path (e.g. HostStore.EnsureHost); this
+// function is the unconditional primitive it calls.
 //
 // Registration FAILS outright if the lock cannot be acquired (doc sec.3.6:
 // a filesystem without lock support must fail registration; that class, and
@@ -380,7 +369,7 @@ func RegisterHost(ctx context.Context, dataDir string, pid int, label string, st
 		}
 		return nil, fmt.Errorf("%w: register: acquire %s: %w", ErrHostLockUnavailable, lockPath, err)
 	}
-	if _, err := store.RegisterAsyncHost(ctx, db.RegisterAsyncHostParams{
+	if _, err := store.RegisterAsyncHost(ctx, db.RegisterAsyncHostRowParams{
 		ID:        id,
 		Pid:       int64(pid),
 		Label:     label,
@@ -395,7 +384,7 @@ func RegisterHost(ctx context.Context, dataDir string, pid int, label string, st
 
 // Close is the owner-exit path (doc sec.3.6: "файл удаляет владелец при
 // выходе, если строк не осталось"). If this host has zero referencing
-// async_jobs rows, its async_hosts row and lock file are both removed;
+// batch_nodes rows, its async_hosts row and lock file are both removed;
 // otherwise only the OS lock is released, leaving the DB row and file for
 // a later recoverer (RemoveDeadHostFile) or retention pass. Safe to call on
 // nil or an already-closed identity.
@@ -510,5 +499,5 @@ func RemoveDeadHostFile(lockPath string, held *FileLock) error {
 // rather than an already-built *db.Queries can pass it directly to
 // RegisterHost/Close.
 func AsyncHostStoreFromConn(dbtx db.DBTX) AsyncHostStore {
-	return db.New(dbtx)
+	return hostNodeStore{q: db.New(dbtx)}
 }

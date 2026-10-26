@@ -23,10 +23,12 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/ktavcodec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -125,6 +127,7 @@ func TestModelsIntegrityCmd_SessionsListAborts(t *testing.T) {
 // on stderr and proceed; the JSON payload flags edited_directly only on
 // failure, and a clean store stays silent both ways.
 func TestModelsIntegrityCmd_ModelsStateWarns(t *testing.T) {
+	ktavGateOn(t)
 	warning := "warning: the model settings were changed outside the rush models commands"
 
 	globalPath := isolatedModelsEnv(t)
@@ -144,8 +147,16 @@ func TestModelsIntegrityCmd_ModelsStateWarns(t *testing.T) {
 	require.Equal(t, true, payload["edited_directly"])
 
 	// (c) clean store: no warning, and no edited_directly key at all.
-	require.NoError(t, os.WriteFile(globalPath,
-		[]byte(`{"providers":{"zai":{"api_key":"test-zai-key"}}}`), 0o644))
+	// With the gate ON the earlier runs migrated the seeded rush.json to
+	// rush.ktav (rush.json renamed to rush.json.bak), so the clean seed must
+	// go into the ACTIVE Ktav slot — writing rush.json here would be
+	// shadowed by the still-tampered rush.ktav and the warning would
+	// (correctly) persist.
+	ktavPath := filepath.Join(filepath.Dir(globalPath), "rush.ktav")
+	cleanDoc, convErr := ktavcodec.ConvertJSONToKtav(
+		[]byte(`{"providers":{"zai":{"api_key":"test-zai-key"}}}`))
+	require.NoError(t, convErr)
+	require.NoError(t, os.WriteFile(ktavPath, cleanDoc, 0o644))
 	_, cleanErrOut, runErr := runRushTreeCapture(t, "models", "state")
 	require.NoError(t, runErr)
 	assert.NotContains(t, cleanErrOut, warning)
@@ -192,6 +203,7 @@ func TestModelsIntegrityCmd_ModelsUseRepairs(t *testing.T) {
 // with a settings lock is treated as tampering by setupApp, while
 // setupAppLite still proceeds.
 func TestModelsIntegrityCmd_LockedMissingKeyAborts(t *testing.T) {
+	ktavGateOn(t)
 	globalPath := isolatedModelsEnv(t)
 	seedLockedModelsMissingRev(t, globalPath)
 

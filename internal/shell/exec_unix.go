@@ -112,7 +112,7 @@ func isolateProcess(cmd *exec.Cmd) {
 // context.Background() (as internal/agent/tools/bash.go's foreground path
 // does) has no independent timeout of its own here; in practice it's
 // bounded by whatever OUTER mechanism eventually cancels that context
-// (turn cancellation, the stream watchdog, `job_kill` for a backgrounded
+// (turn cancellation, the stream watchdog, batch_stop for a backgrounded
 // tool run), not by anything in this file.
 func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int)) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
@@ -134,6 +134,10 @@ func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 		}
 		isolateProcess(&cmd)
 
+		if stops, ok := ctx.Value(retainedStopKey{}).(*retainedStops); ok {
+			err = runRetainedProcess(ctx, &cmd, stops, func() error { return killRetainedProcess(cmd.Process.Pid) }, registerProcess)
+			return retainedCommandResult(ctx, hc.Stderr, err)
+		}
 		err = cmd.Start()
 		if err == nil {
 			if registerProcess != nil && cmd.Process != nil {
@@ -157,6 +161,23 @@ func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 
 		return exitStatusFromError(ctx, hc.Stderr, err)
 	}
+}
+
+func killRetainedProcess(pid int) error {
+	err := syscall.Kill(-pid, syscall.SIGKILL)
+	// ESRCH: the group is gone. EPERM: macOS refuses to signal a group whose
+	// members have all exited but are not reaped yet (the group is ours).
+	if err == syscall.ESRCH || err == syscall.EPERM {
+		return nil
+	}
+	return err
+}
+
+func retainedCommandResult(ctx context.Context, stderr io.Writer, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return exitStatusFromError(ctx, stderr, err)
 }
 
 // exitStatusFromError translates an exec error into an interp exit status,

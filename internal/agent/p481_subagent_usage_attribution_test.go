@@ -91,7 +91,7 @@ func TestSubAgentUsage_CostTransferDoesNotDuplicateMessageRows(t *testing.T) {
 		Provider: "zai", Model: "glm-5.3", CacheSupport: message.CacheSupportNative,
 	}))
 
-	// The child charges its OWN ledger (#1130: no transfer); the parent's
+	// The child charges its OWN session (#1130: no transfer); the parent's
 	// budget picks the spend up through the delegation tree.
 	_, err = env.sessions.IncrementCost(ctx, child.ID, 1.25)
 	require.NoError(t, err)

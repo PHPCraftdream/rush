@@ -196,6 +196,16 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 
 	// Parse the call data from JSON
 	var callData SessionAgentCallData
+	if IsSessionExecutionRequirementCallData(leased.CallData) {
+		slog.Error("run_queue_pump: refusing to execute a session execution requirement metadata row as a call", "id", leased.ID, "session_id", leased.SessionID, "instance_id", p.cfg.PumpInstanceID)
+		fenceDBCtx, fenceDBCancel := newDBCtx()
+		defer fenceDBCancel()
+		if termErr := p.cfg.Sessions.TerminalFailRunQueueEntry(fenceDBCtx, leased.ID, p.cfg.PumpInstanceID); termErr != nil {
+			slog.Error("run_queue_pump: terminal fail failed", "id", leased.ID, "err", termErr, "instance_id", p.cfg.PumpInstanceID)
+		}
+		ids, terminalID := resultIdentity()
+		return ids, terminalID, fmt.Errorf("session execution requirement row %s is not executable", leased.ID)
+	}
 	if err := json.Unmarshal([]byte(leased.CallData), &callData); err != nil {
 		slog.Error("run_queue_pump: failed to parse call data", "id", leased.ID, "session_id", leased.SessionID, "err", err, "instance_id", p.cfg.PumpInstanceID)
 		// Terminal failure: malformed data can never succeed
@@ -571,8 +581,10 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 		}
 	}()
 
-	// Attempt to execute via coordinator.Run
-	_, err := p.cfg.Coordinator.Run(execCtx, callData)
+	// Attempt to execute via coordinator.Run. The leased row's durable id
+	// rides the context (R12-H2b §2.4): the coordinator's rebuild releases
+	// this row's Continuation holder in both outcomes.
+	_, err := p.cfg.Coordinator.Run(WithRunQueueRowID(execCtx, leased.ID), callData)
 	sealAssistantIdentities()
 
 	// Stop renewing IMMEDIATELY once Run returns, synchronously, before any

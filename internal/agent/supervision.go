@@ -3,18 +3,16 @@
 // concurrency.md §7, wake-tools-contract.md §5.1/§5.2/§6/§7, operator
 // decision 2026-09-27 item 5).
 //
-// Deliberately NOT a workLedger job: a supervision timer never appears in
-// bySession[x].jobs, so it can never itself keep l.running(x)/next() from
+// Deliberately NOT a counted unit of work: a supervision timer never appears
+// in any live-work read, so it can never keep a scope predicate from
 // reporting "no open work" -- rush run still exits the instant its OTHER
 // work drains, and the timer is simply abandoned when the process exits
-// (Go does not wait for stray goroutines). This sidesteps the jobKind/
-// HoldsScope question docs/plans/2026-09-28-async-phase3-spec.md §0.2 left
-// open for phase 5 entirely: supervision was never a counted unit of work
-// to begin with.
+// (Go does not wait for stray goroutines).
 //
-// The single per-process timer goroutine is shared with asyncJob deadlines
-// (work_ledger_timeout.go's timeoutService/timeoutEntry) -- this file never
-// starts a second worker or a goroutine per session.
+// The single per-process timer goroutine is the shared timeoutService
+// (timeout_service.go) -- this file never starts a second worker or a
+// goroutine per session. The registry and the service hang off the
+// coordinator (the deleted workLedger's retained halves, rehomed).
 package agent
 
 import (
@@ -26,7 +24,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -119,9 +116,10 @@ type supervisionState struct {
 	interval      time.Duration // current (grows on no-progress ticks, resets to cfg.Interval on progress)
 	tickCount     int           // consecutive no-progress ticks delivered since the last progress reset
 	paused        bool          // true once tickCount reaches cfg.MaxNoProgress; cleared only by recordProgress
-	// flaggedOnce remembers command jobs already seen silent on an earlier
-	// tick: only a job silent on TWO consecutive ticks gets the escalation
-	// line. Cleared by recordProgress (and noteWorkStarted's resume branch).
+	// flaggedOnce is retained state shape (the legacy silence escalation's
+	// memory); nothing writes it in the batch world -- the escalation is
+	// gone with the ledger output buffers. Cleared by recordProgress (and
+	// noteWorkStarted's resume branch).
 	flaggedOnce map[string]bool
 }
 
@@ -149,22 +147,22 @@ func newSupervisionRegistry() *supervisionRegistry {
 // child cannot itself be running a bash/run_command call before its driver
 // is registered (runSubAgent registers before dispatching the child's first
 // turn), so this check is never racing the child's own first Start call.
-// Called from asyncTool.Run AFTER workLedger.Start has released l.mu, so
-// this never nests l.mu under supervisionRegistry.mu (see that struct's own
-// lock-ordering note: the two mutexes are always taken sequentially, never
-// nested, in either direction).
-func (l *workLedger) noteWorkStarted(ctx context.Context, sessionID string) {
-	if l == nil || l.supervision == nil || l.coord == nil || sessionID == "" {
+// Called from the batch delivery's started boundary (the deleted asyncTool
+// the arming never holds any other owner lock (the registry's own
+// lock-ordering note: its mutex is always taken sequentially, never nested,
+// with any delivery lock).
+func (c *coordinator) noteWorkStarted(ctx context.Context, sessionID string) {
+	if c == nil || c.supervision == nil || sessionID == "" {
 		return
 	}
-	if _, isDelegatedChild := l.coord.subAgentDrivers.get(sessionID); isDelegatedChild {
+	if _, isDelegatedChild := c.subAgentDrivers.get(sessionID); isDelegatedChild {
 		return
 	}
-	cfg := l.coord.resolveSupervisionConfig(ctx)
+	cfg := c.resolveSupervisionConfig(ctx)
 	if !cfg.Enabled {
 		return
 	}
-	sr := l.supervision
+	sr := c.supervision
 	sr.mu.Lock()
 	st, ok := sr.byRoot[sessionID]
 	switch {
@@ -190,7 +188,7 @@ func (l *workLedger) noteWorkStarted(ctx context.Context, sessionID string) {
 	gen := st.generation
 	deadline := time.Now().Add(st.interval)
 	sr.mu.Unlock()
-	l.timeouts.armFunc(deadline, func() { l.handleSupervisionDeadline(sessionID, gen) })
+	c.timeouts.armFunc(deadline, func() { c.handleSupervisionDeadline(sessionID, gen) })
 }
 
 // recordProgress resets sessionID's backoff to its base interval and clears
@@ -200,11 +198,11 @@ func (l *workLedger) noteWorkStarted(ctx context.Context, sessionID string) {
 // moves into history, for every notice EXCEPT supervision's own
 // (noticeKindSupervision) -- see that call site's comment for why the tick's
 // own resulting turn must not reset the very backoff it just grew.
-func (l *workLedger) recordProgress(sessionID string) {
-	if l == nil || l.supervision == nil || sessionID == "" {
+func (c *coordinator) recordProgress(sessionID string) {
+	if c == nil || c.supervision == nil || sessionID == "" {
 		return
 	}
-	sr := l.supervision
+	sr := c.supervision
 	sr.mu.Lock()
 	st, ok := sr.byRoot[sessionID]
 	if !ok {
@@ -220,7 +218,7 @@ func (l *workLedger) recordProgress(sessionID string) {
 	gen := st.generation
 	deadline := time.Now().Add(st.interval)
 	sr.mu.Unlock()
-	l.timeouts.armFunc(deadline, func() { l.handleSupervisionDeadline(sessionID, gen) })
+	c.timeouts.armFunc(deadline, func() { c.handleSupervisionDeadline(sessionID, gen) })
 }
 
 // pushDeadlineOnTurnEnd re-arms sessionID's CURRENT (possibly already grown)
@@ -235,11 +233,11 @@ func (l *workLedger) recordProgress(sessionID string) {
 // backoff it just grew (that would defeat consecutive-no-progress growth
 // entirely, since every tick that wakes an idle root produces exactly such a
 // turn). A no-op while paused: only recordProgress resumes a paused session.
-func (l *workLedger) pushDeadlineOnTurnEnd(sessionID string) {
-	if l == nil || l.supervision == nil || sessionID == "" {
+func (c *coordinator) pushDeadlineOnTurnEnd(sessionID string) {
+	if c == nil || c.supervision == nil || sessionID == "" {
 		return
 	}
-	sr := l.supervision
+	sr := c.supervision
 	sr.mu.Lock()
 	st, ok := sr.byRoot[sessionID]
 	if !ok || st.paused {
@@ -251,7 +249,7 @@ func (l *workLedger) pushDeadlineOnTurnEnd(sessionID string) {
 	gen := st.generation
 	deadline := time.Now().Add(st.interval)
 	sr.mu.Unlock()
-	l.timeouts.armFunc(deadline, func() { l.handleSupervisionDeadline(sessionID, gen) })
+	c.timeouts.armFunc(deadline, func() { c.handleSupervisionDeadline(sessionID, gen) })
 }
 
 // clearSupervisionIfPresent removes sessionID's supervision state entirely.
@@ -261,11 +259,11 @@ func (l *workLedger) pushDeadlineOnTurnEnd(sessionID string) {
 // see this function's own doc for the known gap around a bare session
 // delete with no prior cancel). A stale heap entry for the removed
 // generation simply finds byRoot[sessionID] absent when it fires and no-ops.
-func (l *workLedger) clearSupervisionIfPresent(sessionID string) {
-	if l == nil || l.supervision == nil {
+func (c *coordinator) clearSupervisionIfPresent(sessionID string) {
+	if c == nil || c.supervision == nil {
 		return
 	}
-	sr := l.supervision
+	sr := c.supervision
 	sr.mu.Lock()
 	delete(sr.byRoot, sessionID)
 	sr.mu.Unlock()
@@ -280,18 +278,29 @@ func growInterval(cur, max time.Duration) time.Duration {
 	return next
 }
 
+// supervisionWorkOpen is the scope-open input of the supervision deadline:
+// batch live work (own roots plus delegation descendants). Unknown reads
+// fail open (work treated as open).
+func (c *coordinator) supervisionWorkOpen(sessionID string) bool {
+	own, desc, err := coordinatorBatchCutoverFacts(c).LiveWorkSummary(context.Background(), sessionID)
+	if err != nil {
+		return true
+	}
+	return own > 0 || desc > 0
+}
+
 // handleSupervisionDeadline is the timeoutService fire callback for
 // sessionID's armed generation. It re-checks everything under
-// supervisionRegistry.mu / workLedger.mu / the agent mailbox before acting
+// supervisionRegistry.mu / the agent mailbox before acting
 // (the same "lazy recheck, stale fire is a no-op" discipline
 // work_ledger_timeout.go's handleTimeout already documents for asyncJob
 // deadlines): a generation mismatch, no open work, or a live turn all make
 // this a no-op rather than a wrong tick.
-func (l *workLedger) handleSupervisionDeadline(rootSessionID string, generation uint64) {
-	if l == nil || l.supervision == nil || l.coord == nil {
+func (c *coordinator) handleSupervisionDeadline(rootSessionID string, generation uint64) {
+	if c == nil || c.supervision == nil {
 		return
 	}
-	sr := l.supervision
+	sr := c.supervision
 
 	sr.mu.Lock()
 	st, ok := sr.byRoot[rootSessionID]
@@ -307,7 +316,7 @@ func (l *workLedger) handleSupervisionDeadline(rootSessionID string, generation 
 	// closed since this deadline was armed; drop the state instead of
 	// waiting for deliverLocked to have caught it first (belt and braces --
 	// the two can race harmlessly, both converge on "state gone").
-	if !l.running(rootSessionID) {
+	if !c.supervisionWorkOpen(rootSessionID) {
 		sr.mu.Lock()
 		if st2, ok := sr.byRoot[rootSessionID]; ok && st2.generation == generation {
 			delete(sr.byRoot, rootSessionID)
@@ -330,7 +339,7 @@ func (l *workLedger) handleSupervisionDeadline(rootSessionID string, generation 
 	// agent run died here from a fire armed by an earlier test). Nobody can
 	// answer the busy question, so this fire is a no-op exactly like a
 	// stale generation: the countdown stops until something re-arms it.
-	agent := l.coord.agentFor(rootSessionID)
+	agent := c.agentFor(rootSessionID)
 	if agent == nil {
 		return
 	}
@@ -359,39 +368,22 @@ func (l *workLedger) handleSupervisionDeadline(rootSessionID string, generation 
 		sr.nextGen++
 		st.generation = sr.nextGen
 		nextGen = st.generation
-		// Keep the stale-check in the flaggedOnce block below meaningful:
-		// this tick moved the state's generation, so the fired one is now
-		// stale by definition and the memory write would never happen.
+		// This tick moved the state's generation, so the fired one is now
+		// stale by definition.
 		generation = nextGen
 		nextDeadline = time.Now().Add(interval)
 	}
 	sr.mu.Unlock()
 
-	text, flagged := l.buildSupervisionSummaryAt(time.Now(), rootSessionID, tickNum, interval, lastTick)
+	text := c.buildSupervisionSummaryAt(time.Now(), rootSessionID, tickNum, interval, lastTick)
 	if !lastTick {
-		l.timeouts.armFunc(nextDeadline, func() { l.handleSupervisionDeadline(rootSessionID, nextGen) })
+		c.timeouts.armFunc(nextDeadline, func() { c.handleSupervisionDeadline(rootSessionID, nextGen) })
 	}
-	// Second consecutive silent tick for a job: escalate to an explicit
-	// kill instruction. Then remember this tick's flagged set. All under
-	// sr.mu (flaggedOnce belongs to supervisionState).
-	sr.mu.Lock()
-	if st, ok := sr.byRoot[rootSessionID]; ok && st.generation == generation {
-		if st.flaggedOnce == nil {
-			st.flaggedOnce = make(map[string]bool)
-		}
-		for _, fj := range flagged {
-			if st.flaggedOnce[fj.ToolCallID] {
-				text += fmt.Sprintf("\njob %s has been silent for %s: job_kill it unless you can name evidence of progress other than processes existing.",
-					fj.ToolCallID, fj.Silence.Round(time.Second))
-			}
-		}
-		for _, fj := range flagged {
-			st.flaggedOnce[fj.ToolCallID] = true
-		}
+	store := c.sessionNoticeStore()
+	if store == nil {
+		slog.Error("supervision: no session notice store bound; check-in not persisted", "session_id", rootSessionID)
+		return
 	}
-	sr.mu.Unlock()
-
-	coord := l.coord
 	go func() {
 		// Phase-4 step 3 (doc sec.3.2/3.3): persist the check-in as a
 		// session_notices row FIRST (no job_tool_call_id -- the void
@@ -399,107 +391,76 @@ func (l *workLedger) handleSupervisionDeadline(rootSessionID string, generation 
 		// owner", not one specific job), then submit the wake hint. wake=1
 		// per the wake-policy table; the pull (agent_notice_pull.go) voids
 		// it instead of delivering it if the scope has since closed.
-		if l.store == nil {
-			return
-		}
-		if err := l.store.InsertSessionNotice(context.Background(), rootSessionID, session.NoticeKindSupervision, text, true, ""); err != nil {
+		if err := store.InsertSessionNotice(context.Background(), rootSessionID, session.NoticeKindSupervision, text, true, ""); err != nil {
 			slog.Error("supervision: failed to persist check-in notice", "session_id", rootSessionID, "err", err)
 			return
 		}
-		_ = coord.wakeSession(context.Background(), rootSessionID, true)
+		_ = c.wakeSession(context.Background(), rootSessionID, true)
 	}()
 }
 
-// jobSnapshot is a copy of the fields buildSupervisionSummary needs from one
-// open job, taken under l.mu and used afterward without it (mirroring
-// capturePartial's own "snapshot under lock, I/O outside it" discipline).
-type jobSnapshot struct {
-	toolCallID, toolName, childSession, shellID string
-	outputBuf                                   tools.LiveOutputBuffer
-	input                                       string
-	startedAt                                   time.Time
-	elapsed                                     time.Duration
-}
-
-// buildSupervisionSummary composes the check-in text from rootSessionID's
-// currently open jobs, reusing capturePartial/capturePartialDelegation
-// (work_ledger_timeout.go) for each one's last-output-line -- the same
-// cheap, best-effort helpers §5.6's timeout notices already use, per the
-// task's explicit instruction to reuse them rather than add a second
-// output-reading path.
-func (l *workLedger) buildSupervisionSummary(rootSessionID string, tickNum int, interval time.Duration, paused bool) string {
-	text, _ := l.buildSupervisionSummaryAt(time.Now(), rootSessionID, tickNum, interval, paused)
-	return text
-}
-
-// buildSupervisionSummaryAt is buildSupervisionSummary with the clock passed
-// in, so tests can backdate job ages/silences instead of sleeping. Alongside
-// the text it returns the set of command jobs flagged as silent this tick
-// (see supervision_silence.go), which handleSupervisionDeadline uses for the
-// second-tick escalation and the pause line.
-func (l *workLedger) buildSupervisionSummaryAt(now time.Time, rootSessionID string, tickNum int, interval time.Duration, paused bool) (string, []flaggedJob) {
-	l.mu.Lock()
-	var snaps []jobSnapshot
-	if s := l.bySession[rootSessionID]; s != nil {
-		for _, job := range s.jobs {
-			snaps = append(snaps, jobSnapshot{
-				toolCallID: job.toolCallID, toolName: job.toolName,
-				childSession: job.childSession, shellID: job.shellID,
-				outputBuf: job.outputBuf, input: job.input,
-				startedAt: job.startedAt, elapsed: now.Sub(job.startedAt),
-			})
+// buildSupervisionSummaryAt is the supervision summary: one line per live
+// batch node, from the facts' live read, with the delegation count and the
+// #1157 awaiting-question line sourced from batch FACTS
+// (LiveDelegationNodes' descendants and LiveHeldQuestions' pending
+// child_question rows). There is NO output-buffer/last-activity seam on
+// BatchCutoverFacts, so no silence line and no flagged job exists here (the
+// legacy output-buffer silence escalation is gone with the ledger job map;
+// the pause line and the awaiting-question callout are retained).
+func (c *coordinator) buildSupervisionSummaryAt(now time.Time, rootSessionID string, tickNum int, interval time.Duration, paused bool) string {
+	facts := coordinatorBatchCutoverFacts(c)
+	nodes, err := facts.LiveNodes(context.Background(), rootSessionID)
+	lines := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		name := node.ToolCallID
+		if name == "" {
+			name = node.NodeID
 		}
+		kind := node.TaskKind
+		if kind == "" {
+			kind = node.Kind
+		}
+		lines = append(lines, fmt.Sprintf("- %s (%s): %s, running %s",
+			name, kind, node.State, now.Sub(node.StartedAt).Round(time.Second)))
 	}
-	l.mu.Unlock()
-
-	commands, delegations, awaitingCount := 0, 0, 0
-	lines := make([]string, 0, len(snaps))
-	for _, j := range snaps {
-		if j.childSession != "" {
-			delegations++
-			// #1157: a delegation whose child is paused on its question is
-			// the actionable case -- name it first, with the exact calls.
-			if line, ok := l.childAwaitingQuestionSummary(j.childSession, j.elapsed); ok {
-				awaitingCount++
-				lines = append(lines, line)
-				continue
-			}
-			if line, ok := l.idleChildSummary(j.childSession, j.elapsed); ok {
-				lines = append(lines, line)
-				continue
+	// The delegation count is the DESCENDANT facts' count (every live child
+	// node naming a delegation child session), not a recount of the tree
+	// lines: a descendant whose root line is present still counts once.
+	delegations := 0
+	if delegationNodes, derr := facts.LiveDelegationNodes(context.Background(), rootSessionID); derr == nil {
+		for _, node := range delegationNodes {
+			if node.ChildSessionID != "" {
+				delegations++
 			}
 		}
-		partial := l.capturePartial(rootSessionID, j.toolCallID, j.toolName, j.childSession, j.shellID, j.outputBuf)
-		last := lastNonEmptyLine(tools.TruncateOutput(strings.TrimSpace(partial.content)))
-		if last == "" {
-			last = "(no output yet)"
-		}
-		if j.childSession != "" {
-			lines = append(lines, fmt.Sprintf("- %s (sub-agent, child session %s): running %s, last activity: %s",
-				j.toolCallID, j.childSession, j.elapsed.Round(time.Second), last))
-		} else {
-			commands++
-			line, _ := l.silenceLine(now, rootSessionID, j)
-			lines = append(lines, line)
-		}
 	}
-	flagged := l.silenceFlaggedJobs(now, rootSessionID, snaps)
+	// #1157 on batch facts: LiveHeldQuestions is the pending child_question
+	// debt bound to a LIVE node incarnation (conservative fail-safe: 1 +
+	// err). Its rows carry only id+kind (session.PendingNoticeDebt), no
+	// question text, so the count clause stands alone -- the question
+	// itself reaches the parent through the pulled notice. A settled or
+	// stale-incarnation question is NOT counted (it can no longer be
+	// answered through inject_agent).
+	awaitingCount := 0
+	if held, herr := facts.LiveHeldQuestions(context.Background(), rootSessionID); herr == nil {
+		awaitingCount = len(held)
+	}
 	body := strings.Join(lines, "\n")
 	if body == "" {
-		body = "(no details available)"
+		if err != nil {
+			body = "(live scope unreadable: " + err.Error() + ")"
+		} else {
+			body = "(no details available)"
+		}
 	}
-
-	guidance := "Keep waiting, inspect with job_output, or stop with job_kill (commands); for a sub-agent use inspect_agent, inject_agent or stop_agent."
+	guidance := "Inspect with batch_output, or stop with batch_stop."
 	if awaitingCount > 0 {
 		guidance = "A sub-agent is blocked on your answer; waiting will not progress it.\n" + guidance
 	}
-	if len(flagged) > 0 {
-		guidance = "Verify liveness with job_output (last output time, recent lines). Process existence is not progress. If there is no sign of progress, stop it with job_kill and report.\n" + guidance
-	}
 	if paused {
 		guidance = fmt.Sprintf(
-			"Supervision is now paused after %d consecutive check-ins with no progress; it resumes automatically once something changes (a job or sub-agent completes). %s",
-			tickNum, guidance)
+			"%s\nSupervision is now paused after %d consecutive check-ins with no progress; it resumes automatically once something changes (a job or sub-agent completes).",
+			guidance, tickNum)
 	}
 	awaitingClause := ""
 	if awaitingCount > 0 {
@@ -507,70 +468,8 @@ func (l *workLedger) buildSupervisionSummaryAt(now time.Time, rootSessionID stri
 	}
 	text := fmt.Sprintf(
 		"Supervision check-in (tick %d, interval %gm): %d background job(s) running, %d sub-agent delegation(s) in progress%s.\n\n%s\n\n%s",
-		tickNum, interval.Minutes(), commands, delegations, awaitingClause, body, guidance)
-	// Pausing with a silent job: name the oldest flagged one and demand a
-	// kill-or-justify decision -- no further ticks follow a pause.
-	if paused {
-		if oldest := oldestFlaggedJob(flagged); oldest != nil {
-			text += fmt.Sprintf("\nSupervision is pausing: job %s has been running %s and silent %s — job_kill it now or state why it must keep running.",
-				oldest.ToolCallID, oldest.Running.Round(time.Second), oldest.Silence.Round(time.Second))
-		}
-	}
-	return text, flagged
-}
-
-// oldestFlaggedJob returns the flagged job with the earliest start time.
-func oldestFlaggedJob(flagged []flaggedJob) *flaggedJob {
-	var oldest *flaggedJob
-	for i := range flagged {
-		if oldest == nil || flagged[i].StartedAt.Before(oldest.StartedAt) {
-			oldest = &flagged[i]
-		}
-	}
-	return oldest
-}
-
-// idleChildSummary is the #1157 visibility line for the OTHER variant of the
-// old deadlock: a child that finished its turn with text and is now idle
-// while its own jobs still run. The stale "last activity" reading (an old
-// turn's text) said nothing about why nothing happens. ok=false when the
-// child has no question and no own running work, or was never a delegation
-// child -- the ordinary "last activity" line applies.
-func (l *workLedger) idleChildSummary(childID string, elapsed time.Duration) (string, bool) {
-	if l.coord == nil {
-		return "", false
-	}
-	if ag := l.coord.agentFor(childID); ag != nil && ag.IsSessionBusy(childID) {
-		return "", false
-	}
-	own := l.childOwnRunningJobs(childID)
-	bg := 0
-	if l.coord.background != nil {
-		bg = l.coord.background.ActiveOwned(childID)
-	}
-	if own+bg == 0 {
-		return "", false
-	}
-	oldest := ""
-	l.mu.Lock()
-	var oldestAt time.Time
-	if s := l.bySession[childID]; s != nil {
-		for _, job := range s.jobs {
-			if job.state != phaseRunning {
-				continue
-			}
-			if oldestAt.IsZero() || job.startedAt.Before(oldestAt) {
-				oldestAt, oldest = job.startedAt, job.toolName
-			}
-		}
-	}
-	l.mu.Unlock()
-	detail := fmt.Sprintf("oldest: %s running %s", oldest, time.Since(oldestAt).Round(time.Second))
-	if oldest == "" {
-		detail = "none in this ledger"
-	}
-	return fmt.Sprintf("- (sub-agent, child session %s): idle, waiting on its own %d job(s); %s",
-		childID, own+bg, detail), true
+		tickNum, interval.Minutes(), len(nodes), delegations, awaitingClause, body, guidance)
+	return text
 }
 
 // lastNonEmptyLine returns the last non-blank line of s, or "".
@@ -586,10 +485,38 @@ func lastNonEmptyLine(s string) string {
 
 // onSessionIdleHook is wired as every SessionAgent's OnSessionIdle
 // (coordinator_tools.go): the universal "the mailbox of this session was
-// just released" trigger. It does no work on the releasing goroutine (no DB,
-// no lock): everything runs in one goroutine (afterRelease).
+// just released" trigger. Only admission runs on the releasing goroutine;
+// bookkeeping and DB work run in the registered callback.
 func (c *coordinator) onSessionIdleHook(sessionID string) {
-	go c.afterRelease(sessionID)
+	ctx, ok := c.admitCallback(&c.releaseWG)
+	if !ok {
+		return
+	}
+	go func() {
+		defer c.releaseWG.Done()
+		c.afterReleaseContext(ctx, sessionID)
+	}()
+}
+
+// admitCallback registers BEFORE spawn, under the same mutex that closes
+// admission. No positive Add can race shutdown's Wait, including a natural
+// ledger completion whose onWebDone invocation was delayed past ledger.close.
+func (c *coordinator) admitCallback(wg *sync.WaitGroup) (context.Context, bool) {
+	c.callbackMu.Lock()
+	defer c.callbackMu.Unlock()
+	if c.callbackClosing {
+		return nil, false
+	}
+	ctx := c.callbackContextLocked()
+	wg.Add(1)
+	return ctx, true
+}
+
+func (c *coordinator) callbackContextLocked() context.Context {
+	if c.callbackCtx == nil {
+		c.callbackCtx, c.callbackCancel = context.WithCancel(context.Background())
+	}
+	return c.callbackCtx
 }
 
 // afterRelease is the release-time work: the phase-3 delegation re-check
@@ -601,16 +528,92 @@ func (c *coordinator) onSessionIdleHook(sessionID string) {
 // does not relaunch itself here, and an unreadable debt check goes to the
 // re-check set.
 func (c *coordinator) afterRelease(sessionID string) {
-	if c.asyncJobs == nil || sessionID == "" {
+	ctx, ok := c.admitCallback(&c.releaseWG)
+	if !ok {
+		return
+	}
+	defer c.releaseWG.Done()
+	c.afterReleaseContext(ctx, sessionID)
+}
+
+func (c *coordinator) afterReleaseContext(ctx context.Context, sessionID string) {
+	if c.releaseCallbackHook != nil {
+		c.releaseCallbackHook(ctx)
+	}
+	if sessionID == "" {
 		return
 	}
 	// A delegated child's turn just ended (its first turn, a Drain turn, a
 	// turn a Stop cut off). #1130: no parent charge — the child paid its own
 	// cost_self as it ran, and readers sum the subtree on demand.
 	c.noteSubAgentChildRunEnded(sessionID)
-	if err := c.wakeSession(context.Background(), sessionID, false); err != nil {
+	if err := c.wakeSession(ctx, sessionID, false); err != nil {
 		slog.Debug("onSessionIdle: release-triggered drain attempt did not complete", "session_id", sessionID, "err", err)
 	}
+	// The wake above routes through agentFor, so it must run BEFORE the
+	// driver record can be torn down. After it, close the record's lifecycle:
+	// in the batch world nothing else ever unregisters a child's
+	// subAgentDriver (the ledger's recheckChild tail that used to call
+	// releaseDriverIfScopeClosed is deleted), so agentFor would route every
+	// later wake/cancel to a stale task-agent forever, contradicting
+	// coordinator_work_scope.go's "a delivered delegation is unregistered by
+	// design".
+	//
+	// REVERT CHECK (batch port, repair round 11 item 3): making this call a
+	// no-op leaves TestChildRunEnd_ReleaseChargesNothing red at "and its
+	// driver is released" (coordinator_child_cost_test.go) -- the driver
+	// record survives Kill + afterRelease forever.
+	c.releaseChildDriverIfScopeClosed(ctx, sessionID)
+}
+
+// releaseChildDriverIfScopeClosed is afterReleaseContext's driver-lifecycle
+// tail: it removes sessionID's subAgentDriver record (and its allowlist
+// entry) once the child's scope is closed. Conservative by construction:
+//
+//   - only a delegated child (a resolvable ParentSessionID) is considered;
+//   - a session mid-turn (its driver's mailbox busy) keeps its record -- a
+//     live turn means the scope is not closing (the BGShell wake contract:
+//     TestBGShellDone_DelegatedChildIsWokenWhateverTheClaimSays);
+//   - a delegation whose batch row still runs AND whose tree was not stopped
+//     keeps its record: the delegation still drives the child;
+//   - any unreadable read (session row, delegation row) keeps the record.
+//
+// A stopped tree is autoResumeSuspended (stopTree suspends every member),
+// which is the in-process fact that the operator closed the scope even while
+// the durable stop request still pends on the executor (in fixtures there is
+// no runner at all, so the row can never go terminal on its own). Releasing
+// cannot strand debt: the debt stays in the DB, and decide()/drainPolicy
+// re-derives every later launch through the policy (a released child's Drain
+// is refused there, and a resume_session_id re-registers the driver via
+// runSubAgent before its next turn).
+func (c *coordinator) releaseChildDriverIfScopeClosed(ctx context.Context, sessionID string) {
+	if c == nil || c.sessions == nil || sessionID == "" {
+		return
+	}
+	observed, registered := c.subAgentDrivers.get(sessionID)
+	if !registered {
+		return
+	}
+	if ag := c.agentFor(sessionID); ag != nil && ag.IsSessionBusy(sessionID) {
+		return
+	}
+	sess, err := c.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return
+	}
+	if sess.ParentSessionID == "" {
+		return
+	}
+	live, err := coordinatorBatchCutoverFacts(c).LiveDelegationChildOf(ctx, sess.ParentSessionID, sessionID)
+	if err != nil {
+		return
+	}
+	if live && !c.autoResumeSuspended(sessionID) {
+		return
+	}
+	// Release exactly the registration the reads above were made about: a
+	// resume that registered a newer driver meanwhile keeps its record.
+	c.releaseDriverGeneration(sessionID, observed.generation)
 }
 
 // supervisionIntervalNS shrinks the built-in initial interval for tests

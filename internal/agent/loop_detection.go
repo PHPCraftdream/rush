@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
 
 	"charm.land/fantasy"
 )
@@ -105,6 +106,33 @@ func loopDetectedFinishText(detail loopDetail) (msg, details string) {
 	return msg, details
 }
 
+// Background launch acks embed a fresh per-launch shell ID (bash tool:
+// "Background shell started with ID: %s" and the auto-background
+// "Background shell ID: %s" variant). Canonicalize the ID before hashing so
+// N identical background launches are recognized as repeats. The match is
+// anchored to the FULL ack template, so an ordinary tool result that merely
+// contains an ID-looking token still hashes raw.
+var backgroundLaunchAckRes = []*regexp.Regexp{
+	regexp.MustCompile(`\ABackground shell started with ID: [^\n]+\n\nUse batch_output \(root_id/node_id from await_tasks\) to view output or batch_stop to terminate\.\z`),
+	regexp.MustCompile(`\ACommand is taking longer than expected and has been moved to background\.\n\nBackground shell ID: [^\n]+\n\nUse batch_output \(root_id/node_id from await_tasks\) to view output or batch_stop to terminate\.\z`),
+}
+
+var backgroundLaunchAckCanonical = []string{
+	"Background shell started with ID: <shell-id>\n\nUse batch_output (root_id/node_id from await_tasks) to view output or batch_stop to terminate.",
+	"Command is taking longer than expected and has been moved to background.\n\nBackground shell ID: <shell-id>\n\nUse batch_output (root_id/node_id from await_tasks) to view output or batch_stop to terminate.",
+}
+
+// canonicalizeBackgroundLaunchAck collapses a trusted background-launch ack
+// to an ID-free canonical form. Non-matching output is returned unchanged.
+func canonicalizeBackgroundLaunchAck(output string) string {
+	for i, re := range backgroundLaunchAckRes {
+		if re.MatchString(output) {
+			return backgroundLaunchAckCanonical[i]
+		}
+	}
+	return output
+}
+
 // getToolInteractionSignature computes a hash signature for the tool
 // interactions in a single step's content. It pairs tool calls with their
 // results (matched by ToolCallID) and returns a hex-encoded SHA-256 hash.
@@ -125,7 +153,7 @@ func getToolInteractionSignature(content fantasy.ResponseContent) string {
 	for _, tc := range toolCalls {
 		output := ""
 		if tr, ok := resultsByID[tc.ToolCallID]; ok {
-			output = toolResultOutputString(tr.Result)
+			output = canonicalizeBackgroundLaunchAck(toolResultOutputString(tr.Result))
 		}
 		io.WriteString(h, tc.ToolName)
 		io.WriteString(h, "\x00")

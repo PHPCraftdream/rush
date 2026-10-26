@@ -1,8 +1,6 @@
 // The 60-second host-level pass (doc sec.3.4 rule (b), sec.3.5's "the ONLY
 // inter-process fallback"): hints live only inside this process, so a host
-// re-checks, once a minute: its own parked delegations (recheckChild, which
-// may need to fire again if the child's own work was recovered by another
-// process), every session whose launch is waiting (a Drain refused by an
+// re-checks, once a minute: every session whose launch is waiting (a Drain refused by an
 // admission gate, paced by the launch gate, held by a rerun, or whose launch
 // decision could not be read -- wakeSession's verdict switch keeps it in the
 // set), and the sweep of idle per-session state. The wakes run detached (one
@@ -53,6 +51,19 @@ func (c *coordinator) addToRecheckSet(sessionID string) {
 	c.recheckMu.Unlock()
 }
 
+// clearFromRecheckSet removes sessionID from the recheck set (R12-H2b
+// §2.3): a binding-loss refusal must not re-spin the 60s pass — the
+// binding cannot come back on a timer, and a newly admitted explicit
+// epoch re-evaluates on its own.
+func (c *coordinator) clearFromRecheckSet(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	c.recheckMu.Lock()
+	delete(c.recheckSet, sessionID)
+	c.recheckMu.Unlock()
+}
+
 // drainRecheckSet atomically empties and returns the current recheck set.
 func (c *coordinator) drainRecheckSet() []string {
 	c.recheckMu.Lock()
@@ -68,11 +79,8 @@ func (c *coordinator) drainRecheckSet() []string {
 	return out
 }
 
-// RecheckPass runs one iteration of the 60s host-level pass: the dead-host
-// sweep and retention purge, a re-evaluation of every parked delegation
-// (recheckChild -- a child whose scope was recovered or otherwise resolved by
-// another process since it was parked), and a wake for every session in the
-// recheck set (a hint that could not be acted on immediately). The wakes are
+// RecheckPass runs one iteration of the 60s host-level pass: the retention
+// purge, and a wake for every session in the recheck set (a hint that could not be acted on immediately). The wakes are
 // DETACHED (launchRecheckWake): a Drain turn can take minutes, and the pass
 // must return promptly so the next tick's sweep/purge/recheck run on
 // schedule. Exported and independently callable so tests can drive it
@@ -82,17 +90,9 @@ func (c *coordinator) RecheckPass(ctx context.Context) {
 		(*seam)()
 	}
 	c.RunMaintenanceSweep(ctx)
-	if c.asyncJobs != nil {
-		// B12/C14 fix: recheckChild indexes l.byChild by CHILD session id
-		// (never by parent/owner) -- parkedParentSessions() returns the
-		// PARENT ids, so calling recheckChild with those was always a
-		// byChild[parent] miss: no parked delegation was ever actually
-		// re-evaluated by this pass. parkedChildSessions() returns the ids
-		// recheckChild actually expects.
-		for _, child := range c.asyncJobs.parkedChildSessions() {
-			c.asyncJobs.recheckChild(child)
-		}
-	}
+	// Parked-delegation re-evaluation is batch delivery now: a delegation's
+	// outcome is delivered by the batch executor, and a release-shaped retry
+	// reaches this pass through the recheck set (noteSubAgentChildRunEnded).
 	for _, sessionID := range c.drainRecheckSet() {
 		if !c.launchRecheckWake(ctx, sessionID) {
 			// Already being woken, or the concurrency bound is full: keep the

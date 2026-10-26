@@ -12,7 +12,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -52,19 +51,13 @@ func TestRecheckDebtOnRelease_DrainOutlivesCheckBudget_StillCompletes(t *testing
 	model := newProbeModel(t, srv)
 
 	env := testEnv(t)
-	store := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "test")
-	t.Cleanup(func() { _ = store.Close(context.Background()) })
 
-	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
-	ledger := newWorkLedger(coord.notifyAsyncCompletion)
-	ledger.store = store
-	ledger.coord = coord
-	coord.asyncJobs = ledger
+	coord := a2AttachBatchFacts(t, env)
 
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, AsyncJobs: ledger,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coord,
 	})
 	agent := sa.(*sessionAgent)
 	ctx := context.Background()
@@ -72,19 +65,9 @@ func TestRecheckDebtOnRelease_DrainOutlivesCheckBudget_StillCompletes(t *testing
 	require.NoError(t, err)
 	coord.subAgentDrivers.register(sess.ID, subAgentDriver{agent: agent, call: SessionAgentCall{SessionID: sess.ID}})
 
-	// Seed real VISIBLE debt: claim+finish a job, then pull its notice into
-	// history -- exactly what decideDrainTurn requires to allow a turn.
-	_, existing, err := ledger.Start(sess.ID, "call-1", "call-1", "bash", "", false, false, nil, func() {})
-	require.NoError(t, err)
-	require.False(t, existing)
-	require.NoError(t, store.MarkAnnounced(ctx, sess.ID, "call-1"))
-	_, err = store.Transition(ctx, session.TransitionParams{
-		Owner: sess.ID, ToolCallID: "call-1", State: "completed", ResultSummary: "output", Wake: true,
-	})
-	require.NoError(t, err)
-	pulled, err := store.PullJobNotices(ctx, env.messages, sess.ID, buildJobNoticeMessageParams)
-	require.NoError(t, err)
-	require.Len(t, pulled, 1)
+	// Seed real VISIBLE debt: a terminal, pulled, wake-armed completion debt
+	// in batch_nodes -- exactly what decideDrainTurn requires to allow a turn.
+	seedFixtureJobDebt(t, env.conn, sess.ID, "call-1", true)
 
 	// The function under test: this must complete (well past providerDelay)
 	// without the debt-check's own tiny budget ever reaching the turn.
@@ -92,11 +75,9 @@ func TestRecheckDebtOnRelease_DrainOutlivesCheckBudget_StillCompletes(t *testing
 
 	require.EqualValues(t, 1, atomic.LoadInt32(&requests), "the Drain triggered by the release re-check must reach the provider")
 
-	debtStillOpen, err := store.ReactionDebtExists(ctx, sess.ID)
-	require.NoError(t, err)
-	require.False(t, debtStillOpen, "a successful Drain turn must react to and clear the debt")
+	require.False(t, a3DebtOpen(t, ctx, env.conn, sess.ID), "a successful Drain turn must react to and clear the debt")
 
-	notices, err := store.ListSessionNotices(ctx, sess.ID)
+	notices, err := session.NewSessionNoticeStore(env.conn).ListSessionNotices(ctx, sess.ID)
 	require.NoError(t, err)
 	for _, n := range notices {
 		require.NotEqual(t, session.NoticeKindWakeFailed, n.Kind,
@@ -143,19 +124,13 @@ func TestRecheckDebtOnRelease_QueuedUserTurnSurvivesSlowDrain(t *testing.T) {
 	model := newProbeModel(t, srv)
 
 	env := testEnv(t)
-	store := session.NewAsyncJobStore(env.conn, env.workingDir, os.Getpid(), "test")
-	t.Cleanup(func() { _ = store.Close(context.Background()) })
 
-	coord := &coordinator{subAgentDrivers: newSubAgentDriverRegistry()}
-	ledger := newWorkLedger(coord.notifyAsyncCompletion)
-	ledger.store = store
-	ledger.coord = coord
-	coord.asyncJobs = ledger
+	coord := a2AttachBatchFacts(t, env)
 
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, AsyncJobs: ledger,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coord,
 	})
 	agent := sa.(*sessionAgent)
 	ctx := context.Background()
@@ -163,17 +138,9 @@ func TestRecheckDebtOnRelease_QueuedUserTurnSurvivesSlowDrain(t *testing.T) {
 	require.NoError(t, err)
 	coord.subAgentDrivers.register(sess.ID, subAgentDriver{agent: agent, call: SessionAgentCall{SessionID: sess.ID}})
 
-	_, existing, err := ledger.Start(sess.ID, "call-1", "call-1", "bash", "", false, false, nil, func() {})
-	require.NoError(t, err)
-	require.False(t, existing)
-	require.NoError(t, store.MarkAnnounced(ctx, sess.ID, "call-1"))
-	_, err = store.Transition(ctx, session.TransitionParams{
-		Owner: sess.ID, ToolCallID: "call-1", State: "completed", ResultSummary: "output", Wake: true,
-	})
-	require.NoError(t, err)
-	pulled, err := store.PullJobNotices(ctx, env.messages, sess.ID, buildJobNoticeMessageParams)
-	require.NoError(t, err)
-	require.Len(t, pulled, 1)
+	// Seed real VISIBLE debt: a terminal, pulled, wake-armed completion debt
+	// in batch_nodes -- exactly what decideDrainTurn requires to allow a turn.
+	seedFixtureJobDebt(t, env.conn, sess.ID, "call-1", true)
 
 	drainDone := make(chan struct{})
 	go func() {

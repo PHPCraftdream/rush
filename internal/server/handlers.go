@@ -151,6 +151,8 @@ func handleIncoming(ctx context.Context, s *Server, c *Client, raw []byte) {
 		c.dispatch("handleUpdateTodos", msg.ID, func() { handleUpdateTodos(ctx, a, c, msg) })
 	case CmdGetSessionLiveWork:
 		c.dispatch("handleGetSessionLiveWork", msg.ID, func() { handleGetSessionLiveWork(ctx, a, c, msg) })
+	case CmdGetSessionBatchWork:
+		c.dispatch("handleGetSessionBatchWork", msg.ID, func() { handleGetSessionBatchWork(ctx, a, c, msg) })
 	case CmdGetSessionWakeSchedules:
 		c.dispatch("handleGetSessionWakeSchedules", msg.ID, func() { handleGetSessionWakeSchedules(ctx, a, c, msg) })
 	case CmdCancelWakeSchedule:
