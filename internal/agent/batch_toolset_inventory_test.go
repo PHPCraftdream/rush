@@ -24,6 +24,7 @@ package agent
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"charm.land/fantasy"
@@ -292,14 +293,21 @@ func TestWorkerStopScopeComesFromTrustedCoordinatorBuild(t *testing.T) {
 	taskCfg, ok := coord.cfg.Config().Agents[config.AgentTask]
 	require.True(t, ok, "task agent must be configured")
 
-	var captured []BatchInvocation
+	var (
+		capturedMu sync.Mutex
+		captured   []BatchInvocation
+	)
 	controls := make([]fantasy.AgentTool, 0, 1)
 	controls = append(controls, fantasy.NewAgentTool("batch_stop", "control", func(context.Context, batchModelParams, fantasy.ToolCall) (fantasy.ToolResponse, error) {
 		return fantasy.NewTextResponse("ok"), nil
 	}))
 	controlInstaller := modelControlCapture{
 		modelControlInventory: modelControlInventory{tools: controls},
-		capture:               func(inv BatchInvocation) { captured = append(captured, inv) },
+		capture: func(inv BatchInvocation) {
+			capturedMu.Lock()
+			defer capturedMu.Unlock()
+			captured = append(captured, inv)
+		},
 	}
 	bind := &batchCoordinatorBinding{
 		ingress:      &fakeBatchIngress{},
@@ -327,9 +335,20 @@ func TestWorkerStopScopeComesFromTrustedCoordinatorBuild(t *testing.T) {
 
 	build(true, "trusted-worker")
 	build(false, "trusted-root")
-	require.Len(t, captured, 2)
-	require.True(t, captured[0].WorkerStopScope, "sub-agent build receives trusted worker stop authority")
-	require.False(t, captured[1].WorkerStopScope, "root build does not receive worker stop authority")
+	capturedMu.Lock()
+	defer capturedMu.Unlock()
+	seen := map[string]int{}
+	for _, inv := range captured {
+		seen[inv.SessionID]++
+		switch inv.SessionID {
+		case "trusted-worker":
+			require.True(t, inv.WorkerStopScope, "sub-agent build receives trusted worker stop authority")
+		case "trusted-root":
+			require.False(t, inv.WorkerStopScope, "root build does not receive worker stop authority")
+		}
+	}
+	require.Positive(t, seen["trusted-worker"], "worker build installed its controls")
+	require.Positive(t, seen["trusted-root"], "root build installed its controls")
 }
 
 type modelControlCapture struct {
