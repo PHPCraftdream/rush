@@ -180,7 +180,7 @@ because the legacy journal name anchors on the legacy `rush.json` spelling.
   on disk, so a valid legacy signature would no longer verify. An existing
   mismatch or missing signature is copied through **unchanged** — a
   pre-existing direct edit is never blessed by migration, and a mismatch
-  stays a mismatch. `sync_rev` is preserved as-is and is never touched.
+  stays a mismatch. `sync_rev` is preserved as-is and is never touched. Its stored value is a salted PBKDF2-SHA-256 hash of the settings password; values written by older Rush versions are not recognized and the protection must be re-applied.
 
 ## 6. Manual rollback
 

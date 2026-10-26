@@ -763,7 +763,7 @@ func TestModelsIntegrityKtav_MigrationPreservesMismatchAndMissing(t *testing.T) 
 		decoded := mustDecodeTestKtav(t, migrated)
 		require.Equal(t, "deadbeef", gjson.GetBytes(decoded, "cache_rev").String(),
 			"the tampered value must never be recomputed (blessed) by the migration")
-		require.Equal(t, HashPassword("pw"), gjson.GetBytes(decoded, "sync_rev").String(),
+		require.True(t, VerifyPassword("pw", gjson.GetBytes(decoded, "sync_rev").String()),
 			"sync_rev must be untouched by the migration integrity step")
 		require.ErrorIs(t, modelsIntegrityOf(decoded, false), ErrModelsEditedDirectly)
 	})

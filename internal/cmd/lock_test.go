@@ -17,6 +17,7 @@ import (
 	rushlog "github.com/PHPCraftdream/rush/internal/log"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestLockUnlock_GlobalLocalAndRelock(t *testing.T) {
@@ -91,8 +92,9 @@ func TestPassword_SetupAppLiteRejectsWrongLocalPasswordBeforeWrite(t *testing.T)
 	require.Contains(t, stderr, config.ErrWrongPassword.Error())
 	data, err := os.ReadFile(filepath.Join(dataDir, "rush.json"))
 	require.NoError(t, err)
-	require.Contains(t, string(data), config.HashPassword("local-right"))
-	require.NotContains(t, string(data), config.HashPassword("replacement"))
+	stored := gjson.GetBytes(data, "sync_rev").String()
+	require.True(t, config.VerifyPassword("local-right", stored), "the lock must still verify with the original password")
+	require.False(t, config.VerifyPassword("replacement", stored), "the lock must not accept the refused replacement password")
 }
 
 func TestSettingsLock_ScopePriorityAndModelsUseRefusal(t *testing.T) {

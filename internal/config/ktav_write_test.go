@@ -277,11 +277,11 @@ func TestKtavLockUnlockSyncRevRoundTrip(t *testing.T) {
 
 	require.NoError(t, s.LockSettings(ScopeGlobal, "secret"))
 	lockedDoc := string(ktavDecodedJSON(t, ktavPath))
-	require.Equal(t, HashPassword("secret"), gjson.Get(lockedDoc, "sync_rev").String())
+	require.True(t, VerifyPassword("secret", gjson.Get(lockedDoc, "sync_rev").String()))
 	require.True(t, gjson.Get(lockedDoc, "mcp.srv").Exists(), "locking must preserve MCP records")
 	hash, err = freshSettingsHash(ktavPath)
 	require.NoError(t, err)
-	require.Equal(t, HashPassword("secret"), hash)
+	require.True(t, VerifyPassword("secret", hash))
 	state, err := s.LockState()
 	require.NoError(t, err)
 	require.True(t, state.Global)
@@ -360,7 +360,7 @@ func TestKtavActiveSlotNeverCreatesLegacyJSON(t *testing.T) {
 	require.NoFileExists(t, jsonPath, "an active rush.ktav slot must never spawn rush.json")
 	doc := string(ktavDecodedJSON(t, ktavPath))
 	require.False(t, gjson.Get(doc, "providers.p.api_key").Exists())
-	require.Equal(t, HashPassword("pw"), gjson.Get(doc, "sync_rev").String())
+	require.True(t, VerifyPassword("pw", gjson.Get(doc, "sync_rev").String()))
 }
 
 // TestRejectUnconvertedKtavWriteBoundary pins the wave-B seam helper used by
