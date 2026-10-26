@@ -1,26 +1,10 @@
-# ci-windows-shards — REUSABLE SHADOW workflow (Phase 2b).
+# ci-windows-shards — active reusable Windows full-suite workflow.
+# Called by ci-tests.yml for full Windows coverage and retained for
+# ci-shards-shadow/** validation. Coverage and package assignment are checked
+# against .github/ci-shards/shards.toml.
 #
-# Splits the sequential Windows full-suite of .github/workflows/build.yml
-# into 4 parallel shards (A-D) plus the isolated internal/agent job, as a
-# reusable workflow validated on demand. build.yml is NOT touched; this
-# workflow is validated by pushing a branch to `ci-shards-shadow/**` or calling it
-# via workflow_call. Cutover (replacing build.yml's Windows leg) is a
-# separate, later task.
-#
-# Conventions mirrored from build.yml: pinned action SHAs, -short policy
-# (-short skips VCR/network integration tests), shell: bash, one named step
-# per logical package group so the failing step NAME is the diagnosis.
-#
-# Caching: there is NO pinned actions/cache anywhere in this repo, so we do
-# NOT add one. We rely on actions/setup-go's built-in module + build cache
-# (cache defaults to true). Cache hit/miss is visible only in setup-go's
-# step log; the summary job instead reports setup-go step duration so cold
-# vs warm runs can be compared over time.
-#
-# Artifact actions: no workflow in this repo pins actions/upload-artifact or
-# actions/download-artifact by SHA. They are used here pinned to the v4 tag,
-# flagged as THE ONLY UNPINNED ACTIONS; a SHA pin is required at cutover
-# review. Everything else is copied exactly from build.yml.
+# Go module/build caching uses actions/setup-go's built-in cache; this says
+# nothing about caching unrelated repository tasks.
 name: ci-windows-shards
 
 on:
@@ -53,26 +37,24 @@ jobs:
     outputs:
       assignment: ${{ steps.plan.outputs.assignment }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: list packages and assign shards
         id: plan
         run: |
-          go list ./... > packages.txt
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go list ./... > packages.txt
           # Nonzero exit (unassigned / double-assigned / bad prefix) fails the run.
           python3 .github/ci-shards/assign_shards.py \
             --shards .github/ci-shards/shards.toml --input packages.txt > assignment.json
-          # Coverage of build.yml's Windows-leg named steps (the other half
-          # of the "not run" assertion): every step name must be mapped in
-          # [windows_leg] to a group that exists in the assignment.
+          # Coverage of the active Windows shard groups: the workflow names
+          # are checked against [windows_leg] and the resulting assignment.
           python3 .github/ci-shards/assign_shards.py \
             --shards .github/ci-shards/shards.toml \
-            --check-coverage \
-            --build-yml .github/workflows/build.yml \
+            --check-coverage --workflow .github/workflows/ci-windows-shards.yml \
             --assignment assignment.json
           # Job outputs must be single-line: emit compact JSON verbatim
           # (json.dump already emits no newlines).
@@ -94,14 +76,14 @@ jobs:
     # Runaway backstop only — shards are expected to finish well under this.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: setup-go (start timing)
         id: setup_start
         shell: bash
         run: echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
         # Built-in module+build cache only; no actions/cache (see header).
@@ -178,7 +160,7 @@ jobs:
 
       - name: "test: npm wrapper cache logic"
         if: matrix.shard == 'A'
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
       - name: "test: npm wrapper cache logic"
@@ -259,7 +241,7 @@ jobs:
           [ -s "$f" ] || exit 0
           set -o pipefail
           t0=$(date +%s)
-          go test -short -failfast -p 2 -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-internal-permission-internal-config-internal-csync.json"
+          go test -short -failfast -p 2 -timeout 20m -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-internal-permission-internal-config-internal-csync.json"
           rc=$?
           echo "${{ matrix.shard }}|test: internal/permission, internal/config, internal/csync|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
@@ -313,21 +295,21 @@ jobs:
 
   # internal/agent alone (exact package, NOT subpackages): dedicated job,
   # must not compete with anything else on windows-latest — genuine OOM
-  # history (VirtualAlloc errno=1455), see build.yml's test-agent job for
+  # history (VirtualAlloc errno=1455), see the former build workflow's test-agent job for
   # the full investigation and rationale of batches/parallel/GOMEMLIMIT.
   windows-agent:
     runs-on: windows-latest
-    # Runaway backstop only — the Windows branch of build.yml's test-agent.
+    # Runaway backstop only — the Windows branch of the former build workflow's test-agent.
     timeout-minutes: 75
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: setup-go (start timing)
         id: setup_start
         shell: bash
         run: echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: record setup-go timing
@@ -339,7 +321,7 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          # Windows branch of build.yml's test-agent job (hardcoded here;
+          # Windows branch of the former build workflow's test-agent job (hardcoded here;
           # see that job for the full history — bash 3.2-compatible name
           # extraction, why batches=8/-parallel 1/GOMEMLIMIT=1500MiB).
           names=()
@@ -368,7 +350,7 @@ jobs:
           batches=8
           parallel=1
           # errno=1455 (ERROR_COMMITMENT_LIMIT): GC sheds heap proactively
-          # instead of asking the OS to commit more (see build.yml).
+          # instead of asking the OS to commit more (see the former build workflow).
           export GOMEMLIMIT=1500MiB
           size=$(( (total + batches - 1) / batches ))
           status=0
@@ -400,17 +382,17 @@ jobs:
 
   # Asserts the "not run" list is ZERO (both directions): every go-list
   # package lands in exactly one shard/agent (re-run of the planner against
-  # a fresh `go list`), and every build.yml Windows-leg step name maps to a
+  # a fresh `go list`), and every named group in this workflow maps to a
   # live group. Then renders the timing table.
   shards-summary:
     needs: [plan-shards, windows-shard, windows-agent]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: download test-json artifacts
@@ -419,12 +401,12 @@ jobs:
           path: artifacts
       - name: assert total coverage (no package left unrun)
         run: |
-          go list ./... > packages.txt
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go list ./... > packages.txt
           python3 .github/ci-shards/assign_shards.py \
             --shards .github/ci-shards/shards.toml --input packages.txt > recomputed.json
           python3 .github/ci-shards/assign_shards.py \
             --shards .github/ci-shards/shards.toml \
-            --check-coverage --build-yml .github/workflows/build.yml \
+            --check-coverage --workflow .github/workflows/ci-windows-shards.yml \
             --assignment artifacts/shard-assignment/assignment.json
           # The recomputed assignment IS the assignment the jobs ran with
           # (same deterministic input + rules); byte-compare to be sure the

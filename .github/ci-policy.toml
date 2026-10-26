@@ -1,4 +1,4 @@
-# Tiered CI policy — shadow mode (phase 1).
+# Tiered CI policy — active CI.
 # All thresholds and path lists for the selector live here.
 
 # Design section 3: any changed file under these prefixes requires native
@@ -78,7 +78,7 @@ owners = ["internal/skills", "internal/agent"]
 always_run = [
   ".githooks/",
   ".github/scripts/",
-  ".github/workflows/ci-plan.yml",
+  ".github/workflows/ci.yml",
   ".github/ci-policy.toml",
 ]
 

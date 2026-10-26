@@ -1982,6 +1982,8 @@ Installing an extra tool might be needed on Unix-like environments.
 
 Open an issue or pull request on [this fork's repository](https://github.com/PHPCraftdream/rush).
 
+[CI documentation](docs/ci.md)
+
 ## Whatcha think?
 
 Questions or issues specific to this fork: use [GitHub Issues on

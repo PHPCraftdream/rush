@@ -1,28 +1,20 @@
-# ci — NEW TIERED ENTRY POINT, SHADOW MODE (phase 2).
-#
-# Sole new entry point for the tiered CI experiment. Gates NOTHING yet:
-# triggers only on pushes to `ci-shadow/**` branches and manual dispatch,
-# so it can be validated in parallel with the existing build/lint/security
-# workflows (which stay authoritative until cutover). No schedule/cron.
-#
-# Cutover (later task) edits ONLY this file's `on:` block — the exact diff
-# is documented in .github/ci-structure.md. All job/step bodies already
-# implement both the shadow path (base = merge-base origin/ci/job-batches)
-# and the real pull_request path, so the flip is a trigger edit only.
-#
-# Heavy bodies live in reusable workflows called below:
-#   ./.github/workflows/ci-tests.yml     — test/agent/race/native jobs
-#   ./.github/workflows/ci-security.yml  — CodeQL / govulncheck / Grype
-# ci-gate stays here (a `uses:` job cannot have steps).
+# ci — tiered CI entry point.
+# Heavy work is selected by the plan and enforced by ci-gate.
 name: ci
 run-name: ci [${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'full' || github.event_name == 'pull_request' && github.base_ref == 'main' && contains(github.event.pull_request.labels.*.name, 'full-ci') && 'full' || 'quick' }}]
 
 on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, edited, ready_for_review, labeled, unlabeled]
   push:
-    branches: ["ci-shadow/**"]
+    branches: [main, 'ci-shadow/**', 'ci-shards-shadow/**']
   workflow_dispatch:
 permissions:
   contents: read
+defaults:
+  run:
+    shell: bash
 concurrency:
   group: ci-${{ (github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'full-ci') && format('isolated-{0}', github.run_id) || ((github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.base_ref == 'main' && contains(github.event.pull_request.labels.*.name, 'full-ci'))) && 'full' || 'quick') }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -50,7 +42,7 @@ jobs:
       validated_head: ${{ steps.read.outputs.validated_head }}
       validated_base: ${{ steps.read.outputs.validated_base }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -65,7 +57,7 @@ jobs:
             echo "base=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
             echo "head=${{ github.sha }}" >> "$GITHUB_OUTPUT"
           else
-            echo "base=$(git merge-base origin/ci/job-batches HEAD)" >> "$GITHUB_OUTPUT"
+            echo "base=$(git merge-base origin/main HEAD)" >> "$GITHUB_OUTPUT"
             echo "head=${{ github.sha }}" >> "$GITHUB_OUTPUT"
           fi
       - name: choose validation lane
@@ -78,9 +70,9 @@ jobs:
         run: |
           if [ "$EVENT" = pull_request ] && [ "$BASE_REF" = main ] && [ "$FULL_CI" != true ]; then echo cheap_only=true >> "$GITHUB_OUTPUT"; echo force_full=false >> "$GITHUB_OUTPUT"; else echo cheap_only=false >> "$GITHUB_OUTPUT"; fi
           if { [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; } || { [ "$EVENT" = pull_request ] && [ "$BASE_REF" = main ] && [ "$FULL_CI" = true ]; }; then echo force_full=true >> "$GITHUB_OUTPUT"; else echo force_full=false >> "$GITHUB_OUTPUT"; fi
-      - name: setup Go for plan
+      - name: install selector graph dependencies
         if: steps.lane.outputs.cheap_only != 'true'
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: extract platform graphs
@@ -112,12 +104,18 @@ jobs:
     if: always() && (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - run: git config --global core.autocrlf input
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+      - name: selector, gate, and shard unit tests
+        run: |
+          python3 -I -m unittest discover -s .github/scripts
+          python3 -I -m unittest discover -s .github/ci-shards
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         if: needs.plan.outputs.heavy_allowed == 'true'
         with: {go-version-file: go.mod}
       - name: internal/db/sql is ASCII-only (sqlc miscounts spans around multi-byte comments)
+        if: runner.os == 'Linux'
         run: |
           if offenders="$(grep -lP "[^[:ascii:]]" internal/db/sql/*.sql 2>/dev/null)" && [ -n "$offenders" ]; then
             printf '\033[31mnon-ASCII bytes in:\033[0m\n%s\n' "$offenders"
@@ -125,23 +123,28 @@ jobs:
             exit 1
           fi
       - name: no stale large/small model-slot spelling (renamed to smart/fast)
+        if: runner.os == 'Linux'
         run: bash .githooks/check_stale_model_slots.sh
       - name: test files pair db.Connect/db.ConnectRead with db.Release (ref-counted pool contract)
+        if: runner.os == 'Linux'
         run: bash .githooks/check_db_release_pairing.sh
       - name: self-test db release pairing guard
+        if: runner.os == 'Linux'
         run: bash .githooks/check_db_release_pairing_selftest.sh
       - name: no hand-written source file over 1000 lines (ratchet allowlist)
+        if: runner.os == 'Linux'
         run: bash .githooks/check_file_size.sh
       - name: self-test file-size guard
+        if: runner.os == 'Linux'
         run: bash .githooks/check_file_size_selftest.sh
       - name: go mod tidy produces no diff
-        if: needs.plan.outputs.heavy_allowed == 'true'
+        if: runner.os == 'Linux' && needs.plan.outputs.heavy_allowed == 'true'
         run: go mod tidy -diff
       - name: install sqlc (pinned, matches sqlc.yaml / the ASCII guard's target version)
-        if: needs.plan.outputs.heavy_allowed == 'true'
+        if: runner.os == 'Linux' && needs.plan.outputs.heavy_allowed == 'true'
         run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0
       - name: sqlc generate produces no diff (committed internal/db/*.sql.go matches internal/db/sql/*.sql)
-        if: needs.plan.outputs.heavy_allowed == 'true'
+        if: runner.os == 'Linux' && needs.plan.outputs.heavy_allowed == 'true'
         run: |
           set -uo pipefail
           "$(go env GOPATH)/bin/sqlc" generate
@@ -150,29 +153,60 @@ jobs:
             exit 1
           }
       - name: go build ./...
-        if: needs.plan.outputs.heavy_allowed == 'true'
+        if: runner.os == 'Linux' && needs.plan.outputs.heavy_allowed == 'true'
         run: go build ./...
       - name: go vet ./...
-        if: needs.plan.outputs.heavy_allowed == 'true'
+        if: runner.os == 'Linux' && needs.plan.outputs.heavy_allowed == 'true'
         run: go vet ./...
-      # lint.yml `lint` job, ubuntu leg only (the macOS/Windows legs of the
-      # lint matrix stay in lint.yml until cutover — see ci-structure.md).
-      - name: golangci-lint
+      # the former lint workflow lint matrix, retained on Ubuntu.
+      - name: golangci-lint (Ubuntu)
         if: needs.plan.outputs.heavy_allowed == 'true'
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           args: --config=.golangci.yml --timeout=10m ./...
           version: v2.13
-      # lint.yml `lint-ncruces-driver` job (verbatim): the ncruces SQLite
+      # the former lint workflow `lint-ncruces-driver` job (verbatim): the ncruces SQLite
       # driver branch is compiled on no runner otherwise.
+      - name: setup Node for shortcode check
+        if: runner.os == 'Linux' && needs.plan.outputs.heavy_allowed == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: Check model shortcode drift (advisory)
+        continue-on-error: true
+        if: runner.os == 'Linux' && needs.plan.outputs.heavy_allowed == 'true'
+        run: |
+          go run ./internal/tools/cahsync -check -strict || {
+            echo "::warning::Model shortcode catalog lag or refresh failure"
+            exit 1
+          }
       - name: golangci-lint (GOOS=linux GOARCH=mips64)
-        if: needs.plan.outputs.heavy_allowed == 'true'
+        if: runner.os == 'Linux' && needs.plan.outputs.heavy_allowed == 'true'
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         env:
           GOOS: linux
           GOARCH: mips64
         with:
           args: --config=.golangci.yml --timeout=10m ./internal/db/...
+          version: v2.13
+  native-lint:
+    needs: plan
+    if: (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci') && needs.plan.outputs.heavy_allowed == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: git config --global core.autocrlf input
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: {go-version-file: go.mod}
+      - name: golangci-lint (native)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          args: --config=.golangci.yml --timeout=10m ./...
           version: v2.13
   tests:
     needs: [plan, checks]
@@ -196,11 +230,11 @@ jobs:
     if: (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci') && needs.plan.outputs.heavy_allowed == 'true' && needs.plan.outputs.web_changed == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - name: Enable pnpm via corepack
         run: corepack enable
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
       - name: Install dependencies
@@ -218,6 +252,16 @@ jobs:
       - name: production build (rsbuild build)
         working-directory: web
         run: pnpm build
+  ktav-purity:
+    needs: plan
+    if: (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci') && needs.plan.outputs.heavy_allowed == 'true'
+    uses: ./.github/workflows/ktav-purity.yml
+    permissions: {contents: read}
+  licenses:
+    needs: plan
+    if: (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci') && needs.plan.outputs.heavy_allowed == 'true'
+    uses: ./.github/workflows/licenses.yml
+    permissions: {contents: read}
   security:
     needs: plan
     if: (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci') && needs.plan.outputs.heavy_allowed == 'true' && (needs.plan.outputs.security_full == 'true' || needs.plan.outputs.security_deps == 'true' || needs.plan.outputs.security_actions == 'true')
@@ -233,7 +277,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions: {actions: write, contents: read, pull-requests: read}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - name: cancel matching full runs
         env:
@@ -247,12 +291,12 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: python3 .github/scripts/ci_gate_decide.py cancel-full
   ci-gate:
-    needs: [plan, checks, tests, web, security]
+    needs: [plan, checks, native-lint, tests, web, security, ktav-purity, licenses]
     if: always()
     permissions: {actions: read, contents: read, pull-requests: read}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - name: download plan artifact
         if: always() && (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci')
@@ -264,6 +308,18 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with: {name: shard-assignment, path: assignment}
+      - name: enforce reusable workflow results
+        if: always() && needs.plan.outputs.heavy_allowed == 'true'
+        env:
+          KTAV_RESULT: ${{ needs.ktav-purity.result }}
+          LICENSE_RESULT: ${{ needs.licenses.result }}
+          NATIVE_LINT_RESULT: ${{ needs.native-lint.result }}
+          LINT_RESULT: ${{ needs.checks.result }}
+        run: |
+          if [ "$KTAV_RESULT" != success ] || [ "$LICENSE_RESULT" != success ] || [ "$LINT_RESULT" != success ] || [ "$NATIVE_LINT_RESULT" != success ]; then
+            echo 'Required ktav-purity, licenses, or native lint workflow failed or was skipped.' >&2
+            exit 1
+          fi
       - name: gate live state and receipts
         if: always()
         env:
@@ -279,7 +335,7 @@ jobs:
           VALIDATED_HEAD: ${{ needs.plan.outputs.validated_head }}
           VALIDATED_BASE: ${{ needs.plan.outputs.validated_base }}
           PLAN_OUTPUTS_JSON: ${{ toJSON(needs.plan.outputs) }}
-          NEEDS_JSON: '{"plan":"${{ needs.plan.result }}","checks":"${{ needs.checks.result }}","tests":"${{ needs.tests.result }}","web":"${{ needs.web.result }}","security":"${{ needs.security.result }}"}'
+          NEEDS_JSON: '{"plan":"${{ needs.plan.result }}","checks":"${{ needs.checks.result }}","native-lint":"${{ needs.native-lint.result }}","tests":"${{ needs.tests.result }}","web":"${{ needs.web.result }}","security":"${{ needs.security.result }}","ktav-purity":"${{ needs.ktav-purity.result }}","licenses":"${{ needs.licenses.result }}"}'
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}

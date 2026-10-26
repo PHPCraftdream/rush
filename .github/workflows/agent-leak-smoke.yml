@@ -3,7 +3,7 @@
 # before/after comparison around the entire run.
 #
 # Why this exists: batching -- the test-agent job's 8-way split in
-# build.yml, and the batched -race split in its test-race job -- keeps
+# the former build workflow, and the batched -race split in its test-race job -- keeps
 # each invocation short enough for shared runners, but it also lowers
 # the chance of catching a leak that only manifests after hundreds of
 # tests have accumulated in a single process. Exactly such a leak (every
@@ -111,6 +111,6 @@ jobs:
           # the VCR-cassette TestCoderAgent); -parallel 2 matches the
           # test-agent job's ubuntu leg. No -race: time, not memory, is
           # the constraint that forced batching elsewhere (see the
-          # test-race job comment in build.yml), and this job's budget
+          # test-race job comment in the former build workflow), and this job's budget
           # is a single -timeout 30m invocation.
           go test -short -parallel 2 -timeout 30m ./internal/agent/

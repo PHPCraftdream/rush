@@ -9,9 +9,10 @@
 # alone does NOT prove purity (a purego wrapper can pass it), so the
 # dependency closure of the product root package is inspected under
 # BOTH CGO settings, per matrix GOOS. No tests, no full build: this is
-# deliberately cheap. Conformance and semantics are build.yml's job.
+# deliberately cheap. Conformance and semantics are the former build workflow's job.
 name: ktav-purity
 on:
+  workflow_call:
   push:
     branches: [main]
   pull_request:
@@ -20,13 +21,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: ktav-purity-${{ github.event.pull_request.number || github.ref }}
+  group: ktav-purity-${{ github.run_id }}
   cancel-in-progress: true
 
 jobs:
   purity:
     strategy:
-      # Same fail-fast rationale as build.yml: one leg's failure must
+      # Same fail-fast rationale as the former build workflow: one leg's failure must
       # not cancel the others mid-run.
       fail-fast: false
       matrix:
@@ -40,7 +41,7 @@ jobs:
             goos: windows
     runs-on: ${{ matrix.os }}
     steps:
-      # Same pinned actions and Go version source as build.yml/lint.yml.
+      # Same pinned actions and Go version source as the active CI lanes.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -55,7 +56,7 @@ jobs:
       # a clean graph makes `grep -E` exit 1 inside the command
       # substitution and errexit kills the step before
       # `if [ -n "$bad" ]` is reached -- the exact hazard documented
-      # in build.yml's non-ASCII guard. `|| true` inside the
+      # in the former build workflow's non-ASCII guard. `|| true` inside the
       # substitution keeps grep's status from escaping it; the
       # emptiness check alone decides. `tr -d '\r'` strips the CR
       # that `go list` can emit on Windows before the grep runs.

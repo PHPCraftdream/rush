@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -51,7 +52,120 @@ def run_cli(shards: str, packages: list[str], *extra: str) -> subprocess.Complet
         )
 
 
+def run_coverage(
+    shards: str, workflow: str | None, assignment: dict
+) -> subprocess.CompletedProcess:
+    with tempfile.TemporaryDirectory() as td:
+        toml_path = os.path.join(td, "shards.toml")
+        with open(toml_path, "w", encoding="utf-8") as f:
+            f.write(shards)
+        assignment_path = os.path.join(td, "assignment.json")
+        with open(assignment_path, "w", encoding="utf-8") as f:
+            json.dump(assignment, f)
+        args = [sys.executable, SCRIPT, "--shards", toml_path, "--check-coverage"]
+        if workflow is not None:
+            workflow_path = os.path.join(td, "ci-windows-shards.yml")
+            with open(workflow_path, "w", encoding="utf-8") as f:
+                f.write(workflow)
+            args.extend(["--workflow", workflow_path])
+        args.extend(["--assignment", assignment_path])
+        return subprocess.run(args, capture_output=True, text=True)
+
+
+def run_coverage_files(shards_path: str, workflow_path: str, assignment: dict) -> subprocess.CompletedProcess:
+    with tempfile.TemporaryDirectory() as td:
+        assignment_path = os.path.join(td, "assignment.json")
+        with open(assignment_path, "w", encoding="utf-8") as f:
+            json.dump(assignment, f)
+        return subprocess.run(
+            [sys.executable, SCRIPT, "--shards", shards_path, "--check-coverage",
+             "--workflow", workflow_path, "--assignment", assignment_path],
+            capture_output=True, text=True,
+        )
+
+
+COVERAGE_TOML = BASE_TOML + '''\
+[windows_leg]
+"test: a" = "A/test: a"
+"go mod tidy produces no diff" = "A/test: a"
+"test: npm wrapper cache logic" = "A/test: a"
+"go test ./internal/agent/ split into sequential batches" = "agent"
+'''
+
+
 class AssignShardsTests(unittest.TestCase):
+    def test_coverage_uses_repository_workflow_and_shard_groups(self):
+        root = os.path.dirname(os.path.dirname(HERE))
+        shards_path = os.path.join(HERE, "shards.toml")
+        workflow_path = os.path.join(root, ".github", "workflows", "ci-windows-shards.yml")
+        with open(shards_path, "rb") as f:
+            config = tomllib.load(f)
+        assignment = {"shards": {
+            shard: {"groups": [{"name": group["name"]} for group in data.get("groups", [])]}
+            for shard, data in config["shards"].items()
+        }}
+        p = run_coverage_files(shards_path, workflow_path, assignment)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("coverage OK", p.stdout)
+
+    def test_coverage_missing_workflow_file_fails_clearly(self):
+        missing = os.path.join(HERE, "nonexistent-ci-windows-shards.yml")
+        p = run_coverage_files(os.path.join(HERE, "shards.toml"), missing, {"shards": {}})
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn(os.path.basename(missing), p.stderr)
+
+    def test_coverage_empty_workflow_fails(self):
+        assignment = {"shards": {"A": {"groups": [{"name": "test: a"}]}}}
+        p = run_coverage(COVERAGE_TOML, "# empty workflow\\n", assignment)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("no recognized Windows group steps", p.stderr)
+
+        assignment = {
+            "shards": {
+                "A": {"groups": [{"name": "test: a"}]},
+                "B": {"groups": []},
+                "D": {"groups": []},
+            }
+        }
+        workflow = '''\
+      - name: "test: a"
+      - name: go mod tidy produces no diff
+      - name: "test: npm wrapper cache logic"
+      - name: go test ./internal/agent/ split into sequential batches
+'''
+        p = run_coverage(COVERAGE_TOML, workflow, assignment)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("coverage OK", p.stdout)
+
+    def test_coverage_reads_active_workflow_group_names(self):
+        assignment = {
+            "shards": {
+                "A": {"groups": [{"name": "test: a"}]},
+                "B": {"groups": []},
+                "D": {"groups": []},
+            }
+        }
+        workflow = '''\
+      - name: "test: a"
+      - name: go mod tidy produces no diff
+      - name: "test: npm wrapper cache logic"
+      - name: go test ./internal/agent/ split into sequential batches
+'''
+        p = run_coverage(COVERAGE_TOML, workflow, assignment)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("coverage OK", p.stdout)
+
+        assignment = {"shards": {"A": {"groups": [{"name": "test: a"}]}}}
+        workflow = '      - name: "test: newly added group"\n'
+        p = run_coverage(COVERAGE_TOML, workflow, assignment)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("test: newly added group", p.stderr)
+
+    def test_coverage_requires_workflow_input(self):
+        p = run_coverage(COVERAGE_TOML, None, {"shards": {}})
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("requires --workflow", p.stderr)
+
     def test_exact_once_assignment(self):
         pkgs = [
             "example.com/m",

@@ -9,10 +9,10 @@ Modes:
       Emits the assignment JSON to stdout. Input is one import path per line;
       `--input -` reads stdin. Nonzero exit = a package was not assigned
       exactly once (this IS the "every package exactly once" assertion).
-  --check-coverage --build-yml build.yml --assignment assignment.json
-      Verifies every Windows-leg test step name found in build.yml appears in
-      shards.toml's [windows_leg] table and maps to a group that exists in the
-      assignment JSON. Nonzero exit = a step would go uncovered ("not run").
+  --check-coverage --workflow ci-windows-shards.yml --assignment assignment.json
+      Verifies every named Windows test/group step in the active shard workflow
+      appears in shards.toml's [windows_leg] table and maps to a group that
+      exists in the assignment JSON. Nonzero exit = a step would go uncovered.
 
 Assignment rules:
   * "internal/agent" (agent_isolated) is EXACT match only, and no shard
@@ -32,15 +32,7 @@ import re
 import sys
 import tomllib
 
-WINDOWS_LEG_STEP_RE = re.compile(r'^\s*- name:\s*"?test: ')
-# build.yml Windows-leg step names that are not "test: ..." steps but are
-# still part of the leg this shadow workflow must cover.
-FIXED_WINDOWS_LEG_STEPS = [
-    "go mod tidy",
-    "git diff --exit-code",
-    "Test npm wrapper cache logic (crush, legacy package)",
-    "Test npm wrapper cache logic (rush)",
-]
+WINDOWS_GROUP_STEP_RE = re.compile(r'^\s*- name:\s*"?((?:test: |go mod tidy|go test ./internal/agent/)[^"\r\n]*)(?:"\s*)?$')
 SPECIAL_TARGETS = {"agent", "plan", "all"}
 
 
@@ -174,25 +166,28 @@ def assign(cfg: dict, packages: list[str]) -> dict:
     }
 
 
-def check_coverage(cfg: dict, build_yml: str, assignment_path: str) -> None:
+def check_coverage(cfg: dict, workflow: str, assignment_path: str) -> None:
     table = cfg.get("windows_leg")
     if not table:
         die("shards.toml: missing [windows_leg] coverage table")
     names: list[str] = []
-    with open(build_yml, encoding="utf-8") as f:
-        for line in f:
-            m = WINDOWS_LEG_STEP_RE.match(line)
-            if m:
-                name = line.split("name:", 1)[1].strip().strip('"')
-                names.append(name)
-    names.extend(FIXED_WINDOWS_LEG_STEPS)
+    try:
+        with open(workflow, encoding="utf-8") as f:
+            for line in f:
+                m = WINDOWS_GROUP_STEP_RE.match(line)
+                if m:
+                    names.append(m.group(1))
+    except OSError as exc:
+        die(f"cannot read workflow {workflow!r}: {exc.strerror or exc}")
+    if not names:
+        die(f"workflow {workflow!r} contains no recognized Windows group steps")
 
     with open(assignment_path, encoding="utf-8") as f:
         assignment = json.load(f)
 
     missing = [n for n in names if n not in table]
     if missing:
-        die("build.yml Windows-leg steps missing from [windows_leg]: " + ", ".join(missing))
+        die("ci-windows-shards.yml group steps missing from [windows_leg]: " + ", ".join(missing))
 
     stale = []
     for step, target in table.items():
@@ -208,8 +203,8 @@ def check_coverage(cfg: dict, build_yml: str, assignment_path: str) -> None:
     if stale:
         die("[windows_leg] targets not present in assignment: " + "; ".join(stale))
     print(
-        f"assign_shards: coverage OK: {len(names)} build.yml Windows-leg "
-        f"steps mapped, {len(table)} table entries all resolve"
+        f"assign_shards: coverage OK: {len(names)} ci-windows-shards.yml "
+        f"group steps mapped, {len(table)} table entries all resolve"
     )
 
 
@@ -218,16 +213,16 @@ def main() -> None:
     ap.add_argument("--shards", required=True, help="path to shards.toml")
     ap.add_argument("--input", help="package list file, one per line; '-' for stdin")
     ap.add_argument("--check-coverage", action="store_true")
-    ap.add_argument("--build-yml", help="path to build.yml (with --check-coverage)")
+    ap.add_argument("--workflow", help="path to ci-windows-shards.yml (with --check-coverage)")
     ap.add_argument("--assignment", help="path to assignment JSON (with --check-coverage)")
     args = ap.parse_args()
 
     cfg = load_shards(args.shards)
 
     if args.check_coverage:
-        if not args.build_yml or not args.assignment:
-            die("--check-coverage requires --build-yml and --assignment")
-        check_coverage(cfg, args.build_yml, args.assignment)
+        if not args.workflow or not args.assignment:
+            die("--check-coverage requires --workflow and --assignment")
+        check_coverage(cfg, args.workflow, args.assignment)
         return
 
     if not args.input:

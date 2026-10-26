@@ -1,11 +1,11 @@
 # CI shard definitions for the Windows full test suite (Phase 2b shadow).
 # Package prefixes are module-relative (module = github.com/PHPCraftdream/rush).
-# This file mirrors the named-step grouping of .github/workflows/build.yml so
+# This file mirrors the named-step grouping of .github/workflows/the former build workflow so
 # the failing step's NAME stays the diagnosis. See .github/ci-shards/README.md.
 module = "github.com/PHPCraftdream/rush"
 
 # Exact-match only: "internal/agent" itself is isolated in its own
-# windows-agent job (see build.yml's test-agent job history comments).
+# windows-agent job (see the former build workflow's test-agent job history comments).
 # No shard group may list the bare prefix "internal/agent" — assign_shards.py
 # rejects that so agent/* subpackages can never be swallowed here.
 [agent_isolated]
@@ -43,9 +43,9 @@ groups = [
   { name = "test: internal/jobbatch, cmd/batchlab", type = "go", packages = ["internal/jobbatch", "cmd/batchlab"] },
 ]
 
-# Shard D keeps build.yml's named-step diagnosis for the groups that were
+# Shard D keeps the former build workflow's named-step diagnosis for the groups that were
 # never promoted to A/B/C, plus the dynamic computed catch-all (same
-# philosophy as build.yml's last step: a newly added package is always
+# philosophy as the former build workflow's last step: a newly added package is always
 # covered by SOMETHING).
 [shards.D]
 groups = [
@@ -56,22 +56,22 @@ groups = [
   { name = "test: everything else (computed catch-all)", type = "go", catch_all = true, packages = [] },
 ]
 
-# Coverage map: every Windows-leg test step name in build.yml -> the
-# shard/group (or special target) that now covers it. Verified by
-# `assign_shards.py --check-coverage --build-yml .github/workflows/build.yml
-# --assignment <json>` in the shards-summary job; any missing key is a hard
-# failure so a "not run" gap cannot slip in silently.
+# Coverage map: every named package/group step in ci-windows-shards.yml maps
+# to a shard/group (or special target) that exists in the assignment. The
+# workflow is the source of truth; checked by assign_shards.py during planning
+# and in shards-summary so workflow group changes cannot silently go uncovered.
 [windows_leg]
 "test: internal/app" = "A/test: internal/app"
 "test: internal/server, internal/session" = "A/test: internal/server, internal/session"
-"test: internal/permission, internal/config, internal/csync" = "D/test: internal/permission, internal/config, internal/csync"
-"test: internal/cmd, internal/commands" = "B/test: internal/cmd, internal/commands"
 "test: sdk" = "A/test: sdk"
-"test: internal/agent subpackages (agentguard, cliprovider, hyper, notify, prompt, tools)" = "C/test: internal/agent subpackages"
+"test: internal/cmd, internal/commands" = "B/test: internal/cmd, internal/commands"
+"test: internal/agent subpackages" = "C/test: internal/agent subpackages"
+"test: internal/shell" = "C/test: internal/shell"
+"test: internal/jobbatch, cmd/batchlab" = "C/test: internal/jobbatch, cmd/batchlab"
+"test: internal/permission, internal/config, internal/csync" = "D/test: internal/permission, internal/config, internal/csync"
 "test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history" = "D/test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history"
 "test: internal/oauth, internal/deploy, internal/update, internal/version" = "D/test: internal/oauth, internal/deploy, internal/update, internal/version"
 "test: everything else (computed catch-all)" = "D/test: everything else (computed catch-all)"
-"go mod tidy" = "A/go mod tidy produces no diff"
-"git diff --exit-code" = "A/go mod tidy produces no diff"
-"Test npm wrapper cache logic (crush, legacy package)" = "A/test: npm wrapper cache logic"
-"Test npm wrapper cache logic (rush)" = "A/test: npm wrapper cache logic"
+"go mod tidy produces no diff" = "A/go mod tidy produces no diff"
+"test: npm wrapper cache logic" = "A/test: npm wrapper cache logic"
+"go test ./internal/agent/ split into sequential batches" = "agent"

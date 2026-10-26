@@ -1,19 +1,4 @@
-# ci-security — REUSABLE workflow (workflow_call ONLY).
-#
-# Holds the security job bodies sliced out of .github/workflows/security.yml
-# so .github/ci.yml (the new tiered entry point) can call them with the
-# plan's decisions as inputs. Every action pin, permission set and command
-# is copied EXACTLY from security.yml; nothing new is invented here.
-#
-# Gating (inputs come from the plan job in ci.yml):
-#   security_full     — CodeQL go + govulncheck + Grype (full runs)
-#   security_deps     — go.mod/go.sum/lockfile changed → govulncheck + Grype
-#   security_actions  — .github/workflows/** changed → CodeQL actions
-#
-# NOT included: actions/dependency-review-action. It is NOT included until
-# the repo setting "Dependency review" / the required API access is enabled
-# on this fork; security.yml keeps its copy for the legacy path. Revisit at
-# cutover.
+# CodeQL, govulncheck and Grype bodies for the active tiered CI entry point.
 name: ci-security
 
 on:
@@ -40,7 +25,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # security.yml `codeql` matrix leg language=go. Full runs only.
+  dependency-review:
+    if: github.event_name == 'pull_request' && (inputs.security_full || inputs.security_deps)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294
+        with:
+          fail-on-severity: critical
+          allow-licenses: BSD-2-Clause, BSD-3-Clause, MIT, MIT-0, Apache-2.0, MPL-2.0, ISC, LicenseRef-scancode-google-patent-license-golang, Unlicense
+
   codeql-go:
     if: inputs.security_full
     runs-on: ubuntu-latest
@@ -50,16 +49,16 @@ jobs:
       pull-requests: read
       security-events: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           languages: go
-      - uses: github/codeql-action/autobuild@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
-      - uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+      - uses: github/codeql-action/autobuild@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
 
-  # security.yml `codeql` matrix leg language=actions. Workflow changes only.
+  # the former security workflow `codeql` matrix leg language=actions. Workflow changes only.
   codeql-actions:
     if: inputs.security_actions
     runs-on: ubuntu-latest
@@ -69,16 +68,16 @@ jobs:
       pull-requests: read
       security-events: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           languages: actions
-      - uses: github/codeql-action/autobuild@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
-      - uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+      - uses: github/codeql-action/autobuild@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
 
-  # security.yml `govulncheck` job. Full runs or dependency changes.
+  # the former security workflow `govulncheck` job. Full runs or dependency changes.
   govulncheck:
     if: inputs.security_full || inputs.security_deps
     runs-on: ubuntu-latest
@@ -86,10 +85,10 @@ jobs:
       security-events: write
       contents: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
       - name: Install govulncheck
@@ -97,11 +96,11 @@ jobs:
       - name: Run govulncheck
         run: |
           govulncheck -C . -format sarif ./... > results.sarif
-      - uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+      - uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: results.sarif
 
-  # security.yml `grype` job. Full runs or dependency changes.
+  # the former security workflow `grype` job. Full runs or dependency changes.
   grype:
     if: inputs.security_full || inputs.security_deps
     runs-on: ubuntu-latest
@@ -110,15 +109,15 @@ jobs:
       actions: read
       contents: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+      - uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         id: scan
         with:
           path: "."
           fail-build: true
           severity-cutoff: critical
-      - uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+      - uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: ${{ steps.scan.outputs.sarif }}
