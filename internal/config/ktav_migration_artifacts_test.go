@@ -302,7 +302,8 @@ func TestKtavArtifactSharedStartupDeadline(t *testing.T) {
 	ktavSetupLoadMigrationTest(t, true)
 	resetBothFormatsWarnings()
 	savedBudget := ktavMigrationBudget
-	ktavMigrationBudget = 500 * time.Millisecond
+	// Room for three slot migrations with fsync on slow Windows runners.
+	ktavMigrationBudget = 2 * time.Second
 	t.Cleanup(func() { ktavMigrationBudget = savedBudget })
 
 	dir := canonicalArtifactTempDir(t)
@@ -380,7 +381,7 @@ func TestKtavArtifactSharedStartupDeadline(t *testing.T) {
 		inWindow++
 	}
 	require.GreaterOrEqual(t, inWindow, 1, "at least one artifact conversion acquired its lock under Load's shared startup deadline")
-	require.Less(t, elapsed, 2*time.Second, "no fresh per-file timeout may be added")
+	require.Less(t, elapsed, 5*time.Second, "no fresh per-file timeout may be added")
 
 	require.Contains(t, logs.String(), "deferred")
 	require.NotContains(t, logs.String(), ktavArtifactJournalSecret, "journal bytes must never reach diagnostics")
