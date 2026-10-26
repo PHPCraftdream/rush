@@ -6,6 +6,7 @@ package cmd
 // files in this package.
 
 import (
+	"github.com/PHPCraftdream/rush/internal/ansiext"
 	"github.com/spf13/cobra"
 )
 
@@ -71,12 +72,10 @@ func short(hash string) string {
 	return hash[:8]
 }
 
+// truncate shortens s so its display width in terminal cells is at most n,
+// appending an ellipsis when truncation happens. It is rune- and
+// display-width-aware (Cyrillic, CJK wide runes, emoji), so multibyte text is
+// never cut mid-rune and column widths still hold.
 func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	if n <= 1 {
-		return s[:n]
-	}
-	return s[:n-1] + "…"
+	return ansiext.TruncateDisplay(s, n)
 }

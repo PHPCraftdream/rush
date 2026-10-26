@@ -95,10 +95,7 @@ func formatOpenToolCall(tc openToolCall) string {
 	if !readOnlyToolNames[tc.Name] {
 		return fmt.Sprintf("<%s> <%s> open %s (args hidden)", tc.Name, tc.CallID, age)
 	}
-	summary := tc.Input
-	if len(summary) > 80 {
-		summary = summary[:80]
-	}
+	summary := truncate(tc.Input, 80)
 	return fmt.Sprintf("<%s> <%s> open %s %s", tc.Name, tc.CallID, age, summary)
 }
 

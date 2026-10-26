@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -290,6 +291,7 @@ reason) are written back to the queue.`,
 
 			type taskResult struct {
 				task       queue.Task
+				sessionID  string
 				cost       float64
 				tokens     int64
 				exitReason string
@@ -303,8 +305,8 @@ reason) are written back to the queue.`,
 
 				for _, t := range tasks {
 					go func(task queue.Task) {
-						cost, tokens, exitReason, runErr := runQueueTask(runCtx, cwd, dataDir, task)
-						ch <- taskResult{task: task, cost: cost, tokens: tokens, exitReason: exitReason, err: runErr}
+						sessionID, cost, tokens, exitReason, runErr := runQueueTask(runCtx, cwd, dataDir, task)
+						ch <- taskResult{task: task, sessionID: sessionID, cost: cost, tokens: tokens, exitReason: exitReason, err: runErr}
 					}(t)
 				}
 
@@ -330,7 +332,7 @@ reason) are written back to the queue.`,
 					// and keep draining the channel so every task still gets
 					// its UpdateStatus attempt and every goroutine is
 					// reaped, but remember to fail the command afterward.
-					if uerr := q.UpdateStatus(ctx, r.task.ID, finalStatus, r.cost, r.tokens, r.exitReason); uerr != nil {
+					if uerr := q.UpdateStatusWithSession(ctx, r.task.ID, r.sessionID, finalStatus, r.cost, r.tokens, r.exitReason); uerr != nil {
 						wrapped := fmt.Errorf("persist final status for task %s (%s): %w", r.task.ID, finalStatus, uerr)
 						slog.Error("queue task status update failed", "id", r.task.ID, "status", finalStatus, "err", uerr)
 						if statusErr == nil {
@@ -417,8 +419,8 @@ var queueClearCmd = &cobra.Command{
 var queueTaskExecOverride func(args []string, cwd, prompt string) ([]byte, error)
 
 // runQueueTask executes a single queue task by spawning rush run.
-// Returns cost, tokens, exit reason, and any error.
-func runQueueTask(ctx context.Context, cwd, dataDir string, task queue.Task) (float64, int64, string, error) {
+// Returns the resolved session ID, session cost/tokens, exit reason, and any error.
+func runQueueTask(ctx context.Context, cwd, dataDir string, task queue.Task) (string, float64, int64, string, error) {
 	sessionID := task.SessionID
 	if sessionID == "" {
 		sessionID = task.ID
@@ -438,7 +440,7 @@ func runQueueTask(ctx context.Context, cwd, dataDir string, task queue.Task) (fl
 	// to the parent's version was considered and rejected as incoherent.
 	rushBin, err := os.Executable()
 	if err != nil {
-		return 0, 0, "", err
+		return sessionID, 0, 0, "", err
 	}
 
 	role := "smart"
@@ -462,53 +464,96 @@ func runQueueTask(ctx context.Context, cwd, dataDir string, task queue.Task) (fl
 		cmdArgs = append(cmdArgs, "--timeout", fmt.Sprintf("%ds", task.TimeoutSec))
 	}
 
-	var output []byte
-	if queueTaskExecOverride != nil {
-		var overrideErr error
-		output, overrideErr = queueTaskExecOverride(cmdArgs, cwd, task.Prompt)
-		if overrideErr != nil {
-			return 0, 0, "", overrideErr
+	// The child may print a complete JSON envelope before exiting non-zero.
+	cost, tokens := 0.0, int64(0)
+	exitReason := ""
+
+	// mergeEnvelope folds a decoded child envelope into the outcome: it
+	// overrides the fallback session ID, usage and exit reason with whatever
+	// the envelope actually carries.
+	mergeEnvelope := func(env queueRunEnvelope) {
+		if env.SessionID != "" {
+			sessionID = env.SessionID
 		}
+		if env.Usage.Session != nil {
+			cost, tokens = env.Usage.Session.CostUSD, env.Usage.Session.TotalTokens
+		} else {
+			cost, tokens = env.Usage.DeltaCostUSD, env.Usage.DeltaTokens
+		}
+		if env.ExitReason != "" {
+			exitReason = env.ExitReason
+		}
+	}
+
+	var output []byte
+	var execErr error
+	if queueTaskExecOverride != nil {
+		output, execErr = queueTaskExecOverride(cmdArgs, cwd, task.Prompt)
 	} else {
 		execCmd := platform.Command(ctx, rushBin, cmdArgs...)
 		execCmd.Dir = cwd
 		execCmd.Stdin = strings.NewReader(task.Prompt)
-
-		var execErr error
 		output, execErr = execCmd.Output()
-		if execErr != nil {
-			if exitErr, ok := execErr.(*exec.ExitError); ok {
-				return 0, 0, fmt.Sprintf("exit %d", exitErr.ExitCode()), fmt.Errorf("%s", string(exitErr.Stderr))
-			}
-			return 0, 0, "", execErr
-		}
 	}
 
-	// Parse JSON output to extract cost/tokens. A parse failure here means
-	// the child's stdout was corrupted, empty, or not JSON at all (crash
-	// mid-write, a non-JSON banner/error bleeding onto stdout, an early
-	// pipe close) — it must be reported as a task failure, not silently
-	// treated as success. The pre-fix code returned a nil error here, which
-	// the caller (queueRunCmd.RunE) took as "task succeeded" and persisted
-	// StatusDone with zeroed cost/tokens, hiding a broken run entirely.
-	//
-	// The error carries a length-bounded excerpt of stdout (via the
-	// package's existing truncate helper, defined in sessions.go and already
-	// used a few lines up in queueShowCmd for its own Prompt preview) rather
-	// than the full output: a misbehaving child can write arbitrarily large
-	// stdout before failing to emit valid JSON, and the operator only needs
-	// enough of the head to see why parsing failed, not the whole blob
-	// logged/wrapped into an error chain.
-	var result struct {
-		CostUSD    float64 `json:"cost_usd"`
-		Tokens     int64   `json:"tokens"`
-		ExitReason string  `json:"exit_reason"`
+	env, ok := decodeRunEnvelope(output)
+	if ok {
+		mergeEnvelope(env)
 	}
-	if jsonErr := json.Unmarshal(output, &result); jsonErr != nil {
+	if execErr != nil {
+		if exitErr, isExitErr := execErr.(*exec.ExitError); isExitErr {
+			if exitReason == "" {
+				exitReason = fmt.Sprintf("exit %d", exitErr.ExitCode())
+			}
+			stderr := truncate(string(exitErr.Stderr), 512)
+			diagnostic := ""
+			if !ok {
+				diagnostic = fmt.Sprintf(" (stdout excerpt: %q)", truncate(string(output), 512))
+			}
+			if stderr == "" {
+				return sessionID, cost, tokens, exitReason, fmt.Errorf("rush run failed%s: %w", diagnostic, execErr)
+			}
+			return sessionID, cost, tokens, exitReason, fmt.Errorf("rush run failed (stderr: %q)%s: %w", stderr, diagnostic, execErr)
+		}
+		return sessionID, cost, tokens, exitReason, fmt.Errorf("rush run failed (exec: %v): %w", execErr, execErr)
+	}
+	if !ok {
 		excerpt := truncate(string(output), 512)
-		return 0, 0, "", fmt.Errorf("parse rush run JSON output: %w (stdout excerpt: %q)", jsonErr, excerpt)
+		return sessionID, 0, 0, "", fmt.Errorf("parse rush run JSON output: %w (stdout excerpt: %q)", env.parseErr, excerpt)
 	}
-	return result.CostUSD, result.Tokens, result.ExitReason, nil
+	return sessionID, cost, tokens, exitReason, nil
+}
+
+// queueRunEnvelope is the subset of the child `rush run --json` envelope the
+// queue runner consumes (see internal/app/app_run_result.go for the producer).
+type queueRunEnvelope struct {
+	SessionID  string `json:"session_id"`
+	ExitReason string `json:"exit_reason"`
+	Usage      struct {
+		DeltaTokens  int64   `json:"delta_tokens"`
+		DeltaCostUSD float64 `json:"delta_cost_usd"`
+		Session      *struct {
+			TotalTokens int64   `json:"total_tokens"`
+			CostUSD     float64 `json:"cost_usd"`
+		} `json:"session"`
+	} `json:"usage"`
+	// parseErr is non-nil only when decoding failed.
+	parseErr error
+}
+
+// decodeRunEnvelope decodes the child's full buffered stdout so large
+// final_text fields cannot hide usage fields later in the envelope.
+func decodeRunEnvelope(output []byte) (queueRunEnvelope, bool) {
+	var env queueRunEnvelope
+	if len(bytes.TrimSpace(output)) == 0 {
+		env.parseErr = fmt.Errorf("child stdout is empty")
+		return env, false
+	}
+	if jsonErr := json.Unmarshal(output, &env); jsonErr != nil {
+		env.parseErr = jsonErr
+		return env, false
+	}
+	return env, true
 }
 
 func init() {
