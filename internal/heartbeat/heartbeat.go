@@ -322,6 +322,11 @@ func copySlots(m map[string]string) map[string]string {
 }
 
 func resolveDir() string {
+	if os.Getenv("RUSH_GLOBAL_DIR") != "" {
+		if p := dirFunc.Load(); p != nil {
+			return (*p)()
+		}
+	}
 	if s := os.Getenv("RUSH_HEARTBEAT_DIR"); s != "" {
 		return s
 	}

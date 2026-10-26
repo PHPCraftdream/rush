@@ -457,7 +457,7 @@ func removeKtavMigrationRecord(recordPath string) error {
 
 func ownerPolicyForMigration(path, workingDir string) (int, bool, error) {
 	canonical := normalizeReloadPath(path)
-	if systemConfigPath != "" && matchesLogicalSlot(canonical, systemConfigPath) || matchesLogicalSlot(canonical, GlobalConfig()) || matchesLogicalSlot(canonical, GlobalConfigData()) {
+	if systemConfigSlot() != "" && matchesLogicalSlot(canonical, systemConfigSlot()) || matchesLogicalSlot(canonical, GlobalConfig()) || matchesLogicalSlot(canonical, GlobalConfigData()) {
 		return configOwnerPolicyForPath(path, workingDir)
 	}
 	projectDir := workingDir

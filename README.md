@@ -124,6 +124,16 @@ binary against untouched `.rush/rush.db`: this restores the old snapshot, not
 post-import activity. Preserve `rush_store_v1.db` and its sidecars; there is no
 reverse importer or merge-back. See [job-batch rollout and controls](docs/jobbatch.md).
 
+## Running an experimental build side by side
+
+`rush --global-dir <DIR>` (or the `RUSH_GLOBAL_DIR` environment variable; the flag wins) relocates ALL Rush-owned global state under `DIR` with a fixed layout: `DIR/config` (config, Rush-owned skills/commands), `DIR/data` (data file, OAuth journals, provider/model-catalog caches, projects.json, audit logs, heartbeat, bin) and `DIR/cache`. When set, `RUSH_GLOBAL_CONFIG`, `RUSH_GLOBAL_DATA`, `RUSH_CACHE_DIR` and `XDG_*` are ignored for Rush-owned global paths, so an experimental build never touches a production install's state. Things belonging to other tools deliberately do NOT move: `~/.claude`, `~/.agents/skills`, `agents/skills`, `~/.aws`, the GitHub Copilot CLI token file, and the legacy `crush.*` migration source paths.
+
+```bash
+rush --global-dir ~/rush-experimental run "try the new provider config"
+```
+
+The experimental instance needs its own login: run `rush providers login` (or configure API keys) inside the root. NEVER copy an OAuth refresh token from the stable instance into the experimental one — refresh-token rotation by either instance invalidates the other's token, which is exactly what the isolation prevents. The local-cli providers (claude/gemini/codex) use those CLIs' own credentials, which live outside Rush's control and are shared by design.
+
 ## Protecting settings
 
 Use `rush lock <password>` to protect global settings, or `rush lock --local <password>` for the current workspace; use the matching `rush unlock` command to remove protection. A local protection applies to that workspace, while a global protection takes priority. `--password <password>` authorizes settings changes for a command. Do not expose this value to agent sessions: command-line arguments may appear in process listings, shell history, or transcripts. Models can only be changed with the `rush models` commands; direct edits of the settings file are detected at start-up. `rush web --password <password>` authorizes settings changes from every web client connected to that server for the server's lifetime. A forgotten password cannot be reset by rush; the owner of the machine can only remove the protection by hand from the settings file whose path `rush lock` printed. That is an operator action: agents are told on every refusal to ask the user instead. The stored protection value is a salted PBKDF2-SHA-256 hash of the password (600000 iterations), not the password or an unsalted digest; protection values written by older versions are not recognized — remove the stored value from the settings file by hand and run `rush lock` again.

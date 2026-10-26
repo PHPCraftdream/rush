@@ -56,7 +56,7 @@ func lookupConfigCandidateGroups(cwd string) configCandidateGroups {
 		path  string
 		owner int
 	}{
-		{systemConfigPath, systemConfigOwner()},
+		{systemConfigSlot(), systemConfigOwner()},
 		{GlobalConfig(), homeConfigOwner()},
 		{GlobalConfigData(), homeConfigOwner()},
 	} {
@@ -120,7 +120,7 @@ func configOwnerPolicyForPath(path, workingDir string) (int, bool, error) {
 		return 0, false, nil
 	}
 	canonical := normalizeReloadPath(path)
-	if systemConfigPath != "" && matchesLogicalSlot(canonical, systemConfigPath) {
+	if systemConfigSlot() != "" && matchesLogicalSlot(canonical, systemConfigSlot()) {
 		return systemConfigOwner(), true, nil
 	}
 	if matchesLogicalSlot(canonical, GlobalConfig()) || matchesLogicalSlot(canonical, GlobalConfigData()) {

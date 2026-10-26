@@ -113,6 +113,9 @@ var gitGlobalIgnorePatterns = sync.OnceValue(func() []gitignore.Pattern {
 // ~/.config/rush/ignore file.
 var rushGlobalIgnorePatterns = sync.OnceValue(func() []gitignore.Pattern {
 	name := filepath.Join(home.Config(), "rush", "ignore")
+	if root := os.Getenv("RUSH_GLOBAL_DIR"); root != "" {
+		name = filepath.Join(root, "config", "rush", "ignore")
+	}
 	bts, err := os.ReadFile(name)
 	if err != nil {
 		if !os.IsNotExist(err) {

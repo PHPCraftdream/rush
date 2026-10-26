@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/filelock"
 )
 
@@ -256,7 +257,16 @@ func SweepRenameAsideLeftovers(dst string) []string {
 //	Linux/macOS:  ~/.local/bin/rush
 //	              (XDG-recommended user binaries dir; on PATH by
 //	              default in most modern distros and shells)
+//
+// Under --global-dir (RUSH_GLOBAL_DIR) the install path is overridden to
+// <root>/bin/rush(.exe), since that location is Rush-owned global state.
 func DefaultInstallPath() (string, error) {
+	if root, ok := config.GlobalDir(); ok {
+		if runtime.GOOS == "windows" {
+			return filepath.Join(root, "bin", "rush.exe"), nil
+		}
+		return filepath.Join(root, "bin", "rush"), nil
+	}
 	if runtime.GOOS == "windows" {
 		base := os.Getenv("LOCALAPPDATA")
 		if base == "" {

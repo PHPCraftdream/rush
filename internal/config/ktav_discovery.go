@@ -223,8 +223,8 @@ func checkBackupOnlySlot(legacyJSON string) error {
 // well-known authoritative config location, including every project slot
 // the bounded discovery walk reports (visible and hidden, every ancestor).
 func checkAuthoritativeBackupOnly(workingDir string) error {
-	if systemConfigPath != "" {
-		if err := checkBackupOnlySlot(systemConfigPath); err != nil {
+	if systemConfigSlot() != "" {
+		if err := checkBackupOnlySlot(systemConfigSlot()); err != nil {
 			return err
 		}
 	}
@@ -286,8 +286,8 @@ func ktavMigrationPendingSlots(workingDir string) []string {
 			pending = append(pending, legacy)
 		}
 	}
-	if systemConfigPath != "" {
-		add(systemConfigPath)
+	if systemConfigSlot() != "" {
+		add(systemConfigSlot())
 	}
 	for _, slot := range []string{GlobalConfig(), GlobalConfigData()} {
 		add(slot)
