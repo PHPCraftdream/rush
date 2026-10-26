@@ -167,7 +167,7 @@ set -uo pipefail
 
 # Deliberately NOT `set -e`: this script is invoked two ways -- directly by
 # .githooks/pre-push (plain `bash .githooks/check_stale_model_slots.sh`,
-# no -e) and, as of the F12 CI hardening, by .github/workflows/build.yml's
+# no -e) and, as of the F12 CI hardening, by .github/workflows/ci.yml's
 # "no stale large/small model-slot spelling" step, which itself runs under
 # GitHub Actions' default `bash --noprofile --norc -eo pipefail {0}` for a
 # `run:` block with no `shell:` override -- but that parent -e does NOT

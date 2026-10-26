@@ -1,0 +1,77 @@
+# CI shard definitions for the Windows full test suite (Phase 2b shadow).
+# Package prefixes are module-relative (module = github.com/PHPCraftdream/rush).
+# This file mirrors the named-step grouping of .github/workflows/the former build workflow so
+# the failing step's NAME stays the diagnosis. See .github/ci-shards/README.md.
+module = "github.com/PHPCraftdream/rush"
+
+# Exact-match only: "internal/agent" itself is isolated in its own
+# windows-agent job (see the former build workflow's test-agent job history comments).
+# No shard group may list the bare prefix "internal/agent" — assign_shards.py
+# rejects that so agent/* subpackages can never be swallowed here.
+[agent_isolated]
+packages = ["internal/agent"]
+
+[shards.A]
+groups = [
+  { name = "test: internal/app", type = "go", packages = ["internal/app"], timeout = "20m" },
+  { name = "test: internal/server, internal/session", type = "go", packages = ["internal/server", "internal/session"] },
+  { name = "test: sdk", type = "go", packages = ["sdk"] },
+  { name = "test: npm wrapper cache logic", type = "npm" },
+  { name = "go mod tidy produces no diff", type = "tidy" },
+]
+
+[shards.B]
+groups = [
+  { name = "test: internal/cmd, internal/commands", type = "go", packages = ["internal/cmd", "internal/commands"] },
+]
+
+[shards.C]
+groups = [
+  # Prefixes only — tools/mcp and mcp/internal/contextlock are covered by
+  # the internal/agent/tools prefix. "internal/agent" itself is NOT here.
+  { name = "test: internal/agent subpackages", type = "go", packages = [
+    "internal/agent/agentguard",
+    "internal/agent/cliprovider",
+    "internal/agent/codexprovider",
+    "internal/agent/hyper",
+    "internal/agent/limitwords",
+    "internal/agent/notify",
+    "internal/agent/prompt",
+    "internal/agent/tools",
+  ] },
+  { name = "test: internal/shell", type = "go", packages = ["internal/shell"] },
+  { name = "test: internal/jobbatch, cmd/batchlab", type = "go", packages = ["internal/jobbatch", "cmd/batchlab"] },
+]
+
+# Shard D keeps the former build workflow's named-step diagnosis for the groups that were
+# never promoted to A/B/C, plus the dynamic computed catch-all (same
+# philosophy as the former build workflow's last step: a newly added package is always
+# covered by SOMETHING).
+[shards.D]
+groups = [
+  { name = "test: internal/permission, internal/config, internal/csync", type = "go", packages = ["internal/permission", "internal/config", "internal/csync"] },
+  { name = "test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history", type = "go", packages = ["internal/db", "internal/message", "internal/queue", "internal/pubsub", "internal/history"] },
+  { name = "test: internal/oauth, internal/deploy, internal/update, internal/version", type = "go", packages = ["internal/oauth", "internal/deploy", "internal/update", "internal/version"] },
+  # Dynamic remainder, computed by assign_shards.py. Must stay LAST.
+  { name = "test: everything else (computed catch-all)", type = "go", catch_all = true, packages = [] },
+]
+
+# Coverage map: every named package/group step in ci-windows-shards.yml maps
+# to a shard/group (or special target) that exists in the assignment. The
+# workflow is the source of truth; checked by assign_shards.py during planning
+# and in shards-summary so workflow group changes cannot silently go uncovered.
+[windows_leg]
+"test: internal/app" = "A/test: internal/app"
+"test: internal/server, internal/session" = "A/test: internal/server, internal/session"
+"test: sdk" = "A/test: sdk"
+"test: internal/cmd, internal/commands" = "B/test: internal/cmd, internal/commands"
+"test: internal/agent subpackages" = "C/test: internal/agent subpackages"
+"test: internal/shell" = "C/test: internal/shell"
+"test: internal/jobbatch, cmd/batchlab" = "C/test: internal/jobbatch, cmd/batchlab"
+"test: internal/permission, internal/config, internal/csync" = "D/test: internal/permission, internal/config, internal/csync"
+"test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history" = "D/test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history"
+"test: internal/oauth, internal/deploy, internal/update, internal/version" = "D/test: internal/oauth, internal/deploy, internal/update, internal/version"
+"test: everything else (computed catch-all)" = "D/test: everything else (computed catch-all)"
+"go mod tidy produces no diff" = "A/go mod tidy produces no diff"
+"test: npm wrapper cache logic" = "A/test: npm wrapper cache logic"
+"go test ./internal/agent/ split into sequential batches" = "agent"

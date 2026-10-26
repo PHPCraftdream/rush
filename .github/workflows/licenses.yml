@@ -18,6 +18,7 @@ name: licenses
 # re-checks everything.
 
 on:
+  workflow_call:
   pull_request:
     paths:
       - go.mod
@@ -48,7 +49,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: licenses-${{ github.event.pull_request.number || github.ref }}
+  group: licenses-${{ github.run_id }}
   cancel-in-progress: true
 
 jobs:
