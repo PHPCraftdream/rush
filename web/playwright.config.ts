@@ -36,6 +36,9 @@ const baseURL = `http://localhost:${port}`;
 
 export default defineConfig({
   testDir: "./tests",
+  // Real-backend suite has its own config and webServer; keep it out of the
+  // mock-driven default run (see tests/real-backend/playwright.config.ts).
+  testIgnore: "**/real-backend/**",
   workers: "50%",
   use: {
     baseURL,

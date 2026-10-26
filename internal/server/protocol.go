@@ -58,7 +58,8 @@ const (
 	// pushed on change and replied to CmdGetSessionBatchWork.
 	// Unconditional since the H4 cutover (batch is the only runtime);
 	// the old session_live_work wire is untouched.
-	EventSessionBatchWork = "session_batch_work"
+	EventSessionBatchWork   = "session_batch_work"
+	EventBatchControlResult = "batch_control_result"
 )
 
 // Inbound command types (client → server).
@@ -108,6 +109,11 @@ const (
 	// snapshot for one session (R15a, handlers_batch.go). Registered
 	// unconditionally since the H4 cutover (batch is the only runtime).
 	CmdGetSessionBatchWork = "get_session_batch_work"
+	CmdBatchStatus         = "batch_status"
+	CmdBatchOutput         = "batch_output"
+	CmdBatchStop           = "batch_stop"
+	CmdBatchAdd            = "batch_add"
+	CmdBatchDrain          = "batch_drain"
 	// CmdCancelWakeSchedule cancels one of the session's own wake schedules
 	// (stage 5b); handleCancelWakeSchedule answers it with a fresh snapshot.
 	CmdCancelWakeSchedule = "cancel_wake_schedule"
@@ -729,7 +735,7 @@ type GetSessionLiveWorkPayload struct {
 // ID. StartedAt/FinishedAt/LastActivityAt are unix milliseconds; FinishedAt
 // is 0 while the row is still running. Status is the durable async_jobs.state
 // ("running"|"completed"|"failed"|"timed_out"|"cancelled"|"interrupted") and
-// Reason the row's notice_kind ("job_kill" for a user-killed command,
+// Reason the row's notice_kind for a user-stopped command,
 // "session_cancel" for a session-level stop, ...) so the client can tell
 // user-stopped apart from timed out apart from failed. Mirrors
 // web/src/types.ts's LiveWorkItem.

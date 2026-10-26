@@ -194,6 +194,10 @@ Each entry expires at `finished_at + 10m` (the exact boundary is expired). It re
 
 `batch_output` first uses live Runner output and falls back only when the Runner reports `ErrReleased`; successful live output is never replaced by cache data. It returns `output_expired` when no cached entry remains and `output_truncated` when the requested data starts before the retained suffix. Capture is best-effort, so pressure eviction or process exit can end availability before ten minutes. `internal/jobbatch` remains independent of this Rush-owned policy.
 
+### Web batch view and controls
+
+The WebUI's Batches view renders the session's structured `session_batch_work` snapshot as an ordered tree of roots and nodes, including state, outcome summaries/references, held questions, and notice selection/delivery state (including delayed or suppressed notices). It refreshes from the server on session load/reconnect or explicit status refresh; the browser store is in-memory only, not local persistence. Incomplete snapshots merge conservatively so they do not erase previously seen work. The server refuses controls outside the owner runtime's supported roots; refusal is not success. Stop expresses cancellation intent, not confirmed termination. Add works only for roots owned by this process's CLI runtime: `App.BatchAdd` refuses model-created roots with the owner-process-only error, surfaced verbatim as a refusal in the UI. A live output stream is not exposed to the server: only retained outcome summary/reference is available. Drain is nonblocking, but currently refused because no public session-scoped drain API exists; the drain button never blocks other UI, and its refusal must not be treated as accepted or completed.
+
 ## Journal and replay limits
 
 JSONL is a header, public records, and footer. The header hashes the decoded

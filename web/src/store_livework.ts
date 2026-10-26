@@ -75,7 +75,7 @@ export function isLiveWorkRequestID(id: string | undefined): boolean {
 
 // ── Jump-to-tool-call signal ─────────────────────────────────────────────────
 //
-// LiveWorkList dispatches requestExpandToolCall on item click.
+// Transcript-level rows dispatch requestExpandToolCall on item click.
 // ToolActivityGroup/ActionRow/SubAgentBlock subscribe (via
 // useExpandToolCallSignal for the row-level ones) and force their matching
 // tool call open; the panel itself then scrolls the anchor

@@ -135,7 +135,10 @@ export function useWS() {
         // pushes for whatever session is active, so re-request it fresh --
         // mirrors the OwnedExternal messages_list refresh below.
         const activeForLiveWork = $activeSessionID.get();
-        if (activeForLiveWork) sendGetSessionLiveWork(activeForLiveWork);
+        if (activeForLiveWork) {
+          sendGetSessionLiveWork(activeForLiveWork);
+          ws.send("get_session_batch_work", { sessionID: activeForLiveWork });
+        }
       }),
 
       ws.on("_disconnected", () => {
@@ -499,6 +502,7 @@ export function useWS() {
         if (id) {
           sendGetSessionLiveWork(id);
           sendGetSessionWakeSchedules(id);
+          ws.send("get_session_batch_work", { sessionID: id });
         }
       }),
     ];

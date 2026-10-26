@@ -35,12 +35,12 @@ type BatchCountsWire struct {
 }
 
 // BatchDeliveryWire summarizes the R8 notice-delivery state of one root's
-// nodes: Selected counts nodes whose notice was selected for delivery,
-// Pending/Delivered classify the selected ones by notice_state.
+// Counts notice state on every node, including suppressed and delayed selection.
 type BatchDeliveryWire struct {
-	Selected  int `json:"selected"`
-	Pending   int `json:"pending"`
-	Delivered int `json:"delivered"`
+	Selected   int `json:"selected"`
+	Pending    int `json:"pending"`
+	Delivered  int `json:"delivered"`
+	Suppressed int `json:"suppressed"`
 }
 
 // BatchNodeWire is one batch_nodes row of a live root. Host is the
@@ -61,6 +61,9 @@ type BatchNodeWire struct {
 	OutcomeCode    string `json:"outcomeCode"`
 	OutcomeSummary string `json:"outcomeSummary"`
 	OutcomeRef     string `json:"outcomeRef"`
+	HeldQuestion   string `json:"heldQuestion,omitempty"`
+	NoticeSelected bool   `json:"noticeSelected"`
+	NoticeState    string `json:"noticeState,omitempty"`
 }
 
 // BatchRootWire is one live (nonterminal) root of the requested session's
@@ -250,6 +253,7 @@ func buildBatchWorkSnapshot(ctx context.Context, a *appPkg.App, sessionID string
 	}
 
 	rowsByOwner, visited, walkComplete := batchCollectRows(ctx, src, sessionID)
+	questions, questionsComplete := batchPendingQuestionsFor(ctx, a, visited)
 	var all []db.BatchNode
 	for _, rows := range rowsByOwner {
 		all = append(all, rows...)
@@ -275,7 +279,7 @@ func buildBatchWorkSnapshot(ctx context.Context, a *appPkg.App, sessionID string
 		}
 		nodesByRoot[n.RootID] = append(nodesByRoot[n.RootID], n)
 	}
-	snap.Complete = walkComplete && !missingRoot
+	snap.Complete = walkComplete && !missingRoot && questionsComplete
 	for _, rootRow := range roots {
 		nodes := nodesByRoot[rootRow.RootID]
 		// Deterministic order within a root: ordinal first, node id
@@ -341,6 +345,12 @@ func buildBatchWorkSnapshot(ctx context.Context, a *appPkg.App, sessionID string
 				wire.Delivery.Pending++
 			case "delivered":
 				wire.Delivery.Delivered++
+			case "suppressed":
+				wire.Delivery.Suppressed++
+			}
+			question, held := questions[n.NodeID]
+			if !held && n.ToolCallID.Valid {
+				question, held = questions[n.ToolCallID.String]
 			}
 			node := BatchNodeWire{
 				NodeID:         n.NodeID,
@@ -357,6 +367,9 @@ func buildBatchWorkSnapshot(ctx context.Context, a *appPkg.App, sessionID string
 				OutcomeCode:    n.OutcomeCode,
 				OutcomeSummary: n.OutcomeSummary,
 				OutcomeRef:     n.ResponseEnvelopeRef.String,
+				NoticeSelected: n.NoticeSelected > 0,
+				NoticeState:    n.NoticeState.String,
+				HeldQuestion:   heldQuestion(question, held),
 			}
 			wire.Nodes = append(wire.Nodes, node)
 			if batchTerminal(n.State) {
@@ -500,6 +513,13 @@ func (c *BatchCountsWire) add(n db.BatchNode) {
 	default:
 		c.Active++
 	}
+}
+
+func heldQuestion(q session.ChildQuestion, held bool) string {
+	if held {
+		return q.Question
+	}
+	return ""
 }
 
 // handleGetSessionBatchWork replies with one EventSessionBatchWork snapshot

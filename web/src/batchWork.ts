@@ -1,156 +1,108 @@
 import { atom } from "nanostores";
-import type {
-  BatchWorkCompletion,
-  BatchWorkRoot,
-  BatchWorkSnapshot,
-  LiveWorkItem,
-} from "./types";
-import type { SessionLiveWork } from "./store_livework";
+import type { BatchWorkCompletion, BatchWorkNode, BatchWorkRoot, BatchWorkSnapshot } from "./types";
 
-// Batch-work store slice (R15a, internal/server/handlers_batch.go): the
-// structured batch_nodes tree for the active session, delivered as full
-// `session_batch_work` snapshots. Unconditional since the H4 cutover: batch
-// is the only runtime, so every live session receives these events.
-//
-// Never-disappears rule: the store mutates ONLY on a delivered snapshot. A
-// failed server-side read never sends one at all (the server still replies
-// with an incomplete snapshot rather than dropping the reply), and
-// incomplete snapshots MERGE -- so a transient read failure can neither
-// clear nor replace previously live roots. Wire types live in types.ts.
-
-export interface BatchWorkState {
-  lastGood: BatchWorkSnapshot | null;
-}
-
-// Keyed by sessionID. No snapshot yet reads as null via pickBatchWork.
+export interface BatchWorkState { lastGood: BatchWorkSnapshot | null }
 export const $batchWorkBySession = atom<Map<string, BatchWorkState>>(new Map());
 
-// pickBatchWork takes the MAP as an explicit argument rather than reading
-// $batchWorkBySession.get() itself. Same React Compiler constraint as
-// pickLiveWork in store_livework.ts: the compiler memoizes a component's
-// derived values from recognized reactive inputs only, and a plain function
-// reaching into an atom via .get() is invisible to that analysis. Callers
-// MUST pass the value returned by `useStore($batchWorkBySession)` here.
-export function pickBatchWork(
-  map: Map<string, BatchWorkState>,
-  sessionID: string | null,
-): BatchWorkState | null {
+export function pickBatchWork(map: Map<string, BatchWorkState>, sessionID: string | null): BatchWorkState | null {
   if (!sessionID) return null;
   return map.get(sessionID) ?? null;
 }
 
-/** Applies a session_batch_work snapshot. complete=true REPLACES the last
- * good snapshot; complete=false MERGES the carried roots into it by rootID
- * (never drops a previously live root). No snapshot is ever applied for a
- * failed read -- the server simply does not send one. */
 export function applyBatchWorkSnapshot(payload: BatchWorkSnapshot) {
   const next = new Map($batchWorkBySession.get());
-  const prev = next.get(payload.sessionID)?.lastGood ?? null;
-  const lastGood: BatchWorkSnapshot =
-    payload.complete || prev === null
-      ? { ...payload, roots: payload.roots ?? [], completions: payload.completions ?? [] }
-      : {
-          ...payload,
-          roots: mergeRoots(prev.roots, payload.roots ?? []),
-          // Completions follow the same merge rule as roots: an incomplete
-          // read may have missed the terminal-root history chunk, so a
-          // previously seen completion (keyed by rootID + nodeID) must
-          // never drop out of the index. A complete snapshot replaces.
-          completions: mergeCompletions(prev.completions, payload.completions ?? []),
-        };
+  const previous = next.get(payload.sessionID)?.lastGood ?? null;
+  const lastGood = payload.complete || previous === null
+    ? { ...payload, roots: payload.roots ?? [], completions: payload.completions ?? [] }
+    : { ...payload, roots: mergeRoots(previous.roots, payload.roots ?? []), completions: mergeCompletions(previous.completions, payload.completions ?? []) };
   next.set(payload.sessionID, { lastGood });
   $batchWorkBySession.set(next);
 }
 
-/** Merges incoming completions over the previous ones by (rootID, nodeID):
- * incoming overwrites its own key, previously seen completions without an
- * incoming counterpart are kept. */
-function mergeCompletions(prev: BatchWorkCompletion[], incoming: BatchWorkCompletion[]): BatchWorkCompletion[] {
-  const byKey = new Map(prev.map((c) => [`${c.rootID}\u0000${c.nodeID}`, c]));
-  for (const c of incoming) byKey.set(`${c.rootID}\u0000${c.nodeID}`, c);
+function mergeCompletions(previous: BatchWorkCompletion[], incoming: BatchWorkCompletion[]): BatchWorkCompletion[] {
+  const byKey = new Map(previous.map((item) => [`${item.rootID}\u0000${item.nodeID}`, item]));
+  for (const item of incoming) byKey.set(`${item.rootID}\u0000${item.nodeID}`, item);
   return [...byKey.values()];
 }
-
-/** Merges incoming incomplete roots into the previous roots by rootID:
- * incoming roots overwrite their own ID, previously live roots without an
- * incoming counterpart are kept. Within a shared root, nodes merge by
- * nodeID -- only a complete read can remove a previously live node. */
-function mergeRoots(prev: BatchWorkRoot[], incoming: BatchWorkRoot[]): BatchWorkRoot[] {
+function mergeRoots(previous: BatchWorkRoot[], incoming: BatchWorkRoot[]): BatchWorkRoot[] {
   const out: BatchWorkRoot[] = [];
   const seen = new Set<string>();
-  const incomingByID = new Map(incoming.map((r) => [r.rootID, r]));
-  for (const p of prev) {
-    const inc = incomingByID.get(p.rootID);
-    if (!inc) {
-      // Root only in prev: keep as-is.
-      out.push(p);
-      continue;
-    }
-    seen.add(inc.rootID);
-    const nodes = [...inc.nodes];
-    for (const pn of p.nodes) {
-      if (!inc.nodes.some((n) => n.nodeID === pn.nodeID)) nodes.push(pn);
-    }
-    out.push({ ...inc, nodes });
+  const updates = new Map(incoming.map((root) => [root.rootID, root]));
+  for (const prior of previous) {
+    const next = updates.get(prior.rootID);
+    if (!next) { out.push(prior); continue; }
+    seen.add(next.rootID);
+    const nodes = [...next.nodes];
+    for (const node of prior.nodes) if (!nodes.some((item) => item.nodeID === node.nodeID)) nodes.push(node);
+    out.push({ ...next, nodes });
   }
-  for (const r of incoming) {
-    if (!seen.has(r.rootID)) out.push(r);
-  }
+  for (const root of incoming) if (!seen.has(root.rootID)) out.push(root);
   return out;
 }
 
-/** Merge selector for the live-work panel: the old flat rows (commands +
- * agents) with any row whose toolCallID matches a snapshot node's
- * toolCallID REPLACED by that node's structured entry, and structured-only
- * nodes (no covered flat row) APPENDED in root/node order -- nothing is
- * dropped. Empty toolCallIDs never dedupe or render as appended rows.
- * Both maps are explicit arguments -- same React Compiler rule as
- * pickBatchWork above. Flag off (no snapshot state for the session) returns
- * the flat rows unchanged. */
-export function pickMergedLiveWork(
-  liveWorkMap: Map<string, SessionLiveWork>,
-  batchMap: Map<string, BatchWorkState>,
-  sessionID: string | null,
-): { commands: LiveWorkItem[]; agents: LiveWorkItem[] } {
-  const flat = liveWorkMap.get(sessionID ?? "") ?? { commands: [], agents: [] };
-  const snap = pickBatchWork(batchMap, sessionID)?.lastGood;
-  if (!snap) return { commands: flat.commands, agents: flat.agents };
-  const covered = new Set<string>();
-  for (const root of snap.roots) {
-    for (const node of root.nodes) {
-      if (node.toolCallID) covered.add(node.toolCallID);
+export interface BatchTreeNode { node: BatchWorkNode; children: BatchTreeNode[]; childBatches: BatchTreeRoot[] }
+export interface BatchTreeRoot { root: BatchWorkRoot; nodes: BatchTreeNode[] }
+
+export function buildBatchTree(roots: BatchWorkRoot[]): BatchTreeRoot[] {
+  const sorted = [...roots].sort((a, b) => a.rootID.localeCompare(b.rootID));
+  const rootsByOwner = new Map<string, BatchWorkRoot[]>();
+  for (const root of sorted) rootsByOwner.set(root.ownerSessionID, [...(rootsByOwner.get(root.ownerSessionID) ?? []), root]);
+  const attached = new Set<string>();
+
+  function buildRoot(root: BatchWorkRoot, ancestry: Set<string>): BatchTreeRoot {
+    const nodes = [...root.nodes].sort((a, b) => a.ordinal - b.ordinal || a.nodeID.localeCompare(b.nodeID));
+    const byID = new Map(nodes.map((node) => [node.nodeID, node]));
+    const childrenByParent = new Map<string, BatchWorkNode[]>();
+    const top: BatchWorkNode[] = [];
+    for (const node of nodes) {
+      const chain = new Set([node.nodeID]);
+      let parentID = node.parentID;
+      let malformed = false;
+      while (parentID) {
+        if (chain.has(parentID)) { malformed = true; break; }
+        chain.add(parentID);
+        const parentNode = byID.get(parentID);
+        if (!parentNode) { malformed = true; break; }
+        parentID = parentNode.parentID;
+      }
+      const parent = byID.get(node.parentID);
+      if (!node.parentID || !parent || malformed) top.push(node);
+      else childrenByParent.set(parent.nodeID, [...(childrenByParent.get(parent.nodeID) ?? []), node]);
     }
-  }
-  const keep = (rows: LiveWorkItem[]) =>
-    rows.filter((r) => !r.toolCallID || !covered.has(r.toolCallID));
-  const commands = keep(flat.commands);
-  const agents = keep(flat.agents);
-  // Flat rows by tool call: a structural ROOT node carries no
-  // childSessionID/awaiting state, so a covered flat agent row would lose
-  // its Agents classification and awaiting badge — carry those over.
-  const flatByToolCallID = new Map<string, LiveWorkItem>();
-  for (const row of [...flat.commands, ...flat.agents]) {
-    if (row.toolCallID) flatByToolCallID.set(row.toolCallID, row);
-  }
-  for (const root of snap.roots) {
-    for (const node of root.nodes) {
-      if (!node.toolCallID) continue;
-      const flatRow = flatByToolCallID.get(node.toolCallID);
-      const childSessionID = node.childSessionID || flatRow?.childSessionID || undefined;
-      const item: LiveWorkItem = {
-        toolCallID: node.toolCallID,
-        toolName: node.kind === "task" ? node.taskKind || node.kind : node.kind,
-        title: node.outcomeSummary || node.taskKind || node.kind || flatRow?.title || "",
-        childSessionID,
-        startedAt: root.startedAt,
-        status: node.state,
-        reason: node.cause || undefined,
-        lastActivityAt: undefined,
-        awaitingAnswer: flatRow?.awaitingAnswer,
-        awaitingQuestion: flatRow?.awaitingQuestion,
+
+    function buildNode(node: BatchWorkNode, branch: Set<string>): BatchTreeNode {
+      if (branch.has(node.nodeID)) return { node, children: [], childBatches: [] };
+      const path = new Set(branch).add(node.nodeID);
+      const nestedRoots = node.childSessionID ? rootsByOwner.get(node.childSessionID) ?? [] : [];
+      const nested = nestedRoots.filter((candidate) => !ancestry.has(candidate.rootID) && !attached.has(candidate.rootID));
+      for (const candidate of nested) attached.add(candidate.rootID);
+      return {
+        node,
+        children: (childrenByParent.get(node.nodeID) ?? []).map((child) => buildNode(child, path)),
+        childBatches: nested.map((candidate) => buildRoot(candidate, new Set(ancestry).add(candidate.rootID))),
       };
-      (childSessionID ? agents : commands).push(item);
+    }
+    return { root, nodes: top.map((node) => buildNode(node, new Set())) };
+  }
+
+  const tree: BatchTreeRoot[] = [];
+  const rootsWithLinks = new Set<string>();
+  for (const root of sorted) {
+    for (const node of root.nodes) {
+      if (node.childSessionID) {
+        for (const linked of rootsByOwner.get(node.childSessionID) ?? []) rootsWithLinks.add(linked.rootID);
+      }
     }
   }
-  return { commands, agents };
+  for (const root of sorted) {
+    if (attached.has(root.rootID) || rootsWithLinks.has(root.rootID)) continue;
+    attached.add(root.rootID);
+    tree.push(buildRoot(root, new Set([root.rootID])));
+  }
+  for (const root of sorted) {
+    if (attached.has(root.rootID)) continue;
+    attached.add(root.rootID);
+    tree.push(buildRoot(root, new Set([root.rootID])));
+  }
+  return tree;
 }

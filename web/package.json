@@ -15,7 +15,8 @@
     "lint": "oxlint --max-warnings=101",
     "preview": "rsbuild preview",
     "test": "node scripts/run-tests.mjs",
-    "test:ui": "node scripts/run-tests.mjs --ui"
+    "test:ui": "node scripts/run-tests.mjs --ui",
+    "test:real-backend": "playwright test --config tests/real-backend/playwright.config.ts"
   },
   "dependencies": {
     "@nanostores/react": "^0.8.1",
