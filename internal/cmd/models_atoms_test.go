@@ -300,3 +300,18 @@ func TestParseAtom_ShortCodeRoundtrip(t *testing.T) {
 	assert.Equal(t, want.Slug, sm.Model)
 	assert.Equal(t, want.Effort, sm.ReasoningEffort)
 }
+
+// The family atoms pin the top generation, not the claude CLI's lagging
+// moving aliases.
+func TestFamilyAtomsPinTopGeneration(t *testing.T) {
+	for name, model := range map[string]string{
+		"opus":   "cli-claude-opus-5-5",
+		"sonnet": "cli-claude-sonnet-5-5",
+		"haiku":  "cli-claude-haiku-5-5",
+		"fable":  "cli-claude-fable-5-1",
+	} {
+		a, ok := atomRegistry[name]
+		require.True(t, ok, name)
+		assert.Equal(t, model, a.Model, name)
+	}
+}
