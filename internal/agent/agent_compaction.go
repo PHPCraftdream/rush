@@ -387,7 +387,7 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 		Role:             message.Assistant,
 		Model:            smartModel.Model.Model(),
 		Provider:         smartModel.Model.Provider(),
-		ReasoningEffort:  turnSmartReasoningEffort(ctx, currentSession),
+		ReasoningEffort:  turnSmartReasoningEffort(smartModel),
 		IsSummaryMessage: true,
 	})
 	if err != nil {
@@ -589,7 +589,7 @@ func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string,
 		Role:             message.Assistant,
 		Model:            smartModel.Model.Model(),
 		Provider:         smartModel.Model.Provider(),
-		ReasoningEffort:  turnSmartReasoningEffort(ctx, currentSession),
+		ReasoningEffort:  turnSmartReasoningEffort(smartModel),
 		IsSummaryMessage: true,
 		Hidden:           true,
 	})

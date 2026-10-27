@@ -48,6 +48,46 @@ func credentialLiteralStore(probe *credentialLiteralProbe) *config.ConfigStore {
 	}, probe.resolver())
 }
 
+func TestResolveCredentialsModelsUsesInvocationEffortWithoutSessionInheritance(t *testing.T) {
+	probe := &credentialLiteralProbe{}
+	coord := &coordinator{cfg: credentialLiteralStore(probe)}
+	creds := &CredentialSet{
+		Credentials: []Credential{{Provider: "tenant", Type: ProviderTypeOpenAI, APIKey: "key"}},
+		Models: map[Role]ModelChoice{
+			RoleSmart: {Provider: "tenant", Model: "tenant-smart", ReasoningEffort: "low"},
+			RoleFast:  {Provider: "tenant", Model: "tenant-fast", ReasoningEffort: "low"},
+		},
+	}
+	ctx := WithRoleReasoningEffort(t.Context(), "high")
+	resolved, err := coord.resolveCredentialsModels(ctx, "", creds)
+	require.NoError(t, err)
+	require.Equal(t, "high", resolved.smart.ModelCfg.ReasoningEffort)
+	require.Equal(t, "low", resolved.fast.ModelCfg.ReasoningEffort)
+
+	ctx = WithModelOverrides(ctx, nil, &ModelOverride{Provider: "tenant", Model: "tenant-fast-override"})
+	resolved, err = coord.resolveCredentialsModels(ctx, "", creds)
+	require.NoError(t, err)
+	require.Equal(t, "high", resolved.smart.ModelCfg.ReasoningEffort)
+	require.Empty(t, resolved.fast.ModelCfg.ReasoningEffort, "an explicit model switch must not inherit credential model effort")
+
+	// Fast-only model overrides do not change the selected turn slot:
+	// smart/empty role runs apply explicit effort to the smart choice.
+	resolved, err = coord.resolveCredentialsModels(WithCallOptions(ctx, &CallOptions{ModelRole: config.SelectedModelTypeSmart}), "", creds)
+	require.NoError(t, err)
+	require.Equal(t, "high", resolved.smart.ModelCfg.ReasoningEffort)
+	require.Empty(t, resolved.fast.ModelCfg.ReasoningEffort)
+
+	resolved, err = coord.resolveCredentialsModels(WithCallOptions(ctx, &CallOptions{ModelRole: config.SelectedModelTypeFast}), "", creds)
+	require.NoError(t, err)
+	require.Equal(t, "low", resolved.smart.ModelCfg.ReasoningEffort)
+	require.Equal(t, "high", resolved.fast.ModelCfg.ReasoningEffort)
+
+	ctx = WithModelOverrides(ctx, &ModelOverride{Provider: "tenant", Model: "tenant-override"}, nil)
+	resolved, err = coord.resolveCredentialsModels(ctx, "", creds)
+	require.NoError(t, err)
+	require.Equal(t, "high", resolved.smart.ModelCfg.ReasoningEffort)
+}
+
 func TestBuildCredentialModelUsesLiteralCredentialValues(t *testing.T) {
 	probe := &credentialLiteralProbe{}
 	store := credentialLiteralStore(probe)

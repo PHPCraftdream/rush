@@ -125,7 +125,9 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 		FrequencyPenalty:     freqPenalty,
 		PresencePenalty:      presPenalty,
 		SystemPromptOverride: sessionSystemPrompt,
-		CallOptions:          callOpts,
+		// Preserve the accepted call's policy when this run is queued as a
+		// mailbox follow-up and later executed under the owner's context.
+		CallOptions: callOpts,
 		// R3-4: this call's restricted-run policy, armed at turn start; the
 		// uncompiled spec travels too so the durable queue can persist it.
 		RunAllowlist:        runAllowlistFrom(ctx),
@@ -786,17 +788,19 @@ func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt st
 
 	// Carry session-level reasoning effort into the overrides so that
 	// applyModelOverrides restores it after resetting the model config.
-	if sess, err := c.sessions.Get(ctx, sessionID); err == nil {
-		// An omitted slot inherits the target session's durable override. This
-		// keeps a one-slot ExecuteRun override from silently switching the other
-		// slot back to the process default.
-		if smart == nil && sess.SmartModelID != "" {
-			smart = &ModelOverride{Provider: sess.SmartModelProvider, Model: sess.SmartModelID}
+	if WebModelPolicy(ctx) {
+		if sess, err := c.sessions.Get(ctx, sessionID); err == nil {
+			// An omitted slot inherits the target session's durable override. This
+			// keeps a one-slot ExecuteRun override from silently switching the other
+			// slot back to the process default.
+			if smart == nil && sess.SmartModelID != "" {
+				smart = &ModelOverride{Provider: sess.SmartModelProvider, Model: sess.SmartModelID}
+			}
+			if fast == nil && sess.FastModelID != "" {
+				fast = &ModelOverride{Provider: sess.FastModelProvider, Model: sess.FastModelID}
+			}
+			inheritSessionEffort(smart, fast, sess)
 		}
-		if fast == nil && sess.FastModelID != "" {
-			fast = &ModelOverride{Provider: sess.FastModelProvider, Model: sess.FastModelID}
-		}
-		inheritSessionEffort(smart, fast, sess)
 	}
 
 	// R9-2 (round-9 audit): the session-inheritance fill-in above lives on
@@ -919,17 +923,17 @@ func (c *coordinator) RunWithReservedOwnership(ctx context.Context, sessionID, p
 		return nil, err
 	}
 
-	// Preserve durable session overrides for slots omitted by this call before
-	// building the pinned snapshot. ExecuteRun persists its requested slots at
-	// the agent handoff, so this read still observes the prior session state.
-	if sess, getErr := c.sessions.Get(ctx, sessionID); getErr == nil {
-		if smart == nil && sess.SmartModelID != "" {
-			smart = &ModelOverride{Provider: sess.SmartModelProvider, Model: sess.SmartModelID}
+	// Invocation-only model selections must not inherit durable session pins.
+	if WebModelPolicy(ctx) {
+		if sess, getErr := c.sessions.Get(ctx, sessionID); getErr == nil {
+			if smart == nil && sess.SmartModelID != "" {
+				smart = &ModelOverride{Provider: sess.SmartModelProvider, Model: sess.SmartModelID}
+			}
+			if fast == nil && sess.FastModelID != "" {
+				fast = &ModelOverride{Provider: sess.FastModelProvider, Model: sess.FastModelID}
+			}
+			inheritSessionEffort(smart, fast, sess)
 		}
-		if fast == nil && sess.FastModelID != "" {
-			fast = &ModelOverride{Provider: sess.FastModelProvider, Model: sess.FastModelID}
-		}
-		inheritSessionEffort(smart, fast, sess)
 	}
 
 	var pinned *resolvedOverrides

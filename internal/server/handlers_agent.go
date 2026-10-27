@@ -236,10 +236,8 @@ func handleSendMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMess
 	// Decouple the agent run from the WebSocket connection lifetime.
 	// Without this, closing/refreshing the browser tab would cancel the agent.
 	// Explicit cancellation is still available via Cancel(sessionID).
-	// Web-originated turn: tag the entry channel so the user message the
-	// agent creates carries OriginWeb (decoupled from the WS lifetime —
-	// WithoutCancel still applies).
 	agentCtx := agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb)
+	agentCtx = agent.WithCallOptions(agentCtx, &agent.CallOptions{WebTurnOptIn: true})
 
 	c.hub.Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: p.SessionID, Busy: true})
 	var err error
@@ -334,7 +332,7 @@ func handleInterruptAndSend(ctx context.Context, a *appPkg.App, c *Client, msg W
 	// Use bounded context for idle-interrupt: WithoutCancel + timeout to ensure
 	// the operation can complete even if the WebSocket connection closes, but with
 	// a reasonable upper bound to prevent indefinite hangs (e.g., blocked SQLite write).
-	agentCtx, cancel := context.WithTimeout(agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb), 30*time.Second)
+	agentCtx, cancel := context.WithTimeout(agent.WithCallOptions(agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb), &agent.CallOptions{WebTurnOptIn: true}), 30*time.Second)
 	defer cancel()
 
 	if err := a.AgentCoordinator.InterruptAndSend(agentCtx, p.SessionID, p.Content, smartOverride, fastOverride, attachments...); err != nil {
@@ -388,7 +386,7 @@ func handleInjectMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMe
 		})
 	}
 
-	agentCtx := agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb)
+	agentCtx := agent.WithCallOptions(agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb), &agent.CallOptions{WebTurnOptIn: true})
 	if _, err := a.AgentCoordinator.InjectMessage(agentCtx, p.SessionID, p.Content, attachments...); err != nil {
 		slog.Error("ws: inject-message failed", "err", err)
 		c.reply(msg.ID, EventError, nil, err.Error())
@@ -519,7 +517,7 @@ func handleInitializeProject(ctx context.Context, a *appPkg.App, c *Client, msg 
 	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok", "sessionID": sess.ID}, "")
 
 	// Run the agent in a background context so closing the tab won't cancel it.
-	agentCtx := agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb)
+	agentCtx := agent.WithCallOptions(agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb), &agent.CallOptions{WebTurnOptIn: true})
 	c.hub.Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: sess.ID, Busy: true})
 	_, runErr := a.AgentCoordinator.Run(agentCtx, sess.ID, initPrompt)
 	// P2-2 fix: broadcast the actual busy state derived from mailbox ownership.

@@ -100,6 +100,7 @@ func toSessionCallOptionsSpec(o *CallOptions) *session.CallOptionsSpec {
 		TimeoutExtendsOnProgress: o.TimeoutExtendsOnProgress,
 		TimeoutHardCap:           o.TimeoutHardCap,
 		IdleTimeout:              o.IdleTimeout,
+		WebTurnOptIn:             o.WebTurnOptIn,
 	}
 }
 
@@ -114,9 +115,9 @@ func toSessionCallOptionsSpec(o *CallOptions) *session.CallOptionsSpec {
 // an older binary could accept a newer durable row, silently drop an
 // unknown execution-policy field, and run the replayed turn with weaker
 // semantics than the row actually declared. There is exactly one accepted
-// version today (session.CallOptionsSpecVersion); anything else — zero,
-// malformed, or a future schema this binary predates — is refused rather
-// than partially decoded.
+// version 2. Version 1 remains readable only when the v2-only WebTurnOptIn
+// marker is absent (false); a v1 row carrying that marker is inconsistent and
+// rejected rather than silently dropping policy. Unsupported versions fail closed.
 var ErrCallOptionsSpecVersionUnsupported = errors.New("agent: durable CallOptionsSpec has an unsupported schema version")
 
 // fromSessionCallOptionsSpec is the inverse of toSessionCallOptionsSpec. A
@@ -129,8 +130,9 @@ func fromSessionCallOptionsSpec(spec *session.CallOptionsSpec) (*CallOptions, er
 	if spec == nil {
 		return nil, nil
 	}
-	if spec.Version != session.CallOptionsSpecVersion {
-		return nil, fmt.Errorf("%w: got %d, want %d",
+	if spec.Version != session.CallOptionsSpecVersion &&
+		!(spec.Version == 1 && !spec.WebTurnOptIn) {
+		return nil, fmt.Errorf("%w: got %d, want %d (or legacy v1 without WebTurnOptIn)",
 			ErrCallOptionsSpecVersionUnsupported, spec.Version, session.CallOptionsSpecVersion)
 	}
 	return &CallOptions{
@@ -140,6 +142,7 @@ func fromSessionCallOptionsSpec(spec *session.CallOptionsSpec) (*CallOptions, er
 		TimeoutExtendsOnProgress: spec.TimeoutExtendsOnProgress,
 		TimeoutHardCap:           spec.TimeoutHardCap,
 		IdleTimeout:              spec.IdleTimeout,
+		WebTurnOptIn:             spec.WebTurnOptIn,
 	}, nil
 }
 

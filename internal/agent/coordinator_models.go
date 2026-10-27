@@ -99,10 +99,14 @@ func (c *coordinator) resolveSessionModels(ctx context.Context, sessionID string
 // All config reads use a single atomic Snapshot() call to prevent reading config fields
 // from different generations (task #341, P1-3).
 func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionID string, wantTools bool) (*resolvedOverrides, error) {
-	// Load the session to check for model overrides.
-	sess, err := c.sessions.Get(ctx, sessionID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load session %q: %w", sessionID, err)
+	// Load session preferences only when policy permits them.
+	var sess session.Session
+	var err error
+	if WebModelPolicy(ctx) {
+		sess, err = c.sessions.Get(ctx, sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load session %q: %w", sessionID, err)
+		}
 	}
 
 	// Atomically capture config and generation in a single snapshot to prevent
@@ -113,21 +117,12 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 	smartCfg := cfg.Models[config.SelectedModelTypeSmart]
 	fastCfg := cfg.Models[config.SelectedModelTypeFast]
 
-	// Apply session-level overrides from the DB if present.
 	var smartOverride, fastOverride *ModelOverride
 	if sess.SmartModelID != "" {
-		smartOverride = &ModelOverride{
-			Provider:        sess.SmartModelProvider,
-			Model:           sess.SmartModelID,
-			ReasoningEffort: sess.SmartModelReasoningEffort,
-		}
+		smartOverride = &ModelOverride{Provider: sess.SmartModelProvider, Model: sess.SmartModelID, ReasoningEffort: sess.SmartModelReasoningEffort}
 	}
 	if sess.FastModelID != "" {
-		fastOverride = &ModelOverride{
-			Provider:        sess.FastModelProvider,
-			Model:           sess.FastModelID,
-			ReasoningEffort: sess.FastModelReasoningEffort,
-		}
+		fastOverride = &ModelOverride{Provider: sess.FastModelProvider, Model: sess.FastModelID, ReasoningEffort: sess.FastModelReasoningEffort}
 	}
 
 	// D2 (docs/plans/2026-10-15-role-models-hot-reload.md §2.2): a
@@ -140,9 +135,17 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 	// --effort of a non-smart role run onto the resolved slot (plan R6).
 	roleSource := ""
 	if smartOverride == nil {
-		if ovr, src, ok := roleSlotOverride(cfg, sess, callModelRole(ctx), roleReasoningEffortFrom(ctx)); ok {
-			smartOverride = ovr
-			roleSource = src
+		role := callModelRole(ctx)
+		if role == config.SelectedModelTypeSmart || role == "" {
+			if effort := roleReasoningEffortFrom(ctx); effort != "" {
+				smartCfg.ReasoningEffort = effort
+			}
+		}
+		if role != config.SelectedModelTypeSmart && role != "" {
+			if ovr, src, ok := roleSlotOverride(cfg, sess, role, roleReasoningEffortFrom(ctx)); ok {
+				smartOverride = ovr
+				roleSource = src
+			}
 		}
 	}
 
@@ -385,7 +388,7 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, sessionID string,
 	// a failed load resolves no pins (the caller decides whether that is
 	// fatal — the explicit overrides below still apply).
 	sess := session.Session{}
-	if sessionID != "" {
+	if sessionID != "" && WebModelPolicy(ctx) {
 		if loaded, getErr := c.sessions.Get(ctx, sessionID); getErr == nil {
 			sess = loaded
 		}
@@ -415,17 +418,25 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, sessionID string,
 	// --effort of a non-smart role run onto the resolved slot (plan R6).
 	roleSource := ""
 	if smart == nil {
-		if ovr, src, ok := roleSlotOverride(cfg, sess, callModelRole(ctx), roleReasoningEffortFrom(ctx)); ok {
-			if smartCfg.Provider != ovr.Provider || smartCfg.Model != ovr.Model {
-				smartCfg.Think = false
-				smartCfg.ReasoningEffort = ""
+		role := callModelRole(ctx)
+		if role == config.SelectedModelTypeSmart || role == "" {
+			if effort := roleReasoningEffortFrom(ctx); effort != "" {
+				smartCfg.ReasoningEffort = effort
 			}
-			smartCfg.Provider = ovr.Provider
-			smartCfg.Model = ovr.Model
-			if ovr.ReasoningEffort != "" {
-				smartCfg.ReasoningEffort = ovr.ReasoningEffort
+		}
+		if role != config.SelectedModelTypeSmart && role != "" {
+			if ovr, src, ok := roleSlotOverride(cfg, sess, role, roleReasoningEffortFrom(ctx)); ok {
+				if smartCfg.Provider != ovr.Provider || smartCfg.Model != ovr.Model {
+					smartCfg.Think = false
+					smartCfg.ReasoningEffort = ""
+				}
+				smartCfg.Provider = ovr.Provider
+				smartCfg.Model = ovr.Model
+				if ovr.ReasoningEffort != "" {
+					smartCfg.ReasoningEffort = ovr.ReasoningEffort
+				}
+				roleSource = src
 			}
-			roleSource = src
 		}
 	}
 	if fast != nil {

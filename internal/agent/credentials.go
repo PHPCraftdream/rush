@@ -389,14 +389,33 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 	fastChoice, fastCovered := creds.Models[RoleFast]
 	if smartOverride, fastOverride := modelOverridesFrom(ctx); smartOverride != nil || fastOverride != nil {
 		if smartOverride != nil {
+			sameModel := smartChoice.Provider == smartOverride.Provider && smartChoice.Model == smartOverride.Model
 			smartChoice.Provider = smartOverride.Provider
 			smartChoice.Model = smartOverride.Model
+			if !sameModel || smartOverride.ReasoningEffort != "" {
+				smartChoice.ReasoningEffort = smartOverride.ReasoningEffort
+			}
 			smartCovered = true
 		}
 		if fastOverride != nil {
+			sameModel := fastChoice.Provider == fastOverride.Provider && fastChoice.Model == fastOverride.Model
 			fastChoice.Provider = fastOverride.Provider
 			fastChoice.Model = fastOverride.Model
+			if !sameModel || fastOverride.ReasoningEffort != "" {
+				fastChoice.ReasoningEffort = fastOverride.ReasoningEffort
+			}
 			fastCovered = true
+		}
+	}
+	// Explicit invocation effort belongs to the selected turn model,
+	// including credential-selected models when no model override exists.
+	// Do not consult durable session effort here: it is specific to the
+	// session's configured model and must not leak onto tenant credentials.
+	if effort := roleReasoningEffortFrom(ctx); effort != "" {
+		if callModelRole(ctx) == config.SelectedModelTypeFast {
+			fastChoice.ReasoningEffort = effort
+		} else {
+			smartChoice.ReasoningEffort = effort
 		}
 	}
 

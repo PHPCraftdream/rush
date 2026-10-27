@@ -31,17 +31,13 @@ const (
 // RunOverrides bundles the optional per-invocation overrides for
 // RunNonInteractive so the signature doesn't keep growing.
 //
-// Persistence: every non-empty field is written to the session BEFORE
-// the agent runs, so a subsequent `rush run --session <same>` without
-// those flags continues with the same overrides. Empty fields are
-// left alone (they don't reset what's already on the session).
+// Model and reasoning-effort overrides are invocation-only: they do not
+// replace the session's saved model or reasoning-effort preferences.
 type RunOverrides struct {
 	SmartModel   string // "model" or "provider/model"; overrides selected large
 	FastModel    string // same as SmartModel, for the fast slot
 	SystemPrompt string // persisted on the session (Sessions.UpdateSystemPrompt)
-	// ReasoningEffort applies to whichever slot is "active" for this run —
-	// the smart one if RoleSmart is true, the fast one otherwise. Persisted
-	// via Sessions.UpdateReasoningEffort.
+	// ReasoningEffort applies to whichever slot is active for this run.
 	ReasoningEffort string
 	RoleSmart       bool
 	// ModelRole is the resolved --role slot for this invocation (smart,

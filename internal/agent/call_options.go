@@ -160,6 +160,10 @@ type CallOptions struct {
 	// into the queue — see mailbox_ownership.go and sessionAgent.Run.
 	FailIfSessionBusy bool
 
+	// WebTurnOptIn is an explicit marker for server-initiated web turns and
+	// reruns. Unlike OriginWeb, it is not inferred from transport metadata.
+	WebTurnOptIn bool
+
 	// FolderScope scopes this call's filesystem toolset. When non-nil,
 	// applyCallFolderScope rebuilds AllowedTools from the scope: the
 	// legacy single-target file tools and the escape-hatch tools are
@@ -211,6 +215,23 @@ type CallOptions struct {
 	Requirement *session.SessionExecutionRequirement
 }
 
+// WebModelPolicy reports whether this call explicitly opted into web-turn
+// model selection policy. The marker is carried in CallOptions so it survives
+// durable queue serialization; OriginWeb alone does not imply this policy.
+func WebModelPolicy(ctx context.Context) bool {
+	opts := callOptionsFrom(ctx)
+	return opts != nil && opts.WebTurnOptIn && opts.ModelRole != config.SelectedModelTypeReviewer
+}
+
+// inheritWebPolicyCallOptions transfers only the explicit web-policy marker
+// to an independently driven child call; parent execution policy is not inherited.
+func inheritWebPolicyCallOptions(ctx context.Context) *CallOptions {
+	if !WebModelPolicy(ctx) {
+		return nil
+	}
+	return &CallOptions{WebTurnOptIn: true}
+}
+
 type sessionModelPersistenceContextKey struct{}
 
 type sessionModelPersistence struct {
@@ -218,9 +239,10 @@ type sessionModelPersistence struct {
 	fast  *session.ModelSlotUpdate
 }
 
-// WithSessionModelPersistence carries explicit ExecuteRun model-slot writes
+// WithSessionModelPersistence carries explicit session-model preference writes
 // to the eventual SessionAgentCall without making them shared coordinator
-// state. The values are copied before being attached to the context.
+// state. Invocation-only rush run model/effort overrides are not persisted.
+// The values are copied before being attached to the context.
 func WithSessionModelPersistence(ctx context.Context, smart, fast *session.ModelSlotUpdate) context.Context {
 	copyUpdate := func(update *session.ModelSlotUpdate) *session.ModelSlotUpdate {
 		if update == nil {

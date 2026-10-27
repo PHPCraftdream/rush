@@ -267,30 +267,6 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 		}
 	}
 
-	// Persist reasoning effort onto the active slot. We pass the current
-	// stored value for the *other* slot through so we don't clobber it —
-	// UpdateReasoningEffort takes both fields as a single transaction.
-	// A worker/reviewer role run persists NOTHING: the role model itself is
-	// not persisted (plan D2) and the explicit effort rides the role-slot
-	// resolution for this invocation only (plan R6).
-	if err := checkHoldCanceled(); err != nil {
-		return nil, err
-	}
-	rolePersistable := overrides.ModelRole != config.SelectedModelTypeWorker &&
-		overrides.ModelRole != config.SelectedModelTypeReviewer
-	if overrides.ReasoningEffort != "" && rolePersistable && !req.mutationFree() {
-		smart := sess.SmartModelReasoningEffort
-		fast := sess.FastModelReasoningEffort
-		if overrides.RoleSmart {
-			smart = overrides.ReasoningEffort
-		} else {
-			fast = overrides.ReasoningEffort
-		}
-		if err := app.Sessions.UpdateReasoningEffort(mutCtx, sess.ID, smart, fast); err != nil {
-			return nil, fmt.Errorf("failed to set reasoning effort: %w", err)
-		}
-	}
-
 	// Automatically approve all permission requests for this non-interactive
 	// session.
 	// checkHoldCanceled guards both calls below: they have no ctx parameter

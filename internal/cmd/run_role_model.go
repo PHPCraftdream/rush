@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 )
@@ -19,7 +20,7 @@ import (
 // resolves the same cascade live per turn — so the fold merely confirms a
 // pin exists before the run starts.
 func sessionRoleModelOverride(ctx context.Context, a *app.App, sessionID string, modelType config.SelectedModelType) string {
-	if sessionID == "" {
+	if sessionID == "" || agent.WebModelPolicy(ctx) {
 		return ""
 	}
 	sess, err := a.Sessions.Get(ctx, sessionID)
@@ -65,9 +66,6 @@ func foldRoleModel(ctx context.Context, a *app.App, role string, modelType confi
 		if last, lastErr := a.Sessions.GetLast(ctx); lastErr == nil {
 			sessionID, useLast = last.ID, false
 		}
-	}
-	if override := sessionRoleModelOverride(ctx, a, sessionID, modelType); override != "" {
-		return "", sessionID, useLast, nil
 	}
 	roleModel, ok := a.Config().Models[modelType]
 	if !ok || roleModel.Model == "" {

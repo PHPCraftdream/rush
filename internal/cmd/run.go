@@ -841,7 +841,7 @@ func init() {
 	runCmd.Flags().BoolP("quiet", "q", false, "Hide spinner")
 	runCmd.Flags().BoolP("verbose", "v", false, "Show logs")
 	runCmd.Flags().String("role", "", "REQUIRED. Which preselected model slot to use: smart (the strong default; --role smart + a configured worker also enables orchestrator-mode sub-agent delegation) | fast (the cheap slot) | worker (cheap slot for delegated sub-task work, never auto-selected) | reviewer (the strongest slot, for explicit review invocations, never auto-selected). The actual model id comes from `rush models show`; override with --model.")
-	runCmd.Flags().String("effort", "", "Reasoning effort for this turn: low|medium|high. Applies to whichever slot --role picked. Persisted on the session so subsequent runs inherit it.")
+	runCmd.Flags().String("effort", "", "Reasoning effort for this turn: low|medium|high. Applies to whichever slot --role picked. Not persisted by rush run.")
 	runCmd.Flags().Bool("stream", false, "Stream every assistant token to stdout. Default is terse: tool-call names on stderr + final answer on stdout.")
 	runCmd.Flags().Bool("json", false, "Emit one JSON object on stdout summarising the run (session_id, final_text, tool_calls, usage, duration, exit_reason). Mutually exclusive with --stream.")
 	runCmd.Flags().String("timeout", "0", "Abort the run after this duration (e.g. 30s, 5m, 900 — plain number = seconds). A hard wall-clock kill force-exits the process 60s past this even on a freeze. Default 0 (no --timeout deadline; a graceful 6h default cap still applies, RUSH_RUN_DEFAULT_HARD_TIMEOUT overrides it, and --timeout is how to wait longer; see --idle-timeout for the inactivity backstop).")

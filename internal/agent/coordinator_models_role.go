@@ -119,7 +119,7 @@ func roleSlotConfigModel(cfg *config.Config, role config.SelectedModelType) (con
 // tier configured, return ok=false. The string result is the heartbeat
 // source label for the resolved slot.
 func roleSlotOverride(cfg *config.Config, sess session.Session, role config.SelectedModelType, roleEffort string) (*ModelOverride, string, bool) {
-	if role == "" || role == config.SelectedModelTypeSmart {
+	if role == config.SelectedModelTypeSmart || role == "" {
 		return nil, "", false
 	}
 	var sel config.SelectedModel

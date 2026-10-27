@@ -105,11 +105,9 @@ type FolderScopeSpec struct {
 	KeepCommandTools bool               `json:"keep_command_tools,omitempty"`
 }
 
-// CallOptionsSpecVersion is the current schema version stamped by
-// toSessionCallOptionsSpec (internal/agent/call_data_conversion.go) onto
-// every newly persisted CallOptionsSpec. Bump it whenever the mirrored
-// field set changes incompatibly.
-const CallOptionsSpecVersion = 1
+// CallOptionsSpecVersion is the current schema version. Version 1 predates
+// WebTurnOptIn; version 2 adds it so older readers reject marker-bearing rows.
+const CallOptionsSpecVersion = 2
 
 // CallOptionsSpec is a JSON-serializable mirror of the replay-relevant
 // subset of agent.CallOptions (R5-3, P0 security review). It exists for
@@ -168,8 +166,9 @@ type CallOptionsSpec struct {
 	// conversion-side value, so a plain duration round-trip preserves all
 	// three states (F7). Additive field: rows persisted before it existed
 	// decode as zero, which is the unset semantics they were written
-	// with, so CallOptionsSpecVersion stays at 1.
-	IdleTimeout time.Duration `json:"idle_timeout,omitempty"`
+	// with, so CallOptionsSpecVersion stays at 2.
+	IdleTimeout  time.Duration `json:"idle_timeout,omitempty"`
+	WebTurnOptIn bool          `json:"web_turn_opt_in,omitempty"`
 }
 
 // SessionAgentCallData is a durable, serializable subset of agent.SessionAgentCall
