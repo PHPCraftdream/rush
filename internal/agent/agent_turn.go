@@ -529,7 +529,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// Add the session to the context.
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, call.SessionID)
 	ctx = context.WithValue(ctx, cliprovider.SessionIDContextKey, call.SessionID)
-	ctx = context.WithValue(ctx, cliprovider.ReasoningEffortContextKey, turnSmartReasoningEffort(ctx, currentSession))
+	ctx = context.WithValue(ctx, cliprovider.ReasoningEffortContextKey, turnSmartReasoningEffort(smartModel))
 	// Heartbeat attribution: root run entry or inherited sub-agent root (design pt. 1/2).
 	hb := heartbeat.FromContext(ctx)
 	ctx = withHeartbeat(ctx, call.SessionID, heartbeat.PurposeTurn, hbTurnRole(call, hb), hbTurnSource(ctx, hb))
@@ -753,6 +753,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// Aborts this turn when the provider enters its peak-hours window
 	// mid-stream. See peakHoursWatcher's doc in agent_turn_peakhours.go.
 	peakHours := newPeakHoursWatcher(a, call.SessionID, ctx, genCtx, &ts.mu, &ts.currentAssistant)
+	peakHours.bypass = peakHoursBypassed(call)
 	ts.setPeakHoursAbortErr = peakHours.setAbortErr
 	getPeakHoursAbortErr := peakHours.getAbortErr
 

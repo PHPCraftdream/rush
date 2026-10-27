@@ -10,9 +10,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -22,7 +22,8 @@ import (
 )
 
 type modelOverrideRequest struct {
-	Model string `json:"model"`
+	Model  string `json:"model"`
+	Effort string `json:"reasoning_effort"`
 }
 
 type modelOverrideApp struct {
@@ -30,7 +31,30 @@ type modelOverrideApp struct {
 	store    *config.ConfigStore
 	dataDir  string
 	requests chan string
+	bodies   chan []byte
 	release  chan struct{}
+}
+
+func waitModelOverrideRequest(t *testing.T, requests <-chan string) string {
+	t.Helper()
+	select {
+	case model := <-requests:
+		return model
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for provider request")
+		return ""
+	}
+}
+
+func waitModelOverrideResult(t *testing.T, result <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-result:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for run result")
+		return nil
+	}
 }
 
 func newModelOverrideApp(t *testing.T) modelOverrideApp {
@@ -45,6 +69,7 @@ func newModelOverrideApp(t *testing.T) modelOverrideApp {
 	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 
 	requests := make(chan string, 8)
+	bodies := make(chan []byte, 32)
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req modelOverrideRequest
@@ -52,7 +77,12 @@ func newModelOverrideApp(t *testing.T) modelOverrideApp {
 		require.NoError(t, err)
 		require.NoError(t, json.Unmarshal(body, &req))
 		requests <- req.Model
-		<-release
+		bodies <- body
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"id":"override","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}`)
 		_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"id":"override","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
@@ -68,7 +98,7 @@ func newModelOverrideApp(t *testing.T) modelOverrideApp {
       "id": "openaicompat", "type": "openai-compat", "base_url": %q,
       "api_key": "probe", "discover_models": false,
       "models": [
-        {"id":"smart-default","context_window":200000,"default_max_tokens":1000},
+        {"id":"smart-default","context_window":200000,"default_max_tokens":1000,"can_reason":true,"reasoning_levels":["low","medium","high"],"default_reasoning_effort":"medium"},
         {"id":"fast-default","context_window":200000,"default_max_tokens":1000},
         {"id":"smart-a","context_window":200000,"default_max_tokens":1000},
         {"id":"fast-a","context_window":200000,"default_max_tokens":1000},
@@ -86,7 +116,7 @@ func newModelOverrideApp(t *testing.T) modelOverrideApp {
 	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "rush.json"), []byte(rushJSON), 0o644))
 	store, err := config.Init(dataDir, dataDir, false)
 	require.NoError(t, err)
-	store.SetSelectedModelRuntime(config.SelectedModelTypeSmart, config.SelectedModel{Provider: "openaicompat", Model: "smart-default"})
+	store.SetSelectedModelRuntime(config.SelectedModelTypeSmart, config.SelectedModel{Provider: "openaicompat", Model: "smart-default", ReasoningEffort: "medium"})
 	store.SetSelectedModelRuntime(config.SelectedModelTypeFast, config.SelectedModel{Provider: "openaicompat", Model: "fast-default"})
 	store.SetupAgents()
 
@@ -98,12 +128,20 @@ func newModelOverrideApp(t *testing.T) modelOverrideApp {
 	}
 	require.NoError(t, err)
 	t.Cleanup(application.Shutdown)
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
 
 	return modelOverrideApp{
 		app:      application,
 		store:    store,
 		dataDir:  dataDir,
 		requests: requests,
+		bodies:   bodies,
 		release:  release,
 	}
 }
@@ -120,7 +158,88 @@ func createModelOverrideSession(t *testing.T, application *App, title string) se
 	return sess
 }
 
-func TestExecuteRunModelOverridesArePinnedPerCallAndPersisted(t *testing.T) {
+func TestExecuteRunStoredModelAndOverrideArePerCall(t *testing.T) {
+	h := newModelOverrideApp(t)
+	sess := createModelOverrideSession(t, h.app, "stored-model-per-call")
+	require.NoError(t, h.app.Sessions.UpdateModels(t.Context(), sess.ID,
+		&session.ModelSlotUpdate{Provider: "openaicompat", Model: "smart-a"}, nil))
+	close(h.release)
+
+	run := func(prompt string, overrides RunOverrides) {
+		t.Helper()
+		result, err := h.app.ExecuteRun(context.Background(), RunRequest{
+			Prompt:            prompt,
+			ContinueSessionID: sess.ID,
+			Overrides:         overrides,
+			Mode:              RunModeJSON,
+			Stdout:            io.Discard,
+			Stderr:            io.Discard,
+			HideSpinner:       true,
+			FailIfSessionBusy: true,
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+	}
+
+	run("stored model must not override configured default", RunOverrides{})
+	require.Equal(t, "smart-default", waitModelOverrideRequest(t, h.requests))
+	run("explicit model", RunOverrides{SmartModel: "smart-b"})
+	require.Equal(t, "smart-b", waitModelOverrideRequest(t, h.requests))
+	run("no model flags after explicit override", RunOverrides{})
+	require.Equal(t, "smart-default", waitModelOverrideRequest(t, h.requests))
+}
+
+func TestExecuteRunStoredEffortAndExplicitSmartEffortArePerCall(t *testing.T) {
+	h := newModelOverrideApp(t)
+	sess := createModelOverrideSession(t, h.app, "stored-effort-per-call")
+	require.NoError(t, h.app.Sessions.UpdateReasoningEffort(t.Context(), sess.ID, "low", ""))
+
+	resultCh := make(chan error, 1)
+	run := func(prompt string, overrides RunOverrides) {
+		t.Helper()
+		go func() {
+			_, err := h.app.ExecuteRun(context.Background(), RunRequest{
+				Prompt: prompt, ContinueSessionID: sess.ID, Overrides: overrides,
+				Mode: RunModeJSON, Stdout: io.Discard, Stderr: io.Discard,
+				HideSpinner: true, FailIfSessionBusy: true,
+			})
+			resultCh <- err
+		}()
+	}
+	requestEffort := func(model, effort string) {
+		t.Helper()
+		select {
+		case got := <-h.requests:
+			require.Equal(t, model, got)
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for provider request")
+		}
+		select {
+		case body := <-h.bodies:
+			var got modelOverrideRequest
+			require.NoError(t, json.Unmarshal(body, &got))
+			require.Equal(t, effort, got.Effort)
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for provider request body")
+		}
+	}
+
+	// The provider answers at once: the runs are sequential on one App.
+	close(h.release)
+	run("configured effort despite stored effort", RunOverrides{})
+	requestEffort("smart-default", "medium")
+	require.NoError(t, waitModelOverrideResult(t, resultCh))
+
+	run("explicit smart effort with fast-only override", RunOverrides{FastModel: "fast-a", ReasoningEffort: "high", RoleSmart: true})
+	requestEffort("smart-default", "high")
+	require.NoError(t, waitModelOverrideResult(t, resultCh))
+
+	run("subsequent invocation uses configured effort", RunOverrides{})
+	requestEffort("smart-default", "medium")
+	require.NoError(t, waitModelOverrideResult(t, resultCh))
+}
+
+func TestExecuteRunModelOverridesArePinnedPerCallAndNotPersisted(t *testing.T) {
 	h := newModelOverrideApp(t)
 	sessA := createModelOverrideSession(t, h.app, "override-a")
 	sessB := createModelOverrideSession(t, h.app, "override-b")
@@ -156,7 +275,7 @@ func TestExecuteRunModelOverridesArePinnedPerCallAndPersisted(t *testing.T) {
 
 	gotModels := map[string]bool{}
 	for len(gotModels) < 2 {
-		gotModels[<-h.requests] = true
+		gotModels[waitModelOverrideRequest(t, h.requests)] = true
 	}
 	close(h.release)
 	wg.Wait()
@@ -172,10 +291,10 @@ func TestExecuteRunModelOverridesArePinnedPerCallAndPersisted(t *testing.T) {
 	require.NoError(t, err)
 	storedB, err := h.app.Sessions.Get(t.Context(), sessB.ID)
 	require.NoError(t, err)
-	require.Equal(t, "smart-a", storedA.SmartModelID)
-	require.Equal(t, "fast-a", storedA.FastModelID)
-	require.Equal(t, "smart-b", storedB.SmartModelID)
-	require.Equal(t, "fast-b", storedB.FastModelID)
+	require.Empty(t, storedA.SmartModelID)
+	require.Empty(t, storedA.FastModelID)
+	require.Empty(t, storedB.SmartModelID)
+	require.Empty(t, storedB.FastModelID)
 }
 
 func TestExecuteRunInvalidFastModelDoesNotPersistValidSmartModel(t *testing.T) {
@@ -212,18 +331,23 @@ func TestExecuteRunModelPersistenceRollbackSkipsProvider(t *testing.T) {
 		BEGIN SELECT RAISE(ABORT, 'model persistence failure'); END`)
 	require.NoError(t, err)
 
-	_, err = h.app.ExecuteRun(context.Background(), RunRequest{
-		Prompt:            "transaction failure",
-		ContinueSessionID: sess.ID,
-		Overrides:         RunOverrides{SmartModel: "smart-fail", FastModel: "fast-a"},
-		Mode:              RunModeJSON,
-		Stdout:            io.Discard,
-		Stderr:            io.Discard,
-		HideSpinner:       true,
-		FailIfSessionBusy: true,
-	})
-	require.Error(t, err)
-	require.Empty(t, h.requests)
+	resultCh := make(chan error, 1)
+	go func() {
+		_, runErr := h.app.ExecuteRun(context.Background(), RunRequest{
+			Prompt:            "transaction failure",
+			ContinueSessionID: sess.ID,
+			Overrides:         RunOverrides{SmartModel: "smart-fail", FastModel: "fast-a"},
+			Mode:              RunModeJSON,
+			Stdout:            io.Discard,
+			Stderr:            io.Discard,
+			HideSpinner:       true,
+			FailIfSessionBusy: true,
+		})
+		resultCh <- runErr
+	}()
+	require.Equal(t, "smart-fail", waitModelOverrideRequest(t, h.requests))
+	close(h.release)
+	require.NoError(t, waitModelOverrideResult(t, resultCh))
 	after, err := h.app.Sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
 	require.Empty(t, after.SmartModelID)
@@ -250,13 +374,13 @@ func TestExecuteRunModelOverridePreservesOmittedSessionSlot(t *testing.T) {
 		})
 		resultCh <- err
 	}()
-	require.Equal(t, "smart-a", <-h.requests)
+	require.Equal(t, "smart-a", waitModelOverrideRequest(t, h.requests))
 	close(h.release)
-	require.NoError(t, <-resultCh)
+	require.NoError(t, waitModelOverrideResult(t, resultCh))
 
 	after, err := h.app.Sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
-	require.Equal(t, "smart-a", after.SmartModelID)
+	require.Empty(t, after.SmartModelID)
 	require.Equal(t, "fast-b", after.FastModelID)
 }
 
@@ -277,9 +401,9 @@ func TestExecuteRunModelOverrideSurvivesFreshAppContinuation(t *testing.T) {
 		})
 		resultCh <- err
 	}()
-	require.Equal(t, "smart-a", <-h.requests)
+	require.Equal(t, "smart-a", waitModelOverrideRequest(t, h.requests))
 	close(h.release)
-	require.NoError(t, <-resultCh)
+	require.NoError(t, waitModelOverrideResult(t, resultCh))
 	oldDB := h.app.DB()
 	h.app.Shutdown()
 	freshStore, err := config.Init(h.dataDir, h.dataDir, false)
@@ -296,8 +420,8 @@ func TestExecuteRunModelOverrideSurvivesFreshAppContinuation(t *testing.T) {
 	t.Cleanup(fresh.Shutdown)
 	after, err := fresh.Sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
-	require.Equal(t, "smart-a", after.SmartModelID)
-	require.Equal(t, "fast-a", after.FastModelID)
+	require.Empty(t, after.SmartModelID)
+	require.Empty(t, after.FastModelID)
 	continuation, err := fresh.ExecuteRun(context.Background(), RunRequest{
 		Prompt:            "continue without flags",
 		ContinueSessionID: sess.ID,
@@ -309,10 +433,10 @@ func TestExecuteRunModelOverrideSurvivesFreshAppContinuation(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, continuation)
-	require.Equal(t, "smart-a", <-h.requests)
+	require.Equal(t, "smart-default", waitModelOverrideRequest(t, h.requests))
 }
 
-func TestExecuteRunQueuedOverridePersistsWhenPromoted(t *testing.T) {
+func TestExecuteRunQueuedOverrideDoesNotPersistWhenPromotedAndPromotionFails(t *testing.T) {
 	h := newModelOverrideApp(t)
 	sess := createModelOverrideSession(t, h.app, "queued-override")
 	outcomes := make(chan struct {
@@ -334,7 +458,7 @@ func TestExecuteRunQueuedOverridePersistsWhenPromoted(t *testing.T) {
 			err error
 		}{1, err}
 	}()
-	require.Equal(t, "smart-a", <-h.requests)
+	require.Equal(t, "smart-a", waitModelOverrideRequest(t, h.requests))
 
 	go func() {
 		_, err := h.app.ExecuteRun(context.Background(), RunRequest{
@@ -360,23 +484,17 @@ func TestExecuteRunQueuedOverridePersistsWhenPromoted(t *testing.T) {
 	require.True(t, queued)
 	close(h.release)
 	require.NoError(t, (<-outcomes).err)
-	require.Equal(t, "smart-b", <-h.requests)
+	require.Equal(t, "smart-b", waitModelOverrideRequest(t, h.requests))
 
 	stored, err := h.app.Sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
-	require.Equal(t, "smart-b", stored.SmartModelID)
-	require.Equal(t, "fast-b", stored.FastModelID)
+	require.Empty(t, stored.SmartModelID)
+	require.Empty(t, stored.FastModelID)
 }
 
-func TestExecuteRunQueuedOverridePersistenceFailureSkipsProviderAndCleansMailbox(t *testing.T) {
+func TestExecuteRunQueuedOverrideDoesNotPersistWhenPromoted(t *testing.T) {
 	h := newModelOverrideApp(t)
-	sess := createModelOverrideSession(t, h.app, "queued-override-failure")
-	_, err := h.app.DB().ExecContext(t.Context(), `
-		CREATE TRIGGER fail_queued_model_update
-		BEFORE UPDATE OF smart_model_id ON sessions
-		WHEN NEW.smart_model_id = 'smart-b'
-		BEGIN SELECT RAISE(ABORT, 'queued model persistence failure'); END`)
-	require.NoError(t, err)
+	sess := createModelOverrideSession(t, h.app, "queued-override")
 
 	outcomes := make(chan error, 2)
 	go func() {
@@ -391,7 +509,7 @@ func TestExecuteRunQueuedOverridePersistenceFailureSkipsProviderAndCleansMailbox
 		})
 		outcomes <- runErr
 	}()
-	require.Equal(t, "smart-a", <-h.requests)
+	require.Equal(t, "smart-a", waitModelOverrideRequest(t, h.requests))
 	go func() {
 		_, runErr := h.app.ExecuteRun(context.Background(), RunRequest{
 			Prompt:            "queued",
@@ -404,30 +522,15 @@ func TestExecuteRunQueuedOverridePersistenceFailureSkipsProviderAndCleansMailbox
 		})
 		outcomes <- runErr
 	}()
-	queuedErr := <-outcomes
-	require.ErrorIs(t, queuedErr, ErrRunQueued)
+	require.ErrorIs(t, <-outcomes, ErrRunQueued)
 	close(h.release)
-	<-outcomes
+	require.NoError(t, <-outcomes)
+	require.Equal(t, "smart-b", waitModelOverrideRequest(t, h.requests))
 
-	select {
-	case model := <-h.requests:
-		t.Fatalf("queued call reached provider after persistence failure: %s", model)
-	default:
-	}
 	stored, err := h.app.Sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
-	require.Equal(t, "smart-a", stored.SmartModelID)
-	require.Equal(t, "fast-a", stored.FastModelID)
-	require.False(t, h.app.AgentCoordinator.IsSessionBusy(sess.ID))
-	pending, err := h.app.Sessions.ListPendingRunQueueEntries(t.Context())
-	require.NoError(t, err)
-	var recovered bool
-	for _, entry := range pending {
-		if entry.SessionID == sess.ID && strings.Contains(entry.CallData, `"smart-b"`) && strings.Contains(entry.CallData, `"fast-b"`) {
-			recovered = true
-		}
-	}
-	require.True(t, recovered, "queued B must remain durably recoverable after admission-time persistence failure")
+	require.Empty(t, stored.SmartModelID)
+	require.Empty(t, stored.FastModelID)
 }
 
 func TestExecuteRunBusyModelOverrideDoesNotMutateSession(t *testing.T) {
@@ -448,7 +551,7 @@ func TestExecuteRunBusyModelOverrideDoesNotMutateSession(t *testing.T) {
 		})
 		firstDone <- err
 	}()
-	require.Equal(t, "smart-a", <-h.requests)
+	require.Equal(t, "smart-a", waitModelOverrideRequest(t, h.requests))
 
 	_, err := h.app.ExecuteRun(context.Background(), RunRequest{
 		Prompt:            "loser",
@@ -463,8 +566,8 @@ func TestExecuteRunBusyModelOverrideDoesNotMutateSession(t *testing.T) {
 	require.Error(t, err)
 	stored, err := h.app.Sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
-	require.Equal(t, "smart-a", stored.SmartModelID)
-	require.Equal(t, "fast-a", stored.FastModelID)
+	require.Empty(t, stored.SmartModelID)
+	require.Empty(t, stored.FastModelID)
 
 	close(h.release)
 	require.NoError(t, <-firstDone)

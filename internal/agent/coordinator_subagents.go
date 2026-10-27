@@ -201,7 +201,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		}
 	}
 
-	if credProviderCfg == nil {
+	if credProviderCfg == nil && WebModelPolicy(ctx) {
 		if override, err := c.resolveSubAgentModelOverride(ctx, params.SessionID); err != nil {
 			slog.Error("runSubAgent: failed to resolve session worker override, falling back to default", "sessionID", params.SessionID, "err", err)
 		} else if override != nil {
@@ -301,6 +301,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		NonInteractive:   true,
 		SmartModel:       &driverModel,
 		Credentials:      callCreds,
+		CallOptions:      inheritWebPolicyCallOptions(ctx),
 	}
 	if params.pctHandoff != nil {
 		pctReleases = params.pctHandoff.pctClaimDriver()
@@ -358,6 +359,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			NonInteractive:   true,
 			SmartModel:       pinnedModel,
 			Credentials:      callCreds,
+			CallOptions:      inheritWebPolicyCallOptions(ctx),
 		}
 		if lifecycleBound {
 			if sa, ok := params.Agent.(*sessionAgent); ok {

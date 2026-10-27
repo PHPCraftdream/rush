@@ -17,7 +17,7 @@ import (
 // TestReviewerPass_RecordsReviewerEffort runs a --role smart run whose reviewer
 // slot is configured with effort "max". The assistant message of the review
 // turn (the one after the reviewer-pass marker) must carry "max"; the primary
-// turn's assistant message must carry the session's own effort.
+// turn's assistant message must carry the configured smart effort.
 //
 // Revert-check: put `ts.currentSession.SmartModelReasoningEffort` back in
 // agent_turn_step.go (the label of the assistant message) instead of
@@ -61,5 +61,7 @@ func TestReviewerPass_RecordsReviewerEffort(t *testing.T) {
 	}
 	require.True(t, sawPrimary && sawReview, "both an executor and a reviewer assistant message are expected")
 	require.Equal(t, "max", reviewEffort, "the review turn must be labelled with the reviewer slot's effort")
-	require.Equal(t, before.SmartModelReasoningEffort, primaryEffort, "the primary turn keeps the session's own effort")
+	// A rush run uses the configured smart slot, which sets no effort; the
+	// session's stored effort is not applied outside web turns.
+	require.Empty(t, primaryEffort, "the primary turn carries the configured smart effort, not the session's")
 }

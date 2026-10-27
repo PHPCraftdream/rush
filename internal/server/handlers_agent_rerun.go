@@ -490,7 +490,7 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		rerunPreHandoffSeam()
 	}
 
-	agentCtx := agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb)
+	agentCtx := agent.WithCallOptions(agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb), &agent.CallOptions{WebTurnOptIn: true})
 	c.hub.Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: sessionID, Busy: true})
 	if smartOverride != nil || fastOverride != nil {
 		_, err = a.AgentCoordinator.RunWithReservedOwnership(agentCtx, sessionID, text, epoch, reserveCancel, func() { releaseOnBailout = false }, smartOverride, fastOverride)

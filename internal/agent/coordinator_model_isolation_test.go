@@ -46,7 +46,9 @@ func TestConcurrentSessionResolutionDoesNotRewriteSharedModelPair(t *testing.T) 
 		wg.Add(1)
 		go func(sessionID string) {
 			defer wg.Done()
-			resolved, resolveErr := coord.resolveSessionModelsInternal(context.Background(), sessionID, false)
+			// Per-session choices are honored on web turns only.
+			webCtx := WithCallOptions(context.Background(), &CallOptions{WebTurnOptIn: true})
+			resolved, resolveErr := coord.resolveSessionModelsInternal(webCtx, sessionID, false)
 			if resolveErr != nil {
 				errs <- resolveErr
 				return

@@ -17,7 +17,6 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/charmbracelet/x/ansi"
@@ -264,30 +263,6 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	if systemPrompt != "" && !req.mutationFree() {
 		if err := app.Sessions.UpdateSystemPrompt(mutCtx, sess.ID, systemPrompt); err != nil {
 			return nil, fmt.Errorf("failed to set system prompt for session: %w", err)
-		}
-	}
-
-	// Persist reasoning effort onto the active slot. We pass the current
-	// stored value for the *other* slot through so we don't clobber it —
-	// UpdateReasoningEffort takes both fields as a single transaction.
-	// A worker/reviewer role run persists NOTHING: the role model itself is
-	// not persisted (plan D2) and the explicit effort rides the role-slot
-	// resolution for this invocation only (plan R6).
-	if err := checkHoldCanceled(); err != nil {
-		return nil, err
-	}
-	rolePersistable := overrides.ModelRole != config.SelectedModelTypeWorker &&
-		overrides.ModelRole != config.SelectedModelTypeReviewer
-	if overrides.ReasoningEffort != "" && rolePersistable && !req.mutationFree() {
-		smart := sess.SmartModelReasoningEffort
-		fast := sess.FastModelReasoningEffort
-		if overrides.RoleSmart {
-			smart = overrides.ReasoningEffort
-		} else {
-			fast = overrides.ReasoningEffort
-		}
-		if err := app.Sessions.UpdateReasoningEffort(mutCtx, sess.ID, smart, fast); err != nil {
-			return nil, fmt.Errorf("failed to set reasoning effort: %w", err)
 		}
 	}
 

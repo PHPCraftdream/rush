@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -120,4 +121,32 @@ func TestPeakHoursWatcherStartWithNoCheckClosesImmediately(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("start() with a nil peakHoursCheck must return an already-closed channel")
 	}
+}
+
+// A call made with --allow-peak-hours waived the window at turn start; the
+// mid-turn poll and the per-step re-check must not enforce it afterwards,
+// or the turn is aborted right after its first step.
+func TestPeakHoursMidTurnChecksHonorCallBypass(t *testing.T) {
+	var checks atomic.Int32
+	a := &sessionAgent{peakHoursCheck: func() error {
+		checks.Add(1)
+		return &PeakHoursError{ProviderID: "in-window"}
+	}}
+	call := SessionAgentCall{SessionID: "sess-1", CallOptions: &CallOptions{AllowPeakHours: true}}
+
+	var sessionLock sync.Mutex
+	currentAssistant := &message.Message{}
+	w := newPeakHoursWatcher(a, call.SessionID, context.Background(), context.Background(), &sessionLock, &currentAssistant)
+	w.bypass = peakHoursBypassed(call)
+	select {
+	case <-w.start():
+	case <-time.After(time.Second):
+		t.Fatal("a bypassed call must not start the peak-hours poll")
+	}
+
+	ts := &turnStream{a: a, call: call}
+	require.NoError(t, ts.recheckPeakHours())
+	require.Zero(t, checks.Load(), "the in-window check must not run for a bypassed call")
+
+	require.False(t, peakHoursBypassed(SessionAgentCall{}), "no call options: no bypass")
 }

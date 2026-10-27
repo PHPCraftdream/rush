@@ -31,9 +31,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/sdk"
 	"github.com/stretchr/testify/require"
 )
@@ -138,19 +136,6 @@ func writeTwoProviderRushJSON(t *testing.T, workDir, urlA, urlB string) {
 	require.NoError(t, os.WriteFile(filepath.Join(workDir, "rush.json"), []byte(rushJSON), 0o644))
 }
 
-// routeSessionToProviderB points sessionID's smart+fast slots at probe-b
-// (per-session DB override, same mechanism the web UI's model picker uses).
-func routeSessionToProviderB(t *testing.T, workDir, sessionID string) {
-	t.Helper()
-	dataDir := filepath.Join(workDir, ".rush")
-	conn, err := db.Connect(context.Background(), dataDir)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.Release(dataDir) })
-	sessions := session.NewService(db.New(conn), conn)
-	slot := &session.ModelSlotUpdate{Provider: "probe-b", Model: "probe-b"}
-	require.NoError(t, sessions.UpdateModels(context.Background(), sessionID, slot, slot))
-}
-
 func toolResultsOf(msgs []sdk.Message) []message.ToolResult {
 	var out []message.ToolResult
 	for _, m := range msgs {
@@ -221,7 +206,6 @@ func TestSDKConcurrentRunsPerCallPolicyIsolation(t *testing.T) {
 
 	seedTenantSession(t, workDir, sessionA)
 	seedTenantSession(t, workDir, sessionB)
-	routeSessionToProviderB(t, workDir, sessionB)
 
 	var (
 		wg      sync.WaitGroup
@@ -260,6 +244,9 @@ func TestSDKConcurrentRunsPerCallPolicyIsolation(t *testing.T) {
 			HideSpinner:       true,
 			Overrides: sdk.RunOverrides{
 				AllowPeakHours: true, // per-call bypass; provider B is in-window
+				// A run uses the configured models unless the call names others.
+				SmartModel: "probe-b/probe-b",
+				FastModel:  "probe-b/probe-b",
 			},
 		})
 	}()

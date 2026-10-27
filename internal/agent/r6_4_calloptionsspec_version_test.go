@@ -38,32 +38,36 @@ func TestFromSessionCallOptionsSpec_NilSpec_LegacyNoError(t *testing.T) {
 	assert.Nil(t, opts)
 }
 
-// TestFromSessionCallOptionsSpec_AcceptedVersion_Decodes is the "accepted
-// v1" case: a spec stamped with the current session.CallOptionsSpecVersion
-// decodes normally, with every field surviving.
-func TestFromSessionCallOptionsSpec_AcceptedVersion_Decodes(t *testing.T) {
-	spec := &session.CallOptionsSpec{
-		Version:                  session.CallOptionsSpecVersion,
-		DisableSubAgents:         true,
-		ModelRole:                "fast",
-		TimeoutOptionsSet:        true,
-		TimeoutExtendsOnProgress: true,
-		TimeoutHardCap:           1234,
-	}
-	opts, err := fromSessionCallOptionsSpec(spec)
+// TestFromSessionCallOptionsSpec_AcceptsLegacyV1WithoutMarker verifies v1's
+// historical form is accepted only when the v2-only marker is absent.
+func TestFromSessionCallOptionsSpec_AcceptsLegacyV1WithoutMarker(t *testing.T) {
+	opts, err := fromSessionCallOptionsSpec(&session.CallOptionsSpec{Version: 1, DisableSubAgents: true})
 	require.NoError(t, err)
 	require.NotNil(t, opts)
 	assert.True(t, opts.DisableSubAgents)
-	assert.EqualValues(t, "fast", opts.ModelRole)
-	assert.True(t, opts.TimeoutOptionsSet)
-	assert.True(t, opts.TimeoutExtendsOnProgress)
-	assert.EqualValues(t, 1234, opts.TimeoutHardCap)
+	assert.False(t, opts.WebTurnOptIn)
+}
+
+func TestFromSessionCallOptionsSpec_RejectsV1WithMarker(t *testing.T) {
+	opts, err := fromSessionCallOptionsSpec(&session.CallOptionsSpec{Version: 1, WebTurnOptIn: true})
+	require.ErrorIs(t, err, ErrCallOptionsSpecVersionUnsupported)
+	assert.Nil(t, opts)
+}
+
+func TestCallOptionsSpecV2RoundTrip(t *testing.T) {
+	original := &CallOptions{DisableSubAgents: true, WebTurnOptIn: true}
+	durable := toSessionCallOptionsSpec(original)
+	require.Equal(t, 2, durable.Version)
+	restored, err := fromSessionCallOptionsSpec(durable)
+	require.NoError(t, err)
+	assert.Equal(t, original.DisableSubAgents, restored.DisableSubAgents)
+	assert.Equal(t, original.WebTurnOptIn, restored.WebTurnOptIn)
 }
 
 // TestFromSessionCallOptionsSpec_ZeroVersion_FailsClosed is the
 // "malformed/zero version" case: a non-nil spec whose Version is the zero
 // value (never a legitimate stamped version — toSessionCallOptionsSpec
-// always stamps session.CallOptionsSpecVersion, currently 1) must be
+// always stamps session.CallOptionsSpecVersion, currently 2) must be
 // refused rather than partially decoded.
 func TestFromSessionCallOptionsSpec_ZeroVersion_FailsClosed(t *testing.T) {
 	spec := &session.CallOptionsSpec{

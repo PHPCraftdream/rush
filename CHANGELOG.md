@@ -11,6 +11,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - `rush models state` prints EFFECTIVE and SCOPES as bordered tables with separate columns (role/scope, provider, model, effort, source scope or status, atom, note) instead of free-form lines; `--json` is unchanged.
 - A batch commit now waits out SQLite's full 30s lock wait (budget 45s, was 5s): a few seconds of database contention no longer faults the batch runtime and kills `rush run` with exit 70 and an empty envelope.
 - The `sonnet` and `haiku` model atoms now run Claude Sonnet 5.5 and Haiku 5.5, and `fable` runs Fable 5.1, instead of the claude CLI's lagging moving aliases.
+- `--allow-peak-hours` (and the SDK's `AllowPeakHours`) now holds for the whole turn: the call build and the mid-turn peak-hours checks no longer abort a bypassed run whose model's provider is inside its peak window.
 - The `opus` model atom (`rush models use opus-<effort>`) now runs Claude Opus 5.5 instead of Opus 4.8; `opus48` keeps the 4.8 pin.
 - An unknown subcommand of a command group (e.g. `rush sessions lsit`) now fails with an error and a suggestion instead of printing help and exiting 0.
 - Invalid or legacy settings locks now fail closed with a recovery hint naming the active file; remove `sync_rev` manually and run `rush lock` again.

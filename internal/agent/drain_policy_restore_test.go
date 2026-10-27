@@ -40,6 +40,19 @@ import (
 // would fall through to the seeded outside file and succeed).
 func wireRootDrainFence(t *testing.T, f *attemptFixture) (bindingID string, caps *diskCapabilityManager) {
 	t.Helper()
+	return wireRootDrainFenceWith(t, f, false)
+}
+
+// wireRootDrainFenceWeb is wireRootDrainFence for a web session: the fence's
+// call policy carries the web-turn marker, so the drain reads the session's
+// stored models (and so reaches sessions.Get).
+func wireRootDrainFenceWeb(t *testing.T, f *attemptFixture) (bindingID string, caps *diskCapabilityManager) {
+	t.Helper()
+	return wireRootDrainFenceWith(t, f, true)
+}
+
+func wireRootDrainFenceWith(t *testing.T, f *attemptFixture, web bool) (bindingID string, caps *diskCapabilityManager) {
+	t.Helper()
 	caps = newDiskCapabilityManager()
 	insidePath := filepath.Join(f.env.workingDir, "inside-probe.txt")
 	outsidePath := filepath.Join(filepath.Dir(f.env.workingDir), "outside-probe.txt")
@@ -60,7 +73,7 @@ func wireRootDrainFence(t *testing.T, f *attemptFixture) (bindingID string, caps
 			Entries:    []session.FolderScopeEntry{{Dir: ".", Ops: []session.FileOp{"read"}}},
 		},
 		RunAllowlistSpec: &session.RunAllowlistSpec{Restrict: true, AllowTools: []string{"fs_read"}},
-		CallPolicy:       &session.CallOptionsSpec{Version: session.CallOptionsSpecVersion, DisableSubAgents: true},
+		CallPolicy:       &session.CallOptionsSpec{Version: session.CallOptionsSpecVersion, DisableSubAgents: true, WebTurnOptIn: web},
 	}))
 	f.coord.execReqs = store
 	f.coord.diskCaps = caps
@@ -234,7 +247,7 @@ func TestDrainCallFor_ReleasesContinuationOwnerWhenModelResolutionFails(t *testi
 	f := newAttemptFixture(t, "drain-fence-leak", attemptFixtureOpts{
 		noIdle: true, noDriver: true, oauthProvider: oauthTestProvider,
 	})
-	_, caps := wireRootDrainFence(t, f)
+	_, caps := wireRootDrainFenceWeb(t, f)
 	f.coord.sessions = &fenceFailingGetSessions{Service: f.env.sessions}
 
 	_, prep, err := f.coord.drainCallFor(ctx, f.sessID)
@@ -312,7 +325,7 @@ func TestDrainCallFor_BuildCallFailureReleasesConstructionOwner(t *testing.T) {
 	require.NoError(t, BindCoordinatorBatchRuntimeBindings(f.coord, &fakeBatchIngress{}, nil, caps2))
 	// AFTER the bind: wireRootDrainFence overwrites coord.diskCaps with the
 	// fence caps; caps2 keeps only the Construction owner.
-	_, fenceCaps := wireRootDrainFence(t, f)
+	_, fenceCaps := wireRootDrainFenceWeb(t, f)
 	// The oauth fixture's expired token makes refreshExpiredToken refresh
 	// (coordinator_providers_auth.go:30-37); succeed it like
 	// drain_unauthorized_test.go's countRefreshes(nil).

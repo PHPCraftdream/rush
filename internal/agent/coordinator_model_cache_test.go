@@ -15,6 +15,11 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
+// webTurnCtx marks a web turn, the only kind that honors session-stored models.
+func webTurnCtx(t *testing.T) context.Context {
+	return WithCallOptions(t.Context(), &CallOptions{WebTurnOptIn: true})
+}
+
 func TestResolveSessionModels_ModelCacheIsBoundedAndEvictsPairs(t *testing.T) {
 	env := testEnv(t)
 	coord := newWorkerToolTestCoordinator(t, env, false)
@@ -22,7 +27,7 @@ func TestResolveSessionModels_ModelCacheIsBoundedAndEvictsPairs(t *testing.T) {
 
 	defaultSession, err := env.sessions.Create(t.Context(), "cache default")
 	require.NoError(t, err)
-	first, err := coord.resolveSessionModelsInternal(t.Context(), defaultSession.ID, false)
+	first, err := coord.resolveSessionModelsInternal(webTurnCtx(t), defaultSession.ID, false)
 	require.NoError(t, err)
 
 	for i := 0; i < modelCacheMaxEntries; i++ {
@@ -31,14 +36,14 @@ func TestResolveSessionModels_ModelCacheIsBoundedAndEvictsPairs(t *testing.T) {
 		require.NoError(t, env.sessions.UpdateModels(t.Context(), sess.ID,
 			&session.ModelSlotUpdate{Provider: "smart-provider", Model: fmt.Sprintf("smart-override-%d", i)},
 			&session.ModelSlotUpdate{Provider: "fast-provider", Model: fmt.Sprintf("fast-override-%d", i)}))
-		resolved, resolveErr := coord.resolveSessionModelsInternal(t.Context(), sess.ID, false)
+		resolved, resolveErr := coord.resolveSessionModelsInternal(webTurnCtx(t), sess.ID, false)
 		require.NoError(t, resolveErr)
 		require.Equal(t, fmt.Sprintf("smart-override-%d", i), resolved.smart.ModelCfg.Model)
 		require.Equal(t, fmt.Sprintf("fast-override-%d", i), resolved.fast.ModelCfg.Model)
 	}
 
 	require.Equal(t, modelCacheMaxEntries, coord.modelCache.Len())
-	rebuilt, err := coord.resolveSessionModelsInternal(t.Context(), defaultSession.ID, false)
+	rebuilt, err := coord.resolveSessionModelsInternal(webTurnCtx(t), defaultSession.ID, false)
 	require.NoError(t, err)
 	require.NotEqual(t, first.smart.Model, rebuilt.smart.Model, "the evicted pair must be rebuilt")
 	require.Equal(t, "smart-model", rebuilt.smart.ModelCfg.Model)
@@ -67,9 +72,9 @@ func TestResolveSessionModels_ModelCacheSeparatesPunctuationTuples(t *testing.T)
 	require.NoError(t, env.sessions.UpdateModels(t.Context(), secondSession.ID,
 		&session.ModelSlotUpdate{Provider: "pair:one", Model: "two"}, nil))
 
-	first, err := coord.resolveSessionModelsInternal(t.Context(), firstSession.ID, false)
+	first, err := coord.resolveSessionModelsInternal(webTurnCtx(t), firstSession.ID, false)
 	require.NoError(t, err)
-	second, err := coord.resolveSessionModelsInternal(t.Context(), secondSession.ID, false)
+	second, err := coord.resolveSessionModelsInternal(webTurnCtx(t), secondSession.ID, false)
 	require.NoError(t, err)
 
 	require.Equal(t, "pair", first.smart.ModelCfg.Provider)
@@ -99,7 +104,7 @@ func TestResolveSessionModels_ClearCannotPublishInFlightBuild(t *testing.T) {
 
 	result := make(chan error, 1)
 	go func() {
-		_, resolveErr := coord.resolveSessionModelsInternal(t.Context(), sess.ID, false)
+		_, resolveErr := coord.resolveSessionModelsInternal(webTurnCtx(t), sess.ID, false)
 		result <- resolveErr
 	}()
 	<-started
@@ -109,7 +114,7 @@ func TestResolveSessionModels_ClearCannotPublishInFlightBuild(t *testing.T) {
 	require.NoError(t, <-result)
 	require.Equal(t, 0, coord.modelCache.Len(), "a build started before clear must not resurrect its pair")
 
-	_, err = coord.resolveSessionModelsInternal(t.Context(), sess.ID, false)
+	_, err = coord.resolveSessionModelsInternal(webTurnCtx(t), sess.ID, false)
 	require.NoError(t, err)
 	require.Equal(t, int32(2), builds.Load(), "the next resolve must rebuild after clear")
 	require.Equal(t, 1, coord.modelCache.Len())

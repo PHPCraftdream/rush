@@ -113,7 +113,9 @@ func TestCoordinator_InterruptAndSend_UnknownProvider_Errors(t *testing.T) {
 	}
 	coord.currentAgent = mock
 
-	err = coord.InterruptAndSend(t.Context(), sess.ID, "hello", nil, nil)
+	// Session-stored models are honored on web turns only.
+	webCtx := WithCallOptions(t.Context(), &CallOptions{WebTurnOptIn: true})
+	err = coord.InterruptAndSend(webCtx, sess.ID, "hello", nil, nil)
 	require.Error(t, err, "InterruptAndSend must error when model resolution fails")
 	assert.Empty(t, mock.queuedCalls, "queue must not be touched when build fails")
 	assert.Empty(t, mock.cancelled, "Cancel must not be called when build fails")

@@ -13,7 +13,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/format"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/permission"
@@ -54,9 +53,8 @@ type runExecSetup struct {
 	stdout, stderr io.Writer
 	credsRunner    credentialsRunner
 
-	smartOverride, fastOverride             *agent.ModelOverride
-	modelOverrideRequested                  bool
-	persistedSmartModel, persistedFastModel *session.ModelSlotUpdate
+	smartOverride, fastOverride *agent.ModelOverride
+	modelOverrideRequested      bool
 
 	spinner     *format.Spinner
 	stopSpinner func()
@@ -240,13 +238,6 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		return nil, cancel, nil, fmt.Errorf("failed to override models: %w", err)
 	}
 	modelOverrideRequested := smartOverride != nil || fastOverride != nil
-	var persistedSmartModel, persistedFastModel *session.ModelSlotUpdate
-	if smartOverride != nil {
-		persistedSmartModel = &session.ModelSlotUpdate{Provider: smartOverride.Provider, Model: smartOverride.Model}
-	}
-	if fastOverride != nil {
-		persistedFastModel = &session.ModelSlotUpdate{Provider: fastOverride.Provider, Model: fastOverride.Model}
-	}
 
 	// Apply explicit effort to the override of the targeted slot. #1221 prohibits
 	// inheriting effort across a model switch unless given explicitly here.
@@ -544,16 +535,12 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 	// non-smart role run rides the role-slot resolution (roleSlotOverride)
 	// for every turn of this invocation; it is never persisted for
 	// worker/reviewer — the role model itself is not persisted either.
-	if overrides.ReasoningEffort != "" && overrides.ModelRole != "" && overrides.ModelRole != config.SelectedModelTypeSmart {
+	if overrides.ReasoningEffort != "" && !(overrides.RoleSmart && smartOverride != nil) {
 		ctx = agent.WithRoleReasoningEffort(ctx, overrides.ReasoningEffort)
 	}
 	if modelOverrideRequested {
-		// The override applies to every turn of the invocation, but only the
-		// first one writes it to the session: a follow-up call (Drain, reviewer
-		// pass) would overwrite a model the operator changed meanwhile (R3C-6).
-		if !req.mutationFree() {
-			ctx = agent.WithSessionModelPersistence(ctx, persistedSmartModel, persistedFastModel)
-		}
+		// Model choices belong to this ExecuteRun invocation only. Neither the
+		// explicit override nor its effort selection is written to session prefs.
 		ctx = agent.WithModelOverrides(ctx, smartOverride, fastOverride)
 	}
 
@@ -597,8 +584,6 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		smartOverride:          smartOverride,
 		fastOverride:           fastOverride,
 		modelOverrideRequested: modelOverrideRequested,
-		persistedSmartModel:    persistedSmartModel,
-		persistedFastModel:     persistedFastModel,
 		spinner:                spinner,
 		stopSpinner:            stopSpinner,
 		stderrTTY:              stderrTTY,

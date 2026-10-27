@@ -249,7 +249,9 @@ func TestRunWithReservedOwnership_EffortNotInheritedForDifferentModel(t *testing
 		&session.ModelSlotUpdate{Provider: "session-provider", Model: "session-model"}, nil))
 	require.NoError(t, env.sessions.UpdateReasoningEffort(t.Context(), foreign.ID, "xhigh", ""))
 
-	holdCtx, epoch, cancel, ok := coord.ReserveExclusive(t.Context(), foreign.ID)
+	// The re-run path is a web turn: session-stored effort applies there only.
+	webCtx := WithCallOptions(t.Context(), &CallOptions{WebTurnOptIn: true})
+	holdCtx, epoch, cancel, ok := coord.ReserveExclusive(webCtx, foreign.ID)
 	require.True(t, ok, "ReserveExclusive must succeed on an idle session")
 	_, err = coord.RunWithReservedOwnership(holdCtx, foreign.ID, "prompt", epoch, cancel, func() {},
 		&ModelOverride{Provider: "other-provider", Model: "other-model"}, nil)
@@ -267,7 +269,7 @@ func TestRunWithReservedOwnership_EffortNotInheritedForDifferentModel(t *testing
 		&session.ModelSlotUpdate{Provider: "session-provider", Model: "session-model"}, nil))
 	require.NoError(t, env.sessions.UpdateReasoningEffort(t.Context(), own.ID, "xhigh", ""))
 
-	holdCtx, epoch, cancel, ok = coord.ReserveExclusive(t.Context(), own.ID)
+	holdCtx, epoch, cancel, ok = coord.ReserveExclusive(webCtx, own.ID)
 	require.True(t, ok, "ReserveExclusive must succeed on an idle session")
 	_, err = coord.RunWithReservedOwnership(holdCtx, own.ID, "prompt", epoch, cancel, func() {},
 		&ModelOverride{Provider: "session-provider", Model: "session-model"}, nil)

@@ -935,6 +935,9 @@ func reviewerCallOptions(primary *agent.CallOptions) *agent.CallOptions {
 		SupervisionDisabled:         primary.SupervisionDisabled,
 		SupervisionInterval:         primary.SupervisionInterval,
 		BackgroundJobDefaultTimeout: primary.BackgroundJobDefaultTimeout,
+		// Inert for the reviewer role (WebModelPolicy excludes it); carried
+		// so the review turn keeps the caller's origin marker.
+		WebTurnOptIn: primary.WebTurnOptIn,
 		// R2-3: honor the caller's fail-fast busy policy on the review
 		// turn too. The decision itself stays at the mailbox reservation
 		// (sessionAgent.Run -> mailbox.submit), which is atomic under

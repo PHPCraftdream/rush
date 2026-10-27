@@ -344,6 +344,7 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 // (task #340, ROUND 3 migration). This bypasses the normal buildCall path since the
 // call is already fully reconstructed with all necessary data.
 func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+	sessionID := call.SessionID
 	// gh#10d: claim scope ownership at ENTRY, BEFORE the ready gate — the
 	// gate's sticky failure is one of this method's return paths, and on the
 	// old code the scope-close defer sat after it, so a rebuilt Call owner
@@ -381,7 +382,10 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 		}
 	}
 
-	sessionID := call.SessionID
+	ctx = WithCallOrigin(ctx, call.Origin)
+	if call.CallOptions != nil {
+		ctx = WithCallOptions(ctx, call.CallOptions)
+	}
 
 	// R4-3: after a REAL process restart the permission service's
 	// autoApproveSessions map is empty (it is in-memory only, like

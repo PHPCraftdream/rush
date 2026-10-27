@@ -375,6 +375,22 @@ func (c *coordinator) resolveCallModels(ctx context.Context, sessionID string, c
 // OpenAI-style low/medium/high ladder is the least surprising default.
 var credentialReasoningLevels = []string{"low", "medium", "high"}
 
+// applyInvocationEffort gives explicit invocation effort to the selected turn
+// model, including credential-selected models when no model override exists.
+// Durable session effort is not consulted: it is specific to the session's
+// configured model and must not leak onto tenant credentials.
+func applyInvocationEffort(ctx context.Context, smart, fast *ModelChoice) {
+	effort := roleReasoningEffortFrom(ctx)
+	if effort == "" {
+		return
+	}
+	if callModelRole(ctx) == config.SelectedModelTypeFast {
+		fast.ReasoningEffort = effort
+	} else {
+		smart.ReasoningEffort = effort
+	}
+}
+
 // resolveCredentialsModels builds the per-call model snapshot from
 // creds. Roles covered by creds.Models are built ad-hoc (fresh provider
 // client, never cached — see buildCredentialModel). Strict isolation is
@@ -389,16 +405,25 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 	fastChoice, fastCovered := creds.Models[RoleFast]
 	if smartOverride, fastOverride := modelOverridesFrom(ctx); smartOverride != nil || fastOverride != nil {
 		if smartOverride != nil {
+			sameModel := smartChoice.Provider == smartOverride.Provider && smartChoice.Model == smartOverride.Model
 			smartChoice.Provider = smartOverride.Provider
 			smartChoice.Model = smartOverride.Model
+			if !sameModel || smartOverride.ReasoningEffort != "" {
+				smartChoice.ReasoningEffort = smartOverride.ReasoningEffort
+			}
 			smartCovered = true
 		}
 		if fastOverride != nil {
+			sameModel := fastChoice.Provider == fastOverride.Provider && fastChoice.Model == fastOverride.Model
 			fastChoice.Provider = fastOverride.Provider
 			fastChoice.Model = fastOverride.Model
+			if !sameModel || fastOverride.ReasoningEffort != "" {
+				fastChoice.ReasoningEffort = fastOverride.ReasoningEffort
+			}
 			fastCovered = true
 		}
 	}
+	applyInvocationEffort(ctx, &smartChoice, &fastChoice)
 
 	if !smartCovered {
 		return nil, fmt.Errorf("credential set does not cover the smart role (Models[RoleSmart]); smart is required even when AllowConfiguredRoleFallback is true")

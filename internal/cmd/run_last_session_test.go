@@ -16,8 +16,8 @@ import (
 )
 
 // TestFoldRoleModel_ContinueNeverResolvesAChildSession: a root and a child
-// updated LATER; --continue resolves the root for every role, so the pin comes
-// from the root and the run continues the root instead of failing "cannot
+// updated LATER; --continue resolves the root for every role, so the run
+// continues the root instead of failing "cannot
 // continue a child session" (worker/reviewer) or continuing the child (smart).
 // The fold validates and resolves the session; the model itself is resolved
 // per turn (D2).
@@ -57,7 +57,7 @@ func TestFoldRoleModel_ContinueNeverResolvesAChildSession(t *testing.T) {
 		{"worker", config.SelectedModelTypeWorker, ""},
 		{"reviewer", config.SelectedModelTypeReviewer, ""},
 	} {
-		model, resolved, useLast, err := foldRoleModel(ctx, a, tc.role, tc.typ, "", "", true)
+		model, resolved, useLast, err := foldRoleModel(ctx, a, roleTestModels, tc.role, tc.typ, "", "", true)
 		require.NoError(t, err, tc.role)
 		require.Equal(t, tc.want, model, tc.role)
 		require.Equal(t, root.ID, resolved, tc.role)

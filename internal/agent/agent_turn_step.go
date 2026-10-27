@@ -215,7 +215,7 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 		Parts:           []message.ContentPart{},
 		Model:           ts.smartModel.Model.Model(),
 		Provider:        ts.smartModel.Model.Provider(),
-		ReasoningEffort: turnSmartReasoningEffort(callContext, ts.currentSession),
+		ReasoningEffort: turnSmartReasoningEffort(ts.smartModel),
 	})
 	if err != nil {
 		return callContext, prepared, err
@@ -789,7 +789,7 @@ func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 // never re-checked, so a long turn that started before the window opened
 // ran straight through it.
 func (ts *turnStream) recheckPeakHours() error {
-	if ts.a.peakHoursCheck == nil {
+	if ts.a.peakHoursCheck == nil || peakHoursBypassed(ts.call) {
 		return nil
 	}
 	pErr := ts.a.peakHoursCheck()

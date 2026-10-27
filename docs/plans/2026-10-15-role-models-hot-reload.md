@@ -17,6 +17,11 @@ numbers refer to the tree this plan was written against (`d5c3b0d9`).
 
 ## 0. Executive summary
 
+> **Historical design note:** This plan describes proposed behavior and is not
+> current documentation. In particular, invocation-level `rush run` model and
+> effort selections are not persisted to session preferences. See
+> [`docs/run-model-effort.md`](../run-model-effort.md) for the current contract.
+
 1. The pieces needed for "new requests use new models" **already exist**.
    Every turn resolves its models from the store's current snapshot,
    overlays the session's explicit per-session overrides, and caches built
@@ -59,7 +64,7 @@ numbers refer to the tree this plan was written against (`d5c3b0d9`).
 | project files | `rush.json` / `.rush.json`, walking up to the project boundary (outermost first) | operator | OBSERVED `load_files.go:76-95` |
 | **workspace config** | `<Options.DataDirectory>/rush.json` (usually `.rush/rush.json`) = snapshot `workspacePath` | `rush models use --workspace` (scope flag) | OBSERVED `store_write.go:24-29`, `internal/config/store_reload.go:421-459` |
 | per-invocation flags | `rush run --model/--fast-model/--role` | CLI | OBSERVED `internal/cmd/run.go:475`, `:538`, `:760`; `internal/app/app_run_setup.go:157-168` |
-| per-session DB override | `sessions.smart_model_*`, `fast_model_*`, `worker_model_*`, `reviewer_model_*` | web `set_session_models`, `rush run --model` (persisted), session fork | OBSERVED `internal/session/session_update.go:202-244`, `internal/server/handlers_models.go:123-132`, `internal/agent/agent_run.go:589-609`, `internal/session/session_fork.go:124-137` |
+| per-session DB override | `sessions.smart_model_*`, `fast_model_*`, `worker_model_*`, `reviewer_model_*` | web `set_session_models`, session fork | OBSERVED `internal/session/session_update.go:202-244`, `internal/server/handlers_models.go:123-132`, `internal/session/session_fork.go:124-137` |
 
 The merge contract runs from lowest to highest priority: system, then
 global config, then global data, then project files (outer to inner),
@@ -117,8 +122,8 @@ refuses process startup. OBSERVED:
 | Pinning | The resolved models, prompt and tools are pinned onto the `SessionAgentCall`; an in-flight turn never re-reads shared model state | OBSERVED `coordinator_models.go:456-476` |
 | Sub-agent (`agent` tool) | The sub-agent is built inside the parent call's per-call toolset (`pinCallTools` → `buildTools` → `buildAgent`) from the parent's **pinned** cfg; worker slot when `workerSubAgentActiveForCall`. At dispatch: per-call credentials, else the session's `WorkerModelID`, else the model built at the parent's turn start | OBSERVED `coordinator_models.go:610-645`, `:794-796`; `internal/agent/coordinator_subagents.go:152`, `:186-193` |
 | Reviewer pass | `Config().Models[reviewer]` read live when the pass is built, then passed as a call override | OBSERVED `internal/app/app_run_reviewer.go:890-906` |
-| `rush run --role X` | `foldRoleModel`: for fast/worker/reviewer without `--model`, the session's worker/reviewer pin or `Config().Models[X]` is turned into a **`provider/model` string in the smart slot** | OBSERVED `internal/cmd/run_role_model.go:59-76`, `internal/cmd/run.go:760` |
-| ExecuteRun override lifetime | A requested override is armed on ctx for **every turn of the invocation** and persisted into the session's smart/fast slots on the first turn | OBSERVED `app_run_setup.go:157-168`, `:419-427`; `agent_run.go:589-609` |
+| `rush run --role X` | Role selection determines the invocation's model slot; model/effort overrides are not written to session preferences | Current contract: `docs/run-model-effort.md` |
+| ExecuteRun override lifetime | Invocation overrides are carried through the run's calls; explicit `rush run --model`, `--fast-model`, and `--effort` values are not written to session preferences | Current implementation; see `docs/run-model-effort.md` |
 | Shared default agent | `UpdateModels` rebuilds `currentAgent` models and tools from the latest snapshot. It is called only after a credential refresh | OBSERVED `coordinator_models.go:930-958`; `internal/agent/coordinator_providers_auth.go:250`, `:267`; `internal/app/app_agent_setup.go:22-27` |
 
 ### 1.4 What a running process does today when another process runs `rush models use`
@@ -148,11 +153,7 @@ refuses process startup. OBSERVED:
     later, so the **second** turn is correct. The web UI's config view
     (`EventConfig`) stays stale until something in-process broadcasts
     (`internal/server/handlers_config.go`, `handlers_models.go:202-204`).
-  - `rush run --role worker|fast|reviewer`: the role default is folded
-    at CLI start into a fixed override for the whole invocation and
-    persisted into the session's smart slot. It never picks up a change
-    during the invocation, and later web turns on that session keep the
-    copied model (see §2.2).
+  - `rush run --role worker|fast|reviewer`: this plan's claim that a role default is folded into a fixed override and persisted in the smart slot is outdated; current run model/effort choices are invocation-only (see `docs/run-model-effort.md`).
   - Sub-agents: the worker model is fixed at the parent turn's start, so
     a long orchestrator turn keeps dispatching on the old worker model.
 - Also OBSERVED: the OAuth poller is started only by `setupApp`
@@ -181,9 +182,7 @@ refuses process startup. OBSERVED:
    unless the session has an **explicit** per-session choice for that
    slot. This already holds once the snapshot is fresh
    (`coordinator_models.go:118-136`). The poller provides the freshness.
-3. **An explicit choice always wins**: web `set_session_models`, `rush run
-   --model/--fast-model` (persisted), SDK `RunOverrides.SmartModel`,
-   per-call `CredentialSet`, and session forks of those.
+3. **An explicit choice wins for that invocation or call.** Web `set_session_models` stores session preferences. `rush run --model/--fast-model/--effort` overrides are invocation-only; they do not persist session preferences.
 4. **A role-derived value is not an explicit choice.** It must be
    resolved live and must not be persisted (see §2.2).
 
@@ -196,19 +195,13 @@ refuses process startup. OBSERVED:
   (`session_fork.go:124-137`). An empty `smart_model_id` means "inherit"
   (`internal/db/sql/sessions.sql:52-64`).
 - Explicit writers: web `set_session_models` (user action,
-  `web/src/store.ts:591-607`), ExecuteRun persistence of
-  `--model/--fast-model` (`app_run_setup.go:162-168`,
-  `agent_run.go:589-609`). Both are deliberate choices.
-- **The one copy:** `rush run --role fast|worker|reviewer` without
-  `--model` goes through `foldRoleModel` (`run_role_model.go:59-76`).
-  That function turns `Config().Models[role]` (or the session's
-  worker/reviewer pin) into a `provider/model` string in the **smart**
-  slot. ExecuteRun then treats it exactly like `--model`: it is armed for
-  every turn of the invocation and persisted into
-  `sessions.smart_model_*` (`app_run_setup.go:157-168`, `:419-427`). From
-  then on the session looks as if the operator had explicitly pinned
-  that model. Any later web turn, or `rush run --role smart --session S`,
-  stays on it after a role change.
+  `web/src/store.ts:591-607`). `rush run --model/--fast-model/--effort`
+  overrides affect that invocation only and are not written to the session; see
+  `docs/run-model-effort.md`.
+- Historical proposal: the role fold was described as copying a role-derived
+  value into the smart slot and persisting it. That description is outdated;
+  `rush run` model/effort overrides are invocation-only and are not written to
+  session preferences. See `docs/run-model-effort.md`.
 - Proposed distinction (minimal state change, **no migration**). A role
   fold produces **no** model override and **no** persistence. The role
   already travels as `CallOptions.ModelRole` (`app_run_setup.go:372-374`)
@@ -253,8 +246,7 @@ refuses process startup. OBSERVED:
 - **`rush run --role fast|worker|reviewer`**: §2.2. Each turn of the
   invocation (follow-ups, drains, rebuilt durable calls) re-resolves the
   role slot from the live snapshot.
-- **`rush run --model X`, `--fast-model`**: explicit. Unchanged: fixed
-  for the invocation and persisted.
+- **`rush run --model X`, `--fast-model`, `--effort`**: invocation-only; they are not persisted. See `docs/run-model-effort.md`.
 - **Per-call `CredentialSet` (SDK)**: explicit tenant models. Unchanged.
 
 ### 2.4 Web UI notification
