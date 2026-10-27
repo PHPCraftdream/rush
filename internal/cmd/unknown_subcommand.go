@@ -36,6 +36,10 @@ func guardUnknownSubcommands(cmd *cobra.Command) {
 
 func unknownSubcommandError(cmd *cobra.Command, name string) error {
 	msg := fmt.Sprintf("unknown command %q for %q", name, cmd.CommandPath())
+	// Cobra applies its default distance (2) only on the root.
+	if cmd.SuggestionsMinimumDistance <= 0 {
+		cmd.SuggestionsMinimumDistance = 2
+	}
 	if suggestions := cmd.SuggestionsFor(name); len(suggestions) > 0 {
 		msg += "\n\nDid you mean this?\n\t" + strings.Join(suggestions, "\n\t")
 	}
