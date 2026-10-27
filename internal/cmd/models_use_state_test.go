@@ -102,15 +102,24 @@ func TestModelsState_ExplicitEffort_TakesPrecedenceOverDefault(t *testing.T) {
 
 	smartLine, ok := effectiveRow(out, "smart")
 	require.True(t, ok, "expected a smart row in output:\n%s", out)
-	assert.Equal(t, "on", strings.Fields(smartLine)[3], "the EFFORT column holds the explicit effort")
+	assert.Equal(t, "on", tableCells(smartLine)[3], "the EFFORT column holds the explicit effort")
 	assert.NotContains(t, smartLine, "unset ->")
 }
 
+// tableCells splits a bordered table row into its trimmed cells.
+func tableCells(line string) []string {
+	parts := strings.Split(strings.Trim(strings.TrimSpace(line), "│"), "│")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
+}
+
 // effectiveRow returns the EFFECTIVE table row for role: the first line
-// whose first column is role.
+// whose first cell is role.
 func effectiveRow(s, role string) (string, bool) {
 	for _, line := range strings.Split(s, "\n") {
-		if fields := strings.Fields(line); len(fields) > 0 && fields[0] == role {
+		if cells := tableCells(line); len(cells) > 0 && cells[0] == role {
 			return line, true
 		}
 	}

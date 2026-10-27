@@ -259,24 +259,31 @@ func TestRestoreCommands_RawLocalCLIFormExecutes(t *testing.T) {
 }
 
 // restoreGoldenFull is the byte-exact full `rush models state` text for the
-// fixture below: the EFFECTIVE and SCOPES tables plus the RESTORE commands.
+// fixture below: the bordered EFFECTIVE and SCOPES tables plus the RESTORE
+// commands.
 const restoreGoldenFull = `EFFECTIVE
-  ROLE      PROVIDER  MODEL          EFFORT  SCOPE   ATOM             NOTE
-  smart     zai       glm-4.6        —       global  glm4_6           unset -> thinking on, high
-  fast      zai       glm-4.7-flash  —       local   glm4_7_flash     unset -> thinking on, high
-  worker    zai       glm-4.7-flash  on      global  glm4_7_flash-on
-  reviewer  zai       glm-5-turbo    —       global  glm5_turbo       unset -> thinking on, high
+╭──────────┬──────────┬───────────────┬────────┬────────┬─────────────────┬────────────────────────────╮
+│ ROLE     │ PROVIDER │ MODEL         │ EFFORT │ SCOPE  │ ATOM            │ NOTE                       │
+├──────────┼──────────┼───────────────┼────────┼────────┼─────────────────┼────────────────────────────┤
+│ smart    │ zai      │ glm-4.6       │ —      │ global │ glm4_6          │ unset -> thinking on, high │
+│ fast     │ zai      │ glm-4.7-flash │ —      │ local  │ glm4_7_flash    │ unset -> thinking on, high │
+│ worker   │ zai      │ glm-4.7-flash │ on     │ global │ glm4_7_flash-on │                            │
+│ reviewer │ zai      │ glm-5-turbo   │ —      │ global │ glm5_turbo      │ unset -> thinking on, high │
+╰──────────┴──────────┴───────────────┴────────┴────────┴─────────────────┴────────────────────────────╯
 
 SCOPES
-  SCOPE   ROLE      PROVIDER  MODEL          EFFORT  STATUS               NOTE
-  global  smart     zai       glm-4.6        —       effective            unset -> thinking on, high
-  global  fast      zai       glm-5-turbo    —       overridden by local  unset -> thinking on, high
-  global  worker    zai       glm-4.7-flash  on      effective
-  global  reviewer  zai       glm-5-turbo    —       effective            unset -> thinking on, high
-  local   smart     —         —              —       not set
-  local   fast      zai       glm-4.7-flash  —       effective            unset -> thinking on, high
-  local   worker    —         —              —       not set
-  local   reviewer  —         —              —       not set
+╭────────┬──────────┬──────────┬───────────────┬────────┬─────────────────────┬────────────────────────────╮
+│ SCOPE  │ ROLE     │ PROVIDER │ MODEL         │ EFFORT │ STATUS              │ NOTE                       │
+├────────┼──────────┼──────────┼───────────────┼────────┼─────────────────────┼────────────────────────────┤
+│ global │ smart    │ zai      │ glm-4.6       │ —      │ effective           │ unset -> thinking on, high │
+│ global │ fast     │ zai      │ glm-5-turbo   │ —      │ overridden by local │ unset -> thinking on, high │
+│ global │ worker   │ zai      │ glm-4.7-flash │ on     │ effective           │                            │
+│ global │ reviewer │ zai      │ glm-5-turbo   │ —      │ effective           │ unset -> thinking on, high │
+│ local  │ smart    │ —        │ —             │ —      │ not set             │                            │
+│ local  │ fast     │ zai      │ glm-4.7-flash │ —      │ effective           │ unset -> thinking on, high │
+│ local  │ worker   │ —        │ —             │ —      │ not set             │                            │
+│ local  │ reviewer │ —        │ —             │ —      │ not set             │                            │
+╰────────┴──────────┴──────────┴───────────────┴────────┴─────────────────────┴────────────────────────────╯
 
 RESTORE (run these to re-create this state)
   rush models use --smart glm4_6

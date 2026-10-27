@@ -5,13 +5,13 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
-	"text/tabwriter"
 
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/table"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -139,8 +139,7 @@ rush models show
 		}
 
 		fmt.Println("EFFECTIVE")
-		tw := newStateTable()
-		fmt.Fprintln(tw, "  ROLE\tPROVIDER\tMODEL\tEFFORT\tSCOPE\tATOM\tNOTE")
+		tw := newStateTable("ROLE", "PROVIDER", "MODEL", "EFFORT", "SCOPE", "ATOM", "NOTE")
 		printEffectiveRow(tw, "smart", hasSmart, effSmart, smartScope)
 		printEffectiveRow(tw, "fast", hasFast, effFast, fastScope)
 		printEffectiveRow(tw, "worker", hasWorker, effWorker, workerScope)
@@ -148,8 +147,7 @@ rush models show
 		tw.flush()
 		fmt.Println()
 		fmt.Println("SCOPES")
-		tw = newStateTable()
-		fmt.Fprintln(tw, "  SCOPE\tROLE\tPROVIDER\tMODEL\tEFFORT\tSTATUS\tNOTE")
+		tw = newStateTable("SCOPE", "ROLE", "PROVIDER", "MODEL", "EFFORT", "STATUS", "NOTE")
 		printScopeRow(tw, "global", "smart", globalSmart, localSmart)
 		printScopeRow(tw, "global", "fast", globalFast, localFast)
 		printScopeRow(tw, "global", "worker", globalWorker, localWorker)
@@ -219,24 +217,28 @@ func nilOrStaleEffort(has bool, m config.SelectedModel) any {
 // tableDash marks an empty table cell.
 const tableDash = "—"
 
-// stateTable aligns rows into columns and trims the padding an empty last
-// cell leaves at line ends.
+// stateTable collects rows and renders them as a bordered table, in the
+// same rounded style as `rush projects`.
 type stateTable struct {
-	buf bytes.Buffer
-	*tabwriter.Writer
+	headers []string
+	rows    [][]string
 }
 
-func newStateTable() *stateTable {
-	t := &stateTable{}
-	t.Writer = tabwriter.NewWriter(&t.buf, 0, 0, 2, ' ', 0)
-	return t
+func newStateTable(headers ...string) *stateTable {
+	return &stateTable{headers: headers}
 }
+
+func (t *stateTable) row(cells ...string) { t.rows = append(t.rows, cells) }
 
 func (t *stateTable) flush() {
-	_ = t.Flush()
-	for line := range strings.Lines(t.buf.String()) {
-		fmt.Println(strings.TrimRight(line, " \n"))
-	}
+	tbl := table.New().
+		Border(lipgloss.RoundedBorder()).
+		Headers(t.headers...).
+		Rows(t.rows...).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			return lipgloss.NewStyle().Padding(0, 1)
+		})
+	fmt.Println(tbl.String())
 }
 
 func cellOr(v string) string {
@@ -250,7 +252,7 @@ func cellOr(v string) string {
 // effort, source scope, matching atom and the effort note.
 func printEffectiveRow(tw *stateTable, role string, has bool, m config.SelectedModel, scope string) {
 	if !has {
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\n", role, tableDash, tableDash, tableDash, tableDash, tableDash, "not set in any scope")
+		tw.row(role, tableDash, tableDash, tableDash, tableDash, tableDash, "not set in any scope")
 		return
 	}
 	atom := ""
@@ -267,8 +269,7 @@ func printEffectiveRow(tw *stateTable, role string, has bool, m config.SelectedM
 	if scope == "" {
 		scope = "unknown"
 	}
-	fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-		role, m.Provider, m.Model, cellOr(m.ReasoningEffort), scope, cellOr(atom), effortNoteText(m))
+	tw.row(role, m.Provider, m.Model, cellOr(m.ReasoningEffort), scope, cellOr(atom), effortNoteText(m))
 }
 
 // effortNoteText is effortEffectiveNote without its inline framing, for the
@@ -346,15 +347,14 @@ func staleEffortNote(m config.SelectedModel) string {
 // other scope: a global value with a local one beside it is overridden.
 func printScopeRow(tw *stateTable, scopeName, role string, value, other *config.SelectedModel) {
 	if value == nil {
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t\n", scopeName, role, tableDash, tableDash, tableDash, "not set")
+		tw.row(scopeName, role, tableDash, tableDash, tableDash, "not set", "")
 		return
 	}
 	status := "effective"
 	if scopeName == "global" && other != nil {
 		status = "overridden by local"
 	}
-	fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-		scopeName, role, value.Provider, value.Model, cellOr(value.ReasoningEffort), status, effortNoteText(*value))
+	tw.row(scopeName, role, value.Provider, value.Model, cellOr(value.ReasoningEffort), status, effortNoteText(*value))
 }
 
 func init() {
