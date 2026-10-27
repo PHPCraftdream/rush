@@ -51,6 +51,8 @@ type turnStreamConfig struct {
 	stall  *stallClock
 	// att is the Drain leg being accounted (nil for any other call).
 	att *drainAttempt
+	// fatalTools records the turn-ending tool error (tool_fatal_error.go).
+	fatalTools *fatalToolCollector
 
 	smartModel     Model
 	promptPrefix   string
@@ -115,6 +117,8 @@ type turnStream struct {
 	genID  uint64
 	stall  *stallClock
 	att    *drainAttempt
+
+	fatalTools *fatalToolCollector
 
 	smartModel   Model
 	promptPrefix string
@@ -200,6 +204,7 @@ func newTurnStream(cfg turnStreamConfig) *turnStream {
 		cancel:               cfg.cancel,
 		call:                 cfg.call,
 		att:                  cfg.att,
+		fatalTools:           cfg.fatalTools,
 		genID:                cfg.genID,
 		stall:                cfg.stall,
 		smartModel:           cfg.smartModel,
@@ -310,6 +315,7 @@ func (ts *turnStream) prepareStepWithToolReceipts(ctx context.Context, opts fant
 	if err != nil {
 		return updated, prepared, err
 	}
+	prepared.Tools = withFatalToolErrors(prepared.Tools, ts.fatalTools)
 	return context.WithValue(updated, toolReceiptContextKey{}, sink), prepared, nil
 }
 

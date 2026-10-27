@@ -330,6 +330,8 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// turns marking "their" last tool wrote the same field (a real -race
 	// finding). See withProviderOptionsOnLast.
 	agentTools = withProviderOptionsOnLast(agentTools, a.getCacheControlOptions())
+	fatalTools := &fatalToolCollector{}
+	agentTools = withFatalToolErrors(agentTools, fatalTools)
 
 	agent := fantasy.NewAgent(
 		smartModel.Model,
@@ -733,6 +735,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		genID:            genID,
 		stall:            stall,
 		att:              att,
+		fatalTools:       fatalTools,
 		smartModel:       smartModel,
 		promptPrefix:     promptPrefix,
 		historyIDs:       historyIDs,
@@ -797,6 +800,10 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		var streamErr error
 		result, streamErr = agent.Stream(attemptCtx, ts.streamCall(history, files, maxOutputTokens))
 		attemptCancel()
+		// A tool's Go error ends the turn and is the turn's error.
+		if fatal := fatalTools.take(); fatal != nil {
+			streamErr = fatal
+		}
 		return streamErr
 	}, func(retry int) {
 		slog.Warn("turn-stall policy: re-issuing stalled provider step", "session_id", call.SessionID, "retry", retry)
