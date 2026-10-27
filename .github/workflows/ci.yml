@@ -164,7 +164,9 @@ jobs:
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           args: --config=.golangci.yml --timeout=10m ./...
-          version: v2.13
+          version: v2.15.0
+          # built by the job's own Go: a prebuilt binary cannot read newer export data
+          install-mode: goinstall
       # the former lint workflow `lint-ncruces-driver` job (verbatim): the ncruces SQLite
       # driver branch is compiled on no runner otherwise.
       - name: setup Node for shortcode check
@@ -182,13 +184,10 @@ jobs:
           }
       - name: golangci-lint (GOOS=linux GOARCH=mips64)
         if: runner.os == 'Linux' && needs.plan.outputs.heavy_allowed == 'true'
-        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
-        env:
-          GOOS: linux
-          GOARCH: mips64
-        with:
-          args: --config=.golangci.yml --timeout=10m ./internal/db/...
-          version: v2.13
+        # The linter is installed for the host; only its run targets mips64.
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
+          GOOS=linux GOARCH=mips64 "$(go env GOPATH)/bin/golangci-lint" run --config=.golangci.yml --timeout=10m ./internal/db/...
   native-lint:
     needs: plan
     if: (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci') && needs.plan.outputs.heavy_allowed == 'true'
@@ -207,7 +206,9 @@ jobs:
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           args: --config=.golangci.yml --timeout=10m ./...
-          version: v2.13
+          version: v2.15.0
+          # built by the job's own Go: a prebuilt binary cannot read newer export data
+          install-mode: goinstall
   tests:
     needs: [plan, checks]
     if: (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci') && needs.plan.outputs.heavy_allowed == 'true' && (needs.plan.outputs.ubuntu_needed == 'true' || needs.plan.outputs.macos_needed == 'true' || needs.plan.outputs.windows_needed == 'true' || needs.plan.outputs.agent_selected == 'true' || needs.plan.outputs.race_needed == 'true')

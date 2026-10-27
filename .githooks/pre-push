@@ -11,7 +11,7 @@
 #
 # Runs the same checks as .github/workflows/{build,lint}.yml:
 #   1. go build ./...                 — compile + //go:embed all:dist
-#   2. golangci-lint run              — v2.13, same as lint.yml (covers gofumpt),
+#   2. golangci-lint run              — v2.15.0, same as ci.yml (covers gofumpt),
 #                                       once per GOOS in the CI matrix so
 #                                       build-tagged files aren't skipped
 #   3. go test -short -failfast ./... — like build.yml, minus -race (that needs
@@ -49,8 +49,8 @@
 # Bypass in an emergency with:  git push --no-verify
 set -uo pipefail
 
-# Keep in sync with golangci_version in .github/workflows/lint.yml.
-GOLANGCI_VERSION="v2.13"
+# Keep in sync with the golangci-lint version in .github/workflows/ci.yml.
+GOLANGCI_VERSION="v2.15.0"
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # These are per-gate cold-cache budgets, not a global timeout multiplier. The
