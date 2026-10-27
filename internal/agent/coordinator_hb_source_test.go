@@ -29,7 +29,8 @@ import (
 )
 
 // TestCoordinatorResolve_SessionOverrideSourceLabels pins that a session
-// row override is reported as hbSourceSessionOverride on the snapshot.
+// row override is reported as hbSourceSessionOverride on a web turn's
+// snapshot.
 func TestCoordinatorResolve_SessionOverrideSourceLabels(t *testing.T) {
 	hbIsolateEnv(t)
 	coord, _ := newCallOptionsTestCoordinator(t)
@@ -42,10 +43,16 @@ func TestCoordinatorResolve_SessionOverrideSourceLabels(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	pinned, err := coord.resolveSessionModels(t.Context(), sess.ID)
+	// Session rows are honored only on web turns.
+	webCtx := WithCallOptions(t.Context(), &CallOptions{WebTurnOptIn: true})
+	pinned, err := coord.resolveSessionModels(webCtx, sess.ID)
 	require.NoError(t, err)
 	require.Equal(t, hbSourceSessionOverride, pinned.smartSource)
 	require.Equal(t, hbSourceSlotStart, pinned.fastSource)
+
+	pinned, err = coord.resolveSessionModels(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.Equal(t, hbSourceSlotStart, pinned.smartSource, "a non-web run ignores the session row")
 }
 
 // hbSourceCaptureAgent wraps a SessionAgent and records the ctx each Run

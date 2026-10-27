@@ -133,7 +133,7 @@ func TestExecuteRun_DrainTurnNeverRunsTheReviewerPass(t *testing.T) {
 }
 
 // R3C-3: a setup step that fails after the driver claim but before the user's
-// turn is launched (here the reasoning-effort write) ends the run with that
+// turn is launched (here the system-prompt write) ends the run with that
 // error. Before the fix the loop carried on: a Drain reacted to the unrelated
 // notice and cleared the error, so the run exited 0 although "do it" never
 // reached the model.
@@ -145,15 +145,15 @@ func TestRunNonInteractive_FirstTurnFailsBeforeSubmission_EndsTheRun(t *testing.
 		t.Error("nothing may reach the provider: the user's turn never ran")
 		loopText(w, "x", "unexpected", 1, 1)
 	})
-	_, err := h.app.DB().ExecContext(context.Background(), `CREATE TRIGGER fx_block_effort BEFORE UPDATE OF smart_model_reasoning_effort ON sessions
-		BEGIN SELECT RAISE(ABORT, 'fx: effort write blocked'); END`)
+	_, err := h.app.DB().ExecContext(context.Background(), `CREATE TRIGGER fx_block_prompt BEFORE UPDATE OF system_prompt ON sessions
+		BEGIN SELECT RAISE(ABORT, 'fx: system prompt write blocked'); END`)
 	require.NoError(t, err)
 	h.seedDebt() // an unrelated notice a Drain would happily react to
 
-	res, _, runErr := h.run(loopCtx(t), RunOverrides{ReasoningEffort: "low", RoleSmart: true})
+	res, _, runErr := h.run(loopCtx(t), RunOverrides{SystemPrompt: "be brief", RoleSmart: true})
 
 	require.Error(t, runErr)
-	require.Contains(t, runErr.Error(), "failed to set reasoning effort")
+	require.Contains(t, runErr.Error(), "failed to set system prompt")
 	require.Nil(t, res, "no turn ran, so there is no envelope")
 	require.Zero(t, h.requests.Load())
 	require.True(t, h.debtOpen(), "the notice is untouched: no Drain ran")
