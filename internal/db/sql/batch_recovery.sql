@@ -2,7 +2,7 @@
 -- Include terminal ancestors with live descendants and terminal unannounced leaks.
 SELECT r.* FROM batch_nodes r
 WHERE r.node_id = r.root_id
-  AND (r.announced = 0 OR EXISTS (
+  AND ((r.announced = 0 AND r.origin_cli = 0) OR EXISTS (
     SELECT 1 FROM batch_nodes n WHERE n.root_id = r.root_id
       AND n.state IN ('pending', 'starting', 'running', 'cancelling'))
     OR EXISTS (SELECT 1 FROM batch_control_requests c WHERE c.root_id = r.root_id AND c.status = 'pending'))

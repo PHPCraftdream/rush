@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,6 +49,41 @@ func batchApp(cmd *cobra.Command, owner bool) (*app.App, error) {
 	return a, nil
 }
 
+type batchRunResult struct {
+	RootID         string               `json:"root_id"`
+	OwnerSessionID string               `json:"owner_session_id"`
+	State          string               `json:"state"`
+	Leaves         []batchRunLeafResult `json:"leaves"`
+}
+
+type batchRunLeafResult struct {
+	NodeID  string          `json:"node_id"`
+	State   string          `json:"state"`
+	Code    string          `json:"code"`
+	Summary string          `json:"summary"`
+	Output  string          `json:"output"`
+	Details json.RawMessage `json:"details,omitempty"`
+}
+
+func batchLeafResults(nodes []db.BatchNode, outputByNode map[string]string) []batchRunLeafResult {
+	results := make([]batchRunLeafResult, 0)
+	for _, node := range nodes {
+		if node.Kind != "task" {
+			continue
+		}
+		var details json.RawMessage
+		if node.ResponseEnvelope.Valid {
+			var envelope struct {
+				Details json.RawMessage `json:"details"`
+			}
+			_ = json.Unmarshal([]byte(node.ResponseEnvelope.String), &envelope)
+			details = envelope.Details
+		}
+		results = append(results, batchRunLeafResult{NodeID: node.NodeID, State: node.State, Code: node.OutcomeCode, Summary: node.OutcomeSummary, Output: outputByNode[node.NodeID], Details: details})
+	}
+	return results
+}
+
 func batchRun(cmd *cobra.Command, _ []string) error {
 	detach, _ := cmd.Flags().GetBool("detach")
 	if detach {
@@ -75,21 +111,33 @@ func batchRun(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	if j, _ := cmd.Flags().GetBool("json"); j {
-		if _, err = fmt.Fprintf(cmd.ErrOrStderr(), "batch root: %s\n", root); err != nil {
-			return err
-		}
-		stored, waitErr := a.BatchWait(cmd.Context(), sess.ID, root)
-		if waitErr != nil {
-			return waitErr
-		}
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"root_id": root, "owner_session_id": sess.ID, "state": stored.State})
+	stored, waitErr := a.BatchWait(cmd.Context(), sess.ID, root)
+	if waitErr != nil {
+		return waitErr
 	}
-	if _, err = fmt.Fprintln(cmd.OutOrStdout(), root); err != nil {
+	nodes, outputs, err := a.BatchResult(cmd.Context(), sess.ID, root)
+	if err != nil {
 		return err
 	}
-	_, err = a.BatchWait(cmd.Context(), sess.ID, root)
-	return err
+	result := batchRunResult{RootID: root, OwnerSessionID: sess.ID, State: stored.State, Leaves: batchLeafResults(nodes, outputs)}
+	if j, _ := cmd.Flags().GetBool("json"); j {
+		if err = json.NewEncoder(cmd.OutOrStdout()).Encode(result); err != nil {
+			return err
+		}
+		return a.BatchRelease(cmd.Context(), sess.ID, root)
+	}
+	if _, err = fmt.Fprintf(cmd.OutOrStdout(), "batch %s %s\n", root, stored.State); err != nil {
+		return err
+	}
+	for _, leaf := range result.Leaves {
+		if _, err = fmt.Fprintf(cmd.OutOrStdout(), "%s %s code=%s summary=%s output=%s\n", leaf.NodeID, leaf.State, leaf.Code, leaf.Summary, leaf.Output); err != nil {
+			return err
+		}
+	}
+	if err = a.BatchRelease(cmd.Context(), sess.ID, root); err != nil {
+		return err
+	}
+	return nil
 }
 
 func batchReadStore(cmd *cobra.Command) (*session.BatchStore, *session.BatchLiveReader, func(), error) {
@@ -143,6 +191,9 @@ func findBatchCLIIdentity(ctx context.Context, store *session.BatchStore, target
 
 func renderBatchShow(identity session.BatchCLIIdentity, level session.BatchLevelResult) (batchShowTree, error) {
 	if !level.Complete {
+		if level.Disappeared || errors.Is(level.Err, sql.ErrNoRows) {
+			return batchShowTree{}, fmt.Errorf("batch not found or disposed: %s", identity.Root)
+		}
 		return batchShowTree{}, errors.New("batch tree is incomplete or host status unknown")
 	}
 	tree := batchShowTree{RootID: identity.Root, OwnerSessionID: identity.Owner, HostID: identity.Host, Incarnation: identity.Runner, Complete: level.Complete}
@@ -160,6 +211,9 @@ func batchShow(cmd *cobra.Command, args []string) error {
 	defer closeStore()
 	identity, nodeID, err := findBatchCLIIdentity(cmd.Context(), store, args[0])
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("batch not found: %s", args[0])
+		}
 		return err
 	}
 	if nodeID != identity.Root {

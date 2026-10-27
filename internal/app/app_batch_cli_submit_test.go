@@ -9,9 +9,49 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAppBatchResultFailureAndSkippedLeaf(t *testing.T) {
+	a := newFullNewApp(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	sess, err := a.BatchCLISession(ctx, "")
+	require.NoError(t, err)
+	a.Permissions.AutoApproveSession(sess.ID)
+	badProgram := "rush-command-that-does-not-exist-92831"
+	failed := jobbatch.Spec{Task: &jobbatch.TaskSpec{Payload: mustJSON(t, map[string]any{
+		"tool": "run_command", "input": map[string]any{"program": badProgram},
+	})}}
+	second := jobbatch.Spec{Task: &jobbatch.TaskSpec{Payload: mustJSON(t, map[string]any{
+		"tool": "run_command", "input": map[string]any{"program": "sh", "args": []string{"-c", "printf should-not-run"}},
+	})}}
+	if runtime.GOOS == "windows" {
+		second = jobbatch.Spec{Task: &jobbatch.TaskSpec{Payload: mustJSON(t, map[string]any{
+			"tool": "run_command", "input": map[string]any{"program": "cmd", "args": []string{"/c", "echo", "should-not-run"}},
+		})}}
+	}
+	root, err := a.BatchSubmit(ctx, sess.ID, jobbatch.Spec{Batch: &jobbatch.BatchSpec{Mode: jobbatch.ModeSequential, OnFail: jobbatch.OnFailStop, Items: []jobbatch.Spec{failed, second}}})
+	require.NoError(t, err)
+	_, err = a.BatchWait(ctx, sess.ID, root)
+	require.NoError(t, err)
+	nodes, outputs, err := a.BatchResult(ctx, sess.ID, root)
+	require.NoError(t, err)
+	leaves := make(map[string]db.BatchNode, 2)
+	for _, node := range nodes {
+		if node.Kind == "task" {
+			leaves[node.NodeID] = node
+		}
+	}
+	require.Len(t, leaves, 2)
+	first, secondNode := leaves[root+".1"], leaves[root+".2"]
+	require.Equal(t, string(jobbatch.StateFailed), first.State)
+	require.Equal(t, string(jobbatch.StateSkipped), secondNode.State)
+	require.NotContains(t, outputs, secondNode.NodeID)
+	require.NoError(t, a.BatchRelease(ctx, sess.ID, root))
+}
 
 func TestAppBatchSubmitRunCommandParallelAndSequential(t *testing.T) {
 	a := newFullNewApp(t)
@@ -49,21 +89,28 @@ func TestAppBatchSubmitRunCommandParallelAndSequential(t *testing.T) {
 			snapshot, err := a.BatchWait(ctx, sess.ID, root)
 			require.NoError(t, err)
 			require.Equal(t, string(jobbatch.StateCompleted), snapshot.State)
-			nodes := batchCLINodeOutcomes(t, a, root)
-			require.Len(t, nodes, 3)
-			require.Equal(t, string(jobbatch.StateCompleted), nodes[1].state)
-			require.Equal(t, string(jobbatch.StateCompleted), nodes[2].state)
-			require.NotEqual(t, nodes[1].id, nodes[2].id)
-			firstID, secondID := root+".1", root+".2"
-			if mode == jobbatch.ModeParallel && nodes[1].id == secondID {
-				require.Contains(t, nodes[1].summary+"\n"+nodes[1].envelope, expectedSecond)
-				require.Contains(t, nodes[2].summary+"\n"+nodes[2].envelope, expectedFirst)
-			} else {
-				require.Equal(t, firstID, nodes[1].id)
-				require.Equal(t, secondID, nodes[2].id)
-				require.Contains(t, nodes[1].summary+"\n"+nodes[1].envelope, expectedFirst)
-				require.Contains(t, nodes[2].summary+"\n"+nodes[2].envelope, expectedSecond)
+			nodes, outputs, err := a.BatchResult(ctx, sess.ID, root)
+			require.NoError(t, err)
+			outcomes := batchCLINodeOutcomes(t, a, root)
+			require.Len(t, outcomes, 3)
+			require.Equal(t, string(jobbatch.StateCompleted), outcomes[1].state)
+			require.Equal(t, string(jobbatch.StateCompleted), outcomes[2].state)
+			leaves := make(map[string]db.BatchNode, 2)
+			for _, node := range nodes {
+				if node.Kind == "task" {
+					leaves[node.NodeID] = node
+				}
 			}
+			require.Len(t, leaves, 2)
+			require.Contains(t, outputs, outcomes[1].id)
+			require.Contains(t, outputs, outcomes[2].id)
+			require.Equal(t, string(jobbatch.StateCompleted), leaves[outcomes[1].id].State)
+			require.Equal(t, string(jobbatch.StateCompleted), leaves[outcomes[2].id].State)
+			require.Contains(t, outputs[outcomes[1].id], expectedFirst)
+			require.Contains(t, outputs[outcomes[2].id], expectedSecond)
+			require.NoError(t, a.BatchRelease(ctx, sess.ID, root))
+			_, _, err = a.BatchResult(ctx, sess.ID, root)
+			require.Error(t, err, "Runner release drops the execution handle")
 		})
 	}
 }

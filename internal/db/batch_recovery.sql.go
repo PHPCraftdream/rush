@@ -192,7 +192,7 @@ func (q *Queries) BatchRecoveryNotice(ctx context.Context, arg BatchRecoveryNoti
 const batchRecoveryRoots = `-- name: BatchRecoveryRoots :many
 SELECT r.node_id, r.root_id, r.owner_session_id, r.host_id, r.parent_id, r.ordinal, r.kind, r.tool_call_id, r.input_hash, r.announced, r.announce_message_id, r.origin_cli, r.mode, r.on_fail, r.notify, r.max_parallel, r.task_kind, r.task_group, r.task_payload, r.timeout_ns, r.child_session_id, r.state, r.cause, r.token, r.attempts, r.control_state, r.control_error, r.control_pending, r.outcome_state, r.outcome_code, r.outcome_summary, r.response_envelope_ref, r.root_sequence, r.projection_sequence, r.notice_selected, r.notice_kind, r.notice_state, r.notice_cause, r.notice_sequence, r.notice_ordinal, r.notice_pending, r.notice_active, r.notice_completed, r.notice_failed, r.notice_cancelled, r.notice_timed_out, r.notice_interrupted, r.notice_skipped, r.delivery, r.notice_message_id, r.wake, r.reacted, r.wake_attempts, r.reacted_failed, r.created_at, r.updated_at, r.runner_id, r.response_envelope FROM batch_nodes r
 WHERE r.node_id = r.root_id
-  AND (r.announced = 0 OR EXISTS (
+  AND ((r.announced = 0 AND r.origin_cli = 0) OR EXISTS (
     SELECT 1 FROM batch_nodes n WHERE n.root_id = r.root_id
       AND n.state IN ('pending', 'starting', 'running', 'cancelling'))
     OR EXISTS (SELECT 1 FROM batch_control_requests c WHERE c.root_id = r.root_id AND c.status = 'pending'))

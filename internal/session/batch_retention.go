@@ -7,7 +7,18 @@ import (
 	"github.com/PHPCraftdream/rush/internal/db"
 )
 
-// BatchCountExpired counts whole roots, never individual descendant rows.
+// BatchSettleCLIWakeDebt settles wake debt after the CLI has delivered the
+// terminal result to its caller. CLI notices are not consumed by the interactive
+// reaction channel, so the owning CLI result path must close this debt.
+func (s *BatchStore) BatchSettleCLIWakeDebt(ctx context.Context, owner, root string) error {
+	_, err := s.writer.ExecContext(ctx, `UPDATE batch_nodes SET delivery = 'done', wake = 0, reacted = 1, updated_at = ?
+WHERE owner_session_id = ? AND root_id = ? AND notice_selected = 1
+  AND delivery = 'pending' AND EXISTS (
+    SELECT 1 FROM batch_nodes r WHERE r.node_id = batch_nodes.root_id AND r.origin_cli = 1
+  )`, time.Now().Unix(), owner, root)
+	return err
+}
+
 // Use the same explicit cutoff for dry-run and purge to avoid clock drift.
 func (s *BatchStore) BatchCountExpired(ctx context.Context, cutoff int64) (int64, error) {
 	roots, err := db.New(s.writer).BatchRetentionRoots(ctx, cutoff)

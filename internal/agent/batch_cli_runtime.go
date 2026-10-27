@@ -154,6 +154,41 @@ func (i *BatchInstall) RetainCLIConstruction(root jobbatch.ID, release func()) e
 	return nil
 }
 
+func (i *BatchInstall) CLIOutput(ctx context.Context, owner string, root, node jobbatch.ID) (jobbatch.OutputChunk, error) {
+	if i == nil || i.RunnerHandle == nil || i.Runner == nil || i.CLIOwner(root) != owner {
+		return jobbatch.OutputChunk{}, errors.New("batch CLI: root is not owned by this session")
+	}
+	chunk, err := i.Runner.Output(ctx, node, 0)
+	if err == nil {
+		return chunk, nil
+	}
+	if !errors.Is(err, jobbatch.ErrReleased) {
+		return jobbatch.OutputChunk{}, err
+	}
+	cached, _, _, _, ok := i.OutputCache.readWithMetadata(node, 0)
+	if !ok {
+		return jobbatch.OutputChunk{}, errors.New("batch CLI: output expired or evicted")
+	}
+	return cached, nil
+}
+
+func (i *BatchInstall) ReleaseCLIAfterResult(root jobbatch.ID) error {
+	if i == nil || i.RunnerHandle == nil || i.Runner == nil {
+		return errors.New("batch CLI: runtime unavailable")
+	}
+	batch := i.RunnerHandle.batchFor(root)
+	if batch == nil {
+		return errors.New("batch CLI: root is not owned by this installed Runner")
+	}
+	if _, err := batch.Wait(context.Background()); err != nil {
+		return err
+	}
+	if err := i.Runner.Release(context.Background(), root); err != nil && !errors.Is(err, jobbatch.ErrReleased) {
+		return err
+	}
+	return nil
+}
+
 func (i *BatchInstall) WaitCLI(ctx context.Context, root jobbatch.ID) (jobbatch.Summary, error) {
 	if i == nil || i.RunnerHandle == nil {
 		return jobbatch.Summary{}, errors.New("batch CLI: runtime unavailable")

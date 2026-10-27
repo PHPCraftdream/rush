@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
 )
@@ -59,7 +60,7 @@ func TestR9RetentionWholeRootsDebtLiveDelegation(t *testing.T) {
 			require.Equal(t, want, count)
 			purged, err := a.BatchPurgeExpired(ctx, 100)
 			require.NoError(t, err)
-			require.Equal(t, count, purged)
+			require.EqualValues(t, 1, purged)
 			_, err = a.Read(ctx, "owner", snap.Root.RootID)
 			if want == 1 {
 				require.ErrorIs(t, err, sql.ErrNoRows)
@@ -73,6 +74,35 @@ func TestR9RetentionWholeRootsDebtLiveDelegation(t *testing.T) {
 			require.Equal(t, history.ID, got.ID)
 		})
 	}
+}
+
+func TestR9RetentionSettledCLIWakeDebtExpires(t *testing.T) {
+	a, _, conn, _, ctx := r9Stores(t)
+	runner, executor, runCtx := commitHookRunner(t, NewBatchCommitHook(a, BatchCommitIdentity{Host: "host", Runner: "runner", Owner: "owner"}))
+	batch := commitHookSubmit(t, runCtx, runner, "cli-retention", jobbatch.OneItem(jobbatch.TaskSpec{Kind: "retention"}), "batch-cli:retention")
+	attempt := commitHookAccept(t, runCtx, runner, executor, nil)
+	commitHookFinish(t, runCtx, runner, attempt, jobbatch.Result{State: jobbatch.StateCompleted})
+	commitHookWait(t, runCtx, batch)
+	root := "cli-retention"
+	var children int
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT count(*) FROM batch_nodes WHERE root_id=?`, root).Scan(&children))
+	require.Equal(t, 2, children)
+	var pending int
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT count(*) FROM batch_nodes WHERE root_id=? AND notice_selected=1 AND wake=1 AND delivery='pending'`, root).Scan(&pending))
+	require.Equal(t, 1, pending)
+	count, err := a.BatchCountExpired(ctx, 1<<62)
+	require.NoError(t, err)
+	require.Zero(t, count)
+	purged, err := a.BatchPurgeExpired(ctx, 1<<62)
+	require.NoError(t, err)
+	require.Zero(t, purged)
+	require.NoError(t, a.BatchSettleCLIWakeDebt(ctx, "owner", root))
+	count, err = a.BatchCountExpired(ctx, 1<<62)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, count)
+	purged, err = a.BatchPurgeExpired(ctx, 1<<62)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, purged)
 }
 
 func TestR9OwnerCascade(t *testing.T) {

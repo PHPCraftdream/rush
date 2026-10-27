@@ -86,6 +86,7 @@ type BatchReservationNode struct {
 type BatchReservation struct {
 	Owner, Host, RunnerID, RootID, ToolCallID, InputHash string
 	Sequence                                             int64
+	OriginCLI                                            bool
 	Root                                                 BatchReservationNode
 	Updates                                              []db.ProjectBatchNodeParams
 	Notices                                              []db.SelectBatchNodeNoticeParams
@@ -156,7 +157,7 @@ func (s *BatchStore) ReserveIdentity(ctx context.Context, p BatchReservation) (B
 		if root = p.RootID; root == "" {
 			root = uuid.NewString()
 		}
-		if err = batchInsertTree(ctx, q, p.Root, p.Owner, p.Host, p.RunnerID, root, root, "", 0, p.Sequence, p.ToolCallID, p.InputHash); err != nil {
+		if err = batchInsertTree(ctx, q, p.Root, p.Owner, p.Host, p.RunnerID, root, root, "", 0, p.Sequence, p.ToolCallID, p.InputHash, p.OriginCLI); err != nil {
 			return BatchReservationResult{}, err
 		}
 	}
@@ -180,7 +181,7 @@ func (s *BatchStore) ReserveIdentity(ctx context.Context, p BatchReservation) (B
 	return BatchReservationResult{Snapshot: snapshot, Attached: attached}, nil
 }
 
-func batchInsertTree(ctx context.Context, q *db.Queries, spec BatchReservationNode, owner, host, runner, root, node, parent string, ordinal, sequence int64, call, hash string) error {
+func batchInsertTree(ctx context.Context, q *db.Queries, spec BatchReservationNode, owner, host, runner, root, node, parent string, ordinal, sequence int64, call, hash string, originCLI bool) error {
 	v := spec.Values
 	v.NodeID, v.RootID, v.OwnerSessionID, v.HostID, v.RunnerID = node, root, owner, host, runner
 	v.ParentID = sql.NullString{String: parent, Valid: parent != ""}
@@ -189,13 +190,16 @@ func batchInsertTree(ctx context.Context, q *db.Queries, spec BatchReservationNo
 	if parent == "" {
 		v.RootSequence = sequence
 		v.ToolCallID, v.InputHash = sql.NullString{String: call, Valid: true}, sql.NullString{String: hash, Valid: true}
+		if originCLI {
+			v.OriginCli = 1
+		}
 	}
 	v.CreatedAt, v.UpdatedAt = time.Now().Unix(), time.Now().Unix()
 	if _, err := q.ReserveBatchNode(ctx, v); err != nil {
 		return err
 	}
 	for i, child := range spec.Children {
-		if err := batchInsertTree(ctx, q, child, owner, host, runner, root, fmt.Sprintf("%s.%d", node, i+1), node, int64(i+1), sequence, "", ""); err != nil {
+		if err := batchInsertTree(ctx, q, child, owner, host, runner, root, fmt.Sprintf("%s.%d", node, i+1), node, int64(i+1), sequence, "", "", false); err != nil {
 			return err
 		}
 	}
@@ -280,7 +284,7 @@ func batchProjectRoot(ctx context.Context, q *db.Queries, host, runner string, p
 		if parent.HostID != host || parent.Kind != "batch" || !batchStateLive(parent.State) {
 			return ErrBatchProjectionConflict
 		}
-		if err := batchInsertTree(ctx, q, a.Node, p.Owner, host, runner, p.Root, fmt.Sprintf("%s.%d", a.Parent, a.Ordinal), a.Parent, a.Ordinal, sequence, "", ""); err != nil {
+		if err := batchInsertTree(ctx, q, a.Node, p.Owner, host, runner, p.Root, fmt.Sprintf("%s.%d", a.Parent, a.Ordinal), a.Parent, a.Ordinal, sequence, "", "", false); err != nil {
 			return err
 		}
 	}

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
@@ -85,6 +86,54 @@ func (a *App) BatchSubmit(ctx context.Context, owner string, spec jobbatch.Spec)
 		return "", err
 	}
 	return string(batch.ID()), nil
+}
+
+func (a *App) BatchRelease(ctx context.Context, owner, root string) error {
+	if a == nil || a.batchInstall == nil || a.batchInstall.CLIOwner(jobbatch.ID(root)) != owner {
+		return errors.New("batch CLI: root is not owned by this session")
+	}
+	fac, err := a.BatchCLIStore()
+	if err != nil {
+		return err
+	}
+	if err = fac.Store.BatchSettleCLIWakeDebt(ctx, owner, root); err != nil {
+		return err
+	}
+	return a.batchInstall.ReleaseCLIAfterResult(jobbatch.ID(root))
+}
+
+func (a *App) BatchResult(ctx context.Context, owner, root string) ([]db.BatchNode, map[string]string, error) {
+	if a == nil || a.batchInstall == nil {
+		return nil, nil, errors.New("batch runtime unavailable")
+	}
+	if a.batchInstall.CLIOwner(jobbatch.ID(root)) != owner {
+		return nil, nil, errors.New("batch CLI: root is not owned by this session")
+	}
+	fac, err := a.BatchCLIStore()
+	if err != nil {
+		return nil, nil, err
+	}
+	snapshot, err := fac.Store.Read(ctx, owner, root)
+	if err != nil {
+		return nil, nil, err
+	}
+	outputs := make(map[string]string, len(snapshot.Nodes))
+	for _, node := range snapshot.Nodes {
+		if node.Kind != "task" {
+			continue
+		}
+		chunk, outputErr := a.batchInstall.CLIOutput(ctx, owner, jobbatch.ID(root), jobbatch.ID(node.NodeID))
+		if outputErr != nil {
+			if errors.Is(outputErr, jobbatch.ErrNotStarted) {
+				continue
+			}
+			return nil, nil, fmt.Errorf("batch CLI output for %s: %w", node.NodeID, outputErr)
+		}
+		if len(chunk.Data) > 0 {
+			outputs[node.NodeID] = string(chunk.Data)
+		}
+	}
+	return snapshot.Nodes, outputs, nil
 }
 
 func (a *App) BatchWait(ctx context.Context, owner, root string) (db.BatchNode, error) {
