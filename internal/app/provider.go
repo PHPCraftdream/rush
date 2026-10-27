@@ -108,25 +108,29 @@ func (app *App) ResolveModel(modelStr string) (provider, modelID string, known b
 	if fErr != nil {
 		return "", "", false, fErr
 	}
-	m, vErr := validateMatches(matches, modelStr, "model")
+	m, vErr := validateMatches(matches, modelStr, "")
 	if vErr != nil {
 		return "", "", false, vErr
 	}
 	return m.provider, m.modelID, m.known, nil
 }
 
-// Validate and return a single match.
+// Validate and return a single match. label names the slot ("smart",
+// "fast") or is empty.
 func validateMatches(matches []modelMatch, modelID, label string) (modelMatch, error) {
+	if label != "" {
+		label += " "
+	}
 	switch {
 	case len(matches) == 0:
-		return modelMatch{}, fmt.Errorf("%s model %q not found", label, modelID)
+		return modelMatch{}, fmt.Errorf("%smodel %q not found", label, modelID)
 	case len(matches) > 1:
 		names := make([]string, len(matches))
 		for i, m := range matches {
 			names[i] = m.provider
 		}
 		return modelMatch{}, fmt.Errorf(
-			"%s model: model %q found in multiple providers: %s. Please specify provider using 'provider/model' format",
+			"%smodel %q found in multiple providers: %s. Please specify provider using 'provider/model' format",
 			label,
 			modelID,
 			xstrings.EnglishJoin(names, true),
