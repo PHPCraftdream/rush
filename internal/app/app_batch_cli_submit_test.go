@@ -109,8 +109,14 @@ func TestAppBatchSubmitRunCommandParallelAndSequential(t *testing.T) {
 			require.Contains(t, outputs[outcomes[1].id], expectedFirst)
 			require.Contains(t, outputs[outcomes[2].id], expectedSecond)
 			require.NoError(t, a.BatchRelease(ctx, sess.ID, root))
-			_, _, err = a.BatchResult(ctx, sess.ID, root)
-			require.Error(t, err, "Runner release drops the execution handle")
+			// After release the outcomes still report; output comes from the
+			// cache while it lasts and is omitted once evicted.
+			released, releasedOutputs, err := a.BatchResult(ctx, sess.ID, root)
+			require.NoError(t, err)
+			require.Len(t, released, len(nodes))
+			for id, out := range releasedOutputs {
+				require.Equal(t, outputs[id], out)
+			}
 		})
 	}
 }

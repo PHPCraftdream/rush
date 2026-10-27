@@ -154,6 +154,10 @@ func (i *BatchInstall) RetainCLIConstruction(root jobbatch.ID, release func()) e
 	return nil
 }
 
+// ErrBatchCLIOutputExpired reports that a released leaf's output is no
+// longer cached; its persisted outcome is still valid.
+var ErrBatchCLIOutputExpired = errors.New("batch CLI: output expired or evicted")
+
 func (i *BatchInstall) CLIOutput(ctx context.Context, owner string, root, node jobbatch.ID) (jobbatch.OutputChunk, error) {
 	if i == nil || i.RunnerHandle == nil || i.Runner == nil || i.CLIOwner(root) != owner {
 		return jobbatch.OutputChunk{}, errors.New("batch CLI: root is not owned by this session")
@@ -167,7 +171,7 @@ func (i *BatchInstall) CLIOutput(ctx context.Context, owner string, root, node j
 	}
 	cached, _, _, _, ok := i.OutputCache.readWithMetadata(node, 0)
 	if !ok {
-		return jobbatch.OutputChunk{}, errors.New("batch CLI: output expired or evicted")
+		return jobbatch.OutputChunk{}, ErrBatchCLIOutputExpired
 	}
 	return cached, nil
 }

@@ -124,7 +124,9 @@ func (a *App) BatchResult(ctx context.Context, owner, root string) ([]db.BatchNo
 		}
 		chunk, outputErr := a.batchInstall.CLIOutput(ctx, owner, jobbatch.ID(root), jobbatch.ID(node.NodeID))
 		if outputErr != nil {
-			if errors.Is(outputErr, jobbatch.ErrNotStarted) {
+			// Never started, or released and no longer cached: the outcome
+			// still reports, without output.
+			if errors.Is(outputErr, jobbatch.ErrNotStarted) || errors.Is(outputErr, agent.ErrBatchCLIOutputExpired) {
 				continue
 			}
 			return nil, nil, fmt.Errorf("batch CLI output for %s: %w", node.NodeID, outputErr)
