@@ -37,6 +37,16 @@ Historical transcript display and presentation promises remain; no signoff
 reductions are implied. Detailed rollout is also summarized in the
 [README](../README.md#batch-runtime-rollout-and-data).
 
+## CLI batch run
+
+`rush batch run -f spec.json` (or stdin) accepts a minimal external schema:
+`{ "mode": "parallel", "items": [ { "tool": "run_command", "input": { "program": "go", "args": ["version"] } } ] }`.
+Omitted `mode` is parallel; `on_fail` is only valid on `mode: "sequential"`
+(defaulting to `stop` there) and a nonempty `on_fail` on a parallel batch is
+rejected naming the field. Each item is a task (`tool` + `input`) or a nested
+batch. Tools resolve only in the pinned coder toolset of the owning process;
+submission requires an owning runtime in the same process.
+
 ## Layout and ownership
 
 The standalone engine, laboratory and `batchlab` remain as documented below;
