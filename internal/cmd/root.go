@@ -339,6 +339,8 @@ func Execute() {
 	// config/path resolution anywhere in the command tree.
 	applyGlobalDir(globalDirFlagFromArgs(os.Args[1:]))
 	journalExecutionStarted()
+	// Every subcommand is registered by now (package init has run).
+	guardUnknownSubcommands(rootCmd)
 
 	options := []fang.Option{
 		// Fork patch: show the fork's own release-line version (not

@@ -9,6 +9,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 - The `opus` model atom (`rush models use opus-<effort>`) now runs Claude Opus 5.5 instead of Opus 4.8; `opus48` keeps the 4.8 pin.
+- An unknown subcommand of a command group (e.g. `rush sessions lsit`) now fails with an error and a suggestion instead of printing help and exiting 0.
 - Invalid or legacy settings locks now fail closed with a recovery hint naming the active file; remove `sync_rev` manually and run `rush lock` again.
 - `rush batch run` rejects parallel `on_fail` (leaving the omitted default empty) and keeps each owning construction registry through accepted root completion; unsupported caller-supplied disk providers fail explicitly.
 - Session/queue CLI output no longer cuts multibyte titles and previews mid-rune (e.g. a Russian title rendering as `в сооб\uFFFD…`): user-visible truncation (`truncate`, `truncatePreview`, stall summaries, show purpose) now cuts by display cell width with an ellipsis tail, so Cyrillic, CJK wide runes and emoji stay valid UTF-8 and table columns hold.
