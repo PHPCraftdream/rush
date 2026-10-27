@@ -62,11 +62,8 @@ func TestParseAtom_AnthropicWithLevel(t *testing.T) {
 	sm, err := parseAtom("opus-high")
 	require.NoError(t, err)
 	assert.Equal(t, "local-cli", sm.Provider)
-	// `opus` is now an alias for the latest pinned Opus version (4.8).
-	// Earlier atoms pointed at the legacy "cli-claude-opus" alias entry;
-	// we kept the registry pointing at the pinned id so newly-created
-	// sessions track the freshest generation.
-	assert.Equal(t, "cli-claude-opus-4-8", sm.Model)
+	// `opus` pins the top Opus generation (5.5), not the CLI alias (4.8).
+	assert.Equal(t, "cli-claude-opus-5-5", sm.Model)
 	assert.Equal(t, "high", sm.ReasoningEffort)
 }
 
@@ -225,7 +222,7 @@ func TestParseAtomOrRaw_AtomWinsOverFallback(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, called, "resolver must NOT be called when atom matches")
 	assert.Equal(t, "local-cli", sm.Provider)
-	assert.Equal(t, "cli-claude-opus-4-8", sm.Model)
+	assert.Equal(t, "cli-claude-opus-5-5", sm.Model)
 	assert.True(t, known, "atoms are always known")
 }
 
@@ -255,10 +252,7 @@ func TestParseAtomOrRaw_UnverifiedPassthroughReportsUnknown(t *testing.T) {
 
 func TestLookupAtomForModel(t *testing.T) {
 	k := lookupAtomForModel(config.SelectedModel{Provider: "local-cli", Model: "cli-claude-opus-4-8"})
-	// Both "opus" (alias to latest) and "opus48" (explicit pin) resolve to
-	// the same underlying model id; lookupAtomForModel returns whichever
-	// key the registry walk reaches first, so accept either.
-	assert.Contains(t, []string{"opus", "opus48"}, k)
+	assert.Equal(t, "opus48", k)
 	k2 := lookupAtomForModel(config.SelectedModel{Provider: "zai", Model: "glm-5-turbo"})
 	assert.Equal(t, "glm5_turbo", k2)
 	k3 := lookupAtomForModel(config.SelectedModel{Provider: "openai", Model: "gpt-5"})

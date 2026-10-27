@@ -117,7 +117,7 @@ var zai53ReasoningLevels = discover.GLM53ReasoningLevels
 var zaiBooleanThinkingLevels = []string{"off", "on"}
 
 var atomRegistry = map[string]atom{
-	"opus":   {Provider: "local-cli", Model: "cli-claude-opus-4-8", DisplayName: "Claude Opus 4.8", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
+	"opus":   {Provider: "local-cli", Model: "cli-claude-opus-5-5", DisplayName: "Claude Opus 5.5", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
 	"opus46": {Provider: "local-cli", Model: "cli-claude-opus-4-6", DisplayName: "Claude Opus 4.6", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
 	"opus47": {Provider: "local-cli", Model: "cli-claude-opus-4-7", DisplayName: "Claude Opus 4.7", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
 	"opus48": {Provider: "local-cli", Model: "cli-claude-opus-4-8", DisplayName: "Claude Opus 4.8", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
@@ -131,7 +131,8 @@ var atomRegistry = map[string]atom{
 	"fable":  {Provider: "local-cli", Model: "cli-claude-fable", DisplayName: "Claude Fable (latest)", Group: "anthropic", EffortSource: claudeEffortSource},
 	// Pinned Claude 5 entries. `opus5`/`sonnet5` use the CLI's `[1m]`
 	// context-window form (verified 1M vs 200k for the bare id); no alias
-	// reaches Opus 5 at all, `opus` still resolves to 4.8.
+	// reaches Opus 5 at all. The CLI `opus` alias still resolves to 4.8, so
+	// the `opus` atom pins the top generation (5.5) instead of using it.
 	"opus5":   {Provider: "local-cli", Model: "cli-claude-opus-5-1m", DisplayName: "Claude Opus 5 (1M)", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
 	"sonnet5": {Provider: "local-cli", Model: "cli-claude-sonnet-5-1m", DisplayName: "Claude Sonnet 5 (1M)", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
 	"fable5":  {Provider: "local-cli", Model: "cli-claude-fable-5", DisplayName: "Claude Fable 5", Group: "anthropic", EffortSource: claudeEffortSource},
