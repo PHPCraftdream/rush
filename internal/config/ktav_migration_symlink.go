@@ -1,7 +1,7 @@
 // Ktav migration for symlinked legacy configs: dotfiles managers keep
 // rush.json as a symbolic link into a versioned repository. The physical
 // target is the backup, so the migration publishes rush.ktav beside the
-// LINK path (never touching the target) and then removes only the link.
+// LINK path and leaves both the link and its target untouched.
 package config
 
 import (
@@ -50,8 +50,7 @@ func runKtavSymlinkMigrationState(ctx context.Context, legacy, recordPath, worki
 
 // finishKtavSymlinkMigration recovers a symlink migration whose record
 // (Symlink: true) and published rush.ktav already exist: verify the
-// digests, remove the link (never the physical target), retire the
-// record, and log once. Crash points: record + ktav + link, or record +
+// digests, retire the record, and log once; the link is kept. Crash points: record + ktav + link, or record +
 // ktav with the link already removed.
 func finishKtavSymlinkMigration(ctx context.Context, legacy, recordPath, ktavPath string, record *ktavMigrationRecord, workingDir string) error {
 	owner, enforce, err := ownerPolicyForMigration(legacy, workingDir)
@@ -78,19 +77,12 @@ func finishKtavSymlinkMigration(ctx context.Context, legacy, recordPath, ktavPat
 		if _, err := hex.Decode(want[:], []byte(record.SourceDigest)); err != nil || fp.digest != want || !sameBytesFingerprint(data, want) || fmt.Sprintf("%v", fp.identity) != record.SourceID || fmt.Sprintf("%v", fp.parentIdentity) != record.ParentID {
 			return fmt.Errorf("%w: migration record does not match source %s", errKtavMigrationConflict, filepath.Base(legacy))
 		}
-		// Removing the link path only ever removes the symbolic link;
-		// the physical target in the dotfiles repository is preserved.
-		if err := os.Remove(legacy); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("ktav migration: failed to remove symbolic link %s: %w", legacy, err)
-		}
-		if err := syncConfigParent(filepath.Dir(legacy)); err != nil {
-			return err
-		}
+		// The link is kept, like a regular legacy JSON, for older binaries.
 	}
 	if err := removeKtavMigrationRecord(recordPath); err != nil {
 		return err
 	}
-	slog.Info("Ktav migration: legacy symlinked config migrated; the symbolic link was removed and its target was left untouched", "ktav", ktavPath, "link", legacy)
+	slog.Info("Ktav migration: legacy symlinked config migrated; the symbolic link and its target were left untouched", "ktav", ktavPath, "link", legacy)
 	return nil
 }
 
@@ -197,14 +189,6 @@ func migrateKtavSymlinkedConfig(ctx context.Context, legacy, recordPath, working
 	if err := ktavMigrationCheckContext(ctx, "after-publish"); err != nil {
 		return err
 	}
-	if isKtavSymlinkPath(legacy) {
-		if err := os.Remove(legacy); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("ktav migration: failed to remove symbolic link %s: %w", legacy, err)
-		}
-		if err := syncConfigParent(filepath.Dir(legacy)); err != nil {
-			return err
-		}
-	}
-	slog.Info("Ktav migration: legacy symlinked config migrated; the symbolic link was removed and its target was left untouched", "ktav", ktavPath, "link", legacy)
+	slog.Info("Ktav migration: legacy symlinked config migrated; the symbolic link and its target were left untouched", "ktav", ktavPath, "link", legacy)
 	return removeKtavMigrationRecord(recordPath)
 }

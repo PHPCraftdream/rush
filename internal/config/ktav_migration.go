@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -177,11 +178,11 @@ func runKtavMigrationStateLocked(ctx context.Context, legacy, workingDir string)
 			return err
 		}
 		return fmt.Errorf("%w: %s and its migration record exist but source and backup are gone", errKtavMigrationConflict, filepath.Base(ktavPath))
-	case state.jsonExists && state.backupExists:
-		return fmt.Errorf("%w: unexpected backup %s beside active %s; preserve every file and resolve manually", errKtavMigrationConflict, filepath.Base(backup), filepath.Base(legacy))
 	case state.ktavExists && state.jsonExists:
 		if !state.recordExists {
-			return fmt.Errorf("%w: Ktav and JSON coexist without an authenticated migration record", errKtavMigrationConflict)
+			// The migration keeps the legacy JSON: Ktav is the active
+			// generation and the JSON stays for older binaries.
+			return nil
 		}
 		record, err := loadKtavMigrationRecord(recordPath, legacy, ktavPath, workingDir)
 		if err != nil {
@@ -208,9 +209,6 @@ func runKtavMigrationTransaction(ctx context.Context, legacy, backup, recordPath
 		if err != nil {
 			return err
 		}
-	}
-	if state.backupExists {
-		return fmt.Errorf("%w: backup %s already exists", errKtavMigrationConflict, filepath.Base(backup))
 	}
 	owner, enforce, err := ownerPolicyForMigration(legacy, workingDir)
 	if err != nil {
@@ -358,12 +356,9 @@ func finishKtavArchival(ctx context.Context, legacy, dest, backup, recordPath st
 	if _, err := hex.Decode(want[:], []byte(record.SourceDigest)); err != nil || currentFP.digest != want || !sameBytesFingerprint(current, want) || fmt.Sprintf("%v", currentFP.identity) != record.SourceID || fmt.Sprintf("%v", currentFP.parentIdentity) != record.ParentID {
 		return fmt.Errorf("%w: %s changed after Ktav publication; the JSON stays active", errKtavMigrationConflict, filepath.Base(legacy))
 	}
-	if err := archiveKtavBackup(ctx, legacy, backup, currentFP, owner, enforce); err != nil {
-		if errors.Is(err, errKtavMigrationConflict) {
-			return err
-		}
-		return fmt.Errorf("ktav migration: failed to archive %s: %w", legacy, err)
-	}
+	// The legacy JSON is kept in place (not archived) so older binaries
+	// that only read JSON keep working; Ktav is the active generation.
+	slog.Info("Ktav migration: legacy JSON kept beside the new Ktav generation", "json", legacy, "ktav", dest)
 	if err := runKtavMigrationStep("after-archive"); err != nil {
 		return err
 	}
@@ -435,7 +430,7 @@ func verifyKtavGenerations(record *ktavMigrationRecord, legacy, dest string, own
 			return fmt.Errorf("%w: migration record does not match source %s", errKtavMigrationConflict, filepath.Base(legacy))
 		}
 	}
-	if state.backupExists {
+	if state.backupExists && !state.jsonExists {
 		data, fp, err := readStableConfigFileOwned(backupPathFor(legacy), owner, enforceOwner)
 		if err != nil {
 			return fmt.Errorf("%w: cannot verify backup %s: %v", errKtavMigrationRecord, filepath.Base(backupPathFor(legacy)), err)
