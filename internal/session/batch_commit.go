@@ -120,7 +120,7 @@ func batchCommitSubmit(ctx context.Context, store *BatchStore, id BatchCommitIde
 		Owner: owner, Host: id.Host, RunnerID: id.Runner, RootID: string(e.Root),
 		ToolCallID: e.Ref, InputHash: batchCommitSpecHash(e.Spec),
 		OriginCLI: len(e.Ref) >= len("batch-cli:") && e.Ref[:len("batch-cli:")] == "batch-cli:",
-		Sequence: int64(t.Sequence), Root: root, Notices: notices,
+		Sequence:  int64(t.Sequence), Root: root, Notices: notices,
 		Checkpoint: &db.UpdateBatchRunnerCheckpointParams{
 			HostID: id.Host, RunnerID: id.Runner, Sequence: int64(t.Sequence),
 			EventType: batchCommitCheckpointEvent(t), Final: batchCommitFlag(t.Final),
