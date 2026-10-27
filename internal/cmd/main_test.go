@@ -25,16 +25,25 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/testguard"
 )
 
 func TestMain(m *testing.M) {
+	// Never let a test reach the operator's real global config.
+	cleanup, err := testguard.Isolate()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "TestMain: isolate global state: %v\n", err)
+		os.Exit(1)
+	}
 	restore := config.SetKtavAutoMigrateForTest(false)
 	code := m.Run()
 	restore()
+	cleanup()
 	os.Exit(code)
 }
 
