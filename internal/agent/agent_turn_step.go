@@ -789,7 +789,7 @@ func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 // never re-checked, so a long turn that started before the window opened
 // ran straight through it.
 func (ts *turnStream) recheckPeakHours() error {
-	if ts.a.peakHoursCheck == nil {
+	if ts.a.peakHoursCheck == nil || peakHoursBypassed(ts.call) {
 		return nil
 	}
 	pErr := ts.a.peakHoursCheck()

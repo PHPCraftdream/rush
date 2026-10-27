@@ -39,8 +39,17 @@ type peakHoursWatcher struct {
 	sessionLock *sync.Mutex
 	assistant   **message.Message
 
+	// bypass is the call's --allow-peak-hours: the window was waived for
+	// this call, so the mid-turn poll must not enforce it either.
+	bypass bool
+
 	mu       sync.Mutex
 	abortErr error
+}
+
+// peakHoursBypassed reports whether the call waived the peak-hours window.
+func peakHoursBypassed(call SessionAgentCall) bool {
+	return call.CallOptions != nil && call.CallOptions.AllowPeakHours
 }
 
 func newPeakHoursWatcher(a *sessionAgent, sessionID string, ctx, genCtx context.Context, sessionLock *sync.Mutex, assistant **message.Message) *peakHoursWatcher {
@@ -71,7 +80,7 @@ func (w *peakHoursWatcher) getAbortErr() error {
 // without a separate nil branch.
 func (w *peakHoursWatcher) start() <-chan struct{} {
 	done := make(chan struct{})
-	if w.a.peakHoursCheck == nil {
+	if w.a.peakHoursCheck == nil || w.bypass {
 		close(done)
 		return done
 	}

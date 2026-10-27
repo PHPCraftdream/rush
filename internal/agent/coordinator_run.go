@@ -96,8 +96,11 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 	if providerCfg.ID == "" {
 		return SessionAgentCall{}, errModelProviderNotConfigured
 	}
-	if err := checkPeakHours(providerCfg); err != nil {
-		return SessionAgentCall{}, err
+	// A per-call --allow-peak-hours waives the window here too.
+	if opts := callOptionsFrom(ctx); opts == nil || !opts.AllowPeakHours {
+		if err := checkPeakHours(providerCfg); err != nil {
+			return SessionAgentCall{}, err
+		}
 	}
 
 	mergedOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(sessionID, model, providerCfg)
