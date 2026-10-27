@@ -35,7 +35,7 @@ func restoreCommands(global, local map[config.SelectedModelType]*config.Selected
 	return cmds
 }
 
-// restoreSpec renders m like printEffectiveLine, but an EffortSource atom with
+// restoreSpec renders m like printEffectiveRow, but an EffortSource atom with
 // no stored effort goes raw (`models use <atom>` rejects it without a level).
 func restoreSpec(m config.SelectedModel) string {
 	k := lookupAtomForModel(m)

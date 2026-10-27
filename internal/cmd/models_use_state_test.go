@@ -27,10 +27,12 @@ func TestModelsState_ReportsWorkerAndReviewer(t *testing.T) {
 	out, runErr := runModelsCmd(t, modelsStateCmd)
 	require.NoError(t, runErr)
 
-	assert.Contains(t, out, "worker:")
-	assert.Contains(t, out, "glm-4.7-flash")
-	assert.Contains(t, out, "reviewer:")
-	assert.Contains(t, out, "glm-5.3")
+	workerRow, ok := effectiveRow(out, "worker")
+	require.True(t, ok, "expected a worker row in:\n%s", out)
+	assert.Contains(t, workerRow, "glm-4.7-flash")
+	reviewerRow, ok := effectiveRow(out, "reviewer")
+	require.True(t, ok, "expected a reviewer row in:\n%s", out)
+	assert.Contains(t, reviewerRow, "glm-5.3")
 }
 
 func TestModelsState_JSONReportsWorkerAndReviewer(t *testing.T) {
@@ -98,17 +100,17 @@ func TestModelsState_ExplicitEffort_TakesPrecedenceOverDefault(t *testing.T) {
 	out, runErr := runModelsCmd(t, modelsStateCmd)
 	require.NoError(t, runErr)
 
-	smartLine, ok := lineContaining(out, "smart:")
-	require.True(t, ok, "expected a 'large:' line in output:\n%s", out)
-	assert.Contains(t, smartLine, "effort=on")
+	smartLine, ok := effectiveRow(out, "smart")
+	require.True(t, ok, "expected a smart row in output:\n%s", out)
+	assert.Equal(t, "on", strings.Fields(smartLine)[3], "the EFFORT column holds the explicit effort")
 	assert.NotContains(t, smartLine, "unset ->")
 }
 
-// lineContaining returns the first line of s containing substr, and whether
-// one was found.
-func lineContaining(s, substr string) (string, bool) {
+// effectiveRow returns the EFFECTIVE table row for role: the first line
+// whose first column is role.
+func effectiveRow(s, role string) (string, bool) {
 	for _, line := range strings.Split(s, "\n") {
-		if strings.Contains(line, substr) {
+		if fields := strings.Fields(line); len(fields) > 0 && fields[0] == role {
 			return line, true
 		}
 	}
@@ -330,12 +332,12 @@ func TestModelsState_EndToEnd_FlagsStaleGLM53FlashEffort(t *testing.T) {
 	out, runErr := runModelsCmd(t, modelsStateCmd)
 	require.NoError(t, runErr)
 
-	smartLine, ok := lineContaining(out, "smart:")
-	require.True(t, ok, "expected a 'smart:' line in output:\n%s", out)
-	assert.Contains(t, smartLine, "(STALE:")
+	smartLine, ok := effectiveRow(out, "smart")
+	require.True(t, ok, "expected a smart row in output:\n%s", out)
+	assert.Contains(t, smartLine, "STALE:")
 	assert.Contains(t, smartLine, `"on"`)
 	assert.Contains(t, smartLine, "low|high|max")
-	assert.NotContains(t, smartLine, "atom: glm5_3_flash-on",
+	assert.NotContains(t, smartLine, "glm5_3_flash-on",
 		"must never render a <atom>-<effort> form that `rush models use` would now reject")
 
 	// --json must carry the same fact machine-readably.

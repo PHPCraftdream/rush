@@ -5,6 +5,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -26,13 +27,13 @@ var modelsStateCmd = &cobra.Command{
 	Aliases: []string{"show"}, // backwards-compat: `rush models show` used to exist.
 	Short:   "Show what's currently effective and from which scope",
 	Long: `Print three things:
-  1. EFFECTIVE — the (smart, fast, worker, reviewer) values that
+  1. EFFECTIVE — a table of the (smart, fast, worker, reviewer) values that
      ` + "`rush run --role smart/fast/worker/reviewer`" + ` will actually use, and
      which scope each came from. worker and reviewer are optional; when unset
      in both scopes they print "(not set in any scope)".
-  2. SCOPES — what each scope (global, local) says about each slot, with
-     "(effective)" / "(overridden by local)" / "(not set)" annotations.
-  3. The atom name in parens when the effective model matches a known atom.
+  2. SCOPES — a table of what each scope (global, local) says about each
+     slot, with an "effective" / "overridden by local" / "not set" STATUS.
+  3. The atom name (ATOM column) when the effective model matches a known atom.
   4. For a slot with no explicit effort, the known unset-default (e.g.
      "unset -> thinking on, high" for Z.AI) — silent when undocumented.
   5. RESTORE — copy-pasteable ` + "`rush models use --<role> <spec>`" + ` commands
@@ -138,22 +139,26 @@ rush models show
 		}
 
 		fmt.Println("EFFECTIVE")
-		printEffectiveLine("smart", hasSmart, effSmart, smartScope)
-		printEffectiveLine("fast", hasFast, effFast, fastScope)
-		printEffectiveLine("worker", hasWorker, effWorker, workerScope)
-		printEffectiveLine("reviewer", hasReviewer, effReviewer, reviewerScope)
+		tw := newStateTable()
+		fmt.Fprintln(tw, "  ROLE\tPROVIDER\tMODEL\tEFFORT\tSCOPE\tATOM\tNOTE")
+		printEffectiveRow(tw, "smart", hasSmart, effSmart, smartScope)
+		printEffectiveRow(tw, "fast", hasFast, effFast, fastScope)
+		printEffectiveRow(tw, "worker", hasWorker, effWorker, workerScope)
+		printEffectiveRow(tw, "reviewer", hasReviewer, effReviewer, reviewerScope)
+		tw.flush()
 		fmt.Println()
 		fmt.Println("SCOPES")
-		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		printScopeLine(tw, "global", "smart", globalSmart, localSmart, "global")
-		printScopeLine(tw, "global", "fast", globalFast, localFast, "global")
-		printScopeLine(tw, "global", "worker", globalWorker, localWorker, "global")
-		printScopeLine(tw, "global", "reviewer", globalReviewer, localReviewer, "global")
-		printScopeLine(tw, "local", "smart", localSmart, globalSmart, "local")
-		printScopeLine(tw, "local", "fast", localFast, globalFast, "local")
-		printScopeLine(tw, "local", "worker", localWorker, globalWorker, "local")
-		printScopeLine(tw, "local", "reviewer", localReviewer, globalReviewer, "local")
-		tw.Flush()
+		tw = newStateTable()
+		fmt.Fprintln(tw, "  SCOPE\tROLE\tPROVIDER\tMODEL\tEFFORT\tSTATUS\tNOTE")
+		printScopeRow(tw, "global", "smart", globalSmart, localSmart)
+		printScopeRow(tw, "global", "fast", globalFast, localFast)
+		printScopeRow(tw, "global", "worker", globalWorker, localWorker)
+		printScopeRow(tw, "global", "reviewer", globalReviewer, localReviewer)
+		printScopeRow(tw, "local", "smart", localSmart, globalSmart)
+		printScopeRow(tw, "local", "fast", localFast, globalFast)
+		printScopeRow(tw, "local", "worker", localWorker, globalWorker)
+		printScopeRow(tw, "local", "reviewer", localReviewer, globalReviewer)
+		tw.flush()
 		fmt.Println()
 		fmt.Println("RESTORE (run these to re-create this state)")
 		if len(restore) == 0 {
@@ -211,34 +216,66 @@ func nilOrStaleEffort(has bool, m config.SelectedModel) any {
 	return atomRegistry[lookupAtomForModel(m)].Levels()
 }
 
-func printEffectiveLine(label string, has bool, m config.SelectedModel, scope string) {
+// tableDash marks an empty table cell.
+const tableDash = "—"
+
+// stateTable aligns rows into columns and trims the padding an empty last
+// cell leaves at line ends.
+type stateTable struct {
+	buf bytes.Buffer
+	*tabwriter.Writer
+}
+
+func newStateTable() *stateTable {
+	t := &stateTable{}
+	t.Writer = tabwriter.NewWriter(&t.buf, 0, 0, 2, ' ', 0)
+	return t
+}
+
+func (t *stateTable) flush() {
+	_ = t.Flush()
+	for line := range strings.Lines(t.buf.String()) {
+		fmt.Println(strings.TrimRight(line, " \n"))
+	}
+}
+
+func cellOr(v string) string {
+	if v == "" {
+		return tableDash
+	}
+	return v
+}
+
+// printEffectiveRow writes one EFFECTIVE table row: role, provider, model,
+// effort, source scope, matching atom and the effort note.
+func printEffectiveRow(tw *stateTable, role string, has bool, m config.SelectedModel, scope string) {
 	if !has {
-		fmt.Printf("  %s:  (not set in any scope)\n", label)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\n", role, tableDash, tableDash, tableDash, tableDash, tableDash, "not set in any scope")
 		return
 	}
-	atomLabel := ""
+	atom := ""
 	if k := lookupAtomForModel(m); k != "" {
 		// The "<atom>-<effort>" form is only printed when that exact string
 		// would still be accepted by `rush models use`. A stale effort (see
 		// staleEffortNote) falls back to the bare atom key so the output
 		// never suggests a command the CLI now rejects.
+		atom = k
 		if m.ReasoningEffort != "" && staleEffortNote(m) == "" {
-			atomLabel = fmt.Sprintf(" (atom: %s-%s)", k, m.ReasoningEffort)
-		} else {
-			atomLabel = fmt.Sprintf(" (atom: %s)", k)
+			atom = k + "-" + m.ReasoningEffort
 		}
 	}
-	src := scope
-	switch scope {
-	case "global":
-		src = "from GLOBAL"
-	case "local":
-		src = "from LOCAL"
-	default:
-		src = "scope unknown"
+	if scope == "" {
+		scope = "unknown"
 	}
-	fmt.Printf("  %s:  %s/%s%s%s%s   (%s)\n",
-		label, m.Provider, m.Model, effortSuffix(m.ReasoningEffort), atomLabel, effortEffectiveNote(m), src)
+	fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		role, m.Provider, m.Model, cellOr(m.ReasoningEffort), scope, cellOr(atom), effortNoteText(m))
+}
+
+// effortNoteText is effortEffectiveNote without its inline framing, for the
+// NOTE table column.
+func effortNoteText(m config.SelectedModel) string {
+	note := strings.TrimSpace(effortEffectiveNote(m))
+	return strings.TrimSuffix(strings.TrimPrefix(note, "("), ")")
 }
 
 // effortEffectiveNote returns a terse parenthetical (with a leading space,
@@ -305,22 +342,19 @@ func staleEffortNote(m config.SelectedModel) string {
 		m.ReasoningEffort, strings.Join(levels, "|"))
 }
 
-func printScopeLine(tw *tabwriter.Writer, scopeName, slot string, value, other *config.SelectedModel, ownScope string) {
+// printScopeRow writes one SCOPES table row. other is the same role in the
+// other scope: a global value with a local one beside it is overridden.
+func printScopeRow(tw *stateTable, scopeName, role string, value, other *config.SelectedModel) {
 	if value == nil {
-		fmt.Fprintf(tw, "  %s\t%s = —\t(not set)\n", scopeName, slot)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t\n", scopeName, role, tableDash, tableDash, tableDash, "not set")
 		return
 	}
-	annotation := ""
-	switch {
-	case ownScope == "global" && other != nil:
-		annotation = "(overridden by local)"
-	case ownScope == "global":
-		annotation = "(effective)"
-	case ownScope == "local":
-		annotation = "(effective)"
+	status := "effective"
+	if scopeName == "global" && other != nil {
+		status = "overridden by local"
 	}
-	fmt.Fprintf(tw, "  %s\t%s = %s/%s%s%s\t%s\n",
-		scopeName, slot, value.Provider, value.Model, effortSuffix(value.ReasoningEffort), effortEffectiveNote(*value), annotation)
+	fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		scopeName, role, value.Provider, value.Model, cellOr(value.ReasoningEffort), status, effortNoteText(*value))
 }
 
 func init() {
