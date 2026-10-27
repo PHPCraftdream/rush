@@ -184,7 +184,8 @@ func TestR9RecoveryPreservesUnannouncedCLIUntilRetention(t *testing.T) {
 	require.Equal(t, "done", delivery)
 	purged, err := a.BatchPurgeExpired(ctx, 1<<62)
 	require.NoError(t, err)
-	require.EqualValues(t, 2, purged, "purge reports deleted nodes")
+	// Counts delegations like BatchCountExpired; children go by FK cascade.
+	require.EqualValues(t, 1, purged, "purge reports deleted delegations")
 	require.NoError(t, conn.QueryRowContext(ctx, `SELECT count(*) FROM batch_nodes WHERE root_id=?`, root).Scan(&count))
 	require.Zero(t, count)
 }

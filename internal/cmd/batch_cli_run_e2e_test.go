@@ -111,10 +111,31 @@ func batchRunCommandForOutput(output string) string {
 	return batchRunCommandSpec("sh", []string{"-c", "printf " + output})
 }
 
+// batchCLIWorkspaceConfig gives the helper a configured provider: without one
+// the App builds no coordinator and batch run reports the runtime unavailable,
+// so the test must not depend on whatever the CI host happens to configure.
+const batchCLIWorkspaceConfig = `{
+  "providers": {
+    "batch-e2e": {
+      "name": "Batch E2E",
+      "type": "openai",
+      "api_key": "sk-1234567890abcdef",
+      "base_url": "http://127.0.0.1:9/v1",
+      "models": [{"id": "batch-e2e-model"}]
+    }
+  }
+}`
+
 func writeBatchCLISpec(t *testing.T, dir, raw string) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(dir+string(os.PathSeparator)+"spec.json", []byte(raw), 0o600))
+	ws := batchCLIWorkspace(dir)
+	require.NoError(t, os.MkdirAll(ws, 0o700))
+	require.NoError(t, os.WriteFile(ws+string(os.PathSeparator)+"rush.json", []byte(batchCLIWorkspaceConfig), 0o600))
 }
+
+// The workspace is kept apart from the data dir, whose rush.json is app-owned.
+func batchCLIWorkspace(dir string) string { return dir + string(os.PathSeparator) + "ws" }
 
 func runBatchCLIRunSubprocess(t *testing.T, dir string, asJSON bool) batchCLIResult {
 	args := []string{"batch", "run", "-f", dir + string(os.PathSeparator) + "spec.json"}
@@ -126,7 +147,7 @@ func runBatchCLIRunSubprocess(t *testing.T, dir string, asJSON bool) batchCLIRes
 
 func runBatchCLIRunSubprocessArgs(t *testing.T, dir string, args []string) batchCLIResult {
 	t.Helper()
-	encoded, err := json.Marshal(append([]string{"--data-dir", dir, "--cwd", dir}, args...))
+	encoded, err := json.Marshal(append([]string{"--data-dir", dir, "--cwd", batchCLIWorkspace(dir)}, args...))
 	require.NoError(t, err)
 	exe, err := os.Executable()
 	require.NoError(t, err)
@@ -134,9 +155,12 @@ func runBatchCLIRunSubprocessArgs(t *testing.T, dir string, args []string) batch
 	defer cancel()
 	cmd := platform.Command(ctx, exe, "-test.run=^TestBatchCLIRunTextJSONAndConsecutiveRuns$")
 	cmd.Env = append(os.Environ(), batchCLIHelperEnv+"=1", "R14_BATCH_CLI_ARGS="+string(encoded), "RUSH_GLOBAL_DATA="+t.TempDir(), "RUSH_GLOBAL_CONFIG="+t.TempDir())
-	output, runErr := cmd.CombinedOutput()
+	// The envelope is on stdout; startup logs go to stderr and must not mix in.
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, runErr := cmd.Output()
 	var got batchCLIResult
-	require.NoError(t, json.Unmarshal(bytes.TrimSpace(output), &got), fmt.Sprintf("helper output: %s", output))
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(output), &got), fmt.Sprintf("helper output: %s\nstderr: %s", output, stderr.String()))
 	if runErr != nil && got.Error == "" {
 		got.Error = runErr.Error()
 	}
