@@ -3,8 +3,8 @@ package mcp
 // Ktav test gate: the mcp package's tests are overwhelmingly legacy
 // rush.json fixture tests — they write rush.json, then assert rush.json on
 // disk. With Ktav auto-migration active (the shipped default since the
-// activation flip), config.Init renames rush.json to rush.json.bak and
-// mutations land in rush.ktav, so those assertions fail. This init()
+// activation flip), config.Init migrates rush.json to rush.ktav and
+// mutations land there, so those assertions fail. This init()
 // therefore pins the WHOLE package to the pre-activation world
 // (ktavAutoMigrate = false) so every legacy fixture asserts exactly what it
 // asserted before. The restore func is intentionally ignored: the gate stays
@@ -47,13 +47,14 @@ func TestKtavAutoMigrateActiveShippedDefault(t *testing.T) {
 	store := isolatedMCPStore(t)
 	configDir := os.Getenv("RUSH_GLOBAL_CONFIG")
 
-	// Init migrated the legacy global rush.json to Ktav and kept a backup.
+	// Init migrated the legacy global rush.json to Ktav and left the JSON in
+	// place for older builds; no backup is made.
 	_, err := os.Stat(filepath.Join(configDir, "rush.ktav"))
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(configDir, "rush.json"))
-	require.True(t, os.IsNotExist(err), "legacy rush.json must be renamed away once migrated")
+	require.NoError(t, err, "legacy rush.json stays in place after migration")
 	_, err = os.Stat(filepath.Join(configDir, "rush.json.bak"))
-	require.NoError(t, err)
+	require.True(t, os.IsNotExist(err), "no backup: the legacy JSON is kept, not renamed")
 
 	// Mutations land in the Ktav world and never resurrect a legacy rush.json.
 	require.NoError(t, store.SetConfigField(config.ScopeGlobal, "mcp.ktav-default-probe", config.MCPConfig{

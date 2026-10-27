@@ -6,7 +6,7 @@
 // dir, run a CLI command, then read rush.json back / assert raw JSON bytes /
 // assert the "rush.json" file name. With the gate ON (the production default
 // since the Ktav activation), config.Load converts such a seed to rush.ktav
-// (rush.json renamed to rush.json.bak), so every one of those assertions
+// (later reads and writes go to rush.ktav, not rush.json), so every one of those assertions
 // fails without the config itself being wrong. Disabling the gate here puts
 // those tests back in the legacy world they were written for, and each test
 // still asserts exactly what it asserted before.
