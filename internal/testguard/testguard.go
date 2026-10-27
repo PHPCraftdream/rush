@@ -20,10 +20,19 @@ var globalEnv = map[string]string{
 	"RUSH_CACHE_DIR":     "cache",
 }
 
+// rootEnv marks a process whose global state is already isolated. Test
+// binaries re-invoked as child processes inherit it together with the
+// parent's (possibly per-test) paths, which must be kept as they are.
+const rootEnv = "RUSH_TESTGUARD_ROOT"
+
 // Isolate points global Rush state at a fresh temporary root for the whole
 // process and returns a function that removes it. RUSH_GLOBAL_DIR is cleared
-// because it would override the per-path variables.
+// because it would override the per-path variables. In a child of an isolated
+// process the inherited environment is kept and cleanup is a no-op.
 func Isolate() (cleanup func(), err error) {
+	if os.Getenv(rootEnv) != "" {
+		return func() {}, nil
+	}
 	root, err := os.MkdirTemp("", "rush-test-global-*")
 	if err != nil {
 		return nil, err
@@ -43,7 +52,14 @@ func Isolate() (cleanup func(), err error) {
 		_ = os.RemoveAll(root)
 		return nil, err
 	}
-	return func() { _ = os.RemoveAll(root) }, nil
+	if err := os.Setenv(rootEnv, root); err != nil {
+		_ = os.RemoveAll(root)
+		return nil, err
+	}
+	return func() {
+		_ = os.Unsetenv(rootEnv)
+		_ = os.RemoveAll(root)
+	}, nil
 }
 
 // Main runs m with global Rush state isolated and exits with its code.
