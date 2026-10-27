@@ -1,13 +1,11 @@
 package cmd
 
-// Tests for sessionRoleModelOverride and foldRoleModel (task #1060, plan D2):
-// `rush run --role worker` / `--role reviewer` validates against a
-// per-session worker/reviewer override or the config slot, the same
-// precedence resolveSubAgentModelOverride already applies for sub-agent
-// dispatch (internal/agent/coordinator_models.go). The fold no longer
-// copies a model into the smart slot — the coordinator resolves the role's
-// model live per turn — so foldRoleModel only resolves --continue's
-// session and validates that a tier exists.
+// Tests for foldRoleModel (task #1060, plan D2): `rush run --role worker` /
+// `--role reviewer` validates against the configured role slot only — a
+// model stored on the session never satisfies it, because rush run follows
+// settings. The fold no longer copies a model into the smart slot — the
+// coordinator resolves the role's model live per turn — so foldRoleModel
+// only resolves --continue's session and validates that the slot exists.
 
 import (
 	"context"
@@ -20,77 +18,35 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
-// TestSessionRoleModelOverride_EmptySessionID guards the brand-new-run path
-// (no --session / not yet resolved): must return "" so the caller falls
-// back to the config default, never panics on an empty lookup.
-func TestSessionRoleModelOverride_EmptySessionID(t *testing.T) {
-	t.Parallel()
-	conn, q := newTestDB(t)
-	s := session.NewService(q, conn)
-	a := &app.App{Sessions: s}
-
-	got := sessionRoleModelOverride(context.Background(), a, "", config.SelectedModelTypeWorker)
-	require.Equal(t, "", got)
+// roleTestModels configures both role slots, as `rush models use --worker
+// --reviewer` would.
+var roleTestModels = map[config.SelectedModelType]config.SelectedModel{
+	config.SelectedModelTypeWorker:   {Provider: "cfg-prov", Model: "cfg-worker"},
+	config.SelectedModelTypeReviewer: {Provider: "cfg-prov", Model: "cfg-reviewer"},
 }
 
-// TestSessionRoleModelOverride_NoOverrideReturnsEmpty covers a session that
-// never called set_session_models for worker/reviewer: falls back to "",
-// so the caller uses the config default instead of an accidental empty pin.
-func TestSessionRoleModelOverride_NoOverrideReturnsEmpty(t *testing.T) {
+// TestFoldRoleModel_SessionPinDoesNotReplaceConfigSlot: a worker/reviewer
+// model stored on the session no longer satisfies --role; with the slot
+// unconfigured the run fails fast instead of running a stale session model.
+//
+// Revert-check: restoring the session-pin early return in foldRoleModel
+// makes the worker case return no error.
+func TestFoldRoleModel_SessionPinDoesNotReplaceConfigSlot(t *testing.T) {
 	t.Parallel()
 	conn, q := newTestDB(t)
 	s := session.NewService(q, conn)
-	a := &app.App{Sessions: s}
 	ctx := context.Background()
-
-	sess, err := s.Create(ctx, "no override")
-	require.NoError(t, err)
-
-	require.Equal(t, "", sessionRoleModelOverride(ctx, a, sess.ID, config.SelectedModelTypeWorker))
-	require.Equal(t, "", sessionRoleModelOverride(ctx, a, sess.ID, config.SelectedModelTypeReviewer))
-}
-
-// TestSessionRoleModelOverride_UsesWorkerAndReviewerOverride is the direct
-// regression: a session with explicit worker/reviewer overrides resolves to
-// EXACTLY those, not the coordinator-wide config default for that slot.
-func TestSessionRoleModelOverride_UsesWorkerAndReviewerOverride(t *testing.T) {
-	t.Parallel()
-	conn, q := newTestDB(t)
-	s := session.NewService(q, conn)
-	a := &app.App{Sessions: s}
-	ctx := context.Background()
-
-	sess, err := s.Create(ctx, "with overrides")
+	sess, err := s.Create(ctx, "pinned")
 	require.NoError(t, err)
 	require.NoError(t, s.UpdateWorkerReviewerModels(ctx, sess.ID,
-		&session.ModelSlotUpdate{Provider: "worker-prov", Model: "worker-model"},
-		&session.ModelSlotUpdate{Provider: "reviewer-prov", Model: "reviewer-model"}))
-
-	require.Equal(t, "worker-prov/worker-model",
-		sessionRoleModelOverride(ctx, a, sess.ID, config.SelectedModelTypeWorker))
-	require.Equal(t, "reviewer-prov/reviewer-model",
-		sessionRoleModelOverride(ctx, a, sess.ID, config.SelectedModelTypeReviewer))
-}
-
-// TestSessionRoleModelOverride_SmartFastNeverOverridden proves this helper
-// is scoped to worker/reviewer only: smart/fast already have their own
-// resolution cascade inside the coordinator (resolveSessionModels), so
-// routing them through here too would double-apply the session override.
-func TestSessionRoleModelOverride_SmartFastNeverOverridden(t *testing.T) {
-	t.Parallel()
-	conn, q := newTestDB(t)
-	s := session.NewService(q, conn)
+		&session.ModelSlotUpdate{Provider: "pin-prov", Model: "pin-worker"},
+		&session.ModelSlotUpdate{Provider: "pin-prov", Model: "pin-reviewer"}))
 	a := &app.App{Sessions: s}
-	ctx := context.Background()
 
-	sess, err := s.Create(ctx, "smart fast set")
-	require.NoError(t, err)
-	require.NoError(t, s.UpdateModels(ctx, sess.ID,
-		&session.ModelSlotUpdate{Provider: "smart-prov", Model: "smart-model"},
-		&session.ModelSlotUpdate{Provider: "fast-prov", Model: "fast-model"}))
-
-	require.Equal(t, "", sessionRoleModelOverride(ctx, a, sess.ID, config.SelectedModelTypeSmart))
-	require.Equal(t, "", sessionRoleModelOverride(ctx, a, sess.ID, config.SelectedModelTypeFast))
+	_, _, _, err = foldRoleModel(ctx, a, nil, "worker", config.SelectedModelTypeWorker, "", sess.ID, false)
+	require.ErrorContains(t, err, "no worker model configured")
+	_, _, _, err = foldRoleModel(ctx, a, nil, "reviewer", config.SelectedModelTypeReviewer, "", sess.ID, false)
+	require.ErrorContains(t, err, "no reviewer model configured")
 }
 
 // lastPinnedService makes GetLast deterministic (updated_at has one-second
@@ -105,14 +61,12 @@ func (l lastPinnedService) GetLast(ctx context.Context) (session.Session, error)
 }
 
 // TestFoldRoleModel_ContinueResolvesLastSessionBeforeFold is R2C-14:
-// `rush run --continue --role worker` names its session only implicitly, and
-// the fold used to read the pin with an empty session id, so it always fell
-// back to the config default. It must read the pin of the session --continue
-// resolves to; an explicit --session still wins (the run's own precedence).
+// `rush run --continue --role worker` names its session only implicitly; the
+// fold resolves the session --continue continues and hands it on, while an
+// explicit --session still wins (the run's own precedence).
 //
 // Revert-check: the GetLast resolution removed from foldRoleModel -- the fold
-// fell through to a.Config() (this test App has none) and the test panicked at
-// the first assertion.
+// returns the caller's ("", true) pair, failing the resolved-id assertion.
 func TestFoldRoleModel_ContinueResolvesLastSessionBeforeFold(t *testing.T) {
 	t.Parallel()
 	conn, q := newTestDB(t)
@@ -131,29 +85,29 @@ func TestFoldRoleModel_ContinueResolvesLastSessionBeforeFold(t *testing.T) {
 		&session.ModelSlotUpdate{Provider: "last-prov", Model: "last-reviewer"}))
 	a := &app.App{Sessions: lastPinnedService{Service: s, lastID: last.ID}}
 
-	got, resolved, useLast, err := foldRoleModel(ctx, a, "worker", config.SelectedModelTypeWorker, "", "", true)
+	got, resolved, useLast, err := foldRoleModel(ctx, a, roleTestModels, "worker", config.SelectedModelTypeWorker, "", "", true)
 	require.NoError(t, err)
 	require.Equal(t, "", got, "the fold no longer copies the model (D2); resolution is per turn in the coordinator")
 	require.Equal(t, last.ID, resolved, "the resolved session is handed on so the run does not resolve it again")
 	require.False(t, useLast)
 
-	got, _, _, err = foldRoleModel(ctx, a, "reviewer", config.SelectedModelTypeReviewer, "", "", true)
+	got, _, _, err = foldRoleModel(ctx, a, roleTestModels, "reviewer", config.SelectedModelTypeReviewer, "", "", true)
 	require.NoError(t, err)
 	require.Equal(t, "", got, "the fold no longer copies the model (D2); resolution is per turn in the coordinator")
 
-	got, resolved, useLast, err = foldRoleModel(ctx, a, "worker", config.SelectedModelTypeWorker, "", older.ID, true)
+	got, resolved, useLast, err = foldRoleModel(ctx, a, roleTestModels, "worker", config.SelectedModelTypeWorker, "", older.ID, true)
 	require.NoError(t, err)
 	require.Equal(t, "", got, "the fold no longer copies the model (D2); resolution is per turn in the coordinator")
 	require.Equal(t, older.ID, resolved)
 	require.True(t, useLast, "an explicit id resolves nothing: the flags come back as given")
 
-	got, resolved, useLast, err = foldRoleModel(ctx, a, "worker", config.SelectedModelTypeWorker, "explicit/model", "", true)
+	got, resolved, useLast, err = foldRoleModel(ctx, a, roleTestModels, "worker", config.SelectedModelTypeWorker, "explicit/model", "", true)
 	require.NoError(t, err)
 	require.Equal(t, "explicit/model", got, "an explicit --model is never overridden")
 	require.Empty(t, resolved)
 	require.True(t, useLast)
 
-	got, _, _, err = foldRoleModel(ctx, a, "smart", config.SelectedModelTypeSmart, "", "", true)
+	got, _, _, err = foldRoleModel(ctx, a, roleTestModels, "smart", config.SelectedModelTypeSmart, "", "", true)
 	require.NoError(t, err)
 	require.Equal(t, "", got, "--role smart never folds")
 }
@@ -197,7 +151,7 @@ func TestFoldRoleModel_ResolvedLastSessionIsHandedOn(t *testing.T) {
 	svc := &bumpingLastService{Service: s, ids: []string{a1.ID, b1.ID}}
 	a := &app.App{Sessions: svc}
 
-	model, sessionID, useLast, err := foldRoleModel(ctx, a, "worker", config.SelectedModelTypeWorker, "", "", true)
+	model, sessionID, useLast, err := foldRoleModel(ctx, a, roleTestModels, "worker", config.SelectedModelTypeWorker, "", "", true)
 
 	require.NoError(t, err)
 	require.Equal(t, "", model, "the fold no longer copies the model (D2); resolution is per turn in the coordinator")
@@ -208,9 +162,8 @@ func TestFoldRoleModel_ResolvedLastSessionIsHandedOn(t *testing.T) {
 
 // TestFoldRoleModel_NoFoldLeavesSmartEmpty pins the D2 contract's no-fold
 // paths: an explicit --model comes back unchanged even for a role run, and
-// --role smart never folds. The no-model-no-pin path is NOT exercised
-// here: it would reach a.Config(), which panics on this App literal
-// (Sessions only, no Config store).
+// --role smart never folds. The unconfigured-slot path is covered by
+// TestFoldRoleModel_SessionPinDoesNotReplaceConfigSlot.
 func TestFoldRoleModel_NoFoldLeavesSmartEmpty(t *testing.T) {
 	t.Parallel()
 	conn, q := newTestDB(t)
@@ -218,13 +171,13 @@ func TestFoldRoleModel_NoFoldLeavesSmartEmpty(t *testing.T) {
 	a := &app.App{Sessions: s}
 	ctx := context.Background()
 
-	got, resolved, useLast, err := foldRoleModel(ctx, a, "worker", config.SelectedModelTypeWorker, "explicit/model", "", true)
+	got, resolved, useLast, err := foldRoleModel(ctx, a, roleTestModels, "worker", config.SelectedModelTypeWorker, "explicit/model", "", true)
 	require.NoError(t, err)
 	require.Equal(t, "explicit/model", got, "an explicit --model is returned unchanged")
 	require.Empty(t, resolved)
 	require.True(t, useLast)
 
-	got, resolved, useLast, err = foldRoleModel(ctx, a, "smart", config.SelectedModelTypeSmart, "", "", true)
+	got, resolved, useLast, err = foldRoleModel(ctx, a, roleTestModels, "smart", config.SelectedModelTypeSmart, "", "", true)
 	require.NoError(t, err)
 	require.Equal(t, "", got, "--role smart never folds")
 	require.Empty(t, resolved)

@@ -233,11 +233,11 @@ func TestApplyModelOverridesResolvesRoleSlot(t *testing.T) {
 	require.Equal(t, hbSourceSlotStart, resolved.smartSource)
 }
 
-// TestApplyModelOverrides_PinWinsWithFastOverridePresent is P1-2: a session
-// worker pin must survive a fast override riding along on the same call —
-// the shared roleSlotOverride cascade reads the session, so the pin tier
-// beats the config worker slot. The second case proves the config tier
-// still fires when no pin exists.
+// TestApplyModelOverrides_PinWinsWithFastOverridePresent is P1-2: on a web
+// turn a session worker pin must survive a fast override riding along on the
+// same call — the shared roleSlotOverride cascade reads the session, so the
+// pin tier beats the config worker slot. A non-web run ignores the pin, and
+// the config tier still fires when no pin exists.
 // Revert-check: reverting applyModelOverrides' role branch to the
 // config-only form (round 1) resolves the config worker slot (w-model)
 // instead of the pin (w-pin), failing the first case's model assertion.
@@ -258,19 +258,26 @@ func TestApplyModelOverrides_PinWinsWithFastOverridePresent(t *testing.T) {
 	coord.cfg.SetupAgents()
 
 	ctx := WithCallOptions(context.Background(), &CallOptions{ModelRole: config.SelectedModelTypeWorker})
+	webCtx := WithCallOptions(context.Background(), &CallOptions{ModelRole: config.SelectedModelTypeWorker, WebTurnOptIn: true})
 
-	// A pinned session wins over the config slot even with a fast override.
+	// On a web turn a pinned session wins over the config slot even with a
+	// fast override.
 	pinned, err := coord.sessions.Create(t.Context(), "pin-fast")
 	require.NoError(t, err)
 	require.NoError(t, coord.sessions.UpdateWorkerReviewerModels(t.Context(), pinned.ID,
 		&session.ModelSlotUpdate{Provider: prov, Model: "w-pin"}, nil))
 	require.NoError(t, coord.sessions.UpdateModels(t.Context(), pinned.ID, nil,
 		&session.ModelSlotUpdate{Provider: prov, Model: "f-m"}))
-	resolved, err := coord.applyModelOverrides(ctx, pinned.ID, nil, &ModelOverride{Provider: prov, Model: "f-m"})
+	resolved, err := coord.applyModelOverrides(webCtx, pinned.ID, nil, &ModelOverride{Provider: prov, Model: "f-m"})
 	require.NoError(t, err)
-	require.Equal(t, "w-pin", resolved.smart.ModelCfg.Model, "the session pin beats the config slot")
+	require.Equal(t, "w-pin", resolved.smart.ModelCfg.Model, "on a web turn the session pin beats the config slot")
 	require.Equal(t, "f-m", resolved.fast.ModelCfg.Model)
 	require.Equal(t, hbSourceSessionOverride, resolved.smartSource)
+
+	// Outside a web turn the same pin is ignored: settings decide.
+	resolved, err = coord.applyModelOverrides(ctx, pinned.ID, nil, &ModelOverride{Provider: prov, Model: "f-m"})
+	require.NoError(t, err)
+	require.Equal(t, "w-model", resolved.smart.ModelCfg.Model, "a non-web run follows the config slot")
 
 	// No pins: the config worker slot is still the fallback tier.
 	unpinned, err := coord.sessions.Create(t.Context(), "no-pin-fast")

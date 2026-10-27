@@ -757,7 +757,7 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 
 		// foldRoleModel validates --role and resolves --continue's session;
 		// the role model itself resolves live per turn (plan D2).
-		smartModel, sessionID, useLast, err = foldRoleModel(ctx, a, role, modelType, smartModel, sessionID, useLast)
+		smartModel, sessionID, useLast, err = foldRoleModel(ctx, a, a.Config().Models, role, modelType, smartModel, sessionID, useLast)
 		if err != nil {
 			return err
 		}

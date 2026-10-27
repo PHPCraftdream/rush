@@ -327,11 +327,8 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 //
 // reviewer has no equivalent SUB-AGENT DISPATCH hook: unlike worker, it is
 // never read when the "agent" tool spawns a sub-agent, because reviewer is
-// never a delegation target. It IS read, like worker, as a top-level
-// `rush run --role reviewer` CLI selection — sessionRoleModelOverride
-// (internal/cmd/run_role_model.go) applies the same session-DB-first
-// cascade this function documents, just for the top-level run's own model
-// instead of a dispatched sub-agent's (task #1060).
+// never a delegation target. A top-level `rush run --role reviewer`
+// follows the configured reviewer slot (internal/cmd/run_role_model.go).
 func (c *coordinator) resolveSubAgentModelOverride(ctx context.Context, sessionID string) (*Model, error) {
 	sess, err := c.sessions.Get(ctx, sessionID)
 	if err != nil {

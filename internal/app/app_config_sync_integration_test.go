@@ -258,13 +258,12 @@ func TestRoleModelHotReload_NextTurnUsesNewSmart(t *testing.T) {
 	require.NotNil(t, outcome.result)
 }
 
-// TestRoleModelHotReload_ExplicitSessionChoiceSurvives: an explicit
-// session-level smart choice (plan rule 3) keeps precedence over a
-// reloaded config for the pinned session — BOTH before and after the
-// reload (the pinned session is re-run after adoption to catch a mutant
-// that clears the session override during reload) — while fresh sessions
-// pick up the reloaded slot.
-func TestRoleModelHotReload_ExplicitSessionChoiceSurvives(t *testing.T) {
+// TestRoleModelHotReload_CLIRunIgnoresSessionChoice: a stored session-level
+// smart choice is a web-UI preference; rush run (ExecuteRun) follows the
+// configured slot instead, BOTH before and after a reload, and so does a
+// fresh session. Web turns keeping the choice are covered by
+// internal/server/web_session_preference_restart_test.go.
+func TestRoleModelHotReload_CLIRunIgnoresSessionChoice(t *testing.T) {
 	h := newRoleModelSyncApp(t)
 	sessB := createRoleSyncSession(t, h.app, "pinned-smart")
 	require.NoError(t, h.app.Sessions.UpdateModels(t.Context(), sessB.ID,
@@ -283,8 +282,8 @@ func TestRoleModelHotReload_ExplicitSessionChoiceSurvives(t *testing.T) {
 		})
 		pinned <- runOutcome{result: result, err: err}
 	}()
-	require.Equal(t, "smart-x", waitForModelRequest(t, h.requests, 30*time.Second).Model,
-		"the session-pinned smart model must win over config")
+	require.Equal(t, "smart-default", waitForModelRequest(t, h.requests, 30*time.Second).Model,
+		"rush run must use the configured smart slot, not the stored session choice")
 	h.closeRelease()
 	outcome := <-pinned
 	require.NoError(t, outcome.err)
@@ -296,9 +295,8 @@ func TestRoleModelHotReload_ExplicitSessionChoiceSurvives(t *testing.T) {
 		return h.store.Config().Models[config.SelectedModelTypeSmart].Model == "smart-2"
 	}, 20*time.Second, 10*time.Millisecond, "the background poller must adopt the foreign smart-slot write")
 
-	// The pinned session runs AGAIN after the reload: its explicit choice
-	// must survive the adoption (a mutant clearing the session's smart
-	// override during/after reload would make this record "smart-2").
+	// The pinned session runs AGAIN after the reload and follows the
+	// reloaded slot, still ignoring its stored choice.
 	// release is already closed, so the SSE handler unblocks immediately.
 	pinnedAgain := make(chan runOutcome, 1)
 	go func() {
@@ -313,8 +311,8 @@ func TestRoleModelHotReload_ExplicitSessionChoiceSurvives(t *testing.T) {
 		})
 		pinnedAgain <- runOutcome{result: result, err: err}
 	}()
-	require.Equal(t, "smart-x", waitForModelRequest(t, h.requests, 30*time.Second).Model,
-		"the pinned session keeps its explicit choice after the reload")
+	require.Equal(t, "smart-2", waitForModelRequest(t, h.requests, 30*time.Second).Model,
+		"rush run follows the reloaded smart slot on a session with a stored choice")
 	outcome = <-pinnedAgain
 	require.NoError(t, outcome.err)
 
