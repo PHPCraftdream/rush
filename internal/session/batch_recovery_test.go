@@ -197,9 +197,8 @@ func TestR9RecoveryInterruptsLiveUnannouncedCLI(t *testing.T) {
 	reservation, err := a.Reserve(ctx, p)
 	require.NoError(t, err)
 	root := reservation.Snapshot.Root.RootID
-	_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET state='running', notice_selected=1, notice_kind='root', notice_state='running', notice_sequence=1, notice_ordinal=0, delivery='pending' WHERE root_id=? AND node_id=root_id`, root)
-	require.NoError(t, err)
-	_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET state='running' WHERE root_id=? AND node_id<>root_id`, root)
+	// A live root carries no notice yet: notice_state admits only terminal states.
+	_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET state='running' WHERE root_id=?`, root)
 	require.NoError(t, err)
 	lock, err := TryAcquireFileLock(HostLockPath(dir, "host"))
 	require.NoError(t, err)

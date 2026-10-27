@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -75,6 +76,12 @@ func looksLikeKtav(raw []byte) bool {
 	return err != nil
 }
 
+// startsWithJSONValue reports whether raw opens with one complete JSON value.
+func startsWithJSONValue(raw []byte) bool {
+	var v any
+	return json.NewDecoder(bytes.NewReader(raw)).Decode(&v) == nil
+}
+
 func parseBatchSpec(cmd *cobra.Command) (jobbatch.Spec, error) {
 	raw, err := readBatchSpec(cmd)
 	if err != nil {
@@ -92,6 +99,10 @@ func parseBatchSpec(cmd *cobra.Command) (jobbatch.Spec, error) {
 	if format == "ktav" {
 		tree, decodeErr := ktavcodec.DecodeKtav(raw)
 		if decodeErr != nil {
+			if name == "-" && startsWithJSONValue(raw) {
+				// JSON followed by more input: the JSON diagnosis is the useful one.
+				return jobbatch.Spec{}, errors.New("trailing JSON value")
+			}
 			return jobbatch.Spec{}, decodeErr
 		}
 		raw, err = ktavcodec.ToJSON(tree)
