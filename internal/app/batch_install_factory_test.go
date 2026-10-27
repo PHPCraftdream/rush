@@ -46,6 +46,22 @@ func TestBatchRuntimeFactoryFailsClosedWithoutResources(t *testing.T) {
 	require.Error(t, err, "no message service")
 }
 
+// A commit timeout faults the runner and exits the process (exit 70), so the
+// default budget must cover a full SQLite lock wait: a 5s budget killed a run
+// during a ~15s stall the database itself would have ridden out.
+func TestBatchRuntimeFactoryCommitBudgetOutlastsLockWait(t *testing.T) {
+	t.Parallel()
+	a := batchFactoryApp(t)
+	factory, err := newBatchRuntimeFactory(a, batchFactoryDeps())
+	require.NoError(t, err)
+	require.Greater(t, factory.deps.CommitTimeout, db.BusyTimeout)
+	explicit := batchFactoryDeps()
+	explicit.CommitTimeout = time.Second
+	factory, err = newBatchRuntimeFactory(a, explicit)
+	require.NoError(t, err)
+	require.Equal(t, time.Second, factory.deps.CommitTimeout, "explicit budget wins")
+}
+
 // build constructs the adapted install and attaches the Runner; the fault
 // watcher stays disarmed and no store row is written (no side effects until
 // Start).

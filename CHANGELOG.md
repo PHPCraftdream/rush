@@ -8,6 +8,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- A batch commit now waits out SQLite's full 30s lock wait (budget 45s, was 5s): a few seconds of database contention no longer faults the batch runtime and kills `rush run` with exit 70 and an empty envelope.
 - The `sonnet` and `haiku` model atoms now run Claude Sonnet 5.5 and Haiku 5.5, and `fable` runs Fable 5.1, instead of the claude CLI's lagging moving aliases.
 - The `opus` model atom (`rush models use opus-<effort>`) now runs Claude Opus 5.5 instead of Opus 4.8; `opus48` keeps the 4.8 pin.
 - An unknown subcommand of a command group (e.g. `rush sessions lsit`) now fails with an error and a suggestion instead of printing help and exiting 0.

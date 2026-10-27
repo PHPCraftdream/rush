@@ -7,10 +7,17 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db/storepath"
 )
+
+// BusyTimeout is how long a statement waits on a locked database before
+// SQLITE_BUSY. Callers bounding a write with their own deadline must allow
+// at least this long, or a legitimate lock wait reads as a failure.
+const BusyTimeout = 30 * time.Second
 
 var pragmas = map[string]string{
 	"foreign_keys":  "ON",
@@ -20,7 +27,7 @@ var pragmas = map[string]string{
 	"cache_size":    "-8000",
 	"synchronous":   "NORMAL",
 	"secure_delete": "ON",
-	"busy_timeout":  "30000",
+	"busy_timeout":  strconv.FormatInt(BusyTimeout.Milliseconds(), 10),
 }
 
 //go:embed migrations/*.sql
