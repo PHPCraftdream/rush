@@ -111,7 +111,8 @@ func TestModelsBump_GLM53FullStepUp(t *testing.T) {
 	resetModelsStateFlags(t)
 	state, runErr := runModelsCmd(t, modelsStateCmd)
 	require.NoError(t, runErr)
-	assert.Contains(t, state, "atom: glm5_3-max")
+	reviewerRow, _ := effectiveRow(state, "reviewer")
+	assert.Contains(t, reviewerRow, "glm5_3-max", "the ATOM column carries the stepped level")
 }
 
 // TestModelsBump_GLM53FullStepDown is the symmetric downward walk, starting
@@ -144,7 +145,8 @@ func TestModelsBump_GLM53FullStepDown(t *testing.T) {
 	resetModelsStateFlags(t)
 	state, runErr := runModelsCmd(t, modelsStateCmd)
 	require.NoError(t, runErr)
-	assert.Contains(t, state, "atom: glm5_3-low")
+	reviewerRow, _ := effectiveRow(state, "reviewer")
+	assert.Contains(t, reviewerRow, "glm5_3-low", "the ATOM column carries the stepped level")
 }
 
 // TestModelsBump_TopBoundary_UpIsInformationalNotError confirms that
@@ -167,7 +169,8 @@ func TestModelsBump_TopBoundary_UpIsInformationalNotError(t *testing.T) {
 	resetModelsStateFlags(t)
 	state, runErr := runModelsCmd(t, modelsStateCmd)
 	require.NoError(t, runErr)
-	assert.Contains(t, state, "atom: glm5_3-max")
+	reviewerRow, _ := effectiveRow(state, "reviewer")
+	assert.Contains(t, reviewerRow, "glm5_3-max", "the ATOM column carries the stepped level")
 }
 
 // TestModelsBump_BottomBoundary_DownIsInformationalNotError is the symmetric
@@ -188,7 +191,8 @@ func TestModelsBump_BottomBoundary_DownIsInformationalNotError(t *testing.T) {
 	resetModelsStateFlags(t)
 	state, runErr := runModelsCmd(t, modelsStateCmd)
 	require.NoError(t, runErr)
-	assert.Contains(t, state, "atom: glm5_3-low")
+	reviewerRow, _ := effectiveRow(state, "reviewer")
+	assert.Contains(t, reviewerRow, "glm5_3-low", "the ATOM column carries the stepped level")
 }
 
 // TestModelsBump_UnsetEffort_UpLandsOnLowestLevel confirms the chosen
@@ -216,7 +220,8 @@ func TestModelsBump_UnsetEffort_UpLandsOnLowestLevel(t *testing.T) {
 	resetModelsStateFlags(t)
 	state, runErr := runModelsCmd(t, modelsStateCmd)
 	require.NoError(t, runErr)
-	assert.Contains(t, state, "atom: glm5_3-low")
+	reviewerRow, _ := effectiveRow(state, "reviewer")
+	assert.Contains(t, reviewerRow, "glm5_3-low", "the ATOM column carries the stepped level")
 }
 
 // TestModelsBump_UnsetEffort_DownReportsAlreadyLowest confirms the symmetric
