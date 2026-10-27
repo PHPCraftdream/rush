@@ -65,7 +65,14 @@ func TestResolveModel_NotFound(t *testing.T) {
 	})
 	_, _, _, err := a.ResolveModel("nonexistent-model")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
+	assert.Equal(t, `model "nonexistent-model" not found`, err.Error())
+}
+
+func TestValidateMatchesSlotLabel(t *testing.T) {
+	_, err := validateMatches(nil, "x", "smart")
+	require.EqualError(t, err, `smart model "x" not found`)
+	_, err = validateMatches([]modelMatch{{provider: "a"}, {provider: "b"}}, "x", "fast")
+	require.ErrorContains(t, err, `fast model "x" found in multiple providers`)
 }
 
 func TestResolveModel_UnknownProviderPrefix(t *testing.T) {
