@@ -183,15 +183,21 @@ func TestResolveSessionModelsInternal_RoleSlotCascade(t *testing.T) {
 	require.Equal(t, hbSourceSlotStart, resolved.smartSource)
 	require.Equal(t, "m-smart", resolved.fast.ModelCfg.Model, "fast is untouched by the role resolution")
 
-	// A session worker pin beats the config slot and is labelled as such.
+	// On a web turn a session worker pin beats the config slot and is
+	// labelled as such; any other turn keeps the config slot.
 	pinned, err := coord.sessions.Create(t.Context(), "role-slot-pin")
 	require.NoError(t, err)
 	require.NoError(t, coord.sessions.UpdateWorkerReviewerModels(t.Context(), pinned.ID,
 		&session.ModelSlotUpdate{Provider: prov, Model: "m-worker"}, nil))
-	resolved, err = coord.resolveSessionModelsInternal(roleCtx, pinned.ID, false)
+	webRoleCtx := WithCallOptions(context.Background(), &CallOptions{ModelRole: config.SelectedModelTypeWorker, WebTurnOptIn: true})
+	resolved, err = coord.resolveSessionModelsInternal(webRoleCtx, pinned.ID, false)
 	require.NoError(t, err)
 	require.Equal(t, "m-worker", resolved.smart.ModelCfg.Model)
 	require.Equal(t, hbSourceSessionOverride, resolved.smartSource)
+	resolved, err = coord.resolveSessionModelsInternal(roleCtx, pinned.ID, false)
+	require.NoError(t, err)
+	require.Equal(t, "m-worker", resolved.smart.ModelCfg.Model)
+	require.Equal(t, hbSourceSlotStart, resolved.smartSource)
 
 	// No role in the context: smart stays the smart slot (unchanged behavior).
 	resolved, err = coord.resolveSessionModelsInternal(context.Background(), sess.ID, false)

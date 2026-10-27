@@ -99,7 +99,8 @@ func TestRunWithOverrides_401RebuildKeepsInheritedSmartSlot_R9_2(t *testing.T) {
 	// resolveSessionModels instead, which happens to already read the
 	// session's own slots correctly and would mask this exact bug.
 	fastOverride := &ModelOverride{Provider: "fast-provider", Model: "fast-model"}
-	ctx := WithModelOverrides(t.Context(), nil, fastOverride)
+	// The session-slot fill-in applies on web turns only.
+	ctx := WithModelOverrides(webTurnCtx(t), nil, fastOverride)
 	_, err = coord.RunWithOverrides(ctx, sess.ID, "prompt", nil, fastOverride)
 	require.NoError(t, err)
 	require.Len(t, calls, 2, "the 401 must have triggered exactly one rebuild+retry")

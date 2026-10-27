@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -53,11 +54,26 @@ func TestWebSessionModelPreferenceSurvivesRestartAndSends(t *testing.T) {
 		provider.Close()
 	})
 
+	// The config lives on disk: turns may reload it, and a runtime-only
+	// provider would vanish on reload.
+	workspaceCfg, err := json.Marshal(map[string]any{
+		"models": map[string]any{
+			"smart": map[string]any{"provider": "web-test", "model": "configured-model"},
+			"fast":  map[string]any{"provider": "web-test", "model": "configured-model"},
+		},
+		"providers": map[string]any{"web-test": map[string]any{
+			"type": openaicompat.Name, "base_url": provider.URL, "api_key": "test-key",
+			"models": []catwalk.Model{
+				{ID: "configured-model", Name: "Configured", ContextWindow: 32768, DefaultMaxTokens: 512},
+				{ID: "saved-model", Name: "Saved", ContextWindow: 32768, DefaultMaxTokens: 512},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(workingDir, "rush.json"), workspaceCfg, 0o600))
 	store, err := config.Init(workingDir, dataDir, false)
 	require.NoError(t, err)
-	store.Config().Providers.Set("web-test", config.ProviderConfig{ID: "web-test", Type: openaicompat.Name, BaseURL: provider.URL, APIKey: "test-key", Models: []catwalk.Model{{ID: "configured-model", Name: "Configured", ContextWindow: 32768, DefaultMaxTokens: 512}, {ID: "saved-model", Name: "Saved", ContextWindow: 32768, DefaultMaxTokens: 512}}})
-	store.SetSelectedModelRuntime(config.SelectedModelTypeSmart, config.SelectedModel{Provider: "web-test", Model: "configured-model"})
-	store.SetSelectedModelRuntime(config.SelectedModelTypeFast, config.SelectedModel{Provider: "web-test", Model: "configured-model"})
+	require.Contains(t, store.Config().Providers.Copy(), "web-test")
 	store.SetupAgents()
 	resolvedDataDir := store.Config().Options.DataDirectory
 	require.NoError(t, os.MkdirAll(resolvedDataDir, 0o700))

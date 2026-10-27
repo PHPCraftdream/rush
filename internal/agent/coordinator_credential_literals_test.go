@@ -72,15 +72,17 @@ func TestResolveCredentialsModelsUsesInvocationEffortWithoutSessionInheritance(t
 
 	// Fast-only model overrides do not change the selected turn slot:
 	// smart/empty role runs apply explicit effort to the smart choice.
-	resolved, err = coord.resolveCredentialsModels(WithCallOptions(ctx, &CallOptions{ModelRole: config.SelectedModelTypeSmart}), "", creds)
-	require.NoError(t, err)
-	require.Equal(t, "high", resolved.smart.ModelCfg.ReasoningEffort)
-	require.Empty(t, resolved.fast.ModelCfg.ReasoningEffort)
+	// A role run also builds a per-call toolset, which this bare coordinator
+	// cannot, so the role mapping is checked on the helper the resolve uses.
+	smart, fast := ModelChoice{ReasoningEffort: "low"}, ModelChoice{ReasoningEffort: "low"}
+	applyInvocationEffort(WithCallOptions(ctx, &CallOptions{ModelRole: config.SelectedModelTypeSmart}), &smart, &fast)
+	require.Equal(t, "high", smart.ReasoningEffort)
+	require.Equal(t, "low", fast.ReasoningEffort)
 
-	resolved, err = coord.resolveCredentialsModels(WithCallOptions(ctx, &CallOptions{ModelRole: config.SelectedModelTypeFast}), "", creds)
-	require.NoError(t, err)
-	require.Equal(t, "low", resolved.smart.ModelCfg.ReasoningEffort)
-	require.Equal(t, "high", resolved.fast.ModelCfg.ReasoningEffort)
+	smart, fast = ModelChoice{ReasoningEffort: "low"}, ModelChoice{ReasoningEffort: "low"}
+	applyInvocationEffort(WithCallOptions(ctx, &CallOptions{ModelRole: config.SelectedModelTypeFast}), &smart, &fast)
+	require.Equal(t, "low", smart.ReasoningEffort)
+	require.Equal(t, "high", fast.ReasoningEffort)
 
 	ctx = WithModelOverrides(ctx, &ModelOverride{Provider: "tenant", Model: "tenant-override"}, nil)
 	resolved, err = coord.resolveCredentialsModels(ctx, "", creds)

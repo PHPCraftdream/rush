@@ -224,18 +224,14 @@ func TestExecuteRunStoredEffortAndExplicitSmartEffortArePerCall(t *testing.T) {
 		}
 	}
 
+	// The provider answers at once: the runs are sequential on one App.
+	close(h.release)
 	run("configured effort despite stored effort", RunOverrides{})
 	requestEffort("smart-default", "medium")
-	close(h.release)
 	require.NoError(t, waitModelOverrideResult(t, resultCh))
 
-	// Use a fresh app fixture since the release gate is closed after each run.
-	h = newModelOverrideApp(t)
-	sess = createModelOverrideSession(t, h.app, "explicit-smart-effort")
-	require.NoError(t, h.app.Sessions.UpdateReasoningEffort(t.Context(), sess.ID, "low", ""))
 	run("explicit smart effort with fast-only override", RunOverrides{FastModel: "fast-a", ReasoningEffort: "high", RoleSmart: true})
 	requestEffort("smart-default", "high")
-	close(h.release)
 	require.NoError(t, waitModelOverrideResult(t, resultCh))
 
 	run("subsequent invocation uses configured effort", RunOverrides{})

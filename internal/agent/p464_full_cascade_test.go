@@ -41,7 +41,7 @@ func TestFullCascade_SessionOverridesAlreadyFolderShadowedConfig(t *testing.T) {
 
 	// Before any session override: resolves to the coordinator-wide
 	// (stand-in for folder-shadowed-system) default.
-	before, err := coord.resolveSessionModels(t.Context(), sess.ID)
+	before, err := coord.resolveSessionModels(webTurnCtx(t), sess.ID)
 	require.NoError(t, err)
 	require.Equal(t, "smart-provider", before.smart.ModelCfg.Provider)
 
@@ -49,7 +49,7 @@ func TestFullCascade_SessionOverridesAlreadyFolderShadowedConfig(t *testing.T) {
 	require.NoError(t, env.sessions.UpdateModels(t.Context(), sess.ID,
 		&session.ModelSlotUpdate{Provider: "session-provider", Model: "session-model"}, nil))
 
-	after, err := coord.resolveSessionModels(t.Context(), sess.ID)
+	after, err := coord.resolveSessionModels(webTurnCtx(t), sess.ID)
 	require.NoError(t, err)
 	require.Equal(t, "session-provider", after.smart.ModelCfg.Provider, "session override must win over the merged system/folder config")
 	require.Equal(t, "session-model", after.smart.ModelCfg.Model)
@@ -60,7 +60,7 @@ func TestFullCascade_SessionOverridesAlreadyFolderShadowedConfig(t *testing.T) {
 	require.NoError(t, env.sessions.UpdateModels(t.Context(), sess.ID,
 		&session.ModelSlotUpdate{Provider: "", Model: ""}, nil))
 
-	restored, err := coord.resolveSessionModels(t.Context(), sess.ID)
+	restored, err := coord.resolveSessionModels(webTurnCtx(t), sess.ID)
 	require.NoError(t, err)
 	require.Equal(t, before.smart.ModelCfg.Provider, restored.smart.ModelCfg.Provider,
 		"clearing the session override must restore exactly the merged system/folder value")

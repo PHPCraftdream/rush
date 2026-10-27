@@ -375,6 +375,22 @@ func (c *coordinator) resolveCallModels(ctx context.Context, sessionID string, c
 // OpenAI-style low/medium/high ladder is the least surprising default.
 var credentialReasoningLevels = []string{"low", "medium", "high"}
 
+// applyInvocationEffort gives explicit invocation effort to the selected turn
+// model, including credential-selected models when no model override exists.
+// Durable session effort is not consulted: it is specific to the session's
+// configured model and must not leak onto tenant credentials.
+func applyInvocationEffort(ctx context.Context, smart, fast *ModelChoice) {
+	effort := roleReasoningEffortFrom(ctx)
+	if effort == "" {
+		return
+	}
+	if callModelRole(ctx) == config.SelectedModelTypeFast {
+		fast.ReasoningEffort = effort
+	} else {
+		smart.ReasoningEffort = effort
+	}
+}
+
 // resolveCredentialsModels builds the per-call model snapshot from
 // creds. Roles covered by creds.Models are built ad-hoc (fresh provider
 // client, never cached — see buildCredentialModel). Strict isolation is
@@ -407,17 +423,7 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 			fastCovered = true
 		}
 	}
-	// Explicit invocation effort belongs to the selected turn model,
-	// including credential-selected models when no model override exists.
-	// Do not consult durable session effort here: it is specific to the
-	// session's configured model and must not leak onto tenant credentials.
-	if effort := roleReasoningEffortFrom(ctx); effort != "" {
-		if callModelRole(ctx) == config.SelectedModelTypeFast {
-			fastChoice.ReasoningEffort = effort
-		} else {
-			smartChoice.ReasoningEffort = effort
-		}
-	}
+	applyInvocationEffort(ctx, &smartChoice, &fastChoice)
 
 	if !smartCovered {
 		return nil, fmt.Errorf("credential set does not cover the smart role (Models[RoleSmart]); smart is required even when AllowConfiguredRoleFallback is true")

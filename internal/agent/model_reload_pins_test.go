@@ -99,16 +99,17 @@ func TestForkedWorkerReviewerPinsSurviveDiskReload(t *testing.T) {
 	require.Equal(t, "worker-new", diskCfg.Config().Models[config.SelectedModelTypeWorker].Model)
 	require.Equal(t, "reviewer-new", diskCfg.Config().Models[config.SelectedModelTypeReviewer].Model)
 
-	workerCtx := WithCallOptions(ctx, &CallOptions{ModelRole: config.SelectedModelTypeWorker})
+	// Session pins are honored on web turns only, and never for the reviewer.
+	workerCtx := WithCallOptions(ctx, &CallOptions{ModelRole: config.SelectedModelTypeWorker, WebTurnOptIn: true})
 	resolved, err := coord.resolveSessionModelsInternal(workerCtx, fork.ID, false)
 	require.NoError(t, err)
 	require.Equal(t, "worker-pin", resolved.smart.ModelCfg.Model)
 	require.Equal(t, "high", resolved.smart.ModelCfg.ReasoningEffort)
-	reviewerCtx := WithCallOptions(ctx, &CallOptions{ModelRole: config.SelectedModelTypeReviewer})
+	reviewerCtx := WithCallOptions(ctx, &CallOptions{ModelRole: config.SelectedModelTypeReviewer, WebTurnOptIn: true})
 	resolved, err = coord.resolveSessionModelsInternal(reviewerCtx, fork.ID, false)
 	require.NoError(t, err)
-	require.Equal(t, "reviewer-pin", resolved.smart.ModelCfg.Model)
-	require.Equal(t, "low", resolved.smart.ModelCfg.ReasoningEffort)
+	require.Equal(t, "reviewer-new", resolved.smart.ModelCfg.Model, "the reviewer slot comes from the reloaded settings")
+	require.Empty(t, resolved.smart.ModelCfg.ReasoningEffort)
 
 	var observed SessionAgentCall
 	driver := newMockAgent(provider, 3000, func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
