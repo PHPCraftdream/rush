@@ -9,6 +9,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 - `rush models state` prints EFFECTIVE and SCOPES as bordered tables with separate columns (role/scope, provider, model, effort, source scope or status, atom, note) instead of free-form lines; `--json` is unchanged.
+- `rush ping` through a CLI provider (claude/codex/gemini/qwen) no longer gets "your request is empty" back: the default prompt now carries the reply-OK instruction instead of a bare `ping`, which the CLI saw beneath its own system prompt and the project's instructions.
 - A batch commit now waits out SQLite's full 30s lock wait (budget 45s, was 5s): a few seconds of database contention no longer faults the batch runtime and kills `rush run` with exit 70 and an empty envelope.
 - The `sonnet` and `haiku` model atoms now run Claude Sonnet 5.5 and Haiku 5.5, and `fable` runs Fable 5.1, instead of the claude CLI's lagging moving aliases.
 - `--allow-peak-hours` (and the SDK's `AllowPeakHours`) now holds for the whole turn: the call build and the mid-turn peak-hours checks no longer abort a bypassed run whose model's provider is inside its peak window.

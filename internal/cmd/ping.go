@@ -282,12 +282,8 @@ func runPing(cmd *cobra.Command, a *app.App, modelType config.SelectedModelType,
 	}
 
 	// Set up the ping request
-	userPrompt := "ping"
-	if customPrompt != "" {
-		userPrompt = customPrompt
-	}
-
-	systemPrompt := "You are a network liveness probe. Reply with exactly the word OK and nothing else."
+	userPrompt := pingUserPrompt(customPrompt)
+	systemPrompt := pingSystemPrompt
 
 	// Create agent
 	agent := fantasy.NewAgent(
@@ -739,16 +735,30 @@ func resolveModelRole(role string) (config.SelectedModelType, error) {
 	}
 }
 
+const pingSystemPrompt = "You are a network liveness probe. Reply with exactly the word OK and nothing else."
+
+// pingDefaultPrompt carries the instruction itself: CLI providers fold the
+// system prompt into the user text beneath their own system prompt and the
+// project's CLAUDE.md, and a bare "ping" there reads as an empty request.
+const pingDefaultPrompt = "Liveness check: reply with exactly the word OK and nothing else."
+
+func pingUserPrompt(custom string) string {
+	if custom != "" {
+		return custom
+	}
+	return pingDefaultPrompt
+}
+
 func init() {
 	pingCmd.Flags().Bool("json", false, "Emit JSON output instead of human-readable text")
 	pingCmd.Flags().Duration("timeout", time.Minute, "Request timeout")
-	pingCmd.Flags().String("prompt", "", "Custom user prompt (default: \"ping\")")
+	pingCmd.Flags().String("prompt", "", "Custom user prompt (default: an instruction to reply OK)")
 	pingCmd.Flags().String("role", "", "Which model slot to ping: smart (default) | fast | worker | reviewer (worker/reviewer are optional, set via `rush models use --worker/--reviewer`)")
 	pingCmd.Flags().String("model", "", "Ping an ad-hoc model directly (atom short code or provider/model[@effort]) instead of a persisted slot — nothing is written to config. Mutually exclusive with --role.")
 
 	pingFastCmd.Flags().Bool("json", false, "Emit JSON output instead of human-readable text")
 	pingFastCmd.Flags().Duration("timeout", time.Minute, "Request timeout")
-	pingFastCmd.Flags().String("prompt", "", "Custom user prompt (default: \"ping\")")
+	pingFastCmd.Flags().String("prompt", "", "Custom user prompt (default: an instruction to reply OK)")
 
 	rootCmd.AddCommand(pingCmd)
 	rootCmd.AddCommand(pingFastCmd)

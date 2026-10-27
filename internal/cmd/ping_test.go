@@ -457,3 +457,14 @@ func TestResolveModelRole(t *testing.T) {
 		require.Contains(t, err.Error(), "turbo")
 	})
 }
+
+// A bare "ping" reached CLI providers as the only user text under the CLI's
+// own system prompt and the project's CLAUDE.md, and the model answered that
+// the request was empty. The default prompt must carry the instruction.
+func TestPingUserPromptCarriesInstruction(t *testing.T) {
+	t.Parallel()
+	got := pingUserPrompt("")
+	require.NotEqual(t, "ping", got)
+	require.Contains(t, got, "reply with exactly the word OK")
+	require.Equal(t, "custom", pingUserPrompt("custom"))
+}
