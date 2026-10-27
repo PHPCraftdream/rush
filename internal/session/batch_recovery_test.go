@@ -10,6 +10,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/db/storepath"
+	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
 )
@@ -151,6 +152,66 @@ func TestR9RecoveryUnknownAliveOwnNoChanges(t *testing.T) {
 			require.Zero(t, count)
 		})
 	}
+}
+
+func TestR9RecoveryPreservesUnannouncedCLIUntilRetention(t *testing.T) {
+	a, _, conn, dir, ctx := r9Stores(t)
+	// A terminal CLI root remains available to its caller until result delivery;
+	// once delivered, recovery is inert and retention can remove the entire tree.
+	hook := NewBatchCommitHook(a, BatchCommitIdentity{Host: "host", Runner: "runner", Owner: "owner"})
+	runner, executor, runCtx := commitHookRunner(t, hook)
+	batch := commitHookSubmit(t, runCtx, runner, "cli-root", jobbatch.OneItem(jobbatch.TaskSpec{Kind: "retention"}), "batch-cli:retention")
+	attempt := commitHookAccept(t, runCtx, runner, executor, nil)
+	commitHookFinish(t, runCtx, runner, attempt, jobbatch.Result{State: jobbatch.StateCompleted})
+	commitHookWait(t, runCtx, batch)
+	root := "cli-root"
+	var pending int
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT count(*) FROM batch_nodes WHERE root_id=? AND notice_selected=1 AND delivery='pending'`, root).Scan(&pending))
+	require.Equal(t, 1, pending)
+	lock, err := TryAcquireFileLock(HostLockPath(dir, "host"))
+	require.NoError(t, err)
+	require.NoError(t, lock.Release())
+
+	out, err := a.BatchRecoverDeadHost(ctx, "host", BatchSharedHostProbe(dir))
+	require.NoError(t, err)
+	require.Equal(t, BatchRecoveryOutcome{}, out)
+	var count int
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT count(*) FROM batch_nodes WHERE root_id=?`, root).Scan(&count))
+	require.Equal(t, 2, count, "undelivered terminal CLI result remains available")
+	require.NoError(t, a.BatchSettleCLIWakeDebt(ctx, "owner", root))
+	var delivery string
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT delivery FROM batch_nodes WHERE root_id=? AND notice_selected=1`, root).Scan(&delivery))
+	require.Equal(t, "done", delivery)
+	purged, err := a.BatchPurgeExpired(ctx, 1<<62)
+	require.NoError(t, err)
+	// Counts delegations like BatchCountExpired; children go by FK cascade.
+	require.EqualValues(t, 1, purged, "purge reports deleted delegations")
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT count(*) FROM batch_nodes WHERE root_id=?`, root).Scan(&count))
+	require.Zero(t, count)
+}
+
+func TestR9RecoveryInterruptsLiveUnannouncedCLI(t *testing.T) {
+	a, _, conn, dir, ctx := r9Stores(t)
+	p := batchStoreTestReservation()
+	p.OriginCLI = true
+	reservation, err := a.Reserve(ctx, p)
+	require.NoError(t, err)
+	root := reservation.Snapshot.Root.RootID
+	// A live root carries no notice yet: notice_state admits only terminal states.
+	_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET state='running' WHERE root_id=?`, root)
+	require.NoError(t, err)
+	lock, err := TryAcquireFileLock(HostLockPath(dir, "host"))
+	require.NoError(t, err)
+	require.NoError(t, lock.Release())
+
+	out, err := a.BatchRecoverDeadHost(ctx, "host", BatchSharedHostProbe(dir))
+	require.NoError(t, err)
+	require.EqualValues(t, 3, out.Interrupted)
+	got, err := a.Read(ctx, "owner", root)
+	require.NoError(t, err)
+	require.Equal(t, "interrupted", got.Nodes[1].State)
+	require.Equal(t, "host_lost", got.Nodes[1].OutcomeCode)
+	require.Zero(t, got.Root.Announced)
 }
 
 func TestR9RecoveryUnannouncedTerminalCascade(t *testing.T) {

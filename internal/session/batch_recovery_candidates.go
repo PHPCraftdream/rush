@@ -56,12 +56,12 @@ type batchHostVerdict struct {
 }
 
 // batchRecoveryCandidateSQL mirrors the canonical BatchRecoveryRoots
-// predicate (internal/db/sql/batch_recovery.sql) so candidate discovery and
-// exact-root recovery cannot disagree. It is intentionally a Go-side query:
-// the generated recovery SQL stays unchanged.
+// predicate (internal/db/sql/batch_recovery.sql) with its intentional CLI-root
+// exclusion: CLI roots remain history until ordinary retention, while pending
+// descendants and controls still select them for recovery.
 const batchRecoveryCandidateSQL = `SELECT r.root_id, r.owner_session_id, r.host_id FROM batch_nodes r
 WHERE r.node_id = r.root_id
-  AND (r.announced = 0 OR EXISTS (
+  AND ((r.announced = 0 AND r.origin_cli = 0) OR EXISTS (
     SELECT 1 FROM batch_nodes n WHERE n.root_id = r.root_id
       AND n.state IN ('pending', 'starting', 'running', 'cancelling'))
     OR EXISTS (SELECT 1 FROM batch_control_requests c WHERE c.root_id = r.root_id AND c.status = 'pending'))`

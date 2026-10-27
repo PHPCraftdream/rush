@@ -20,10 +20,9 @@ func BatchSharedHostProbe(dataDir string) BatchHostProbe {
 
 type BatchRecoveryOutcome struct{ Interrupted, DeletedRoots, Notices, Controls int64 }
 
-// BatchRecoverDeadHost now has a production caller (the batch reset entry's
-// owner-scope recovery); the App maintenance and scope-time paths go through
-// the bounded W1 primitives in batch_recovery_candidates.go. No recovery
-// path writes history or wakes work.
+// BatchRecoverDeadHost returns announced work to durable history and deletes
+// unannounced non-CLI reservations. CLI roots retain their durable identity
+// even before an announcement; live CLI descendants are still interrupted.
 // Each root commits separately; failures are returned without blocking other roots.
 func (s *BatchStore) BatchRecoverDeadHost(ctx context.Context, host string, probe BatchHostProbe) (BatchRecoveryOutcome, error) {
 	var total BatchRecoveryOutcome
@@ -74,7 +73,7 @@ func (s *BatchStore) batchRecoverRoot(ctx context.Context, listed db.BatchNode) 
 	if err != nil {
 		return out, err
 	}
-	if r.Announced == 0 {
+	if r.Announced == 0 && r.OriginCli == 0 {
 		out.DeletedRoots, err = q.DeleteBatchSubtree(ctx, db.DeleteBatchSubtreeParams{RootID: r.RootID, NodeID: r.NodeID, OwnerSessionID: r.OwnerSessionID, HostID: r.HostID})
 	} else {
 		nodes, e := q.ListBatchNodes(ctx, db.ListBatchNodesParams{RootID: r.RootID, OwnerSessionID: r.OwnerSessionID})

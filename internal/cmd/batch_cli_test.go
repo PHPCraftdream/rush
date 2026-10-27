@@ -10,12 +10,14 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/ktavcodec"
 	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
@@ -47,6 +49,19 @@ func TestBatchCLISubprocessShowInstalledDatabase(t *testing.T) {
 		require.Equal(t, "r14-test-runner", got.Incarnation, "show must expose the runner incarnation")
 		require.Equal(t, []batchShowNode{{NodeID: fixture.root, Depth: 0, Kind: "batch", State: "pending"}, {NodeID: fixture.root + ".1", ParentID: fixture.root, Depth: 1, Kind: "batch", State: "pending"}, {NodeID: fixture.root + ".1.1", ParentID: fixture.root + ".1", Depth: 2, Kind: "task", State: "pending"}, {NodeID: fixture.root + ".1.2", ParentID: fixture.root + ".1", Depth: 2, Kind: "task", State: "pending"}, {NodeID: fixture.root + ".2", ParentID: fixture.root, Depth: 1, Kind: "task", State: "pending"}}, got.Nodes)
 	}
+}
+
+func TestBatchCLIShowUnknownAndDisposedAreNotFound(t *testing.T) {
+	if os.Getenv(batchCLIHelperEnv) == "1" {
+		executeBatchCLIHelper()
+		return
+	}
+	fixture := seedBatchCLIAcceptance(t)
+	result := runBatchCLIProcess(t, fixture, []string{"batch", "show", "missing-prefix"})
+	require.Contains(t, result.Error, "batch not found: missing-prefix")
+	conn, err := db.Connect(context.Background(), fixture.dir)
+	require.NoError(t, err)
+	defer db.ReleaseConn(conn)
 }
 
 func TestBatchCLIStopSubprocessQueuesExactNestedLeaf(t *testing.T) {
@@ -289,6 +304,89 @@ func executeBatchCLIHelper() {
 	}
 	_ = json.NewEncoder(os.Stdout).Encode(result)
 	os.Exit(0)
+}
+
+func TestBatchSpecParsesJSONAndKtavFilesAndStdin(t *testing.T) {
+	ktav := "mode: parallel\nitems: [\n    {\n        tool: view\n        input: {\n            path: x\n        }\n    }\n]\n"
+	jsonInput := `{"mode":"parallel","items":[{"tool":"view","input":{"path":"x"}}]}`
+	jsonTree, err := ktavcodec.ParseJSONLossless([]byte(jsonInput))
+	require.NoError(t, err)
+	ktavTree, err := ktavcodec.DecodeKtav([]byte(ktav))
+	require.NoError(t, err)
+	require.NoError(t, ktavcodec.Equivalent(jsonTree, ktavTree))
+	write := func(dir, name, body string) string {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+		return path
+	}
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name, filename, body string
+		stdin                bool
+	}{
+		{"json file", "spec.json", jsonInput, false},
+		{"ktav file", "spec.ktav", ktav, false},
+		{"json stdin", "-", jsonInput, true},
+		{"ktav stdin", "-", ktav, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			name := tc.filename
+			if !tc.stdin {
+				name = write(dir, tc.filename, tc.body)
+			}
+			cmd := &cobra.Command{}
+			cmd.Flags().String("spec", name, "")
+			if tc.stdin {
+				cmd.SetIn(strings.NewReader(tc.body))
+			}
+			spec, err := parseBatchSpec(cmd)
+			require.NoError(t, err)
+			require.NotNil(t, spec.Batch)
+			require.Len(t, spec.Batch.Items, 1)
+			require.NotNil(t, spec.Batch.Items[0].Task)
+			require.JSONEq(t, `{"tool":"view","input":{"path":"x"}}`, string(spec.Batch.Items[0].Task.Payload))
+		})
+	}
+}
+
+func TestBatchSpecStdinDetectsKtavCommentsQuotedKeysAndRootObject(t *testing.T) {
+	for _, raw := range []string{
+		"## leading comment\nmode: parallel\nitems: [{tool: view, input: {path: x}}]\n",
+		`"mode": parallel` + "\n" + `"items": [{"tool": view, "input": {"path": x}}]` + "\n",
+		"{ mode: parallel, items: [{ tool: view, input: { path: x } }] }\n",
+	} {
+		cmd := &cobra.Command{}
+		cmd.Flags().String("spec", "-", "")
+		cmd.SetIn(strings.NewReader(raw))
+		spec, err := parseBatchSpec(cmd)
+		require.NoError(t, err, raw)
+		require.NotNil(t, spec.Batch, raw)
+		require.Len(t, spec.Batch.Items, 1, raw)
+		require.NotNil(t, spec.Batch.Items[0].Task, raw)
+	}
+}
+
+func TestBatchSpecRejectsMalformedKtavFileAndStdin(t *testing.T) {
+	for _, tc := range []struct{ name, spec, body string }{
+		{"file", "bad.ktav", "mode: [oops\n"},
+		{"stdin", "-", "mode: [oops\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			name := tc.spec
+			if name != "-" {
+				name = filepath.Join(t.TempDir(), name)
+				require.NoError(t, os.WriteFile(name, []byte(tc.body), 0o600))
+			}
+			cmd := &cobra.Command{}
+			cmd.Flags().String("spec", name, "")
+			if tc.spec == "-" {
+				cmd.SetIn(strings.NewReader(tc.body))
+			}
+			_, err := parseBatchSpec(cmd)
+			require.Error(t, err)
+			require.Contains(t, strings.ToLower(err.Error()), "ktav decode")
+		})
+	}
 }
 
 func TestBatchSpecRejectsUnknownTrailingAndMixedFields(t *testing.T) {

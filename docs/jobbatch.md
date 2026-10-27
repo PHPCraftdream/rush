@@ -39,8 +39,32 @@ reductions are implied. Detailed rollout is also summarized in the
 
 ## CLI batch run
 
+See [batch CLI results and lifecycle](batch-cli-results.md) for leaf-result output and disposal semantics.
+
 `rush batch run -f spec.json` (or stdin) accepts a minimal external schema:
 `{ "mode": "parallel", "items": [ { "tool": "run_command", "input": { "program": "go", "args": ["version"] } } ] }`.
+File extension selects JSON or Ktav (`.ktav`); stdin is JSON only when the entire
+payload is a valid JSON document, otherwise Ktav is selected. For example, the following Ktav document is
+equivalent to the JSON schema above:
+
+```ktav
+mode: parallel
+items: [
+    {
+        tool: run_command
+        input: {
+            program: go
+            args: [
+                version
+            ]
+        }
+    }
+]
+```
+
+Use `rush batch run -f spec.ktav` for a root spec. `rush batch add ROOT -f
+items.ktav` accepts the same format; its `items` are appended. See
+[batch spec formats](batch-spec-formats.md) for details.
 Omitted `mode` is parallel; `on_fail` is only valid on `mode: "sequential"`
 (defaulting to `stop` there) and a nonempty `on_fail` on a parallel batch is
 rejected naming the field. Each item is a task (`tool` + `input`) or a nested
