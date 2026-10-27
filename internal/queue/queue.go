@@ -247,10 +247,15 @@ func (s *Service) ClaimPending(ctx context.Context, n int) ([]Task, error) {
 
 // UpdateStatus sets the task's final state and metrics.
 func (s *Service) UpdateStatus(ctx context.Context, id string, status TaskStatus, cost float64, tokens int64, exitReason string) error {
+	return s.UpdateStatusWithSession(ctx, id, "", status, cost, tokens, exitReason)
+}
+
+// UpdateStatusWithSession also records the child run's resolved session ID.
+func (s *Service) UpdateStatusWithSession(ctx context.Context, id, sessionID string, status TaskStatus, cost float64, tokens int64, exitReason string) error {
 	now := time.Now().Unix()
 	_, err := s.db.ExecContext(ctx,
-		"UPDATE queue_tasks SET status = ?, cost = ?, tokens = ?, exit_reason = ?, finished_at = ? WHERE id = ?",
-		string(status), cost, tokens, exitReason, now, id,
+		"UPDATE queue_tasks SET session_id = CASE WHEN ? = '' THEN session_id ELSE ? END, status = ?, cost = ?, tokens = ?, exit_reason = ?, finished_at = ? WHERE id = ?",
+		sessionID, sessionID, string(status), cost, tokens, exitReason, now, id,
 	)
 	return err
 }

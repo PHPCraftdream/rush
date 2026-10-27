@@ -148,10 +148,7 @@ func sessionsShowCmdRun(cmd *cobra.Command, args []string) error {
 			if msg.Role == message.User {
 				for _, part := range msg.Parts {
 					if tc, ok := part.(message.TextContent); ok && tc.Text != "" {
-						purpose = tc.Text
-						if len(purpose) > 120 {
-							purpose = purpose[:120] + "…"
-						}
+						purpose = truncate(tc.Text, 120)
 						break
 					}
 				}

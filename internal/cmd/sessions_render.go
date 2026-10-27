@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/PHPCraftdream/rush/internal/ansiext"
 )
 
 // toolPreviewMaxLen caps the displayed length of a tool-call argument
@@ -260,21 +262,12 @@ func toolResultOriginHint(name, input string) string {
 	return ""
 }
 
-// truncatePreview shortens s to max runes, appending an ellipsis when
-// truncation actually happened. Counts runes (not bytes) so multibyte
-// characters don't get cut mid-encoding.
+// truncatePreview shortens s so its display width in terminal cells is at
+// most max, appending an ellipsis when truncation happened. It is rune- and
+// display-width-aware (via ansiext.TruncateDisplay) so multibyte characters
+// don't get cut mid-encoding and wide runes count as 2 cells.
 func truncatePreview(s string, max int) string {
-	if max <= 0 {
-		return ""
-	}
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-	if max <= 1 {
-		return string(runes[:max])
-	}
-	return string(runes[:max-1]) + "…"
+	return ansiext.TruncateDisplay(s, max)
 }
 
 // stringField looks up a key in the parsed params map and returns its

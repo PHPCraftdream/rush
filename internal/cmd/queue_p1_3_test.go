@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,6 +35,27 @@ import (
 func TestRunQueueTask_CorruptStdout_ReturnsErrorWithBoundedExcerpt(t *testing.T) {
 	task := queue.Task{ID: "task-corrupt-stdout", Prompt: "hi"}
 
+	t.Run("execution error keeps identity", func(t *testing.T) {
+		sentinel := errors.New("sentinel exec error")
+		queueTaskExecOverride = func(args []string, cwd, prompt string) ([]byte, error) { return nil, sentinel }
+		t.Cleanup(func() { queueTaskExecOverride = nil })
+		_, _, _, _, err := runQueueTask(context.Background(), t.TempDir(), t.TempDir(), task)
+		assert.ErrorIs(t, err, sentinel)
+	})
+	t.Run("bad stdout with execution error keeps fallback", func(t *testing.T) {
+		t.Cleanup(func() { queueTaskExecOverride = nil })
+		for _, output := range [][]byte{[]byte("garbage"), nil} {
+			sentinel := errors.New("child error")
+			queueTaskExecOverride = func(args []string, cwd, prompt string) ([]byte, error) { return output, sentinel }
+			id, cost, tokens, reason, err := runQueueTask(context.Background(), t.TempDir(), t.TempDir(), task)
+			assert.ErrorIs(t, err, sentinel)
+			assert.Equal(t, task.ID, id)
+			assert.Zero(t, cost)
+			assert.Zero(t, tokens)
+			assert.Empty(t, reason)
+		}
+	})
+
 	t.Run("garbled non-JSON output", func(t *testing.T) {
 		badOutput := "not json at all, this is a crash banner or stderr bleed onto stdout"
 		queueTaskExecOverride = func(args []string, cwd, prompt string) ([]byte, error) {
@@ -41,9 +63,10 @@ func TestRunQueueTask_CorruptStdout_ReturnsErrorWithBoundedExcerpt(t *testing.T)
 		}
 		t.Cleanup(func() { queueTaskExecOverride = nil })
 
-		cost, tokens, exitReason, err := runQueueTask(context.Background(), t.TempDir(), t.TempDir(), task)
+		id, cost, tokens, exitReason, err := runQueueTask(context.Background(), t.TempDir(), t.TempDir(), task)
 
 		require.Error(t, err, "corrupt/non-JSON stdout must be reported as an error, not silently treated as success")
+		assert.Equal(t, task.ID, id)
 		assert.Zero(t, cost)
 		assert.Zero(t, tokens)
 		assert.Empty(t, exitReason)
@@ -56,7 +79,7 @@ func TestRunQueueTask_CorruptStdout_ReturnsErrorWithBoundedExcerpt(t *testing.T)
 		}
 		t.Cleanup(func() { queueTaskExecOverride = nil })
 
-		_, _, _, err := runQueueTask(context.Background(), t.TempDir(), t.TempDir(), task)
+		_, _, _, _, err := runQueueTask(context.Background(), t.TempDir(), t.TempDir(), task)
 		require.Error(t, err, "empty child stdout must be reported as an error, not silently treated as success")
 	})
 
@@ -73,7 +96,7 @@ func TestRunQueueTask_CorruptStdout_ReturnsErrorWithBoundedExcerpt(t *testing.T)
 		}
 		t.Cleanup(func() { queueTaskExecOverride = nil })
 
-		_, _, _, err := runQueueTask(context.Background(), t.TempDir(), t.TempDir(), task)
+		_, _, _, _, err := runQueueTask(context.Background(), t.TempDir(), t.TempDir(), task)
 		require.Error(t, err)
 		assert.Less(t, len(err.Error()), len(huge),
 			"error text must be a bounded excerpt of a huge stdout, not the entire payload")
