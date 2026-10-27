@@ -98,6 +98,7 @@ func TestBatchCLIRunRootDisposalAfterPurge(t *testing.T) {
 	show := runBatchCLIRunSubprocessArgs(t, dir, []string{"batch", "show", result.RootID})
 	require.Contains(t, show.Error, "not found: ")
 }
+
 func batchRunCommandSpec(program string, args []string) string {
 	raw, _ := json.Marshal(map[string]any{"items": []any{map[string]any{"tool": "run_command", "input": map[string]any{"program": program, "args": args}}}})
 	return string(raw)
