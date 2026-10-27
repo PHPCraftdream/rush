@@ -69,6 +69,11 @@ func ResetProviderCacheForTests() {
 
 // file to cache provider data
 func cachePathFor(name string) string {
+	// Provider caches are Rush-owned data siblings: under --global-dir they
+	// move into the isolated root's data dir.
+	if dataRoot, ok := globalDataRoot(); ok {
+		return filepath.Join(dataRoot, name+".json")
+	}
 	xdgDataHome := os.Getenv("XDG_DATA_HOME")
 	if xdgDataHome != "" {
 		return filepath.Join(xdgDataHome, appName, name+".json")

@@ -37,8 +37,16 @@ func globalSkillsDirs(homeDir string) []string {
 		return []string{rushSkills}
 	}
 
+	// Rush-owned skills dir. Under --global-dir the Rush-owned entries
+	// (including the Windows appData compat entry below) move under
+	// <root>/config/rush/skills; third-party dirs stay put.
+	rushOwnedSkills := filepath.Join(home.Config(), appName, "skills")
+	if root, ok := GlobalDir(); ok {
+		rushOwnedSkills = filepath.Join(root, "config", appName, "skills")
+	}
+
 	paths := []string{
-		filepath.Join(home.Config(), appName, "skills"),
+		rushOwnedSkills,
 		filepath.Join(home.Config(), "agents", "skills"),
 		// Per the Agent Skills spec, scan ~/.agents/skills
 		filepath.Join(homeDir, ".agents", "skills"),
@@ -54,12 +62,24 @@ func globalSkillsDirs(homeDir string) []string {
 		)
 		paths = append(
 			paths,
-			filepath.Join(appData, appName, "skills"),
+			windowsRushSkills(appData),
 			filepath.Join(appData, "agents", "skills"),
 		)
 	}
 
+	if _, ok := GlobalDir(); ok {
+		return dedupeDirs(paths)
+	}
 	return paths
+}
+
+// windowsRushSkills is the Rush-owned Windows appData skills entry; under
+// --global-dir it moves into the root like every Rush-owned dir.
+func windowsRushSkills(appData string) string {
+	if root, ok := GlobalDir(); ok {
+		return filepath.Join(root, "config", appName, "skills")
+	}
+	return filepath.Join(appData, appName, "skills")
 }
 
 // projectSkillSubdirs lists the conventional subdirectories where

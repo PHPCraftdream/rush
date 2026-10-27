@@ -162,6 +162,21 @@ func LoadMCPPrompts() ([]MCPPrompt, error) {
 }
 
 func buildCommandSources(cfg *config.Config) []commandSource {
+	if root, ok := config.GlobalDir(); ok {
+		// Both the home.Config()/rush/commands and ~/.rush/commands
+		// locations are Rush-owned, so under --global-dir they collapse
+		// into the single relocated dir (deduped by construction).
+		return []commandSource{
+			{
+				path:   filepath.Join(root, "config", "rush", "commands"),
+				prefix: userCommandPrefix,
+			},
+			{
+				path:   filepath.Join(cfg.Options.DataDirectory, "commands"),
+				prefix: projectCommandPrefix,
+			},
+		}
+	}
 	return []commandSource{
 		{
 			path:   filepath.Join(home.Config(), "rush", "commands"),

@@ -8,6 +8,14 @@ import (
 // canonicalGlobalDataPath is the OS-resolved global settings file independent
 // of environment overrides. Tests may replace it to use an isolated fixture.
 var canonicalGlobalDataPath = func() string {
+	// The canonical lock protects a specific config file. Under
+	// --global-dir the isolated instance never writes the machine's real
+	// global data file, so the real lock must not apply to it — and the
+	// isolated lock must not apply to the real instance. Route the
+	// canonical source into the isolated root instead of the platform path.
+	if root, ok := GlobalDir(); ok {
+		return readSlotOf(filepath.Join(root, "data", appName+".json"))
+	}
 	if testing.Testing() {
 		return ""
 	}

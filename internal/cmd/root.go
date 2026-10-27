@@ -45,6 +45,13 @@ func init() {
 	// Chain: the journal start record is written first, before the
 	// password check, so denied commands are journalled too.
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		// Apply --global-dir before journaling: the audit log lives under
+		// GlobalConfigData and must already be relocated. (Execute() applies
+		// it earlier from raw os.Args too; this re-applies the parsed value
+		// so the flag is effective even when only cobra sees it.)
+		if v, err := cmd.Flags().GetString("global-dir"); err == nil {
+			applyGlobalDir(v)
+		}
 		journalCommandStart(cmd, args)
 		return settingsPasswordPreRun(cmd, args)
 	}
@@ -57,6 +64,15 @@ func init() {
 			"the project and survive `git worktree remove`); dev builds (go run / go build -o "+
 			"in a checkout or temp) isolate to <wt>/.rush/dev so branch builds never touch the "+
 			"shared DB; otherwise <cwd>/.rush.")
+	rootCmd.PersistentFlags().String("global-dir", "",
+		"Relocate ALL Rush-owned global state under DIR so an experimental build "+
+			"runs side by side with a production install. Fixed layout: DIR/config "+
+			"(rush.json config, Rush-owned skills/commands), DIR/data (data file, "+
+			"oauth journals, provider/model-catalog caches, projects.json, audit "+
+			"logs, heartbeat, bin), DIR/cache. When set, RUSH_GLOBAL_CONFIG, "+
+			"RUSH_GLOBAL_DATA, RUSH_CACHE_DIR and XDG_* are ignored for Rush-owned "+
+			"global paths — nothing outside DIR is read or written by Rush. Can "+
+			"also be set via the RUSH_GLOBAL_DIR environment variable; the flag wins.")
 	rootCmd.PersistentFlags().BoolP("debug", "d", false, "Debug")
 	rootCmd.Flags().BoolP("help", "h", false, "Help")
 	rootCmd.Flags().StringP("host", "H", "localhost", "Host to bind the web UI to")
@@ -319,6 +335,9 @@ func commandErrorHandler(w io.Writer, styles fang.Styles, err error) {
 
 func Execute() {
 	defer recoverAndLogPanic()
+	// Apply --global-dir first, before fang.Execute and hence before any
+	// config/path resolution anywhere in the command tree.
+	applyGlobalDir(globalDirFlagFromArgs(os.Args[1:]))
 	journalExecutionStarted()
 
 	options := []fang.Option{
@@ -389,6 +408,56 @@ func colorSchemeFlagFromArgs(args []string) string {
 		}
 	}
 	return ""
+}
+
+// globalDirFlagFromArgs scans a raw arg slice for the --global-dir flag
+// (in --global-dir=value or --global-dir value form, and the same with a
+// single dash) and returns its value, or "" if absent. Same shape and
+// caveats as colorSchemeFlagFromArgs: it stops at the first "--"
+// (end-of-flags sentinel) and ignores a value that is clearly another
+// flag, so `--global-dir --debug` is treated as "not set" rather than
+// "--debug".
+func globalDirFlagFromArgs(args []string) string {
+	const name = "--global-dir"
+	const nameShort = "-global-dir" // tolerate single-dash form
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			return ""
+		}
+		if a == name || a == nameShort {
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				return args[i+1]
+			}
+			return "" // flag present but no value follows
+		}
+		if strings.HasPrefix(a, name+"=") {
+			return strings.TrimPrefix(a, name+"=")
+		}
+		if strings.HasPrefix(a, nameShort+"=") {
+			return strings.TrimPrefix(a, nameShort+"=")
+		}
+	}
+	return ""
+}
+
+// applyGlobalDir makes the --global-dir flag effective before any path
+// resolution: it overwrites the RUSH_GLOBAL_DIR environment variable with
+// the absolute, cleaned flag value (flag wins over a pre-set env var),
+// then eagerly creates the DIR/config, DIR/data, DIR/cache layout. An
+// empty value is a no-op — an env-only setting is honored directly by the
+// config resolvers, which create their own directories as they do today.
+func applyGlobalDir(flagValue string) {
+	if flagValue == "" {
+		return
+	}
+	abs, err := filepath.Abs(flagValue)
+	if err != nil {
+		abs = filepath.Clean(flagValue)
+	}
+	os.Setenv(config.GlobalDirEnv, abs)
+	config.EnsureGlobalDirTree()
 }
 
 // mcpAppOptions decides whether app.New should restrict MCP startup to

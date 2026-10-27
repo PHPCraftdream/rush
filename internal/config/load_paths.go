@@ -14,6 +14,11 @@ import (
 
 // GlobalConfig returns the global configuration file path for the application.
 func GlobalConfig() string {
+	// --global-dir wins over every other global-config override: a single
+	// root must not partially mix with RUSH_GLOBAL_CONFIG/XDG/home.
+	if root, ok := GlobalDir(); ok {
+		return filepath.Join(root, "config", fmt.Sprintf("%s.json", appName))
+	}
 	if rushGlobal := os.Getenv("RUSH_GLOBAL_CONFIG"); rushGlobal != "" {
 		return filepath.Join(rushGlobal, fmt.Sprintf("%s.json", appName))
 	}
@@ -24,12 +29,16 @@ func GlobalConfig() string {
 // /etc/rush/rush.json on Unix). It is empty on Windows, where there is no
 // system-wide config location — see config_unix.go / config_windows.go.
 func SystemConfig() string {
-	return systemConfigPath
+	return systemConfigSlot()
 }
 
 // GlobalCacheDir returns the path to the global cache directory for the
 // application.
 func GlobalCacheDir() string {
+	// --global-dir wins over every other cache-dir override (see GlobalConfig).
+	if root, ok := GlobalDir(); ok {
+		return filepath.Join(root, "cache")
+	}
 	if rushCache := os.Getenv("RUSH_CACHE_DIR"); rushCache != "" {
 		return rushCache
 	}
@@ -54,6 +63,10 @@ func ProjectConfigs(cwd string) []string {
 // GlobalConfigData returns the path to the main data directory for the application.
 // this config is used when the app overrides configurations instead of updating the global config.
 func GlobalConfigData() string {
+	// --global-dir wins over every other data-dir override (see GlobalConfig).
+	if dataRoot, ok := globalDataRoot(); ok {
+		return filepath.Join(dataRoot, fmt.Sprintf("%s.json", appName))
+	}
 	if rushData := os.Getenv("RUSH_GLOBAL_DATA"); rushData != "" {
 		return filepath.Join(rushData, fmt.Sprintf("%s.json", appName))
 	}
