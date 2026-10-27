@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/testguard"
 )
 
 func TestMain(m *testing.M) {
@@ -25,6 +26,17 @@ func TestMain(m *testing.M) {
 	// across environments (clean CI vs a dev box with the CLIs installed).
 	cliprovider.AvailableFunc = func() []cliprovider.CLISpec { return nil }
 
+	// The command-substitution helper runs this binary with a minimal
+	// environment (no temp dir) and never touches config.
+	if os.Getenv(resolveCommandHelperEnv) == "1" {
+		os.Exit(m.Run())
+	}
+	// Never let a test reach the operator's real global config.
+	cleanup, err := testguard.Isolate()
+	if err != nil {
+		os.Exit(1)
+	}
 	exitVal := m.Run()
+	cleanup()
 	os.Exit(exitVal)
 }

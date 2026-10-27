@@ -86,11 +86,11 @@ func TestWriteTargetSlotSymlinkMigratedWritesLandInKtav(t *testing.T) {
 	require.NotNil(t, store)
 
 	// Load migrated the symlink: rush.ktav exists beside the link path, the
-	// link is gone, and the physical target was never touched.
+	// link is kept, and the physical target was never touched.
 	ktavPath := ktavSiblingOf(logical)
 	require.FileExists(t, ktavPath)
 	_, err = os.Lstat(logical)
-	require.ErrorIs(t, err, os.ErrNotExist)
+	require.NoError(t, err)
 	persisted, err := os.ReadFile(physical)
 	require.NoError(t, err)
 	require.Equal(t, original, persisted)
@@ -144,14 +144,14 @@ func TestWriteTargetSlotSymlinkMigratedLockAndOAuth(t *testing.T) {
 	}
 
 	// Run Load first so the KTAV-6 symlink migration happens: the link is
-	// removed and rush.ktav is published beside the link path; the store is
+	// kept and rush.ktav is published beside the link path; the store is
 	// then built directly on the migrated slot.
 	_, err = Load(dir, dir, false)
 	require.NoError(t, err)
 	ktavPath := ktavSiblingOf(logical)
 	require.FileExists(t, ktavPath)
 	_, err = os.Lstat(logical)
-	require.ErrorIs(t, err, os.ErrNotExist)
+	require.NoError(t, err)
 	persistedOriginal, err := os.ReadFile(physical)
 	require.NoError(t, err)
 	require.Equal(t, original, persistedOriginal)

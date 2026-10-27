@@ -164,11 +164,19 @@ func runKtavArtifactMigrationStateLocked(ctx context.Context, legacy, dest, work
 			return err
 		}
 		return fmt.Errorf("%w: %s and its migration record exist but source and backup are gone", errKtavMigrationConflict, filepath.Base(dest))
+	case state.jsonExists && state.backupExists && !ktavKeepsLegacy(legacy):
+		return fmt.Errorf("%w: unexpected backup %s beside active %s; preserve every file and resolve manually", errKtavMigrationConflict, filepath.Base(backup), filepath.Base(legacy))
 	case state.ktavExists && state.jsonExists:
 		if !state.recordExists {
-			// The migration keeps the legacy JSON: readers prefer the Ktav
-			// generation and the JSON stays for older binaries.
-			return nil
+			if ktavKeepsLegacy(legacy) {
+				// The migration keeps the legacy JSON: readers prefer the
+				// Ktav generation and the JSON stays for older binaries.
+				return nil
+			}
+			// Readers prefer the Ktav generation, so the EXISTING Ktav file
+			// stays active; the JSON copy is ignored. Both files are left
+			// untouched for manual resolution.
+			return fmt.Errorf("%w: Ktav and JSON coexist without an authenticated migration record; the existing %s stays the active generation and %s is ignored", errKtavMigrationConflict, filepath.Base(dest), filepath.Base(legacy))
 		}
 		record, err := loadKtavMigrationRecord(recordPath, legacy, dest, workingDir)
 		if err != nil {
@@ -202,6 +210,9 @@ func runKtavArtifactMigrationTransaction(ctx context.Context, legacy, dest, back
 		if err != nil {
 			return err
 		}
+	}
+	if state.backupExists && !ktavKeepsLegacy(legacy) {
+		return fmt.Errorf("%w: backup %s already exists", errKtavMigrationConflict, filepath.Base(backup))
 	}
 	owner, enforce, err := ownerPolicyForMigration(legacy, workingDir)
 	if err != nil {
@@ -345,8 +356,12 @@ func ktavArtifactFinishArchival(ctx context.Context, legacy, dest, backup, recor
 	// Tolerant re-apply in case a crash between publish and the first
 	// Chtimes left the Ktav with its publication time: the migration is
 	// already complete, so a failure here must not report it as failed —
-	// warn paths-only instead.
-	if err := ktavArtifactPreserveMTime(dest, legacy); err != nil {
+	// warn paths-only instead. The source is the kept JSON or its backup.
+	source := legacy
+	if !ktavKeepsLegacy(legacy) {
+		source = backup
+	}
+	if err := ktavArtifactPreserveMTime(dest, source); err != nil {
 		warnMigrationDeferredOnce(dest, err.Error())
 	}
 	return nil

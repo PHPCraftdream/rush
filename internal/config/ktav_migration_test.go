@@ -35,18 +35,18 @@ func ktavSeedLoadLegacy(t *testing.T, dir string) string {
 	return legacy
 }
 
-// ktavAssertMigrated proves K + B exist, the record is gone, the backup
-// holds the original bytes, and the COMPLETE active config loaded from the
-// Ktav deep-equals the config loaded from the backup.
+// ktavAssertMigrated proves K exists beside the kept legacy JSON (no backup is
+// made), the record is gone, the JSON holds the original bytes, and the
+// COMPLETE active config loaded from the Ktav deep-equals the JSON.
 func ktavAssertMigrated(t *testing.T, dir string) {
 	t.Helper()
 	legacy := filepath.Join(dir, "rush.json")
 	require.FileExists(t, filepath.Join(dir, "rush.ktav"))
-	require.FileExists(t, filepath.Join(dir, "rush.json.bak"))
-	require.NoFileExists(t, legacy)
+	require.FileExists(t, legacy, "migration keeps the legacy JSON for older binaries")
+	require.NoFileExists(t, filepath.Join(dir, "rush.json.bak"))
 	require.NoFileExists(t, filepath.Join(dir, "rush.json.ktav-migration"))
 
-	backup, err := os.ReadFile(filepath.Join(dir, "rush.json.bak"))
+	backup, err := os.ReadFile(legacy)
 	require.NoError(t, err)
 	require.Contains(t, string(backup), ktavTestSecret)
 
@@ -96,6 +96,8 @@ func TestMigrateLegacyConfigFile_Success(t *testing.T) {
 	ktavAssertMigrated(t, dir)
 }
 
+// A leftover backup beside the active JSON no longer blocks migration (the
+// migration makes no backup of its own) and is never rewritten.
 func TestMigrateLegacyConfigFile_ExistingBackupNeverOverwritten(t *testing.T) {
 	ktavIsolateGlobals(t)
 	dir := t.TempDir()
@@ -106,17 +108,16 @@ func TestMigrateLegacyConfigFile_ExistingBackupNeverOverwritten(t *testing.T) {
 	preciousBackup := `{"providers":{"p":{"api_key":"PRECIOUS-BACKUP"}}}`
 	writeTestFile(t, backup, preciousBackup)
 
-	err := migrateLegacyConfigFile(context.Background(), legacy, dir)
-	require.ErrorIs(t, err, errKtavMigrationConflict)
+	require.NoError(t, migrateLegacyConfigFile(context.Background(), legacy, dir))
 
-	// Every file is preserved; the JSON stays active and unmodified.
+	// Every file is preserved; the JSON stays in place and unmodified.
 	onDisk, readErr := os.ReadFile(backup)
 	require.NoError(t, readErr)
 	require.Equal(t, preciousBackup, string(onDisk), "a pre-existing backup must never be rewritten")
 	jsonOnDisk, readErr := os.ReadFile(legacy)
 	require.NoError(t, readErr)
 	require.Equal(t, originalJSON, jsonOnDisk)
-	require.NoFileExists(t, filepath.Join(dir, "rush.ktav"))
+	require.FileExists(t, filepath.Join(dir, "rush.ktav"))
 }
 
 func TestMigrateLegacyConfigFile_BackupOnlyFailsClosed(t *testing.T) {
@@ -252,9 +253,7 @@ func TestMigrateLegacyConfigFile_CrashBoundariesRecovers(t *testing.T) {
 		{name: "after record before publish", step: "after-record", hasRecord: true, expectJSON: true},
 		{name: "after K rename before sync", step: "after-ktav-rename", hasRecord: true, expectJSON: true, expectKtav: true},
 		{name: "after K durable before archival", step: "after-publish", hasRecord: true, expectJSON: true, expectKtav: true},
-		{name: "during backup rename", step: "during-backup-rename", hasRecord: true, expectJSON: true, expectKtav: true},
-		{name: "after backup rename before sync", step: "after-backup-rename", hasRecord: true, expectKtav: true, expectBak: true},
-		{name: "after archival before record cleanup", step: "after-archive", hasRecord: true, expectKtav: true, expectBak: true},
+		{name: "after archival before record cleanup", step: "after-archive", hasRecord: true, expectJSON: true, expectKtav: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -357,54 +356,28 @@ func TestMigrateLegacyConfigFile_SourceChangedBeforeArchival(t *testing.T) {
 	require.NoFileExists(t, filepath.Join(dir, "rush.json.bak"))
 }
 
-func TestMigrateLegacyConfigFile_SourceChangedDuringArchival(t *testing.T) {
+// TestMigrateLegacyConfigFile_KeptJSONMayChangeAfterMigration: the legacy
+// JSON stays for older binaries, which may keep rewriting it. Later startups
+// neither fail nor touch it, and the Ktav generation stays active.
+func TestMigrateLegacyConfigFile_KeptJSONMayChangeAfterMigration(t *testing.T) {
 	ktavIsolateGlobals(t)
 	dir := t.TempDir()
 	legacy := ktavSeedLegacy(t, dir)
-	original, err := os.ReadFile(legacy)
+	require.NoError(t, migrateLegacyConfigFile(context.Background(), legacy, dir))
+	ktavBefore, err := os.ReadFile(filepath.Join(dir, "rush.ktav"))
 	require.NoError(t, err)
-	changed := []byte(`{"providers":{"p":{"api_key":"CHANGED-DURING-ARCHIVAL"}}}`)
-	previousHook := ktavMigrationStepHook
-	var rewriteErr error
-	ktavMigrationStepHook = func(step string) error {
-		if step == "during-backup-rename" {
-			rewriteErr = os.WriteFile(legacy, changed, 0o600)
-		}
-		return nil
-	}
-	err = migrateLegacyConfigFile(context.Background(), legacy, dir)
-	ktavMigrationStepHook = previousHook
-	if runtime.GOOS == "windows" {
-		// The pinned source handle denies a concurrent rewrite outright, so
-		// the window cannot be exploited: the original generation is archived.
-		require.Error(t, rewriteErr, "pinned source handle must deny a concurrent rewrite")
-		require.NoError(t, err)
-		backupBytes, readErr := os.ReadFile(filepath.Join(dir, "rush.json.bak"))
-		require.NoError(t, readErr)
-		require.Equal(t, original, backupBytes)
-		require.NoFileExists(t, legacy)
-		require.FileExists(t, filepath.Join(dir, "rush.ktav"))
-		require.NoFileExists(t, filepath.Join(dir, "rush.json.ktav-migration"))
-		return
-	}
-	require.NoError(t, rewriteErr)
-	require.ErrorIs(t, err, errKtavMigrationConflict)
-	require.Contains(t, err.Error(), "rush.json")
-	require.Contains(t, err.Error(), "rush.json.bak")
-	require.NotContains(t, err.Error(), ktavTestSecret)
 
-	ktavBytes, readErr := os.ReadFile(filepath.Join(dir, "rush.ktav"))
-	require.NoError(t, readErr)
-	originalTree, parseErr := ktavcodec.ParseJSONLossless(original)
-	require.NoError(t, parseErr)
-	convertedTree, decodeErr := ktavcodec.DecodeKtav(ktavBytes)
-	require.NoError(t, decodeErr)
-	require.NoError(t, ktavcodec.Equivalent(originalTree, convertedTree))
-	backupBytes, readErr := os.ReadFile(filepath.Join(dir, "rush.json.bak"))
-	require.NoError(t, readErr)
-	require.Equal(t, changed, backupBytes)
-	require.NoFileExists(t, legacy)
-	require.FileExists(t, filepath.Join(dir, "rush.json.ktav-migration"))
+	changed := []byte(`{"providers":{"p":{"api_key":"WRITTEN-BY-OLDER-BINARY"}}}`)
+	require.NoError(t, os.WriteFile(legacy, changed, 0o600))
+	require.NoError(t, migrateLegacyConfigFile(context.Background(), legacy, dir))
+
+	jsonAfter, err := os.ReadFile(legacy)
+	require.NoError(t, err)
+	require.Equal(t, changed, jsonAfter, "the kept JSON is never rewritten or removed")
+	ktavAfter, err := os.ReadFile(filepath.Join(dir, "rush.ktav"))
+	require.NoError(t, err)
+	require.Equal(t, ktavBefore, ktavAfter, "the Ktav generation stays active and untouched")
+	require.NoFileExists(t, filepath.Join(dir, "rush.json.bak"))
 }
 
 func TestMigrateLegacyConfigFile_ForgedRecordFailsClosed(t *testing.T) {
@@ -465,7 +438,7 @@ func TestMigrateLegacyConfigFile_ForgedRecordFailsClosed(t *testing.T) {
 		require.ErrorIs(t, err, errKtavMigrationRecord)
 		require.FileExists(t, recordPath)
 		require.FileExists(t, filepath.Join(dir, "rush.ktav"))
-		require.FileExists(t, filepath.Join(dir, "rush.json.bak"))
+		require.FileExists(t, legacy)
 	})
 
 	t.Run("foreign owner rejected on open", func(t *testing.T) {
@@ -566,9 +539,17 @@ func TestMigrateLegacyConfigFile_NoSecretsInDiagnostics(t *testing.T) {
 
 	dir := t.TempDir()
 	legacy := ktavSeedLegacy(t, dir)
-	// Force a conflict: an unexpected backup beside the active JSON.
-	writeTestFile(t, filepath.Join(dir, "rush.json.bak"), `{"x":1}`)
+	// Force a conflict: the JSON changes between publication and the
+	// archival check.
+	prevHook := ktavMigrationStepHook
+	ktavMigrationStepHook = func(step string) error {
+		if step == "after-publish" {
+			return os.WriteFile(legacy, []byte(`{"x":1}`), 0o600)
+		}
+		return nil
+	}
 	err := migrateLegacyConfigFile(context.Background(), legacy, dir)
+	ktavMigrationStepHook = prevHook
 	require.ErrorIs(t, err, errKtavMigrationConflict)
 	require.NotContains(t, err.Error(), ktavTestSecret)
 

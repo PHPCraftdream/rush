@@ -262,13 +262,12 @@ func TestKtavArtifactCacheMTimePreserved(t *testing.T) {
 	require.NoError(t, migrateKtavArtifact(context.Background(), providers, dir))
 
 	ktav := ktavSiblingOf(providers)
-	backup := backupPathFor(providers)
-	require.NoFileExists(t, providers)
+	require.FileExists(t, providers, "the JSON cache is kept for older binaries")
 	require.FileExists(t, ktav)
-	require.FileExists(t, backup)
-	backupBytes, err := os.ReadFile(backup)
+	require.NoFileExists(t, backupPathFor(providers))
+	jsonBytes, err := os.ReadFile(providers)
 	require.NoError(t, err)
-	require.Equal(t, `{"providers":[{"name":"p"}]}`, string(backupBytes))
+	require.Equal(t, `{"providers":[{"name":"p"}]}`, string(jsonBytes))
 
 	info, err := os.Stat(ktav)
 	require.NoError(t, err)
@@ -453,9 +452,9 @@ func TestKtavArtifactCacheReaderResolvesConvertedCaches(t *testing.T) {
 
 			require.NoError(t, migrateKtavArtifact(context.Background(), legacy, dir))
 
-			require.NoFileExists(t, legacy)
+			require.FileExists(t, legacy, "the JSON cache is kept for older binaries")
 			require.FileExists(t, ktavSiblingOf(legacy))
-			require.FileExists(t, backupPathFor(legacy))
+			require.NoFileExists(t, backupPathFor(legacy))
 			converted, err := readCacheDocument(legacy)
 			require.NoError(t, err)
 			require.JSONEq(t, tc.body, string(converted), "the production reader must decode the converted Ktav to the original JSON document")
@@ -503,7 +502,9 @@ func TestKtavArtifactExistingKtavConflictLeavesKtavActive(t *testing.T) {
 		existingBody := `{"providers":[{"name":"existing-ktav"}]}`
 		writeTestFile(t, dest, string(testKtavBytes(t, existingBody)))
 
-		require.ErrorIs(t, migrateKtavArtifact(context.Background(), legacy, dir), errKtavMigrationConflict)
+		// A kept JSON beside an existing Ktav is the normal post-migration
+		// state for caches: nothing to do, nothing rewritten.
+		require.NoError(t, migrateKtavArtifact(context.Background(), legacy, dir))
 
 		jsonOnDisk, err := os.ReadFile(legacy)
 		require.NoError(t, err)
@@ -550,9 +551,9 @@ func TestKtavArtifactChtimesFailureDefersConversion(t *testing.T) {
 	// working Chtimes — through the recovery rules, which HARD-apply the
 	// mtime before retiring the record.
 	require.NoError(t, migrateKtavArtifact(context.Background(), providers, dir))
-	require.NoFileExists(t, providers)
+	require.FileExists(t, providers, "the JSON cache is kept for older binaries")
 	require.FileExists(t, ktavSiblingOf(providers))
-	require.FileExists(t, backupPathFor(providers))
+	require.NoFileExists(t, backupPathFor(providers))
 	require.NoFileExists(t, migrationRecordPathFor(providers))
 	info, statErr := os.Stat(ktavSiblingOf(providers))
 	require.NoError(t, statErr)
@@ -622,8 +623,8 @@ func TestKtavLoadConvertsCachesRegardlessOfWorkspaceFormat(t *testing.T) {
 			t.Cleanup(func() { store.stopOAuthJournalWorkers() })
 
 			require.FileExists(t, ktavSiblingOf(providers), "the providers cache must be converted after Load")
-			require.NoFileExists(t, providers)
-			require.FileExists(t, backupPathFor(providers))
+			require.FileExists(t, providers, "the JSON cache is kept for older binaries")
+			require.NoFileExists(t, backupPathFor(providers))
 			converted, err := readCacheDocument(providers)
 			require.NoError(t, err)
 			require.JSONEq(t, `{"providers":[{"name":"p"}]}`, string(converted))
@@ -711,9 +712,9 @@ func TestKtavArtifactPersistentChtimesFailureNeverArchives(t *testing.T) {
 	// Attempt 3: with a working Chtimes the recovery converges fully.
 	ktavArtifactStatFile, ktavArtifactChtimes = savedStat, savedChtimes
 	require.NoError(t, migrateKtavArtifact(context.Background(), providers, dir))
-	require.NoFileExists(t, providers)
+	require.FileExists(t, providers, "the JSON cache is kept for older binaries")
 	require.FileExists(t, ktavSiblingOf(providers))
-	require.FileExists(t, backupPathFor(providers))
+	require.NoFileExists(t, backupPathFor(providers))
 	require.NoFileExists(t, migrationRecordPathFor(providers))
 	info, statErr := os.Stat(ktavSiblingOf(providers))
 	require.NoError(t, statErr)
@@ -721,11 +722,10 @@ func TestKtavArtifactPersistentChtimesFailureNeverArchives(t *testing.T) {
 }
 
 // TestKtavCacheStartupRecoversPostArchiveTransactions seeds the post-crash
-// leftover state (Ktav + backup + migration record, legacy JSON already
-// archived) for BOTH a model catalog and providers.json — produced
-// authentically by a hook crash at "after-backup-rename" — and proves
-// ktavMigrateCacheArtifactsStartup discovers and converges BOTH pending
-// transactions, including the catalog whose legacy JSON no longer exists.
+// leftover state (Ktav + kept JSON + migration record) for BOTH a model
+// catalog and providers.json — produced authentically by a hook crash at
+// "after-archive" — and proves ktavMigrateCacheArtifactsStartup discovers and
+// converges BOTH pending transactions without touching the kept JSON.
 func TestKtavCacheStartupRecoversPostArchiveTransactions(t *testing.T) {
 	ktavArtifactTestEnv(t)
 	dir := canonicalArtifactTempDir(t)
@@ -743,12 +743,12 @@ func TestKtavCacheStartupRecoversPostArchiveTransactions(t *testing.T) {
 		legacy := cachePathFor(tc.name)
 		legacyPaths[tc.name] = legacy
 		writeTestFile(t, legacy, tc.body)
-		require.NoError(t, os.Chtimes(legacy, old, old), "the stale source mtime must be inherited by the backup")
+		require.NoError(t, os.Chtimes(legacy, old, old), "the stale source mtime must be inherited by the Ktav")
 	}
 
 	previousConfigHook := ktavMigrationStepHook
 	ktavMigrationStepHook = func(step string) error {
-		if step == "after-backup-rename" {
+		if step == "after-archive" {
 			return errKtavMigrationCrashInjected
 		}
 		return nil
@@ -758,13 +758,13 @@ func TestKtavCacheStartupRecoversPostArchiveTransactions(t *testing.T) {
 		err := migrateKtavArtifact(context.Background(), legacyPaths[tc.name], dir)
 		require.ErrorIs(t, err, errKtavMigrationCrashInjected)
 	}
-	// The crash-after-archive state for both artifacts: Ktav + backup +
-	// record, no JSON.
+	// The crash-after-archive state for both artifacts: Ktav + kept JSON +
+	// record, no backup.
 	for _, tc := range slots {
 		legacy := legacyPaths[tc.name]
-		require.NoFileExists(t, legacy)
+		require.FileExists(t, legacy)
 		require.FileExists(t, ktavSiblingOf(legacy))
-		require.FileExists(t, backupPathFor(legacy))
+		require.NoFileExists(t, backupPathFor(legacy))
 		require.FileExists(t, migrationRecordPathFor(legacy))
 	}
 
@@ -776,10 +776,10 @@ func TestKtavCacheStartupRecoversPostArchiveTransactions(t *testing.T) {
 		legacy := legacyPaths[tc.name]
 		require.NoFileExists(t, migrationRecordPathFor(legacy), tc.name+": the leftover record must be retired")
 		require.FileExists(t, ktavSiblingOf(legacy), tc.name+": the Ktav generation must survive")
-		require.FileExists(t, backupPathFor(legacy), tc.name+": the backup must survive")
+		require.FileExists(t, legacy, tc.name+": the kept JSON must survive")
 		info, statErr := os.Stat(ktavSiblingOf(legacy))
 		require.NoError(t, statErr)
-		require.WithinDuration(t, old, info.ModTime(), 2*time.Second, tc.name+": the stale mtime must be re-applied from the backup")
+		require.WithinDuration(t, old, info.ModTime(), 2*time.Second, tc.name+": the stale mtime must be re-applied from the kept JSON")
 	}
 }
 
