@@ -60,7 +60,7 @@ func TestR9RetentionWholeRootsDebtLiveDelegation(t *testing.T) {
 			require.Equal(t, want, count)
 			purged, err := a.BatchPurgeExpired(ctx, 100)
 			require.NoError(t, err)
-			require.EqualValues(t, 1, purged)
+			require.Equal(t, count, purged)
 			_, err = a.Read(ctx, "owner", snap.Root.RootID)
 			if want == 1 {
 				require.ErrorIs(t, err, sql.ErrNoRows)
@@ -102,7 +102,7 @@ func TestR9RetentionSettledCLIWakeDebtExpires(t *testing.T) {
 	require.EqualValues(t, 1, count)
 	purged, err = a.BatchPurgeExpired(ctx, 1<<62)
 	require.NoError(t, err)
-	require.EqualValues(t, 2, purged)
+	require.EqualValues(t, 1, purged, "purge counts delegations, like BatchCountExpired")
 }
 
 func TestR9OwnerCascade(t *testing.T) {
