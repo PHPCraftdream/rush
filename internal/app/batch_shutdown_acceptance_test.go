@@ -7,7 +7,7 @@ package app
 // Production entry points exercised:
 //   - App built through the REAL New() (the app
 //     install path: real Runner budgets — ControlTimeout 60s, CommitTimeout
-//     5s, RecordRetention 256 — real default batchExecutor, real commit
+//     db.BusyTimeout+15s, RecordRetention 256 — real default batchExecutor, real commit
 //     hook, real HostStore host identity and OS host lock).
 //   - Provider-backed work submitted through the app's own run path:
 //     ExecuteRun with RunOverrides.DiskProvider (a custom gated provider) +

@@ -18,6 +18,12 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
+// defaultBatchCommitTimeout must outlast SQLite's own lock wait: a commit
+// timeout is a runner fault that ends the process, so firing it while the
+// write is still legitimately waiting on the database lock kills healthy
+// runs whenever another writer holds the lock for a few seconds.
+const defaultBatchCommitTimeout = db.BusyTimeout + 15*time.Second
+
 // batchRuntimeFactory builds the R11E BatchRuntime plus the adapted R11C/D
 // seams from App-owned resources: the host identity, the DB writer, the
 // history service. Host, store and messages come from the App; the remaining
@@ -100,7 +106,7 @@ func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeF
 		deps.ControlTimeout = 60 * time.Second
 	}
 	if deps.CommitTimeout <= 0 {
-		deps.CommitTimeout = 5 * time.Second
+		deps.CommitTimeout = defaultBatchCommitTimeout
 	}
 	if deps.RecordRetention <= 0 {
 		deps.RecordRetention = 256
