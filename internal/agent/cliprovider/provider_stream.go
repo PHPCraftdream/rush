@@ -129,36 +129,40 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 		var err error
 		mcpSrv, err = newRushMCPServer(ctx, m.perms, m.sessions, sessionID, m.workingDir, "", m.mcpProxy)
 		if err != nil {
-			slog.Warn("cliprovider: failed to start MCP server, falling back to CLI permissions", "err", err)
-		} else {
-			cfgJSON, jsonErr := mcpSrv.mcpConfigJSON()
-			if jsonErr != nil {
-				slog.Warn("cliprovider: failed to marshal MCP config", "err", jsonErr)
-				mcpSrv.stop()
-				mcpSrv = nil
-			} else {
-				// Write the config to a temp file; the claude CLI reads it via --mcp-config.
-				tmpFile, tmpErr := os.CreateTemp("", "rush-mcp-*.json")
-				if tmpErr != nil {
-					slog.Warn("cliprovider: failed to create MCP config temp file", "err", tmpErr)
-					mcpSrv.stop()
-					mcpSrv = nil
-				} else {
-					if _, werr := tmpFile.Write(cfgJSON); werr != nil {
-						slog.Warn("cliprovider: failed to write MCP config", "err", werr)
-						_ = tmpFile.Close()
-						_ = os.Remove(tmpFile.Name())
-						mcpSrv.stop()
-						mcpSrv = nil
-					} else {
-						_ = tmpFile.Close()
-						mcpTmpCfg = tmpFile.Name()
-						args = append(args, "--mcp-config", mcpTmpCfg)
-						slog.Info("cliprovider: MCP config written", "path", mcpTmpCfg, "addr", mcpSrv.addr)
-					}
-				}
+			if attachTmpDir != "" {
+				_ = os.RemoveAll(attachTmpDir)
 			}
+			return nil, fmt.Errorf("cliprovider: required MCP server failed to start: %w", err)
 		}
+		cfgJSON, jsonErr := mcpSrv.mcpConfigJSON()
+		if jsonErr != nil {
+			mcpSrv.stop()
+			if attachTmpDir != "" {
+				_ = os.RemoveAll(attachTmpDir)
+			}
+			return nil, fmt.Errorf("cliprovider: required MCP config failed: %w", jsonErr)
+		}
+		tmpFile, tmpErr := os.CreateTemp("", "rush-mcp-*.json")
+		if tmpErr != nil {
+			mcpSrv.stop()
+			if attachTmpDir != "" {
+				_ = os.RemoveAll(attachTmpDir)
+			}
+			return nil, fmt.Errorf("cliprovider: required MCP config file failed: %w", tmpErr)
+		}
+		if _, werr := tmpFile.Write(cfgJSON); werr != nil {
+			_ = tmpFile.Close()
+			_ = os.Remove(tmpFile.Name())
+			mcpSrv.stop()
+			if attachTmpDir != "" {
+				_ = os.RemoveAll(attachTmpDir)
+			}
+			return nil, fmt.Errorf("cliprovider: required MCP config write failed: %w", werr)
+		}
+		_ = tmpFile.Close()
+		mcpTmpCfg = tmpFile.Name()
+		args = append(args, "--mcp-config", mcpTmpCfg)
+		slog.Info("cliprovider: MCP config written", "path", mcpTmpCfg, "addr", mcpSrv.addr)
 	}
 
 	// When rush's own MCP server is active, the CLI may use only rush's MCP
