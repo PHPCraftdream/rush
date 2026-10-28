@@ -7,10 +7,10 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"slices"
-	"strings"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
@@ -183,23 +183,68 @@ func handleGetLogs(a *appPkg.App, c *Client, msg WSMessage) {
 	c.reply(msg.ID, EventLogs, logs, "")
 }
 
-// readLastNLines reads the last N lines from a file (0 = all lines)
+// readLastNLines reads the last N lines from a file (0 = all lines).
 func readLastNLines(path string, n int) (string, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
+	defer f.Close()
+	return readLastNLinesFrom(f, n)
+}
 
+const logTailChunkSize = 32 * 1024
+
+func readLastNLinesFrom(file io.ReadSeeker, n int) (string, error) {
+	return readLastNLinesFromChunk(file, n, logTailChunkSize)
+}
+
+func readLastNLinesFromChunk(file io.ReadSeeker, n, chunkSize int) (string, error) {
+	end, err := file.Seek(0, io.SeekEnd)
+	if err != nil {
+		return "", err
+	}
 	if n <= 0 {
-		return string(data), nil
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return "", err
+		}
+		data, err := io.ReadAll(file)
+		return string(data), err
+	}
+	if end == 0 {
+		return "", nil
+	}
+	if chunkSize <= 0 {
+		chunkSize = logTailChunkSize
 	}
 
-	lines := strings.Split(string(data), "\n")
-	if len(lines) <= n {
-		return strings.Join(lines, "\n"), nil
+	var data []byte
+	position, lineBreaks := end, 0
+	for position > 0 {
+		size := int64(chunkSize)
+		if position < size {
+			size = position
+		}
+		position -= size
+		if _, err := file.Seek(position, io.SeekStart); err != nil {
+			return "", err
+		}
+		chunk := make([]byte, int(size))
+		if _, err := io.ReadFull(file, chunk); err != nil {
+			return "", err
+		}
+		data = append(chunk, data...)
+		for i := len(chunk) - 1; i >= 0; i-- {
+			if chunk[i] != '\n' {
+				continue
+			}
+			lineBreaks++
+			if lineBreaks == n {
+				return string(data[i+1:]), nil
+			}
+		}
 	}
-
-	return strings.Join(lines[len(lines)-n:], "\n"), nil
+	return string(data), nil
 }
 
 func handleSetTheme(a *appPkg.App, c *Client, msg WSMessage) {
