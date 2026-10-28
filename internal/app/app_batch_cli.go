@@ -48,10 +48,41 @@ func (a *App) DataDirectory() string {
 }
 
 func (a *App) BatchCLISession(ctx context.Context, id string) (session.Session, error) {
-	if id != "" {
-		return a.Sessions.Get(ctx, id)
+	if id == "" {
+		return a.Sessions.Create(ctx, "rush batch")
 	}
-	return a.Sessions.Create(ctx, "rush batch")
+	if a.Sessions.IsAgentToolSession(id) {
+		return session.Session{}, fmt.Errorf("cannot continue an agent tool session: %s", id)
+	}
+	sess, err := a.Sessions.Get(ctx, id)
+	if err != nil {
+		return session.Session{}, err
+	}
+	sess, err = a.validateResolvedSession(sess, id)
+	if err != nil {
+		return session.Session{}, err
+	}
+	if a.AgentCoordinator != nil && a.AgentCoordinator.IsSessionBusy(sess.ID) {
+		return session.Session{}, fmt.Errorf("session %q is already processing another request: %w", sess.ID, agent.ErrSessionBusy)
+	}
+	if a.dataDir == "" {
+		return sess, nil
+	}
+	// Another process (rush run, web) holds the session's OS lock while it
+	// drives a turn; probe it and release at once: the batch's own leaves
+	// may need the lock.
+	lock, err := session.TryAcquireSessionLock(a.dataDir, sess.ID)
+	if err != nil {
+		var busyErr *session.SessionLockBusyError
+		if errors.As(err, &busyErr) {
+			return session.Session{}, fmt.Errorf("session %q is already processing another request (held by PID %d): %w", sess.ID, busyErr.HolderPID, agent.ErrSessionBusy)
+		}
+		return session.Session{}, fmt.Errorf("check session %q lock: %w", sess.ID, err)
+	}
+	if err := lock.Release(); err != nil {
+		return session.Session{}, fmt.Errorf("release session %q lock probe: %w", sess.ID, err)
+	}
+	return sess, nil
 }
 
 func (a *App) BatchCLISpec(ctx context.Context, owner, messageID string, spec jobbatch.Spec) (jobbatch.Spec, func(), error) {
