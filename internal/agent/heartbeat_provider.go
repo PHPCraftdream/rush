@@ -4,6 +4,11 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"html"
+	"regexp"
+	"strings"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/heartbeat"
@@ -46,6 +51,7 @@ func (m *hbLanguageModel) Generate(ctx context.Context, call fantasy.Call) (*fan
 	heartbeat.RecordRequest(ctx, p, id, nil)
 	resp, err := m.inner.Generate(ctx, call)
 	if err != nil {
+		err = wrapProviderHTTPError(err)
 		heartbeat.RecordFailure(ctx, p, id, err)
 	}
 	return resp, err
@@ -56,6 +62,7 @@ func (m *hbLanguageModel) Stream(ctx context.Context, call fantasy.Call) (fantas
 	heartbeat.RecordRequest(ctx, p, id, nil)
 	s, err := m.inner.Stream(ctx, call)
 	if err != nil {
+		err = wrapProviderHTTPError(err)
 		heartbeat.RecordFailure(ctx, p, id, err)
 		return nil, err
 	}
@@ -67,6 +74,7 @@ func (m *hbLanguageModel) GenerateObject(ctx context.Context, call fantasy.Objec
 	heartbeat.RecordRequest(ctx, p, id, nil)
 	resp, err := m.inner.GenerateObject(ctx, call)
 	if err != nil {
+		err = wrapProviderHTTPError(err)
 		heartbeat.RecordFailure(ctx, p, id, err)
 	}
 	return resp, err
@@ -77,6 +85,7 @@ func (m *hbLanguageModel) StreamObject(ctx context.Context, call fantasy.ObjectC
 	heartbeat.RecordRequest(ctx, p, id, nil)
 	s, err := m.inner.StreamObject(ctx, call)
 	if err != nil {
+		err = wrapProviderHTTPError(err)
 		heartbeat.RecordFailure(ctx, p, id, err)
 		return nil, err
 	}
@@ -87,13 +96,95 @@ func (m *hbLanguageModel) Provider() string { return m.inner.Provider() }
 
 func (m *hbLanguageModel) Model() string { return m.inner.Model() }
 
-// observeStream passes every part through unchanged and in order, recording
-// one failure per observed error part. No goroutines; a consumer that stops
+func wrapProviderHTTPError(err error) error {
+	var providerErr *fantasy.ProviderError
+	if !errors.As(err, &providerErr) {
+		return err
+	}
+	message, ok := sanitizeProviderHTML(providerErr)
+	if !ok {
+		return err
+	}
+	userMessage := strings.Replace(err.Error(), providerErr.Error(), message, 1)
+	if userMessage == err.Error() {
+		userMessage = message
+	}
+	return &sanitizedProviderError{message: userMessage, cause: err}
+}
+
+type sanitizedProviderError struct {
+	message string
+	cause   error
+}
+
+func (e *sanitizedProviderError) Error() string { return e.message }
+
+func (e *sanitizedProviderError) Unwrap() error { return e.cause }
+
+func sanitizeProviderHTML(err *fantasy.ProviderError) (string, bool) {
+	body := strings.TrimSpace(err.Message)
+	if body == "" {
+		body = strings.TrimSpace(string(err.ResponseBody))
+	}
+	if !isHTMLProviderError(err) {
+		return "", false
+	}
+	text := htmlTitle(body)
+	if text == "" {
+		text = htmlText(body)
+	}
+	const maxExcerpt = 240
+	if len(text) > maxExcerpt {
+		text = strings.TrimSpace(strings.ToValidUTF8(text[:maxExcerpt], "")) + "…"
+	}
+	if text == "" {
+		text = "no details"
+	}
+	title := strings.TrimSpace(err.Title)
+	if title == "" {
+		title = "error page"
+	}
+	return fmt.Sprintf("HTTP %d %s: %s", err.StatusCode, title, text), true
+}
+
+func htmlTitle(body string) string {
+	match := htmlTitlePattern.FindStringSubmatch(body)
+	if len(match) < 2 {
+		return ""
+	}
+	return htmlText(match[1])
+}
+
+func isHTMLProviderError(err *fantasy.ProviderError) bool {
+	body := strings.TrimSpace(err.Message)
+	if body == "" {
+		body = strings.TrimSpace(string(err.ResponseBody))
+	}
+	lower := strings.ToLower(body)
+	return strings.HasPrefix(lower, "<!doctype html") || strings.HasPrefix(lower, "<html")
+}
+
+var htmlTagPattern = regexp.MustCompile(`<[^>]*>`)
+var htmlTitlePattern = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title\s*>`)
+var htmlHiddenContentPattern = regexp.MustCompile(`(?is)<(?:style|script)[^>]*>.*?</(?:style|script)\s*>`)
+var htmlSpacePattern = regexp.MustCompile(`\s+`)
+
+func htmlText(body string) string {
+	body = htmlHiddenContentPattern.ReplaceAllString(body, " ")
+	text := htmlTagPattern.ReplaceAllString(body, " ")
+	text = html.UnescapeString(text)
+	return strings.TrimSpace(htmlSpacePattern.ReplaceAllString(text, " "))
+}
+
+// observeStream passes every part through in order (an error part carrying an
+// HTML provider body is rewritten to a short summary), recording one failure
+// per observed error part. No goroutines; a consumer that stops
 // early simply stops observing.
 func observeStream(ctx context.Context, provider, model string, s fantasy.StreamResponse) fantasy.StreamResponse {
 	return func(yield func(fantasy.StreamPart) bool) {
 		s(func(part fantasy.StreamPart) bool {
 			if part.Type == fantasy.StreamPartTypeError && part.Error != nil {
+				part.Error = wrapProviderHTTPError(part.Error)
 				heartbeat.RecordFailure(ctx, provider, model, part.Error)
 			}
 			return yield(part)
@@ -105,6 +196,7 @@ func observeObjectStream(ctx context.Context, provider, model string, s fantasy.
 	return func(yield func(fantasy.ObjectStreamPart) bool) {
 		s(func(part fantasy.ObjectStreamPart) bool {
 			if part.Type == fantasy.ObjectStreamPartTypeError && part.Error != nil {
+				part.Error = wrapProviderHTTPError(part.Error)
 				heartbeat.RecordFailure(ctx, provider, model, part.Error)
 			}
 			return yield(part)
