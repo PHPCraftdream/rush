@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/ktavcodec"
@@ -27,8 +28,9 @@ import (
 const batchCLIHelperEnv = "R14_BATCH_CLI_HELPER"
 
 type batchCLIResult struct {
-	Output string
-	Error  string
+	Output           string
+	Error            string
+	RunIncompleteErr bool
 }
 
 func TestBatchCLISubprocessShowInstalledDatabase(t *testing.T) {
@@ -300,6 +302,8 @@ func executeBatchCLIHelper() {
 	err := rootCmd.Execute()
 	result := batchCLIResult{Output: output.String()}
 	if err != nil {
+		var incomplete *app.RunIncompleteError
+		result.RunIncompleteErr = errors.As(err, &incomplete)
 		result.Error = err.Error()
 	}
 	_ = json.NewEncoder(os.Stdout).Encode(result)
