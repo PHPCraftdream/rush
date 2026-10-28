@@ -39,3 +39,30 @@ func TestAuthLoginStillWorks(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	require.NotEmpty(t, w.Result().Cookies())
 }
+
+func TestAuthBodyBoundaryAndTrailingData(t *testing.T) {
+	t.Parallel()
+	a := newAuth()
+	valid := []byte(`{"token":"` + a.token + `"}`)
+	for _, tc := range []struct {
+		name   string
+		body   []byte
+		status int
+	}{
+		{"exact limit", append(bytes.Clone(valid), bytes.Repeat([]byte(" "), maxAuthBodyBytes-len(valid))...), http.StatusOK},
+		{"one byte over", append(bytes.Clone(valid), bytes.Repeat([]byte(" "), maxAuthBodyBytes-len(valid)+1)...), http.StatusRequestEntityTooLarge},
+		{"second JSON value", append(bytes.Clone(valid), []byte(` {}`)...), http.StatusBadRequest},
+		{"invalid trailing data", append(bytes.Clone(valid), []byte(` garbage`)...), http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := httptest.NewRequest(http.MethodPost, "/auth", bytes.NewReader(tc.body))
+			w := httptest.NewRecorder()
+			a.HandleAuth(w, r)
+			require.Equal(t, tc.status, w.Code)
+			if tc.status != http.StatusOK {
+				require.Empty(t, w.Result().Cookies())
+			}
+		})
+	}
+}
