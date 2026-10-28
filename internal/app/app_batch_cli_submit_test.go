@@ -56,6 +56,27 @@ func TestBatchCLISessionFreshAndBusy(t *testing.T) {
 	require.ErrorIs(t, err, agent.ErrSessionBusy)
 }
 
+func TestBatchCLISessionRespectsOSSessionLock(t *testing.T) {
+	ctx := context.Background()
+	a := newFullNewApp(t)
+	sess, err := a.Sessions.Create(ctx, "locked")
+	require.NoError(t, err)
+
+	lock, err := session.TryAcquireSessionLock(a.dataDir, sess.ID)
+	require.NoError(t, err)
+	_, err = a.BatchCLISession(ctx, sess.ID)
+	require.ErrorIs(t, err, agent.ErrSessionBusy)
+	require.ErrorContains(t, err, fmt.Sprintf("PID %d", lock.HolderPID))
+	require.NoError(t, lock.Release())
+
+	_, err = a.BatchCLISession(ctx, sess.ID)
+	require.NoError(t, err)
+	// Successful validation probes and immediately releases its own lock.
+	reacquired, err := session.TryAcquireSessionLock(a.dataDir, sess.ID)
+	require.NoError(t, err)
+	require.NoError(t, reacquired.Release())
+}
+
 func TestAppBatchResultFailureAndSkippedLeaf(t *testing.T) {
 	a := newFullNewApp(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
