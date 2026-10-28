@@ -36,6 +36,14 @@ func (r *BatchLiveReader) BatchLevel(ctx context.Context, ref BatchLiveRef, node
 		v.Err = err
 		return v
 	}
+	return r.batchLevelRows(ref, nodeID, rows)
+}
+
+func (r *BatchLiveReader) batchLevelRows(ref BatchLiveRef, nodeID string, rows []db.BatchNode) BatchLevelResult {
+	v := BatchLevelResult{Ref: ref}
+	if nodeID == "" {
+		nodeID = ref.RootID
+	}
 	v.Complete = true
 	byID := make(map[string]db.BatchNode)
 	children := make(map[string][]string)

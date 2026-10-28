@@ -9,6 +9,26 @@ import (
 	"context"
 )
 
+const deleteBatchRunnerCheckpointIfIdle = `-- name: DeleteBatchRunnerCheckpointIfIdle :exec
+DELETE FROM batch_runner_checkpoints
+WHERE host_id = ?1 AND runner_id = ?2
+  AND NOT EXISTS (SELECT 1 FROM batch_nodes n
+    WHERE n.host_id = batch_runner_checkpoints.host_id
+      AND n.runner_id = batch_runner_checkpoints.runner_id)
+`
+
+type DeleteBatchRunnerCheckpointIfIdleParams struct {
+	HostID   string `json:"host_id"`
+	RunnerID string `json:"runner_id"`
+}
+
+// Checkpoints are rootless; remove only once purge leaves no nodes for this
+// host/runner, within the caller's purge transaction.
+func (q *Queries) DeleteBatchRunnerCheckpointIfIdle(ctx context.Context, arg DeleteBatchRunnerCheckpointIfIdleParams) error {
+	_, err := q.exec(ctx, q.deleteBatchRunnerCheckpointIfIdleStmt, deleteBatchRunnerCheckpointIfIdle, arg.HostID, arg.RunnerID)
+	return err
+}
+
 const getBatchRootIdentity = `-- name: GetBatchRootIdentity :one
 
 SELECT owner_session_id, host_id, runner_id FROM batch_nodes

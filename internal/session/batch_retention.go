@@ -50,6 +50,11 @@ func (s *BatchStore) BatchPurgeExpired(ctx context.Context, cutoff int64) (int64
 		}
 		count += n
 	}
+	for _, r := range roots {
+		if err = q.DeleteBatchRunnerCheckpointIfIdle(ctx, db.DeleteBatchRunnerCheckpointIfIdleParams{HostID: r.HostID, RunnerID: r.RunnerID}); err != nil {
+			return 0, err
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return 0, err
 	}

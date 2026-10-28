@@ -201,6 +201,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.deleteAsyncHostIfNoNodesStmt, err = db.PrepareContext(ctx, deleteAsyncHostIfNoNodes); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteAsyncHostIfNoNodes: %w", err)
 	}
+	if q.deleteBatchRunnerCheckpointIfIdleStmt, err = db.PrepareContext(ctx, deleteBatchRunnerCheckpointIfIdle); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteBatchRunnerCheckpointIfIdle: %w", err)
+	}
 	if q.deleteBatchSubtreeStmt, err = db.PrepareContext(ctx, deleteBatchSubtree); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteBatchSubtree: %w", err)
 	}
@@ -892,6 +895,11 @@ func (q *Queries) Close() error {
 	if q.deleteAsyncHostIfNoNodesStmt != nil {
 		if cerr := q.deleteAsyncHostIfNoNodesStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing deleteAsyncHostIfNoNodesStmt: %w", cerr)
+		}
+	}
+	if q.deleteBatchRunnerCheckpointIfIdleStmt != nil {
+		if cerr := q.deleteBatchRunnerCheckpointIfIdleStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteBatchRunnerCheckpointIfIdleStmt: %w", cerr)
 		}
 	}
 	if q.deleteBatchSubtreeStmt != nil {
@@ -1647,6 +1655,7 @@ type Queries struct {
 	createSessionStmt                                    *sql.Stmt
 	createSessionPermissionStmt                          *sql.Stmt
 	deleteAsyncHostIfNoNodesStmt                         *sql.Stmt
+	deleteBatchRunnerCheckpointIfIdleStmt                *sql.Stmt
 	deleteBatchSubtreeStmt                               *sql.Stmt
 	deleteFileStmt                                       *sql.Stmt
 	deleteMessageStmt                                    *sql.Stmt
@@ -1843,6 +1852,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		createSessionStmt:                                    q.createSessionStmt,
 		createSessionPermissionStmt:                          q.createSessionPermissionStmt,
 		deleteAsyncHostIfNoNodesStmt:                         q.deleteAsyncHostIfNoNodesStmt,
+		deleteBatchRunnerCheckpointIfIdleStmt:                q.deleteBatchRunnerCheckpointIfIdleStmt,
 		deleteBatchSubtreeStmt:                               q.deleteBatchSubtreeStmt,
 		deleteFileStmt:                                       q.deleteFileStmt,
 		deleteMessageStmt:                                    q.deleteMessageStmt,

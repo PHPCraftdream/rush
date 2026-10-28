@@ -57,10 +57,7 @@ func (s *BatchStore) BatchHistorySnapshot(ctx context.Context, reader *BatchLive
 	if err != nil {
 		return BatchHistorySnapshot{}, fmt.Errorf("batch snapshot: level nodes: %w", err)
 	}
-	level := reader.BatchLevel(ctx, BatchLiveRef{OwnerSessionID: owner, RootID: root}, "")
-	if level.Err != nil {
-		return BatchHistorySnapshot{}, fmt.Errorf("batch snapshot: level: %w", level.Err)
-	}
+	level := reader.batchLevelRows(BatchLiveRef{OwnerSessionID: owner, RootID: root}, "", rows)
 	out := BatchHistorySnapshot{Owner: owner, RootID: root, Disappeared: level.Disappeared, Complete: level.Complete}
 	byID := make(map[string]db.BatchNode, len(rows))
 	for _, n := range rows {

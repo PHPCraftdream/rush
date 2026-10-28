@@ -19,3 +19,12 @@ ON CONFLICT (host_id, runner_id) DO UPDATE SET
     sequence = excluded.sequence, event_type = excluded.event_type,
     final = excluded.final, updated_at = excluded.updated_at
 WHERE excluded.sequence > batch_runner_checkpoints.sequence;
+
+-- name: DeleteBatchRunnerCheckpointIfIdle :exec
+-- Checkpoints are rootless; remove only once purge leaves no nodes for this
+-- host/runner, within the caller's purge transaction.
+DELETE FROM batch_runner_checkpoints
+WHERE host_id = @host_id AND runner_id = @runner_id
+  AND NOT EXISTS (SELECT 1 FROM batch_nodes n
+    WHERE n.host_id = batch_runner_checkpoints.host_id
+      AND n.runner_id = batch_runner_checkpoints.runner_id);
