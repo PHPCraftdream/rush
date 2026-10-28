@@ -202,7 +202,9 @@ func TestBatchIngressDirectWakeOnlyTimeoutCarriedInPayload(t *testing.T) {
 }
 
 // TestBatchIngressInvalidTimeoutFailsClosed catches the mutation where an
-// invalid timeout is accepted at ingress instead of failing the call.
+// invalid timeout is accepted at ingress instead of failing the call. The
+// failure is the model's input, so it comes back as a tool error result: a
+// Go error here is fatal and ended the whole run.
 func TestBatchIngressInvalidTimeoutFailsClosed(t *testing.T) {
 	t.Parallel()
 	runner := newFakeRunner(nil)
@@ -212,9 +214,17 @@ func TestBatchIngressInvalidTimeoutFailsClosed(t *testing.T) {
 	cfg.Delivery = newFakeDelivery(fantasy.ToolResponse{Content: "done"})
 	rt, err := newBatchRuntime(cfg)
 	require.NoError(t, err)
-	_, err = rt.Invoke(context.Background(), testInvocation(), newTestLeaf("bash"),
+	resp, err := rt.Invoke(context.Background(), testInvocation(), newTestLeaf("bash"),
 		fantasy.ToolCall{ID: "call-bad", Name: "bash", Input: `{"command":"x","timeout":{"seconds":1,"kind":"wake_only"}}`})
-	require.ErrorContains(t, err, "must be between 5 and 604800")
+	require.NoError(t, err, "a bad tool input must not end the turn")
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, "must be between 5 and 604800")
+
+	resp, err = rt.Invoke(context.Background(), testInvocation(), newTestLeaf("run_command"),
+		fantasy.ToolCall{ID: "call-both", Name: "run_command", Input: `{"command":"x","timeout":30,"timeout_seconds":30}`})
+	require.NoError(t, err, "a bad tool input must not end the turn")
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, "not both")
 	require.Zero(t, runner.submitCalls(), "an invalid timeout never submits")
 }
 
