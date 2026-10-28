@@ -16,6 +16,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/testguard"
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,6 +34,11 @@ func requireStdioDiagnosticProcessConfig(t *testing.T, cmd *exec.Cmd) {
 }
 
 func TestMain(m *testing.M) {
+	cleanup, err := testguard.Isolate()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "TestMain: isolate global state: %v\n", err)
+		os.Exit(1)
+	}
 	switch os.Getenv(helperEnvVar) {
 	case "level1":
 		runLevel1Helper()
@@ -41,7 +47,9 @@ func TestMain(m *testing.M) {
 		runLevel2Helper()
 		return
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
 }
 
 // runLevel1Helper models a stdio MCP server that spawns its own child (an

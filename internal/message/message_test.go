@@ -14,7 +14,10 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
+	"github.com/PHPCraftdream/rush/internal/testguard"
 )
+
+func TestMain(m *testing.M) { testguard.Main(m) }
 
 func newTestMessageDB(t *testing.T) (*sql.DB, *db.Queries) {
 	t.Helper()

@@ -20,6 +20,7 @@ const GlobalDirEnv = "RUSH_GLOBAL_DIR"
 // fails when the working directory cannot be resolved) the cleaned
 // relative value is returned rather than dropping the override.
 func GlobalDir() (string, bool) {
+	assertTestGlobalStateIsolated()
 	root := os.Getenv(GlobalDirEnv)
 	if root == "" {
 		return "", false
