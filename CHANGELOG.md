@@ -8,6 +8,31 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Commands that take no positional arguments now reject them instead of ignoring them: `rush sessions cost <id>` used to print the totals of every session as if they were that session's.
+- A tool that fails with an internal error inside a batch is now reported to the model as an error with that message; it used to come back as a successful empty result.
+- Malformed or empty tool-call arguments from the model now come back to it as a tool error instead of ending the whole run.
+- `rush batch run` now exits non-zero when the batch does not complete (failed, timed out, cancelled, interrupted); it used to exit 0. The result is still printed first.
+- `rush sessions tree` shows each session's own cost again (it printed $0.00 for every node): the session list read now loads the full row.
+- Web UI: editing a custom provider (name, models, peak hours, rename) no longer erases its API key; entering a new key still replaces it.
+- A batch notice that goes back to pending after its message was deleted (history edit or rerun) now wakes the session again to redeliver it; a previously reacted notice used to stay silent.
+- `rush sessions watch` now prints an assistant reply once it is finished; a reply it first saw while still streaming used to be shown empty or partial and never updated (also in sub-agent streams).
+- `rush batch run --session <id>` now refuses a session owned by another workspace or a child session (as `rush run` does) and fails fast when the session is busy; it used to run the batch on it regardless.
+- A long text or reasoning reply is now saved while it streams; checkpoints only fired when a new part was added, so watchers saw no progress and a crash lost the whole partial answer.
+- A web session woken by a finished background job or batch notice now keeps the model chosen in the web UI; the wake turn used to fall back to the configured models.
+- Delegated workers are told to wait for their own background jobs with `await_tasks` (prompt and the detached-start reply); a worker used `ask_question` to wait and hung until it was cancelled.
+- `rush sessions reap --dry-run` no longer probes the locks it lists: the probe rewrote an orphan's PID, so the real `reap` that followed skipped it. Aged locks are now reported as `would probe`, untouched.
+- `rush sessions locks` no longer panics when a lock file disappears between listing the directory and reading its metadata; the entry is skipped.
+- Web settings: adding/removing a skills path or adding/editing/removing a custom provider whose write fails (e.g. settings locked) now replies with an error and leaves the live config untouched; it used to change the running config, broadcast it and reply OK. Renaming a provider onto an existing id is rejected instead of overwriting it.
+- Claude CLI models now run with only rush's MCP tools and a few built-ins rush doesn't replicate (`--tools`): `--allowedTools` alone blocked nothing under `--dangerously-skip-permissions`, so the CLI's native Bash/Write/Edit bypassed agentguard, `--restrict-run`, folder scopes and rush's tool accounting.
+- Tests can no longer reach the real global config: test binaries started from a `rush` process (which exports `RUSH_GLOBAL_DIR`) bypassed the temp-dir isolation in packages with their own `TestMain`. Every test binary now isolates through testguard, and resolving a global path in a test without it panics.
+- Retrying the same `batch_run` call ID now reattaches to its live reservation instead of resubmitting and failing the Runner's unique owner/call reservation.
+- `rush sessions reap` on Linux/macOS now unlinks an orphan lock while still holding the probe lock; it used to release the probe first and unlink later, so a `rush run` starting in between kept a lock on a deleted file while a second run created a new one — two owners of one session.
+- One slow batch wake handler (a session whose reaction blocks) no longer delays the wake-ups of every other session: wakes now dispatch concurrently (bounded), and shutdown waits for in-flight handlers.
+- Leaves submitted by the model through `batch_run`/`batch_add` now get their scheduling group, so per-group concurrency limits (io, cli/agent drivers) apply to them; they used to run unbounded.
+- Config: a setting written while a JSON→Ktav migration completes is no longer lost into the now-ignored JSON file; an interrupted symlinked-config migration is recovered instead of stranding the record; a model edit with a stale `cache_rev` is no longer adopted after a mid-session migration.
+- OAuth: concurrent credential setters can no longer publish an older key over a newer one, and a Codex refresh whose credential was superseded on disk no longer exchanges through the caller's stale client.
+- Security: the git-write guard on the MCP `Bash` tool is now keyed on the session's own working directory, not the `working_dir` the model passes, so a model could no longer sidestep it by pointing the shell at another directory; and `fs_write`/`fs_replace`/`fs_write_lines`/`fs_delete` now request permission for every target path of a batch, not just the first.
+- A batch runtime fault (exit code 70) now says why: `rush run` prints `rush run: batch runtime fault: <error>; exiting with code 70` to stderr, and with `--json` emits an envelope with `exit_reason: "batch_fault"` when no result had been written yet. Before, the run died silently with an empty stdout.
 - An invalid `timeout` in a `bash`/`run_command`/`agent` call (out of range, malformed, or set together with `timeout_seconds`) now comes back to the model as a tool error; it used to end the whole run with `failed to start agent processing stream`.
 - `rush models state` labels a role that no scope sets (built-in default) as `default` instead of `unknown`; `--json` is unchanged.
 - `rush models state` prints EFFECTIVE and SCOPES as bordered tables with separate columns (role/scope, provider, model, effort, source scope or status, atom, note) instead of free-form lines; `--json` is unchanged.
