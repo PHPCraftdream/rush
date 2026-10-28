@@ -132,6 +132,34 @@ func TestKtavLoadDefersDanglingSymlinkedLegacyConfig(t *testing.T) {
 	require.Empty(t, entries)
 }
 
+func TestKtavSymlinkMigrationRecoversBeforeDestinationPublication(t *testing.T) {
+	enableKtavAutoMigrateForTest(t)
+	_, _ = isolateAllGlobalConfigPaths(t)
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	original := []byte(`{"options":{"disable_default_providers":true}}`)
+	physical := filepath.Join(dir, "source.json")
+	require.NoError(t, os.WriteFile(physical, original, 0o600))
+	legacy := filepath.Join(dir, "rush.json")
+	if err := os.Symlink(physical, legacy); err != nil {
+		t.Skipf("logical rush.json symlink unavailable: %v", err)
+	}
+	_, sourceFP, err := readStableConfigFileOwned(legacy, 0, false)
+	require.NoError(t, err)
+	ktavBytes, err := ktavcodec.ConvertJSONToKtav(original)
+	require.NoError(t, err)
+	record := ktavMigrationRecord{Version: ktavMigrationRecordVersion, Source: filepath.Base(legacy), Destination: filepath.Base(ktavSiblingOf(legacy)), Backup: filepath.Base(backupPathFor(legacy)), SourceDigest: hex.EncodeToString(sourceFP.digest[:]), StagedDigest: fmt.Sprintf("%x", sha256.Sum256(ktavBytes)), SourceID: fmt.Sprintf("%v", sourceFP.identity), ParentID: fmt.Sprintf("%v", sourceFP.parentIdentity), Symlink: true}
+	recordBytes, err := json.Marshal(record)
+	require.NoError(t, err)
+	recordPath := migrationRecordPathFor(legacy)
+	require.NoError(t, os.WriteFile(recordPath, append(recordBytes, '\n'), 0o600))
+	require.NoError(t, runKtavMigrationState(context.Background(), legacy, dir))
+	got, err := os.ReadFile(ktavSiblingOf(legacy))
+	require.NoError(t, err)
+	require.Equal(t, ktavBytes, got)
+	require.NoFileExists(t, recordPath)
+}
+
 // TestKtavSymlinkMigrationCrashRecovery drives runKtavMigrationState
 // directly against the two interrupted symlink-migration states: (a) record
 // + rush.ktav + link still present, and (b) record + rush.ktav with the

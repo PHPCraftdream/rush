@@ -258,6 +258,23 @@ func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, f
 	if err != nil {
 		return fmt.Errorf("failed to lock config file %q: %w", path, err)
 	}
+	// A slot migration can publish a different active spelling while this
+	// writer waits for the shared legacy sidecar lock. Re-select the slot
+	// only after acquiring that lock, then pin and verify the resulting
+	// physical target before invoking the read-modify-write callback.
+	selected := writeTargetSlot(path)
+	if selected != target.selectedPath {
+		updated, resolveErr := s.resolveConfigWriteTarget(selected)
+		if resolveErr != nil {
+			_ = releaseConfigFileLock(target.lockPath, lock)
+			return fmt.Errorf("failed to resolve config file %q after locking: %w", path, resolveErr)
+		}
+		if updated.lockPath != target.lockPath {
+			_ = releaseConfigFileLock(target.lockPath, lock)
+			return fmt.Errorf("config write lock anchor changed for %q", path)
+		}
+		target = updated
+	}
 	if err := verifyConfigWriteTarget(target); err != nil {
 		_ = releaseConfigFileLock(target.lockPath, lock)
 		return fmt.Errorf("failed to verify config file %q: %w", path, err)

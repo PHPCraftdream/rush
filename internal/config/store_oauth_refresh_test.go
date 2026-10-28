@@ -149,7 +149,51 @@ func (h *codexRefreshLogs) requireError(t *testing.T, message string) {
 	t.Errorf("missing Error log %q", message)
 }
 
-// Revert-check: codexRefreshAlreadyCurrent (production :54) must compare used A with valid B.
+// Equal-expiry replacements still invalidate a client built from the prior credential.
+func TestOAuthRefresh_EqualExpiryNewCredentialRejectsStaleClient(t *testing.T) {
+	f := newCodexRefreshFixture(t)
+	replacement := *f.used.OAuthToken
+	replacement.AccessToken = "replacement-access"
+	replacement.RefreshToken = "replacement-refresh"
+	pc := f.used
+	pc.OAuthToken = &replacement
+	f.store.SetProviderRuntimeConfig(pc.ID, pc)
+	writeCodexRefreshDisk(t, f.path, &replacement)
+
+	calls := 0
+	stubCodexRefresh(t, func(context.Context, *http.Client, string) (*oauth.Token, error) {
+		calls++
+		return f.next, nil
+	})
+
+	err := f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, &http.Client{})
+	require.ErrorIs(t, err, errOAuthCredentialCAS)
+	require.Zero(t, calls, "a stale client must not exchange a replacement credential")
+}
+
+// A newer expired credential must not be exchanged through a stale caller client.
+func TestOAuthRefresh_ExpiredNewerCredentialRejectsStaleClient(t *testing.T) {
+	f := newCodexRefreshFixture(t)
+	client := &http.Client{}
+	newer := &oauth.Token{AccessToken: "new-access", RefreshToken: "new-refresh", ExpiresIn: 3600, ExpiresAt: time.Now().Add(-time.Minute).Unix(), AccountID: "test-account"}
+	pc := f.used
+	pc.OAuthToken = newer
+	f.store.SetProviderRuntimeConfig(pc.ID, pc)
+	writeCodexRefreshDisk(t, f.path, newer)
+
+	calls := 0
+	stubCodexRefresh(t, func(_ context.Context, gotClient *http.Client, refresh string) (*oauth.Token, error) {
+		calls++
+		require.Same(t, client, gotClient)
+		require.Equal(t, newer.RefreshToken, refresh)
+		return f.next, nil
+	})
+
+	err := f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, client)
+	require.ErrorIs(t, err, errOAuthCredentialCAS)
+	require.Zero(t, calls, "a stale client must not carry the newer credential")
+}
+
 func TestOAuthRefresh_DifferentValidMemorySkipsExchange(t *testing.T) {
 	f := newCodexRefreshFixture(t)
 	pc := f.used
