@@ -265,8 +265,51 @@ func TestFSWriteFailedSnapshotReadBlocksWrite(t *testing.T) {
 	require.Equal(t, "old", string(content), "the file on disk must remain unchanged")
 }
 
-// fsWriteDenyService refuses every permission request so the whole-call
-// gate in NewFSWriteTool takes its denial branch.
+type fsBatchPerPathPermissionService struct {
+	*mockPermissionService
+	requests []permission.CreatePermissionRequest
+	denyPath string
+}
+
+func (m *fsBatchPerPathPermissionService) Request(ctx context.Context, req permission.CreatePermissionRequest) (bool, error) {
+	m.requests = append(m.requests, req)
+	return filepath.Clean(req.Path) != filepath.Clean(m.denyPath), nil
+}
+
+func TestFSWriteBatchRequestsPermissionForEveryPath(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	workingDir := filepath.Join(dir, "work")
+	firstRoot := filepath.Join(dir, "approved")
+	secondRoot := filepath.Join(dir, "denied")
+	require.NoError(t, os.MkdirAll(workingDir, 0o755))
+	require.NoError(t, os.MkdirAll(firstRoot, 0o755))
+	require.NoError(t, os.MkdirAll(secondRoot, 0o755))
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "sess-write")
+	scope := fsWriteTestScope(t, workingDir,
+		permission.FolderScopeEntry{Dir: firstRoot, Ops: []permission.FileOp{permission.FileOpCreate}},
+		permission.FolderScopeEntry{Dir: secondRoot, Ops: []permission.FileOp{permission.FileOpCreate}},
+	)
+	perms := &fsBatchPerPathPermissionService{
+		mockPermissionService: &mockPermissionService{},
+		denyPath:              filepath.Join(secondRoot, "b.txt"),
+	}
+	tool := NewFSWriteTool(scope, perms, &mockHistoryService{}, mockFileTrackerService{}, workingDir, nil)
+	resp, err := fsWriteRun(t, ctx, tool, FSWriteParams{Items: []FSWriteItem{
+		{Path: filepath.Join(firstRoot, "a.txt"), Content: "approved"},
+		{Path: filepath.Join(secondRoot, "b.txt"), Content: "denied"},
+	}})
+	require.NoError(t, err)
+	require.True(t, resp.StopTurn)
+	require.Len(t, perms.requests, 2)
+	require.Equal(t, filepath.Join(firstRoot, "a.txt"), perms.requests[0].Path)
+	require.Equal(t, filepath.Join(secondRoot, "b.txt"), perms.requests[1].Path)
+	require.NoFileExists(t, filepath.Join(firstRoot, "a.txt"))
+	require.NoFileExists(t, filepath.Join(secondRoot, "b.txt"))
+}
+
+// fsWriteDenyService refuses every per-target permission request so the
+// whole-call gate in NewFSWriteTool takes its denial branch.
 type fsWriteDenyService struct {
 	*mockPermissionService
 }

@@ -50,6 +50,7 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/fsext"
 	"github.com/PHPCraftdream/rush/internal/permission"
 )
 
@@ -92,6 +93,25 @@ const (
 	// item may request, in lines on each side of a hit.
 	FSBatchMaxContextLines = 50
 )
+
+// requestFSBatchPermissions authorizes every target path before any batch I/O.
+func requestFSBatchPermissions(ctx context.Context, permissions permission.Service, sessionID, toolCallID, toolName, action, description string, paths []string, workingDir string, params any) (bool, error) {
+	for _, path := range paths {
+		granted, err := permissions.Request(ctx, permission.CreatePermissionRequest{
+			SessionID:   sessionID,
+			Path:        fsext.PathOrPrefix(path, workingDir),
+			ToolCallID:  toolCallID,
+			ToolName:    toolName,
+			Action:      action,
+			Description: description,
+			Params:      params,
+		})
+		if err != nil || !granted {
+			return granted, err
+		}
+	}
+	return true, nil
+}
 
 // FSItemResult is one item's outcome inside a batch response, shared by
 // every fs_* tool. It is rendered into the response text for the model

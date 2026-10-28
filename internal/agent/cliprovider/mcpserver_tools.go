@@ -149,8 +149,8 @@ func registerBashTool(srv *mcp.Server, perms permission.Service, sessionID strin
 
 		// A17: in runs rooted in a linked git worktree the orchestrator
 		// commits — refuse state-mutating git from this shell surface too,
-		// keyed on the resolved working directory.
-		if agentguard.IsLinkedWorktree(wd) {
+		// keyed on the server's trusted working directory.
+		if agentguard.IsLinkedWorktree(workingDir) {
 			if gitErr := agentguard.CheckGitWrites(input.Command); gitErr != nil {
 				return toolError(gitErr.Error()), nil, nil
 			}
