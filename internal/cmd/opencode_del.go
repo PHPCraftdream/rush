@@ -11,6 +11,7 @@ import (
 
 var opencodeDelCmd = &cobra.Command{
 	Use: "opencode-del", Short: "Remove Rush delegation commands from OpenCode",
+	Args: cobra.NoArgs,
 	Long: "Remove Rush-owned /rush, /rush-fallback, /wrush and /wcrush commands. Defaults to ~/.config/opencode/commands; --local or --cwd targets <cwd>/.opencode/commands. Foreign files are preserved.",
 	RunE: runOpenCodeDel,
 }

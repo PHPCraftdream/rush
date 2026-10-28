@@ -22,6 +22,7 @@ import (
 var runCmd = &cobra.Command{
 	Aliases: []string{"r"},
 	Use:     "run [prompt...]",
+	Args:    cobra.ArbitraryArgs,
 	Short:   "Run a single non-interactive prompt",
 	Long: `Run a single prompt in non-interactive mode and exit.
 

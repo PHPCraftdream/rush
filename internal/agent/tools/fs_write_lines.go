@@ -2,7 +2,7 @@ package tools
 
 // fs_write_lines is the batch-capable member of the scoped fs_* write
 // family that edits line ranges: N ranges across multiple files, one
-// permission request, per-item outcomes via RunFSBatch, and — for items
+// permission request per target, per-item outcomes via RunFSBatch, and — for items
 // sharing one file — in-memory application bottom-up with a single
 // atomic write. It reuses edit.go's commitFileChange so durability,
 // history and read-tracking behave exactly like the single-file edit
@@ -79,19 +79,9 @@ func NewFSWriteLinesTool(scope permission.FolderScope, permissions permission.Se
 				joinedPaths[i] = joined
 			}
 
-			// One whole-call gate, multiedit's precedent: a single
-			// permission request for the entire batch, placed before
-			// any batch work so a denial ends the turn before the
-			// runner touches the filesystem.
-			p, err := permissions.Request(ctx, permission.CreatePermissionRequest{
-				SessionID:   sessionID,
-				Path:        fsext.PathOrPrefix(joinedPaths[0], workingDir),
-				ToolCallID:  call.ID,
-				ToolName:    FSWriteLinesToolName,
-				Action:      "write",
-				Description: fmt.Sprintf("write lines in %d files", len(params.Items)),
-				Params:      FSWriteLinesPermissionsParams{Paths: joinedPaths},
-			})
+			// Every target path is authorized before any batch work, so a denial
+			// ends the turn before the runner touches the filesystem.
+			p, err := requestFSBatchPermissions(ctx, permissions, sessionID, call.ID, FSWriteLinesToolName, "write", fmt.Sprintf("write lines in %d files", len(params.Items)), joinedPaths, workingDir, FSWriteLinesPermissionsParams{Paths: joinedPaths})
 			if err != nil {
 				return fantasy.ToolResponse{}, err
 			}

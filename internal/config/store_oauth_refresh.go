@@ -258,6 +258,13 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 		if decision == oauthJournalLogout {
 			return s.applyCodexDiskLogout(pc.ID, live.OAuthToken)
 		}
+		// A disk rotation that supersedes this caller's credential belongs to a
+		// newer generation, so the caller's network client is stale. Require a
+		// fresh snapshot/client pair instead of exchanging.
+		if disk != nil && disk.AccessToken != "" && disk.RefreshToken != "" && disk.ExpiresAt > 0 &&
+			!reflect.DeepEqual(disk, used) && (decision == oauthJournalDiskLaterOrTie || decision == oauthJournalEqual && record == nil) {
+			return errOAuthCredentialCAS
+		}
 		// Expired disk rotations still supersede older live credentials.
 		if disk != nil && disk.AccessToken != "" && disk.RefreshToken != "" && disk.ExpiresAt > 0 &&
 			(decision == oauthJournalDiskLaterOrTie || decision == oauthJournalEqual && record == nil) {

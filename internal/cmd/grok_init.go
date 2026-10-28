@@ -32,6 +32,7 @@ func resolveGrokSkillsDir(cwd string, global bool) (string, error) {
 
 var grokInitCmd = &cobra.Command{
 	Use:   "grok-init",
+	Args:  cobra.NoArgs,
 	Short: "Install the rush/rush-fallback Skills for Grok Build CLI",
 	Long: `Set up rush's delegation Skills in xAI Grok Build CLI.
 

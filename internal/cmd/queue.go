@@ -55,6 +55,7 @@ Workflow:
 
 var queueAddCmd = &cobra.Command{
 	Use:   "add",
+	Args:  cobra.NoArgs,
 	Short: "Add a task to the queue (reads prompt from stdin)",
 	Long:  `Read a prompt from stdin and add it as a pending task to the queue.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -111,6 +112,7 @@ var queueAddCmd = &cobra.Command{
 
 var queueListCmd = &cobra.Command{
 	Use:   "list",
+	Args:  cobra.NoArgs,
 	Short: "List queue tasks",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		status, _ := cmd.Flags().GetString("status")
@@ -193,6 +195,7 @@ var queueShowCmd = &cobra.Command{
 
 var queueRunCmd = &cobra.Command{
 	Use:   "run",
+	Args:  cobra.NoArgs,
 	Short: "Process pending queue tasks by spawning rush run subprocesses",
 	Long: `Acquire an exclusive lock and process pending tasks from the queue.
 
@@ -388,6 +391,7 @@ var queueRmCmd = &cobra.Command{
 
 var queueClearCmd = &cobra.Command{
 	Use:   "clear",
+	Args:  cobra.NoArgs,
 	Short: "Clear tasks from the queue",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		status, _ := cmd.Flags().GetString("status")

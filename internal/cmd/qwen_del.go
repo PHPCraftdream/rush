@@ -14,6 +14,7 @@ import (
 
 var qwenDelCmd = &cobra.Command{
 	Use:   "qwen-del",
+	Args:  cobra.NoArgs,
 	Short: "Remove the rush/rush-fallback slash-commands from Qwen Code CLI",
 	Long: `Undo ` + "`rush qwen-init`" + `: remove the rush and rush-fallback commands
 from Qwen Code CLI's commands directory.

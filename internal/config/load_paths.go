@@ -14,6 +14,7 @@ import (
 
 // GlobalConfig returns the global configuration file path for the application.
 func GlobalConfig() string {
+	assertTestGlobalStateIsolated()
 	// --global-dir wins over every other global-config override: a single
 	// root must not partially mix with RUSH_GLOBAL_CONFIG/XDG/home.
 	if root, ok := GlobalDir(); ok {
@@ -35,6 +36,7 @@ func SystemConfig() string {
 // GlobalCacheDir returns the path to the global cache directory for the
 // application.
 func GlobalCacheDir() string {
+	assertTestGlobalStateIsolated()
 	// --global-dir wins over every other cache-dir override (see GlobalConfig).
 	if root, ok := GlobalDir(); ok {
 		return filepath.Join(root, "cache")
@@ -63,6 +65,7 @@ func ProjectConfigs(cwd string) []string {
 // GlobalConfigData returns the path to the main data directory for the application.
 // this config is used when the app overrides configurations instead of updating the global config.
 func GlobalConfigData() string {
+	assertTestGlobalStateIsolated()
 	// --global-dir wins over every other data-dir override (see GlobalConfig).
 	if dataRoot, ok := globalDataRoot(); ok {
 		return filepath.Join(dataRoot, fmt.Sprintf("%s.json", appName))
@@ -94,5 +97,6 @@ func GlobalConfigData() string {
 // writes, and provider resolution behave identically to project
 // workspaces.
 func GlobalWorkspaceDir() string {
+	assertTestGlobalStateIsolated()
 	return filepath.Dir(GlobalConfigData())
 }

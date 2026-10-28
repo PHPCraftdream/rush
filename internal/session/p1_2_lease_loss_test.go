@@ -414,12 +414,14 @@ func TestP1_2_OutcomeWriteSkippedOnLeaseLoss(t *testing.T) {
 	// Wait a bit for the renewal loop to start
 	time.Sleep(50 * time.Millisecond)
 
-	// Steal the lease via direct SQL update
+	// Give the new owner its own fresh lease. Retaining the old 100ms TTL
+	// lets the pump's expiry cleanup reclaim it during assertions on a slow
+	// runner, so cleanup can race the final Nack for thief-owner.
 	stealCtx, stealCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stealCancel()
 	_, err = sqlDB.ExecContext(stealCtx,
-		"UPDATE session_run_queue SET leased_by = ? WHERE id = ?",
-		"thief-owner", idempotencyKey)
+		"UPDATE session_run_queue SET leased_by = ?, lease_expires_at = ? WHERE id = ?",
+		"thief-owner", time.Now().Add(time.Minute).Unix(), idempotencyKey)
 	require.NoError(t, err)
 
 	// Wait for cancellation to be observed

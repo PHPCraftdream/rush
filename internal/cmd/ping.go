@@ -31,6 +31,7 @@ import (
 
 var pingCmd = &cobra.Command{
 	Use:   "ping [--role smart|fast] [--model <atom-or-provider/model>] [--json] [--timeout 1m] [--prompt \"<custom>\"]",
+	Args:  cobra.NoArgs,
 	Short: "Ping a configured model to verify connectivity and API key",
 	Long: `Send a minimal request to the configured model to verify connectivity,
 API key validity, and measure latency. Works with any provider: API-based
@@ -132,6 +133,7 @@ rush ping --timeout 30s --prompt "Reply with yes or no"
 
 var pingFastCmd = &cobra.Command{
 	Use:   "ping-fast [--json] [--timeout 1m] [--prompt \"<custom>\"]",
+	Args:  cobra.NoArgs,
 	Short: "Ping the fast model to verify connectivity and API key",
 	Long: `Same as 'rush ping' but for the configured fast model slot.
 Works with any provider type — API or CLI.`,

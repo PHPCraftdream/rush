@@ -49,6 +49,10 @@ rush sessions tail myid-123 --format ndjson | jq '.role == "assistant"'
 	RunE: sessionsTailCmdRun,
 }
 
+// tailFollowStartedHook, when set by a test, runs once the existing messages
+// are printed and --follow starts polling.
+var tailFollowStartedHook func()
+
 func sessionsTailCmdRun(cmd *cobra.Command, args []string) error {
 	follow, _ := cmd.Flags().GetBool("follow")
 	fromMsgID, _ := cmd.Flags().GetString("from-message")
@@ -120,6 +124,9 @@ func sessionsTailCmdRun(cmd *cobra.Command, args []string) error {
 
 	if !follow {
 		return nil
+	}
+	if tailFollowStartedHook != nil {
+		tailFollowStartedHook()
 	}
 
 	workNoted := "" // last live-work note printed (one line per change)

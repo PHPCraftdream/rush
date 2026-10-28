@@ -212,6 +212,11 @@ var lockProbeOptions []session.LockOption
 // Always nil in production.
 var preAutoDeleteRemoveHook func(lockPath string)
 
+// lockEntryInfo is a seam for handling DirEntry.Info failures.
+var lockEntryInfo = func(entry os.DirEntry) (os.FileInfo, error) {
+	return entry.Info()
+}
+
 func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
 	staleOnly, _ := cmd.Flags().GetBool("stale-only")
@@ -313,7 +318,10 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		info, _ := entry.Info()
+		info, infoErr := lockEntryInfo(entry)
+		if infoErr != nil {
+			continue
+		}
 		age := now.Sub(info.ModTime())
 
 		lockPath := filepath.Join(locksDir, entry.Name())

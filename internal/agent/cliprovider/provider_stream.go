@@ -161,49 +161,10 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 		}
 	}
 
-	// When rush's own MCP server is active, tell the CLI to only allow our
-	// MCP tools. This pre-approves them inside the CLI's own permission layer
-	// (so calls reach our handlers), while the CLI's built-in tools remain
-	// blocked. Rush still shows its own permission dialog in the UI for each
-	// tool call via perms.Request() inside the MCP handlers.
-	// We also explicitly disallow TodoWrite so the model uses mcp__rush__todos
-	// (which persists tasks to the rush session) instead of the CLI-native
-	// TodoWrite tool that writes to a local file unknown to the rush UI.
+	// When rush's own MCP server is active, the CLI may use only rush's MCP
+	// tools plus a few built-ins rush doesn't replicate (see rushMCPToolArgs).
 	if mcpSrv != nil {
-		allowed := []string{
-			// Rush MCP bridge tools (go through rush's permission system).
-			"mcp__rush__Bash",
-			"mcp__rush__Read",
-			"mcp__rush__Write",
-			"mcp__rush__Glob",
-			"mcp__rush__Grep",
-			"mcp__rush__todos",
-			// CLI built-in tools that rush doesn't replicate.
-			// These are safe read-only or internal tools that don't need
-			// rush's permission system.
-			"WebSearch",
-			"WebFetch",
-			"Task",
-			"Agent",
-		}
-		// Include external MCP tools registered on the rush MCP bridge.
-		if bridge != nil {
-			allowed = nil
-			for _, tool := range bridge.Tools() {
-				allowed = append(allowed, "mcp__rush__"+tool.WireName)
-			}
-		} else if m.mcpProxy != nil {
-			for _, ext := range m.mcpProxy.ListTools() {
-				allowed = append(allowed, "mcp__rush__"+ext.ServerName+"__"+ext.Name)
-			}
-		}
-		args = append(
-			args,
-			"--allowedTools",
-			strings.Join(allowed, ","),
-			"--disallowedTools",
-			"TodoWrite",
-		)
+		args = append(args, rushMCPToolArgs(bridge, m.mcpProxy)...)
 	}
 
 	// Qwen MCP integration: register rush's MCP server in ~/.qwen/settings.json

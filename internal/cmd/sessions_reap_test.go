@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -84,6 +86,133 @@ func TestSessionsReapCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	require.True(t, os.IsNotExist(statErr), "orphan lock file at the configured data dir must be removed")
 }
 
+func TestAcquireUnixReapProbePreservesHolderMetadata(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "data")
+	const sessionID = "reap-probe-holder-metadata"
+	path := filepath.Join(dataDir, "locks", "session-"+sessionID+".lock")
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte("placeholder\n"), 0o644))
+
+	// Exercise the exact Unix production acquisition policy, including on
+	// Windows, where the Unix unlink/release ordering cannot otherwise run.
+	probe, err := acquireUnixReapProbe(dataDir, sessionID)
+	require.NoError(t, err)
+	require.NoError(t, probe.Release())
+
+	// Release performs metadata cleanup asynchronously. Wait for its normal
+	// handoff window before checking that the production no-cleanup option
+	// preserved the acquired lock's metadata. This also works on Windows,
+	// where the OS lock prevents reading the file while the probe is held.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, statErr := os.Stat(path + ".gen"); statErr == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, fmt.Sprintf("%d\n", os.Getpid()), string(got))
+	pidAfter, err := os.ReadFile(path + ".pid")
+	require.NoError(t, err)
+	require.Equal(t, fmt.Sprintf("%d\n", os.Getpid()), string(pidAfter))
+	_, err = os.Stat(path + ".gen")
+	require.NoError(t, err)
+}
+
+func TestSessionsReap_ReleaseAfterUnlinkDoesNotTouchReplacement(t *testing.T) {
+	tmp := isolateConfigEnvForTests(t)
+	dataDir := filepath.Join(tmp, "reap-release-replacement")
+	ensureRootFlagStandIns(sessionsReapCmd, dataDir)
+	if f := sessionsReapCmd.Flags().Lookup("cwd"); f == nil {
+		sessionsReapCmd.Flags().StringP("cwd", "c", "", "")
+	}
+	require.NoError(t, sessionsReapCmd.Flags().Set("cwd", ""))
+	require.NoError(t, sessionsReapCmd.Flags().Set("dry-run", "false"))
+	require.NoError(t, sessionsReapCmd.Flags().Set("all", "false"))
+	sessionsReapCmd.SetContext(context.Background())
+	path := writeLockFileAt(t, dataDir, "reap-release-replacement", 999999)
+	ageLock(t, path, time.Minute)
+
+	oldHook := reapAfterUnlinkHook
+	var replacement *session.SessionLock
+	reapAfterUnlinkHook = func(string) {
+		var err error
+		replacement, err = session.TryAcquireSessionLock(dataDir, "reap-release-replacement")
+		require.NoError(t, err, "new owner can acquire recreated path after unlink")
+	}
+	t.Cleanup(func() { reapAfterUnlinkHook = oldHook })
+	stderr := captureStderr(t, func() { require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil)) })
+	require.NotNil(t, replacement)
+	t.Cleanup(func() { _ = replacement.Release() })
+	require.FileExists(t, path)
+	_, err := session.TryAcquireSessionLock(dataDir, "reap-release-replacement")
+	var busyErr *session.SessionLockBusyError
+	require.ErrorAs(t, err, &busyErr, "replacement's OS lock remains held")
+	replacementPID, err := os.ReadFile(path + ".pid")
+	require.NoError(t, err, "replacement PID sidecar survives stale probe cleanup")
+	require.Equal(t, fmt.Sprintf("%d\n", os.Getpid()), string(replacementPID))
+	require.FileExists(t, path+".gen", "replacement generation sidecar survives stale probe cleanup")
+	require.Contains(t, stderr, "reclaimed 1 lock(s)")
+}
+
+func TestSessionsReap_UnlinkWhileProbeLockHeld(t *testing.T) {
+	tmp := isolateConfigEnvForTests(t)
+	dataDir := filepath.Join(tmp, "reap-unlink-held")
+	ensureRootFlagStandIns(sessionsReapCmd, dataDir)
+	if f := sessionsReapCmd.Flags().Lookup("cwd"); f == nil {
+		sessionsReapCmd.Flags().StringP("cwd", "c", "", "")
+	}
+	require.NoError(t, sessionsReapCmd.Flags().Set("cwd", ""))
+	require.NoError(t, sessionsReapCmd.Flags().Set("dry-run", "false"))
+	require.NoError(t, sessionsReapCmd.Flags().Set("all", "false"))
+	sessionsReapCmd.SetContext(context.Background())
+	path := writeLockFileAt(t, dataDir, "reap-unlink-race", 999999)
+	ageLock(t, path, time.Minute)
+
+	var owner *session.SessionLock
+	oldHook := reapAfterProbeHook
+	hookCalls := 0
+	reapAfterProbeHook = func(string) {
+		hookCalls++
+		if hookCalls != 1 {
+			return
+		}
+		var err error
+		if runtime.GOOS == "windows" {
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				owner, err = session.TryAcquireSessionLock(dataDir, "reap-unlink-race")
+				if err == nil || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			require.NoError(t, err, "owner must acquire after probe release and before fresh probe")
+		} else {
+			owner, err = session.TryAcquireSessionLock(dataDir, "reap-unlink-race")
+			var busyErr *session.SessionLockBusyError
+			require.ErrorAs(t, err, &busyErr, "the probe's held flock must prevent a competing owner")
+		}
+	}
+	t.Cleanup(func() { reapAfterProbeHook = oldHook })
+
+	stderr := captureStderr(t, func() { require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil)) })
+	require.Equal(t, 1, hookCalls, "probe hook must run exactly once")
+	if runtime.GOOS == "windows" {
+		require.NotNil(t, owner, "owner acquired in release-to-fresh-probe window must survive")
+		t.Cleanup(func() { _ = owner.Release() })
+		require.Contains(t, stderr, "kept   live lock")
+		require.FileExists(t, path, "live owner's lock path must not be removed")
+	} else {
+		require.Nil(t, owner)
+		require.Contains(t, stderr, "reclaimed 1 lock(s)")
+		_, err := os.Stat(path)
+		require.True(t, os.IsNotExist(err), "uncontended stale lock is removed after safe unlink")
+	}
+}
+
 // R8C-5: an aged EMPTY lock file is the leftover of a clean release (a live
 // `rush run` loop between turns, a web session between turns). Probing it
 // takes the lock the owner needs for its next turn and unlinks a path it will
@@ -114,20 +243,40 @@ func TestSessionsReap_ReleasedLockIsKeptCrashLockIsReaped(t *testing.T) {
 	ageLock(t, releasedLockPath, 2*time.Minute)
 	crashPath := writeLockFileAt(t, dataDir, "reap-crashed", 999999)
 	ageLock(t, crashPath, 2*time.Minute)
+	held, err := session.TryAcquireSessionLock(dataDir, "reap-held")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = held.Release() })
+	heldPath := filepath.Join(dataDir, "locks", "session-reap-held.lock")
+	ageLock(t, heldPath, 2*time.Minute)
+	heldBefore, err := os.Stat(heldPath)
+	require.NoError(t, err)
 	before, err := os.Stat(releasedLockPath)
 	require.NoError(t, err)
 
+	crashBefore, err := os.Stat(crashPath)
+	require.NoError(t, err)
+	beforePID := session.ReadLockPID(crashPath)
+
 	require.NoError(t, sessionsReapCmd.Flags().Set("dry-run", "true"))
 	stderr := captureStderr(t, func() { require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil)) })
-	require.Contains(t, stderr, "would remove orphan lock session-reap-crashed.lock")
+	require.Contains(t, stderr, "would probe lock session-reap-crashed.lock (aged PID recorded; candidate")
+	require.Contains(t, stderr, "would probe lock session-reap-held.lock (aged PID recorded; candidate")
+	require.NotContains(t, stderr, "session-reap-crashed.lock (holder provably dead",
+		"dry-run has not probed the lock")
 	require.NotContains(t, stderr, "session-reap-released-loop.lock (holder provably dead",
 		"a clean-release leftover is not an orphan")
 	require.Contains(t, stderr, "kept   released lock session-reap-released-loop.lock")
-	require.Contains(t, stderr, "would have reclaimed 1 lock(s)")
+	require.Contains(t, stderr, "(dry-run; 2 lock(s) would be probed)")
+
+	afterDryRun, err := os.Stat(crashPath)
+	require.NoError(t, err)
+	require.True(t, crashBefore.ModTime().Equal(afterDryRun.ModTime()), "dry-run must leave lock mtime unchanged")
+	require.Equal(t, beforePID, session.ReadLockPID(crashPath), "dry-run must leave lock PID unchanged")
+	heldAfterDryRun, err := os.Stat(heldPath)
+	require.NoError(t, err)
+	require.True(t, heldBefore.ModTime().Equal(heldAfterDryRun.ModTime()), "dry-run must not probe a live held lock")
 
 	require.NoError(t, sessionsReapCmd.Flags().Set("dry-run", "false"))
-	// The dry run still probed the crash lock (freshening it): seed it again.
-	ageLock(t, writeLockFileAt(t, dataDir, "reap-crashed", 999999), 2*time.Minute)
 	stderr = captureStderr(t, func() { require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil)) })
 	require.Contains(t, stderr, "reclaimed 1 lock(s)")
 	require.FileExists(t, releasedLockPath, "the loop's lock file stays in place")

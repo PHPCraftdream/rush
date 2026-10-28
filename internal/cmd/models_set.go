@@ -14,6 +14,7 @@ import (
 
 var modelsSetCmd = &cobra.Command{
 	Use:                "set",
+	Args:               cobra.NoArgs,
 	Hidden:             true,
 	Short:              "(removed — use `rush models use`)",
 	DisableFlagParsing: true, // print the redirect even when caller passes --large/--small/etc.

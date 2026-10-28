@@ -41,6 +41,7 @@ func resolveQwenCommandsDir(cwd string, global bool) (string, error) {
 
 var qwenInitCmd = &cobra.Command{
 	Use:   "qwen-init",
+	Args:  cobra.NoArgs,
 	Short: "Install the rush/rush-fallback slash-commands for Qwen Code CLI",
 	Long: `Set up rush's delegation commands in Qwen Code CLI.
 

@@ -9,6 +9,7 @@ import (
 
 var systemPromptCmd = &cobra.Command{
 	Use:   "system-prompt",
+	Args:  cobra.NoArgs,
 	Short: "Print the system prompt that would be sent to the model",
 	Long: `Print the system prompt that rush is currently configured to send.
 

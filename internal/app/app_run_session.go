@@ -47,6 +47,16 @@ func (app *App) owns(sess session.Session) bool {
 	return session.Owns(sess.WorkspaceRoot, app.workspaceRoot, app.ProcessHome())
 }
 
+func (app *App) validateResolvedSession(sess session.Session, id string) (session.Session, error) {
+	if sess.ParentSessionID != "" {
+		return session.Session{}, fmt.Errorf("cannot continue a child session: %s", id)
+	}
+	if !app.owns(sess) {
+		return session.Session{}, app.refuseForeign(sess)
+	}
+	return sess, nil
+}
+
 // resolveSession resolves which session to use for a non-interactive run
 // If continueSessionID is set, it looks up that session by ID
 // If useLast is set, it returns the most recently updated top-level session
@@ -60,16 +70,7 @@ func (app *App) resolveSession(ctx context.Context, continueSessionID string, us
 		}
 		sess, err := app.Sessions.Get(ctx, continueSessionID)
 		if err == nil {
-			if sess.ParentSessionID != "" {
-				return session.Session{}, fmt.Errorf("cannot continue a child session: %s", continueSessionID)
-			}
-			// WS-1 (#1142 step C): the row exists, so its workspace is now
-			// known -- refuse before anything below can mutate the session or
-			// acquire its lock.
-			if !app.owns(sess) {
-				return session.Session{}, app.refuseForeign(sess)
-			}
-			return sess, nil
+			return app.validateResolvedSession(sess, continueSessionID)
 		}
 		// Get-or-create semantics: --session <id> with an unknown id creates
 		// a brand-new top-level session with that exact id. Lets CI / scripts
@@ -123,19 +124,14 @@ func (app *App) resolveSession(ctx context.Context, continueSessionID string, us
 		// found" on the follow-up Get.
 		if isSessionsIDConstraintError(createErr) {
 			if sess, getErr := app.Sessions.Get(ctx, continueSessionID); getErr == nil {
-				if sess.ParentSessionID != "" {
-					return session.Session{}, fmt.Errorf("cannot continue a child session: %s", continueSessionID)
+				// The winner of the create race may have bound the row to its
+				// own workspace: same ownership check as the first Get.
+				sess, err := app.validateResolvedSession(sess, continueSessionID)
+				if err == nil {
+					slog.Info("Session creation raced another process; attached to the winner's row",
+						"session_id", continueSessionID)
 				}
-				// WS-1 (#1142 step C): the same ownership check the first Get
-				// above runs -- the winner of the create race may have bound
-				// the row to its own workspace, and attaching to it would
-				// silently drive another checkout's session.
-				if !app.owns(sess) {
-					return session.Session{}, app.refuseForeign(sess)
-				}
-				slog.Info("Session creation raced another process; attached to the winner's row",
-					"session_id", continueSessionID)
-				return sess, nil
+				return sess, err
 			}
 			// The re-Get failed too (extremely unlikely — the row that
 			// caused our constraint violation vanished again, e.g. a

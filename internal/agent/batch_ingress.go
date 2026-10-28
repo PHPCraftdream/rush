@@ -59,7 +59,10 @@ func (r *batchRuntime) Invoke(ctx context.Context, inv BatchInvocation, leaf fan
 	}
 	input, err := batchCanonicalInput(call.Input)
 	if err != nil {
-		return fantasy.ToolResponse{}, err
+		if pctHandoff != nil {
+			pctHandoff.pctRelease()
+		}
+		return fantasy.NewTextErrorResponse(err.Error()), nil
 	}
 	spec, err := batchOneItemSpec(inv, call, input)
 	if err != nil {

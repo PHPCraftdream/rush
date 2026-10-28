@@ -243,6 +243,11 @@ func batchEnvelope(resp fantasy.ToolResponse) json.RawMessage {
 // denial or failure never becomes success: an error response or a Run error
 // settles Failed. cancelled says the execution was stopped by a Stop request.
 func batchResultFromResponse(resp fantasy.ToolResponse, err error, cancelled bool) jobbatch.Result {
+	if err != nil {
+		metadata := resp.Metadata
+		resp = fantasy.NewTextErrorResponse(err.Error())
+		resp.Metadata = metadata
+	}
 	r := jobbatch.Result{Details: batchEnvelope(resp)}
 	switch {
 	case cancelled:

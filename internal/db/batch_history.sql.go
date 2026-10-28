@@ -36,7 +36,7 @@ func (q *Queries) BatchDisposeBoundNoticesByToolCallID(ctx context.Context, arg 
 
 const batchHistoryRependNodesByDeletedNoticeMessages = `-- name: BatchHistoryRependNodesByDeletedNoticeMessages :execrows
 UPDATE batch_nodes SET delivery = 'pending', notice_message_id = NULL,
-    wake_attempts = 0, reacted_failed = 0, updated_at = ?1
+    wake_attempts = 0, reacted = 0, reacted_failed = 0, updated_at = ?1
 WHERE owner_session_id = ?2 AND notice_selected = 1
   AND delivery IN ('done', 'pending')
   AND notice_message_id IN (/*SLICE:message_ids*/?)
@@ -472,7 +472,7 @@ func (q *Queries) BatchRerunLiveRootsByToolCallIDs(ctx context.Context, arg Batc
 
 const batchRerunRependNodesByNoticeMessageIDs = `-- name: BatchRerunRependNodesByNoticeMessageIDs :execrows
 UPDATE batch_nodes SET delivery = 'pending', notice_message_id = NULL,
-    wake_attempts = 0, reacted_failed = 0, updated_at = ?1
+    wake_attempts = 0, reacted = 0, reacted_failed = 0, updated_at = ?1
 WHERE owner_session_id = ?2 AND notice_selected = 1 AND delivery = 'done'
   AND notice_message_id IN (/*SLICE:message_ids*/?)
 `

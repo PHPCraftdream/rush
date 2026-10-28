@@ -25,6 +25,7 @@ import (
 
 var sessionsCompactCmd = &cobra.Command{
 	Use:   "compact",
+	Args:  cobra.NoArgs,
 	Short: "Reclaim free space in the session store (SQLite VACUUM)",
 	Long: `Rebuild the session store with SQLite VACUUM to return freed pages to the
 filesystem.

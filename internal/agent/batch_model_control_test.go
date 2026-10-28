@@ -95,6 +95,61 @@ func batchTestModelInv(env *batchInventoryEnv, call string) BatchInvocation {
 	return BatchInvocation{SessionID: env.sessionID, MessageID: "msg", CallID: call, RegistryID: env.registryID, Origin: "coordinator", WaiterRank: batchGroupRanks[batchGroupDefault], Delivery: batchDeliveryChoice{Mode: batchDeliveryDetached}, Policy: batchLeafPolicyContext{RegistryID: env.registryID, RestrictedToolset: "view"}}
 }
 
+func TestModelBatchRunHonorsIOGroupLimit(t *testing.T) {
+	const limit = 2
+	gate := newGatingInstallExecutor("held")
+	started := make(chan struct{}, limit+1)
+	gate.started = started
+	env := newBatchInventoryEnvWithExecutor(t, "view", gate, func(deps *BatchInstallDeps) {
+		deps.Limits = jobbatch.Limits{MaxConcurrent: 8, ByGroup: map[string]int{batchGroupIO: limit}, MaxDepth: 8, MaxNodes: 64}
+	})
+	profile, err := NewBatchProfile(BatchProfileCaps{IO: limit, CLIDriver: 1, AgentDriver: 1, Default: 1, Global: 8})
+	require.NoError(t, err)
+	control := batchOwnedControl(t, env, profile)
+	inv := batchTestModelInv(env, "limited-run")
+	reg, err := env.registries.Resolve(env.registryID)
+	require.NoError(t, err)
+	modelTools, err := control.InstallBatchModelControls(reg, inv)
+	require.NoError(t, err)
+	var runTool fantasy.AgentTool
+	for _, tool := range modelTools {
+		if tool.Info().Name == "batch_run" {
+			runTool = tool
+		}
+	}
+	require.NotNil(t, runTool)
+	items := make([]batchModelItem, limit+1)
+	for i := range items {
+		items[i] = batchModelItem{Tool: "view", Input: json.RawMessage(`{}`)}
+	}
+	input, err := json.Marshal(batchModelParams{Spec: batchModelSpec{Mode: "parallel", Items: items}})
+	require.NoError(t, err)
+	ctx := batchCallCtx(env.sessionID)
+	resp, err := runTool.Run(ctx, fantasy.ToolCall{ID: "model-facing-limited-run", Name: "batch_run", Input: string(input)})
+	require.NoError(t, err)
+	require.False(t, resp.IsError, resp.Content)
+	for i := 0; i < limit; i++ {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d leaves entered; expected %d", i, limit)
+		}
+	}
+	select {
+	case <-started:
+		t.Fatalf("admitted more than group limit %d leaves", limit)
+	case <-time.After(100 * time.Millisecond):
+	}
+	gate.letGo()
+	for i := limit; i < limit+1; i++ {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("leaf %d did not start after capacity was released", i+1)
+		}
+	}
+}
+
 func TestInstalledModelControlRecursiveDefaultsAndPinnedPolicy(t *testing.T) {
 	inv := BatchInvocation{SessionID: "owner", CallID: "call", RegistryID: "reg", Policy: batchLeafPolicyContext{RegistryID: "reg", RestrictedToolset: "view"}}
 	spec, err := modelBatchSpec(batchModelSpec{Mode: "parallel", Items: []batchModelItem{{Tool: "view", Input: json.RawMessage(`{"path":"x"}`)}, {Batch: &batchModelSpec{Mode: "sequential", Notify: "each", Items: []batchModelItem{{Tool: "view", Input: json.RawMessage(`{"path":"y"}`)}}}}}}, inv, modelRegistry("view"))

@@ -16,6 +16,7 @@ import (
 
 var sessionsCostCmd = &cobra.Command{
 	Use:   "cost",
+	Args:  cobra.NoArgs,
 	Short: "Show cost breakdown across sessions",
 	Long: `Show cost and token usage broken down by model, day, or session.
 

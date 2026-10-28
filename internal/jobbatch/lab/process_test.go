@@ -19,6 +19,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/testguard"
 )
 
 var processTestBuild struct {
@@ -54,10 +55,16 @@ func processTestHelper(t *testing.T) string {
 }
 
 func TestMain(m *testing.M) {
+	cleanup, err := testguard.Isolate()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "TestMain: isolate global state: %v\n", err)
+		os.Exit(1)
+	}
 	code := m.Run()
 	if processTestBuild.dir != "" {
 		_ = os.RemoveAll(processTestBuild.dir)
 	}
+	cleanup()
 	os.Exit(code)
 }
 

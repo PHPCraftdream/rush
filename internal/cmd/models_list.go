@@ -25,6 +25,7 @@ import (
 
 var modelsListCmd = &cobra.Command{
 	Use:   "list",
+	Args:  cobra.NoArgs,
 	Short: "Show the atom registry plus all models from enabled providers",
 	Long: `Print the atom registry — short, friendly names you pass to
 ` + "`rush models use <smart> <fast>`" + `. Atoms whose backing provider is

@@ -59,6 +59,7 @@ an optional peak_hours refusal window (local-clock HH:MM-HH:MM; see
 
 var providersListCmd = &cobra.Command{
 	Use:   "list",
+	Args:  cobra.NoArgs,
 	Short: "List configured providers across both scopes",
 	Long: `Print the merged effective view of providers (workspace overriding
 global). Use --json for one NDJSON object per provider. API keys are

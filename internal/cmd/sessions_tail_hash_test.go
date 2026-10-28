@@ -82,7 +82,11 @@ func TestSessionsTailCmdRun_ByHashPrintsMessagesAndFollowEnds(t *testing.T) {
 func TestSessionsTailCmdRun_FollowInterruptedExitsClean(t *testing.T) {
 	id, dataDir := seedTailSession(t, false)
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(1500*time.Millisecond, cancel)
+	// Interrupt once following has started: a fixed delay raced the database
+	// connect on slow runners ("failed to connect to database: context
+	// canceled") and could fire before anything was printed.
+	tailFollowStartedHook = cancel
+	t.Cleanup(func() { tailFollowStartedHook = nil })
 
 	out, err := runTail(t, ctx, dataDir, session.HashID(id)[:8], true)
 

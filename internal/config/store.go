@@ -160,6 +160,12 @@ type ConfigStore struct {
 	configSyncStopped bool
 	configSyncOpts    ConfigDiskSyncOptions
 
+	// credentialWriteMu serializes credential disk writes through their
+	// in-memory publication. It is separate from publishMu so auto-reload
+	// can acquire publishMu while a credential write is in progress.
+	credentialWriteMu          sync.Mutex
+	credentialSetBeforePublish func() // Test seam; guarded by credentialWriteMu.
+
 	// diskWriteMu serialises the on-disk read-modify-write cycle
 	// (os.ReadFile → sjson.Set/Delete → atomicWriteFile) in
 	// SetConfigFields, RemoveConfigField, and MCP lifecycle transactions.
