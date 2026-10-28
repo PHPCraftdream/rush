@@ -22,7 +22,7 @@ func TestStartStreamRequiredMCPFailureFailsClosed(t *testing.T) {
 			BuildArgs:  func(bool) []string { return nil },
 		},
 		perms: &recordingMCPPermissionService{},
-		streamProcess: func(bool) procHandle {
+		streamProcess: func(bool, []string) procHandle {
 			t.Fatal("process started without required MCP")
 			return procHandle{}
 		},
@@ -43,7 +43,7 @@ func TestStartStreamRequiredMCPStartsNormally(t *testing.T) {
 			BuildArgs:  func(bool) []string { return nil },
 		},
 		perms: &recordingMCPPermissionService{},
-		streamProcess: func(bool) procHandle {
+		streamProcess: func(bool, []string) procHandle {
 			started = true
 			return procHandle{
 				stdout: strings.NewReader("done\n"),
@@ -66,7 +66,7 @@ func TestStartStreamWithoutRushMCPRemainsAvailable(t *testing.T) {
 	started := false
 	m := &cliModel{
 		spec: CLISpec{ModelID: "no-tools", Binary: self, UseRushMCP: true, BuildArgs: func(bool) []string { return nil }},
-		streamProcess: func(bool) procHandle {
+		streamProcess: func(bool, []string) procHandle {
 			started = true
 			return procHandle{
 				stdout: io.NopCloser(strings.NewReader("done\n")),
