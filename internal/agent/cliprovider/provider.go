@@ -218,7 +218,7 @@ func (p *cliProvider) LanguageModel(_ context.Context, modelID string) (fantasy.
 }
 
 type cliModel struct {
-	streamProcess        func(bool) procHandle
+	streamProcess        func(bool, []string) procHandle
 	streamVisibleCleanup func()
 	spec                 CLISpec
 	mcpProxy             ExternalMCPProxy

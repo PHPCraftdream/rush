@@ -2,11 +2,14 @@ package cliprovider
 
 // Registration of the rush MCP server in external CLI settings files
 // (~/.qwen/settings.json and ~/.gemini/settings.json): stable per-project
-// server IDs, register/deregister pairs, and the flock helpers that
-// serialise settings read-modify-write cycles across parallel rush runs.
+// IDs and session-scoped registration names, register/deregister pairs, and
+// the flock helpers that serialise settings read-modify-write cycles across
+// parallel rush runs.
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -37,6 +40,12 @@ func acquireMCPConfigLock(lockPath string) (*filelock.FileLock, error) {
 }
 
 // ── qwen MCP registration ─────────────────────────────────────────────────────
+
+// sessionMCPName scopes a project's stable MCP name to one CLI session.
+func sessionMCPName(projectName, sessionID string) string {
+	sum := sha256.Sum256([]byte(sessionID))
+	return projectName + "-" + hex.EncodeToString(sum[:])
+}
 
 // qwenMCPID returns a stable MCP server name for the given workingDir.
 // If <workingDir>/.rush/ already exists, the ID is stored there in qwen-mcp-id.
@@ -144,18 +153,9 @@ func registerQwenMCP(serverName, addr, token string) error {
 // but ONLY if it still points at expectedAddr — the exact addr this specific
 // call's own registerQwenMCP wrote.
 //
-// serverName is a STABLE per-workingDir ID (see qwenMCPID), so two
-// concurrent rush sessions in the same project both integrating with Qwen
-// share one mcpServers[serverName] entry: registerQwenMCP unconditionally
-// overwrites it with whichever session called last, and an unconditional
-// delete here used to remove the entry regardless of which session
-// currently owned it — found by a full-project @rush --role reviewer
-// audit. Session A finishing first would delete session B's still-active
-// registration (B's own overwrite already replaced A's url with B's own),
-// breaking qwen's ability to reconnect to B's MCP server for the rest of
-// B's session. Comparing the stored url first makes this call a safe no-op
-// once a later session has taken over the shared name, instead of
-// clobbering that later session's entry.
+// serverName is session-scoped (see sessionMCPName), so concurrent sessions
+// in one project have independent entries and cleanup names. The expected URL
+// check also protects against an entry being replaced by another owner.
 //
 // Fork patch (concurrency): same flock + atomic-write as registerQwenMCP.
 func deregisterQwenMCP(serverName, expectedAddr string) {
@@ -296,9 +296,8 @@ func registerGeminiMCP(serverName, addr, token string) error {
 // deregisterGeminiMCP removes the rush MCP entry from
 // ~/.gemini/settings.json, but ONLY if it still points at expectedAddr —
 // the exact addr this specific call's own registerGeminiMCP wrote. See
-// deregisterQwenMCP's doc for why an unconditional delete is unsafe when
-// two concurrent sessions in the same project share one stable server name
-// (serverName, from geminiMCPID).
+// deregisterQwenMCP's doc for the expected-URL check that protects against
+// deleting a replacement registration (serverName is session-scoped).
 //
 // Fork patch (concurrency): flock + atomic-write — see registerQwenMCP.
 func deregisterGeminiMCP(serverName, expectedAddr string) {
