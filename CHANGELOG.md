@@ -8,7 +8,6 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-- A tool that fails with an internal error inside a batch is now reported to the model as an error with that message; it used to come back as a successful empty result.
 - An invalid `timeout` in a `bash`/`run_command`/`agent` call (out of range, malformed, or set together with `timeout_seconds`) now comes back to the model as a tool error; it used to end the whole run with `failed to start agent processing stream`.
 - `rush models state` prints EFFECTIVE and SCOPES as bordered tables with separate columns (role/scope, provider, model, effort, source scope or status, atom, note) instead of free-form lines; `--json` is unchanged.
 - `rush ping` through a CLI provider (claude/codex/gemini/qwen) no longer gets "your request is empty" back: the default prompt now carries the reply-OK instruction instead of a bare `ping`, which the CLI saw beneath its own system prompt and the project's instructions.
