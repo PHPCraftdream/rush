@@ -9,10 +9,52 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
+
+func TestBatchCLISessionValidatesExistingIDs(t *testing.T) {
+	ctx := context.Background()
+	a := newFullNewApp(t)
+
+	foreignRoot := wsGitRepo(t)
+	foreignSvc := session.NewServiceWithWorkspace(db.New(a.DB()), a.DB(), nil, nil, foreignRoot, foreignRoot, false)
+	foreign, err := foreignSvc.Create(ctx, "foreign")
+	require.NoError(t, err)
+	_, err = a.BatchCLISession(ctx, foreign.ID)
+	require.ErrorIs(t, err, session.ErrForeignWorkspace)
+
+	parent, err := a.Sessions.Create(ctx, "parent")
+	require.NoError(t, err)
+	child, err := a.Sessions.CreateTaskSession(ctx, "tool-call", parent.ID, "child")
+	require.NoError(t, err)
+	_, err = a.BatchCLISession(ctx, child.ID)
+	require.ErrorContains(t, err, "cannot continue a child session")
+
+	_, err = a.BatchCLISession(ctx, "unknown-batch-session-id")
+	require.Error(t, err)
+	_, err = a.Sessions.Get(ctx, "unknown-batch-session-id")
+	require.Error(t, err, "batch lookup must not create an unknown ID")
+}
+
+func TestBatchCLISessionFreshAndBusy(t *testing.T) {
+	ctx := context.Background()
+	a := newFullNewApp(t)
+	fresh, err := a.BatchCLISession(ctx, "")
+	require.NoError(t, err)
+	require.Equal(t, "rush batch", fresh.Title)
+
+	busy, err := a.Sessions.Create(ctx, "busy")
+	require.NoError(t, err)
+	_, epoch, cancel, ok := a.AgentCoordinator.ReserveExclusive(ctx, busy.ID)
+	require.True(t, ok)
+	defer a.AgentCoordinator.ReleaseExclusive(busy.ID, epoch, cancel)
+	_, err = a.BatchCLISession(ctx, busy.ID)
+	require.ErrorIs(t, err, agent.ErrSessionBusy)
+}
 
 func TestAppBatchResultFailureAndSkippedLeaf(t *testing.T) {
 	a := newFullNewApp(t)
