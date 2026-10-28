@@ -12,6 +12,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/testguard"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,6 +29,11 @@ const (
 )
 
 func TestMain(m *testing.M) {
+	cleanup, err := testguard.Isolate()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "TestMain: isolate global state: %v\n", err)
+		os.Exit(1)
+	}
 	if runArgvLeafHelper() {
 		return
 	}
@@ -41,7 +47,9 @@ func TestMain(m *testing.M) {
 			return
 		}
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
 }
 
 // runRunCommandLevel1Helper models the direct child run_command spawns. It

@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/PHPCraftdream/rush/internal/testguard"
 )
 
 // fastExitHelperEnv turns this test binary into the fast-exiting child process
@@ -16,6 +18,11 @@ import (
 const fastExitHelperEnv = "RUSH_TEST_FAST_EXIT_FILE"
 
 func TestMain(m *testing.M) {
+	cleanup, err := testguard.Isolate()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "testguard: isolate global state: %v\n", err)
+		os.Exit(1)
+	}
 	// Child-process mode: dump the fixture and exit before the testing
 	// framework emits anything of its own (no flag parsing, no "PASS" line),
 	// so the parent's scanner sees exactly the bytes of the file.
@@ -28,12 +35,13 @@ func TestMain(m *testing.M) {
 		os.Stdout.Write(data)
 		os.Exit(0)
 	}
-
 	// go-pty's Windows ConPTY path has an internal data race that the -race
 	// detector flags. Force pipe mode for the whole cliprovider suite on
 	// Windows so streaming tests stay race-clean; Unix keeps PTY coverage.
 	testDisablePTY = runtime.GOOS == "windows"
-	os.Exit(m.Run())
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
 }
 
 func TestNewProvider(t *testing.T) {

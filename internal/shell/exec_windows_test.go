@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/testguard"
 	"github.com/stretchr/testify/require"
 	"mvdan.cc/sh/v3/interp"
 )
@@ -28,6 +29,11 @@ import (
 const helperEnvVar = "RUSH_SHELL_TEST_HELPER"
 
 func TestMain(m *testing.M) {
+	cleanup, err := testguard.Isolate()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "TestMain: isolate global state: %v\n", err)
+		os.Exit(1)
+	}
 	switch os.Getenv(helperEnvVar) {
 	case "level1":
 		runLevel1Helper()
@@ -36,7 +42,9 @@ func TestMain(m *testing.M) {
 		runLevel2Helper()
 		return
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
 }
 
 // runLevel1Helper models the "direct child" a background shell command
