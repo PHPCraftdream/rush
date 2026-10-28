@@ -36,6 +36,43 @@ func newMessageEditTestApp(t *testing.T) (*appPkg.App, string) {
 	return &appPkg.App{Messages: message.NewService(q)}, sess.ID
 }
 
+func TestUpdateMessageAndVerify_RejectsEditAfterConcurrentFinish(t *testing.T) {
+	a, sessionID := newMessageEditTestApp(t)
+	created, err := a.Messages.Create(t.Context(), sessionID, message.CreateMessageParams{
+		Role:  message.Assistant,
+		Parts: []message.ContentPart{message.TextContent{Text: "before"}},
+	})
+	require.NoError(t, err)
+
+	// The caller loaded this unfinished message and constructs an edit from it.
+	staleEdit := created.Clone()
+	staleEdit.Parts[0] = message.TextContent{Text: "operator edit"}
+
+	// Meanwhile, the agent adds fresh text and terminal parts. The handler must
+	// reject the stale edit rather than preserving only Finish and losing text.
+	finished := created.Clone()
+	finished.Parts = append(finished.Parts, message.TextContent{Text: "fresh terminal text"})
+	finished.AddFinish(message.FinishReasonEndTurn, "", "")
+	require.NoError(t, a.Messages.Update(t.Context(), finished))
+
+	c := &Client{send: make(chan []byte, 4)}
+	require.False(t, updateMessageAndVerify(t.Context(), a, c, created.ID, staleEdit))
+	select {
+	case raw := <-c.send:
+		var env WSMessage
+		require.NoError(t, json.Unmarshal(raw, &env))
+		require.Equal(t, EventError, env.Type)
+	default:
+		t.Fatal("expected an error reply for stale edit")
+	}
+
+	stored, err := a.Messages.Get(t.Context(), created.ID)
+	require.NoError(t, err)
+	require.Equal(t, finished.Parts, stored.Parts, "rejected edit must preserve every fresh finished part")
+	require.Equal(t, "before\n\nfresh terminal text", stored.FullText())
+	require.True(t, stored.IsFinished())
+}
+
 // TestUpdateMessageAndVerify_RefusesEditToPartialMessage covers task #590
 // (P1-2 in docs/reviews/2026-08-19-release-readiness-static-follow-up-0635c631.md).
 //
