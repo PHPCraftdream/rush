@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -56,11 +57,19 @@ rush sessions reap --all      # legacy no-op
 // reporting the failure beats hanging the sweep.
 const reapRemoveRetryBudget = 3 * time.Second
 
+// reapAfterProbeHook is a deterministic test seam invoked while the probe
+// lock is held and immediately before unlinking on Unix.
+var reapAfterProbeHook func(path string)
+
+// reapAfterUnlinkHook is a deterministic test seam invoked after successful unlink.
+var reapAfterUnlinkHook func(path string)
+
 type reapItem struct {
 	Path   string
 	PID    int
 	AgeSec int
 	Action string // "remove-dead", "probe-candidate", "remove-unreadable", "skip-alive", "skip-young", "skip-released"
+	Err    error
 }
 
 func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
@@ -99,6 +108,7 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 	const heartbeatThreshold = 10 * time.Second
 	now := time.Now()
 	items := []reapItem{}
+	removed := 0
 
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "session-") || !strings.HasSuffix(entry.Name(), ".lock") {
@@ -167,15 +177,35 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 		// create a fresh inode at the same path and believe it owns the
 		// session — two owners of one session id. See internal/session/lock.go
 		// and lockHolderProvablyDead (sessions.go) for the full rationale.
-		lk, probeErr := session.TryAcquireSessionLock(dataDir, sessionID)
+		lk, probeErr := acquireReapProbe(dataDir, sessionID)
 		switch probeErr {
 		case nil:
-			// Nobody holds the OS lock — provably dead. Release our probe and
-			// mark for removal. The narrow release→Remove TOCTOU this leaves
-			// is the same accepted one documented for `sessions locks --prune`
-			// (reap is an explicit, operator-invoked sweep).
-			_ = lk.Release()
 			item.Action = "remove-dead"
+			// On Unix, unlink while holding flock: it is attached to the inode,
+			// so releasing first lets an owner acquire before the path is removed.
+			// Windows requires closing handles before unlink; the second probe
+			// below checks for an owner that acquired during that interval.
+			if runtime.GOOS == "windows" {
+				_ = lk.Release()
+			} else {
+				if reapAfterProbeHook != nil {
+					reapAfterProbeHook(path)
+				}
+				// Clear stale sidecars before unlinking: after unlink a new owner
+				// may create a different lock at this path.
+				removeReapSidecars(path)
+				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+					item.Action = "remove-failed"
+					item.Err = err
+				} else {
+					item.Action = "removed"
+					removed++
+					if reapAfterUnlinkHook != nil {
+						reapAfterUnlinkHook(path)
+					}
+				}
+				_ = lk.Release()
+			}
 		default:
 			var busyErr *session.SessionLockBusyError
 			if errors.As(probeErr, &busyErr) {
@@ -194,7 +224,6 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	removed := 0
 	// One retry budget for the WHOLE sweep, not one per lock.
 	//
 	// Not a bare os.Remove: on Windows the unlink fails with
@@ -223,6 +252,25 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 	for _, it := range items {
 		switch it.Action {
 		case "remove-dead":
+			// Windows cannot unlink while the probe handle is open. Re-probe
+			// immediately before unlink so an owner that acquired after Release
+			// is observed and preserved.
+			if runtime.GOOS == "windows" {
+				if reapAfterProbeHook != nil {
+					reapAfterProbeHook(it.Path)
+				}
+				lk, err := acquireReapProbe(dataDir, strings.TrimSuffix(strings.TrimPrefix(filepath.Base(it.Path), "session-"), ".lock"))
+				if err != nil {
+					var busyErr *session.SessionLockBusyError
+					if errors.As(err, &busyErr) {
+						fmt.Fprintf(os.Stderr, "kept   live lock %s (OS lock held, age %ds)\n", filepath.Base(it.Path), it.AgeSec)
+					} else {
+						fmt.Fprintf(os.Stderr, "kept   lock %s (probe inconclusive; left untouched, age %ds)\n", filepath.Base(it.Path), it.AgeSec)
+					}
+					continue
+				}
+				_ = lk.Release()
+			}
 			action := "would remove"
 			if !dryRun {
 				retryFor := time.Until(retryDeadline)
@@ -233,19 +281,9 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 				if err := removeLockWithRetry(it.Path, retryFor); err == nil {
 					action = "removed"
 					removed++
-					// The lock's sidecars go with it. They are normally
-					// cleared by the holder's own Release, but that runs in
-					// a goroutine Release only waits 50ms for, and Go does
-					// not wait for goroutines at process exit — so a crash
-					// or a fast exit leaves session-X.lock.pid and
-					// session-X.lock.gen behind. The scan filter only
-					// matches ".lock", so without this reap would report
-					// "reclaimed 1 lock(s)" and still leave two files in a
-					// directory it exists to keep tidy.
-					for _, sidecar := range []string{it.Path + ".pid", it.Path + ".gen"} {
-						if err := os.Remove(sidecar); err != nil && !os.IsNotExist(err) {
-							fmt.Fprintf(os.Stderr, "kept   sidecar %s (%v)\n", filepath.Base(sidecar), err)
-						}
+					removeReapSidecars(it.Path)
+					if reapAfterUnlinkHook != nil {
+						reapAfterUnlinkHook(it.Path)
 					}
 				} else {
 					action = "failed to remove (" + err.Error() + ")"
@@ -253,6 +291,10 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 			}
 			fmt.Fprintf(os.Stderr, "%s orphan lock %s (holder provably dead via OS lock, age %ds)\n",
 				action, filepath.Base(it.Path), it.AgeSec)
+		case "removed":
+			fmt.Fprintf(os.Stderr, "removed orphan lock %s (holder provably dead via OS lock, age %ds)\n", filepath.Base(it.Path), it.AgeSec)
+		case "remove-failed":
+			fmt.Fprintf(os.Stderr, "failed to remove (%v) orphan lock %s (holder provably dead via OS lock, age %ds)\n", it.Err, filepath.Base(it.Path), it.AgeSec)
 		case "probe-candidate":
 			fmt.Fprintf(os.Stderr, "would probe lock %s (aged PID recorded; candidate, age %ds)\n",
 				filepath.Base(it.Path), it.AgeSec)
@@ -285,6 +327,33 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "reclaimed %d lock(s)\n", removed)
 	}
 	return nil
+}
+
+func acquireReapProbe(dataDir, sessionID string) (*session.SessionLock, error) {
+	// A probe is not the session owner. On Unix, Release may run metadata
+	// cleanup after reap unlinks the path, so suppress it to protect a new
+	// owner at that path. Windows must retain normal cleanup: skipped/failed
+	// removals rely on Release to clear the holder metadata as before.
+	if runtime.GOOS == "windows" {
+		return session.TryAcquireSessionLock(dataDir, sessionID)
+	}
+	return acquireUnixReapProbe(dataDir, sessionID)
+}
+
+// acquireUnixReapProbe keeps the Unix probe's no-cleanup policy independent
+// of the host OS so its production behavior can be exercised on Windows too.
+func acquireUnixReapProbe(dataDir, sessionID string) (*session.SessionLock, error) {
+	return session.TryAcquireSessionLockWithOptions(dataDir, sessionID,
+		session.WithClearHolderMetadataFn(func(string, string) {}),
+	)
+}
+
+func removeReapSidecars(path string) {
+	for _, sidecar := range []string{path + ".pid", path + ".gen"} {
+		if err := os.Remove(sidecar); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "kept   sidecar %s (%v)\n", filepath.Base(sidecar), err)
+		}
+	}
 }
 
 func countAction(items []reapItem, action string) int {
