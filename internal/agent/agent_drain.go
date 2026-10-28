@@ -16,6 +16,8 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/permission"
 )
 
@@ -42,6 +44,23 @@ func newDrainCall(base SessionAgentCall) SessionAgentCall {
 	base.FailIfSessionBusy = false
 	base.onQueueResolved = nil
 	return base
+}
+
+// lastUserMessageOrigin returns the origin of the chronologically latest user
+// message. Read failures and empty history fail closed (no web preference).
+func lastUserMessageOrigin(ctx context.Context, messages message.Service, sessionID string) (message.Origin, bool) {
+	if messages == nil {
+		return message.OriginUnspecified, false
+	}
+	rows, err := messages.ListUserMessages(ctx, sessionID)
+	if err != nil {
+		slog.Warn("Drain: could not read last user-message origin; using configured models", "session_id", sessionID, "error", err)
+		return message.OriginUnspecified, false
+	}
+	if len(rows) == 0 {
+		return message.OriginUnspecified, false
+	}
+	return rows[0].Origin, true
 }
 
 // callFromActive is the single constructor for a call built from an active
@@ -141,6 +160,11 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 			return SessionAgentCall{}, nil, policyErr
 		}
 		ctx = WithCallOptions(ctx, capOpts)
+		// CallOptions remain the source of call policy; the marker now reflects
+		// the latest persisted user-message origin rather than inherited setup.
+		origin, hasUserMessage := lastUserMessageOrigin(ctx, c.messages, sessionID)
+		capOpts.WebTurnOptIn = hasUserMessage && origin == message.OriginWeb && capOpts.ModelRole != config.SelectedModelTypeReviewer
+		ctx = WithCallOptions(ctx, capOpts)
 		// Carry the fence's folder-scope spec on the ctx too, mirroring
 		// ExecuteRun's per-call arming: its presence is what lets the
 		// durable queue re-serialize the scope.
@@ -159,6 +183,19 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 			}
 			ctx = WithRunAllowlist(ctx, &compiled)
 			ctx = WithRunAllowlistSpec(ctx, runSpec)
+		}
+	}
+	if prep == nil {
+		// With no execution fence, use CallOptions to carry the web-turn policy
+		// into model resolution without replacing unrelated context options.
+		origin, hasUserMessage := lastUserMessageOrigin(ctx, c.messages, sessionID)
+		if hasUserMessage && origin == message.OriginWeb {
+			var opts CallOptions
+			if existing := callOptionsFrom(ctx); existing != nil {
+				opts = *existing
+			}
+			opts.WebTurnOptIn = opts.ModelRole != config.SelectedModelTypeReviewer
+			ctx = WithCallOptions(ctx, &opts)
 		}
 	}
 	pinned, err := c.resolveSessionModels(ctx, sessionID)

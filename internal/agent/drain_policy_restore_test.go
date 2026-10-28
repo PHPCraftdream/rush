@@ -17,6 +17,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -248,6 +249,10 @@ func TestDrainCallFor_ReleasesContinuationOwnerWhenModelResolutionFails(t *testi
 		noIdle: true, noDriver: true, oauthProvider: oauthTestProvider,
 	})
 	_, caps := wireRootDrainFenceWeb(t, f)
+	_, err := f.env.messages.Create(ctx, f.sessID, message.CreateMessageParams{
+		Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "web"}}, Origin: message.OriginWeb,
+	})
+	require.NoError(t, err)
 	f.coord.sessions = &fenceFailingGetSessions{Service: f.env.sessions}
 
 	_, prep, err := f.coord.drainCallFor(ctx, f.sessID)
@@ -326,6 +331,10 @@ func TestDrainCallFor_BuildCallFailureReleasesConstructionOwner(t *testing.T) {
 	// AFTER the bind: wireRootDrainFence overwrites coord.diskCaps with the
 	// fence caps; caps2 keeps only the Construction owner.
 	_, fenceCaps := wireRootDrainFenceWeb(t, f)
+	_, err := f.env.messages.Create(ctx, f.sessID, message.CreateMessageParams{
+		Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "web"}}, Origin: message.OriginWeb,
+	})
+	require.NoError(t, err)
 	// The oauth fixture's expired token makes refreshExpiredToken refresh
 	// (coordinator_providers_auth.go:30-37); succeed it like
 	// drain_unauthorized_test.go's countRefreshes(nil).
