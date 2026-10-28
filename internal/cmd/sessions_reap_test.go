@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -114,20 +115,40 @@ func TestSessionsReap_ReleasedLockIsKeptCrashLockIsReaped(t *testing.T) {
 	ageLock(t, releasedLockPath, 2*time.Minute)
 	crashPath := writeLockFileAt(t, dataDir, "reap-crashed", 999999)
 	ageLock(t, crashPath, 2*time.Minute)
+	held, err := session.TryAcquireSessionLock(dataDir, "reap-held")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = held.Release() })
+	heldPath := filepath.Join(dataDir, "locks", "session-reap-held.lock")
+	ageLock(t, heldPath, 2*time.Minute)
+	heldBefore, err := os.Stat(heldPath)
+	require.NoError(t, err)
 	before, err := os.Stat(releasedLockPath)
 	require.NoError(t, err)
 
+	crashBefore, err := os.Stat(crashPath)
+	require.NoError(t, err)
+	beforePID := session.ReadLockPID(crashPath)
+
 	require.NoError(t, sessionsReapCmd.Flags().Set("dry-run", "true"))
 	stderr := captureStderr(t, func() { require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil)) })
-	require.Contains(t, stderr, "would remove orphan lock session-reap-crashed.lock")
+	require.Contains(t, stderr, "would probe lock session-reap-crashed.lock (aged PID recorded; candidate")
+	require.Contains(t, stderr, "would probe lock session-reap-held.lock (aged PID recorded; candidate")
+	require.NotContains(t, stderr, "session-reap-crashed.lock (holder provably dead",
+		"dry-run has not probed the lock")
 	require.NotContains(t, stderr, "session-reap-released-loop.lock (holder provably dead",
 		"a clean-release leftover is not an orphan")
 	require.Contains(t, stderr, "kept   released lock session-reap-released-loop.lock")
-	require.Contains(t, stderr, "would have reclaimed 1 lock(s)")
+	require.Contains(t, stderr, "(dry-run; 2 lock(s) would be probed)")
+
+	afterDryRun, err := os.Stat(crashPath)
+	require.NoError(t, err)
+	require.True(t, crashBefore.ModTime().Equal(afterDryRun.ModTime()), "dry-run must leave lock mtime unchanged")
+	require.Equal(t, beforePID, session.ReadLockPID(crashPath), "dry-run must leave lock PID unchanged")
+	heldAfterDryRun, err := os.Stat(heldPath)
+	require.NoError(t, err)
+	require.True(t, heldBefore.ModTime().Equal(heldAfterDryRun.ModTime()), "dry-run must not probe a live held lock")
 
 	require.NoError(t, sessionsReapCmd.Flags().Set("dry-run", "false"))
-	// The dry run still probed the crash lock (freshening it): seed it again.
-	ageLock(t, writeLockFileAt(t, dataDir, "reap-crashed", 999999), 2*time.Minute)
 	stderr = captureStderr(t, func() { require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil)) })
 	require.Contains(t, stderr, "reclaimed 1 lock(s)")
 	require.FileExists(t, releasedLockPath, "the loop's lock file stays in place")

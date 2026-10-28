@@ -230,6 +230,22 @@ func TestSessionsLocksCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	_, wrongStatErr := os.Stat(wrongPath)
 	require.True(t, os.IsNotExist(wrongStatErr))
 
+	originalInfo := lockEntryInfo
+	lockEntryInfo = func(entry os.DirEntry) (os.FileInfo, error) {
+		if entry.Name() == filepath.Base(lockPath) {
+			return nil, fmt.Errorf("injected DirEntry.Info failure")
+		}
+		return originalInfo(entry)
+	}
+	t.Cleanup(func() { lockEntryInfo = originalInfo })
+	failedInfoOutput := captureStdout(t, func() {
+		runErr := sessionsLocksCmd.RunE(sessionsLocksCmd, nil)
+		require.NoError(t, runErr)
+	})
+	require.NotContains(t, failedInfoOutput, sessionID,
+		"an entry whose DirEntry.Info fails must be skipped")
+	lockEntryInfo = originalInfo
+
 	stdout := captureStdout(t, func() {
 		runErr := sessionsLocksCmd.RunE(sessionsLocksCmd, nil)
 		require.NoError(t, runErr)

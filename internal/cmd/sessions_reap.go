@@ -60,7 +60,7 @@ type reapItem struct {
 	Path   string
 	PID    int
 	AgeSec int
-	Action string // "remove-dead", "remove-unreadable", "skip-alive", "skip-young", "skip-released"
+	Action string // "remove-dead", "probe-candidate", "remove-unreadable", "skip-alive", "skip-young", "skip-released"
 }
 
 func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
@@ -145,6 +145,12 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 		// --prune` has). A crash leaves its PID in the file and is still swept.
 		if pid <= 0 {
 			item.Action = "skip-released"
+			items = append(items, item)
+			continue
+		}
+
+		if dryRun {
+			item.Action = "probe-candidate"
 			items = append(items, item)
 			continue
 		}
@@ -247,6 +253,9 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 			}
 			fmt.Fprintf(os.Stderr, "%s orphan lock %s (holder provably dead via OS lock, age %ds)\n",
 				action, filepath.Base(it.Path), it.AgeSec)
+		case "probe-candidate":
+			fmt.Fprintf(os.Stderr, "would probe lock %s (aged PID recorded; candidate, age %ds)\n",
+				filepath.Base(it.Path), it.AgeSec)
 		case "skip-alive":
 			fmt.Fprintf(os.Stderr, "kept   live lock %s (OS lock held, age %ds)\n",
 				filepath.Base(it.Path), it.AgeSec)
@@ -263,7 +272,7 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 	}
 
 	if dryRun {
-		fmt.Fprintf(os.Stderr, "(dry-run; would have reclaimed %d lock(s))\n", countAction(items, "remove-dead"))
+		fmt.Fprintf(os.Stderr, "(dry-run; %d lock(s) would be probed)\n", countAction(items, "probe-candidate"))
 	} else {
 		// Say it, rather than just going quiet: once the budget is gone the
 		// later locks got a single attempt each, so a failure below that
