@@ -148,10 +148,14 @@ func newBatchModelTools(c batchModelControl, inv BatchInvocation, reg *policyLea
 }
 
 func modelBatchSpec(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRegistry) (jobbatch.Spec, error) {
-	return modelBatchSpecAt(raw, inv, reg, "")
+	return modelBatchSpecAt(raw, inv, reg, "", nil, false)
 }
 
-func modelBatchSpecAt(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRegistry, path string) (jobbatch.Spec, error) {
+func modelBatchSpecForAdmission(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRegistry, resolver batchMCPCapabilityResolver) (jobbatch.Spec, error) {
+	return modelBatchSpecAt(raw, inv, reg, "", resolver, true)
+}
+
+func modelBatchSpecAt(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRegistry, path string, resolver batchMCPCapabilityResolver, admission bool) (jobbatch.Spec, error) {
 	if reg == nil {
 		return jobbatch.Spec{}, errors.New("calling pinned tool registry is unavailable")
 	}
@@ -193,7 +197,7 @@ func modelBatchSpecAt(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRe
 		}
 		if it.Batch != nil {
 			nestedPath := fmt.Sprintf("%s%d.", path, index)
-			nested, e := modelBatchSpecAt(*it.Batch, inv, reg, nestedPath)
+			nested, e := modelBatchSpecAt(*it.Batch, inv, reg, nestedPath, resolver, admission)
 			if e != nil {
 				return jobbatch.Spec{}, e
 			}
@@ -246,7 +250,28 @@ func modelBatchSpecAt(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRe
 		if e != nil {
 			return jobbatch.Spec{}, e
 		}
-		items = append(items, jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchLeafKind(it.Tool), Payload: payload, Timeout: timeout}})
+		kind := batchLeafKind(it.Tool)
+		group := ""
+		if kind == batchKindMCP {
+			if resolver != nil {
+				mcp, ok := resolver(kind, it.Tool)
+				if !ok {
+					return jobbatch.Spec{}, fmt.Errorf("%w: %q", errBatchMCPCapabilityUnknown, it.Tool)
+				}
+				group, _, e = classifyBatchLeaf(kind, it.Tool, mcp)
+				if e != nil {
+					return jobbatch.Spec{}, e
+				}
+			} else if admission {
+				return jobbatch.Spec{}, fmt.Errorf("%w: %q", errBatchMCPCapabilityUnknown, it.Tool)
+			}
+		} else {
+			group, _, e = classifyBatchLeaf(kind, it.Tool, batchMCPCapability{})
+			if e != nil {
+				return jobbatch.Spec{}, e
+			}
+		}
+		items = append(items, jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: kind, Group: group, Payload: payload, Timeout: timeout}})
 	}
 	if depth, nodes, _, err := batchSpecNodes([]jobbatch.Spec{{Batch: &jobbatch.BatchSpec{Items: items}}}); err != nil {
 		return jobbatch.Spec{}, err
