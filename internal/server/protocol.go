@@ -397,10 +397,10 @@ type RemoveCustomProviderPayload struct {
 	Scope string `json:"scope,omitempty"`
 }
 
-// UpdateCustomProviderPayload updates an existing custom provider.
-// Update is a full replace, not a partial merge — mirroring APIKey and
-// every other field, PeakHours is taken verbatim from the payload:
-// present → set (validated), absent → cleared to nil.
+// UpdateCustomProviderPayload updates an existing custom provider. An empty
+// apiKey preserves the existing key; a non-empty apiKey replaces it. Other
+// fields are replaced, not partially merged. PeakHours is taken verbatim from
+// the payload: present → set (validated), absent → cleared to nil.
 //
 // Scope is "global" or "local" (workspace); empty defaults to "global".
 type UpdateCustomProviderPayload struct {

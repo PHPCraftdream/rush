@@ -206,6 +206,14 @@ func handleUpdateCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 		c.reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
+	// Preserve the existing key when the edit form omits it. A non-empty
+	// key explicitly replaces the current value.
+	apiKey := p.APIKey
+	if apiKey == "" {
+		if existing, ok := cfg.Providers.Get(p.OldID); ok {
+			apiKey = existing.APIKey
+		}
+	}
 	// Remove the old entry. Uses the SAME scope as the update target: a
 	// rename is expected to stay within the scope the operator picked in
 	// the edit form, not silently move between global/local.
@@ -232,7 +240,7 @@ func handleUpdateCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 		Name:      cmp.Or(p.Name, p.ID),
 		Type:      catwalk.Type(cmp.Or(p.Type, "openai-compat")),
 		BaseURL:   p.BaseURL,
-		APIKey:    p.APIKey,
+		APIKey:    apiKey,
 		Models:    models,
 		PeakHours: peakHours,
 	}
