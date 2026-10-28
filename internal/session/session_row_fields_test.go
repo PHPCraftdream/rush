@@ -13,6 +13,42 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestSessionListAllCarriesFullRow(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	conn, err := db.Connect(ctx, dataDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)) })
+	svc := session.NewService(db.New(conn), conn)
+
+	created, err := svc.Create(ctx, "full row")
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `UPDATE sessions SET cost_base = ?, smart_model_provider = ?,
+		smart_model_id = ?, fast_model_provider = ?, fast_model_id = ? WHERE id = ?`,
+		2.5, "test-provider", "test-smart", "fast-provider", "test-fast", created.ID)
+	require.NoError(t, err)
+	_, err = svc.IncrementCost(ctx, created.ID, 1.25)
+	require.NoError(t, err)
+
+	got, err := svc.ListAll(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	want, err := svc.Get(ctx, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, want, got[0])
+	require.Equal(t, 1.25, got[0].OwnCost)
+	require.Equal(t, 2.5, got[0].CostBase)
+	require.Equal(t, "test-provider", got[0].SmartModelProvider)
+	require.Equal(t, "test-smart", got[0].SmartModelID)
+	require.Equal(t, "fast-provider", got[0].FastModelProvider)
+	require.Equal(t, "test-fast", got[0].FastModelID)
+
+	var cost float64
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT cost FROM sessions WHERE id = ?`, created.ID).Scan(&cost))
+	require.Equal(t, 1.25, cost)
+}
+
 // TestSessionReaders_CarryEndedReasonBudgetAndCancelFlag round-trips rows
 // with ended_reason, all three budget columns and cancel_requested set
 // through every reader that builds a Session from a row.

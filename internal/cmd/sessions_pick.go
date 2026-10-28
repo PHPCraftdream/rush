@@ -15,6 +15,7 @@ import (
 
 var sessionsPickCmd = &cobra.Command{
 	Use:   "pick",
+	Args:  cobra.NoArgs,
 	Short: "Interactively pick a session",
 	Long: `Show an interactive list of sessions and open the selected one.
 

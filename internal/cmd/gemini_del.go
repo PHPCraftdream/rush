@@ -14,6 +14,7 @@ import (
 
 var geminiDelCmd = &cobra.Command{
 	Use:   "gemini-del",
+	Args:  cobra.NoArgs,
 	Short: "Remove the rush/rush-fallback custom commands from Gemini CLI",
 	Long: `Undo ` + "`rush gemini-init`" + `: remove the rush and rush-fallback custom
 commands from Gemini CLI's commands directory.

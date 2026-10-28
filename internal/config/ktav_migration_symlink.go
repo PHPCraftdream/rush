@@ -40,12 +40,58 @@ func runKtavSymlinkMigrationState(ctx context.Context, legacy, recordPath, worki
 		if !record.Symlink {
 			return false, nil
 		}
+		if !state.ktavExists {
+			return true, recoverKtavSymlinkBeforePublication(ctx, legacy, recordPath, ktavPath, record, workingDir)
+		}
 		return true, finishKtavSymlinkMigration(ctx, legacy, recordPath, ktavPath, record, workingDir)
 	}
 	if state.jsonExists && !state.ktavExists && !state.recordExists && !state.backupExists && isKtavSymlinkPath(legacy) {
 		return true, migrateKtavSymlinkedConfig(ctx, legacy, recordPath, workingDir)
 	}
 	return false, nil
+}
+
+// recoverKtavSymlinkBeforePublication rebuilds the staged document from the
+// still-authoritative symlink source after a crash between record commit and
+// destination publication.
+func recoverKtavSymlinkBeforePublication(ctx context.Context, legacy, recordPath, ktavPath string, record *ktavMigrationRecord, workingDir string) error {
+	owner, enforce, err := ownerPolicyForMigration(legacy, workingDir)
+	if err != nil {
+		return err
+	}
+	source, fp, err := readStableConfigFileOwned(legacy, owner, enforce)
+	if err != nil {
+		return fmt.Errorf("%w: cannot read symlinked source %s: %v", errKtavMigrationConflict, filepath.Base(legacy), err)
+	}
+	var want [sha256.Size]byte
+	if _, err := hex.Decode(want[:], []byte(record.SourceDigest)); err != nil || fp.digest != want || !sameBytesFingerprint(source, want) || fmt.Sprintf("%v", fp.identity) != record.SourceID || fmt.Sprintf("%v", fp.parentIdentity) != record.ParentID {
+		return fmt.Errorf("%w: migration record does not match source %s", errKtavMigrationConflict, filepath.Base(legacy))
+	}
+	if err := ktavMigrationCheckContext(ctx, "before-convert"); err != nil {
+		return err
+	}
+	data, err := ktavcodec.ConvertJSONToKtav(source)
+	if err != nil {
+		return fmt.Errorf("ktav conversion failed for %s: %w", filepath.Base(legacy), err)
+	}
+	data, err = applyKtavMigrationModelsIntegrity(source, data)
+	if err != nil {
+		return err
+	}
+	if fmt.Sprintf("%x", sha256.Sum256(data)) != record.StagedDigest {
+		return fmt.Errorf("%w: regenerated destination does not match migration record", errKtavMigrationConflict)
+	}
+	_, expected, err := readStableConfigFileOwned(ktavPath, owner, enforce)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if expected.exists {
+		return fmt.Errorf("%w: %s appeared during recovery", errKtavMigrationConflict, filepath.Base(ktavPath))
+	}
+	if _, err := commitConfigFile(ktavPath, ktavPath, data, 0o600, expected, owner, enforce); err != nil {
+		return fmt.Errorf("ktav migration: failed to publish %s: %w", ktavPath, err)
+	}
+	return finishKtavSymlinkMigration(ctx, legacy, recordPath, ktavPath, record, workingDir)
 }
 
 // finishKtavSymlinkMigration recovers a symlink migration whose record

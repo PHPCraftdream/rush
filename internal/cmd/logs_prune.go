@@ -67,6 +67,7 @@ type logsPruneJSON struct {
 
 var logsPruneCmd = &cobra.Command{
 	Use:   "prune",
+	Args:  cobra.NoArgs,
 	Short: "Truncate the rush log file and prune audit journals and heartbeat snapshots",
 	Long: `Truncate .rush/logs/rush.log and prune audit and heartbeat files.
 

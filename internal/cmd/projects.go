@@ -13,6 +13,7 @@ import (
 
 var projectsCmd = &cobra.Command{
 	Use:   "projects",
+	Args:  cobra.NoArgs,
 	Short: "List project directories",
 	Long:  "List directories where Rush project data is known to exist",
 	Example: `

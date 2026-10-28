@@ -43,6 +43,7 @@ func resolveGeminiCommandsDir(cwd string, global bool) (string, error) {
 
 var geminiInitCmd = &cobra.Command{
 	Use:   "gemini-init",
+	Args:  cobra.NoArgs,
 	Short: "Install the rush/rush-fallback custom commands for Gemini CLI",
 	Long: `Set up rush's delegation custom commands in Gemini CLI.
 

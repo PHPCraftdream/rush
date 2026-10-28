@@ -14,6 +14,7 @@ import (
 
 var schemaCmd = &cobra.Command{
 	Use:    "schema",
+	Args:   cobra.NoArgs,
 	Short:  "Generate JSON schema for configuration",
 	Long:   "Generate JSON schema for the rush configuration file",
 	Hidden: true,

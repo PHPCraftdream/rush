@@ -1,7 +1,7 @@
 package tools
 
 // fs_replace is the batch-capable member of the scoped fs_* write family:
-// N replace operations across multiple files, one permission request,
+// N replace operations across multiple files, one permission request per target,
 // per-item outcomes via RunFSBatch, and — for items sharing one file —
 // in-order in-memory application with a single atomic write. It reuses
 // edit.go's findAndReplace and commitFileChange so matching semantics,
@@ -78,19 +78,9 @@ func NewFSReplaceTool(scope permission.FolderScope, permissions permission.Servi
 				joinedPaths[i] = joined
 			}
 
-			// One whole-call gate, multiedit's precedent: a single
-			// permission request for the entire batch, placed before
-			// any batch work so a denial ends the turn before the
-			// runner touches the filesystem.
-			p, err := permissions.Request(ctx, permission.CreatePermissionRequest{
-				SessionID:   sessionID,
-				Path:        fsext.PathOrPrefix(joinedPaths[0], workingDir),
-				ToolCallID:  call.ID,
-				ToolName:    FSReplaceToolName,
-				Action:      "write",
-				Description: fmt.Sprintf("replace content in %d files", len(params.Items)),
-				Params:      FSReplacePermissionsParams{Paths: joinedPaths},
-			})
+			// Every target path is authorized before any batch work, so a denial
+			// ends the turn before the runner touches the filesystem.
+			p, err := requestFSBatchPermissions(ctx, permissions, sessionID, call.ID, FSReplaceToolName, "write", fmt.Sprintf("replace content in %d files", len(params.Items)), joinedPaths, workingDir, FSReplacePermissionsParams{Paths: joinedPaths})
 			if err != nil {
 				return fantasy.ToolResponse{}, err
 			}

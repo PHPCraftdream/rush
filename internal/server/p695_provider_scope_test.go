@@ -71,3 +71,42 @@ func TestBuildConfigWire_ReportsEffectiveProviderScope(t *testing.T) {
 	require.True(t, store.HasConfigField(config.ScopeWorkspace, "providers.acme"))
 	require.True(t, store.HasConfigField(config.ScopeGlobal, "providers.acme"))
 }
+
+func TestUpdateCustomProviderPreservesAndReplacesAPIKey(t *testing.T) {
+	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
+	client := newTestClient()
+
+	addPayload, err := json.Marshal(AddCustomProviderPayload{
+		ID:      "before-rename",
+		BaseURL: "https://acme.example.invalid/v1",
+		Type:    "openai-compat",
+		APIKey:  "original-key",
+		Models:  []CustomModelPayload{{ID: "acme-model", Name: "Acme Model"}},
+	})
+	require.NoError(t, err)
+	handleAddCustomProvider(a, client, WSMessage{ID: "seed-add", Type: CmdAddCustomProvider, Payload: addPayload})
+
+	update := func(oldID, id, apiKey string) {
+		t.Helper()
+		payload, marshalErr := json.Marshal(UpdateCustomProviderPayload{
+			OldID:   oldID,
+			ID:      id,
+			BaseURL: "https://acme.example.invalid/v1",
+			Type:    "openai-compat",
+			APIKey:  apiKey,
+			Models:  []CustomModelPayload{{ID: "acme-model", Name: "Acme Model"}},
+		})
+		require.NoError(t, marshalErr)
+		handleUpdateCustomProvider(a, client, WSMessage{ID: "update", Type: CmdUpdateCustomProvider, Payload: payload})
+	}
+
+	update("before-rename", "after-rename", "")
+	provider, ok := a.Store().Config().Providers.Get("after-rename")
+	require.True(t, ok)
+	require.Equal(t, "original-key", provider.APIKey)
+
+	update("after-rename", "after-rename", "replacement-key")
+	provider, ok = a.Store().Config().Providers.Get("after-rename")
+	require.True(t, ok)
+	require.Equal(t, "replacement-key", provider.APIKey)
+}

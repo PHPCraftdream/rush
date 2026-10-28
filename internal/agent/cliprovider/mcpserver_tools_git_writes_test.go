@@ -17,11 +17,11 @@ func linkedMCPWorktree(t *testing.T) string {
 	t.Helper()
 	mainRepo := t.TempDir()
 	worktree := filepath.Join(t.TempDir(), "wt")
+	require.NoError(t, os.MkdirAll(filepath.Join(mainRepo, ".git", "worktrees", "wt"), 0o755))
 	require.NoError(t, os.MkdirAll(worktree, 0o755))
-	gitdir := filepath.Join(mainRepo, ".git", "worktrees", "wt")
 	require.NoError(t, os.WriteFile(
 		filepath.Join(worktree, ".git"),
-		[]byte("gitdir: "+gitdir+"\n"), 0o644,
+		[]byte("gitdir: "+filepath.ToSlash(filepath.Join(mainRepo, ".git", "worktrees", "wt"))+"\n"), 0o644,
 	))
 	return worktree
 }
@@ -38,6 +38,24 @@ func firstMCPText(t *testing.T, result *mcp.CallToolResult) string {
 // surface: with the server rooted in a linked worktree, a state-mutating git
 // command is refused before the permission flow runs, while read-only git
 // still reaches the shell (and a main-checkout run is unaffected).
+func TestMCPBash_GitWritesGuardUsesTrustedWorkingDir(t *testing.T) {
+	worktree := linkedMCPWorktree(t)
+	outside := t.TempDir()
+
+	perms := &recordingMCPPermissionService{Service: newMCPTestPermissionService(t, worktree)}
+	perms.AutoApproveSession("owner-session")
+	client := connectMCPTestClient(t, newMCPTestServer(t, perms, "owner-session", worktree, nil))
+
+	result := callMCPTool(t, client, "Bash", mcpBashInput{
+		Command:     "git -C " + filepath.ToSlash(worktree) + " checkout -- f",
+		Description: "mutate git state in trusted worktree",
+		WorkingDir:  outside,
+	})
+	require.True(t, result.IsError)
+	require.Contains(t, firstMCPText(t, result), "git writes are not allowed")
+	require.Empty(t, perms.Requests(), "guard must run before requesting permission")
+}
+
 func TestMCPBash_GitWritesBlockedInLinkedWorktree(t *testing.T) {
 	worktree := linkedMCPWorktree(t)
 

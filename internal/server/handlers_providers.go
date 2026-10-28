@@ -143,10 +143,12 @@ func handleAddCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 		Models:    models,
 		PeakHours: peakHours,
 	}
-	cfg.Providers.Set(p.ID, providerCfg)
 	if err := store.SetConfigField(scopeFromWire(p.Scope), fmt.Sprintf("providers.%s", p.ID), providerCfg); err != nil {
 		slog.Warn("ws: failed to persist custom provider", "id", p.ID, "err", err)
+		c.reply(msg.ID, EventError, nil, err.Error())
+		return
 	}
+	cfg.Providers.Set(p.ID, providerCfg)
 	if wire, ok := buildConfigWire(a); ok {
 		c.hub.Broadcast(EventConfig, wire)
 	}
@@ -169,15 +171,17 @@ func handleRemoveCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 		c.reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
-	cfg.Providers.Del(p.ID)
-	// RemoveConfigField returns an error when there is no override to
-	// delete, which is expected for a default-provider id that only
-	// exists in the built-in catalog — benign in that case. A real
-	// failure (e.g. disk / parse error) surfaces the same way. Scope must
-	// match the scope the provider was added under (p.Scope), or this is
-	// a silent no-op against the wrong config file.
-	if err := store.RemoveConfigField(scopeFromWire(p.Scope), fmt.Sprintf("providers.%s", p.ID)); err != nil {
-		slog.Warn("ws: failed to remove custom provider override (benign for default/catalog providers with no override set)", "id", p.ID, "err", err)
+	field := fmt.Sprintf("providers.%s", p.ID)
+	if err := store.RemoveConfigField(scopeFromWire(p.Scope), field); err != nil {
+		slog.Warn("ws: failed to remove custom provider", "id", p.ID, "err", err)
+		c.reply(msg.ID, EventError, nil, err.Error())
+		return
+	}
+	// RemoveConfigField auto-reloads and publishes a new snapshot, making cfg
+	// stale. Remove the explicitly requested provider from the current live
+	// config as well, including catalog providers with no stored override.
+	if liveCfg := store.Config(); liveCfg != nil {
+		liveCfg.Providers.Del(p.ID)
 	}
 	if wire, ok := buildConfigWire(a); ok {
 		c.hub.Broadcast(EventConfig, wire)
@@ -206,14 +210,12 @@ func handleUpdateCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 		c.reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
-	// Remove the old entry. Uses the SAME scope as the update target: a
-	// rename is expected to stay within the scope the operator picked in
-	// the edit form, not silently move between global/local.
-	scope := scopeFromWire(p.Scope)
-	cfg.Providers.Del(p.OldID)
-	if p.OldID != p.ID {
-		if err := store.RemoveConfigField(scope, fmt.Sprintf("providers.%s", p.OldID)); err != nil {
-			slog.Warn("ws: failed to remove old custom provider", "id", p.OldID, "err", err)
+	// Preserve the existing key when the edit form omits it. A non-empty
+	// key explicitly replaces the current value.
+	apiKey := p.APIKey
+	if apiKey == "" {
+		if existing, ok := cfg.Providers.Get(p.OldID); ok {
+			apiKey = existing.APIKey
 		}
 	}
 	// Build updated models.
@@ -232,14 +234,37 @@ func handleUpdateCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 		Name:      cmp.Or(p.Name, p.ID),
 		Type:      catwalk.Type(cmp.Or(p.Type, "openai-compat")),
 		BaseURL:   p.BaseURL,
-		APIKey:    p.APIKey,
+		APIKey:    apiKey,
 		Models:    models,
 		PeakHours: peakHours,
 	}
-	cfg.Providers.Set(p.ID, providerCfg)
-	if err := store.SetConfigField(scope, fmt.Sprintf("providers.%s", p.ID), providerCfg); err != nil {
-		slog.Warn("ws: failed to persist updated custom provider", "id", p.ID, "err", err)
+	scope := scopeFromWire(p.Scope)
+	newProviderField := fmt.Sprintf("providers.%s", p.ID)
+	if p.OldID != p.ID {
+		if _, exists := cfg.Providers.Get(p.ID); exists {
+			c.reply(msg.ID, EventError, nil, fmt.Sprintf("provider %q already exists", p.ID))
+			return
+		}
 	}
+	if err := store.SetConfigField(scope, newProviderField, providerCfg); err != nil {
+		slog.Warn("ws: failed to persist updated custom provider", "id", p.ID, "err", err)
+		c.reply(msg.ID, EventError, nil, err.Error())
+		return
+	}
+	if p.OldID != p.ID {
+		if err := store.RemoveConfigField(scope, fmt.Sprintf("providers.%s", p.OldID)); err != nil {
+			slog.Warn("ws: failed to remove old custom provider; rolling back new provider", "id", p.OldID, "new_id", p.ID, "err", err)
+			if rollbackErr := store.RemoveConfigField(scope, newProviderField); rollbackErr != nil {
+				slog.Warn("ws: failed to roll back new custom provider after rename failure", "id", p.ID, "err", rollbackErr)
+			}
+			c.reply(msg.ID, EventError, nil, err.Error())
+			return
+		}
+	}
+	if p.OldID != p.ID {
+		cfg.Providers.Del(p.OldID)
+	}
+	cfg.Providers.Set(p.ID, providerCfg)
 	if wire, ok := buildConfigWire(a); ok {
 		c.hub.Broadcast(EventConfig, wire)
 	}

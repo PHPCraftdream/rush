@@ -14,6 +14,7 @@ import (
 
 var dirsCmd = &cobra.Command{
 	Use:   "dirs",
+	Args:  cobra.NoArgs,
 	Short: "Show config and data directories",
 	Long: `Show where Rush stores its configuration and data,
 including any project-level config files discovered

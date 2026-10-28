@@ -166,6 +166,23 @@ func TestShutdownRacingFaultReleaseAbortsMidway(t *testing.T) {
 		"writer release must be skipped once the fence is set: the inter-release fence recheck must prevent 'release-writer'")
 }
 
+func TestBatchFaultDrainFencesWithoutWatcher(t *testing.T) {
+	runner := newFakeRunner()
+	rt, exits, rec := newTestRuntime(t, runner)
+
+	done := make(chan BatchDrainResult, 1)
+	go func() { done <- rt.DrainAndRelease(context.Background(), time.Second) }()
+	<-runner.closeEntered
+	runner.FireFault(errors.New("commit failed after watcher teardown"))
+	runner.finishClose(errors.New("commit failed"))
+
+	res := <-done
+	require.True(t, res.Forced, "fault channel must fence shutdown without watcher")
+	require.True(t, rt.Fenced())
+	require.Empty(t, rec.snapshot(), "neither host nor writer release hook may run")
+	require.Empty(t, exits.called(), "no fault watcher is active")
+}
+
 // TestBatchFaultNoSyntheticSettlement: the fault path never touches the
 // Runner's nodes — no Close, no Stop, no retry; the exit function is the
 // only side effect beyond the fence and retention.

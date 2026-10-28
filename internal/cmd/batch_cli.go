@@ -124,18 +124,21 @@ func batchRun(cmd *cobra.Command, _ []string) error {
 		if err = json.NewEncoder(cmd.OutOrStdout()).Encode(result); err != nil {
 			return err
 		}
-		return a.BatchRelease(cmd.Context(), sess.ID, root)
-	}
-	if _, err = fmt.Fprintf(cmd.OutOrStdout(), "batch %s %s\n", root, stored.State); err != nil {
-		return err
-	}
-	for _, leaf := range result.Leaves {
-		if _, err = fmt.Fprintf(cmd.OutOrStdout(), "%s %s code=%s summary=%s output=%s\n", leaf.NodeID, leaf.State, leaf.Code, leaf.Summary, leaf.Output); err != nil {
+	} else {
+		if _, err = fmt.Fprintf(cmd.OutOrStdout(), "batch %s %s\n", root, stored.State); err != nil {
 			return err
+		}
+		for _, leaf := range result.Leaves {
+			if _, err = fmt.Fprintf(cmd.OutOrStdout(), "%s %s code=%s summary=%s output=%s\n", leaf.NodeID, leaf.State, leaf.Code, leaf.Summary, leaf.Output); err != nil {
+				return err
+			}
 		}
 	}
 	if err = a.BatchRelease(cmd.Context(), sess.ID, root); err != nil {
 		return err
+	}
+	if stored.State != "completed" {
+		return app.NewRunIncompleteError("batch", fmt.Sprintf("root state %s", stored.State))
 	}
 	return nil
 }

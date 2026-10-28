@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,6 +98,35 @@ func TestBatchCLIRunRootDisposalAfterPurge(t *testing.T) {
 
 	show := runBatchCLIRunSubprocessArgs(t, dir, []string{"batch", "show", result.RootID})
 	require.Contains(t, show.Error, "not found: ")
+}
+
+func TestBatchCLIRunFailedRootPrintsResultAndReturnsError(t *testing.T) {
+	if os.Getenv(batchCLIHelperEnv) == "1" {
+		executeBatchCLIHelper()
+		return
+	}
+	dir := t.TempDir()
+	command := batchRunCommandSpec("sh", []string{"-c", "printf FAILURE; exit 7"})
+	if runtime.GOOS == "windows" {
+		command = batchRunCommandSpec("cmd", []string{"/c", "echo FAILURE & exit /b 7"})
+	}
+	writeBatchCLISpec(t, dir, command)
+
+	for _, asJSON := range []bool{false, true} {
+		run := runBatchCLIRunSubprocess(t, dir, asJSON)
+		require.True(t, run.RunIncompleteErr, "batch failed root must use the rush run incomplete error type")
+		require.Equal(t, "run did not complete cleanly (batch): root state failed", run.Error)
+		require.Contains(t, run.Output, "failed")
+		require.Contains(t, run.Output, "FAILURE")
+		if asJSON {
+			var result batchRunResult
+			jsonOutput := strings.SplitN(run.Output, "\n", 2)[0]
+			require.NoError(t, json.Unmarshal([]byte(jsonOutput), &result), run.Output)
+			require.Equal(t, "failed", result.State)
+			require.Len(t, result.Leaves, 1)
+			require.Equal(t, "failed", result.Leaves[0].State)
+		}
+	}
 }
 
 func batchRunCommandSpec(program string, args []string) string {

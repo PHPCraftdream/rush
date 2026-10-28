@@ -1,7 +1,7 @@
 package tools
 
 // fs_delete is the batch-capable delete member of the scoped fs_* family:
-// N files, one permission request, per-item outcomes via RunFSBatch.
+// N files, one permission request per target, per-item outcomes via RunFSBatch.
 // Deleting is not a content write, so unlike fs_write/fs_replace/
 // fs_write_lines it keeps no history and reads no filetracker state:
 // each item is a stat-then-remove on the resolved path.
@@ -15,7 +15,6 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/filepathext"
-	"github.com/PHPCraftdream/rush/internal/fsext"
 	"github.com/PHPCraftdream/rush/internal/permission"
 )
 
@@ -63,19 +62,9 @@ func NewFSDeleteTool(scope permission.FolderScope, permissions permission.Servic
 				joinedPaths[i] = filepathext.SmartJoin(workingDir, item.Path)
 			}
 
-			// One whole-call gate, multiedit's precedent: a single
-			// permission request for the entire batch, placed before
-			// any batch work so a denial ends the turn before the
-			// runner touches the filesystem.
-			p, err := permissions.Request(ctx, permission.CreatePermissionRequest{
-				SessionID:   sessionID,
-				Path:        fsext.PathOrPrefix(joinedPaths[0], workingDir),
-				ToolCallID:  call.ID,
-				ToolName:    FSDeleteToolName,
-				Action:      "delete",
-				Description: fmt.Sprintf("delete %d files", len(params.Items)),
-				Params:      FSDeletePermissionsParams{Paths: joinedPaths},
-			})
+			// Every target path is authorized before any batch work, so a denial
+			// ends the turn before the runner touches the filesystem.
+			p, err := requestFSBatchPermissions(ctx, permissions, sessionID, call.ID, FSDeleteToolName, "delete", fmt.Sprintf("delete %d files", len(params.Items)), joinedPaths, workingDir, FSDeletePermissionsParams{Paths: joinedPaths})
 			if err != nil {
 				return fantasy.ToolResponse{}, err
 			}

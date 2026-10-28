@@ -120,6 +120,16 @@ type runIncompleteError struct {
 	cause error
 }
 
+// RunIncompleteError is the exit-code error returned when a run did not
+// complete its work cleanly.
+type RunIncompleteError = runIncompleteError
+
+// NewRunIncompleteError creates the non-zero-exit error used when work ran
+// but did not complete cleanly.
+func NewRunIncompleteError(reason, detail string) *RunIncompleteError {
+	return &runIncompleteError{reason: reason, detail: detail}
+}
+
 // ErrRunQueued marks a legacy mailbox admission that was accepted for a
 // different active owner. The prompt remains owned by that mailbox and this
 // invocation must not claim a completed result.

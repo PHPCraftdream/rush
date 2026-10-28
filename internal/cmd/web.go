@@ -13,6 +13,7 @@ func init() {
 // embedded web server — webCmd just makes the intent obvious in scripts.
 var webCmd = &cobra.Command{
 	Use:   "web",
+	Args:  cobra.NoArgs,
 	Short: "Start the Rush web UI (same as running 'rush' with no subcommand)",
 	Long: `Start the Rush web UI.
 

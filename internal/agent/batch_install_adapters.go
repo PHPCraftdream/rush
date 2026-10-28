@@ -363,7 +363,7 @@ func (e batchStoreElector) ElectInline(ctx context.Context, owner string, root j
 }
 
 func batchStartedNoticeText(root jobbatch.ID) string {
-	return fmt.Sprintf("batch root %s started; completions arrive as selected notices.", root)
+	return fmt.Sprintf("batch root %s started; completions arrive as selected notices. Call await_tasks to wait for it.", root)
 }
 
 func batchCompletionMessageParams(text string) message.CreateMessageParams {

@@ -14,6 +14,7 @@ var updateProvidersSource string
 
 var updateProvidersCmd = &cobra.Command{
 	Use:   "update-providers [path-or-url]",
+	Args:  cobra.MaximumNArgs(1),
 	Short: "Update providers",
 	Long:  `Update provider information from a specified local path or remote URL.`,
 	Example: `

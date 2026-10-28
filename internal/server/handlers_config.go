@@ -374,10 +374,13 @@ func handleAddSkillsPath(a *appPkg.App, c *Client, msg WSMessage) {
 		c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 		return
 	}
-	cfg.Options.SkillsPaths = append(cfg.Options.SkillsPaths, p.Path)
-	if err := store.SetConfigField(config.ScopeGlobal, "options.skills_paths", cfg.Options.SkillsPaths); err != nil {
+	paths := append(slices.Clone(cfg.Options.SkillsPaths), p.Path)
+	if err := store.SetConfigField(config.ScopeGlobal, "options.skills_paths", paths); err != nil {
 		slog.Warn("ws: failed to persist skills paths", "err", err)
+		c.reply(msg.ID, EventError, nil, err.Error())
+		return
 	}
+	cfg.Options.SkillsPaths = paths
 	if wire, ok := buildConfigWire(a); ok {
 		c.hub.Broadcast(EventConfig, wire)
 	}
@@ -400,10 +403,13 @@ func handleRemoveSkillsPath(a *appPkg.App, c *Client, msg WSMessage) {
 		c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 		return
 	}
-	cfg.Options.SkillsPaths = slices.DeleteFunc(cfg.Options.SkillsPaths, func(s string) bool { return s == p.Path })
-	if err := store.SetConfigField(config.ScopeGlobal, "options.skills_paths", cfg.Options.SkillsPaths); err != nil {
+	paths := slices.DeleteFunc(slices.Clone(cfg.Options.SkillsPaths), func(s string) bool { return s == p.Path })
+	if err := store.SetConfigField(config.ScopeGlobal, "options.skills_paths", paths); err != nil {
 		slog.Warn("ws: failed to persist skills paths", "err", err)
+		c.reply(msg.ID, EventError, nil, err.Error())
+		return
 	}
+	cfg.Options.SkillsPaths = paths
 	if wire, ok := buildConfigWire(a); ok {
 		c.hub.Broadcast(EventConfig, wire)
 	}

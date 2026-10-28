@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/permission"
@@ -198,5 +199,52 @@ func emitToolEnd(toolCh chan mcpToolEvent, id string) {
 	case toolCh <- mcpToolEvent{id: id}:
 	default:
 		slog.Debug("cliprovider: toolCh full, dropping end event", "id", id)
+	}
+}
+
+// rushMCPToolArgs returns the claude CLI flags that confine it to rush's MCP
+// tools. --allowedTools pre-approves them inside the CLI's own permission
+// layer (so calls reach rush's handlers, which run rush's permission checks);
+// it blocks nothing under --dangerously-skip-permissions, so --tools limits
+// the CLI's built-in set to the non-MCP names of the same list — without it
+// the native Bash/Write/Edit bypass agentguard and the run policy.
+// TodoWrite is denied so the model uses mcp__rush__todos, which persists to
+// the rush session.
+func rushMCPToolArgs(bridge ToolBridge, proxy ExternalMCPProxy) []string {
+	allowed := []string{
+		// Rush MCP bridge tools (go through rush's permission system).
+		"mcp__rush__Bash",
+		"mcp__rush__Read",
+		"mcp__rush__Write",
+		"mcp__rush__Glob",
+		"mcp__rush__Grep",
+		"mcp__rush__todos",
+		// CLI built-ins rush doesn't replicate.
+		"WebSearch",
+		"WebFetch",
+		"Task",
+		"Agent",
+	}
+	// Include external MCP tools registered on the rush MCP bridge.
+	if bridge != nil {
+		allowed = nil
+		for _, tool := range bridge.Tools() {
+			allowed = append(allowed, "mcp__rush__"+tool.WireName)
+		}
+	} else if proxy != nil {
+		for _, ext := range proxy.ListTools() {
+			allowed = append(allowed, "mcp__rush__"+ext.ServerName+"__"+ext.Name)
+		}
+	}
+	var builtins []string
+	for _, name := range allowed {
+		if !strings.HasPrefix(name, "mcp__") {
+			builtins = append(builtins, name)
+		}
+	}
+	return []string{
+		"--tools", strings.Join(builtins, ","),
+		"--allowedTools", strings.Join(allowed, ","),
+		"--disallowedTools", "TodoWrite",
 	}
 }

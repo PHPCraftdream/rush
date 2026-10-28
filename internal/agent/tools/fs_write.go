@@ -1,7 +1,7 @@
 package tools
 
 // fs_write is the batch-capable member of the scoped fs_* write family:
-// N files, one permission request, per-item outcomes via RunFSBatch, and
+// N files, one permission request per target, per-item outcomes via RunFSBatch, and
 // one atomic write plus one history version per distinct file. It reuses
 // edit.go's commitFileChange so durability, history and read-tracking
 // behave exactly like the single-file write path.
@@ -19,7 +19,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/diff"
 	"github.com/PHPCraftdream/rush/internal/filepathext"
 	"github.com/PHPCraftdream/rush/internal/filetracker"
-	"github.com/PHPCraftdream/rush/internal/fsext"
 	"github.com/PHPCraftdream/rush/internal/history"
 	"github.com/PHPCraftdream/rush/internal/permission"
 )
@@ -76,19 +75,10 @@ func NewFSWriteTool(scope permission.FolderScope, permissions permission.Service
 				joinedPaths[i] = joined
 			}
 
-			// One whole-call gate, multiedit's precedent: a single
-			// permission request for the entire batch, placed before
-			// any batch work so a denial ends the turn before the
-			// runner touches the filesystem.
-			p, err := permissions.Request(ctx, permission.CreatePermissionRequest{
-				SessionID:   sessionID,
-				Path:        fsext.PathOrPrefix(joinedPaths[0], workingDir),
-				ToolCallID:  call.ID,
-				ToolName:    FSWriteToolName,
-				Action:      "write",
-				Description: fmt.Sprintf("write %d files", len(params.Items)),
-				Params:      FSWritePermissionsParams{Paths: joinedPaths},
-			})
+			// One whole-call gate, multiedit's precedent: every target path is
+			// authorized before any batch work, so a denial ends the turn
+			// before the runner touches the filesystem.
+			p, err := requestFSBatchPermissions(ctx, permissions, sessionID, call.ID, FSWriteToolName, "write", fmt.Sprintf("write %d files", len(params.Items)), joinedPaths, workingDir, FSWritePermissionsParams{Paths: joinedPaths})
 			if err != nil {
 				return fantasy.ToolResponse{}, err
 			}

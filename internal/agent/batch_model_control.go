@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"charm.land/fantasy"
@@ -29,13 +30,16 @@ type installedBatchModelControl struct {
 	profile            *BatchProfile
 	resolver           batchMCPCapabilityResolver
 	rootLeases         *batchRootLeaseStore
+	runMu              *sync.Mutex
 	maxDepth, maxNodes int
 }
+
+var batchModelRunFallbackMu sync.Mutex
 
 var _ BatchModelControl = (*installedBatchModelControl)(nil)
 
 func NewInstalledBatchModelControl(runner batchModelRunner, delivery batchModelDelivery, store *session.BatchStore, live *session.BatchLiveReader, sessions session.Service, host, runnerID string, profile *BatchProfile, resolver batchMCPCapabilityResolver, leases ...*batchRootLeaseStore) BatchModelControl {
-	control := &installedBatchModelControl{runner: runner, delivery: delivery, store: store, live: live, sessions: sessions, host: host, runnerID: runnerID, profile: profile, resolver: resolver, maxDepth: batchDefaultMaxDepth, maxNodes: batchDefaultMaxNodes}
+	control := &installedBatchModelControl{runner: runner, delivery: delivery, store: store, live: live, sessions: sessions, host: host, runnerID: runnerID, profile: profile, resolver: resolver, runMu: &sync.Mutex{}, maxDepth: batchDefaultMaxDepth, maxNodes: batchDefaultMaxNodes}
 	if adapter, ok := runner.(interface{ OutputCache() *batchOutputCache }); ok {
 		control.outputCache = adapter.OutputCache()
 	}
@@ -62,17 +66,63 @@ func (c *installedBatchModelControl) Run(ctx context.Context, inv BatchInvocatio
 	if inv.CallID == "" || reg == nil || inv.RegistryID != inv.Policy.RegistryID || !reg.hasToolset(inv.Policy.RestrictedToolset) {
 		return "", errBatchMissingCallID
 	}
-	spec, err := modelBatchSpec(raw, inv, reg)
+	spec, err := modelBatchSpecForAdmission(raw, inv, reg, c.resolver)
 	if err != nil {
 		return "", err
 	}
 	if err := assignModelBatchCallIDs(&spec, inv.CallID, "run"); err != nil {
 		return "", err
 	}
-	root := batchRootID()
-	if err = ValidateSubmit(c.profile, batchRankContext{Rank: inv.WaiterRank, Root: root}, nil, spec, c.maxDepth, c.maxNodes, c.resolver); err != nil {
+	if err := ValidateSubmit(c.profile, batchRankContext{Rank: inv.WaiterRank}, nil, spec, c.maxDepth, c.maxNodes, c.resolver); err != nil {
 		return "", err
 	}
+	// Hash the exact spec the adapter submits. Credential stamping adds a
+	// CallCredentials marker to agent payloads, and the durable reservation
+	// hashes that stamped spec; probing the unstamped form misses live retries.
+	spec, err = stampBatchCallCredentials(ctx, spec)
+	if err != nil {
+		return "", err
+	}
+	inputHash := batchInvocationHash(spec)
+	var runMu *sync.Mutex
+	if c.runMu != nil {
+		runMu = c.runMu
+	} else {
+		runMu = &batchModelRunFallbackMu
+	}
+	runMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			runMu.Unlock()
+		}
+	}()
+	liveRoot, attached, err := c.store.BatchProbeLive(ctx, session.BatchLiveProbe{
+		Owner: inv.SessionID, Host: c.host, RunnerID: c.runnerID,
+		ToolCallID: inv.CallID, InputHash: inputHash,
+	})
+	if err != nil {
+		return "", fmt.Errorf("batch attach: %w", err)
+	}
+	if attached {
+		if c.rootLeases == nil || !c.rootLeases.matches(jobbatch.ID(liveRoot), inv.Policy.DiskBindingID, inv.RegistryID) {
+			return "", ErrDiskProviderUnavailable
+		}
+		locked = false
+		runMu.Unlock()
+		resp, err := c.delivery.DeliverBatch(ctx, jobbatch.ID(liveRoot), inv)
+		if err != nil {
+			return "", err
+		}
+		if resp.IsError {
+			return "", fmt.Errorf("batch delivery failed: %s", resp.Content)
+		}
+		return jobbatch.ID(liveRoot), nil
+	}
+	root := batchRootID()
+	// Reservation identity is the caller's tool-call ID, so matching retries
+	// attach to the live root before attempting another Runner submission.
+	request := jobbatch.SubmitRequest{Root: root, Spec: spec, Ref: inv.CallID}
 	// Root owner: acquired BEFORE Submit with the already-minted root ID;
 	// it covers accepted-but-not-started children. Released on definite
 	// rejection below; a successful Submit keeps it and the Done watcher
@@ -92,7 +142,6 @@ func (c *installedBatchModelControl) Run(ctx context.Context, inv BatchInvocatio
 			c.rootLeases.release(root, inv.Policy.DiskBindingID, inv.RegistryID)
 		}
 	}
-	request := jobbatch.SubmitRequest{Root: root, Spec: spec, Ref: inv.CallID}
 	var id jobbatch.ID
 	var batch *jobbatch.Batch
 	if rootOwned {
@@ -130,6 +179,8 @@ func (c *installedBatchModelControl) Run(ctx context.Context, inv BatchInvocatio
 			return "", err
 		}
 	}
+	locked = false
+	runMu.Unlock()
 	resp, err := c.delivery.DeliverBatch(ctx, root, inv)
 	if err != nil {
 		return "", err
@@ -228,16 +279,16 @@ func batchModelNodeInSnapshot(nodes []db.BatchNode, id, kind, root string) bool 
 	return false
 }
 
-func batchModelSpecNodes(items []batchModelItem, inv BatchInvocation, reg *policyLeafRegistry) ([]jobbatch.Spec, error) {
+func batchModelSpecNodes(items []batchModelItem, inv BatchInvocation, reg *policyLeafRegistry, resolver batchMCPCapabilityResolver) ([]jobbatch.Spec, error) {
 	out := make([]jobbatch.Spec, 0, len(items))
 	for i, item := range items {
 		var spec jobbatch.Spec
 		var err error
 		if item.Batch != nil {
-			spec, err = modelBatchSpec(*item.Batch, inv, reg)
+			spec, err = modelBatchSpecForAdmission(*item.Batch, inv, reg, resolver)
 		} else {
 			var wrapper jobbatch.Spec
-			wrapper, err = modelBatchSpec(batchModelSpec{Mode: "parallel", Notify: "each", Items: []batchModelItem{item}}, inv, reg)
+			wrapper, err = modelBatchSpecForAdmission(batchModelSpec{Mode: "parallel", Notify: "each", Items: []batchModelItem{item}}, inv, reg, resolver)
 			if err == nil {
 				spec = wrapper.Batch.Items[0]
 			}
@@ -307,7 +358,7 @@ func (c *installedBatchModelControl) Add(ctx context.Context, caller, root, pare
 	if !ok || pn.Kind != "batch" {
 		return nil, errors.New("batch_add parent must be batch")
 	}
-	specs, err := batchModelSpecNodes(items, inv, reg)
+	specs, err := batchModelSpecNodes(items, inv, reg, c.resolver)
 	if err != nil {
 		return nil, err
 	}

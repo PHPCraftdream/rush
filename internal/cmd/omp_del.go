@@ -7,6 +7,7 @@ import (
 
 var ompDelCmd = &cobra.Command{
 	Use: "omp-del", Short: "Remove Rush delegation commands from Oh My Pi",
+	Args: cobra.NoArgs,
 	Long: "Remove Rush-owned /rush, /rush-fallback, /wrush and /wcrush commands. Defaults to ~/.omp/agent/commands; --local or --cwd targets <cwd>/.omp/commands. Foreign files are preserved.",
 	RunE: runOMPDel,
 }
