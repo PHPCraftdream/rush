@@ -9,8 +9,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-
-	"github.com/PHPCraftdream/rush/internal/db"
 )
 
 func (s *service) Get(ctx context.Context, id string) (Session, error) {
@@ -130,42 +128,13 @@ func (s *service) List(ctx context.Context) ([]Session, error) {
 // WebSocket events stream (internal/server/events.go) without per-session
 // estimated-state tracking. See CHANGELOG.fork.md Section 2.
 func (s *service) ListAll(ctx context.Context) ([]Session, error) {
-	rows, err := s.readDB.QueryContext(ctx, `SELECT id, parent_session_id, title, message_count,
-		prompt_tokens, completion_tokens, cost, updated_at, created_at,
-		summary_message_id, todos,
-		smart_model_provider, smart_model_id,
-		fast_model_provider, fast_model_id,
-		system_prompt, yolo_enabled,
-		smart_model_reasoning_effort, fast_model_reasoning_effort,
-		worker_model_provider, worker_model_id, worker_model_reasoning_effort,
-		reviewer_model_provider, reviewer_model_id, reviewer_model_reasoning_effort,
-		cancel_requested,
-		COALESCE(ended_reason, ''), COALESCE(budget_max_cost, 0),
-		COALESCE(budget_max_tokens, 0), COALESCE(budget_timeout_sec, 0)
-		FROM sessions ORDER BY updated_at DESC`)
+	dbSessions, err := s.qRead.ListAllSessions(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var sessions []Session
-	for rows.Next() {
-		var item db.Session
-		if err := rows.Scan(
-			&item.ID, &item.ParentSessionID, &item.Title, &item.MessageCount,
-			&item.PromptTokens, &item.CompletionTokens, &item.Cost,
-			&item.UpdatedAt, &item.CreatedAt, &item.SummaryMessageID, &item.Todos,
-			&item.SmartModelProvider, &item.SmartModelID,
-			&item.FastModelProvider, &item.FastModelID,
-			&item.SystemPrompt, &item.YoloEnabled,
-			&item.SmartModelReasoningEffort, &item.FastModelReasoningEffort,
-			&item.WorkerModelProvider, &item.WorkerModelID, &item.WorkerModelReasoningEffort,
-			&item.ReviewerModelProvider, &item.ReviewerModelID, &item.ReviewerModelReasoningEffort,
-			&item.CancelRequested,
-			&item.EndedReason, &item.BudgetMaxCost, &item.BudgetMaxTokens, &item.BudgetTimeoutSec,
-		); err != nil {
-			return nil, err
-		}
-		sessions = append(sessions, s.fromDBItem(item))
+	sessions := make([]Session, len(dbSessions))
+	for i, dbSession := range dbSessions {
+		sessions[i] = s.fromDBItem(dbSession)
 	}
-	return sessions, rows.Err()
+	return sessions, nil
 }
