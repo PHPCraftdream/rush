@@ -131,7 +131,7 @@ func TestMCPGlobalScopeWritableAfterMidSessionKtavMigration(t *testing.T) {
 	require.NoError(t, store.ReloadFromDisk(context.Background()))
 	require.FileExists(t, ktavSiblingOf(globalPath),
 		"the reload must migrate the global rush.json to rush.ktav")
-	require.NoFileExists(t, globalPath)
+	require.FileExists(t, globalPath, "the migration keeps the legacy JSON")
 
 	scope, err := store.ResolveMCPWritableScope("global-migrated")
 	require.NoError(t, err)

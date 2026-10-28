@@ -22,15 +22,14 @@ import (
 )
 
 // TestKtavLoadMigratesSymlinkedLegacyConfig verifies that Load migrates a
-// symlinked rush.json in place of deferring: the link is removed, rush.ktav
+// symlinked rush.json in place of deferring: the link is kept, rush.ktav
 // appears beside the link path only, the physical target keeps its exact
 // bytes, no record and no .bak survive, the loaded store resolves the
 // custom provider, and a second Load is idempotent.
 //
 // Hand-trace (first assertion after setup is require.FileExists(dir/
 // "rush.ktav")): migrateKtavSymlinkedConfig publishes rush.ktav beside the
-// link via commitConfigFile, then removes only the link
-// (ktav_migration_symlink.go). On Windows os.Symlink may fail without
+// link via commitConfigFile and keeps the link (ktav_migration_symlink.go). On Windows os.Symlink may fail without
 // privileges — the test skips in that case (both traces below).
 //
 // Mutation: making runKtavSymlinkMigrationState return (false, nil) for the
@@ -63,9 +62,10 @@ func TestKtavLoadMigratesSymlinkedLegacyConfig(t *testing.T) {
 	require.NoFileExists(t, backupPathFor(logical))
 	require.NoFileExists(t, filepath.Join(dir, "dotfiles", "rush.ktav"))
 
-	// The link itself is gone.
-	_, err = os.Lstat(logical)
-	require.ErrorIs(t, err, os.ErrNotExist)
+	// The link is kept for older binaries that only read rush.json.
+	linkInfo, err := os.Lstat(logical)
+	require.NoError(t, err)
+	require.NotEqual(t, os.FileMode(0), linkInfo.Mode()&os.ModeSymlink)
 
 	// The physical target is byte-identical: it was never written.
 	persisted, err := os.ReadFile(physical)
@@ -143,12 +143,10 @@ func TestKtavLoadDefersDanglingSymlinkedLegacyConfig(t *testing.T) {
 // with record.Symlink and hands off to finishKtavSymlinkMigration, which
 // verifies StagedDigest against rush.ktav and — while the link exists —
 // SourceDigest/SourceID/ParentID against the target through the link,
-// removes the link, then removes the record.
+// keeps the link, then removes the record.
 //
-// Mutation: dropping the os.Remove(legacy) link removal in
-// finishKtavSymlinkMigration leaves the link — the Lstat assertion fails
-// while the record is still retired; reversing removal order (record first)
-// makes case (a) strand the link.
+// Mutation: removing the link in finishKtavSymlinkMigration fails the
+// Lstat assertion of case (a).
 func TestKtavSymlinkMigrationCrashRecovery(t *testing.T) {
 	enableKtavAutoMigrateForTest(t)
 	_, _ = isolateAllGlobalConfigPaths(t)
@@ -195,15 +193,15 @@ func TestKtavSymlinkMigrationCrashRecovery(t *testing.T) {
 		return logical, physical, ktavPath, recordPath
 	}
 
-	// (a) crash after publishing rush.ktav and the record, before removing
-	// the link: recovery verifies the digests through the link, removes the
-	// link, and retires the record.
+	// (a) crash after publishing rush.ktav and the record: recovery verifies
+	// the digests through the link, keeps the link, and retires the record.
 	dirA, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
 	logical, physical, ktavPath, recordPath := writeCrashArtifacts(t, dirA, true)
 	require.NoError(t, runKtavMigrationState(context.Background(), logical, dirA))
-	_, err = os.Lstat(logical)
-	require.ErrorIs(t, err, os.ErrNotExist)
+	linkInfo, err := os.Lstat(logical)
+	require.NoError(t, err)
+	require.NotEqual(t, os.FileMode(0), linkInfo.Mode()&os.ModeSymlink, "the link is kept")
 	require.NoFileExists(t, recordPath)
 	require.FileExists(t, ktavPath)
 	persisted, err := os.ReadFile(physical)

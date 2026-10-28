@@ -12,14 +12,14 @@ stated otherwise. Every claim here is verified against the code in
 
 ### Rush-owned files that move to Ktav
 
-| Legacy JSON name | Ktav name | Backup |
+| Legacy JSON name | Ktav name | Legacy file after migration |
 |---|---|---|
-| `rush.json` | `rush.ktav` | `rush.json.bak` |
-| `.rush.json` | `.rush.ktav` | `.rush.json.bak` |
-| `providers.json` | `providers.ktav` | — (see §3) |
-| `hyper.json` | `hyper.ktav` | — |
-| `model-catalog-<id>.json` | `model-catalog-<id>.ktav` | — |
-| OAuth pending journal: `rush.json.oauth-pending-<hash>.json` | `rush.ktav.oauth-pending-<hash>.ktav` (new journals only) | — |
+| `rush.json` | `rush.ktav` | kept in place |
+| `.rush.json` | `.rush.ktav` | kept in place |
+| `providers.json` | `providers.ktav` | kept in place |
+| `hyper.json` | `hyper.ktav` | kept in place |
+| `model-catalog-<id>.json` | `model-catalog-<id>.ktav` | kept in place |
+| OAuth pending journal: `rush.json.oauth-pending-<hash>.json` | `rush.ktav.oauth-pending-<hash>.ktav` | renamed to `.bak` |
 
 `<hash>` is the first 16 hex characters of the SHA-256 of the provider ID
 (`oauthJournalDigest`, `ktav_oauth.go`).
@@ -82,17 +82,19 @@ Implemented in `ktav_migration.go`; call sites: startup in `load.go`
   record file exists (an interrupted transaction), recovery of that slot runs
   even with the gate off (`ktavMigrateStartupSlots` calls
   `ktavMigrationPendingSlots` before checking the gate).
-- **Files produced:** `<name>.ktav` plus `<name>.json.bak`. The JSON original
-  is renamed to the backup; it is not deleted.
-- **Never overwrites an existing backup.** If `<name>.json.bak` already
-  exists, the migration stops with `errKtavMigrationConflict` ("backup …
-  already exists") and the JSON stays active.
+- **Files produced:** only `<name>.ktav`. The JSON original stays in place,
+  untouched, so older binaries that only read JSON keep working; newer ones
+  use the Ktav file. The two are not kept in sync afterwards (`ktavKeepsLegacy`).
+- **Pending OAuth journals are the exception:** their JSON copy is still
+  renamed to `<name>.json.bak`, because a stale duplicate journal could replay
+  over rotated tokens.
+- **Leftover backups are ignored.** A `<name>.json.bak` beside an active JSON
+  no longer blocks the migration and is never rewritten.
 - **Interrupted transactions finish from the migration record**
   `<name>.json.ktav-migration` (mode 0600, contains only paths and SHA-256
   digests — no configuration values). A crash after the Ktav file is
-  published but before the JSON is archived leaves the record in place; the
-  next startup re-authenticates it (digests, file identity, parent identity)
-  and finishes the archival.
+  published leaves the record in place; the next startup re-authenticates it
+  (digests, file identity, parent identity) and retires it.
 - **Crash-recovery states from the state machine** (`runKtavMigrationStateLocked`):
   - Nothing exists → no-op.
   - Only a backup exists (no JSON, no Ktav) → `errKtavBackupOnly` (fail closed).
@@ -100,9 +102,10 @@ Implemented in `ktav_migration.go`; call sites: startup in `load.go`
     already complete; the record is removed.
   - Ktav exists, no JSON, no backup, record present → `errKtavMigrationConflict`
     (source and backup are gone but the record remains).
-  - JSON + backup exist → `errKtavMigrationConflict`; every file is preserved,
-    manual resolution required.
-  - Ktav + JSON exist without a valid record → `errKtavMigrationConflict`.
+  - JSON + backup exist → the backup is a leftover; the migration proceeds
+    (journals: `errKtavMigrationConflict`).
+  - Ktav + JSON exist without a record → the normal post-migration state;
+    no-op (journals: `errKtavMigrationConflict`).
 - **Conflicts preserve everything.** `errKtavMigrationConflict` never deletes
   or rewrites files; resolve manually and restart.
 - **Read-only / permission failures defer.** Non-conflict errors (e.g.
@@ -127,14 +130,12 @@ Implemented in `ktav_migration_symlink.go` (KTAV-6). Dotfiles managers keep
 
 - `rush.ktav` is published as a **regular file beside the LINK path** (never
   next to the physical target).
-- Only the symbolic link is removed. The physical target in the dotfiles
-  repository is left byte-for-byte untouched and **acts as the backup** — no
+- The symbolic link and its physical target are both left untouched — no
   `.bak` is created for a symlinked source.
 - The migration record carries a `symlink` flag; crash recovery
   (`finishKtavSymlinkMigration`) re-verifies the record's digests and file
-  identities (through the link, while it still exists), removes the link if
-  present, and retires the record — idempotently, whether the crash happened
-  before or after link removal.
+  identities (through the link, while it still exists) and retires the
+  record idempotently.
 - A **dangling link** or a non-regular/unreadable target stays deferred with
   zero side effects (`warnMigrationDeferredOnce`; no record, no `.ktav`, no
   link removal).
@@ -149,10 +150,10 @@ because the legacy journal name anchors on the legacy `rush.json` spelling.
 
 ## 4. Operational contract
 
-- **Stop all older Rush versions before the first migration.** An older
-  binary that runs after migration will find no `rush.json` and may recreate
-  an empty one; the new version ignores that file because `rush.ktav` wins
-  slot selection. The two versions would otherwise diverge silently.
+- **Older Rush versions keep working after migration, on their own copy.**
+  They read and write the kept `rush.json`; the new version reads and writes
+  `rush.ktav` (it wins slot selection). Changes made by one version are not
+  seen by the other — the files diverge from the first write.
 - **OAuth refresh-token consequence, stated plainly.** Two Rush versions
   operating at once maintain **independent OAuth refresh state**. Refresh
   tokens are single-use or limited-use: if one version refreshes the token,
@@ -184,17 +185,18 @@ because the legacy journal name anchors on the legacy `rush.json` spelling.
 
 ## 6. Manual rollback
 
-1. Stop **all** Rush versions (old ones will recreate `rush.json`).
+1. Stop **all** Rush versions.
 2. Keep the current `rush.ktav` somewhere safe (copy, do not move yet).
-3. Rename the chosen `<name>.json.bak` back to its JSON name
-   (e.g. `rush.json.bak` → `rush.json`).
+3. The legacy JSON is still in place (older migrations left a
+   `<name>.json.bak` instead: rename it back, e.g. `rush.json.bak` →
+   `rush.json`).
 4. Remove the migrated `.ktav` files (`rush.ktav` and any `providers.ktav`,
    `hyper.ktav`, `model-catalog-<id>.ktav` you want to revert).
 5. Acknowledge: any configuration changes made **after** the migration live
    only in the `.ktav` file and are lost by this rollback. Merge them into
    the JSON by hand if needed.
-6. **OAuth warning:** the refresh token in the restored backup may already
-   have been burned (used or rotated) by the newer version.
+6. **OAuth warning:** the refresh token in the kept JSON may already have
+   been burned (used or rotated) by the newer version.
    Re-authentication may be required.
 
 ## 7. Windows notes

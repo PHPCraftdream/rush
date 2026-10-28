@@ -148,7 +148,7 @@ func TestModelsIntegrityCmd_ModelsStateWarns(t *testing.T) {
 
 	// (c) clean store: no warning, and no edited_directly key at all.
 	// With the gate ON the earlier runs migrated the seeded rush.json to
-	// rush.ktav (rush.json renamed to rush.json.bak), so the clean seed must
+	// rush.ktav (the JSON stays but is no longer read), so the clean seed must
 	// go into the ACTIVE Ktav slot — writing rush.json here would be
 	// shadowed by the still-tampered rush.ktav and the warning would
 	// (correctly) persist.
