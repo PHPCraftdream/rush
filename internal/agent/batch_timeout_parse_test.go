@@ -228,6 +228,35 @@ func TestBatchIngressInvalidTimeoutFailsClosed(t *testing.T) {
 	require.Zero(t, runner.submitCalls(), "an invalid timeout never submits")
 }
 
+func TestBatchIngressInvalidCanonicalInputFailsClosed(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{name: "malformed JSON", input: `{"command":`},
+		{name: "empty string", input: ""},
+		{name: "whitespace", input: "  \t"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			runner := newFakeRunner(nil)
+			t.Cleanup(runner.settleBatches)
+			cfg := testRuntimeConfig()
+			cfg.Runner = runner
+			cfg.Delivery = newFakeDelivery(fantasy.ToolResponse{Content: "done"})
+			rt, err := newBatchRuntime(cfg)
+			require.NoError(t, err)
+
+			resp, err := rt.Invoke(context.Background(), testInvocation(), newTestLeaf("bash"),
+				fantasy.ToolCall{ID: "call-invalid-input", Name: "bash", Input: tc.input})
+			require.NoError(t, err, "invalid tool input must not end the turn")
+			require.True(t, resp.IsError)
+			require.Zero(t, runner.submitCalls(), "invalid input never submits")
+		})
+	}
+}
+
 // TestBatchModelLeafTimeoutAmbiguityRejected catches the mutation where an
 // explicit batch item deadline and a nested tool-input timeout are both
 // accepted (two unresolvable authorities), plus the positive twins pinning
