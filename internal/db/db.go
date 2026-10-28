@@ -570,14 +570,26 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.updatePermissionEnabledStmt, err = db.PrepareContext(ctx, updatePermissionEnabled); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdatePermissionEnabled: %w", err)
 	}
+	if q.updateSessionFastReasoningEffortStmt, err = db.PrepareContext(ctx, updateSessionFastReasoningEffort); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateSessionFastReasoningEffort: %w", err)
+	}
 	if q.updateSessionModelsStmt, err = db.PrepareContext(ctx, updateSessionModels); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateSessionModels: %w", err)
 	}
 	if q.updateSessionReasoningEffortStmt, err = db.PrepareContext(ctx, updateSessionReasoningEffort); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateSessionReasoningEffort: %w", err)
 	}
+	if q.updateSessionReviewerReasoningEffortStmt, err = db.PrepareContext(ctx, updateSessionReviewerReasoningEffort); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateSessionReviewerReasoningEffort: %w", err)
+	}
+	if q.updateSessionSmartReasoningEffortStmt, err = db.PrepareContext(ctx, updateSessionSmartReasoningEffort); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateSessionSmartReasoningEffort: %w", err)
+	}
 	if q.updateSessionSystemPromptStmt, err = db.PrepareContext(ctx, updateSessionSystemPrompt); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateSessionSystemPrompt: %w", err)
+	}
+	if q.updateSessionWorkerReasoningEffortStmt, err = db.PrepareContext(ctx, updateSessionWorkerReasoningEffort); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateSessionWorkerReasoningEffort: %w", err)
 	}
 	if q.updateSessionWorkerReviewerModelsStmt, err = db.PrepareContext(ctx, updateSessionWorkerReviewerModels); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateSessionWorkerReviewerModels: %w", err)
@@ -1512,6 +1524,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing updatePermissionEnabledStmt: %w", cerr)
 		}
 	}
+	if q.updateSessionFastReasoningEffortStmt != nil {
+		if cerr := q.updateSessionFastReasoningEffortStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateSessionFastReasoningEffortStmt: %w", cerr)
+		}
+	}
 	if q.updateSessionModelsStmt != nil {
 		if cerr := q.updateSessionModelsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing updateSessionModelsStmt: %w", cerr)
@@ -1522,9 +1539,24 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing updateSessionReasoningEffortStmt: %w", cerr)
 		}
 	}
+	if q.updateSessionReviewerReasoningEffortStmt != nil {
+		if cerr := q.updateSessionReviewerReasoningEffortStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateSessionReviewerReasoningEffortStmt: %w", cerr)
+		}
+	}
+	if q.updateSessionSmartReasoningEffortStmt != nil {
+		if cerr := q.updateSessionSmartReasoningEffortStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateSessionSmartReasoningEffortStmt: %w", cerr)
+		}
+	}
 	if q.updateSessionSystemPromptStmt != nil {
 		if cerr := q.updateSessionSystemPromptStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing updateSessionSystemPromptStmt: %w", cerr)
+		}
+	}
+	if q.updateSessionWorkerReasoningEffortStmt != nil {
+		if cerr := q.updateSessionWorkerReasoningEffortStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateSessionWorkerReasoningEffortStmt: %w", cerr)
 		}
 	}
 	if q.updateSessionWorkerReviewerModelsStmt != nil {
@@ -1778,9 +1810,13 @@ type Queries struct {
 	updateMessagePinnedStmt                              *sql.Stmt
 	updateMessageUsageStmt                               *sql.Stmt
 	updatePermissionEnabledStmt                          *sql.Stmt
+	updateSessionFastReasoningEffortStmt                 *sql.Stmt
 	updateSessionModelsStmt                              *sql.Stmt
 	updateSessionReasoningEffortStmt                     *sql.Stmt
+	updateSessionReviewerReasoningEffortStmt             *sql.Stmt
+	updateSessionSmartReasoningEffortStmt                *sql.Stmt
 	updateSessionSystemPromptStmt                        *sql.Stmt
+	updateSessionWorkerReasoningEffortStmt               *sql.Stmt
 	updateSessionWorkerReviewerModelsStmt                *sql.Stmt
 	updateSessionWorkerReviewerReasoningEffortStmt       *sql.Stmt
 	voidPendingSessionNoticeStmt                         *sql.Stmt
@@ -1975,9 +2011,13 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		updateMessagePinnedStmt:                              q.updateMessagePinnedStmt,
 		updateMessageUsageStmt:                               q.updateMessageUsageStmt,
 		updatePermissionEnabledStmt:                          q.updatePermissionEnabledStmt,
+		updateSessionFastReasoningEffortStmt:                 q.updateSessionFastReasoningEffortStmt,
 		updateSessionModelsStmt:                              q.updateSessionModelsStmt,
 		updateSessionReasoningEffortStmt:                     q.updateSessionReasoningEffortStmt,
+		updateSessionReviewerReasoningEffortStmt:             q.updateSessionReviewerReasoningEffortStmt,
+		updateSessionSmartReasoningEffortStmt:                q.updateSessionSmartReasoningEffortStmt,
 		updateSessionSystemPromptStmt:                        q.updateSessionSystemPromptStmt,
+		updateSessionWorkerReasoningEffortStmt:               q.updateSessionWorkerReasoningEffortStmt,
 		updateSessionWorkerReviewerModelsStmt:                q.updateSessionWorkerReviewerModelsStmt,
 		updateSessionWorkerReviewerReasoningEffortStmt:       q.updateSessionWorkerReviewerReasoningEffortStmt,
 		voidPendingSessionNoticeStmt:                         q.voidPendingSessionNoticeStmt,

@@ -50,6 +50,37 @@ func TestCreateWithID(t *testing.T) {
 	})
 }
 
+func TestUpdateWorkerReviewerReasoningEffort(t *testing.T) {
+	sqlDB, q := newTestDB(t)
+	svc := NewService(q, sqlDB)
+	ctx := t.Context()
+	sess, err := svc.Create(ctx, "worker reviewer effort")
+	require.NoError(t, err)
+
+	require.NoError(t, svc.UpdateWorkerReviewerReasoningEffort(ctx, sess.ID, "high", "low"))
+	// A single-slot write must leave the other slot untouched.
+	require.NoError(t, svc.UpdateWorkerReasoningEffort(ctx, sess.ID, "max"))
+	// Slot writes are independent: each keeps the other slot's latest value.
+	require.NoError(t, svc.UpdateReviewerReasoningEffort(ctx, sess.ID, "medium"))
+	got, err := svc.Get(ctx, sess.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "max", got.WorkerModelReasoningEffort)
+	assert.Equal(t, "medium", got.ReviewerModelReasoningEffort)
+
+	require.NoError(t, svc.UpdateWorkerReasoningEffort(ctx, sess.ID, ""))
+	var workerNull bool
+	require.NoError(t, sqlDB.QueryRowContext(ctx, `SELECT worker_model_reasoning_effort IS NULL FROM sessions WHERE id = ?`, sess.ID).Scan(&workerNull))
+	assert.True(t, workerNull, "empty effort clears to SQL NULL")
+	require.NoError(t, svc.UpdateReviewerReasoningEffort(ctx, sess.ID, "max"))
+	got, err = svc.Get(ctx, sess.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "max", got.ReviewerModelReasoningEffort, "reviewer slot update is independent")
+	require.NoError(t, svc.UpdateReviewerReasoningEffort(ctx, sess.ID, ""))
+	var reviewerNull bool
+	require.NoError(t, sqlDB.QueryRowContext(ctx, `SELECT reviewer_model_reasoning_effort IS NULL FROM sessions WHERE id = ?`, sess.ID).Scan(&reviewerNull))
+	assert.True(t, reviewerNull, "empty reviewer effort clears to SQL NULL")
+}
+
 func TestUpdateReasoningEffort(t *testing.T) {
 	sqlDB, q := newTestDB(t)
 	svc := NewService(q, sqlDB)
@@ -60,6 +91,30 @@ func TestUpdateReasoningEffort(t *testing.T) {
 	session, err := svc.Create(ctx, "Test Session")
 	require.NoError(t, err)
 	require.NotNil(t, session)
+
+	require.NoError(t, svc.UpdateReasoningEffort(ctx, session.ID, "high", "low"))
+	// Slot writes are independent: this fails if a slot method writes the
+	// pair (the other column would be reset to the value passed for it).
+	require.NoError(t, svc.UpdateFastReasoningEffort(ctx, session.ID, "max"))
+	require.NoError(t, svc.UpdateSmartReasoningEffort(ctx, session.ID, "medium"))
+	preserved, err := svc.Get(ctx, session.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "medium", preserved.SmartModelReasoningEffort)
+	assert.Equal(t, "max", preserved.FastModelReasoningEffort, "other slot survives stale-view write")
+	var fastNull bool
+	require.NoError(t, sqlDB.QueryRowContext(ctx, `SELECT fast_model_reasoning_effort IS NULL FROM sessions WHERE id = ?`, session.ID).Scan(&fastNull))
+	assert.False(t, fastNull)
+	require.NoError(t, svc.UpdateFastReasoningEffort(ctx, session.ID, ""))
+	require.NoError(t, sqlDB.QueryRowContext(ctx, `SELECT fast_model_reasoning_effort IS NULL FROM sessions WHERE id = ?`, session.ID).Scan(&fastNull))
+	assert.True(t, fastNull, "empty effort clears to SQL NULL")
+	require.NoError(t, svc.UpdateSmartReasoningEffort(ctx, session.ID, "high"))
+	preserved, err = svc.Get(ctx, session.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "high", preserved.SmartModelReasoningEffort)
+	require.NoError(t, svc.UpdateSmartReasoningEffort(ctx, session.ID, ""))
+	var smartNull bool
+	require.NoError(t, sqlDB.QueryRowContext(ctx, `SELECT smart_model_reasoning_effort IS NULL FROM sessions WHERE id = ?`, session.ID).Scan(&smartNull))
+	assert.True(t, smartNull, "empty effort clears smart slot to SQL NULL")
 
 	t.Run("sets reasoning effort for both models", func(t *testing.T) {
 		err := svc.UpdateReasoningEffort(ctx, session.ID, "high", "low")

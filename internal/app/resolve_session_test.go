@@ -217,6 +217,22 @@ func (m *mockSessionService) UpdateWorkerReviewerReasoningEffort(context.Context
 	return nil
 }
 
+func (m *mockSessionService) UpdateSmartReasoningEffort(context.Context, string, string) error {
+	return nil
+}
+
+func (m *mockSessionService) UpdateFastReasoningEffort(context.Context, string, string) error {
+	return nil
+}
+
+func (m *mockSessionService) UpdateWorkerReasoningEffort(context.Context, string, string) error {
+	return nil
+}
+
+func (m *mockSessionService) UpdateReviewerReasoningEffort(context.Context, string, string) error {
+	return nil
+}
+
 func (m *mockSessionService) UpdateSystemPrompt(context.Context, string, string) error {
 	return nil
 }
