@@ -22,7 +22,10 @@ func TestDrainWebModelPolicyUnfencedUsesLastUserOrigin(t *testing.T) {
 		{name: "cli-after-web", origins: []message.Origin{message.OriginWeb, message.OriginCLI}, want: "probe"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := WithCallOptions(context.Background(), &CallOptions{
+				WebTurnOptIn:     true,
+				DisableSubAgents: true,
+			})
 			f := newAttemptFixture(t, "drain-origin-unfenced-"+tc.name, attemptFixtureOpts{
 				noIdle: true, noDriver: true, oauthProvider: oauthTestProvider,
 			})
@@ -45,6 +48,8 @@ func TestDrainWebModelPolicyUnfencedUsesLastUserOrigin(t *testing.T) {
 			require.NoError(t, err)
 			require.Nil(t, prep, "unfenced drain has no prepared continuation")
 			require.Equal(t, tc.want, call.SmartModel.ModelCfg.Model)
+			require.True(t, call.CallOptions.DisableSubAgents)
+			require.True(t, callOptionsFrom(ctx).WebTurnOptIn, "inherited options must remain unchanged")
 		})
 	}
 }

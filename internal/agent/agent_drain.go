@@ -189,12 +189,12 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 		// With no execution fence, use CallOptions to carry the web-turn policy
 		// into model resolution without replacing unrelated context options.
 		origin, hasUserMessage := lastUserMessageOrigin(ctx, c.messages, sessionID)
-		if hasUserMessage && origin == message.OriginWeb {
+		if existing := callOptionsFrom(ctx); existing != nil || hasUserMessage && origin == message.OriginWeb {
 			var opts CallOptions
-			if existing := callOptionsFrom(ctx); existing != nil {
+			if existing != nil {
 				opts = *existing
 			}
-			opts.WebTurnOptIn = opts.ModelRole != config.SelectedModelTypeReviewer
+			opts.WebTurnOptIn = hasUserMessage && origin == message.OriginWeb && opts.ModelRole != config.SelectedModelTypeReviewer
 			ctx = WithCallOptions(ctx, &opts)
 		}
 	}
