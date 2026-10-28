@@ -241,6 +241,10 @@ type Service interface {
 	ResetCostBase(ctx context.Context, sessionID string) error
 	UpdateModels(ctx context.Context, sessionID string, smart, fast *ModelSlotUpdate) error
 	UpdateReasoningEffort(ctx context.Context, sessionID, smartEffort, fastEffort string) error
+	UpdateSmartReasoningEffort(ctx context.Context, sessionID, effort string) error
+	UpdateFastReasoningEffort(ctx context.Context, sessionID, effort string) error
+	UpdateWorkerReasoningEffort(ctx context.Context, sessionID, effort string) error
+	UpdateReviewerReasoningEffort(ctx context.Context, sessionID, effort string) error
 	// UpdateWorkerReviewerModels and UpdateWorkerReviewerReasoningEffort are
 	// UpdateModels/UpdateReasoningEffort's siblings for the optional
 	// worker/reviewer slots (task #466).
