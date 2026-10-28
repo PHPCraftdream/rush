@@ -125,6 +125,7 @@ func (cp *turnCheckpointWriter) start() {
 		// cross-generation races. Each writer tracks its own lastPartsLen and
 		// only writes if there's new content since its last write.
 		lastPartsLen := 0
+		lastContentBytes := 0
 		for {
 			select {
 			case <-stop:
@@ -156,16 +157,16 @@ func (cp *turnCheckpointWriter) start() {
 				var snap message.Message
 				haveSnap := false
 				var currentPartsLen int
+				var currentContentBytes int
 				cp.mu.Lock()
 				isCurrentGen := myGeneration == cp.generation
 				cp.mu.Unlock()
 				if *cp.assistant != nil && isCurrentGen {
 					currentPartsLen = len((*cp.assistant).Parts)
-					// Only write if we have new content since our last write.
-					// This is per-generation coalescing: each writer independently
-					// skips redundant DB writes, but doesn't interfere with other
-					// generations.
-					if currentPartsLen != lastPartsLen {
+					currentContentBytes = checkpointContentBytes((*cp.assistant).Parts)
+					// Text and reasoning deltas grow existing parts without changing
+					// the part count, so length alone misses streamed content.
+					if currentContentBytes != lastContentBytes || currentPartsLen != lastPartsLen {
 						snap = (*cp.assistant).Clone()
 						// Stamp the snapshot with THIS writer's generation
 						// so the conditional update can reject it if a
@@ -204,11 +205,25 @@ func (cp *turnCheckpointWriter) start() {
 					} else {
 						// Update our local coalescing state on successful write.
 						lastPartsLen = currentPartsLen
+						lastContentBytes = currentContentBytes
 					}
 				}
 			}
 		}
 	}()
+}
+
+func checkpointContentBytes(parts []message.ContentPart) int {
+	var size int
+	for _, part := range parts {
+		switch content := part.(type) {
+		case message.TextContent:
+			size += len(content.Text)
+		case message.ReasoningContent:
+			size += len(content.Thinking)
+		}
+	}
+	return size
 }
 
 func (cp *turnCheckpointWriter) stop() {
