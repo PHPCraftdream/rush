@@ -44,6 +44,7 @@ func TestTurnCheckpointWriterPersistsStreamingContentGrowth(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			msg, err := env.messages.Create(ctx, sess.ID, message.CreateMessageParams{Role: "assistant"})
 			require.NoError(t, err)
 			current := &msg
