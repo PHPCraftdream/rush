@@ -244,3 +244,29 @@ func TestWrapProviderHTTPErrorPreservesNonHTMLError(t *testing.T) {
 	original := &fantasy.ProviderError{StatusCode: 503, Message: "temporarily unavailable"}
 	require.Same(t, original, wrapProviderHTTPError(original))
 }
+
+func TestHeartbeatProviderSanitizesHTMLObjectStreamErrorPart(t *testing.T) {
+	sentinel := errors.New("object stream sentinel")
+	original := &fantasy.ProviderError{
+		StatusCode: http.StatusForbidden,
+		Message:    "<html><title>Access denied</title><style>hidden CSS</style></html>",
+		Cause:      sentinel,
+	}
+	source := func(yield func(fantasy.ObjectStreamPart) bool) {
+		yield(fantasy.ObjectStreamPart{Type: fantasy.ObjectStreamPartTypeError, Error: original})
+	}
+	var parts []fantasy.ObjectStreamPart
+	for part := range observeObjectStream(t.Context(), "test", "model", source) {
+		parts = append(parts, part)
+	}
+	require.Len(t, parts, 1)
+	require.Equal(t, fantasy.ObjectStreamPartTypeError, parts[0].Type)
+	require.Contains(t, parts[0].Error.Error(), "HTTP 403")
+	require.Contains(t, parts[0].Error.Error(), "Access denied")
+	require.NotContains(t, parts[0].Error.Error(), "<html>")
+	require.NotContains(t, parts[0].Error.Error(), "hidden CSS")
+	var providerErr *fantasy.ProviderError
+	require.ErrorAs(t, parts[0].Error, &providerErr)
+	require.Same(t, original, providerErr)
+	require.ErrorIs(t, parts[0].Error, sentinel)
+}
