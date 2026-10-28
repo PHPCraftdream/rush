@@ -70,6 +70,19 @@ func TestBatchLeafResolutionFailsClosed(t *testing.T) {
 	require.ErrorAs(t, err, &coded)
 }
 
+func TestBatchResultFromRunErrorKeepsResponseMetadata(t *testing.T) {
+	resp := fantasy.ToolResponse{Metadata: `{"details":"kept"}`}
+	result := batchResultFromResponse(resp, errors.New("run failed"), false)
+
+	require.Equal(t, jobbatch.StateFailed, result.State)
+	require.Equal(t, "tool_run_error", result.Code)
+	var got fantasy.ToolResponse
+	require.NoError(t, json.Unmarshal(result.Details, &got))
+	require.Equal(t, "run failed", got.Content)
+	require.True(t, got.IsError)
+	require.Equal(t, resp.Metadata, got.Metadata)
+}
+
 func TestBatchResultNeverTurnsFailureIntoSuccess(t *testing.T) {
 	// Mutation: mapping an error response or a Run error to Completed, or dropping the envelope.
 	ok := batchResultFromResponse(fantasy.NewTextResponse("done"), nil, false)
