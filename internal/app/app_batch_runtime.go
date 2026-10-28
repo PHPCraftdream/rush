@@ -53,6 +53,10 @@ type BatchRuntimeConfig struct {
 	// ExitFunc is the injectable process exit. Nil selects os.Exit.
 	ExitFunc func(code int)
 
+	// BeforeExit runs after the fault is fenced and containment has elapsed,
+	// immediately before the process exit. Hosts may publish a final result.
+	BeforeExit func(error)
+
 	// RetainHostIdentity forgets the in-process host-lock handle without
 	// releasing the OS lock (the CloseKeepLock convention of the forced
 	// shutdown path in app_lifecycle.go). Nil means no host identity.
