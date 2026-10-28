@@ -54,14 +54,15 @@ type CLISpec struct {
 	NoPTY bool
 	// QwenMCPIntegration starts rush's MCP server and registers it in
 	// ~/.qwen/settings.json under a stable per-project ID stored in
-	// <workingDir>/.rush/qwen-mcp-id. The entry is removed when the CLI
-	// process exits. Uses Authorization: Bearer header for auth.
+	// <workingDir>/.rush/qwen-mcp-id, suffixed with a session-specific hash.
+	// The entry is removed when the CLI process exits. Uses Authorization:
+	// Bearer header for auth.
 	QwenMCPIntegration bool
 	// GeminiMCPIntegration starts rush's MCP server and registers it in
 	// ~/.gemini/settings.json under a stable per-project ID stored in
-	// <workingDir>/.rush/gemini-mcp-id. The entry is removed when the CLI
-	// process exits. Uses Authorization: Bearer header and trust:true to
-	// bypass Gemini's own confirmation prompts.
+	// <workingDir>/.rush/gemini-mcp-id, suffixed with a session-specific hash.
+	// The entry is removed when the CLI process exits. Uses Authorization:
+	// Bearer header and trust:true to bypass Gemini's own confirmation prompts.
 	GeminiMCPIntegration bool
 	// CodexMCPIntegration starts rush's MCP server and passes its URL to
 	// codex via -c flags (inline config override), so no persistent changes

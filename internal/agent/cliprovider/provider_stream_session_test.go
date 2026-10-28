@@ -32,7 +32,7 @@ func TestRetainedStreamLifetime(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			sentinel := errors.New("late exit")
-			m := &cliModel{spec: CLISpec{Binary: self, NoPTY: !pty, BuildArgs: func(bool) []string { return nil }}, streamProcess: func(noPTY bool) procHandle {
+			m := &cliModel{spec: CLISpec{Binary: self, NoPTY: !pty, BuildArgs: func(bool) []string { return nil }}, streamProcess: func(noPTY bool, _ []string) procHandle {
 				if noPTY != (!pty || testDisablePTY) {
 					t.Fatal("production_mode_selection")
 				}
@@ -170,7 +170,7 @@ func TestRetainedStreamEvents(t *testing.T) {
 	}
 	for _, pty := range []bool{false, true} {
 		t.Run(fmt.Sprintf("pty=%v", pty), func(t *testing.T) {
-			m := &cliModel{spec: CLISpec{Binary: self, BuildArgs: func(bool) []string { return nil }}, streamProcess: func(bool) procHandle {
+			m := &cliModel{spec: CLISpec{Binary: self, BuildArgs: func(bool) []string { return nil }}, streamProcess: func(bool, []string) procHandle {
 				return procHandle{stdout: strings.NewReader("hello\nfinal\n"), usingPTY: pty, kill: func() {}, wait: func() (string, error) { return "", nil }}
 			}}
 			stream, err := m.Stream(context.Background(), fantasy.Call{})
@@ -200,7 +200,7 @@ func TestRetainedStreamYieldFalse(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var kills, cleanups atomic.Int32
-	m := &cliModel{spec: CLISpec{Binary: self, BuildArgs: func(bool) []string { return nil }}, streamProcess: func(bool) procHandle {
+	m := &cliModel{spec: CLISpec{Binary: self, BuildArgs: func(bool) []string { return nil }}, streamProcess: func(bool, []string) procHandle {
 		return procHandle{stdout: strings.NewReader("tail\n"), kill: func() { kills.Add(1) }, wait: func() (string, error) { return "", nil }, cleanup: func() { cleanups.Add(1) }}
 	}}
 	s, err := m.StartStream(ctx, fantasy.Call{})

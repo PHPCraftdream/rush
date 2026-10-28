@@ -207,7 +207,8 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 	}
 
 	// Qwen MCP integration: register rush's MCP server in ~/.qwen/settings.json
-	// using a stable per-project ID stored in <workingDir>/.rush/qwen-mcp-id.
+	// using a stable per-project ID, suffixed with a session-specific hash because
+	// concurrent rush sessions must not overwrite one another's registration.
 	// Qwen doesn't support --mcp-config, so we write the settings directly.
 	// The Authorization: Bearer header is stored in the settings (qwen CLI
 	// supports custom headers for httpUrl transports); the server is
@@ -228,13 +229,14 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 				// (removed: it also used to unsafely delete a possibly
 				// concurrent session's live entry — see
 				// deregisterQwenMCP's own doc for the full story).
-				if regErr := registerQwenMCP(id, mcpSrv.addr, mcpSrv.token); regErr != nil {
+				serverName := sessionMCPName(id, sessionID)
+				if regErr := registerQwenMCP(serverName, mcpSrv.addr, mcpSrv.token); regErr != nil {
 					slog.Warn("cliprovider: failed to register qwen MCP server", "err", regErr)
 					mcpSrv.stop()
 					mcpSrv = nil
 				} else {
-					qwenMCPName = id
-					args = append(args, "--allowed-mcp-server-names", id)
+					qwenMCPName = serverName
+					args = append(args, "--allowed-mcp-server-names", qwenMCPName)
 					// Restrict qwen to only rush MCP tools so its built-in
 					// tools (read_file, glob, etc.) cannot bypass rush's
 					// permission system.
@@ -243,19 +245,19 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 					if bridge != nil {
 						args = append(args, "--allowed-tools")
 						for _, tool := range bridge.Tools() {
-							args = append(args, "mcp__"+id+"__"+tool.WireName)
+							args = append(args, "mcp__"+qwenMCPName+"__"+tool.WireName)
 						}
 						args = append(args, "--exclude-tools", "todo_write")
 					} else {
 						args = append(
 							args,
 							"--allowed-tools",
-							"mcp__"+id+"__Bash",
-							"mcp__"+id+"__Read",
-							"mcp__"+id+"__Write",
-							"mcp__"+id+"__Glob",
-							"mcp__"+id+"__Grep",
-							"mcp__"+id+"__todos",
+							"mcp__"+qwenMCPName+"__Bash",
+							"mcp__"+qwenMCPName+"__Read",
+							"mcp__"+qwenMCPName+"__Write",
+							"mcp__"+qwenMCPName+"__Glob",
+							"mcp__"+qwenMCPName+"__Grep",
+							"mcp__"+qwenMCPName+"__todos",
 							"--exclude-tools",
 							"todo_write",
 						)
@@ -266,9 +268,10 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 	}
 
 	// Gemini MCP integration: register rush's MCP server in ~/.gemini/settings.json
-	// using a stable per-project ID. Gemini supports Authorization: Bearer headers and
-	// a trust:true flag to bypass its own confirmation prompts, so tool calls go
-	// directly to our MCP server which shows rush's permission dialog.
+	// using a stable per-project ID, suffixed with a session-specific hash so
+	// concurrent rush sessions retain independent registrations.
+	// Authorization: Bearer headers and trust:true to bypass its own confirmation
+	// prompts, so tool calls go directly to our MCP server and Rush permission UI.
 	if m.spec.GeminiMCPIntegration && (m.perms != nil || bridge != nil) {
 		id, idErr := geminiMCPID(m.workingDir)
 		if idErr != nil {
@@ -285,14 +288,15 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 				// (removed: it also used to unsafely delete a possibly
 				// concurrent session's live entry — see
 				// deregisterGeminiMCP's own doc for the full story).
-				if regErr := registerGeminiMCP(id, mcpSrv.addr, mcpSrv.token); regErr != nil {
+				serverName := sessionMCPName(id, sessionID)
+				if regErr := registerGeminiMCP(serverName, mcpSrv.addr, mcpSrv.token); regErr != nil {
 					slog.Warn("cliprovider: failed to register gemini MCP server", "err", regErr)
 					mcpSrv.stop()
 					mcpSrv = nil
 				} else {
-					geminiMCPName = id
-					args = append(args, "--allowed-mcp-server-names", id)
-					slog.Info("cliprovider: gemini MCP registered", "name", id, "addr", mcpSrv.addr)
+					geminiMCPName = serverName
+					args = append(args, "--allowed-mcp-server-names", geminiMCPName)
+					slog.Info("cliprovider: gemini MCP registered", "name", geminiMCPName, "addr", mcpSrv.addr)
 				}
 			}
 		}
@@ -338,7 +342,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 	var childPid int
 
 	if m.streamProcess != nil {
-		proc = m.streamProcess(noPTY)
+		proc = m.streamProcess(noPTY, args)
 	}
 	if proc.stdout == nil && !useStdin && !noPTY {
 		// Use a PTY so the subprocess (e.g. Node.js claude CLI) sees a TTY on
