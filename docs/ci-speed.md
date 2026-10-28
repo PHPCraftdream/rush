@@ -1,4 +1,4 @@
-# Build and test cost — measurements (2026-10-28)
+# Build and test cost - measurements (2026-10-28)
 
 Measured on `main` at `2e2ff0a4` (all repository packages, `-short`, one package at a time,
 2 logical processors, cold Go build cache for the build numbers). The absolute numbers are
@@ -34,10 +34,10 @@ Total 2,470 s (41 min). Four packages are 78% of it:
 
 Within them the time is concentrated in a few clusters of tests with nearly identical durations:
 
-- `internal/config`: `TestOAuthRound7_CartesianMatrix` alone is about 160–200 s (55% of the package).
+- `internal/config`: `TestOAuthRound7_CartesianMatrix` alone is about 160-200 s (55% of the package).
   It is a 2112-case model check and runs under `-short`.
 - `internal/app`: about ten `TestExecuteRunContinuation*` tests at about 25.6 s each, the
-  `TestCLIQuota*` tests at 15–46 s, `TestRunTimeout*` at about 26–30 s.
+  `TestCLIQuota*` tests at 15-46 s, `TestRunTimeout*` at about 26-30 s.
 - `internal/agent`: three `TestRun_QuotaLimit*` tests at 30.0 s each.
 
 Identical durations point at a fixed wait (the tests contain no sleeps of that length; the
@@ -62,7 +62,7 @@ the dependency's export data identical, so the real cost of a typical edit is fa
    shortening its fixed waits shortens the critical path of every sharded run.
    Removing the fixed waits of the clusters above would cut about 500 s of the 2,470 s.
 3. `TestOAuthRound7_CartesianMatrix` is a candidate for running outside `-short` (or a
-   reduced `-short` subset) — an operator decision, because it is the only exhaustive check of
+   reduced `-short` subset) - an operator decision, because it is the only exhaustive check of
    the OAuth refresh arbitration.
 4. `-count=1` in CI disables the Go test result cache. Dropping it would let unchanged
    packages skip their run entirely, at the price of masking flakes; also an operator decision.
