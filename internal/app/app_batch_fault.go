@@ -56,6 +56,10 @@ func (rt *BatchRuntime) handleFault(faultErr error) {
 	rt.retainHostIdentity()
 
 	rt.exitOnce.Do(func() {
+		writeBatchFaultOutput(os.Stderr, faultErr)
+		if rt.cfg.BeforeExit != nil {
+			rt.cfg.BeforeExit(faultErr)
+		}
 		exit := rt.cfg.ExitFunc
 		if exit == nil {
 			exit = batchFaultExit

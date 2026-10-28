@@ -121,6 +121,7 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	// generation-safe per-reference DB release of releaseResources.
 	// Host release goes through the HostStore -- CloseKeepLock pins the OS
 	// lock, Close deletes via DeleteAsyncHostIfNoNodes, never async_jobs.
+	rt.cfg.BeforeExit = app.handleBatchFaultOutput
 	rt.cfg.RetainHostIdentity = app.batchHostReleaseKeepLock
 	rt.cfg.ReleaseHostIdentity = func(ctx context.Context) error {
 		// R12-H2 §1.3: residual construction scopes close AFTER the

@@ -283,6 +283,16 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 	if output == nil {
 		output = io.Discard
 	}
+	if app.batchFaultWriter != nil && mode == RunModeJSON {
+		output = app.batchFaultWriter
+		app.batchFaultOutputMu.Lock()
+		app.batchFaultOutput = func(fault error) {
+			if err := app.batchFaultWriter.writeFault(continueSessionID, fault); err != nil {
+				slog.Error("failed to encode batch-fault JSON result", "error", err)
+			}
+		}
+		app.batchFaultOutputMu.Unlock()
+	}
 	source, isReactionSource := app.AgentCoordinator.(agent.ReactionDebtSource)
 	if overrides.Origin == message.OriginCLI && !isReactionSource {
 		// The loop cannot run without the coordinator's scope answers; running one

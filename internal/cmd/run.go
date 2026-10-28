@@ -732,7 +732,7 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			hardKillGrace, os.Stderr, exitWithAudit)
 		defer stopDeadline()
 
-		a, err := setupApp(cmd)
+		a, err := setupRunApp(cmd, asJSON, sessionID)
 		if err != nil {
 			return err
 		}

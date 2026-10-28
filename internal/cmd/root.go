@@ -537,6 +537,10 @@ func initCommandConfig(cmd *cobra.Command) (*config.ConfigStore, string, bool, e
 // setupApp handles the common setup logic for both interactive and non-interactive modes.
 // It returns the app instance, config, cleanup function, and any error.
 func setupApp(cmd *cobra.Command) (*app.App, error) {
+	return setupAppWithOptions(cmd, mcpAppOptions(cmd))
+}
+
+func setupAppWithOptions(cmd *cobra.Command, opts []app.Option) (*app.App, error) {
 	ctx := cmd.Context()
 	store, cwd, debug, err := initCommandConfig(cmd)
 	if err != nil {
@@ -573,7 +577,7 @@ func setupApp(cmd *cobra.Command) (*app.App, error) {
 		return nil, err
 	}
 
-	appInstance, err := app.New(ctx, conn, store, mcpAppOptions(cmd)...)
+	appInstance, err := app.New(ctx, conn, store, opts...)
 	if err != nil {
 		slog.Error("Failed to create app instance", "error", err)
 		// Ownership split (task #778): app.New only ever releases the

@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"log/slog"
 	"sync"
 	"time"
@@ -139,6 +140,9 @@ type App struct {
 	// coordinator in agent setup and cleared on shutdown with the rest of
 	// the batch wiring.
 	batchHeldAnswerSink agent.BatchHeldAnswerSink
+	batchFaultOutputMu  sync.Mutex
+	batchFaultOutput    func(error)
+	batchFaultWriter    *batchFaultEnvelopeWriter
 
 	// RunQueuePump is the background pump for durable orphaned/detached calls (task #340).
 	// It scans session_run_queue periodically and executes pending work.
@@ -229,10 +233,12 @@ type App struct {
 type Option func(*newOptions)
 
 type newOptions struct {
-	skipAgentSetup   bool
-	skipMCP          bool
-	restrictMCPToCLI bool
-	mcpOwner         *mcp.Owner
+	skipAgentSetup      bool
+	skipMCP             bool
+	restrictMCPToCLI    bool
+	mcpOwner            *mcp.Owner
+	batchFaultOutput    io.Writer
+	batchFaultSessionID string
 }
 
 // SkipAgentSetup builds the App without recoverInterruptedTurns,
@@ -248,6 +254,15 @@ type newOptions struct {
 // internal/cmd/root.go documents which commands qualify).
 func SkipAgentSetup() Option {
 	return func(o *newOptions) { o.skipAgentSetup = true }
+}
+
+// WithBatchFaultJSONOutput installs the stdout writer and session identity used
+// to publish a fault envelope when a Runner fault ends a `rush run --json`.
+func WithBatchFaultJSONOutput(output io.Writer, sessionID string) Option {
+	return func(o *newOptions) {
+		o.batchFaultOutput = output
+		o.batchFaultSessionID = sessionID
+	}
 }
 
 // SkipMCP prevents App from acquiring the process-wide MCP application
@@ -389,6 +404,18 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		config:             store,
 		agentNotifications: pubsub.NewBroker[notify.Notification](),
 		events:             pubsub.NewBroker[any](),
+	}
+
+	if o.batchFaultOutput != nil {
+		app.batchFaultWriter = &batchFaultEnvelopeWriter{writer: o.batchFaultOutput}
+	}
+	if app.batchFaultWriter != nil {
+		writer := app.batchFaultWriter
+		app.batchFaultOutput = func(fault error) {
+			if err := writer.writeFault(o.batchFaultSessionID, fault); err != nil {
+				slog.Error("failed to encode batch-fault JSON result", "error", err)
+			}
+		}
 	}
 
 	// Stage 4b: the durable wake-schedule store over the writer pool,
