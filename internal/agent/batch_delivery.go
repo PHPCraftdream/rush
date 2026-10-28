@@ -39,7 +39,7 @@ var (
 
 const (
 	// batchStartedResponseSuffix is the detached started-response suffix.
-	batchStartedResponseSuffix = "started; completions arrive as selected notices."
+	batchStartedResponseSuffix = "started; completions arrive as selected notices. Call await_tasks to wait for it."
 	// batchInlineElectionAttempts bounds failed-ack retries, never unbounded.
 	batchInlineElectionAttempts = 4
 )
