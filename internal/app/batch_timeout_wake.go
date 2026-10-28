@@ -177,6 +177,10 @@ func (d *batchTimeoutWakeDispatcher) release(req pwBatchWakeRequest) {
 
 func (d *batchTimeoutWakeDispatcher) run() {
 	defer close(d.done)
+	var dispatches sync.WaitGroup
+	// Every return path joins in-flight handlers before done closes.
+	defer dispatches.Wait()
+	dispatchSlots := make(chan struct{}, batchTimeoutWakeQueueSize)
 	for {
 		select {
 		case <-d.ctx.Done():
@@ -216,8 +220,19 @@ func (d *batchTimeoutWakeDispatcher) run() {
 				}
 				owner = resolved
 			}
-			_ = agent.DispatchSessionWake(d.ctx, coord, owner)
-			d.release(req)
+			select {
+			case dispatchSlots <- struct{}{}:
+			case <-d.ctx.Done():
+				d.release(req)
+				return
+			}
+			dispatches.Add(1)
+			go func(req pwBatchWakeRequest, coord agent.Coordinator, owner string) {
+				defer dispatches.Done()
+				defer func() { <-dispatchSlots }()
+				_ = agent.DispatchSessionWake(d.ctx, coord, owner)
+				d.release(req)
+			}(req, coord, owner)
 		}
 	}
 }
