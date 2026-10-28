@@ -83,6 +83,23 @@ func TestBatchResultFromRunErrorKeepsResponseMetadata(t *testing.T) {
 	require.Equal(t, resp.Metadata, got.Metadata)
 }
 
+func TestBatchResultFromRunErrorKeepsPartialResponse(t *testing.T) {
+	for name, resp := range map[string]fantasy.ToolResponse{
+		"text":  fantasy.NewTextResponse("partial output"),
+		"media": fantasy.NewMediaResponse([]byte{1, 2}, "audio/wav"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := batchResultFromResponse(resp, errors.New("run failed"), false)
+
+			require.Equal(t, jobbatch.StateFailed, result.State)
+			require.Equal(t, "tool_run_error", result.Code)
+			var got fantasy.ToolResponse
+			require.NoError(t, json.Unmarshal(result.Details, &got))
+			require.Equal(t, resp, got)
+		})
+	}
+}
+
 func TestBatchResultNeverTurnsFailureIntoSuccess(t *testing.T) {
 	// Mutation: mapping an error response or a Run error to Completed, or dropping the envelope.
 	ok := batchResultFromResponse(fantasy.NewTextResponse("done"), nil, false)

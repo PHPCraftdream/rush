@@ -242,8 +242,11 @@ func batchEnvelope(resp fantasy.ToolResponse) json.RawMessage {
 // batchResultFromResponse maps a finished leaf Run to a jobbatch.Result. A
 // denial or failure never becomes success: an error response or a Run error
 // settles Failed. cancelled says the execution was stopped by a Stop request.
+// A Run error with an empty response gets an error envelope so the stored
+// result cannot read as a successful empty one; a response that carries
+// content or media (partial output of a stopped or failed leaf) is kept.
 func batchResultFromResponse(resp fantasy.ToolResponse, err error, cancelled bool) jobbatch.Result {
-	if err != nil {
+	if err != nil && resp.Content == "" && len(resp.Data) == 0 {
 		metadata := resp.Metadata
 		resp = fantasy.NewTextErrorResponse(err.Error())
 		resp.Metadata = metadata
