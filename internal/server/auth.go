@@ -5,12 +5,16 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 )
 
 const cookieName = "rush_session"
+
+const maxAuthBodyBytes = 4 << 10
 
 // Auth handles token-based authentication for the web UI.
 // The token is generated at startup, printed to the terminal, and must be
@@ -53,7 +57,26 @@ func (a *Auth) HandleAuth(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Token string `json:"token"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Token == "" {
+	r.Body = http.MaxBytesReader(w, r.Body, maxAuthBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&body)
+	if err == nil {
+		// Require exactly one JSON value while retaining legal trailing
+		// whitespace. Decode again so MaxBytesReader bounds trailing data too.
+		var extra any
+		err = decoder.Decode(&extra)
+		if err == io.EOF {
+			err = nil
+		} else if err == nil {
+			err = errors.New("multiple JSON values")
+		}
+	}
+	if err != nil || body.Token == "" {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}

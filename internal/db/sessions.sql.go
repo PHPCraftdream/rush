@@ -630,6 +630,24 @@ func (q *Queries) SetParentCostAccounted(ctx context.Context, arg SetParentCostA
 	return err
 }
 
+const updateSessionFastReasoningEffort = `-- name: UpdateSessionFastReasoningEffort :exec
+UPDATE sessions
+SET
+    fast_model_reasoning_effort = ?,
+    updated_at = strftime('%s', 'now')
+WHERE id = ?
+`
+
+type UpdateSessionFastReasoningEffortParams struct {
+	FastModelReasoningEffort sql.NullString `json:"fast_model_reasoning_effort"`
+	ID                       string         `json:"id"`
+}
+
+func (q *Queries) UpdateSessionFastReasoningEffort(ctx context.Context, arg UpdateSessionFastReasoningEffortParams) error {
+	_, err := q.exec(ctx, q.updateSessionFastReasoningEffortStmt, updateSessionFastReasoningEffort, arg.FastModelReasoningEffort, arg.ID)
+	return err
+}
+
 const updateSessionModels = `-- name: UpdateSessionModels :exec
 
 UPDATE sessions
@@ -690,6 +708,42 @@ func (q *Queries) UpdateSessionReasoningEffort(ctx context.Context, arg UpdateSe
 	return err
 }
 
+const updateSessionReviewerReasoningEffort = `-- name: UpdateSessionReviewerReasoningEffort :exec
+UPDATE sessions
+SET
+    reviewer_model_reasoning_effort = ?,
+    updated_at = strftime('%s', 'now')
+WHERE id = ?
+`
+
+type UpdateSessionReviewerReasoningEffortParams struct {
+	ReviewerModelReasoningEffort sql.NullString `json:"reviewer_model_reasoning_effort"`
+	ID                           string         `json:"id"`
+}
+
+func (q *Queries) UpdateSessionReviewerReasoningEffort(ctx context.Context, arg UpdateSessionReviewerReasoningEffortParams) error {
+	_, err := q.exec(ctx, q.updateSessionReviewerReasoningEffortStmt, updateSessionReviewerReasoningEffort, arg.ReviewerModelReasoningEffort, arg.ID)
+	return err
+}
+
+const updateSessionSmartReasoningEffort = `-- name: UpdateSessionSmartReasoningEffort :exec
+UPDATE sessions
+SET
+    smart_model_reasoning_effort = ?,
+    updated_at = strftime('%s', 'now')
+WHERE id = ?
+`
+
+type UpdateSessionSmartReasoningEffortParams struct {
+	SmartModelReasoningEffort sql.NullString `json:"smart_model_reasoning_effort"`
+	ID                        string         `json:"id"`
+}
+
+func (q *Queries) UpdateSessionSmartReasoningEffort(ctx context.Context, arg UpdateSessionSmartReasoningEffortParams) error {
+	_, err := q.exec(ctx, q.updateSessionSmartReasoningEffortStmt, updateSessionSmartReasoningEffort, arg.SmartModelReasoningEffort, arg.ID)
+	return err
+}
+
 const updateSessionSystemPrompt = `-- name: UpdateSessionSystemPrompt :exec
 UPDATE sessions
 SET
@@ -705,6 +759,24 @@ type UpdateSessionSystemPromptParams struct {
 
 func (q *Queries) UpdateSessionSystemPrompt(ctx context.Context, arg UpdateSessionSystemPromptParams) error {
 	_, err := q.exec(ctx, q.updateSessionSystemPromptStmt, updateSessionSystemPrompt, arg.SystemPrompt, arg.ID)
+	return err
+}
+
+const updateSessionWorkerReasoningEffort = `-- name: UpdateSessionWorkerReasoningEffort :exec
+UPDATE sessions
+SET
+    worker_model_reasoning_effort = ?,
+    updated_at = strftime('%s', 'now')
+WHERE id = ?
+`
+
+type UpdateSessionWorkerReasoningEffortParams struct {
+	WorkerModelReasoningEffort sql.NullString `json:"worker_model_reasoning_effort"`
+	ID                         string         `json:"id"`
+}
+
+func (q *Queries) UpdateSessionWorkerReasoningEffort(ctx context.Context, arg UpdateSessionWorkerReasoningEffortParams) error {
+	_, err := q.exec(ctx, q.updateSessionWorkerReasoningEffortStmt, updateSessionWorkerReasoningEffort, arg.WorkerModelReasoningEffort, arg.ID)
 	return err
 }
 
