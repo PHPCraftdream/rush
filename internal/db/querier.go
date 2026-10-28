@@ -852,6 +852,7 @@ type Querier interface {
 	// explicit index already used, which silently shifts positional binding.
 	UpdateMessageUsage(ctx context.Context, arg UpdateMessageUsageParams) error
 	UpdatePermissionEnabled(ctx context.Context, arg UpdatePermissionEnabledParams) error
+	UpdateSessionFastReasoningEffort(ctx context.Context, arg UpdateSessionFastReasoningEffortParams) error
 	// GetLastSession lives in run_cost_queries.go (hand-written): sqlc's SQLite
 	// parser cannot compile the two-column recursive CTE that carries the root
 	// ancestor through the recursive member.
@@ -863,7 +864,10 @@ type Querier interface {
 	// "no override" convention the app layer already reads via != "").
 	UpdateSessionModels(ctx context.Context, arg UpdateSessionModelsParams) error
 	UpdateSessionReasoningEffort(ctx context.Context, arg UpdateSessionReasoningEffortParams) error
+	UpdateSessionReviewerReasoningEffort(ctx context.Context, arg UpdateSessionReviewerReasoningEffortParams) error
+	UpdateSessionSmartReasoningEffort(ctx context.Context, arg UpdateSessionSmartReasoningEffortParams) error
 	UpdateSessionSystemPrompt(ctx context.Context, arg UpdateSessionSystemPromptParams) error
+	UpdateSessionWorkerReasoningEffort(ctx context.Context, arg UpdateSessionWorkerReasoningEffortParams) error
 	// Same partial-update semantics as UpdateSessionModels: a NULL arg leaves
 	// that slot untouched, a non-NULL arg (including an explicit empty string)
 	// overwrites it.

@@ -1,18 +1,31 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/heartbeat"
 	"github.com/PHPCraftdream/rush/internal/testguard"
 )
 
 // Tests here reach config.Init/app.New; without this they read, migrate and
 // rewrite the operator's real global config.
-func TestMain(m *testing.M) { testguard.Main(m) }
+func TestMain(m *testing.M) {
+	cleanup, err := testguard.Isolate()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "testguard: isolate global state: %v\n", err)
+		os.Exit(1)
+	}
+	code := m.Run()
+	// Join the process-wide writer before removing its isolated global paths.
+	heartbeat.QuiesceForTest()
+	cleanup()
+	os.Exit(code)
+}
 
 func TestGlobalConfigPathsAreIsolated(t *testing.T) {
 	tmp, err := filepath.EvalSymlinks(os.TempDir())

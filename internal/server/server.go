@@ -136,11 +136,13 @@ func (s *Server) Start(ctx context.Context, onReady func(addr string)) error {
 		s.port = port
 	}
 
-	go s.hub.Run(ctx)
-	go subscribeAndBroadcast(ctx, s.app, s.hub)
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	go s.hub.Run(runCtx)
+	go subscribeAndBroadcast(runCtx, s.app, s.hub)
 	// Best-effort, once per start, in its own goroutine so a slow release
 	// API never delays the listener becoming usable.
-	go broadcastUpdateNotice(ctx, s.hub)
+	go broadcastUpdateNotice(runCtx, s.hub)
 
 	mux := http.NewServeMux()
 
@@ -153,7 +155,7 @@ func (s *Server) Start(ctx context.Context, onReady func(addr string)) error {
 		// The server-lifetime ctx (same one Hub.Run drains) is what the
 		// guarded register send inside handleWS needs; r.Context() alone
 		// cannot unblock it (it ends only when the handler returns).
-		s.handleWS(ctx, w, r)
+		s.handleWS(runCtx, w, r)
 	})))
 
 	if s.static != nil {
@@ -181,6 +183,7 @@ func (s *Server) Start(ctx context.Context, onReady func(addr string)) error {
 		case <-ctx.Done():
 		case <-s.shutdownSignal():
 		}
+		cancelRun()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutCtx)
@@ -250,6 +253,7 @@ func (s *Server) readPump(ctx context.Context, c *Client) {
 	defer func() {
 		select {
 		case s.hub.unregister <- c:
+		case <-s.hub.stopped:
 		case <-ctx.Done():
 		}
 	}()
