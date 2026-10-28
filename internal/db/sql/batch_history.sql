@@ -26,7 +26,7 @@ DELETE FROM batch_nodes WHERE owner_session_id = @owner_session_id;
 -- pull names a FRESH message and can never fail its CAS forever.
 -- The delivery='done' guard keeps a retried rerun from resurrecting a void.
 UPDATE batch_nodes SET delivery = 'pending', notice_message_id = NULL,
-    wake_attempts = 0, reacted_failed = 0, updated_at = @updated_at
+    wake_attempts = 0, reacted = 0, reacted_failed = 0, updated_at = @updated_at
 WHERE owner_session_id = @owner AND notice_selected = 1 AND delivery = 'done'
   AND notice_message_id IN (sqlc.slice('message_ids'));
 
@@ -37,7 +37,7 @@ WHERE owner_session_id = @owner AND notice_selected = 1 AND delivery = 'done'
 -- delivers against surviving history and debt accounting cannot key a deleted
 -- message id. 'none' (never selected) and 'void' are untouched by design.
 UPDATE batch_nodes SET delivery = 'pending', notice_message_id = NULL,
-    wake_attempts = 0, reacted_failed = 0, updated_at = @updated_at
+    wake_attempts = 0, reacted = 0, reacted_failed = 0, updated_at = @updated_at
 WHERE owner_session_id = @owner AND notice_selected = 1
   AND delivery IN ('done', 'pending')
   AND notice_message_id IN (sqlc.slice('message_ids'));

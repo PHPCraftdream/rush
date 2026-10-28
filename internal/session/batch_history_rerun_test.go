@@ -315,6 +315,33 @@ func TestBatchRerunRependSurvivingRootVoidsVoidedRoot(t *testing.T) {
 	require.NotEmpty(t, f.node(b.Root.RootID, b.Nodes[1].NodeID).NoticeMessageID.String)
 }
 
+func TestBatchRerunRependReactedNoticeRestoresWakeDebt(t *testing.T) {
+	t.Parallel()
+	f := newBatchRerunFx(t)
+
+	target := f.add(message.User, message.TextContent{Text: "rerun"})
+	asst := f.assistantCall("call-reacted")
+	snap := f.reserve("call-reacted")
+	f.start(snap)
+	f.ack(snap)
+	taskNotice, rootNotice := f.settle(snap)
+
+	question := f.add(message.Assistant, message.TextContent{Text: "handled"})
+	require.NoError(t, f.store.BatchReactionMarkReactedWithMessageUpdate(f.ctx, f.messages, batchRerunOwner, question))
+	before := f.node(snap.Root.RootID, snap.Nodes[1].NodeID)
+	require.EqualValues(t, 1, before.Reacted)
+
+	_, err := f.reconcile(target.ID, asst.ID, taskNotice.ID, rootNotice.ID)
+	require.NoError(t, err)
+	got := f.node(snap.Root.RootID, snap.Nodes[1].NodeID)
+	require.Equal(t, "pending", got.Delivery)
+	require.Zero(t, got.Reacted, "re-pending a wake notice resets its previous reaction")
+
+	debt, err := f.store.BatchReactionPendingInclusiveDebtRows(f.ctx, batchRerunOwner)
+	require.NoError(t, err)
+	require.Contains(t, debt.Nodes, BatchDebtNodeRef{RootID: snap.Root.RootID, NodeID: snap.Nodes[1].NodeID})
+}
+
 // Revert-check: dropping the target-present check deletes the tail and voids
 // the old incarnation anyway.
 func TestBatchRerunTargetGoneChangesNothing(t *testing.T) {
