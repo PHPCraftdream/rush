@@ -10,6 +10,56 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestTurnCheckpointWriterGetsFreshDeadlinePerWrite(t *testing.T) {
+	env := testEnv(t)
+	ctx := context.Background()
+	sess, err := env.sessions.Create(ctx, "checkpoint fresh deadline")
+	require.NoError(t, err)
+	msg, err := env.messages.Create(ctx, sess.ID, message.CreateMessageParams{Role: "assistant"})
+	require.NoError(t, err)
+	current := &msg
+	var lock sync.Mutex
+	deadlines := make(chan time.Time, 2)
+	messages := &checkpointDeadlineMessages{Service: env.messages, deadlines: deadlines}
+	a := &sessionAgent{messages: messages, checkpointInterval: 10 * time.Millisecond}
+	cp := newTurnCheckpointWriter(a, sess.ID, ctx, &lock, &current, &stallClock{})
+	cp.start()
+	defer cp.stop()
+
+	lock.Lock()
+	current.AppendContent("first")
+	lock.Unlock()
+	var firstDeadline time.Time
+	select {
+	case firstDeadline = <-deadlines:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first checkpoint did not write")
+	}
+	lock.Lock()
+	current.AppendContent(" second")
+	lock.Unlock()
+	select {
+	case secondDeadline := <-deadlines:
+		require.True(t, secondDeadline.After(firstDeadline), "each write must get a new 30s deadline")
+	case <-time.After(5 * time.Second):
+		t.Fatal("second checkpoint did not write")
+	}
+}
+
+type checkpointDeadlineMessages struct {
+	message.Service
+	deadlines chan<- time.Time
+}
+
+func (m *checkpointDeadlineMessages) Update(ctx context.Context, msg message.Message) error {
+	if msg.FinishPart() != nil {
+		if deadline, hasDeadline := ctx.Deadline(); hasDeadline {
+			m.deadlines <- deadline
+		}
+	}
+	return m.Service.Update(ctx, msg)
+}
+
 func TestTurnCheckpointWriterPersistsStreamingContentGrowth(t *testing.T) {
 	t.Parallel()
 	env := testEnv(t)

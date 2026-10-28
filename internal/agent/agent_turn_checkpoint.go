@@ -107,11 +107,9 @@ func (cp *turnCheckpointWriter) start() {
 	cp.generation++
 	myGeneration := cp.generation
 	cp.mu.Unlock()
-	// Give the DB write its own cancelable context with a deadline (not genCtx, which
-	// stays alive for the whole Run call). This allows stop() to actually
-	// cancel an in-flight Update, not just wait forever. The deadline (30s) bounds
-	// the maximum time a hung write can hold a DB connection even if cancel races.
-	writeCtx, writeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// The generation context is deliberately cancellable by stop(), but has no
+	// per-write deadline: each Update gets a fresh 30s budget from this parent.
+	writeCtxParent, writeCancel := context.WithCancel(context.Background())
 	cp.writeCancel = writeCancel
 	// Register in runWg so a timeout reflects in stillBusy (P0-4).
 	cp.a.runWg.Add(1)
@@ -188,10 +186,14 @@ func (cp *turnCheckpointWriter) start() {
 				}
 				cp.sessionLock.Unlock()
 				if haveSnap {
-					// P0-4: use writeCtx (cancelable) not genCtx, so
-					// stop() can actually cancel a hung DB write.
-					// P0-2: writeCtx now has both cancel AND a 30s deadline.
-					if err := cp.a.messages.Update(writeCtx, snap); err != nil {
+					// Each checkpoint attempt gets a fresh bounded budget, while
+					// remaining cancellable by stop() through the parent.
+					updateCtx, updateCancel := context.WithTimeout(writeCtxParent, 30*time.Second)
+					// P0-4: stop() cancels writeCtxParent immediately to fence an
+					// in-flight DB write.
+					err := cp.a.messages.Update(updateCtx, snap)
+					updateCancel()
+					if err != nil {
 						// Don't log cancelled errors as failures — they're
 						// the expected outcome of stop() fencing.
 						if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
