@@ -75,6 +75,7 @@ func resolveCommandsDir(cwd string, global bool) (string, error) {
 
 var claudeInitCmd = &cobra.Command{
 	Use:   "claude-init",
+	Args:  cobra.NoArgs,
 	Short: "Install the /rush, /rush-fallback, /wrush and /wcrush slash-commands and strip legacy CLAUDE.md block",
 	Long: `Set up rush's ` + "`/rush`" + `, ` + "`/rush-fallback`" + `, ` + "`/wrush`" + ` and ` + "`/wcrush`" + ` slash-commands in
 Claude Code.

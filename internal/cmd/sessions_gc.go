@@ -14,6 +14,7 @@ import (
 
 var sessionsGcCmd = &cobra.Command{
 	Use:   "gc",
+	Args:  cobra.NoArgs,
 	Short: "Garbage-collect stale sessions",
 	Long: `Delete sessions that are no longer useful:
 

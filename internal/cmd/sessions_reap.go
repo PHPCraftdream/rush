@@ -15,6 +15,7 @@ import (
 
 var sessionsReapCmd = &cobra.Command{
 	Use:   "reap",
+	Args:  cobra.NoArgs,
 	Short: "Remove lock files proven (via a real OS lock probe) to have no live holder",
 	Long: `Scan .rush/locks/ and remove any lock that a real OS-level lock
 probe (actually attempting flock/LockFileEx) proves has no live holder.

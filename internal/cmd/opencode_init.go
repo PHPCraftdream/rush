@@ -14,6 +14,7 @@ const opencodeCommandsDir = ".opencode/commands"
 
 var opencodeInitCmd = &cobra.Command{
 	Use: "opencode-init", Short: "Install Rush delegation commands for OpenCode",
+	Args: cobra.NoArgs,
 	Long: "Install /rush, /rush-fallback, /wrush and /wcrush as OpenCode Markdown commands. Defaults to ~/.config/opencode/commands; use --local or --cwd for <cwd>/.opencode/commands. Existing foreign files are preserved.",
 	RunE: runOpenCodeInit,
 }

@@ -11,6 +11,7 @@ import (
 
 var claudeDelCmd = &cobra.Command{
 	Use:   "claude-del",
+	Args:  cobra.NoArgs,
 	Short: "Remove the /rush, /rush-fallback, /wrush and /wcrush slash-commands and strip legacy CLAUDE.md block",
 	Long: `Undo ` + "`rush claude-init`" + `: remove the /rush, /rush-fallback, /wrush and /wcrush
 slash-commands and strip any crush-claude-init block from CLAUDE.md.

@@ -13,6 +13,7 @@ import (
 
 var codexDelCmd = &cobra.Command{
 	Use:   "codex-del",
+	Args:  cobra.NoArgs,
 	Short: "Remove the rush/rush-fallback/wrush/wcrush Skills from Codex CLI",
 	Long: `Undo ` + "`rush codex-init`" + `: remove the rush, rush-fallback, wrush and wcrush Skills
 from Codex CLI's Skills directory.

@@ -13,6 +13,7 @@ const ompCommandsDir = ".omp/commands"
 
 var ompInitCmd = &cobra.Command{
 	Use: "omp-init", Short: "Install Rush delegation commands for Oh My Pi",
+	Args: cobra.NoArgs,
 	Long: "Install /rush, /rush-fallback, /wrush and /wcrush as OMP Markdown commands. Defaults to ~/.omp/agent/commands; use --local or --cwd for <cwd>/.omp/commands. Existing foreign files are preserved.",
 	RunE: runOMPInit,
 }
