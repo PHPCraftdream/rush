@@ -116,7 +116,7 @@ jobs:
             extra=(); if [ "$FORCE_FULL" = true ]; then extra+=(--force-full); fi
             python3 .github/scripts/ci_gate_decide.py prepare-plan --plan .ci-plan-tmp/selector-plan.json --graph-dir .ci-plan-tmp --policy .github/ci-policy.toml --output .ci-plan-tmp/plan.json --base "$BASE" --head "$HEAD" "${extra[@]}"
           fi
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: ci-plan, path: .ci-plan-tmp/plan.json}
   checks:
     needs: plan
@@ -390,12 +390,12 @@ jobs:
       - name: download plan artifact
         if: always() && (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci')
         continue-on-error: true
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: {name: ci-plan, path: plan}
       - name: download Windows assignment
         if: always() && needs.plan.outputs.mode == 'full' && needs.plan.outputs.windows_needed == 'true'
         continue-on-error: true
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: {name: shard-assignment, path: assignment}
       - name: enforce reusable workflow results
         if: always() && needs.plan.outputs.heavy_allowed == 'true'
