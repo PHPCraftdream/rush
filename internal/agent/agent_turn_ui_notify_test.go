@@ -129,6 +129,79 @@ func TestTurnUINotifierDrainPendingSuppressesStalePublish(t *testing.T) {
 	})
 }
 
+// blockingUINotifyMsgSvc parks its first Notify until release is closed and
+// logs the order in which publishes finish and the test's own events happen.
+type blockingUINotifyMsgSvc struct {
+	message.Service
+	inNotify chan struct{}
+	release  chan struct{}
+	once     sync.Once
+	mu       sync.Mutex
+	events   []string
+}
+
+func (m *blockingUINotifyMsgSvc) Notify(message.Message) {
+	m.once.Do(func() { close(m.inNotify) })
+	<-m.release
+	m.record("publish-done")
+}
+
+func (m *blockingUINotifyMsgSvc) record(event string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.events = append(m.events, event)
+}
+
+// The receive-before-publish interleaving: the ticker has taken an unfinished
+// snapshot off the channel but has not published it yet when runTurn drains the
+// (now empty) channel and goes on to write the final state. drainPending must
+// wait for that publish, or the stale snapshot lands after the final one and
+// the server keeps it as the message's last update.
+//
+// Revert-check: without pubMu drainPending returns at once, "drain-return" is
+// recorded first and the not-returned-yet assertion fails.
+func TestTurnUINotifierDrainPendingWaitsForInFlightPublish(t *testing.T) {
+	msgSvc := &blockingUINotifyMsgSvc{inNotify: make(chan struct{}), release: make(chan struct{})}
+	a := &sessionAgent{messages: msgSvc}
+	var sessionLock sync.Mutex
+	currentAssistant := &message.Message{ID: "msg-1", SessionID: "sess-1"}
+	currentAssistant.AppendContent("unfinished")
+
+	genCtx, genCancel := context.WithCancel(t.Context())
+	defer genCancel()
+	n := newTurnUINotifier(a, genCtx, &sessionLock, &currentAssistant)
+	n.start()
+	require.NoError(t, n.notify())
+
+	select {
+	case <-msgSvc.inNotify:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the ticker never started publishing the snapshot")
+	}
+
+	drained := make(chan struct{})
+	go func() {
+		n.drainPending()
+		msgSvc.record("drain-return")
+		close(drained)
+	}()
+	select {
+	case <-drained:
+		t.Fatal("drainPending returned while a snapshot was still being published")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(msgSvc.release)
+	select {
+	case <-drained:
+	case <-time.After(5 * time.Second):
+		t.Fatal("drainPending never returned after the publish finished")
+	}
+	msgSvc.mu.Lock()
+	defer msgSvc.mu.Unlock()
+	require.Equal(t, []string{"publish-done", "drain-return"}, msgSvc.events)
+}
+
 func TestTurnUINotifierNotifyIsNoopWithNilAssistant(t *testing.T) {
 	msgSvc := &fakeUINotifyMsgSvc{}
 	a := &sessionAgent{messages: msgSvc}
