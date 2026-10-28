@@ -72,6 +72,7 @@ jobs:
   test-ubuntu:
     if: inputs.ubuntu_needed
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -421,24 +422,21 @@ jobs:
   #    called instead (windows-full-shards below). ──
   test-native:
     if: inputs.macos_needed || (inputs.windows_needed && inputs.mode != 'full')
+    # A step-level `exit 0` ends only that step, so the old "no-op when this OS
+    # lane is not needed" step let a FULL plan run the whole Windows suite here
+    # sequentially (~100 min) on top of windows-full-shards. The legs a plan
+    # does not need are now never created. Windows runs here only on a
+    # non-full plan; macOS whenever it is needed. When neither is needed the
+    # job-level `if` skips the job, so the fallback leg is never scheduled.
+    timeout-minutes: 75
     strategy:
       # Same rationale as the former build workflow's build matrix: one leg's failure must
       # not cancel the other mid-run.
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: ${{ fromJSON((inputs.windows_needed && inputs.mode != 'full') && (inputs.macos_needed && '["macos-latest","windows-latest"]' || '["windows-latest"]') || '["macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
-      - name: no-op when this OS lane is not needed
-        shell: bash
-        run: |
-          if [ "${{ matrix.os }}" = "macos-latest" ] && [ "${{ inputs.macos_needed }}" != "true" ]; then
-            echo "plan: darwin lane not needed"; exit 0
-          fi
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            if [ "${{ inputs.windows_needed }}" != "true" ]; then echo "plan: windows lane not needed"; exit 0; fi
-            if [ "${{ inputs.mode }}" = "full" ]; then echo "plan: full windows run goes to ci-windows-shards"; exit 0; fi
-          fi
       - run: git config --global core.autocrlf input
         if: matrix.os == 'windows-latest'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

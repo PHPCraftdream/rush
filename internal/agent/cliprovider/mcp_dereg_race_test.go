@@ -1,16 +1,8 @@
 package cliprovider
 
-// BUG-2 regression test (found by a full-project @rush --role reviewer
-// audit, 2026-08-11): registerQwenMCP/registerGeminiMCP write under a
-// STABLE per-workingDir server name (see qwenMCPID/geminiMCPID), so two
-// concurrent rush sessions in the same project integrating with the same
-// CLI provider share one mcpServers[serverName] entry — register
-// unconditionally overwrites it with whichever session called last.
-// deregisterQwenMCP/deregisterGeminiMCP used to delete that entry
-// unconditionally too, regardless of which session currently owned it: if
-// session A finished after session B had already overwritten A's entry
-// with B's own (different port), A's deregister deleted B's still-active
-// registration, breaking B's ability to reconnect to its own MCP server.
+// Session-scoped IDs (see sessionMCPName) now isolate concurrent sessions; the
+// expected-URL check additionally prevents cleanup from deleting a replacement
+// registration under the same name.
 //
 // This test isolates os.UserHomeDir() (not the repo's own cached
 // internal/home.Dir() — qwenSettingsPath/geminiSettingsPath call the
@@ -19,13 +11,11 @@ package cliprovider
 // elsewhere in this codebase).
 //
 // REVERT CHECK PROCEDURE:
-//  1. In mcpserver.go, revert deregisterQwenMCP/deregisterGeminiMCP to
-//     unconditionally delete (drop the expectedURL/expectedAddr comparison
-//     and parameter).
-//  2. Run: go test ./internal/agent/cliprovider -run TestDeregisterQwenMCP_DoesNotClobberNewerSession -v
-//  3. FAIL: session B's entry is gone after session A's (stale) deregister
-//     call.
-//  4. Restore the comparison and PASS.
+//  1. In provider_stream.go, replace sessionMCPName(id, sessionID) with id at
+//     both Qwen and Gemini registration call sites.
+//  2. Run: go test ./internal/agent/cliprovider/ -run 'TestStartStream(Qwen|Gemini)SameProjectSessionRegistrations' -count=1 -p 1
+//  3. FAIL: both tests observe same-project sessions sharing the allowed name.
+//  4. Restore sessionMCPName at both call sites and PASS.
 
 import (
 	"encoding/json"
@@ -65,6 +55,83 @@ func readQwenMCPServerURL(t *testing.T, home, serverName string) (string, bool) 
 	}
 	url, _ := entry["httpUrl"].(string)
 	return url, true
+}
+
+func readMCPAuthorization(t *testing.T, home, providerDir, serverName string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(home, providerDir, "settings.json"))
+	require.NoError(t, err)
+	var settings map[string]any
+	require.NoError(t, json.Unmarshal(data, &settings))
+	servers := settings["mcpServers"].(map[string]any)
+	entry := servers[serverName].(map[string]any)
+	headers := entry["headers"].(map[string]any)
+	return headers["Authorization"].(string)
+}
+
+func TestQwenMCP_SameProjectSessionsHaveIsolatedRegistrations(t *testing.T) {
+	home := isolateHomeDir(t)
+	workingDir := filepath.Join(home, "project")
+	require.NoError(t, os.MkdirAll(filepath.Join(workingDir, ".rush"), 0o755))
+
+	projectID, err := qwenMCPID(workingDir)
+	require.NoError(t, err)
+	const sessionA, sessionB = "session-a", "session-b"
+	sessionAName := sessionMCPName(projectID, sessionA)
+	sessionBName := sessionMCPName(projectID, sessionB)
+	require.NotEqual(t, sessionAName, sessionBName)
+	require.NoError(t, registerQwenMCP(sessionAName, "127.0.0.1:5001", "token-a"))
+	require.NoError(t, registerQwenMCP(sessionBName, "127.0.0.1:5002", "token-b"))
+
+	url, ok := readQwenMCPServerURL(t, home, sessionAName)
+	require.True(t, ok, "session B registration must not replace session A")
+	require.Equal(t, "http://127.0.0.1:5001/mcp", url)
+	require.Equal(t, "Bearer token-a", readMCPAuthorization(t, home, ".qwen", sessionAName))
+	url, ok = readQwenMCPServerURL(t, home, sessionBName)
+	require.True(t, ok)
+	require.Equal(t, "http://127.0.0.1:5002/mcp", url)
+	require.Equal(t, "Bearer token-b", readMCPAuthorization(t, home, ".qwen", sessionBName))
+
+	deregisterQwenMCP(sessionAName, "127.0.0.1:5001")
+	_, ok = readQwenMCPServerURL(t, home, sessionAName)
+	require.False(t, ok, "session A cleanup must remove only A")
+	url, ok = readQwenMCPServerURL(t, home, sessionBName)
+	require.True(t, ok, "session A cleanup must preserve B")
+	require.Equal(t, "http://127.0.0.1:5002/mcp", url)
+	deregisterQwenMCP(sessionBName, "127.0.0.1:5002")
+}
+
+func TestGeminiMCP_SameProjectSessionsHaveIsolatedRegistrations(t *testing.T) {
+	home := isolateHomeDir(t)
+	workingDir := filepath.Join(home, "project")
+	require.NoError(t, os.MkdirAll(filepath.Join(workingDir, ".rush"), 0o755))
+
+	projectID, err := geminiMCPID(workingDir)
+	require.NoError(t, err)
+	const sessionA, sessionB = "session-a", "session-b"
+	sessionAName := sessionMCPName(projectID, sessionA)
+	sessionBName := sessionMCPName(projectID, sessionB)
+	require.NotEqual(t, sessionAName, sessionBName)
+
+	require.NoError(t, registerGeminiMCP(sessionAName, "127.0.0.1:5001", "token-a"))
+	require.NoError(t, registerGeminiMCP(sessionBName, "127.0.0.1:5002", "token-b"))
+
+	url, ok := readGeminiMCPServerURL(t, home, sessionAName)
+	require.True(t, ok, "session B registration must not replace session A")
+	require.Equal(t, "http://127.0.0.1:5001/mcp", url)
+	require.Equal(t, "Bearer token-a", readMCPAuthorization(t, home, ".gemini", sessionAName))
+	url, ok = readGeminiMCPServerURL(t, home, sessionBName)
+	require.True(t, ok)
+	require.Equal(t, "http://127.0.0.1:5002/mcp", url)
+	require.Equal(t, "Bearer token-b", readMCPAuthorization(t, home, ".gemini", sessionBName))
+
+	deregisterGeminiMCP(sessionAName, "127.0.0.1:5001")
+	_, ok = readGeminiMCPServerURL(t, home, sessionAName)
+	require.False(t, ok, "session A cleanup must remove only A")
+	url, ok = readGeminiMCPServerURL(t, home, sessionBName)
+	require.True(t, ok, "session A cleanup must preserve B")
+	require.Equal(t, "http://127.0.0.1:5002/mcp", url)
+	deregisterGeminiMCP(sessionBName, "127.0.0.1:5002")
 }
 
 func TestDeregisterQwenMCP_DoesNotClobberNewerSession(t *testing.T) {
