@@ -27,30 +27,6 @@ const (
 	setModelsFieldWorkerReviewerEffort = "workerReviewerReasoningEffort"
 )
 
-// resolveEffortPair turns one effort pair's raw wire values into the values
-// to write. An empty raw value means "not sent": the stored column value is
-// substituted so writing the OTHER slot cannot clobber this one. The
-// ReasoningEffortClear sentinel means the slot WAS sent, explicitly asking
-// to reset to unset: it becomes the empty string, which the effort updates
-// write as the column's no-override state. The sentinel is checked on the
-// raw value, before backfill, so only a payload that actually asked to
-// clear can produce a clear.
-func resolveEffortPair(raw1, raw2, stored1, stored2 string) (string, string) {
-	switch raw1 {
-	case "":
-		raw1 = stored1
-	case ReasoningEffortClear:
-		raw1 = ""
-	}
-	switch raw2 {
-	case "":
-		raw2 = stored2
-	case ReasoningEffortClear:
-		raw2 = ""
-	}
-	return raw1, raw2
-}
-
 func handleSetSessionModels(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p SetSessionModelsPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
@@ -131,42 +107,53 @@ func handleSetSessionModels(ctx context.Context, a *appPkg.App, c *Client, msg W
 		})
 	}
 
-	// Worker/reviewer reasoning effort. An empty raw value means "not sent"
-	// — resolveEffortPair backfills the stored value so the paired slot's
-	// write cannot clobber it; ReasoningEffortClear means "explicitly reset"
-	// and becomes the column's unset state.
-	if wre != "" || rre != "" {
-		var storedWorker, storedReviewer string
-		if wre == "" || rre == "" {
-			if sess, sessErr := a.Sessions.Get(ctx, p.SessionID); sessErr == nil {
-				storedWorker, storedReviewer = sess.WorkerModelReasoningEffort, sess.ReviewerModelReasoningEffort
-			}
-		}
-		wre, rre = resolveEffortPair(wre, rre, storedWorker, storedReviewer)
+	// Effort values are written independently per sent model slot. This avoids
+	// stale Get/backfill/pair writes racing another request and preserves
+	// omitted slots. The clear sentinel maps to empty, which service methods
+	// store as SQL NULL just like the legacy pair methods.
+	if (p.WorkerModel != nil && wre != "") || (p.ReviewerModel != nil && rre != "") {
 		run(setModelsFieldWorkerReviewerEffort, func() error {
-			return a.Sessions.UpdateWorkerReviewerReasoningEffort(ctx, p.SessionID, wre, rre)
+			var firstErr error
+			if p.WorkerModel != nil && wre != "" {
+				effort := wre
+				if effort == ReasoningEffortClear {
+					effort = ""
+				}
+				firstErr = a.Sessions.UpdateWorkerReasoningEffort(ctx, p.SessionID, effort)
+			}
+			if p.ReviewerModel != nil && rre != "" {
+				effort := rre
+				if effort == ReasoningEffortClear {
+					effort = ""
+				}
+				if err := a.Sessions.UpdateReviewerReasoningEffort(ctx, p.SessionID, effort); firstErr == nil {
+					firstErr = err
+				}
+			}
+			return firstErr
 		})
 	}
 
-	// Update reasoning effort for models that support it. CRITICAL: a single
-	// ModelSelector arrow click only carries ONE effort value but the frontend
-	// always serialises BOTH models in set_session_models. Without preserving
-	// the unset side from the DB, the previous "default to medium" behaviour
-	// would clobber the OTHER model's effort on every click — and on GLM (where
-	// medium is not a supported level) the clamp useEffect would immediately
-	// fire back, locking the UI into a flash-loop that never let the
-	// operator's chosen effort stick. An explicit clear deliberately does
-	// NOT round-trip through this preservation: see resolveEffortPair.
-	if lre != "" || sre != "" {
-		var storedSmart, storedFast string
-		if lre == "" || sre == "" {
-			if sess, sessErr := a.Sessions.Get(ctx, p.SessionID); sessErr == nil {
-				storedSmart, storedFast = sess.SmartModelReasoningEffort, sess.FastModelReasoningEffort
-			}
-		}
-		lre, sre = resolveEffortPair(lre, sre, storedSmart, storedFast)
+	if (p.SmartModel != nil && lre != "") || (p.FastModel != nil && sre != "") {
 		run(setModelsFieldSmartFastEffort, func() error {
-			return a.Sessions.UpdateReasoningEffort(ctx, p.SessionID, lre, sre)
+			var firstErr error
+			if p.SmartModel != nil && lre != "" {
+				effort := lre
+				if effort == ReasoningEffortClear {
+					effort = ""
+				}
+				firstErr = a.Sessions.UpdateSmartReasoningEffort(ctx, p.SessionID, effort)
+			}
+			if p.FastModel != nil && sre != "" {
+				effort := sre
+				if effort == ReasoningEffortClear {
+					effort = ""
+				}
+				if err := a.Sessions.UpdateFastReasoningEffort(ctx, p.SessionID, effort); firstErr == nil {
+					firstErr = err
+				}
+			}
+			return firstErr
 		})
 	}
 

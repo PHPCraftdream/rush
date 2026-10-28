@@ -280,6 +280,52 @@ func (s *service) UpdateReasoningEffort(ctx context.Context, sessionID, smartEff
 	return nil
 }
 
+// UpdateSmartReasoningEffort, UpdateFastReasoningEffort,
+// UpdateWorkerReasoningEffort and UpdateReviewerReasoningEffort write ONE
+// effort column. The pair methods above always write both columns, so a
+// caller that sends a single slot must use these: backfilling the unsent
+// slot from an earlier read and writing the pair lets two concurrent
+// single-slot requests restore each other's old value. An empty effort
+// clears the column to NULL, like the pair methods.
+func (s *service) UpdateSmartReasoningEffort(ctx context.Context, sessionID, effort string) error {
+	return s.afterEffortWrite(ctx, sessionID, s.q.UpdateSessionSmartReasoningEffort(ctx, db.UpdateSessionSmartReasoningEffortParams{
+		ID:                        sessionID,
+		SmartModelReasoningEffort: sql.NullString{String: effort, Valid: effort != ""},
+	}))
+}
+
+func (s *service) UpdateFastReasoningEffort(ctx context.Context, sessionID, effort string) error {
+	return s.afterEffortWrite(ctx, sessionID, s.q.UpdateSessionFastReasoningEffort(ctx, db.UpdateSessionFastReasoningEffortParams{
+		ID:                       sessionID,
+		FastModelReasoningEffort: sql.NullString{String: effort, Valid: effort != ""},
+	}))
+}
+
+func (s *service) UpdateWorkerReasoningEffort(ctx context.Context, sessionID, effort string) error {
+	return s.afterEffortWrite(ctx, sessionID, s.q.UpdateSessionWorkerReasoningEffort(ctx, db.UpdateSessionWorkerReasoningEffortParams{
+		ID:                         sessionID,
+		WorkerModelReasoningEffort: sql.NullString{String: effort, Valid: effort != ""},
+	}))
+}
+
+func (s *service) UpdateReviewerReasoningEffort(ctx context.Context, sessionID, effort string) error {
+	return s.afterEffortWrite(ctx, sessionID, s.q.UpdateSessionReviewerReasoningEffort(ctx, db.UpdateSessionReviewerReasoningEffortParams{
+		ID:                           sessionID,
+		ReviewerModelReasoningEffort: sql.NullString{String: effort, Valid: effort != ""},
+	}))
+}
+
+// afterEffortWrite publishes the updated session after a successful write.
+func (s *service) afterEffortWrite(ctx context.Context, sessionID string, err error) error {
+	if err != nil {
+		return err
+	}
+	if sess, getErr := s.Get(ctx, sessionID); getErr == nil {
+		s.Publish(pubsub.UpdatedEvent, sess)
+	}
+	return nil
+}
+
 // Rename updates only the title of a session without touching updated_at or
 // usage fields.
 //

@@ -55,11 +55,11 @@ func (f *failOneUpdateService) UpdateWorkerReviewerModels(ctx context.Context, s
 	return f.Service.UpdateWorkerReviewerModels(ctx, sessionID, worker, reviewer)
 }
 
-func (f *failOneUpdateService) UpdateWorkerReviewerReasoningEffort(ctx context.Context, sessionID, workerEffort, reviewerEffort string) error {
+func (f *failOneUpdateService) UpdateWorkerReasoningEffort(ctx context.Context, sessionID, effort string) error {
 	if f.failUpdateWorkerReviewerReasoningEffort {
 		return errors.New("simulated: worker/reviewer effort write failed")
 	}
-	return f.Service.UpdateWorkerReviewerReasoningEffort(ctx, sessionID, workerEffort, reviewerEffort)
+	return f.Service.UpdateWorkerReasoningEffort(ctx, sessionID, effort)
 }
 
 func (f *failOneUpdateService) UpdateReasoningEffort(ctx context.Context, sessionID, smartEffort, fastEffort string) error {
@@ -244,7 +244,19 @@ func TestHandleSetSessionModels_EffortClearSentinelVersusOmission(t *testing.T) 
 	require.Empty(t, after.SmartModelReasoningEffort, "the clear sentinel must reset the effort to unset")
 	require.Equal(t, "medium", after.FastModelReasoningEffort, "the omitted side must still be preserved through a clear on the other side")
 
-	// (c) CLEAR on the worker/reviewer pair too, reviewer omitted+preserved.
+	// (c) OMIT reviewer while changing worker; the worker/reviewer pair must
+	// preserve the unsent slot just like smart/fast.
+	reply = callSetSessionModels(t, ctx, a, "req-696-omit-wr", SetSessionModelsPayload{
+		SessionID:   sess.ID,
+		WorkerModel: &ModelOverrideWire{Provider: "wp", Model: "wm", ReasoningEffort: "max"},
+	})
+	require.Equal(t, EventResponse, reply.Type)
+	after, err = a.Sessions.Get(ctx, sess.ID)
+	require.NoError(t, err)
+	require.Equal(t, "max", after.WorkerModelReasoningEffort)
+	require.Equal(t, "low", after.ReviewerModelReasoningEffort, "omitted reviewer effort must be preserved")
+
+	// (d) CLEAR on worker/reviewer too, reviewer omitted+preserved.
 	reply = callSetSessionModels(t, ctx, a, "req-696-clear-wr", SetSessionModelsPayload{
 		SessionID:   sess.ID,
 		WorkerModel: &ModelOverrideWire{Provider: "wp", Model: "wm", ReasoningEffort: ReasoningEffortClear},

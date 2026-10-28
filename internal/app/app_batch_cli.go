@@ -89,6 +89,9 @@ func (a *App) BatchCLISpec(ctx context.Context, owner, messageID string, spec jo
 	if !a.BatchOwnerRuntime() || a.AgentCoordinator == nil {
 		return jobbatch.Spec{}, nil, errors.New("batch runtime unavailable")
 	}
+	if err := persistSessionExecutionIntent(ctx, a, owner, sessionExecutionProviderOmitted, nil, false); err != nil {
+		return jobbatch.Spec{}, nil, err
+	}
 	b, err := agent.NewBatchCLIBuilder(a.AgentCoordinator, a.batchWorkIngress)
 	if err != nil {
 		return jobbatch.Spec{}, nil, err

@@ -86,6 +86,34 @@ SET
     updated_at = strftime('%s', 'now')
 WHERE id = ?;
 
+-- name: UpdateSessionSmartReasoningEffort :exec
+UPDATE sessions
+SET
+    smart_model_reasoning_effort = ?,
+    updated_at = strftime('%s', 'now')
+WHERE id = ?;
+
+-- name: UpdateSessionFastReasoningEffort :exec
+UPDATE sessions
+SET
+    fast_model_reasoning_effort = ?,
+    updated_at = strftime('%s', 'now')
+WHERE id = ?;
+
+-- name: UpdateSessionWorkerReasoningEffort :exec
+UPDATE sessions
+SET
+    worker_model_reasoning_effort = ?,
+    updated_at = strftime('%s', 'now')
+WHERE id = ?;
+
+-- name: UpdateSessionReviewerReasoningEffort :exec
+UPDATE sessions
+SET
+    reviewer_model_reasoning_effort = ?,
+    updated_at = strftime('%s', 'now')
+WHERE id = ?;
+
 -- name: GetSessionByID :one
 SELECT *
 FROM sessions
