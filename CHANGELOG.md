@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Concurrent Qwen/Gemini sessions in one project no longer overwrite each other's Rush MCP registration (endpoint and token) in the CLI's settings file: each session registers under its own name and cleans up only that.
+- On Windows, a session lock held by a live process that rush cannot open (access denied) is no longer treated as orphaned; the liveness probe used to count every open failure as a dead process.
 - Commands that take no positional arguments now reject them instead of ignoring them: `rush sessions cost <id>` used to print the totals of every session as if they were that session's.
 - A tool that fails with an internal error inside a batch is now reported to the model as an error with that message; it used to come back as a successful empty result.
 - Malformed or empty tool-call arguments from the model now come back to it as a tool error instead of ending the whole run.
