@@ -137,10 +137,7 @@ func liveTailSession(ctx context.Context, a *app.App, sessionID, dataDir string,
 
 	now := time.Now()
 	lastPrinted := ""
-	for i, msg := range messages {
-		printMessageWithTime(os.Stdout, msg, "text", now, callCtx, i < len(messages)-1)
-		lastPrinted = msg.ID
-	}
+	printNewRootMessages(os.Stdout, messages, &lastPrinted, now, callCtx)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -229,11 +226,8 @@ func liveTailSession(ctx context.Context, a *app.App, sessionID, dataDir string,
 		// deterministic total order, so trusting slice position avoids the
 		// old same-second-tie coinflip on message.ID.
 		lastIdx := indexByID(msgs, lastPrinted)
-		for i := range msgs {
-			if i > lastIdx {
-				printMessageWithTime(os.Stdout, msgs[i], "text", tickNow, callCtx, i < len(msgs)-1)
-				lastPrinted = msgs[i].ID
-			}
+		if lastIdx < len(msgs)-1 {
+			printNewRootMessages(os.Stdout, msgs[lastIdx+1:], &lastPrinted, tickNow, callCtx)
 		}
 
 		// Live-tail whichever descendant session is currently the freshest
@@ -297,6 +291,20 @@ func descendantSessionIDs(ctx context.Context, a *app.App, rootID string) []stri
 	return out
 }
 
+func watchMessageComplete(msg message.Message) bool {
+	return msg.Role != message.Assistant || msg.IsFinished()
+}
+
+func printNewRootMessages(w io.Writer, msgs []message.Message, lastPrinted *string, now time.Time, callCtx map[string]toolCallOrigin) {
+	for i, msg := range msgs {
+		if !watchMessageComplete(msg) {
+			break
+		}
+		printMessageWithTime(w, msg, "text", now, callCtx, i < len(msgs)-1)
+		*lastPrinted = msg.ID
+	}
+}
+
 // printNewMessagesSince prints every message in sessionID newer than
 // lastPrinted[sessionID] to w, using the same rendering
 // (printMessageWithTime) the top-level live-tail stream uses. When the
@@ -319,11 +327,15 @@ func printNewMessagesSince(w io.Writer, ctx context.Context, a *app.App, session
 	lastIdx := indexByID(msgs, last)
 	printed := false
 	for i := range msgs {
-		if i > lastIdx {
-			printMessageWithTime(w, msgs[i], "text", now, callCtx, i < len(msgs)-1)
-			lastPrinted[sessionID] = msgs[i].ID
-			printed = true
+		if i <= lastIdx {
+			continue
 		}
+		if !watchMessageComplete(msgs[i]) {
+			break
+		}
+		printMessageWithTime(w, msgs[i], "text", now, callCtx, i < len(msgs)-1)
+		lastPrinted[sessionID] = msgs[i].ID
+		printed = true
 	}
 	return printed
 }

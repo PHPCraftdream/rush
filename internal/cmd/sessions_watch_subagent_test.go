@@ -158,7 +158,7 @@ func TestPrintNewMessagesSince_EventDriven_NoRepeatOnUnchangedSession(t *testing
 
 	_, err = m.Create(ctx, child.ID, message.CreateMessageParams{
 		Role:  message.Assistant,
-		Parts: []message.ContentPart{message.TextContent{Text: "doing the task"}},
+		Parts: []message.ContentPart{message.TextContent{Text: "doing the task"}, message.Finish{Reason: message.FinishReasonEndTurn}},
 	})
 	require.NoError(t, err)
 
@@ -197,7 +197,7 @@ func TestPrintNewMessagesSince_EventDriven_NoRepeatOnUnchangedSession(t *testing
 	// construction, run without any created_at manipulation, on purpose.
 	_, err = m.Create(ctx, child.ID, message.CreateMessageParams{
 		Role:  message.Assistant,
-		Parts: []message.ContentPart{message.TextContent{Text: "found the answer"}},
+		Parts: []message.ContentPart{message.TextContent{Text: "found the answer"}, message.Finish{Reason: message.FinishReasonEndTurn}},
 	})
 	require.NoError(t, err)
 
@@ -205,6 +205,61 @@ func TestPrintNewMessagesSince_EventDriven_NoRepeatOnUnchangedSession(t *testing
 	printed3 := printNewMessagesSince(&buf3, ctx, a, child.ID, lastPrinted, time.Now())
 	assert.True(t, printed3, "genuine new activity after a quiet tick must be printed")
 	assert.Contains(t, buf3.String(), "found the answer")
+}
+
+func TestWatchDescendantUnfinishedAssistantWaitsForCompletion(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	conn, q := newTestDB(t)
+	s := session.NewService(q, conn)
+	m := message.NewService(q)
+	root, err := s.Create(ctx, "root")
+	require.NoError(t, err)
+	child, err := s.CreateTaskSession(ctx, "msg$$call", root.ID, "sub-agent")
+	require.NoError(t, err)
+	msg, err := m.Create(ctx, child.ID, message.CreateMessageParams{
+		Role:  message.Assistant,
+		Parts: []message.ContentPart{message.TextContent{Text: "partial"}},
+	})
+	require.NoError(t, err)
+	a := &app.App{Sessions: s, Messages: m}
+	cursor := map[string]string{}
+
+	var initial bytes.Buffer
+	assert.False(t, printNewMessagesSince(&initial, ctx, a, child.ID, cursor, time.Now()))
+	assert.Empty(t, initial.String())
+	assert.Empty(t, cursor[child.ID], "unfinished assistant ID must not advance the cursor")
+
+	msg.Parts = []message.ContentPart{message.TextContent{Text: "completed answer"}, message.Finish{Reason: message.FinishReasonEndTurn}}
+	require.NoError(t, m.Update(ctx, msg))
+	var completed bytes.Buffer
+	assert.True(t, printNewMessagesSince(&completed, ctx, a, child.ID, cursor, time.Now()))
+	assert.Contains(t, completed.String(), "completed answer")
+	assert.Equal(t, msg.ID, cursor[child.ID])
+
+	var duplicate bytes.Buffer
+	assert.False(t, printNewMessagesSince(&duplicate, ctx, a, child.ID, cursor, time.Now()))
+	assert.Empty(t, duplicate.String(), "completed message must print exactly once")
+}
+
+func TestRootBackfillAndPollingWaitForAssistantCompletion(t *testing.T) {
+	t.Parallel()
+	unfinished := message.Message{ID: "assistant", Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: "partial"}}}
+	finished := unfinished
+	finished.Parts = []message.ContentPart{message.TextContent{Text: "complete"}, message.Finish{Reason: message.FinishReasonEndTurn}}
+	callCtx := buildToolCallContext(nil)
+	lastPrinted := ""
+
+	var backfill bytes.Buffer
+	printNewRootMessages(&backfill, []message.Message{unfinished}, &lastPrinted, time.Now(), callCtx)
+	assert.Empty(t, backfill.String())
+	assert.Empty(t, lastPrinted)
+
+	var poll bytes.Buffer
+	printNewRootMessages(&poll, []message.Message{finished}, &lastPrinted, time.Now(), callCtx)
+	assert.Contains(t, poll.String(), "complete")
+	assert.Equal(t, finished.ID, lastPrinted)
 }
 
 // TestSubAgentWriter_PrefixesEveryLine proves the display half of the fix:
