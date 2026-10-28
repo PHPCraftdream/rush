@@ -122,42 +122,17 @@ func (q *Queries) GetFileByPathAndSession(ctx context.Context, arg GetFileByPath
 	return i, err
 }
 
-const listFilesByPath = `-- name: ListFilesByPath :many
-SELECT id, session_id, path, content, version, created_at, updated_at
+const getNextFileVersionByPath = `-- name: GetNextFileVersionByPath :one
+SELECT COALESCE(MAX(version) + 1, 0) AS next_version
 FROM files
 WHERE path = ?
-ORDER BY version DESC, created_at DESC
 `
 
-func (q *Queries) ListFilesByPath(ctx context.Context, path string) ([]File, error) {
-	rows, err := q.query(ctx, q.listFilesByPathStmt, listFilesByPath, path)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []File{}
-	for rows.Next() {
-		var i File
-		if err := rows.Scan(
-			&i.ID,
-			&i.SessionID,
-			&i.Path,
-			&i.Content,
-			&i.Version,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+func (q *Queries) GetNextFileVersionByPath(ctx context.Context, path string) (interface{}, error) {
+	row := q.queryRow(ctx, q.getNextFileVersionByPathStmt, getNextFileVersionByPath, path)
+	var next_version interface{}
+	err := row.Scan(&next_version)
+	return next_version, err
 }
 
 const listFilesBySession = `-- name: ListFilesBySession :many
