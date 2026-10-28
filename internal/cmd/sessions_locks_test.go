@@ -46,6 +46,25 @@ func captureStdout(t *testing.T, f func()) string {
 	return buf.String()
 }
 
+func TestLockCallTreeActivityFromBatch_UsesMappedIDsAndUnknownStem(t *testing.T) {
+	activities := map[string]callTreeActivity{
+		"known-a":     {LatestUnix: 101, DeepestSessionID: "known-a"},
+		"known-b":     {LatestUnix: 103, DeepestSessionID: "child"},
+		"orphan-stem": {LatestUnix: 102, DeepestSessionID: "orphan-stem"},
+	}
+
+	got, ok := lockCallTreeActivityLookup(activities, []string{"known-a", "known-b"}, "shared-stem", 100)
+	require.True(t, ok)
+	require.Equal(t, activities["known-b"], got, "colliding lock stems must use the freshest mapped real session")
+
+	got, ok = lockCallTreeActivityLookup(activities, nil, "orphan-stem", 100)
+	require.True(t, ok, "unknown/orphan locks retain the legacy stem lookup")
+	require.Equal(t, activities["orphan-stem"], got)
+
+	_, ok = lockCallTreeActivityLookup(activities, nil, "orphan-stem", 102)
+	require.False(t, ok, "activity at or before the lock mtime is not fresher")
+}
+
 func TestSessionsLocks_CreateLockFile(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()

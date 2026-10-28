@@ -288,6 +288,26 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 	if acts.LockStems != nil {
 		stemIDs = acts.LockStems
 	}
+	// Include unlisted lock stems so orphaned session files retain the previous
+	// call-tree activity lookup semantics, but perform all lookups in one batch.
+	activityIDs := append([]string(nil), allIDs...)
+	seenActivityIDs := make(map[string]struct{}, len(activityIDs))
+	for _, id := range activityIDs {
+		seenActivityIDs[id] = struct{}{}
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "session-") || !strings.HasSuffix(entry.Name(), ".lock") {
+			continue
+		}
+		stem := strings.TrimSuffix(strings.TrimPrefix(entry.Name(), "session-"), ".lock")
+		if len(stemIDs[stem]) == 0 {
+			if _, ok := seenActivityIDs[stem]; !ok {
+				activityIDs = append(activityIDs, stem)
+				seenActivityIDs[stem] = struct{}{}
+			}
+		}
+	}
+	callTreeActivities := computeCallTreeActivityBatch(cmd.Context(), a, activityIDs)
 	liveVerdict := func(stem string) (session.ActivityVerdict, bool) {
 		if actErr != nil {
 			return session.ActivityVerdict{}, false
@@ -438,7 +458,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		// that came from the session's OWN activity, not a delegation,
 		// gets no such label.
 		var subAgentLabel string
-		if act, fresher := lockCallTreeActivity(cmd.Context(), a, stemIDs[sessionID], sessionID, info.ModTime().Unix()); fresher {
+		if act, fresher := lockCallTreeActivityLookup(callTreeActivities, stemIDs[sessionID], sessionID, info.ModTime().Unix()); fresher {
 			if subAge, ok := act.Age(now); ok {
 				pulseSec = int64(subAge.Seconds())
 				pulse = lockPulseStatus(pulseSec)
@@ -631,19 +651,17 @@ func resolveLocksFilterStem(ctx context.Context, a *app.App, arg string) (string
 	}
 }
 
-// lockCallTreeActivity is callTreeActivityFresherThan over a lock-file
-// stem's real session ids (several when ids collide on one stem, D11): the
-// freshest candidate wins. Without a known id the stem itself is tried (a
-// plain id is its own stem) -- R8C-8: the stem is never used as a session
-// id for the lookup.
-func lockCallTreeActivity(ctx context.Context, a *app.App, ids []string, stem string, baselineUnix int64) (callTreeActivity, bool) {
+// lockCallTreeActivityLookup returns the freshest activity for a lock's real
+// session IDs, or falls back to its stem when no ID is mapped.
+func lockCallTreeActivityLookup(activities map[string]callTreeActivity, ids []string, stem string, baselineUnix int64) (callTreeActivity, bool) {
 	if len(ids) == 0 {
 		ids = []string{stem}
 	}
 	var best callTreeActivity
 	found := false
 	for _, id := range ids {
-		if act, fresher := callTreeActivityFresherThan(ctx, a, id, baselineUnix); fresher && (!found || act.LatestUnix > best.LatestUnix) {
+		act, ok := activities[id]
+		if ok && act.LatestUnix > baselineUnix && (!found || act.LatestUnix > best.LatestUnix) {
 			best, found = act, true
 		}
 	}
