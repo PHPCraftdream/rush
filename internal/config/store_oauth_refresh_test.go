@@ -171,6 +171,29 @@ func TestOAuthRefresh_EqualExpiryNewCredentialRejectsStaleClient(t *testing.T) {
 	require.Zero(t, calls, "a stale client must not exchange a replacement credential")
 }
 
+// The stale-client rejection applies once live memory already holds the
+// replacement. A newer disk rotation that live memory has not seen yet is
+// still adopted first (arbitration, not the stale-client guard, decides), and
+// an expired one is then exchanged.
+func TestOAuthRefresh_NewerExpiredDiskNotYetInMemoryIsAdoptedThenExchanged(t *testing.T) {
+	f := newCodexRefreshFixture(t)
+	disk := &oauth.Token{AccessToken: "disk-access", RefreshToken: "disk-refresh", ExpiresIn: 3600, ExpiresAt: time.Now().Add(-30 * time.Minute).Unix(), AccountID: f.used.OAuthToken.AccountID}
+	writeCodexRefreshDisk(t, f.path, disk)
+
+	calls := 0
+	stubCodexRefresh(t, func(_ context.Context, _ *http.Client, refresh string) (*oauth.Token, error) {
+		calls++
+		require.Equal(t, disk.RefreshToken, refresh, "the adopted disk credential is the one exchanged")
+		return f.next, nil
+	})
+
+	require.NoError(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, &http.Client{}))
+	require.Equal(t, 1, calls)
+	pc, ok := f.store.loadSnapshot().config.Providers.Get(f.used.ID)
+	require.True(t, ok)
+	require.Equal(t, f.next, pc.OAuthToken)
+}
+
 // A newer expired credential must not be exchanged through a stale caller client.
 func TestOAuthRefresh_ExpiredNewerCredentialRejectsStaleClient(t *testing.T) {
 	f := newCodexRefreshFixture(t)

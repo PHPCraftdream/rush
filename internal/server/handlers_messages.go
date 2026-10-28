@@ -62,6 +62,15 @@ func updateMessageAndVerify(ctx context.Context, a *appPkg.App, c *Client, msgID
 		c.reply(msgID, EventError, nil, err.Error())
 		return false
 	}
+	// The caller's edit was based on an unfinished assistant message, but a
+	// terminal finish arrived before this fresh read. Reject rather than
+	// applying the stale edit: its Parts may have been changed (including
+	// removal of the Finish part), and it could overwrite fresh terminal text
+	// or other parts as well as the Finish.
+	if m.Role == message.Assistant && !m.IsFinished() && current.IsFinished() {
+		c.reply(msgID, EventError, nil, "message changed while it was being edited; please reload and try again")
+		return false
+	}
 	// Only assistant messages ever carry a Finish part -- user/system/tool
 	// rows are written once and never streamed, so IsFinished() on them is
 	// always false and must NOT be read as "still owned by a turn". Gate the

@@ -35,6 +35,7 @@ type oauthMatrixWant struct {
 	finalMemory *oauth.Token
 	converges   bool
 	blockedIO   bool
+	staleCaller bool
 }
 
 func TestOAuthRound7_CartesianMatrix(t *testing.T) {
@@ -157,6 +158,17 @@ func oauthMatrixOracle(c oauthMatrixCase, tok oauthMatrixTokens) oauthMatrixWant
 		if !knownPredecessor {
 			want.finalMemory = authority
 		}
+		return want
+	}
+	// The caller's client was built for a credential that live memory and disk
+	// have both replaced (and that replacement is expired, so it would be
+	// exchanged): the client is stale, the refresh must be rejected so the
+	// caller retries with a fresh snapshot/client pair. Cases with a journal
+	// lineage (owned outbox or a valid WAL) keep their journal-driven
+	// expectations above and below.
+	want.staleCaller = !knownPredecessor && readable && disk != nil && disk.AccessToken != "" && disk.RefreshToken != "" && disk.ExpiresAt > 0 &&
+		memory == disk && memory != used
+	if want.staleCaller {
 		return want
 	}
 	// Earlier disk cannot justify exchanging stale caller A instead of live B.
@@ -377,6 +389,8 @@ func runOAuthMatrixCase(t *testing.T, c oauthMatrixCase) {
 	}
 	if want.blockedIO {
 		assert.Error(t, refreshErr, "I2: journal I/O must be reported")
+	} else if want.staleCaller {
+		assert.ErrorIs(t, refreshErr, errOAuthCredentialCAS, "I2: stale client must be rejected")
 	} else if want.final != nil {
 		assert.NoError(t, refreshErr, "I2: intact owned lineage must not reject refresh or hide unexpected credential CAS")
 	}

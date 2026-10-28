@@ -262,7 +262,7 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 		// newer generation, so the caller's network client is stale. Require a
 		// fresh snapshot/client pair instead of exchanging.
 		if disk != nil && disk.AccessToken != "" && disk.RefreshToken != "" && disk.ExpiresAt > 0 &&
-			!reflect.DeepEqual(disk, used) && (decision == oauthJournalDiskLaterOrTie || decision == oauthJournalEqual && record == nil) {
+			!reflect.DeepEqual(disk, used) && reflect.DeepEqual(live.OAuthToken, disk) {
 			return errOAuthCredentialCAS
 		}
 		// Expired disk rotations still supersede older live credentials.
