@@ -79,6 +79,26 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache: false
+      - name: resolve Go cache paths
+        id: go-cache
+        shell: bash
+        run: |
+          echo "gomodcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+          echo "gocache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "goversion=$(go env GOVERSION)" >> "$GITHUB_OUTPUT"
+      - name: restore Go module cache
+        id: go-mod-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gomodcache }}
+          key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+      - name: restore Go build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gocache }}
+          key: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-test-ubuntu-${{ github.sha }}
+          restore-keys: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-test-ubuntu-
       - name: resolve plan selection into the former build workflow's named groups
         run: |
           set -euo pipefail
@@ -182,6 +202,18 @@ jobs:
         run: node npm/crush/bin/crush.cache.test.js
       - name: Test npm wrapper cache logic (rush)
         run: node npm/rush/bin/rush.cache.test.js
+      - name: save Go module cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.go-mod-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gomodcache }}
+          key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+      - name: save Go build cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gocache }}
+          key: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-test-ubuntu-${{ github.sha }}
 
   # ── the former build workflow `test-agent` ubuntu leg + one whole-package -race pass ──
   agent-ubuntu:
@@ -197,6 +229,26 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache: false
+      - name: resolve Go cache paths
+        id: go-cache
+        shell: bash
+        run: |
+          echo "gomodcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+          echo "gocache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "goversion=$(go env GOVERSION)" >> "$GITHUB_OUTPUT"
+      - name: restore Go module cache
+        id: go-mod-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gomodcache }}
+          key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+      - name: restore Go build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gocache }}
+          key: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-agent-ubuntu-${{ github.sha }}
+          restore-keys: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-agent-ubuntu-
       - name: go test ./internal/agent/ split into sequential batches
         shell: bash
         run: |
@@ -254,6 +306,18 @@ jobs:
       # single 10m-default kill can bite and the job owns the diagnosis.
       - name: go test -race -short -parallel 2 (internal/agent, one invocation)
         run: go test -race -short -parallel 2 -count=1 -timeout 60m ./internal/agent/
+      - name: save Go module cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.go-mod-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gomodcache }}
+          key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+      - name: save Go build cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gocache }}
+          key: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-agent-ubuntu-${{ github.sha }}
 
   # ── the former build workflow `test-race` job, reduced to the plan's selection,
   #    EXCLUDING internal/agent (covered by agent-ubuntu above) ──
@@ -269,6 +333,26 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache: false
+      - name: resolve Go cache paths
+        id: go-cache
+        shell: bash
+        run: |
+          echo "gomodcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+          echo "gocache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "goversion=$(go env GOVERSION)" >> "$GITHUB_OUTPUT"
+      - name: restore Go module cache
+        id: go-mod-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gomodcache }}
+          key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+      - name: restore Go build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gocache }}
+          key: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-race-ubuntu-${{ github.sha }}
+          restore-keys: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-race-ubuntu-
       - name: resolve race selection into the former build workflow's race groups
         run: |
           set -euo pipefail
@@ -318,6 +402,18 @@ jobs:
         run: |
           f="$GROUP_DIR/r-catchall.txt"; [ -s "$f" ] || exit 0
           go test -race -short -failfast -timeout 15m $(cat "$f")
+      - name: save Go module cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.go-mod-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gomodcache }}
+          key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+      - name: save Go build cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gocache }}
+          key: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-race-ubuntu-${{ github.sha }}
 
   # ── the former build workflow `build`/`test-agent` native legs, reduced to the plan's
   #    selection. A lane is skipped entirely when the plan says that OS is
@@ -351,6 +447,26 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache: false
+      - name: resolve Go cache paths
+        id: go-cache
+        shell: bash
+        run: |
+          echo "gomodcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+          echo "gocache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "goversion=$(go env GOVERSION)" >> "$GITHUB_OUTPUT"
+      - name: restore Go module cache
+        id: go-mod-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gomodcache }}
+          key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+      - name: restore Go build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gocache }}
+          key: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-test-native-${{ github.sha }}
+          restore-keys: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-test-native-
       - name: resolve plan selection into the former build workflow's named groups
         shell: bash
         run: |
@@ -483,6 +599,18 @@ jobs:
             fi
           done
           exit $status
+      - name: save Go module cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.go-mod-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gomodcache }}
+          key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+      - name: save Go build cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gocache }}
+          key: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-test-native-${{ github.sha }}
 
   # ── FULL Windows plan: delegate to the reusable shards workflow ──
   # (a `uses:` job carries no steps — kept thin per ci-structure.md).

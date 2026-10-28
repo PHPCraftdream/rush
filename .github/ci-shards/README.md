@@ -20,7 +20,7 @@ Test steps record start/end epochs in `timings.txt`; rebalance whole group entri
 
 ## Caching
 
-This shard workflow uses `actions/setup-go`'s built-in Go module and build cache. This describes only the Go cache; it makes no claim that all repository work is cached.
+Windows jobs explicitly restore a stable Go module cache and rolling per-shard Go build caches; cache saves run only on pushes to `main`.
 
 ## Rollback
 

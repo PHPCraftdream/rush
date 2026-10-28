@@ -55,4 +55,12 @@ Rollback is one revert of the eventual cutover commit; the exact hash is supplie
 | security_full/deps/actions | CodeQL Go/Actions, govulncheck, Grype, PR dependency-review |
 | expected outputs, SHA identity, not_run | ci-gate |
 
-`go mod tidy -diff` avoids mutation; Ubuntu and native lint are distinct real lanes; shortcode drift remains advisory. The shard workflow uses setup-go's built-in cache only for its Go module/build caches; that does not assert repository-wide caching. Mutation checking applies only to `mut/**`.
+`go mod tidy -diff` avoids mutation; Ubuntu and native lint are distinct real lanes; shortcode drift remains advisory. Mutation checking applies only to `mut/**`.
+
+## Go cache layout (workflow configuration; not runtime-verified)
+
+`ci.yml`, `ci-tests.yml`, and `ci-windows-shards.yml` disable `setup-go`'s built-in cache and explicitly cache paths from `go env GOMODCACHE` and `go env GOCACHE`. The module cache key is shared by jobs on the same OS and `go.sum`: `go-mod-${runner.os}-${hashFiles('go.sum')}`. Plan and summary jobs use the module cache only; test/build jobs also use the build cache.
+
+Build-cache keys include OS, Go version, runner architecture, and a job discriminator, ending in the current commit SHA; restore prefixes omit the SHA to reuse the latest matching cache. Windows shard build caches are separately keyed by shard matrix value (A-D), in addition to OS/version/architecture, so shards don't share build entries. Job configuration intentionally distinguishes mixed work: the agent job combines race and non-race tests, while the checks job includes native and cross-target (mips64) work.
+
+Only pushes to `main` save caches; other runs restore only. There is no extra cache-trimming step: Go self-trims old entries. Cache contents and actual CI runtime behavior have not yet been verified; the plan and summary above describe configured keys and paths only.

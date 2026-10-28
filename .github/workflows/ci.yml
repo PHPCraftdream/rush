@@ -75,6 +75,19 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache: false
+      - name: resolve Go module cache path
+        if: steps.lane.outputs.cheap_only != 'true'
+        id: go-cache
+        shell: bash
+        run: echo "gomodcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+      - name: restore Go module cache
+        if: steps.lane.outputs.cheap_only != 'true'
+        id: go-mod-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gomodcache }}
+          key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
       - name: extract platform graphs
         if: steps.lane.outputs.cheap_only != 'true'
         run: |
@@ -82,6 +95,12 @@ jobs:
           GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go list -deps -test -json ./... > .ci-plan-tmp/linux.json
           GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 go list -deps -test -json ./... > .ci-plan-tmp/darwin.json
           GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go list -deps -test -json ./... > .ci-plan-tmp/windows.json
+      - name: save Go module cache
+        if: steps.lane.outputs.cheap_only != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.go-mod-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gomodcache }}
+          key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
       - name: select plan and export outputs
         id: read
         env:
@@ -113,7 +132,31 @@ jobs:
           python3 -I -m unittest discover -s .github/ci-shards
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         if: needs.plan.outputs.heavy_allowed == 'true'
-        with: {go-version-file: go.mod}
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: resolve Go cache paths
+        if: needs.plan.outputs.heavy_allowed == 'true'
+        id: go-cache
+        shell: bash
+        run: |
+          echo "gomodcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+          echo "gocache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "goversion=$(go env GOVERSION)" >> "$GITHUB_OUTPUT"
+      - name: restore Go module cache
+        if: needs.plan.outputs.heavy_allowed == 'true'
+        id: go-mod-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gomodcache }}
+          key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+      - name: restore Go build cache
+        if: needs.plan.outputs.heavy_allowed == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gocache }}
+          key: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-ci-checks-${{ github.sha }}
+          restore-keys: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-ci-checks-
       - name: internal/db/sql is ASCII-only (sqlc miscounts spans around multi-byte comments)
         if: runner.os == 'Linux'
         run: |
@@ -188,6 +231,18 @@ jobs:
         run: |
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
           GOOS=linux GOARCH=mips64 "$(go env GOPATH)/bin/golangci-lint" run --config=.golangci.yml --timeout=10m ./internal/db/...
+      - name: save Go module cache
+        if: needs.plan.outputs.heavy_allowed == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.go-mod-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gomodcache }}
+          key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+      - name: save Go build cache
+        if: needs.plan.outputs.heavy_allowed == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gocache }}
+          key: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-ci-checks-${{ github.sha }}
   native-lint:
     needs: plan
     if: (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci') && needs.plan.outputs.heavy_allowed == 'true'
@@ -201,7 +256,28 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with: {go-version-file: go.mod}
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: resolve Go cache paths
+        id: go-cache
+        shell: bash
+        run: |
+          echo "gomodcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+          echo "gocache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "goversion=$(go env GOVERSION)" >> "$GITHUB_OUTPUT"
+      - name: restore Go module cache
+        id: go-mod-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gomodcache }}
+          key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+      - name: restore Go build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gocache }}
+          key: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-ci-native-lint-${{ github.sha }}
+          restore-keys: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-ci-native-lint-
       - name: golangci-lint (native)
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
@@ -209,6 +285,18 @@ jobs:
           version: v2.15.0
           # built by the job's own Go: a prebuilt binary cannot read newer export data
           install-mode: goinstall
+      - name: save Go module cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.go-mod-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gomodcache }}
+          key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+      - name: save Go build cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.go-cache.outputs.gocache }}
+          key: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-ci-native-lint-${{ github.sha }}
   tests:
     needs: [plan, checks]
     if: (github.event_name != 'pull_request' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'full-ci') && needs.plan.outputs.heavy_allowed == 'true' && (needs.plan.outputs.ubuntu_needed == 'true' || needs.plan.outputs.macos_needed == 'true' || needs.plan.outputs.windows_needed == 'true' || needs.plan.outputs.agent_selected == 'true' || needs.plan.outputs.race_needed == 'true')
