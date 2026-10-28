@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"charm.land/fantasy"
@@ -49,7 +50,7 @@ func runMCPStartStreamRegistrationTest(t *testing.T, qwen bool) {
 	type running struct {
 		name   string
 		args   []string
-		stream *StreamSession
+		finish func()
 	}
 	start := func(sessionID string) running {
 		var args []string
@@ -64,8 +65,13 @@ func runMCPStartStreamRegistrationTest(t *testing.T, qwen bool) {
 		ctx := WithToolBridge(context.WithValue(t.Context(), SessionIDContextKey, sessionID), mcpRegistrationTestBridge{})
 		stream, startErr := model.StartStream(ctx, fantasy.Call{})
 		require.NoError(t, startErr)
+		var once sync.Once
+		finish := func() {
+			once.Do(func() { stream.Stream()(func(fantasy.StreamPart) bool { return true }) })
+		}
+		t.Cleanup(finish)
 		name := allowedMCPName(t, args)
-		return running{name: name, args: args, stream: stream}
+		return running{name: name, args: args, finish: finish}
 	}
 	first := start("session-a")
 	second := start("session-b")
@@ -99,12 +105,12 @@ func runMCPStartStreamRegistrationTest(t *testing.T, qwen bool) {
 		require.Contains(t, first.args, "mcp__"+first.name+"__probe")
 		require.NotContains(t, first.args, "mcp__"+second.name+"__probe")
 	}
-	first.stream.Stream()(func(fantasy.StreamPart) bool { return true })
+	first.finish()
 	_, ok = readURL(t, home, first.name)
 	require.False(t, ok, "stream cleanup must deregister its own server")
 	_, ok = readURL(t, home, second.name)
 	require.True(t, ok, "stream cleanup must preserve the other session")
-	second.stream.Stream()(func(fantasy.StreamPart) bool { return true })
+	second.finish()
 }
 
 func argsFlagValue(t *testing.T, args []string, flag string) string {
