@@ -140,10 +140,10 @@ rush models show
 
 		fmt.Println("EFFECTIVE")
 		tw := newStateTable("ROLE", "PROVIDER", "MODEL", "EFFORT", "SCOPE", "ATOM", "NOTE")
-		printEffectiveRow(tw, "smart", hasSmart, effSmart, smartScope)
-		printEffectiveRow(tw, "fast", hasFast, effFast, fastScope)
-		printEffectiveRow(tw, "worker", hasWorker, effWorker, workerScope)
-		printEffectiveRow(tw, "reviewer", hasReviewer, effReviewer, reviewerScope)
+		printEffectiveRow(tw, "smart", hasSmart, effSmart, textScope(smartScope, hasSmart))
+		printEffectiveRow(tw, "fast", hasFast, effFast, textScope(fastScope, hasFast))
+		printEffectiveRow(tw, "worker", hasWorker, effWorker, textScope(workerScope, hasWorker))
+		printEffectiveRow(tw, "reviewer", hasReviewer, effReviewer, textScope(reviewerScope, hasReviewer))
 		tw.flush()
 		fmt.Println()
 		fmt.Println("SCOPES")
@@ -178,6 +178,15 @@ func whichScope(local, global *config.SelectedModel) string {
 		return "global"
 	}
 	return ""
+}
+
+// textScope labels a role no scope sets but that still resolves (built-in
+// default) as "default" in the text table; --json keeps the empty scope.
+func textScope(scope string, has bool) string {
+	if scope == "" && has {
+		return "default"
+	}
+	return scope
 }
 
 func nilOrModel(has bool, m config.SelectedModel) any {

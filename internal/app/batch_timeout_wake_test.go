@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -57,6 +58,75 @@ func TestBatchTimeoutWakeDispatcherBoundsAndJoins(t *testing.T) {
 		t.Fatal("dispatcher did not join")
 	}
 	var _ agent.SessionWakeDispatcher = wakeDispatchTestCoordinator{}
+}
+
+func TestBatchTimeoutWakeDispatcherJoinsWhenCanceledWaitingForSlot(t *testing.T) {
+	d := newBatchTimeoutWakeDispatcher()
+	entered := make(chan struct{}, batchTimeoutWakeQueueSize)
+	release := make(chan struct{})
+	d.Attach(wakeDispatchTestCoordinator{wake: func(_ context.Context, _ string, _ bool) error {
+		entered <- struct{}{}
+		<-release
+		return nil
+	}})
+	for i := 0; i <= batchTimeoutWakeQueueSize; i++ {
+		d.Wake(context.Background(), fmt.Sprintf("owner-%d", i))
+	}
+	for i := 0; i < batchTimeoutWakeQueueSize; i++ {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("dispatches did not fill available slots")
+		}
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		d.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned before blocked dispatches completed")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not join dispatches")
+	}
+}
+func TestBatchTimeoutWakeDispatcherDoesNotSerializeBlockedSessions(t *testing.T) {
+	d := newBatchTimeoutWakeDispatcher()
+	t.Cleanup(d.Stop)
+	firstEntered := make(chan struct{})
+	firstRelease := make(chan struct{})
+	secondWoke := make(chan struct{})
+	d.Attach(wakeDispatchTestCoordinator{wake: func(_ context.Context, owner string, _ bool) error {
+		switch owner {
+		case "first":
+			close(firstEntered)
+			<-firstRelease
+		case "second":
+			close(secondWoke)
+		}
+		return nil
+	}})
+	d.Wake(context.Background(), "first")
+	select {
+	case <-firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first dispatch did not start")
+	}
+	d.Wake(context.Background(), "second")
+	select {
+	case <-secondWoke:
+	case <-time.After(time.Second):
+		close(firstRelease)
+		t.Fatal("second due session was serialized behind the blocked first wake")
+	}
+	close(firstRelease)
 }
 
 func TestBatchTimeoutCheckinFutureAndMalformedPayloadsDoNotFire(t *testing.T) {

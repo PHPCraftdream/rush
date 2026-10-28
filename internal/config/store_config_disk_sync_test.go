@@ -836,6 +836,43 @@ func TestConfigDiskSyncStopBeforeStartIsTerminal(t *testing.T) {
 //     fire;
 //   - dropping PresencePenalty → the presence_penalty-only step does not
 //     fire.
+func TestReloadKeepsGlobalModelIntegrityAfterMidSessionKtavMigration(t *testing.T) {
+	dir, _, globalPath := configSyncIsolate(t)
+	savedGate := ktavAutoMigrate
+	t.Cleanup(func() { ktavAutoMigrate = savedGate })
+	ktavAutoMigrate = true
+
+	// Startup observes an absent global slot and retains its JSON spelling.
+	s, err := Load(dir, dir, false)
+	require.NoError(t, err)
+	t.Cleanup(func() { s.StopConfigDiskSync() })
+	require.Equal(t, normalizeReloadPath(filepath.Join(filepath.Dir(globalPath), "rush.json")), s.globalDataPath)
+
+	writeSignedModelsFixture(t, globalPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
+	require.NoError(t, s.ReloadFromDisk(context.Background()))
+	active := selectConfigSlot(globalPath)
+	require.True(t, isKtavConfigPath(active), "global config should migrate during reload")
+	require.Equal(t, "gpt-4", s.Config().Models[SelectedModelTypeSmart].Model)
+
+	// Change models without refreshing cache_rev.
+	raw, err := os.ReadFile(active)
+	require.NoError(t, err)
+	jsonBytes, err := decodeConfigDocument(active, raw)
+	require.NoError(t, err)
+	edited, err := sjson.Set(string(jsonBytes), "models.smart.model", "hacked")
+	require.NoError(t, err)
+	editedBytes := []byte(edited)
+	if isKtavConfigPath(active) {
+		editedBytes, err = ktavcodec.ConvertJSONToKtav(editedBytes)
+		require.NoError(t, err)
+	}
+	require.NoError(t, os.WriteFile(active, editedBytes, 0o600))
+
+	require.NoError(t, s.ReloadFromDisk(context.Background()))
+	require.Equal(t, "gpt-4", s.Config().Models[SelectedModelTypeSmart].Model,
+		"a stale global cache_rev must preserve the previous model after migration")
+}
+
 func TestConfigDiskSyncOnModelsChangedEffortOnlyFires(t *testing.T) {
 	dir, configPath, globalPath := configSyncIsolate(t)
 	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
