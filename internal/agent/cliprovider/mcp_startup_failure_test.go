@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -29,6 +30,31 @@ func TestStartStreamRequiredMCPFailureFailsClosed(t *testing.T) {
 	}
 	_, err = m.StartStream(context.Background(), fantasy.Call{})
 	require.ErrorContains(t, err, "required MCP server failed to start")
+}
+
+func TestStartStreamRequiredMCPConfigFileFailureFailsClosed(t *testing.T) {
+	self, err := os.Executable()
+	require.NoError(t, err)
+	missingTemp := filepath.Join(t.TempDir(), "missing")
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, missingTemp)
+	}
+	m := &cliModel{
+		spec: CLISpec{
+			ModelID: "required-mcp", Binary: self, UseRushMCP: true,
+			BuildArgs: func(bool) []string { return nil },
+		},
+		perms: &recordingMCPPermissionService{},
+		streamProcess: func(bool, []string) procHandle {
+			t.Fatal("process started without required MCP config file")
+			return procHandle{}
+		},
+	}
+	ctx := context.WithValue(t.Context(), SessionIDContextKey, "config-file-failure")
+	stream, err := m.StartStream(ctx, fantasy.Call{})
+	require.Nil(t, stream)
+	require.ErrorContains(t, err, "required MCP config file failed")
+	require.NoDirExists(t, missingTemp)
 }
 
 func TestStartStreamRequiredMCPStartsNormally(t *testing.T) {
