@@ -117,6 +117,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 	var mcpTmpCfg string     // path to temp MCP config file (claude-style); "" if not used
 	var qwenMCPName string   // registered name in ~/.qwen/settings.json; "" if not used
 	var geminiMCPName string // registered name in ~/.gemini/settings.json; "" if not used
+	var mcpSetupErr error
 	// Fork patch: batch 20 — keep the MCP bridge active even in yolo/bypass mode.
 	// Before this fix, `!yolo` here meant that `rush run` (which sets yolo=true via
 	// NonInteractiveContextKey in batch 14) would skip MCP setup entirely. Inner
@@ -181,11 +182,13 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 	if m.spec.QwenMCPIntegration && (m.perms != nil || bridge != nil) {
 		id, idErr := qwenMCPID(m.workingDir)
 		if idErr != nil {
+			mcpSetupErr = idErr
 			slog.Warn("cliprovider: failed to get qwen MCP ID", "err", idErr)
 		} else {
 			var err error
 			mcpSrv, err = newRushMCPServer(ctx, m.perms, m.sessions, sessionID, m.workingDir, "", m.mcpProxy)
 			if err != nil {
+				mcpSetupErr = err
 				slog.Warn("cliprovider: failed to start qwen MCP server", "err", err)
 			} else {
 				// registerQwenMCP below unconditionally replaces
@@ -196,6 +199,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 				// deregisterQwenMCP's own doc for the full story).
 				serverName := sessionMCPName(id, sessionID)
 				if regErr := registerQwenMCP(serverName, mcpSrv.addr, mcpSrv.token); regErr != nil {
+					mcpSetupErr = regErr
 					slog.Warn("cliprovider: failed to register qwen MCP server", "err", regErr)
 					mcpSrv.stop()
 					mcpSrv = nil
@@ -240,11 +244,13 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 	if m.spec.GeminiMCPIntegration && (m.perms != nil || bridge != nil) {
 		id, idErr := geminiMCPID(m.workingDir)
 		if idErr != nil {
+			mcpSetupErr = idErr
 			slog.Warn("cliprovider: failed to get gemini MCP ID", "err", idErr)
 		} else {
 			var err error
 			mcpSrv, err = newRushMCPServer(ctx, m.perms, m.sessions, sessionID, m.workingDir, "", m.mcpProxy)
 			if err != nil {
+				mcpSetupErr = err
 				slog.Warn("cliprovider: failed to start gemini MCP server", "err", err)
 			} else {
 				// registerGeminiMCP below unconditionally replaces
@@ -255,6 +261,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 				// deregisterGeminiMCP's own doc for the full story).
 				serverName := sessionMCPName(id, sessionID)
 				if regErr := registerGeminiMCP(serverName, mcpSrv.addr, mcpSrv.token); regErr != nil {
+					mcpSetupErr = regErr
 					slog.Warn("cliprovider: failed to register gemini MCP server", "err", regErr)
 					mcpSrv.stop()
 					mcpSrv = nil
@@ -275,6 +282,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 		var err error
 		mcpSrv, err = newRushMCPServer(ctx, m.perms, m.sessions, sessionID, m.workingDir, "", m.mcpProxy)
 		if err != nil {
+			mcpSetupErr = err
 			slog.Warn("cliprovider: failed to start codex MCP server", "err", err)
 		} else {
 			args = append(args, codexMCPConfigArgs(mcpSrv.addr)...)
@@ -282,11 +290,17 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 		}
 	}
 
-	if bridge != nil && mcpSrv == nil {
+	if mcpSrv == nil && (bridge != nil || (m.perms != nil && (m.spec.UseRushMCP || m.spec.QwenMCPIntegration || m.spec.GeminiMCPIntegration || m.spec.CodexMCPIntegration))) {
 		if attachTmpDir != "" {
 			_ = os.RemoveAll(attachTmpDir)
 		}
-		return nil, fmt.Errorf("cliprovider: configured tool bridge is unavailable for %s", m.spec.ModelID)
+		if bridge != nil {
+			return nil, fmt.Errorf("cliprovider: configured tool bridge is unavailable for %s", m.spec.ModelID)
+		}
+		if mcpSetupErr != nil {
+			return nil, fmt.Errorf("cliprovider: configured permission MCP server is unavailable for %s: %w", m.spec.ModelID, mcpSetupErr)
+		}
+		return nil, fmt.Errorf("cliprovider: configured permission MCP server is unavailable for %s", m.spec.ModelID)
 	}
 
 	noPTY := m.spec.NoPTY || testDisablePTY
