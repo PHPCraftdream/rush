@@ -681,7 +681,7 @@ func reloadModelsIntegrityMismatch(s *ConfigStore, docs []stableConfigDocument) 
 func stableConfigDocumentForPath(docs []stableConfigDocument, path string) *stableConfigDocument {
 	canonical := normalizeReloadPath(path)
 	for i := range docs {
-		if normalizeReloadPath(docs[i].path) == canonical {
+		if normalizeReloadPath(docs[i].path) == canonical || matchesLogicalSlot(docs[i].path, canonical) {
 			return &docs[i]
 		}
 	}

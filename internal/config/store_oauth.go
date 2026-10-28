@@ -28,6 +28,9 @@ import (
 
 // SetProviderAPIKey sets the API key for a provider and persists it.
 func (s *ConfigStore) SetProviderAPIKey(scope Scope, providerID string, apiKey any) error {
+	s.credentialWriteMu.Lock()
+	defer s.credentialWriteMu.Unlock()
+
 	var providerConfig ProviderConfig
 	var exists bool
 	var setKeyOrToken func()
@@ -53,6 +56,10 @@ func (s *ConfigStore) SetProviderAPIKey(scope Scope, providerID string, apiKey a
 				providerConfig.SetupGitHubCopilot()
 			}
 		}
+	}
+
+	if hook := s.credentialSetBeforePublish; hook != nil {
+		hook()
 	}
 
 	// publishMu is held for the whole read-modify-publish cycle below, and
@@ -587,6 +594,9 @@ func (s *ConfigStore) ImportCopilot() (*oauth.Token, bool) {
 // snapshot uses) and publish it under publishMu so the old snapshot's
 // Providers map is never touched.
 func (s *ConfigStore) RemoveProviderAPIKey(scope Scope, providerID string) error {
+	s.credentialWriteMu.Lock()
+	defer s.credentialWriteMu.Unlock()
+
 	if err := s.RemoveConfigField(scope, fmt.Sprintf("providers.%s.api_key", providerID)); err != nil {
 		return fmt.Errorf("failed to remove provider API key: %w", err)
 	}
