@@ -63,6 +63,15 @@ func (r *batchRuntime) Invoke(ctx context.Context, inv BatchInvocation, leaf fan
 	}
 	spec, err := batchOneItemSpec(inv, call, input)
 	if err != nil {
+		if pctHandoff != nil {
+			pctHandoff.pctRelease()
+		}
+		// A bad timeout is the model's own input: report it back so the turn
+		// goes on, instead of a Go error that ends the run.
+		var inputErr batchToolInputError
+		if errors.As(err, &inputErr) {
+			return fantasy.NewTextErrorResponse(err.Error()), nil
+		}
 		return fantasy.ToolResponse{}, err
 	}
 	spec, err = stampBatchCallCredentials(ctx, spec)
@@ -297,6 +306,12 @@ func (r *batchRuntime) submit(ctx context.Context, inv BatchInvocation, spec job
 	return root, nil
 }
 
+// batchToolInputError marks a direct call whose tool input itself is invalid.
+type batchToolInputError struct{ err error }
+
+func (e batchToolInputError) Error() string { return e.err.Error() }
+func (e batchToolInputError) Unwrap() error { return e.err }
+
 // batchOneItemSpec builds the direct-call spec: OneItem, NotifyAll, kind
 // derived from the tool family, payload carrying the invocation's immutable
 // policy transport and pinned registry identity. The call's timeout intent
@@ -308,7 +323,7 @@ func (r *batchRuntime) submit(ctx context.Context, inv BatchInvocation, spec job
 func batchOneItemSpec(inv BatchInvocation, call fantasy.ToolCall, input json.RawMessage) (jobbatch.Spec, error) {
 	intent, err := batchParseTimeoutParam(call.Name, string(input))
 	if err != nil {
-		return jobbatch.Spec{}, err
+		return jobbatch.Spec{}, batchToolInputError{err}
 	}
 	payload := batchLeafPayload{
 		Tool:       call.Name,
