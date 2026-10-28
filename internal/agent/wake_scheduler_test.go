@@ -437,6 +437,82 @@ func TestWakeScheduler_DeadOwnerNoLoop(t *testing.T) {
 	}
 }
 
+func TestWakeScheduler_StopCancelsAndJoinsDispatchedWake(t *testing.T) {
+	fx := newSchedFx(t)
+	entered := make(chan struct{})
+	cancelled := make(chan struct{})
+	returned := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	s := newWakeScheduler(fx.store, "w1", func(ctx context.Context, _ string) {
+		close(entered)
+		defer close(returned)
+		select {
+		case <-ctx.Done():
+			close(cancelled)
+			<-release
+		case <-release:
+		}
+	})
+	s.now = fx.now
+	s.after = fx.after
+	s.Start()
+	t.Cleanup(s.Stop)
+	select {
+	case <-s.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("scheduler startup timed out")
+	}
+	select {
+	case <-fx.armed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("initial timer arm timed out")
+	}
+
+	_, err := fx.store.CreateSchedule(fx.ctx, fx.createOnce("sess-1", 5*time.Second), fx.now())
+	require.NoError(t, err)
+	s.Reschedule()
+	select {
+	case <-fx.armed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("rescheduled timer arm timed out")
+	}
+	fx.fire(5 * time.Second)
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("wake dispatch did not start")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		s.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not cancel the dispatched wake context")
+	}
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned before the dispatched wake returned")
+	case <-time.After(50 * time.Millisecond):
+	}
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatched wake did not return after release")
+	}
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not join the dispatched wake")
+	}
+}
+
 // TestWakeScheduler_StopExitsGoroutine: Stop terminates the worker
 // goroutine (no leak), and is idempotent + nil-safe.
 func TestWakeScheduler_StopExitsGoroutine(t *testing.T) {

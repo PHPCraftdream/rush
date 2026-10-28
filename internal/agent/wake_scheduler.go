@@ -52,12 +52,15 @@ type wakeScheduler struct {
 	// duration; production uses time.After.
 	after func(d time.Duration) <-chan time.Time
 
-	wakeCh    chan struct{} // buffered 1: "recompute the nearest due time"
-	stopCh    chan struct{}
-	done      chan struct{} // closed after the run goroutine actually returns
-	started   chan struct{} // closed after the startup lease recovery ran
-	startOnce sync.Once
-	stopOnce  sync.Once
+	wakeCh         chan struct{} // buffered 1: "recompute the nearest due time"
+	stopCh         chan struct{}
+	done           chan struct{} // closed after the run goroutine actually returns
+	started        chan struct{} // closed after the startup lease recovery ran
+	dispatchCtx    context.Context
+	dispatchCancel context.CancelFunc
+	dispatchWG     sync.WaitGroup // wake deliveries dispatched by the run goroutine
+	startOnce      sync.Once
+	stopOnce       sync.Once
 }
 
 // WakeScheduleController is the optional interface the App asserts the
@@ -88,11 +91,9 @@ func (c *coordinator) SetWakeScheduleStore(store *session.WakeScheduleStore) {
 	}
 	owner := "wakesched-" + uuid.NewString()
 	s := newWakeScheduler(store, owner, func(ctx context.Context, sessionID string) {
-		go func() {
-			if err := c.wakeSession(context.Background(), sessionID, true); err != nil {
-				slog.Debug("wake scheduler: delivery attempt did not complete", "session_id", sessionID, "err", err)
-			}
-		}()
+		if err := c.wakeSession(ctx, sessionID, true); err != nil {
+			slog.Debug("wake scheduler: delivery attempt did not complete", "session_id", sessionID, "err", err)
+		}
 	})
 	c.wakeScheduler = s
 	s.Start()
@@ -119,16 +120,19 @@ func (c *coordinator) WakeSchedulerNotify() {
 }
 
 func newWakeScheduler(store *session.WakeScheduleStore, leaseOwner string, wake func(ctx context.Context, sessionID string)) *wakeScheduler {
+	dispatchCtx, dispatchCancel := context.WithCancel(context.Background())
 	return &wakeScheduler{
-		store:      store,
-		leaseOwner: leaseOwner,
-		wake:       wake,
-		now:        time.Now,
-		after:      time.After,
-		wakeCh:     make(chan struct{}, 1),
-		stopCh:     make(chan struct{}),
-		done:       make(chan struct{}),
-		started:    make(chan struct{}),
+		store:          store,
+		leaseOwner:     leaseOwner,
+		wake:           wake,
+		now:            time.Now,
+		after:          time.After,
+		wakeCh:         make(chan struct{}, 1),
+		stopCh:         make(chan struct{}),
+		done:           make(chan struct{}),
+		started:        make(chan struct{}),
+		dispatchCtx:    dispatchCtx,
+		dispatchCancel: dispatchCancel,
 	}
 }
 
@@ -137,14 +141,19 @@ func (s *wakeScheduler) Start() {
 	s.startOnce.Do(func() { go s.run() })
 }
 
-// Stop terminates the worker and waits for its goroutine to return.
-// Nil-safe, idempotent.
+// Stop terminates the worker, cancels its delivery context, and waits for
+// its goroutine and every wake delivery it dispatched to return. Nil-safe,
+// idempotent.
 func (s *wakeScheduler) Stop() {
 	if s == nil {
 		return
 	}
-	s.stopOnce.Do(func() { close(s.stopCh) })
+	s.stopOnce.Do(func() {
+		close(s.stopCh)
+		s.dispatchCancel()
+	})
 	<-s.done
+	s.dispatchWG.Wait()
 }
 
 // Notify asks the run loop to recompute the nearest due time NOW — the
@@ -239,7 +248,12 @@ func (s *wakeScheduler) fireDue() {
 		}
 		// The occurrence (and its durable wake_fired notice) is committed;
 		// a delivery failure here leaves the notice pending for the owner's
-		// next pull — it is never lost and never re-fired.
-		s.wake(context.Background(), row.OwnerSessionID)
+		// next pull — it is never lost and never re-fired. Track the detached
+		// delivery so Stop cannot release the DB underneath wakeSession.
+		s.dispatchWG.Add(1)
+		go func(owner string) {
+			defer s.dispatchWG.Done()
+			s.wake(s.dispatchCtx, owner)
+		}(row.OwnerSessionID)
 	}
 }

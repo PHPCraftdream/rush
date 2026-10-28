@@ -148,7 +148,7 @@ func (b *batchDeliveryImpl) DeliverBatch(ctx context.Context, root jobbatch.ID, 
 		if err != nil {
 			return fantasy.ToolResponse{}, err
 		}
-		return b.deliverWithEscapeWindow(ctx, b.owner(inv), root, window, inv.CallID)
+		return b.deliverWithEscapeWindow(ctx, b.owner(inv), root, window, inv.CallID, mode == batchDeliverySync)
 	}
 	switch mode {
 	case batchDeliverySync:
@@ -254,7 +254,7 @@ func (b *batchDeliveryImpl) deliverInline(ctx context.Context, owner string, roo
 // second Submit and without a second executor — the waiter keeps waiting for
 // the real Done and completion arrives via selected notices. If both resolve
 // together the select commits to exactly ONE outcome.
-func (b *batchDeliveryImpl) deliverWithEscapeWindow(ctx context.Context, owner string, root jobbatch.ID, window time.Duration, callID string) (fantasy.ToolResponse, error) {
+func (b *batchDeliveryImpl) deliverWithEscapeWindow(ctx context.Context, owner string, root jobbatch.ID, window time.Duration, callID string, syncMode bool) (fantasy.ToolResponse, error) {
 	type awaited struct {
 		envelope fantasy.ToolResponse
 		ok       bool
@@ -268,6 +268,13 @@ func (b *batchDeliveryImpl) deliverWithEscapeWindow(ctx context.Context, owner s
 	select {
 	case a := <-done:
 		if a.err != nil {
+			if syncMode && ctx.Err() != nil {
+				out := cancelBatchCall(ctx, b.deps.Runner, root)
+				if out.Err != nil {
+					return fantasy.ToolResponse{}, errors.Join(ctx.Err(), out.Err)
+				}
+				return fantasy.ToolResponse{}, ctx.Err()
+			}
 			return fantasy.ToolResponse{}, a.err
 		}
 		if !a.ok {
@@ -288,7 +295,22 @@ func (b *batchDeliveryImpl) deliverWithEscapeWindow(ctx context.Context, owner s
 			b.psvArmSupervision(ctx, owner)
 		}
 		return batchStartedResponse(root), nil
+	case <-callerDone(ctx, syncMode):
+		// Sync cancellation retains the ordinary sync Stop behavior; inline
+		// escape does not convert cancellation into a root cancellation.
+		out := cancelBatchCall(ctx, b.deps.Runner, root)
+		if out.Err != nil {
+			return fantasy.ToolResponse{}, errors.Join(ctx.Err(), out.Err)
+		}
+		return fantasy.ToolResponse{}, ctx.Err()
 	}
+}
+
+func callerDone(ctx context.Context, enabled bool) <-chan struct{} {
+	if enabled {
+		return ctx.Done()
+	}
+	return nil
 }
 
 // after sleeps for one window via the injectable timer seam (nil = time.After).
