@@ -66,7 +66,7 @@ func (c *installedBatchModelControl) Run(ctx context.Context, inv BatchInvocatio
 	if inv.CallID == "" || reg == nil || inv.RegistryID != inv.Policy.RegistryID || !reg.hasToolset(inv.Policy.RestrictedToolset) {
 		return "", errBatchMissingCallID
 	}
-	spec, err := modelBatchSpec(raw, inv, reg)
+	spec, err := modelBatchSpecForAdmission(raw, inv, reg, c.resolver)
 	if err != nil {
 		return "", err
 	}
@@ -279,16 +279,16 @@ func batchModelNodeInSnapshot(nodes []db.BatchNode, id, kind, root string) bool 
 	return false
 }
 
-func batchModelSpecNodes(items []batchModelItem, inv BatchInvocation, reg *policyLeafRegistry) ([]jobbatch.Spec, error) {
+func batchModelSpecNodes(items []batchModelItem, inv BatchInvocation, reg *policyLeafRegistry, resolver batchMCPCapabilityResolver) ([]jobbatch.Spec, error) {
 	out := make([]jobbatch.Spec, 0, len(items))
 	for i, item := range items {
 		var spec jobbatch.Spec
 		var err error
 		if item.Batch != nil {
-			spec, err = modelBatchSpec(*item.Batch, inv, reg)
+			spec, err = modelBatchSpecForAdmission(*item.Batch, inv, reg, resolver)
 		} else {
 			var wrapper jobbatch.Spec
-			wrapper, err = modelBatchSpec(batchModelSpec{Mode: "parallel", Notify: "each", Items: []batchModelItem{item}}, inv, reg)
+			wrapper, err = modelBatchSpecForAdmission(batchModelSpec{Mode: "parallel", Notify: "each", Items: []batchModelItem{item}}, inv, reg, resolver)
 			if err == nil {
 				spec = wrapper.Batch.Items[0]
 			}
@@ -358,7 +358,7 @@ func (c *installedBatchModelControl) Add(ctx context.Context, caller, root, pare
 	if !ok || pn.Kind != "batch" {
 		return nil, errors.New("batch_add parent must be batch")
 	}
-	specs, err := batchModelSpecNodes(items, inv, reg)
+	specs, err := batchModelSpecNodes(items, inv, reg, c.resolver)
 	if err != nil {
 		return nil, err
 	}
