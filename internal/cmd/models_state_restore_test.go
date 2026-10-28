@@ -170,6 +170,30 @@ func TestRestoreCommands_Table(t *testing.T) {
 	})
 }
 
+func TestModelsState_UnsetRoleScopeLabels(t *testing.T) {
+	ktavGateOn(t)
+	isolatedModelsEnv(t)
+
+	resetModelsStateFlags(t)
+	text, runErr := runModelsCmd(t, modelsStateCmd)
+	require.NoError(t, runErr)
+	smartRow, ok := effectiveRow(text, "smart")
+	require.True(t, ok, "expected a smart row in output:\n%s", text)
+	assert.Equal(t, "default", tableCells(smartRow)[4])
+
+	resetModelsStateFlags(t)
+	out, runErr := runModelsCmd(t, modelsStateCmd, "--json")
+	require.NoError(t, runErr)
+	var doc struct {
+		Effective struct {
+			SmartScope string `json:"smart_scope"`
+		} `json:"effective"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &doc))
+	assert.Empty(t, doc.Effective.SmartScope,
+		"JSON scope stays empty when neither scope sets the role")
+}
+
 // TestRestoreCommands_EmptyState covers the nothing-set-anywhere case: the
 // section still prints with the placeholder, and --json carries [] not null.
 func TestRestoreCommands_EmptyState(t *testing.T) {
