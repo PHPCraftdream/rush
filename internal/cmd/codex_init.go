@@ -35,6 +35,7 @@ func resolveCodexSkillsDir(cwd string, global bool) (string, error) {
 
 var codexInitCmd = &cobra.Command{
 	Use:   "codex-init",
+	Args:  cobra.NoArgs,
 	Short: "Install the rush/rush-fallback/wrush/wcrush Skills for Codex CLI",
 	Long: `Set up rush's delegation Skills in Codex CLI.
 

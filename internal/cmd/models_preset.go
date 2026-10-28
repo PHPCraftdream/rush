@@ -9,6 +9,7 @@ import (
 
 var modelsPresetCmd = &cobra.Command{
 	Use:                "preset",
+	Args:               cobra.NoArgs,
 	Hidden:             true,
 	Short:              "(removed — use `rush models use` / `rush models list`)",
 	DisableFlagParsing: true, // print the redirect even when caller passes legacy preset args.

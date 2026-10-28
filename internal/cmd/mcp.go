@@ -33,6 +33,7 @@ operations and "both" for read operations.`,
 
 var mcpListCmd = &cobra.Command{
 	Use:   "list",
+	Args:  cobra.NoArgs,
 	Short: "List configured MCP servers across both scopes",
 	Long: `Print the merged effective view of MCP servers (workspace overriding
 global). Use --json for one JSON object per server. Use --grep to filter

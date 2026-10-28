@@ -24,6 +24,7 @@ func warnModelsEditedDirectly() {
 
 var modelsStateCmd = &cobra.Command{
 	Use:     "state",
+	Args:    cobra.NoArgs,
 	Aliases: []string{"show"}, // backwards-compat: `rush models show` used to exist.
 	Short:   "Show what's currently effective and from which scope",
 	Long: `Print three things:

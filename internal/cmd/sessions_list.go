@@ -21,6 +21,7 @@ import (
 
 var sessionsListCmd = &cobra.Command{
 	Use:   "list",
+	Args:  cobra.NoArgs,
 	Short: "List all top-level sessions",
 	Long: `List all top-level (non-child) sessions in this workspace.
 

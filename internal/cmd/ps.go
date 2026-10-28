@@ -28,6 +28,7 @@ const (
 
 var psCmd = &cobra.Command{
 	Use:   "ps",
+	Args:  cobra.NoArgs,
 	Short: "Show which rush processes are using which models right now",
 	Long: `Read the global heartbeat directory and print one row per rush
 process: its state, the model it used last (plus +N for others), the roles

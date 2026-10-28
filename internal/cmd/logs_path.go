@@ -11,6 +11,7 @@ import (
 
 var logsPathCmd = &cobra.Command{
 	Use:   "path",
+	Args:  cobra.NoArgs,
 	Short: "Print the path to the rush log file",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cwd, _ := cmd.Flags().GetString("cwd")

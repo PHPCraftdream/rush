@@ -13,6 +13,7 @@ import (
 
 var grokDelCmd = &cobra.Command{
 	Use:   "grok-del",
+	Args:  cobra.NoArgs,
 	Short: "Remove the rush/rush-fallback Skills from Grok Build CLI",
 	Long: `Undo ` + "`rush grok-init`" + `: remove the rush and rush-fallback Skills
 from Grok Build CLI's Skills directory.

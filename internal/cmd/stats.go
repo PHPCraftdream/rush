@@ -30,6 +30,7 @@ var statsJS string
 
 var statsCmd = &cobra.Command{
 	Use:   "stats",
+	Args:  cobra.NoArgs,
 	Short: "Show usage statistics",
 	Long:  "Generate and display usage statistics including token usage, costs, and activity patterns",
 	RunE:  runStats,
