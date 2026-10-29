@@ -65,16 +65,16 @@ func parseResumeShellArgs(command string) ([]string, error) {
 			}
 			continue
 		}
-		switch {
-		case r == '\'' || r == '"':
+		switch r {
+		case '\'', '"':
 			quote, started = r, true
-		case r == ' ' || r == '\t':
+		case ' ', '\t':
 			if started {
 				args = append(args, word.String())
 				word.Reset()
 				started = false
 			}
-		case r == '\\':
+		case '\\':
 			return nil, fmt.Errorf("unsupported shell escape in %q", command)
 		default:
 			word.WriteRune(r)

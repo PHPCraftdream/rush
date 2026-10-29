@@ -77,6 +77,7 @@ func TestAskQuestion_InDrainTurnIsAReaction(t *testing.T) {
 // finish), proving per-call roles reach resume guidance and nil CallOptions is
 // handled safely rather than being read from a nonexistent SessionAgentCall field.
 func TestRun_AskQuestionResumeRoleComesFromCallOptions(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		role config.SelectedModelType
