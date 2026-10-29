@@ -116,6 +116,17 @@ func defaultContinuationSmartStub(n int, w http.ResponseWriter, _ *http.Request)
 // 1-based request count for the smart model within the test run.
 func newContinuationAppWithStub(t *testing.T, withReviewer bool, smartStub func(n int, w http.ResponseWriter, r *http.Request)) *App {
 	t.Helper()
+	// The scenario needs the Fantasy retry flow exhausted and the coordinator
+	// to retry, not their real-time backoffs (5s+10s, then 10s per turn).
+	// No Fantasy retries = exhausted at once (every stub derives its request
+	// numbers from agent.ProviderMaxRetries); the coordinator's own backoff
+	// is shrunk. Tests here are not parallel (t.Setenv below), so the package
+	// vars are not shared. Cleanups run last-in-first-out: the App shuts down
+	// before the values are restored.
+	prevRetries := agent.ProviderMaxRetries
+	agent.ProviderMaxRetries = 0
+	t.Cleanup(func() { agent.ProviderMaxRetries = prevRetries })
+	t.Cleanup(agent.SetTurnRetryBackoffForTest(time.Millisecond))
 	isolationTmp := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", isolationTmp)
 	t.Setenv("RUSH_GLOBAL_DATA", isolationTmp)

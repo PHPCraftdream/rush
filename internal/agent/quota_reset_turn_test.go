@@ -11,6 +11,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// withoutProviderRetries makes a failing provider stub fail at once. The tests
+// that call it assert the finish a quota error produces, not the retry flow,
+// whose real backoff (5s+10s, per request) was the whole 30s of each. They are
+// not parallel, so the package var is not shared with a running turn.
+func withoutProviderRetries(t *testing.T) {
+	t.Helper()
+	prev := ProviderMaxRetries
+	ProviderMaxRetries = 0
+	t.Cleanup(func() { ProviderMaxRetries = prev })
+}
+
 // quotaLimitModel is a fantasy.LanguageModel whose Stream call fails with a
 // 429 shaped exactly like a real quota wall (isQuotaLimit's "quota"/"limit
 // will reset" substrings), embedding a z.ai-style reset timestamp in the
@@ -81,6 +92,7 @@ var unparseableQuotaLimitProviderErr = &fantasy.ProviderError{
 // stamp verbatim, while still keeping the original provider message for
 // diagnostic value.
 func TestRun_QuotaLimitFinishShowsLocalTime(t *testing.T) {
+	withoutProviderRetries(t)
 	env := testEnv(t)
 	agent := testSessionAgent(env, quotaLimitModel{}, quotaLimitModel{}, "test system prompt")
 
@@ -127,6 +139,7 @@ func TestRun_QuotaLimitFinishShowsLocalTime(t *testing.T) {
 // verbatim-message behavior -- no panic, no empty finish, and no stray
 // "Limit resets:" line fabricated from nothing.
 func TestRun_QuotaLimitWithoutParseableResetDegradesGracefully(t *testing.T) {
+	withoutProviderRetries(t)
 	env := testEnv(t)
 	agent := testSessionAgent(env, unparseableQuotaLimitModel{}, unparseableQuotaLimitModel{}, "test system prompt")
 

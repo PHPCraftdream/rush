@@ -93,6 +93,7 @@ func TestLocalizeResetError(t *testing.T) {
 // TestRun_QuotaLimitFinishLocalizesInline: the finish shows the reset once,
 // in local time, with the remote stamp gone.
 func TestRun_QuotaLimitFinishLocalizesInline(t *testing.T) {
+	withoutProviderRetries(t)
 	setTestLocal(t)
 	env := testEnv(t)
 	agent := testSessionAgent(env, quotaLimitModel{}, quotaLimitModel{}, "test system prompt")
