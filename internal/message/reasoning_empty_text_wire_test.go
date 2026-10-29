@@ -98,8 +98,7 @@ func TestReasoningPartsRequireTextOrMetadata(t *testing.T) {
 				}
 			}
 
-			// fantasy skips reasoning on Responses replay, so this metadata has no wire effect.
-			// Responses API metadata alone must not create a fantasy reasoning part.
+			// Responses metadata without encrypted payload has no wire effect; it must not create a fantasy reasoning part.
 			wantCount := 0
 			if tt.expectedProvider != "" || tt.thinking != "" {
 				wantCount = 1

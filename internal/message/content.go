@@ -664,7 +664,8 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 		for _, part := range m.Parts {
 			switch content := part.(type) {
 			case ReasoningContent:
-				if content.Thinking == "" && content.Signature == "" && content.RedactedData == "" && content.ThoughtSignature == "" {
+				// OpenRouter replays encrypted Responses data; direct Responses skips reasoning parts.
+				if content.Thinking == "" && content.Signature == "" && content.RedactedData == "" && content.ThoughtSignature == "" && (content.ResponsesData == nil || content.ResponsesData.EncryptedContent == nil || *content.ResponsesData.EncryptedContent == "") {
 					continue
 				}
 				reasoningPart := fantasy.ReasoningPart{Text: content.Thinking, ProviderOptions: fantasy.ProviderOptions{}}
