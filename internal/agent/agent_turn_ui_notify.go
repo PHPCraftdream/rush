@@ -23,6 +23,9 @@ type turnUINotifier struct {
 	assistant   **message.Message
 
 	latestMsgCh chan message.Message
+	// pubMu covers "take the pending snapshot and publish it", so drainPending
+	// can wait out a snapshot the ticker already took but has not published.
+	pubMu sync.Mutex
 }
 
 func newTurnUINotifier(a *sessionAgent, genCtx context.Context, sessionLock *sync.Mutex, assistant **message.Message) *turnUINotifier {
@@ -47,21 +50,26 @@ func (n *turnUINotifier) start() {
 			select {
 			case <-n.genCtx.Done():
 				// Flush any final pending snapshot before exiting.
-				select {
-				case msg := <-n.latestMsgCh:
-					n.a.messages.Notify(msg)
-				default:
-				}
+				n.publishPending()
 				return
 			case <-ticker.C:
-				select {
-				case msg := <-n.latestMsgCh:
-					n.a.messages.Notify(msg)
-				default:
-				}
+				n.publishPending()
 			}
 		}
 	}()
+}
+
+// publishPending publishes the pending snapshot, if any. Taking it and
+// publishing it is one step under pubMu, so drainPending can wait out a
+// snapshot already taken but not yet published.
+func (n *turnUINotifier) publishPending() {
+	n.pubMu.Lock()
+	defer n.pubMu.Unlock()
+	select {
+	case msg := <-n.latestMsgCh:
+		n.a.messages.Notify(msg)
+	default:
+	}
 }
 
 // notify enqueues the latest assistant snapshot for the ticker goroutine.
@@ -94,8 +102,11 @@ func (n *turnUINotifier) notify() error {
 // drainPending discards any snapshot still queued for the ticker goroutine.
 // runTurn calls this right before persisting the assistant message's final
 // state, so the ticker cannot publish a stale snapshot racing behind the
-// authoritative write.
+// authoritative write. It also waits for a snapshot the ticker already took
+// and is publishing, so nothing stale lands after it returns.
 func (n *turnUINotifier) drainPending() {
+	n.pubMu.Lock()
+	defer n.pubMu.Unlock()
 	select {
 	case <-n.latestMsgCh:
 	default:
