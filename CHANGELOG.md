@@ -8,6 +8,17 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.0-alpha.18] - 2026-10-29
+
+- Vertex AI providers (`google-vertex`) now get the Gemini thinking options (budget or level, include_thoughts) like the plain Google provider; the reasoning effort chosen for a Vertex model used to be never sent.
+- An assistant reasoning block with empty text but an Anthropic or Gemini signature is no longer dropped when the provider history is rebuilt from the database.
+- An assistant step with several reasoning blocks now keeps each block with its own text, signature and position (Anthropic signatures used to be concatenated into one invalid signature); reasoning is replayed before the text and tool calls, in the order it was stored.
+- Anthropic `redacted_thinking` blocks are kept in the stored message and sent back to Anthropic in their original position; they used to be dropped.
+- OpenAI Responses reasoning metadata (`item_id`, `encrypted_content`, `summary`) is recovered when a stored message is reloaded; it used to come back empty.
+- The resume command printed when a run stops on a question (`exit_reason: "awaiting_answer"`) now carries the stopped run's `--role`; it used to print a command that `rush run` rejected. For an unknown role no command is printed.
+- The shipped delegation skills (`/rush`, `/wrush`, `/wcrush`, `/rush-fallback`) are about half as long, corrected against the code, and state two rules callers kept getting wrong: do not forbid `smart` from delegating, and nested executors starting is not a reason to stop or ask the operator.
+- The Codex renderings of those skills no longer wait for a `rush_done` marker that nothing produces any more: `/rush`, `/wrush` and `/wcrush` tell Codex to block on `write_stdin` until `rush run` exits.
+
 ## [0.2.0-alpha.17] - 2026-10-29
 
 - When Rush's MCP bridge is required, the Claude CLI provider no longer falls back to the CLI's native, unpoliced tools if the bridge cannot start; the call now fails instead.
