@@ -323,6 +323,51 @@ func TestBatchDeliveryEscapeWindowElapsed(t *testing.T) {
 	require.Equal(t, int64(1), done.awaitCalls.Load(), "escape waits for the real Done first")
 }
 
+func TestBatchDeliveryEscapeSyncCancelSubmitsStop(t *testing.T) {
+	t.Parallel()
+	runner := newFakeCancelRunner()
+	stopErr := errors.New("stop failed")
+	runner.stopErr = stopErr
+	done := newFakeDone(fantasy.NewTextResponse("late"))
+	impl, err := newBatchDelivery(batchDeliveryDeps{
+		Owner: "owner-1", Done: done, Elect: &fakeElector{}, Runner: fakeStopOnlyRunner{runner},
+		Timer: func(time.Duration) <-chan time.Time { return make(chan time.Time) },
+	})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inv := deliveryTestInvocation(batchDeliverySync)
+	inv.BackgroundEscape = batchEscapeAuto
+	inv.Delivery.Window = "1s"
+	results := make(chan error, 1)
+	go func() {
+		_, err := impl.DeliverBatch(ctx, "root-esc", inv)
+		results <- err
+	}()
+	<-done.entered
+	cancel()
+	select {
+	case root := <-runner.stopRoot:
+		require.Equal(t, jobbatch.ID("root-esc"), root)
+	case <-time.After(2 * time.Second):
+		t.Fatal("sync cancellation did not submit Stop")
+	}
+	select {
+	case err := <-results:
+		t.Fatalf("sync cancellation returned before Stop completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(runner.release)
+	select {
+	case err := <-results:
+		require.ErrorIs(t, err, context.Canceled)
+		require.ErrorIs(t, err, stopErr, "Stop failure must be joined with caller cancellation")
+	case <-time.After(2 * time.Second):
+		t.Fatal("escape-window delivery did not return after Stop completed")
+	}
+	require.Equal(t, int64(1), runner.stops.Load(), "sync cancellation must submit exactly one Stop")
+}
+
 // Acceptance: window elapse racing completion commits to exactly ONE outcome —
 // either the full envelope with zero started elections, or the started
 // response with exactly one election. Never both.
