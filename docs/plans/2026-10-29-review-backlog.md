@@ -4,34 +4,20 @@ From the r01-r10 architecture review sweep (Review Stop Rule: P2/P3 without a
 reproduced failure go to the backlog, not into the same cycle). Each entry says
 what was checked, why nothing was changed, and what would unblock it.
 
-## Needs a decision
+## Decided after advisor review (an `oh` agent and the rush reviewer role agreed)
 
-### Live-work title for a reused tool-call id
-`internal/server/handlers_livework.go` (`liveWorkTitleKey`, `titleCache.titles`).
-Providers number tool calls per response, so one session can retain two
-assistant messages with the same tool-call id and different commands. The cache
-key carries `input_hash`, but the history lookup matches only session and
-tool-call id, reads oldest-first and fills every matching missing key from the
-first match: both incarnations get the first command's title.
-
-Not fixed because the batch root stores neither the submitting message id nor a
-hash the server can recompute from a message's tool input: the stored hash is
-`batchCommitSpecHash` (sha256 of the marshalled `jobbatch.Spec`,
-`internal/session/batch_commit.go`), a parsed spec, not the raw input. Options:
-(a) store the submitting message id on the batch root (schema change), or
-(b) export the spec parse + hash and let the server recompute the hash per
-candidate tool call. The existing reuse test deletes the old message first, so it
-never covers retention of both.
-
-### Aged unread completion rows are never purged
-`BatchPurgeExpired` removes "whole terminal, debt-free, idle delegations". A
-completion with unconsumed wake debt (`delivery='pending'`, or `wake=1` and
-`reacted=0`) is protected indefinitely, so a crashed CLI that never settled its
-debt leaves rows that accumulate. A rush attempt dropped the debt predicate
-altogether; rejected, because an unread notice of a dormant session must survive.
-Product call: purge debt older than the retention age, possibly only for
-CLI-origin roots (`origin_cli = 1`), whose notices no interactive channel consumes
-(`BatchSettleCLIWakeDebt` is the only settler).
+- **Live-work title for a reused tool-call id**: fixed in #291. The title now comes
+  from the input the call stored in its task node's `task_payload`; no schema change.
+  `announce_message_id` was rejected as the key (it is the id of a server-created
+  message, NULL until the ack and for CLI roots), and so was a created_at
+  heuristic (second resolution). Open refinement: for roots without a usable
+  payload input, resolve `policy.message_id` from the payload and fetch exactly
+  that message instead of the first history match.
+- **Aged unread completion rows**: fixed in #292, narrowed to roots with
+  `origin_cli = 1 AND announced = 0` (their debt is inert and only the live CLI
+  settles it). Web and announced roots keep their debt protection. Remaining
+  smaller leak: a CLI root whose delegation child session holds unsettled debt
+  stays protected by the child terms.
 
 ## Not demonstrated (no failing scenario found)
 
