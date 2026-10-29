@@ -10,6 +10,7 @@ type runnerFeed struct {
 	mu          sync.Mutex
 	retention   int
 	records     []Record
+	start       int
 	head, final uint64
 	changed     chan struct{}
 	// Only the loop uses known; it distinguishes creation from changed views.
@@ -90,11 +91,11 @@ func (r *Runner) appendRecords(records []Record, final bool) {
 	for _, record := range records {
 		f.head++
 		record.Cursor = f.head
-		if len(f.records) == f.retention {
-			copy(f.records, f.records[1:])
-			f.records[len(f.records)-1] = record
-		} else {
+		if len(f.records) < f.retention {
 			f.records = append(f.records, record)
+		} else {
+			f.records[f.start] = record
+			f.start = (f.start + 1) % f.retention
 		}
 	}
 	if final {
@@ -120,7 +121,7 @@ func (r *Runner) Events(ctx context.Context, cursor uint64) (EventPage, error) {
 		f.mu.Lock()
 		oldest := f.head + 1
 		if len(f.records) > 0 {
-			oldest = f.records[0].Cursor
+			oldest = f.records[f.start].Cursor
 		}
 		page := EventPage{Next: cursor, Oldest: oldest, Head: f.head, Final: f.final}
 		if cursor < oldest {
@@ -129,9 +130,11 @@ func (r *Runner) Events(ctx context.Context, cursor uint64) (EventPage, error) {
 			return page, r.resultAfterFault(ErrGap)
 		}
 		if cursor <= f.head {
-			for _, rec := range f.records {
-				if rec.Cursor >= cursor {
-					page.Records = append(page.Records, runnerCopyRecord(rec))
+			if cursor >= oldest {
+				start := int(cursor - oldest)
+				for i := start; i < len(f.records); i++ {
+					index := (f.start + i) % len(f.records)
+					page.Records = append(page.Records, runnerCopyRecord(f.records[index]))
 				}
 			}
 			page.Next = page.Records[len(page.Records)-1].Cursor + 1
