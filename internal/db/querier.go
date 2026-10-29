@@ -331,6 +331,7 @@ type Querier interface {
 	// Hash comparison belongs to the caller; mismatches must not start new work.
 	GetLiveBatchRoot(ctx context.Context, arg GetLiveBatchRootParams) (BatchNode, error)
 	GetMessage(ctx context.Context, id string) (Message, error)
+	GetNextFileVersionByPath(ctx context.Context, path string) (interface{}, error)
 	// Get the oldest pending entry for a session (for transactional lease).
 	GetOldestPendingRunQueueEntryForSession(ctx context.Context, sessionID string) (SessionRunQueue, error)
 	// Get a single entry by ID.
@@ -511,7 +512,6 @@ type Querier interface {
 	// matches that, so a linked-worktree process never claims a schedule it has
 	// no session to fire.
 	ListDueWakeSchedules(ctx context.Context, arg ListDueWakeSchedulesParams) ([]WakeSchedule, error)
-	ListFilesByPath(ctx context.Context, path string) ([]File, error)
 	ListFilesBySession(ctx context.Context, sessionID string) ([]File, error)
 	ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error)
 	ListLiveBatchRootsForHost(ctx context.Context, hostID string) ([]BatchNode, error)

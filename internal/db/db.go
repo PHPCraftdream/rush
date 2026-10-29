@@ -288,6 +288,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getMessageStmt, err = db.PrepareContext(ctx, getMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query GetMessage: %w", err)
 	}
+	if q.getNextFileVersionByPathStmt, err = db.PrepareContext(ctx, getNextFileVersionByPath); err != nil {
+		return nil, fmt.Errorf("error preparing query GetNextFileVersionByPath: %w", err)
+	}
 	if q.getOldestPendingRunQueueEntryForSessionStmt, err = db.PrepareContext(ctx, getOldestPendingRunQueueEntryForSession); err != nil {
 		return nil, fmt.Errorf("error preparing query GetOldestPendingRunQueueEntryForSession: %w", err)
 	}
@@ -383,9 +386,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.listDueWakeSchedulesStmt, err = db.PrepareContext(ctx, listDueWakeSchedules); err != nil {
 		return nil, fmt.Errorf("error preparing query ListDueWakeSchedules: %w", err)
-	}
-	if q.listFilesByPathStmt, err = db.PrepareContext(ctx, listFilesByPath); err != nil {
-		return nil, fmt.Errorf("error preparing query ListFilesByPath: %w", err)
 	}
 	if q.listFilesBySessionStmt, err = db.PrepareContext(ctx, listFilesBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListFilesBySession: %w", err)
@@ -1051,6 +1051,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getMessageStmt: %w", cerr)
 		}
 	}
+	if q.getNextFileVersionByPathStmt != nil {
+		if cerr := q.getNextFileVersionByPathStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getNextFileVersionByPathStmt: %w", cerr)
+		}
+	}
 	if q.getOldestPendingRunQueueEntryForSessionStmt != nil {
 		if cerr := q.getOldestPendingRunQueueEntryForSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getOldestPendingRunQueueEntryForSessionStmt: %w", cerr)
@@ -1209,11 +1214,6 @@ func (q *Queries) Close() error {
 	if q.listDueWakeSchedulesStmt != nil {
 		if cerr := q.listDueWakeSchedulesStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listDueWakeSchedulesStmt: %w", cerr)
-		}
-	}
-	if q.listFilesByPathStmt != nil {
-		if cerr := q.listFilesByPathStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing listFilesByPathStmt: %w", cerr)
 		}
 	}
 	if q.listFilesBySessionStmt != nil {
@@ -1708,6 +1708,7 @@ type Queries struct {
 	getHourDayHeatmapStmt                                *sql.Stmt
 	getLiveBatchRootStmt                                 *sql.Stmt
 	getMessageStmt                                       *sql.Stmt
+	getNextFileVersionByPathStmt                         *sql.Stmt
 	getOldestPendingRunQueueEntryForSessionStmt          *sql.Stmt
 	getOrphanOutboxEntryStmt                             *sql.Stmt
 	getRunQueueEntryStmt                                 *sql.Stmt
@@ -1740,7 +1741,6 @@ type Queries struct {
 	listBatchNodesStmt                                   *sql.Stmt
 	listCandidateInterruptedAssistantSessionsStmt        *sql.Stmt
 	listDueWakeSchedulesStmt                             *sql.Stmt
-	listFilesByPathStmt                                  *sql.Stmt
 	listFilesBySessionStmt                               *sql.Stmt
 	listLatestSessionFilesStmt                           *sql.Stmt
 	listLiveBatchRootsForHostStmt                        *sql.Stmt
@@ -1908,6 +1908,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getHourDayHeatmapStmt:                                q.getHourDayHeatmapStmt,
 		getLiveBatchRootStmt:                                 q.getLiveBatchRootStmt,
 		getMessageStmt:                                       q.getMessageStmt,
+		getNextFileVersionByPathStmt:                         q.getNextFileVersionByPathStmt,
 		getOldestPendingRunQueueEntryForSessionStmt:          q.getOldestPendingRunQueueEntryForSessionStmt,
 		getOrphanOutboxEntryStmt:                             q.getOrphanOutboxEntryStmt,
 		getRunQueueEntryStmt:                                 q.getRunQueueEntryStmt,
@@ -1940,7 +1941,6 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listBatchNodesStmt:                                   q.listBatchNodesStmt,
 		listCandidateInterruptedAssistantSessionsStmt:        q.listCandidateInterruptedAssistantSessionsStmt,
 		listDueWakeSchedulesStmt:                             q.listDueWakeSchedulesStmt,
-		listFilesByPathStmt:                                  q.listFilesByPathStmt,
 		listFilesBySessionStmt:                               q.listFilesBySessionStmt,
 		listLatestSessionFilesStmt:                           q.listLatestSessionFilesStmt,
 		listLiveBatchRootsForHostStmt:                        q.listLiveBatchRootsForHostStmt,

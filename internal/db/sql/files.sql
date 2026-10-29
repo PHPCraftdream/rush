@@ -16,11 +16,10 @@ FROM files
 WHERE session_id = ?
 ORDER BY version ASC, created_at ASC;
 
--- name: ListFilesByPath :many
-SELECT *
+-- name: GetNextFileVersionByPath :one
+SELECT COALESCE(MAX(version) + 1, 0) AS next_version
 FROM files
-WHERE path = ?
-ORDER BY version DESC, created_at DESC;
+WHERE path = ?;
 
 -- name: CreateFile :one
 INSERT INTO files (

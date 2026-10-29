@@ -372,10 +372,13 @@ func (m *Message) AppendReasoningContent(delta string) {
 	for i, part := range m.Parts {
 		if c, ok := part.(ReasoningContent); ok {
 			m.Parts[i] = ReasoningContent{
-				Thinking:   c.Thinking + delta,
-				Signature:  c.Signature,
-				StartedAt:  c.StartedAt,
-				FinishedAt: c.FinishedAt,
+				Thinking:         c.Thinking + delta,
+				Signature:        c.Signature,
+				ThoughtSignature: c.ThoughtSignature,
+				ToolID:           c.ToolID,
+				ResponsesData:    c.ResponsesData,
+				StartedAt:        c.StartedAt,
+				FinishedAt:       c.FinishedAt,
 			}
 			found = true
 		}
@@ -396,6 +399,7 @@ func (m *Message) AppendThoughtSignature(signature string, toolCallID string) {
 				ThoughtSignature: c.ThoughtSignature + signature,
 				ToolID:           toolCallID,
 				Signature:        c.Signature,
+				ResponsesData:    c.ResponsesData,
 				StartedAt:        c.StartedAt,
 				FinishedAt:       c.FinishedAt,
 			}
@@ -409,10 +413,13 @@ func (m *Message) AppendReasoningSignature(signature string) {
 	for i, part := range m.Parts {
 		if c, ok := part.(ReasoningContent); ok {
 			m.Parts[i] = ReasoningContent{
-				Thinking:   c.Thinking,
-				Signature:  c.Signature + signature,
-				StartedAt:  c.StartedAt,
-				FinishedAt: c.FinishedAt,
+				Thinking:         c.Thinking,
+				Signature:        c.Signature + signature,
+				ThoughtSignature: c.ThoughtSignature,
+				ToolID:           c.ToolID,
+				ResponsesData:    c.ResponsesData,
+				StartedAt:        c.StartedAt,
+				FinishedAt:       c.FinishedAt,
 			}
 			return
 		}
@@ -424,10 +431,13 @@ func (m *Message) SetReasoningResponsesData(data *openai.ResponsesReasoningMetad
 	for i, part := range m.Parts {
 		if c, ok := part.(ReasoningContent); ok {
 			m.Parts[i] = ReasoningContent{
-				Thinking:      c.Thinking,
-				ResponsesData: data,
-				StartedAt:     c.StartedAt,
-				FinishedAt:    c.FinishedAt,
+				Thinking:         c.Thinking,
+				ResponsesData:    data,
+				Signature:        c.Signature,
+				ThoughtSignature: c.ThoughtSignature,
+				ToolID:           c.ToolID,
+				StartedAt:        c.StartedAt,
+				FinishedAt:       c.FinishedAt,
 			}
 			return
 		}
@@ -439,10 +449,13 @@ func (m *Message) FinishThinking() {
 		if c, ok := part.(ReasoningContent); ok {
 			if c.FinishedAt == 0 {
 				m.Parts[i] = ReasoningContent{
-					Thinking:   c.Thinking,
-					Signature:  c.Signature,
-					StartedAt:  c.StartedAt,
-					FinishedAt: time.Now().Unix(),
+					Thinking:         c.Thinking,
+					Signature:        c.Signature,
+					ThoughtSignature: c.ThoughtSignature,
+					ToolID:           c.ToolID,
+					ResponsesData:    c.ResponsesData,
+					StartedAt:        c.StartedAt,
+					FinishedAt:       time.Now().Unix(),
 				}
 			}
 			return

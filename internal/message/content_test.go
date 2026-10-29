@@ -7,8 +7,42 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"charm.land/fantasy/providers/anthropic"
+	"charm.land/fantasy/providers/google"
+	"charm.land/fantasy/providers/openai"
 	"github.com/stretchr/testify/require"
 )
+
+func TestReasoningMutatorsPreserveReplayMetadata(t *testing.T) {
+	responsesData := &openai.ResponsesReasoningMetadata{}
+	msg := &Message{Role: Assistant}
+	msg.AppendReasoningContent("thinking")
+	msg.AppendThoughtSignature("thought-signature", "tool-id")
+	msg.AppendReasoningSignature("signature")
+	msg.SetReasoningResponsesData(responsesData)
+	msg.AppendReasoningContent(" more")
+	msg.AppendReasoningSignature("+signature")
+	msg.FinishThinking()
+
+	reasoning := msg.ReasoningContent()
+	require.Equal(t, "thinking more", reasoning.Thinking)
+	require.Equal(t, "signature+signature", reasoning.Signature)
+	require.Equal(t, "thought-signature", reasoning.ThoughtSignature)
+	require.Equal(t, "tool-id", reasoning.ToolID)
+	require.Same(t, responsesData, reasoning.ResponsesData)
+
+	messages := msg.ToAIMessage()
+	require.Len(t, messages, 1)
+	require.Len(t, messages[0].Content, 1)
+	part, ok := messages[0].Content[0].(fantasy.ReasoningPart)
+	require.True(t, ok)
+	require.Equal(t, "thinking more", part.Text)
+	require.Equal(t, "signature+signature", part.ProviderOptions[anthropic.Name].(*anthropic.ReasoningOptionMetadata).Signature)
+	require.Equal(t, responsesData, part.ProviderOptions[openai.Name])
+	googleData := part.ProviderOptions[google.Name].(*google.ReasoningMetadata)
+	require.Equal(t, "thought-signature", googleData.Signature)
+	require.Equal(t, "tool-id", googleData.ToolID)
+}
 
 func makeTestAttachments(n int, contentSize int) []Attachment {
 	attachments := make([]Attachment, n)
