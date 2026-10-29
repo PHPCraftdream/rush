@@ -650,7 +650,7 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 			parts = append(parts, fantasy.TextPart{Text: text})
 		}
 		reasoning := m.ReasoningContent()
-		if reasoning.Thinking != "" {
+		if reasoning.Thinking != "" || reasoning.Signature != "" || reasoning.ThoughtSignature != "" {
 			reasoningPart := fantasy.ReasoningPart{Text: reasoning.Thinking, ProviderOptions: fantasy.ProviderOptions{}}
 			if reasoning.Signature != "" {
 				reasoningPart.ProviderOptions[anthropic.Name] = &anthropic.ReasoningOptionMetadata{
