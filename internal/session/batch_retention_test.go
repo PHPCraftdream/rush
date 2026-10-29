@@ -10,6 +10,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// A purged root takes its runner checkpoint with it; checkpoints are rootless
+// (no cascade), so without the explicit delete they outlive every batch.
+func TestBatchRetentionPurgesRunnerCheckpointAtomically(t *testing.T) {
+	a, _, conn, _, ctx := r9Stores(t)
+	snap := batchStoreTestReserve(t, a, ctx)
+	_, err := conn.ExecContext(ctx, `UPDATE batch_nodes SET state='completed',updated_at=1 WHERE root_id=?`, snap.Root.RootID)
+	require.NoError(t, err)
+	root, err := a.Read(ctx, "owner", snap.Root.RootID)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `INSERT INTO batch_runner_checkpoints(host_id,runner_id,sequence,event_type,final,created_at,updated_at) VALUES(?,?,1,'finished',1,1,1)`, root.Root.HostID, root.Root.RunnerID)
+	require.NoError(t, err)
+	purged, err := a.BatchPurgeExpired(ctx, 50)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, purged)
+	var remaining int
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT count(*) FROM batch_runner_checkpoints WHERE host_id=? AND runner_id=?`, root.Root.HostID, root.Root.RunnerID).Scan(&remaining))
+	require.Zero(t, remaining)
+}
+
 func TestR9RetentionWholeRootsDebtLiveDelegation(t *testing.T) {
 	for _, scenario := range []string{"idle", "pending", "starting", "running", "cancelling", "delivery", "debt", "child-live", "child-debt", "child-notice", "recent"} {
 		t.Run(scenario, func(t *testing.T) {

@@ -213,6 +213,9 @@ type Querier interface {
 	// and sidesteps the repeated-placeholder rewrite bug (confirmed against
 	// sqlc v1.30.0, see the async_jobs.sql comment).
 	DeleteAsyncHostIfNoNodes(ctx context.Context, id string) (int64, error)
+	// Checkpoints are rootless; remove only once purge leaves no nodes for this
+	// host/runner, within the caller's purge transaction.
+	DeleteBatchRunnerCheckpointIfIdle(ctx context.Context, arg DeleteBatchRunnerCheckpointIfIdleParams) error
 	// Same-incarnation parent/root FKs cascade descendants and controls.
 	DeleteBatchSubtree(ctx context.Context, arg DeleteBatchSubtreeParams) (int64, error)
 	DeleteFile(ctx context.Context, id string) error

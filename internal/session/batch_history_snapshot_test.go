@@ -5,12 +5,50 @@
 package session
 
 import (
+	"context"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
 )
+
+type batchSnapshotCountingSource struct {
+	BatchLiveSource
+	levelCalls int
+	afterRead  func()
+}
+
+func (s *batchSnapshotCountingSource) BatchLevelNodes(ctx context.Context, p db.BatchLevelNodesParams) ([]db.BatchNode, error) {
+	s.levelCalls++
+	rows, err := s.BatchLiveSource.BatchLevelNodes(ctx, p)
+	if err == nil && s.afterRead != nil {
+		s.afterRead()
+	}
+	return rows, err
+}
+
+// Revert-check: a second read after a commit would mix pre-commit counts with
+// post-commit node delivery. The hook commits after the first result is read.
+func TestBatchHistorySnapshotUsesOneLevelRead(t *testing.T) {
+	t.Parallel()
+	s, conn, ctx := batchStoreTestDB(t)
+	snap := batchStoreTestReserve(t, s, ctx)
+	source := &batchSnapshotCountingSource{BatchLiveSource: db.New(conn)}
+	source.afterRead = func() {
+		_, err := conn.ExecContext(ctx, `UPDATE batch_nodes SET state='completed',notice_selected=1,notice_kind='task',notice_state='completed',notice_cause='',notice_sequence=1,notice_ordinal=0,delivery='done',wake=0,reacted=1 WHERE root_id=?`, snap.Root.RootID)
+		require.NoError(t, err)
+	}
+	r := batchReadTestReader(t, conn)
+	r.Source = source
+	got, err := s.BatchHistorySnapshot(ctx, r, "owner", snap.Root.RootID)
+	require.NoError(t, err)
+	require.True(t, got.Complete)
+	require.Len(t, got.Nodes, 3)
+	require.Equal(t, 2, got.Counts.Pending, "snapshot must reflect the first atomic result")
+	require.Equal(t, "none", got.Nodes[1].Delivery)
+	require.Equal(t, 1, source.levelCalls, "all snapshot fields must derive from one source read")
+}
 
 // Revert-check (mutation "snapshot host verdict not injectable / probe
 // bypassed"): hardcoding the verdict, probing the filesystem directly or
