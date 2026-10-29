@@ -288,7 +288,10 @@ WHERE r.node_id = r.root_id AND r.updated_at < ?1
   AND NOT EXISTS (SELECT 1 FROM batch_control_requests c WHERE c.root_id = r.root_id AND c.status = 'pending')
   AND NOT EXISTS (SELECT 1 FROM batch_nodes n WHERE n.root_id = r.root_id
     AND (n.updated_at >= ?1 OR n.state IN ('pending', 'starting', 'running', 'cancelling')
-      OR (n.notice_selected = 1 AND (n.delivery = 'pending'
+      -- Debt of an unannounced CLI root is inert (every reader requires
+      -- announced = 1; only the live CLI settles it), so once the root is old
+      -- enough it must not keep the row alive.
+      OR (NOT (r.origin_cli = 1 AND r.announced = 0) AND n.notice_selected = 1 AND (n.delivery = 'pending'
         OR (n.delivery != 'void' AND n.wake = 1 AND n.reacted = 0)))))
   AND NOT EXISTS (SELECT 1 FROM batch_nodes delegation
     JOIN batch_nodes child ON child.owner_session_id = delegation.child_session_id

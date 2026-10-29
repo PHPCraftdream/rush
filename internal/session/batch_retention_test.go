@@ -30,7 +30,7 @@ func TestBatchRetentionPurgesRunnerCheckpointAtomically(t *testing.T) {
 }
 
 func TestR9RetentionWholeRootsDebtLiveDelegation(t *testing.T) {
-	for _, scenario := range []string{"idle", "pending", "starting", "running", "cancelling", "delivery", "debt", "child-live", "child-debt", "child-notice", "recent"} {
+	for _, scenario := range []string{"idle", "pending", "starting", "running", "cancelling", "delivery", "debt", "cli-debt", "cli-announced-debt", "child-live", "child-debt", "child-notice", "recent"} {
 		t.Run(scenario, func(t *testing.T) {
 			a, _, conn, _, ctx := r9Stores(t)
 			snap := batchStoreTestReserve(t, a, ctx)
@@ -53,6 +53,17 @@ func TestR9RetentionWholeRootsDebtLiveDelegation(t *testing.T) {
 					delivery, wake = "done", 1
 				}
 				_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET notice_selected=1,notice_kind='task',notice_state='completed',notice_cause='',notice_sequence=1,notice_ordinal=0,delivery=?,wake=?,notice_message_id=? WHERE node_id=?`, delivery, wake, history.ID, snap.Nodes[2].NodeID)
+			case "cli-debt", "cli-announced-debt":
+				// A CLI-origin root: nothing but the live CLI ever settles its
+				// debt, and an unannounced root's debt is invisible to every
+				// reader, so only the unannounced one expires with age.
+				_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET origin_cli=1 WHERE root_id=?`, snap.Root.RootID)
+				require.NoError(t, err)
+				if scenario == "cli-announced-debt" {
+					_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET announced=1,announce_message_id=? WHERE node_id=?`, history.ID, snap.Root.RootID)
+					require.NoError(t, err)
+				}
+				_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET notice_selected=1,notice_kind='task',notice_state='completed',notice_cause='',notice_sequence=1,notice_ordinal=0,delivery='pending',wake=1,notice_message_id=? WHERE node_id=?`, history.ID, snap.Nodes[2].NodeID)
 			case "child-live", "child-debt", "child-notice":
 				require.NoError(t, seedSession(ctx, db.New(conn), "child"))
 				_, err = conn.ExecContext(ctx, "UPDATE batch_nodes SET child_session_id='child' WHERE node_id=?", snap.Nodes[1].NodeID)
@@ -73,7 +84,7 @@ func TestR9RetentionWholeRootsDebtLiveDelegation(t *testing.T) {
 			count, err := a.BatchCountExpired(ctx, 100)
 			require.NoError(t, err)
 			want := int64(0)
-			if scenario == "idle" {
+			if scenario == "idle" || scenario == "cli-debt" {
 				want = 1
 			}
 			require.Equal(t, want, count)
@@ -95,7 +106,10 @@ func TestR9RetentionWholeRootsDebtLiveDelegation(t *testing.T) {
 	}
 }
 
-func TestR9RetentionSettledCLIWakeDebtExpires(t *testing.T) {
+// A CLI root is never announced, so its unconsumed completion is inert (no
+// reader sees it) and only the live CLI settles it. When the CLI dies first, the
+// debt must not keep the row forever: it expires with age like a settled root.
+func TestR9RetentionUnannouncedCLIDebtExpiresWithAge(t *testing.T) {
 	a, _, conn, _, ctx := r9Stores(t)
 	runner, executor, runCtx := commitHookRunner(t, NewBatchCommitHook(a, BatchCommitIdentity{Host: "host", Runner: "runner", Owner: "owner"}))
 	batch := commitHookSubmit(t, runCtx, runner, "cli-retention", jobbatch.OneItem(jobbatch.TaskSpec{Kind: "retention"}), "batch-cli:retention")
@@ -106,20 +120,18 @@ func TestR9RetentionSettledCLIWakeDebtExpires(t *testing.T) {
 	var children int
 	require.NoError(t, conn.QueryRowContext(ctx, `SELECT count(*) FROM batch_nodes WHERE root_id=?`, root).Scan(&children))
 	require.Equal(t, 2, children)
-	var pending int
+	var pending, announced int
 	require.NoError(t, conn.QueryRowContext(ctx, `SELECT count(*) FROM batch_nodes WHERE root_id=? AND notice_selected=1 AND wake=1 AND delivery='pending'`, root).Scan(&pending))
 	require.Equal(t, 1, pending)
-	count, err := a.BatchCountExpired(ctx, 1<<62)
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT announced FROM batch_nodes WHERE node_id=root_id AND root_id=?`, root).Scan(&announced))
+	require.Zero(t, announced, "a CLI root is never announced")
+	count, err := a.BatchCountExpired(ctx, 0)
 	require.NoError(t, err)
-	require.Zero(t, count)
-	purged, err := a.BatchPurgeExpired(ctx, 1<<62)
-	require.NoError(t, err)
-	require.Zero(t, purged)
-	require.NoError(t, a.BatchSettleCLIWakeDebt(ctx, "owner", root))
+	require.Zero(t, count, "debt younger than the cutoff is protected by age")
 	count, err = a.BatchCountExpired(ctx, 1<<62)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, count)
-	purged, err = a.BatchPurgeExpired(ctx, 1<<62)
+	purged, err := a.BatchPurgeExpired(ctx, 1<<62)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, purged, "purge counts delegations, like BatchCountExpired")
 }
