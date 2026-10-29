@@ -62,6 +62,7 @@ type ContentPart interface {
 type ReasoningContent struct {
 	Thinking         string                             `json:"thinking"`
 	Signature        string                             `json:"signature"`
+	RedactedData     string                             `json:"redacted_data,omitempty"`
 	ThoughtSignature string                             `json:"thought_signature"` // Used for google
 	ToolID           string                             `json:"tool_id"`           // Used for openrouter google models
 	ResponsesData    *openai.ResponsesReasoningMetadata `json:"responses_data"`
@@ -428,6 +429,16 @@ func (m *Message) AppendThoughtSignature(signature string, toolCallID string) {
 	m.Parts = append(m.Parts, ReasoningContent{ThoughtSignature: signature, ToolID: toolCallID})
 }
 
+func (m *Message) SetReasoningRedactedData(data string) {
+	if i := m.reasoningPartIndex(); i >= 0 {
+		reasoning := m.Parts[i].(ReasoningContent)
+		reasoning.RedactedData = data
+		m.Parts[i] = reasoning
+		return
+	}
+	m.Parts = append(m.Parts, ReasoningContent{RedactedData: data})
+}
+
 func (m *Message) AppendReasoningSignature(signature string) {
 	if i := m.reasoningPartIndex(); i >= 0 {
 		reasoning := m.Parts[i].(ReasoningContent)
@@ -653,12 +664,14 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 		for _, part := range m.Parts {
 			switch content := part.(type) {
 			case ReasoningContent:
-				if content.Thinking == "" && content.Signature == "" && content.ThoughtSignature == "" {
+				if content.Thinking == "" && content.Signature == "" && content.RedactedData == "" && content.ThoughtSignature == "" {
 					continue
 				}
 				reasoningPart := fantasy.ReasoningPart{Text: content.Thinking, ProviderOptions: fantasy.ProviderOptions{}}
 				if content.Signature != "" {
 					reasoningPart.ProviderOptions[anthropic.Name] = &anthropic.ReasoningOptionMetadata{Signature: content.Signature}
+				} else if content.RedactedData != "" {
+					reasoningPart.ProviderOptions[anthropic.Name] = &anthropic.ReasoningOptionMetadata{RedactedData: content.RedactedData}
 				}
 				if content.ResponsesData != nil {
 					reasoningPart.ProviderOptions[openai.Name] = content.ResponsesData
