@@ -48,6 +48,34 @@ func TestBuild_AwaitTasksRule_TracksWorkerAvailable(t *testing.T) {
 		"without a worker the whole orchestrator block (the rule with it) is absent")
 }
 
+func TestBuild_OrchestratorDelegationContract(t *testing.T) {
+	store := testConfigStore(t)
+	cfg := store.Config()
+	cfg.Models[config.SelectedModelTypeWorker] = registerProvider(cfg, "worker-provider", "worker-model", 200_000)
+	p := newTestCoderPrompt(t, store.WorkingDir())
+
+	got, err := p.Build(context.Background(), "smart-provider", "smart-model", store, store.Config(), true)
+	require.NoError(t, err)
+	without, err := p.Build(context.Background(), "smart-provider", "smart-model", store, store.Config(), false)
+	require.NoError(t, err)
+
+	for _, instruction := range []string{
+		"Delegation contract:",
+		"A worker ending without a final report, or without concrete diff/evidence for an edit task, has FAILED.",
+		"Inspect worktree `git status` and `git diff`, then re-delegate once with a narrower, fully specified task.",
+		"Never say done or end without a deliverable on an edit task.",
+		"Answer a worker's `ask_question` immediately and conservatively by resuming it with `resume_session_id`; never wait for a human.",
+		"While a worker runs, wait only for its completion via `await_tasks`, never a wake schedule or unrelated timer.",
+		"Never repeat an already-run verification command without changed input; independent verification of worker claims remains required.",
+		"The final reply must be the work report: files changed, commands and real output, and what could not be done, never a background-notice acknowledgement.",
+		"A worker's command claim is unverified until visible in evidence such as diff or command output; report which claims were verified and which could not be verified.",
+	} {
+		require.Contains(t, got, instruction)
+		require.NotContains(t, without, instruction,
+			"each delegation-contract line must be absent when WorkerAvailable is false")
+	}
+}
+
 // TestBuild_WorkerWaitRule_NamesNativePollTool pins the unconditional
 // batch-world coder.md.tpl wait rule: the orchestrator wait rule names the
 // native poll tool (batch_output) and the legacy job_output name never
