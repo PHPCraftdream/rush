@@ -11,7 +11,7 @@ slower than a CI runner; the proportions are what matter.
 | Third-party dependencies (build) | 196 s |
 | Standard library (build) | 37 s |
 | This repository (build) | 104 s |
-| Linking 61 test binaries | 65 s (about 2 s each, up to 3.6 s) |
+| Linking 61 test binaries | 65 s (about 1.1 s each on average, up to 3.6 s) |
 | `go vet` run by `go test` | 52 s |
 | Wall clock | 463 s |
 
@@ -34,7 +34,8 @@ Total 2,470 s (41 min). Four packages are 78% of it:
 
 Within them the time is concentrated in a few clusters of tests with nearly identical durations:
 
-- `internal/config`: `TestOAuthRound7_CartesianMatrix` alone is about 160-200 s (55% of the package).
+- `internal/config`: `TestOAuthRound7_CartesianMatrix` alone is about 160-200 s
+  (roughly 40-50% of the package's 395 s).
   It is a 2112-case model check and runs under `-short`.
 - `internal/app`: about ten `TestExecuteRunContinuation*` tests at about 25.6 s each, the
   `TestCLIQuota*` tests at 15-46 s, `TestRunTimeout*` at about 26-30 s.
