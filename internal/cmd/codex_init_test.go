@@ -148,6 +148,7 @@ func TestCodexInit_CreatesWrushSkillFromCanonicalTemplate(t *testing.T) {
 	assert.Contains(t, got, "retain it and block on `write_stdin` until the run finishes")
 	assert.NotContains(t, got, "--codex-thread-id <thread-id>")
 	assert.Contains(t, got, "Commit the transferred changes in the primary branch")
+	assert.Contains(t, got, "After the merge is committed, remove the worktree")
 }
 
 func TestCodexInit_CreatesWcrushSkillFromCanonicalTemplate(t *testing.T) {
