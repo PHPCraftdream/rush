@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.0-alpha.17] - 2026-10-29
+
 - When Rush's MCP bridge is required, the Claude CLI provider no longer falls back to the CLI's native, unpoliced tools if the bridge cannot start; the call now fails instead.
 - When Rush's MCP integration is required, the Qwen, Gemini and Codex CLI providers no longer fall back to the CLI's native, unpoliced tools if the MCP server cannot be set up; the call now fails with the setup error instead.
 - A provider's HTML error page (for example a Cloudflare 403 in front of the Codex endpoint) no longer floods the run error, the `--json` error field and stderr: it is shown as `HTTP <status> <title>: <short text>`.
