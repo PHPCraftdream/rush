@@ -185,7 +185,151 @@ func TestEmptyReasoningPreservedOnAnthropicWire(t *testing.T) {
 	require.Equal(t, "user", apiMessages[1].(map[string]any)["role"])
 }
 
-func TestEmptyReasoningPreservedOnGoogleGenerateWire(t *testing.T) {
+func TestMultipleSignedReasoningBlocksPreservedOnAnthropicWire(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-3-5-sonnet-20241022\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"ok\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer server.Close()
+
+	m := &Message{Role: Assistant}
+	m.StartReasoningContent("")
+	m.AppendReasoningContent("")
+	m.AppendReasoningSignature("signature-")
+	m.AppendReasoningSignature("one")
+	m.FinishThinking()
+	m.StartReasoningContent("")
+	m.AppendReasoningContent("")
+	m.AppendReasoningSignature("signature-")
+	m.AppendReasoningSignature("two")
+	m.FinishThinking()
+	m.AppendContent("visible ")
+	m.AppendContent("text")
+	m.AddToolCall(ToolCall{ID: "lookup-call", Name: "lookup", Input: `{"q":"`})
+	m.AppendToolCallInput("lookup-call", `x"}`)
+	m.FinishToolCall("lookup-call")
+	parts, err := marshalParts(m.Parts)
+	require.NoError(t, err)
+	m.Parts, err = unmarshalParts(parts)
+	require.NoError(t, err)
+	prompt := m.ToAIMessage()
+	prompt = append(prompt, (&Message{Role: User, Parts: []ContentPart{TextContent{Text: "Continue."}}}).ToAIMessage()...)
+
+	provider, err := anthropic.New(anthropic.WithBaseURL(server.URL), anthropic.WithAPIKey("test"))
+	require.NoError(t, err)
+	model, err := provider.LanguageModel(t.Context(), "claude-3-5-sonnet-20241022")
+	require.NoError(t, err)
+	stream, err := model.Stream(t.Context(), fantasy.Call{Prompt: prompt})
+	require.NoError(t, err)
+	for range stream {
+	}
+
+	apiMessages := body["messages"].([]any)
+	content := apiMessages[0].(map[string]any)["content"].([]any)
+	var types []string
+	for _, item := range content {
+		part := item.(map[string]any)
+		types = append(types, part["type"].(string))
+	}
+	require.Equal(t, []string{"thinking", "thinking", "text", "tool_use"}, types)
+	first := content[0].(map[string]any)
+	require.Equal(t, "", first["thinking"])
+	require.Equal(t, "signature-one", first["signature"])
+	second := content[1].(map[string]any)
+	require.Equal(t, "", second["thinking"])
+	require.Equal(t, "signature-two", second["signature"])
+	text := content[2].(map[string]any)
+	require.Equal(t, "visible text", text["text"])
+	tool := content[3].(map[string]any)
+	require.Equal(t, "lookup-call", tool["id"])
+	require.Equal(t, "lookup", tool["name"])
+	require.Equal(t, map[string]any{"q": "x"}, tool["input"])
+}
+
+func TestMultipleGeminiThoughtSignaturesPreservedOnWire(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`))
+	}))
+	defer server.Close()
+
+	m := &Message{Role: Assistant}
+	m.StartReasoningContent("")
+	m.AppendReasoningContent("")
+	m.AppendThoughtSignature("google-signature-", "call-one")
+	m.AppendThoughtSignature("one", "call-one")
+	m.FinishThinking()
+	m.AddToolCall(ToolCall{ID: "call-one", Name: "lookup_one", Input: `{"q":"`})
+	m.AppendToolCallInput("call-one", `one"}`)
+	m.FinishToolCall("call-one")
+	m.AppendContent("visible ")
+	m.AppendContent("text")
+	m.StartReasoningContent("")
+	m.AppendReasoningContent("")
+	m.AppendThoughtSignature("google-signature-", "call-two")
+	m.AppendThoughtSignature("two", "call-two")
+	m.FinishThinking()
+	m.AddToolCall(ToolCall{ID: "call-two", Name: "lookup_two", Input: `{"q":"`})
+	m.AppendToolCallInput("call-two", `two"}`)
+	m.FinishToolCall("call-two")
+	parts, err := marshalParts(m.Parts)
+	require.NoError(t, err)
+	m.Parts, err = unmarshalParts(parts)
+	require.NoError(t, err)
+	prompt := m.ToAIMessage()
+	prompt = append(prompt, (&Message{Role: User, Parts: []ContentPart{TextContent{Text: "Continue."}}}).ToAIMessage()...)
+
+	provider, err := google.New(google.WithBaseURL(server.URL), google.WithGeminiAPIKey("test"))
+	require.NoError(t, err)
+	model, err := provider.LanguageModel(t.Context(), "gemini-2.5-flash")
+	require.NoError(t, err)
+	_, err = model.Generate(t.Context(), fantasy.Call{Prompt: prompt})
+	require.NoError(t, err)
+
+	contents := body["contents"].([]any)
+	assistantParts := contents[0].(map[string]any)["parts"].([]any)
+	// fantasy's Google mapper emits only text and function-call parts here; it
+	// attaches each thought signature to the following tool call rather than
+	// serializing the reasoning text as a Gemini thought part.
+	require.Len(t, assistantParts, 3)
+	var textFound bool
+	calls := map[string]string{}
+	callIDs := map[string]string{}
+	for _, item := range assistantParts {
+		part := item.(map[string]any)
+		if text, ok := part["text"].(string); ok {
+			textFound = true
+			require.Equal(t, "visible text", text)
+		}
+		call, ok := part["functionCall"].(map[string]any)
+		if !ok {
+			continue
+		}
+		encoded, ok := part["thoughtSignature"].(string)
+		require.True(t, ok)
+		signature, err := base64.StdEncoding.DecodeString(encoded)
+		require.NoError(t, err)
+		name := call["name"].(string)
+		calls[name] = string(signature)
+		callIDs[name] = call["id"].(string)
+		q := map[string]string{"lookup_one": "one", "lookup_two": "two"}[name]
+		require.Equal(t, map[string]any{"q": q}, call["args"])
+	}
+	require.True(t, textFound)
+	require.Equal(t, map[string]string{
+		"lookup_one": "google-signature-one",
+		"lookup_two": "google-signature-two",
+	}, calls)
+	require.Equal(t, map[string]string{"lookup_one": "call-one", "lookup_two": "call-two"}, callIDs)
+}
+
+func TestEmptyReasoningSignaturePreservedOnGoogleGenerateWire(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
@@ -219,6 +363,7 @@ func TestEmptyReasoningPreservedOnGoogleGenerateWire(t *testing.T) {
 	require.Len(t, contents, 2)
 	require.Equal(t, "model", contents[0].(map[string]any)["role"])
 	assistantParts := contents[0].(map[string]any)["parts"].([]any)
+	require.Len(t, assistantParts, 1)
 	var functionCall map[string]any
 	for _, item := range assistantParts {
 		part := item.(map[string]any)
@@ -232,8 +377,8 @@ func TestEmptyReasoningPreservedOnGoogleGenerateWire(t *testing.T) {
 	require.True(t, ok)
 	signature, err := base64.StdEncoding.DecodeString(encodedSignature)
 	require.NoError(t, err)
-	// The signature must survive even without thought text: it carries opaque context the model needs to continue the tool call.
-	// Google carries the thought signature on the functionCall part as bytes encoded in JSON.
+	// fantasy keeps the signature on the function call but does not emit an
+	// empty reasoning-text part; this verifies signature replay, not thought text.
 	require.Equal(t, "google-empty-thought-signature", string(signature))
 	userParts := contents[1].(map[string]any)["parts"].([]any)
 	require.Equal(t, "Continue.", userParts[0].(map[string]any)["text"])

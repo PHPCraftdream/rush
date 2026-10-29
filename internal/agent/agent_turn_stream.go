@@ -362,7 +362,7 @@ func (ts *turnStream) onReasoningStart(id string, reasoning fantasy.ReasoningCon
 	// before that text lands. Its own Update below then persists the
 	// already-truncated state; no extra write is needed.
 	ts.truncateStaleRetryContentLocked()
-	ts.currentAssistant.AppendReasoningContent(reasoning.Text)
+	ts.currentAssistant.StartReasoningContent(reasoning.Text)
 	snap := ts.currentAssistant.Clone()
 	ts.mu.Unlock()
 	return ts.a.messages.Update(ts.genCtx, snap)
