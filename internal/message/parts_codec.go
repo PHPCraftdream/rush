@@ -81,9 +81,27 @@ func unmarshalParts(data []byte) ([]ContentPart, error) {
 
 		switch wrapper.Type {
 		case reasoningType:
-			part := ReasoningContent{}
-			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
+			var raw struct {
+				Thinking         string          `json:"thinking"`
+				Signature        string          `json:"signature"`
+				ThoughtSignature string          `json:"thought_signature"`
+				ToolID           string          `json:"tool_id"`
+				ResponsesData    json.RawMessage `json:"responses_data"`
+				StartedAt        int64           `json:"started_at"`
+				FinishedAt       int64           `json:"finished_at"`
+			}
+			if err := json.Unmarshal(wrapper.Data, &raw); err != nil {
 				return nil, err
+			}
+			responsesData, err := decodeResponsesReasoningMetadata(raw.ResponsesData)
+			if err != nil {
+				return nil, err
+			}
+			part := ReasoningContent{
+				Thinking: raw.Thinking, Signature: raw.Signature,
+				ThoughtSignature: raw.ThoughtSignature, ToolID: raw.ToolID,
+				ResponsesData: responsesData, StartedAt: raw.StartedAt,
+				FinishedAt: raw.FinishedAt,
 			}
 			parts = append(parts, part)
 		case textType:
