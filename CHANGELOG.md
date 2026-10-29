@@ -8,6 +8,23 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- The Claude CLI provider no longer falls back to the CLI's native, unpoliced tools when the rush MCP bridge cannot start; the call now fails instead.
+- The Qwen, Gemini and Codex CLI providers no longer fall back to the CLI's native, unpoliced tools when the rush MCP server cannot be set up; the call now fails with the setup error instead.
+- A provider's HTML error page (for example a Cloudflare 403 in front of the Codex endpoint) no longer floods the run error, the `--json` error field and stderr: it is shown as `HTTP <status> <title>: <short text>`.
+- OAuth refresh: a newer Codex credential found on disk that the session has not seen yet is adopted again (and exchanged when expired); the stale-client rejection added with the credential-publication fix applied to it too broadly.
+- Web UI: editing an assistant message that finishes while the edit is being applied no longer overwrites the finished reply with the older snapshot; the edit is rejected and the message can be reloaded and edited again.
+- `rush batch run --session <id>` now refuses a session that has a persistent custom-provider requirement, like `rush run` does; it used to run the batch on the default provider.
+- Web UI: changing the reasoning effort of one model slot no longer rewrites the other slot of its pair, so two quick changes (for example smart and fast) can no longer undo each other.
+- Web UI server: a web-triggered shutdown now stops the WebSocket hub and closes its connections, a closing connection can no longer block after the hub has stopped, the login request body is limited to 4 KiB, and the log viewer reads only the tail of the log file.
+- Long-running steps keep saving their partial reply: every periodic checkpoint write now gets its own 30 s deadline instead of sharing one that started with the step.
+- Provider replay of reasoning: editing a reasoning part (appending text or a signature, finishing it) no longer drops its thought signature, tool id or OpenAI responses data.
+- Purging an expired batch now also removes its runner checkpoint, and the batch history snapshot is built from a single database read so counts and delivery state can no longer disagree.
+- Cancelling a synchronous batch caller while its result was being delivered now stops the batch call instead of leaving it running unattended, and stopping the wake scheduler waits for wakes already dispatched.
+- `rush sessions locks` looks up sub-agent activity for all locks in one query instead of one per lock, so listings with many lock files are faster.
+- In orchestrator mode the model is now told to treat a worker that ends without a report or evidence as failed, to answer a worker's question at once, to wait only on `await_tasks`, and to end with the work report; worker claims about commands stay claims until visible in evidence.
+- An unfinished streaming snapshot can no longer be published after the final state of an assistant message and overwrite it in the browser.
+- When a session reuses a tool-call id for different commands, each live-work row now shows its own command instead of the first one.
+- Batch results left by a CLI that exited before reading them are now removed by the normal retention purge once they are older than the retention age.
 - Concurrent Qwen/Gemini sessions in one project no longer overwrite each other's Rush MCP registration (endpoint and token) in the CLI's settings file: each session registers under its own name and cleans up only that.
 - On Windows, a session lock held by a live process that rush cannot open (access denied) is no longer treated as orphaned; the liveness probe used to count every open failure as a dead process.
 - Commands that take no positional arguments now reject them instead of ignoring them: `rush sessions cost <id>` used to print the totals of every session as if they were that session's.
