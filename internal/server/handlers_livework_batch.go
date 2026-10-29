@@ -12,6 +12,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"sort"
 
@@ -36,6 +37,29 @@ type batchRootMeta struct {
 	taskKind  string
 	child     string
 	askNodeID string
+	// taskChildren counts the task nodes under the root and taskPayload is
+	// the first one's task_payload: a direct tool call stores its own input
+	// there, which names the title without any history lookup.
+	taskChildren int
+	taskPayload  string
+}
+
+// payloadTitle is the title of a root started by ONE direct tool call, read
+// from the input the call stored on its task node ("" when the root has not
+// exactly one task node, no payload, or nothing readable in the input). It
+// identifies the incarnation exactly, where the history lookup can only match
+// a reused tool_call_id to the first message that carries it.
+func (m batchRootMeta) payloadTitle() string {
+	if m.taskChildren != 1 || m.taskPayload == "" {
+		return ""
+	}
+	var p struct {
+		Input json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal([]byte(m.taskPayload), &p); err != nil || len(p.Input) == 0 {
+		return ""
+	}
+	return abbreviateToolInput(string(p.Input))
 }
 
 // buildSessionLiveWorkFromBatch is the ON-path replacement for the flat
@@ -75,15 +99,26 @@ func buildSessionLiveWorkFromBatch(ctx context.Context, a *appPkg.App, cache *ti
 	}
 	snap.Complete = &complete
 
+	// A root started by one direct call carries its own input: only the other
+	// roots (batch_run, rows without a payload) need the history lookup.
 	jobs := make([]liveWorkTitleJob, 0, len(roots))
+	payloadTitles := make(map[liveWorkTitleKey]string, len(roots))
 	for _, m := range roots {
-		jobs = append(jobs, liveWorkTitleJob{
+		job := liveWorkTitleJob{
 			owner:      m.root.OwnerSessionID,
 			toolCallID: m.root.ToolCallID.String,
 			inputHash:  m.root.InputHash.String,
-		})
+		}
+		if t := m.payloadTitle(); t != "" {
+			payloadTitles[liveWorkTitleKey(job)] = t
+			continue
+		}
+		jobs = append(jobs, job)
 	}
 	titles := cache.titles(ctx, a, jobs)
+	for key, t := range payloadTitles {
+		titles[key] = t
+	}
 
 	for _, m := range roots {
 		item := batchRootItem(m, titles, questions)
@@ -110,6 +145,12 @@ func collectBatchRoots(rowsByOwner map[string][]db.BatchNode) []batchRootMeta {
 			for _, c := range rows {
 				if c.NodeID == c.RootID || !c.ParentID.Valid || c.ParentID.String != n.RootID {
 					continue
+				}
+				if c.Kind == "task" {
+					m.taskChildren++
+					if m.taskChildren == 1 {
+						m.taskPayload = c.TaskPayload.String
+					}
 				}
 				if m.taskKind == "" && c.Kind == "task" {
 					m.taskKind = c.TaskKind.String
@@ -219,6 +260,12 @@ func collectBatchHistoryTerminalRoots(ctx context.Context, src batchNodeSource, 
 				for _, c := range nodes {
 					if c.NodeID == c.RootID {
 						continue
+					}
+					if c.Kind == "task" {
+						m.taskChildren++
+						if m.taskChildren == 1 {
+							m.taskPayload = c.TaskPayload.String
+						}
 					}
 					if m.taskKind == "" && c.Kind == "task" {
 						m.taskKind = c.TaskKind.String
