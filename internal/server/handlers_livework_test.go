@@ -456,6 +456,56 @@ func TestLiveWorkTitles_InputChangeInvalidates(t *testing.T) {
 	require.Equal(t, "echo second", snap.Commands[0].Title, "a re-claimed row with different input must not show the stale title")
 }
 
+// TestLiveWorkTitles_ReusedToolCallIDKeepsBothIncarnations: one session retains
+// TWO assistant messages that use the same tool-call id with different
+// commands, and both incarnations have a batch root (the first settled, the
+// second running). Each root's title is the input its own call stored, not the
+// first history match for the id.
+//
+// Revert-check: with the history-only lookup (no payload title) both rows show
+// "echo first", the first message in history.
+func TestLiveWorkTitles_ReusedToolCallIDKeepsBothIncarnations(t *testing.T) {
+	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
+	hub := newHub()
+	go hub.Run(t.Context())
+	client := newClient(hub, nil)
+	client.send = make(chan []byte, 64)
+	hub.register <- client
+	ctx := t.Context()
+
+	sess, err := a.Sessions.Create(ctx, "lw reuse both")
+	require.NoError(t, err)
+	for _, cmd := range []string{"echo first", "echo second"} {
+		_, err = a.Messages.Create(ctx, sess.ID, message.CreateMessageParams{
+			Role: message.Assistant,
+			Parts: []message.ContentPart{
+				message.ToolCall{ID: "tc-both", Name: "bash", Input: `{"command":"` + cmd + `"}`},
+				message.Finish{Reason: message.FinishReasonEndTurn},
+			},
+		})
+		require.NoError(t, err)
+	}
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{
+		owner: sess.ID, toolCallID: "tc-both", taskKind: "bash", state: "running",
+		payloadInput: `{"command":"echo first"}`, inputHash: "hash-first",
+	})
+	projectLiveWorkRoot(t, a, sess.ID, "tc-both", "completed")
+	seedLiveWorkRow(t, a, liveWorkSeedSpec{
+		owner: sess.ID, toolCallID: "tc-both", taskKind: "bash", state: "running",
+		payloadInput: `{"command":"echo second"}`, inputHash: "hash-second",
+	})
+
+	snap := requestSnapshot(t, a, client, sess.ID)
+	require.NotNil(t, snap)
+	titles := map[string]string{}
+	for _, it := range snap.Commands {
+		titles[it.Status] = it.Title
+	}
+	require.Len(t, snap.Commands, 2)
+	require.Equal(t, "echo first", titles["completed"])
+	require.Equal(t, "echo second", titles["running"])
+}
+
 func mustSessionID(t *testing.T, a *app.App, title string) string {
 	t.Helper()
 	sessions, err := a.Sessions.List(t.Context())

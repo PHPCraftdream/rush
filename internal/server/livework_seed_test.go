@@ -27,6 +27,12 @@ type liveWorkSeedSpec struct {
 	taskKind       string // "" = bare command root
 	childSessionID string
 	state          string
+	// payloadInput, when set, is stored as the task node's payload exactly like
+	// a direct tool call stores its input ({"input": <payloadInput>}).
+	payloadInput string
+	// inputHash overrides the default "hash-<toolCallID>" (a re-claimed id with
+	// different input has a different hash).
+	inputHash string
 }
 
 // seedLiveWorkRow seeds one live-work fact as a live batch root:
@@ -41,15 +47,23 @@ func seedLiveWorkRow(t *testing.T, a *appPkg.App, spec liveWorkSeedSpec) {
 	ctx := t.Context()
 	children := []session.BatchReservationNode(nil)
 	if spec.taskKind != "" {
-		children = append(children, session.BatchReservationNode{Values: db.ReserveBatchNodeParams{
+		task := db.ReserveBatchNodeParams{
 			Kind: "task", TaskKind: sql.NullString{String: spec.taskKind, Valid: true},
 			State: spec.state, ControlState: "none",
 			ChildSessionID: sql.NullString{String: spec.childSessionID, Valid: spec.childSessionID != ""},
-		}})
+		}
+		if spec.payloadInput != "" {
+			task.TaskPayload = sql.NullString{String: `{"input":` + spec.payloadInput + `}`, Valid: true}
+		}
+		children = append(children, session.BatchReservationNode{Values: task})
+	}
+	inputHash := spec.inputHash
+	if inputHash == "" {
+		inputHash = "hash-" + spec.toolCallID
 	}
 	_, err := session.NewBatchStore(a.DB()).Reserve(ctx, session.BatchReservation{
 		Owner: spec.owner, Host: "batch-test-host", RunnerID: "lw-seed-runner",
-		ToolCallID: spec.toolCallID, InputHash: "hash-" + spec.toolCallID, Sequence: 1,
+		ToolCallID: spec.toolCallID, InputHash: inputHash, Sequence: 1,
 		Root: session.BatchReservationNode{Values: db.ReserveBatchNodeParams{
 			Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true},
 			State: spec.state, ControlState: "none",
