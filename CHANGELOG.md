@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- `RunWithCredentials`: the automatic follow-up turn after a delegated worker finishes no longer goes to the Client's configured (operator) provider; it is skipped and the completion is delivered with the session's next call.
+
 ## [0.2.0-alpha.19] - 2026-10-30
 
 - Encrypted OpenAI reasoning that arrives without any summary text (OpenRouter and Vercel gateway `openai/*` models) is now sent back with the next request; it used to be dropped from the rebuilt history, so the model lost its hidden reasoning between tool calls.
