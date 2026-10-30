@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.0-alpha.19] - 2026-10-30
+
+- Encrypted OpenAI reasoning that arrives without any summary text (OpenRouter and Vercel gateway `openai/*` models) is now sent back with the next request; it used to be dropped from the rebuilt history, so the model lost its hidden reasoning between tool calls.
+
 ## [0.2.0-alpha.18] - 2026-10-29
 
 - Vertex AI providers (`google-vertex`) now get the Gemini thinking options (budget or level, include_thoughts) like the plain Google provider; the reasoning effort chosen for a Vertex model used to be never sent.
