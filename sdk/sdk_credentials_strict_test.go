@@ -170,6 +170,49 @@ func TestCredentialSetValidateRejectsUnknownProviderType(t *testing.T) {
 	require.ErrorContains(t, err, "unknown type")
 }
 
+func TestCredentialSetValidateRejectsReservedProviderIDs(t *testing.T) {
+	for _, id := range []string{"openai-codex", "hyper", "opencode-go", "opencode-zen", "zai", "minimax", "minimax-cn", "copilot"} {
+		t.Run(id, func(t *testing.T) {
+			cs := offlineCreds(validStrictModels())
+			cs.Credentials[0].Provider = id
+			for role, choice := range cs.Models {
+				choice.Provider = id
+				cs.Models[role] = choice
+			}
+			err := cs.Validate()
+			require.ErrorContains(t, err, "reserved")
+		})
+	}
+}
+
+func TestCredentialSetValidateRequiresLiteralAPIKey(t *testing.T) {
+	t.Run("openai-compat allows keyless URL", func(t *testing.T) {
+		cs := offlineCreds(validStrictModels())
+		cs.Credentials[0].APIKey = ""
+		require.NoError(t, cs.Validate())
+	})
+	for _, providerType := range []sdk.ProviderType{
+		sdk.ProviderTypeOpenAI, sdk.ProviderTypeOpenRouter,
+		sdk.ProviderTypeAnthropic, sdk.ProviderTypeGoogle, sdk.ProviderTypeAzure,
+		sdk.ProviderTypeBedrock, sdk.ProviderTypeVercel,
+	} {
+		t.Run(string(providerType), func(t *testing.T) {
+			cs := offlineCreds(validStrictModels())
+			cs.Credentials[0].Type = providerType
+			cs.Credentials[0].APIKey = ""
+			err := cs.Validate()
+			require.ErrorContains(t, err, "api_key is required")
+		})
+	}
+}
+
+func TestCredentialSetValidateRejectsGoogleVertex(t *testing.T) {
+	cs := offlineCreds(validStrictModels())
+	cs.Credentials[0].Type = sdk.ProviderTypeGoogleVertex
+	err := cs.Validate()
+	require.ErrorContains(t, err, "google-vertex credentials are unsupported")
+}
+
 func TestCredentialSetValidateRequiresSmartRole(t *testing.T) {
 	missingSmart := offlineCreds(map[sdk.Role]sdk.ModelChoice{
 		sdk.RoleFast: {Provider: "tenant-provider", Model: "tenant-model"},

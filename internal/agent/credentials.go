@@ -222,6 +222,9 @@ func (cs *CredentialSet) Validate() error {
 		if cred.Provider == "" {
 			return fmt.Errorf("credential is missing its provider name")
 		}
+		if err := validateCredentialProviderID(cred.Provider); err != nil {
+			return err
+		}
 		if _, dup := known[cred.Provider]; dup {
 			return fmt.Errorf("duplicate credential for provider %q", cred.Provider)
 		}
@@ -231,6 +234,12 @@ func (cs *CredentialSet) Validate() error {
 		}
 		if !knownProviderType(cred.Type) {
 			return fmt.Errorf("credential for provider %q has unknown type %q; valid types: %s", cred.Provider, cred.Type, providerTypeNames())
+		}
+		if cred.Type == ProviderTypeGoogleVertex {
+			return fmt.Errorf("provider %q: google-vertex credentials are unsupported because Vertex uses ambient credentials", cred.Provider)
+		}
+		if cred.APIKey == "" && cred.Type != ProviderTypeOpenAICompat {
+			return fmt.Errorf("provider %q: api_key is required for per-call credentials", cred.Provider)
 		}
 		if cred.Type == ProviderTypeOpenAICompat && cred.BaseURL == "" {
 			return fmt.Errorf("provider %q: base_url is required for the %q provider type", cred.Provider, cred.Type)

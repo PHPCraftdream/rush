@@ -878,7 +878,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		}
 	}
 
-	// Silent compact of the oldest half (P0-4/#268): runs synchronously under
+	// Silent compact of all non-pinned history (P0-4/#268): runs synchronously under
 	// the turn's mailbox ownership — not as a background goroutine — so no
 	// concurrent turn or compaction can delete/rewrite history while it is in
 	// flight. Skipped when shouldSummarize already ran a full compaction

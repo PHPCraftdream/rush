@@ -395,6 +395,17 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 	}
 
 	summaryPromptText := buildSummaryPrompt(currentSession.Todos)
+	var discardRetryContent bool
+	truncateAbandonedContent := func() error {
+		if !discardRetryContent {
+			return nil
+		}
+		discardRetryContent = false
+		if !summaryMessage.TruncateStreamedContent() {
+			return nil
+		}
+		return a.messages.Update(ctx, summaryMessage.Clone())
+	}
 
 	resp, err := agent.Stream(ctx, fantasy.AgentStreamCall{
 		MaxRetries:      &ProviderMaxRetries,
@@ -409,9 +420,24 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 			}
 			return callContext, prepared, nil
 		},
+		OnRetry: func(_ *fantasy.ProviderError, _ time.Duration) {
+			discardRetryContent = true
+		},
+		OnReasoningStart: func(id string, reasoning fantasy.ReasoningContent) error {
+			notifyActivity(ctx)
+			notifyWatchdog(ctx)
+			if err := truncateAbandonedContent(); err != nil {
+				return err
+			}
+			summaryMessage.StartReasoningContent(reasoning.Text)
+			return a.messages.Update(ctx, summaryMessage)
+		},
 		OnReasoningDelta: func(id string, text string) error {
 			notifyActivity(ctx)
 			notifyWatchdog(ctx)
+			if err := truncateAbandonedContent(); err != nil {
+				return err
+			}
 			summaryMessage.AppendReasoningContent(text)
 			return a.messages.Update(ctx, summaryMessage)
 		},
@@ -430,6 +456,9 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 		OnTextDelta: func(id, text string) error {
 			notifyActivity(ctx)
 			notifyWatchdog(ctx)
+			if err := truncateAbandonedContent(); err != nil {
+				return err
+			}
 			summaryMessage.AppendContent(text)
 			return a.messages.Update(ctx, summaryMessage)
 		},
@@ -535,11 +564,11 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 	return nil
 }
 
-// runSummarizeSilent compacts the oldest half of the session's messages
+// runSummarizeSilent compacts all non-pinned session messages
 // synchronously under the caller's mailbox ownership without any visible
 // change in the UI. It:
-//  1. Loads all current messages, splits them at the midpoint.
-//  2. Sends the older half to the LLM for summarisation.
+//  1. Loads all current messages and selects every non-pinned message.
+//  2. Sends those messages to the LLM for summarisation.
 //  3. Creates a hidden summary message (not rendered in the UI).
 //  4. Deletes all non-pinned messages that were summarised.
 //  5. Updates session.SummaryMessageID so future runs start from the summary.
@@ -562,22 +591,17 @@ func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string,
 		return nil
 	}
 
-	// Split at midpoint: summarise the older half.
-	mid := len(msgs) / 2
-	oldMsgs := msgs[:mid]
-	// Separate pinned from non-pinned in the old half.
-	var toSummarise, pinnedOld []message.Message
-	for _, m := range oldMsgs {
-		if m.Pinned {
-			pinnedOld = append(pinnedOld, m)
-		} else {
+	// Summarize all non-pinned history. Pinned messages remain in history and
+	// are never deleted.
+	var toSummarise []message.Message
+	for _, m := range msgs {
+		if !m.Pinned {
 			toSummarise = append(toSummarise, m)
 		}
 	}
 	if len(toSummarise) == 0 {
 		return nil
 	}
-
 	aiMsgs, _ := a.preparePrompt(toSummarise, nil)
 
 	agent := fantasy.NewAgent(
@@ -598,6 +622,18 @@ func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string,
 	}
 
 	summaryPromptText := buildSummaryPrompt(currentSession.Todos)
+	var discardRetryContent bool
+	truncateAbandonedContent := func() error {
+		if !discardRetryContent {
+			return nil
+		}
+		discardRetryContent = false
+		if !summaryMessage.TruncateStreamedContent() {
+			return nil
+		}
+		return a.messages.Update(ctx, summaryMessage.Clone())
+	}
+
 	resp, err := agent.Stream(ctx, fantasy.AgentStreamCall{
 		MaxRetries:      &ProviderMaxRetries,
 		Prompt:          summaryPromptText,
@@ -611,9 +647,24 @@ func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string,
 			}
 			return callContext, prepared, nil
 		},
+		OnRetry: func(_ *fantasy.ProviderError, _ time.Duration) {
+			discardRetryContent = true
+		},
+		OnReasoningStart: func(id string, reasoning fantasy.ReasoningContent) error {
+			notifyActivity(ctx)
+			notifyWatchdog(ctx)
+			if err := truncateAbandonedContent(); err != nil {
+				return err
+			}
+			summaryMessage.StartReasoningContent(reasoning.Text)
+			return a.messages.Update(ctx, summaryMessage)
+		},
 		OnReasoningDelta: func(id string, text string) error {
 			notifyActivity(ctx)
 			notifyWatchdog(ctx)
+			if err := truncateAbandonedContent(); err != nil {
+				return err
+			}
 			summaryMessage.AppendReasoningContent(text)
 			return a.messages.Update(ctx, summaryMessage)
 		},
@@ -631,6 +682,9 @@ func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string,
 		OnTextDelta: func(id, text string) error {
 			notifyActivity(ctx)
 			notifyWatchdog(ctx)
+			if err := truncateAbandonedContent(); err != nil {
+				return err
+			}
 			summaryMessage.AppendContent(text)
 			return a.messages.Update(ctx, summaryMessage)
 		},
@@ -722,7 +776,6 @@ func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string,
 			slog.Warn("silent summarise: failed to delete old message", "id", m.ID, "err", delErr)
 		}
 	}
-	_ = pinnedOld // pinned messages stay in the DB untouched
 	return nil
 }
 

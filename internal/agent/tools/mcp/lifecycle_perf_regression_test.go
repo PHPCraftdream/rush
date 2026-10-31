@@ -78,6 +78,9 @@ func TestRetirementReleaseQueuesExactlyOneBlockingClose(t *testing.T) {
 	defer func() { require.NoError(t, owner.Close(context.Background())) }()
 	closeStarted := make(chan struct{})
 	releaseClose := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseClose) }) }
+	defer release()
 	var closeCalls atomic.Int32
 	session := &ClientSession{terminal: func() {
 		closeCalls.Add(1)
@@ -109,7 +112,7 @@ func TestRetirementReleaseQueuesExactlyOneBlockingClose(t *testing.T) {
 	default:
 	}
 
-	close(releaseClose)
+	release()
 	select {
 	case <-session.closedDone():
 	case <-time.After(time.Second):
@@ -127,6 +130,9 @@ func TestConcurrentFinalReleasesQueueOneCloseAndReturn(t *testing.T) {
 	const operations = 4
 	closeStarted := make(chan struct{})
 	releaseClose := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseClose) }) }
+	defer release()
 	var closeCalls atomic.Int32
 	session := &ClientSession{terminal: func() {
 		closeCalls.Add(1)
@@ -168,7 +174,7 @@ func TestConcurrentFinalReleasesQueueOneCloseAndReturn(t *testing.T) {
 		t.Fatal("Close completed before its barrier was released")
 	default:
 	}
-	close(releaseClose)
+	release()
 	select {
 	case <-session.closedDone():
 	case <-time.After(time.Second):
@@ -227,6 +233,9 @@ func TestOwnerCloseKeepsFenceWhileDetachedCloseBlocks(t *testing.T) {
 	require.NoError(t, err)
 	closeStarted := make(chan struct{})
 	releaseClose := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseClose) }) }
+	defer release()
 	session := &ClientSession{terminal: func() {
 		close(closeStarted)
 		<-releaseClose
@@ -243,7 +252,7 @@ func TestOwnerCloseKeepsFenceWhileDetachedCloseBlocks(t *testing.T) {
 	require.ErrorIs(t, <-closeDone, context.Canceled)
 	_, err = Acquire()
 	require.ErrorIs(t, err, ErrOwnerBusy)
-	close(releaseClose)
+	release()
 	require.NoError(t, owner.Close(context.Background()))
 	next, err := Acquire()
 	require.NoError(t, err)
@@ -295,6 +304,9 @@ func TestTrackRejectsAdoptionAfterCloseBegins(t *testing.T) {
 	require.NoError(t, err)
 	closeStarted := make(chan struct{})
 	releaseClose := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseClose) }) }
+	defer release()
 	session := &ClientSession{terminal: func() {
 		close(closeStarted)
 		<-releaseClose
@@ -310,7 +322,7 @@ func TestTrackRejectsAdoptionAfterCloseBegins(t *testing.T) {
 	tracked := len(owner.trackedSessions)
 	lifecycleMu.Unlock()
 	require.Zero(t, tracked)
-	close(releaseClose)
+	release()
 	select {
 	case <-closeDone:
 	case <-time.After(time.Second):

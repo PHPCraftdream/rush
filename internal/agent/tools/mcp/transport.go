@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -139,6 +140,7 @@ func createTransport(ctx context.Context, m config.MCPConfig, resolver config.Va
 				ctx:       ctx,
 				transport: transport,
 			},
+			CheckRedirect: checkMCPRedirect,
 		}
 		return &mcp.StreamableClientTransport{
 			Endpoint:   url,
@@ -166,6 +168,7 @@ func createTransport(ctx context.Context, m config.MCPConfig, resolver config.Va
 				ctx:       ctx,
 				transport: transport,
 			},
+			CheckRedirect: checkMCPRedirect,
 		}
 		return &mcp.SSEClientTransport{
 			Endpoint:   url,
@@ -173,6 +176,34 @@ func createTransport(ctx context.Context, m config.MCPConfig, resolver config.Va
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported mcp type: %s", m.Type)
+	}
+}
+
+func checkMCPRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	if len(via) == 0 {
+		return nil
+	}
+	original := via[0].URL
+	if !strings.EqualFold(req.URL.Scheme, original.Scheme) || !strings.EqualFold(req.URL.Hostname(), original.Hostname()) || effectivePort(req.URL) != effectivePort(original) {
+		return fmt.Errorf("mcp: refusing cross-origin redirect from %s to %s", original.Redacted(), req.URL.Redacted())
+	}
+	return nil
+}
+
+func effectivePort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch u.Scheme {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	default:
+		return ""
 	}
 }
 

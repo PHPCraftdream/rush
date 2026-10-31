@@ -87,7 +87,9 @@ func processTestStart(t *testing.T, ceiling int, cap *int, args ...string) (*pro
 		t.Fatal(err)
 	}
 	reports := make(chan jobbatch.Result, 4)
-	handle, err := executor.Start(processTestContext(t), processTestLaunch(processTestHelper(t), args, cap), func(result jobbatch.Result) { reports <- result })
+	helper := processTestHelper(t)
+	ctx := processTestContext(t)
+	handle, err := executor.Start(ctx, processTestLaunch(helper, args, cap), func(result jobbatch.Result) { reports <- result })
 	if err != nil {
 		t.Fatal(err)
 	}

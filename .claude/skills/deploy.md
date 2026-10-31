@@ -11,7 +11,7 @@ go run deploy.go
 ## What happens
 
 - Runs the production build, including the frontend bundle, and embeds a build ID in the new binary.
-- Uses `RUSH_DEPLOY_PATH` as a single explicit destination when set. Otherwise it finds replaceable Rush executables on `PATH` (excluding this checkout), including related npm platform and Windows sibling binaries; command shims are not overwritten.
+- Uses `RUSH_DEPLOY_PATH` as a single explicit destination when set. Otherwise it finds replaceable Rush executables on `PATH` (excluding this checkout), including the npm platform binary (on Unix the launcher symlink is resolved to its own package's platform binary) and Windows sibling binaries; command shims and launcher symlinks are not overwritten.
 - If no replaceable binary is found, first install goes to `%LOCALAPPDATA%\Programs\rush\rush.exe` on Windows or `~/.local/bin/rush` on Linux/macOS.
 - On Windows, the install directory is appended to the user `PATH`; new terminals pick it up, while existing terminals need restarting. On Linux/macOS, `~/.local/bin` is already on `PATH` in most distributions; otherwise deploy prints an export line. It does not edit shell startup files.
 - Before acquiring the deploy lock, sweeps leftover Windows renamed-aside files from earlier deploys. Busy files are silently left for a later sweep.

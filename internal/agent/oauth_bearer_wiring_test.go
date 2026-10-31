@@ -97,7 +97,7 @@ func TestOAuthBearerCoordinatorWiring(t *testing.T) {
 			store := oauthBearerStore(t, id, &oauth.Token{AccessToken: "memory"})
 			coord := &coordinator{cfg: store}
 			pc, _ := store.Config().Providers.Get(id)
-			provider, err := coord.buildProviderWithValuesInner(store.Config(), pc, config.SelectedModel{}, false, "static", "http://local.invalid")
+			provider, err := coord.buildProviderWithValuesInner(store.Config(), pc, config.SelectedModel{}, false, "static", "http://local.invalid", true)
 			require.NoError(t, err)
 			model, err := provider.LanguageModel(t.Context(), "test-model")
 			require.NoError(t, err)
@@ -179,7 +179,7 @@ func TestOAuthBearerCodexUnchanged(t *testing.T) {
 	store := oauthBearerStore(t, "openai-codex", &oauth.Token{AccessToken: "memory", AccountID: "account"})
 	coord := &coordinator{cfg: store}
 	pc, _ := store.Config().Providers.Get("openai-codex")
-	provider, err := coord.buildProviderWithValuesInner(store.Config(), pc, config.SelectedModel{}, false, "", "")
+	provider, err := coord.buildProviderWithValuesInner(store.Config(), pc, config.SelectedModel{}, false, "", "", true)
 	require.NoError(t, err)
 	require.Equal(t, "openai-codex", provider.Name())
 	model, err := provider.LanguageModel(t.Context(), "gpt-5-codex")

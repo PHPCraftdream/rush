@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -292,6 +294,15 @@ func connect(ctx context.Context, dataDir string, migrationOpts ...MigrateOption
 	}
 	migrateOpts := newMigrateOptions(migrationOpts, dbPath)
 	migrateOpts.MigrationLockPath = filepath.Join(dataDir, "migrate.lock")
+	if !migrateOpts.MayMigrate {
+		if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
+			pending, err := embeddedVersions(migrateFS)
+			if err != nil {
+				return nil, fmt.Errorf("failed to apply migrations: %w", err)
+			}
+			return nil, fmt.Errorf("failed to apply migrations: %w", &SchemaMigrationNotAllowedError{Pending: pending})
+		}
+	}
 	if migrateOpts.MayMigrate {
 		if _, err := ImportLegacyStore(ctx, dataDir, LegacyImportOptions{Schema: migrateFS}); err != nil {
 			return nil, fmt.Errorf("legacy import: %w", err)

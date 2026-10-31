@@ -691,7 +691,7 @@ func splitChained(s string) []string {
 				inDouble = !inDouble
 			}
 			cur.WriteByte(c)
-		case ';':
+		case ';', '\n':
 			if !inSingle && !inDouble {
 				out = append(out, cur.String())
 				cur.Reset()

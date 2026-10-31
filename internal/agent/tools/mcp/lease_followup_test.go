@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -57,6 +58,9 @@ func TestRetireMCPClientQueuesCloseAfterFinalRelease(t *testing.T) {
 
 	closeStarted := make(chan struct{})
 	releaseClose := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseClose) }) }
+	defer release()
 	var closeCalls atomic.Int32
 	retired := &ClientSession{terminal: func() {
 		closeCalls.Add(1)
@@ -109,7 +113,7 @@ func TestRetireMCPClientQueuesCloseAfterFinalRelease(t *testing.T) {
 		t.Fatal("blocked Close completed before barrier release")
 	default:
 	}
-	close(releaseClose)
+	release()
 	select {
 	case <-retired.closedDone():
 	case <-time.After(time.Second):

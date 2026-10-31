@@ -138,6 +138,90 @@ func TestForkSessionTx_EmptySourceNoLimit(t *testing.T) {
 	require.NotEqual(t, src.ID, fork.ID)
 }
 
+// TestForkSessionTx_SummaryPointerFollowsCopiedBoundary covers pointer mapping
+// when copied, no source pointer, and a pointer excluded by LimitMsgs.
+func TestForkSessionTx_SummaryPointerFollowsCopiedBoundary(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		pointerAt int
+		limit     int
+		wantPtr   bool
+	}{
+		{name: "mapped pointer", pointerAt: 2, wantPtr: true},
+		{name: "no pointer"},
+		{name: "prefix excludes pointer", pointerAt: 3, limit: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			limitParallel(t)
+			sqlDB, q := newTestDB(t)
+			svc := NewService(q, sqlDB).(*service)
+			ctx := t.Context()
+			src, err := svc.Create(ctx, "source")
+			require.NoError(t, err)
+			var sourceMessageID string
+			sourceParts := []string{
+				`[{"type":"text","data":{"text":"row-1"}}]`,
+				`[{"type":"text","data":{"text":"row-2"}}]`,
+				`[{"type":"text","data":{"text":"row-3"}}]`,
+			}
+			var summaryParts string
+			for i := 1; i <= 3; i++ {
+				id := uuid.NewString()
+				_, err := sqlDB.ExecContext(ctx,
+					`INSERT INTO messages (id, session_id, role, parts, created_at, updated_at) VALUES (?, ?, 'user', ?, ?, ?)`,
+					id, src.ID, sourceParts[i-1], 100+i, 100+i)
+				require.NoError(t, err)
+				if i == tc.pointerAt {
+					sourceMessageID = id
+					summaryParts = sourceParts[i-1]
+				}
+			}
+			if sourceMessageID != "" {
+				_, err = sqlDB.ExecContext(ctx, `UPDATE sessions SET summary_message_id = ? WHERE id = ?`, sourceMessageID, src.ID)
+				require.NoError(t, err)
+			}
+			fork, _, err := svc.ForkSessionTx(ctx, src.ID, ForkOptions{LimitMsgs: tc.limit})
+			require.NoError(t, err)
+			if !tc.wantPtr {
+				require.Empty(t, fork.SummaryMessageID)
+				return
+			}
+			require.NotEmpty(t, fork.SummaryMessageID)
+			require.NotEqual(t, sourceMessageID, fork.SummaryMessageID)
+			var copiedSessionID, copiedParts string
+			require.NoError(t, sqlDB.QueryRowContext(ctx, `SELECT session_id, parts FROM messages WHERE id = ?`, fork.SummaryMessageID).Scan(&copiedSessionID, &copiedParts))
+			require.Equal(t, fork.ID, copiedSessionID)
+			require.Equal(t, summaryParts, copiedParts)
+		})
+	}
+}
+
+// TestForkSessionTx_PreservesPinnedMessage verifies pinned messages remain
+// pinned when their rows are cloned into the fork.
+func TestForkSessionTx_PreservesPinnedMessage(t *testing.T) {
+	t.Parallel()
+	limitParallel(t)
+	sqlDB, q := newTestDB(t)
+	svc := NewService(q, sqlDB).(*service)
+	ctx := t.Context()
+	src, err := svc.Create(ctx, "source")
+	require.NoError(t, err)
+	pinnedID := uuid.NewString()
+	_, err = sqlDB.ExecContext(ctx,
+		`INSERT INTO messages (id, session_id, role, parts, pinned, created_at, updated_at) VALUES (?, ?, 'user', '[]', 1, 1, 1)`,
+		pinnedID, src.ID)
+	require.NoError(t, err)
+
+	fork, _, err := svc.ForkSessionTx(ctx, src.ID, ForkOptions{})
+	require.NoError(t, err)
+	var pinned int64
+	require.NoError(t, sqlDB.QueryRowContext(ctx, `SELECT pinned FROM messages WHERE session_id = ?`, fork.ID).Scan(&pinned))
+	require.EqualValues(t, 1, pinned)
+}
+
 // TestForkSession_MidwayFailureRollsBack arms a trigger that aborts the
 // copy of a sentinel-role message placed AFTER two normal messages, then
 // asserts the ENTIRE fork (new session row + every copied message) is rolled

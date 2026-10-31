@@ -143,18 +143,9 @@ func main() {
 		fmt.Printf("[%s]     %s\n", ts(), dst)
 	}
 
-	// 3. Sweep leftover rename-aside files from previous deploys before
-	//    doing anything else, so garbage doesn't accumulate run over run.
-	//    Failures are expected and silent: a file that won't delete just
-	//    means a live session from a previous deploy is still serving it.
-	for _, dst := range dsts {
-		for _, removed := range deploy.SweepRenameAsideLeftovers(dst) {
-			ok("Swept leftover %s", removed)
-		}
-	}
-
-	// 3.5. Take an exclusive, cross-process lock around steps 4 and 5 so
-	//      two `go run deploy.go` invocations racing on this machine can
+	// 3.5. Take an exclusive, cross-process lock before sweeping or
+	//      replacing destinations so another deploy cannot race cleanup.
+	//      Two `go run deploy.go` invocations racing on this machine can
 	//      never interleave their per-destination renames — see
 	//      deploy.AcquireDeployLock's doc comment for why the race matters
 	//      (mixed-version installs, and a rollback in one process clobbering
@@ -169,6 +160,16 @@ func main() {
 	}
 	defer deployLock.Release()
 	ok("Deploy lock acquired")
+
+	// Sweeping while holding the same lock as replacement prevents deleting
+	// another deploy's rollback source between its rename-aside and restore.
+	// Sweep leftovers before replacing destinations. Busy files are expected
+	// and silently retained.
+	for _, dst := range dsts {
+		for _, removed := range deploy.SweepRenameAsideLeftovers(dst) {
+			ok("Swept leftover %s", removed)
+		}
+	}
 
 	// 4. Copy with a temp + rename to make the swap atomic for each
 	//    target. Live sessions are never killed: on Unix the rename is
@@ -277,22 +278,17 @@ func binaryName() string {
 //  1. $RUSH_DEPLOY_PATH set → single forced target, used as-is.
 //  2. Otherwise we discover the npm-installed rush via exec.LookPath
 //     and return EVERY binary we can find around it:
-//     a. <npm-dir>/node_modules/@phpcraftdream/rush-<node_os>-<node_arch>/bin/rush(.exe)
-//     — the real binary the JS wrapper execs via `node`. The fork ships
-//     the binary in the PLATFORM package, not the meta package (unlike
-//     upstream's @charmland/crush, which bundled bin/ directly in the
-//     package the JS wrapper lives in) — see
-//     docs/plans/2026-07-29-relaunch-from-cache.md §5.3.
+//     a. On Unix, the resolved npm launcher is a JS file under the meta
+//     package's bin directory. Its real path identifies the sibling
+//     per-platform package binary that the launcher actually executes.
 //     b. <npm-dir>/rush.exe (Windows only) — a sibling native
 //     binary that `cmd` may pick BEFORE the JS wrapper depending
 //     on PATHEXT and PATH ordering. Historically this slot
 //     received an out-of-band copy from a previous install and
 //     then drifted, producing "rush --version is fresh but
 //     claude-init --replace is unknown" symptoms.
-//     c. The LookPath result itself, only if it is an executable
-//     (.exe on Windows, no extension on Unix) — covers raw
-//     binaries dropped on PATH without an npm package around
-//     them.
+//     c. The LookPath result itself on Windows, only if it looks like an
+//     executable (.exe) — covers native binaries on PATH alongside npm.
 //
 // We deduplicate by absolute path so the same file isn't replaced
 // twice on a same-file collision.
@@ -325,16 +321,32 @@ func resolveDests() ([]string, error) {
 	dir := filepath.Dir(p)
 
 	var cands []string
-	// (a) node_modules real binary — lives in the fork's per-platform
-	// package (@phpcraftdream/rush-<node_os>-<node_arch>), not the meta
-	// package (@phpcraftdream/rush) that owns bin/rush.js.
-	npmBin := deploy.NpmPlatformBinaryPath(dir, runtime.GOOS, runtime.GOARCH, binaryName())
-	if _, err := os.Stat(npmBin); err == nil {
-		cands = append(cands, npmBin)
+	if runtime.GOOS == "windows" {
+		// Windows npm shims can live beside the real binary in the npm bin dir.
+		npmBin := deploy.NpmPlatformBinaryPath(dir, runtime.GOOS, runtime.GOARCH, binaryName())
+		if _, err := os.Stat(npmBin); err == nil {
+			cands = append(cands, npmBin)
+		}
+	} else {
+		// Resolve PATH symlinks before deciding whether this is a launcher
+		// or native binary; failed resolution is safely ignored.
+		resolved, kind, resolveErr := deploy.ResolveDeployTarget(p)
+		if resolveErr == nil {
+			switch kind {
+			case deploy.DeployTargetJS:
+				if packageRoot, ok := deploy.FindNpmPackageRoot(resolved); ok {
+					if npmBin, ok := deploy.NpmPlatformBinaryPathForPackage(packageRoot, runtime.GOOS, runtime.GOARCH, binaryName()); ok {
+						if _, err := os.Stat(npmBin); err == nil {
+							cands = append(cands, npmBin)
+						}
+					}
+				}
+			case deploy.DeployTargetNative:
+				cands = append(cands, resolved)
+			}
+		}
 	}
-	// (b) sibling rush.exe in npm bin dir (Windows only). This is the
-	// one that Windows `cmd` may pick when PATHEXT resolves `rush` to
-	// `rush.exe` before considering `rush.cmd`/`rush.ps1`.
+	// Windows npm shims can live beside the real binary in the npm bin dir.
 	if runtime.GOOS == "windows" {
 		sibling := filepath.Join(dir, "rush.exe")
 		if _, err := os.Stat(sibling); err == nil {
@@ -345,7 +357,7 @@ func resolveDests() ([]string, error) {
 	// executable (not a script/shim). On Windows that means .exe; on
 	// Unix it means no extension and an executable mode bit. We add
 	// only if not already covered.
-	if deploy.IsReplaceableExe(p) {
+	if runtime.GOOS == "windows" && deploy.IsReplaceableExe(p) {
 		cands = append(cands, p)
 	}
 

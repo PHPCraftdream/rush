@@ -281,6 +281,74 @@ func DefaultInstallPath() (string, error) {
 	return filepath.Join(home, ".local", "bin", "rush"), nil
 }
 
+// DeployTargetKind identifies a resolved PATH target without confusing a
+// JavaScript launcher with a native executable.
+type DeployTargetKind int
+
+const (
+	DeployTargetUnknown DeployTargetKind = iota
+	DeployTargetNative
+	DeployTargetJS
+)
+
+// ClassifyDeployTarget classifies a resolved target. packageRoot, when non-empty,
+// is the npm package root discovered by the caller; classification itself does no I/O.
+func ClassifyDeployTarget(path string, mode os.FileMode, packageRoot string) DeployTargetKind {
+	if packageRoot != "" {
+		return DeployTargetJS
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == ".js" || ext == ".cjs" || ext == ".mjs" {
+		return DeployTargetJS
+	}
+	if !mode.IsRegular() || mode&0o111 == 0 {
+		return DeployTargetUnknown
+	}
+	if runtime.GOOS == "windows" {
+		if ext == ".exe" {
+			return DeployTargetNative
+		}
+		return DeployTargetUnknown
+	}
+	switch ext {
+	case ".sh", ".bash", ".py", ".js", ".cjs", ".mjs":
+		return DeployTargetUnknown
+	}
+	return DeployTargetNative
+}
+
+// ResolveDeployTarget resolves symlinks before classifying. Resolution/stat
+// failures are returned so callers can safely skip the candidate.
+func ResolveDeployTarget(path string) (string, DeployTargetKind, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", DeployTargetUnknown, err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", DeployTargetUnknown, err
+	}
+	packageRoot, _ := FindNpmPackageRoot(resolved)
+	return resolved, ClassifyDeployTarget(resolved, info.Mode(), packageRoot), nil
+}
+
+// FindNpmPackageRoot finds the nearest actual package root directly beneath
+// node_modules (including the two-level @scope/name form).
+func FindNpmPackageRoot(path string) (string, bool) {
+	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+		if info, err := os.Stat(filepath.Join(dir, "package.json")); err == nil && info.Mode().IsRegular() {
+			parent := filepath.Dir(dir)
+			if filepath.Base(parent) == "node_modules" || (strings.HasPrefix(filepath.Base(parent), "@") && filepath.Base(filepath.Dir(parent)) == "node_modules") {
+				return dir, true
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+	}
+}
+
 // IsReplaceableExe reports whether p is a native executable that should
 // be overwritten by a deploy — not a .cmd/.ps1/POSIX shim. On Windows
 // that means a .exe extension; on Unix it means an executable mode bit
@@ -444,6 +512,20 @@ func NpmNodeArch(goarch string) string {
 	default:
 		return goarch
 	}
+}
+
+// NpmPlatformBinaryPathForPackage maps a meta-package root beneath
+// node_modules to the sibling platform-package binary.
+func NpmPlatformBinaryPathForPackage(packageRoot, goos, goarch, binaryName string) (string, bool) {
+	parent := filepath.Dir(packageRoot)
+	nodeModules := parent
+	if strings.HasPrefix(filepath.Base(parent), "@") {
+		nodeModules = filepath.Dir(parent)
+	}
+	if filepath.Base(nodeModules) != "node_modules" {
+		return "", false
+	}
+	return NpmPlatformBinaryPath(filepath.Dir(nodeModules), goos, goarch, binaryName), true
 }
 
 // NpmPlatformBinaryPath returns the path to the real binary inside the

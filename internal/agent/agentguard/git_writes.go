@@ -11,31 +11,45 @@ import (
 // owns commits in delegated runs; an agent run inside a linked worktree
 // must not reach for them.
 var gitWriteSubcommands = map[string]bool{
-	"add":         true,
-	"am":          true,
-	"apply":       true,
-	"cherry-pick": true,
-	"checkout":    true,
-	"clean":       true,
-	"commit":      true,
-	"merge":       true,
-	"mv":          true,
-	"pull":        true,
-	"push":        true,
-	"rebase":      true,
-	"reset":       true,
-	"restore":     true,
-	"rm":          true,
-	"stash":       true,
-	"worktree":    true,
+	"add":           true,
+	"am":            true,
+	"apply":         true,
+	"cherry-pick":   true,
+	"checkout":      true,
+	"clean":         true,
+	"commit":        true,
+	"fast-import":   true,
+	"filter-branch": true,
+	"merge":         true,
+	"mv":            true,
+	"pack-refs":     true,
+	"pull":          true,
+	"push":          true,
+	"rebase":        true,
+	"reset":         true,
+	"restore":       true,
+	"replace":       true,
+	"rm":            true,
+	"stash":         true,
+	"update-ref":    true,
+	"symbolic-ref":  true,
+	"worktree":      true,
 }
 
-// gitBranchDeleteFlags are the branch subcommand's deletion flags; plain
-// `git branch <name>` (creating a branch) is not in scope for this guard.
+// gitBranchDeleteFlags are branch subcommand's state-mutating flags. Plain
+// `git branch <name>` (creating a branch) remains allowed for compatibility.
 var gitBranchDeleteFlags = map[string]bool{
 	"-d":       true,
 	"-D":       true,
 	"--delete": true,
+	"-m":       true,
+	"-M":       true,
+	"--move":   true,
+	"-c":       true,
+	"-C":       true,
+	"--copy":   true,
+	"-f":       true,
+	"--force":  true,
 }
 
 // GitWriteError is returned by CheckGitWrites when a command would mutate
@@ -140,6 +154,14 @@ func gitWriteDecision(sub string, rest []string, segment string) error {
 		for _, tok := range rest {
 			if gitBranchDeleteFlags[tok] {
 				return &GitWriteError{Subcommand: "branch", Snippet: segment}
+			}
+		}
+		return nil
+	}
+	if sub == "tag" {
+		for _, tok := range rest {
+			if tok == "-d" || tok == "--delete" || tok == "-f" || tok == "--force" {
+				return &GitWriteError{Subcommand: "tag", Snippet: segment}
 			}
 		}
 		return nil

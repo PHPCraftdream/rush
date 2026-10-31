@@ -230,6 +230,9 @@ func TestPinnedRetirementCancelsOnFinalReleaseBeforeBlockedClose(t *testing.T) {
 	canceled := make(chan struct{})
 	closeStarted := make(chan struct{})
 	releaseClose := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseBarrier := func() { releaseOnce.Do(func() { close(releaseClose) }) }
+	defer releaseBarrier()
 	var cancelOnce sync.Once
 	var cancelCalls atomic.Int32
 	session := &ClientSession{
@@ -281,7 +284,7 @@ func TestPinnedRetirementCancelsOnFinalReleaseBeforeBlockedClose(t *testing.T) {
 		t.Fatal("blocked Close completed before its barrier was released")
 	default:
 	}
-	close(releaseClose)
+	releaseBarrier()
 	select {
 	case <-session.closedDone():
 	case <-time.After(time.Second):
