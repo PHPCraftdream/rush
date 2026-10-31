@@ -385,6 +385,165 @@ func TestInjectAgent_InterruptOnBusyChildRoutesToItsDriver(t *testing.T) {
 	}
 }
 
+func TestInjectAgent_CredentialedInterruptReusesDriverTemplate(t *testing.T) {
+	t.Parallel()
+	coord, env := newControlCoordinator(t)
+	parent, child := controlChild(t, env, "inj-credentialed-template")
+	pinned, err := coord.resolveSessionModels(t.Context(), child)
+	require.NoError(t, err)
+	driverModel := pinned.smart
+	creds := &CredentialSet{
+		Credentials: []Credential{{Provider: "tenant", Type: ProviderTypeOpenAI, APIKey: "tenant-key"}},
+		Models:      map[Role]ModelChoice{RoleSmart: {Provider: "tenant", Model: "tenant-model"}},
+	}
+	options := &CallOptions{}
+	EnsureCallBuildScope(options)
+	driver := &controlStubAgent{}
+	driver.setBusy(true)
+	coord.subAgentDrivers.register(child, subAgentDriver{agent: driver, call: SessionAgentCall{
+		SessionID: child, SmartModel: &driverModel, Credentials: creds, CallOptions: options,
+	}})
+	// If InjectAgent attempts ordinary configured-model resolution, it cannot
+	// build a replacement. The tenant's already-bound template remains usable.
+	coord.cfg.Config().Models = map[config.SelectedModelType]config.SelectedModel{}
+
+	_, err = coord.InjectAgent(t.Context(), parent, child, "tenant replacement", true)
+	require.NoError(t, err)
+	replacements := driver.interruptAndReplacedSnapshot()
+	require.Len(t, replacements, 1)
+	require.Same(t, creds, replacements[0].Credentials)
+	require.Same(t, &driverModel, replacements[0].SmartModel)
+	require.NotSame(t, options, replacements[0].CallOptions)
+	require.NotSame(t, options.buildScope, replacements[0].CallOptions.buildScope)
+	require.Equal(t, "tenant replacement", replacements[0].Prompt)
+}
+
+func TestInjectAgent_NoncredentialedInterruptResolvesConfiguredModelsAndReplaces(t *testing.T) {
+	t.Parallel()
+	coord, env := newControlCoordinator(t)
+	parent, child := controlChild(t, env, "inj-noncredentialed-resolution")
+	pinned, err := coord.resolveSessionModels(t.Context(), child)
+	require.NoError(t, err)
+	driver := &controlStubAgent{}
+	driver.setBusy(true)
+	coord.subAgentDrivers.register(child, subAgentDriver{agent: driver, parentSessionID: parent})
+
+	_, err = coord.InjectAgent(t.Context(), parent, child, "configured replacement", true)
+	require.NoError(t, err)
+	replacements := driver.interruptAndReplacedSnapshot()
+	require.Len(t, replacements, 1)
+	require.NotNil(t, replacements[0].SmartModel)
+	require.Equal(t, pinned.smart, *replacements[0].SmartModel)
+	require.Nil(t, replacements[0].Credentials)
+	require.Equal(t, "configured replacement", replacements[0].Prompt)
+}
+
+func TestInjectAgent_MarkedCredentialedChildWithNilCredentialsFailsClosed(t *testing.T) {
+	t.Parallel()
+	coord, env := newControlCoordinator(t)
+	parent, child := controlChild(t, env, "inj-marked-child-nil-creds")
+	coord.markCredentialedRoot(parent)
+	driver := &controlStubAgent{}
+	driver.setBusy(true)
+	coord.subAgentDrivers.register(child, subAgentDriver{agent: driver, call: SessionAgentCall{SessionID: child}})
+
+	_, err := coord.InjectAgent(t.Context(), parent, child, "must stay tenant-bound", true)
+	require.ErrorIs(t, err, ErrCredentialBindingUnavailable)
+	require.Empty(t, driver.interruptAndReplacedSnapshot())
+	messages, listErr := env.messages.List(t.Context(), child)
+	require.NoError(t, listErr)
+	require.Empty(t, messages)
+}
+
+func TestInjectAgent_CredentialedInterruptRejectsUnusableDriverBinding(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		model bool
+		creds *CredentialSet
+	}{
+		{name: "nil model", creds: &CredentialSet{
+			Credentials: []Credential{{Provider: "tenant", Type: ProviderTypeOpenAI, APIKey: "tenant-key"}},
+			Models:      map[Role]ModelChoice{RoleSmart: {Provider: "tenant", Model: "tenant-model"}},
+		}},
+		{name: "invalid credentials", model: true, creds: &CredentialSet{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			coord, env := newControlCoordinator(t)
+			parent, child := controlChild(t, env, "inj-unusable-binding-"+tc.name)
+			coord.markCredentialedRoot(parent)
+			var model *Model
+			if tc.model {
+				pinned, err := coord.resolveSessionModels(t.Context(), child)
+				require.NoError(t, err)
+				model = &pinned.smart
+			}
+			driver := &controlStubAgent{}
+			driver.setBusy(true)
+			coord.subAgentDrivers.register(child, subAgentDriver{agent: driver, call: SessionAgentCall{
+				SessionID: child, SmartModel: model, Credentials: tc.creds,
+			}})
+
+			_, err := coord.InjectAgent(t.Context(), parent, child, "must fail closed", true)
+			require.ErrorIs(t, err, ErrCredentialBindingUnavailable)
+			require.Empty(t, driver.interruptAndReplacedSnapshot())
+			messages, listErr := env.messages.List(t.Context(), child)
+			require.NoError(t, listErr)
+			require.Empty(t, messages)
+		})
+	}
+}
+
+func TestInjectAgent_CredentialedInterruptWithoutDriverBindingFailsClosed(t *testing.T) {
+	t.Parallel()
+	coord, env := newControlCoordinator(t)
+	parent, child := controlChild(t, env, "inj-credentialed-unbound")
+	coord.markCredentialedRoot(child)
+	driver := &controlStubAgent{}
+	driver.setBusy(true)
+	coord.currentAgent = driver
+
+	_, err := coord.InjectAgent(t.Context(), parent, child, "must not use shared model", true)
+	require.ErrorIs(t, err, ErrCredentialBindingUnavailable)
+	require.Empty(t, driver.interruptAndReplacedSnapshot())
+	messages, listErr := env.messages.List(t.Context(), child)
+	require.NoError(t, listErr)
+	require.Empty(t, messages, "a refused credentialed interrupt must not persist an operator-configured fallback")
+}
+
+func TestInjectAgent_CredentialedInterruptPreservesTemplateScopeOwnership(t *testing.T) {
+	t.Parallel()
+	coord, env := newControlCoordinator(t)
+	parent, child := controlChild(t, env, "inj-credentialed-scope")
+	pinned, err := coord.resolveSessionModels(t.Context(), child)
+	require.NoError(t, err)
+	model := pinned.smart
+	options := &CallOptions{}
+	EnsureCallBuildScope(options)
+	driver := &controlStubAgent{}
+	driver.setBusy(true)
+	coord.subAgentDrivers.register(child, subAgentDriver{agent: driver, call: SessionAgentCall{
+		SessionID: child, SmartModel: &model,
+		Credentials: &CredentialSet{
+			Credentials: []Credential{{Provider: "tenant", Type: ProviderTypeOpenAI, APIKey: "key"}},
+			Models:      map[Role]ModelChoice{RoleSmart: {Provider: "tenant", Model: "tenant-model"}},
+		},
+		CallOptions: options,
+	}})
+
+	_, err = coord.InjectAgent(t.Context(), parent, child, "scoped replacement", true)
+	require.NoError(t, err)
+	replacements := driver.interruptAndReplacedSnapshot()
+	require.Len(t, replacements, 1)
+	call := replacements[0]
+	require.NotNil(t, call.onQueueResolved)
+	require.NotSame(t, options, call.CallOptions)
+	require.NotSame(t, options.buildScope, call.CallOptions.buildScope)
+	require.NotNil(t, call.CallOptions.buildScope)
+	require.Equal(t, child, call.SessionID)
+}
+
 func TestInjectAgent_InterruptErrorSurfaced(t *testing.T) {
 	t.Parallel()
 	coord, env := newControlCoordinator(t)

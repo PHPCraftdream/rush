@@ -148,7 +148,9 @@ configured model (e.g. `fast` for background title generation), set
 `AllowConfiguredRoleFallback: true` on the `CredentialSet`. That is a
 deliberate crossing of the tenant-credential boundary: the fallback
 role runs on **your** (the operator's) provider, with whatever tenant
-data that role carries.
+data that role carries. Interrupting a credentialed delegated turn also
+fails closed when its driver binding is missing; it never falls back to
+the Client's configured provider.
 
 ```go
 result, err := client.RunWithCredentials(ctx, sdk.RunRequest{

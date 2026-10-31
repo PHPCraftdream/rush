@@ -16,6 +16,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/google/uuid"
 )
 
 var _ tools.AgentControl = (*coordinator)(nil)
@@ -207,6 +208,20 @@ func finishedStatusFor(msg *message.Message) string {
 	return "finished"
 }
 
+func (c *coordinator) credentialedSessionOrAncestor(ctx context.Context, sessionID string) bool {
+	for sessionID != "" {
+		if c.isCredentialedRoot(sessionID) {
+			return true
+		}
+		sess, err := c.sessions.Get(ctx, sessionID)
+		if err != nil {
+			return true
+		}
+		sessionID = sess.ParentSessionID
+	}
+	return false
+}
+
 // InjectAgent implements tools.AgentControl (§4.2).
 func (c *coordinator) InjectAgent(ctx context.Context, callerSessionID, childSessionID, msg string, interrupt bool) (string, error) {
 	if err := c.controlChild(ctx, callerSessionID, childSessionID, "inject"); err != nil {
@@ -247,6 +262,53 @@ func (c *coordinator) InjectAgent(ctx context.Context, callerSessionID, childSes
 				ownedScope.close()
 			}
 		}()
+	}
+	driver, hasDriver := c.subAgentDrivers.get(childSessionID)
+	credentialed := c.credentialedSessionOrAncestor(ctx, childSessionID) || hasDriver && driver.call.Credentials != nil
+	if credentialed {
+		if !hasDriver || driver.call.Credentials == nil {
+			return "", fmt.Errorf("%w: child session %s has no driver credential binding", ErrCredentialBindingUnavailable, childSessionID)
+		}
+		// Credentialed child work may only be replaced from its registered
+		// driver's frozen call template. Resolving against coordinator config
+		// here could silently switch the tenant to the operator's provider.
+		if driver.call.SmartModel == nil || driver.call.SmartModel.Model == nil {
+			return "", fmt.Errorf("%w: child session %s has no usable driver template", ErrCredentialBindingUnavailable, childSessionID)
+		}
+		if err := driver.call.Credentials.Validate(); err != nil {
+			return "", fmt.Errorf("%w: child session %s has unusable driver credentials: %v", ErrCredentialBindingUnavailable, childSessionID, err)
+		}
+		call := driver.callFor(msg)
+		call.SessionID = childSessionID
+		call.LogicalCallID = uuid.NewString()
+		callOptions := call.CallOptions
+		if callOptions == nil {
+			callOptions = callOptionsFrom(ctx)
+		}
+		if callOptions != nil {
+			if ownedScope != nil {
+				ownedScope.close()
+			}
+			ownedOptions := *callOptions
+			ownedOptions.buildScope = newBuildResourceScope()
+			call.CallOptions = &ownedOptions
+			ownedScope = ownedOptions.buildScope
+		}
+		if ownedScope != nil {
+			call.onQueueResolved = func(_ *fantasy.AgentResult, _ error) { ownedScope.close() }
+		}
+		if c.agentFor(childSessionID).InterruptAndReplace(childSessionID, call) {
+			scopeTransferred = true
+			return "Interrupted the sub-agent's current turn; it will process this message next.", nil
+		}
+		if ownedScope != nil {
+			ownedScope.close()
+			scopeTransferred = true
+		}
+		if _, err := c.InjectMessage(ctx, childSessionID, msg); err != nil {
+			return "", err
+		}
+		return "child session was idle, nothing to interrupt — message queued instead; call agent with resume_session_id to resume it", nil
 	}
 	pinned, err := c.resolveSessionModels(ctx, childSessionID)
 	if err != nil {
