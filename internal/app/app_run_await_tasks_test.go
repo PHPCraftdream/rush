@@ -86,10 +86,10 @@ func delegationRunning(t *testing.T, application *App, sessionID, toolCallID str
 func TestRunLoop_AwaitTasksAny_WakesOnFirstCompletion(t *testing.T) {
 	defer agent.SetDrainPacingForTest(100*time.Millisecond, 50*time.Millisecond, 0)()
 	var trans1At, req2At atomic.Int64
-	// The completer goroutine outlives neither the run nor the test: it is
-	// joined before any assertion so its require calls can never fire after
-	// the test completed (the suite panic "Fail in goroutine after
-	// TestRunLoop_AwaitTasksAny_WakesOnFirstCompletion has completed").
+	stopCompleters := make(chan struct{})
+	var stopOnce sync.Once
+	stop := func() { stopOnce.Do(func() { close(stopCompleters) }) }
+	defer stop()
 	var completers sync.WaitGroup
 	h := newLoopHarness(t, func(h *loopHarness, w http.ResponseWriter, _ []byte, _ bool, n int) {
 		switch n {
@@ -102,15 +102,33 @@ func TestRunLoop_AwaitTasksAny_WakesOnFirstCompletion(t *testing.T) {
 			go func() {
 				defer completers.Done()
 				ctx := context.Background()
-				time.Sleep(300 * time.Millisecond)
+				firstTimer := time.NewTimer(300 * time.Millisecond)
+				defer firstTimer.Stop()
+				select {
+				case <-firstTimer.C:
+				case <-stopCompleters:
+					return
+				}
 				completeDelegation(h.t, ctx, h.app, h.sessionID, "deleg-1", "done-one", true)
 				trans1At.Store(time.Now().UnixNano())
 				// The second delegation completes only after the any-wake
 				// drain started, so its result needs a further drain.
+				ticker := time.NewTicker(20 * time.Millisecond)
+				defer ticker.Stop()
 				for req2At.Load() == 0 {
-					time.Sleep(20 * time.Millisecond)
+					select {
+					case <-ticker.C:
+					case <-stopCompleters:
+						return
+					}
 				}
-				time.Sleep(500 * time.Millisecond)
+				secondTimer := time.NewTimer(500 * time.Millisecond)
+				defer secondTimer.Stop()
+				select {
+				case <-secondTimer.C:
+				case <-stopCompleters:
+					return
+				}
 				completeDelegation(h.t, ctx, h.app, h.sessionID, "deleg-2", "done-two", true)
 			}()
 		case 2:
@@ -129,12 +147,15 @@ func TestRunLoop_AwaitTasksAny_WakesOnFirstCompletion(t *testing.T) {
 	claimDelegation(t, ctx, h.app, h.sessionID, "deleg-2", child2.ID)
 
 	res, _, runErr := h.run(ctx, RunOverrides{})
-	// The run ends only after the second completion drove the final drain,
-	// so the completer goroutine is done by now; the join keeps its require
-	// calls inside the test's lifetime either way.
+	if runErr != nil {
+		t.Errorf("run: %v", runErr)
+	}
+	stop()
 	completers.Wait()
+	if runErr != nil {
+		return
+	}
 
-	require.NoError(t, runErr)
 	require.NoError(t, ctx.Err(), "the run finishes well within the deadline")
 	require.NotNil(t, res)
 	require.Equal(t, "end_turn", res.ExitReason)
