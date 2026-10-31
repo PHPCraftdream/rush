@@ -9,6 +9,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 - Ripgrep-backed searches and the CLI-provider MCP Grep tool now pass search patterns with `-e` and terminate option parsing before paths, so model-controlled patterns or dash-prefixed paths cannot activate command options.
+- MCP HTTP and SSE clients now reject redirects that change the original scheme, host, or port, preventing server requests from being redirected to another origin.
+
 - `RunWithCredentials`: the automatic follow-up turn after a delegated worker finishes no longer goes to the Client's configured (operator) provider; it is skipped and the completion is delivered with the session's next call.
 - Linked-worktree Git protection now blocks newline-separated write commands, additional ref writers, and destructive branch and tag flags.
 
