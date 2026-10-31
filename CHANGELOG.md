@@ -18,6 +18,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - A retried compaction no longer includes text or reasoning from an abandoned partial response in its saved summary.
 
 - `Connect` with `WithMayMigrate(false)` now refuses a missing store-v1 database before opening it, returning the typed migration-not-allowed error without creating the destination or attempting legacy import.
+- `go run deploy.go` now resolves the Unix npm launcher to its sibling platform-package binary before deploying, so installs outside the assumed global npm layout update correctly.
+
 - `RunWithCredentials`: the automatic follow-up turn after a delegated worker finishes no longer goes to the Client's configured (operator) provider; it is skipped and the completion is delivered with the session's next call.
 - Linked-worktree Git protection now blocks newline-separated write commands, additional ref writers, and destructive branch and tag flags.
 

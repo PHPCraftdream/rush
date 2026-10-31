@@ -75,6 +75,106 @@ func TestDefaultInstallPath_UnixUsesHome(t *testing.T) {
 	}
 }
 
+func TestClassifyDeployTarget(t *testing.T) {
+	pkg := filepath.Join(t.TempDir(), "node_modules", "rush")
+	if err := os.MkdirAll(filepath.Join(pkg, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkg, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	native := "rush"
+	if runtime.GOOS == "windows" {
+		native = "rush.exe"
+	}
+	cases := []struct {
+		name        string
+		path        string
+		mode        os.FileMode
+		packageRoot string
+		want        DeployTargetKind
+	}{
+		{"native", native, 0o755, "", DeployTargetNative},
+		{"js", "rush.js", 0o755, "", DeployTargetJS},
+		{"cjs", "rush.cjs", 0o755, "", DeployTargetJS},
+		{"mjs", "rush.mjs", 0o755, "", DeployTargetJS},
+		{"non-executable", native, 0o644, "", DeployTargetUnknown},
+		{"extensionless npm launcher", filepath.Join(pkg, "bin", "rush"), 0o755, pkg, DeployTargetJS},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyDeployTarget(tc.path, tc.mode, tc.packageRoot); got != tc.want {
+				t.Errorf("ClassifyDeployTarget(%q, %v) = %v, want %v", tc.path, tc.mode, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNpmPlatformBinaryPathForPackage(t *testing.T) {
+	tests := []struct {
+		name string
+		root string
+		want string
+	}{
+		{
+			name: "scoped",
+			root: filepath.Join("/opt", "npm", "lib", "node_modules", "@phpcraftdream", "rush"),
+			want: filepath.Join("/opt", "npm", "lib", "node_modules", "@phpcraftdream", "rush-linux-x64", "bin", "rush"),
+		},
+		{
+			name: "unscoped",
+			root: filepath.Join("/opt", "npm", "lib", "node_modules", "rush"),
+			want: filepath.Join("/opt", "npm", "lib", "node_modules", "@phpcraftdream", "rush-linux-x64", "bin", "rush"),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := NpmPlatformBinaryPathForPackage(tc.root, "linux", "amd64", "rush")
+			if !ok || got != tc.want {
+				t.Errorf("NpmPlatformBinaryPathForPackage(%q) = (%q, %v), want (%q, true)", tc.root, got, ok, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveDeployTargetSymlinkToJS(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on some Windows systems")
+	}
+	dir := t.TempDir()
+	js := filepath.Join(dir, "rush.js")
+	link := filepath.Join(dir, "rush")
+	if err := os.WriteFile(js, []byte("#!/usr/bin/env node\\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(js, link); err != nil {
+		t.Fatal(err)
+	}
+	resolved, kind, err := ResolveDeployTarget(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != js || kind != DeployTargetJS {
+		t.Errorf("ResolveDeployTarget(%q) = (%q, %v), want (%q, %v)", link, resolved, kind, js, DeployTargetJS)
+	}
+}
+
+func TestFindNpmPackageRootScopedPackage(t *testing.T) {
+	root := t.TempDir()
+	pkg := filepath.Join(root, "node_modules", "@phpcraftdream", "rush")
+	if err := os.MkdirAll(filepath.Join(pkg, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkg, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	launcher := filepath.Join(pkg, "bin", "rush.js")
+	got, ok := FindNpmPackageRoot(launcher)
+	if !ok || got != pkg {
+		t.Errorf("FindNpmPackageRoot(%q) = (%q, %v), want (%q, true)", launcher, got, ok, pkg)
+	}
+}
+
 func TestIsReplaceableExe(t *testing.T) {
 	dir := t.TempDir()
 
