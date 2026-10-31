@@ -10,16 +10,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 - Ripgrep-backed searches and the CLI-provider MCP Grep tool now pass search patterns with `-e` and terminate option parsing before paths, so model-controlled patterns or dash-prefixed paths cannot activate command options.
 - MCP HTTP and SSE clients now reject redirects that change the original scheme, host, or port, preventing server requests from being redirected to another origin.
-
 - Security: `RunWithCredentials` isolates per-call credentials by avoiding config expansion and ambient authentication, and rejects provider IDs with special dispatch behavior and Google Vertex's ambient-auth flow.
 - `inject_agent(interrupt=true)` now replaces a credentialed child turn using its registered tenant driver template, and refuses instead of falling back to operator models when that binding is missing or unusable.
 - Forks now preserve the summary pointer when its summary message is within the copied history boundary.
 - Silent compaction now leaves pinned history and its summary available to the next model context; older non-pinned history is removed.
 - A retried compaction no longer includes text or reasoning from an abandoned partial response in its saved summary.
-
 - `Connect` with `WithMayMigrate(false)` now refuses a missing store-v1 database before opening it, returning the typed migration-not-allowed error without creating the destination or attempting legacy import.
 - `go run deploy.go` now resolves the Unix npm launcher to its sibling platform-package binary before deploying, so installs outside the assumed global npm layout update correctly.
-
 - `rush sessions gc` now keeps sessions with a held OS session lock or live `rush run` driver, including loops between turns; `rush sessions reset` refuses held locks and live run owners unless `--force` kills the lock holder.
 - `RunWithCredentials`: the automatic follow-up turn after a delegated worker finishes no longer goes to the Client's configured (operator) provider; it is skipped and the completion is delivered with the session's next call.
 - Linked-worktree Git protection now blocks newline-separated write commands, additional ref writers, and destructive branch and tag flags.
