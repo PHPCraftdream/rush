@@ -61,14 +61,14 @@ func getRgSearchCmd(ctx context.Context, pattern, path, include string, contextL
 // messages alongside "match" messages.
 func buildRgSearchCmd(ctx context.Context, rgPath, pattern, path, include string, contextLines int) *exec.Cmd {
 	// Use -n to show line numbers, -0 for null separation to handle Windows paths
-	args := []string{"--json", "-H", "-n", "-0", pattern}
+	args := []string{"--json", "-H", "-n", "-0", "-e", pattern}
 	if contextLines > 0 {
 		args = append(args, "-C", strconv.Itoa(contextLines))
 	}
 	if include != "" {
 		args = append(args, "--glob", include)
 	}
-	args = append(args, path)
+	args = append(args, "--", path)
 
 	return platform.Command(ctx, rgPath, args...)
 }
@@ -78,10 +78,16 @@ func buildRgSearchCmd(ctx context.Context, rgPath, pattern, path, include string
 // content-search caller so ignore handling cannot drift between them.
 func appendRgIgnoreFiles(cmd *exec.Cmd, rootPath string) {
 	// Only add ignore files if they exist.
+	var ignoreArgs []string
 	for _, ignoreFile := range []string{".gitignore", ".rushignore"} {
 		ignorePath := filepath.Join(rootPath, ignoreFile)
 		if _, err := os.Stat(ignorePath); err == nil {
-			cmd.Args = append(cmd.Args, "--ignore-file", ignorePath)
+			ignoreArgs = append(ignoreArgs, "--ignore-file", ignorePath)
 		}
 	}
+	separator := len(cmd.Args) - 2
+	if separator < 1 || cmd.Args[separator] != "--" {
+		separator = len(cmd.Args)
+	}
+	cmd.Args = append(cmd.Args[:separator], append(ignoreArgs, cmd.Args[separator:]...)...)
 }

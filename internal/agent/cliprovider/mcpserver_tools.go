@@ -384,6 +384,15 @@ type mcpGrepInput struct {
 	Glob    string `json:"glob,omitempty" description:"File glob filter (e.g. *.go)"`
 }
 
+// mcpGrepArgs keeps model-controlled grep operands out of option parsing.
+func mcpGrepArgs(input mcpGrepInput, dir string) []string {
+	args := []string{"-rn", "--color=never", "--max-count=100", "-e", input.Pattern}
+	if input.Glob != "" {
+		args = append(args, "--include="+input.Glob)
+	}
+	return append(append([]string{"grep"}, args...), "--", dir)
+}
+
 func registerGrepTool(srv *mcp.Server, perms permission.Service, sessionID string, workingDir string, toolCh chan mcpToolEvent) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "Grep",
@@ -414,11 +423,7 @@ func registerGrepTool(srv *mcp.Server, perms permission.Service, sessionID strin
 			return toolError("grep denied"), nil, nil
 		}
 
-		// --max-count limits matches per file; pipe through head to cap total output.
-		args := []string{"grep", "-rn", "--color=never", "--max-count=100", input.Pattern, dir}
-		if input.Glob != "" {
-			args = append(args, "--include="+input.Glob)
-		}
+		args := mcpGrepArgs(input, dir)
 		cmd := platform.Command(ctx, args[0], args[1:]...)
 		var buf bytes.Buffer
 		cmd.Stdout = &buf
