@@ -150,12 +150,18 @@ func TestResolveDeployTargetSymlinkToJS(t *testing.T) {
 	if err := os.Symlink(js, link); err != nil {
 		t.Fatal(err)
 	}
+	// The resolver returns the canonical path; the temp dir itself may sit
+	// behind a symlink (macOS /var -> /private/var).
+	wantJS, err := filepath.EvalSymlinks(js)
+	if err != nil {
+		t.Fatal(err)
+	}
 	resolved, kind, err := ResolveDeployTarget(link)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved != js || kind != DeployTargetJS {
-		t.Errorf("ResolveDeployTarget(%q) = (%q, %v), want (%q, %v)", link, resolved, kind, js, DeployTargetJS)
+	if resolved != wantJS || kind != DeployTargetJS {
+		t.Errorf("ResolveDeployTarget(%q) = (%q, %v), want (%q, %v)", link, resolved, kind, wantJS, DeployTargetJS)
 	}
 }
 
