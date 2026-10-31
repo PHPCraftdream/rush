@@ -13,6 +13,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 - Security: `RunWithCredentials` isolates per-call credentials by avoiding config expansion and ambient authentication, and rejects provider IDs with special dispatch behavior and Google Vertex's ambient-auth flow.
 - `inject_agent(interrupt=true)` now replaces a credentialed child turn using its registered tenant driver template, and refuses instead of falling back to operator models when that binding is missing or unusable.
+- Forks now preserve the summary pointer when its summary message is within the copied history boundary.
+- Silent compaction now leaves pinned history and its summary available to the next model context; older non-pinned history is removed.
+- A retried compaction no longer includes text or reasoning from an abandoned partial response in its saved summary.
+
 - `RunWithCredentials`: the automatic follow-up turn after a delegated worker finishes no longer goes to the Client's configured (operator) provider; it is skipped and the completion is delivered with the session's next call.
 - Linked-worktree Git protection now blocks newline-separated write commands, additional ref writers, and destructive branch and tag flags.
 

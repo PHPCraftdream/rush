@@ -193,9 +193,13 @@ func (s *service) ForkSessionTx(ctx context.Context, srcID string, o ForkOptions
 	// complete, correct transcript. If a future subscriber needs
 	// incremental per-message fork events, publish them AFTER tx.Commit()
 	// below (loop over the re-read committed rows), not inside the tx.
+	// Keep the source-to-fork IDs so session-level pointers can follow the
+	// copied rows without referring back into the source session.
+	messageIDMap := make(map[string]string, len(srcMsgs))
 	for _, m := range srcMsgs {
+		copiedMessageID := uuid.New().String()
 		if _, err := qtx.CreateMessage(ctx, db.CreateMessageParams{
-			ID:                  uuid.New().String(),
+			ID:                  copiedMessageID,
 			SessionID:           forkID,
 			Role:                m.Role,
 			Parts:               m.Parts,
@@ -209,6 +213,21 @@ func (s *service) ForkSessionTx(ctx context.Context, srcID string, o ForkOptions
 			Origin:              m.Origin,
 		}); err != nil {
 			return Session{}, 0, fmt.Errorf("copy message into fork: %w", err)
+		}
+		messageIDMap[m.ID] = copiedMessageID
+		if m.Pinned != 0 {
+			if _, err := tx.ExecContext(ctx, `UPDATE messages SET pinned = ? WHERE id = ?`, m.Pinned, copiedMessageID); err != nil {
+				return Session{}, 0, fmt.Errorf("copy pinned state into fork: %w", err)
+			}
+		}
+	}
+
+	if copiedSummaryID, ok := messageIDMap[src.SummaryMessageID.String]; ok && src.SummaryMessageID.Valid {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE sessions SET summary_message_id = ? WHERE id = ?`,
+			copiedSummaryID, forkID,
+		); err != nil {
+			return Session{}, 0, fmt.Errorf("copy summary pointer into fork: %w", err)
 		}
 	}
 
