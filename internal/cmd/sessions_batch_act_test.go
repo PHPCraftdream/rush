@@ -196,6 +196,60 @@ func TestSessionsGc_BatchHeldRootProtectsSession(t *testing.T) {
 	require.Equal(t, 0, countActMessages(t, dataDir, f.owner), "and its data is untouched")
 }
 
+func TestSessionsGc_LockedPingRetainedAndUnlockedPingDeleted(t *testing.T) {
+	a, shutdownSeed := isolatedGcEnv(t)
+	ctx := context.Background()
+	locked, err := a.Sessions.CreateWithID(ctx, "ping-x", "locked ping")
+	require.NoError(t, err)
+	unlocked, err := a.Sessions.CreateWithID(ctx, "ping-y", "unlocked ping")
+	require.NoError(t, err)
+	_, err = a.DB().ExecContext(ctx, `UPDATE sessions SET created_at = ? WHERE id IN (?, ?)`, time.Now().Add(-2*time.Hour).Unix(), locked.ID, unlocked.ID)
+	require.NoError(t, err)
+	lock, err := session.TryAcquireSessionLock(a.Config().Options.DataDirectory, locked.ID)
+	require.NoError(t, err)
+	defer lock.Release()
+	dataDir := a.Config().Options.DataDirectory
+	shutdownSeed()
+
+	_, stderr := runBatchGc(t, false)
+	require.Contains(t, stderr, "kept session")
+	require.Contains(t, stderr, "a turn holds the session lock")
+	conn, err := db.Connect(ctx, dataDir)
+	require.NoError(t, err)
+	defer func() { _ = db.ReleaseConn(conn) }()
+	for id, want := range map[string]int{locked.ID: 1, unlocked.ID: 0} {
+		var count int
+		require.NoError(t, conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE id = ?`, id).Scan(&count))
+		require.Equal(t, want, count, "session %s", id)
+	}
+}
+
+func TestSessionsGc_LiveRunOwnerProtectsSession(t *testing.T) {
+	a, shutdownSeed := isolatedGcEnv(t)
+	ctx := context.Background()
+	sess, err := a.Sessions.CreateWithID(ctx, "gc-live-run-owner", "live driver")
+	require.NoError(t, err)
+	_, err = a.DB().ExecContext(ctx, `UPDATE sessions SET created_at = ? WHERE id = ?`, time.Now().Add(-8*24*time.Hour).Unix(), sess.ID)
+	require.NoError(t, err)
+	host := session.NewHostStore(a.DB(), a.Config().Options.DataDirectory, 4321, "gc-live-owner")
+	require.NoError(t, host.ClaimSessionDriver(ctx, sess.ID))
+	hostID := host.HostID()
+	host.CloseKeepLock()
+	t.Cleanup(func() { session.ReleaseRetainedHostLocksForTest(hostID) })
+	dataDir := a.Config().Options.DataDirectory
+	shutdownSeed()
+
+	_, stderr := runBatchGc(t, false)
+	require.Contains(t, stderr, "kept session")
+	require.Contains(t, stderr, "live `rush run` loop still drives it")
+	conn, err := db.Connect(ctx, dataDir)
+	require.NoError(t, err)
+	defer func() { _ = db.ReleaseConn(conn) }()
+	var count int
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE id = ?`, sess.ID).Scan(&count))
+	require.Equal(t, 1, count, "GC must preserve the session owned by a live run loop")
+}
+
 // TestSessionsGc_BatchRetentionSummary: the --jobs-older-than run reports
 // the batch-side numbers through the R10c retention API as an additive JSON
 // line.

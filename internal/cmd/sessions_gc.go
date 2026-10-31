@@ -156,6 +156,7 @@ func sessionsGcCmdRun(cmd *cobra.Command, args []string) error {
 	// Never collect a session that owns live or unknown batch work (or
 	// unreacted batch debt); each keep is reported.
 	toDelete = gcDropBatchProtected(a, toDelete)
+	toDelete = gcDropMaintenanceProtected(cmd.Context(), a, toDelete)
 
 	// --jobs-older-than: independent of the session-collection rules above
 	// and of --max-sessions (which only bounds SESSION deletions) -- runs
@@ -198,23 +199,31 @@ func sessionsGcCmdRun(cmd *cobra.Command, args []string) error {
 	// is kept.
 
 	for _, item := range toDelete {
+		if dryRun {
+			if asJSON {
+				if err := json.NewEncoder(os.Stdout).Encode(item); err != nil {
+					return err
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "would delete session %s (%s): %s\n", short(session.HashID(item.ID)), truncate(item.Title, 40), item.Reason)
+			}
+			continue
+		}
+
+		if protectionReason := liveOwnerProtection(cmd.Context(), a, item.ID); protectionReason != "" {
+			fmt.Fprintf(os.Stderr, "kept session %s (%s): %s\n", short(session.HashID(item.ID)), truncate(item.Title, 40), protectionReason)
+			continue
+		}
+		if err := a.Sessions.Delete(cmd.Context(), item.ID); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to delete session %s: %v\n", item.ID, err)
+			continue
+		}
 		if asJSON {
-			enc := json.NewEncoder(os.Stdout)
-			if err := enc.Encode(item); err != nil {
+			if err := json.NewEncoder(os.Stdout).Encode(item); err != nil {
 				return err
 			}
 		} else {
-			action := "would delete"
-			if !dryRun {
-				action = "deleted"
-			}
-			fmt.Fprintf(os.Stderr, "%s session %s (%s): %s\n", action, short(session.HashID(item.ID)), truncate(item.Title, 40), item.Reason)
-		}
-
-		if !dryRun {
-			if err := a.Sessions.Delete(cmd.Context(), item.ID); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to delete session %s: %v\n", item.ID, err)
-			}
+			fmt.Fprintf(os.Stderr, "deleted session %s (%s): %s\n", short(session.HashID(item.ID)), truncate(item.Title, 40), item.Reason)
 		}
 	}
 

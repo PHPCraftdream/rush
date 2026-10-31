@@ -29,11 +29,11 @@ clean slate without picking a new id and losing the side-channel state
 The wipe is a clean slate: the session's undelivered and unreacted background
 job / supervision notices are voided with the messages, so
 none of them reappears in the next run. A session that is still worked on is
-never reset: reset refuses while a "rush run" loop drives it (even between
-turns) or a background job / delegation of it is running. Stop it first
-("rush sessions cancel <id>"; a hung "rush run" can be ended by its PID, and
-"rush sessions kill <id>" ends the holder of the session lock during a turn).
---force kills the process holding the session lock (a turn in progress) and takes
+never reset: reset refuses while its OS session lock is held, a "rush run" loop
+drives it (even between turns), or a background job / delegation of it is running.
+Stop it first ("rush sessions cancel <id>"; a hung "rush run" can be ended by
+its PID, and "rush sessions kill <id>" ends the holder of the session lock
+during a turn). --force kills the process holding the session lock and takes
 over the lock, then applies the same check: it does not override a loop waiting
 between turns or a running job that outlived the killed process.`,
 	Args: cobra.ExactArgs(1),
@@ -60,9 +60,9 @@ rush sessions reset pr-42 --force
 		}
 
 		// Fork patch (orchestrator UX): --force kills any process still
-		// holding the session's lock and removes the lock file. Without
-		// this, a reset can succeed at the DB level but a subsequent
-		// `rush run --session <same>` still fails with "session is
+		// holding the session's lock, then acquires and holds the lock across
+		// the DB reset. Without this, a reset can succeed at the DB level but a
+		// subsequent `rush run --session <same>` still fails with "session is
 		// already in use" because the previous holder crashed without
 		// releasing.
 		//
@@ -101,11 +101,14 @@ rush sessions reset pr-42 --force
 			defer lk.Release()
 		}
 
-		// F8: the live-loop gate first -- the batch reset's atomic refusal
-		// covers batch work, but a live `rush run` loop between turns
-		// holds no batch root and no lock, so it must refuse exactly like
-		// the legacy path did (the R8A-3 bug).
-		if err := resetLiveLoopRefusal(cmd.Context(), a, sess.ID); err != nil {
+		// Non-force reset refuses a held session lock or live run-driver.
+		// The lock probe is released immediately; the batch reset handles
+		// batch ownership atomically.
+		if !force {
+			if reason := liveOwnerProtection(cmd.Context(), a, sess.ID); reason != "" {
+				return resetRefusedError(sess.ID, reason)
+			}
+		} else if err := resetLiveLoopRefusal(cmd.Context(), a, sess.ID); err != nil {
 			return err
 		}
 		// History (messages and batch rows) goes through the
