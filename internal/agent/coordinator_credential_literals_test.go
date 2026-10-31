@@ -128,6 +128,15 @@ func TestBuildCredentialModelUsesLiteralCredentialValues(t *testing.T) {
 	require.Equal(t, int64(0), probe.calls.Load(), "tenant credential construction must not invoke the config resolver")
 }
 
+func TestBuildCredentialModelRejectsEmptyBedrockKey(t *testing.T) {
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "ambient-token")
+	coord := &coordinator{cfg: config.NewLibraryStore(&config.Config{Options: &config.Options{}}, t.TempDir())}
+	providerCfg := credentialProviderConfig(Credential{Provider: "tenant-bedrock", Type: ProviderTypeBedrock})
+	provider, err := coord.buildProviderWithLiteralCredentials(coord.cfg.Config(), providerCfg, config.SelectedModel{}, false)
+	require.ErrorContains(t, err, "api_key is required")
+	require.Nil(t, provider)
+}
+
 func TestBuildProviderStillResolvesConfiguredValues(t *testing.T) {
 	probe := &credentialLiteralProbe{}
 	coord := &coordinator{cfg: credentialLiteralStore(probe)}

@@ -183,8 +183,18 @@ the caller's responsibility to synchronize.
 
 `ModelChoice.Model` is **not** validated against `Credential.Models` —
 an unrecognised model id fails on the first real provider call, exactly
-like `rush run --model` does today. OAuth-based providers (e.g. GitHub
-Copilot) are out of scope for `CredentialSet` — only a literal API key.
+like `rush run --model` does today. Credential type constants include
+`openai`, `openai-compat`, `openrouter`, `anthropic`, `google`,
+`google-vertex`, `azure`, `bedrock`, and `vercel`; **Google Vertex is
+rejected for per-call credentials** because it uses ambient
+application-default credentials. **An API key is required for every
+supported type except `openai-compat`**, which requires a `BaseURL` but
+may omit its key. OAuth-based providers (e.g. GitHub Copilot) are out of
+scope for `CredentialSet`; credential values pass literally without host
+configuration expansion.
+Provider IDs with special dispatch behavior (`openai-codex`, `hyper`,
+`opencode-go`, `opencode-zen`, `zai`, `minimax`, `minimax-cn`, and
+`copilot`) are reserved for configured providers.
 
 Credentialed roots are marked in memory after admission; that marker lives
 for the lifetime of the Client. Automatic background follow-ups are skipped

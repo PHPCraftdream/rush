@@ -41,6 +41,29 @@ import (
 	"github.com/qjebbs/go-jsons"
 )
 
+// reservedCredentialProviderIDs lists IDs with provider-specific construction
+// that would change the API or authentication used by tenant credentials.
+var reservedCredentialProviderIDs = map[string]struct{}{
+	"openai-codex": {},
+	"hyper":        {},
+	"opencode-go":  {},
+	"opencode-zen": {},
+	"zai":          {},
+	"minimax":      {},
+	"minimax-cn":   {},
+	"copilot":      {},
+}
+
+func validateCredentialProviderID(id string) error {
+	if id == "" {
+		return fmt.Errorf("credential is missing its provider name")
+	}
+	if _, reserved := reservedCredentialProviderIDs[id]; reserved {
+		return fmt.Errorf("provider ID %q is reserved and cannot be used for per-call credentials", id)
+	}
+	return nil
+}
+
 // Copilot models that use the Responses API instead of Chat Completions.
 var copilotResponsesModels = map[string]bool{
 	"gpt-5.2":       true,
@@ -708,7 +731,7 @@ func (c *coordinator) buildAzureProvider(baseURL, apiKey string, headers map[str
 	return azure.New(opts...)
 }
 
-func (c *coordinator) buildBedrockProvider(apiKey string, headers map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
+func (c *coordinator) buildBedrockProvider(apiKey string, headers map[string]string, httpClient *http.Client, allowAmbientAuth bool) (fantasy.Provider, error) {
 	var opts []bedrock.Option
 	if httpClient != nil {
 		opts = append(opts, bedrock.WithHTTPClient(httpClient))
@@ -719,7 +742,7 @@ func (c *coordinator) buildBedrockProvider(apiKey string, headers map[string]str
 	switch {
 	case apiKey != "":
 		opts = append(opts, bedrock.WithAPIKey(apiKey))
-	case os.Getenv("AWS_BEARER_TOKEN_BEDROCK") != "":
+	case apiKey == "" && allowAmbientAuth && os.Getenv("AWS_BEARER_TOKEN_BEDROCK") != "":
 		opts = append(opts, bedrock.WithAPIKey(os.Getenv("AWS_BEARER_TOKEN_BEDROCK")))
 	default:
 		// Skip, let the SDK do authentication.
@@ -778,27 +801,35 @@ func (c *coordinator) buildProvider(cfg *config.Config, providerCfg config.Provi
 	return c.buildProviderWithValues(cfg, providerCfg, model, isSubAgent, apiKey, baseURL)
 }
 
-// buildProviderWithLiteralCredentials builds a provider from credentials that
-// are already resolved by the caller. Per-call tenant credentials are opaque
-// values, so this boundary deliberately does not consult the config resolver.
-// cfg is the caller's pinned config snapshot (F6) and only supplies the
-// global network defaults for the HTTP client — it never feeds key/URL
-// resolution.
+// buildProviderWithLiteralCredentials builds a provider from opaque values. It
+// skips provider-ID dispatch, OAuth wiring, config resolution, and ambient auth.
 func (c *coordinator) buildProviderWithLiteralCredentials(cfg *config.Config, providerCfg config.ProviderConfig, model config.SelectedModel, isSubAgent bool) (fantasy.Provider, error) {
-	return c.buildProviderWithValues(cfg, providerCfg, model, isSubAgent, providerCfg.APIKey, providerCfg.BaseURL)
+	if providerCfg.Type == bedrock.Name && providerCfg.APIKey == "" {
+		return nil, fmt.Errorf("provider %q: api_key is required for per-call Bedrock credentials", providerCfg.ID)
+	}
+	if providerCfg.Type == "google-vertex" {
+		return nil, fmt.Errorf("provider %q: google-vertex credentials are unsupported because Vertex uses ambient credentials", providerCfg.ID)
+	}
+	providerCfg.ID = ""
+	providerCfg.OAuthToken = nil
+	return c.buildProviderWithValuesAndAuth(cfg, providerCfg, model, isSubAgent, providerCfg.APIKey, providerCfg.BaseURL, false)
 }
 
 // buildProviderWithValues wraps every provider built for agent sessions so
 // its model calls land in the heartbeat snapshot.
 func (c *coordinator) buildProviderWithValues(cfg *config.Config, providerCfg config.ProviderConfig, model config.SelectedModel, isSubAgent bool, apiKey, baseURL string) (fantasy.Provider, error) {
-	p, err := c.buildProviderWithValuesInner(cfg, providerCfg, model, isSubAgent, apiKey, baseURL)
+	return c.buildProviderWithValuesAndAuth(cfg, providerCfg, model, isSubAgent, apiKey, baseURL, true)
+}
+
+func (c *coordinator) buildProviderWithValuesAndAuth(cfg *config.Config, providerCfg config.ProviderConfig, model config.SelectedModel, isSubAgent bool, apiKey, baseURL string, allowAmbientAuth bool) (fantasy.Provider, error) {
+	p, err := c.buildProviderWithValuesInner(cfg, providerCfg, model, isSubAgent, apiKey, baseURL, allowAmbientAuth)
 	if err != nil {
 		return nil, err
 	}
 	return NewHeartbeatProvider(p), nil
 }
 
-func (c *coordinator) buildProviderWithValuesInner(cfg *config.Config, providerCfg config.ProviderConfig, model config.SelectedModel, isSubAgent bool, apiKey, baseURL string) (fantasy.Provider, error) {
+func (c *coordinator) buildProviderWithValuesInner(cfg *config.Config, providerCfg config.ProviderConfig, model config.SelectedModel, isSubAgent bool, apiKey, baseURL string, allowAmbientAuth bool) (fantasy.Provider, error) {
 	headers := maps.Clone(providerCfg.ExtraHeaders)
 	if headers == nil {
 		headers = make(map[string]string)
@@ -845,7 +876,7 @@ func (c *coordinator) buildProviderWithValuesInner(cfg *config.Config, providerC
 	case azure.Name:
 		return c.buildAzureProvider(baseURL, apiKey, headers, providerCfg.ExtraParams, httpClient)
 	case bedrock.Name:
-		return c.buildBedrockProvider(apiKey, headers, httpClient)
+		return c.buildBedrockProvider(apiKey, headers, httpClient, allowAmbientAuth)
 	case google.Name:
 		return c.buildGoogleProvider(baseURL, apiKey, headers, httpClient)
 	case "google-vertex":

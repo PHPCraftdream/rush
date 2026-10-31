@@ -219,7 +219,7 @@ func TestCodexTokenSourceCoordinatorStaticFallback(t *testing.T) {
 	cfg := &config.Config{Options: &config.Options{}}
 	pc := config.ProviderConfig{ID: codexTokenProviderID, OAuthToken: &token}
 	for _, coord := range []*coordinator{nil, {}} {
-		provider, err := coord.buildProviderWithValuesInner(cfg, pc, config.SelectedModel{}, false, "", "")
+		provider, err := coord.buildProviderWithValuesInner(cfg, pc, config.SelectedModel{}, false, "", "", true)
 		require.NoError(t, err)
 		require.Equal(t, codexTokenProviderID, provider.Name())
 	}
