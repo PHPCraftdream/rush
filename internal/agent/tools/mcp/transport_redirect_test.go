@@ -62,7 +62,9 @@ func TestMCPHTTPClientsRedirectPolicy(t *testing.T) {
 					t.Fatalf("unexpected transport %T", created)
 				}
 
-				resp, err := client.Get(origin.URL + "/start")
+				startReq, reqErr := http.NewRequestWithContext(t.Context(), http.MethodGet, origin.URL+"/start", nil)
+				require.NoError(t, reqErr)
+				resp, err := client.Do(startReq)
 				require.Equal(t, authorization, receiveHeader(t, originHeaders))
 				if crossOrigin {
 					require.Error(t, err)
@@ -95,7 +97,7 @@ func receiveHeader(t *testing.T, headers <-chan string) string {
 }
 
 func TestCheckMCPRedirectOriginComparison(t *testing.T) {
-	original, err := http.NewRequest(http.MethodGet, "https://mcp.example.test:443/start", nil)
+	original, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://mcp.example.test:443/start", nil)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -110,7 +112,7 @@ func TestCheckMCPRedirectOriginComparison(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			req, err := http.NewRequest(http.MethodGet, tc.target, nil)
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, tc.target, nil)
 			require.NoError(t, err)
 			via := []*http.Request{original}
 			err = checkMCPRedirect(req, via)
@@ -124,11 +126,11 @@ func TestCheckMCPRedirectOriginComparison(t *testing.T) {
 }
 
 func TestCheckMCPRedirectUsesFirstRequestInVia(t *testing.T) {
-	original, err := http.NewRequest(http.MethodGet, "https://mcp.example.test/start", nil)
+	original, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://mcp.example.test/start", nil)
 	require.NoError(t, err)
-	intermediate, err := http.NewRequest(http.MethodGet, "https://other.example.test/intermediate", nil)
+	intermediate, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://other.example.test/intermediate", nil)
 	require.NoError(t, err)
-	target, err := http.NewRequest(http.MethodGet, "https://mcp.example.test/final", nil)
+	target, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://mcp.example.test/final", nil)
 	require.NoError(t, err)
 
 	err = checkMCPRedirect(target, []*http.Request{original, intermediate})
@@ -136,7 +138,7 @@ func TestCheckMCPRedirectUsesFirstRequestInVia(t *testing.T) {
 }
 
 func TestCheckMCPRedirectPreservesLimit(t *testing.T) {
-	original, err := http.NewRequest(http.MethodGet, "https://mcp.example.test/", nil)
+	original, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://mcp.example.test/", nil)
 	require.NoError(t, err)
 	via := make([]*http.Request, 10)
 	via[0] = original

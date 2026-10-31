@@ -141,6 +141,8 @@ func TestForkSessionTx_EmptySourceNoLimit(t *testing.T) {
 // TestForkSessionTx_SummaryPointerFollowsCopiedBoundary covers pointer mapping
 // when copied, no source pointer, and a pointer excluded by LimitMsgs.
 func TestForkSessionTx_SummaryPointerFollowsCopiedBoundary(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct {
 		name      string
 		pointerAt int
