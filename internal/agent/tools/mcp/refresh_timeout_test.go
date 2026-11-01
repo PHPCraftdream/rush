@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -114,4 +115,89 @@ func TestRefreshWorkerRequestTimeoutDoesNotBlockOtherServer(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return GetServerToolNames(healthyName) != nil
 	}, 3*time.Second, 5*time.Millisecond, "unrelated server refresh did not proceed after timeout")
+}
+
+func TestPromptAndResourceRefreshRequestsRespectTimeout(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		kind   refreshKind
+		method string
+	}{
+		{name: "prompts", kind: refreshPromptsKind, method: "prompts/list"},
+		{name: "resources", kind: refreshResourcesKind, method: "resources/list"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			serverName := "refresh-list-timeout-" + test.name
+			started := make(chan struct{})
+			canceled := make(chan struct{})
+			release := make(chan struct{})
+			var stall atomic.Bool
+			var startedOnce, canceledOnce sync.Once
+			server := mcp.NewServer(&mcp.Implementation{Name: serverName}, nil)
+			server.AddPrompt(&mcp.Prompt{Name: "prompt"}, nil)
+			server.AddResource(&mcp.Resource{URI: "test://resource", Name: "resource"}, nil)
+			server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+				return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+					if method == test.method && stall.Load() {
+						startedOnce.Do(func() { close(started) })
+						select {
+						case <-ctx.Done():
+							canceledOnce.Do(func() { close(canceled) })
+							return nil, ctx.Err()
+						case <-release:
+							return nil, errors.New("released stalled list request")
+						}
+					}
+					return next(ctx, method, request)
+				}
+			})
+			httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+			cleanupTestMCPServer(t, server, httpServer)
+			t.Cleanup(func() { close(release) })
+
+			store := persistedMCPStore(t, serverName, httpServer.URL, false)
+			_, ok := store.UpdateMCP(serverName, func(cfg *config.MCPConfig) { cfg.Timeout = 1 })
+			require.True(t, ok)
+			owner, err := Acquire()
+			require.NoError(t, err)
+			defer func() {
+				closeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				require.NoError(t, owner.Close(closeCtx))
+			}()
+			require.NoError(t, InitializeSingle(context.Background(), serverName, store))
+			session, ok := sessions.Get(serverName)
+			require.True(t, ok)
+			admission, err := owner.admitServer(context.Background(), store, serverName, false)
+			require.NoError(t, err)
+			defer admission.done()
+			admission.committed = true
+			admission.committedName = serverName
+			admission.committedEpoch = admission.epoch
+			admission.publishedSession = session
+
+			stall.Store(true)
+			request := refreshRequest{kind: test.kind, name: serverName, cfg: store, admission: admission}
+			done := make(chan struct{})
+			go func() {
+				owner.runRefresh(request)
+				close(done)
+			}()
+			select {
+			case <-started:
+			case <-time.After(3 * time.Second):
+				t.Fatal("list refresh did not start")
+			}
+			select {
+			case <-canceled:
+			case <-time.After(3 * time.Second):
+				t.Fatal("list refresh context was not canceled at its timeout")
+			}
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("list refresh remained blocked after timeout")
+			}
+		})
+	}
 }

@@ -24,7 +24,12 @@ func prepareClient(ctx context.Context, cfg *config.ConfigStore, name string, m 
 		return nil, err
 	}
 
-	tools, err := getTools(ctx, session)
+	// Discovery runs after the connect timer is disarmed; bound the rest of
+	// the unpublished preparation with the same initialization timeout. The
+	// published session keeps its own lifetime context.
+	discoveryCtx, cancelDiscovery := context.WithTimeout(ctx, mcpTimeout(m))
+	defer cancelDiscovery()
+	tools, err := getTools(discoveryCtx, session)
 	if err != nil {
 		slog.Error("Error listing tools", "error", err, "name", name)
 		if admission == nil || (!admission.suppressState && admission.valid()) {
@@ -38,7 +43,7 @@ func prepareClient(ctx context.Context, cfg *config.ConfigStore, name string, m 
 		return nil, err
 	}
 
-	prompts, err := getPrompts(ctx, session)
+	prompts, err := getPrompts(discoveryCtx, session)
 	if err != nil {
 		slog.Error("Error listing prompts", "error", err, "name", name)
 		if admission == nil || (!admission.suppressState && admission.valid()) {
