@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Added user-global hashed API bearer token storage and `rush tokens create|list|show|revoke` commands with safe metadata output, documented exit codes, and one-time secret display.
+
 - MCP enable, disable, add and replace no longer fail with "MCP mutation result is stale" on a Ktav-migrated configuration: the legacy `rush.json` that migration keeps beside `rush.ktav` is no longer treated as a changed input unless its bytes actually change, and a write to an unrelated Ktav document (for example the app-managed data file) no longer advances the revision of MCP servers that document does not define. The same holds for the global config file: after it is migrated, its kept `rush.json` is no longer read as a second MCP source, which had made every MCP server, even a disabled one, report "MCP mutation result is stale" at startup.
 - SDK: a tenant's scheduled wake, batch notice or recheck no longer runs on the host's configured providers after a process restart. Credentialed sessions now carry a durable, secret-free marker (one reserved row in the existing run-queue table, no schema migration) that survives restarts, is copied into forks of the session or of any descendant, and keeps automatic follow-ups refused until the tenant's next call supplies credentials.
 - An accepted queued prompt is no longer dropped when an interrupt-and-send replacement fails before the prompt ran; the run now reports it as not executed and the queue releases it without an attempt penalty.

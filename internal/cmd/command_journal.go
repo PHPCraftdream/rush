@@ -130,11 +130,15 @@ func journalCommandStart(cmd *cobra.Command, args []string) {
 // first writes the classified start record with a fixed error string, so
 // cobra's raw-argument echo never reaches the journal.
 func finalizeCommandJournal(rawArgs []string, runErr error) {
-	code, errText := 0, ""
+	code := 0
 	if runErr != nil {
 		code = 1
-		errText = journalErrText(runErr)
 	}
+	finalizeCommandJournalWithCode(rawArgs, runErr, code)
+}
+
+func finalizeCommandJournalWithCode(rawArgs []string, runErr error, code int) {
+	errText := journalErrText(runErr)
 	commandJournal.mu.Lock()
 	defer commandJournal.mu.Unlock()
 	if commandJournal.endWritten || commandJournal.suppressed {

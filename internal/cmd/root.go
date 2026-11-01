@@ -109,6 +109,7 @@ func init() {
 		psCmd,
 		loginCmd,
 		statsCmd,
+		tokensCmd,
 	)
 }
 
@@ -374,9 +375,13 @@ func Execute() {
 		rootCmd,
 		options...,
 	)
-	finalizeCommandJournal(os.Args[1:], err)
+	code, tokenCommand := tokensExitCode(os.Args[1:], err)
+	if err != nil && !tokenCommand {
+		code = 1
+	}
+	finalizeCommandJournalWithCode(os.Args[1:], err, code)
 	if err != nil {
-		exitWithAudit(1)
+		exitWithAudit(code)
 	}
 }
 
