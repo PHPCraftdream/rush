@@ -574,6 +574,7 @@ type BatchInstallDeps struct {
 	// completion wake bridge; the App wires the bounded timeout-wake
 	// dispatcher). Nil keeps the plain durable commit hook.
 	CompletionWake func(context.Context, string)
+	QuestionWake   func(context.Context, string)
 	// ArmSupervision, when non-nil, arms the invoking session's supervision
 	// timer when a batch delivery answers with the started response (psv
 	// legacy-parity restoration). The app factory wires
@@ -785,7 +786,7 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 	}
 	env := batchLeafEnv{OutputCache: cache, Leaves: deps.Registries.Resolve, DiskBindings: deps.DiskBindings, Ingress: runtime.ingress}
 	if deps.AgentDeps.Runs != nil {
-		deps.AgentDeps.QuestionPublisher = batchCoordinatorQuestionPublisher{store: deps.Store}
+		deps.AgentDeps.QuestionPublisher = batchCoordinatorQuestionPublisher{store: deps.Store, wake: deps.QuestionWake}
 		deps.AgentDeps.Host = deps.Host
 		deps.AgentDeps.RunnerID = deps.RunnerID
 		deps.AgentDeps.Bind = batchStoreChildBind(deps.Store, deps.Host, deps.RunnerID)

@@ -32,6 +32,10 @@ var batchRuntimeConfigHook func(*BatchRuntimeConfig)
 // Nil in production; tests restore it immediately after New returns.
 var batchInstallDepsHook func(*agent.BatchInstallDeps)
 
+// batchInstallWiringHook observes the completed app-owned wake wiring in tests.
+// Nil in production; tests restore it immediately after New returns.
+var batchInstallWiringHook func(agent.BatchInstallDeps)
+
 // arms its fault watcher. It fails closed: any missing resource surfaces as
 // a New error — the process never silently continues with a half-installed
 // runtime. Caller must have ensured agent setup and a non-empty data dir.
@@ -78,6 +82,10 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	app.batchTimeoutWake.rootOwner = pwBatchCompletionRootOwner(app)
 	factory.wake = app.batchTimeoutWake.Wake
 	factory.deps.CompletionWake = app.batchTimeoutWake.WakeCompletion
+	factory.deps.QuestionWake = app.batchTimeoutWake.Wake
+	if batchInstallWiringHook != nil {
+		batchInstallWiringHook(factory.deps)
+	}
 	if factory.deps.Profile == nil {
 		profile, perr := agent.NewBatchProfileDefault()
 		if perr != nil {
