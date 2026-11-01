@@ -581,6 +581,7 @@ func TestLiveWorkTitles_CacheAvoidsHistoryReread(t *testing.T) {
 // fixture — the history bound already caps the single owner's 55 terminal
 // roots before capBatchRoots runs (accepted as a P3 coverage note).
 func TestBuildSessionLiveWork_TerminalCap(t *testing.T) {
+	t.Setenv("RUSH_GLOBAL_DIR", t.TempDir())
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	ctx, cancel := context.WithCancel(t.Context())
 
@@ -598,6 +599,8 @@ func TestBuildSessionLiveWork_TerminalCap(t *testing.T) {
 	}
 	for _, id := range []string{"tc-cap-run-a", "tc-cap-run-b"} {
 		seedLiveWorkRow(t, a, liveWorkSeedSpec{owner: sess.ID, toolCallID: id, taskKind: "bash", state: "running"})
+		_, err = a.DB().ExecContext(ctx, "UPDATE batch_nodes SET updated_at = ? WHERE tool_call_id = ?", 1_700_000_100, id)
+		require.NoError(t, err)
 	}
 
 	hub := newHub()
@@ -612,8 +615,8 @@ func TestBuildSessionLiveWork_TerminalCap(t *testing.T) {
 	require.NotNil(t, snap)
 	require.Len(t, snap.Commands, 52, "all running + only the last 50 finished")
 
-	// Newest first (running rows were claimed last, so their updated_at is
-	// the most recent; the tie between them breaks on tool_call_id asc);
+	// Newest first (running rows have explicitly equal updated_at values, so
+	// the tie between them breaks on tool_call_id asc);
 	// the 5 OLDEST finished rows (lowest i) are dropped.
 	require.Equal(t, "tc-cap-run-a", snap.Commands[0].ToolCallID)
 	require.Equal(t, "tc-cap-run-b", snap.Commands[1].ToolCallID)
