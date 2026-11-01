@@ -672,12 +672,20 @@ func (s *ConfigStore) mcpMutationResultCurrentLocked(result MCPMutationResult, e
 			// slot, including a sibling the MCP evaluation never reads
 			// because it does not exist (an absent rush.ktav beside an
 			// active rush.json). An absent tracked file the evaluation does
-			// not cover cannot make the mutation stale; an EXISTING tracked
-			// file missing from the evaluation stays a staleness signal.
+			// not cover cannot make the mutation stale. An EXISTING one (the
+			// legacy rush.json kept beside the selected rush.ktav after
+			// migration) is fingerprinted from its real disk bytes, exactly
+			// as the snapshot builder and ConfigStaleness do: it is stale
+			// only if those bytes changed, not merely because the
+			// evaluation does not read it.
 			if !expected.Exists {
 				continue
 			}
-			return false
+			sibling, err := trackedSlotFingerprint(path, nil)
+			if err != nil || !reloadFingerprintContentEqual(expected.fingerprint, sibling) {
+				return false
+			}
+			continue
 		}
 		if !reloadFingerprintContentEqual(expected.fingerprint, actual) {
 			return false
