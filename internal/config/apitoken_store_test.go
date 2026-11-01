@@ -103,14 +103,14 @@ func TestAPITokenStoreExpiryMalformedFailClosedAndProjectPathIgnored(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := store.VerifyAPIToken(plain, time.Now()); ok || err != errInvalidAPIToken {
+	if _, ok, err := store.VerifyAPIToken(plain, time.Now()); ok || err != ErrInvalidAPIToken {
 		t.Fatalf("expired credential accepted: %v, %v", ok, err)
 	}
 	if _, err := os.Stat(global); err != nil {
 		t.Fatal(err)
 	}
 	store.Path = project
-	if _, ok, err := store.VerifyAPIToken(plain, time.Now()); ok || err != errInvalidAPIToken {
+	if _, ok, err := store.VerifyAPIToken(plain, time.Now()); ok || err != ErrInvalidAPIToken {
 		t.Fatalf("project record unexpectedly authorized: %v, %v", ok, err)
 	}
 	store.Path = global
@@ -425,7 +425,7 @@ func TestAPITokenVerifyUniformErrorsAndCompare(t *testing.T) {
 	}
 	_, _, badErr := store.VerifyAPIToken(string(bad), time.Now())
 	_, _, expiredErr := store.VerifyAPIToken(plain, expires.Add(time.Second))
-	if expiredErr != errInvalidAPIToken {
+	if expiredErr != ErrInvalidAPIToken {
 		t.Fatalf("expired error = %v, want uniform invalid-token error", expiredErr)
 	}
 	if err := store.RevokeAPIToken(record.ID); err != nil {
@@ -821,7 +821,7 @@ func TestAPITokenHashBindsIDWhenSecretIsShared(t *testing.T) {
 	store.cacheMu.Lock()
 	store.cacheValid = false
 	store.cacheMu.Unlock()
-	if _, ok, err := store.VerifyAPIToken(tokenB, time.Now()); ok || err != errInvalidAPIToken {
+	if _, ok, err := store.VerifyAPIToken(tokenB, time.Now()); ok || err != ErrInvalidAPIToken {
 		t.Fatalf("copied digest verified token B: %v, %v", ok, err)
 	}
 }

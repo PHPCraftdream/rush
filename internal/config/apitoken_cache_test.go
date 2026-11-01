@@ -116,7 +116,7 @@ func TestAPITokenConcurrentReadersAndMutations(t *testing.T) {
 	}
 
 	for _, token := range revoked {
-		if _, ok, err := store.VerifyAPIToken(token.plain, time.Now()); ok || err != errInvalidAPIToken {
+		if _, ok, err := store.VerifyAPIToken(token.plain, time.Now()); ok || err != ErrInvalidAPIToken {
 			t.Fatalf("revoked token verification: ok=%v err=%v", ok, err)
 		}
 	}

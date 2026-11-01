@@ -36,7 +36,7 @@ var (
 	apiTokenWriteFile      = atomicWriteFile
 )
 
-var errInvalidAPIToken = errors.New("invalid API token")
+var ErrInvalidAPIToken = errors.New("invalid API token")
 
 // ErrAPITokenNotFound is returned when an API token id does not exist.
 var ErrAPITokenNotFound = errors.New("API token not found")
@@ -204,7 +204,7 @@ func (s *APITokenStore) CreateAPIToken(name string, scopes []string, permission 
 	}
 	record := APIToken{ID: id, Name: name, Scopes: append([]string(nil), scopes...), Permission: permission, Created: time.Now().UTC(), Expires: expiresCopy, Hash: hex.EncodeToString(hash[:])}
 	if _, ok := parseAPIToken(token); !ok {
-		return "", APIToken{}, errInvalidAPIToken
+		return "", APIToken{}, ErrInvalidAPIToken
 	}
 	err := s.mutate(func(doc *apiTokenDocument) error {
 		for _, old := range doc.Tokens {
@@ -274,7 +274,7 @@ func (s *APITokenStore) RevokeAPIToken(id string) error {
 func (s *APITokenStore) VerifyAPIToken(plain string, now time.Time) (APIToken, bool, error) {
 	id, ok := parseAPIToken(plain)
 	if !ok {
-		return APIToken{}, false, errInvalidAPIToken
+		return APIToken{}, false, ErrInvalidAPIToken
 	}
 
 	doc, err := s.read()
@@ -302,7 +302,7 @@ func (s *APITokenStore) VerifyAPIToken(plain string, now time.Time) (APIToken, b
 	if validRecord {
 		decoded, decodeErr := hex.DecodeString(record.Hash)
 		if decodeErr != nil || len(decoded) != sha256.Size {
-			return APIToken{}, false, errInvalidAPIToken
+			return APIToken{}, false, ErrInvalidAPIToken
 		}
 		want = decoded
 	}
@@ -312,7 +312,7 @@ func (s *APITokenStore) VerifyAPIToken(plain string, now time.Time) (APIToken, b
 	}
 	matched := compare(want, got[:]) == 1
 	if !validRecord || !matched || record.RevokedAt != nil || (record.Expires != nil && !now.Before(*record.Expires)) {
-		return APIToken{}, false, errInvalidAPIToken
+		return APIToken{}, false, ErrInvalidAPIToken
 	}
 	s.usedMu.Lock()
 	if s.lastUsed == nil {
