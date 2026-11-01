@@ -122,6 +122,7 @@ type Client struct {
 	// workersOnce guards starting the work-queue worker pool exactly once
 	// per Client (see startWorkers).
 	workersOnce sync.Once
+	workers     sync.WaitGroup
 }
 
 // newClient constructs a Client with its per-connection handler queue/
@@ -148,7 +149,9 @@ func newClient(hub *Hub, conn *websocket.Conn) *Client {
 func (c *Client) startWorkers() {
 	c.workersOnce.Do(func() {
 		for i := 0; i < workerPoolSize; i++ {
+			c.workers.Add(1)
 			go func() {
+				defer c.workers.Done()
 				for item := range c.workQueue {
 					runRecovered(item.name, func() {}, item.fn)
 				}
@@ -219,7 +222,11 @@ func (c *Client) dispatch(name, msgID string, fn func()) {
 func (c *Client) dispatchControl(name, msgID string, fn func()) {
 	select {
 	case c.controlSem <- struct{}{}:
-		go runRecovered(name, func() { <-c.controlSem }, fn)
+		c.workers.Add(1)
+		go func() {
+			defer c.workers.Done()
+			runRecovered(name, func() { <-c.controlSem }, fn)
+		}()
 	default:
 		slog.Warn("ws: control queue full, rejecting", "handler", name)
 		c.reply(msgID, EventError, nil, "server busy, please retry")

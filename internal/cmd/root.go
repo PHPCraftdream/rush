@@ -16,9 +16,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -76,6 +78,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolP("debug", "d", false, "Debug")
 	rootCmd.Flags().BoolP("help", "h", false, "Help")
 	rootCmd.Flags().StringP("host", "H", "localhost", "Host to bind the web UI to")
+	rootCmd.Flags().Bool("allow-cleartext", false, "Required to bind a non-loopback host; the UI uses plain HTTP and its per-process token is the only protection")
 	rootCmd.Flags().IntP("port", "p", 0, "Port to bind the web UI to (0 = pick a free one)")
 	rootCmd.Flags().Bool("no-open", false, "Do not open the browser after the server starts")
 	// --color-scheme forces fang's help/error styling onto a light or dark
@@ -153,7 +156,8 @@ flag registration, not duplicated here.`,
 rush
 
 # Pin the port and bind to all interfaces (e.g. for a remote dev box)
-rush --host 0.0.0.0 --port 9000
+# Remote browsers cannot connect; use SSH port forwarding with --host localhost.
+rush --host 0.0.0.0 --allow-cleartext --port 9000
 
 # Start the server without opening the browser (useful for IDE integrations)
 rush --no-open --port 8080
@@ -241,20 +245,29 @@ func setSettingsAudit(cmd *cobra.Command) {
 	})
 }
 
+var webAppFactory = setupApp
+
 func runWebMode(cmd *cobra.Command) error {
 	host, _ := cmd.Flags().GetString("host")
 	port, _ := cmd.Flags().GetInt("port")
 	noOpen, _ := cmd.Flags().GetBool("no-open")
+	allowCleartext, _ := cmd.Flags().GetBool("allow-cleartext")
+	if !server.IsLoopbackHost(host) && !allowCleartext {
+		return &tokenCLIError{code: 2, err: fmt.Errorf("refusing non-loopback --host %q: pass --allow-cleartext to bind the plain HTTP UI (the per-process token is its only protection); for remote access, use SSH port forwarding with --host localhost", host)}
+	}
 
-	a, err := setupApp(cmd)
+	a, err := webAppFactory(cmd)
 	if err != nil {
 		return err
 	}
 	defer a.Shutdown()
 	a.AgentCoordinator.SetPersistentMode(true)
 
-	addr := fmt.Sprintf("%s:%d", host, port)
-	srv := server.New(a, addr, rushweb.FS())
+	if !server.IsLoopbackHost(host) {
+		fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: rush web is serving unencrypted HTTP; anyone who obtains the token can run commands and edit files as you. Use a tunnel for remote access. Remote browsers cannot connect because WebSocket origins are restricted to loopback.")
+	}
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	srv := server.NewWithCleartext(a, addr, rushweb.FS(), allowCleartext)
 	token := srv.Token()
 
 	onReady := func(boundAddr string) {

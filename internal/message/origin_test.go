@@ -37,6 +37,26 @@ func TestCreateMessageOriginRoundTrip(t *testing.T) {
 	assert.Equal(t, OriginSDK, list[0].Origin)
 }
 
+func TestCreateMessageAPIOriginRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	_, q := newTestMessageDB(t)
+	svc := NewService(q)
+	ctx := t.Context()
+
+	msg, err := svc.Create(ctx, "test-api-origin-session", CreateMessageParams{
+		Role:   User,
+		Parts:  []ContentPart{TextContent{Text: "api"}},
+		Origin: OriginAPI,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, OriginAPI, msg.Origin)
+
+	got, err := svc.Get(ctx, msg.ID)
+	require.NoError(t, err)
+	assert.Equal(t, Origin("api"), got.Origin)
+}
+
 func TestCreateMessageOriginDefaultsUnspecified(t *testing.T) {
 	t.Parallel()
 

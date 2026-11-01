@@ -5,6 +5,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -17,13 +19,22 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Server wires together the HTTP mux, the WebSocket hub, and the app.
+var (
+	ErrUnexpectedNonLoopbackBind = errors.New("bound non-loopback address requires --allow-cleartext")
+	Listen                       = func(ctx context.Context, network, address string) (net.Listener, error) {
+		var lc net.ListenConfig
+		return lc.Listen(ctx, network, address)
+	}
+)
+
 type Server struct {
 	app    *appPkg.App
 	hub    *Hub
 	auth   *Auth
 	addr   string
 	static fs.FS
+	policy ListenerPolicy
+	uiAuth bool
 
 	// port is the actual TCP port the listener bound to. It's populated once
 	// Start() binds the listener (useful when addr requested port 0), and is
@@ -37,6 +48,18 @@ type Server struct {
 	shutdownMu   sync.Mutex
 	shutdownSig  chan struct{}
 	shutdownOnce sync.Once
+	connMu       sync.Mutex
+	connections  map[net.Conn]struct{}
+	wsWorkers    sync.WaitGroup
+}
+
+func (s *Server) policyHasSurface(surface ListenerSurface) bool {
+	for _, configured := range s.policy.Surfaces {
+		if configured == surface {
+			return true
+		}
+	}
+	return false
 }
 
 // checkOrigin validates the WebSocket handshake's Origin header. This is the
@@ -81,21 +104,75 @@ func (s *Server) checkOrigin(r *http.Request) bool {
 	return false
 }
 
+func (s *Server) validatePolicy() error {
+	for _, surface := range s.policy.Surfaces {
+		if surface == SurfaceUI {
+			return &ListenerPolicyError{Address: s.policy.Address, Rule: "UI surface is not permitted for serve policies"}
+		}
+	}
+	return s.policy.Validate()
+}
+
 // New creates a Server. Pass a nil staticFS to proxy the dev server instead.
 // Use addr "host:0" to let the OS pick a free port.
 func New(a *appPkg.App, addr string, staticFS fs.FS) *Server {
+	return newServer(a, ListenerPolicy{
+		Address:  addr,
+		Surfaces: []ListenerSurface{SurfaceWS, SurfaceUI},
+	}, staticFS, true)
+}
+
+// NewWithCleartext creates a UI server with an explicit non-loopback bind opt-in.
+func NewWithCleartext(a *appPkg.App, addr string, staticFS fs.FS, allowCleartext bool) *Server {
+	s := New(a, addr, staticFS)
+	s.policy.AllowCleartext = allowCleartext
+	return s
+}
+
+// NewWithPolicy creates a Server whose listener surfaces and authentication are
+// determined by policy. Unlike New, it never creates a UI token implicitly.
+func NewWithPolicy(a *appPkg.App, policy ListenerPolicy, staticFS fs.FS) *Server {
+	policy = cloneListenerPolicy(policy)
+	if policy.Auth == nil {
+		policy.Auth = DenyAllAuth
+	}
+	return newServer(a, policy, staticFS, false)
+}
+
+func cloneListenerPolicy(policy ListenerPolicy) ListenerPolicy {
+	policy.Surfaces = append([]ListenerSurface(nil), policy.Surfaces...)
+	policy.AllowedOrigins = append([]string(nil), policy.AllowedOrigins...)
+	policy.TokenIDs = append([]string(nil), policy.TokenIDs...)
+	return policy
+}
+
+func newServer(a *appPkg.App, policy ListenerPolicy, staticFS fs.FS, uiAuth bool) *Server {
+	policy = cloneListenerPolicy(policy)
+	var auth *Auth
+	if uiAuth {
+		auth = newAuth()
+	}
 	return &Server{
 		app:         a,
 		hub:         newHub(),
-		auth:        newAuth(),
-		addr:        addr,
+		auth:        auth,
+		addr:        policy.Address,
 		static:      staticFS,
+		policy:      policy,
+		uiAuth:      uiAuth,
 		shutdownSig: make(chan struct{}),
 	}
 }
 
 // Token returns the auth token to be printed in the terminal.
-func (s *Server) Token() string { return s.auth.Token() }
+func (s *Server) Token() string {
+	if s.auth == nil {
+		return ""
+	}
+	return s.auth.Token()
+}
+
+func (s *Server) RequestShutdown() { s.requestShutdown() }
 
 // shutdownChan returns the shutdown signal channel, lazily creating it so
 // Servers built as bare struct literals (tests) behave like New-built ones.
@@ -123,10 +200,43 @@ func (s *Server) requestShutdown() {
 // Start runs the server until ctx is cancelled. onReady is called once the
 // listener is bound (with the actual address, useful when port was 0).
 func (s *Server) Start(ctx context.Context, onReady func(addr string)) error {
-	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, "tcp", s.addr)
+	addr := s.addr
+	if !s.uiAuth {
+		var err error
+		addr, err = s.policy.ResolvedAddress()
+		if err != nil {
+			return err
+		}
+		validatedPolicy := s.policy
+		validatedPolicy.Address = addr
+		if err := validatedPolicy.Validate(); err != nil {
+			return err
+		}
+		s.policy.Address = addr
+	}
+	ln, err := Listen(ctx, "tcp", addr)
 	if err != nil {
 		return err
+	}
+	if !IsLoopbackHost(listenerHost(ln.Addr())) && !s.policy.AllowCleartext {
+		_ = ln.Close()
+		return fmt.Errorf("%w: %q", ErrUnexpectedNonLoopbackBind, ln.Addr().String())
+	}
+	return s.ServeListener(ctx, ln, onReady)
+}
+
+// ServeListener serves on a listener that was prebound by the caller. The
+// post-bind host check is repeated here for callers that inject a listener.
+func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady func(addr string)) error {
+	if !IsLoopbackHost(listenerHost(ln.Addr())) && !s.policy.AllowCleartext {
+		_ = ln.Close()
+		return fmt.Errorf("%w: %q", ErrUnexpectedNonLoopbackBind, ln.Addr().String())
+	}
+	if !s.uiAuth {
+		if err := s.validatePolicy(); err != nil {
+			_ = ln.Close()
+			return err
+		}
 	}
 
 	// Record the actual bound port (resolves "host:0" to whatever the OS
@@ -136,57 +246,131 @@ func (s *Server) Start(ctx context.Context, onReady func(addr string)) error {
 		s.port = port
 	}
 
-	runCtx, cancelRun := context.WithCancel(ctx)
+	runCtx, cancelRun := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelRun()
-	go s.hub.Run(runCtx)
-	go subscribeAndBroadcast(runCtx, s.app, s.hub)
-	// Best-effort, once per start, in its own goroutine so a slow release
-	// API never delays the listener becoming usable.
-	go broadcastUpdateNotice(runCtx, s.hub)
+	var joined sync.WaitGroup
+	joined.Add(1)
+	go func() {
+		defer joined.Done()
+		s.hub.Run(runCtx)
+	}()
+	if s.app != nil {
+		forwarders := subscribeAndBroadcast(runCtx, s.app, s.hub)
+		joined.Add(1)
+		go func() {
+			defer joined.Done()
+			forwarders.Wait()
+		}()
+	}
+	joined.Add(1)
+	go func() {
+		defer joined.Done()
+		broadcastUpdateNotice(runCtx, s.hub)
+	}()
 
 	mux := http.NewServeMux()
-
-	// Auth endpoints ΓÇö no cookie required.
-	mux.HandleFunc("/auth", s.auth.HandleAuth)
-	mux.HandleFunc("/auth/check", s.auth.HandleAuthCheck)
-
-	// WebSocket ΓÇö requires valid session cookie.
-	mux.Handle("/ws", s.auth.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The server-lifetime ctx (same one Hub.Run drains) is what the
-		// guarded register send inside handleWS needs; r.Context() alone
-		// cannot unblock it (it ends only when the handler returns).
-		s.handleWS(runCtx, w, r)
-	})))
-
-	if s.static != nil {
-		// Serve the embedded React build; fall back to index.html for SPA routing.
-		mux.Handle("/", spaHandler(s.static))
-	} else {
-		// Dev mode: proxy to the rspack dev server.
-		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, "http://localhost:3000"+r.RequestURI, http.StatusTemporaryRedirect)
+	if s.policyHasSurface(SurfaceWS) {
+		var ws http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// The server-lifetime ctx (same one Hub.Run drains) is what the
+			// guarded register send inside handleWS needs; r.Context() alone
+			// cannot unblock it (it ends only when the handler returns).
+			s.handleWS(runCtx, w, r)
 		})
+		if s.uiAuth {
+			ws = s.auth.Middleware(ws)
+		} else if s.policy.Auth != nil {
+			ws = s.policy.Auth(ws)
+		}
+		mux.Handle("/ws", ws)
+	}
+	if s.policyHasSurface(SurfaceREST) {
+		rest := http.Handler(http.NotFoundHandler())
+		if s.policy.Auth != nil {
+			rest = s.policy.Auth(rest)
+		}
+		mux.Handle("/api/v1/", rest)
+	}
+	if s.uiAuth && s.auth != nil {
+		mux.HandleFunc("/auth", s.auth.HandleAuth)
+		mux.HandleFunc("/auth/check", s.auth.HandleAuthCheck)
+	}
+	if s.policyHasSurface(SurfaceUI) {
+		if s.static != nil {
+			mux.Handle("/", spaHandler(s.static))
+		} else {
+			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, "http://localhost:3000"+r.RequestURI, http.StatusTemporaryRedirect)
+			})
+		}
 	}
 
+	var handlers sync.WaitGroup
+	var admissionMu sync.Mutex
+	admissionClosed := false
+	trackedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		admissionMu.Lock()
+		if admissionClosed {
+			admissionMu.Unlock()
+			http.Error(w, "server is shutting down", http.StatusServiceUnavailable)
+			return
+		}
+		handlers.Add(1)
+		admissionMu.Unlock()
+		defer handlers.Done()
+		mux.ServeHTTP(w, r)
+	})
 	srv := &http.Server{
-		Handler:      mux,
+		Handler: trackedHandler,
+		BaseContext: func(net.Listener) context.Context {
+			return runCtx
+		},
+		ConnState:    s.trackConnection,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 0, // streaming responses have no timeout
 		IdleTimeout:  120 * time.Second,
+		ErrorLog:     slog.NewLogLogger(slog.Default().Handler(), slog.LevelError),
+	}
+	if !s.uiAuth {
+		srv.ReadHeaderTimeout = 10 * time.Second
 	}
 
+	shutdownDone := make(chan error, 1)
 	go func() {
-		// ctx.Done() is the SIGINT/SIGTERM path; shutdownSignal is the
-		// WS-triggered shutdown_server command (task #714). Both converge
-		// here so the teardown sequence is identical either way.
 		select {
 		case <-ctx.Done():
 		case <-s.shutdownSignal():
 		}
+		// Stop admission before any cancellation or wait begins. The mutex
+		// makes handler WaitGroup.Add impossible after the shutdown waiter starts.
+		_ = ln.Close()
+		admissionMu.Lock()
+		admissionClosed = true
+		admissionMu.Unlock()
 		cancelRun()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutCtx)
+		err := srv.Shutdown(shutCtx)
+		cancel()
+		if err != nil {
+			_ = srv.Close()
+			s.closeConnections()
+		}
+		cancelRun()
+		s.closeConnections()
+		joinCtx, cancelJoin := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelJoin()
+		joinDone := make(chan struct{})
+		go func() {
+			joined.Wait()
+			handlers.Wait()
+			s.wsWorkers.Wait()
+			close(joinDone)
+		}()
+		select {
+		case <-joinDone:
+		case <-joinCtx.Done():
+			err = errors.Join(err, joinCtx.Err())
+		}
+		shutdownDone <- err
 	}()
 
 	slog.Info("rush web server listening", "addr", ln.Addr().String())
@@ -195,13 +379,46 @@ func (s *Server) Start(ctx context.Context, onReady func(addr string)) error {
 	if onReady != nil {
 		onReady(ln.Addr().String())
 	}
-	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-		return err
+	serveErr := srv.Serve(ln)
+	if serveErr != nil && serveErr != http.ErrServerClosed {
+		s.requestShutdown()
 	}
-	return nil
+	shutdownErr := <-shutdownDone
+	if serveErr != nil && serveErr != http.ErrServerClosed && !errors.Is(serveErr, net.ErrClosed) {
+		return serveErr
+	}
+	return shutdownErr
 }
 
-// handleWS upgrades the connection and runs the client read/write pumps.
+func (s *Server) trackConnection(conn net.Conn, state http.ConnState) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if state == http.StateClosed {
+		delete(s.connections, conn)
+		return
+	}
+	if s.connections == nil {
+		s.connections = make(map[net.Conn]struct{})
+	}
+	s.connections[conn] = struct{}{}
+}
+
+func (s *Server) closeConnections() {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	for conn := range s.connections {
+		_ = conn.Close()
+	}
+}
+
+func listenerHost(addr net.Addr) string {
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return ""
+	}
+	return host
+}
+
 // ctx is the server's lifetime context (Start's), so the register send
 // below can be abandoned when the hub has already stopped.
 func (s *Server) handleWS(ctx context.Context, w http.ResponseWriter, r *http.Request) {
@@ -217,6 +434,11 @@ func (s *Server) handleWS(ctx context.Context, w http.ResponseWriter, r *http.Re
 	}
 
 	c := newClient(s.hub, conn)
+	s.wsWorkers.Add(1)
+	go func() {
+		defer s.wsWorkers.Done()
+		c.workers.Wait()
+	}()
 	// register is buffered (64) but nothing drains it once Hub.Run has
 	// returned, and a bare select between the send and ctx.Done() cannot
 	// close the shutdown race: with buffer space left and ctx cancelled,
