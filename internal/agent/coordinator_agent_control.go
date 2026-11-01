@@ -208,10 +208,34 @@ func finishedStatusFor(msg *message.Message) string {
 	return "finished"
 }
 
+// drainCredentialBoundary reports whether an automatic drain of sessionID must
+// be refused for lack of its tenant credentials. The in-process root marker is
+// always consulted; the durable lineage walk (an extra session read per drain)
+// runs only when a durable marker store is bound, so a coordinator without one
+// keeps its previous behaviour exactly.
+func (c *coordinator) drainCredentialBoundary(ctx context.Context, sessionID string) bool {
+	if c.isCredentialedRoot(sessionID) {
+		return true
+	}
+	if c.credentialReqs == nil {
+		return false
+	}
+	return c.credentialedSessionOrAncestor(ctx, sessionID)
+}
+
 func (c *coordinator) credentialedSessionOrAncestor(ctx context.Context, sessionID string) bool {
 	for sessionID != "" {
 		if c.isCredentialedRoot(sessionID) {
 			return true
+		}
+		if c.credentialReqs != nil {
+			hasRequirement, err := c.credentialReqs.HasSessionCredentialRequirement(ctx, sessionID)
+			if err != nil {
+				return true // A durable lookup failure must not permit configured-provider fallback.
+			}
+			if hasRequirement {
+				return true
+			}
 		}
 		sess, err := c.sessions.Get(ctx, sessionID)
 		if err != nil {

@@ -350,6 +350,11 @@ func (c *coordinator) RunWithCredentials(ctx context.Context, sessionID, prompt 
 				return err
 			}
 		}
+		if c.credentialReqs != nil {
+			if err := c.credentialReqs.StoreSessionCredentialRequirement(admitCtx, sessionID); err != nil {
+				return fmt.Errorf("persist session credential requirement: %w", err)
+			}
+		}
 		c.markCredentialedRoot(sessionID)
 		return nil
 	})
@@ -359,7 +364,7 @@ func (c *coordinator) RunWithCredentials(ctx context.Context, sessionID, prompt 
 }
 
 // credentialedRoots methods are coordinator-local sticky state. Membership is
-// recorded only after the run has passed session admission.
+// recorded only after admission and any configured durable marker succeed.
 func (c *coordinator) markCredentialedRoot(sessionID string) {
 	c.credentialedRootsMu.Lock()
 	if c.credentialedRoots == nil {

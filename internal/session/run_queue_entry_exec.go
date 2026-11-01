@@ -196,15 +196,15 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 
 	// Parse the call data from JSON
 	var callData SessionAgentCallData
-	if IsSessionExecutionRequirementCallData(leased.CallData) {
-		slog.Error("run_queue_pump: refusing to execute a session execution requirement metadata row as a call", "id", leased.ID, "session_id", leased.SessionID, "instance_id", p.cfg.PumpInstanceID)
+	if IsSessionExecutionRequirementCallData(leased.CallData) || IsSessionCredentialRequirementCallData(leased.CallData) {
+		slog.Error("run_queue_pump: refusing to execute session metadata row as a call", "id", leased.ID, "session_id", leased.SessionID, "instance_id", p.cfg.PumpInstanceID)
 		fenceDBCtx, fenceDBCancel := newDBCtx()
 		defer fenceDBCancel()
 		if termErr := p.cfg.Sessions.TerminalFailRunQueueEntry(fenceDBCtx, leased.ID, p.cfg.PumpInstanceID); termErr != nil {
 			slog.Error("run_queue_pump: terminal fail failed", "id", leased.ID, "err", termErr, "instance_id", p.cfg.PumpInstanceID)
 		}
 		ids, terminalID := resultIdentity()
-		return ids, terminalID, fmt.Errorf("session execution requirement row %s is not executable", leased.ID)
+		return ids, terminalID, fmt.Errorf("session metadata row %s is not executable", leased.ID)
 	}
 	if err := json.Unmarshal([]byte(leased.CallData), &callData); err != nil {
 		slog.Error("run_queue_pump: failed to parse call data", "id", leased.ID, "session_id", leased.SessionID, "err", err, "instance_id", p.cfg.PumpInstanceID)

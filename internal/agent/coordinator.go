@@ -316,6 +316,9 @@ type coordinator struct {
 	// nil means no fence can exist (bare fixtures), which reads as "no
 	// requirement" in PrepareContinuation.
 	execReqs session.SessionExecutionRequirementStore
+	// credentialReqs durably records the secret-free credential boundary;
+	// nil retains the in-process marker only.
+	credentialReqs session.SessionCredentialRequirementStore
 
 	// wakeScheduler is the stage-4b durable wake-schedule worker (one timer
 	// goroutine over WakeScheduleStore.NextDue), wired via

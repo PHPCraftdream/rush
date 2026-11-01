@@ -108,7 +108,7 @@ func applyDrainModelOptions(call SessionAgentCall, model Model) SessionAgentCall
 // transferred to the successful return. A lost binding fails closed typed
 // before anything runs.
 func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (SessionAgentCall, *preparedContinuation, error) {
-	if _, ok := c.subAgentDrivers.get(sessionID); !ok && c.isCredentialedRoot(sessionID) {
+	if _, ok := c.subAgentDrivers.get(sessionID); !ok && c.drainCredentialBoundary(ctx, sessionID) {
 		return SessionAgentCall{}, nil, fmt.Errorf("%w: session %s", ErrCredentialBindingUnavailable, sessionID)
 	}
 	if driver, ok := c.subAgentDrivers.get(sessionID); ok {
