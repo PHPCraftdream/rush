@@ -175,6 +175,18 @@ func newTestDB(t *testing.T) (*sql.DB, *db.Queries) {
 			interrupt INTEGER NOT NULL DEFAULT 0,
 			created_at INTEGER NOT NULL
 		);
+
+		-- Forking reads the durable credential marker row from the run queue.
+		CREATE TABLE session_run_queue (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+			call_data TEXT NOT NULL,
+			status TEXT NOT NULL CHECK (status IN ('pending','leased','acked')),
+			leased_by TEXT, leased_at INTEGER, lease_expires_at INTEGER,
+			attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+			terminal_failure INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+		);
 	`)
 	require.NoError(t, err)
 
