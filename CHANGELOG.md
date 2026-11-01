@@ -8,6 +8,11 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- MCP enable, disable, add and replace no longer fail with "MCP mutation result is stale" on a Ktav-migrated configuration: the legacy `rush.json` that migration keeps beside `rush.ktav` is no longer treated as a changed input unless its bytes actually change, and a write to an unrelated Ktav document (for example the app-managed data file) no longer advances the revision of MCP servers that document does not define.
+- SDK: a tenant's scheduled wake, batch notice or recheck no longer runs on the host's configured providers after a process restart. Credentialed sessions now carry a durable, secret-free marker (one reserved row in the existing run-queue table, no schema migration) that survives restarts, is copied into forks of the session or of any descendant, and keeps automatic follow-ups refused until the tenant's next call supplies credentials.
+- An accepted queued prompt is no longer dropped when an interrupt-and-send replacement fails before the prompt ran; the run now reports it as not executed and the queue releases it without an attempt penalty.
+- A queued sub-agent whose run is compacted mid-turn no longer reports an empty completion before its work continues.
+- An explicitly empty `reasoning_content` streamed by OpenAI-compatible providers (for example Kimi) is now replayed on later turns when the next request goes to the same provider family, and is still omitted for other providers.
 - MCP initialization now bounds the tools/prompts discovery that follows a successful connect with the server's initialization timeout, so a server that answers the handshake but never answers `tools/list` can no longer hang startup.
 - Ripgrep-backed searches and the CLI-provider MCP Grep tool now pass search patterns with `-e` and terminate option parsing before paths, so model-controlled patterns or dash-prefixed paths cannot activate command options.
 - MCP HTTP and SSE clients now reject redirects that change the original scheme, host, or port, preventing server requests from being redirected to another origin.
