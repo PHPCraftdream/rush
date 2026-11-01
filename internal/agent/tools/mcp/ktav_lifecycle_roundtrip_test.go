@@ -37,6 +37,20 @@ func TestKtavMigratedMCPEnableDisableRemoveRoundTrip(t *testing.T) {
 			t.Setenv("XDG_DATA_HOME", dataDir)
 			require.NoError(t, os.MkdirAll(configDir, 0o700))
 			require.NoError(t, os.MkdirAll(dataDir, 0o700))
+			// With the default providers disabled, Init needs a custom provider;
+			// without one it relied on locally installed CLI providers and failed
+			// on CI machines that have none.
+			require.NoError(t, os.WriteFile(filepath.Join(configDir, "rush.json"), []byte(`{
+  "providers": {
+    "test": {
+      "id": "test",
+      "base_url": "https://example.invalid/v1",
+      "api_key": "test-key",
+      "discover_models": false,
+      "models": [{"id": "model", "name": "Test model"}]
+    }
+  }
+}`), 0o600))
 
 			const name, toolName = "ktav-lifecycle", "ktav_echo"
 			server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "ktav-lifecycle-server"}, nil)
@@ -161,7 +175,7 @@ func awaitKtavEvent(t *testing.T, events <-chan pubsub.Event[Event], typ pubsub.
 			}
 			require.Equal(t, typ, event.Type)
 			require.Equal(t, EventStateChanged, event.Payload.Type)
-			require.Equal(t, state, event.Payload.State)
+			require.Equal(t, state, event.Payload.State, "unexpected MCP state event: %#v err=%v", event.Payload, event.Payload.Error)
 			return
 		case <-timer.C:
 			t.Fatalf("timed out waiting for %s event for %q", state, name)
