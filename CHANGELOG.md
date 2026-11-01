@@ -8,6 +8,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- MCP initialization now bounds the tools/prompts discovery that follows a successful connect with the server's initialization timeout, so a server that answers the handshake but never answers `tools/list` can no longer hang startup.
 - Ripgrep-backed searches and the CLI-provider MCP Grep tool now pass search patterns with `-e` and terminate option parsing before paths, so model-controlled patterns or dash-prefixed paths cannot activate command options.
 - MCP HTTP and SSE clients now reject redirects that change the original scheme, host, or port, preventing server requests from being redirected to another origin.
 - Security: `RunWithCredentials` isolates per-call credentials by avoiding config expansion and ambient authentication, and rejects provider IDs with special dispatch behavior and Google Vertex's ambient-auth flow.
