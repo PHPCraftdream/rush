@@ -10,8 +10,10 @@ import (
 	"time"
 )
 
-const SessionCredentialRequirementKind = "session_credential_requirement"
-const SessionCredentialRequirementVersion = 1
+const (
+	SessionCredentialRequirementKind    = "session_credential_requirement"
+	SessionCredentialRequirementVersion = 1
+)
 
 // SessionCredentialRequirementStore is an optional capability for persisting
 // whether a session requires credentials. Marker payloads contain no secrets.
