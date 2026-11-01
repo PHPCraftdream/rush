@@ -213,14 +213,25 @@ func TestP0_2_CompactionContinuation_DurableAckAfterContinuationExecutes(t *test
 	require.NoError(t, err)
 	require.Len(t, pending, 1, "durable row must be queued before the pump starts")
 
-	// mockCoord adapts session.SessionAgentCallData to agent.SessionAgentCall
-	// exactly like pumpTestCoordinator in p0_2_regression_test.go: it sets
-	// FromDurableQueue=true, mirroring coordinator.RebuildSessionAgentCall in
-	// production, so the leased call takes the exact code path the P0-1
-	// guard (mailbox.submit) special-cases.
+	// Observe the live waiter callback too: it must resolve only after the
+	// continuation provider call has completed, not at the first turn boundary.
+	resolved := make(chan struct {
+		result *fantasy.AgentResult
+		err    error
+	}, 4)
+	var resolutionCount atomic.Int64
+	var continuationCallsAtResolution atomic.Int64
 	mockCoord := &pumpTestCoordinator{
 		sessionAgent: sessionAgent,
 		dataDir:      dataDir,
+		onQueueResolved: func(result *fantasy.AgentResult, err error) {
+			resolutionCount.Add(1)
+			continuationCallsAtResolution.Store(continuationCalls.Load())
+			resolved <- struct {
+				result *fantasy.AgentResult
+				err    error
+			}{result: result, err: err}
+		},
 	}
 
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
@@ -242,13 +253,32 @@ func TestP0_2_CompactionContinuation_DurableAckAfterContinuationExecutes(t *test
 		t.Fatal("durable row was never Acked within 10s")
 	}
 	require.NotEmpty(t, ackedID, "AckRunQueueEntry must report the deleted row's ID")
+	// Join the pump before inspecting callback count: this proves exactly
+	// one callback was made over the complete execution, not merely that one
+	// callback eventually arrived. The channel is buffered to avoid blocking
+	// a duplicate callback on the worker.
+	require.False(t, pump.Stop(), "pump should stop after the run completed")
+	var resolution struct {
+		result *fantasy.AgentResult
+		err    error
+	}
+	select {
+	case resolution = <-resolved:
+	case <-time.After(10 * time.Second):
+		t.Fatal("durable queue callback was not resolved after continuation execution")
+	}
+	require.Equal(t, int64(1), resolutionCount.Load(), "queue callback must be invoked exactly once")
+	require.NoError(t, resolution.err, "durable queue callback must resolve successfully")
+	require.NotNil(t, resolution.result, "durable queue callback must include a result")
 
-	// Core proof 1: at the exact moment of Ack, the continuation turn had
-	// ALREADY reached the provider. Before the fix, continuationCalls is
-	// still 0 here — the row is Acked with the continuation work silently
-	// dropped, and no later event will ever bring it back to 1.
+	// Core proof 1: at the exact moment the queue callback resolves, the
+	// continuation turn had ALREADY reached the provider. Before the fix,
+	// continuationCallsAtResolution is still 0 here — the row is Acked with
+	// the continuation work silently dropped.
 	require.Equal(t, int64(1), continuationCalls.Load(),
-		"post-compaction continuation must execute exactly once, strictly before the durable row is Acked")
+		"continuation provider call count must be exactly one")
+	require.Equal(t, int64(1), continuationCallsAtResolution.Load(),
+		"continuation provider call count inside callback must be exactly one")
 
 	// Core proof 2: no double execution — main turn and summarize each ran
 	// exactly once too (guards against a fix that accidentally resubmits

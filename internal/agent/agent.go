@@ -264,6 +264,9 @@ type SessionAgentCall struct {
 	// replacementHandoff marks a call extracted from mailbox.replacement.
 	replacementHandoff bool
 
+	// compactionContinuation marks an internal continuation of this call's turn.
+	compactionContinuation bool
+
 	// InjectID, when non-empty, is the ID of a pending_injects row that
 	// must be deleted AFTER successful OS lock acquisition. Set by the
 	// cross-process interrupt inject path (startDetachedRun) to

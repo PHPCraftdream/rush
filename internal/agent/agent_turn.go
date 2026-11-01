@@ -907,6 +907,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			// pending tool calls never answered (mirrors coordinator_run.go's
 			// own `trackCall.drainTurnCommitted = trackCall.IsDrain` retry rule).
 			continuationCall.drainTurnCommitted = continuationCall.IsDrain
+			continuationCall.compactionContinuation = true
 			return nil, continuationCall, true, nil
 		}
 	}
