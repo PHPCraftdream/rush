@@ -23,7 +23,10 @@ type batchChildQuestionNotice struct {
 type batchChildQuestionPublisher interface {
 	PublishChildQuestion(context.Context, batchChildQuestionNotice) error
 }
-type batchCoordinatorQuestionPublisher struct{ store *session.BatchStore }
+type batchCoordinatorQuestionPublisher struct {
+	store *session.BatchStore
+	wake  func(context.Context, string)
+}
 
 func (p batchCoordinatorQuestionPublisher) PublishChildQuestion(ctx context.Context, n batchChildQuestionNotice) error {
 	if p.store == nil {
@@ -34,7 +37,13 @@ func (p batchCoordinatorQuestionPublisher) PublishChildQuestion(ctx context.Cont
 	}
 	marker := fmt.Sprintf("[batch-question node=%s token=%d sequence=%d depth=%d child=%s]\n", n.NodeID, n.Token, n.Sequence, n.Depth, n.ChildSessionID)
 	text := marker + "SUB-AGENT QUESTION: " + n.Question + "\nAnswer with inject_agent for this existing batch node; do not resume the delegation as a new generation."
-	return p.store.BatchPublishQuestion(ctx, n.Owner, n.NodeID, int64(n.Token), marker, text)
+	if err := p.store.BatchPublishQuestion(ctx, n.Owner, n.NodeID, int64(n.Token), marker, text); err != nil {
+		return err
+	}
+	if p.wake != nil {
+		p.wake(ctx, n.Owner)
+	}
+	return nil
 }
 
 func buildBatchQuestionTools(list []fantasy.AgentTool, ctx context.Context) ([]fantasy.AgentTool, error) {

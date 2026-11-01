@@ -8,6 +8,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- A delegated batch worker that stops to ask a question now wakes its sleeping orchestrator immediately after the question is stored, instead of leaving an orchestrator parked in await_tasks until a timeout check-in.
 - Added user-global hashed API bearer token storage and `rush tokens create|list|show|revoke` commands with safe metadata output, documented exit codes, and one-time secret display.
 
 - MCP enable, disable, add and replace no longer fail with "MCP mutation result is stale" on a Ktav-migrated configuration: the legacy `rush.json` that migration keeps beside `rush.ktav` is no longer treated as a changed input unless its bytes actually change, and a write to an unrelated Ktav document (for example the app-managed data file) no longer advances the revision of MCP servers that document does not define. The same holds for the global config file: after it is migrated, its kept `rush.json` is no longer read as a second MCP source, which had made every MCP server, even a disabled one, report "MCP mutation result is stale" at startup.
