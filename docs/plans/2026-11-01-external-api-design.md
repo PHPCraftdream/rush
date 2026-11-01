@@ -229,10 +229,12 @@ no valid token and no way to create one (prints how to run `rush tokens create`)
 | API-8 | WS hardening: header/subprotocol auth, origins, limits, hello | API-4 |
 | API-9 | Four-channel e2e matrix, security tests, mutants | API-3, API-6, API-7, API-8 |
 | API-10 | Docs, OpenAPI file, client examples, CHANGELOG | API-6 |
+| API-11 | Client CLI `rush api` with remote profiles, help text, completion | API-6 |
+| API-12 | Help/README/docs coverage tests (docs-lint), golden help output, coverage gate | API-1, API-2, API-11 |
 
 Suggested agent batches: auth core (API-1 + API-4), listeners and TLS
 (API-2 + API-3), REST (API-5 + API-6 + API-10), permissions and WS
-(API-7 + API-8), then verification (API-9).
+(API-7 + API-8), client CLI (API-11 + API-12), then verification (API-9).
 
 ## 14. Decisions
 
@@ -244,3 +246,67 @@ Suggested agent batches: auth core (API-1 + API-4), listeners and TLS
 - D4: default permission mode `ask`, `auto` only for admin tokens or an explicit
   listener flag.
 - D5: remote web UI is out of scope; the UI surface is loopback only.
+- D6: shape of the command-line interface (section 15): a separate `rush api` client command group with named remote profiles (recommended), versus extending `rush run` with `--remote`, versus documenting `curl` only.
+
+## 15. Command-line interface (operator requirement: convenient, documented, tested)
+
+The API must be as easy to use from a terminal as `rush run` is today. Two
+command groups, both documented in `--help`, in the README and in `docs/`:
+
+Server side
+- `rush serve` (section 10) with `--listen`, `--tls-cert`, `--tls-key`,
+  `--tls-self-signed`, `--client-ca`, `--allow-cleartext`, `--workdir-root`;
+  `--print-config` prints the effective listener table and the certificate
+  fingerprint without starting.
+- `rush tokens create|list|show|revoke` with `--json`, `--expires`, `--scope`,
+  `--permission`, `--name`; the secret is printed once to stdout (stderr carries
+  the warning text), never accepted on the command line of other commands.
+
+Client side (`rush api`, decision D6)
+- Remote profiles: `rush api remote add <name> --url https://host:8443
+  --token-env RUSH_TOKEN | --token-file PATH | --token-stdin
+  [--ca FILE] [--pin-sha256 HEX] [--client-cert FILE --client-key FILE]`,
+  `remote list|show|rm|test`. Profiles live in the config (Ktav-capable) and
+  hold references to secrets, never the secret itself; a token given as a plain
+  argument is refused with an explanation (it would appear in process lists and
+  shell history).
+- Commands mirroring section 7: `rush api sessions list|get|create|fork|delete`,
+  `rush api messages <session> [--after ID]`, `rush api run <session|--new>
+  "prompt" [--wait] [--stream] [--role smart] [--timeout 30m]`,
+  `rush api events <session> --follow`, `rush api cancel <run>`,
+  `rush api inject <session> --message ... [--interrupt]`,
+  `rush api permissions list|allow|deny <id>`, `rush api models`,
+  `rush api raw METHOD PATH [--data FILE]` (escape hatch), `rush api openapi`.
+- The profile is chosen by `--remote NAME` or `RUSH_REMOTE`; one default profile.
+- Output: readable tables by default, `--json` for scripting (stable schema,
+  documented), `--quiet`; streaming commands print one event per line.
+- Exit codes are part of the contract: 0 success, 1 error, 2 usage, 3
+  authentication or scope refused, 4 not found, 5 timeout, 6 waiting for a
+  permission decision.
+- TLS ergonomics: `--ca`, `--pin-sha256` (accepts the fingerprint printed by
+  `rush serve`), mTLS cert/key, and an explicit, loudly named
+  `--insecure-skip-verify`. Shell completion for commands, profiles, sessions.
+- `rush run --remote NAME ...` runs a prompt through the API with the same
+  flags and output as local `rush run` (follow-up, after `rush api run` works).
+
+Documentation rules, enforced by tests (section 16): every command and flag has
+`Short`, `Long` and at least one `Example` in its help; every command appears in
+`docs/api/cli.md` and the README section "Remote API"; the help text, the docs
+page and the README table are checked against the command tree.
+
+## 16. Definition of done for every API task
+
+- Unit tests for each new function with a decision in it; integration tests over
+  real listeners (httptest, plain and TLS); CLI tests against a fake REST server
+  and against the in-process real server.
+- Golden files for `--help` output of every new command and for `--json`
+  schemas; a docs-lint test walks the cobra command tree and fails when a
+  command, flag or exit code is missing from `docs/api/cli.md` or the README, or
+  when an example in the docs does not parse against the command tree.
+- Revert-check mutants for every security rule (scope default, redaction, TLS
+  minimum, cleartext refusal, root confinement, token comparison).
+- Coverage of the new packages measured with `go test -cover`, floor 85% of
+  statements, recorded in the hand-over; uncovered branches are listed with the
+  reason.
+- Token redaction check: the log of every integration test is scanned for the
+  plaintext token.
