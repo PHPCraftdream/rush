@@ -277,7 +277,7 @@ def gate_cli(args):
         for key, expected in expected_outputs.items():
             actual = outputs.get(key)
             if isinstance(expected, bool): actual = actual is True or str(actual).lower() == "true"
-            elif isinstance(expected, str) and key in ("mode", "linux_packages", "darwin_packages", "windows_packages", "race_packages", "validated_head", "validated_base"): actual = str(actual)
+            elif isinstance(expected, str) and key in ("mode", "linux_packages", "darwin_packages", "windows_packages", "race_packages", "validated_head", "validated_base"): actual = "" if actual is None else str(actual)
             if actual != expected: raise ValueError("plan output drift: " + key)
         if plan.get("mode") != outputs.get("mode"): raise ValueError("mode differs from plan outputs")
         validated_head, validated_base = os.environ.get("VALIDATED_HEAD", ""), os.environ.get("VALIDATED_BASE", "")

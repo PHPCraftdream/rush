@@ -211,6 +211,72 @@ class AdapterTests(unittest.TestCase):
                 if failure == "missing": self.assertEqual(result["reason"],f"missing jobs: {missing_job}")
                 else: self.assertEqual(result["reason"],f"required jobs not successful: {failed_job} (failure)")
 
+    def test_missing_empty_string_outputs_pass_and_nonempty_contracts_still_fail(self):
+        package = MODULE + "/internal/server"
+
+        def run_case(omitted=(), actual_changes=None, empty_key=None):
+            with tempfile.TemporaryDirectory() as td:
+                plan, outputs, args, env = self.setup_contract(td)
+                package = MODULE + "/internal/server"
+                outputs.update(ubuntu_needed=True, macos_needed=True, windows_needed=True,
+                               linux_packages=package, darwin_packages=package,
+                               windows_packages=package, race_packages="", native_required=True)
+                plan["native_required"] = {"required": True}
+                plan["per_os"] = {"linux": [{"package": package}],
+                                  "darwin": [{"package": package}],
+                                  "windows": [{"package": package}]}
+                plan["race_packages"] = []
+                if empty_key in ("linux_packages", "darwin_packages", "windows_packages"):
+                    os_name = {"linux_packages": "linux", "darwin_packages": "darwin",
+                               "windows_packages": "windows"}[empty_key]
+                    needed_key = {"linux": "ubuntu_needed", "darwin": "macos_needed",
+                                  "windows": "windows_needed"}[os_name]
+                    outputs[needed_key] = False
+                    plan["per_os"][os_name] = []
+                    outputs[empty_key] = ""
+                expected = dict(outputs)
+                if actual_changes:
+                    if "race_packages" in actual_changes and "race_packages" in omitted:
+                        expected["race_packages"] = actual_changes["race_packages"]
+                        plan["race_packages"] = actual_changes["race_packages"].split()
+                    plan["expected_outputs"] = expected
+                    outputs.update(actual_changes)
+                else:
+                    plan["expected_outputs"] = expected
+                for key in omitted: outputs.pop(key, None)
+                pathlib.Path(args.plan).write_text(json.dumps(plan))
+                env["PLAN_OUTPUTS_JSON"] = json.dumps(outputs)
+                needs, skipped = gate.expected_jobs(plan, outputs)
+                env["NEEDS_JSON"] = json.dumps({
+                    "plan": "success", "checks": "success",
+                    "tests": "success" if any(x.startswith("tests /") for x in needs) else "skipped",
+                    "web": "success" if "web" in needs else "skipped",
+                    "security": "success" if any(x.startswith("security /") for x in needs) else "skipped",
+                })
+                job_rows = [{"name": name, "conclusion": "success", "run_attempt": 2}
+                            for name in needs]
+                job_rows.extend({"name": item["job"], "conclusion": "skipped", "run_attempt": 2}
+                                for item in skipped)
+                with patch.dict("os.environ", env, clear=True), patch.object(
+                        gate, "run_json", side_effect=[self.pr(), [{"jobs": job_rows}]]):
+                    return gate.gate_cli(args)
+
+        for empty_key in ("race_packages", "linux_packages", "darwin_packages", "windows_packages"):
+            with self.subTest(empty_key=empty_key):
+                result = run_case((empty_key,), empty_key=empty_key)
+                self.assertEqual(result["verdict"], "pass", result["reason"])
+
+        for key, value in (("race_packages", "internal/x"), ("mode", ""),
+                           ("validated_head", ""), ("validated_base", "")):
+            with self.subTest(missing=key):
+                result = run_case((key,), {key: value})
+                self.assertEqual(result["verdict"], "fail")
+                self.assertIn("plan output drift", result["reason"])
+        with self.subTest(name="different nonempty actual"):
+            result = run_case((), {"race_packages": "internal/x"})
+            self.assertEqual(result["verdict"], "fail")
+            self.assertIn("plan output drift: race_packages", result["reason"])
+
     def test_output_drift_and_missing_plan_fail(self):
         with tempfile.TemporaryDirectory() as td:
             _,outputs,args,env=self.setup_contract(td); outputs["web_changed"]=True; env["PLAN_OUTPUTS_JSON"]=json.dumps(outputs)
