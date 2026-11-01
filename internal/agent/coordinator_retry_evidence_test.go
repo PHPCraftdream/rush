@@ -232,6 +232,10 @@ func TestRunInternal_UnauthorizedRetryReusesUserMessage(t *testing.T) {
 	env := testEnv(t)
 	cfg, err := config.Init(env.workingDir, "", false)
 	require.NoError(t, err)
+	// Init skips agent setup when no provider is configured (a clean CI
+	// runner); the 401 refresh rebuilds models through UpdateModels, which
+	// needs the coder agent.
+	cfg.SetupAgents()
 	providerCfg := config.ProviderConfig{
 		ID: providerID, Type: "openai", APIKey: "stale-key", APIKeyTemplate: "$TEST_401_REUSE_KEY",
 		Models: []catwalk.Model{{ID: "test-model", Name: "Test Model", DefaultMaxTokens: 4096}},
