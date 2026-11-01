@@ -70,7 +70,7 @@ func TestPreparePrompt_OrphanedToolUse(t *testing.T) {
 	msgs, err := env.messages.List(ctx, sess.ID)
 	require.NoError(t, err)
 
-	history, _ := agent.preparePrompt(msgs, nil)
+	history, _ := agent.preparePrompt(msgs, nil, "")
 
 	// The history must contain a synthetic tool result for the orphaned call.
 	found := false
@@ -144,7 +144,7 @@ func TestPreparePrompt_OrphanedToolUseMixed(t *testing.T) {
 	msgs, err := env.messages.List(ctx, sess.ID)
 	require.NoError(t, err)
 
-	history, _ := agent.preparePrompt(msgs, nil)
+	history, _ := agent.preparePrompt(msgs, nil, "")
 
 	// Should have a synthetic result only for the orphaned call.
 	var syntheticCount int
@@ -206,7 +206,7 @@ func TestPreparePrompt_ReminderPosition(t *testing.T) {
 		require.NoError(t, err)
 		msgs := newMsgs(t, env, sess.ID)
 
-		history, _ := agent.preparePrompt(msgs, nil)
+		history, _ := agent.preparePrompt(msgs, nil, "")
 
 		require.NotEmpty(t, history)
 		require.False(t, hasReminder(history[0]), "reminder must not be the first message in history")
@@ -232,7 +232,7 @@ func TestPreparePrompt_ReminderPosition(t *testing.T) {
 		todos := []session.Todo{
 			{Content: "write tests", Status: session.TodoStatusInProgress},
 		}
-		history, _ := agent.preparePrompt(msgs, todos)
+		history, _ := agent.preparePrompt(msgs, todos, "")
 
 		require.NotEmpty(t, history)
 		require.False(t, hasReminder(history[0]), "reminder must not be the first message in history")
@@ -255,7 +255,7 @@ func TestPreparePrompt_ReminderPosition(t *testing.T) {
 		todos := []session.Todo{
 			{Content: "write tests", Status: session.TodoStatusInProgress},
 		}
-		history, _ := agent.preparePrompt(msgs, todos)
+		history, _ := agent.preparePrompt(msgs, todos, "")
 
 		require.NotEmpty(t, history)
 		for _, m := range history {
