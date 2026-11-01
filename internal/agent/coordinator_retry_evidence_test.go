@@ -7,8 +7,10 @@ package agent
 // (CLAUDE.md) — a pure move, no behavior change.
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"testing"
 	"time"
@@ -266,8 +268,12 @@ func TestRunInternal_UnauthorizedRetryReusesUserMessage(t *testing.T) {
 	coord.currentAgent = agent
 	pinned, err := coord.resolveSessionModels(t.Context(), sess.ID)
 	require.NoError(t, err)
+	var logs bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 	result, err := coord.runInternal(t.Context(), sess.ID, prompt, pinned)
-	require.NoError(t, err)
+	require.NoError(t, err, "the 401 retry must refresh the credential and run again; logs:\n%s", logs.String())
 	require.NotNil(t, result)
 	require.Equal(t, 2, callCount)
 }
