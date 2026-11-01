@@ -158,6 +158,12 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 			return err
 		}
 	}
+	if reqStore, ok := app.Sessions.(session.SessionCredentialRequirementStore); ok {
+		if err := agent.SetCoordinatorSessionCredentialRequirementStore(app.AgentCoordinator, reqStore); err != nil {
+			slog.Error("Failed to bind session credential requirement store", "err", err)
+			return err
+		}
+	}
 	// F7b: an ephemeral App (dataDir == "") never installs the batch
 	// runtime, so BindCoordinatorBatchControls below never runs and
 	// the coordinator is left with NO capability manager. Its run path

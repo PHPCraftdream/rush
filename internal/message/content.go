@@ -13,6 +13,7 @@ import (
 	"charm.land/fantasy/providers/anthropic"
 	"charm.land/fantasy/providers/google"
 	"charm.land/fantasy/providers/openai"
+	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/stringext"
 )
 
@@ -624,6 +625,11 @@ func PromptWithTextAttachments(prompt string, attachments []Attachment) string {
 }
 
 func (m *Message) ToAIMessage() []fantasy.Message {
+	return m.ToAIMessageFor("")
+}
+
+// ToAIMessageFor converts this message for the target provider family.
+func (m *Message) ToAIMessageFor(targetFamily string) []fantasy.Message {
 	var messages []fantasy.Message
 	switch m.Role {
 	case User:
@@ -666,7 +672,9 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 			case ReasoningContent:
 				// OpenRouter replays encrypted Responses data; direct Responses skips reasoning parts.
 				if content.Thinking == "" && content.Signature == "" && content.RedactedData == "" && content.ThoughtSignature == "" && (content.ResponsesData == nil || content.ResponsesData.EncryptedContent == nil || *content.ResponsesData.EncryptedContent == "") {
-					continue
+					if m.Provider != openaicompat.Name || targetFamily != openaicompat.Name {
+						continue
+					}
 				}
 				reasoningPart := fantasy.ReasoningPart{Text: content.Thinking, ProviderOptions: fantasy.ProviderOptions{}}
 				if content.Signature != "" {

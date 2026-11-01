@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -542,6 +544,15 @@ func promptsOf(calls []SessionAgentCall) []string {
 // assertions below reflect it: two provider calls (replacement, then the
 // original prompt), not one.
 func TestRun_InterruptBeforeFirstGeneration_ReplacementRunsExactlyOnce(t *testing.T) {
+	testInterruptBeforeFirstGeneration(t, true)
+}
+
+func TestRun_InterruptBeforeFirstGeneration_ReplacementSuccessControl(t *testing.T) {
+	testInterruptBeforeFirstGeneration(t, false)
+}
+
+func testInterruptBeforeFirstGeneration(t *testing.T, rejectReplacement bool) {
+	t.Helper()
 	env := testEnv(t)
 	dataDir := t.TempDir()
 
@@ -551,12 +562,18 @@ func TestRun_InterruptBeforeFirstGeneration_ReplacementRunsExactlyOnce(t *testin
 	var promptsMu sync.Mutex
 	var promptsSeen []string
 	requestStarted := make(chan struct{}, 4)
+	var providerHTTP400 atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		promptsMu.Lock()
 		promptsSeen = append(promptsSeen, string(body))
+		requestIndex := len(promptsSeen)
 		promptsMu.Unlock()
 
+		if providerHTTP400.Load() == int64(requestIndex) {
+			http.Error(w, "deterministic provider rejection", http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl, _ := w.(http.Flusher)
 		fmt.Fprintf(w, "data: %s\n\n", `{"id":"c1","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}`)
@@ -629,9 +646,11 @@ func TestRun_InterruptBeforeFirstGeneration_ReplacementRunsExactlyOnce(t *testin
 	runDone := make(chan error, 1)
 	go func() {
 		_, runErr := agentIface.Run(t.Context(), SessionAgentCall{
-			SessionID:       sess.ID,
-			Prompt:          originalPrompt,
-			MaxOutputTokens: 1000,
+			SessionID:        sess.ID,
+			Prompt:           originalPrompt,
+			MaxOutputTokens:  1000,
+			FromDurableQueue: true,
+			LogicalCallID:    "interrupt-before-first-durable",
 		})
 		runDone <- runErr
 	}()
@@ -669,28 +688,35 @@ func TestRun_InterruptBeforeFirstGeneration_ReplacementRunsExactlyOnce(t *testin
 	require.True(t, hadOwner, "InterruptAndReplace must report an owner existed — mb.state is already mbOwned by "+
 		"the time Run() reaches its loop, even though no generation has ever been live yet")
 
-	// Only now let the loop proceed to beginGeneration for turn 1.
+	// Before allowing the first generation to proceed, make its durable
+	// replacement fail deterministically at the provider boundary.
+	if rejectReplacement {
+		providerHTTP400.Store(1)
+	}
 	close(releaseLoopRearm)
 
 	select {
 	case runErr := <-runDone:
-		require.NoError(t, runErr, "Run must complete successfully: the interrupt landing before the first "+
-			"generation must NOT poison runCtx via a dispatcherCancel fallback — the same #307 mechanism as the "+
-			"inter-turn window, just one iteration earlier")
+		if rejectReplacement {
+			var alreadyAttempted session.AlreadyAttempted
+			require.ErrorIs(t, runErr, session.ErrCallQueuedNotExecuted)
+			require.False(t, errors.As(runErr, &alreadyAttempted))
+			require.Contains(t, runErr.Error(), "deterministic provider rejection")
+			promptsMu.Lock()
+			require.Len(t, promptsSeen, 1, "failed replacement must not run the displaced original call")
+			assert.Contains(t, promptsSeen[0], replacementPrompt)
+			assert.NotContains(t, promptsSeen[0], originalPrompt)
+			promptsMu.Unlock()
+		} else {
+			require.NoError(t, runErr, "successful replacement must finish normally")
+			promptsMu.Lock()
+			require.Len(t, promptsSeen, 2, "replacement then displaced original must each execute once")
+			assert.Contains(t, promptsSeen[0], replacementPrompt)
+			assert.Contains(t, promptsSeen[1], originalPrompt)
+			promptsMu.Unlock()
+		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("Run never returned — the dispatcher is wedged")
+		t.Fatal("Run never returned after replacement turn")
 	}
-
-	promptsMu.Lock()
-	defer promptsMu.Unlock()
-	require.Len(t, promptsSeen, 2, "exactly two provider calls must have been made: the replacement (pre-empting, "+
-		"as turn 1) and then the original prompt, requeued as turn 2 — the original must NOT be discarded just "+
-		"because it was never a `call` popped out of mb.submitted; reclaimReplacementOrKeep requeues it exactly "+
-		"like any other pre-empted `call`")
-	assert.Contains(t, promptsSeen[0], replacementPrompt, "the FIRST provider call must carry the REPLACEMENT "+
-		"prompt — it pre-empts the original, which is the whole point of interrupt-and-replace")
-	assert.Contains(t, promptsSeen[1], originalPrompt, "the SECOND provider call must carry the original prompt — "+
-		"requeued, not lost")
-
-	assert.False(t, sa.IsSessionBusy(sess.ID), "the session must not be left wedged busy after both turns complete")
+	assert.False(t, sa.IsSessionBusy(sess.ID), "session must be released after replacement turn")
 }

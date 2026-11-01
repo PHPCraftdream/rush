@@ -517,7 +517,16 @@ func updateSingleProvider(a *app.App, id string, scopes ...config.Scope) error {
 	if !ok {
 		return fmt.Errorf("provider %q not found", id)
 	}
+	return updateProvider(a, id, p, writeScope)
+}
 
+// updateProvider refreshes the model list of p (stored under id), a provider
+// config the caller already holds. updateAllProviders passes the config it
+// listed up front: an earlier provider's write reloads the live config, and
+// that reload drops a provider with no models whose discovery fails at that
+// moment, so looking the id up again would report "not found" instead of the
+// provider's real fetch error.
+func updateProvider(a *app.App, id string, p config.ProviderConfig, writeScope config.Scope) error {
 	oldModels := p.Models
 	newModels, warnings, err := fetchModels(a, p)
 	if err != nil {
@@ -596,7 +605,7 @@ func updateAllProviders(a *app.App) error {
 	count := 0
 	var updateErrors []error
 	for _, p := range providers {
-		if err := updateSingleProvider(a, p.ID, config.ScopeGlobal); err != nil {
+		if err := updateProvider(a, p.ID, p, config.ScopeGlobal); err != nil {
 			fmt.Fprintf(os.Stderr, "error updating %s: %v\n", p.ID, err)
 			updateErrors = append(updateErrors, fmt.Errorf("%s: %w", p.ID, err))
 			continue

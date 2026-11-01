@@ -639,6 +639,8 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 	// "queued" contract, which would misreport a finished turn.
 	var carriedResult *fantasy.AgentResult
 	var carriedErr error
+	var replacedDurableCallID string
+	var replacementError string
 	originCallOpts := call.CallOptions
 	for {
 		// Test-only seam (#289): fires strictly after any end-of-turn drain
@@ -671,12 +673,20 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// interrupt landed in this exact window, which is the overwhelming
 		// majority of iterations.
 		previousCall := call
-		call = mb.reclaimReplacementOrKeep(call)
+		reclaimed := mb.reclaimReplacementOrKeep(call)
+		if reclaimed.replacementHandoff && previousCall.FromDurableQueue {
+			replacedDurableCallID = previousCall.LogicalCallID
+			replacementError = ""
+		}
+		call = reclaimed
 		inheritReplacementIdentityCallback(&previousCall, &call)
 		if err := persistCallModels(call); err != nil {
 			a.noteRefusal(call.SessionID, err)
 			if durableErr := a.restartOrphanedWithRetry([]SessionAgentCall{call}); durableErr != nil {
-				return nil, notAttempted(call, fmt.Errorf("%w; failed to durably recover the admitted call: %v", err, durableErr))
+				err = fmt.Errorf("%w; failed to durably recover the admitted call: %v", err, durableErr)
+			}
+			if replacedDurableCallID != "" {
+				return nil, fmt.Errorf("%w: durable call %q was replaced but never executed; replacement failed: %s", session.ErrCallQueuedNotExecuted, replacedDurableCallID, err)
 			}
 			return nil, notAttempted(call, err)
 		}
@@ -725,9 +735,16 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// preamble is now part of a cancelable generation that is SEPARATE
 		// from the durable dispatcher cancel.
 		mb.beginGeneration(turnCancel)
+		if replacedDurableCallID != "" && call.LogicalCallID == replacedDurableCallID {
+			replacedDurableCallID = ""
+			replacementError = ""
+		}
 		att := a.newDrainAttempt(call)
 		result, next, hasNext, err := a.runTurn(turnCtx, call, lk, epoch, runCancel, att)
 		err = a.afterTurn(call, att, err, turnCtx.Err() != nil)
+		if replacedDurableCallID != "" && call.LogicalCallID != replacedDurableCallID && err != nil {
+			replacementError = err.Error()
+		}
 		// A real result or error replaces the carry; a (nil, nil)
 		// iteration (a refused no-turn Drain leg) leaves it untouched.
 		carriedResult, carriedErr, _ = mergeTurnOutcome(carriedResult, carriedErr, result, err)
@@ -743,9 +760,17 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// helper clears the marker afterwards so a re-queued closed-scope
 		// copy is freshly armed by submit (armQueuedBuildRetention skips
 		// only while buildScopeRetained is true).
-		turnEndRelease(&call, originCallOpts)
-		if call.onQueueResolved != nil {
-			call.onQueueResolved(result, err)
+		isCompactionContinuation := hasNext && next.compactionContinuation
+		// The marker describes this edge only. Consume it before next enters
+		// another iteration (or is copied through a mailbox handoff).
+		if hasNext {
+			next.compactionContinuation = false
+		}
+		if !isCompactionContinuation {
+			turnEndRelease(&call, originCallOpts)
+			if call.onQueueResolved != nil {
+				call.onQueueResolved(result, err)
+			}
 		}
 		mb.clearCurrentCall(epoch)
 		turnCancel()
@@ -756,6 +781,12 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// own shape and is untouched (a queued loser returns before runOwned
 		// is ever entered).
 		if !hasNext {
+			if replacedDurableCallID != "" {
+				if replacementError == "" {
+					replacementError = "replacement exited without an error"
+				}
+				return nil, fmt.Errorf("%w: durable call %q was replaced but never executed; replacement failed: %s", session.ErrCallQueuedNotExecuted, replacedDurableCallID, replacementError)
+			}
 			return finalTurnOutcome(result, err, carriedResult, carriedErr)
 		}
 		inheritReplacementIdentityCallback(&call, &next)

@@ -217,8 +217,9 @@ func TestP0_2_RetryExhaustion_QueuesCall(t *testing.T) {
 // pumpTestCoordinator adapts session.SessionAgentCallData to agent.SessionAgentCall
 // and executes it through the sessionAgent for testing.
 type pumpTestCoordinator struct {
-	sessionAgent *sessionAgent
-	dataDir      string
+	sessionAgent    *sessionAgent
+	dataDir         string
+	onQueueResolved func(*fantasy.AgentResult, error)
 }
 
 func (p *pumpTestCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
@@ -231,6 +232,7 @@ func (p *pumpTestCoordinator) Run(ctx context.Context, callData session.SessionA
 	// mark this call as originating from the durable queue so mailbox.submit
 	// skips mb.submitted for it (P0-1, closing-review round).
 	call.FromDurableQueue = true
+	call.onQueueResolved = p.onQueueResolved
 
 	// Execute the call through the sessionAgent
 	result, err := p.sessionAgent.Run(ctx, call)

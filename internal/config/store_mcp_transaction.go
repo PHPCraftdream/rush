@@ -586,7 +586,12 @@ func (s *ConfigStore) orderedMCPPaths() []string {
 	if systemPath := s.systemConfigPathValue(); systemPath != "" {
 		appendSafe(systemPath, systemConfigOwner())
 	}
-	appendSafe(GlobalConfig(), homeConfigOwner())
+	// One logical slot is one document: the selected spelling, exactly as
+	// lookupConfigCandidates and the loader resolve it. The fixed legacy
+	// spelling would add the rush.json kept beside a migrated rush.ktav as a
+	// second document and make every input fingerprint differ from the
+	// loaded snapshot's.
+	appendSafe(ActiveConfigFileName(GlobalConfig()), homeConfigOwner())
 	appendSafe(s.globalDataPath, homeConfigOwner())
 	// lookupConfigCandidates applies the same global/project owner policy;
 	// retain its discovery spelling so mcpPathData can bind the alias to the

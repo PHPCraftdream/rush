@@ -117,6 +117,43 @@ func (s *service) ForkSessionTx(ctx context.Context, srcID string, o ForkOptions
 		return Session{}, 0, fmt.Errorf("create forked session: %w", err)
 	}
 
+	// Carry the secret-free credential marker into a fork when the source or
+	// any ancestor has it. Walk the complete parent chain in this transaction;
+	// a broken chain or any read error fails closed rather than losing the
+	// credential requirement on continuation.
+	var credentialMarker string
+	marked := false
+	ancestorID := srcID
+	for ancestorID != "" {
+		markerErr := tx.QueryRowContext(ctx,
+			`SELECT call_data FROM session_run_queue WHERE id = ? AND session_id = ?`,
+			SessionCredentialMarkerRowID(ancestorID), ancestorID).Scan(&credentialMarker)
+		if markerErr == nil {
+			marked = true
+		} else if markerErr != sql.ErrNoRows {
+			return Session{}, 0, fmt.Errorf("load credential marker for session %s: %w", ancestorID, markerErr)
+		}
+
+		var parentID sql.NullString
+		parentErr := tx.QueryRowContext(ctx,
+			`SELECT parent_session_id FROM sessions WHERE id = ?`, ancestorID).Scan(&parentID)
+		if parentErr != nil {
+			return Session{}, 0, fmt.Errorf("load parent for session %s: %w", ancestorID, parentErr)
+		}
+		if !parentID.Valid {
+			break
+		}
+		ancestorID = parentID.String
+	}
+	if marked {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO session_run_queue (id, session_id, call_data, status, attempts, terminal_failure, created_at, updated_at)
+			 VALUES (?, ?, ?, 'acked', 0, 1, strftime('%s', 'now'), strftime('%s', 'now'))`,
+			SessionCredentialMarkerRowID(forkID), forkID, `{"kind":"session_credential_requirement","version":1}`); err != nil {
+			return Session{}, 0, fmt.Errorf("copy credential marker into fork: %w", err)
+		}
+	}
+
 	// Copy the source's model selection, system prompt, reasoning effort,
 	// and todos onto the fork via column-scoped UPDATEs routed through qtx
 	// so they share the tx.

@@ -686,7 +686,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// patch); our Notify() path goes through pubsub directly and Update()
 	// writes synchronously, so there is nothing to flush here.
 
-	history, files := a.preparePrompt(msgs, currentSession.Todos, call.Attachments...)
+	history, files := a.preparePrompt(msgs, currentSession.Todos, smartModel.Model.Provider(), call.Attachments...)
 
 	// Phase-4 step 3 (doc sec.3.4): a Drain call's empty prompt relies on
 	// history already ending in a fresh user-role notice (the turn-start
@@ -827,7 +827,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		if loadErr != nil {
 			stallRetryErr = fmt.Errorf("reload session history for stall retry: %w", loadErr)
 		} else {
-			stallRetryHistory, stallRetryFiles = a.preparePrompt(persisted, currentSession.Todos, call.Attachments...)
+			stallRetryHistory, stallRetryFiles = a.preparePrompt(persisted, currentSession.Todos, smartModel.Model.Provider(), call.Attachments...)
 			stallRetryReady = true
 			if call.IsDrain && call.Prompt == "" {
 				stallRetryHistory = reminderBeforeTail(stallRetryHistory, len(pulledAtStart))
@@ -907,6 +907,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			// pending tool calls never answered (mirrors coordinator_run.go's
 			// own `trackCall.drainTurnCommitted = trackCall.IsDrain` retry rule).
 			continuationCall.drainTurnCommitted = continuationCall.IsDrain
+			continuationCall.compactionContinuation = true
 			return nil, continuationCall, true, nil
 		}
 	}

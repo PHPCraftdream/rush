@@ -143,7 +143,7 @@ func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentC
 	return msg, nil
 }
 
-func (a *sessionAgent) preparePrompt(msgs []message.Message, todos []session.Todo, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart) {
+func (a *sessionAgent) preparePrompt(msgs []message.Message, todos []session.Todo, targetFamily string, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart) {
 	var history []fantasy.Message
 	var reminderMsg fantasy.Message
 	hasReminder := false
@@ -206,7 +206,7 @@ If not, please feel free to ignore. Again do not mention this message to the use
 			}
 			continue
 		}
-		aiMsgs := m.ToAIMessage()
+		aiMsgs := m.ToAIMessageFor(targetFamily)
 		// Fork merge note (origin/main 6d95ecc5 "skip image attachments in
 		// history when model doesn't support them"): we intentionally skip
 		// upstream's per-message filter here — the same scrub happens in

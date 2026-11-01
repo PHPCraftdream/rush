@@ -152,6 +152,16 @@ data that role carries. Interrupting a credentialed delegated turn also
 fails closed when its driver binding is missing; it never falls back to
 the Client's configured provider.
 
+A credentialed session is permanently marked as requiring its tenant
+credentials. With a persistent session store, that boundary survives process
+restarts: after restart, automatic drain and credentialed interrupts refuse
+to use the Client's configured provider unless the original in-process driver
+binding is still available. If the session service does not implement the
+optional durable marker store, protection is only in memory and is lost on
+restart. Existing sessions from before this marker was introduced are not
+retroactively identified; preserve their tenant binding or avoid resuming
+those sessions without credentials.
+
 ```go
 result, err := client.RunWithCredentials(ctx, sdk.RunRequest{
     Prompt:            "summarise the attached diff",
@@ -198,11 +208,11 @@ Provider IDs with special dispatch behavior (`openai-codex`, `hyper`,
 `opencode-go`, `opencode-zen`, `zai`, `minimax`, `minimax-cn`, and
 `copilot`) are reserved for configured providers.
 
-Credentialed roots are marked in memory after admission; that marker lives
-for the lifetime of the Client. Automatic background follow-ups are skipped
-rather than sent to the Client's configured provider. Any completed work is
-delivered on the next explicit call. Delegated child sessions keep their
-per-call credential snapshot and are not affected by this root-only refusal.
+Credentialed roots are durably marked after admission. Automatic background
+follow-ups are refused rather than sent to the Client's configured provider.
+Any completed work is delivered on the next explicit call. Delegated child
+sessions retain their per-call credential snapshot and are not subject to this
+root refusal.
 
 ## Sessions and credentials are independent axes
 

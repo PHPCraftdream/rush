@@ -16,9 +16,13 @@ func mcpInputFingerprints(rush, external []stableConfigDocument) map[string][sha
 		path    string
 		entries map[string]json.RawMessage
 		// rawDigest is the RAW disk digest of a Ktav rush document. It is
-		// mixed into every entry hash so two Ktav documents that decode to
-		// identical JSON but differ in raw bytes still produce different
-		// revisions (JSON documents keep the legacy entry-only hash).
+		// mixed into the hash of every entry this document DEFINES, so two
+		// Ktav documents that decode to identical JSON but differ in raw
+		// bytes still produce different revisions (JSON documents keep the
+		// legacy entry-only hash). It is never mixed into an entry the
+		// document does not define: a write to an unrelated Ktav document
+		// (for example the app-managed data file) must not move that
+		// entry's revision.
 		rawDigest []byte
 	}
 	documentsByPath := make(map[string]document, len(rush)+len(external))
@@ -76,10 +80,10 @@ func mcpInputFingerprints(rush, external []stableConfigDocument) map[string][sha
 				path = normalizeDiscoveryPath(document.path)
 			}
 			hash.Write([]byte(path))
-			if len(document.rawDigest) > 0 {
-				hash.Write(document.rawDigest)
-			}
 			if raw, ok := document.entries[name]; ok {
+				if len(document.rawDigest) > 0 {
+					hash.Write(document.rawDigest)
+				}
 				hash.Write([]byte{1})
 				hash.Write(raw)
 			} else {

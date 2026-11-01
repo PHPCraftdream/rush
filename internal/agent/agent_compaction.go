@@ -376,7 +376,7 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 		}
 	}
 
-	aiMsgs, _ := a.preparePrompt(msgs, nil)
+	aiMsgs, _ := a.preparePrompt(msgs, nil, smartModel.Model.Provider())
 
 	agent := fantasy.NewAgent(
 		smartModel.Model,
@@ -611,7 +611,7 @@ func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string,
 	if len(toSummarise) == 0 {
 		return nil
 	}
-	aiMsgs, _ := a.preparePrompt(toSummarise, nil)
+	aiMsgs, _ := a.preparePrompt(toSummarise, nil, smartModel.Model.Provider())
 
 	agent := fantasy.NewAgent(
 		smartModel.Model,

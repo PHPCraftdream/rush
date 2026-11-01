@@ -42,7 +42,7 @@ func TestPreparePrompt_UserInjectDuringToolRunFollowsTheToolRound(t *testing.T) 
 		orderMsg(message.Assistant, message.TextContent{Text: "done"}),
 	}
 
-	history, _ := a.preparePrompt(msgs, nil)
+	history, _ := a.preparePrompt(msgs, nil, "")
 
 	require.Equal(t, []fantasy.MessageRole{
 		fantasy.MessageRoleUser,
@@ -65,7 +65,7 @@ func TestPreparePrompt_InjectBetweenTwoToolMessagesStaysAfterTheRound(t *testing
 		orderMsg(message.Tool, orderToolResult("call_b")),
 	}
 
-	history, _ := a.preparePrompt(msgs, nil)
+	history, _ := a.preparePrompt(msgs, nil, "")
 
 	require.Equal(t, []fantasy.MessageRole{
 		fantasy.MessageRoleAssistant,
@@ -85,7 +85,7 @@ func TestPreparePrompt_UnansweredToolRoundIsLeftAlone(t *testing.T) {
 		orderMsg(message.User, message.TextContent{Text: "next"}),
 	}
 
-	history, _ := a.preparePrompt(msgs, nil)
+	history, _ := a.preparePrompt(msgs, nil, "")
 
 	require.Equal(t, []fantasy.MessageRole{
 		fantasy.MessageRoleAssistant,
