@@ -752,7 +752,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 
 	// Aborts this turn when the provider enters its peak-hours window
 	// mid-stream. See peakHoursWatcher's doc in agent_turn_peakhours.go.
-	peakHours := newPeakHoursWatcher(a, call.SessionID, ctx, genCtx, &ts.mu, &ts.currentAssistant)
+	peakHours := newPeakHoursWatcher(a, call.SessionID, ts.smartModel.ModelCfg.Provider, ctx, genCtx, &ts.mu, &ts.currentAssistant)
 	peakHours.bypass = peakHoursBypassed(call)
 	ts.setPeakHoursAbortErr = peakHours.setAbortErr
 	getPeakHoursAbortErr := peakHours.getAbortErr
@@ -795,11 +795,23 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// times); onRetry flags the cut attempt's partial content stale exactly
 	// like fantasy's OnRetry path does.
 	var result *fantasy.AgentResult
+	stallRetryHistory := history
+	stallRetryFiles := files
+	stallRetryReady := false
+	var stallRetryErr error
 	err = runStallRetried(stall, func() error {
+		attemptHistory := history
+		attemptFiles := files
+		if stallRetryErr != nil {
+			return stallRetryErr
+		}
+		if stallRetryReady {
+			attemptHistory, attemptFiles = stallRetryHistory, stallRetryFiles
+		}
 		attemptCtx, attemptCancel := context.WithCancel(genCtx)
 		stall.armAttemptCancel(attemptCancel)
 		var streamErr error
-		result, streamErr = agent.Stream(attemptCtx, ts.streamCall(history, files, maxOutputTokens))
+		result, streamErr = agent.Stream(attemptCtx, ts.streamCall(attemptHistory, attemptFiles, maxOutputTokens))
 		attemptCancel()
 		// A tool's Go error ends the turn and is the turn's error.
 		if fatal := fatalTools.take(); fatal != nil {
@@ -808,6 +820,27 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		return streamErr
 	}, func(retry int) {
 		slog.Warn("turn-stall policy: re-issuing stalled provider step", "session_id", call.SessionID, "retry", retry)
+		// A stalled Stream re-enters fantasy from its initial Messages, not
+		// from responseMessages accumulated by earlier completed steps. Reload
+		// persisted history so completed tool calls/results are not replayed.
+		persisted, loadErr := a.getSessionMessages(ctx, currentSession)
+		if loadErr != nil {
+			stallRetryErr = fmt.Errorf("reload session history for stall retry: %w", loadErr)
+		} else {
+			stallRetryHistory, stallRetryFiles = a.preparePrompt(persisted, currentSession.Todos, call.Attachments...)
+			stallRetryReady = true
+			if call.IsDrain && call.Prompt == "" {
+				stallRetryHistory = reminderBeforeTail(stallRetryHistory, len(pulledAtStart))
+				last := len(stallRetryHistory) - 1
+				if last < 0 || (stallRetryHistory[last].Role != fantasy.MessageRoleUser && stallRetryHistory[last].Role != fantasy.MessageRoleTool) {
+					nudge := "Continue based on the notice(s) above."
+					if call.drainTurnCommitted {
+						nudge = "The conversation was summarized; continue reacting to the notice(s) above."
+					}
+					stallRetryHistory = append(stallRetryHistory, fantasy.NewUserMessage(nudge))
+				}
+			}
+		}
 		ts.mu.Lock()
 		ts.retryStale = true
 		ts.mu.Unlock()
@@ -878,13 +911,10 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		}
 	}
 
-	// Silent compact of all non-pinned history (P0-4/#268): runs synchronously under
-	// the turn's mailbox ownership — not as a background goroutine — so no
-	// concurrent turn or compaction can delete/rewrite history while it is in
-	// flight. Skipped when shouldSummarize already ran a full compaction
-	// above (the two would be redundant, and running both would race for
-	// SummaryMessageID). genCtx is still alive here (cancel() hasn't fired
-	// yet), so Cancel(sessionID) can interrupt this if needed.
+	// Silent sliding-window compaction runs synchronously under the turn's
+	// mailbox ownership, so no concurrent turn can rewrite history while it
+	// is in flight. It preserves the recent tail verbatim and summarizes older
+	// context; skip it when a full compaction already ran above.
 	if !ts.shouldSummarize && ts.silentCompactNeeded {
 		if silentErr := a.runSummarizeSilent(genCtx, call.SessionID, call.ProviderOptions, smartModel, promptPrefix); silentErr != nil {
 			slog.Warn("silent summarise failed", "session_id", call.SessionID, "err", silentErr)
