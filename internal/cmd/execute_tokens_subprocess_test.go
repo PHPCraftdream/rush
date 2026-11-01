@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/platform"
 )
 
 const executeHelperEnv = "RUSH_TEST_EXECUTE_HELPER"
@@ -73,7 +75,7 @@ func TestExecuteTokenExitAndJournal(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, absExecutable, "-test.run=^TestExecuteHelperProcess$")
+			cmd := platform.Command(ctx, absExecutable, "-test.run=^TestExecuteHelperProcess$")
 			cmd.Dir = cwd
 			cmd.Env = cleanExecuteHelperEnv(os.Environ())
 			cmd.Env = append(cmd.Env,
@@ -170,7 +172,7 @@ func TestExecuteTokensStdoutStderr(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, absExecutable, "-test.run=^TestExecuteHelperProcess$")
+		cmd := platform.Command(ctx, absExecutable, "-test.run=^TestExecuteHelperProcess$")
 		cmd.Dir = cwd
 		cmd.Env = cleanExecuteHelperEnv(os.Environ())
 		cmd.Env = append(cmd.Env,
