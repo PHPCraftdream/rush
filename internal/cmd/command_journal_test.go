@@ -133,6 +133,33 @@ func TestJournalFailedCommand(t *testing.T) {
 	require.LessOrEqual(t, utf8.RuneCountInString(end["err"].(string)), journalErrMaxRunes)
 }
 
+func TestJournalTokenExitCodes(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want float64
+	}{
+		{[]string{"tokens", "show", "deadbeef"}, 4},
+		{[]string{"tokens", "create", "--name", "x", "--expires", "bad"}, 2},
+	} {
+		t.Run(tc.args[1], func(t *testing.T) {
+			t.Setenv("RUSH_GLOBAL_DIR", "")
+			home := t.TempDir()
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
+			t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
+			t.Setenv("HOME", filepath.Join(home, "home"))
+			t.Setenv("USERPROFILE", filepath.Join(home, "userprofile"))
+			journalTestEnv(t)
+			_, runErr := runRushTree(t, tc.args...)
+			require.Error(t, runErr)
+			code, tokenCommand := tokensExitCode(tc.args, runErr)
+			require.True(t, tokenCommand)
+			finalizeCommandJournalWithCode(tc.args, runErr, code)
+			recs := journalRecords(t)
+			require.Equal(t, tc.want, recs[len(recs)-1]["exit"])
+		})
+	}
+}
+
 func TestJournalWrongPasswordJournalled(t *testing.T) {
 	journalTestEnv(t)
 	t.Cleanup(func() {
