@@ -113,6 +113,7 @@ func init() {
 		loginCmd,
 		statsCmd,
 		tokensCmd,
+		apiCmd,
 	)
 }
 
