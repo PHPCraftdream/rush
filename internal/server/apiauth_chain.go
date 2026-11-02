@@ -22,6 +22,7 @@ type Principal struct {
 	verifier        TokenVerifier
 	expires         *time.Time
 	bootstrap       bool
+	tickerFactory   func(time.Duration) Ticker
 }
 
 type principalKey struct{}
@@ -68,6 +69,8 @@ type ChainConfig struct {
 	MaxConnsPerToken int
 	MaxBody          int64
 	Logger           *slog.Logger
+	TickerFactory    func(time.Duration) Ticker
+	SlotReleased     chan<- struct{}
 }
 
 func (c ChainConfig) now() time.Time {
@@ -96,6 +99,11 @@ const (
 
 var bearerPattern = regexp.MustCompile(`^rush_[0-9a-f]{8}\.[A-Za-z0-9_-]{43}$`)
 
+var (
+	serveAuthTickerFactory func(time.Duration) Ticker
+	serveAuthSlotReleased  chan struct{}
+)
+
 func Chain(cfg ChainConfig) func(http.Handler) http.Handler {
 	if err := cfg.Validate(); err != nil {
 		panic(err)
@@ -105,6 +113,15 @@ func Chain(cfg ChainConfig) func(http.Handler) http.Handler {
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
+	}
+	if cfg.TickerFactory == nil {
+		cfg.TickerFactory = serveAuthTickerFactory
+	}
+	if cfg.SlotReleased == nil {
+		cfg.SlotReleased = serveAuthSlotReleased
+	}
+	if cfg.TickerFactory == nil {
+		cfg.TickerFactory = func(d time.Duration) Ticker { return realTicker{t: time.NewTicker(d)} }
 	}
 	if cfg.RPS == 0 {
 		cfg.RPS = 20
@@ -130,6 +147,10 @@ func Chain(cfg ChainConfig) func(http.Handler) http.Handler {
 			}
 			p, failureID, err, storeErr := authenticate(cfg, r)
 			if err != nil {
+				if errors.Is(err, errAmbiguousWebSocketCredentials) || errors.Is(err, errMissingWSProtocol) {
+					writeProblem(w, http.StatusBadRequest, "{\"type\":\"about:blank\",\"title\":\"Bad Request\",\"status\":400}\n")
+					return
+				}
 				if storeErr != nil {
 					cfg.Logger.Error("API token verification failed", "error", Redact(storeErr.Error()))
 					writeProblem(w, 503, authUnavailableBody)
@@ -155,7 +176,15 @@ func Chain(cfg ChainConfig) func(http.Handler) http.Handler {
 				retryResponse(w, time.Second)
 				return
 			}
-			defer inflight.Release(p.TokenID)
+			defer func() {
+				inflight.Release(p.TokenID)
+				if cfg.SlotReleased != nil {
+					select {
+					case cfg.SlotReleased <- struct{}{}:
+					default:
+					}
+				}
+			}()
 			if r.ContentLength > cfg.MaxBody {
 				writeProblem(w, 413, tooLargeBody)
 				return
@@ -171,6 +200,11 @@ func Chain(cfg ChainConfig) func(http.Handler) http.Handler {
 	}
 }
 
+var (
+	errAmbiguousWebSocketCredentials = errors.New("ambiguous websocket credentials")
+	errMissingWSProtocol             = errors.New("websocket credential missing rush.v1")
+)
+
 func authenticate(cfg ChainConfig, r *http.Request) (Principal, string, error, error) {
 	if _, ok := r.URL.Query()["token"]; ok {
 		return Principal{}, "", errors.New("bad credentials"), nil
@@ -179,16 +213,42 @@ func authenticate(cfg ChainConfig, r *http.Request) (Principal, string, error, e
 		return Principal{}, "", errors.New("bad credentials"), nil
 	}
 	values := r.Header.Values("Authorization")
-	if len(values) != 1 {
-		return Principal{}, "", errors.New("bad credentials"), nil
+	var token string
+	if len(values) == 0 && r.URL.Path == "/ws" && websocketUpgrade(r) {
+		var found []string
+		for _, header := range r.Header.Values("Sec-WebSocket-Protocol") {
+			for _, item := range strings.Split(header, ",") {
+				item = strings.TrimSpace(item)
+				if strings.HasPrefix(item, "rush.bearer.") {
+					found = append(found, strings.TrimPrefix(item, "rush.bearer."))
+				}
+			}
+		}
+		if len(found) > 0 && !offeredSubprotocol(r, "rush.v1") {
+			return Principal{}, "", errMissingWSProtocol, nil
+		}
+		if len(found) > 1 || (len(found) == 1 && !bearerPattern.MatchString(found[0])) {
+			return Principal{}, "", errors.New("bad credentials"), nil
+		}
+		if len(found) == 1 {
+			token = found[0]
+		}
+	} else if len(values) > 0 && r.URL.Path == "/ws" && websocketUpgrade(r) && hasBearerSubprotocol(r) {
+		return Principal{}, "", errAmbiguousWebSocketCredentials, nil
 	}
-	v := values[0]
-	parts := strings.Split(v, " ")
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || parts[1] == "" || strings.TrimSpace(v) != v || !bearerPattern.MatchString(parts[1]) {
-		return Principal{}, "", errors.New("bad credentials"), nil
+	if token == "" {
+		if len(values) != 1 {
+			return Principal{}, "", errors.New("bad credentials"), nil
+		}
+		v := values[0]
+		parts := strings.Split(v, " ")
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || parts[1] == "" || strings.TrimSpace(v) != v || !bearerPattern.MatchString(parts[1]) {
+			return Principal{}, "", errors.New("bad credentials"), nil
+		}
+		token = parts[1]
 	}
-	id := parts[1][5:13]
-	t, ok, err := cfg.Verifier.VerifyAPIToken(parts[1], cfg.now())
+	id := token[5:13]
+	t, ok, err := cfg.Verifier.VerifyAPIToken(token, cfg.now())
 	if errors.Is(err, config.ErrInvalidAPIToken) {
 		return Principal{}, id, errors.New("bad credentials"), nil
 	}
@@ -215,7 +275,7 @@ func authenticate(cfg ChainConfig, r *http.Request) (Principal, string, error, e
 	if r.TLS != nil && len(r.TLS.VerifiedChains) > 0 && len(r.TLS.PeerCertificates) > 0 {
 		fingerprint = certificateFingerprint(r)
 	}
-	return Principal{TokenID: t.ID, Scopes: append([]string(nil), t.Scopes...), Permission: t.Permission, CertFingerprint: fingerprint, verifier: cfg.Verifier, expires: t.Expires, bootstrap: bootstrap}, "", nil, nil
+	return Principal{TokenID: t.ID, Scopes: append([]string(nil), t.Scopes...), Permission: t.Permission, CertFingerprint: fingerprint, verifier: cfg.Verifier, expires: t.Expires, bootstrap: bootstrap, tickerFactory: cfg.TickerFactory}, "", nil, nil
 }
 
 func allowedID(ids []string, id string) bool {
