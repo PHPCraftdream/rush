@@ -133,7 +133,7 @@ func TestAPIRunProductionListenerCreatePollAndCancel(t *testing.T) {
 
 	app := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	coordinator := newAPIRunIntegrationCoordinator()
-	coordinator.Coordinator = app.AgentCoordinator
+	coordinator.Coordinator = nil // never depend on a host-configured coordinator: CI has none
 	app.AgentCoordinator = coordinator
 	createdSession, err := app.Sessions.Create(t.Context(), "API run integration")
 	if err != nil {

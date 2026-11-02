@@ -122,7 +122,7 @@ func TestServeAPIEventsProductionListenerRunReplayAndStop(t *testing.T) {
 	}
 	app := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	coordinator := &apiEventsIntegrationCoordinator{app: app, started: make(chan struct{}, 1), release: make(chan struct{})}
-	coordinator.Coordinator = app.AgentCoordinator
+	coordinator.Coordinator = nil // never depend on a host-configured coordinator: CI has none
 	app.AgentCoordinator = coordinator
 	sess, err := app.Sessions.Create(t.Context(), "event integration")
 	if err != nil {

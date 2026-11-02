@@ -163,7 +163,7 @@ func newAPIRunBackendGateApp(t *testing.T, manager *apiRunBackendGateManager, ru
 	events := &apiRunBackendGateEvents{}
 	manager.events = events
 	coordinator := &apiRunBackendGateCoordinator{
-		Coordinator: app.AgentCoordinator,
+		Coordinator: nil,
 		events:      events,
 		runStarted:  make(chan struct{}, 1),
 		runReturn:   runReturn,
@@ -322,7 +322,7 @@ func TestAPIRunBackendGateUnavailableRefusesBeforeCoordinatorStarts(t *testing.T
 		t.Setenv(key, t.TempDir())
 	}
 	app := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
-	coordinator := &apiRunBackendGateCoordinator{Coordinator: app.AgentCoordinator, runStarted: make(chan struct{}, 1)}
+	coordinator := &apiRunBackendGateCoordinator{Coordinator: nil, runStarted: make(chan struct{}, 1)}
 	app.AgentCoordinator = coordinator
 	app.Permissions = nil
 	store := &apiRunHandlerStore{item: session.Session{ID: "api-gate-session"}}
@@ -369,3 +369,5 @@ func TestAPIRunBackendGateBusySessionRemainsConflict(t *testing.T) {
 
 // CancelAll keeps App shutdown safe when no real coordinator is configured (CI has no providers).
 func (c *apiRunBackendGateCoordinator) CancelAll() bool { return false }
+
+func (c *apiRunBackendGateCoordinator) IsSessionBusy(string) bool { return false }
