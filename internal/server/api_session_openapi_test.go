@@ -26,6 +26,10 @@ func TestSessionOpenAPIContract(t *testing.T) {
 		{"/sessions", "get", "listSessions", "200", map[string]bool{"after": false, "limit": false}},
 		{"/sessions/{id}", "get", "getSession", "200", map[string]bool{"id": true}},
 		{"/sessions/{id}/messages", "get", "listMessages", "200", map[string]bool{"id": true, "after": false, "limit": false}},
+		{"/sessions/{id}/runs", "post", "createRun", "202", map[string]bool{"id": true, "Idempotency-Key": false}},
+		{"/runs/{id}", "get", "getRun", "200", map[string]bool{"id": true, "wait": false}},
+		{"/runs/{id}/cancel", "post", "cancelRun", "202", map[string]bool{"id": true}},
+		{"/sessions/{id}/inject", "post", "injectMessage", "202", map[string]bool{"id": true}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.operationID, func(t *testing.T) {
@@ -44,10 +48,18 @@ func TestSessionOpenAPIContract(t *testing.T) {
 			if _, ok := responses[tc.success]; !ok {
 				t.Fatalf("missing success response %s", tc.success)
 			}
-			for _, status := range []string{"200", "201", "204"} {
-				if status != tc.success {
-					if _, ok := responses[status]; ok {
-						t.Errorf("incorrect success response %s is documented", status)
+			for _, status := range []string{"200", "201", "202", "204"} {
+				if status == tc.success || (tc.operationID == "cancelRun" && status == "200") {
+					continue
+				}
+				if _, ok := responses[status]; ok {
+					t.Errorf("incorrect success response %s is documented", status)
+				}
+			}
+			if tc.operationID == "cancelRun" {
+				for _, status := range []string{"200", "202"} {
+					if _, ok := responses[status]; !ok {
+						t.Errorf("missing cancellation success response %s", status)
 					}
 				}
 			}
@@ -71,6 +83,9 @@ func TestSessionOpenAPIContract(t *testing.T) {
 					gotParams[name] = param["required"].(bool)
 					if name == "Idempotency-Key" && param["in"] != "header" {
 						t.Errorf("Idempotency-Key location=%v", param["in"])
+					}
+					if name == "wait" && param["in"] != "query" {
+						t.Errorf("wait location=%v", param["in"])
 					}
 				}
 			}

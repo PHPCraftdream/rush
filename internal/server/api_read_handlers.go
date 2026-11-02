@@ -54,13 +54,16 @@ func APIRoutesWithDeps(deps APIReadStore) []APIRoute {
 			routes[i].Handler = apiListModelsHandler(deps)
 		}
 	}
-	return append(append(apiCoreRoutes(), routes...), apiSessionRoutes()...)
+	return append(append(apiCoreRoutes(), routes...), append(apiSessionRoutes(), apiRunRoutesWithPlaceholders()...)...)
 }
 
 // APIRoutesWithApp binds the read routes to the production App services.
 func APIRoutesWithApp(a *appPkg.App) []APIRoute {
 	routes := APIRoutesWithDeps(apiAppReadStore{app: a})
-	return append(routes[:len(routes)-len(apiSessionRoutes())], apiSessionWriteRoutes(apiAppWriteStore{app: a})...)
+	writeRoutes := apiSessionWriteRoutes(apiAppWriteStore{app: a})
+	runRoutes := apiRunWriteRoutes(apiAppWriteStore{app: a}, newAPIRunBackend(a))
+	routes = append(routes[:len(routes)-len(apiSessionRoutes())-len(apiRunRoutes())], append(writeRoutes, runRoutes...)...)
+	return routes
 }
 
 func apiListSessionsHandler(store APIReadStore) http.HandlerFunc {
