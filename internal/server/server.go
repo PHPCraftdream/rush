@@ -350,6 +350,9 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady fun
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		err := srv.Shutdown(shutCtx)
 		cancel()
+		if errors.Is(err, net.ErrClosed) {
+			err = nil
+		}
 		if err != nil {
 			_ = srv.Close()
 			s.closeConnections()
