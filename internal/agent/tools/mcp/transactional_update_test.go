@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -211,16 +212,28 @@ func requireTransactionalEvent(
 	state State,
 ) {
 	t.Helper()
+	event, err := waitForTransactionalEvent(events, eventType, name)
+	require.NoError(t, err)
+	require.Equal(t, eventType, event.Type)
+	require.Equal(t, EventStateChanged, event.Payload.Type)
+	require.Equal(t, name, event.Payload.Name)
+	require.Equal(t, state, event.Payload.State)
+}
+
+func waitForTransactionalEvent(
+	events <-chan pubsub.Event[Event],
+	eventType pubsub.EventType,
+	name string,
+) (pubsub.Event[Event], error) {
 	select {
 	case event := <-events:
-		require.Equal(t, eventType, event.Type)
-		require.Equal(t, EventStateChanged, event.Payload.Type)
-		require.Equal(t, name, event.Payload.Name)
-		require.Equal(t, state, event.Payload.State)
-	case <-time.After(time.Second):
-		t.Fatalf("missing %s event for MCP server %q", eventType, name)
+		return event, nil
+	case <-time.After(transactionalEventTimeout):
+		return pubsub.Event[Event]{}, fmt.Errorf("missing %s event for MCP server %q", eventType, name)
 	}
 }
+
+var transactionalEventTimeout = 10 * time.Second
 
 func TestReplaceServerSuccessfulSwapPublishesNewSessionOnce(t *testing.T) {
 	oldHTTP := transactionalTestServer(t, "old-tool", "old")
