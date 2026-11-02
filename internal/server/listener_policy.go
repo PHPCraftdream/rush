@@ -78,6 +78,7 @@ type ListenerPolicy struct {
 	Limits           ListenerLimits
 	TLS              ListenerTLS
 	Auth             func(next http.Handler) http.Handler
+	RESTHandler      http.Handler
 	resolver         func(string) ([]net.IP, error)
 }
 
