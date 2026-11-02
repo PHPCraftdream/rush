@@ -44,7 +44,7 @@ func newAPICmd() *cobra.Command {
 	flags.Bool("json", false, "Output JSON")
 	flags.Bool("quiet", false, "Suppress non-error output")
 	flags.Duration("timeout", 0, "Overall request timeout")
-	cmd.AddCommand(newAPIRemoteCmd(), newAPISessionsCmd(), newAPIMessagesCmd(), newAPIModelsCmd(), newAPIOpenAPICmd(), newAPIRawCmd())
+	cmd.AddCommand(newAPIRemoteCmd(), newAPISessionsCmd(), newAPIMessagesCmd(), newAPIModelsCmd(), newAPIOpenAPICmd(), newAPIRawCmd(), newAPIRunCmd(), newAPIRunsCmd(), newAPIEventsCmd(), newAPIInjectCmd(), newAPICancelRunCmd(), newAPIPermissionsCmd())
 	return cmd
 }
 

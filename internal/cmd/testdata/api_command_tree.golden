@@ -1,0 +1,56 @@
+api cancel|cancel RUN
+api events|--after||string|
+api events|--follow||bool|false
+api events|--idle||duration|1s
+api events|events SESSION
+api inject|inject SESSION TEXT
+api messages|--after||string|
+api messages|--all||bool|false
+api messages|--limit||int|0
+api messages|messages SESSION
+api models|models
+api openapi|openapi
+api permissions allow|allow ID
+api permissions deny|deny ID
+api permissions list|--session||string|
+api permissions list|list
+api permissions|permissions
+api raw|--data||string|
+api raw|raw METHOD PATH
+api remote add|--allow-cleartext||bool|false
+api remote add|--ca||string|
+api remote add|--client-cert||string|
+api remote add|--client-key||string|
+api remote add|--default||bool|false
+api remote add|--pin||string|
+api remote add|--replace||bool|false
+api remote add|--token-env||string|
+api remote add|--token-file||string|
+api remote add|--token-stdin||bool|false
+api remote add|--url||string|
+api remote add|add NAME
+api remote list|list
+api remote rm|rm NAME
+api remote show|show NAME
+api remote test|test [NAME]
+api remote|remote
+api runs cancel|cancel RUN
+api runs get|get RUN
+api runs wait|wait RUN
+api runs|runs
+api run|--model||string|
+api run|--no-wait||bool|false
+api run|--role||string|
+api run|--stream||bool|false
+api run|run SESSION "prompt"
+api sessions create|--title||string|
+api sessions create|create
+api sessions delete|delete ID
+api sessions fork|--title||string|
+api sessions fork|fork ID
+api sessions get|get ID
+api sessions list|--after||string|
+api sessions list|--all||bool|false
+api sessions list|--limit||int|0
+api sessions list|list
+api sessions|sessions

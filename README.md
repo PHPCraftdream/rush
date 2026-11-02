@@ -16,6 +16,10 @@ npm install -g @phpcraftdream/rush
 rush run --role smart "summarize what this repo does"
 ```
 
+## Remote API
+
+Connect to a configured Rush server with `rush api` for sessions, runs, events, and permission management. See the [CLI reference](docs/api/cli.md).
+
 ## What is this, and why
 
 Most coding-agent CLIs are built for a human sitting in a terminal,
