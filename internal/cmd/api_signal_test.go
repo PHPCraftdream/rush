@@ -129,7 +129,6 @@ func TestAPISignalContextDistinguishesSignalFromDeadline(t *testing.T) {
 	if interrupted() {
 		t.Fatal("a parent cancellation was reported as an interrupt")
 	}
-
 }
 
 // TestAPICLIRunStreamEndsOnRunEventNotOnPolling disables the polling fallback
