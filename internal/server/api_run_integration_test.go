@@ -201,3 +201,6 @@ func TestAPIRunProductionListenerCreatePollAndCancel(t *testing.T) {
 		t.Fatal("plaintext token appeared in captured logs")
 	}
 }
+
+// CancelAll keeps App shutdown safe when no real coordinator is configured (CI has no providers).
+func (c *apiRunIntegrationCoordinator) CancelAll() bool { return false }

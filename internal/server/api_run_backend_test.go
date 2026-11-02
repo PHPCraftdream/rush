@@ -366,3 +366,6 @@ func TestAPIRunBackendGateBusySessionRemainsConflict(t *testing.T) {
 	require.Empty(t, calls)
 	require.Equal(t, "another-run", owner)
 }
+
+// CancelAll keeps App shutdown safe when no real coordinator is configured (CI has no providers).
+func (c *apiRunBackendGateCoordinator) CancelAll() bool { return false }

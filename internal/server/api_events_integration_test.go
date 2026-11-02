@@ -208,3 +208,6 @@ func TestServeAPIEventsProductionListenerRunReplayAndStop(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// CancelAll keeps App shutdown safe when no real coordinator is configured (CI has no providers).
+func (c *apiEventsIntegrationCoordinator) CancelAll() bool { return false }
