@@ -28,13 +28,14 @@ var (
 )
 
 type Server struct {
-	app    *appPkg.App
-	hub    *Hub
-	auth   *Auth
-	addr   string
-	static fs.FS
-	policy ListenerPolicy
-	uiAuth bool
+	app          *appPkg.App
+	hub          *Hub
+	auth         *Auth
+	addr         string
+	static       fs.FS
+	policy       ListenerPolicy
+	uiAuth       bool
+	updateNotice func(context.Context, *Hub)
 
 	// port is the actual TCP port the listener bound to. It's populated once
 	// Start() binds the listener (useful when addr requested port 0), and is
@@ -49,7 +50,7 @@ type Server struct {
 	shutdownSig  chan struct{}
 	shutdownOnce sync.Once
 	connMu       sync.Mutex
-	connections  map[net.Conn]struct{}
+	connections  map[net.Conn]http.ConnState
 	wsWorkers    sync.WaitGroup
 }
 
@@ -153,14 +154,15 @@ func newServer(a *appPkg.App, policy ListenerPolicy, staticFS fs.FS, uiAuth bool
 		auth = newAuth()
 	}
 	return &Server{
-		app:         a,
-		hub:         newHub(),
-		auth:        auth,
-		addr:        policy.Address,
-		static:      staticFS,
-		policy:      policy,
-		uiAuth:      uiAuth,
-		shutdownSig: make(chan struct{}),
+		app:          a,
+		hub:          newHub(),
+		auth:         auth,
+		addr:         policy.Address,
+		static:       staticFS,
+		policy:       policy,
+		uiAuth:       uiAuth,
+		updateNotice: broadcastUpdateNotice,
+		shutdownSig:  make(chan struct{}),
 	}
 }
 
@@ -262,11 +264,7 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady fun
 			forwarders.Wait()
 		}()
 	}
-	joined.Add(1)
-	go func() {
-		defer joined.Done()
-		broadcastUpdateNotice(runCtx, s.hub)
-	}()
+	go s.updateNotice(runCtx, s.hub)
 
 	mux := http.NewServeMux()
 	if s.policyHasSurface(SurfaceWS) {
@@ -347,6 +345,7 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady fun
 		admissionClosed = true
 		admissionMu.Unlock()
 		cancelRun()
+		s.closeQuiescentConnections()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		err := srv.Shutdown(shutCtx)
 		cancel()
@@ -401,9 +400,19 @@ func (s *Server) trackConnection(conn net.Conn, state http.ConnState) {
 		return
 	}
 	if s.connections == nil {
-		s.connections = make(map[net.Conn]struct{})
+		s.connections = make(map[net.Conn]http.ConnState)
 	}
-	s.connections[conn] = struct{}{}
+	s.connections[conn] = state
+}
+
+func (s *Server) closeQuiescentConnections() {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	for conn, state := range s.connections {
+		if state == http.StateNew || state == http.StateIdle {
+			_ = conn.Close()
+		}
+	}
 }
 
 func (s *Server) closeConnections() {
