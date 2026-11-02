@@ -151,6 +151,13 @@ func handleDeleteSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMe
 		c.reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
+	if c.auth != nil {
+		sess, err := a.Sessions.Get(ctx, p.SessionID)
+		if err != nil || !appOwnsSession(a, sess) {
+			c.reply(msg.ID, EventError, nil, "session not found")
+			return
+		}
+	}
 	if err := a.Sessions.Delete(ctx, p.SessionID); err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return

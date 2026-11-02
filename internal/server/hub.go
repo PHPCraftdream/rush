@@ -95,6 +95,7 @@ type Client struct {
 	hub  *Hub
 	conn *websocket.Conn
 	send chan []byte
+	auth *clientAuth
 
 	// workQueue is the bounded queue work-shaped dispatches (see dispatch)
 	// are handed to. A fixed pool of workerPoolSize worker goroutines (see
@@ -491,15 +492,21 @@ func (h *Hub) Run(ctx context.Context) {
 			// only ordering that can be made reliable against a bounded
 			// channel without blocking or growing it unboundedly.
 			for _, msg := range h.stickyEvents() {
+				if c.auth != nil && !c.mayReceive(envelopeType(msg)) {
+					continue
+				}
 				select {
 				case c.send <- msg:
 				default:
 					// Client buffer full already (e.g. many sticky types).
 				}
 			}
-			// Then replay buffered events. Sticky envelopes are never in
-			// here (see above), so no filtering is needed.
+			// Then replay buffered events, applying the same per-client filter
+			// as live delivery so retained sensitive state cannot leak.
 			h.buffer.forEach(func(msg []byte) {
+				if c.auth != nil && !c.mayReceive(envelopeType(msg)) {
+					return
+				}
 				select {
 				case c.send <- msg:
 				default:
@@ -589,6 +596,9 @@ func (h *Hub) Run(ctx context.Context) {
 				// Fan-out to already-connected clients only; identical to the
 				// broadcast case's fan-out.
 				for c := range h.clients {
+					if !c.mayReceive(msgType) {
+						continue
+					}
 					select {
 					case c.send <- env:
 					default:
@@ -633,7 +643,11 @@ func (h *Hub) tryRegister(ctx context.Context, c *Client) bool {
 
 func (h *Hub) deliver(msg []byte) {
 	_ = h.buffer.push(msg)
+	msgType := envelopeType(msg)
 	for c := range h.clients {
+		if !c.mayReceive(msgType) {
+			continue
+		}
 		select {
 		case c.send <- msg:
 		default:

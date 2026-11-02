@@ -479,6 +479,11 @@ func (s *Server) handleWS(ctx context.Context, w http.ResponseWriter, r *http.Re
 		}
 	}
 	c := newClient(s.hub, conn)
+	if !s.uiAuth {
+		if principal, ok := PrincipalFrom(r.Context()); ok {
+			c.auth = newClientAuth(principal, CommandPolicy{AllowAdmin: s.policy.AllowAdmin})
+		}
+	}
 	s.wsWorkers.Add(1)
 	go func() {
 		defer s.wsWorkers.Done()
