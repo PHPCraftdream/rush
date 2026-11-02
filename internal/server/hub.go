@@ -498,8 +498,15 @@ func (h *Hub) Run(ctx context.Context) {
 			// only ordering that can be made reliable against a bounded
 			// channel without blocking or growing it unboundedly.
 			for _, msg := range h.stickyEvents() {
-				if c.auth != nil && !c.mayReceive(envelopeType(msg)) {
+				meta := newLazyMeta(msg)
+				if !c.filterMetadata(meta) {
 					continue
+				}
+				if c.auth != nil {
+					msg = c.auth.filter(msg, meta)
+					if msg == nil {
+						continue
+					}
 				}
 				select {
 				case c.send <- msg:
@@ -510,8 +517,15 @@ func (h *Hub) Run(ctx context.Context) {
 			// Then replay buffered events, applying the same per-client filter
 			// as live delivery so retained sensitive state cannot leak.
 			h.buffer.forEach(func(msg []byte) {
-				if c.auth != nil && !c.mayReceive(envelopeType(msg)) {
+				meta := newLazyMeta(msg)
+				if !c.filterMetadata(meta) {
 					return
+				}
+				if c.auth != nil {
+					msg = c.auth.filter(msg, meta)
+					if msg == nil {
+						return
+					}
 				}
 				select {
 				case c.send <- msg:
@@ -601,12 +615,20 @@ func (h *Hub) Run(ctx context.Context) {
 				}
 				// Fan-out to already-connected clients only; identical to the
 				// broadcast case's fan-out.
+				meta := newLazyMeta(env)
 				for c := range h.clients {
-					if !c.mayReceive(msgType) {
+					if !c.filterMetadata(meta) {
 						continue
 					}
+					send := env
+					if c.auth != nil {
+						send = c.auth.filter(env, meta)
+						if send == nil {
+							continue
+						}
+					}
 					select {
-					case c.send <- env:
+					case c.send <- send:
 					default:
 						slog.Debug("ws: slow client, dropping sticky message")
 					}
@@ -649,13 +671,20 @@ func (h *Hub) tryRegister(ctx context.Context, c *Client) bool {
 
 func (h *Hub) deliver(msg []byte) {
 	_ = h.buffer.push(msg)
-	msgType := envelopeType(msg)
+	meta := newLazyMeta(msg)
 	for c := range h.clients {
-		if !c.mayReceive(msgType) {
+		send := msg
+		if !c.filterMetadata(meta) {
 			continue
 		}
+		if c.auth != nil {
+			send = c.auth.filter(msg, meta)
+			if send == nil {
+				continue
+			}
+		}
 		select {
-		case c.send <- msg:
+		case c.send <- send:
 		default:
 			slog.Debug("ws: slow client, dropping message")
 		}
@@ -730,6 +759,16 @@ func (c *Client) reply(id, msgType string, payload any, errMsg string) {
 	env, err := json.Marshal(WSMessage{ID: id, Type: msgType, Payload: raw, Error: errMsg})
 	if err != nil {
 		return
+	}
+	if c.auth != nil && !c.auth.replyBypassesView(id, msgType) {
+		meta := newLazyMeta(env)
+		if !c.filterMetadata(meta) {
+			return
+		}
+		env = c.auth.filter(env, meta)
+		if env == nil {
+			return
+		}
 	}
 	if !c.trySend(env) {
 		slog.Warn("ws: client send buffer full or closed, dropping reply")

@@ -18,6 +18,8 @@ type Principal struct {
 	TokenID         string
 	Scopes          []string
 	Permission      string
+	PinnedSession   string
+	TokenWorkspace  string
 	CertFingerprint string
 	verifier        TokenVerifier
 	expires         *time.Time
@@ -58,6 +60,9 @@ func (t realTicker) Stop() { t.t.Stop() }
 type AuthConfig struct {
 	Verifier          TokenVerifier
 	AllowedTokenIDs   []string
+	Pins              map[string]string
+	PinsDeclared      bool
+	Workspace         string
 	Clock             func() time.Time
 	BootstrapTokenIDs []string
 }
@@ -172,6 +177,10 @@ func Chain(cfg ChainConfig) func(http.Handler) http.Handler {
 				retryResponse(w, retry)
 				return
 			}
+			if p.TokenWorkspace != "" && !sameCanonicalWorkspace(p.TokenWorkspace, cfg.Workspace) {
+				writeProblem(w, http.StatusForbidden, "{\"type\":\"token-not-for-this-workspace\",\"title\":\"Forbidden\",\"status\":403}\n")
+				return
+			}
 			if !inflight.Acquire(p.TokenID) {
 				retryResponse(w, time.Second)
 				return
@@ -258,6 +267,11 @@ func authenticate(cfg ChainConfig, r *http.Request) (Principal, string, error, e
 	if !ok || !allowedID(cfg.AllowedTokenIDs, t.ID) {
 		return Principal{}, id, errors.New("bad credentials"), nil
 	}
+	if cfg.PinsDeclared {
+		if _, pinned := cfg.Pins[t.ID]; !pinned {
+			return Principal{}, id, errors.New("bad credentials"), nil
+		}
+	}
 	show, showErr := cfg.Verifier.ShowAPIToken(t.ID)
 	bootstrap := false
 	if showErr != nil {
@@ -271,11 +285,30 @@ func authenticate(cfg ChainConfig, r *http.Request) (Principal, string, error, e
 	} else {
 		t = show
 	}
+	pin := ""
+	workspace := ""
+	binding := t.Binding.Normalized()
+	if binding.Kind == "session" && binding.Pin != nil {
+		pin = binding.Pin.Session
+		workspace = binding.Pin.Workspace
+	}
+	if listenerPin, ok := cfg.Pins[t.ID]; ok {
+		pin = listenerPin
+		if workspace == "" {
+			workspace = cfg.Workspace
+		}
+	}
 	fingerprint := ""
 	if r.TLS != nil && len(r.TLS.VerifiedChains) > 0 && len(r.TLS.PeerCertificates) > 0 {
 		fingerprint = certificateFingerprint(r)
 	}
-	return Principal{TokenID: t.ID, Scopes: append([]string(nil), t.Scopes...), Permission: t.Permission, CertFingerprint: fingerprint, verifier: cfg.Verifier, expires: t.Expires, bootstrap: bootstrap, tickerFactory: cfg.TickerFactory}, "", nil, nil
+	return Principal{TokenID: t.ID, Scopes: append([]string(nil), t.Scopes...), Permission: t.Permission, PinnedSession: pin, TokenWorkspace: workspace, CertFingerprint: fingerprint, verifier: cfg.Verifier, expires: t.Expires, bootstrap: bootstrap, tickerFactory: cfg.TickerFactory}, "", nil, nil
+}
+
+func sameCanonicalWorkspace(tokenWorkspace, listenerWorkspace string) bool {
+	tokenPath, tokenErr := config.CanonicalAPIWorkspace(tokenWorkspace)
+	listenerPath, listenerErr := config.CanonicalAPIWorkspace(listenerWorkspace)
+	return tokenErr == nil && listenerErr == nil && tokenPath == listenerPath
 }
 
 func allowedID(ids []string, id string) bool {

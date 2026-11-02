@@ -44,19 +44,21 @@ var ErrAPITokenNotFound = errors.New("API token not found")
 // APIToken is the persisted authorization record. Hash is SHA-256 of the full
 // plaintext credential; plaintext credentials are never persisted.
 type APIToken struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name"`
-	Scopes     []string   `json:"scopes"`
-	Permission string     `json:"permission"`
-	Created    time.Time  `json:"created"`
-	Expires    *time.Time `json:"expires,omitempty"`
-	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
-	Hash       string     `json:"-"`
+	ID         string          `json:"id"`
+	Name       string          `json:"name"`
+	Scopes     []string        `json:"scopes"`
+	Permission string          `json:"permission"`
+	Created    time.Time       `json:"created"`
+	Expires    *time.Time      `json:"expires,omitempty"`
+	RevokedAt  *time.Time      `json:"revoked_at,omitempty"`
+	Hash       string          `json:"-"`
+	Binding    APITokenBinding `json:"binding"`
 }
 
 func (t APIToken) clone() APIToken {
 	copy := t
 	copy.Scopes = append([]string(nil), t.Scopes...)
+	copy.Binding = t.Binding.Clone()
 	if t.Expires != nil {
 		expires := *t.Expires
 		copy.Expires = &expires
@@ -77,14 +79,15 @@ func (t APIToken) GoString() string                  { return t.String() }
 func (t APIToken) Format(state fmt.State, verb rune) { _, _ = fmt.Fprint(state, t.String()) }
 
 type apiTokenRecord struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name"`
-	Scopes     []string   `json:"scopes"`
-	Permission string     `json:"permission"`
-	Created    time.Time  `json:"created"`
-	Expires    *time.Time `json:"expires,omitempty"`
-	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
-	Hash       string     `json:"sha256"`
+	ID         string          `json:"id"`
+	Name       string          `json:"name"`
+	Scopes     []string        `json:"scopes"`
+	Permission string          `json:"permission"`
+	Created    time.Time       `json:"created"`
+	Expires    *time.Time      `json:"expires,omitempty"`
+	RevokedAt  *time.Time      `json:"revoked_at,omitempty"`
+	Hash       string          `json:"sha256"`
+	Binding    APITokenBinding `json:"binding"`
 }
 
 func toAPIRecord(t APIToken) apiTokenRecord {
@@ -96,20 +99,21 @@ func (t *APIToken) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &r); err != nil {
 		return err
 	}
-	t.ID, t.Name, t.Scopes, t.Permission, t.Created, t.Expires, t.RevokedAt, t.Hash = r.ID, r.Name, r.Scopes, r.Permission, r.Created, r.Expires, r.RevokedAt, r.Hash
+	t.ID, t.Name, t.Scopes, t.Permission, t.Created, t.Expires, t.RevokedAt, t.Hash, t.Binding = r.ID, r.Name, r.Scopes, r.Permission, r.Created, r.Expires, r.RevokedAt, r.Hash, r.Binding.Normalized()
 	return nil
 }
 
 func (t APIToken) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		ID         string     `json:"id"`
-		Name       string     `json:"name"`
-		Scopes     []string   `json:"scopes"`
-		Permission string     `json:"permission"`
-		Created    time.Time  `json:"created"`
-		Expires    *time.Time `json:"expires,omitempty"`
-		RevokedAt  *time.Time `json:"revoked_at,omitempty"`
-	}{t.ID, t.Name, t.Scopes, t.Permission, t.Created, t.Expires, t.RevokedAt})
+		ID         string           `json:"id"`
+		Name       string           `json:"name"`
+		Scopes     []string         `json:"scopes"`
+		Permission string           `json:"permission"`
+		Created    time.Time        `json:"created"`
+		Expires    *time.Time       `json:"expires,omitempty"`
+		RevokedAt  *time.Time       `json:"revoked_at,omitempty"`
+		Binding    *APITokenBinding `json:"binding,omitempty"`
+	}{t.ID, t.Name, t.Scopes, t.Permission, t.Created, t.Expires, t.RevokedAt, publicBinding(t.Binding)})
 }
 
 type apiTokenDocument struct {
@@ -164,6 +168,10 @@ func GlobalAPITokenStore() *APITokenStore {
 // CreateAPIToken generates and durably records a rush_<id>.<secret> credential,
 // returning the plaintext exactly once to its caller.
 func (s *APITokenStore) CreateAPIToken(name string, scopes []string, permission string, expires *time.Time) (string, APIToken, error) {
+	return s.CreateAPITokenWithBinding(name, scopes, permission, expires, APITokenBinding{Kind: "none"})
+}
+
+func (s *APITokenStore) CreateAPITokenWithBinding(name string, scopes []string, permission string, expires *time.Time, binding APITokenBinding) (string, APIToken, error) {
 	if strings.TrimSpace(name) == "" {
 		return "", APIToken{}, errors.New("token name is required")
 	}
@@ -186,6 +194,9 @@ func (s *APITokenStore) CreateAPIToken(name string, scopes []string, permission 
 	if permission == "auto" && !seen["admin"] {
 		return "", APIToken{}, errors.New("auto permission requires admin scope")
 	}
+	if err := binding.Validate(scopes); err != nil {
+		return "", APIToken{}, err
+	}
 	secretBytes := make([]byte, 32)
 	idBytes := make([]byte, 4)
 	if _, err := rand.Read(secretBytes); err != nil {
@@ -202,7 +213,7 @@ func (s *APITokenStore) CreateAPIToken(name string, scopes []string, permission 
 		value := *expires
 		expiresCopy = &value
 	}
-	record := APIToken{ID: id, Name: name, Scopes: append([]string(nil), scopes...), Permission: permission, Created: time.Now().UTC(), Expires: expiresCopy, Hash: hex.EncodeToString(hash[:])}
+	record := APIToken{ID: id, Name: name, Scopes: append([]string(nil), scopes...), Permission: permission, Created: time.Now().UTC(), Expires: expiresCopy, Hash: hex.EncodeToString(hash[:]), Binding: binding.Normalized()}
 	if _, ok := parseAPIToken(token); !ok {
 		return "", APIToken{}, ErrInvalidAPIToken
 	}
@@ -689,4 +700,14 @@ func apiTokenDigest(token string) [sha256.Size]byte {
 func APITokenHash(token string) string {
 	sum := apiTokenDigest(token)
 	return hex.EncodeToString(sum[:])
+}
+
+// publicBinding keeps the public token JSON of unbound tokens exactly as it was
+// before bindings existed: the key appears only for a real binding.
+func publicBinding(b APITokenBinding) *APITokenBinding {
+	normalized := b.Normalized()
+	if normalized.Kind == "none" {
+		return nil
+	}
+	return &normalized
 }

@@ -63,6 +63,7 @@ type ServerListenerFlags struct {
 	TLSMinVersion    *string
 	TLSSelfSigned    *bool
 	TLSSANs          *[]string
+	Pins             map[string]string
 }
 
 func (l *ServerListenerLimits) UnmarshalJSON(data []byte) error {
@@ -223,7 +224,7 @@ func globalServerListenersFromDocuments(documents []serverListenerConfigDocument
 		sources[i] = make(map[string]string)
 		if i < len(sourceRoot.Server.Listeners) {
 			for field, raw := range sourceRoot.Server.Listeners[i] {
-				if field == "tls" || field == "limits" {
+				if field == "tls" || field == "limits" || field == "pins" {
 					var nested map[string]string
 					if json.Unmarshal(raw, &nested) == nil {
 						for name, source := range nested {
@@ -268,7 +269,7 @@ func annotateServerListenerSources(data []byte, source string) ([]byte, error) {
 			if strings.TrimSpace(string(value)) == "null" {
 				continue
 			}
-			if key == "tls" || key == "limits" {
+			if key == "tls" || key == "limits" || key == "pins" {
 				var nested map[string]json.RawMessage
 				if json.Unmarshal(value, &nested) == nil {
 					for name, nestedValue := range nested {
@@ -291,7 +292,7 @@ func annotateServerListenerSources(data []byte, source string) ([]byte, error) {
 
 func serverListenerConfiguredFields(raw map[string]json.RawMessage) map[string]bool {
 	fields := make(map[string]bool)
-	for _, name := range []string{"addr", "surfaces", "allow_cleartext", "allow_admin", "allow_auto_approve", "allowed_origins", "tokens"} {
+	for _, name := range []string{"addr", "surfaces", "allow_cleartext", "allow_admin", "allow_auto_approve", "allowed_origins", "tokens", "pins"} {
 		if _, ok := raw[name]; ok {
 			fields[name] = true
 		}
@@ -339,5 +340,13 @@ func applyServerListenerFlags(listener *ServerListener, flags ServerListenerFlag
 	}
 	if flags.TLSSANs != nil {
 		listener.TLS.SANs = append([]string(nil), (*flags.TLSSANs)...)
+	}
+	if flags.Pins != nil {
+		if listener.Pins == nil {
+			listener.Pins = make(map[string]string)
+		}
+		for id, sessionID := range flags.Pins {
+			listener.Pins[id] = sessionID
+		}
 	}
 }

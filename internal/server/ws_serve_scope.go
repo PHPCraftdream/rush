@@ -10,11 +10,12 @@ import (
 type clientAuth struct {
 	principal Principal
 	policy    CommandPolicy
+	view      pinnedView
 }
 
 func newClientAuth(principal Principal, policy CommandPolicy) *clientAuth {
 	principal.Scopes = append([]string(nil), principal.Scopes...)
-	return &clientAuth{principal: principal, policy: policy}
+	return &clientAuth{principal: principal, policy: policy, view: newPinnedView(principal.PinnedSession)}
 }
 
 func (c *Client) mayReceive(msgType string) bool {
@@ -22,6 +23,39 @@ func (c *Client) mayReceive(msgType string) bool {
 		return true
 	}
 	return c.auth.policy.AllowAdmin && hasScope(c.auth.principal, "admin")
+}
+
+// filterMetadata reports whether this client may receive the event. The cheap
+// type check runs for every client; the payload is parsed (once per delivery)
+// only for pinned clients.
+func (c *Client) filterMetadata(m *lazyEventMeta) bool {
+	if !c.mayReceive(m.typ()) {
+		return false
+	}
+	if c == nil || c.auth == nil || c.auth.view.sessionID == "" {
+		return true
+	}
+	return c.auth.view.allows(m.meta())
+}
+
+// replyBypassesView lets the correlated error/ok reply to a command through a
+// pinned view: the command already passed the pre-handler session resolution,
+// so it targeted the pinned session, and these envelopes carry no event
+// payload of another session. Uncorrelated or data-bearing replies still go
+// through the view filter.
+func (a *clientAuth) replyBypassesView(id, msgType string) bool {
+	return a.view.sessionID != "" && id != "" && (msgType == EventError || msgType == EventResponse)
+}
+
+func (a *clientAuth) filter(raw []byte, m *lazyEventMeta) []byte {
+	msgType := m.typ()
+	if msgType == "" || (msgType == EventMCPState && (!a.policy.AllowAdmin || !hasScope(a.principal, "admin"))) {
+		return nil
+	}
+	if a.view.sessionID == "" {
+		return raw
+	}
+	return a.view.project(raw, m.meta())
 }
 
 func hasScope(principal Principal, scope string) bool {

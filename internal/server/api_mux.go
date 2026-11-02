@@ -114,6 +114,14 @@ func protectAPIRoute(route APIRoute) http.Handler {
 			WriteAPIProblem(w, r, http.StatusInternalServerError, "Internal Server Error", "", "", fmt.Errorf("missing authenticated principal"))
 			return
 		}
+		if status := resolvePinnedRoute(p.PinnedSession, route, r); status != 0 {
+			if status == http.StatusNotFound {
+				WriteAPIProblem(w, r, status, "Not Found", "resource not found", "", nil)
+			} else {
+				WriteAPIProblem(w, r, status, "Forbidden", "pinned-token", "", nil)
+			}
+			return
+		}
 		if !config.APITokenScopeAllows(p.Scopes, route.Scope) {
 			WriteAPIProblem(w, r, http.StatusForbidden, "Forbidden", "insufficient scope", "", nil)
 			return

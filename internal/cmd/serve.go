@@ -45,6 +45,7 @@ var (
 	serveAPIStop               = func(api *server.ServeAPI) error { return api.Stop(context.Background()) }
 	serveAuthFactory           func(http.Handler) http.Handler
 	serveResolver              = net.LookupIP
+	servePinSpecs              []string
 )
 
 func serveAppOptions() []app.Option {
@@ -60,6 +61,7 @@ func init() {
 	serveCmd.Flags().StringSlice("tls-san", nil, "Additional TLS subject alternative name (repeatable)")
 	serveCmd.Flags().Bool("allow-cleartext", false, "Allow cleartext on non-loopback listeners")
 	serveCmd.Flags().Bool("print-config", false, "Print effective listener configuration without starting")
+	serveCmd.Flags().StringArrayVar(&servePinSpecs, "pin-session", nil, "Narrow a token to one session (TOKEN_ID=SESSION_ID)")
 	rootCmd.AddCommand(serveCmd)
 }
 
@@ -138,6 +140,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	selfSigned, _ := cmd.Flags().GetBool("tls-self-signed")
 	sans, _ := cmd.Flags().GetStringSlice("tls-san")
 	flags := config.ServerListenerFlags{}
+	if len(servePinSpecs) > 0 {
+		pins, pinErr := parseServePinSpecs(servePinSpecs)
+		if pinErr != nil {
+			return &tokenCLIError{code: 2, err: pinErr}
+		}
+		flags.Pins = pins
+	}
 	if cmd.Flags().Changed("listen") {
 		flags.Addr = &listen
 	}
@@ -167,7 +176,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		if cmd.Flags().Changed("listen") {
 			addr = listen
 		}
-		listeners = []config.ServerListener{{Addr: addr, Surfaces: []string{"rest", "ws"}, AllowCleartext: false}}
+		listeners = []config.ServerListener{{Addr: addr, Surfaces: []string{"rest", "ws"}, AllowCleartext: false, Pins: cloneStringMap(flags.Pins)}}
 		if cmd.Flags().Changed("allow-cleartext") {
 			listeners[0].AllowCleartext = clear
 		}
@@ -183,7 +192,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	policies := make([]server.ListenerPolicy, 0, len(listeners))
-	for _, l := range listeners {
+	for i, l := range listeners {
 		if l.Surfaces == nil {
 			l.Surfaces = []string{"rest", "ws"}
 		}
@@ -200,7 +209,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		if policyAuth == nil {
 			policyAuth = server.DenyAllAuth
 		}
-		policy := server.ListenerPolicy{Address: l.Addr, Surfaces: surfaces, AllowCleartext: l.AllowCleartext, AllowAdmin: l.AllowAdmin, AllowAutoApprove: l.AllowAutoApprove, AllowedOrigins: l.AllowedOrigins, TokenIDs: l.Tokens, Limits: server.ListenerLimits{RPS: l.Limits.RPS, Burst: l.Limits.Burst, MaxConnsPerToken: l.Limits.MaxConnsPerToken, MaxBody: l.Limits.MaxBody}, Auth: policyAuth}.WithResolver(serveResolver)
+		policy := server.ListenerPolicy{Address: l.Addr, Surfaces: surfaces, AllowCleartext: l.AllowCleartext, AllowAdmin: l.AllowAdmin, AllowAutoApprove: l.AllowAutoApprove, AllowedOrigins: l.AllowedOrigins, TokenIDs: l.Tokens, Pins: cloneStringMap(l.Pins), DeclaredPins: cloneStringMap(l.Pins), PinsDeclared: len(l.Pins) > 0 || (configuredListeners && i < len(fieldSources) && fieldSources[i]["pins"] != ""), Workspace: cmdFlagString(cmd, "cwd"), Limits: server.ListenerLimits{RPS: l.Limits.RPS, Burst: l.Limits.Burst, MaxConnsPerToken: l.Limits.MaxConnsPerToken, MaxBody: l.Limits.MaxBody}, Auth: policyAuth}.WithResolver(serveResolver)
 		policy.TLS = server.ListenerTLS{Cert: l.TLS.Cert, Key: l.TLS.Key, ClientCA: l.TLS.ClientCA, MinVersion: l.TLS.MinVersion, SelfSigned: l.TLS.SelfSigned, SANs: l.TLS.SANs}
 		if len(policies) == 0 && cmd.Flags().Changed("tls-self-signed") {
 			policy.TLS.SelfSigned = selfSigned
@@ -226,6 +235,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	if err := server.ValidateListenerSet(policies); err != nil {
 		return &tokenCLIError{code: 2, err: err}
+	}
+	workspace, workspaceErr := canonicalServeWorkspace(cmdFlagString(cmd, "cwd"))
+	if workspaceErr != nil {
+		return &tokenCLIError{code: 2, err: workspaceErr}
+	}
+	for i := range policies {
+		policies[i].Workspace = workspace
 	}
 	if printConfig, _ := cmd.Flags().GetBool("print-config"); printConfig {
 		var lines []string
@@ -282,6 +298,16 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if !usable {
 		return &tokenCLIError{code: 2, err: fmt.Errorf("no usable API token; create one with: %s", tokenCreateCommand(cmdFlagString(cmd, "cwd"), serveGlobalDir(cmd)))}
 	}
+	for i := range policies {
+		resolvedPins, pinErr := server.EffectiveListenerPins(policies[i].Pins, tokens, nil)
+		if pinErr != nil {
+			return &tokenCLIError{code: 2, err: pinErr}
+		}
+		policies[i].Pins = resolvedPins
+	}
+	if err := server.ValidatePinnedPermissionModesAcrossPolicies(tokens, policies); err != nil {
+		return &tokenCLIError{code: 2, err: err}
+	}
 	bound := make([]net.Listener, 0, len(policies))
 	for _, policy := range policies {
 		ln, err := serveListen(policy.Address)
@@ -321,6 +347,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			_ = ln.Close()
 		}
 		return &tokenCLIError{code: 1, err: err}
+	}
+	if err := server.ValidateEffectivePins(cmd.Context(), appInstance, tokens, policies, nil); err != nil {
+		for _, ln := range bound {
+			_ = ln.Close()
+		}
+		_ = serveAppShutdown(appInstance)
+		return &tokenCLIError{code: 2, err: err}
 	}
 	apis := make([]*server.ServeAPI, 0, len(policies))
 	bootstrapIDs := []string(nil)

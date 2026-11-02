@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/http"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 )
@@ -35,6 +36,14 @@ func handleIncoming(ctx context.Context, s *Server, c *Client, raw []byte) {
 	}
 
 	if c.auth != nil {
+		if status := resolvePinnedCommand(c.auth.principal.PinnedSession, msg.Type, msg.Payload); status != 0 {
+			if status == http.StatusNotFound {
+				c.reply(msg.ID, EventError, nil, "not found")
+			} else {
+				c.reply(msg.ID, EventError, nil, "forbidden: pinned-token")
+			}
+			return
+		}
 		if err := authorizeWSCommand(*c.auth, msg.Type); err != nil {
 			c.reply(msg.ID, EventError, nil, err.Error())
 			return
