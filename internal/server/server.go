@@ -282,9 +282,12 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady fun
 		mux.Handle("/ws", ws)
 	}
 	if s.policyHasSurface(SurfaceREST) {
-		rest := http.Handler(http.NotFoundHandler())
-		if s.policy.Auth != nil {
-			rest = s.policy.Auth(rest)
+		rest := s.policy.RESTHandler
+		if rest == nil {
+			rest = http.NotFoundHandler()
+			if s.policy.Auth != nil {
+				rest = s.policy.Auth(rest)
+			}
 		}
 		mux.Handle("/api/v1/", rest)
 	}

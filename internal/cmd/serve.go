@@ -41,7 +41,8 @@ var (
 		return nil
 	}
 	serveConsumeBootstrapToken = config.ConsumeServeBootstrapTokenFromEnv
-	serveAuthFactory           = server.DenyAllAuth
+	serveAPIStop               = func(api *server.ServeAPI) error { return api.Stop(context.Background()) }
+	serveAuthFactory           func(http.Handler) http.Handler
 	serveResolver              = net.LookupIP
 )
 
@@ -165,7 +166,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 				return &tokenCLIError{code: 2, err: errors.New("UI surface is not permitted for serve policies")}
 			}
 		}
-		policy := server.ListenerPolicy{Address: l.Addr, Surfaces: surfaces, AllowCleartext: l.AllowCleartext, AllowAdmin: l.AllowAdmin, AllowAutoApprove: l.AllowAutoApprove, AllowedOrigins: l.AllowedOrigins, TokenIDs: l.Tokens, Limits: server.ListenerLimits{RPS: l.Limits.RPS, Burst: l.Limits.Burst, MaxConnsPerToken: l.Limits.MaxConnsPerToken, MaxBody: l.Limits.MaxBody}, Auth: serveAuthFactory}.WithResolver(serveResolver)
+		policyAuth := serveAuthFactory
+		if policyAuth == nil {
+			policyAuth = server.DenyAllAuth
+		}
+		policy := server.ListenerPolicy{Address: l.Addr, Surfaces: surfaces, AllowCleartext: l.AllowCleartext, AllowAdmin: l.AllowAdmin, AllowAutoApprove: l.AllowAutoApprove, AllowedOrigins: l.AllowedOrigins, TokenIDs: l.Tokens, Limits: server.ListenerLimits{RPS: l.Limits.RPS, Burst: l.Limits.Burst, MaxConnsPerToken: l.Limits.MaxConnsPerToken, MaxBody: l.Limits.MaxBody}, Auth: policyAuth}.WithResolver(serveResolver)
 		policy.TLS = server.ListenerTLS{Cert: l.TLS.Cert, Key: l.TLS.Key, ClientCA: l.TLS.ClientCA, MinVersion: l.TLS.MinVersion}
 		if cmd.Flags().Changed("allow-cleartext") && len(policies) == 0 {
 			policy.AllowCleartext = clear
@@ -221,7 +226,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	store := config.GlobalAPITokenStore()
 	now := serveNow()
 	bootstrap, bootstrapOK, err := serveConsumeBootstrapToken(store, now)
-	_ = bootstrap
 	if err != nil {
 		return &tokenCLIError{code: 1, err: tokenStoreGuidance(err, cmdFlagString(cmd, "cwd"), serveGlobalDir(cmd))}
 	}
@@ -257,6 +261,30 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 		return &tokenCLIError{code: 1, err: err}
 	}
+	apis := make([]*server.ServeAPI, 0, len(policies))
+	bootstrapIDs := []string(nil)
+	if bootstrapOK {
+		bootstrapIDs = []string{bootstrap.ID}
+	}
+	for i := range policies {
+		api, err := server.NewServeAPI(policies[i], appInstance, store, bootstrapIDs)
+		if err != nil {
+			for _, listener := range bound {
+				_ = listener.Close()
+			}
+			for _, existing := range apis {
+				_ = existing.Stop(context.Background())
+			}
+			_ = serveAppShutdown(appInstance)
+			return &tokenCLIError{code: 1, err: err}
+		}
+		api.Configure(&policies[i])
+		if serveAuthFactory != nil {
+			policies[i].Auth = serveAuthFactory
+			policies[i].RESTHandler = serveAuthFactory(api.RESTHandler)
+		}
+		apis = append(apis, api)
+	}
 	ctx, cancel := context.WithCancel(cmd.Context())
 	defer cancel()
 	signals, stop := serveSignals()
@@ -264,11 +292,17 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	watchServeSignals(ctx, cancel, signals)
 	servers := make([]*server.Server, 0, len(bound))
 	serveDone := make(chan error, len(bound))
+	// The loop below reassigns ctx after the first cancellation; the server
+	// goroutines must keep reading the original one, not the variable.
+	serveCtx := ctx
 	for i, policy := range policies {
 		s := server.NewWithPolicy(appInstance, policy, nil)
 		servers = append(servers, s)
 		ln := bound[i]
-		go func() { serveDone <- s.ServeListener(ctx, ln, nil) }()
+		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "rush serve: listening on %s\n", ln.Addr().String()); err != nil {
+			cancel()
+		}
+		go func() { serveDone <- s.ServeListener(serveCtx, ln, nil) }()
 	}
 	var serverErr error
 	remaining := len(servers)
@@ -287,9 +321,19 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			ctx = context.Background()
 		}
 	}
+	for _, ln := range bound {
+		_ = ln.Close()
+	}
+	var apiStopErr error
+	for _, api := range apis {
+		apiStopErr = errors.Join(apiStopErr, serveAPIStop(api))
+	}
 	shutdownErr := serveAppShutdown(appInstance)
 	if serverErr != nil {
 		return &tokenCLIError{code: 1, err: serverErr}
+	}
+	if apiStopErr != nil {
+		return &tokenCLIError{code: 1, err: apiStopErr}
 	}
 	if shutdownErr != nil {
 		return &tokenCLIError{code: 1, err: shutdownErr}
