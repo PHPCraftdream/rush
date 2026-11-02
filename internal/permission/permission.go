@@ -460,19 +460,16 @@ func (s *permissionService) Deny(permission PermissionRequest) {
 }
 
 func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRequest) (bool, error) {
-	// A denied session never takes the pre-gate shortcut; every other session
-	// keeps the exact legacy order (pre-gate first, then hook approval).
 	denied := s.SessionDenied(opts.SessionID)
-	if !denied && s.preGateAllows(opts) {
+	active, allowed := s.SessionPolicyDecision(opts.SessionID, opts.ToolName, opts.Action)
+
+	// Preserve the legacy no-gate ordering: the pre-gate returns without
+	// publishing the hook-approval notification when both shortcuts apply.
+	if !denied && !active && s.preGateAllows(opts) {
 		return true, nil
 	}
 
-	// A PreToolUse hook that returned decision=allow stamps the context
-	// with the tool call ID. Treat that as a pre-approval and skip the
-	// prompt entirely. We still publish a granted notification so the UI
-	// and audit subscribers see the outcome.
-	// Hook approval is operator-configured and intentionally retains precedence
-	// over session denial.
+	// Operator hook approval takes precedence over session gates.
 	if hookApproved(ctx, opts.ToolCallID) {
 		s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
 			ToolCallID: opts.ToolCallID,
@@ -488,6 +485,14 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 			Denied:     true,
 		})
 		return false, nil
+	}
+	if active {
+		s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
+			ToolCallID: opts.ToolCallID,
+			Granted:    allowed,
+			Denied:     !allowed,
+		})
+		return allowed, nil
 	}
 
 	// tell the UI that a permission was requested
@@ -639,6 +644,9 @@ func (s *permissionService) AuthorizeRestrictedRun(opts CreatePermissionRequest)
 	if s.SessionDenied(opts.SessionID) {
 		return true, false
 	}
+	if active, allowed := s.SessionPolicyDecision(opts.SessionID, opts.ToolName, opts.Action); active {
+		return true, allowed
+	}
 	if s.preGateAllows(opts) {
 		return false, true
 	}
@@ -657,6 +665,9 @@ func (s *permissionService) AuthorizeRestrictedTool(opts CreatePermissionRequest
 	if s.SessionDenied(opts.SessionID) {
 		return true, false
 	}
+	if active, allowed := s.SessionPolicyDecision(opts.SessionID, opts.ToolName, opts.Action); active {
+		return true, allowed
+	}
 	if s.preGateAllows(opts) {
 		return false, true
 	}
@@ -664,6 +675,17 @@ func (s *permissionService) AuthorizeRestrictedTool(opts CreatePermissionRequest
 }
 
 func (s *permissionService) AuthorizeRestrictedDispatch(ctx context.Context, opts CreatePermissionRequest) (bool, bool) {
+	if !s.SessionDenied(opts.SessionID) {
+		if active, allowed := s.SessionPolicyDecision(opts.SessionID, opts.ToolName, opts.Action); active {
+			if !allowed && hookApproved(ctx, opts.ToolCallID) {
+				return false, true
+			}
+			if !allowed {
+				s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{ToolCallID: opts.ToolCallID, Granted: false, Denied: true})
+			}
+			return true, allowed
+		}
+	}
 	if s.SessionDenied(opts.SessionID) {
 		// Hook approval is operator-configured and keeps precedence over a
 		// session denial only; other sessions keep the legacy dispatch gate.
@@ -956,23 +978,4 @@ func NewPermissionService(ctx context.Context, workingDir string, skip bool, all
 func (s *permissionService) Shutdown() {
 	s.Broker.Shutdown()
 	s.notificationBroker.Shutdown()
-}
-
-func (s *permissionService) ListSessionPermissions(ctx context.Context, sessionID string) ([]db.SessionPermission, error) {
-	return s.q.ListSessionPermissions(ctx, sessionID)
-}
-
-func (s *permissionService) UpdatePermissionEnabled(ctx context.Context, ruleID string, enabled bool) error {
-	var enabledInt int64
-	if enabled {
-		enabledInt = 1
-	}
-	return s.q.UpdatePermissionEnabled(ctx, db.UpdatePermissionEnabledParams{
-		Enabled: enabledInt,
-		ID:      ruleID,
-	})
-}
-
-func (s *permissionService) DeletePermission(ctx context.Context, ruleID string) error {
-	return s.q.DeletePermission(ctx, ruleID)
 }

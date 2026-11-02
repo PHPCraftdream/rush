@@ -80,6 +80,8 @@ func openAPIResponses(method, operationID, successDescription string) map[string
 		successStatus = "201"
 		if routeSuccessAccepted(operationID) {
 			successStatus = "202"
+		} else if operationID == "answerPermission" {
+			successStatus = "200"
 		}
 		successResponse = map[string]any{"description": successDescription, "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}}}
 	case http.MethodDelete:

@@ -54,26 +54,27 @@ func APIRoutesWithDeps(deps APIReadStore) []APIRoute {
 			routes[i].Handler = apiListModelsHandler(deps)
 		}
 	}
-	return append(append(apiCoreRoutes(), routes...), append(apiSessionRoutes(), apiRunRoutesWithPlaceholders()...)...)
+	return append(append(apiCoreRoutes(), routes...), append(apiSessionRoutes(), append(apiRunRoutesWithPlaceholders(), apiPermissionRouteDeclarations()...)...)...)
 }
 
 // APIRoutesWithApp binds the read routes to the production App services.
 func APIRoutesWithApp(a *appPkg.App) []APIRoute {
-	routes, _, _ := apiRoutesWithAppEvents(a)
+	routes, _, _ := apiRoutesWithBroker(a, nil, false)
 	return routes
 }
 
-func apiRoutesWithAppEvents(a *appPkg.App) ([]APIRoute, *APIEventLog, *APIRunRegistry) {
+// apiRoutesWithBroker also returns the event log and run registry the routes share.
+func apiRoutesWithBroker(a *appPkg.App, broker *APIPermissionBroker, allowAutoApprove bool) ([]APIRoute, *APIEventLog, *APIRunRegistry) {
 	log := NewAPIEventLog(nil)
 	registry := NewAPIRunRegistry(nil)
 	routes := APIRoutesWithDeps(apiAppReadStore{app: a})
 	writeRoutes := apiSessionWriteRoutes(apiAppWriteStore{app: a})
-	runRoutes := apiRunWriteRoutesWithRegistry(apiAppWriteStore{app: a}, newAPIRunBackend(a), registry)
-	routes = append(routes[:len(routes)-len(apiSessionRoutes())-len(apiRunRoutes())], append(writeRoutes, runRoutes...)...)
+	runRoutes := apiRunWriteRoutesWithRegistry(apiAppWriteStore{app: a}, newAPIRunBackendWithPolicy(a, broker, allowAutoApprove), registry)
+	permissionRoutes := apiPermissionRoutes(broker)
+	routes = append(routes[:len(routes)-len(apiSessionRoutes())-len(apiRunRoutes())-len(apiPermissionRouteDeclarations())], append(append(writeRoutes, runRoutes...), permissionRoutes...)...)
 	events := apiEventsRoute()
 	events.Handler = newAPIEventsHandler(apiAppWriteStore{app: a}, log, nil, nil)
-	routes = append(routes, events)
-	return routes, log, registry
+	return append(routes, events), log, registry
 }
 
 func apiListSessionsHandler(store APIReadStore) http.HandlerFunc {

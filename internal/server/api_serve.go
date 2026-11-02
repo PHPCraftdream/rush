@@ -17,8 +17,9 @@ const usageFlushInterval = time.Minute
 
 var (
 	// serveAPIRoutes also returns the event log and run registry the routes share,
-	// so the feeder below feeds exactly the instances the handlers read.
-	serveAPIRoutes = apiRoutesWithAppEvents
+	// so the feeder below feeds exactly the instances the handlers read; the broker
+	// and auto-approve flag select the permission mode wiring.
+	serveAPIRoutes = apiRoutesWithBroker
 	serveAPINow    = time.Now
 )
 
@@ -27,6 +28,7 @@ type ServeAPI struct {
 	Auth        func(http.Handler) http.Handler
 	RESTHandler http.Handler
 	stop        func(context.Context) error
+	broker      *APIPermissionBroker
 	stopOnce    sync.Once
 	stopErr     error
 }
@@ -54,7 +56,14 @@ func NewServeAPI(policy ListenerPolicy, app *appPkg.App, store *config.APITokenS
 		RPS:        policy.Limits.RPS, Burst: policy.Limits.Burst, MaxConnsPerToken: policy.Limits.MaxConnsPerToken, MaxBody: policy.Limits.MaxBody,
 		Logger: logger,
 	})
-	routes, eventLog, runRegistry := serveAPIRoutes(app)
+	var broker *APIPermissionBroker
+	if app != nil && app.Permissions != nil {
+		broker = NewAPIPermissionBroker(app.Permissions, "", nil)
+		if err := broker.Start(context.Background()); err != nil {
+			broker = nil
+		}
+	}
+	routes, eventLog, runRegistry := serveAPIRoutes(app, broker, policy.AllowAutoApprove)
 	public, protected := NewAPIHandlerSplit(routes)
 	limits := policy.Limits
 	rps, burst := limits.RPS, limits.Burst
@@ -92,11 +101,23 @@ func NewServeAPI(policy ListenerPolicy, app *appPkg.App, store *config.APITokenS
 		feeder = startAPIEventFeeder(app, eventLog, runRegistry)
 	}
 	flusher := retainServeFlusher(store)
-	return &ServeAPI{Auth: auth, RESTHandler: rest, stop: func(ctx context.Context) error {
+	return &ServeAPI{Auth: auth, RESTHandler: rest, broker: broker, stop: func(ctx context.Context) error {
 		// Feeder first: it reads App pubsub and must be gone before the App shuts down.
 		feederCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		return errors.Join(feeder.Stop(feederCtx), releaseServeFlusher(store, flusher, ctx))
+		errs := []error{feeder.Stop(feederCtx)}
+		if broker != nil {
+			joined := make(chan struct{})
+			go func() { broker.Stop(); close(joined) }()
+			select {
+			case <-joined:
+			case <-ctx.Done():
+				errs = append(errs, ctx.Err())
+			case <-time.After(5 * time.Second):
+				errs = append(errs, context.DeadlineExceeded)
+			}
+		}
+		return errors.Join(append(errs, releaseServeFlusher(store, flusher, ctx))...)
 	}}, nil
 }
 
