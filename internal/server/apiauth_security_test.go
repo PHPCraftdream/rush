@@ -236,8 +236,8 @@ func TestChainRateLimitedAndAuditCapturesSecurityStatus(t *testing.T) {
 	if got := request(limitedHandler, "/limited", token, ""); got.Code != 429 {
 		t.Fatalf("rate-limited request status=%d", got.Code)
 	}
-	largeHandler := makeHandler(1, 2, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.ReadAll(r.Body) }))
-	if got := request(largeHandler, "/large", token, "large"); got.Code != 413 {
+	oversizeHandler := makeHandler(1, 2, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.ReadAll(r.Body) }))
+	if got := request(oversizeHandler, "/oversize", token, "oversize"); got.Code != 413 {
 		t.Fatalf("oversize request status=%d", got.Code)
 	}
 	panicHandler := makeHandler(8, 2, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("controlled") }))

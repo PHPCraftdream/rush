@@ -158,7 +158,7 @@ func TestBodyCapRejectsKnownOversizeBeforeHandler(t *testing.T) {
 	v := &fakeVerifier{token: config.APIToken{ID: "12345678"}, ok: true}
 	called := false
 	h := Chain(ChainConfig{AuthConfig: AuthConfig{Verifier: v}, MaxBody: 2})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
-	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader("large"))
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader("oversize"))
 	r.Header.Set("Authorization", "Bearer rush_12345678.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
