@@ -61,6 +61,7 @@ type APIRunRegistry struct {
 	runs     map[string]*apiRunEntry
 	now      func() time.Time
 	sequence uint64
+	observer func(APIRun)
 }
 
 func NewAPIRunRegistry(now func() time.Time) *APIRunRegistry {
@@ -156,7 +157,17 @@ func (r *APIRunRegistry) Transition(id string, state APIRunState, errorCode, err
 	entry.run.MessageID = resultMessageID
 	close(entry.notify)
 	entry.notify = make(chan struct{})
-	return cloneAPIRun(entry.run), nil
+	updated := cloneAPIRun(entry.run)
+	if r.observer != nil {
+		r.observer(updated)
+	}
+	return updated, nil
+}
+
+func (r *APIRunRegistry) setObserver(observer func(APIRun)) {
+	r.mu.Lock()
+	r.observer = observer
+	r.mu.Unlock()
 }
 
 func validAPIRunTransition(from, to APIRunState) bool {

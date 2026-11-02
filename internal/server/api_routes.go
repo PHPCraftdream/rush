@@ -24,7 +24,7 @@ func APIRoutes() []APIRoute {
 	routes := append(apiCoreRoutes(), apiReadRoutes()...)
 	routes = append(routes, apiSessionRoutes()...)
 	routes = append(routes, apiRunRoutesWithPlaceholders()...)
-	return routes
+	return append(routes, apiEventsRoute())
 }
 
 func apiCoreRoutes() []APIRoute {

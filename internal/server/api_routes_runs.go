@@ -12,7 +12,10 @@ func apiRunRoutes() []APIRoute {
 }
 
 func apiRunWriteRoutes(store APIWriteStore, backend APIRunBackend) []APIRoute {
-	registry := NewAPIRunRegistry(nil)
+	return apiRunWriteRoutesWithRegistry(store, backend, NewAPIRunRegistry(nil))
+}
+
+func apiRunWriteRoutesWithRegistry(store APIWriteStore, backend APIRunBackend, registry *APIRunRegistry) []APIRoute {
 	idempotency := newIdempotencyStore(nil)
 	routes := apiRunRoutes()
 	routes[0].Handler = withIdempotency(idempotency, http.HandlerFunc(apiCreateRunHandler(store, backend, registry))).ServeHTTP

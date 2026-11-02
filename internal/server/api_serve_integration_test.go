@@ -245,6 +245,16 @@ func TestServeAPIDoesNotServeRoutePlaceholders(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if route.OperationID == "streamSessionEvents" {
+			// A stream never ends on its own: check status and content type, then stop.
+			status, contentType := resp.StatusCode, resp.Header.Get("Content-Type")
+			cancel()
+			_ = resp.Body.Close()
+			if status != http.StatusOK || !strings.HasPrefix(contentType, "text/event-stream") {
+				t.Errorf("%s %s = %d %q, want an event stream", route.Method, uri, status, contentType)
+			}
+			continue
+		}
 		body, readErr := io.ReadAll(resp.Body)
 		closeErr := resp.Body.Close()
 		if readErr != nil || closeErr != nil {

@@ -59,11 +59,21 @@ func APIRoutesWithDeps(deps APIReadStore) []APIRoute {
 
 // APIRoutesWithApp binds the read routes to the production App services.
 func APIRoutesWithApp(a *appPkg.App) []APIRoute {
+	routes, _, _ := apiRoutesWithAppEvents(a)
+	return routes
+}
+
+func apiRoutesWithAppEvents(a *appPkg.App) ([]APIRoute, *APIEventLog, *APIRunRegistry) {
+	log := NewAPIEventLog(nil)
+	registry := NewAPIRunRegistry(nil)
 	routes := APIRoutesWithDeps(apiAppReadStore{app: a})
 	writeRoutes := apiSessionWriteRoutes(apiAppWriteStore{app: a})
-	runRoutes := apiRunWriteRoutes(apiAppWriteStore{app: a}, newAPIRunBackend(a))
+	runRoutes := apiRunWriteRoutesWithRegistry(apiAppWriteStore{app: a}, newAPIRunBackend(a), registry)
 	routes = append(routes[:len(routes)-len(apiSessionRoutes())-len(apiRunRoutes())], append(writeRoutes, runRoutes...)...)
-	return routes
+	events := apiEventsRoute()
+	events.Handler = newAPIEventsHandler(apiAppWriteStore{app: a}, log, nil, nil)
+	routes = append(routes, events)
+	return routes, log, registry
 }
 
 func apiListSessionsHandler(store APIReadStore) http.HandlerFunc {

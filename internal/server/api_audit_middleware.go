@@ -122,9 +122,9 @@ func (w *statusWriter) Flush() {
 	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)
 	}
-	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
+	// ResponseController walks Unwrap chains; a direct http.Flusher assertion would
+	// silently drop the flush when a wrapper below does not implement Flusher itself.
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
 }
 
 func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {

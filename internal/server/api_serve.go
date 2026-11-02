@@ -16,7 +16,9 @@ import (
 const usageFlushInterval = time.Minute
 
 var (
-	serveAPIRoutes = func(app *appPkg.App) []APIRoute { return APIRoutesWithApp(app) }
+	// serveAPIRoutes also returns the event log and run registry the routes share,
+	// so the feeder below feeds exactly the instances the handlers read.
+	serveAPIRoutes = apiRoutesWithAppEvents
 	serveAPINow    = time.Now
 )
 
@@ -52,7 +54,8 @@ func NewServeAPI(policy ListenerPolicy, app *appPkg.App, store *config.APITokenS
 		RPS:        policy.Limits.RPS, Burst: policy.Limits.Burst, MaxConnsPerToken: policy.Limits.MaxConnsPerToken, MaxBody: policy.Limits.MaxBody,
 		Logger: logger,
 	})
-	public, protected := NewAPIHandlerSplit(serveAPIRoutes(app))
+	routes, eventLog, runRegistry := serveAPIRoutes(app)
+	public, protected := NewAPIHandlerSplit(routes)
 	limits := policy.Limits
 	rps, burst := limits.RPS, limits.Burst
 	if rps == 0 {
@@ -84,8 +87,17 @@ func NewServeAPI(policy ListenerPolicy, app *appPkg.App, store *config.APITokenS
 		}
 		mux.ServeHTTP(w, r)
 	})
+	var feeder *apiEventFeeder
+	if eventLog != nil {
+		feeder = startAPIEventFeeder(app, eventLog, runRegistry)
+	}
 	flusher := retainServeFlusher(store)
-	return &ServeAPI{Auth: auth, RESTHandler: rest, stop: func(ctx context.Context) error { return releaseServeFlusher(store, flusher, ctx) }}, nil
+	return &ServeAPI{Auth: auth, RESTHandler: rest, stop: func(ctx context.Context) error {
+		// Feeder first: it reads App pubsub and must be gone before the App shuts down.
+		feederCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		return errors.Join(feeder.Stop(feederCtx), releaseServeFlusher(store, flusher, ctx))
+	}}, nil
 }
 
 func retainServeFlusher(store *config.APITokenStore) *serveUsageFlusher {

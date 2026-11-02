@@ -23,6 +23,9 @@ func BuildOpenAPIDocument(routes []APIRoute) map[string]any {
 			"responses":    openAPIResponses(route.Method, route.OperationID, route.ResponseDescription),
 			"x-rush-scope": route.Scope,
 		}
+		if route.OperationID == "streamSessionEvents" {
+			operation["responses"] = openAPIStreamResponses(route.ResponseDescription)
+		}
 		if route.Scope == "none" {
 			operation["security"] = []any{}
 		} else {
@@ -55,6 +58,15 @@ func BuildOpenAPIDocument(routes []APIRoute) map[string]any {
 
 func routeSuccessAccepted(operationID string) bool {
 	return operationID == "createRun" || operationID == "cancelRun" || operationID == "injectMessage"
+}
+
+func openAPIStreamResponses(description string) map[string]any {
+	if description == "" {
+		description = "Session event stream"
+	}
+	responses := openAPIResponses(http.MethodGet, "streamSessionEvents", description)
+	responses["200"] = map[string]any{"description": description, "content": map[string]any{"text/event-stream": map[string]any{"schema": map[string]any{"type": "string"}}}}
+	return responses
 }
 
 func openAPIResponses(method, operationID, successDescription string) map[string]any {
