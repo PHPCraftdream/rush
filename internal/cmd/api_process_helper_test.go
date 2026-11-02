@@ -54,8 +54,10 @@ func newAPIProcessFixture(t *testing.T) *apiProcessFixture {
 	return f
 }
 
-const apiProcessHelperEnv = "RUSH_TEST_API_PROCESS_HELPER"
-const apiProcessArgsEnv = apiProcessHelperEnv + "_ARGS"
+const (
+	apiProcessHelperEnv = "RUSH_TEST_API_PROCESS_HELPER"
+	apiProcessArgsEnv   = apiProcessHelperEnv + "_ARGS"
+)
 
 // TestAPIProcessHelperProcess re-executes the production Execute() path.
 func TestAPIProcessHelperProcess(t *testing.T) {

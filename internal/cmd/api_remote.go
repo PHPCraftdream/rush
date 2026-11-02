@@ -273,6 +273,7 @@ func sortedRemoteNames(profiles map[string]config.APIRemote) []string {
 	sort.Strings(names)
 	return names
 }
+
 func remoteCredentialSource(remote config.APIRemote) string {
 	if remote.TokenEnv != "" {
 		return "environment:" + remote.TokenEnv
@@ -282,28 +283,33 @@ func remoteCredentialSource(remote config.APIRemote) string {
 	}
 	return "none"
 }
+
 func remoteTLSFact(raw string) string {
 	if strings.HasPrefix(raw, "https://") {
 		return "HTTPS certificate verification enabled (unless --insecure-skip-verify is used)"
 	}
 	return "HTTP cleartext"
 }
+
 func pinFact(pin string) string {
 	if pin == "" {
 		return "not configured"
 	}
 	return "configured"
 }
+
 func apiRemoteConfigError(err error) error {
 	if strings.Contains(err.Error(), "not found") {
 		return &exitCodeError{code: 4, err: err}
 	}
 	return apiConfigurationError(err)
 }
+
 func apiJSON(cmd *cobra.Command) bool {
 	value, err := cmd.Flags().GetBool("json")
 	return err == nil && value
 }
+
 func apiQuiet(cmd *cobra.Command) bool {
 	value, err := cmd.Flags().GetBool("quiet")
 	return err == nil && value

@@ -184,6 +184,7 @@ func printAPISingle(cmd *cobra.Command, item any) error {
 	_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
 	return err
 }
+
 func printAPIJSON(cmd *cobra.Command, item any) error {
 	data, err := json.Marshal(item)
 	if err != nil {
