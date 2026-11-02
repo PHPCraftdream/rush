@@ -52,7 +52,11 @@ func runInProcess(t *testing.T, fake *fakeRunServer, args ...string) (code int, 
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
 	cmd.SetArgs(args)
-	err := cmd.Execute()
+	// A bounded context turns a hung command into a failing assertion (exit 5)
+	// instead of a test-binary timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	err := cmd.ExecuteContext(ctx)
 	code, ok := apiExitCode(err)
 	if err == nil {
 		code, ok = 0, true

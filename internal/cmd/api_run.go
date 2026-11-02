@@ -49,9 +49,6 @@ func newAPIRunCmd() *cobra.Command {
 				apiCancelRemoteRun(cmd, client, accepted.RunID)
 				return interruptedAPIError()
 			}
-			if errors.Is(err, context.DeadlineExceeded) {
-				return &exitCodeError{code: 5, err: err}
-			}
 			var paused *apiclient.RunPausedError
 			if errors.As(err, &paused) {
 				if paused.Run != nil {
