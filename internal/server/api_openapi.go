@@ -1,6 +1,7 @@
 package server
 
 import (
+	"net/http"
 	"sort"
 
 	"github.com/PHPCraftdream/rush/internal/version"
@@ -19,7 +20,7 @@ func BuildOpenAPIDocument(routes []APIRoute) map[string]any {
 		operation := map[string]any{
 			"operationId":  route.OperationID,
 			"summary":      route.Summary,
-			"responses":    openAPIResponses(route.ResponseDescription),
+			"responses":    openAPIResponses(route.Method, route.ResponseDescription),
 			"x-rush-scope": route.Scope,
 		}
 		if route.Scope == "none" {
@@ -52,12 +53,25 @@ func BuildOpenAPIDocument(routes []APIRoute) map[string]any {
 	}
 }
 
-func openAPIResponses(successDescription string) map[string]any {
+func openAPIResponses(method, successDescription string) map[string]any {
 	if successDescription == "" {
 		successDescription = "Success"
 	}
-	responses := map[string]any{"200": map[string]any{"description": successDescription, "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}}}}
-	for _, code := range []string{"401", "403", "404", "405", "429", "500"} {
+	var successStatus string
+	var successResponse map[string]any
+	switch method {
+	case http.MethodPost:
+		successStatus = "201"
+		successResponse = map[string]any{"description": successDescription, "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}}}
+	case http.MethodDelete:
+		successStatus = "204"
+		successResponse = map[string]any{"description": successDescription}
+	default:
+		successStatus = "200"
+		successResponse = map[string]any{"description": successDescription, "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}}}
+	}
+	responses := map[string]any{successStatus: successResponse}
+	for _, code := range []string{"400", "401", "403", "404", "405", "409", "413", "422", "429", "500"} {
 		responses[code] = map[string]any{"description": httpStatusDescription(code), "content": map[string]any{"application/problem+json": map[string]any{"schema": map[string]any{"$ref": "#/components/schemas/Problem"}}}}
 	}
 	return responses
@@ -75,6 +89,8 @@ func lowercaseASCII(value string) string {
 
 func httpStatusDescription(code string) string {
 	switch code {
+	case "400":
+		return "Bad Request"
 	case "401":
 		return "Unauthorized"
 	case "403":
@@ -83,6 +99,12 @@ func httpStatusDescription(code string) string {
 		return "Not Found"
 	case "405":
 		return "Method Not Allowed"
+	case "409":
+		return "Conflict"
+	case "413":
+		return "Request Entity Too Large"
+	case "422":
+		return "Unprocessable Entity"
 	case "429":
 		return "Too Many Requests"
 	default:

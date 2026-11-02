@@ -198,6 +198,9 @@ func TestAPIRoutesPinned(t *testing.T) {
 		{Method: "GET", Pattern: "/sessions/{id}", Scope: "read", OperationID: "getSession"},
 		{Method: "GET", Pattern: "/sessions/{id}/messages", Scope: "read", OperationID: "listMessages"},
 		{Method: "GET", Pattern: "/models", Scope: "read", OperationID: "listModels"},
+		{Method: "POST", Pattern: "/sessions", Scope: "run", OperationID: "createSession"},
+		{Method: "POST", Pattern: "/sessions/{id}/fork", Scope: "run", OperationID: "forkSession"},
+		{Method: "DELETE", Pattern: "/sessions/{id}", Scope: "run", OperationID: "deleteSession"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("routes=%d", len(got))
