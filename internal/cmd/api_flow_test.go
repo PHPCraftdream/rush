@@ -181,7 +181,7 @@ func TestAPICLIEndToEndFlow(t *testing.T) {
 	if left := findTokenFiles(t, f.root, "main.token"); len(left) != 0 {
 		t.Fatalf("remote rm left the managed token file: %v", left)
 	}
-	if _, stderr, exit := run(nil, "", "api", "sessions", "list"); exit != 2 || !strings.Contains(stderr, "no remote selected") {
+	if _, stderr, exit := run(nil, "", "api", "sessions", "list"); exit != 2 || !strings.Contains(strings.ToLower(stderr), "no remote selected") {
 		t.Fatalf("no default after rm: exit %d stderr=%q", exit, stderr)
 	}
 

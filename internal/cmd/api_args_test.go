@@ -17,12 +17,15 @@ func TestRejectAPITokenArguments(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := newAPICmd()
+			var positional []string
 			if tc.name == "flag value" {
-				if err := cmd.Flags().Parse(tc.args); err != nil {
+				if err := cmd.ParseFlags(tc.args); err != nil {
 					t.Fatal(err)
 				}
+			} else {
+				positional = tc.args
 			}
-			err := rejectAPITokenArguments(cmd, tc.args)
+			err := rejectAPITokenArguments(cmd, positional)
 			if err == nil {
 				t.Fatal("token-looking value accepted")
 			}
