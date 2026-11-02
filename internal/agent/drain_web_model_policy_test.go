@@ -20,6 +20,7 @@ func TestDrainWebModelPolicyUnfencedUsesLastUserOrigin(t *testing.T) {
 	}{
 		{name: "web-after-cli", origins: []message.Origin{message.OriginCLI, message.OriginWeb}, want: "session-smart-model"},
 		{name: "cli-after-web", origins: []message.Origin{message.OriginWeb, message.OriginCLI}, want: "probe"},
+		{name: "api", origins: []message.Origin{message.OriginAPI}, want: "probe"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := WithCallOptions(context.Background(), &CallOptions{
@@ -49,6 +50,10 @@ func TestDrainWebModelPolicyUnfencedUsesLastUserOrigin(t *testing.T) {
 			require.Nil(t, prep, "unfenced drain has no prepared continuation")
 			require.Equal(t, tc.want, call.SmartModel.ModelCfg.Model)
 			require.True(t, call.CallOptions.DisableSubAgents)
+			if tc.name == "api" {
+				require.NotNil(t, call.CallOptions)
+				require.False(t, call.CallOptions.WebTurnOptIn, "API turns must not inherit web opt-in")
+			}
 			require.True(t, callOptionsFrom(ctx).WebTurnOptIn, "inherited options must remain unchanged")
 		})
 	}
@@ -62,6 +67,7 @@ func TestDrainWebModelPolicyUsesLastUserOrigin(t *testing.T) {
 	}{
 		{name: "web-after-cli", origins: []message.Origin{message.OriginCLI, message.OriginWeb}, want: "session-smart-model"},
 		{name: "cli-after-web", origins: []message.Origin{message.OriginWeb, message.OriginCLI}, want: "probe"},
+		{name: "api", origins: []message.Origin{message.OriginAPI}, want: "probe"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -90,6 +96,10 @@ func TestDrainWebModelPolicyUsesLastUserOrigin(t *testing.T) {
 			require.NotNil(t, prep)
 			defer prep.release()
 			require.Equal(t, tc.want, call.SmartModel.ModelCfg.Model)
+			if tc.name == "api" {
+				require.NotNil(t, call.CallOptions)
+				require.False(t, call.CallOptions.WebTurnOptIn, "API turns must not inherit web opt-in")
+			}
 		})
 	}
 }

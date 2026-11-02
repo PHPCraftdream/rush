@@ -122,6 +122,9 @@ type Client struct {
 	// workersOnce guards starting the work-queue worker pool exactly once
 	// per Client (see startWorkers).
 	workersOnce sync.Once
+	workers     sync.WaitGroup
+	ackMu       sync.Mutex
+	ackWaiters  map[*byte]chan struct{}
 }
 
 // newClient constructs a Client with its per-connection handler queue/
@@ -148,7 +151,9 @@ func newClient(hub *Hub, conn *websocket.Conn) *Client {
 func (c *Client) startWorkers() {
 	c.workersOnce.Do(func() {
 		for i := 0; i < workerPoolSize; i++ {
+			c.workers.Add(1)
 			go func() {
+				defer c.workers.Done()
 				for item := range c.workQueue {
 					runRecovered(item.name, func() {}, item.fn)
 				}
@@ -219,7 +224,11 @@ func (c *Client) dispatch(name, msgID string, fn func()) {
 func (c *Client) dispatchControl(name, msgID string, fn func()) {
 	select {
 	case c.controlSem <- struct{}{}:
-		go runRecovered(name, func() { <-c.controlSem }, fn)
+		c.workers.Add(1)
+		go func() {
+			defer c.workers.Done()
+			runRecovered(name, func() { <-c.controlSem }, fn)
+		}()
 	default:
 		slog.Warn("ws: control queue full, rejecting", "handler", name)
 		c.reply(msgID, EventError, nil, "server busy, please retry")
@@ -711,6 +720,62 @@ func (c *Client) reply(id, msgType string, payload any, errMsg string) {
 	}
 }
 
+var (
+	testHookMu            sync.RWMutex
+	testBeforeWrite       func([]byte)
+	shutdownAckWriteLimit = 2 * time.Second
+)
+
+func beforeClientWrite(msg []byte) {
+	testHookMu.RLock()
+	hook := testBeforeWrite
+	testHookMu.RUnlock()
+	if hook != nil {
+		hook(msg)
+	}
+}
+
+// replyAndWait queues a reply and waits until the write pump confirms it reached the socket.
+func (c *Client) replyAndWait(id, msgType string, payload any, errMsg string, timeout time.Duration) bool {
+	raw, _ := json.Marshal(payload)
+	env, err := json.Marshal(WSMessage{ID: id, Type: msgType, Payload: raw, Error: errMsg})
+	if err != nil {
+		return false
+	}
+	done := make(chan struct{})
+	identity := &env[0]
+	c.ackMu.Lock()
+	if c.ackWaiters == nil {
+		c.ackWaiters = make(map[*byte]chan struct{})
+	}
+	c.ackWaiters[identity] = done
+	c.ackMu.Unlock()
+	defer func() {
+		c.ackMu.Lock()
+		delete(c.ackWaiters, identity)
+		c.ackMu.Unlock()
+	}()
+	select {
+	case c.send <- env:
+	default:
+		c.ackMu.Lock()
+		delete(c.ackWaiters, identity)
+		c.ackMu.Unlock()
+		slog.Warn("ws: client send buffer full, dropping reply")
+		return false
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	case <-c.hub.stopped:
+		return false
+	}
+}
+
 // writePump pumps messages from the send channel to the WebSocket connection.
 // Exactly one writePump goroutine runs per client.
 func (c *Client) writePump() {
@@ -723,6 +788,9 @@ func (c *Client) writePump() {
 	for {
 		select {
 		case msg, ok := <-c.send:
+			if ok {
+				beforeClientWrite(msg)
+			}
 			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
 				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
@@ -732,6 +800,12 @@ func (c *Client) writePump() {
 				slog.Debug("ws: write error", "err", err)
 				return
 			}
+			c.ackMu.Lock()
+			if done := c.ackWaiters[&msg[0]]; done != nil {
+				close(done)
+				delete(c.ackWaiters, &msg[0])
+			}
+			c.ackMu.Unlock()
 		case <-ticker.C:
 			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {

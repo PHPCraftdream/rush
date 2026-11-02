@@ -37,6 +37,7 @@ const (
 	OriginCLI         Origin = "cli"
 	OriginWeb         Origin = "web"
 	OriginSDK         Origin = "sdk"
+	OriginAPI         Origin = "api"
 )
 
 // mediaLoadFailedPlaceholder is the text substituted for image data that

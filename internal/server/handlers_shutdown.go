@@ -8,14 +8,11 @@ package server
 
 import "log/slog"
 
-// handleShutdownServer replies success FIRST — the client must receive a
-// clean ack before the shutdown sequence tears the listener (and soon the
-// process) down — then signals Start()'s shutdown watcher. The reply is a
-// non-blocking enqueue into the client's buffered send channel, and
-// nothing closes the connection before the write pump has flushed it, so
-// ordering is safe in practice.
+// handleShutdownServer waits until its acknowledgement is written to the
+// WebSocket (or the bounded wait ends) before signaling the shutdown watcher.
+// This keeps teardown from closing the connection ahead of the queued reply.
 func handleShutdownServer(s *Server, c *Client, msg WSMessage) {
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "shutting_down"}, "")
+	c.replyAndWait(msg.ID, EventResponse, map[string]string{"status": "shutting_down"}, "", shutdownAckWriteLimit)
 	slog.Info("ws: shutdown_server requested by client")
 	s.requestShutdown()
 }
