@@ -142,7 +142,13 @@ type UsageInfo struct {
 //
 // Token classes are DISJOINT, so PromptTokens is their sum: InputTokens
 // (fresh, full price), CacheReadTokens (served from cache) and
-// CacheCreationTokens (written into it).
+// CacheCreationTokens (written into it). TotalTokens remains the sum of the
+// providers' reported totals when available; it is not derived from those
+// classes and may be smaller than PromptTokens when a provider's total omits
+// cache tokens. Synthesized usage is separately flagged by Estimated. Likewise,
+// CacheSupport is the weakest classification across every contributing message:
+// cache_read_tokens can be positive while cache_support is "none" when another
+// contributing message could not establish cache-reporting support.
 type SessionUsageInfo struct {
 	InputTokens         int64   `json:"input_tokens"`
 	OutputTokens        int64   `json:"output_tokens"`

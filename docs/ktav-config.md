@@ -43,9 +43,13 @@ Implemented in `ktav_discovery.go` and `ktav_doc.go`:
 - **Ktav wins per logical slot.** Each legacy JSON path (`rush.json`,
   `.rush.json`, etc.) names a logical "slot". `selectConfigSlot` resolves the
   slot to `rush.ktav` whenever that file exists, otherwise to the JSON name.
-- **Both-formats warning.** When both spellings exist, Rush logs once per
-  file: `Both config formats exist; using Ktav and ignoring legacy JSON`
-  (`warnBothFormatsOnce`). Paths only are logged, never document values.
+- **Both-formats diagnostic.** When both spellings exist, Rush logs once per
+  logical slot. For config slots it emits a WARN only when `rush.json` has a
+  newer modification time than `rush.ktav`, using the message
+  `rush.json changed after rush.ktav (by hand or an older rush); its edits are ignored`.
+  Equal or older JSON timestamps, and every cache slot, are logged at Debug.
+  Ktav remains selected in all cases. Paths only are logged, never document values
+  (`warnBothFormatsOnce`).
 - **Invalid Ktav is an error, no JSON fallback.** A selected `.ktav` file
   that fails to decode produces `invalid Ktav in config file <path>: …`
   (`decodeConfigDocument`). The legacy JSON sibling is **not** used as a

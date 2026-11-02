@@ -114,13 +114,21 @@ func isKtavMigrationRecordPath(path string) bool {
 var ktavBothFormatsWarned sync.Map
 
 // warnBothFormatsOnce logs the both-formats condition once per logical
-// source. Messages carry paths only, never document values.
-func warnBothFormatsOnce(ktav, legacy string) {
-	if _, dup := ktavBothFormatsWarned.LoadOrStore(ktav, struct{}{}); dup {
+// source and kind. Messages carry paths only, never document values.
+func warnBothFormatsOnce(kind, ktav, legacy string) {
+	key := kind + ":" + ktav
+	if _, dup := ktavBothFormatsWarned.LoadOrStore(key, struct{}{}); dup {
 		return
 	}
-	slog.Warn("Both config formats exist; using Ktav and ignoring legacy JSON",
-		"ktav", ktav, "json", legacy)
+	ktavInfo, ktavErr := os.Stat(ktav)
+	legacyInfo, legacyErr := os.Stat(legacy)
+	if kind == "config" && ktavErr == nil && legacyErr == nil && legacyInfo.ModTime().After(ktavInfo.ModTime()) {
+		slog.Warn("rush.json changed after rush.ktav (by hand or an older rush); its edits are ignored",
+			"ktav", ktav, "json", legacy)
+		return
+	}
+	slog.Debug("Both config formats exist; using Ktav and ignoring legacy JSON",
+		"kind", kind, "ktav", ktav, "json", legacy)
 }
 
 // warnMigrationDeferredOnce logs a migration that could not run while the
@@ -155,7 +163,7 @@ func selectConfigSlot(legacyJSON string) string {
 	if err == nil {
 		if !info.IsDir() {
 			if _, jsonErr := os.Stat(legacyJSON); jsonErr == nil {
-				warnBothFormatsOnce(ktav, legacyJSON)
+				warnBothFormatsOnce("config", ktav, legacyJSON)
 			}
 		}
 		return ktav
