@@ -95,9 +95,32 @@ class JobPlanTests(unittest.TestCase):
         plan={"schema_version":1,"mode":"tier1","per_os":{"linux":[],"darwin":[],"windows":[]},"race_packages":[],"not_run":[],"native_required":{"required":True},"head":SHA,"base":SHA}
         with tempfile.TemporaryDirectory() as td:
             pp=pathlib.Path(td)/"p.json"; out=pathlib.Path(td)/"out.json"; pp.write_text(json.dumps(plan)); args=type("A",(),{"plan":str(pp),"graph_dir":td,"force_full":False,"policy":str(pathlib.Path(td)/"policy"),"base":SHA,"head":SHA,"output":str(out)})()
-            with patch.object(gate.subprocess,"run",return_value=type("R",(),{"stdout":""})()),patch.dict("os.environ",{},clear=True): gate.prepare_cli(args)
+            with patch.object(gate.subprocess,"run",return_value=type("R",(),{"stdout":""})()),patch.dict("os.environ",{},clear=True),patch.object(gate,"MACOS_LANE_ENABLED",True): gate.prepare_cli(args)
             result=json.loads(out.read_text())
             self.assertEqual(result["expected_outputs"]["mode"],"tier1"); self.assertTrue(result["expected_outputs"]["macos_needed"]); self.assertTrue(result["expected_outputs"]["windows_needed"])
+    def test_macos_lane_is_off_by_default(self):
+        self.assertFalse(gate.MACOS_LANE_ENABLED)
+    def test_prepare_cli_skips_macos_when_lane_off(self):
+        for plan_mode,native in (("tier1",True),("tier1",False)):
+            plan={"schema_version":1,"mode":plan_mode,"per_os":{"linux":[],"darwin":[{"package":MODULE+"/internal/db"}],"windows":[]},"race_packages":[],"not_run":[],"native_required":{"required":native},"head":SHA,"base":SHA}
+            with tempfile.TemporaryDirectory() as td:
+                pp=pathlib.Path(td)/"p.json"; out=pathlib.Path(td)/"out.json"; pp.write_text(json.dumps(plan)); args=type("A",(),{"plan":str(pp),"graph_dir":td,"force_full":False,"policy":str(pathlib.Path(td)/"policy"),"base":SHA,"head":SHA,"output":str(out)})()
+                with patch.object(gate.subprocess,"run",return_value=type("R",(),{"stdout":""})()),patch.dict("os.environ",{},clear=True),patch.object(gate,"MACOS_LANE_ENABLED",False): gate.prepare_cli(args)
+                result=json.loads(out.read_text())
+                self.assertFalse(result["expected_outputs"]["macos_needed"],native)
+                self.assertEqual(result["expected_outputs"]["windows_needed"],native or bool(plan["per_os"]["windows"]))
+    def test_full_mode_without_macos_lane_expects_no_macos_job(self):
+        outputs={k:True for k in ("ubuntu_needed","windows_needed","agent_selected","race_needed","web_changed","security_full","security_actions","security_deps")}; outputs["macos_needed"]=False
+        with patch.object(gate,"MACOS_LANE_ENABLED",False):
+            jobs,not_run=gate.expected_jobs({"mode":"full"},outputs)
+        self.assertNotIn("tests / test-native (macos-latest)",jobs)
+        self.assertTrue(any(x["job"]=="tests / test-native (macos-latest)" for x in not_run))
+        with patch.object(gate,"MACOS_LANE_ENABLED",True),self.assertRaises(ValueError): gate.expected_jobs({"mode":"full"},outputs)
+    def test_workflows_do_not_hardcode_macos_while_lane_off(self):
+        root=pathlib.Path(__file__).resolve().parents[1]/"workflows"
+        for name,needle in (("ci.yml","os: [macos-latest"),("ktav-purity.yml","macos-latest, windows-latest"),("ktav-purity.yml","- os: macos-latest")):
+            self.assertNotIn(needle,(root/name).read_text(encoding="utf-8"),name)
+        self.assertIn("needs.plan.outputs.macos_needed",(root/"ci.yml").read_text(encoding="utf-8"))
 
     def test_prepare_cli_never_disables_heavy_work(self):
         plan={"schema_version":1,"mode":"tier1","per_os":{"linux":[],"darwin":[],"windows":[]},"race_packages":[],"not_run":[],"native_required":{"required":False},"heavy_allowed":False,"cheap_only":True,"head":SHA,"base":SHA}

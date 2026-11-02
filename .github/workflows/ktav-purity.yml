@@ -31,12 +31,12 @@ jobs:
       # not cancel the others mid-run.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # macos-latest is switched off while hosted macOS runners are unavailable;
+        # re-enable together with MACOS_LANE_ENABLED in ci_gate_decide.py.
+        os: [ubuntu-latest, windows-latest]
         include:
           - os: ubuntu-latest
             goos: linux
-          - os: macos-latest
-            goos: darwin
           - os: windows-latest
             goos: windows
     runs-on: ${{ matrix.os }}
