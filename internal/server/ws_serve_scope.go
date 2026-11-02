@@ -19,23 +19,16 @@ func newClientAuth(principal Principal, policy CommandPolicy) *clientAuth {
 }
 
 func (c *Client) mayReceive(msgType string) bool {
-	if c == nil || c.auth == nil || msgType != EventMCPState {
+	if c == nil || c.auth == nil {
 		return true
 	}
-	return c.auth.policy.AllowAdmin && hasScope(c.auth.principal, "admin")
+	return c.auth.mayReceive(msgType)
 }
 
-// filterMetadata reports whether this client may receive the event. The cheap
-// type check runs for every client; the payload is parsed (once per delivery)
-// only for pinned clients.
-func (c *Client) filterMetadata(m *lazyEventMeta) bool {
-	if !c.mayReceive(m.typ()) {
-		return false
-	}
-	if c == nil || c.auth == nil || c.auth.view.sessionID == "" {
-		return true
-	}
-	return c.auth.view.allows(m.meta())
+// mayReceive is the type-level rule: mcp_state (MCP environment and headers)
+// only reaches admin clients of an allow_admin listener.
+func (a *clientAuth) mayReceive(msgType string) bool {
+	return msgType != EventMCPState || (a.policy.AllowAdmin && hasScope(a.principal, "admin"))
 }
 
 // replyBypassesView lets the correlated error/ok reply to a command through a
@@ -47,9 +40,11 @@ func (a *clientAuth) replyBypassesView(id, msgType string) bool {
 	return a.view.sessionID != "" && id != "" && (msgType == EventError || msgType == EventResponse)
 }
 
+// filter returns the bytes this client may receive, or nil. The payload is
+// parsed (once per delivery) only for pinned clients.
 func (a *clientAuth) filter(raw []byte, m *lazyEventMeta) []byte {
 	msgType := m.typ()
-	if msgType == "" || (msgType == EventMCPState && (!a.policy.AllowAdmin || !hasScope(a.principal, "admin"))) {
+	if msgType == "" || !a.mayReceive(msgType) {
 		return nil
 	}
 	if a.view.sessionID == "" {

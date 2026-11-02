@@ -102,6 +102,19 @@ func TestHub_PinnedViewNeverReceivesForeignSessionEvents(t *testing.T) {
 		tokens:   map[string]string{"pinned": pinnedToken, "control": controlToken},
 	}
 
+	// One event of every non-session class, with a sentinel: none may reach a
+	// pinned view through any path, all must reach the unpinned control.
+	classSentinels := []string{"CLASS_LOGS_SECRET", "CLASS_SKILLS_SECRET", "CLASS_UNKNOWN_SECRET", "CLASS_NOID_SECRET"}
+	broadcastClasses := func(prefix string) {
+		server.hub.Broadcast(EventLogs, map[string]string{"line": prefix + "CLASS_LOGS_SECRET"})
+		server.hub.Broadcast(EventSkills, map[string]string{"skill": prefix + "CLASS_SKILLS_SECRET"})
+		server.hub.Broadcast("mystery_event", map[string]string{"x": prefix + "CLASS_UNKNOWN_SECRET"})
+		server.hub.Broadcast(EventSessionUpdated, map[string]string{"note": prefix + "CLASS_NOID_SECRET"}) // session class, no session id
+	}
+	stickyClassSentinels := []string{"STICKY_CLASS_SKILLS_SECRET", "STICKY_CLASS_UNKNOWN_SECRET"}
+	server.hub.BroadcastSticky(EventSkills, map[string]string{"skill": "STICKY_CLASS_SKILLS_SECRET"})
+	server.hub.BroadcastSticky("mystery_event", map[string]string{"x": "STICKY_CLASS_UNKNOWN_SECRET"})
+	broadcastClasses("")
 	// Sticky and buffered history are present before either production client registers.
 	server.hub.BroadcastSticky(EventSessionUpdated, map[string]string{"sessionID": foreign.ID, "sentinel": "STICKY_SECRET"})
 	server.hub.BroadcastSticky(EventMCPState, map[string]any{"headers": map[string]string{"X-Sentinel": "MCP_STICKY_SECRET"}})
@@ -145,6 +158,10 @@ func TestHub_PinnedViewNeverReceivesForeignSessionEvents(t *testing.T) {
 	require.Contains(t, messagesText(controlInitial), "STICKY_SECRET")
 	require.Contains(t, messagesText(controlInitial), "MCP_REPLAY_SECRET")
 	require.Contains(t, messagesText(controlInitial), "MCP_STICKY_SECRET")
+	for _, sentinel := range append(append([]string{}, classSentinels...), stickyClassSentinels...) {
+		require.NotContains(t, messagesText(pinnedInitial), sentinel, "replay leaked a non-session event class to the pinned view")
+		require.Contains(t, messagesText(controlInitial), sentinel, "the unpinned control must receive %s", sentinel)
+	}
 	var pinnedSessions []struct {
 		ID string `json:"id"`
 	}
@@ -167,6 +184,8 @@ func TestHub_PinnedViewNeverReceivesForeignSessionEvents(t *testing.T) {
 	server.hub.Broadcast(EventSessionUpdated, map[string]string{"sessionID": foreign.ID, "sentinel": "LIVE_SECRET"})
 	server.hub.Broadcast(EventSessionUpdated, map[string]string{"sessionID": own.ID, "sentinel": "OWN_VISIBLE"})
 	server.hub.Broadcast(EventMCPState, map[string]any{"headers": map[string]string{"X-Sentinel": "MCP_LIVE_SECRET"}})
+	broadcastClasses("LIVE_")
+	server.hub.BroadcastSticky(EventSkills, map[string]string{"skill": "LIVE_STICKY_CLASS_SKILLS_SECRET"})
 	server.hub.Broadcast(EventSessionCreated, map[string]string{"sessionID": own.ID, "id": "delivery-barrier"})
 	select {
 	case <-server.hub.WaitDelivery():
@@ -196,6 +215,14 @@ func TestHub_PinnedViewNeverReceivesForeignSessionEvents(t *testing.T) {
 	require.Contains(t, controlLive, "LIVE_SECRET")
 	require.Contains(t, controlLive, "OWN_VISIBLE")
 	require.Contains(t, controlLive, "MCP_LIVE_SECRET")
+	for _, sentinel := range append(append([]string{}, classSentinels...), "LIVE_STICKY_CLASS_SKILLS_SECRET") {
+		live := sentinel
+		if sentinel != "LIVE_STICKY_CLASS_SKILLS_SECRET" {
+			live = "LIVE_" + sentinel
+		}
+		require.NotContains(t, pinnedLive, live, "live delivery leaked a non-session event class to the pinned view")
+		require.Contains(t, controlLive, live, "the unpinned control must receive %s", live)
+	}
 
 	// list_sessions is a real direct reply: its unpinned control contains both
 	// sessions, while the bound principal's reply contains only the pin.

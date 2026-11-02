@@ -499,9 +499,6 @@ func (h *Hub) Run(ctx context.Context) {
 			// channel without blocking or growing it unboundedly.
 			for _, msg := range h.stickyEvents() {
 				meta := newLazyMeta(msg)
-				if !c.filterMetadata(meta) {
-					continue
-				}
 				if c.auth != nil {
 					msg = c.auth.filter(msg, meta)
 					if msg == nil {
@@ -518,9 +515,6 @@ func (h *Hub) Run(ctx context.Context) {
 			// as live delivery so retained sensitive state cannot leak.
 			h.buffer.forEach(func(msg []byte) {
 				meta := newLazyMeta(msg)
-				if !c.filterMetadata(meta) {
-					return
-				}
 				if c.auth != nil {
 					msg = c.auth.filter(msg, meta)
 					if msg == nil {
@@ -617,9 +611,6 @@ func (h *Hub) Run(ctx context.Context) {
 				// broadcast case's fan-out.
 				meta := newLazyMeta(env)
 				for c := range h.clients {
-					if !c.filterMetadata(meta) {
-						continue
-					}
 					send := env
 					if c.auth != nil {
 						send = c.auth.filter(env, meta)
@@ -674,9 +665,6 @@ func (h *Hub) deliver(msg []byte) {
 	meta := newLazyMeta(msg)
 	for c := range h.clients {
 		send := msg
-		if !c.filterMetadata(meta) {
-			continue
-		}
 		if c.auth != nil {
 			send = c.auth.filter(msg, meta)
 			if send == nil {
@@ -762,9 +750,6 @@ func (c *Client) reply(id, msgType string, payload any, errMsg string) {
 	}
 	if c.auth != nil && !c.auth.replyBypassesView(id, msgType) {
 		meta := newLazyMeta(env)
-		if !c.filterMetadata(meta) {
-			return
-		}
 		env = c.auth.filter(env, meta)
 		if env == nil {
 			return
