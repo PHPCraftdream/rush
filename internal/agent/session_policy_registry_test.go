@@ -20,8 +20,11 @@ func TestReadonlySessionToolsExistAndAreReadOnlyInProductionRegistry(t *testing.
 		registered[tool.Info().Name] = struct{}{}
 	}
 	for _, name := range permission.ReadonlySessionTools {
-		_, exists := registered[name]
-		require.Truef(t, exists, "readonly policy tool %q is absent from production buildTools registry", name)
+		// The fs_* family only reaches a folder-scoped toolset; an unscoped build omits it.
+		if _, scopedOnly := folderScopeOpForTool[name]; !scopedOnly {
+			_, exists := registered[name]
+			require.Truef(t, exists, "readonly policy tool %q is absent from production buildTools registry", name)
+		}
 		action, hasAction := restrictedToolActions[name]
 		require.Truef(t, hasAction, "readonly policy tool %q has no restricted action metadata", name)
 		require.Containsf(t, []string{"read", "list"}, action, "readonly policy tool %q has non-read action %q", name, action)

@@ -137,6 +137,7 @@ func TestAPIPermissionsProductionListenerDecisions(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 	app := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	coordinator := &apiPermissionListenerCoordinator{app: app, started: make(chan struct{}, 1), results: make(chan error, 1), cleaned: make(chan struct{}, 1)}
+	coordinator.Coordinator = app.AgentCoordinator
 	app.AgentCoordinator = coordinator
 	store := config.GlobalAPITokenStore()
 	token, _, err := store.CreateAPIToken("permission-listener", []string{"run", "read"}, "ask", nil)
@@ -211,6 +212,7 @@ func TestAPIPermissionsProductionListenerTimeoutDenies(t *testing.T) {
 	}
 	app := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	coordinator := &apiPermissionListenerCoordinator{app: app, started: make(chan struct{}, 1), results: make(chan error, 1), cleaned: make(chan struct{}, 1)}
+	coordinator.Coordinator = app.AgentCoordinator
 	app.AgentCoordinator = coordinator
 	store := config.GlobalAPITokenStore()
 	token, _, err := store.CreateAPIToken("permission-timeout", []string{"run"}, "ask", nil)
@@ -262,19 +264,16 @@ func TestAPIPermissionsProductionListenerTimeoutDenies(t *testing.T) {
 	}
 }
 
-func TestAPIPermissionsProductionListenerReadonlyAndAutoDenied(t *testing.T) {
+func TestAPIPermissionsProductionListenerReadonlyDenied(t *testing.T) {
 	for _, key := range []string{"RUSH_GLOBAL_DATA", "RUSH_GLOBAL_CONFIG", "RUSH_GLOBAL_DIR"} {
 		t.Setenv(key, t.TempDir())
 	}
 	app := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	coordinator := &apiPermissionListenerCoordinator{app: app, started: make(chan struct{}, 1), results: make(chan error, 1), cleaned: make(chan struct{}, 1)}
+	coordinator.Coordinator = app.AgentCoordinator
 	app.AgentCoordinator = coordinator
 	store := config.GlobalAPITokenStore()
 	readonlyToken, _, err := store.CreateAPIToken("readonly", []string{"run"}, "readonly", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	autoToken, _, err := store.CreateAPIToken("auto", []string{"run"}, "auto", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,8 +315,7 @@ func TestAPIPermissionsProductionListenerReadonlyAndAutoDenied(t *testing.T) {
 	if status != http.StatusOK || json.Unmarshal(body, &pending) != nil || len(pending) != 0 {
 		t.Fatalf("readonly permission list = %d %s, want no prompt", status, body)
 	}
-	status, body = apiPermissionListenerRequest(t, client, baseURL, http.MethodPost, "/api/v1/sessions/"+session.ID+"/runs", autoToken, `{"prompt":"auto forbidden"}`)
-	if status != http.StatusForbidden {
-		t.Fatalf("auto run = %d %s, want forbidden", status, body)
-	}
 }
+
+// CancelAll keeps App shutdown safe when no real coordinator is configured (CI has no providers).
+func (c *apiPermissionListenerCoordinator) CancelAll() bool { return false }

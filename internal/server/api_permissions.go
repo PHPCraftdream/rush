@@ -410,7 +410,7 @@ func redactPermissionPath(path, workspace string) string {
 	normalize := func(value string) string { return strings.ReplaceAll(value, "\\", "/") }
 	portableAbs := func(value string) bool {
 		value = normalize(value)
-		return filepath.IsAbs(value) || strings.HasPrefix(value, "//") || (len(value) >= 3 && value[1] == ':' && value[2] == '/')
+		return filepath.IsAbs(value) || strings.HasPrefix(value, "/") || (len(value) >= 3 && value[1] == ':' && value[2] == '/')
 	}
 	if portableAbs(path) {
 		cleanPath, cleanWorkspace := filepath.ToSlash(filepath.Clean(normalize(path))), filepath.ToSlash(filepath.Clean(normalize(workspace)))

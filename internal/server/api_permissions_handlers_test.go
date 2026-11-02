@@ -15,7 +15,7 @@ import (
 
 func permissionHandlerRequest(t *testing.T, handler http.Handler, method, path, body string, principal Principal) *httptest.ResponseRecorder {
 	t.Helper()
-	r := httptest.NewRequest(method, path, strings.NewReader(body))
+	r := httptest.NewRequestWithContext(t.Context(), method, path, strings.NewReader(body))
 	r.SetPathValue("id", "p1")
 	r = r.WithContext(WithPrincipal(r.Context(), principal))
 	w := httptest.NewRecorder()

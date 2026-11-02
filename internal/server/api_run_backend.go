@@ -83,7 +83,7 @@ func (b *appAPIRunBackend) Start(ctx context.Context, runID, sessionID, prompt, 
 		manager, _ = b.app.Permissions.(permission.SessionDenyManager)
 		policies, _ = b.app.Permissions.(permission.SessionPolicyManager)
 	}
-	if manager == nil || policies == nil {
+	if manager == nil {
 		return nil, ErrAPIRunBackendGateUnavailable
 	}
 	if ctx == nil || ctx.Err() != nil {
@@ -98,6 +98,9 @@ func (b *appAPIRunBackend) Start(ctx context.Context, runID, sessionID, prompt, 
 	}
 	if mode != "ask" && mode != "readonly" && mode != "auto" {
 		mode = "invalid"
+	}
+	if (mode == "readonly" || mode == "auto") && policies == nil {
+		return nil, ErrAPIRunBackendGateUnavailable
 	}
 	if mode == "auto" && !config.APITokenScopeAllows(principal.Scopes, "admin") && !b.allowAutoApprove {
 		return nil, ErrAPIRunAutoApproveDenied
