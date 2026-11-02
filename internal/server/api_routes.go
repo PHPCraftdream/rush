@@ -21,6 +21,11 @@ type APIRoute struct {
 }
 
 func APIRoutes() []APIRoute {
+	routes := append(apiCoreRoutes(), apiReadRoutes()...)
+	return routes
+}
+
+func apiCoreRoutes() []APIRoute {
 	return []APIRoute{
 		{Method: http.MethodGet, Pattern: "/health", Scope: "none", Summary: "Health check", OperationID: "getHealth", Handler: apiHealthHandler},
 		{Method: http.MethodGet, Pattern: "/version", Scope: "read", Summary: "Get version", OperationID: "getVersion", Handler: apiVersionHandler},

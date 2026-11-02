@@ -190,7 +190,15 @@ func TestAPIPanicAfterWriteKeepsResponse(t *testing.T) {
 
 func TestAPIRoutesPinned(t *testing.T) {
 	got := APIRoutes()
-	want := []APIRoute{{Method: "GET", Pattern: "/health", Scope: "none", OperationID: "getHealth"}, {Method: "GET", Pattern: "/version", Scope: "read", OperationID: "getVersion"}, {Method: "GET", Pattern: "/openapi.json", Scope: "read", OperationID: "getOpenAPI"}}
+	want := []APIRoute{
+		{Method: "GET", Pattern: "/health", Scope: "none", OperationID: "getHealth"},
+		{Method: "GET", Pattern: "/version", Scope: "read", OperationID: "getVersion"},
+		{Method: "GET", Pattern: "/openapi.json", Scope: "read", OperationID: "getOpenAPI"},
+		{Method: "GET", Pattern: "/sessions", Scope: "read", OperationID: "listSessions"},
+		{Method: "GET", Pattern: "/sessions/{id}", Scope: "read", OperationID: "getSession"},
+		{Method: "GET", Pattern: "/sessions/{id}/messages", Scope: "read", OperationID: "listMessages"},
+		{Method: "GET", Pattern: "/models", Scope: "read", OperationID: "listModels"},
+	}
 	if len(got) != len(want) {
 		t.Fatalf("routes=%d", len(got))
 	}
