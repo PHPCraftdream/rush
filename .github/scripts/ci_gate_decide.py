@@ -14,6 +14,10 @@ NO_FULL = "Full validation not requested for this revision."
 SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 OS_NAMES = ("linux", "darwin", "windows")
 MODULE = "github.com/PHPCraftdream/rush"
+# The macOS lane is switched off while hosted macOS runners are unavailable.
+# Re-enable: set True and restore macos-latest in the native-lint matrix of
+# ci.yml and the purity matrix of ktav-purity.yml.
+MACOS_LANE_ENABLED = False
 
 
 def decide(event_name, base_ref, labels, mode, needed_job_results, validated_sha,
@@ -94,6 +98,7 @@ def expected_jobs(plan, outputs):
     else: skipped.extend([{"job": "security / govulncheck", "reason": "security not selected"}, {"job": "security / grype", "reason": "security not selected"}])
     if mode == "full":
         required = {"ubuntu_needed", "macos_needed", "windows_needed", "agent_selected", "race_needed", "web_changed", "security_full", "security_actions", "security_deps"}
+        if not MACOS_LANE_ENABLED: required.discard("macos_needed")
         if not all(yes(k) for k in required): raise ValueError("full plan has incomplete coverage flags")
     return jobs, skipped
 
@@ -155,7 +160,7 @@ def prepare_cli(args):
     full = plan["mode"] == "full"
     outputs = {
         "mode": plan["mode"], "ubuntu_needed": full or bool(plan.get("per_os", {}).get("linux")),
-        "macos_needed": full or bool(plan.get("native_required", {}).get("required", False)) or bool(plan.get("per_os", {}).get("darwin")),
+        "macos_needed": MACOS_LANE_ENABLED and (full or bool(plan.get("native_required", {}).get("required", False)) or bool(plan.get("per_os", {}).get("darwin"))),
         "windows_needed": full or bool(plan.get("native_required", {}).get("required", False)) or bool(plan.get("per_os", {}).get("windows")),
         "linux_packages": " ".join(x["package"] for x in plan["per_os"].get("linux", [])),
         "darwin_packages": " ".join(x["package"] for x in plan["per_os"].get("darwin", [])),
