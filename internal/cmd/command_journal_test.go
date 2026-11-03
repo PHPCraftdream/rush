@@ -330,17 +330,27 @@ func journalSnapshotRestore(t *testing.T, sets ...*pflag.FlagSet) func() {
 	type savedFlag struct {
 		f       *pflag.Flag
 		value   string
+		slice   []string
 		changed bool
 	}
 	var saved []savedFlag
 	for _, fs := range sets {
 		fs.VisitAll(func(f *pflag.Flag) {
-			saved = append(saved, savedFlag{f: f, value: f.Value.String(), changed: f.Changed})
+			entry := savedFlag{f: f, value: f.Value.String(), changed: f.Changed}
+			if sv, ok := f.Value.(pflag.SliceValue); ok {
+				entry.slice = append([]string(nil), sv.GetSlice()...)
+			}
+			saved = append(saved, entry)
 		})
 	}
 	return func() {
 		for _, s := range saved {
-			_ = s.f.Value.Set(s.value)
+			// Set("[]") on a slice flag would append the literal "[]"; Replace restores the list.
+			if sv, ok := s.f.Value.(pflag.SliceValue); ok {
+				_ = sv.Replace(s.slice)
+			} else {
+				_ = s.f.Value.Set(s.value)
+			}
 			s.f.Changed = s.changed
 		}
 	}
