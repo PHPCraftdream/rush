@@ -38,6 +38,9 @@ const (
 	OriginWeb         Origin = "web"
 	OriginSDK         Origin = "sdk"
 	OriginAPI         Origin = "api"
+	// OriginAPIService marks the service session that owns a token's batch
+	// roots; it never runs a conversational turn and is never woken.
+	OriginAPIService Origin = "api_service"
 )
 
 // mediaLoadFailedPlaceholder is the text substituted for image data that

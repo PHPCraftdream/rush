@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -30,6 +31,19 @@ func (r pwBatchWakeRequest) key() string {
 // batch root from the durable row (batch_nodes.owner_session_id), never
 // from hook or host identity. The writer is read at call time so a resolver
 // created before the App's writer is bound still uses the live pool.
+// apiServiceOwner reports whether the owner is an API service session: such a
+// session holds batch roots for a token and never runs a conversational turn,
+// so no batch event may wake its model.
+func apiServiceOwner(a *App) func(context.Context, string) bool {
+	return func(ctx context.Context, owner string) bool {
+		if a == nil || a.Sessions == nil {
+			return false
+		}
+		item, err := a.Sessions.Get(ctx, owner)
+		return err == nil && item.Origin == message.OriginAPIService
+	}
+}
+
 func pwBatchCompletionRootOwner(a *App) func(context.Context, string) (string, error) {
 	return func(ctx context.Context, root string) (string, error) {
 		if a == nil {
@@ -71,6 +85,9 @@ type batchTimeoutWakeDispatcher struct {
 	coord     agent.Coordinator
 	queue     chan pwBatchWakeRequest
 	rootOwner func(context.Context, string) (string, error)
+	// skipOwner, when set, vetoes a wake for owners that must never run a
+	// model turn (API service sessions).
+	skipOwner func(context.Context, string) bool
 	// queued holds the key of every request currently sitting in the queue
 	// or the unattached pending buffer, so a repeated commit or a second
 	// pull of the same debt cannot enqueue twice while a wake is in flight.
@@ -219,6 +236,10 @@ func (d *batchTimeoutWakeDispatcher) run() {
 					continue
 				}
 				owner = resolved
+			}
+			if d.skipOwner != nil && d.skipOwner(d.ctx, owner) {
+				d.release(req)
+				continue
 			}
 			select {
 			case dispatchSlots <- struct{}{}:

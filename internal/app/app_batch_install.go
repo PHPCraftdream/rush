@@ -80,6 +80,7 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	// is NOT a delivery authority — the durable selected notice stays
 	// the only fact; the wake only schedules the reaction turn.
 	app.batchTimeoutWake.rootOwner = pwBatchCompletionRootOwner(app)
+	app.batchTimeoutWake.skipOwner = apiServiceOwner(app)
 	factory.wake = app.batchTimeoutWake.Wake
 	factory.deps.CompletionWake = app.batchTimeoutWake.WakeCompletion
 	factory.deps.QuestionWake = app.batchTimeoutWake.Wake
