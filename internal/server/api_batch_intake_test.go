@@ -173,3 +173,54 @@ func TestBatchServiceSessionIdCollisionIsRefused(t *testing.T) {
 	resp := f.do(t, token, http.MethodPost, "/tasks", map[string]any{"prompt": "p"})
 	require.GreaterOrEqual(t, resp.Status, 500, "a conversational session squatting the id must not become an owner: %s", resp.Body)
 }
+
+func TestAPIBatchResumeContinuesOnlyADirectChildOfTheServiceSession(t *testing.T) {
+	f := newBatchFixture(t, batchTextProvider("ok"))
+	token := f.token(t, "resume", []string{"read", "run"}, "ask", config.APITokenBinding{})
+	other := f.token(t, "other", []string{"read", "run"}, "ask", config.APITokenBinding{})
+	first := f.do(t, token, http.MethodPost, "/tasks", map[string]any{"prompt": "first"}).accepted(t)
+	firstDone := f.waitBatchDone(t, token, first.RootID)
+	var child string
+	for _, node := range firstDone.Nodes {
+		if node.Kind == "task" {
+			child = node.ChildSessionID
+		}
+	}
+	require.NotEmpty(t, child)
+	before, err := f.app.Messages.List(t.Context(), child)
+	require.NoError(t, err)
+
+	resumed := f.do(t, token, http.MethodPost, "/tasks", map[string]any{"prompt": "follow up", "resume_session_id": child}).accepted(t)
+	resumedDone := f.waitBatchDone(t, token, resumed.RootID)
+	require.Equal(t, "completed", resumedDone.State)
+	for _, node := range resumedDone.Nodes {
+		if node.Kind == "task" {
+			require.Equal(t, child, node.ChildSessionID, "the resume continued the same child, it did not create another")
+		}
+	}
+	after, err := f.app.Messages.List(t.Context(), child)
+	require.NoError(t, err)
+	require.Greater(t, len(after), len(before), "resuming appends to the child's conversation")
+
+	// Not the owner's child: another token's child, the service session itself, an unrelated session, a missing one.
+	otherRoot := f.do(t, other, http.MethodPost, "/tasks", map[string]any{"prompt": "theirs"}).accepted(t)
+	otherDone := f.waitBatchDone(t, other, otherRoot.RootID)
+	var foreignChild string
+	for _, node := range otherDone.Nodes {
+		if node.Kind == "task" {
+			foreignChild = node.ChildSessionID
+		}
+	}
+	unrelated, err := f.app.Sessions.Create(t.Context(), "unrelated")
+	require.NoError(t, err)
+	for name, target := range map[string]string{
+		"another token's child": foreignChild,
+		"the service session":   serviceSessionID(token2ID(t, f, token)),
+		"an unrelated session":  unrelated.ID,
+		"a missing session":     "no-such-session",
+	} {
+		resp := f.do(t, token, http.MethodPost, "/tasks", map[string]any{"prompt": "x", "resume_session_id": target})
+		require.Equal(t, http.StatusBadRequest, resp.Status, "%s: %s", name, resp.Body)
+		require.Contains(t, string(resp.Body), "not a child")
+	}
+}

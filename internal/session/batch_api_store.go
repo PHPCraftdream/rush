@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"strings"
 )
 
@@ -84,4 +86,16 @@ func parseBatchAPIQuestion(text string) (BatchAPIHeldQuestion, bool) {
 	body, _ := strings.CutPrefix(rest, "SUB-AGENT QUESTION: ")
 	question.Question, _, _ = strings.Cut(body, "\nAnswer with inject_agent")
 	return question, question.Node != "" && question.Child != ""
+}
+
+// BatchOwnsRows reports whether the session owns any batch row, live or
+// terminal. Deleting such a session cascades the rows away, so sessions gc keeps
+// it until the batch retention purge removes the rows.
+func (s *BatchStore) BatchOwnsRows(ctx context.Context, owner string) (bool, error) {
+	var one int
+	err := s.writer.QueryRowContext(ctx, `SELECT 1 FROM batch_nodes WHERE owner_session_id=? LIMIT 1`, owner).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
 }
