@@ -33,10 +33,12 @@ type ServerListener struct {
 
 // ServerListenerTLS contains the configured TLS file paths and minimum version.
 type ServerListenerTLS struct {
-	Cert       string `json:"cert,omitempty"`
-	Key        string `json:"key,omitempty"`
-	ClientCA   string `json:"client_ca,omitempty"`
-	MinVersion string `json:"min_version,omitempty"`
+	Cert       string   `json:"cert,omitempty"`
+	Key        string   `json:"key,omitempty"`
+	ClientCA   string   `json:"client_ca,omitempty"`
+	MinVersion string   `json:"min_version,omitempty"`
+	SelfSigned bool     `json:"self_signed,omitempty"`
+	SANs       []string `json:"sans,omitempty"`
 }
 
 // ServerListenerLimits contains the configured listener resource limits.
@@ -59,6 +61,8 @@ type ServerListenerFlags struct {
 	TLSKey           *string
 	TLSClientCA      *string
 	TLSMinVersion    *string
+	TLSSelfSigned    *bool
+	TLSSANs          *[]string
 }
 
 func (l *ServerListenerLimits) UnmarshalJSON(data []byte) error {
@@ -237,7 +241,7 @@ func globalServerListenersFromDocuments(documents []serverListenerConfigDocument
 	}
 	if len(listeners) > 0 {
 		applyServerListenerFlags(&listeners[0], flags)
-		for field, present := range map[string]bool{"addr": flags.Addr != nil, "allow_cleartext": flags.AllowCleartext != nil, "allow_admin": flags.AllowAdmin != nil, "allow_auto_approve": flags.AllowAutoApprove != nil, "tls.cert": flags.TLSCert != nil, "tls.key": flags.TLSKey != nil, "tls.client_ca": flags.TLSClientCA != nil, "tls.min_version": flags.TLSMinVersion != nil} {
+		for field, present := range map[string]bool{"addr": flags.Addr != nil, "allow_cleartext": flags.AllowCleartext != nil, "allow_admin": flags.AllowAdmin != nil, "allow_auto_approve": flags.AllowAutoApprove != nil, "tls.cert": flags.TLSCert != nil, "tls.key": flags.TLSKey != nil, "tls.client_ca": flags.TLSClientCA != nil, "tls.min_version": flags.TLSMinVersion != nil, "tls.self_signed": flags.TLSSelfSigned != nil, "tls.sans": flags.TLSSANs != nil} {
 			if present {
 				sources[0][field] = "flag"
 			}
@@ -329,5 +333,11 @@ func applyServerListenerFlags(listener *ServerListener, flags ServerListenerFlag
 	}
 	if flags.TLSMinVersion != nil {
 		listener.TLS.MinVersion = *flags.TLSMinVersion
+	}
+	if flags.TLSSelfSigned != nil {
+		listener.TLS.SelfSigned = *flags.TLSSelfSigned
+	}
+	if flags.TLSSANs != nil {
+		listener.TLS.SANs = append([]string(nil), (*flags.TLSSANs)...)
 	}
 }

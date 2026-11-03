@@ -123,9 +123,9 @@ func TestWebListenerStillServesSPAAndAuth(t *testing.T) {
 func TestServeListener_TLSPolicyPlaceholderDoesNotPermitCleartext(t *testing.T) {
 	policy := ListenerPolicy{
 		Address: "0.0.0.0:8080", Surfaces: []ListenerSurface{SurfaceREST},
-		TLS: ListenerTLS{Cert: "cert.pem"}, Auth: DenyAllAuth,
+		TLS: ListenerTLS{Cert: "cert.pem", Key: "key.pem"}, Auth: DenyAllAuth,
 	}
-	if err := policy.Validate(); err == nil || err.Error() != `listener policy "0.0.0.0:8080": TLS is not implemented yet` {
-		t.Fatalf("Validate() error = %v, want exact TLS placeholder refusal", err)
+	if err := policy.Validate(); err != nil {
+		t.Fatalf("configured TLS policy rejected: %v", err)
 	}
 }

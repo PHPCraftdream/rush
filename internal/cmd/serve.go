@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -52,6 +53,11 @@ func serveAppOptions() []app.Option {
 
 func init() {
 	serveCmd.Flags().String("listen", "", "Override the first configured listener address")
+	serveCmd.Flags().String("tls-cert", "", "PEM server certificate for the first listener")
+	serveCmd.Flags().String("tls-key", "", "PEM server private key for the first listener")
+	serveCmd.Flags().String("client-ca", "", "PEM client CA; require and verify client certificates")
+	serveCmd.Flags().Bool("tls-self-signed", false, "Generate or reuse a self-signed TLS certificate")
+	serveCmd.Flags().StringSlice("tls-san", nil, "Additional TLS subject alternative name (repeatable)")
 	serveCmd.Flags().Bool("allow-cleartext", false, "Allow cleartext on non-loopback listeners")
 	serveCmd.Flags().Bool("print-config", false, "Print effective listener configuration without starting")
 	rootCmd.AddCommand(serveCmd)
@@ -126,12 +132,26 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	listen, _ := cmd.Flags().GetString("listen")
 	clear, _ := cmd.Flags().GetBool("allow-cleartext")
+	cert, _ := cmd.Flags().GetString("tls-cert")
+	key, _ := cmd.Flags().GetString("tls-key")
+	clientCA, _ := cmd.Flags().GetString("client-ca")
+	selfSigned, _ := cmd.Flags().GetBool("tls-self-signed")
+	sans, _ := cmd.Flags().GetStringSlice("tls-san")
 	flags := config.ServerListenerFlags{}
 	if cmd.Flags().Changed("listen") {
 		flags.Addr = &listen
 	}
 	if cmd.Flags().Changed("allow-cleartext") {
 		flags.AllowCleartext = &clear
+	}
+	if cmd.Flags().Changed("tls-cert") {
+		flags.TLSCert = &cert
+	}
+	if cmd.Flags().Changed("tls-key") {
+		flags.TLSKey = &key
+	}
+	if cmd.Flags().Changed("client-ca") {
+		flags.TLSClientCA = &clientCA
 	}
 	listeners, fieldSources, err := config.GlobalServerListenersWithSources(flags)
 	if err != nil {
@@ -150,6 +170,16 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		listeners = []config.ServerListener{{Addr: addr, Surfaces: []string{"rest", "ws"}, AllowCleartext: false}}
 		if cmd.Flags().Changed("allow-cleartext") {
 			listeners[0].AllowCleartext = clear
+		}
+		// The default listener has no config entry to merge the flags into.
+		if cmd.Flags().Changed("tls-cert") {
+			listeners[0].TLS.Cert = cert
+		}
+		if cmd.Flags().Changed("tls-key") {
+			listeners[0].TLS.Key = key
+		}
+		if cmd.Flags().Changed("client-ca") {
+			listeners[0].TLS.ClientCA = clientCA
 		}
 	}
 	policies := make([]server.ListenerPolicy, 0, len(listeners))
@@ -171,7 +201,16 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			policyAuth = server.DenyAllAuth
 		}
 		policy := server.ListenerPolicy{Address: l.Addr, Surfaces: surfaces, AllowCleartext: l.AllowCleartext, AllowAdmin: l.AllowAdmin, AllowAutoApprove: l.AllowAutoApprove, AllowedOrigins: l.AllowedOrigins, TokenIDs: l.Tokens, Limits: server.ListenerLimits{RPS: l.Limits.RPS, Burst: l.Limits.Burst, MaxConnsPerToken: l.Limits.MaxConnsPerToken, MaxBody: l.Limits.MaxBody}, Auth: policyAuth}.WithResolver(serveResolver)
-		policy.TLS = server.ListenerTLS{Cert: l.TLS.Cert, Key: l.TLS.Key, ClientCA: l.TLS.ClientCA, MinVersion: l.TLS.MinVersion}
+		policy.TLS = server.ListenerTLS{Cert: l.TLS.Cert, Key: l.TLS.Key, ClientCA: l.TLS.ClientCA, MinVersion: l.TLS.MinVersion, SelfSigned: l.TLS.SelfSigned, SANs: l.TLS.SANs}
+		if len(policies) == 0 && cmd.Flags().Changed("tls-self-signed") {
+			policy.TLS.SelfSigned = selfSigned
+		}
+		if len(policies) == 0 && cmd.Flags().Changed("tls-san") {
+			policy.TLS.SANs = append([]string(nil), sans...)
+		}
+		if policy.TLS.SelfSigned && (policy.TLS.Cert != "" || policy.TLS.Key != "") {
+			return &tokenCLIError{code: 2, err: errors.New("self-signed TLS cannot be combined with an explicit certificate or key")}
+		}
 		if cmd.Flags().Changed("allow-cleartext") && len(policies) == 0 {
 			policy.AllowCleartext = clear
 		}
@@ -254,6 +293,28 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 		bound = append(bound, ln)
 	}
+	for i := range policies {
+		if policies[i].TLS.SelfSigned {
+			cwd := cmdFlagString(cmd, "cwd")
+			dataDir, resolveErr := config.ResolveDataDirectory(cwd, cmdFlagString(cmd, "data-dir"))
+			if resolveErr != nil {
+				for _, listener := range bound {
+					_ = listener.Close()
+				}
+				return &tokenCLIError{code: 2, err: resolveErr}
+			}
+			certPath, keyPath, certErr := server.EnsureSelfSignedCertificateForListener(dataDir, policies[i].Address, bound[i].Addr().String(), policies[i].TLS.SANs, serveNow())
+			if certErr != nil {
+				for _, listener := range bound {
+					_ = listener.Close()
+				}
+				return &tokenCLIError{code: 2, err: certErr}
+			}
+			policies[i].Address = bound[i].Addr().String()
+			policies[i].TLS.Cert, policies[i].TLS.Key = certPath, keyPath
+			policies[i].TLS.SelfSigned = false
+		}
+	}
 	appInstance, err := serveAppFactory(cmd)
 	if err != nil {
 		for _, ln := range bound {
@@ -292,17 +353,32 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	watchServeSignals(ctx, cancel, signals)
 	servers := make([]*server.Server, 0, len(bound))
 	serveDone := make(chan error, len(bound))
+	readyCount := 0
+	readyMu := sync.Mutex{}
 	// The loop below reassigns ctx after the first cancellation; the server
 	// goroutines must keep reading the original one, not the variable.
 	serveCtx := ctx
-	for i, policy := range policies {
-		s := server.NewWithPolicy(appInstance, policy, nil)
-		servers = append(servers, s)
+	for _, policy := range policies {
+		servers = append(servers, server.NewWithPolicy(appInstance, policy, nil))
+	}
+	for i, s := range servers {
 		ln := bound[i]
-		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "rush serve: listening on %s\n", ln.Addr().String()); err != nil {
-			cancel()
-		}
-		go func() { serveDone <- s.ServeListener(serveCtx, ln, nil) }()
+		go func(s *server.Server, ln net.Listener) {
+			serveDone <- s.ServeListener(serveCtx, ln, func(string) {
+				readyMu.Lock()
+				defer readyMu.Unlock()
+				readyCount++
+				if readyCount != len(bound) {
+					return
+				}
+				for j, readyServer := range servers {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "rush serve: listening on %s\n", bound[j].Addr().String())
+					if pins, pinErr := readyServer.TLSPins(); pinErr == nil && pins.PublicKeyHex != "" {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "rush serve: TLS public-key pin: %s (curl: %s); leaf fingerprint: %s\n", pins.PublicKeyHex, pins.PublicKeyCurl, pins.Certificate)
+					}
+				}
+			})
+		}(s, ln)
 	}
 	var serverErr error
 	remaining := len(servers)
