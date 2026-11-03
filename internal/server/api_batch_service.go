@@ -276,7 +276,7 @@ func (s *apiBatchService) submit(ctx context.Context, principal Principal, spec 
 		return apiBatchSubmitResult{}, fmt.Errorf("%w: engine leaf budget", errBatchOverloaded)
 	}
 	if principal.Permission == "auto" {
-		s.app.Permissions.AutoApproveSession(owner)
+		s.app.BatchAutoApproveOwner(owner)
 	}
 	root, err := s.app.BatchSubmitRef(ctx, owner, normalized, batchRef(principal.TokenID, key, bodyHash))
 	if err != nil {

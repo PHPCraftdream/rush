@@ -103,6 +103,17 @@ func (a *App) BatchSubmit(ctx context.Context, owner string, spec jobbatch.Spec)
 	return a.BatchSubmitRef(ctx, owner, spec, nil)
 }
 
+// BatchAutoApproveOwner lets the tool calls of an API-owned batch service
+// session run without a prompt. Only the "auto" token permission mode asks for
+// it; the service session has no user to answer a prompt, and it is never a
+// conversational session.
+func (a *App) BatchAutoApproveOwner(owner string) {
+	if a == nil || a.Permissions == nil {
+		return
+	}
+	a.Permissions.AutoApproveSession(owner)
+}
+
 // BatchSubmitRef is BatchSubmit with a caller-chosen submit reference (see
 // agent.BatchInstall.SubmitCLIRef).
 func (a *App) BatchSubmitRef(ctx context.Context, owner string, spec jobbatch.Spec, ref func(root string) string) (string, error) {

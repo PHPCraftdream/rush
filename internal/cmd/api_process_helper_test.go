@@ -48,6 +48,10 @@ func newAPIProcessFixture(t *testing.T) *apiProcessFixture {
 		"RUSH_GLOBAL_DIR": f.globalDir, "RUSH_GLOBAL_DATA": f.dataDir, "RUSH_GLOBAL_CONFIG": f.configDir,
 		"XDG_CONFIG_HOME": filepath.Join(root, "xdg-config"), "XDG_DATA_HOME": filepath.Join(root, "xdg-data"),
 		"HOME": root, "USERPROFILE": root,
+		// An empty isolated data dir would otherwise make the command fetch
+		// the provider catalogue from the network, which stalls it for tens
+		// of seconds and outlasts the tests' own wait deadlines.
+		"RUSH_PROVIDER_CACHE_ONLY": "1",
 	} {
 		t.Setenv(key, value)
 	}
