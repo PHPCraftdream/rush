@@ -8,6 +8,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Added batch intake to the external API: `POST /tasks` and `POST /batches` with reads, stops and held-question answers, a hidden service session per token, an exact-name tool allowlist, node/depth/parallelism/timeout limits, durable idempotency, and `rush api task` / `rush api batch run|show|wait|stop|output|answer`.
+- Added token bindings that are enforced: `rush tokens create --batch [--tools --max-roots --max-parallel]` confines a token to batch intake, and `rush serve --route batch` (or `route: batch`) makes batch intake the only work route of a listener, on REST and WebSocket alike. Documented in `docs/api/bindings.md`.
+- Fixed a batch question staying `awaiting_answer` after it was answered, which made answer-then-wait ask for the same answer again.
+
 - Added API reference documentation for the `rush serve` REST, SSE, WebSocket, authentication, permission, and error surfaces, with implementation limitations called out.
 
 - `rush web` and bare `rush` now refuse a non-loopback `--host` unless `--allow-cleartext` is passed, and print a warning at every such start.
