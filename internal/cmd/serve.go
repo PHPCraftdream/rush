@@ -373,7 +373,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 				}
 				for j, readyServer := range servers {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "rush serve: listening on %s\n", bound[j].Addr().String())
-					if pins, pinErr := readyServer.TLSPins(); pinErr == nil {
+					if pins, pinErr := readyServer.TLSPins(); pinErr == nil && pins.PublicKeyHex != "" {
 						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "rush serve: TLS public-key pin: %s (curl: %s); leaf fingerprint: %s\n", pins.PublicKeyHex, pins.PublicKeyCurl, pins.Certificate)
 					}
 				}
