@@ -21,11 +21,13 @@ type rateEntry struct {
 	at     time.Time
 }
 type rateLimiter struct {
-	mu      sync.Mutex
-	entries map[string]rateEntry
-	rps     float64
-	burst   float64
-	clock   func() time.Time
+	mu           sync.Mutex
+	entries      map[string]rateEntry
+	rps          float64
+	burst        float64
+	clock        func() time.Time
+	lastSweep    time.Time
+	sweepStarted bool
 }
 
 func newRateLimiter(rps float64, burst int, clock func() time.Time) *rateLimiter {
@@ -35,12 +37,18 @@ func newRateLimiter(rps float64, burst int, clock func() time.Time) *rateLimiter
 func (l *rateLimiter) Allow(key string, now time.Time) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for k, e := range l.entries {
-		if now.Sub(e.at) > time.Minute {
-			delete(l.entries, k)
+	if l.shouldSweep(now) {
+		for k, e := range l.entries {
+			if now.Sub(e.at) > time.Minute {
+				delete(l.entries, k)
+			}
 		}
 	}
 	e, ok := l.entries[key]
+	if ok && now.Sub(e.at) > time.Minute {
+		delete(l.entries, key)
+		ok = false
+	}
 	if !ok {
 		e = rateEntry{tokens: l.burst, at: now}
 	}
@@ -65,6 +73,15 @@ func (l *rateLimiter) Allow(key string, now time.Time) time.Duration {
 	return 0
 }
 
+func (l *rateLimiter) shouldSweep(now time.Time) bool {
+	if l.sweepStarted && now.Sub(l.lastSweep) < time.Minute {
+		return false
+	}
+	l.lastSweep = now
+	l.sweepStarted = true
+	return true
+}
+
 type failureEntry struct {
 	times        []time.Time
 	offences     int
@@ -72,9 +89,11 @@ type failureEntry struct {
 	lastActivity time.Time
 }
 type failureBackoff struct {
-	mu      sync.Mutex
-	entries map[string]failureEntry
-	clock   func() time.Time
+	mu           sync.Mutex
+	entries      map[string]failureEntry
+	clock        func() time.Time
+	lastSweep    time.Time
+	sweepStarted bool
 }
 
 func newFailureBackoff(clock func() time.Time) *failureBackoff {
@@ -84,22 +103,38 @@ func newFailureBackoff(clock func() time.Time) *failureBackoff {
 func (b *failureBackoff) Blocked(ip string, now time.Time) time.Duration {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for k, e := range b.entries {
-		if e.offences == 0 {
-			if now.Sub(e.lastActivity) >= time.Minute {
+	if b.shouldSweep(now) {
+		for k, e := range b.entries {
+			if failureEntryExpired(e, now) {
 				delete(b.entries, k)
 			}
-			continue
-		}
-		if !now.Before(e.blockedUntil.Add(backoffDelay(e.offences))) {
-			delete(b.entries, k)
 		}
 	}
 	e, ok := b.entries[ip]
+	if ok && failureEntryExpired(e, now) {
+		delete(b.entries, ip)
+		ok = false
+	}
 	if !ok || !now.Before(e.blockedUntil) {
 		return 0
 	}
 	return e.blockedUntil.Sub(now)
+}
+
+func (b *failureBackoff) shouldSweep(now time.Time) bool {
+	if b.sweepStarted && now.Sub(b.lastSweep) < time.Minute {
+		return false
+	}
+	b.lastSweep = now
+	b.sweepStarted = true
+	return true
+}
+
+func failureEntryExpired(e failureEntry, now time.Time) bool {
+	if e.offences == 0 {
+		return now.Sub(e.lastActivity) >= time.Minute
+	}
+	return !now.Before(e.blockedUntil.Add(backoffDelay(e.offences)))
 }
 
 func (b *failureBackoff) Failure(ip string, now time.Time) {
