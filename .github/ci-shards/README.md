@@ -6,9 +6,9 @@ Reusable Windows full-suite shards called by `ci-tests.yml`; this is not the rem
 
 | Job | Runs | Contents |
 |---|---|---|
-| windows-shard A | windows-latest | internal/app (-timeout 20m), internal/server + internal/session, sdk, npm wrapper cache tests, `go mod tidy` no-diff |
+| windows-shard A | windows-latest | internal/app (-timeout 20m), sdk, npm wrapper cache tests, `go mod tidy` no-diff |
 | windows-shard B | windows-latest | internal/cmd + internal/commands |
-| windows-shard C | windows-latest | internal/agent subpackages, internal/shell, internal/jobbatch + cmd/batchlab |
+| windows-shard C | windows-latest | internal/agent subpackages, internal/shell, internal/jobbatch + cmd/batchlab, internal/server + internal/session |
 | windows-shard D | windows-latest | permission/config/csync; db/message/queue/pubsub/history; oauth/deploy/update/version; computed catch-all |
 | windows-agent | windows-latest | `internal/agent` exact package, 8 batches, -parallel 1, GOMEMLIMIT=1500MiB |
 
