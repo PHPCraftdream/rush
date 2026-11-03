@@ -111,6 +111,9 @@ func TestEnsureSelfSignedCertificateReusesKeyAndRejectsWildcardWithoutSAN(t *tes
 	if certPath != certPath2 || keyPath != keyPath2 || string(keyBefore) != string(keyAfter) {
 		t.Fatal("self-signed key was not reused")
 	}
+	if _, err := tls.LoadX509KeyPair(certPath2, keyPath2); err != nil {
+		t.Fatalf("regenerated certificate does not match the persisted key: %v", err)
+	}
 	if _, _, err = EnsureSelfSignedCertificate(t.TempDir(), "0.0.0.0:0", nil, now); err == nil {
 		t.Fatal("wildcard self-signed TLS accepted without SAN")
 	}
@@ -167,7 +170,7 @@ func TestTLSListenerNegotiatesHTTP11AndRejectsTLS12ByDefault(t *testing.T) {
 	cert, key, _ := writeTLSTestPair(t, dir, "server", time.Now(), []string{"localhost"})
 	policy := ListenerPolicy{Address: "127.0.0.1:0", Surfaces: []ListenerSurface{SurfaceREST}, TLS: ListenerTLS{Cert: cert, Key: key}, Auth: DenyAllAuth}
 	srv := NewWithPolicy(nil, policy, nil)
-	ln, err := net.Listen("tcp", policy.Address)
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", policy.Address)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +189,7 @@ func TestTLSListenerNegotiatesHTTP11AndRejectsTLS12ByDefault(t *testing.T) {
 		}
 	})
 	client := &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"h2", "http/1.1"}} // test certificate is generated locally
-	conn, err := tls.Dial("tcp", ln.Addr().String(), client)
+	conn, err := dialTLSTest(t, ln.Addr().String(), client)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,8 +199,18 @@ func TestTLSListenerNegotiatesHTTP11AndRejectsTLS12ByDefault(t *testing.T) {
 		t.Fatalf("ALPN = %q", state.NegotiatedProtocol)
 	}
 	tls12 := &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS12} // test certificate is generated locally
-	if conn, err = tls.Dial("tcp", ln.Addr().String(), tls12); err == nil {
+	if conn, err = dialTLSTest(t, ln.Addr().String(), tls12); err == nil {
 		conn.Close()
 		t.Fatal("TLS 1.2 accepted under default policy")
 	}
+}
+
+// dialTLSTest dials with the test context so the lint ban on context-free dials holds.
+func dialTLSTest(t *testing.T, addr string, cfg *tls.Config) (*tls.Conn, error) {
+	t.Helper()
+	conn, err := (&tls.Dialer{Config: cfg}).DialContext(t.Context(), "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return conn.(*tls.Conn), nil
 }

@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,12 +10,27 @@ import (
 )
 
 func loadClientCAPool(path string) (*x509.CertPool, error) {
-	pem, err := os.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read client CA: %w", err)
 	}
 	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(pem) || len(pool.Subjects()) == 0 {
+	added := 0
+	for rest := data; ; {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		if cert, parseErr := x509.ParseCertificate(block.Bytes); parseErr == nil {
+			pool.AddCert(cert)
+			added++
+		}
+	}
+	if added == 0 {
 		return nil, errors.New("invalid or empty client CA PEM")
 	}
 	return pool, nil

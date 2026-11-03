@@ -62,16 +62,20 @@ func TestListenerPolicyValidateLoopbackAndCleartext(t *testing.T) {
 	}
 	policy.AllowCleartext = false
 	policy.TLS.Cert = "server.pem"
+	err := policy.Validate()
+	if err == nil {
+		t.Fatal("certificate without key Validate() error = nil, want refusal")
+	}
+	var policyErr *ListenerPolicyError
+	if !errors.As(err, &policyErr) {
+		t.Fatalf("certificate without key error type = %T, want *ListenerPolicyError", err)
+	}
+	if want := "TLS certificate and key must be specified together"; policyErr.Rule != want {
+		t.Fatalf("certificate without key Rule = %q, want %q", policyErr.Rule, want)
+	}
+	policy.TLS.Key = "server.key"
 	if err := policy.Validate(); err != nil {
-		var policyErr *ListenerPolicyError
-		if !errors.As(err, &policyErr) {
-			t.Fatalf("configured TLS error type = %T, want *ListenerPolicyError", err)
-		}
-		if policyErr.Rule != "TLS is not implemented yet" {
-			t.Fatalf("configured TLS error Rule = %q, want %q", policyErr.Rule, "TLS is not implemented yet")
-		}
-	} else {
-		t.Fatal("configured TLS Validate() error = nil, want refusal")
+		t.Fatalf("complete TLS pair Validate() error = %v", err)
 	}
 }
 

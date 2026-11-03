@@ -39,7 +39,7 @@ func TestTLS12RestrictedSuitesAndCBCRefusal(t *testing.T) {
 	}
 	policy := ListenerPolicy{Address: "127.0.0.1:0", Surfaces: []ListenerSurface{SurfaceREST}, TLS: ListenerTLS{Cert: certPath, Key: keyPath, MinVersion: "1.2"}, Auth: DenyAllAuth}
 	srv := NewWithPolicy(nil, policy, nil)
-	ln, err := net.Listen("tcp", policy.Address)
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", policy.Address)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestTLS12RestrictedSuitesAndCBCRefusal(t *testing.T) {
 		}
 	})
 	connect := func(suites []uint16) error {
-		conn, err := tls.Dial("tcp", ln.Addr().String(), &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS12, CipherSuites: suites})
+		conn, err := dialTLSTest(t, ln.Addr().String(), &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS12, CipherSuites: suites})
 		if err == nil {
 			_ = conn.Close()
 		}
@@ -89,7 +89,7 @@ func TestTLSCertificateReloadChangesLiveHandshakeByContentAndKeepsGoodPair(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestTLSCertificateReloadChangesLiveHandshakeByContentAndKeepsGoodPair(t *te
 	t.Cleanup(func() { _ = server.Close(); <-done })
 	leafSerial := func() string {
 		t.Helper()
-		conn, err := tls.Dial("tcp", listener.Addr().String(), &tls.Config{InsecureSkipVerify: true})
+		conn, err := dialTLSTest(t, listener.Addr().String(), &tls.Config{InsecureSkipVerify: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -309,7 +309,7 @@ func TestServeAPIWSSProductionTLSSubprotocolHello(t *testing.T) {
 	}
 	api.Configure(&policy)
 	srv := NewWithPolicy(nil, policy, nil)
-	ln, err := net.Listen("tcp", policy.Address)
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", policy.Address)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func TestServeAPIWSSProductionTLSSubprotocolHello(t *testing.T) {
 	})
 	endpoint := "wss://" + ln.Addr().String() + "/ws"
 	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second, Subprotocols: []string{"rush.v1", "rush.bearer." + token}, TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
-	conn, resp, err := dialer.Dial(endpoint, nil)
+	conn, resp, err := dialer.Dial(endpoint, nil) //nolint:bodyclose // gorilla upgrade responses carry no body
 	if err != nil {
 		t.Fatalf("TLS websocket handshake: %v response=%v", err, resp)
 	}

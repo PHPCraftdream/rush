@@ -5,15 +5,19 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,6 +28,10 @@ func TestServeAPIMTLSProductionListenerRequiresVerifiedClientCertificate(t *test
 	for _, key := range []string{"RUSH_GLOBAL_DATA", "RUSH_GLOBAL_CONFIG", "RUSH_GLOBAL_DIR"} {
 		t.Setenv(key, t.TempDir())
 	}
+	var logs syncBuffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 	dir := t.TempDir()
 	now := time.Now()
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -80,7 +88,7 @@ func TestServeAPIMTLSProductionListenerRequiresVerifiedClientCertificate(t *test
 		t.Fatal(err)
 	}
 	store := config.GlobalAPITokenStore()
-	token, _, err := store.CreateAPIToken("mtls-integration", []string{"read"}, "ask", nil)
+	token, tokenRecord, err := store.CreateAPIToken("mtls-integration", []string{"read"}, "ask", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,5 +167,50 @@ func TestServeAPIMTLSProductionListenerRequiresVerifiedClientCertificate(t *test
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("valid certificate and token status = %d", resp.StatusCode)
+	}
+
+	// A client certificate from a CA the listener does not trust fails the handshake.
+	otherKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherTemplate := &x509.Certificate{SerialNumber: big.NewInt(9), Subject: pkix.Name{CommonName: "other CA"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature}
+	otherCADER, err := x509.CreateCertificate(rand.Reader, otherTemplate, otherTemplate, &otherKey.PublicKey, otherKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherCA, err := x509.ParseCertificate(otherCADER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	strangerKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	strangerDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{SerialNumber: big.NewInt(10), Subject: pkix.Name{CommonName: "stranger"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, otherCA, &strangerKey.PublicKey, otherKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	strangerCert := tls.Certificate{Certificate: [][]byte{strangerDER}, PrivateKey: strangerKey}
+	strangerClient := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "localhost", Certificates: []tls.Certificate{strangerCert}}}, Timeout: 5 * time.Second}
+	strangerReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+addr+"/api/v1/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	strangerReq.Header.Set("Authorization", "Bearer "+token)
+	if strangerResp, strangerErr := strangerClient.Do(strangerReq); strangerErr == nil {
+		strangerResp.Body.Close()
+		t.Fatal("a client certificate from an untrusted CA completed a request")
+	}
+
+	// The audit line carries the token id and the verified client certificate
+	// fingerprint, and never the token.
+	sum := sha256.Sum256(clientDER)
+	audit := logs.String()
+	if !strings.Contains(audit, "token_id="+tokenRecord.ID) || !strings.Contains(audit, "certificate_fingerprint="+hex.EncodeToString(sum[:])) {
+		t.Fatalf("audit line lacks the token id or the client certificate fingerprint:\n%s", audit)
+	}
+	if strings.Contains(audit, token) || strings.Contains(audit, token[strings.IndexByte(token, '.')+1:]) {
+		t.Fatal("audit output contains the plaintext token")
 	}
 }

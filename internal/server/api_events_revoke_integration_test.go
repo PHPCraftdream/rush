@@ -56,7 +56,7 @@ func TestServeAPIEventsProductionListenerRevokesToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) //nolint:bodyclose // Closed by the deferred Close below; the body is also read in a goroutine.
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,22 +72,16 @@ func TestServeAPIEventsProductionListenerRevokesToken(t *testing.T) {
 		}
 		close(lineCh)
 	}()
-	for {
+	for opened := false; !opened; {
 		select {
 		case line, ok := <-lineCh:
 			if !ok {
 				t.Fatal("SSE stream ended before revocation frame")
 			}
-			if line == "" {
-				break
-			}
-			if strings.HasPrefix(line, "event: ") {
-				break
-			}
+			opened = strings.HasPrefix(line, "retry: ")
 		case <-time.After(5 * time.Second):
 			t.Fatal("SSE stream did not emit initial response")
 		}
-		break
 	}
 	if err := store.RevokeAPIToken(record.ID); err != nil {
 		t.Fatal(err)

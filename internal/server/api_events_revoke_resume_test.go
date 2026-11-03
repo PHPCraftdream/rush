@@ -102,7 +102,7 @@ func TestServeAPIEventsProductionResumeDeliversBetweenRechecks(t *testing.T) {
 			stream.Body.Close()
 			t.Fatalf("stream status = %d", stream.StatusCode)
 		}
-		streams = append(streams, stream)
+		streams = append(streams, stream) //nolint:bodyclose // Closed by the deferred loop below.
 		framesByStream = append(framesByStream, frames)
 	}
 	for _, stream := range streams {

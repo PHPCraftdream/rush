@@ -73,7 +73,7 @@ func TestExecuteServeTLSRealProcessPinsAndBadPair(t *testing.T) {
 		t.Fatal(err)
 	}
 	globalDir, dataDir, configDir := filepath.Join(base, "global"), filepath.Join(base, "data"), filepath.Join(base, "config")
-	certPath, keyPath := filepath.Join(base, "bad-cert.pem"), filepath.Join(base, "bad-key.pem")
+	var certPath, keyPath string
 	t.Setenv("RUSH_GLOBAL_DIR", globalDir)
 	t.Setenv("RUSH_GLOBAL_DATA", dataDir)
 	t.Setenv("RUSH_GLOBAL_CONFIG", configDir)
@@ -181,7 +181,7 @@ func TestExecuteServeTLSRealProcessPinsAndBadPair(t *testing.T) {
 		return nil
 	}}}
 	pinnedClient := &http.Client{Transport: pinnedTransport, Timeout: 10 * time.Second}
-	resp, err := pinnedClient.Get("https://" + address + "/api/v1/health")
+	resp, err := getTLSTest(t, pinnedClient, "https://"+address+"/api/v1/health")
 	if err != nil {
 		t.Fatalf("pinned HTTPS request: %v", err)
 	}
@@ -191,7 +191,8 @@ func TestExecuteServeTLSRealProcessPinsAndBadPair(t *testing.T) {
 		t.Fatalf("pinned response = %d %q, read error %v", resp.StatusCode, body, readErr)
 	}
 	strictClient := &http.Client{Timeout: 10 * time.Second}
-	if _, err := strictClient.Get("https://" + address + "/api/v1/health"); err == nil {
+	if strictResp, err := getTLSTest(t, strictClient, "https://"+address+"/api/v1/health"); err == nil {
+		_ = strictResp.Body.Close()
 		t.Fatal("unpinned strict client accepted self-signed server")
 	}
 	if _, err := stdin.Write([]byte{1}); err != nil {
@@ -250,4 +251,13 @@ func TestExecuteServeTLSRealProcessPinsAndBadPair(t *testing.T) {
 	if strings.Contains(badErr.String(), secret) {
 		t.Fatal("TLS key material leaked to stderr")
 	}
+}
+
+func getTLSTest(t *testing.T, client *http.Client, url string) (*http.Response, error) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client.Do(req)
 }
