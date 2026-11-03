@@ -15,8 +15,33 @@ import (
 var (
 	tokensJSON                                                    bool
 	tokensName, tokensPermission, tokensExpires, tokensPinSession string
-	tokensScopes                                                  []string
+	tokensScopes, tokensBatchTools                                []string
+	tokensBatch                                                   bool
+	tokensMaxRoots, tokensMaxParallel                             int
 )
+
+var batchToolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]+$`)
+
+// tokenBatchBinding builds the batch binding of `tokens create --batch`.
+// Tool names are exact: a wildcard or any other punctuation is a usage error.
+func tokenBatchBinding(tools []string, maxRoots, maxParallel int) (config.APITokenBinding, error) {
+	if maxRoots < 0 || maxParallel < 0 {
+		return config.APITokenBinding{}, fmt.Errorf("--max-roots and --max-parallel must not be negative")
+	}
+	seenTool := map[string]bool{}
+	clean := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		tool = strings.TrimSpace(tool)
+		if !batchToolNamePattern.MatchString(tool) {
+			return config.APITokenBinding{}, fmt.Errorf("invalid --tools entry %q: exact tool names only, no wildcards", tool)
+		}
+		if !seenTool[tool] {
+			seenTool[tool] = true
+			clean = append(clean, tool)
+		}
+	}
+	return config.APITokenBinding{Kind: "batch", Batch: &config.APITokenBatchBinding{Tools: clean, MaxRoots: maxRoots, MaxParallel: maxParallel}}, nil
+}
 
 var tokenIDPattern = regexp.MustCompile(`^[0-9a-f]{8}$`)
 
@@ -30,8 +55,8 @@ func validateTokenID(id string) error {
 var tokensCreateCmd = &cobra.Command{
 	Use:     "create",
 	Short:   "Create an API bearer token",
-	Long:    "Create a user-global API token. The secret is printed once. An unbound run token accesses every workspace session; this is not an execution or filesystem sandbox. A session binding also confines only the API surface, not the agent or filesystem.\n\nExit codes: 0 success, 1 store or I/O error, 2 usage or validation error.",
-	Example: "rush tokens create --name ci --scope run --expires 30d",
+	Long:    "Create a user-global API token. The secret is printed once. An unbound run token accesses every workspace session; this is not an execution or filesystem sandbox. A binding (--pin-session or --batch) confines the API surface of the token, not the agent: if the permission mode lets the agent run a shell, a bound token is not isolated from the workspace, the session database or other sessions. A batch binding admits batch intake only (POST /tasks, POST /batches and their reads, stops and answers); it cannot be combined with the admin scope, so it cannot use the auto permission mode.\n\nExit codes: 0 success, 1 store or I/O error, 2 usage or validation error.",
+	Example: "rush tokens create --name ci --scope run --expires 30d\nrush tokens create --name worker --batch --max-roots 4",
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		expires, err := parseTokenExpiry(tokensExpires, time.Now())
@@ -62,6 +87,9 @@ var tokensCreateCmd = &cobra.Command{
 		if permission == "auto" && !seen["admin"] {
 			return tokenUsageError(fmt.Errorf("auto permission requires admin scope"))
 		}
+		if tokensBatch && tokensPinSession != "" {
+			return tokenUsageError(fmt.Errorf("--batch cannot be combined with --pin-session"))
+		}
 		binding := config.APITokenBinding{Kind: "none"}
 		if tokensPinSession != "" {
 			cwd, err := cmd.InheritedFlags().GetString("cwd")
@@ -78,6 +106,19 @@ var tokensCreateCmd = &cobra.Command{
 				sessionID = uuid.NewString()
 			}
 			binding = config.APITokenBinding{Kind: "session", Pin: &config.APITokenPinBinding{Session: sessionID, Workspace: workspace, Create: create}}
+		}
+		switch {
+		case tokensBatch:
+			if seen["admin"] {
+				return tokenUsageError(fmt.Errorf("--batch cannot be combined with the admin scope"))
+			}
+			batchBinding, err := tokenBatchBinding(tokensBatchTools, tokensMaxRoots, tokensMaxParallel)
+			if err != nil {
+				return tokenUsageError(err)
+			}
+			binding = batchBinding
+		case len(tokensBatchTools) > 0 || tokensMaxRoots != 0 || tokensMaxParallel != 0:
+			return tokenUsageError(fmt.Errorf("--tools, --max-roots and --max-parallel require --batch"))
 		}
 		plain, record, err := config.GlobalAPITokenStore().CreateAPITokenWithBinding(tokensName, scopes, permission, expires, binding)
 		if err != nil {
@@ -176,6 +217,10 @@ var tokensCmd = &cobra.Command{
 
 func init() {
 	tokensCreateCmd.Flags().StringVar(&tokensPinSession, "pin-session", "", "Bind to one session ID, or new to generate one (requires --cwd)")
+	tokensCreateCmd.Flags().BoolVar(&tokensBatch, "batch", false, "Bind to batch intake: the token submits tasks and batches only; session runs, creation and forks are refused (excludes --pin-session and admin scope)")
+	tokensCreateCmd.Flags().StringSliceVar(&tokensBatchTools, "tools", nil, "With --batch: extra exact tool names the token may submit besides agent (repeatable, no wildcards)")
+	tokensCreateCmd.Flags().IntVar(&tokensMaxRoots, "max-roots", 0, "With --batch: live batch roots at once (0 = server default)")
+	tokensCreateCmd.Flags().IntVar(&tokensMaxParallel, "max-parallel", 0, "With --batch: parallel leaves per batch (0 = server default)")
 	tokensCreateCmd.Flags().StringVar(&tokensName, "name", "", "Human-readable token name")
 	tokensCreateCmd.Flags().StringSliceVar(&tokensScopes, "scope", []string{"run"}, "Repeated scopes: read, run, config, admin")
 	tokensCreateCmd.Flags().StringVar(&tokensPermission, "permission", "ask", "Permission mode: ask, readonly, auto")

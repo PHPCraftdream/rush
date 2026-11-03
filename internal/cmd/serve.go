@@ -60,6 +60,7 @@ func init() {
 	serveCmd.Flags().Bool("tls-self-signed", false, "Generate or reuse a self-signed TLS certificate")
 	serveCmd.Flags().StringSlice("tls-san", nil, "Additional TLS subject alternative name (repeatable)")
 	serveCmd.Flags().Bool("allow-cleartext", false, "Allow cleartext on non-loopback listeners")
+	serveCmd.Flags().String("route", "", "Listener route: full (default) or batch (batch intake is the only work route on the first listener)")
 	serveCmd.Flags().Bool("print-config", false, "Print effective listener configuration without starting")
 	serveCmd.Flags().StringArrayVar(&servePinSpecs, "pin-session", nil, "Narrow a token to one session (TOKEN_ID=SESSION_ID)")
 	rootCmd.AddCommand(serveCmd)
@@ -70,6 +71,14 @@ var serveCmd = &cobra.Command{
 	Short: "Start the authenticated headless API server",
 	Long: `Start the headless API server for the explicitly selected workspace.
 No UI, browser, clipboard, or transient UI token is used.
+
+--route batch makes batch intake the only work route of the first listener: session runs,
+injects, creation, forks and deletes are refused there for every token, while reads,
+permission answers, cancellation and held-question answers stay available. It cannot be
+combined with --pin-session. Tokens created with "rush tokens create --batch" are confined
+the same way on every listener. A binding or route confines the API surface, not the agent:
+if the permission mode lets the agent run a shell, a bound token is not isolated from the
+workspace, the session database or other sessions.
 
 Exit codes:
   0 clean stop
@@ -147,6 +156,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 		flags.Pins = pins
 	}
+	if cmd.Flags().Changed("route") {
+		route, _ := cmd.Flags().GetString("route")
+		if route != "full" && route != "batch" {
+			return &tokenCLIError{code: 2, err: fmt.Errorf("invalid --route %q (allowed: full, batch)", route)}
+		}
+		flags.Route = &route
+	}
 	if cmd.Flags().Changed("listen") {
 		flags.Addr = &listen
 	}
@@ -189,6 +205,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 		if cmd.Flags().Changed("client-ca") {
 			listeners[0].TLS.ClientCA = clientCA
+		}
+		if flags.Route != nil {
+			listeners[0].Route = *flags.Route
 		}
 	}
 	policies := make([]server.ListenerPolicy, 0, len(listeners))
@@ -253,6 +272,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 				if i == 0 && field == "allow_cleartext" && cmd.Flags().Changed("allow-cleartext") {
 					return "flag"
 				}
+				if i == 0 && field == "route" && cmd.Flags().Changed("route") {
+					return "flag"
+				}
 				if configuredListeners && i < len(listeners) && i < len(fieldSources) && fieldSources[i][field] != "" {
 					return fieldSources[i][field]
 				}
@@ -273,7 +295,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			keySource := fieldSource("tls.key")
 			caSource := fieldSource("tls.client_ca")
 			versionSource := fieldSource("tls.min_version")
-			lines = append(lines, fmt.Sprintf("address: %s (source: %s)\nsurfaces: %s (source: %s)\nallow_cleartext: %t (source: %s)\nallow_admin: %t (source: %s)\nallow_auto_approve: %t (source: %s)\nallowed_origins: %s (source: %s)\ntoken_ids: %s (source: %s)\nlimits.rps: %g (source: %s)\nlimits.burst: %d (source: %s)\nlimits.max_conns_per_token: %d (source: %s)\nlimits.max_body: %d (source: %s)\ntls.cert: %s (source: %s)\ntls.key: %s (source: %s)\ntls.client_ca: %s (source: %s)\ntls.min_version: %s (source: %s)", policy.Address, addrSource, strings.Join(listenerSurfaceNames(policy.Surfaces), ","), surfacesSource, policy.AllowCleartext, clearSource, policy.AllowAdmin, adminSource, policy.AllowAutoApprove, autoApproveSource, strings.Join(policy.AllowedOrigins, ","), originsSource, strings.Join(policy.TokenIDs, ","), tokensSource, policy.Limits.RPS, rpsSource, policy.Limits.Burst, burstSource, policy.Limits.MaxConnsPerToken, connsSource, policy.Limits.MaxBody, bodySource, policy.TLS.Cert, certSource, policy.TLS.Key, keySource, policy.TLS.ClientCA, caSource, policy.TLS.MinVersion, versionSource))
+			routeSource := fieldSource("route")
+			route := policy.Route
+			if route == "" {
+				route = "full"
+			}
+			lines = append(lines, fmt.Sprintf("address: %s (source: %s)\nsurfaces: %s (source: %s)\nallow_cleartext: %t (source: %s)\nallow_admin: %t (source: %s)\nallow_auto_approve: %t (source: %s)\nallowed_origins: %s (source: %s)\ntoken_ids: %s (source: %s)\nlimits.rps: %g (source: %s)\nlimits.burst: %d (source: %s)\nlimits.max_conns_per_token: %d (source: %s)\nlimits.max_body: %d (source: %s)\ntls.cert: %s (source: %s)\ntls.key: %s (source: %s)\ntls.client_ca: %s (source: %s)\ntls.min_version: %s (source: %s)\nroute: %s (source: %s)", policy.Address, addrSource, strings.Join(listenerSurfaceNames(policy.Surfaces), ","), surfacesSource, policy.AllowCleartext, clearSource, policy.AllowAdmin, adminSource, policy.AllowAutoApprove, autoApproveSource, strings.Join(policy.AllowedOrigins, ","), originsSource, strings.Join(policy.TokenIDs, ","), tokensSource, policy.Limits.RPS, rpsSource, policy.Limits.Burst, burstSource, policy.Limits.MaxConnsPerToken, connsSource, policy.Limits.MaxBody, bodySource, policy.TLS.Cert, certSource, policy.TLS.Key, keySource, policy.TLS.ClientCA, caSource, policy.TLS.MinVersion, versionSource, route, routeSource))
 		}
 		_, err := fmt.Fprintln(cmd.OutOrStdout(), strings.Join(lines, "\n"))
 		return err

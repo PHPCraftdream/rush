@@ -63,6 +63,7 @@ type ServerListenerFlags struct {
 	TLSMinVersion    *string
 	TLSSelfSigned    *bool
 	TLSSANs          *[]string
+	Route            *string
 	Pins             map[string]string
 }
 
@@ -242,7 +243,7 @@ func globalServerListenersFromDocuments(documents []serverListenerConfigDocument
 	}
 	if len(listeners) > 0 {
 		applyServerListenerFlags(&listeners[0], flags)
-		for field, present := range map[string]bool{"addr": flags.Addr != nil, "allow_cleartext": flags.AllowCleartext != nil, "allow_admin": flags.AllowAdmin != nil, "allow_auto_approve": flags.AllowAutoApprove != nil, "tls.cert": flags.TLSCert != nil, "tls.key": flags.TLSKey != nil, "tls.client_ca": flags.TLSClientCA != nil, "tls.min_version": flags.TLSMinVersion != nil, "tls.self_signed": flags.TLSSelfSigned != nil, "tls.sans": flags.TLSSANs != nil} {
+		for field, present := range map[string]bool{"addr": flags.Addr != nil, "allow_cleartext": flags.AllowCleartext != nil, "allow_admin": flags.AllowAdmin != nil, "allow_auto_approve": flags.AllowAutoApprove != nil, "tls.cert": flags.TLSCert != nil, "tls.key": flags.TLSKey != nil, "tls.client_ca": flags.TLSClientCA != nil, "tls.min_version": flags.TLSMinVersion != nil, "tls.self_signed": flags.TLSSelfSigned != nil, "tls.sans": flags.TLSSANs != nil, "route": flags.Route != nil} {
 			if present {
 				sources[0][field] = "flag"
 			}
@@ -340,6 +341,9 @@ func applyServerListenerFlags(listener *ServerListener, flags ServerListenerFlag
 	}
 	if flags.TLSSANs != nil {
 		listener.TLS.SANs = append([]string(nil), (*flags.TLSSANs)...)
+	}
+	if flags.Route != nil {
+		listener.Route = *flags.Route
 	}
 	if flags.Pins != nil {
 		if listener.Pins == nil {
