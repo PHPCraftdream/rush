@@ -75,11 +75,8 @@ func sessionsWatchCmdRun(cmd *cobra.Command, args []string) error {
 	// Resolve the data directory from the already-booted app's config
 	// (honors --data-dir / a configured data_directory), not a raw
 	// cwd-based guess — same fix as `sessions locks` (task #231). See
-	// task #233. Threaded through as dataDir (not a pre-joined locksDir)
-	// so isSessionFinished can hand it straight to
-	// the classifier, which derives its own locks/session-*.lock
-	// path — see isSessionFinished's doc comment.
-	dataDir := a.Config().Options.DataDirectory
+	// task #233. The session-activity classifier resolves its lock path
+	// from the app configuration.
 	ctx := cmd.Context()
 
 	var sessionID string
@@ -100,7 +97,7 @@ func sessionsWatchCmdRun(cmd *cobra.Command, args []string) error {
 		sessionID = picked
 	}
 
-	return liveTailSession(ctx, a, sessionID, dataDir, interval)
+	return liveTailSession(ctx, a, sessionID, interval)
 }
 
 func init() {
@@ -111,7 +108,7 @@ func init() {
 // polls for new messages until the session ends. See the command Long
 // description for the end-detection signals. On exit it prints a final
 // summary block (duration, cost, tokens, ended_reason).
-func liveTailSession(ctx context.Context, a *app.App, sessionID, dataDir string, interval time.Duration) error {
+func liveTailSession(ctx context.Context, a *app.App, sessionID string, interval time.Duration) error {
 	if interval <= 0 {
 		interval = time.Second
 	}
@@ -173,7 +170,7 @@ func liveTailSession(ctx context.Context, a *app.App, sessionID, dataDir string,
 
 		// Check for end first so we print a summary even when there are
 		// no new messages to emit on this tick.
-		st, reason := isSessionFinished(ctx, a, sessionID, dataDir)
+		st, reason := isSessionFinished(ctx, a, sessionID)
 		if st.lockAlive || st.liveWork != "" {
 			sawLiveLock = true
 		}
@@ -454,11 +451,11 @@ func combinedLockLiveness(mtimeFresh, pidAlive bool) bool {
 // isSessionFinishedFromState so it is unit-testable without an app /
 // filesystem.
 //
-// Liveness comes from the one session-activity classifier (App.SessionActivity):
-// the lock fact answers lockAlive and the verdict keeps the scope open while
-// live work remains. combinedLockLiveness is left in place (still exercised
-// by its own unit tests).
-func isSessionFinished(ctx context.Context, a *app.App, sessionID, dataDir string) (watchState, string) {
+// Lock lookup and liveness come from the one session-activity classifier
+// (App.SessionActivity): the lock fact answers lockAlive and the verdict
+// keeps the scope open while live work remains. combinedLockLiveness is left
+// in place (still exercised by its own unit tests).
+func isSessionFinished(ctx context.Context, a *app.App, sessionID string) (watchState, string) {
 	sess, sessErr := a.Sessions.Get(ctx, sessionID)
 	msgs, msgsErr := a.Messages.List(ctx, sessionID)
 
