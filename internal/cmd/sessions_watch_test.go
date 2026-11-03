@@ -416,7 +416,7 @@ func TestIsSessionFinished_AgedLockWithLivePIDIsAlive(t *testing.T) {
 	require.NoError(t, os.Chtimes(lockPath, staleTime, staleTime),
 		"back-dating mtime: the enum must not depend on it")
 
-	st, _ := isSessionFinished(ctx, a, sess.ID, dataDir)
+	st, _ := isSessionFinished(ctx, a, sess.ID)
 	assert.True(t, st.lockAlive, "an alive recorded PID is held, whatever the lock's age (D10)")
 }
 
