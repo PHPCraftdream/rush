@@ -16,6 +16,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy/providers/openaicompat"
+	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -62,17 +63,34 @@ func newBatchFixture(t *testing.T, provider http.HandlerFunc) *batchFixture {
 	t.Setenv("RUSH_GLOBAL_DIR", t.TempDir())
 	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 
+	// An ambient claude/gemini/codex/qwen on PATH would otherwise be
+	// synthesized into a "local-cli" provider and every batch child would run
+	// the real CLI instead of the in-process provider below.
+	origAvailable := cliprovider.AvailableFunc
+	cliprovider.AvailableFunc = func() []cliprovider.CLISpec { return nil }
+	t.Cleanup(func() { cliprovider.AvailableFunc = origAvailable })
+
 	dataDir := t.TempDir()
 	provSrv := httptest.NewServer(provider)
 	t.Cleanup(provSrv.Close)
+	// The provider lives in a workspace file: a config reload (token writes
+	// trigger one) rebuilds the store from disk, and a runtime-only provider
+	// would vanish with it.
+	workspaceCfg, err := json.Marshal(map[string]any{
+		"models": map[string]any{
+			"smart": map[string]any{"provider": "openaicompat", "model": "probe"},
+			"fast":  map[string]any{"provider": "openaicompat", "model": "probe"},
+		},
+		"providers": map[string]any{"openaicompat": map[string]any{
+			"type": openaicompat.Name, "base_url": provSrv.URL, "api_key": "probe",
+			"models": []catwalk.Model{{ID: "probe", Name: "probe", ContextWindow: 200000, DefaultMaxTokens: 1000}},
+		}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "rush.json"), workspaceCfg, 0o600))
 	cfg, err := config.Init(dataDir, dataDir, false)
 	require.NoError(t, err)
-	cfg.Config().Providers.Set("openaicompat", config.ProviderConfig{
-		ID: "openaicompat", Type: openaicompat.Name, BaseURL: provSrv.URL, APIKey: "probe",
-		Models: []catwalk.Model{{ID: "probe", Name: "probe", ContextWindow: 200000, DefaultMaxTokens: 1000}},
-	})
-	cfg.SetSelectedModelRuntime(config.SelectedModelTypeSmart, config.SelectedModel{Provider: "openaicompat", Model: "probe"})
-	cfg.SetSelectedModelRuntime(config.SelectedModelTypeFast, config.SelectedModel{Provider: "openaicompat", Model: "probe"})
+	require.Contains(t, cfg.Config().Providers.Copy(), "openaicompat")
 	cfg.SetupAgents()
 	conn, err := db.Connect(context.Background(), dataDir)
 	require.NoError(t, err)
@@ -177,7 +195,8 @@ func (f *batchFixture) waitBatchDone(t *testing.T, token, root string) apiBatch 
 		select {
 		case <-ticker.C:
 		case <-deadline.C:
-			require.FailNow(t, "batch did not finish", "state=%s", current.State)
+			nodes, _ := json.Marshal(current.Nodes)
+			require.FailNow(t, "batch did not finish", "state=%s nodes=%s", current.State, nodes)
 		}
 	}
 }

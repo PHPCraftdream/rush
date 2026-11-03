@@ -91,7 +91,7 @@ func TestBatchIntakeReadonlyTokenCannotSubmitAgents(t *testing.T) {
 	token := f.token(t, "readonly", []string{"run"}, "readonly", config.APITokenBinding{})
 	resp := f.do(t, token, http.MethodPost, "/tasks", map[string]any{"prompt": "p"})
 	require.Equal(t, http.StatusBadRequest, resp.Status, string(resp.Body))
-	require.Contains(t, string(resp.Body), "read-only")
+	require.Contains(t, string(resp.Body), "not available to a read-only token", "the agent tool is refused by name, not by falling off the read-only list")
 }
 
 func TestBatchIntakeIdempotencyIsDurableAndBodyBound(t *testing.T) {
