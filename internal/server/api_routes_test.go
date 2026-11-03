@@ -4,7 +4,7 @@ import "testing"
 
 func TestAPIRoutesExhaustive(t *testing.T) {
 	routes := APIRoutes()
-	if len(routes) != 23 {
+	if len(routes) != 24 {
 		t.Fatalf("routes=%d", len(routes))
 	}
 	operations := map[string]bool{}

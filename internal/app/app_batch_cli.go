@@ -146,6 +146,19 @@ func (a *App) BatchNodeOutput(ctx context.Context, owner, root, node string) (st
 	return string(chunk.Data), nil
 }
 
+// BatchAnswerHeld answers the held question of a child of an owner session in
+// the same batch execution (never as a new generation). The error is
+// agent.ErrBatchHeldAnswerNone or a stale/stopped sentinel when there is no
+// current question to answer.
+func (a *App) BatchAnswerHeld(ctx context.Context, owner, childSessionID, text string) error {
+	answerer, ok := a.AgentCoordinator.(agent.BatchHeldAnswerer)
+	if !ok {
+		return errors.New("batch runtime unavailable")
+	}
+	_, err := answerer.AnswerBatchHeldQuestion(ctx, owner, childSessionID, text)
+	return err
+}
+
 // BatchSettleDebt settles the owner's notice debt for a terminal root without
 // releasing the root, so its live output stays readable.
 func (a *App) BatchSettleDebt(ctx context.Context, owner, root string) error {

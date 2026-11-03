@@ -39,6 +39,7 @@ var (
 	errBatchKeyConflict  = errors.New("idempotency key was used with a different request body")
 	errBatchNotFound     = errors.New("batch not found")
 	errBatchUnavailable  = errors.New("batch runtime unavailable")
+	errBatchNoQuestion   = errors.New("no current question to answer")
 	errBatchServiceOwner = errors.New("service session is not an API service session")
 )
 
@@ -361,7 +362,9 @@ type apiBatchView struct {
 	Root    db.BatchNode
 	Nodes   []db.BatchNode
 	Outputs map[string]string
-	Live    bool
+	// Held maps a node id to the unanswered question of its child.
+	Held map[string]string
+	Live bool
 }
 
 // read returns the root of the token's own service session. A root of another
@@ -394,6 +397,12 @@ func (s *apiBatchService) read(ctx context.Context, tokenID, root string) (apiBa
 	view := apiBatchView{Root: snapshot.Root, Nodes: snapshot.Nodes, Live: live}
 	if live {
 		view.Outputs = s.liveOutputs(ctx, owner, root, snapshot.Nodes)
+	}
+	if held, heldErr := fac.Store.BatchAPIHeldQuestions(ctx, owner); heldErr == nil {
+		view.Held = make(map[string]string, len(held))
+		for _, question := range held {
+			view.Held[question.Node] = question.Question
+		}
 	}
 	return view, nil
 }
@@ -484,5 +493,39 @@ func (s *apiBatchService) hostProbe() session.BatchHostProbe {
 			return session.HostStatusAlive, nil
 		}
 		return shared(host)
+	}
+}
+
+// answerHeld answers the held question of a node of the token's own root, in the
+// same execution. errBatchNoQuestion covers "no question" and "stale question".
+func (s *apiBatchService) answerHeld(ctx context.Context, tokenID, root, node, text string) error {
+	view, err := s.read(ctx, tokenID, root)
+	if err != nil {
+		return err
+	}
+	var child string
+	found := false
+	for _, candidate := range view.Nodes {
+		if candidate.NodeID == node {
+			found = true
+			if candidate.ChildSessionID.Valid {
+				child = candidate.ChildSessionID.String
+			}
+		}
+	}
+	if !found {
+		return errBatchNotFound
+	}
+	if child == "" {
+		return errBatchNoQuestion
+	}
+	err = s.app.BatchAnswerHeld(ctx, serviceSessionID(tokenID), child, text)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, agent.ErrBatchHeldAnswerNone), errors.Is(err, agent.ErrBatchAgentStaleGeneration), errors.Is(err, agent.ErrBatchAgentStopped), errors.Is(err, agent.ErrBatchAgentNotHeld), errors.Is(err, jobbatch.ErrReleased):
+		return fmt.Errorf("%w: %v", errBatchNoQuestion, err)
+	default:
+		return err
 	}
 }

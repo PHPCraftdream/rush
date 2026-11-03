@@ -275,6 +275,28 @@ func coordinatorHeldAnswerSinkFor(c *coordinator) BatchHeldAnswerSink {
 	return nil
 }
 
+// BatchHeldAnswerer is implemented by coordinators that can answer a held
+// batch question strictly: unlike inject_agent it never falls back to the
+// mailbox, so a stale or absent question is an error the caller can report.
+type BatchHeldAnswerer interface {
+	AnswerBatchHeldQuestion(ctx context.Context, owner, childSessionID, text string) (BatchHeldQuestionFact, error)
+}
+
+// AnswerBatchHeldQuestion delivers text to the CURRENT incarnation's held
+// question of owner's direct child. ErrBatchHeldAnswerNone means no committed
+// question names the child; the stale/stopped sentinels of the execution pass
+// through unchanged.
+func (c *coordinator) AnswerBatchHeldQuestion(ctx context.Context, owner, childSessionID, text string) (BatchHeldQuestionFact, error) {
+	if err := c.controlChild(ctx, owner, childSessionID, "answer"); err != nil {
+		return BatchHeldQuestionFact{}, err
+	}
+	fact, err := c.deliverBatchHeldAnswer(ctx, owner, childSessionID, text)
+	if errors.Is(err, errBatchInjectBridgeMiss) {
+		return BatchHeldQuestionFact{}, ErrBatchHeldAnswerNone
+	}
+	return fact, err
+}
+
 // deliverBatchHeldAnswer routes one non-interrupt inject_agent message
 // through the installed sink. A sink-less coordinator (flag OFF, install
 // absent, or shutdown cleared) or a "no held question" answer returns

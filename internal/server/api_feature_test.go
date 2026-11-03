@@ -216,6 +216,7 @@ func TestAPIRoutesPinned(t *testing.T) {
 		{Method: "GET", Pattern: "/batches/{root}/nodes/{node}", Scope: "read", OperationID: "getBatchNode"},
 		{Method: "POST", Pattern: "/batches/{root}/stop", Scope: "run", OperationID: "stopBatch"},
 		{Method: "POST", Pattern: "/batches/{root}/nodes/{node}/stop", Scope: "run", OperationID: "stopBatchNode"},
+		{Method: "POST", Pattern: "/batches/{root}/nodes/{node}/answer", Scope: "run", OperationID: "answerBatchQuestion"},
 	}
 	// Compared as sorted tuples, not by position, so that parallel branches that
 	// add routes merge as a one-line union.

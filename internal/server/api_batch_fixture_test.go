@@ -33,6 +33,7 @@ type batchFixture struct {
 	service *apiBatchService
 	// workspace is the workspace the listener serves.
 	workspace string
+	cfg       *config.ConfigStore
 }
 
 func batchSSEText(text string) string {
@@ -100,7 +101,7 @@ func newBatchFixture(t *testing.T, provider http.HandlerFunc) *batchFixture {
 	service := apiBatchServices.byApp[application]
 	apiBatchServices.Unlock()
 	require.NotNil(t, service)
-	return &batchFixture{base: base, app: application, store: store, service: service, workspace: dataDir}
+	return &batchFixture{base: base, app: application, store: store, service: service, workspace: dataDir, cfg: cfg}
 }
 
 func (f *batchFixture) token(t *testing.T, name string, scopes []string, permission string, binding config.APITokenBinding) string {

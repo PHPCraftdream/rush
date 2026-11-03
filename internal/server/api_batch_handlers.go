@@ -31,6 +31,9 @@ type apiBatchNode struct {
 	ChildSessionID string `json:"child_session_id,omitempty"`
 	Output         string `json:"output,omitempty"`
 	OutputExpired  bool   `json:"output_expired,omitempty"`
+	// AwaitingAnswer is set while the node's child holds an unanswered question.
+	AwaitingAnswer bool   `json:"awaiting_answer,omitempty"`
+	Question       string `json:"question,omitempty"`
 }
 
 type apiBatch struct {
@@ -89,6 +92,9 @@ func apiBatchNodeDTO(node db.BatchNode, view apiBatchView) apiBatchNode {
 	if node.ChildSessionID.Valid {
 		dto.ChildSessionID = node.ChildSessionID.String
 	}
+	if question, held := view.Held[node.NodeID]; held && !batchStateDone(node.State) {
+		dto.AwaitingAnswer, dto.Question = true, question
+	}
 	if node.Kind == "task" {
 		if node.TaskPayload.Valid {
 			dto.Tool = batchToolName(node.TaskPayload.String)
@@ -114,6 +120,8 @@ func apiBatchFailure(w http.ResponseWriter, r *http.Request, err error) {
 		retryResponseProblem(w, r)
 	case errors.Is(err, errBatchNotFound):
 		apiNotFound(w, r, "batch")
+	case errors.Is(err, errBatchNoQuestion):
+		WriteAPIProblem(w, r, http.StatusConflict, "Conflict", "the node has no current question to answer", "", nil)
 	case errors.Is(err, errBatchUnavailable):
 		WriteAPIProblem(w, r, http.StatusServiceUnavailable, "Service Unavailable", "batch service unavailable", "", err)
 	default:
@@ -278,6 +286,29 @@ func (s *apiBatchService) stopHandler(node bool) http.HandlerFunc {
 	}
 }
 
+type apiBatchAnswerRequest struct {
+	Text string `json:"text"`
+}
+
+func (s *apiBatchService) answerHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, _ := PrincipalFrom(r.Context())
+		var payload apiBatchAnswerRequest
+		if err := apiDecodeStrictBody(r, &payload); err != nil || strings.TrimSpace(payload.Text) == "" || len(payload.Text) > apiRunMaxFieldBytes {
+			WriteAPIProblem(w, r, http.StatusBadRequest, "Bad Request", "invalid request body", "", err)
+			return
+		}
+		if err := s.answerHeld(r.Context(), principal.TokenID, r.PathValue("root"), r.PathValue("node"), payload.Text); err != nil {
+			apiBatchFailure(w, r, err)
+			return
+		}
+		WriteAPIResponse(w, r, http.StatusAccepted, struct {
+			NodeID    string `json:"node_id"`
+			Delivered bool   `json:"delivered"`
+		}{r.PathValue("node"), true})
+	}
+}
+
 func apiBatchRouteDeclarations() []APIRoute {
 	root := APIParam{Name: "root", In: "path", Required: true, Description: "Batch root ID"}
 	node := APIParam{Name: "node", In: "path", Required: true, Description: "Batch node ID"}
@@ -289,6 +320,7 @@ func apiBatchRouteDeclarations() []APIRoute {
 		{Method: http.MethodGet, Pattern: "/batches/{root}/nodes/{node}", Scope: "read", Summary: "Get batch node", OperationID: "getBatchNode", Params: []APIParam{root, node}, ResponseDescription: "Batch node"},
 		{Method: http.MethodPost, Pattern: "/batches/{root}/stop", Scope: "run", Summary: "Stop batch", OperationID: "stopBatch", Params: []APIParam{root}, ResponseDescription: "Stop request queued"},
 		{Method: http.MethodPost, Pattern: "/batches/{root}/nodes/{node}/stop", Scope: "run", Summary: "Stop batch node", OperationID: "stopBatchNode", Params: []APIParam{root, node}, ResponseDescription: "Stop request queued"},
+		{Method: http.MethodPost, Pattern: "/batches/{root}/nodes/{node}/answer", Scope: "run", Summary: "Answer a held question", OperationID: "answerBatchQuestion", Params: []APIParam{root, node}, ResponseDescription: "Answer delivered to the existing node execution"},
 	}
 }
 
@@ -303,7 +335,7 @@ func apiBatchRoutePlaceholders() []APIRoute {
 // apiBatchRoutes wires the declarations to the service handlers.
 func (s *apiBatchService) apiBatchRoutes() []APIRoute {
 	routes := apiBatchRouteDeclarations()
-	handlers := []http.HandlerFunc{s.createBatchHandler(), s.createTaskHandler(), s.getBatchHandler(), s.getNodeHandler(), s.stopHandler(false), s.stopHandler(true)}
+	handlers := []http.HandlerFunc{s.createBatchHandler(), s.createTaskHandler(), s.getBatchHandler(), s.getNodeHandler(), s.stopHandler(false), s.stopHandler(true), s.answerHandler()}
 	for i := range routes {
 		routes[i].Handler = handlers[i]
 	}
