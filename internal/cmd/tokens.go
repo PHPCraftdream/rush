@@ -8,13 +8,14 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
 
 var (
-	tokensJSON                                  bool
-	tokensName, tokensPermission, tokensExpires string
-	tokensScopes                                []string
+	tokensJSON                                                    bool
+	tokensName, tokensPermission, tokensExpires, tokensPinSession string
+	tokensScopes                                                  []string
 )
 
 var tokenIDPattern = regexp.MustCompile(`^[0-9a-f]{8}$`)
@@ -29,7 +30,7 @@ func validateTokenID(id string) error {
 var tokensCreateCmd = &cobra.Command{
 	Use:     "create",
 	Short:   "Create an API bearer token",
-	Long:    "Create a user-global API token. The secret is printed once. An unbound run token accesses every workspace session; this is not an execution or filesystem sandbox.\n\nExit codes: 0 success, 1 store or I/O error, 2 usage or validation error.",
+	Long:    "Create a user-global API token. The secret is printed once. An unbound run token accesses every workspace session; this is not an execution or filesystem sandbox. A session binding also confines only the API surface, not the agent or filesystem.\n\nExit codes: 0 success, 1 store or I/O error, 2 usage or validation error.",
 	Example: "rush tokens create --name ci --scope run --expires 30d",
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
@@ -61,7 +62,24 @@ var tokensCreateCmd = &cobra.Command{
 		if permission == "auto" && !seen["admin"] {
 			return tokenUsageError(fmt.Errorf("auto permission requires admin scope"))
 		}
-		plain, record, err := config.GlobalAPITokenStore().CreateAPIToken(tokensName, scopes, permission, expires)
+		binding := config.APITokenBinding{Kind: "none"}
+		if tokensPinSession != "" {
+			cwd, err := cmd.InheritedFlags().GetString("cwd")
+			if err != nil || cwd == "" {
+				return tokenUsageError(fmt.Errorf("--pin-session requires --cwd"))
+			}
+			workspace, err := config.CanonicalAPIWorkspace(cwd)
+			if err != nil {
+				return tokenUsageError(fmt.Errorf("invalid --cwd: %w", err))
+			}
+			sessionID := tokensPinSession
+			create := sessionID == "new"
+			if create {
+				sessionID = uuid.NewString()
+			}
+			binding = config.APITokenBinding{Kind: "session", Pin: &config.APITokenPinBinding{Session: sessionID, Workspace: workspace, Create: create}}
+		}
+		plain, record, err := config.GlobalAPITokenStore().CreateAPITokenWithBinding(tokensName, scopes, permission, expires, binding)
 		if err != nil {
 			return tokenStoreError(err)
 		}
@@ -101,7 +119,7 @@ var tokensListCmd = &cobra.Command{
 			return nil
 		}
 		for _, r := range records {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", r.ID, r.Name, strings.Join(r.Scopes, ","))
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", r.ID, r.Name, strings.Join(r.Scopes, ","), tokenBindingPresentation(r.Binding))
 		}
 		return nil
 	},
@@ -126,7 +144,7 @@ var tokensShowCmd = &cobra.Command{
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), string(b))
 		} else {
-			fmt.Fprintf(cmd.OutOrStdout(), "ID: %s\nName: %s\nScopes: %s\nPermission: %s\nCreated: %s\n", r.ID, r.Name, strings.Join(r.Scopes, ","), r.Permission, r.Created.Format(time.RFC3339))
+			fmt.Fprintf(cmd.OutOrStdout(), "ID: %s\nName: %s\nScopes: %s\nPermission: %s\nBinding: %s\nCreated: %s\n", r.ID, r.Name, strings.Join(r.Scopes, ","), r.Permission, tokenBindingPresentation(r.Binding), r.Created.Format(time.RFC3339))
 			if r.Expires != nil {
 				fmt.Fprintf(cmd.OutOrStdout(), "Expires: %s\n", r.Expires.Format(time.RFC3339))
 			}
@@ -157,6 +175,7 @@ var tokensCmd = &cobra.Command{
 }
 
 func init() {
+	tokensCreateCmd.Flags().StringVar(&tokensPinSession, "pin-session", "", "Bind to one session ID, or new to generate one (requires --cwd)")
 	tokensCreateCmd.Flags().StringVar(&tokensName, "name", "", "Human-readable token name")
 	tokensCreateCmd.Flags().StringSliceVar(&tokensScopes, "scope", []string{"run"}, "Repeated scopes: read, run, config, admin")
 	tokensCreateCmd.Flags().StringVar(&tokensPermission, "permission", "ask", "Permission mode: ask, readonly, auto")

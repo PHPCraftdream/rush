@@ -329,6 +329,7 @@ func handleListSessions(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	if sessions == nil {
 		sessions = []session.Session{}
 	}
+	sessions = filterSessionsForPinnedClient(sessions, c)
 	annotateSessionActivity(ctx, a, sessions)
 	c.reply(msg.ID, EventSessionsList, sessions, "")
 

@@ -10,18 +10,47 @@ import (
 type clientAuth struct {
 	principal Principal
 	policy    CommandPolicy
+	view      pinnedView
 }
 
 func newClientAuth(principal Principal, policy CommandPolicy) *clientAuth {
 	principal.Scopes = append([]string(nil), principal.Scopes...)
-	return &clientAuth{principal: principal, policy: policy}
+	return &clientAuth{principal: principal, policy: policy, view: newPinnedView(principal.PinnedSession)}
 }
 
 func (c *Client) mayReceive(msgType string) bool {
-	if c == nil || c.auth == nil || msgType != EventMCPState {
+	if c == nil || c.auth == nil {
 		return true
 	}
-	return c.auth.policy.AllowAdmin && hasScope(c.auth.principal, "admin")
+	return c.auth.mayReceive(msgType)
+}
+
+// mayReceive is the type-level rule: mcp_state (MCP environment and headers)
+// only reaches admin clients of an allow_admin listener.
+func (a *clientAuth) mayReceive(msgType string) bool {
+	return msgType != EventMCPState || (a.policy.AllowAdmin && hasScope(a.principal, "admin"))
+}
+
+// replyBypassesView lets the correlated error/ok reply to a command through a
+// pinned view: the command already passed the pre-handler session resolution,
+// so it targeted the pinned session, and these envelopes carry no event
+// payload of another session. Uncorrelated or data-bearing replies still go
+// through the view filter.
+func (a *clientAuth) replyBypassesView(id, msgType string) bool {
+	return a.view.sessionID != "" && id != "" && (msgType == EventError || msgType == EventResponse)
+}
+
+// filter returns the bytes this client may receive, or nil. The payload is
+// parsed (once per delivery) only for pinned clients.
+func (a *clientAuth) filter(raw []byte, m *lazyEventMeta) []byte {
+	msgType := m.typ()
+	if msgType == "" || !a.mayReceive(msgType) {
+		return nil
+	}
+	if a.view.sessionID == "" {
+		return raw
+	}
+	return a.view.project(raw, m.meta())
 }
 
 func hasScope(principal Principal, scope string) bool {

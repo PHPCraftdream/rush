@@ -89,6 +89,9 @@ func apiListSessionsHandler(store APIReadStore) http.HandlerFunc {
 			apiReadFailure(w, r, err)
 			return
 		}
+		if principal, ok := PrincipalFrom(r.Context()); ok && principal.PinnedSession != "" {
+			sessions = pinnedSessionsOnly(sessions, principal.PinnedSession)
+		}
 		sort.Slice(sessions, func(i, j int) bool {
 			if sessions[i].UpdatedAt != sessions[j].UpdatedAt {
 				return sessions[i].UpdatedAt > sessions[j].UpdatedAt

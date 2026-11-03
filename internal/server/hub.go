@@ -498,8 +498,12 @@ func (h *Hub) Run(ctx context.Context) {
 			// only ordering that can be made reliable against a bounded
 			// channel without blocking or growing it unboundedly.
 			for _, msg := range h.stickyEvents() {
-				if c.auth != nil && !c.mayReceive(envelopeType(msg)) {
-					continue
+				meta := newLazyMeta(msg)
+				if c.auth != nil {
+					msg = c.auth.filter(msg, meta)
+					if msg == nil {
+						continue
+					}
 				}
 				select {
 				case c.send <- msg:
@@ -510,8 +514,12 @@ func (h *Hub) Run(ctx context.Context) {
 			// Then replay buffered events, applying the same per-client filter
 			// as live delivery so retained sensitive state cannot leak.
 			h.buffer.forEach(func(msg []byte) {
-				if c.auth != nil && !c.mayReceive(envelopeType(msg)) {
-					return
+				meta := newLazyMeta(msg)
+				if c.auth != nil {
+					msg = c.auth.filter(msg, meta)
+					if msg == nil {
+						return
+					}
 				}
 				select {
 				case c.send <- msg:
@@ -550,6 +558,8 @@ func (h *Hub) Run(ctx context.Context) {
 				select {
 				case msg := <-h.broadcast:
 					h.deliver(msg)
+				case <-h.stickyBroadcast:
+					h.fanOutSticky()
 				default:
 					goto broadcastsDrained
 				}
@@ -587,30 +597,41 @@ func (h *Hub) Run(ctx context.Context) {
 			// it only occurs when the channel is full, meaning at least one
 			// token is already queued, and any drain reads stickyPending which
 			// already contains the changed types.
-			h.stickyMu.Lock()
-			pending := h.stickyPending
-			h.stickyPending = make(map[string]struct{})
-			h.stickyMu.Unlock()
+			h.fanOutSticky()
+		}
+	}
+}
 
-			for msgType := range pending {
-				h.stickyMu.Lock()
-				env, ok := h.sticky[msgType]
-				h.stickyMu.Unlock()
-				if !ok {
+// fanOutSticky delivers the pending sticky envelopes to the connected clients.
+// Called from Run only.
+func (h *Hub) fanOutSticky() {
+	h.stickyMu.Lock()
+	pending := h.stickyPending
+	h.stickyPending = make(map[string]struct{})
+	h.stickyMu.Unlock()
+
+	for msgType := range pending {
+		h.stickyMu.Lock()
+		env, ok := h.sticky[msgType]
+		h.stickyMu.Unlock()
+		if !ok {
+			continue
+		}
+		// Fan-out to already-connected clients only; identical to the
+		// broadcast case's fan-out.
+		meta := newLazyMeta(env)
+		for c := range h.clients {
+			send := env
+			if c.auth != nil {
+				send = c.auth.filter(env, meta)
+				if send == nil {
 					continue
 				}
-				// Fan-out to already-connected clients only; identical to the
-				// broadcast case's fan-out.
-				for c := range h.clients {
-					if !c.mayReceive(msgType) {
-						continue
-					}
-					select {
-					case c.send <- env:
-					default:
-						slog.Debug("ws: slow client, dropping sticky message")
-					}
-				}
+			}
+			select {
+			case c.send <- send:
+			default:
+				slog.Debug("ws: slow client, dropping sticky message")
 			}
 		}
 	}
@@ -649,13 +670,17 @@ func (h *Hub) tryRegister(ctx context.Context, c *Client) bool {
 
 func (h *Hub) deliver(msg []byte) {
 	_ = h.buffer.push(msg)
-	msgType := envelopeType(msg)
+	meta := newLazyMeta(msg)
 	for c := range h.clients {
-		if !c.mayReceive(msgType) {
-			continue
+		send := msg
+		if c.auth != nil {
+			send = c.auth.filter(msg, meta)
+			if send == nil {
+				continue
+			}
 		}
 		select {
-		case c.send <- msg:
+		case c.send <- send:
 		default:
 			slog.Debug("ws: slow client, dropping message")
 		}
@@ -730,6 +755,13 @@ func (c *Client) reply(id, msgType string, payload any, errMsg string) {
 	env, err := json.Marshal(WSMessage{ID: id, Type: msgType, Payload: raw, Error: errMsg})
 	if err != nil {
 		return
+	}
+	if c.auth != nil && !c.auth.replyBypassesView(id, msgType) {
+		meta := newLazyMeta(env)
+		env = c.auth.filter(env, meta)
+		if env == nil {
+			return
+		}
 	}
 	if !c.trySend(env) {
 		slog.Warn("ws: client send buffer full or closed, dropping reply")

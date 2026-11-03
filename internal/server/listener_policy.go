@@ -78,6 +78,10 @@ type ListenerPolicy struct {
 	AllowAutoApprove bool
 	AllowedOrigins   []string
 	TokenIDs         []string
+	Pins             map[string]string
+	DeclaredPins     map[string]string
+	PinsDeclared     bool
+	Workspace        string
 	Limits           ListenerLimits
 	TLS              ListenerTLS
 	Auth             func(next http.Handler) http.Handler

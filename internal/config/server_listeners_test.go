@@ -16,8 +16,8 @@ func isolateListenerConfig(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	t.Setenv(GlobalDirEnv, root)
-	t.Setenv("RUSH_GLOBAL_CONFIG", "")
-	t.Setenv("RUSH_GLOBAL_DATA", "")
+	t.Setenv("RUSH_GLOBAL_CONFIG", filepath.Join(root, "config"))
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(root, "data"))
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("XDG_DATA_HOME", "")
 	t.Setenv("HOME", root)
@@ -25,6 +25,18 @@ func isolateListenerConfig(t *testing.T) string {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "config"), 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "data"), 0o700))
 	return root
+}
+
+func TestServerListenerPinsDecodeAndFlagMerge(t *testing.T) {
+	root := isolateListenerConfig(t)
+	path := filepath.Join(root, "config", "rush.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"server":{"listeners":[{"addr":"127.0.0.1:8123","pins":{"11111111":"session-a"}}]}}`), 0o600))
+	flags := ServerListenerFlags{Pins: map[string]string{"22222222": "session-b"}}
+	listeners, sources, err := GlobalServerListenersWithSources(flags)
+	require.NoError(t, err)
+	require.Equal(t, "session-a", listeners[0].Pins["11111111"])
+	require.Equal(t, "session-b", listeners[0].Pins["22222222"])
+	require.Equal(t, "global config", sources[0]["pins.11111111"])
 }
 
 func TestGlobalServerListenersReadErrorKind(t *testing.T) {
