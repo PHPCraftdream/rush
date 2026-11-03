@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
 	"strings"
 )
 
@@ -41,7 +42,11 @@ func BatchAPIRootLive(state string) bool {
 }
 
 // BatchAPIHeldQuestion is one unanswered child question of an owner's batch.
-type BatchAPIHeldQuestion struct{ Node, Child, Question string }
+// Token and Sequence identify one question of one incarnation of the node.
+type BatchAPIHeldQuestion struct {
+	Node, Child, Question string
+	Token, Sequence       int64
+}
 
 // BatchAPIHeldQuestions lists the owner's unanswered child questions, oldest
 // first: the unreacted wake=1 child_question notices. The question text and the
@@ -81,6 +86,12 @@ func parseBatchAPIQuestion(text string) (BatchAPIHeldQuestion, bool) {
 		}
 		if value, ok := strings.CutPrefix(field, "child="); ok {
 			question.Child = value
+		}
+		if value, ok := strings.CutPrefix(field, "token="); ok {
+			question.Token, _ = strconv.ParseInt(value, 10, 64)
+		}
+		if value, ok := strings.CutPrefix(field, "sequence="); ok {
+			question.Sequence, _ = strconv.ParseInt(value, 10, 64)
 		}
 	}
 	body, _ := strings.CutPrefix(rest, "SUB-AGENT QUESTION: ")
