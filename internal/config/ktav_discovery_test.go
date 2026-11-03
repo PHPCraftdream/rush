@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/fsext"
 	"github.com/PHPCraftdream/rush/internal/ktavcodec"
@@ -43,6 +44,15 @@ func captureSlogOutput(t *testing.T) *bytes.Buffer {
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+func captureDebugSlogOutput(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	return &buf
 }
@@ -79,8 +89,12 @@ func TestKtavSlotSelectionMatrix(t *testing.T) {
 		writeTestFile(t, filepath.Join(dir, "rush.json"), jsonBody)
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "rush.ktav"), testKtavBytes(t, ktavBody), 0o600))
 		resetBothFormatsWarnings()
-		logs := captureSlogOutput(t)
+		logs := captureDebugSlogOutput(t)
+		stamp := time.Unix(1_700_000_000, 0)
+		require.NoError(t, os.Chtimes(filepath.Join(dir, "rush.json"), stamp, stamp))
+		require.NoError(t, os.Chtimes(filepath.Join(dir, "rush.ktav"), stamp.Add(time.Second), stamp.Add(time.Second)))
 		require.Equal(t, filepath.Join(dir, "rush.ktav"), selectConfigSlot(filepath.Join(dir, "rush.json")))
+		require.Contains(t, logs.String(), "level=DEBUG")
 		require.Contains(t, logs.String(), "Both config formats exist")
 		require.Contains(t, logs.String(), filepath.Join(dir, "rush.ktav"))
 		require.Contains(t, logs.String(), filepath.Join(dir, "rush.json"))

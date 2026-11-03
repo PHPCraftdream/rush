@@ -38,7 +38,7 @@ func readCacheDocument(legacyJSON string) ([]byte, error) {
 			return nil, fmt.Errorf("invalid Ktav in provider cache file %s: %w", ktav, err)
 		}
 		if _, jsonErr := os.Stat(legacyJSON); jsonErr == nil {
-			warnBothFormatsOnce(ktav, legacyJSON)
+			warnBothFormatsOnce("cache", ktav, legacyJSON)
 		}
 		return jsonBytes, nil
 	}
