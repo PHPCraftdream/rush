@@ -106,6 +106,9 @@ func NewServeAPI(policy ListenerPolicy, app *appPkg.App, store *config.APITokenS
 		feederCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		errs := []error{feeder.Stop(feederCtx)}
+		if app != nil {
+			errs = append(errs, releaseAPIBatchService(app, ctx))
+		}
 		if broker != nil {
 			joined := make(chan struct{})
 			go func() { broker.Stop(); close(joined) }()

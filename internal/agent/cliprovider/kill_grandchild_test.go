@@ -81,7 +81,21 @@ func TestStreamKillTerminatesGrandchild(t *testing.T) {
 			// observed Git-Bash builds: test -r succeeds on the
 			// virtual path while cat fails, silently writing an
 			// empty pid file — capture-and-check-empty instead.
-			script := "sleep " + grandchildSleepDuration + " & p=$!; w=$(cat /proc/$p/winpid 2>/dev/null); if [ -z \"$w\" ]; then w=$(ps -a 2>/dev/null | awk -v p=$p '$1==p && $4 ~ /^[0-9]+$/ {print $4}'); fi; echo \"${w:-$p}\" > '" + pidFile + "'; wait"
+			//
+			// A just-forked sleeper may not be visible in /proc or
+			// `ps -a` yet. Falling through to $p then records the
+			// emulated pid, which is no Win32 process at all, and the
+			// premise guard below fails ("never observed alive") on a
+			// healthy tree. So on an MSYS-style uname the resolution
+			// retries (up to ~5 s) before it may fall back to $p;
+			// real Unix breaks out at once.
+			script := "sleep " + grandchildSleepDuration + " & p=$!; w=''; i=0; while [ $i -lt 100 ]; do " +
+				"w=$(cat /proc/$p/winpid 2>/dev/null); " +
+				"if [ -z \"$w\" ]; then w=$(ps -a 2>/dev/null | awk -v p=$p '$1==p && $4 ~ /^[0-9]+$/ {print $4}'); fi; " +
+				"if [ -n \"$w\" ]; then break; fi; " +
+				"case \"$(uname -s)\" in MINGW*|MSYS*|CYGWIN*) ;; *) break;; esac; " +
+				"i=$((i+1)); sleep 0.05; done; " +
+				"echo \"${w:-$p}\" > '" + pidFile + "'; wait"
 			spec := CLISpec{
 				ModelID:    "test-kill-grandchild",
 				ModelName:  "Test Kill Grandchild",
@@ -158,7 +172,23 @@ func TestStreamKillTerminatesGrandchild(t *testing.T) {
 				}
 				time.Sleep(50 * time.Millisecond)
 			}
+			if !sawAlive && runtime.GOOS == "windows" {
+				// The pid the MSYS script recorded can name a Win32 process
+				// that is already gone (observed on windows-latest: a
+				// plausible pid, never alive) while the real sleeper runs
+				// under another one. The premise only needs the sleeper
+				// itself to be alive, so find it by its unique command line.
+				if pids := windowsSleeperPIDs(); len(pids) > 0 {
+					t.Logf("recorded grandchild pid %d is not alive; the sleeper runs as %v", grandpid, pids)
+					grandpid, sawAlive = pids[0], true
+				}
+			}
 			if !sawAlive {
+				if runtime.GOOS == "windows" {
+					diag, _ := platform.Command(context.Background(), "powershell", "-NoProfile", "-Command",
+						`Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'sleep|bash' } | ForEach-Object { "$($_.ProcessId) ppid=$($_.ParentProcessId) $($_.Name) $($_.CommandLine)" }`).CombinedOutput()
+					t.Logf("sleep/bash processes at failure:\n%s", diag)
+				}
 				t.Fatalf("grandchild %d never observed alive before cancel — test premise broken (vacuous)", grandpid)
 			}
 
@@ -185,6 +215,26 @@ func TestStreamKillTerminatesGrandchild(t *testing.T) {
 			t.Errorf("grandchild pid %d still alive after kill() — tree-kill does not reach grandchildren (regression of the orphaned-grandchild fix)", grandpid)
 		})
 	}
+}
+
+// windowsSleeperPIDs lists the live sleep.exe processes started by this test,
+// matched by the unique duration literal (never by bare name, see
+// grandchildSleepDuration).
+func windowsSleeperPIDs() []int {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	out, err := platform.Command(ctx, "powershell", "-NoProfile", "-Command",
+		`Get-CimInstance Win32_Process -Filter "Name='sleep.exe'" | Where-Object { $_.CommandLine -like '*`+grandchildSleepDuration+`*' } | ForEach-Object { $_.ProcessId }`).Output()
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, line := range strings.Fields(string(out)) {
+		if pid, perr := strconv.Atoi(line); perr == nil && pid > 0 {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
 }
 
 func TestConfigureChildProcessGroupKillsGrandchild(t *testing.T) {

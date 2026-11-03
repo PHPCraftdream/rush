@@ -100,6 +100,23 @@ func (a *App) BatchCLISpec(ctx context.Context, owner, messageID string, spec jo
 }
 
 func (a *App) BatchSubmit(ctx context.Context, owner string, spec jobbatch.Spec) (string, error) {
+	return a.BatchSubmitRef(ctx, owner, spec, nil)
+}
+
+// BatchAutoApproveOwner lets the tool calls of an API-owned batch service
+// session run without a prompt. Only the "auto" token permission mode asks for
+// it; the service session has no user to answer a prompt, and it is never a
+// conversational session.
+func (a *App) BatchAutoApproveOwner(owner string) {
+	if a == nil || a.Permissions == nil {
+		return
+	}
+	a.Permissions.AutoApproveSession(owner)
+}
+
+// BatchSubmitRef is BatchSubmit with a caller-chosen submit reference (see
+// agent.BatchInstall.SubmitCLIRef).
+func (a *App) BatchSubmitRef(ctx context.Context, owner string, spec jobbatch.Spec, ref func(root string) string) (string, error) {
 	if !a.BatchOwnerRuntime() {
 		return "", errors.New("batch submit requires owning runtime")
 	}
@@ -110,7 +127,7 @@ func (a *App) BatchSubmit(ctx context.Context, owner string, spec jobbatch.Spec)
 	if err != nil {
 		return "", err
 	}
-	batch, err := a.batchInstall.SubmitCLI(ctx, owner, translated)
+	batch, err := a.batchInstall.SubmitCLIRef(ctx, owner, translated, ref)
 	if err != nil {
 		release()
 		return "", err
@@ -120,6 +137,50 @@ func (a *App) BatchSubmit(ctx context.Context, owner string, spec jobbatch.Spec)
 		return "", err
 	}
 	return string(batch.ID()), nil
+}
+
+// BatchNodeOutput returns the live output of one node of a root this process
+// still holds, or an error when it is released, expired or not started. It is
+// bounded by ctx: the output of a node that is still running blocks until it
+// ends, so callers pass only terminal nodes with a short deadline.
+func (a *App) BatchNodeOutput(ctx context.Context, owner, root, node string) (string, error) {
+	if a == nil || a.batchInstall == nil {
+		return "", errors.New("batch runtime unavailable")
+	}
+	if a.batchInstall.CLIOwner(jobbatch.ID(root)) != owner {
+		return "", errors.New("batch CLI: root is not owned by this session")
+	}
+	chunk, err := a.batchInstall.CLIOutput(ctx, owner, jobbatch.ID(root), jobbatch.ID(node))
+	if err != nil {
+		return "", err
+	}
+	return string(chunk.Data), nil
+}
+
+// BatchAnswerHeld answers the held question of a child of an owner session in
+// the same batch execution (never as a new generation). The error is
+// agent.ErrBatchHeldAnswerNone or a stale/stopped sentinel when there is no
+// current question to answer.
+func (a *App) BatchAnswerHeld(ctx context.Context, owner, childSessionID, text string) error {
+	answerer, ok := a.AgentCoordinator.(agent.BatchHeldAnswerer)
+	if !ok {
+		return errors.New("batch runtime unavailable")
+	}
+	_, err := answerer.AnswerBatchHeldQuestion(ctx, owner, childSessionID, text)
+	return err
+}
+
+// BatchSettleDebt settles the owner's notice debt for a terminal root without
+// releasing the root, so its live output stays readable.
+func (a *App) BatchSettleDebt(ctx context.Context, owner, root string) error {
+	if a == nil || a.batchInstall == nil || a.batchInstall.CLIOwner(jobbatch.ID(root)) != owner {
+		return errors.New("batch CLI: root is not owned by this session")
+	}
+	fac, err := a.BatchCLIStore()
+	if err != nil {
+		return err
+	}
+	return fac.Store.BatchSettleCLIWakeDebt(ctx, owner, root)
 }
 
 func (a *App) BatchRelease(ctx context.Context, owner, root string) error {

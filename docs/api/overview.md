@@ -32,4 +32,4 @@ Tokens are scoped credentials, not workspace sandboxes. A run-capable request ca
 
 ## What is implemented versus design
 
-The design document describes more than the current implementation. In particular, token bindings and pinned-session routes, and batch intake are design-plan features, not documented here as available API behavior. The current REST route table is the authority for available routes.
+The design document describes more than the current implementation. In particular, the user-facing documentation of token bindings and pinned-session routes is still to come. Batch intake (`/batches`, `/tasks`) is described in [Batch intake](batches.md). The current REST route table is the authority for available routes.

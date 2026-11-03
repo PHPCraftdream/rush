@@ -30,6 +30,8 @@ Run records expose `id`, `session_id`, `state`, and UTC `created_at`; `started_a
 
 `docs/api/openapi.json` is a snapshot of the document served at `GET /api/v1/openapi.json` (`info.version` is replaced by `build-version`, it embeds the build time). `TestOpenAPIDocsSnapshotMatchesServedDocument` fails when the routes change without the snapshot; regenerate it with `go test ./internal/server -run OpenAPIDocsSnapshot -args -update-openapi-docs`.
 
+Batch intake routes (`POST /batches`, `POST /tasks`, `GET /batches/{root}` and the node stop/answer routes) are described in [batches.md](batches.md).
+
 ## Examples
 
 Replace `BASE` with the listener origin and supply a token from a secure environment variable; never put a real token in source control or shell history. These examples assume routes are wired on the listener and the caller has the required scope.

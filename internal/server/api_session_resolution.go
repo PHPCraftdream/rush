@@ -87,6 +87,9 @@ var restSessionResolution = map[string]sessionResolution{
 	"getOpenAPI": {"", "read"}, "listModels": {"", "read"},
 	"listPermissions": {"", "owned"}, "answerPermission": {"", "owned"},
 	"streamSessionEvents": {"id", "read"},
+	// Batch intake belongs to unpinned and batch-bound tokens: a session pin never reaches it.
+	"createBatch": {"", "deny"}, "createTask": {"", "deny"}, "getBatch": {"", "deny"},
+	"getBatchNode": {"", "deny"}, "stopBatch": {"", "deny"}, "stopBatchNode": {"", "deny"}, "answerBatchQuestion": {"", "deny"},
 }
 
 // resolvePinnedRoute applies the same fail-closed visibility/class ordering to

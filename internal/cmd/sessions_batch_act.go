@@ -20,6 +20,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -127,6 +128,38 @@ func gcDropBatchProtected(a *app.App, candidates []gcItem) []gcItem {
 		if reason := batchSessionGuardReason(facts[c.ID]); reason != "" {
 			fmt.Fprintf(os.Stderr, "kept session %s (%s): %s\n", short(session.HashID(c.ID)), truncate(c.Title, 40), reason)
 			continue
+		}
+		kept = append(kept, c)
+	}
+	return kept
+}
+
+// gcDropServiceBatchOwners keeps every API service session that still owns
+// batch rows, finished ones included. A service session never has messages, and
+// its rows cascade with it, so collecting it as an old empty session would erase
+// the history of finished roots before the batch retention purge is due. Once
+// retention removed the rows the next gc collects it like any empty session.
+// Ordinary sessions keep the debt-based protection of gcDropBatchProtected.
+func gcDropServiceBatchOwners(ctx context.Context, a *app.App, candidates []gcItem, all []session.Session) []gcItem {
+	service := make(map[string]bool)
+	for _, item := range all {
+		if item.Origin == message.OriginAPIService {
+			service[item.ID] = true
+		}
+	}
+	store := session.NewBatchStore(a.DB())
+	kept := make([]gcItem, 0, len(candidates))
+	for _, c := range candidates {
+		if service[c.ID] {
+			owns, err := store.BatchOwnsRows(ctx, c.ID)
+			if err != nil || owns {
+				reason := "it is an API service session that owns batch rows"
+				if err != nil {
+					reason = "its batch rows could not be read"
+				}
+				fmt.Fprintf(os.Stderr, "kept session %s (%s): %s\n", short(session.HashID(c.ID)), truncate(c.Title, 40), reason)
+				continue
+			}
 		}
 		kept = append(kept, c)
 	}

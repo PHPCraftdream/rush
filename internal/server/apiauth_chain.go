@@ -21,10 +21,12 @@ type Principal struct {
 	PinnedSession   string
 	TokenWorkspace  string
 	CertFingerprint string
-	verifier        TokenVerifier
-	expires         *time.Time
-	bootstrap       bool
-	tickerFactory   func(time.Duration) Ticker
+	// BatchBinding is the token's batch-intake binding (nil for other kinds).
+	BatchBinding  *config.APITokenBatchBinding
+	verifier      TokenVerifier
+	expires       *time.Time
+	bootstrap     bool
+	tickerFactory func(time.Duration) Ticker
 }
 
 type principalKey struct{}
@@ -298,11 +300,17 @@ func authenticate(cfg ChainConfig, r *http.Request) (Principal, string, error, e
 			workspace = cfg.Workspace
 		}
 	}
+	var batchBinding *config.APITokenBatchBinding
+	if binding.Kind == "batch" && binding.Batch != nil {
+		clone := *binding.Batch
+		clone.Tools = append([]string(nil), binding.Batch.Tools...)
+		batchBinding = &clone
+	}
 	fingerprint := ""
 	if r.TLS != nil && len(r.TLS.VerifiedChains) > 0 && len(r.TLS.PeerCertificates) > 0 {
 		fingerprint = certificateFingerprint(r)
 	}
-	return Principal{TokenID: t.ID, Scopes: append([]string(nil), t.Scopes...), Permission: t.Permission, PinnedSession: pin, TokenWorkspace: workspace, CertFingerprint: fingerprint, verifier: cfg.Verifier, expires: t.Expires, bootstrap: bootstrap, tickerFactory: cfg.TickerFactory}, "", nil, nil
+	return Principal{TokenID: t.ID, Scopes: append([]string(nil), t.Scopes...), Permission: t.Permission, PinnedSession: pin, TokenWorkspace: workspace, CertFingerprint: fingerprint, BatchBinding: batchBinding, verifier: cfg.Verifier, expires: t.Expires, bootstrap: bootstrap, tickerFactory: cfg.TickerFactory}, "", nil, nil
 }
 
 func sameCanonicalWorkspace(tokenWorkspace, listenerWorkspace string) bool {

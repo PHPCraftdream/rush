@@ -156,6 +156,7 @@ func sessionsGcCmdRun(cmd *cobra.Command, args []string) error {
 	// Never collect a session that owns live or unknown batch work (or
 	// unreacted batch debt); each keep is reported.
 	toDelete = gcDropBatchProtected(a, toDelete)
+	toDelete = gcDropServiceBatchOwners(cmd.Context(), a, toDelete, sessions)
 	toDelete = gcDropMaintenanceProtected(cmd.Context(), a, toDelete)
 
 	// --jobs-older-than: independent of the session-collection rules above

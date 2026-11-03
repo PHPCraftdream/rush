@@ -25,11 +25,36 @@ type apiAppReadStore struct {
 }
 
 func (s apiAppReadStore) ListSessions(ctx context.Context) ([]session.Session, error) {
-	return s.app.Sessions.List(ctx)
+	items, err := s.app.Sessions.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return withoutServiceSessions(items), nil
 }
 
 func (s apiAppReadStore) GetSession(ctx context.Context, id string) (session.Session, error) {
-	return s.app.Sessions.Get(ctx, id)
+	return hideServiceSession(s.app.Sessions.Get(ctx, id))
+}
+
+// withoutServiceSessions drops the API service sessions that own batch roots:
+// they are not conversations and are never listed.
+func withoutServiceSessions(items []session.Session) []session.Session {
+	out := make([]session.Session, 0, len(items))
+	for _, item := range items {
+		if item.Origin != message.OriginAPIService {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// hideServiceSession makes a service session look missing to the session routes:
+// it never accepts runs, injections, reads or event streams.
+func hideServiceSession(item session.Session, err error) (session.Session, error) {
+	if err == nil && item.Origin == message.OriginAPIService {
+		return session.Session{}, sql.ErrNoRows
+	}
+	return item, err
 }
 
 func (s apiAppReadStore) ListMessages(ctx context.Context, id string) ([]message.Message, error) {
@@ -54,7 +79,7 @@ func APIRoutesWithDeps(deps APIReadStore) []APIRoute {
 			routes[i].Handler = apiListModelsHandler(deps)
 		}
 	}
-	return append(append(apiCoreRoutes(), routes...), append(apiSessionRoutes(), append(apiRunRoutesWithPlaceholders(), apiPermissionRouteDeclarations()...)...)...)
+	return append(append(apiCoreRoutes(), routes...), append(apiSessionRoutes(), append(apiRunRoutesWithPlaceholders(), append(apiPermissionRouteDeclarations(), apiBatchRoutePlaceholders()...)...)...)...)
 }
 
 // APIRoutesWithApp binds the read routes to the production App services.
@@ -71,7 +96,11 @@ func apiRoutesWithBroker(a *appPkg.App, broker *APIPermissionBroker, allowAutoAp
 	writeRoutes := apiSessionWriteRoutes(apiAppWriteStore{app: a})
 	runRoutes := apiRunWriteRoutesWithRegistry(apiAppWriteStore{app: a}, newAPIRunBackendWithPolicy(a, broker, allowAutoApprove), registry)
 	permissionRoutes := apiPermissionRoutes(broker)
-	routes = append(routes[:len(routes)-len(apiSessionRoutes())-len(apiRunRoutes())-len(apiPermissionRouteDeclarations())], append(append(writeRoutes, runRoutes...), permissionRoutes...)...)
+	batchRoutes := apiBatchRoutePlaceholders()
+	if a != nil {
+		batchRoutes = retainAPIBatchService(a).apiBatchRoutes()
+	}
+	routes = append(routes[:len(routes)-len(apiSessionRoutes())-len(apiRunRoutes())-len(apiPermissionRouteDeclarations())-len(batchRoutes)], append(append(append(writeRoutes, runRoutes...), permissionRoutes...), batchRoutes...)...)
 	events := apiEventsRoute()
 	events.Handler = newAPIEventsHandler(apiAppWriteStore{app: a}, log, nil, nil)
 	return append(routes, events), log, registry
