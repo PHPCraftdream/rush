@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,9 +39,28 @@ type oauthMatrixWant struct {
 	staleCaller bool
 }
 
+// oauthMatrixWindowsStride thins the matrix on Windows. Every cell runs the
+// journal worker for real, and on Windows its file syscalls (path
+// canonicalisation, stable reads, locks) cost about 85 ms a cell, so the full
+// 2112 cells take about three minutes of a CI shard. The arbitration under test
+// does not depend on the operating system, so Linux and macOS run every cell
+// and Windows runs every fifth one; 5 is coprime with the 16 inner cells, so
+// each inner axis keeps all of its combinations. RUSH_OAUTH_MATRIX=full forces
+// every cell anywhere.
+const oauthMatrixWindowsStride = 5
+
+func oauthMatrixStride() int {
+	if runtime.GOOS == "windows" && os.Getenv("RUSH_OAUTH_MATRIX") != "full" {
+		return oauthMatrixWindowsStride
+	}
+	return 1
+}
+
 func TestOAuthRound7_CartesianMatrix(t *testing.T) {
 	candidates, executed, skipped := 0, 0, 0
+	stride := oauthMatrixStride()
 	coverage := make(map[string]int)
+	axes := make(map[string]int)
 	for _, journal := range []string{"absent", "validB", "invalidquarantineOK", "invalidquarantinefail", "transientIO", "persistentIO"} {
 		for _, owned := range []bool{false, true} {
 			for _, config := range []string{"A", "Bdurable", "Bsyncfail", "laterC", "earlier", "logout", "corrupt"} {
@@ -55,9 +75,16 @@ func TestOAuthRound7_CartesianMatrix(t *testing.T) {
 								for _, storage := range []string{"healthy", "failthenrepair"} {
 									candidate := oauthMatrixCase{journal: journal, config: config, memory: memory, used: used, storage: storage, expiry: expiry, owned: owned, valid: valid}
 									candidates++
+									if (candidates-1)%stride != 0 {
+										skipped++
+										continue
+									}
 									t.Run(candidate.name(), func(t *testing.T) {
 										executed++
 										coverage[config+"/"+expiry]++
+										for _, axis := range []string{"journal=" + journal, fmt.Sprintf("outbox=%t", owned), "memory=" + memory, "used=" + used, fmt.Sprintf("valid=%t", valid), "storage=" + storage} {
+											axes[axis]++
+										}
 										runOAuthMatrixCase(t, candidate)
 									})
 								}
@@ -70,15 +97,30 @@ func TestOAuthRound7_CartesianMatrix(t *testing.T) {
 	}
 	t.Logf("candidates=%d executed=%d skipped=%d", candidates, executed, skipped)
 	assert.Equal(t, 2112, candidates)
-	assert.Equal(t, 2112, executed)
-	assert.Zero(t, skipped)
+	if stride == 1 {
+		assert.Equal(t, 2112, executed)
+		assert.Zero(t, skipped)
+	} else {
+		assert.Equal(t, (2112+stride-1)/stride, executed)
+	}
+	// Full run: exactly 192 cells per config/expiry. Thinned run: a fair share of
+	// each, so no value of any axis is left unexercised.
+	want := func(full int) func(int) bool {
+		return func(got int) bool { return stride == 1 && got == full || stride > 1 && got >= full/stride/2 }
+	}
 	for _, config := range []string{"A", "laterC"} {
 		for _, expiry := range []string{"earlier", "equal", "later"} {
-			assert.Equal(t, 192, coverage[config+"/"+expiry], "expiry coverage %s/%s", config, expiry)
+			assert.True(t, want(192)(coverage[config+"/"+expiry]), "expiry coverage %s/%s = %d", config, expiry, coverage[config+"/"+expiry])
 		}
 	}
 	for _, config := range []string{"Bdurable", "Bsyncfail", "earlier", "logout", "corrupt"} {
-		assert.Equal(t, 192, coverage[config+"/fixed"], "fixed coverage %s", config)
+		assert.True(t, want(192)(coverage[config+"/fixed"]), "fixed coverage %s = %d", config, coverage[config+"/fixed"])
+	}
+	for _, axis := range []string{"journal=absent", "journal=validB", "journal=invalidquarantineOK", "journal=invalidquarantinefail", "journal=transientIO", "journal=persistentIO"} {
+		assert.True(t, want(352)(axes[axis]), "journal coverage %s = %d", axis, axes[axis])
+	}
+	for _, axis := range []string{"outbox=false", "outbox=true", "memory=A", "memory=B", "used=A", "used=B", "valid=false", "valid=true", "storage=healthy", "storage=failthenrepair"} {
+		assert.True(t, want(1056)(axes[axis]), "axis coverage %s = %d", axis, axes[axis])
 	}
 	assert.Equal(t, candidates, executed+skipped)
 }
