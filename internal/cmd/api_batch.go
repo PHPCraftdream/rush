@@ -57,7 +57,7 @@ func newAPIBatchRunCmd() *cobra.Command {
 }
 
 func readAPIBatchSpec(cmd *cobra.Command, args []string) ([]byte, error) {
-	var reader io.Reader = cmd.InOrStdin()
+	reader := cmd.InOrStdin()
 	if len(args) == 1 && args[0] != "-" {
 		file, err := os.Open(args[0])
 		if err != nil {
