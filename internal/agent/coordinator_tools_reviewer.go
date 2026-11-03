@@ -20,6 +20,10 @@ var reviewerReadOnlyToolNames = []string{
 	tools.FSReadToolName, tools.FSListToolName, tools.FSFindToolName, tools.FSGrepToolName,
 }
 
+// ReviewerReadOnlyToolNames returns a copy of the read-only tool names a
+// reviewer-role call may hold; external intake uses it as the read-only class.
+func ReviewerReadOnlyToolNames() []string { return slices.Clone(reviewerReadOnlyToolNames) }
+
 // applyCallReviewerReadOnly narrows a reviewer-role top-level call to the
 // read-only tool names in reviewerReadOnlyToolNames. The gate is the per-call
 // CallOptions role, exactly like applyCallDisableSubAgents: a context without
