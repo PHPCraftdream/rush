@@ -175,12 +175,12 @@ func TestAPIRemoteTokenSizeAndPermission(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "4 KiB")
 	if runtime.GOOS != "windows" {
-		small := filepath.Join(dir, "small")
-		require.NoError(t, os.WriteFile(small, []byte("credential"), 0o600))
-		_, err = ReadAPIRemoteToken(APIRemote{TokenFile: small}, nil)
+		tokenFile := filepath.Join(dir, "token-file")
+		require.NoError(t, os.WriteFile(tokenFile, []byte("credential"), 0o600))
+		_, err = ReadAPIRemoteToken(APIRemote{TokenFile: tokenFile}, nil)
 		require.NoError(t, err)
-		require.NoError(t, os.Chmod(small, 0o644))
-		_, err = ReadAPIRemoteToken(APIRemote{TokenFile: small}, nil)
+		require.NoError(t, os.Chmod(tokenFile, 0o644))
+		_, err = ReadAPIRemoteToken(APIRemote{TokenFile: tokenFile}, nil)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "permissions")
 	}
