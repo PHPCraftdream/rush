@@ -9,7 +9,7 @@ rush tokens create --name local --scope run
 rush serve --cwd ./project
 ```
 
-The token command prints the credential once. Keep it secret and supply it to clients as documented in [Authentication](auth.md). The default listener is `127.0.0.1:8080` with `rest` and `ws` surfaces. Configure listeners in global/system configuration or use `--listen`; project configuration cannot open a listener. A non-loopback cleartext listener requires explicit `allow_cleartext`/`--allow-cleartext`. TLS configuration is currently rejected as not implemented; do not treat the HTTPS/WSS options in the design plan as working features.
+The token command prints the credential once. Keep it secret and supply it to clients as documented in [Authentication](auth.md). The default listener is `127.0.0.1:8080` with `rest` and `ws` surfaces. Configure listeners in global/system configuration or use `--listen`; project configuration cannot open a listener. A non-loopback cleartext listener requires explicit `allow_cleartext`/`--allow-cleartext`. Add `--tls-cert`/`--tls-key` or `--tls-self-signed` to serve HTTPS and WSS; see [TLS listeners](tls.md).
 
 ## Listener surfaces and channels
 
@@ -19,8 +19,8 @@ One listener can expose REST and WebSocket surfaces. The `ui` surface is not per
 |---|---|---|---|
 | HTTP REST | `http://` | `/api/v1/...` | Implemented |
 | WebSocket | `ws://` | `/ws` | Implemented |
-| HTTPS REST | `https://` | `/api/v1/...` | Not implemented; TLS policy validation rejects configured TLS |
-| Secure WebSocket | `wss://` | `/ws` | Not implemented; TLS policy validation rejects configured TLS |
+| HTTPS REST | `https://` | `/api/v1/...` | Implemented (TLS listener) |
+| Secure WebSocket | `wss://` | `/ws` | Implemented (TLS listener) |
 
 The REST API uses JSON and `application/problem+json` errors. `/api/v1/health` is public; other declared routes require the scope specified by their route. See [Errors](errors.md), [Permissions](permissions.md), [REST reference](rest.md), and [TLS listener status](tls.md). SSE is available at `GET /api/v1/sessions/{id}/events` through the production `NewServeAPI` route wiring.
 
@@ -32,4 +32,4 @@ Tokens are scoped credentials, not workspace sandboxes. A run-capable request ca
 
 ## What is implemented versus design
 
-The design document describes more than the current implementation. In particular, TLS/HTTPS/WSS, token bindings and pinned-session routes, and batch intake are design-plan features, not documented here as available API behavior. `internal/server/listener_policy.go` explicitly rejects TLS with “TLS is not implemented yet”; the current REST route table is the authority for available routes.
+The design document describes more than the current implementation. In particular, token bindings and pinned-session routes, and batch intake are design-plan features, not documented here as available API behavior. The current REST route table is the authority for available routes.
