@@ -55,7 +55,10 @@ func init() {
 			applyGlobalDir(v)
 		}
 		journalCommandStart(cmd, args)
-		return settingsPasswordPreRun(cmd, args)
+		if err := settingsPasswordPreRun(cmd, args); err != nil {
+			return err
+		}
+		return apiTokenArgumentGuard(cmd, args)
 	}
 	rootCmd.PersistentFlags().StringP("cwd", "c", "", "Working directory rush operates in (absolute or relative). Applies to every subcommand; the .rush/ store and any tool-side relative paths resolve against it.")
 	rootCmd.PersistentFlags().StringP("data-dir", "D", "",

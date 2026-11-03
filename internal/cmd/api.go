@@ -20,14 +20,6 @@ func newAPICmd() *cobra.Command {
 		Args: func(cmd *cobra.Command, args []string) error {
 			return rejectAPITokenArguments(cmd, args)
 		},
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			if rootCmd.PersistentPreRunE != nil {
-				if err := rootCmd.PersistentPreRunE(cmd, args); err != nil {
-					return err
-				}
-			}
-			return rejectAPITokenArguments(cmd, args)
-		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
@@ -72,4 +64,17 @@ func rejectAPITokenArguments(cmd *cobra.Command, args []string) error {
 func apiFlagString(cmd *cobra.Command, name string) string {
 	value, _ := cmd.Flags().GetString(name)
 	return strings.TrimSpace(value)
+}
+
+// apiTokenArgumentGuard is called by the root pre-run (a subcommand must not
+// set its own PersistentPreRunE: cobra would run only the nearest one and skip
+// the journal and password checks). It refuses token-shaped arguments and flag
+// values for every command of the `rush api` group.
+func apiTokenArgumentGuard(cmd *cobra.Command, args []string) error {
+	for c := cmd; c != nil; c = c.Parent() {
+		if c.Name() == "api" && (c.Parent() == nil || c.Parent() == rootCmd) {
+			return rejectAPITokenArguments(cmd, args)
+		}
+	}
+	return nil
 }
