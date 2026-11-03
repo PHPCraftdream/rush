@@ -97,6 +97,12 @@ type Client struct {
 	send chan []byte
 	auth *clientAuth
 
+	// sendMu orders close(send) (hub goroutine) against replies sent from
+	// handler goroutines, so a reply racing shutdown is dropped instead of
+	// panicking into a recover.
+	sendMu     sync.RWMutex
+	sendClosed bool
+
 	// workQueue is the bounded queue work-shaped dispatches (see dispatch)
 	// are handed to. A fixed pool of workerPoolSize worker goroutines (see
 	// startWorkers) drains it, so at most workerPoolSize handleX calls run
@@ -443,10 +449,10 @@ func (h *Hub) Run(ctx context.Context) {
 			for {
 				select {
 				case c := <-h.register:
-					close(c.send)
+					c.closeSend()
 				default:
 					for c := range h.clients {
-						close(c.send)
+						c.closeSend()
 					}
 					return
 				}
@@ -517,7 +523,7 @@ func (h *Hub) Run(ctx context.Context) {
 		case c := <-h.unregister:
 			if _, ok := h.clients[c]; ok {
 				delete(h.clients, c)
-				close(c.send)
+				c.closeSend()
 			}
 
 		case <-h.configBroadcast:
@@ -725,12 +731,33 @@ func (c *Client) reply(id, msgType string, payload any, errMsg string) {
 	if err != nil {
 		return
 	}
-	// Recover from panic if the client's send channel was closed concurrently.
-	defer func() { recover() }() //nolint:errcheck
+	if !c.trySend(env) {
+		slog.Warn("ws: client send buffer full or closed, dropping reply")
+	}
+}
+
+// closeSend closes the outbound channel once; replies racing it are dropped.
+func (c *Client) closeSend() {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if !c.sendClosed {
+		c.sendClosed = true
+		close(c.send)
+	}
+}
+
+// trySend queues env without blocking and reports whether it was queued.
+func (c *Client) trySend(env []byte) bool {
+	c.sendMu.RLock()
+	defer c.sendMu.RUnlock()
+	if c.sendClosed {
+		return false
+	}
 	select {
 	case c.send <- env:
+		return true
 	default:
-		slog.Warn("ws: client send buffer full, dropping reply")
+		return false
 	}
 }
 
@@ -769,13 +796,11 @@ func (c *Client) replyAndWait(id, msgType string, payload any, errMsg string, ti
 		delete(c.ackWaiters, identity)
 		c.ackMu.Unlock()
 	}()
-	select {
-	case c.send <- env:
-	default:
+	if !c.trySend(env) {
 		c.ackMu.Lock()
 		delete(c.ackWaiters, identity)
 		c.ackMu.Unlock()
-		slog.Warn("ws: client send buffer full, dropping reply")
+		slog.Warn("ws: client send buffer full or closed, dropping reply")
 		return false
 	}
 	timer := time.NewTimer(timeout)

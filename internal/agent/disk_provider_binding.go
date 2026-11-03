@@ -185,6 +185,7 @@ func SetCoordinatorDiskCapabilityManager(c Coordinator, caps *DiskProviderRegist
 	if !ok {
 		return errors.New("disk capability manager: unsupported coordinator type")
 	}
+	_ = co.readyWg.Wait() // in-flight asynchronous tool builds read diskCaps unlocked
 	co.diskCaps = caps
 	if sa, ok := co.currentAgent.(*sessionAgent); ok {
 		sa.bindDiskCaps(caps)

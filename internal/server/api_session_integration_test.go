@@ -24,7 +24,7 @@ func TestServeAPISessionWritesThroughProductionListener(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var logs strings.Builder
+	var logs syncBuffer
 	previousLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })

@@ -34,7 +34,7 @@ func newFakeRunServer(t *testing.T, states ...string) *fakeRunServer {
 	t.Helper()
 	f := &fakeRunServer{runStates: states}
 	f.Server = httptest.NewServer(http.HandlerFunc(f.serve))
-	t.Cleanup(f.Server.Close)
+	t.Cleanup(f.Close)
 	return f
 }
 

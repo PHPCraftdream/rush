@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -167,7 +166,7 @@ func TestShutdownWebSocketAckWrittenBeforeShutdown(t *testing.T) {
 	setIsolatedGlobalPaths(t)
 	t.Setenv("RUSH_GLOBAL_DIR", t.TempDir())
 	a := newAttachmentsTestApp(t, workingDir, dataDir)
-	var logs strings.Builder
+	var logs syncBuffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
