@@ -22,7 +22,10 @@ type Principal struct {
 	TokenWorkspace  string
 	CertFingerprint string
 	// BatchBinding is the token's batch-intake binding (nil for other kinds).
-	BatchBinding  *config.APITokenBatchBinding
+	BatchBinding *config.APITokenBatchBinding
+	// BatchOnly confines the credential to batch intake: its token has a batch
+	// binding, or the listener it arrived on has route "batch".
+	BatchOnly     bool
 	verifier      TokenVerifier
 	expires       *time.Time
 	bootstrap     bool
@@ -64,6 +67,7 @@ type AuthConfig struct {
 	AllowedTokenIDs   []string
 	Pins              map[string]string
 	PinsDeclared      bool
+	Route             string
 	Workspace         string
 	Clock             func() time.Time
 	BootstrapTokenIDs []string
@@ -310,7 +314,7 @@ func authenticate(cfg ChainConfig, r *http.Request) (Principal, string, error, e
 	if r.TLS != nil && len(r.TLS.VerifiedChains) > 0 && len(r.TLS.PeerCertificates) > 0 {
 		fingerprint = certificateFingerprint(r)
 	}
-	return Principal{TokenID: t.ID, Scopes: append([]string(nil), t.Scopes...), Permission: t.Permission, PinnedSession: pin, TokenWorkspace: workspace, CertFingerprint: fingerprint, BatchBinding: batchBinding, verifier: cfg.Verifier, expires: t.Expires, bootstrap: bootstrap, tickerFactory: cfg.TickerFactory}, "", nil, nil
+	return Principal{TokenID: t.ID, Scopes: append([]string(nil), t.Scopes...), Permission: t.Permission, PinnedSession: pin, TokenWorkspace: workspace, CertFingerprint: fingerprint, BatchBinding: batchBinding, BatchOnly: binding.Kind == "batch" || cfg.Route == routeBatch, verifier: cfg.Verifier, expires: t.Expires, bootstrap: bootstrap, tickerFactory: cfg.TickerFactory}, "", nil, nil
 }
 
 func sameCanonicalWorkspace(tokenWorkspace, listenerWorkspace string) bool {

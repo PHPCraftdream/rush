@@ -209,7 +209,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		if policyAuth == nil {
 			policyAuth = server.DenyAllAuth
 		}
-		policy := server.ListenerPolicy{Address: l.Addr, Surfaces: surfaces, AllowCleartext: l.AllowCleartext, AllowAdmin: l.AllowAdmin, AllowAutoApprove: l.AllowAutoApprove, AllowedOrigins: l.AllowedOrigins, TokenIDs: l.Tokens, Pins: cloneStringMap(l.Pins), DeclaredPins: cloneStringMap(l.Pins), PinsDeclared: len(l.Pins) > 0 || (configuredListeners && i < len(fieldSources) && fieldSources[i]["pins"] != ""), Workspace: cmdFlagString(cmd, "cwd"), Limits: server.ListenerLimits{RPS: l.Limits.RPS, Burst: l.Limits.Burst, MaxConnsPerToken: l.Limits.MaxConnsPerToken, MaxBody: l.Limits.MaxBody}, Auth: policyAuth}.WithResolver(serveResolver)
+		policy := server.ListenerPolicy{Address: l.Addr, Surfaces: surfaces, AllowCleartext: l.AllowCleartext, AllowAdmin: l.AllowAdmin, AllowAutoApprove: l.AllowAutoApprove, AllowedOrigins: l.AllowedOrigins, TokenIDs: l.Tokens, Route: l.Route, Pins: cloneStringMap(l.Pins), DeclaredPins: cloneStringMap(l.Pins), PinsDeclared: len(l.Pins) > 0 || (configuredListeners && i < len(fieldSources) && fieldSources[i]["pins"] != ""), Workspace: cmdFlagString(cmd, "cwd"), Limits: server.ListenerLimits{RPS: l.Limits.RPS, Burst: l.Limits.Burst, MaxConnsPerToken: l.Limits.MaxConnsPerToken, MaxBody: l.Limits.MaxBody}, Auth: policyAuth}.WithResolver(serveResolver)
 		policy.TLS = server.ListenerTLS{Cert: l.TLS.Cert, Key: l.TLS.Key, ClientCA: l.TLS.ClientCA, MinVersion: l.TLS.MinVersion, SelfSigned: l.TLS.SelfSigned, SANs: l.TLS.SANs}
 		if len(policies) == 0 && cmd.Flags().Changed("tls-self-signed") {
 			policy.TLS.SelfSigned = selfSigned

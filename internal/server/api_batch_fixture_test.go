@@ -53,6 +53,13 @@ func batchTextProvider(text string) http.HandlerFunc {
 
 func newBatchFixture(t *testing.T, provider http.HandlerFunc) *batchFixture {
 	t.Helper()
+	return newBatchFixtureWith(t, provider, nil)
+}
+
+// newBatchFixtureWith lets a test adjust the listener policy (for example its
+// route) before the production constructors run.
+func newBatchFixtureWith(t *testing.T, provider http.HandlerFunc, adjust func(*ListenerPolicy)) *batchFixture {
+	t.Helper()
 	isolationTmp := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", isolationTmp)
 	t.Setenv("RUSH_GLOBAL_DATA", isolationTmp)
@@ -105,6 +112,9 @@ func newBatchFixture(t *testing.T, provider http.HandlerFunc) *batchFixture {
 		Address: "127.0.0.1:0", Workspace: dataDir,
 		Surfaces: []ListenerSurface{SurfaceREST, SurfaceWS},
 		Limits:   ListenerLimits{MaxConnsPerToken: 20, RPS: 100000, Burst: 100000},
+	}
+	if adjust != nil {
+		adjust(&policy)
 	}
 	api, err := NewServeAPI(policy, application, store, nil)
 	require.NoError(t, err)
