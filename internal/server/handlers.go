@@ -44,6 +44,10 @@ func handleIncoming(ctx context.Context, s *Server, c *Client, raw []byte) {
 			}
 			return
 		}
+		if c.auth.principal.BatchOnly && resolveBatchOnlyCommand(msg.Type) != 0 {
+			c.reply(msg.ID, EventError, nil, "forbidden: batch-only")
+			return
+		}
 		if err := authorizeWSCommand(*c.auth, msg.Type); err != nil {
 			c.reply(msg.ID, EventError, nil, err.Error())
 			return

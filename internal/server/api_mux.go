@@ -122,6 +122,10 @@ func protectAPIRoute(route APIRoute) http.Handler {
 			}
 			return
 		}
+		if p.BatchOnly && resolveBatchOnlyRoute(route) != 0 {
+			WriteAPIProblem(w, r, http.StatusForbidden, "Forbidden", "batch-only", "", nil)
+			return
+		}
 		if !config.APITokenScopeAllows(p.Scopes, route.Scope) {
 			WriteAPIProblem(w, r, http.StatusForbidden, "Forbidden", "insufficient scope", "", nil)
 			return

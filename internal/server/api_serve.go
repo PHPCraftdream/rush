@@ -52,7 +52,7 @@ func NewServeAPI(policy ListenerPolicy, app *appPkg.App, store *config.APITokenS
 	}
 	logger := slog.Default()
 	auth := Chain(ChainConfig{
-		AuthConfig: AuthConfig{Verifier: store, AllowedTokenIDs: append([]string(nil), policy.TokenIDs...), Pins: cloneListenerPins(policy.Pins), PinsDeclared: policy.PinsDeclared, Workspace: policy.Workspace, BootstrapTokenIDs: append([]string(nil), bootstrapTokenIDs...)},
+		AuthConfig: AuthConfig{Verifier: store, AllowedTokenIDs: append([]string(nil), policy.TokenIDs...), Pins: cloneListenerPins(policy.Pins), PinsDeclared: policy.PinsDeclared, Route: policy.Route, Workspace: policy.Workspace, BootstrapTokenIDs: append([]string(nil), bootstrapTokenIDs...)},
 		RPS:        policy.Limits.RPS, Burst: policy.Limits.Burst, MaxConnsPerToken: policy.Limits.MaxConnsPerToken, MaxBody: policy.Limits.MaxBody,
 		Logger: logger,
 	})

@@ -62,7 +62,7 @@ func TestExecuteServePrintConfigStdout(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, stdout, stderr := runServeExecuteProcess(t, base, "serve", "--cwd", cwd, "--print-config")
-	want := "address: 127.0.0.1:8080 (source: default)\nsurfaces: rest,ws (source: default)\nallow_cleartext: false (source: default)\nallow_admin: false (source: default)\nallow_auto_approve: false (source: default)\nallowed_origins:  (source: default)\ntoken_ids:  (source: default)\nlimits.rps: 0 (source: default)\nlimits.burst: 0 (source: default)\nlimits.max_conns_per_token: 0 (source: default)\nlimits.max_body: 0 (source: default)\ntls.cert:  (source: default)\ntls.key:  (source: default)\ntls.client_ca:  (source: default)\ntls.min_version:  (source: default)\n"
+	want := "address: 127.0.0.1:8080 (source: default)\nsurfaces: rest,ws (source: default)\nallow_cleartext: false (source: default)\nallow_admin: false (source: default)\nallow_auto_approve: false (source: default)\nallowed_origins:  (source: default)\ntoken_ids:  (source: default)\nlimits.rps: 0 (source: default)\nlimits.burst: 0 (source: default)\nlimits.max_conns_per_token: 0 (source: default)\nlimits.max_body: 0 (source: default)\ntls.cert:  (source: default)\ntls.key:  (source: default)\ntls.client_ca:  (source: default)\ntls.min_version:  (source: default)\nroute: full (source: default)\n"
 	if code != 0 || stdout != want || stderr != "" {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
@@ -115,7 +115,7 @@ func TestExecuteServePrintConfigAllFieldProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, stdout, stderr := runServeExecuteProcess(t, base, "serve", "--cwd", cwd, "--print-config")
-	want := "address: 127.0.0.1:8443 (source: global config)\nsurfaces: rest (source: global config)\nallow_cleartext: true (source: global config)\nallow_admin: true (source: global config)\nallow_auto_approve: true (source: global config)\nallowed_origins: https://example.test (source: global config)\ntoken_ids: token-a (source: global config)\nlimits.rps: 2.5 (source: global config)\nlimits.burst: 7 (source: global config)\nlimits.max_conns_per_token: 3 (source: global config)\nlimits.max_body: 1024 (source: global config)\ntls.cert:  (source: global config)\ntls.key:  (source: global config)\ntls.client_ca:  (source: global config)\ntls.min_version:  (source: global config)\n"
+	want := "address: 127.0.0.1:8443 (source: global config)\nsurfaces: rest (source: global config)\nallow_cleartext: true (source: global config)\nallow_admin: true (source: global config)\nallow_auto_approve: true (source: global config)\nallowed_origins: https://example.test (source: global config)\ntoken_ids: token-a (source: global config)\nlimits.rps: 2.5 (source: global config)\nlimits.burst: 7 (source: global config)\nlimits.max_conns_per_token: 3 (source: global config)\nlimits.max_body: 1024 (source: global config)\ntls.cert:  (source: global config)\ntls.key:  (source: global config)\ntls.client_ca:  (source: global config)\ntls.min_version:  (source: global config)\nroute: full (source: default)\n"
 	if code != 0 || stdout != want || stderr != "" {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
@@ -136,7 +136,7 @@ func TestExecuteServePrintConfigFlagProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, stdout, stderr := runServeExecuteProcess(t, base, "serve", "--cwd", cwd, "--print-config", "--listen", "127.0.0.1:9000", "--allow-cleartext")
-	want := "address: 127.0.0.1:9000 (source: flag)\nsurfaces: rest (source: global config)\nallow_cleartext: true (source: flag)\nallow_admin: true (source: global config)\nallow_auto_approve: false (source: default)\nallowed_origins:  (source: default)\ntoken_ids:  (source: default)\nlimits.rps: 0 (source: default)\nlimits.burst: 0 (source: default)\nlimits.max_conns_per_token: 0 (source: default)\nlimits.max_body: 0 (source: default)\ntls.cert:  (source: default)\ntls.key:  (source: default)\ntls.client_ca:  (source: default)\ntls.min_version:  (source: default)\n"
+	want := "address: 127.0.0.1:9000 (source: flag)\nsurfaces: rest (source: global config)\nallow_cleartext: true (source: flag)\nallow_admin: true (source: global config)\nallow_auto_approve: false (source: default)\nallowed_origins:  (source: default)\ntoken_ids:  (source: default)\nlimits.rps: 0 (source: default)\nlimits.burst: 0 (source: default)\nlimits.max_conns_per_token: 0 (source: default)\nlimits.max_body: 0 (source: default)\ntls.cert:  (source: default)\ntls.key:  (source: default)\ntls.client_ca:  (source: default)\ntls.min_version:  (source: default)\nroute: full (source: default)\n"
 	if code != 0 || stdout != want || stderr != "" {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}

@@ -18,7 +18,7 @@ rush run --role smart "summarize what this repo does"
 
 ## Remote API
 
-Connect to a configured Rush server with `rush api` for sessions, runs, events, and permission management. See the [CLI reference](docs/api/cli.md).
+Connect to a configured Rush server with `rush api` for sessions, runs, events, permission management and batch tasks (`rush api task`, `rush api batch`). See the [CLI reference](docs/api/cli.md). A token can be bound to one session or to batch intake only (`rush tokens create --pin-session`, `--batch`), and a listener can make batch intake its only work route (`rush serve --route batch`); a binding confines the API surface, not the agent. See [Token bindings](docs/api/bindings.md) and [Batch intake](docs/api/batches.md).
 
 ## What is this, and why
 

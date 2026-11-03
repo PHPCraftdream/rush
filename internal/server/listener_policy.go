@@ -81,12 +81,15 @@ type ListenerPolicy struct {
 	Pins             map[string]string
 	DeclaredPins     map[string]string
 	PinsDeclared     bool
-	Workspace        string
-	Limits           ListenerLimits
-	TLS              ListenerTLS
-	Auth             func(next http.Handler) http.Handler
-	RESTHandler      http.Handler
-	resolver         func(string) ([]net.IP, error)
+	// Route is "" or "full" (unrestricted) or "batch" (batch intake is the
+	// only work route on this listener).
+	Route       string
+	Workspace   string
+	Limits      ListenerLimits
+	TLS         ListenerTLS
+	Auth        func(next http.Handler) http.Handler
+	RESTHandler http.Handler
+	resolver    func(string) ([]net.IP, error)
 }
 
 // ListenerPolicyError reports a policy validation failure.
@@ -127,6 +130,15 @@ func (p ListenerPolicy) Validate() error {
 	}
 	if p.Auth == nil {
 		return &ListenerPolicyError{Address: p.Address, Rule: "authentication policy is required"}
+	}
+	switch p.Route {
+	case "", routeFull:
+	case routeBatch:
+		if p.PinsDeclared || len(p.Pins) > 0 {
+			return &ListenerPolicyError{Address: p.Address, Rule: "route batch cannot be combined with session pins"}
+		}
+	default:
+		return &ListenerPolicyError{Address: p.Address, Rule: "unknown route " + p.Route + " (allowed: full, batch)"}
 	}
 	if len(p.Surfaces) == 0 {
 		return &ListenerPolicyError{Address: p.Address, Rule: "empty surface list"}

@@ -184,7 +184,8 @@ func resetTokenCommandFlags(cmd *cobra.Command) {
 				fresh.StringSliceVar(&tokensScopes, "scope", []string{"run"}, flag.Usage)
 				flag.Value = fresh.Lookup("scope").Value
 			} else if value, ok := flag.Value.(pflag.SliceValue); ok {
-				_ = value.Replace([]string{"run"})
+				// Only --scope defaults to "run"; every other slice flag (--tools) is empty.
+				_ = value.Replace(nil)
 			} else {
 				_ = flag.Value.Set(flag.DefValue)
 			}

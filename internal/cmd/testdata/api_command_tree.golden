@@ -1,3 +1,11 @@
+api batch answer|answer ROOT NODE "text"
+api batch output|output ROOT [NODE]
+api batch run|--no-wait||bool|false
+api batch run|run [FILE]
+api batch show|show ROOT
+api batch stop|stop ROOT [NODE]
+api batch wait|wait ROOT
+api batch|batch
 api cancel|cancel RUN
 api events|--after||string|
 api events|--follow||bool|false
@@ -54,3 +62,7 @@ api sessions list|--all||bool|false
 api sessions list|--limit||int|0
 api sessions list|list
 api sessions|sessions
+api task|--no-wait||bool|false
+api task|--resume||string|
+api task|--task-timeout||duration|0s
+api task|task "prompt"

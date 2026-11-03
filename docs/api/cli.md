@@ -139,6 +139,44 @@ Create a run in a session. By default it waits and prints the final answer text.
 - `--no-wait`: print the run id and return.
 - `--stream`: print events as they arrive; ends on the run's terminal state with the same exit codes.
 
+### rush api task
+
+Submit one prompt as a one-item batch (`POST /tasks`) and wait for its output by default. This is the work route of batch-bound tokens (`rush tokens create --batch`). Ctrl+C stops the remote batch and exits 130. Exit 6 when a node is held on a question: stderr names the node, the question and the exact `rush api batch answer` command; answer it and wait again with `rush api batch wait`.
+
+- `--resume`: continue this child session of your own batches (a session of another token, an unrelated session or a missing one is refused).
+- `--task-timeout`: per-task time limit; 0 takes the server default, which is also the ceiling.
+- `--no-wait`: print the batch root id and return.
+
+### rush api batch
+
+Batch commands.
+
+### rush api batch run
+
+Read a batch spec (JSON, the external schema of `rush batch run`) from a file, or from standard input when the file is omitted or `-`, submit it through `POST /batches` and wait for it by default. Ctrl+C stops the remote batch and exits 130. Exit 1 when the root ends in a state other than completed (stderr lists the failed nodes); exit 6 when a node is held on a question.
+
+- `--no-wait`: print the batch root id and return.
+
+### rush api batch show
+
+Print the batch state and its nodes (id, kind, state, tool, child session, `awaiting_answer`). `--json` prints the batch object.
+
+### rush api batch wait
+
+Poll a batch until it is terminal and print the task output. The same exit codes as `rush api batch run`. Ctrl+C stops waiting; the remote batch keeps running.
+
+### rush api batch stop
+
+Ask the server to stop the whole batch, or one node of it. The stop is queued and acknowledged with `stop queued`; poll with `rush api batch show`. Exit 1 when the batch is no longer running in a live process.
+
+### rush api batch output
+
+Print the output of every task node of a batch, or of one node. Live output is kept for ten minutes after the batch finishes; an expired output is reported on stderr (with the node's outcome) and does not fail the command.
+
+### rush api batch answer
+
+Answer the question a node is held on. The answer continues the node's existing execution rather than starting another one. Exit 4 when the batch or node is unknown, exit 1 when the node has no current question.
+
 ### rush api runs
 
 Run commands.

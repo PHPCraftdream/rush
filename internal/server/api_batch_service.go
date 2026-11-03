@@ -57,11 +57,15 @@ type apiBatchService struct {
 	mu       sync.Mutex
 	locks    map[string]*sync.Mutex
 	watching map[string]int // root -> max_parallel reserved while the root is live
+	// answered remembers the questions already answered through the API. The
+	// notice of an answered question stays unreacted until its node ends, so
+	// without this a node would keep reporting awaiting_answer while it works on.
+	answered map[string]struct{}
 }
 
 func newAPIBatchService(app *appPkg.App) *apiBatchService {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &apiBatchService{app: app, ctx: ctx, cancel: cancel, outputTTL: batchOutputTTL, locks: make(map[string]*sync.Mutex), watching: make(map[string]int)}
+	return &apiBatchService{app: app, ctx: ctx, cancel: cancel, outputTTL: batchOutputTTL, locks: make(map[string]*sync.Mutex), watching: make(map[string]int), answered: make(map[string]struct{})}
 }
 
 // stop cancels every watcher and waits for them; it must run before the App shuts down.
@@ -401,6 +405,9 @@ func (s *apiBatchService) read(ctx context.Context, tokenID, root string) (apiBa
 	if held, heldErr := fac.Store.BatchAPIHeldQuestions(ctx, owner); heldErr == nil {
 		view.Held = make(map[string]string, len(held))
 		for _, question := range held {
+			if s.questionAnswered(question) {
+				continue
+			}
 			view.Held[question.Node] = question.Question
 		}
 	}
@@ -519,13 +526,43 @@ func (s *apiBatchService) answerHeld(ctx context.Context, tokenID, root, node, t
 	if child == "" {
 		return errBatchNoQuestion
 	}
+	var pending []session.BatchAPIHeldQuestion
+	if fac, facErr := s.app.BatchCLIStore(); facErr == nil {
+		if held, heldErr := fac.Store.BatchAPIHeldQuestions(ctx, serviceSessionID(tokenID)); heldErr == nil {
+			for _, question := range held {
+				if question.Node == node {
+					pending = append(pending, question)
+				}
+			}
+		}
+	}
 	err = s.app.BatchAnswerHeld(ctx, serviceSessionID(tokenID), child, text)
 	switch {
 	case err == nil:
+		s.markAnswered(pending)
 		return nil
 	case errors.Is(err, agent.ErrBatchHeldAnswerNone), errors.Is(err, agent.ErrBatchAgentStaleGeneration), errors.Is(err, agent.ErrBatchAgentStopped), errors.Is(err, agent.ErrBatchAgentNotHeld), errors.Is(err, jobbatch.ErrReleased):
 		return fmt.Errorf("%w: %v", errBatchNoQuestion, err)
 	default:
 		return err
 	}
+}
+
+func answeredKey(question session.BatchAPIHeldQuestion) string {
+	return fmt.Sprintf("%s/%d/%d", question.Node, question.Token, question.Sequence)
+}
+
+func (s *apiBatchService) markAnswered(questions []session.BatchAPIHeldQuestion) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, question := range questions {
+		s.answered[answeredKey(question)] = struct{}{}
+	}
+}
+
+func (s *apiBatchService) questionAnswered(question session.BatchAPIHeldQuestion) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.answered[answeredKey(question)]
+	return ok
 }
