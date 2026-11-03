@@ -81,7 +81,21 @@ func TestStreamKillTerminatesGrandchild(t *testing.T) {
 			// observed Git-Bash builds: test -r succeeds on the
 			// virtual path while cat fails, silently writing an
 			// empty pid file — capture-and-check-empty instead.
-			script := "sleep " + grandchildSleepDuration + " & p=$!; w=$(cat /proc/$p/winpid 2>/dev/null); if [ -z \"$w\" ]; then w=$(ps -a 2>/dev/null | awk -v p=$p '$1==p && $4 ~ /^[0-9]+$/ {print $4}'); fi; echo \"${w:-$p}\" > '" + pidFile + "'; wait"
+			//
+			// A just-forked sleeper may not be visible in /proc or
+			// `ps -a` yet. Falling through to $p then records the
+			// emulated pid, which is no Win32 process at all, and the
+			// premise guard below fails ("never observed alive") on a
+			// healthy tree. So on an MSYS-style uname the resolution
+			// retries (up to ~5 s) before it may fall back to $p;
+			// real Unix breaks out at once.
+			script := "sleep " + grandchildSleepDuration + " & p=$!; w=''; i=0; while [ $i -lt 100 ]; do " +
+				"w=$(cat /proc/$p/winpid 2>/dev/null); " +
+				"if [ -z \"$w\" ]; then w=$(ps -a 2>/dev/null | awk -v p=$p '$1==p && $4 ~ /^[0-9]+$/ {print $4}'); fi; " +
+				"if [ -n \"$w\" ]; then break; fi; " +
+				"case \"$(uname -s)\" in MINGW*|MSYS*|CYGWIN*) ;; *) break;; esac; " +
+				"i=$((i+1)); sleep 0.05; done; " +
+				"echo \"${w:-$p}\" > '" + pidFile + "'; wait"
 			spec := CLISpec{
 				ModelID:    "test-kill-grandchild",
 				ModelName:  "Test Kill Grandchild",
