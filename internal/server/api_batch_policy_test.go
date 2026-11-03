@@ -72,6 +72,13 @@ func TestBatchIntakeForcesParallelismAndTimeouts(t *testing.T) {
 	require.Equal(t, time.Hour, out.Batch.Items[0].Task.Timeout, "an absent item timeout becomes the token maximum")
 	require.Equal(t, time.Duration(0), spec.Batch.Items[0].Task.Timeout, "the caller's spec is not mutated")
 
+	sequential := intakeBatch(intakeTask(t, "agent"))
+	sequential.Batch.Mode = jobbatch.ModeSequential
+	sequential.Batch.MaxParallel = 9
+	out, err = policy.normalize(sequential)
+	require.NoError(t, err)
+	require.Equal(t, 1, out.Batch.MaxParallel, "a sequential batch is capped at one, as the engine requires")
+
 	explicit := intakeTask(t, "agent")
 	explicit.Task.Timeout = 10 * time.Minute
 	out, err = policy.normalize(explicit)

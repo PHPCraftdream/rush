@@ -380,7 +380,7 @@ func (s *apiBatchService) read(ctx context.Context, tokenID, root string) (apiBa
 	s.mu.Unlock()
 	if !live {
 		// The periodic recovery pass can lag; a read settles dead hosts first.
-		if _, recoverErr := fac.Store.BatchRecoverOwnerScope(ctx, owner, session.BatchSharedHostProbe(s.app.DataDirectory())); recoverErr != nil {
+		if _, recoverErr := fac.Store.BatchRecoverOwnerScope(ctx, owner, s.hostProbe()); recoverErr != nil {
 			slog.Debug("api batch read: owner recovery", "error", recoverErr)
 		}
 	}
@@ -392,10 +392,29 @@ func (s *apiBatchService) read(ctx context.Context, tokenID, root string) (apiBa
 		return apiBatchView{}, err
 	}
 	view := apiBatchView{Root: snapshot.Root, Nodes: snapshot.Nodes, Live: live}
-	if _, outputs, resultErr := s.app.BatchResult(ctx, owner, root); resultErr == nil {
-		view.Outputs = outputs
+	if live {
+		view.Outputs = s.liveOutputs(ctx, owner, root, snapshot.Nodes)
 	}
 	return view, nil
+}
+
+// liveOutputs collects the best-effort live output of the finished tasks. A node
+// that is still running is skipped (its output call would block until it ends),
+// and each call is bounded, so a read never hangs on a live root.
+func (s *apiBatchService) liveOutputs(ctx context.Context, owner, root string, nodes []db.BatchNode) map[string]string {
+	outputs := make(map[string]string)
+	for _, node := range nodes {
+		if node.Kind != "task" || !batchStateDone(node.State) {
+			continue
+		}
+		callCtx, cancel := context.WithTimeout(ctx, time.Second)
+		text, err := s.app.BatchNodeOutput(callCtx, owner, root, node.NodeID)
+		cancel()
+		if err == nil && text != "" {
+			outputs[node.NodeID] = text
+		}
+	}
+	return outputs
 }
 
 // stopRequest asks the owning process (this one, via the watcher's pump) to stop
@@ -420,7 +439,7 @@ func (s *apiBatchService) stopRequest(ctx context.Context, tokenID, root, node s
 		return db.BatchControlRequest{}, err
 	}
 	target := session.BatchControlTarget{Owner: serviceSessionID(tokenID), Host: view.Root.HostID, Root: root, Node: node}
-	return fac.Store.BatchRequestStop(ctx, target, session.BatchSharedHostProbe(s.app.DataDirectory()))
+	return fac.Store.BatchRequestStop(ctx, target, s.hostProbe())
 }
 
 // precheckResume gives an early, readable error for an `agent` item that resumes
@@ -453,4 +472,17 @@ func (s *apiBatchService) precheckResume(ctx context.Context, owner string, spec
 		}
 	}
 	return nil
+}
+
+// hostProbe answers "is this batch host alive" for stop requests and owner-scope
+// recovery: this process's own hosts are alive by definition (the shared probe
+// refuses to probe them), other hosts are probed through their lock files.
+func (s *apiBatchService) hostProbe() session.BatchHostProbe {
+	shared := session.BatchSharedHostProbe(s.app.DataDirectory())
+	return func(host string) (session.HostLockStatus, error) {
+		if session.IsOwnHostID(host) {
+			return session.HostStatusAlive, nil
+		}
+		return shared(host)
+	}
 }

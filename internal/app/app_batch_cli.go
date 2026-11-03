@@ -128,6 +128,24 @@ func (a *App) BatchSubmitRef(ctx context.Context, owner string, spec jobbatch.Sp
 	return string(batch.ID()), nil
 }
 
+// BatchNodeOutput returns the live output of one node of a root this process
+// still holds, or an error when it is released, expired or not started. It is
+// bounded by ctx: the output of a node that is still running blocks until it
+// ends, so callers pass only terminal nodes with a short deadline.
+func (a *App) BatchNodeOutput(ctx context.Context, owner, root, node string) (string, error) {
+	if a == nil || a.batchInstall == nil {
+		return "", errors.New("batch runtime unavailable")
+	}
+	if a.batchInstall.CLIOwner(jobbatch.ID(root)) != owner {
+		return "", errors.New("batch CLI: root is not owned by this session")
+	}
+	chunk, err := a.batchInstall.CLIOutput(ctx, owner, jobbatch.ID(root), jobbatch.ID(node))
+	if err != nil {
+		return "", err
+	}
+	return string(chunk.Data), nil
+}
+
 // BatchSettleDebt settles the owner's notice debt for a terminal root without
 // releasing the root, so its live output stays readable.
 func (a *App) BatchSettleDebt(ctx context.Context, owner, root string) error {

@@ -265,7 +265,7 @@ func (s *apiBatchService) stopHandler(node bool) http.HandlerFunc {
 		if err != nil {
 			switch {
 			case errors.Is(err, session.ErrBatchControlStale), errors.Is(err, session.ErrBatchControlUnknownHost):
-				WriteAPIProblem(w, r, http.StatusConflict, "Conflict", "the batch is no longer running in a live process", "", nil)
+				WriteAPIProblem(w, r, http.StatusConflict, "Conflict", "the batch is no longer running in a live process", "", err)
 			default:
 				apiBatchFailure(w, r, err)
 			}

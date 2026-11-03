@@ -136,7 +136,11 @@ func (p batchIntakePolicy) walk(spec jobbatch.Spec, level int, nodes *int) (jobb
 		return jobbatch.Spec{Task: &task2}, level, nil
 	case spec.Batch != nil && spec.Task == nil:
 		batch := *spec.Batch
-		if batch.MaxParallel <= 0 || batch.MaxParallel > p.maxParallel() {
+		switch {
+		case batch.Mode == jobbatch.ModeSequential:
+			// A sequential batch runs one child at a time; the engine refuses a larger cap.
+			batch.MaxParallel = 1
+		case batch.MaxParallel <= 0 || batch.MaxParallel > p.maxParallel():
 			batch.MaxParallel = p.maxParallel()
 		}
 		batch.Items = make([]jobbatch.Spec, 0, len(spec.Batch.Items))
