@@ -48,6 +48,9 @@ type ListenerTLS struct {
 	Key        string
 	ClientCA   string
 	MinVersion string
+	SelfSigned bool
+	SANs       []string
+	DataDir    string
 }
 
 // ListenerLimits contains parsed limits. Enforcement belongs to the API layer.
@@ -102,7 +105,21 @@ func (e *ListenerPolicyError) Unwrap() error { return e.Cause }
 // addresses among listeners that will be served together.
 func (p ListenerPolicy) Validate() error {
 	if p.TLS.configured() {
-		return &ListenerPolicyError{Address: p.Address, Rule: "TLS is not implemented yet"}
+		if p.TLS.SelfSigned && (p.TLS.Cert != "" || p.TLS.Key != "") {
+			return &ListenerPolicyError{Address: p.Address, Rule: "self-signed TLS cannot be combined with an explicit certificate or key"}
+		}
+		if (p.TLS.Cert == "") != (p.TLS.Key == "") {
+			return &ListenerPolicyError{Address: p.Address, Rule: "TLS certificate and key must be specified together"}
+		}
+		if p.TLS.MinVersion != "" && p.TLS.Cert == "" && !p.TLS.SelfSigned {
+			return &ListenerPolicyError{Address: p.Address, Rule: "TLS min_version requires a server certificate and key"}
+		}
+		if p.TLS.MinVersion != "" && p.TLS.MinVersion != "1.2" && p.TLS.MinVersion != "1.3" {
+			return &ListenerPolicyError{Address: p.Address, Rule: "TLS min_version must be 1.2 or 1.3"}
+		}
+		if len(p.TLS.ClientCA) > 0 && p.TLS.Cert == "" && !p.TLS.SelfSigned {
+			return &ListenerPolicyError{Address: p.Address, Rule: "client_ca requires a server certificate and key"}
+		}
 	}
 	if p.Auth == nil {
 		return &ListenerPolicyError{Address: p.Address, Rule: "authentication policy is required"}
@@ -124,7 +141,7 @@ func (p ListenerPolicy) Validate() error {
 	if err != nil {
 		return &ListenerPolicyError{Address: p.Address, Rule: "unparsable address", Cause: err}
 	}
-	if !loopback && !p.AllowCleartext {
+	if !loopback && !p.AllowCleartext && !p.TLS.hasCertificatePair() {
 		return &ListenerPolicyError{Address: p.Address, Rule: "non-loopback address requires TLS or allow_cleartext"}
 	}
 	return nil
@@ -175,8 +192,11 @@ func (p ListenerPolicy) resolvedAddress() (string, bool, error) {
 	if err != nil || portNumber < 0 || portNumber > 65535 {
 		return "", false, fmt.Errorf("invalid port %q", port)
 	}
-	if host == "" {
+	if host == "" && !p.TLS.SelfSigned {
 		return "", false, fmt.Errorf("empty host")
+	}
+	if host == "" {
+		return net.JoinHostPort("", port), false, nil
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		if IsLoopbackHost(host) {
@@ -208,5 +228,9 @@ func (p ListenerPolicy) resolvedAddress() (string, bool, error) {
 }
 
 func (tls ListenerTLS) configured() bool {
-	return tls.Cert != "" || tls.Key != "" || tls.ClientCA != "" || tls.MinVersion != ""
+	return tls.Cert != "" || tls.Key != "" || tls.ClientCA != "" || tls.MinVersion != "" || tls.SelfSigned
+}
+
+func (tls ListenerTLS) hasCertificatePair() bool {
+	return (tls.Cert != "" && tls.Key != "") || tls.SelfSigned
 }

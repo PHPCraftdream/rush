@@ -83,7 +83,7 @@ func NewServeAPI(policy ListenerPolicy, app *appPkg.App, store *config.APITokenS
 	})
 	mux := http.NewServeMux()
 	mux.Handle("/api/v1/health", health)
-	mux.Handle("/api/v1/", auth(protected))
+	mux.Handle("/api/v1/", auth(mtlsFingerprintAuth(protected)))
 	rest := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/v1/") {
 			idResponse := &apiTrackingWriter{ResponseWriter: w}

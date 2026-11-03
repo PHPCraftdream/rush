@@ -113,8 +113,13 @@ func (h apiEventsHandler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	ticker := h.ticker()
 	defer ticker.Stop()
+	revoked := apiSSERevocation(r.Context(), principal)
 	for {
 		select {
+		case <-revoked:
+			_ = apiSSEWrite(w, APIEvent{Type: "closed", Data: json.RawMessage(`{"reason":"token_revoked"}`)})
+			_ = flush()
+			return
 		case <-r.Context().Done():
 			return
 		case <-overflow:

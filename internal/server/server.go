@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -34,6 +35,7 @@ type Server struct {
 	addr         string
 	static       fs.FS
 	policy       ListenerPolicy
+	tlsStore     *tlsCertificateStore
 	uiAuth       bool
 	updateNotice func(context.Context, *Hub)
 
@@ -173,7 +175,13 @@ func newServer(a *appPkg.App, policy ListenerPolicy, staticFS fs.FS, uiAuth bool
 	}
 }
 
-// Token returns the auth token to be printed in the terminal.
+func (s *Server) TLSPins() (TLSPins, error) {
+	if s.tlsStore == nil {
+		return TLSPins{}, nil
+	}
+	return s.tlsStore.pins()
+}
+
 func (s *Server) Token() string {
 	if s.auth == nil {
 		return ""
@@ -227,7 +235,7 @@ func (s *Server) Start(ctx context.Context, onReady func(addr string)) error {
 	if err != nil {
 		return err
 	}
-	if !IsLoopbackHost(listenerHost(ln.Addr())) && !s.policy.AllowCleartext {
+	if !IsLoopbackHost(listenerHost(ln.Addr())) && !s.policy.AllowCleartext && !s.policy.TLS.hasCertificatePair() {
 		_ = ln.Close()
 		return fmt.Errorf("%w: %q", ErrUnexpectedNonLoopbackBind, ln.Addr().String())
 	}
@@ -237,7 +245,7 @@ func (s *Server) Start(ctx context.Context, onReady func(addr string)) error {
 // ServeListener serves on a listener that was prebound by the caller. The
 // post-bind host check is repeated here for callers that inject a listener.
 func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady func(addr string)) error {
-	if !IsLoopbackHost(listenerHost(ln.Addr())) && !s.policy.AllowCleartext {
+	if !IsLoopbackHost(listenerHost(ln.Addr())) && !s.policy.AllowCleartext && !s.policy.TLS.hasCertificatePair() {
 		_ = ln.Close()
 		return fmt.Errorf("%w: %q", ErrUnexpectedNonLoopbackBind, ln.Addr().String())
 	}
@@ -247,6 +255,22 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady fun
 			return err
 		}
 	}
+	var serverTLS *tls.Config
+	var certificateStore *tlsCertificateStore
+	if s.policy.TLS.configured() {
+		var err error
+		certificateStore, err = newTLSCertificateStore(s.policy.TLS)
+		if err != nil {
+			_ = ln.Close()
+			return err
+		}
+		serverTLS, err = tlsConfig(s.policy.TLS, certificateStore)
+		if err != nil {
+			_ = ln.Close()
+			return err
+		}
+	}
+	s.tlsStore = certificateStore
 
 	// Record the actual bound port (resolves "host:0" to whatever the OS
 	// picked) so checkOrigin can validate the WS handshake's Origin header
@@ -257,6 +281,9 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady fun
 
 	runCtx, cancelRun := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelRun()
+	if certificateStore != nil {
+		go runTLSReload(runCtx, certificateStore, tlsReloadOptions{})
+	}
 	var joined sync.WaitGroup
 	joined.Add(1)
 	go func() {
@@ -336,14 +363,16 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady fun
 		BaseContext: func(net.Listener) context.Context {
 			return runCtx
 		},
-		ConnState:    s.trackConnection,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 0, // streaming responses have no timeout
-		IdleTimeout:  120 * time.Second,
-		ErrorLog:     slog.NewLogLogger(slog.Default().Handler(), slog.LevelError),
+		ConnState:         s.trackConnection,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      0, // streaming responses have no timeout
+		IdleTimeout:       120 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		Protocols:         func() *http.Protocols { p := new(http.Protocols); p.SetHTTP1(true); return p }(),
+		ErrorLog:          tlsErrorLogger(),
 	}
-	if !s.uiAuth {
-		srv.ReadHeaderTimeout = 10 * time.Second
+	if serverTLS != nil {
+		srv.TLSConfig = serverTLS
 	}
 
 	shutdownDone := make(chan error, 1)
@@ -395,7 +424,12 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady fun
 	if onReady != nil {
 		onReady(ln.Addr().String())
 	}
-	serveErr := srv.Serve(ln)
+	var serveErr error
+	if serverTLS != nil {
+		serveErr = srv.ServeTLS(ln, "", "")
+	} else {
+		serveErr = srv.Serve(ln)
+	}
 	if serveErr != nil && serveErr != http.ErrServerClosed {
 		s.requestShutdown()
 	}
