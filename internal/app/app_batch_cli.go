@@ -100,6 +100,12 @@ func (a *App) BatchCLISpec(ctx context.Context, owner, messageID string, spec jo
 }
 
 func (a *App) BatchSubmit(ctx context.Context, owner string, spec jobbatch.Spec) (string, error) {
+	return a.BatchSubmitRef(ctx, owner, spec, nil)
+}
+
+// BatchSubmitRef is BatchSubmit with a caller-chosen submit reference (see
+// agent.BatchInstall.SubmitCLIRef).
+func (a *App) BatchSubmitRef(ctx context.Context, owner string, spec jobbatch.Spec, ref func(root string) string) (string, error) {
 	if !a.BatchOwnerRuntime() {
 		return "", errors.New("batch submit requires owning runtime")
 	}
@@ -110,7 +116,7 @@ func (a *App) BatchSubmit(ctx context.Context, owner string, spec jobbatch.Spec)
 	if err != nil {
 		return "", err
 	}
-	batch, err := a.batchInstall.SubmitCLI(ctx, owner, translated)
+	batch, err := a.batchInstall.SubmitCLIRef(ctx, owner, translated, ref)
 	if err != nil {
 		release()
 		return "", err
@@ -120,6 +126,19 @@ func (a *App) BatchSubmit(ctx context.Context, owner string, spec jobbatch.Spec)
 		return "", err
 	}
 	return string(batch.ID()), nil
+}
+
+// BatchSettleDebt settles the owner's notice debt for a terminal root without
+// releasing the root, so its live output stays readable.
+func (a *App) BatchSettleDebt(ctx context.Context, owner, root string) error {
+	if a == nil || a.batchInstall == nil || a.batchInstall.CLIOwner(jobbatch.ID(root)) != owner {
+		return errors.New("batch CLI: root is not owned by this session")
+	}
+	fac, err := a.BatchCLIStore()
+	if err != nil {
+		return err
+	}
+	return fac.Store.BatchSettleCLIWakeDebt(ctx, owner, root)
 }
 
 func (a *App) BatchRelease(ctx context.Context, owner, root string) error {

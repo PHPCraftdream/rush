@@ -49,7 +49,7 @@ func (s apiAppWriteStore) DeleteSession(r *http.Request, id string) error {
 }
 
 func (s apiAppWriteStore) GetSession(r *http.Request, id string) (session.Session, error) {
-	return s.app.Sessions.Get(r.Context(), id)
+	return hideServiceSession(s.app.Sessions.Get(r.Context(), id))
 }
 
 func (s apiAppWriteStore) SessionBusy(id string) bool {

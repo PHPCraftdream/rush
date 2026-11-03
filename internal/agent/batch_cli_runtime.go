@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
@@ -14,6 +15,14 @@ import (
 
 // SubmitCLI submits an explicitly translated tree through the installed Runner.
 func (i *BatchInstall) SubmitCLI(ctx context.Context, owner string, spec jobbatch.Spec) (*jobbatch.Batch, error) {
+	return i.SubmitCLIRef(ctx, owner, spec, nil)
+}
+
+// SubmitCLIRef is SubmitCLI with a caller-chosen submit reference. ref receives
+// the new root id and must return a reference that keeps the "batch-cli:" family
+// prefix (such roots do not wake the owner) and is unique per root; nil keeps
+// the default "batch-cli:<root>".
+func (i *BatchInstall) SubmitCLIRef(ctx context.Context, owner string, spec jobbatch.Spec, ref func(root string) string) (*jobbatch.Batch, error) {
 	if i == nil || i.Runner == nil || i.RunnerHandle == nil || i.Runtime == nil || owner == "" {
 		return nil, errors.New("batch CLI: installed runner, owner and batch root are required")
 	}
@@ -31,10 +40,17 @@ func (i *BatchInstall) SubmitCLI(ctx context.Context, owner string, spec jobbatc
 		return nil, errors.New("batch CLI: empty task tree is unsupported")
 	}
 	root := jobbatch.ID(uuid.NewString())
+	submitRef := "batch-cli:" + string(root)
+	if ref != nil {
+		submitRef = ref(string(root))
+		if !strings.HasPrefix(submitRef, "batch-cli:") || !strings.HasSuffix(submitRef, string(root)) || !jobbatch.ValidRef(submitRef) {
+			return nil, errors.New("batch CLI: invalid submit reference")
+		}
+	}
 	if err := validateBatch(i.Runtime.cfg.Profile, batchRankContext{Root: root}, nil, []jobbatch.Spec{spec}, i.Runtime.cfg.MaxDepth, i.Runtime.cfg.MaxNodes, i.Runtime.cfg.Resolver); err != nil {
 		return nil, fmt.Errorf("batch CLI admission: %w", err)
 	}
-	_, batch, err := i.RunnerHandle.SubmitBound(ctx, jobbatch.SubmitRequest{Root: root, Spec: spec, Ref: "batch-cli:" + string(root)})
+	_, batch, err := i.RunnerHandle.SubmitBound(ctx, jobbatch.SubmitRequest{Root: root, Spec: spec, Ref: submitRef})
 	if err != nil {
 		return nil, err
 	}
