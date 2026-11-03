@@ -68,3 +68,18 @@ func TestValidateEffectivePinsWrapsUnexpectedLookupError(t *testing.T) {
 		t.Fatalf("error %v does not wrap lookup error %v", err, lookupErr)
 	}
 }
+
+func TestValidateEffectivePinsNeedsNoSessionServiceWithoutPins(t *testing.T) {
+	unbound := config.APIToken{ID: "plain"}
+	if err := ValidateEffectivePins(context.Background(), nil, []config.APIToken{unbound}, []ListenerPolicy{{Address: "127.0.0.1:0"}}, nil); err != nil {
+		t.Fatalf("no pins declared, but validation failed: %v", err)
+	}
+	pinned := config.APIToken{ID: "pinned", Binding: config.APITokenBinding{Kind: "session", Pin: &config.APITokenPinBinding{Session: "s"}}}
+	if err := ValidateEffectivePins(context.Background(), &appPkg.App{}, []config.APIToken{pinned}, nil, nil); err == nil {
+		t.Fatal("a session-bound token without a session service must be refused")
+	}
+	declared := ListenerPolicy{Address: "127.0.0.1:0", Pins: map[string]string{"t": "s"}, DeclaredPins: map[string]string{"t": "s"}}
+	if err := ValidateEffectivePins(context.Background(), &appPkg.App{}, nil, []ListenerPolicy{declared}, nil); err == nil {
+		t.Fatal("a declared listener pin without a session service must be refused")
+	}
+}

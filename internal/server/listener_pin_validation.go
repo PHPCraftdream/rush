@@ -15,6 +15,9 @@ import (
 // ValidateEffectivePins checks that listener-declared sessions exist as
 // process-owned top-level sessions. Missing record pins are intentionally soft.
 func ValidateEffectivePins(ctx context.Context, app *appPkg.App, tokens []config.APIToken, policies []ListenerPolicy, logger *slog.Logger) error {
+	if !hasPinsToValidate(tokens, policies) {
+		return nil
+	}
 	if app == nil || app.Sessions == nil {
 		return errors.New("session service required to validate listener pins")
 	}
@@ -61,4 +64,20 @@ func ValidateEffectivePins(ctx context.Context, app *appPkg.App, tokens []config
 		}
 	}
 	return nil
+}
+
+// hasPinsToValidate reports whether any declared listener pin or session-bound
+// token record needs a session lookup.
+func hasPinsToValidate(tokens []config.APIToken, policies []ListenerPolicy) bool {
+	for _, policy := range policies {
+		if len(policy.DeclaredPins) > 0 {
+			return true
+		}
+	}
+	for _, token := range tokens {
+		if binding := token.Binding.Normalized(); binding.Kind == "session" && binding.Pin != nil {
+			return true
+		}
+	}
+	return false
 }

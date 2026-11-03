@@ -52,7 +52,7 @@ func TestResolvePinnedCommandVisibilityBeforeClass(t *testing.T) {
 
 func TestPinnedRESTListSessionsIsFilteredNotDenied(t *testing.T) {
 	route := APIRoute{OperationID: "listSessions"}
-	r := httptest.NewRequest(http.MethodGet, "/sessions", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/sessions", nil)
 	if got := resolvePinnedRoute("pinned-session", route, r); got != 0 {
 		t.Fatalf("status=%d want 0 (the handler filters)", got)
 	}
@@ -77,7 +77,7 @@ func TestResolvePinnedRouteVisibilityBeforeClass(t *testing.T) {
 	}
 	for _, tc := range cases {
 		route := APIRoute{OperationID: tc.operation}
-		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 		r.SetPathValue("id", tc.id)
 		if got := resolvePinnedRoute("pinned", route, r); got != tc.want {
 			t.Errorf("%s/%s: got %d want %d", tc.operation, tc.id, got, tc.want)

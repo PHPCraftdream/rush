@@ -17,7 +17,7 @@ func TestChainListenerPinsRejectUnpinnedAndCheckWorkspace(t *testing.T) {
 	pins := map[string]string{"12345678": "session"}
 	handler := Chain(ChainConfig{AuthConfig: AuthConfig{Verifier: v, Pins: pins, PinsDeclared: true, Workspace: workspace, Clock: func() time.Time { return time.Unix(1, 0) }}})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	req := func() *httptest.ResponseRecorder {
-		r := httptest.NewRequest("GET", "/", nil)
+		r := httptest.NewRequestWithContext(t.Context(), "GET", "/", nil)
 		r.Header.Set("Authorization", "Bearer rush_12345678."+strings.Repeat("a", 43))
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
@@ -38,7 +38,7 @@ func TestChainPinnedTokenWorkspaceMismatchIsForbidden(t *testing.T) {
 	pinWorkspace := t.TempDir()
 	v := &fakeVerifier{token: config.APIToken{ID: "12345678", Scopes: []string{"run"}, Permission: "ask", Binding: config.APITokenBinding{Kind: "session", Pin: &config.APITokenPinBinding{Session: "s", Workspace: pinWorkspace}}}, ok: true}
 	handler := Chain(ChainConfig{AuthConfig: AuthConfig{Verifier: v, Workspace: workspace, Clock: func() time.Time { return time.Unix(1, 0) }}})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	r := httptest.NewRequest("GET", "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), "GET", "/", nil)
 	r.Header.Set("Authorization", "Bearer rush_12345678."+strings.Repeat("a", 43))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
