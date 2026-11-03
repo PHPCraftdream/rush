@@ -29,13 +29,30 @@ func tokenCLIExitCode(err error) (int, bool) {
 }
 
 func tokensExitCode(args []string, err error) (int, bool) {
+	if code, ok := apiExitCode(err); ok && isAPIInvocation(args) {
+		return code, true
+	}
 	if code, ok := tokenCLIExitCode(err); ok {
 		return code, true
 	}
-	if err != nil && (isTokensInvocation(args) || isServeInvocation(args)) {
+	if err != nil && (isTokensInvocation(args) || isServeInvocation(args) || isAPIInvocation(args)) {
 		return 2, true
 	}
 	return 0, false
+}
+
+func isAPIInvocation(args []string) bool {
+	command, _, err := rootCmd.Find(args)
+	if err != nil || command == nil {
+		return len(args) > 0 && args[0] == apiCmd.Name()
+	}
+	for command != nil {
+		if command == apiCmd {
+			return true
+		}
+		command = command.Parent()
+	}
+	return false
 }
 
 func isTokensInvocation(args []string) bool {

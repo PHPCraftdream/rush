@@ -14,6 +14,7 @@ type WSMessage struct {
 
 // Outbound event types (server → client).
 const (
+	EventHello          = "hello"
 	EventMessageCreated = "message_created"
 	EventMessageUpdated = "message_updated"
 	EventMessageDeleted = "message_deleted"

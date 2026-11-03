@@ -20,7 +20,7 @@ func TestServeAPIRealListenerIntegration(t *testing.T) {
 	isolateAPIGlobals(t)
 	store := config.GlobalAPITokenStore()
 	const secretMarker = "plaintext-secret-scan-marker"
-	var logs strings.Builder
+	var logs syncBuffer
 	previousLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })
@@ -206,7 +206,7 @@ func TestServeAPIDoesNotServeRoutePlaceholders(t *testing.T) {
 		t.Fatal(err)
 	}
 	const marker = "placeholder-secret-scan-marker"
-	var logs strings.Builder
+	var logs syncBuffer
 	previousLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })

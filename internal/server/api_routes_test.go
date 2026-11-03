@@ -4,10 +4,11 @@ import "testing"
 
 func TestAPIRoutesExhaustive(t *testing.T) {
 	routes := APIRoutes()
-	if len(routes) != 15 {
+	if len(routes) != 17 {
 		t.Fatalf("routes=%d", len(routes))
 	}
-	seen, operations := map[string]bool{}, map[string]bool{}
+	operations := map[string]bool{}
+	seen := map[string]bool{}
 	for _, route := range routes {
 		if route.Method == "" || route.Pattern == "" || route.Pattern[0] != '/' || route.Handler == nil {
 			t.Fatalf("invalid route: %+v", route)
@@ -31,10 +32,22 @@ func TestAPIRoutesExhaustive(t *testing.T) {
 		t.Fatal("route table was mutable")
 	}
 	want := map[string]string{
-		"POST /sessions/{id}/runs":   "createRun",
-		"GET /runs/{id}":             "getRun",
-		"POST /runs/{id}/cancel":     "cancelRun",
-		"POST /sessions/{id}/inject": "injectMessage",
+		"GET /health":                 "getHealth",
+		"GET /version":                "getVersion",
+		"GET /openapi.json":           "getOpenAPI",
+		"GET /sessions":               "listSessions",
+		"GET /sessions/{id}":          "getSession",
+		"GET /sessions/{id}/messages": "listMessages",
+		"GET /models":                 "listModels",
+		"POST /sessions":              "createSession",
+		"POST /sessions/{id}/fork":    "forkSession",
+		"DELETE /sessions/{id}":       "deleteSession",
+		"POST /sessions/{id}/runs":    "createRun",
+		"GET /runs/{id}":              "getRun",
+		"POST /runs/{id}/cancel":      "cancelRun",
+		"POST /sessions/{id}/inject":  "injectMessage",
+		"GET /permissions":            "listPermissions",
+		"POST /permissions/{id}":      "answerPermission",
 	}
 	for _, route := range routes {
 		key := route.Method + " " + route.Pattern

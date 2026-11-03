@@ -24,14 +24,14 @@ func TestServeAPIScopeDenialThroughProductionListener(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var logs strings.Builder
+	var logs syncBuffer
 	previousLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 
 	previousRoutes := serveAPIRoutes
-	serveAPIRoutes = func(app *appPkg.App) ([]APIRoute, *APIEventLog, *APIRunRegistry) {
-		routes, eventLog, registry := previousRoutes(app)
+	serveAPIRoutes = func(app *appPkg.App, broker *APIPermissionBroker, allowAutoApprove bool) ([]APIRoute, *APIEventLog, *APIRunRegistry) {
+		routes, eventLog, registry := previousRoutes(app, broker, allowAutoApprove)
 		return append(routes, APIRoute{Method: http.MethodGet, Pattern: "/scope-probe", Scope: "run", Handler: func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }}), eventLog, registry
 	}
 	t.Cleanup(func() { serveAPIRoutes = previousRoutes })

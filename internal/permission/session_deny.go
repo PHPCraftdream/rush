@@ -13,6 +13,8 @@ type sessionDenyState struct {
 	mu          sync.RWMutex
 	bySession   map[string]string
 	rootByToken map[string]string
+	policies    map[string]sessionPolicyEntry
+	policyRoots map[string]string
 }
 
 func (s *permissionService) DenySession(sessionID, ownerToken string) {
@@ -65,6 +67,12 @@ func (st *sessionDenyState) initLocked() {
 	if st.rootByToken == nil {
 		st.rootByToken = make(map[string]string)
 	}
+	if st.policies == nil {
+		st.policies = make(map[string]sessionPolicyEntry)
+	}
+	if st.policyRoots == nil {
+		st.policyRoots = make(map[string]string)
+	}
 }
 
 func (s *permissionService) inheritSessionDeny(parentID, childID string) {
@@ -73,6 +81,10 @@ func (s *permissionService) inheritSessionDeny(parentID, childID string) {
 	}
 	state := &s.sessionDenies
 	state.mu.Lock()
+	if policy, ok := state.policies[parentID]; ok {
+		state.initLocked()
+		state.policies[childID] = policy
+	}
 	if token, ok := state.bySession[parentID]; ok {
 		state.initLocked()
 		state.bySession[childID] = token

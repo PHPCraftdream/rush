@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ var (
 	ErrAPIRunBackendNoActiveRun     = errors.New("no active run")
 	ErrAPIRunBackendInvalidModel    = errors.New("invalid model")
 	ErrAPIRunBackendInvalidRole     = errors.New("invalid role")
+	ErrAPIRunAutoApproveDenied      = errors.New("auto-approve not permitted on this listener")
 )
 
 // RunOutcome is the backend's final result for an API-driven run. Message text is
@@ -46,6 +48,9 @@ type APIRunBackend interface {
 type appAPIRunBackend struct {
 	app *appPkg.App
 
+	broker           *APIPermissionBroker
+	allowAutoApprove bool
+
 	mu      sync.Mutex
 	cancels map[string]apiRunBackendCancellation
 }
@@ -56,7 +61,11 @@ type apiRunBackendCancellation struct {
 }
 
 func newAPIRunBackend(app *appPkg.App) APIRunBackend {
-	return &appAPIRunBackend{app: app, cancels: make(map[string]apiRunBackendCancellation)}
+	return newAPIRunBackendWithPolicy(app, nil, false)
+}
+
+func newAPIRunBackendWithPolicy(app *appPkg.App, broker *APIPermissionBroker, allowAutoApprove bool) APIRunBackend {
+	return &appAPIRunBackend{app: app, broker: broker, allowAutoApprove: allowAutoApprove, cancels: make(map[string]apiRunBackendCancellation)}
 }
 
 func (b *appAPIRunBackend) Start(ctx context.Context, runID, sessionID, prompt, role, model string) (<-chan RunOutcome, error) {
@@ -66,12 +75,38 @@ func (b *appAPIRunBackend) Start(ctx context.Context, runID, sessionID, prompt, 
 	if runID == "" || sessionID == "" || strings.TrimSpace(prompt) == "" {
 		return nil, errors.New("invalid run parameters")
 	}
-	manager, ok := b.app.Permissions.(permission.SessionDenyManager)
-	if !ok || b.app.Permissions == nil {
+	var (
+		manager  permission.SessionDenyManager
+		policies permission.SessionPolicyManager
+	)
+	if b.app.Permissions != nil {
+		manager, _ = b.app.Permissions.(permission.SessionDenyManager)
+		policies, _ = b.app.Permissions.(permission.SessionPolicyManager)
+	}
+	if manager == nil {
 		return nil, ErrAPIRunBackendGateUnavailable
 	}
 	if ctx == nil || ctx.Err() != nil {
 		return nil, context.Canceled
+	}
+	principal, hasPrincipal := PrincipalFrom(ctx)
+	mode := principal.Permission
+	if !hasPrincipal {
+		mode = "invalid"
+	} else if mode == "" {
+		mode = "ask"
+	}
+	if mode != "ask" && mode != "readonly" && mode != "auto" {
+		mode = "invalid"
+	}
+	if (mode == "readonly" || mode == "auto") && policies == nil {
+		return nil, ErrAPIRunBackendGateUnavailable
+	}
+	if mode == "auto" && !config.APITokenScopeAllows(principal.Scopes, "admin") && !b.allowAutoApprove {
+		return nil, ErrAPIRunAutoApproveDenied
+	}
+	if mode == "auto" {
+		slog.Warn("API run uses auto-approve", "token_id", principal.TokenID)
 	}
 	cfg := b.app.Config()
 	if cfg == nil {
@@ -114,13 +149,38 @@ func (b *appAPIRunBackend) Start(ctx context.Context, runID, sessionID, prompt, 
 		probe.Release()
 		return nil, ErrAPIRunBackendBusy
 	}
-	manager.DenySession(sessionID, runID)
+	brokerRegistered := false
+	switch mode {
+	case "ask":
+		if b.broker == nil {
+			probe.Release()
+			return nil, ErrAPIRunBackendGateUnavailable
+		}
+		if err := b.broker.Register(runID, sessionID, principal.TokenID); err != nil {
+			probe.Release()
+			return nil, ErrAPIRunBackendGateUnavailable
+		}
+		brokerRegistered = true
+	case "readonly":
+		policies.SetSessionReadonly(sessionID, runID)
+	case "auto":
+		policies.SetSessionAuto(sessionID, runID)
+	default:
+		manager.DenySession(sessionID, runID)
+	}
 	probe.Release()
 
-	gateArmed := true
+	gateArmed := mode != "ask"
 	defer func() {
 		if gateArmed {
-			manager.ReleaseSessionDeny(sessionID, runID)
+			if mode == "invalid" {
+				manager.ReleaseSessionDeny(sessionID, runID)
+			} else if mode != "ask" {
+				policies.ReleaseSessionPolicy(sessionID, runID)
+			}
+		}
+		if brokerRegistered {
+			b.broker.Release(runID)
 		}
 	}()
 	if ctx.Err() != nil {
@@ -142,22 +202,32 @@ func (b *appAPIRunBackend) Start(ctx context.Context, runID, sessionID, prompt, 
 	done := make(chan RunOutcome, 1)
 	reservationOwned = false // the completion goroutine now owns reservation cleanup.
 	gateArmed = false        // completion goroutine owns the gate release from here.
+	completionBrokerRegistered := brokerRegistered
+	brokerRegistered = false // completion goroutine owns the broker registration from here.
 	go func() {
 		handedOff := false
-		gateReleased := false
-		defer func() {
-			b.mu.Lock()
-			delete(b.cancels, runID)
-			b.mu.Unlock()
-			stopCancel()
-			cancelRun()
-			if !handedOff {
-				b.app.AgentCoordinator.ReleaseExclusive(sessionID, epoch, reserveCancel)
-			}
-			if !gateReleased {
-				manager.ReleaseSessionDeny(sessionID, runID)
-			}
-		}()
+		var cleanupOnce sync.Once
+		cleanup := func() {
+			cleanupOnce.Do(func() {
+				b.mu.Lock()
+				delete(b.cancels, runID)
+				b.mu.Unlock()
+				stopCancel()
+				cancelRun()
+				if !handedOff {
+					b.app.AgentCoordinator.ReleaseExclusive(sessionID, epoch, reserveCancel)
+				}
+				if mode == "invalid" {
+					manager.ReleaseSessionDeny(sessionID, runID)
+				} else if mode != "ask" {
+					policies.ReleaseSessionPolicy(sessionID, runID)
+				}
+				if completionBrokerRegistered {
+					b.broker.Release(runID)
+				}
+			})
+		}
+		defer cleanup()
 		_, runErr := b.app.AgentCoordinator.RunWithReservedOwnership(runCtx, sessionID, prompt, epoch, reserveCancel, func() { handedOff = true }, smart, nil)
 		outcome := RunOutcome{State: APIRunSucceeded}
 		if runErr != nil {
@@ -184,8 +254,9 @@ func (b *appAPIRunBackend) Start(ctx context.Context, runID, sessionID, prompt, 
 		b.mu.Lock()
 		delete(b.cancels, runID)
 		b.mu.Unlock()
-		manager.ReleaseSessionDeny(sessionID, runID)
-		gateReleased = true
+		// Do not publish completion until run cleanup has released the session
+		// reservation and permission gate; callers may immediately start a rerun.
+		cleanup()
 		done <- outcome
 		close(done)
 	}()

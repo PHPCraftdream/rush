@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Added API reference documentation for the `rush serve` REST, SSE, WebSocket, authentication, permission, and error surfaces, with implementation limitations called out.
+
 - `rush web` and bare `rush` now refuse a non-loopback `--host` unless `--allow-cleartext` is passed, and print a warning at every such start.
 
 - A delegated batch worker that stops to ask a question now wakes its sleeping orchestrator immediately after the question is stored, instead of leaving an orchestrator parked in await_tasks until a timeout check-in.

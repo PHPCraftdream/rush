@@ -240,7 +240,7 @@ func TestAPIReadProductionAppSmoke(t *testing.T) {
 
 func TestAPIReadProductionWiringIntegration(t *testing.T) {
 	const plaintextToken = "known-plaintext-token-must-not-be-logged"
-	var logs strings.Builder
+	var logs syncBuffer
 	previousLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })

@@ -172,13 +172,17 @@ func BindCoordinatorBatchRuntimeBindings(c Coordinator, ingress BatchWorkIngress
 	if len(live) > 0 {
 		bind.live = live[0]
 	}
-	coordinatorBatchBindings.Store(c, bind)
 	// Continuations resolve through the SAME App-owned manager, never a
-	// process global.
+	// process global. The coordinator fields are written BEFORE the binding
+	// is published and only after the asynchronous tool builds started at
+	// construction have finished: those builds read diskCaps and bind.coord
+	// without a lock, so writing them while a build runs is a data race.
 	if cc, ok := c.(*coordinator); ok {
+		_ = cc.readyWg.Wait() // first build error is reported by its own path
 		cc.diskCaps = diskBindings
 		bind.coord = cc
 	}
+	coordinatorBatchBindings.Store(c, bind)
 	// The root agent is built before the batch install binds the manager,
 	// so propagate the registry onto it here too.
 	if cc, ok := c.(*coordinator); ok {

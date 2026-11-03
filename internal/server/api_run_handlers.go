@@ -104,6 +104,8 @@ func apiCreateRunHandler(store APIWriteStore, backend APIRunBackend, registry *A
 				WriteAPIProblem(w, r, http.StatusConflict, "Conflict", "session is busy", "", nil)
 			case errors.Is(err, ErrAPIRunBackendGateUnavailable):
 				writeAPIRunGateUnavailable(w, r)
+			case errors.Is(err, ErrAPIRunAutoApproveDenied):
+				WriteAPIProblem(w, r, http.StatusForbidden, "Forbidden", "auto-approve not permitted on this listener", "", nil)
 			case errors.Is(err, ErrAPIRunBackendInvalidModel), errors.Is(err, ErrAPIRunBackendInvalidRole):
 				WriteAPIProblem(w, r, http.StatusBadRequest, "Bad Request", err.Error(), "", nil)
 			default:

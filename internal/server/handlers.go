@@ -34,6 +34,13 @@ func handleIncoming(ctx context.Context, s *Server, c *Client, raw []byte) {
 		return
 	}
 
+	if c.auth != nil {
+		if err := authorizeWSCommand(*c.auth, msg.Type); err != nil {
+			c.reply(msg.ID, EventError, nil, err.Error())
+			return
+		}
+	}
+
 	switch msg.Type {
 	case CmdSendMessage:
 		c.dispatch("handleSendMessage", msg.ID, func() { handleSendMessage(ctx, a, c, msg) })

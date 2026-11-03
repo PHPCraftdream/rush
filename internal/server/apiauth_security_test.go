@@ -104,7 +104,7 @@ func TestChainTokenQueryAndCookieAreRejected(t *testing.T) {
 
 func TestChainStoreFailureFixed503DoesNotExposeToken(t *testing.T) {
 	isolateSecurityGlobals(t)
-	var logs strings.Builder
+	var logs syncBuffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
 	const sentinel = "store contains credential details"
 	v := &fakeVerifier{verifyErr: errors.New(sentinel)}
@@ -212,7 +212,7 @@ func TestFailureBackoffQuietResetAndEviction(t *testing.T) {
 
 func TestChainRateLimitedAndAuditCapturesSecurityStatus(t *testing.T) {
 	isolateSecurityGlobals(t)
-	var logs strings.Builder
+	var logs syncBuffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
 	const token = "rush_12345678.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	clock := func() time.Time { return time.Unix(100, 0) }
@@ -341,7 +341,7 @@ func TestRateLimiterRetryAfterAndRedactionOutput(t *testing.T) {
 
 func TestAuditFailureIncludesNoAuthSecret(t *testing.T) {
 	isolateSecurityGlobals(t)
-	var logs strings.Builder
+	var logs syncBuffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
 	h := Chain(ChainConfig{AuthConfig: AuthConfig{Verifier: &fakeVerifier{}}, Logger: logger})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/?access_token=leak", nil)

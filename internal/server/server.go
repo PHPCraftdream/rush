@@ -83,6 +83,10 @@ func (s *Server) policyHasSurface(surface ListenerSurface) bool {
 // bound to (e.g. -H 0.0.0.0 still serves a UI meant to be opened at
 // localhost).
 func (s *Server) checkOrigin(r *http.Request) bool {
+	// A server built by NewWithPolicy carries explicit surfaces; a bare Server keeps the legacy rule.
+	if !s.uiAuth && len(s.policy.Surfaces) > 0 {
+		return serveOriginAllowed(r.Header.Get("Origin"), s.policy.AllowedOrigins)
+	}
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		// Non-browser client: CLI, script, curl, or a WS library that never
@@ -106,6 +110,9 @@ func (s *Server) checkOrigin(r *http.Request) bool {
 }
 
 func (s *Server) validatePolicy() error {
+	if err := validateAllowedOrigins(s.policy.AllowedOrigins); err != nil {
+		return &ListenerPolicyError{Address: s.policy.Address, Rule: "invalid allowed origin", Cause: err}
+	}
 	for _, surface := range s.policy.Surfaces {
 		if surface == SurfaceUI {
 			return &ListenerPolicyError{Address: s.policy.Address, Rule: "UI surface is not permitted for serve policies"}
@@ -269,6 +276,10 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady fun
 	mux := http.NewServeMux()
 	if s.policyHasSurface(SurfaceWS) {
 		var ws http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !s.uiAuth && hasBearerSubprotocol(r) && !offeredSubprotocol(r, "rush.v1") {
+				writeProblem(w, http.StatusBadRequest, "{\"type\":\"about:blank\",\"title\":\"Bad Request\",\"status\":400}\n")
+				return
+			}
 			// The server-lifetime ctx (same one Hub.Run drains) is what the
 			// guarded register send inside handleWS needs; r.Context() alone
 			// cannot unblock it (it ends only when the handler returns).
@@ -442,13 +453,37 @@ func (s *Server) handleWS(ctx context.Context, w http.ResponseWriter, r *http.Re
 		WriteBufferSize: 64 * 1024,
 		CheckOrigin:     s.checkOrigin,
 	}
+	if !s.uiAuth {
+		// Gorilla's Upgrader reads only Header.Get for this field. Normalize
+		// repeated header lines so all client-offered protocols are considered.
+		r = r.Clone(r.Context())
+		protocols := r.Header.Values("Sec-WebSocket-Protocol")
+		if len(protocols) > 1 {
+			r.Header.Set("Sec-WebSocket-Protocol", strings.Join(protocols, ","))
+		}
+		upgrader.Subprotocols = []string{"rush.v1"}
+	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		slog.Debug("ws: upgrade failed", "err", err)
 		return
 	}
 
+	if !s.uiAuth {
+		if principal, ok := PrincipalFrom(r.Context()); ok {
+			if err := conn.WriteJSON(WSMessage{Type: EventHello, Payload: mustJSON(helloPayload{Protocol: "rush.v1", TokenID: principal.TokenID, Scopes: principal.Scopes})}); err != nil {
+				_ = conn.Close()
+				return
+			}
+			startServeRevocationWatch(r.Context(), conn, principal)
+		}
+	}
 	c := newClient(s.hub, conn)
+	if !s.uiAuth {
+		if principal, ok := PrincipalFrom(r.Context()); ok {
+			c.auth = newClientAuth(principal, CommandPolicy{AllowAdmin: s.policy.AllowAdmin})
+		}
+	}
 	s.wsWorkers.Add(1)
 	go func() {
 		defer s.wsWorkers.Done()
