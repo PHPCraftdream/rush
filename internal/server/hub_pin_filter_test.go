@@ -244,3 +244,45 @@ func sessionIDs(sessions []struct {
 	}
 	return ids
 }
+
+func TestClientReplyAppliesPinnedViewExceptCorrelatedErrors(t *testing.T) {
+	client := &Client{send: make(chan []byte, 8), auth: newClientAuth(Principal{PinnedSession: "own", Scopes: []string{"read"}}, CommandPolicy{})}
+	drain := func() []string {
+		var out []string
+		for {
+			select {
+			case msg := <-client.send:
+				out = append(out, string(msg))
+			default:
+				return out
+			}
+		}
+	}
+
+	client.reply("a", EventSessionUpdated, map[string]string{"sessionID": "foreign"}, "")
+	client.reply("b", EventSessionsList, []map[string]string{{"id": "own"}, {"id": "foreign"}}, "")
+	client.reply("c", EventLogs, map[string]string{"line": "SECRET"}, "")
+	require.Empty(t, drain(), "replies about foreign sessions or non-session classes must not reach a pinned client")
+
+	client.reply("d", EventSessionUpdated, map[string]string{"sessionID": "own"}, "")
+	require.Len(t, drain(), 1, "a reply about the pinned session is delivered")
+
+	client.reply("e", EventError, nil, "not found")
+	client.reply("f", EventResponse, map[string]string{"ok": "true"}, "")
+	require.Len(t, drain(), 2, "correlated error and response replies bypass the view")
+
+	client.reply("", EventError, nil, "uncorrelated")
+	require.Empty(t, drain(), "an error without a request id is an event and stays filtered")
+}
+
+func TestPinnedViewNeverAllowsInvalidMetadata(t *testing.T) {
+	view := newPinnedView("own")
+	for _, meta := range []eventMetadata{
+		{valid: false, class: eventSafeGlobal, msgType: EventUpdateAvailable},
+		{valid: false, class: eventSession, sessionIDs: []string{"own"}},
+	} {
+		require.False(t, view.allows(meta), "%+v", meta)
+	}
+	require.True(t, view.allows(eventMetadata{valid: true, class: eventSession, sessionIDs: []string{"own"}}))
+	require.True(t, newPinnedView("").allows(eventMetadata{}), "an unpinned view allows everything")
+}
