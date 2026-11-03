@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -198,13 +200,28 @@ func TestAPIRoutesPinned(t *testing.T) {
 		{Method: "GET", Pattern: "/sessions/{id}", Scope: "read", OperationID: "getSession"},
 		{Method: "GET", Pattern: "/sessions/{id}/messages", Scope: "read", OperationID: "listMessages"},
 		{Method: "GET", Pattern: "/models", Scope: "read", OperationID: "listModels"},
+		{Method: "POST", Pattern: "/sessions", Scope: "run", OperationID: "createSession"},
+		{Method: "POST", Pattern: "/sessions/{id}/fork", Scope: "run", OperationID: "forkSession"},
+		{Method: "DELETE", Pattern: "/sessions/{id}", Scope: "run", OperationID: "deleteSession"},
+		{Method: "POST", Pattern: "/sessions/{id}/runs", Scope: "run", OperationID: "createRun"},
+		{Method: "GET", Pattern: "/runs/{id}", Scope: "read", OperationID: "getRun"},
+		{Method: "POST", Pattern: "/runs/{id}/cancel", Scope: "run", OperationID: "cancelRun"},
+		{Method: "GET", Pattern: "/sessions/{id}/events", Scope: "read", OperationID: "streamSessionEvents"},
+		{Method: "POST", Pattern: "/sessions/{id}/inject", Scope: "run", OperationID: "injectMessage"},
 	}
-	if len(got) != len(want) {
-		t.Fatalf("routes=%d", len(got))
+	// Compared as sorted tuples, not by position, so that parallel branches that
+	// add routes merge as a one-line union.
+	tuple := func(r APIRoute) string { return r.Method + " " + r.Pattern + " " + r.Scope + " " + r.OperationID }
+	gotTuples, wantTuples := make([]string, 0, len(got)), make([]string, 0, len(want))
+	for _, r := range got {
+		gotTuples = append(gotTuples, tuple(r))
 	}
-	for i, r := range want {
-		if got[i].Method != r.Method || got[i].Pattern != r.Pattern || got[i].Scope != r.Scope || got[i].OperationID != r.OperationID {
-			t.Fatalf("route[%d]=%+v want %+v", i, got[i], r)
-		}
+	for _, r := range want {
+		wantTuples = append(wantTuples, tuple(r))
+	}
+	sort.Strings(gotTuples)
+	sort.Strings(wantTuples)
+	if !slices.Equal(gotTuples, wantTuples) {
+		t.Fatalf("routes differ:\n got %q\nwant %q", gotTuples, wantTuples)
 	}
 }

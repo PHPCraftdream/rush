@@ -30,9 +30,9 @@ func TestServeAPIScopeDenialThroughProductionListener(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 
 	previousRoutes := serveAPIRoutes
-	serveAPIRoutes = func(app *appPkg.App) []APIRoute {
-		routes := previousRoutes(app)
-		return append(routes, APIRoute{Method: http.MethodGet, Pattern: "/scope-probe", Scope: "run", Handler: func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }})
+	serveAPIRoutes = func(app *appPkg.App) ([]APIRoute, *APIEventLog, *APIRunRegistry) {
+		routes, eventLog, registry := previousRoutes(app)
+		return append(routes, APIRoute{Method: http.MethodGet, Pattern: "/scope-probe", Scope: "run", Handler: func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }}), eventLog, registry
 	}
 	t.Cleanup(func() { serveAPIRoutes = previousRoutes })
 	policy := ListenerPolicy{Address: "127.0.0.1:0", Surfaces: []ListenerSurface{SurfaceREST}}

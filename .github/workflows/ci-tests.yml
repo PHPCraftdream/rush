@@ -428,7 +428,10 @@ jobs:
     # does not need are now never created. Windows runs here only on a
     # non-full plan; macOS whenever it is needed. When neither is needed the
     # job-level `if` skips the job, so the fallback leg is never scheduled.
-    timeout-minutes: 75
+    # 100 min: the selected-packages step alone took 73.5 min on a Windows runner
+    # for a server+permission change, and the old 75 min cancelled a job whose
+    # every step had passed.
+    timeout-minutes: 100
     strategy:
       # Same rationale as the former build workflow's build matrix: one leg's failure must
       # not cancel the other mid-run.

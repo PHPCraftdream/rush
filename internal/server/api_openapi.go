@@ -1,6 +1,7 @@
 package server
 
 import (
+	"net/http"
 	"sort"
 
 	"github.com/PHPCraftdream/rush/internal/version"
@@ -19,8 +20,11 @@ func BuildOpenAPIDocument(routes []APIRoute) map[string]any {
 		operation := map[string]any{
 			"operationId":  route.OperationID,
 			"summary":      route.Summary,
-			"responses":    openAPIResponses(route.ResponseDescription),
+			"responses":    openAPIResponses(route.Method, route.OperationID, route.ResponseDescription),
 			"x-rush-scope": route.Scope,
+		}
+		if route.OperationID == "streamSessionEvents" {
+			operation["responses"] = openAPIStreamResponses(route.ResponseDescription)
 		}
 		if route.Scope == "none" {
 			operation["security"] = []any{}
@@ -52,12 +56,44 @@ func BuildOpenAPIDocument(routes []APIRoute) map[string]any {
 	}
 }
 
-func openAPIResponses(successDescription string) map[string]any {
+func routeSuccessAccepted(operationID string) bool {
+	return operationID == "createRun" || operationID == "cancelRun" || operationID == "injectMessage"
+}
+
+func openAPIStreamResponses(description string) map[string]any {
+	if description == "" {
+		description = "Session event stream"
+	}
+	responses := openAPIResponses(http.MethodGet, "streamSessionEvents", description)
+	responses["200"] = map[string]any{"description": description, "content": map[string]any{"text/event-stream": map[string]any{"schema": map[string]any{"type": "string"}}}}
+	return responses
+}
+
+func openAPIResponses(method, operationID, successDescription string) map[string]any {
 	if successDescription == "" {
 		successDescription = "Success"
 	}
-	responses := map[string]any{"200": map[string]any{"description": successDescription, "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}}}}
-	for _, code := range []string{"401", "403", "404", "405", "429", "500"} {
+	var successStatus string
+	var successResponse map[string]any
+	switch method {
+	case http.MethodPost:
+		successStatus = "201"
+		if routeSuccessAccepted(operationID) {
+			successStatus = "202"
+		}
+		successResponse = map[string]any{"description": successDescription, "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}}}
+	case http.MethodDelete:
+		successStatus = "204"
+		successResponse = map[string]any{"description": successDescription}
+	default:
+		successStatus = "200"
+		successResponse = map[string]any{"description": successDescription, "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}}}
+	}
+	responses := map[string]any{successStatus: successResponse}
+	if operationID == "cancelRun" {
+		responses["200"] = map[string]any{"description": successDescription, "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}}}
+	}
+	for _, code := range []string{"400", "401", "403", "404", "405", "409", "413", "422", "429", "500"} {
 		responses[code] = map[string]any{"description": httpStatusDescription(code), "content": map[string]any{"application/problem+json": map[string]any{"schema": map[string]any{"$ref": "#/components/schemas/Problem"}}}}
 	}
 	return responses
@@ -75,6 +111,8 @@ func lowercaseASCII(value string) string {
 
 func httpStatusDescription(code string) string {
 	switch code {
+	case "400":
+		return "Bad Request"
 	case "401":
 		return "Unauthorized"
 	case "403":
@@ -83,6 +121,12 @@ func httpStatusDescription(code string) string {
 		return "Not Found"
 	case "405":
 		return "Method Not Allowed"
+	case "409":
+		return "Conflict"
+	case "413":
+		return "Request Entity Too Large"
+	case "422":
+		return "Unprocessable Entity"
 	case "429":
 		return "Too Many Requests"
 	default:

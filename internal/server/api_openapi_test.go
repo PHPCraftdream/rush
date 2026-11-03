@@ -37,8 +37,12 @@ func TestOpenAPIContractAndDeterminism(t *testing.T) {
 		}
 	}
 	paths := document["paths"].(map[string]any)
-	if len(paths) != len(routes) {
-		t.Fatalf("paths=%d routes=%d", len(paths), len(routes))
+	uniquePaths := map[string]bool{}
+	for _, route := range routes {
+		uniquePaths[route.Pattern] = true
+	}
+	if len(paths) != len(uniquePaths) {
+		t.Fatalf("paths=%d unique route patterns=%d", len(paths), len(uniquePaths))
 	}
 	for _, route := range routes {
 		operation := paths[route.Pattern].(map[string]any)[lowercaseASCII(route.Method)].(map[string]any)

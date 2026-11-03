@@ -297,6 +297,7 @@ type permissionService struct {
 	skip                  atomic.Bool
 	allowedTools          []string
 	q                     *db.Queries
+	sessionDenies         sessionDenyState
 
 	// Fork patch (concurrency, H-4): requestMu used to serialize the whole
 	// Request() body — including the blocking wait for a human response —
@@ -459,7 +460,10 @@ func (s *permissionService) Deny(permission PermissionRequest) {
 }
 
 func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRequest) (bool, error) {
-	if s.preGateAllows(opts) {
+	// A denied session never takes the pre-gate shortcut; every other session
+	// keeps the exact legacy order (pre-gate first, then hook approval).
+	denied := s.SessionDenied(opts.SessionID)
+	if !denied && s.preGateAllows(opts) {
 		return true, nil
 	}
 
@@ -467,12 +471,23 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 	// with the tool call ID. Treat that as a pre-approval and skip the
 	// prompt entirely. We still publish a granted notification so the UI
 	// and audit subscribers see the outcome.
+	// Hook approval is operator-configured and intentionally retains precedence
+	// over session denial.
 	if hookApproved(ctx, opts.ToolCallID) {
 		s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
 			ToolCallID: opts.ToolCallID,
 			Granted:    true,
 		})
 		return true, nil
+	}
+
+	if denied {
+		s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
+			ToolCallID: opts.ToolCallID,
+			Granted:    false,
+			Denied:     true,
+		})
+		return false, nil
 	}
 
 	// tell the UI that a permission was requested
@@ -621,6 +636,9 @@ func (s *permissionService) preGateAllows(opts CreatePermissionRequest) bool {
 // auto-approved path. It deliberately ignores interactive approval state:
 // callers use it before a shortcut that would otherwise skip Request.
 func (s *permissionService) AuthorizeRestrictedRun(opts CreatePermissionRequest) (bool, bool) {
+	if s.SessionDenied(opts.SessionID) {
+		return true, false
+	}
 	if s.preGateAllows(opts) {
 		return false, true
 	}
@@ -636,6 +654,9 @@ func (s *permissionService) AuthorizeRestrictedRunContext(ctx context.Context, o
 
 // AuthorizeRestrictedTool checks the exact tool/action dispatch contract.
 func (s *permissionService) AuthorizeRestrictedTool(opts CreatePermissionRequest) (bool, bool) {
+	if s.SessionDenied(opts.SessionID) {
+		return true, false
+	}
 	if s.preGateAllows(opts) {
 		return false, true
 	}
@@ -643,6 +664,15 @@ func (s *permissionService) AuthorizeRestrictedTool(opts CreatePermissionRequest
 }
 
 func (s *permissionService) AuthorizeRestrictedDispatch(ctx context.Context, opts CreatePermissionRequest) (bool, bool) {
+	if s.SessionDenied(opts.SessionID) {
+		// Hook approval is operator-configured and keeps precedence over a
+		// session denial only; other sessions keep the legacy dispatch gate.
+		if hookApproved(ctx, opts.ToolCallID) {
+			return false, true
+		}
+		s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{ToolCallID: opts.ToolCallID, Granted: false, Denied: true})
+		return true, false
+	}
 	if s.preGateAllows(opts) {
 		return false, true
 	}
@@ -703,6 +733,8 @@ func (s *permissionService) InheritSessionAutoApprove(parentID, childID string) 
 	if parentID == "" || childID == "" || parentID == childID {
 		return
 	}
+	s.inheritSessionDeny(parentID, childID)
+
 	s.autoApproveSessionsMu.Lock()
 	defer s.autoApproveSessionsMu.Unlock()
 	if s.autoApproveSessions[parentID] {
@@ -831,6 +863,7 @@ func (s *permissionService) InheritSessionRunAllowlist(parentID, childID string)
 	if parentID == "" || childID == "" || parentID == childID {
 		return
 	}
+	s.inheritSessionDeny(parentID, childID)
 	s.runAllowlistBySessionMu.Lock()
 	if entry, ok := s.runAllowlistBySession[parentID]; ok {
 		s.runAllowlistBySession[childID] = entry
@@ -862,6 +895,7 @@ func (s *permissionService) InheritSessionRunAllowlistForGeneration(parentID, ch
 	if parentID == "" || childID == "" || parentID == childID {
 		return
 	}
+	s.inheritSessionDeny(parentID, childID)
 	s.runAllowlistBySessionMu.Lock()
 	defer s.runAllowlistBySessionMu.Unlock()
 	if entry, ok := s.runAllowlistBySession[parentID]; ok {

@@ -22,7 +22,9 @@ type APIRoute struct {
 
 func APIRoutes() []APIRoute {
 	routes := append(apiCoreRoutes(), apiReadRoutes()...)
-	return routes
+	routes = append(routes, apiSessionRoutes()...)
+	routes = append(routes, apiRunRoutesWithPlaceholders()...)
+	return append(routes, apiEventsRoute())
 }
 
 func apiCoreRoutes() []APIRoute {
