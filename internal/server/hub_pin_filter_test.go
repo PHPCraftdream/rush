@@ -286,3 +286,44 @@ func TestPinnedViewNeverAllowsInvalidMetadata(t *testing.T) {
 	require.True(t, view.allows(eventMetadata{valid: true, class: eventSession, sessionIDs: []string{"own"}}))
 	require.True(t, newPinnedView("").allows(eventMetadata{}), "an unpinned view allows everything")
 }
+
+// WaitDelivery is the barrier tests read through; a sticky fan-out still
+// queued behind it would arrive after the frame the test stops at. Many
+// clients keep that late fan-out busy long enough for the check to see it.
+func TestHubDeliveryBarrierIncludesPendingStickyFanOut(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		h := newHub()
+		clients := make([]*Client, 3000)
+		for j := range clients {
+			clients[j] = &Client{hub: h, send: make(chan []byte, 1)}
+			h.clients[clients[j]] = struct{}{}
+		}
+		h.BroadcastSticky(EventSkills, map[string]string{"skill": "S"})
+		barrier := make(chan (<-chan struct{}), 1)
+		go func() { barrier <- h.WaitDelivery() }() // parks until Run starts, so both inputs are ready at once
+		ctx, cancel := context.WithCancel(t.Context())
+		go h.Run(ctx)
+		select {
+		case done := <-barrier:
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				cancel()
+				t.Fatal("barrier did not complete")
+			}
+		case <-time.After(5 * time.Second):
+			cancel()
+			t.Fatal("barrier was not accepted")
+		}
+		for j, client := range clients {
+			select {
+			case msg := <-client.send:
+				require.Contains(t, string(msg), `"skill":"S"`)
+			default:
+				cancel()
+				t.Fatalf("iteration %d: client %d had no sticky event when the barrier completed", i, j)
+			}
+		}
+		cancel()
+	}
+}

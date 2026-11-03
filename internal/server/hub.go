@@ -558,6 +558,8 @@ func (h *Hub) Run(ctx context.Context) {
 				select {
 				case msg := <-h.broadcast:
 					h.deliver(msg)
+				case <-h.stickyBroadcast:
+					h.fanOutSticky()
 				default:
 					goto broadcastsDrained
 				}
@@ -595,35 +597,41 @@ func (h *Hub) Run(ctx context.Context) {
 			// it only occurs when the channel is full, meaning at least one
 			// token is already queued, and any drain reads stickyPending which
 			// already contains the changed types.
-			h.stickyMu.Lock()
-			pending := h.stickyPending
-			h.stickyPending = make(map[string]struct{})
-			h.stickyMu.Unlock()
+			h.fanOutSticky()
+		}
+	}
+}
 
-			for msgType := range pending {
-				h.stickyMu.Lock()
-				env, ok := h.sticky[msgType]
-				h.stickyMu.Unlock()
-				if !ok {
+// fanOutSticky delivers the pending sticky envelopes to the connected clients.
+// Called from Run only.
+func (h *Hub) fanOutSticky() {
+	h.stickyMu.Lock()
+	pending := h.stickyPending
+	h.stickyPending = make(map[string]struct{})
+	h.stickyMu.Unlock()
+
+	for msgType := range pending {
+		h.stickyMu.Lock()
+		env, ok := h.sticky[msgType]
+		h.stickyMu.Unlock()
+		if !ok {
+			continue
+		}
+		// Fan-out to already-connected clients only; identical to the
+		// broadcast case's fan-out.
+		meta := newLazyMeta(env)
+		for c := range h.clients {
+			send := env
+			if c.auth != nil {
+				send = c.auth.filter(env, meta)
+				if send == nil {
 					continue
 				}
-				// Fan-out to already-connected clients only; identical to the
-				// broadcast case's fan-out.
-				meta := newLazyMeta(env)
-				for c := range h.clients {
-					send := env
-					if c.auth != nil {
-						send = c.auth.filter(env, meta)
-						if send == nil {
-							continue
-						}
-					}
-					select {
-					case c.send <- send:
-					default:
-						slog.Debug("ws: slow client, dropping sticky message")
-					}
-				}
+			}
+			select {
+			case c.send <- send:
+			default:
+				slog.Debug("ws: slow client, dropping sticky message")
 			}
 		}
 	}
