@@ -677,10 +677,10 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 		defer keepBrokenPipeAsError()()
 
 		// Cancel on SIGINT or SIGTERM.
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
+		ctx, cancel := signal.NotifyContext(context.Background(), cancelSignals...)
 		defer cancel()
 
-		// Last-resort teardown for the SECOND interrupt.
+		// Last-resort teardown for the second SIGINT.
 		//
 		// NotifyContext restores the default disposition after the signal it
 		// acts on, so a user who presses Ctrl-C again — the normal reaction
@@ -695,7 +695,7 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 		// numbers). The child and its own descendants would simply keep
 		// running.
 		//
-		// So the second interrupt is caught rather than left to the default:
+		// So a second SIGINT is caught rather than left to the default:
 		// sweep the process groups (Unix) or jobs (Windows) this process
 		// registered, then exit. Registering a handler means the second
 		// Ctrl-C no longer kills us instantly, so the sweep must be
