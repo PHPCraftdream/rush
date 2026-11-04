@@ -58,6 +58,8 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			knownProviders = append(knownProviders, codexProvider())
 		}
 	}
+	knownProviders = mergeSupplementalCatalogModels(knownProviders)
+	knownProviders = mergeConfirmedCatalogModels(knownProviders, c, resolver)
 
 	// Model metadata the user configured explicitly (ContextWindow > 0 /
 	// DefaultMaxTokens > 0 in rush.json). The facts overlay never touches
@@ -143,6 +145,11 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 
 				p.Models = models
 			}
+		}
+		key, keyErr := resolver.ResolveValue(p.APIKey)
+		endpoint, endpointErr := resolver.ResolveValue(p.APIEndpoint)
+		if keyErr == nil && endpointErr == nil && key != "" && endpoint != "" {
+			p.Models = mergeConfirmedModels(p.Models, readFreshConfirmedModels(string(p.ID), strings.TrimSpace(endpoint), key))
 		}
 
 		headers := map[string]string{}
@@ -490,6 +497,23 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 		providerConfig.Name = cmp.Or(providerConfig.Name, id) // Use ID as name if not set
 		// default to OpenAI if not set
 		providerConfig.Type = cmp.Or(providerConfig.Type, catwalk.TypeOpenAICompat)
+		if supportsModelVerification(string(providerConfig.Type)) {
+			key, keyErr := resolver.ResolveValue(providerConfig.APIKey)
+			endpoint, endpointErr := resolver.ResolveValue(providerConfig.BaseURL)
+			if keyErr == nil && endpointErr == nil && key != "" && endpoint != "" {
+				confirmed := readFreshConfirmedModels(id, strings.TrimSpace(endpoint), key)
+				seen := make(map[string]struct{}, len(providerConfig.Models)+len(confirmed))
+				for _, model := range providerConfig.Models {
+					seen[model.ID] = struct{}{}
+				}
+				for _, model := range confirmed {
+					if _, exists := seen[model.ID]; !exists {
+						providerConfig.Models = append(providerConfig.Models, model)
+						seen[model.ID] = struct{}{}
+					}
+				}
+			}
+		}
 		if !slices.Contains(catwalk.KnownProviderTypes(), providerConfig.Type) &&
 			providerConfig.Type != hyper.Name &&
 			!discover.IsKnownCustomProvider(string(providerConfig.Type)) {

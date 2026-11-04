@@ -143,19 +143,9 @@ rush models state
 			return provider, modelID, known, rerr
 		}
 
-		// warnUnknownModel surfaces the findModels unverified-passthrough
-		// case (see its doc comment in internal/app/provider.go): the
-		// provider is real and configured, but the model id didn't match
-		// anything in its cached catalog. The set still goes through —
-		// cost/context-window just render as unknown until the catalog is
-		// refreshed or the provider's own API accepts/rejects the id at
-		// call time — but the operator needs to see this wasn't a verified
-		// hit, in case it's actually a typo.
-		warnUnknownModel := func(label string, sel config.SelectedModel) {
-			cmd.PrintErrf(
-				"warning: %s model %s/%s is not in %s's known model catalog (cost/context-window unknown) -- set anyway. If this is a typo, fix it; otherwise run `rush providers update %s` to refresh the catalog.\n",
-				label, sel.Provider, sel.Model, sel.Provider, sel.Provider,
-			)
+		var verification []modelVerification
+		verifyUnknown := func(label string, sel config.SelectedModel) {
+			verification = append(verification, modelVerification{label: label, selection: sel, cfg: a.Config(), resolver: a.Store().Resolver()})
 		}
 
 		// Pass 1: parse + validate EVERY provided argument before writing
@@ -176,7 +166,7 @@ rush models state
 				return fmt.Errorf("smart: %w", lerr)
 			}
 			if !known {
-				warnUnknownModel("smart", smartSel)
+				verifyUnknown("smart", smartSel)
 			}
 		}
 
@@ -189,7 +179,7 @@ rush models state
 				return fmt.Errorf("fast: %w", serr)
 			}
 			if !known {
-				warnUnknownModel("fast", fastSel)
+				verifyUnknown("fast", fastSel)
 			}
 		}
 
@@ -202,7 +192,7 @@ rush models state
 				return fmt.Errorf("worker: %w", werr)
 			}
 			if !known {
-				warnUnknownModel("worker", workerSel)
+				verifyUnknown("worker", workerSel)
 			}
 		}
 
@@ -215,7 +205,7 @@ rush models state
 				return fmt.Errorf("reviewer: %w", rerr)
 			}
 			if !known {
-				warnUnknownModel("reviewer", reviewerSel)
+				verifyUnknown("reviewer", reviewerSel)
 			}
 		}
 
@@ -248,6 +238,7 @@ rush models state
 			}
 			return fmt.Errorf("write models: %w", err)
 		}
+		verifyModelSelections(verification, func(format string, args ...any) { cmd.PrintErrf(format, args...) })
 
 		if smartArg != "" {
 			fmt.Fprintf(os.Stderr, "set smart = %s/%s%s in %s scope\n",

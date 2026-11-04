@@ -592,6 +592,9 @@ func updateProvider(a *app.App, id string, p config.ProviderConfig, writeScope c
 	if err := a.Store().SetConfigFields(writeScope, updates); err != nil {
 		return fmt.Errorf("failed to save updated models: %w", err)
 	}
+	if supportsConfirmedProviderRefresh(p.Type) {
+		refreshConfirmedProviderModels(a, id, p)
+	}
 	// Print warnings
 	for _, w := range warnings {
 		fmt.Fprintf(os.Stderr, "note: %s\n", w)
