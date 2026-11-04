@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -140,9 +142,14 @@ func TestOwnerCloseVsRenewalDoesNotPublishLateSession(t *testing.T) {
 		closeStarted <- owner.Close(context.Background())
 	}()
 
-	deadline := time.Now().Add(time.Second)
-	for owner.acceptsSession() && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+	// acceptsSession turns false as soon as Close is REQUESTED, before the
+	// coordinator sets closing and cancels the lifecycle; a renewal committed
+	// in that gap is published (and later closed by Close). Wait for the
+	// lifecycle cancellation, which is the state this test is about.
+	select {
+	case <-owner.lifecycleCtx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close coordinator must cancel the owner lifecycle")
 	}
 	require.False(t, owner.acceptsSession())
 	require.ErrorIs(t, owner.commitRenewal(&admission, name, created, Counts{}), context.Canceled)
@@ -162,6 +169,83 @@ func TestOwnerCloseVsRenewalDoesNotPublishLateSession(t *testing.T) {
 		_, ok := GetState(name)
 		return !ok
 	}, time.Second, time.Millisecond)
+}
+
+// TestOwnerRenewalCommittedBetweenCloseRequestAndCoordinatorIsClosed holds
+// the window between closeRequested and the coordinator (acceptsSession is
+// already false, the lifecycle is not yet canceled) open with the
+// beforeCloseRequest hook. Whether a renewal committed there is rejected or
+// published, Close must leave no session behind and close it exactly once.
+func TestOwnerRenewalCommittedBetweenCloseRequestAndCoordinatorIsClosed(t *testing.T) {
+	owner, err := Acquire()
+	require.NoError(t, err)
+	const name = "gap-renewal"
+	store := config.NewTestStore(&config.Config{MCP: config.MCPs{
+		name: {Type: config.MCPStdio, Command: "unused"},
+	}})
+	admission, err := owner.snapshotServerAdmission(context.Background(), store, name)
+	require.NoError(t, err)
+
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	server := mcp.NewServer(&mcp.Implementation{Name: "gap-server"}, nil)
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	require.NoError(t, err)
+	defer serverSession.Close()
+	createdCtx, createdCancel := context.WithCancel(context.Background())
+	defer createdCancel()
+	clientSession, err := mcp.NewClient(&mcp.Implementation{Name: "gap-client"}, nil).
+		Connect(context.Background(), clientTransport, nil)
+	require.NoError(t, err)
+	var closeCalls atomic.Int32
+	created := &ClientSession{ClientSession: clientSession, cancel: func() {
+		closeCalls.Add(1)
+		createdCancel()
+	}}
+
+	requested := make(chan struct{})
+	proceed := make(chan struct{})
+	var requestOnce, proceedOnce sync.Once
+	release := func() { proceedOnce.Do(func() { close(proceed) }) }
+	defer release()
+	mcpInitTestHooks.Lock()
+	previous := mcpInitTestHooks.beforeCloseRequest
+	mcpInitTestHooks.beforeCloseRequest = func(got *Owner) {
+		if got == owner {
+			requestOnce.Do(func() { close(requested) })
+			<-proceed
+		}
+	}
+	mcpInitTestHooks.Unlock()
+	t.Cleanup(func() {
+		mcpInitTestHooks.Lock()
+		mcpInitTestHooks.beforeCloseRequest = previous
+		mcpInitTestHooks.Unlock()
+	})
+
+	require.True(t, owner.beginInit())
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- owner.Close(context.Background()) }()
+	awaitMCPSignal(t, requested)
+
+	require.False(t, owner.acceptsSession())
+	require.NoError(t, owner.lifecycleCtx.Err(), "the coordinator has not run yet")
+	_ = owner.commitRenewal(&admission, name, created, Counts{})
+
+	release()
+	owner.endInit()
+	require.NoError(t, <-closeResult)
+
+	require.Error(t, createdCtx.Err())
+	require.EqualValues(t, 1, closeCalls.Load(), "the renewal session must be closed exactly once")
+	require.Empty(t, func() map[string]*ClientSession {
+		got := map[string]*ClientSession{}
+		for sessionName, session := range sessions.Seq2() {
+			got[sessionName] = session
+		}
+		return got
+	}())
+	_, ok := GetState(name)
+	require.False(t, ok)
 }
 
 func TestOwnerCommitRenewalPublishesSuccessfulSession(t *testing.T) {
