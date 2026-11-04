@@ -13,6 +13,12 @@ var supplementalCatalogModels = map[catwalk.InferenceProvider][]catwalk.Model{
 			ReasoningLevels:        []string{"low", "medium", "high", "xhigh", "max"},
 			DefaultReasoningEffort: "high",
 			SupportsImages:         true,
+			// Anthropic list price for prompts up to 100K tokens; cache
+			// write/read use the standard 1.25x/0.1x multipliers.
+			CostPer1MIn:        0.10,
+			CostPer1MOut:       0.50,
+			CostPer1MInCached:  0.125,
+			CostPer1MOutCached: 0.01,
 		},
 	},
 }
@@ -24,23 +30,12 @@ func mergeSupplementalCatalogModels(providers []catwalk.Provider) []catwalk.Prov
 			continue
 		}
 		ids := make(map[string]struct{}, len(providers[i].Models)+len(supplements))
-		modelsByID := make(map[string]catwalk.Model, len(providers[i].Models))
 		for _, model := range providers[i].Models {
 			ids[model.ID] = struct{}{}
-			modelsByID[model.ID] = model
 		}
 		for _, model := range supplements {
 			if _, exists := ids[model.ID]; exists {
 				continue
-			}
-			if model.ID == "claude-haiku-5-5" {
-				if predecessor, exists := modelsByID["claude-haiku-4-5-20251001"]; exists {
-					// estimate: pricing not published in catwalk; replaced as soon as catwalk lists the model
-					model.CostPer1MIn = predecessor.CostPer1MIn
-					model.CostPer1MOut = predecessor.CostPer1MOut
-					model.CostPer1MInCached = predecessor.CostPer1MInCached
-					model.CostPer1MOutCached = predecessor.CostPer1MOutCached
-				}
 			}
 			providers[i].Models = append(providers[i].Models, model)
 			ids[model.ID] = struct{}{}
