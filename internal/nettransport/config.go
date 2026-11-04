@@ -32,8 +32,11 @@ import (
 // ResolveNetworkConfig merges global and per-provider network settings.
 // Merging is per FIELD, not per struct: for each of Proxy, DNSServer
 // and DoHURL independently, the provider value wins when non-empty,
-// otherwise the global value is inherited. A nil argument means
-// "nothing configured at that level" and is skipped, never a panic.
+// otherwise the global value is inherited. A provider proxy replaces
+// the global one entirely; the value "none" (config.ProxyNone) at
+// either level clears the proxy, so a provider can opt out of a global
+// proxy. A nil argument means "nothing configured at that level" and
+// is skipped, never a panic.
 func ResolveNetworkConfig(global, provider *config.NetworkConfig) config.NetworkConfig {
 	var merged config.NetworkConfig
 	for _, src := range []*config.NetworkConfig{global, provider} {
@@ -41,7 +44,11 @@ func ResolveNetworkConfig(global, provider *config.NetworkConfig) config.Network
 			continue
 		}
 		if src.Proxy != "" {
-			merged.Proxy = src.Proxy
+			if config.IsProxyNone(src.Proxy) {
+				merged.Proxy = ""
+			} else {
+				merged.Proxy = src.Proxy
+			}
 		}
 		if src.DNSServer != "" {
 			merged.DNSServer = src.DNSServer

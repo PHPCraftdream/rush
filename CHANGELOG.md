@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Added `proxy: none` for providers: `providers.<id>.network.proxy: none` (case-insensitive) makes that provider connect directly even when `options.network.proxy` is set; under `options.network` it means no proxy. A provider's proxy already replaced the global one as a whole; this is now documented with a resolution table and examples for both `socks5://` and `http://` proxies, and the schema descriptions say so. `dns_server`/`doh_url` still cascade per field.
+
 - Added `anthropic/claude-haiku-5-5` to the Anthropic catalog (1M context; pricing is an estimate copied from `claude-haiku-4-5` until catwalk lists the model, so cost budgets still apply). A catwalk entry with the same id wins.
 - Unknown models selected with `rush models use` are checked against the provider's model list and successful full lists are cached for seven days; `rush providers update` refreshes the same list. The command now says explicitly that the model is set, whether the provider confirmed it (`note:`), did not list it, or could not be asked (`warning:`); a confirmed full roster makes later models known without warnings.
 
