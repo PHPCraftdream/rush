@@ -20,7 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -54,17 +53,26 @@ func newAdmissionRaceApp(t *testing.T, handler http.HandlerFunc) (*App, string) 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
+	// The provider lives on disk, not only in memory: a config reload (the disk
+	// poller or a config write's auto-reload) rebuilds from disk, and a
+	// memory-only provider would vanish with the coder agent.
+	rushJSON := fmt.Sprintf(`{
+  "disable_default_providers": true,
+  "providers": {
+    "openaicompat": {
+      "id": "openaicompat", "type": %q, "base_url": %q,
+      "api_key": "probe", "discover_models": false,
+      "models": [{"id":"probe","name":"probe","context_window":200000,"default_max_tokens":1000}]
+    }
+  },
+  "models": {
+    "smart": {"provider":"openaicompat","model":"probe"},
+    "fast": {"provider":"openaicompat","model":"probe"}
+  }
+}`, openaicompat.Name, srv.URL)
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "rush.json"), []byte(rushJSON), 0o644))
 	store, err := config.Init(dataDir, dataDir, false)
 	require.NoError(t, err)
-	store.Config().Providers.Set("openaicompat", config.ProviderConfig{
-		ID:      "openaicompat",
-		Type:    openaicompat.Name,
-		BaseURL: srv.URL,
-		APIKey:  "probe",
-		Models: []catwalk.Model{
-			{ID: "probe", Name: "probe", ContextWindow: 200000, DefaultMaxTokens: 1000},
-		},
-	})
 	store.SetSelectedModelRuntime(config.SelectedModelTypeSmart, config.SelectedModel{
 		Provider: "openaicompat",
 		Model:    "probe",
