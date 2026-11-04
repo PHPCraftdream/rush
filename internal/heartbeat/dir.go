@@ -12,7 +12,11 @@ import (
 // else heartbeat/ next to the global settings file. A test binary without
 // an isolated global dir returns "" so tests never write the real registry.
 func DefaultDir() string {
-	if _, ok := config.GlobalDir(); ok {
+	// An isolated global dir (RUSH_GLOBAL_DIR) does not lift the test guard
+	// below: the process-wide writer follows the environment of whichever test
+	// runs now and would keep writing into that test's TempDir while it is
+	// being removed.
+	if _, ok := config.GlobalDir(); ok && !skipDefaultDirInTests {
 		return filepath.Join(config.GlobalWorkspaceDir(), "heartbeat")
 	}
 	if d := os.Getenv("RUSH_HEARTBEAT_DIR"); d != "" {
