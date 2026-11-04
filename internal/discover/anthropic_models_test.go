@@ -23,7 +23,7 @@ func TestDiscoverAnthropicModelsPaginatesAndIncludesFacts(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":[{"id":"b","display_name":"B"}],"has_more":false}`))
 	}))
 	defer server.Close()
-	models, err := DiscoverAnthropicModels(context.Background(), server.URL+"/v1", "secret")
+	models, err := DiscoverAnthropicModels(context.Background(), nil, server.URL+"/v1", "secret")
 	require.NoError(t, err)
 	require.Len(t, models, 2)
 	require.EqualValues(t, 100, models[0].ContextWindow)

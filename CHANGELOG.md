@@ -9,6 +9,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 - The WebSocket `config` event (the `get_config` reply and config broadcasts) no longer carries `cwd`, `contextPaths` or `skillsPaths` for API tokens below the `config` scope, so a `read`/`run` token cannot learn the server's local paths; `config` and `admin` tokens and the built-in web UI are unchanged.
+- Model-list discovery, `rush models use` verification of unknown models, `rush providers update` and `rush providers test` now follow the provider's `network.proxy` cascade (global `options.network` overridden by `providers.<id>.network`, `proxy: none` opts out) like its LLM requests do; before, they always connected directly. A malformed `network` block fails these requests with a clear message instead of connecting directly.
 
 - Added `proxy: none` for providers: `providers.<id>.network.proxy: none` (case-insensitive) makes that provider connect directly even when `options.network.proxy` is set; under `options.network` it means no proxy. A provider's proxy already replaced the global one as a whole; this is now documented with a resolution table and examples for both `socks5://` and `http://` proxies, and the schema descriptions say so. `dns_server`/`doh_url` still cascade per field.
 

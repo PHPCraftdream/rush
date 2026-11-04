@@ -21,7 +21,7 @@ func supportsConfirmedProviderRefresh(providerType catwalk.Type) bool {
 }
 
 func refreshConfirmedProviderModels(a *app.App, id string, pc config.ProviderConfig) {
-	models, reason, err := config.FetchProviderModels(context.Background(), pc, id, a.Store().Resolver())
+	models, reason, err := config.FetchProviderModels(context.Background(), a.Config(), pc, id, a.Store().Resolver())
 	if err != nil || reason != "" {
 		if reason == "" {
 			reason = "provider request failed"

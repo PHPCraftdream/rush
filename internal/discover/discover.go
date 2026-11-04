@@ -17,6 +17,14 @@ import (
 // even if the caller forgets to set a context deadline.
 var httpClient = &http.Client{Timeout: 10 * time.Second}
 
+// clientOrDefault returns client, or the shared default when it is nil.
+func clientOrDefault(client *http.Client) *http.Client {
+	if client == nil {
+		return httpClient
+	}
+	return client
+}
+
 // stripV1Suffix removes a trailing /v1 from a base URL. Enricher
 // endpoints (e.g. Ollama's /api/show, LM Studio's /api/v1/models) are
 // served at the server root, not under the OpenAI-compatible /v1
@@ -31,7 +39,7 @@ func stripV1Suffix(baseURL string) string {
 // shared client. It resolves variable references in the base URL, API
 // key, and extra headers via the provided Resolver. The path is joined
 // to the base URL with proper slash handling.
-func doRequest(ctx context.Context, method, baseURL, path, apiKey string, extraHeaders map[string]string, resolver Resolver, body any) (*http.Response, error) {
+func doRequest(ctx context.Context, client *http.Client, method, baseURL, path, apiKey string, extraHeaders map[string]string, resolver Resolver, body any) (*http.Response, error) {
 	resolvedBase, _ := resolver.ResolveValue(baseURL)
 	resolvedKey, _ := resolver.ResolveValue(apiKey)
 
@@ -71,7 +79,7 @@ func doRequest(ctx context.Context, method, baseURL, path, apiKey string, extraH
 		req.Header.Set(k, resolved)
 	}
 
-	return httpClient.Do(req)
+	return clientOrDefault(client).Do(req)
 }
 
 // Config holds the provider configuration needed for model discovery.
@@ -80,6 +88,9 @@ type Config struct {
 	BaseURL      string
 	APIKey       string
 	ExtraHeaders map[string]string
+	// HTTPClient carries the provider's outbound network policy (proxy, DNS)
+	// resolved by the caller; nil uses the shared default client.
+	HTTPClient *http.Client
 	// Existing models from config — IDs present in this list are skipped
 	// during discovery (user-specified models win).
 	ExistingModels []catwalk.Model
@@ -105,7 +116,7 @@ type modelsResponse struct {
 // Models whose IDs already appear in cfg.ExistingModels are skipped —
 // user-specified models take precedence.
 func DiscoverModels(ctx context.Context, cfg Config, resolver Resolver) ([]catwalk.Model, error) {
-	resp, err := doRequest(ctx, http.MethodGet, cfg.BaseURL, "/models", cfg.APIKey, cfg.ExtraHeaders, resolver, nil)
+	resp, err := doRequest(ctx, cfg.HTTPClient, http.MethodGet, cfg.BaseURL, "/models", cfg.APIKey, cfg.ExtraHeaders, resolver, nil)
 	if err != nil {
 		return nil, fmt.Errorf("discover models for provider %s: %w", cfg.ID, err)
 	}

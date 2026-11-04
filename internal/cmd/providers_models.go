@@ -40,6 +40,18 @@ func fetchModels(a *app.App, p config.ProviderConfig) ([]catwalk.Model, []string
 func fetchModelsByType(a *app.App, p config.ProviderConfig) ([]catwalk.Model, []string, error) {
 	var warnings []string
 
+	// Provider-bound requests follow the provider's proxy cascade (global
+	// options.network overridden by providers.<id>.network, proxy: none opts
+	// out). A malformed setting fails the fetch instead of going direct.
+	var cfg *config.Config
+	if a != nil {
+		cfg = a.Config()
+	}
+	providerClient, err := cfg.ProviderHTTPClient(p)
+	if err != nil {
+		return nil, warnings, fmt.Errorf("provider %s: network settings: %w", p.ID, err)
+	}
+
 	// Resolve env-template API keys (e.g. "$ZAI_API_KEY") before HTTP calls —
 	// otherwise the Authorization header is dropped and the API returns 401.
 	apiKey := p.APIKey
@@ -73,7 +85,7 @@ func fetchModelsByType(a *app.App, p config.ProviderConfig) ([]catwalk.Model, []
 			}
 			token = latest.OAuthToken
 		}
-		models, err := discover.DiscoverCodexModels(ctx, token.AccessToken, token.AccountID)
+		models, err := discover.DiscoverCodexModels(ctx, providerClient, token.AccessToken, token.AccountID)
 		return models, warnings, err
 	case "cli":
 		models := fetchModelsCLI()
@@ -82,14 +94,14 @@ func fetchModelsByType(a *app.App, p config.ProviderConfig) ([]catwalk.Model, []
 		if baseURL == "" {
 			return nil, warnings, fmt.Errorf("openai-compat requires base_url")
 		}
-		models, warns, err := fetchModelsOpenAICompat(baseURL, apiKey)
+		models, warns, err := fetchModelsOpenAICompat(providerClient, baseURL, apiKey)
 		warnings = append(warnings, warns...)
 		return models, warnings, err
 	case "anthropic":
 		if baseURL == "" {
 			baseURL = "https://api.anthropic.com/v1"
 		}
-		models, warns, err := fetchModelsAnthropic(baseURL, apiKey)
+		models, warns, err := fetchModelsAnthropic(providerClient, baseURL, apiKey)
 		warnings = append(warnings, warns...)
 		return models, warnings, err
 	default:
@@ -114,8 +126,16 @@ func fetchModelsFromCatwalk(a *app.App, providerType string) ([]catwalk.Model, e
 	return []catwalk.Model{}, nil
 }
 
+// clientOrDefault returns client, or http.DefaultClient when it is nil.
+func clientOrDefault(client *http.Client) *http.Client {
+	if client == nil {
+		return http.DefaultClient
+	}
+	return client
+}
+
 // fetchModelsOpenAICompat fetches from an OpenAI-compatible /models endpoint.
-func fetchModelsOpenAICompat(baseURL, apiKey string) ([]catwalk.Model, []string, error) {
+func fetchModelsOpenAICompat(client *http.Client, baseURL, apiKey string) ([]catwalk.Model, []string, error) {
 	var warnings []string
 	baseURL = strings.TrimRight(baseURL, "/")
 	endpoint := baseURL + "/models"
@@ -129,7 +149,7 @@ func fetchModelsOpenAICompat(baseURL, apiKey string) ([]catwalk.Model, []string,
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := clientOrDefault(client).Do(req)
 	if err != nil {
 		return nil, warnings, fmt.Errorf("failed to fetch models: %w", err)
 	}
@@ -171,7 +191,7 @@ func fetchModelsOpenAICompat(baseURL, apiKey string) ([]catwalk.Model, []string,
 }
 
 // fetchModelsAnthropic fetches from Anthropic's /v1/models endpoint.
-func fetchModelsAnthropic(baseURL, apiKey string) ([]catwalk.Model, []string, error) {
+func fetchModelsAnthropic(client *http.Client, baseURL, apiKey string) ([]catwalk.Model, []string, error) {
 	var warnings []string
 	baseURL = strings.TrimRight(baseURL, "/")
 	endpoint := baseURL + "/models"
@@ -184,7 +204,7 @@ func fetchModelsAnthropic(baseURL, apiKey string) ([]catwalk.Model, []string, er
 	req.Header.Set("x-api-key", apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := clientOrDefault(client).Do(req)
 	if err != nil {
 		return nil, warnings, fmt.Errorf("failed to fetch models: %w", err)
 	}
