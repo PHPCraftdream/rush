@@ -14,7 +14,6 @@ packages = ["internal/agent"]
 [shards.A]
 groups = [
   { name = "test: internal/app", type = "go", packages = ["internal/app"], timeout = "20m" },
-  { name = "test: internal/server, internal/session", type = "go", packages = ["internal/server", "internal/session"] },
   { name = "test: sdk", type = "go", packages = ["sdk"] },
   { name = "test: npm wrapper cache logic", type = "npm" },
   { name = "go mod tidy produces no diff", type = "tidy" },
@@ -41,6 +40,7 @@ groups = [
   ] },
   { name = "test: internal/shell", type = "go", packages = ["internal/shell"] },
   { name = "test: internal/jobbatch, cmd/batchlab", type = "go", packages = ["internal/jobbatch", "cmd/batchlab"] },
+  { name = "test: internal/server, internal/session", type = "go", packages = ["internal/server", "internal/session"] },
 ]
 
 # Shard D keeps the former build workflow's named-step diagnosis for the groups that were
@@ -62,7 +62,7 @@ groups = [
 # and in shards-summary so workflow group changes cannot silently go uncovered.
 [windows_leg]
 "test: internal/app" = "A/test: internal/app"
-"test: internal/server, internal/session" = "A/test: internal/server, internal/session"
+"test: internal/server, internal/session" = "C/test: internal/server, internal/session"
 "test: sdk" = "A/test: sdk"
 "test: internal/cmd, internal/commands" = "B/test: internal/cmd, internal/commands"
 "test: internal/agent subpackages" = "C/test: internal/agent subpackages"

@@ -93,6 +93,9 @@ jobs:
     runs-on: windows-latest
     # Runaway backstop only. Shards A and D usually take 25-40 min; a slow runner
     # took 60 min on shard A (run 41017535293) and the job was cancelled mid-suite.
+    # Run 41712073762 (slow runner, every package ~1.5x) hit this 90 min limit on
+    # shard A, then holding internal/app + server + session + sdk (53 min on a
+    # normal runner); server + session now run on the lightest shard, C.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -172,7 +175,7 @@ jobs:
           exit $rc
 
       - name: "test: internal/server, internal/session"
-        if: matrix.shard == 'A'
+        if: matrix.shard == 'C'
         shell: bash
         run: |
           f="$SHARD_DIR/test-internal-server-internal-session.txt"
