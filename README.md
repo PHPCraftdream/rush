@@ -986,6 +986,8 @@ Restart an already-running WebUI server after clearing the cache. Run
 
 ### By the Way
 
+Rush also checks provider/model values not present in the local catalog when used with `rush models use`. A successful provider roster is cached for seven days, making newly released models known on subsequent loads; use `rush providers update <provider>` to refresh it explicitly. Models absent from the live roster remain settable, with unknown cost and context-window facts noted.
+
 Is there a provider you’d like to see in Rush? Is there an existing model that needs an update?
 
 Rush’s default model listing is managed in [Catwalk](https://github.com/charmbracelet/catwalk), a community-supported, open source repository of Rush-compatible models, and you’re welcome to contribute.

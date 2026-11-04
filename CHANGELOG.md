@@ -8,6 +8,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Added `anthropic/claude-haiku-5-5` to the Anthropic catalog (1M context; pricing is an estimate copied from `claude-haiku-4-5` until catwalk lists the model, so cost budgets still apply). A catwalk entry with the same id wins.
+- Unknown models selected with `rush models use` are checked against the provider's model list and successful full lists are cached for seven days; `rush providers update` refreshes the same list. The command now says explicitly that the model is set, whether the provider confirmed it (`note:`), did not list it, or could not be asked (`warning:`); a confirmed full roster makes later models known without warnings.
+
 - Added batch intake to the external API: `POST /tasks` and `POST /batches` with reads, stops and held-question answers, a hidden service session per token, an exact-name tool allowlist, node/depth/parallelism/timeout limits, durable idempotency, and `rush api task` / `rush api batch run|show|wait|stop|output|answer`.
 - Added token bindings that are enforced: `rush tokens create --batch [--tools --max-roots --max-parallel]` confines a token to batch intake, and `rush serve --route batch` (or `route: batch`) makes batch intake the only work route of a listener, on REST and WebSocket alike. Documented in `docs/api/bindings.md`.
 - Fixed a batch question staying `awaiting_answer` after it was answered, which made answer-then-wait ask for the same answer again.

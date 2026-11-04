@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
@@ -23,7 +24,7 @@ type cachedModelCatalog struct {
 	Models      []catwalk.Model `json:"models"`
 }
 
-var cachedModelCatalogProviders = [...]string{"openai-codex", "stepfun", "zai"}
+var cachedModelCatalogProviders = [...]string{"openai-codex", "stepfun", "zai", "anthropic", "openai"}
 
 func modelCatalogPath(provider string) string {
 	return cachePathFor("model-catalog-" + provider)
@@ -99,14 +100,45 @@ func ClearModelCatalogCache(provider string) error {
 				return err
 			}
 		}
-		return nil
+		return clearAllConfirmedModels()
 	}
 	for _, id := range cachedModelCatalogProviders {
 		if provider == id {
-			return clearModelCatalog(id)
+			if err := clearModelCatalog(id); err != nil {
+				return err
+			}
+			return clearConfirmedModels(id)
 		}
 	}
-	return fmt.Errorf("unsupported model catalog %q (valid: openai-codex, stepfun, zai, all)", provider)
+	return fmt.Errorf("unsupported model catalog %q (valid: openai-codex, stepfun, zai, anthropic, openai, all)", provider)
+}
+
+func clearAllConfirmedModels() error {
+	paths, err := filepath.Glob(cachePathFor("confirmed-models-*"))
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("clear confirmed models: %w", err)
+		}
+		if strings.HasSuffix(path, ".json") {
+			if err := os.Remove(ktavSiblingOf(path)); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("clear confirmed models: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func clearConfirmedModels(provider string) error {
+	path := confirmedModelsPath(provider)
+	for _, candidate := range []string{path, ktavSiblingOf(path)} {
+		if err := os.Remove(candidate); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("clear %s confirmed models: %w", provider, err)
+		}
+	}
+	return nil
 }
 
 func clearModelCatalog(provider string) error {
