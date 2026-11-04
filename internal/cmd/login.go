@@ -293,7 +293,7 @@ func loginOpenAICodex(cfg *config.ConfigStore, force, device bool) error {
 }
 
 func getLoginContext() context.Context {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
+	ctx, cancel := signal.NotifyContext(context.Background(), cancelSignals...)
 	go func() {
 		<-ctx.Done()
 		cancel()
