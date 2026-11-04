@@ -44,7 +44,7 @@ func (e *llamacppEnricher) EnrichModels(ctx context.Context, cfg Config, resolve
 	// llama-server serves /v1/models under the OpenAI-compatible /v1
 	// namespace, so the path is relative to the configured base URL
 	// (which already includes /v1) rather than the server root.
-	resp, err := doRequest(ctx, http.MethodGet, cfg.BaseURL, "/models", cfg.APIKey, cfg.ExtraHeaders, resolver, nil)
+	resp, err := doRequest(ctx, cfg.HTTPClient, http.MethodGet, cfg.BaseURL, "/models", cfg.APIKey, cfg.ExtraHeaders, resolver, nil)
 	if err != nil {
 		return models, nil
 	}

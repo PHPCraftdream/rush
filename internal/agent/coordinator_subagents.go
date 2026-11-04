@@ -67,6 +67,12 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			lifecycle.NoChildSelected()
 		}
 	}()
+	// A batch node starts its child without an enclosing turn, so nothing has
+	// drained the asynchronous prompt/tool build of params.Agent yet; a child
+	// run before that would go out with an empty system prompt and toolset.
+	if err := c.readyWg.Wait(); err != nil {
+		return fantasy.ToolResponse{}, err
+	}
 	var session session.Session
 	if params.ResumeSessionID != "" {
 		// Resume path (Gap 2 / phase 3.2): reuse the existing sub-session so

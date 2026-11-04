@@ -39,7 +39,7 @@ func TestFetchModelsOpenAICompat(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	models, warnings, err := fetchModelsOpenAICompat(srv.URL, "test-key")
+	models, warnings, err := fetchModelsOpenAICompat(nil, srv.URL, "test-key")
 	require.NoError(t, err)
 	require.Len(t, models, 2)
 	assert.Equal(t, "model-a", models[0].ID)
@@ -58,7 +58,7 @@ func TestFetchModelsOpenAICompat_Unauthorized(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, _, err := fetchModelsOpenAICompat(srv.URL, "bad-key")
+	_, _, err := fetchModelsOpenAICompat(nil, srv.URL, "bad-key")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "HTTP 401")
 }
@@ -82,7 +82,7 @@ func TestFetchModelsOpenAICompat_NoAuth(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	models, _, err := fetchModelsOpenAICompat(srv.URL, "")
+	models, _, err := fetchModelsOpenAICompat(nil, srv.URL, "")
 	require.NoError(t, err)
 	require.Len(t, models, 1)
 	assert.Equal(t, "model-x", models[0].ID)
@@ -113,7 +113,7 @@ func TestFetchModelsAnthropic(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	models, _, err := fetchModelsAnthropic(srv.URL, "test-key")
+	models, _, err := fetchModelsAnthropic(nil, srv.URL, "test-key")
 	require.NoError(t, err)
 	require.Len(t, models, 2)
 	assert.Equal(t, "claude-sonnet-4", models[0].ID)
@@ -129,7 +129,7 @@ func TestFetchModelsAnthropic_Error(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, _, err := fetchModelsAnthropic(srv.URL, "bad-key")
+	_, _, err := fetchModelsAnthropic(nil, srv.URL, "bad-key")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "HTTP 403")
 }
@@ -159,7 +159,7 @@ func TestFetchModelsOpenAICompat_TrailingSlash(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, _, err := fetchModelsOpenAICompat(srv.URL+"/", "key")
+	_, _, err := fetchModelsOpenAICompat(nil, srv.URL+"/", "key")
 	require.NoError(t, err)
 	assert.Equal(t, "/models", receivedPath)
 }

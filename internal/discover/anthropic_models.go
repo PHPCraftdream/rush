@@ -16,7 +16,7 @@ const anthropicModelsMaxPages = 4
 
 // DiscoverAnthropicModels fetches the complete Anthropic model list, bounded
 // to four pages so malformed pagination cannot cause unbounded requests.
-func DiscoverAnthropicModels(ctx context.Context, baseURL, apiKey string) ([]catwalk.Model, error) {
+func DiscoverAnthropicModels(ctx context.Context, client *http.Client, baseURL, apiKey string) ([]catwalk.Model, error) {
 	base := strings.TrimRight(baseURL, "/")
 	base = strings.TrimSuffix(base, "/v1")
 	endpoint := base + "/v1/models"
@@ -39,7 +39,7 @@ func DiscoverAnthropicModels(ctx context.Context, baseURL, apiKey string) ([]cat
 		}
 		req.Header.Set("x-api-key", apiKey)
 		req.Header.Set("anthropic-version", "2023-06-01")
-		resp, err := httpClient.Do(req)
+		resp, err := clientOrDefault(client).Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("fetch Anthropic models: %w", err)
 		}

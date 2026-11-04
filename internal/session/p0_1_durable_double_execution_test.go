@@ -117,7 +117,49 @@ func (c *durableCallExecutionCounter) Run(ctx context.Context, callData session.
 func TestReleaseGate_P0_1_DurableCallExecutesExactlyOnce(t *testing.T) {
 	t.Parallel()
 	limitParallel(t)
-	sess, svc := setupTestSession(t, "test-session-p0-1-no-dup")
+	runDurableExactlyOnceScenario(t, "test-session-p0-1-no-dup", func(svc session.Service, _ *fakePumpClock) session.Service { return svc })
+}
+
+// holdUntilClockMovesAfterNack parks the pump between its Nack and its
+// busyBackoffUntil write until the test advances the fake clock, forcing the
+// interleaving where the test's Advance lands inside that window (the row is
+// already pending, the backoff deadline is not yet stamped).
+type holdUntilClockMovesAfterNack struct {
+	session.Service
+	clk *fakePumpClock
+}
+
+func (s *holdUntilClockMovesAfterNack) NackRunQueueEntryNoAttemptPenalty(ctx context.Context, id, leasedBy, lastError string) error {
+	err := s.Service.NackRunQueueEntryNoAttemptPenalty(ctx, id, leasedBy, lastError)
+	if err != nil {
+		return err
+	}
+	before := s.clk.Now()
+	deadline := time.Now().Add(5 * time.Second)
+	for s.clk.Now().Equal(before) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	return nil
+}
+
+// TestReleaseGate_P0_1_ExactlyOnceSurvivesAdvanceInsideNackWindow is the
+// deterministic form of the Windows shard C flake: the test's Advance lands
+// after the Nack but before busyBackoffUntil is written, so the single tick it
+// delivers is skipped (the execution still holds its admission slot) and the
+// deadline is then stamped on the already-advanced clock. A single Advance
+// followed by a wait never gets another tick; the probe loop must keep
+// advancing.
+func TestReleaseGate_P0_1_ExactlyOnceSurvivesAdvanceInsideNackWindow(t *testing.T) {
+	t.Parallel()
+	limitParallel(t)
+	runDurableExactlyOnceScenario(t, "test-session-p0-1-nack-window", func(svc session.Service, clk *fakePumpClock) session.Service {
+		return &holdUntilClockMovesAfterNack{Service: svc, clk: clk}
+	})
+}
+
+func runDurableExactlyOnceScenario(t *testing.T, sessionName string, wrap func(session.Service, *fakePumpClock) session.Service) {
+	t.Helper()
+	sess, svc := setupTestSession(t, sessionName)
 	ctx := t.Context()
 
 	// Enqueue a durable call with a unique idempotency key. This call will
@@ -159,7 +201,7 @@ func TestReleaseGate_P0_1_DurableCallExecutesExactlyOnce(t *testing.T) {
 	// so neither the watchdog nor lease expiry nor a real-time cleanup can
 	// ever fire — every interleaving is deterministic.
 	clk := newFakePumpClock(fakePumpEpoch)
-	probe := newFakeClockService(svc, clk)
+	probe := wrap(newFakeClockService(svc, clk), clk)
 	const leaseTTL = 30 * time.Second
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       probe,
@@ -192,9 +234,9 @@ func TestReleaseGate_P0_1_DurableCallExecutesExactlyOnce(t *testing.T) {
 		awaitPump(t, rowPending,
 			"pump must retry after the busy backoff (no-attempt-penalty nack)")
 		// Crosses the busyBackoffUntil deadline (now + leaseTTL) and
-		// delivers exactly one coalesced tick.
-		clk.Advance(leaseTTL + 20*time.Millisecond + time.Millisecond)
-		awaitPump(t, func() bool { return counter.callCount.Load() >= i },
+		// delivers one coalesced tick, repeating if that tick was skipped.
+		advanceUntil(t, clk, svc, idempotencyKey, leaseTTL+20*time.Millisecond+time.Millisecond,
+			func() bool { return counter.callCount.Load() >= i },
 			"pump tick after backoff must re-lease and re-dispatch the entry")
 	}
 
@@ -202,8 +244,8 @@ func TestReleaseGate_P0_1_DurableCallExecutesExactlyOnce(t *testing.T) {
 	// nacks the row back to pending on the busy path one last time before
 	// the next attempt executes it for real.
 	awaitPump(t, rowPending, "row must be pending again after the last busy attempt")
-	clk.Advance(leaseTTL + 20*time.Millisecond + time.Millisecond)
-	awaitPump(t, func() bool { return counter.callCount.Load() > busyCycles },
+	advanceUntil(t, clk, svc, idempotencyKey, leaseTTL+20*time.Millisecond+time.Millisecond,
+		func() bool { return counter.callCount.Load() > busyCycles },
 		"the final (successful) attempt must execute the durable call")
 
 	// Fake time is now frozen forever: the watchdog (deadline = lease + 15s
@@ -224,6 +266,27 @@ func TestReleaseGate_P0_1_DurableCallExecutesExactlyOnce(t *testing.T) {
 		"durable call must execute exactly once — got %d executions, "+
 			"indicating double-execution (possibly mb.submitted + durable row)",
 		executions)
+}
+
+// advanceUntil advances the fake clock by step per probe until cond holds. A
+// single Advance is not enough: it delivers at most one coalesced tick, and
+// that tick is skipped when the pump is still inside its Nack -> busyBackoffUntil
+// window (the execution holds its admission slot, then stamps the deadline on
+// the already-advanced clock), after which no further tick would ever fire.
+// Fake time never moves while the row is leased: a cleanup cutoff overtaking a
+// live lease would reap it mid-execution and charge an attempt.
+func advanceUntil(t *testing.T, clk *fakePumpClock, svc session.Service, entryID string, step time.Duration, cond func() bool, msg string) {
+	t.Helper()
+	awaitPump(t, func() bool {
+		if cond() {
+			return true
+		}
+		if e, err := svc.GetRunQueueEntry(t.Context(), entryID); err == nil && e != nil && e.Status == "leased" {
+			return false
+		}
+		clk.Advance(step)
+		return false
+	}, msg)
 }
 
 // Non-durable calls are covered directly and unconditionally by

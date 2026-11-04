@@ -16,7 +16,7 @@ const providerCatalogMaxBytes = 10 << 20
 // DiscoverProviderCatalog reads the provider's own model roster and optional
 // per-model effort metadata. Missing effort metadata remains unknown.
 func DiscoverProviderCatalog(ctx context.Context, cfg Config, resolver Resolver) ([]catwalk.Model, error) {
-	resp, err := doRequest(ctx, http.MethodGet, cfg.BaseURL, "/models", cfg.APIKey, cfg.ExtraHeaders, resolver, nil)
+	resp, err := doRequest(ctx, cfg.HTTPClient, http.MethodGet, cfg.BaseURL, "/models", cfg.APIKey, cfg.ExtraHeaders, resolver, nil)
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s model catalog: %w", cfg.ID, err)
 	}
