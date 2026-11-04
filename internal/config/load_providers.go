@@ -229,11 +229,15 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			prepared.BaseURL = discover.CodexBaseURL
 			if !prepared.Disable {
 				discoverCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				models, err := cachedProviderModels(discoverCtx, prepared.ID, prepared.BaseURL,
-					cmp.Or(config.OAuthToken.AccountID, config.OAuthToken.AccessToken),
-					func(ctx context.Context) ([]catwalk.Model, error) {
-						return discover.DiscoverCodexModels(ctx, config.OAuthToken.AccessToken, config.OAuthToken.AccountID)
-					})
+				providerClient, err := c.ProviderHTTPClient(prepared)
+				var models []catwalk.Model
+				if err == nil {
+					models, err = cachedProviderModels(discoverCtx, prepared.ID, prepared.BaseURL,
+						cmp.Or(config.OAuthToken.AccountID, config.OAuthToken.AccessToken),
+						func(ctx context.Context) ([]catwalk.Model, error) {
+							return discover.DiscoverCodexModels(ctx, providerClient, config.OAuthToken.AccessToken, config.OAuthToken.AccountID)
+						})
+				}
 				cancel()
 				if err != nil {
 					slog.Warn("OpenAI Codex model discovery failed", "provider", p.ID, "error", err)
@@ -352,12 +356,17 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			endpoint, endpointErr := resolver.ResolveValue(prepared.BaseURL)
 			if keyErr == nil && endpointErr == nil && key != "" && endpoint != "" {
 				discoverCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				live, discoverErr := cachedProviderModels(discoverCtx, prepared.ID, endpoint, key,
-					func(ctx context.Context) ([]catwalk.Model, error) {
-						return discover.DiscoverProviderCatalog(ctx, discover.Config{
-							ID: prepared.ID, BaseURL: endpoint, APIKey: key, ExtraHeaders: prepared.ExtraHeaders,
-						}, resolver)
-					})
+				providerClient, discoverErr := c.ProviderHTTPClient(prepared)
+				var live []catwalk.Model
+				if discoverErr == nil {
+					live, discoverErr = cachedProviderModels(discoverCtx, prepared.ID, endpoint, key,
+						func(ctx context.Context) ([]catwalk.Model, error) {
+							return discover.DiscoverProviderCatalog(ctx, discover.Config{
+								ID: prepared.ID, BaseURL: endpoint, APIKey: key, ExtraHeaders: prepared.ExtraHeaders,
+								HTTPClient: providerClient,
+							}, resolver)
+						})
+				}
 				cancel()
 				if discoverErr != nil {
 					slog.Warn("Provider model discovery failed; retaining configured catalog",
@@ -463,12 +472,20 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			continue
 		}
 		providerID := cmp.Or(pc.ID, id)
+		providerClient, clientErr := c.ProviderHTTPClient(pc)
+		if clientErr != nil {
+			discoverMu.Lock()
+			discoveryResults[id] = discoveryResult{err: fmt.Errorf("provider %s: network settings: %w", providerID, clientErr)}
+			discoverMu.Unlock()
+			continue
+		}
 		dcfg := discover.Config{
 			ID:             providerID,
 			BaseURL:        pc.BaseURL,
 			APIKey:         pc.APIKey,
 			ExtraHeaders:   pc.ExtraHeaders,
 			ExistingModels: pc.Models,
+			HTTPClient:     providerClient,
 		}
 		providerType := cmp.Or(pc.Type, catwalk.TypeOpenAICompat)
 		discoverWg.Go(func() {

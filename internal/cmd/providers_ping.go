@@ -56,7 +56,7 @@ rush providers test ollama   # works with a local openai-compat server too
 		ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 		defer cancel()
 
-		result := pingProvider(ctx, args[0], p)
+		result := pingProvider(ctx, a.Config(), args[0], p)
 		if asJSON {
 			return json.NewEncoder(os.Stdout).Encode(result)
 		}
@@ -98,7 +98,7 @@ type providerPingResult struct {
 	LatencyMs   int64  `json:"latency_ms"`
 }
 
-func pingProvider(ctx context.Context, id string, p config.ProviderConfig) providerPingResult {
+func pingProvider(ctx context.Context, cfg *config.Config, id string, p config.ProviderConfig) providerPingResult {
 	res := providerPingResult{ID: id}
 
 	if p.APIKey == "" && p.OAuthToken == nil && !strings.EqualFold(string(p.Type), "cli") {
@@ -149,8 +149,14 @@ func pingProvider(ctx context.Context, id string, p config.ProviderConfig) provi
 		req.Header.Set(k, v)
 	}
 
+	providerClient, err := cfg.ProviderHTTPClient(p)
+	if err != nil {
+		res.Status = "error"
+		res.Error = "provider network settings are invalid: " + err.Error()
+		return res
+	}
 	start := time.Now()
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := clientOrDefault(providerClient).Do(req)
 	res.LatencyMs = time.Since(start).Milliseconds()
 	if err != nil {
 		res.Status = "unreachable"
