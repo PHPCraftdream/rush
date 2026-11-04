@@ -1769,11 +1769,14 @@ the provider build loudly at startup instead of silently falling back to a
 direct connection. CLI providers (`claude`, `gemini`, `codex`, `qwen` — the
 `cliprovider` type) shell out to a local binary and ignore this setting.
 
-This setting covers the provider's LLM requests and its OAuth token refresh. Other
-outbound HTTP — model-list discovery and `rush models use` verification, MCP
-servers, and the web fetch/download tools — does not read `network.proxy`; it
-follows the standard `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` environment variables
-instead.
+Every request that is addressed to a provider follows this cascade: its LLM
+requests, OAuth token refresh, model-list discovery at startup, `rush models use`
+verification of unknown models, `rush providers update` and `rush providers test`.
+A malformed `network` block makes those requests fail with a clear message instead
+of silently connecting directly. Traffic that is not tied to a provider — MCP
+servers, the web fetch/download tools, and the public Z.AI documentation page used
+for reasoning levels — does not read `network.proxy`; it follows the standard
+`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` environment variables instead.
 
 ### Local Models
 

@@ -59,7 +59,7 @@ func VerifyProviderModel(ctx context.Context, cfg *Config, providerID, modelID s
 	if string(pc.Type) == "" {
 		pc.Type = "openai-compatible"
 	}
-	models, reason, err := RefreshProviderModels(ctx, pc, providerID, resolver, modelID)
+	models, reason, err := RefreshProviderModels(ctx, cfg, pc, providerID, resolver, modelID)
 	if err != nil {
 		return Unverifiable, err
 	}
@@ -75,7 +75,7 @@ func VerifyProviderModel(ctx context.Context, cfg *Config, providerID, modelID s
 }
 
 // RefreshProviderModels fetches the entire model roster, using a fresh cached roster when possible.
-func RefreshProviderModels(ctx context.Context, pc ProviderConfig, providerID string, resolver VariableResolver, modelID string) ([]catwalk.Model, string, error) {
+func RefreshProviderModels(ctx context.Context, cfg *Config, pc ProviderConfig, providerID string, resolver VariableResolver, modelID string) ([]catwalk.Model, string, error) {
 	if modelVerifyOffline() {
 		return nil, "provider cache-only mode is enabled", nil
 	}
@@ -87,7 +87,7 @@ func RefreshProviderModels(ctx context.Context, pc ProviderConfig, providerID st
 			}
 		}
 	}
-	models, reason, err := FetchProviderModels(ctx, pc, providerID, resolver)
+	models, reason, err := FetchProviderModels(ctx, cfg, pc, providerID, resolver)
 	if err != nil || reason != "" {
 		return nil, reason, err
 	}
@@ -103,7 +103,7 @@ func RefreshProviderModels(ctx context.Context, pc ProviderConfig, providerID st
 }
 
 // FetchProviderModels fetches a provider's full roster without writing cache.
-func FetchProviderModels(ctx context.Context, pc ProviderConfig, providerID string, resolver VariableResolver) ([]catwalk.Model, string, error) {
+func FetchProviderModels(ctx context.Context, cfg *Config, pc ProviderConfig, providerID string, resolver VariableResolver) ([]catwalk.Model, string, error) {
 	if modelVerifyOffline() {
 		return nil, "provider cache-only mode is enabled", nil
 	}
@@ -131,14 +131,18 @@ func FetchProviderModels(ctx context.Context, pc ProviderConfig, providerID stri
 	if !supportsModelVerification(string(pc.Type)) {
 		return nil, fmt.Sprintf("provider type %q does not support model verification", pc.Type), nil
 	}
+	providerClient, err := cfg.ProviderHTTPClient(pc)
+	if err != nil {
+		return nil, fmt.Sprintf("provider network settings are invalid: %v", err), nil
+	}
 	switch string(pc.Type) {
 	case "anthropic":
 		fetch = func(ctx context.Context) ([]catwalk.Model, error) {
-			return discover.DiscoverAnthropicModels(ctx, endpoint, key)
+			return discover.DiscoverAnthropicModels(ctx, providerClient, endpoint, key)
 		}
 	case "openai", "openai-compatible", "openai_compat", "openai-compat":
 		fetch = func(ctx context.Context) ([]catwalk.Model, error) {
-			return discover.DiscoverProviderCatalog(ctx, discover.Config{ID: providerID, BaseURL: endpoint, APIKey: key}, resolver)
+			return discover.DiscoverProviderCatalog(ctx, discover.Config{ID: providerID, BaseURL: endpoint, APIKey: key, HTTPClient: providerClient}, resolver)
 		}
 	default:
 		return nil, fmt.Sprintf("provider type %q does not support model verification", pc.Type), nil

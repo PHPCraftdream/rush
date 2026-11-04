@@ -21,7 +21,7 @@ func verifyModelSelections(items []modelVerification, out func(string, ...any)) 
 			out("warning: %s model %s/%s is set but could not be verified (provider is not configured); not in the local catalog, cost/context-window unknown. Run `rush providers update %s` or retry online.\n", item.label, item.selection.Provider, item.selection.Model, item.selection.Provider)
 			continue
 		}
-		models, reason, err := config.RefreshProviderModels(context.Background(), pc, item.selection.Provider, item.resolver, item.selection.Model)
+		models, reason, err := config.RefreshProviderModels(context.Background(), item.cfg, pc, item.selection.Provider, item.resolver, item.selection.Model)
 		if err != nil {
 			reason = "provider request failed"
 		}

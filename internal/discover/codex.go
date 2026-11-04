@@ -24,8 +24,8 @@ const (
 // DiscoverCodexModels reads the authenticated account's ChatGPT Codex model
 // catalog. The access token is Rush's own OAuth credential, not a Codex CLI
 // token. Callers should provide a bounded context.
-func DiscoverCodexModels(ctx context.Context, accessToken, accountID string) ([]catwalk.Model, error) {
-	return discoverCodexModels(ctx, httpClient, CodexBaseURL, accessToken, accountID)
+func DiscoverCodexModels(ctx context.Context, client *http.Client, accessToken, accountID string) ([]catwalk.Model, error) {
+	return discoverCodexModels(ctx, clientOrDefault(client), CodexBaseURL, accessToken, accountID)
 }
 
 func discoverCodexModels(ctx context.Context, client *http.Client, baseURL, accessToken, accountID string) ([]catwalk.Model, error) {
