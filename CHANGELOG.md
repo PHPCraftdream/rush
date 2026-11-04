@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- The WebSocket `config` event (the `get_config` reply and config broadcasts) no longer carries `cwd`, `contextPaths` or `skillsPaths` for API tokens below the `config` scope, so a `read`/`run` token cannot learn the server's local paths; `config` and `admin` tokens and the built-in web UI are unchanged.
+
 - Added `proxy: none` for providers: `providers.<id>.network.proxy: none` (case-insensitive) makes that provider connect directly even when `options.network.proxy` is set; under `options.network` it means no proxy. A provider's proxy already replaced the global one as a whole; this is now documented with a resolution table and examples for both `socks5://` and `http://` proxies, and the schema descriptions say so. `dns_server`/`doh_url` still cascade per field.
 
 - Added `anthropic/claude-haiku-5-5` to the Anthropic catalog (1M context; pricing is an estimate copied from `claude-haiku-4-5` until catwalk lists the model, so cost budgets still apply). A catwalk entry with the same id wins.

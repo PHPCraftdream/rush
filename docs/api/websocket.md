@@ -59,7 +59,7 @@ This table reflects every entry in `internal/server/scope_table.go` (`commandSco
 | `initialize_project` | admin | `add_custom_provider` | admin |
 | `update_custom_provider` | admin | | |
 
-On external listeners, admin commands additionally require listener `allow_admin`. Non-admin clients do not receive `mcp_state` events; the filter permits them only when both admin scope and listener admin enablement are present. Other event types are not withheld by this specific event filter. The `get_logs` command is admin-only because logs may contain prompts.
+On external listeners, admin commands additionally require listener `allow_admin`. Non-admin clients do not receive `mcp_state` events; the filter permits them only when both admin scope and listener admin enablement are present. Other event types are not withheld by this specific event filter. The `get_logs` command is admin-only because logs may contain prompts. The `config` event (the `get_config` reply and every config broadcast) omits `cwd`, `contextPaths` and `skillsPaths`, which expose this machine's filesystem layout, for tokens without the `config` scope (`read` and `run`); `config` and `admin` tokens receive them.
 
 The serve connection cap is per token; token revocation/expiry closes the WebSocket with policy close code 1008. Authentication and upgrade failures use HTTP rejection (not a WebSocket close code). The UI listener is distinct and retains its existing behavior.
 
