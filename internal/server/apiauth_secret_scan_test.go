@@ -2,6 +2,8 @@ package server
 
 import (
 	"bufio"
+	"bytes"
+	cryptorand "crypto/rand"
 	"fmt"
 	"io"
 	"log/slog"
@@ -20,22 +22,16 @@ func TestChainRealListenerNeverLeaksCredentialSecrets(t *testing.T) {
 	store := config.GlobalAPITokenStore()
 	verifier := store
 	capture := &captureHandler{notify: make(chan struct{}, 64)}
-	var token string
 	credentials := []string{}
-	for attempt := 0; attempt < 4096; attempt++ {
-		created, _, err := store.CreateAPIToken("secret-scan", []string{"read"}, "ask", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		candidateSecret := created[strings.IndexByte(created, '.')+1:]
-		credentials = append(credentials, created, candidateSecret)
-		if strings.Contains(candidateSecret, "-") && strings.Contains(candidateSecret, "_") {
-			token = created
-			break
-		}
-	}
-	if token == "" {
-		t.Fatal("could not generate a secret containing both '-' and '_'")
+	randomBytes := bytes.Repeat([]byte{0xfb, 0xff}, 16)
+	randomBytes = append(randomBytes, 1, 2, 3, 4)
+	oldRandomReader := cryptorand.Reader
+	defer func() { cryptorand.Reader = oldRandomReader }()
+	cryptorand.Reader = bytes.NewReader(randomBytes)
+	token, _, err := store.CreateAPIToken("secret-scan", []string{"read"}, "ask", nil)
+	cryptorand.Reader = oldRandomReader
+	if err != nil {
+		t.Fatal(err)
 	}
 	wrong := []byte(token)
 	separator := strings.IndexByte(token, '.') + 1
@@ -58,8 +54,8 @@ func TestChainRealListenerNeverLeaksCredentialSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	secret := token[strings.IndexByte(token, '.')+1:]
-	if len(secret) != 43 || !strings.ContainsAny(secret, "-_") {
-		t.Fatalf("generated secret lacks required URL-safe punctuation: %q", secret)
+	if len(secret) != 43 || !strings.Contains(secret, "-") || !strings.Contains(secret, "_") {
+		t.Fatalf("generated secret must contain both '-' and '_': %q", secret)
 	}
 	credentials = append(credentials, token, secret, revokedToken, revokedToken[strings.IndexByte(revokedToken, '.')+1:], expiredToken, expiredToken[strings.IndexByte(expiredToken, '.')+1:], string(wrong), string(wrong[separator:]), strings.Repeat("A", 43))
 	request := func(next http.Handler, raw string) []byte {
