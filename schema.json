@@ -336,7 +336,7 @@
       "properties": {
         "proxy": {
           "type": "string",
-          "description": "Proxy URL (socks5:// or http://) for outbound provider connections",
+          "description": "Proxy URL (socks5:// or http://) for outbound provider connections. A provider's proxy replaces the global one; 'none' on a provider disables the proxy for it even when a global proxy is set",
           "examples": [
             "socks5://127.0.0.1:1080"
           ]
@@ -505,7 +505,7 @@
         },
         "network": {
           "$ref": "#/$defs/NetworkConfig",
-          "description": "Global outbound network settings (proxy, custom DNS/DoH) for provider HTTP connections; providers may override per field"
+          "description": "Global outbound network settings (proxy, custom DNS/DoH) for provider HTTP connections; providers may override per field; a provider proxy replaces the global one (proxy: none disables it for that provider)"
         },
         "stream_idle_timeout_seconds": {
           "type": "integer",
@@ -709,7 +709,7 @@
         },
         "network": {
           "$ref": "#/$defs/NetworkConfig",
-          "description": "Outbound network settings (proxy, custom DNS/DoH) for this provider; overrides options.network per field"
+          "description": "Outbound network settings (proxy, custom DNS/DoH) for this provider; overrides options.network per field. A provider proxy replaces the global one; proxy: none disables it for this provider"
         }
       },
       "additionalProperties": false,

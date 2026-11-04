@@ -83,6 +83,60 @@ func TestResolveNetworkConfig(t *testing.T) {
 				Proxy: "socks5://global:1080", DNSServer: "global.dns", DoHURL: "https://global.doh",
 			},
 		},
+		{
+			name:     "provider none cancels the global proxy",
+			global:   newCfg("socks5://global:1080", "", ""),
+			provider: newCfg("none", "", ""),
+			want:     config.NetworkConfig{},
+		},
+		{
+			name:     "provider none keeps the inherited dns and doh",
+			global:   newCfg("http://global:8080", "global.dns", "https://global.doh"),
+			provider: newCfg("none", "", ""),
+			want:     config.NetworkConfig{DNSServer: "global.dns", DoHURL: "https://global.doh"},
+		},
+		{
+			name:     "none is case and space insensitive",
+			global:   newCfg("socks5://global:1080", "", ""),
+			provider: newCfg("  NoNe ", "", ""),
+			want:     config.NetworkConfig{},
+		},
+		{
+			name:     "global none means no proxy",
+			global:   newCfg("none", "global.dns", ""),
+			provider: nil,
+			want:     config.NetworkConfig{DNSServer: "global.dns"},
+		},
+		{
+			name:     "provider proxy overrides a global none",
+			global:   newCfg("none", "", ""),
+			provider: newCfg("http://provider:8080", "", ""),
+			want:     config.NetworkConfig{Proxy: "http://provider:8080"},
+		},
+		{
+			name:     "provider http proxy replaces a global socks5 proxy",
+			global:   newCfg("socks5://global:1080", "", ""),
+			provider: newCfg("http://provider:8080", "", ""),
+			want:     config.NetworkConfig{Proxy: "http://provider:8080"},
+		},
+		{
+			name:     "provider socks5 proxy replaces a global http proxy",
+			global:   newCfg("http://global:8080", "", ""),
+			provider: newCfg("socks5://provider:1080", "", ""),
+			want:     config.NetworkConfig{Proxy: "socks5://provider:1080"},
+		},
+		{
+			name:     "provider dns without proxy keeps the global proxy",
+			global:   newCfg("socks5://global:1080", "", ""),
+			provider: newCfg("", "provider.dns", ""),
+			want:     config.NetworkConfig{Proxy: "socks5://global:1080", DNSServer: "provider.dns"},
+		},
+		{
+			name:     "a host named none-proxy is not the none keyword",
+			global:   nil,
+			provider: newCfg("http://none:8080", "", ""),
+			want:     config.NetworkConfig{Proxy: "http://none:8080"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

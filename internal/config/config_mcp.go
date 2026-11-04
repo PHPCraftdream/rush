@@ -277,7 +277,7 @@ type Options struct {
 	// DNS/DoH resolution) applied to all provider HTTP connections.
 	// Each provider may override any field individually via its own
 	// provider.network block.
-	Network *NetworkConfig `json:"network,omitempty" jsonschema:"description=Global outbound network settings (proxy\\, custom DNS/DoH) for provider HTTP connections; providers may override per field"`
+	Network *NetworkConfig `json:"network,omitempty" jsonschema:"description=Global outbound network settings (proxy\\, custom DNS/DoH) for provider HTTP connections; providers may override per field; a provider proxy replaces the global one (proxy: none disables it for that provider)"`
 	// StreamIdleTimeoutSeconds overrides the default 3-minute stream
 	// watchdog timeout (see internal/agent/stream_watchdog.go). The
 	// watchdog cancels the LLM streaming request if the provider stops

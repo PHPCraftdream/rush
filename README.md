@@ -1664,15 +1664,20 @@ options: {
 }
 ```
 
-**Per-provider override** — `providers.<id>.network` cascades **per field**
-over the global block: a provider that only sets `proxy` still inherits the
-global `dns_server`/`doh_url`, and vice versa. A field set on both uses the
-provider's value.
+**Proxy types** — `proxy` is a URL; the scheme picks the type:
+`socks5://` (also `socks5h://`, same behavior) or `http://` (HTTP CONNECT
+tunnel). Credentials go in the userinfo (`socks5://user:pass@host:1080`).
+Any other scheme (`https://`, `ftp://`, ...) is rejected at startup.
+
+**Per-provider override** — `providers.<id>.network` overrides the global
+block. A provider's `proxy` **replaces** the global proxy entirely (they are
+never combined or chained), so one provider can use a different proxy — or a
+different proxy type — than everyone else:
 
 ```ktav
 options: {
     network: {
-        dns_server: 1.1.1.1
+        proxy: socks5://127.0.0.1:1080
     }
 }
 providers: {
@@ -1687,6 +1692,50 @@ providers: {
     }
 }
 ```
+
+Here `my-provider` goes through the HTTP proxy and every other provider through
+the global SOCKS5 proxy.
+
+**Disable the proxy for one provider** — `proxy: none` (case-insensitive) on a
+provider cancels the global proxy for that provider only; its requests go
+direct:
+
+```ktav
+options: {
+    network: {
+        proxy: socks5://127.0.0.1:1080
+    }
+}
+providers: {
+    local-llm: {
+        type: openai-compat
+        base_url: http://192.168.1.20:8000/v1
+        network: {
+            proxy: none
+        }
+        models: []
+    }
+}
+```
+
+`proxy: none` is also accepted under `options.network` (no global proxy), where
+it is the same as leaving `proxy` out.
+
+Resolution order, per provider:
+
+| Global `options.network.proxy` | Provider `network.proxy` | Provider uses |
+|---|---|---|
+| unset / `none` | unset | direct connection |
+| `socks5://g:1080` | unset (or no `network` block) | `socks5://g:1080` |
+| `socks5://g:1080` | `http://p:8080` | `http://p:8080` |
+| `http://g:8080` | `socks5://p:1080` | `socks5://p:1080` |
+| `socks5://g:1080` | `none` | direct connection |
+| `none` / unset | `http://p:8080` | `http://p:8080` |
+
+Only `proxy` is replaced as a whole. `dns_server` and `doh_url` still cascade
+**per field**: a provider that sets only `proxy` (or only `proxy: none`) keeps
+the global `dns_server`/`doh_url`, and vice versa. A field set on both uses the
+provider's value.
 
 **Combined proxy + DoH** — when both are configured, even the DNS lookup is
 tunneled through the proxy, so no hostname ever resolves on the local
@@ -1714,10 +1763,17 @@ How the pieces interact:
 - **Both** — the DNS/DoH lookup itself goes through the proxy and the final
   connection uses the same proxy. Nothing touches the OS resolver.
 
-A malformed `proxy` or `doh_url` (unsupported scheme, unparseable URL) fails
+A malformed `proxy` or `doh_url` (unsupported scheme, unparseable URL; `none` is not
+malformed) fails
 the provider build loudly at startup instead of silently falling back to a
 direct connection. CLI providers (`claude`, `gemini`, `codex`, `qwen` — the
 `cliprovider` type) shell out to a local binary and ignore this setting.
+
+This setting covers the provider's LLM requests and its OAuth token refresh. Other
+outbound HTTP — model-list discovery and `rush models use` verification, MCP
+servers, and the web fetch/download tools — does not read `network.proxy`; it
+follows the standard `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` environment variables
+instead.
 
 ### Local Models
 
