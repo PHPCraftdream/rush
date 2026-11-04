@@ -30,6 +30,7 @@ package session_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"sync"
 	"sync/atomic"
@@ -494,7 +495,7 @@ func TestP1_1_WatchdogWithVeryShortTTL(t *testing.T) {
 func TestP1_1_DynamicRenewalTimeout(t *testing.T) {
 	t.Parallel()
 	limitParallel(t)
-	sess, svc, _ := setupTestSessionWithDB(t, "test-session-p1-1-dynamic-timeout")
+	sess, svc, sqlDB := setupTestSessionWithDB(t, "test-session-p1-1-dynamic-timeout")
 	ctx := t.Context()
 
 	idempotencyKey := "p1-1-dynamic-timeout-probe"
@@ -542,34 +543,37 @@ func TestP1_1_DynamicRenewalTimeout(t *testing.T) {
 		return coord.entryCount.Load() > 0
 	}, 5*time.Second, 20*time.Millisecond)
 
-	startTime := time.Now()
-
 	// Wait for cancellation
 	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer timeoutCancel()
 
 	select {
 	case <-coord.canceledCh:
-		elapsed := time.Since(startTime)
-		t.Logf("execution canceled at %v after start", elapsed)
-
-		// KEY INVARIANT: watchdog cancels while renewal is still hung, well
-		// before it would have hung long enough to matter, and — allowing
-		// for lease_expires_at's whole-seconds ceiling rounding (up to ~1s
-		// of extra slack, see the P0-3 fix note above this test) — not
-		// wildly later than the nominal TTL either.
-		require.Less(t, elapsed, ttl+1200*time.Millisecond,
-			"watchdog must cancel reasonably close to TTL even with hanging renewal (canceled at %v, TTL=%v)",
-			elapsed, ttl)
-
-		// Verify we're not firing too early (should fire at ~2s, TTL-margin,
-		// possibly later due to ceiling rounding, but not much earlier).
-		require.Greater(t, elapsed, 1500*time.Millisecond,
-			"watchdog should not fire immediately (canceled at %v, expected > 1.5s)", elapsed)
-
 	case <-timeoutCtx.Done():
 		t.Fatal("coordinator did not observe cancellation within 5s - watchdog did not fire")
 	}
+	canceledAt := time.Unix(0, coord.canceledAt.Load())
+
+	// The first renewal hangs, so the row keeps the lease_expires_at the claim
+	// persisted; read that ground truth instead of timing from when this
+	// goroutine noticed the coordinator (claim-to-Run and poll latency on a
+	// loaded runner made a test-relative stopwatch fail at 1.33s < 1.5s).
+	var leaseExpiresAt sql.NullInt64
+	require.NoError(t, sqlDB.QueryRowContext(ctx,
+		`SELECT lease_expires_at FROM session_run_queue WHERE id = ?`, idempotencyKey,
+	).Scan(&leaseExpiresAt))
+	require.True(t, leaseExpiresAt.Valid, "lease_expires_at is NULL: the row was reclaimed before the watchdog fired")
+	expiry := time.Unix(leaseExpiresAt.Int64, 0)
+	fireAt := expiry.Add(-safetyMargin)
+
+	// KEY INVARIANT: the watchdog cancels while the renewal is still hung and
+	// strictly before the real expiry of the row (no duplicate-execution window)...
+	require.True(t, canceledAt.Before(expiry),
+		"watchdog must cancel before the DB lease expiry (canceled %v, expiry %v)", canceledAt, expiry)
+	// ...and not before expiry minus the safety margin: it must not fire
+	// immediately (the margin is not eaten by rounding).
+	require.False(t, canceledAt.Before(fireAt.Add(-250*time.Millisecond)),
+		"watchdog fired too early (canceled %v, expected no earlier than %v)", canceledAt, fireAt)
 
 	require.True(t, coord.ctxCanceled.Load(), "coordinator should have observed ctx.Done()")
 

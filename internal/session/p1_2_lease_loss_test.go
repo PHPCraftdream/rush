@@ -215,6 +215,7 @@ type contextAwareCoordinator struct {
 	blockCh     chan struct{} // set before each test, unblocks waiting Run calls
 	entryCount  atomic.Int64
 	ctxCanceled atomic.Bool   // true if ctx.Done() was observed
+	canceledAt  atomic.Int64  // Unix nanoseconds when ctx.Done() was observed in Run
 	canceledCh  chan struct{} // closed when ctx.Done() is observed
 	completedCh chan struct{} // closed when Run completes
 	closeOnce   sync.Once     // ensures channels are only closed once
@@ -245,6 +246,7 @@ func (c *contextAwareCoordinator) Run(ctx context.Context, callData session.Sess
 		case <-ctx.Done():
 			// Context was canceled - signal and return error
 			c.closeOnce.Do(func() {
+				c.canceledAt.Store(time.Now().UnixNano())
 				c.ctxCanceled.Store(true)
 				close(c.canceledCh)
 				close(c.completedCh)
