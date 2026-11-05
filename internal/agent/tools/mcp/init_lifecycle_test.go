@@ -21,6 +21,7 @@ import (
 func TestOwnerCloseResetsRegistryAndAllowsNextLifecycle(t *testing.T) {
 	owner, err := Acquire()
 	require.NoError(t, err)
+	logOwnerOnFailure(t, owner)
 
 	_, err = Acquire()
 	require.ErrorIs(t, err, ErrOwnerBusy,
@@ -77,6 +78,7 @@ func TestOwnerCloseCancelsBlockedStartupBeforeCleanup(t *testing.T) {
 
 	owner, err := Acquire()
 	require.NoError(t, err)
+	logOwnerOnFailure(t, owner)
 	initFinished := make(chan struct{})
 	go func() {
 		owner.Initialize(context.Background(), nil, store, false)
@@ -113,6 +115,7 @@ func TestOwnerCloseCancelsBlockedStartupBeforeCleanup(t *testing.T) {
 func TestOwnerCloseVsRenewalDoesNotPublishLateSession(t *testing.T) {
 	owner, err := Acquire()
 	require.NoError(t, err)
+	logOwnerOnFailure(t, owner)
 	const name = "late-renewal"
 	store := config.NewTestStore(&config.Config{MCP: config.MCPs{
 		name: {Type: config.MCPStdio, Command: "unused"},
@@ -179,6 +182,7 @@ func TestOwnerCloseVsRenewalDoesNotPublishLateSession(t *testing.T) {
 func TestOwnerRenewalCommittedBetweenCloseRequestAndCoordinatorIsClosed(t *testing.T) {
 	owner, err := Acquire()
 	require.NoError(t, err)
+	logOwnerOnFailure(t, owner)
 	const name = "gap-renewal"
 	store := config.NewTestStore(&config.Config{MCP: config.MCPs{
 		name: {Type: config.MCPStdio, Command: "unused"},
@@ -251,6 +255,7 @@ func TestOwnerRenewalCommittedBetweenCloseRequestAndCoordinatorIsClosed(t *testi
 func TestOwnerCommitRenewalPublishesSuccessfulSession(t *testing.T) {
 	owner, err := Acquire()
 	require.NoError(t, err)
+	logOwnerOnFailure(t, owner)
 	const name = "successful-renewal"
 	store := config.NewTestStore(&config.Config{MCP: config.MCPs{
 		name: {Type: config.MCPStdio, Command: "unused"},
@@ -320,6 +325,7 @@ func TestRenewalRejectsCrossStoreDiskRemoval(t *testing.T) {
 func TestFailClosedMCPHonorsCallerCancellation(t *testing.T) {
 	owner, err := Acquire()
 	require.NoError(t, err)
+	logOwnerOnFailure(t, owner)
 	defer func() { require.NoError(t, owner.Close(context.Background())) }()
 	const name = "fail-closed-canceled"
 	lease := serverLeaseFor(name)
@@ -339,6 +345,7 @@ func testCrossStoreRenewalAdmission(t *testing.T, remove bool) {
 	require.NoError(t, err)
 	owner, err := Acquire()
 	require.NoError(t, err)
+	logOwnerOnFailure(t, owner)
 	defer func() { require.NoError(t, owner.Close(context.Background())) }()
 
 	admission, err := owner.snapshotServerAdmission(context.Background(), store, name)
@@ -524,6 +531,7 @@ func TestCommitRenewalPublishesOnlyAfterPromotion(t *testing.T) {
 	}})
 	owner, err := Acquire()
 	require.NoError(t, err)
+	logOwnerOnFailure(t, owner)
 	t.Cleanup(func() { require.NoError(t, owner.Close(context.Background())) })
 
 	rejectedAdmission, err := owner.snapshotServerAdmission(context.Background(), store, rejectedName)
@@ -594,6 +602,7 @@ func TestClientLeaseProtectsOperationFromRenewalAndClose(t *testing.T) {
 
 	owner, err := Acquire()
 	require.NoError(t, err)
+	logOwnerOnFailure(t, owner)
 	sessions.Set(name, session)
 	states.Set(name, ClientInfo{Name: name, State: StateConnected, Client: session})
 	dataDir := t.TempDir()
@@ -733,6 +742,7 @@ func TestOwnerCloseDeadlineRetainsFenceUntilStuckSessionCloses(t *testing.T) {
 
 	owner, err := Acquire()
 	require.NoError(t, err)
+	logOwnerOnFailure(t, owner)
 	sessions.Set("stuck", sess)
 	states.Set("stuck", ClientInfo{Name: "stuck", State: StateConnected, Client: sess})
 

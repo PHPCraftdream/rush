@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,6 +36,11 @@ type batchFixture struct {
 	// workspace is the workspace the listener serves.
 	workspace string
 	cfg       *config.ConfigStore
+
+	// trace and tokens feed diagnostics(): printed when the test fails.
+	trace    *batchTrace
+	tokensMu sync.Mutex
+	tokens   map[string]string
 }
 
 func batchSSEText(text string) string {
@@ -67,7 +73,9 @@ func newBatchFixtureWith(t *testing.T, provider http.HandlerFunc, adjust func(*L
 	require.NoError(t, os.MkdirAll(configDir, 0o755))
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 	t.Setenv("RUSH_GLOBAL_CONFIG", configDir)
-	t.Setenv("RUSH_GLOBAL_DIR", t.TempDir())
+	globalDir := t.TempDir()
+	logTempTreeBeforeRemoval(t, globalDir)
+	t.Setenv("RUSH_GLOBAL_DIR", globalDir)
 	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 
 	// An ambient claude/gemini/codex/qwen on PATH would otherwise be
@@ -78,7 +86,8 @@ func newBatchFixtureWith(t *testing.T, provider http.HandlerFunc, adjust func(*L
 	t.Cleanup(func() { cliprovider.AvailableFunc = origAvailable })
 
 	dataDir := t.TempDir()
-	provSrv := httptest.NewServer(provider)
+	trace := newBatchTrace()
+	provSrv := httptest.NewServer(trace.traceProvider(provider))
 	t.Cleanup(provSrv.Close)
 	// The provider lives in a workspace file: a config reload (token writes
 	// trigger one) rebuilds the store from disk, and a runtime-only provider
@@ -129,13 +138,24 @@ func newBatchFixtureWith(t *testing.T, provider http.HandlerFunc, adjust func(*L
 	service := apiBatchServices.byApp[application]
 	apiBatchServices.Unlock()
 	require.NotNil(t, service)
-	return &batchFixture{base: base, app: application, store: store, service: service, workspace: dataDir, cfg: cfg}
+	f := &batchFixture{base: base, app: application, store: store, service: service, workspace: dataDir, cfg: cfg, trace: trace, tokens: make(map[string]string)}
+	// Registered last, so it runs first on cleanup: the App is still up and the
+	// state is still what the failing assertion saw.
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log(f.diagnostics())
+		}
+	})
+	return f
 }
 
 func (f *batchFixture) token(t *testing.T, name string, scopes []string, permission string, binding config.APITokenBinding) string {
 	t.Helper()
 	token, _, err := f.store.CreateAPITokenWithBinding(name, scopes, permission, nil, binding)
 	require.NoError(t, err)
+	f.tokensMu.Lock()
+	f.tokens[name] = token
+	f.tokensMu.Unlock()
 	return token
 }
 
@@ -166,10 +186,14 @@ func (f *batchFixture) do(t *testing.T, token, method, path string, body any, he
 		req.Header.Set(headers[i], headers[i+1])
 	}
 	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		f.trace.addf("HTTP %s %s FAILED: %v", method, path, err)
+	}
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
+	f.trace.addf("HTTP %s %s -> %d %s", method, path, resp.StatusCode, truncateForTrace(raw, 300))
 	return batchResponse{Status: resp.StatusCode, Header: resp.Header, Body: raw}
 }
 
@@ -206,7 +230,7 @@ func (f *batchFixture) waitBatchDone(t *testing.T, token, root string) apiBatch 
 		case <-ticker.C:
 		case <-deadline.C:
 			nodes, _ := json.Marshal(current.Nodes)
-			require.FailNow(t, "batch did not finish", "state=%s nodes=%s", current.State, nodes)
+			require.FailNow(t, "batch did not finish", "state=%s nodes=%s\n%s", current.State, nodes, f.diagnostics())
 		}
 	}
 }

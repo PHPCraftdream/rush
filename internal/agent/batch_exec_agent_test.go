@@ -27,6 +27,7 @@ type batchAgentTestTurn struct {
 	stopped chan struct{}
 	stopErr error
 	once    sync.Once
+	trace   *batchAgentTestTrace
 }
 
 func newBatchAgentTestTurn(res batchAgentTurnResult, err error) *batchAgentTestTurn {
@@ -37,11 +38,13 @@ func newBatchAgentTestTurn(res batchAgentTurnResult, err error) *batchAgentTestT
 }
 
 func (t *batchAgentTestTurn) finish() {
+	t.trace.addf("turn.finish()")
 	t.once.Do(func() { close(t.done) })
 }
 
 // exitNow ends the driver exit barrier; it may lag finish.
 func (t *batchAgentTestTurn) exitNow() {
+	t.trace.addf("turn.exitNow()")
 	t.once.Do(func() { close(t.done) })
 	select {
 	case <-t.exit:
@@ -183,6 +186,8 @@ type batchAgentTestReader struct {
 	live     bool
 	complete bool
 	reads    int
+	trace    *batchAgentTestTrace
+	last     string
 }
 
 func newBatchAgentTestReader(live, complete bool) *batchAgentTestReader {
@@ -193,6 +198,7 @@ func (r *batchAgentTestReader) set(live, complete bool) {
 	r.mu.Lock()
 	r.live, r.complete = live, complete
 	r.mu.Unlock()
+	r.trace.addf("reader.set(live=%v, complete=%v)", live, complete)
 }
 
 func (r *batchAgentTestReader) count() int {
@@ -205,13 +211,25 @@ func (r *batchAgentTestReader) DescendantsLive(context.Context, batchAgentRunReq
 	r.mu.Lock()
 	r.reads++
 	live, complete := r.live, r.complete
+	seen := fmt.Sprintf("live=%v complete=%v", live, complete)
+	changed := seen != r.last
+	r.last = seen
+	reads := r.reads
 	r.mu.Unlock()
+	if changed {
+		r.trace.addf("descendant read #%d -> %s", reads, seen)
+	}
 	return live, complete
 }
 
 func batchAgentTestRun(t *testing.T, deps batchAgentDeps, factory *batchAgentTestFactory) (*batchAgentExecution, *batchAgentTestFactory, *batchAgentTestReader, chan jobbatch.Result) {
 	t.Helper()
 	reader := newBatchAgentTestReader(false, false)
+	tr := batchAgentTraceFor(t)
+	reader.trace = tr
+	if factory.turn != nil {
+		factory.turn.trace = tr
+	}
 	deps.Runs = factory
 	deps.Descendants = reader
 	rig := factory.questionRig()
@@ -225,12 +243,16 @@ func batchAgentTestRun(t *testing.T, deps batchAgentDeps, factory *batchAgentTes
 	payload, err := json.Marshal(batchLeafPayload{Tool: "agent", ToolCallID: "call", SessionID: t.Name(), Input: json.RawMessage(`{}`)})
 	require.NoError(t, err)
 	reports := make(chan jobbatch.Result, 4)
-	exec, err := e.Start(context.Background(), jobbatch.Launch{ID: "root.1", Token: 1, Task: jobbatch.TaskSpec{Kind: batchKindAgent, Payload: payload}}, func(r jobbatch.Result) { reports <- r })
+	exec, err := e.Start(context.Background(), jobbatch.Launch{ID: "root.1", Token: 1, Task: jobbatch.TaskSpec{Kind: batchKindAgent, Payload: payload}}, func(r jobbatch.Result) {
+		tr.addf("scope report: state=%s summary=%q", r.State, r.Summary)
+		reports <- r
+	})
 	require.NoError(t, err)
 	select {
 	case <-factory.started:
+		tr.addf("run factory started the turn")
 	case <-time.After(2 * time.Second):
-		t.Fatal("run factory never started")
+		t.Fatalf("run factory never started\n%s", batchAgentFailureReport(t))
 	}
 	execE := exec.(*batchAgentExecution)
 	rig.holder.Store(execE)
@@ -241,7 +263,7 @@ func batchAgentTestNoReport(t *testing.T, reports chan jobbatch.Result, why stri
 	t.Helper()
 	select {
 	case r := <-reports:
-		t.Fatalf("scope reported while %s: %+v", why, r)
+		t.Fatalf("scope reported while %s: %+v\n%s", why, r, batchAgentFailureReport(t))
 	case <-time.After(80 * time.Millisecond):
 	}
 }
@@ -252,7 +274,7 @@ func batchAgentTestReport(t *testing.T, reports chan jobbatch.Result) jobbatch.R
 	case r := <-reports:
 		return r
 	case <-time.After(5 * time.Second):
-		t.Fatal("termination report missing")
+		t.Fatalf("termination report missing\n%s", batchAgentFailureReport(t))
 		return jobbatch.Result{}
 	}
 }
