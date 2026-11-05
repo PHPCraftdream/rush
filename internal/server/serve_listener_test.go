@@ -27,7 +27,7 @@ func startPolicyServer(t *testing.T, s *Server) string {
 					t.Errorf("server stopped: %v", err)
 				}
 			case <-time.After(5 * time.Second):
-				t.Error("server did not shut down")
+				t.Errorf("server did not shut down within 5s of cancel\n%s", shutdownStacks())
 			}
 		})
 		return "http://" + addr

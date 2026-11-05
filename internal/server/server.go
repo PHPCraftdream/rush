@@ -390,7 +390,7 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady fun
 		cancelRun()
 		s.closeQuiescentConnections()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := srv.Shutdown(shutCtx)
+		err := s.shutdownHTTP(shutCtx, srv)
 		cancel()
 		if errors.Is(err, net.ErrClosed) {
 			err = nil
@@ -459,6 +459,26 @@ func (s *Server) closeQuiescentConnections() {
 	for conn, state := range s.connections {
 		if state == http.StateNew || state == http.StateIdle {
 			_ = conn.Close()
+		}
+	}
+}
+
+// shutdownHTTP runs srv.Shutdown while sweeping quiescent connections until it
+// returns. net/http counts a StateNew connection as active for its first 5 s,
+// so a connection that was accepted just before the listener closed but is
+// registered (StateNew) only after the single sweep in Start (a client's
+// speculative dial that never sends a request) would hold Shutdown for those 5 s.
+func (s *Server) shutdownHTTP(ctx context.Context, srv *http.Server) error {
+	done := make(chan error, 1)
+	go func() { done <- srv.Shutdown(ctx) }()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-ticker.C:
+			s.closeQuiescentConnections()
 		}
 	}
 }
