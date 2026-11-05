@@ -31,7 +31,7 @@ type batchAgentTestTrace struct {
 
 const batchAgentTraceCap = 200
 
-func (tr *batchAgentTestTrace) add(format string, args ...any) {
+func (tr *batchAgentTestTrace) addf(format string, args ...any) {
 	if tr == nil {
 		return
 	}
@@ -120,13 +120,13 @@ func TestBatchAgentTraceKeepsTheNewestEventsWhenFull(t *testing.T) {
 
 	tr := &batchAgentTestTrace{start: time.Now()}
 	for i := 0; i < batchAgentTraceCap*2; i++ {
-		tr.add("event %d", i)
+		tr.addf("event %d", i)
 	}
 	out := tr.String()
 	require.Contains(t, out, fmt.Sprintf("event %d", batchAgentTraceCap*2-1))
 	require.LessOrEqual(t, strings.Count(out, "\n")+1, batchAgentTraceCap)
 
 	var none *batchAgentTestTrace
-	none.add("ignored")
+	none.addf("ignored")
 	require.Equal(t, "(no trace)", none.String())
 }

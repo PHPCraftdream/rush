@@ -35,7 +35,7 @@ const admissionTraceCap = 200
 
 func newAdmissionTrace() *admissionTrace { return &admissionTrace{start: time.Now()} }
 
-func (tr *admissionTrace) add(format string, args ...any) {
+func (tr *admissionTrace) addf(format string, args ...any) {
 	line := fmt.Sprintf("+%7.3fs %s", time.Since(tr.start).Seconds(), fmt.Sprintf(format, args...))
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
@@ -66,7 +66,7 @@ func (tr *admissionTrace) wrap(inner http.HandlerFunc) http.HandlerFunc {
 		body, _ := io.ReadAll(r.Body)
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		system, lastUser, lastTool := lastTurnParts(body)
-		tr.add("provider %s %s bytes=%d system=%q lastUser=%q lastTool=%q", r.Method, r.URL.Path, len(body),
+		tr.addf("provider %s %s bytes=%d system=%q lastUser=%q lastTool=%q", r.Method, r.URL.Path, len(body),
 			admissionShort(system, 40), admissionShort(lastUser, 60), admissionShort(lastTool, 40))
 		inner(w, r)
 	}

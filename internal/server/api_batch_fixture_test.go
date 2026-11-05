@@ -187,13 +187,13 @@ func (f *batchFixture) do(t *testing.T, token, method, path string, body any, he
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		f.trace.add("HTTP %s %s FAILED: %v", method, path, err)
+		f.trace.addf("HTTP %s %s FAILED: %v", method, path, err)
 	}
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	f.trace.add("HTTP %s %s -> %d %s", method, path, resp.StatusCode, truncateForTrace(raw, 300))
+	f.trace.addf("HTTP %s %s -> %d %s", method, path, resp.StatusCode, truncateForTrace(raw, 300))
 	return batchResponse{Status: resp.StatusCode, Header: resp.Header, Body: raw}
 }
 

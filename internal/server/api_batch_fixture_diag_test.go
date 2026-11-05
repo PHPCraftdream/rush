@@ -43,7 +43,7 @@ const batchTraceCap = 300
 
 func newBatchTrace() *batchTrace { return &batchTrace{start: time.Now()} }
 
-func (tr *batchTrace) add(format string, args ...any) {
+func (tr *batchTrace) addf(format string, args ...any) {
 	line := fmt.Sprintf("+%7.3fs %s", time.Since(tr.start).Seconds(), fmt.Sprintf(format, args...))
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
@@ -64,10 +64,10 @@ func (tr *batchTrace) String() string {
 func (tr *batchTrace) traceProvider(inner http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		started := tr.providerStarted.Add(1)
-		tr.add("provider request #%d %s %s (in flight %d)", started, r.Method, r.URL.Path, started-tr.providerDone.Load())
+		tr.addf("provider request #%d %s %s (in flight %d)", started, r.Method, r.URL.Path, started-tr.providerDone.Load())
 		defer func() {
 			done := tr.providerDone.Add(1)
-			tr.add("provider request #%d finished (done %d of %d started)", started, done, tr.providerStarted.Load())
+			tr.addf("provider request #%d finished (done %d of %d started)", started, done, tr.providerStarted.Load())
 		}()
 		inner(w, r)
 	}
@@ -242,7 +242,7 @@ func TestBatchTraceKeepsTheNewestEventsWhenFull(t *testing.T) {
 
 	tr := newBatchTrace()
 	for i := 0; i < batchTraceCap*2; i++ {
-		tr.add("event %d", i)
+		tr.addf("event %d", i)
 	}
 	out := tr.String()
 	require.Contains(t, out, fmt.Sprintf("event %d", batchTraceCap*2-1), "the newest event must survive")
