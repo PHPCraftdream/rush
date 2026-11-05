@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -85,7 +86,12 @@ func TestShutdownHTTPClosesAConnectionRegisteredAfterTheFirstSweep(t *testing.T)
 
 	select {
 	case err := <-shutdownDone:
-		require.NoError(t, err)
+		// Shutdown closes the listener the test already closed; whether it still
+		// tracks it depends on Serve noticing the close first. Start ignores
+		// net.ErrClosed from Shutdown for the same reason.
+		if !errors.Is(err, net.ErrClosed) {
+			require.NoError(t, err)
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatalf("Shutdown did not return: a late-registered StateNew connection holds it for net/http's 5 s\n%s", shutdownStacks())
 	}
