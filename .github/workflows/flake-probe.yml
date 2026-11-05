@@ -1,0 +1,87 @@
+name: flake-probe
+
+on:
+  push:
+    branches: ['flake-probe/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flake-probe-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - os: ubuntu-latest
+            package: ./internal/server
+            tests: '^TestHandleRerunMessage_PanicBeforeHandoff(ReleasesReservation|RecreatesPrompt)$'
+            race: '-race'
+          - os: windows-latest
+            package: ./internal/session
+            tests: '^TestReleaseGate_P350_QueuedNotExecuted'
+            race: ''
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Verify failure-only diagnostic gate and mutants
+        if: runner.os == 'Linux'
+        run: |
+          python -I - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          path = Path('internal/server/panic_timeline_test.go')
+          original = path.read_text()
+          command = ['go', 'test', '-p', '1', '-parallel', '1', '-count=1', '-timeout=10m', '-run', '^TestPanicTimelineReportsOnlyOnFailure$', './internal/server']
+          subprocess.run(command, check=True)
+          mutants = [
+              ('unconditional-report', 'if !t.Failed() {', 'if false {', 'successful test emitted diagnostics'),
+              ('missing-report', 'if !t.Failed() {', 'if true {', 'report lacks'),
+          ]
+          try:
+              for name, before, after, expected in mutants:
+                  assert original.count(before) == 1
+                  path.write_text(original.replace(before, after))
+                  result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                  Path(name + '.log').write_text(result.stdout)
+                  if result.returncode == 0 or expected not in result.stdout:
+                      print(result.stdout)
+                      raise SystemExit('mutant not killed by its assertion: ' + name)
+                  path.write_text(original)
+          finally:
+              path.write_text(original)
+          PY
+      - name: Repeat known flaky tests
+        env:
+          TEST_PACKAGE: ${{ matrix.package }}
+          TEST_FILTER: ${{ matrix.tests }}
+          RACE: ${{ matrix.race }}
+        run: |
+          set -o pipefail
+          go test $RACE -json -p 1 -parallel 1 -count=100 -timeout=25m -run "$TEST_FILTER" "$TEST_PACKAGE" 2>&1 | tee flake-probe.jsonl
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flake-probe-${{ matrix.os }}
+          path: |
+            flake-probe.jsonl
+            unconditional-report.log
+            missing-report.log
+          if-no-files-found: warn

@@ -285,7 +285,10 @@ func (c *queuedNotExecutedCoordinator) Run(ctx context.Context, callData session
 func TestReleaseGate_P350_QueuedNotExecutedNeitherAcksNorSpamRetries(t *testing.T) {
 	t.Parallel()
 	limitParallel(t)
+	tl := newTestTimeline()
+	tl.addf("fixture setup started")
 	sess, svc := setupTestSession(t, "test-session-queued-not-executed")
+	tl.addf("fixture ready")
 	ctx := t.Context()
 
 	callData := map[string]any{"SessionID": sess.ID, "Prompt": "test prompt"}
@@ -313,6 +316,8 @@ func TestReleaseGate_P350_QueuedNotExecutedNeitherAcksNorSpamRetries(t *testing.
 	})
 	pump.Start()
 	t.Cleanup(func() { pump.Stop() })
+	reportPumpOnFailure(t, tl)
+	tl.addf("pump started")
 
 	awaitPump(t, func() bool { return coord.calls.Load() >= 1 }, "the entry must be leased and attempted once")
 	// Released back to pending before any fake time passes, so no cleanup
@@ -530,7 +535,10 @@ func (c *queuedNotExecutedThenSuccessCoordinator) Run(ctx context.Context, callD
 func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *testing.T) {
 	t.Parallel()
 	limitParallel(t)
+	tl := newTestTimeline()
+	tl.addf("fixture setup started")
 	sess, svc := setupTestSession(t, "test-session-queued-backoff")
+	tl.addf("fixture ready")
 	ctx := t.Context()
 
 	const entryID = "queued-backoff-probe"
@@ -559,8 +567,11 @@ func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *test
 	})
 	pump.Start()
 	t.Cleanup(func() { pump.Stop() })
+	reportPumpOnFailure(t, tl)
+	tl.addf("pump started")
 
 	for cycle := int64(1); cycle <= coord.busyUntilCall; cycle++ {
+		tl.addf("cycle=%d waiting for call; fake now=%s calls=%d", cycle, clk.Now(), coord.calls.Load())
 		awaitPump(t, func() bool { return coord.calls.Load() >= cycle }, "the pump must re-attempt the entry each backoff window")
 		awaitPump(t, func() bool {
 			e, getErr := svc.GetRunQueueEntry(ctx, entryID)
@@ -596,6 +607,7 @@ func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *test
 		// charge an attempt (the penalty this test forbids) and make the
 		// in-flight Nack match zero rows. A leased row just needs real
 		// scheduling time, never fake time.
+		tl.addf("cycle=%d pending attempts=%d; advancing TTL from %s", cycle, entry.Attempts, clk.Now())
 		clk.Advance(ttl)
 		awaitPump(t, func() bool {
 			if coord.calls.Load() > cycle {

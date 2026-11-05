@@ -55,6 +55,10 @@ import (
 // Revert-check: restore the old pattern (set releaseOnBailout = false before
 // the call and pass nil onHandoff). The session stays busy and the test fails.
 func TestHandleRerunMessage_PanicBeforeHandoffReleasesReservation(t *testing.T) {
+	tl := &panicTimeline{}
+	rec := &panicRecorder{}
+	defer tl.report(t, rec)
+	tl.add("fixture setup started")
 	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
 	workingDir := t.TempDir()
 	dataDir := t.TempDir()
@@ -68,9 +72,11 @@ func TestHandleRerunMessage_PanicBeforeHandoffReleasesReservation(t *testing.T) 
 	forceLocalCLIProviderForTest(t)
 	a := newAttachmentsTestApp(t, workingDir, dataDir)
 	require.NotNil(t, a.AgentCoordinator, "test app must build a real coordinator")
+	tl.add("app and coordinator ready")
 	sess, err := a.Sessions.Create(t.Context(), "test-panic-window")
 	require.NoError(t, err)
 	sessionID := sess.ID
+	tl.add("session created")
 	ctx := t.Context()
 
 	userMsg, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
@@ -96,6 +102,7 @@ func TestHandleRerunMessage_PanicBeforeHandoffReleasesReservation(t *testing.T) 
 	reachedSeam := make(chan struct{})
 	panicValue := "boom - panic before handoff"
 	rerunPreHandoffSeam = func() {
+		tl.add("pre-handoff seam reached")
 		close(reachedSeam)
 		panic(panicValue)
 	}
@@ -107,10 +114,11 @@ func TestHandleRerunMessage_PanicBeforeHandoffReleasesReservation(t *testing.T) 
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
 	require.NoError(t, err)
 
-	rec := &panicRecorder{}
+	tl.add("fixture ready; launching handler")
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer tl.add("handler returned")
 		// Recover from panic like runRecovered does; the value is checked below.
 		defer rec.capture()
 		handleRerunMessage(ctx, a, client, WSMessage{ID: "req-1", Type: CmdRerunMessage, Payload: payload})
@@ -119,6 +127,7 @@ func TestHandleRerunMessage_PanicBeforeHandoffReleasesReservation(t *testing.T) 
 	// Wait until the handler reaches the seam and panics.
 	select {
 	case <-reachedSeam:
+		tl.add("test observed seam")
 	case <-time.After(5 * time.Second):
 		t.Fatalf("handler never reached the pre-handoff seam; %s\n%s", rec, panicWindowGoroutines())
 	}
@@ -159,6 +168,10 @@ func TestHandleRerunMessage_PanicBeforeHandoffReleasesReservation(t *testing.T) 
 // assertion below goes red while the reservation-release assertions above
 // stay green.
 func TestHandleRerunMessage_PanicBeforeHandoffRecreatesPrompt(t *testing.T) {
+	tl := &panicTimeline{}
+	rec := &panicRecorder{}
+	defer tl.report(t, rec)
+	tl.add("fixture setup started")
 	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
 	workingDir := t.TempDir()
 	dataDir := t.TempDir()
@@ -166,9 +179,11 @@ func TestHandleRerunMessage_PanicBeforeHandoffRecreatesPrompt(t *testing.T) {
 	forceLocalCLIProviderForTest(t)
 	a := newAttachmentsTestApp(t, workingDir, dataDir)
 	require.NotNil(t, a.AgentCoordinator, "test app must build a real coordinator")
+	tl.add("app and coordinator ready")
 	sess, err := a.Sessions.Create(t.Context(), "test-panic-recreate")
 	require.NoError(t, err)
 	sessionID := sess.ID
+	tl.add("session created")
 	ctx := t.Context()
 
 	promptText := "recreate me after panic"
@@ -178,7 +193,10 @@ func TestHandleRerunMessage_PanicBeforeHandoffRecreatesPrompt(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	rerunPreHandoffSeam = func() { panic("boom - panic before handoff") }
+	rerunPreHandoffSeam = func() {
+		tl.add("pre-handoff seam reached")
+		panic("boom - panic before handoff")
+	}
 	t.Cleanup(func() { rerunPreHandoffSeam = nil })
 
 	hub := newHub()
@@ -187,10 +205,11 @@ func TestHandleRerunMessage_PanicBeforeHandoffRecreatesPrompt(t *testing.T) {
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
 	require.NoError(t, err)
 
-	rec := &panicRecorder{}
+	tl.add("fixture ready; launching handler")
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer tl.add("handler returned")
 		defer rec.capture() // expected panic — mirrors hub.runRecovered.
 		handleRerunMessage(ctx, a, client, WSMessage{ID: "req-1", Type: CmdRerunMessage, Payload: payload})
 	}()
