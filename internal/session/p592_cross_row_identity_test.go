@@ -274,23 +274,31 @@ func TestDrainSessionNow_LocalExecution_LeaseLossThenSuccess_ReportsFailed(t *te
 	require.Len(t, pending, 1, "row A must be the only pending entry at this point, so its ID can be captured unambiguously")
 	rowAID := pending[0].ID
 
-	stealing := &leaseStealingServiceP592{Service: svc, victimID: rowAID}
+	// Fake time: the pump runs on a manual clock with a fake-hour TTL, so
+	// neither the lease watchdog nor the renewal tick can fire on a stalled
+	// runner. The 60 ms real TTL this test used before could expire (and the
+	// watchdog cancel the turn) between the lease and Run, and a runner stall
+	// in the test's own setup pushed "row A's turn never started" past its
+	// wall-clock guard. The fake layer sits under the stealing layer, so the
+	// pump's renewals still reach the stealing service and row A's is refused.
+	const ttl = time.Hour
+	clk := newFakePumpClock(fakePumpEpoch)
+	stealing := &leaseStealingServiceP592{Service: newFakeClockService(t, svc, clk), victimID: rowAID}
 	coord := &gatedThenSucceedCoordinator{started: make(chan struct{}, 1), release: make(chan struct{})}
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       stealing,
 		Coordinator:    coord,
 		PumpInstanceID: "test-pump-p592-local-lease",
-		// A short TTL makes the renewal loop attempt its first (rejected,
-		// for row A specifically) renewal quickly instead of waiting out
-		// the 30s production TTL/3, mirroring p575's own lease-loss test.
-		TestLeaseTTL: 60 * time.Millisecond,
+		TestLeaseTTL:   ttl,
+		TestClock:      clk,
 	})
 
 	callDataB, err := json.Marshal(map[string]any{"SessionID": sess.ID, "Prompt": "row-B"})
 	require.NoError(t, err)
 	require.NoError(t, stealing.EnqueueRunQueueEntry(context.Background(), "p592-local-lease-row-B", sess.ID, callDataB))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Only a hang bound: nothing here depends on real time passing.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	drainDone := make(chan struct{})
 	var result session.DrainResult
@@ -300,22 +308,34 @@ func TestDrainSessionNow_LocalExecution_LeaseLossThenSuccess_ReportsFailed(t *te
 		result, drainErr = pump.DrainSessionNow(ctx, sess.ID)
 	}()
 
-	// Confirm row A's turn genuinely started before letting the renewal
-	// loop's own watchdog/timing drive it to lease loss and execCancel() --
-	// the gated coordinator's Run() call observes ctx.Done() and returns on
-	// its own once that happens, so nothing needs to be sent on
-	// coord.release for row A.
-	select {
-	case <-coord.started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("row A's turn never started -- test setup is broken, proves nothing about the race under test")
-	}
+	// Confirm row A's turn genuinely started before driving it to lease
+	// loss -- the gated coordinator's Run() call observes ctx.Done() and
+	// returns on its own once execCancel() fires, so nothing needs to be
+	// sent on coord.release for row A.
+	awaitPump(t, func() bool {
+		select {
+		case <-coord.started:
+			return true
+		default:
+			return false
+		}
+	}, "row A's turn must start")
 
-	select {
-	case <-drainDone:
-	case <-time.After(10 * time.Second):
-		t.Fatal("DrainSessionNow did not return -- row A's lease loss or row B's execution never resolved")
-	}
+	// The execution's watchdog and renewal tickers must exist before time
+	// moves, or the advance would be missed. Then one renewal interval
+	// (TTL/3) elapses: the renewal is refused for row A, which is the lease
+	// loss under test.
+	awaitPump(t, func() bool { return clk.liveTickers() >= 2 }, "the execution's watchdog and renewal tickers must be running")
+	clk.Advance(ttl/3 + time.Millisecond)
+
+	awaitPump(t, func() bool {
+		select {
+		case <-drainDone:
+			return true
+		default:
+			return false
+		}
+	}, "DrainSessionNow must return -- row A's lease loss or row B's execution never resolved")
 
 	require.Equal(t, 2, coord.calls, "row A (lease loss) and row B (clean success) must both have been attempted, in the SAME call")
 	require.Equal(t, session.DrainFailed, result, "row A's lease loss must NOT be masked by row B's unrelated success")
