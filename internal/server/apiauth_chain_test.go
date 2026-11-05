@@ -29,6 +29,7 @@ func (f *fakeVerifier) ShowAPIToken(string) (config.APIToken, error) { return f.
 func isolateAPIGlobals(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
+	logTempTreeBeforeRemoval(t, dir)
 	t.Setenv("RUSH_GLOBAL_DATA", dir)
 	t.Setenv("RUSH_GLOBAL_CONFIG", dir)
 	t.Setenv("RUSH_GLOBAL_DIR", dir)

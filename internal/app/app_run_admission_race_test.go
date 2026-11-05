@@ -50,7 +50,8 @@ func newAdmissionRaceApp(t *testing.T, handler http.HandlerFunc) (*App, string) 
 	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 
 	dataDir := t.TempDir()
-	srv := httptest.NewServer(handler)
+	trace := newAdmissionTrace()
+	srv := httptest.NewServer(trace.wrap(handler))
 	t.Cleanup(srv.Close)
 
 	// The provider lives on disk, not only in memory: a config reload (the disk
@@ -102,6 +103,8 @@ func newAdmissionRaceApp(t *testing.T, handler http.HandlerFunc) (*App, string) 
 		Parts: []message.ContentPart{message.TextContent{Text: "seed"}},
 	})
 	require.NoError(t, err)
+	// Registered last, so it runs before application.Shutdown on cleanup.
+	logAdmissionAppOnFailure(t, application, store, sess.ID, trace)
 	return application, sess.ID
 }
 
