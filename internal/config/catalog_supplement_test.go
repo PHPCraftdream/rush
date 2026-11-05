@@ -38,10 +38,23 @@ func TestSupplementalCatalogModelLoadsForConfiguredAnthropic(t *testing.T) {
 	require.Equal(t, "Claude Haiku 5.5", model.Name)
 	require.EqualValues(t, 1_000_000, model.ContextWindow)
 	require.Contains(t, model.ReasoningLevels, "xhigh")
-	require.Equal(t, predecessor.CostPer1MIn, model.CostPer1MIn)
-	require.Equal(t, predecessor.CostPer1MOut, model.CostPer1MOut)
-	require.Equal(t, predecessor.CostPer1MInCached, model.CostPer1MInCached)
-	require.Equal(t, predecessor.CostPer1MOutCached, model.CostPer1MOutCached)
+	// Own list price, not a copy of the predecessor's.
+	require.InDelta(t, 0.10, model.CostPer1MIn, 1e-9)
+	require.InDelta(t, 0.50, model.CostPer1MOut, 1e-9)
+	require.InDelta(t, 0.125, model.CostPer1MInCached, 1e-9)
+	require.InDelta(t, 0.01, model.CostPer1MOutCached, 1e-9)
+	require.NotEqual(t, predecessor.CostPer1MIn, model.CostPer1MIn)
+}
+
+func TestSupplementalCatalogModelIsPricedWithoutPredecessor(t *testing.T) {
+	providers := mergeSupplementalCatalogModels([]catwalk.Provider{{
+		ID:     catwalk.InferenceProviderAnthropic,
+		Models: []catwalk.Model{{ID: "claude-sonnet-4-6"}},
+	}})
+	model, ok := findCatalogModel(providers[0].Models, "claude-haiku-5-5")
+	require.True(t, ok)
+	require.Positive(t, model.CostPer1MIn, "a zero price would bypass cost budgets")
+	require.Positive(t, model.CostPer1MOut)
 }
 
 func TestSupplementalCatalogDoesNotOverrideExistingID(t *testing.T) {
