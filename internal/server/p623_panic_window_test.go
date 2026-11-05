@@ -107,13 +107,12 @@ func TestHandleRerunMessage_PanicBeforeHandoffReleasesReservation(t *testing.T) 
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
 	require.NoError(t, err)
 
+	rec := &panicRecorder{}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		// Recover from panic like runRecovered does.
-		defer func() {
-			recover() // expected panic in test - continue normally
-		}()
+		// Recover from panic like runRecovered does; the value is checked below.
+		defer rec.capture()
 		handleRerunMessage(ctx, a, client, WSMessage{ID: "req-1", Type: CmdRerunMessage, Payload: payload})
 	}()
 
@@ -121,7 +120,7 @@ func TestHandleRerunMessage_PanicBeforeHandoffReleasesReservation(t *testing.T) 
 	select {
 	case <-reachedSeam:
 	case <-time.After(5 * time.Second):
-		t.Fatal("handler never reached the pre-handoff seam")
+		t.Fatalf("handler never reached the pre-handoff seam; %s\n%s", rec, panicWindowGoroutines())
 	}
 
 	// Wait for the handler goroutine to finish (recover should have
@@ -129,13 +128,18 @@ func TestHandleRerunMessage_PanicBeforeHandoffReleasesReservation(t *testing.T) 
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("handler never returned after panic")
+		t.Fatalf("handler never returned after panic; %s\n%s", rec, panicWindowGoroutines())
 	}
+
+	// Only the seam's own panic is expected: any other value (a nil
+	// dereference in the coordinator, say) is a different bug.
+	require.Equal(t, panicValue, rec.value(), "the handler must panic at the pre-handoff seam; %s", rec)
 
 	// The decisive assertion: the session must NOT be busy — the handler's
 	// defer should have released the reservation even though it panicked.
-	require.False(t, a.AgentCoordinator.IsSessionBusy(sessionID),
-		"session must not be busy after panic before handoff")
+	if a.AgentCoordinator.IsSessionBusy(sessionID) {
+		t.Fatalf("session must not be busy after panic before handoff (ReleaseExclusive called=%v)\n%s", mockCoord.released, panicWindowGoroutines())
+	}
 
 	// Verify by attempting a fresh ReserveExclusive — it should succeed.
 	_, _, _, ok := a.AgentCoordinator.ReserveExclusive(ctx, sessionID)
@@ -183,20 +187,20 @@ func TestHandleRerunMessage_PanicBeforeHandoffRecreatesPrompt(t *testing.T) {
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
 	require.NoError(t, err)
 
+	rec := &panicRecorder{}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		defer func() {
-			recover() // expected panic — mirrors hub.runRecovered.
-		}()
+		defer rec.capture() // expected panic — mirrors hub.runRecovered.
 		handleRerunMessage(ctx, a, client, WSMessage{ID: "req-1", Type: CmdRerunMessage, Payload: payload})
 	}()
 
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("handler never returned after panic")
+		t.Fatalf("handler never returned after panic; %s\n%s", rec, panicWindowGoroutines())
 	}
+	require.Equal(t, "boom - panic before handoff", rec.value(), "the handler must panic at the pre-handoff seam; %s", rec)
 
 	// The decisive assertion: the operator's prompt must have been
 	// recreated by the post-commit-point defer during panic unwind.

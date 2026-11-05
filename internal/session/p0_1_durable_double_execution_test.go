@@ -201,7 +201,7 @@ func runDurableExactlyOnceScenario(t *testing.T, sessionName string, wrap func(s
 	// so neither the watchdog nor lease expiry nor a real-time cleanup can
 	// ever fire — every interleaving is deterministic.
 	clk := newFakePumpClock(fakePumpEpoch)
-	probe := wrap(newFakeClockService(svc, clk), clk)
+	probe := wrap(newFakeClockService(t, svc, clk), clk)
 	const leaseTTL = 30 * time.Second
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       probe,

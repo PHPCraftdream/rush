@@ -6,7 +6,12 @@ package session_test
 // windows" cannot be broken by wall-clock scheduling.
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"runtime/pprof"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -68,6 +73,21 @@ func (c *fakePumpClock) Advance(d time.Duration) {
 	}
 }
 
+// tickerState lists each live ticker's period and next due instant.
+func (c *fakePumpClock) tickerState() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var parts []string
+	for tk := range c.tickers {
+		parts = append(parts, fmt.Sprintf("period=%s next=%s", tk.period, tk.next.UTC().Format(time.RFC3339)))
+	}
+	sort.Strings(parts)
+	if len(parts) == 0 {
+		return ""
+	}
+	return " [" + strings.Join(parts, "; ") + "]"
+}
+
 func (c *fakePumpClock) liveTickers() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -95,14 +115,48 @@ type fakeClockService struct {
 	session.Service
 	clk *fakePumpClock
 
+	seen              sync.Map     // entry ids the pump leased
 	leases            atomic.Int64 // LeaseRunQueueEntry calls that claimed a row
 	renewals          atomic.Int64 // pump renewals that landed
 	cleanups          atomic.Int64 // CleanupExpiredLeases calls that returned
 	lastCleanupBefore atomic.Int64 // cutoff of the latest cleanup, Unix seconds
 }
 
-func newFakeClockService(svc session.Service, clk *fakePumpClock) *fakeClockService {
-	return &fakeClockService{Service: svc, clk: clk}
+// newFakeClockService also registers a state describer for t: on an awaitPump
+// timeout the probe counters and the rows of every leased entry are printed.
+func newFakeClockService(t *testing.T, svc session.Service, clk *fakePumpClock) *fakeClockService {
+	s := &fakeClockService{Service: svc, clk: clk}
+	registerPumpDiag(t, s.describe)
+	return s
+}
+
+func (s *fakeClockService) describe() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "fake clock now=%s (unix %d), live tickers=%d%s\n", s.clk.Now().UTC().Format(time.RFC3339), s.clk.Now().Unix(), s.clk.liveTickers(), s.clk.tickerState())
+	fmt.Fprintf(&b, "probe: leases=%d renewals=%d cleanups=%d lastCleanupBefore=%d\n", s.leases.Load(), s.renewals.Load(), s.cleanups.Load(), s.lastCleanupBefore.Load())
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var ids []string
+	s.seen.Range(func(k, _ any) bool { ids = append(ids, k.(string)); return true })
+	sort.Strings(ids)
+	for _, id := range ids {
+		e, err := s.Service.GetRunQueueEntry(ctx, id)
+		switch {
+		case err != nil:
+			fmt.Fprintf(&b, "entry %s: read error: %v\n", id, err)
+		case e == nil:
+			fmt.Fprintf(&b, "entry %s: gone (acked and deleted)\n", id)
+		default:
+			fmt.Fprintf(&b, "entry %s: status=%s attempts=%d leasedBy=%q leaseExpiresAt=%d leasedAt=%d terminal=%v lastError=%q\n",
+				e.ID, e.Status, e.Attempts, e.LeasedBy, e.LeaseExpiresAt, e.LeasedAt, e.TerminalFailure, e.LastError)
+		}
+	}
+	if pending, err := s.Service.ListPendingRunQueueEntries(ctx); err != nil {
+		fmt.Fprintf(&b, "pending list error: %v\n", err)
+	} else {
+		fmt.Fprintf(&b, "pending entries: %d\n", len(pending))
+	}
+	return b.String()
 }
 
 func (s *fakeClockService) LeaseRunQueueEntry(ctx context.Context, sessionID, leasedBy string, ttl time.Duration) (*session.RunQueueEntry, error) {
@@ -118,6 +172,7 @@ func (s *fakeClockService) LeaseRunQueueEntry(ctx context.Context, sessionID, le
 		return nil, err
 	}
 	e.LeaseExpiresAt = exp
+	s.seen.Store(e.ID, struct{}{})
 	s.leases.Add(1)
 	return e, nil
 }
@@ -137,11 +192,107 @@ func (s *fakeClockService) CleanupExpiredLeases(ctx context.Context, beforeTime 
 	return err
 }
 
+// pumpDiags holds, per test, the state describers that awaitPump prints when
+// its condition never becomes true.
+var pumpDiags sync.Map // *testing.T -> *pumpDiagSet
+
+type pumpDiagSet struct {
+	mu  sync.Mutex
+	fns []func() string
+}
+
+// registerPumpDiag adds a state describer printed on an awaitPump timeout of t.
+func registerPumpDiag(t *testing.T, fn func() string) {
+	v, _ := pumpDiags.LoadOrStore(t, &pumpDiagSet{})
+	set := v.(*pumpDiagSet)
+	set.mu.Lock()
+	set.fns = append(set.fns, fn)
+	set.mu.Unlock()
+	t.Cleanup(func() { pumpDiags.Delete(t) })
+}
+
+// registerPumpCalls adds a coordinator's call counter to the failure report.
+func registerPumpCalls(t *testing.T, name string, calls *atomic.Int64) {
+	registerPumpDiag(t, func() string { return fmt.Sprintf("coordinator %s: calls=%d\n", name, calls.Load()) })
+}
+
+// pumpDiagnostics renders the registered describers plus the stacks of the
+// pump's goroutines, capped so a CI log stays readable.
+func pumpDiagnostics(t *testing.T) string {
+	var b strings.Builder
+	if v, ok := pumpDiags.Load(t); ok {
+		set := v.(*pumpDiagSet)
+		set.mu.Lock()
+		fns := append([]func() string(nil), set.fns...)
+		set.mu.Unlock()
+		for _, fn := range fns {
+			b.WriteString(fn())
+		}
+	}
+	var buf bytes.Buffer
+	_ = pprof.Lookup("goroutine").WriteTo(&buf, 2)
+	var stacks []string
+	for _, g := range strings.Split(buf.String(), "\n\n") {
+		if strings.Contains(g, "RunQueuePump") {
+			stacks = append(stacks, g)
+		}
+	}
+	fmt.Fprintf(&b, "pump goroutines: %d\n", len(stacks))
+	dump := strings.Join(stacks, "\n\n")
+	if len(dump) > 12000 {
+		dump = dump[:12000] + "\n...(truncated)"
+	}
+	b.WriteString(dump)
+	return b.String()
+}
+
 // awaitPump waits for a pump-side event that must eventually happen. It is a
 // hang guard, not a timing window: fake time does not move while it waits.
+// When the condition never holds it prints the pump's observable state (fake
+// clock, probe counters, queue rows, pump goroutine stacks), so a flake that
+// shows up once on a CI runner carries its own evidence.
 func awaitPump(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
-	require.Eventually(t, cond, 15*time.Second, 2*time.Millisecond, msg)
+	if report, ok := awaitPumpFor(t, 15*time.Second, cond, msg); !ok {
+		t.Fatal(report)
+	}
+}
+
+// awaitPumpFor polls cond until timeout; on failure it returns the report
+// awaitPump prints.
+func awaitPumpFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) (string, bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !cond() {
+		if time.Now().After(deadline) {
+			return fmt.Sprintf("awaitPump timed out after %s: %s\n--- pump state at timeout ---\n%s", timeout, msg, pumpDiagnostics(t)), false
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	return "", true
+}
+
+// The failure report is the only evidence a one-off CI flake leaves, so pin
+// that it carries the clock, the probe counters and the queue row.
+func TestAwaitPumpTimeoutReportsPumpState(t *testing.T) {
+	sess, svc := setupTestSession(t, "await-pump-report")
+	ctx := t.Context()
+	require.NoError(t, svc.EnqueueRunQueueEntry(ctx, "report-probe", sess.ID, []byte(`{}`)))
+	clk := newFakePumpClock(fakePumpEpoch)
+	probe := newFakeClockService(t, svc, clk)
+	e, err := probe.LeaseRunQueueEntry(ctx, sess.ID, "report-pump", time.Hour)
+	require.NoError(t, err)
+	require.NotNil(t, e)
+	clk.Advance(time.Minute)
+
+	report, ok := awaitPumpFor(t, 20*time.Millisecond, func() bool { return false }, "never happens")
+	require.False(t, ok)
+	require.Contains(t, report, "never happens")
+	require.Contains(t, report, "fake clock now=2001-01-01T00:01:00Z")
+	require.Contains(t, report, "probe: leases=1")
+	require.Contains(t, report, "entry report-probe: status=leased")
+	require.Contains(t, report, `leasedBy="report-pump"`)
+	require.Contains(t, report, "pump goroutines:")
 }
 
 // TestFakePumpClock_TickersFireOnAdvanceAndCoalesce pins the fake's own

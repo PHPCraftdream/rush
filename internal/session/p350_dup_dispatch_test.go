@@ -294,6 +294,7 @@ func TestReleaseGate_P350_QueuedNotExecutedNeitherAcksNorSpamRetries(t *testing.
 	require.NoError(t, svc.EnqueueRunQueueEntry(ctx, "queued-not-executed-probe", sess.ID, callDataJSON))
 
 	coord := &queuedNotExecutedCoordinator{}
+	registerPumpCalls(t, "queuedNotExecuted", &coord.calls)
 
 	// Fake TTL, so the pump's local backoff (one TTL) is an hour of fake
 	// time. pumpTick is the tick period; see the backs-off test below for why
@@ -301,7 +302,7 @@ func TestReleaseGate_P350_QueuedNotExecutedNeitherAcksNorSpamRetries(t *testing.
 	const ttl = time.Hour
 	const pumpTick = ttl / 10
 	clk := newFakePumpClock(fakePumpEpoch)
-	probe := newFakeClockService(svc, clk)
+	probe := newFakeClockService(t, svc, clk)
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       probe,
 		Coordinator:    coord,
@@ -430,7 +431,7 @@ func TestReleaseGate_P350_LeaseRenewedDuringLongExecution(t *testing.T) {
 		pumpID     = "lease-renewal-pump"
 	)
 	clk := newFakePumpClock(fakePumpEpoch)
-	probe := newFakeClockService(svc, clk)
+	probe := newFakeClockService(t, svc, clk)
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       probe,
 		Coordinator:    coord,
@@ -542,11 +543,12 @@ func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *test
 	// still counted as an attempt (the pre-fix behavior), the entry would
 	// be dead-lettered long before reaching this many cycles.
 	coord := &queuedNotExecutedThenSuccessCoordinator{busyUntilCall: 25}
+	registerPumpCalls(t, "queuedNotExecutedThenSuccess", &coord.calls)
 
 	const ttl = time.Hour // fake time; also the local backoff length
 	const pumpTick = ttl / 10
 	clk := newFakePumpClock(fakePumpEpoch)
-	probe := newFakeClockService(svc, clk)
+	probe := newFakeClockService(t, svc, clk)
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       probe,
 		Coordinator:    coord,
@@ -683,7 +685,7 @@ func TestReleaseGate_P350_BackoffRetryMustSurvivePostNackBackoffWrite(t *testing
 	const ttl = time.Hour // fake time; also the local backoff length
 	const pumpTick = ttl / 10
 	clk := newFakePumpClock(fakePumpEpoch)
-	probe := &postNackAdvancingService{Service: newFakeClockService(svc, clk), clk: clk, ttl: ttl}
+	probe := &postNackAdvancingService{Service: newFakeClockService(t, svc, clk), clk: clk, ttl: ttl}
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       probe,
 		Coordinator:    coord,
