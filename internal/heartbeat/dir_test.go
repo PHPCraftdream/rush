@@ -28,3 +28,17 @@ func TestDefaultDir_EnvAndGuard(t *testing.T) {
 		t.Fatalf("global data: got %q, want %q", got, want)
 	}
 }
+
+// An isolated global dir must not bring the heartbeat directory back: the
+// process-wide writer outlives each test and raced the TempDir removal of
+// whichever test had set RUSH_GLOBAL_DIR ("data\heartbeat: The directory is
+// not empty").
+func TestDefaultDir_GlobalDirDoesNotLiftTheTestGuard(t *testing.T) {
+	SetDirFunc(nil)
+	t.Cleanup(func() { SetDirFunc(nil) })
+	t.Setenv("RUSH_HEARTBEAT_DIR", "")
+	t.Setenv("RUSH_GLOBAL_DIR", t.TempDir())
+	if got := DefaultDir(); got != "" {
+		t.Fatalf("test guard with RUSH_GLOBAL_DIR: got %q, want \"\"", got)
+	}
+}
