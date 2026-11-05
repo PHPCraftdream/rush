@@ -285,10 +285,12 @@ func TestBatchAgentScopeWaitsForTurnAndDescendants(t *testing.T) {
 	reader.set(false, true)
 	batchAgentTestNoReport(t, reports, "the turn loop runs")
 
-	// Turn ended, descendants live: the node stays live and Running.
+	// Turn ended, descendants live: the node stays live and Running. The
+	// descendants go live first: the poller reports as soon as the turn is over
+	// and the last read says terminal.
+	reader.set(true, true)
 	turn.finish()
 	turn.exitNow()
-	reader.set(true, true)
 	batchAgentTestNoReport(t, reports, "descendants are live")
 
 	// An unknown-but-incomplete read is still live, never falsely finished.
