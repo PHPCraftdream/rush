@@ -72,7 +72,17 @@ func (b *BatchCLIBuilder) bind(ctx context.Context, sessionID, messageID string)
 	if scopeSpec := folderScopeSpecFrom(ctx); scopeSpec != nil {
 		ctx = WithFolderScopeSpec(ctx, scopeSpec)
 	}
+	// The toolset embeds a sub-agent whose prompt and tool builds run
+	// asynchronously. Build them on a gate of their own and drain it while ctx
+	// (the submitting request) is still live: on the coordinator's shared gate
+	// a build outliving the request fails with context.Canceled, and that
+	// sticky error would then fail every later run that waits on the gate.
+	buildGate := &readyGate{}
+	ctx = withReadyGate(ctx, buildGate)
 	built, err := b.coord.buildPolicyTools(ctx, cfg, coder, false)
+	if waitErr := buildGate.Wait(); err == nil {
+		err = waitErr
+	}
 	if err != nil {
 		scope.close()
 		return batchCLIBinding{}, err
