@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db/dbtest"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
@@ -48,7 +49,7 @@ func setupTestSessionWithDB(t *testing.T, title string) (*session.Session, sessi
 	// Each connection to :memory: creates a separate database; when sql.Open recycles
 	// a connection (e.g., after ErrBadConn from context cancellation), data is lost.
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	sqlDB, err := sql.Open("sqlite", dbPath)
+	sqlDB, err := dbtest.Open(dbPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { sqlDB.Close() })
 

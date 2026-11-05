@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db/dbtest"
 	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/pressly/goose/v3"
@@ -31,7 +32,7 @@ import (
 
 func openSQLite(t *testing.T, path string) *sql.DB {
 	t.Helper()
-	conn, err := sql.Open("sqlite", path)
+	conn, err := dbtest.Open(path)
 	require.NoError(t, err)
 	conn.SetMaxOpenConns(1) // SQLite: one writer
 	t.Cleanup(func() { _ = conn.Close() })

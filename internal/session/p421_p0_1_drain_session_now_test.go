@@ -82,11 +82,15 @@ func TestDrainSessionNow_ExecutesPendingEntry(t *testing.T) {
 // just because ITS OWN lease attempt found the row already taken by a
 // goroutine it didn't start.
 func TestDrainSessionNow_WaitsForConcurrentBackgroundTick(t *testing.T) {
-	sess, svc := setupTestSession(t, "drain-now-race")
+	tl := newTestTimeline()
+	var sess *session.Session
+	var svc session.Service
+	tl.stepf(func() { sess, svc = setupTestSession(t, "drain-now-race") }, "fixture setup")
 	coord := &slowCoordinatorForDrain{
 		started: make(chan struct{}, 1),
 		release: make(chan struct{}),
 	}
+	registerPumpCalls(t, "slow", &coord.calls)
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    coord,
@@ -94,40 +98,50 @@ func TestDrainSessionNow_WaitsForConcurrentBackgroundTick(t *testing.T) {
 		TestTick:       func() time.Duration { return 5 * time.Millisecond },
 	})
 	pump.Start()
+	tl.addf("pump started")
 	stopPumpLoggingForcedShutdown(t, pump)
+	reportPumpOnFailure(t, tl)
 
 	callData, err := json.Marshal(map[string]any{"SessionID": sess.ID, "Prompt": "continue"})
 	require.NoError(t, err)
-	require.NoError(t, svc.EnqueueRunQueueEntry(context.Background(), "drain-now-race-idem-1", sess.ID, callData))
+	tl.stepf(func() {
+		require.NoError(t, svc.EnqueueRunQueueEntry(context.Background(), "drain-now-race-idem-1", sess.ID, callData))
+	}, "enqueue")
 
 	// Wait for the BACKGROUND tick (not this test's later DrainSessionNow
 	// call) to win the lease and start executing — confirms the race this
-	// test targets is actually set up before DrainSessionNow ever runs.
+	// test targets is actually set up before DrainSessionNow ever runs. A
+	// hang guard, not a timing window: how long the tick takes depends on
+	// how fast the disk is, which is not what this test measures.
 	select {
 	case <-coord.started:
-	case <-time.After(2 * time.Second):
+		tl.addf("background tick started executing")
+	case <-time.After(30 * time.Second):
 		t.Fatal("background tick never started executing — test setup is broken, proves nothing")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	drainDone := make(chan struct{})
 	var result session.DrainResult
 	var drainErr error
 	go func() {
 		defer close(drainDone)
+		tl.addf("DrainSessionNow called")
 		result, drainErr = pump.DrainSessionNow(ctx, sess.ID)
+		tl.addf("DrainSessionNow returned result=%v err=%v", result, drainErr)
 	}()
 
 	// Give DrainSessionNow time to find nothing pending (already leased by
 	// the background tick) and enter its inFlight poll loop before
 	// releasing the background execution.
 	time.Sleep(50 * time.Millisecond)
+	tl.addf("releasing the background execution")
 	close(coord.release)
 
 	select {
 	case <-drainDone:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("DrainSessionNow did not return after the concurrent background execution finished")
 	}
 

@@ -10,6 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db/dbtest"
 )
 
 func newTestDB(t *testing.T) (*sql.DB, *db.Queries) {
@@ -18,7 +19,7 @@ func newTestDB(t *testing.T) (*sql.DB, *db.Queries) {
 	// Each connection to :memory: creates a separate database; when sql.Open recycles
 	// a connection (e.g., after ErrBadConn from context cancellation), data is lost.
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	sqlDB, err := sql.Open("sqlite", dbPath)
+	sqlDB, err := dbtest.Open(dbPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { sqlDB.Close() })
 
