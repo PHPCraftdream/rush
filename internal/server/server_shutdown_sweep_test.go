@@ -58,12 +58,12 @@ func TestShutdownHTTPClosesAConnectionRegisteredAfterTheFirstSweep(t *testing.T)
 			s.trackConnection(c, state)
 		},
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- srv.Serve(ln) }()
 
-	conn, err := net.Dial("tcp", ln.Addr().String())
+	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", ln.Addr().String())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 	select {
@@ -99,7 +99,7 @@ func TestShutdownHTTPClosesAConnectionRegisteredAfterTheFirstSweep(t *testing.T)
 func TestShutdownStacksListsServerGoroutines(t *testing.T) {
 	t.Parallel()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	srv := &http.Server{Handler: http.NotFoundHandler()}
 	go func() { _ = srv.Serve(ln) }()
