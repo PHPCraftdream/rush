@@ -140,7 +140,7 @@ func (s *fakeClockService) describe() string {
 	s.seen.Range(func(k, _ any) bool { ids = append(ids, k.(string)); return true })
 	sort.Strings(ids)
 	for _, id := range ids {
-		e, err := s.Service.GetRunQueueEntry(ctx, id)
+		e, err := s.GetRunQueueEntry(ctx, id)
 		switch {
 		case err != nil:
 			fmt.Fprintf(&b, "entry %s: read error: %v\n", id, err)
@@ -151,7 +151,7 @@ func (s *fakeClockService) describe() string {
 				e.ID, e.Status, e.Attempts, e.LeasedBy, e.LeaseExpiresAt, e.LeasedAt, e.TerminalFailure, e.LastError)
 		}
 	}
-	if pending, err := s.Service.ListPendingRunQueueEntries(ctx); err != nil {
+	if pending, err := s.ListPendingRunQueueEntries(ctx); err != nil {
 		fmt.Fprintf(&b, "pending list error: %v\n", err)
 	} else {
 		fmt.Fprintf(&b, "pending entries: %d\n", len(pending))
