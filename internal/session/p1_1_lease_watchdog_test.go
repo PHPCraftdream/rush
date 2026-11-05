@@ -305,7 +305,7 @@ func TestP1_1_FastRenewalNoFalsePositive(t *testing.T) {
 	)
 
 	clk := newFakePumpClock(fakePumpEpoch)
-	probe := newFakeClockService(svc, clk)
+	probe := newFakeClockService(t, svc, clk)
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:                      probe,
 		Coordinator:                   coord,

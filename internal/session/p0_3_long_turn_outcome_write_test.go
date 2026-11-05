@@ -48,7 +48,7 @@ func TestP0_3_LongTurnOutcomeWriteSurvivesDBWriteTimeout(t *testing.T) {
 	require.NoError(t, svc.EnqueueRunQueueEntry(ctx, idempotencyKey, sess.ID, callData))
 	coord := &observingCoordinator{service: wrapped}
 	clk := newFakePumpClock(fakePumpEpoch)
-	probe := newFakeClockService(wrapped, clk)
+	probe := newFakeClockService(t, wrapped, clk)
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions: probe, Coordinator: coord, PumpInstanceID: "p0-3-long-turn-pump",
 		TestTick:     func() time.Duration { return 100 * time.Millisecond },
