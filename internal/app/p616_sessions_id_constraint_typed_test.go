@@ -10,13 +10,13 @@ package app
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
 
 	_ "modernc.org/sqlite"
 
+	"github.com/PHPCraftdream/rush/internal/db/dbtest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,7 +32,7 @@ func realUniqueConstraintErrorOnColumn(t *testing.T, table, col string) error {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "unique-probe.db")
-	rawDB, err := sql.Open("sqlite", path)
+	rawDB, err := dbtest.Open(path)
 	require.NoError(t, err)
 	t.Cleanup(func() { rawDB.Close() })
 

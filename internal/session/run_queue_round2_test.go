@@ -2,7 +2,6 @@ package session_test
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db/dbtest"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
@@ -402,7 +402,7 @@ func setupTestSession(t *testing.T, title string) (*session.Session, session.Ser
 	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	sqlDB, err := sql.Open("sqlite", dbPath)
+	sqlDB, err := dbtest.Open(dbPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { sqlDB.Close() })
 
