@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/PHPCraftdream/rush/internal/config"
 )
 
 type clientAuth struct {
@@ -46,6 +48,11 @@ func (a *clientAuth) filter(raw []byte, m *lazyEventMeta) []byte {
 	msgType := m.typ()
 	if msgType == "" || !a.mayReceive(msgType) {
 		return nil
+	}
+	if msgType == EventConfig && !config.APITokenScopeAllows(a.principal.Scopes, "config") {
+		if raw = redactConfigLocalPaths(raw); raw == nil {
+			return nil
+		}
 	}
 	if a.view.sessionID == "" {
 		return raw
@@ -97,4 +104,40 @@ func envelopeType(raw []byte) string {
 		return ""
 	}
 	return message.Type
+}
+
+// configLocalPathKeys are the config event payload fields that expose this
+// machine's filesystem layout. Tokens below the config scope never see them;
+// the interactive UI (no auth) and config/admin tokens do.
+var configLocalPathKeys = []string{"cwd", "contextPaths", "skillsPaths"}
+
+// redactConfigLocalPaths drops configLocalPathKeys from a config envelope. It
+// fails closed: an envelope it cannot parse is dropped (nil) rather than sent
+// unredacted.
+func redactConfigLocalPaths(raw []byte) []byte {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil
+	}
+	payload, ok := envelope["payload"]
+	if !ok {
+		return raw
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		return nil
+	}
+	for _, key := range configLocalPathKeys {
+		delete(fields, key)
+	}
+	redacted, err := json.Marshal(fields)
+	if err != nil {
+		return nil
+	}
+	envelope["payload"] = redacted
+	out, err := json.Marshal(envelope)
+	if err != nil {
+		return nil
+	}
+	return out
 }
