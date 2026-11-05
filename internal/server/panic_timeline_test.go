@@ -26,7 +26,8 @@ func (tl *panicTimeline) add(event string) {
 func (tl *panicTimeline) report(t interface {
 	Failed() bool
 	Log(...any)
-}, rec *panicRecorder) {
+}, rec *panicRecorder,
+) {
 	if !t.Failed() {
 		return
 	}
