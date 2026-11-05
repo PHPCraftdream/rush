@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- A model without a price (not in the catalog and no cost override) now logs a one-time warning at its first billable step: its usage is counted as free, so no budget applies to it. Flat-rate models and steps with a provider-reported cost are not affected. Nothing is blocked.
+
 - The WebSocket `config` event (the `get_config` reply and config broadcasts) no longer carries `cwd`, `contextPaths` or `skillsPaths` for API tokens below the `config` scope, so a `read`/`run` token cannot learn the server's local paths; `config` and `admin` tokens and the built-in web UI are unchanged.
 - Model-list discovery, `rush models use` verification of unknown models, `rush providers update` and `rush providers test` now follow the provider's `network.proxy` cascade (global `options.network` overridden by `providers.<id>.network`, `proxy: none` opts out) like its LLM requests do; before, they always connected directly. A malformed `network` block fails these requests with a clear message instead of connecting directly.
 
