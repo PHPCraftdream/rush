@@ -172,7 +172,7 @@ func TestDrainSessionNow_WaitedExecution_PublishesAssistantIDBeforeCompletion(t 
 	refused := make(chan struct{}, 1)
 	pump.SetTestAfterAdmissionRefusalForTest(func(string) { notifyAdmissionRefusal(refused) })
 	drainCtx := session.WithDrainAssistantIdentityLive(context.Background(), func(id string) {
-		liveID <- id
+		notifyLiveIdentity(liveID, id)
 	})
 	done := make(chan struct{})
 	var result session.DrainResult

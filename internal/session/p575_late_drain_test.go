@@ -3,10 +3,44 @@ package session_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
+
+func notifyLiveIdentity(ch chan<- string, id string) {
+	select {
+	case ch <- id:
+	default:
+	}
+}
+
+func TestLiveIdentityNotificationAllowsReplay(t *testing.T) {
+	ch := make(chan string, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		notifyLiveIdentity(ch, "assistant-tool-step")
+		notifyLiveIdentity(ch, "assistant-tool-step")
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		// Освобождаем отправителя и в мутанте с блокирующей записью.
+		select {
+		case <-ch:
+		default:
+		}
+		t.Fatal("identity replay notifier blocked")
+	}
+	select {
+	case id := <-ch:
+		require.Equal(t, "assistant-tool-step", id)
+	default:
+		t.Fatal("identity notification missing")
+	}
+}
 
 func notifyAdmissionRefusal(ch chan<- struct{}) {
 	select {

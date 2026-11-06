@@ -4,7 +4,7 @@ import os
 import subprocess
 
 package = './internal/session'
-tests = '^Test(DrainSessionNow_(WaitedExecution_(CarriesAllAssistantIdentities|PublishesAssistantIDBeforeCompletion)|LateStartDoesNotInheritCompletedIdentities)|AdmissionRefusalNotificationAllowsRepeatedObservations)$'
+tests = '^Test(DrainSessionNow_(WaitedExecution_(CarriesAllAssistantIdentities|PublishesAssistantIDBeforeCompletion)|LateStartDoesNotInheritCompletedIdentities)|AdmissionRefusalNotificationAllowsRepeatedObservations|LiveIdentityNotificationAllowsReplay)$'
 command = ['go', 'test'] + os.environ.get('RACE', '').split() + ['-json', '-p', '1', '-parallel', '1', '-timeout=15m', '-run', tests, package]
 result = subprocess.run(command + ['-count=100'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 Path('waited-identities-baseline.jsonl').write_text(result.stdout)
@@ -21,7 +21,7 @@ for line in result.stdout.splitlines():
         counts[event['Test']] = counts.get(event['Test'], 0) + 1
     if '--- pump failure report' in event.get('Output', '') or '--- pump setup/cleanup failure report' in event.get('Output', ''):
         raise SystemExit('successful baseline emitted failure-only diagnostics')
-if len(counts) != 4 or any(count != 100 for count in counts.values()):
+if len(counts) != 5 or any(count != 100 for count in counts.values()):
     raise SystemExit('incomplete baseline: ' + repr(counts))
 print('baseline passes:', counts)
 
@@ -71,5 +71,19 @@ try:
     if result.returncode == 0 or 'panic: close of closed channel' not in result.stdout:
         print(result.stdout)
         raise SystemExit('double-close mutant was not killed by repeated admission notification')
+finally:
+    path.write_text(original)
+
+path = Path('internal/session/p575_late_drain_test.go')
+original = path.read_text()
+notification = '\tselect {\n\tcase ch <- id:\n\tdefault:\n\t}'
+assert original.count(notification) == 1
+try:
+    path.write_text(original.replace(notification, '\tch <- id'))
+    result = subprocess.run(command + ['-count=1'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    Path('waited-identities-blocking-replay-mutant.jsonl').write_text(result.stdout)
+    if result.returncode == 0 or 'identity replay notifier blocked' not in result.stdout:
+        print(result.stdout)
+        raise SystemExit('blocking replay mutant was not killed by the notification guard')
 finally:
     path.write_text(original)
