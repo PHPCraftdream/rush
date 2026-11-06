@@ -8,6 +8,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func notifyAdmissionRefusal(ch chan<- struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+func TestAdmissionRefusalNotificationAllowsRepeatedObservations(t *testing.T) {
+	ch := make(chan struct{}, 1)
+	notifyAdmissionRefusal(ch)
+	notifyAdmissionRefusal(ch)
+	select {
+	case <-ch:
+	default:
+		t.Fatal("admission notification missing")
+	}
+	notifyAdmissionRefusal(ch)
+	select {
+	case <-ch:
+	default:
+		t.Fatal("repeated admission notification missing")
+	}
+}
+
 func waitForBackgroundAdmissionRelease(t *testing.T, pump *session.RunQueuePump, sessionID string) {
 	t.Helper()
 	awaitPump(t, func() bool {

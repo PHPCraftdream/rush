@@ -78,10 +78,7 @@ func TestDrainSessionNow_WaitedExecution_CarriesAllAssistantIdentities(t *testin
 	refused := make(chan struct{}, 1)
 	pump.SetTestAfterAdmissionRefusalForTest(func(string) {
 		tl.addf("drain observed background admission")
-		select {
-		case refused <- struct{}{}:
-		default:
-		}
+		notifyAdmissionRefusal(refused)
 	})
 
 	var assistantIDs map[string]struct{}
@@ -172,8 +169,8 @@ func TestDrainSessionNow_WaitedExecution_PublishesAssistantIDBeforeCompletion(t 
 	defer pump.Stop()
 
 	liveID := make(chan string, 1)
-	refused := make(chan struct{})
-	pump.SetTestAfterAdmissionRefusalForTest(func(string) { close(refused) })
+	refused := make(chan struct{}, 1)
+	pump.SetTestAfterAdmissionRefusalForTest(func(string) { notifyAdmissionRefusal(refused) })
 	drainCtx := session.WithDrainAssistantIdentityLive(context.Background(), func(id string) {
 		liveID <- id
 	})
