@@ -286,6 +286,7 @@ func TestReleaseGate_P350_QueuedNotExecutedNeitherAcksNorSpamRetries(t *testing.
 	t.Parallel()
 	limitParallel(t)
 	tl := newTestTimeline()
+	reportPumpSetupOnFailure(t, tl)
 	tl.addf("fixture setup started")
 	sess, svc := setupTestSession(t, "test-session-queued-not-executed")
 	tl.addf("fixture ready")
@@ -294,7 +295,10 @@ func TestReleaseGate_P350_QueuedNotExecutedNeitherAcksNorSpamRetries(t *testing.
 	callData := map[string]any{"SessionID": sess.ID, "Prompt": "test prompt"}
 	callDataJSON, err := json.Marshal(callData)
 	require.NoError(t, err)
-	require.NoError(t, svc.EnqueueRunQueueEntry(ctx, "queued-not-executed-probe", sess.ID, callDataJSON))
+	getEntry := registerPumpQueueReport(t, tl, svc, "queued-not-executed-probe")
+	tl.stepf(func() {
+		require.NoError(t, svc.EnqueueRunQueueEntry(ctx, "queued-not-executed-probe", sess.ID, callDataJSON))
+	}, "enqueue")
 
 	coord := &queuedNotExecutedCoordinator{}
 	registerPumpCalls(t, "queuedNotExecuted", &coord.calls)
@@ -323,7 +327,7 @@ func TestReleaseGate_P350_QueuedNotExecutedNeitherAcksNorSpamRetries(t *testing.
 	// Released back to pending before any fake time passes, so no cleanup
 	// pass can see it leased.
 	awaitPump(t, func() bool {
-		e, getErr := svc.GetRunQueueEntry(ctx, "queued-not-executed-probe")
+		e, getErr := getEntry(ctx)
 		return getErr == nil && e != nil && e.Status == "pending"
 	}, "the entry must be released back to pending")
 
@@ -357,7 +361,7 @@ func TestReleaseGate_P350_QueuedNotExecutedNeitherAcksNorSpamRetries(t *testing.
 		if coord.calls.Load() >= 2 {
 			return true
 		}
-		if e, getErr := svc.GetRunQueueEntry(ctx, "queued-not-executed-probe"); getErr == nil && e != nil && e.Status == "leased" {
+		if e, getErr := getEntry(ctx); getErr == nil && e != nil && e.Status == "leased" {
 			return false // execution in flight; do not move fake time
 		}
 		clk.Advance(pumpTick + time.Millisecond)
@@ -536,6 +540,7 @@ func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *test
 	t.Parallel()
 	limitParallel(t)
 	tl := newTestTimeline()
+	reportPumpSetupOnFailure(t, tl)
 	tl.addf("fixture setup started")
 	sess, svc := setupTestSession(t, "test-session-queued-backoff")
 	tl.addf("fixture ready")
@@ -545,7 +550,10 @@ func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *test
 	callData := map[string]any{"SessionID": sess.ID, "Prompt": "test prompt"}
 	callDataJSON, err := json.Marshal(callData)
 	require.NoError(t, err)
-	require.NoError(t, svc.EnqueueRunQueueEntry(ctx, entryID, sess.ID, callDataJSON))
+	getEntry := registerPumpQueueReport(t, tl, svc, entryID)
+	tl.stepf(func() {
+		require.NoError(t, svc.EnqueueRunQueueEntry(ctx, entryID, sess.ID, callDataJSON))
+	}, "enqueue")
 
 	// Far more than RunQueueMaxAttempts (10) — if ErrCallQueuedNotExecuted
 	// still counted as an attempt (the pre-fix behavior), the entry would
@@ -574,10 +582,10 @@ func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *test
 		tl.addf("cycle=%d waiting for call; fake now=%s calls=%d", cycle, clk.Now(), coord.calls.Load())
 		awaitPump(t, func() bool { return coord.calls.Load() >= cycle }, "the pump must re-attempt the entry each backoff window")
 		awaitPump(t, func() bool {
-			e, getErr := svc.GetRunQueueEntry(ctx, entryID)
+			e, getErr := getEntry(ctx)
 			return getErr == nil && e != nil && e.Status == "pending"
 		}, "a busy outcome must release the row back to pending, not dead-letter it")
-		entry, getErr := svc.GetRunQueueEntry(ctx, entryID)
+		entry, getErr := getEntry(ctx)
 		require.NoError(t, getErr)
 		require.NotNil(t, entry)
 		require.Equal(t, int64(0), entry.Attempts, "cycle %d: ErrCallQueuedNotExecuted must never cost an attempt", cycle)
@@ -614,13 +622,13 @@ func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *test
 				// The call has started; wait out its outcome write. On the
 				// final cycle the call SUCCEEDS and acks (deletes) the row,
 				// so a vanished row is a done wait too.
-				e, getErr := svc.GetRunQueueEntry(ctx, entryID)
+				e, getErr := getEntry(ctx)
 				if getErr != nil || e == nil {
 					return true
 				}
 				return e.Status == "pending"
 			}
-			if e, getErr := svc.GetRunQueueEntry(ctx, entryID); getErr == nil && e != nil && e.Status == "leased" {
+			if e, getErr := getEntry(ctx); getErr == nil && e != nil && e.Status == "leased" {
 				return false // execution in flight; do not move fake time
 			}
 			clk.Advance(pumpTick + time.Millisecond)
@@ -631,6 +639,7 @@ func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *test
 	// The 26th call succeeds; the row must be acked, not left behind.
 	awaitPump(t, func() bool {
 		gone, checkErr := runQueueGoneEverywhere(ctx, svc)
+		tl.observef("queue gone check", "gone=%v err=%v", gone, checkErr)
 		return checkErr == nil && gone
 	}, "entry should be acked once the external owner frees up")
 	require.Greater(t, coord.calls.Load(), coord.busyUntilCall)

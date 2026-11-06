@@ -58,6 +58,7 @@ func TestHandleRerunMessage_PanicBeforeHandoffReleasesReservation(t *testing.T) 
 	tl := &panicTimeline{}
 	rec := &panicRecorder{}
 	defer tl.report(t, rec)
+	t.Cleanup(func() { tl.report(t, rec) })
 	tl.add("fixture setup started")
 	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
 	workingDir := t.TempDir()
@@ -79,6 +80,7 @@ func TestHandleRerunMessage_PanicBeforeHandoffReleasesReservation(t *testing.T) 
 	tl.add("session created")
 	ctx := t.Context()
 
+	tl.add("user message create started")
 	userMsg, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
 		Role:  message.User,
 		Parts: []message.ContentPart{message.TextContent{Text: "panic test"}},
@@ -86,6 +88,7 @@ func TestHandleRerunMessage_PanicBeforeHandoffReleasesReservation(t *testing.T) 
 	require.NoError(t, err)
 
 	// Tail message to delete (the rerun target is the user message above).
+	tl.add("user message created; tail message create started")
 	tailMsg, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
 		Role:  message.Assistant,
 		Parts: []message.ContentPart{message.TextContent{Text: "old reply"}},
@@ -93,9 +96,10 @@ func TestHandleRerunMessage_PanicBeforeHandoffReleasesReservation(t *testing.T) 
 	require.NoError(t, err)
 	tailMsg.AddFinish(message.FinishReasonEndTurn, "", "")
 	require.NoError(t, a.Messages.Update(ctx, tailMsg))
+	tl.add("tail message updated")
 
 	// Mock coordinator that tracks ownership for assertions.
-	mockCoord := &panicWindowCoordinator{coordinator: a.AgentCoordinator}
+	mockCoord := &panicWindowCoordinator{coordinator: a.AgentCoordinator, timeline: tl}
 	a.AgentCoordinator = mockCoord
 
 	// Arm the seam to panic before handoff.
@@ -116,6 +120,7 @@ func TestHandleRerunMessage_PanicBeforeHandoffReleasesReservation(t *testing.T) 
 
 	tl.add("fixture ready; launching handler")
 	done := make(chan struct{})
+	tl.snapshot = func() string { return panicHandlerSnapshot(ctx, done) }
 	go func() {
 		defer close(done)
 		defer tl.add("handler returned")
@@ -171,6 +176,7 @@ func TestHandleRerunMessage_PanicBeforeHandoffRecreatesPrompt(t *testing.T) {
 	tl := &panicTimeline{}
 	rec := &panicRecorder{}
 	defer tl.report(t, rec)
+	t.Cleanup(func() { tl.report(t, rec) })
 	tl.add("fixture setup started")
 	// Cannot use t.Parallel() because newAttachmentsTestApp calls t.Setenv.
 	workingDir := t.TempDir()
@@ -187,6 +193,7 @@ func TestHandleRerunMessage_PanicBeforeHandoffRecreatesPrompt(t *testing.T) {
 	ctx := t.Context()
 
 	promptText := "recreate me after panic"
+	tl.add("user message create started")
 	userMsg, err := a.Messages.Create(ctx, sessionID, message.CreateMessageParams{
 		Role:  message.User,
 		Parts: []message.ContentPart{message.TextContent{Text: promptText}},
@@ -207,6 +214,7 @@ func TestHandleRerunMessage_PanicBeforeHandoffRecreatesPrompt(t *testing.T) {
 
 	tl.add("fixture ready; launching handler")
 	done := make(chan struct{})
+	tl.snapshot = func() string { return panicHandlerSnapshot(ctx, done) }
 	go func() {
 		defer close(done)
 		defer tl.add("handler returned")
@@ -241,6 +249,7 @@ type panicWindowCoordinator struct {
 	mu          sync.Mutex
 	coordinator agent.Coordinator
 	released    bool
+	timeline    *panicTimeline
 }
 
 func (p *panicWindowCoordinator) Run(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
@@ -374,10 +383,18 @@ func (p *panicWindowCoordinator) BatchRerunStopVoided(ctx context.Context, sessi
 }
 
 func (p *panicWindowCoordinator) ReserveExclusive(ctx context.Context, sessionID string) (context.Context, uint64, context.CancelFunc, bool) {
+	if p.timeline != nil {
+		p.timeline.add("ReserveExclusive entered")
+		defer p.timeline.add("ReserveExclusive returned")
+	}
 	return p.coordinator.ReserveExclusive(ctx, sessionID)
 }
 
 func (p *panicWindowCoordinator) ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc) {
+	if p.timeline != nil {
+		p.timeline.add("ReleaseExclusive entered")
+		defer p.timeline.add("ReleaseExclusive returned")
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.released = true

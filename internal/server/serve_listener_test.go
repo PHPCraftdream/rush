@@ -13,13 +13,26 @@ import (
 
 func startPolicyServer(t *testing.T, s *Server) string {
 	t.Helper()
+	tl := &panicTimeline{}
+	tl.add("Start scheduled")
+	t.Cleanup(func() { reportListenerFailure(t, tl, func() string { return listenerSnapshot(s) }) })
 	ctx, cancel := context.WithCancel(t.Context())
 	ready := make(chan string, 1)
 	errCh := make(chan error, 1)
-	go func() { errCh <- s.Start(ctx, func(addr string) { ready <- addr }) }()
+	go func() {
+		tl.add("Start entered")
+		err := s.Start(ctx, func(addr string) {
+			tl.add("listener ready")
+			ready <- addr
+		})
+		tl.add("Start returned")
+		errCh <- err
+	}()
 	select {
 	case addr := <-ready:
 		t.Cleanup(func() {
+			defer reportListenerFailure(t, tl, func() string { return listenerSnapshot(s) })
+			tl.add("cancel requested")
 			cancel()
 			select {
 			case err := <-errCh:
@@ -27,7 +40,7 @@ func startPolicyServer(t *testing.T, s *Server) string {
 					t.Errorf("server stopped: %v", err)
 				}
 			case <-time.After(5 * time.Second):
-				t.Errorf("server did not shut down within 5s of cancel\n%s", shutdownStacks())
+				t.Error("server did not shut down within 5s of cancel")
 			}
 		})
 		return "http://" + addr

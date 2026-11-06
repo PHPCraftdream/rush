@@ -3,6 +3,7 @@ package session_test
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -13,9 +14,11 @@ import (
 // on a passing run: reportPumpOnFailure emits it, with the pump state, only
 // when the test has failed, so a one-off CI flake leaves its own evidence.
 type testTimeline struct {
-	start  time.Time
-	mu     sync.Mutex
-	events []string
+	start    time.Time
+	mu       sync.Mutex
+	events   []string
+	last     map[string]string
+	reported bool
 }
 
 func newTestTimeline() *testTimeline { return &testTimeline{start: time.Now()} }
@@ -30,14 +33,53 @@ func (tl *testTimeline) addf(format string, args ...any) {
 // shows up as one slow step rather than as an unexplained timeout.
 func (tl *testTimeline) stepf(fn func(), format string, args ...any) {
 	began := time.Now()
+	tl.addf("%s started", fmt.Sprintf(format, args...))
+	defer func() { tl.addf("%s took %s", fmt.Sprintf(format, args...), time.Since(began).Round(time.Millisecond)) }()
 	fn()
-	tl.addf("%s took %s", fmt.Sprintf(format, args...), time.Since(began).Round(time.Millisecond))
 }
 
 func (tl *testTimeline) String() string {
 	tl.mu.Lock()
 	defer tl.mu.Unlock()
-	return "timeline:\n" + strings.Join(tl.events, "\n") + "\n"
+	var latest []string
+	for key, value := range tl.last {
+		latest = append(latest, key+": "+value)
+	}
+	sort.Strings(latest)
+	return "timeline:\n" + strings.Join(tl.events, "\n") + "\nlast observations:\n" + strings.Join(latest, "\n") + "\n"
+}
+
+func (tl *testTimeline) observef(key, format string, args ...any) {
+	tl.mu.Lock()
+	defer tl.mu.Unlock()
+	if tl.last == nil {
+		tl.last = make(map[string]string)
+	}
+	tl.last[key] = fmt.Sprintf("+%s %s", time.Since(tl.start).Round(time.Millisecond), fmt.Sprintf(format, args...))
+}
+
+func (tl *testTimeline) report(t interface {
+	Failed() bool
+	Log(...any)
+}, render func() string,
+) {
+	if !t.Failed() {
+		return
+	}
+	tl.mu.Lock()
+	if tl.reported {
+		tl.mu.Unlock()
+		return
+	}
+	tl.reported = true
+	tl.mu.Unlock()
+	t.Log(render())
+}
+
+func reportPumpSetupOnFailure(t *testing.T, tl *testTimeline) {
+	t.Cleanup(func() {
+		tl.report(t, func() string { return "--- pump setup/cleanup failure report ---\n" + tl.String() })
+	})
 }
 
 // pumpFailureReport renders what reportPumpOnFailure prints.
@@ -51,9 +93,7 @@ func pumpFailureReport(t *testing.T) string {
 func reportPumpOnFailure(t *testing.T, tl *testTimeline) {
 	registerPumpDiag(t, tl.String)
 	t.Cleanup(func() {
-		if t.Failed() {
-			t.Log(pumpFailureReport(t))
-		}
+		tl.report(t, func() string { return pumpFailureReport(t) })
 	})
 }
 

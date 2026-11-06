@@ -118,6 +118,26 @@ jobs:
           path: "."
           fail-build: true
           severity-cutoff: critical
-      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+          output-file: grype-results.sarif
+      - name: Report blocking Grype findings
+        if: failure() && hashFiles('grype-results.sarif') != ''
+        run: |
+          python3 -I - <<'PY'
+          import json
+          from pathlib import Path
+
+          for run in json.loads(Path('grype-results.sarif').read_text()).get('runs', []):
+              for result in run.get('results', []):
+                  if result.get('level') == 'error':
+                      print(result.get('ruleId', ''), result.get('message', {}).get('text', ''))
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
         with:
-          sarif_file: ${{ steps.scan.outputs.sarif }}
+          name: grype-results
+          path: grype-results.sarif
+          if-no-files-found: warn
+      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        if: always() && hashFiles('grype-results.sarif') != ''
+        with:
+          sarif_file: grype-results.sarif
