@@ -83,9 +83,11 @@ func TestDrainSessionNow_ExecutesPendingEntry(t *testing.T) {
 // goroutine it didn't start.
 func TestDrainSessionNow_WaitsForConcurrentBackgroundTick(t *testing.T) {
 	tl := newTestTimeline()
+	reportPumpSetupOnFailure(t, tl)
 	var sess *session.Session
 	var svc session.Service
 	tl.stepf(func() { sess, svc = setupTestSession(t, "drain-now-race") }, "fixture setup")
+	registerPumpQueueReport(t, tl, svc, "drain-now-race-idem-1")
 	coord := &slowCoordinatorForDrain{
 		started: make(chan struct{}, 1),
 		release: make(chan struct{}),
@@ -122,6 +124,8 @@ func TestDrainSessionNow_WaitsForConcurrentBackgroundTick(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	deadline, _ := ctx.Deadline()
+	tl.addf("drain deadline=%s", deadline.Format(time.RFC3339Nano))
 	drainDone := make(chan struct{})
 	var result session.DrainResult
 	var drainErr error
@@ -142,6 +146,7 @@ func TestDrainSessionNow_WaitsForConcurrentBackgroundTick(t *testing.T) {
 	select {
 	case <-drainDone:
 	case <-time.After(30 * time.Second):
+		tl.addf("drain wait expired ctx=%v remaining=%s", ctx.Err(), time.Until(deadline))
 		t.Fatal("DrainSessionNow did not return after the concurrent background execution finished")
 	}
 
