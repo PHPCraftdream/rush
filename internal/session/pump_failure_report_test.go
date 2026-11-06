@@ -61,7 +61,8 @@ func (tl *testTimeline) observef(key, format string, args ...any) {
 func (tl *testTimeline) report(t interface {
 	Failed() bool
 	Log(...any)
-}, render func() string) {
+}, render func() string,
+) {
 	if !t.Failed() {
 		return
 	}

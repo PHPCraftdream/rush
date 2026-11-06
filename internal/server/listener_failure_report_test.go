@@ -22,7 +22,8 @@ func listenerSnapshot(s *Server) string {
 func reportListenerFailure(t interface {
 	Failed() bool
 	Log(...any)
-}, tl *panicTimeline, snapshot func() string) {
+}, tl *panicTimeline, snapshot func() string,
+) {
 	if !t.Failed() {
 		return
 	}
