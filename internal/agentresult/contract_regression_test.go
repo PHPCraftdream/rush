@@ -245,18 +245,62 @@ func TestContractRegressionSchemaLimits(t *testing.T) {
 
 func TestContractRegressionDiagnosticsAndValidation(t *testing.T) {
 	c := regressionSchema(t, `{"type":"object","required":["token"],"properties":{"token":{"type":"string"}},"additionalProperties":false}`)
-	for _, candidate := range []string{`{`, `{"token":1}`, `{"token":"ok","secret-key":"secret"}`} {
-		err := c.Validate(candidate)
-		var ce *Error
-		if !errors.As(err, &ce) || ce.Code != CodeMismatch {
-			t.Errorf("error class for %q: %v", candidate, err)
-			continue
+	// {"token":1}: keyword type, schema pointer /properties/token, instance pointer /token.
+	err := c.Validate(`{"token":1}`)
+	var ce *Error
+	if !errors.As(err, &ce) || ce.Code != CodeMismatch {
+		t.Fatalf("error class: %v", err)
+	}
+	if len(ce.Diagnostics) == 0 {
+		t.Fatal("нет диагностики")
+	}
+	var found bool
+	for _, d := range ce.Diagnostics {
+		if d.Code == "type" && d.SchemaPointer == "/properties/token" && d.InstancePointer == "/token" {
+			found = true
 		}
-		fb := ce.Feedback(1, 2)
-		var obj map[string]any
-		if len(fb) > 4096 || json.Unmarshal([]byte(fb), &obj) != nil || strings.Contains(fb, "secret") || strings.Contains(fb, "token") {
-			t.Errorf("unsafe feedback: %s", fb)
+	}
+	if !found {
+		t.Fatalf("нет диагностики type с pointers /properties/token и /token: %+v", ce.Diagnostics)
+	}
+	fb := ce.Feedback(1, 2)
+	var obj map[string]any
+	if len(fb) > 4096 || json.Unmarshal([]byte(fb), &obj) != nil || strings.Contains(fb, "secret") {
+		t.Errorf("unsafe feedback: %s", fb)
+	}
+	if !strings.Contains(fb, "/token") {
+		t.Errorf("feedback не содержит schema-known указатель /token: %s", fb)
+	}
+	// Дополнительный ключ: keyword additionalProperties, оба указателя пустые.
+	err = c.Validate(`{"token":"ok","secret-key":"secret"}`)
+	if !errors.As(err, &ce) || ce.Code != CodeMismatch {
+		t.Fatalf("error class: %v", err)
+	}
+	var apFound bool
+	for _, d := range ce.Diagnostics {
+		if d.Code == "additionalProperties" && d.SchemaPointer == "" && d.InstancePointer == "" {
+			apFound = true
 		}
+	}
+	if !apFound {
+		t.Fatalf("нет диагностики additionalProperties с пустыми указателями: %+v", ce.Diagnostics)
+	}
+	fb = ce.Feedback(1, 2)
+	if len(fb) > 4096 || json.Unmarshal([]byte(fb), &obj) != nil || strings.Contains(fb, "secret-key") || strings.Contains(fb, "secret") {
+		t.Errorf("unsafe feedback: %s", fb)
+	}
+	// Некорректный JSON: invalid_json без указателей.
+	err = c.Validate(`{`)
+	if !errors.As(err, &ce) || ce.Code != CodeMismatch {
+		t.Fatalf("error class: %v", err)
+	}
+	for _, d := range ce.Diagnostics {
+		if d.Code != "invalid_json" || d.SchemaPointer != "" || d.InstancePointer != "" {
+			t.Fatalf("неожиданная диагностика для malformed JSON: %+v", d)
+		}
+	}
+	if len(ce.Diagnostics) == 0 {
+		t.Fatal("нет диагностики для malformed JSON")
 	}
 	for _, tc := range []struct {
 		schema, candidate string

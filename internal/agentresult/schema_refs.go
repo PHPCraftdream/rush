@@ -1,9 +1,12 @@
 package agentresult
 
 import (
+	"encoding/json"
 	"errors"
+	"math"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -11,6 +14,27 @@ const (
 	maxSchemaRefDepth = 32
 	maxSchemaRefNodes = 2048
 )
+
+func clampSchemaSizeLimits(registry map[string]map[string]any) error {
+	cap := MaxCandidateBytes + 1
+	for _, schema := range registry {
+		for _, keyword := range []string{"minItems", "maxItems", "minProperties", "maxProperties", "minLength", "maxLength"} {
+			n, ok := schema[keyword].(json.Number)
+			if !ok {
+				continue
+			}
+			// Значение уже прошло проверку decimal round-trip и safe-integer admission.
+			value, err := numberFloat(n)
+			if err != nil || value < 0 || value != math.Trunc(value) {
+				return errors.New("integer")
+			}
+			if value > float64(cap) {
+				schema[keyword] = json.Number(strconv.Itoa(cap))
+			}
+		}
+	}
+	return nil
+}
 
 func sortedKeys(m map[string]any) []string {
 	keys := make([]string, 0, len(m))

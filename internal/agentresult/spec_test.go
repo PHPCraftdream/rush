@@ -1,6 +1,7 @@
 package agentresult
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -77,9 +78,26 @@ func TestFeedbackIsBoundedAndSanitized(t *testing.T) {
 		t.Fatal("errors.As не преобразовал mismatch")
 	}
 	feedback := ve.Feedback(1, 2)
-	if len(feedback) > 4096 || strings.Contains(feedback, "secret") {
-		t.Fatal("feedback не ограничен или содержит секрет")
+	// Секретная reason-строка стирается; caller-constructed указатель "/secret"
+	// опускается: provenance-контракт — указатели только из доверенного снапшота
+	// структурного валидатора, а эта ValidationError сконструирована снаружи.
+	if len(feedback) > 4096 || strings.Contains(feedback, strings.Repeat("secret", 2)) || strings.Contains(feedback, "/secret") {
+		t.Fatal("feedback не ограничен или содержит секретную причину/указатель")
 	}
+	var obj map[string]any
+	if json.Unmarshal([]byte(feedback), &obj) != nil {
+		t.Fatalf("feedback не является валидным JSON: %s", feedback)
+	}
+	diags, ok := obj["diagnostics"].([]any)
+	if !ok || len(diags) != 1 {
+		t.Fatalf("ожидалась одна диагностика: %s", feedback)
+	}
+	d := diags[0].(map[string]any)
+	// Указатель опущен (""), причина сохранена из allowlist — усиление no-leak.
+	if d["schema_pointer"] != "" || d["instance_pointer"] != "" || d["reason"] != "candidate does not satisfy schema" {
+		t.Fatalf("неожиданная диагностика: %s", feedback)
+	}
+	// Большой Error с неизвестным кодом сохраняет fallback-поведение.
 	big := (&Error{Code: Code("private"), Diagnostics: make([]Diagnostic, 100000)}).Feedback(0, 0)
 	if len(big) > 4096 || strings.Contains(big, "private") {
 		t.Fatal("небезопасный feedback")

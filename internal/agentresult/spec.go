@@ -26,6 +26,8 @@ type Compiled struct {
 	effectiveMaxRepairs int
 	re                  *regexp.Regexp
 	validator           interface{ Validate(any) error }
+	schemaRoot          map[string]any
+	schemaRegistry      map[string]map[string]any
 }
 type Diagnostic struct {
 	Code            string `json:"code"`
@@ -33,7 +35,12 @@ type Diagnostic struct {
 	SchemaPointer   string `json:"schema_pointer"`
 	Reason          string `json:"reason"`
 }
-type ValidationError struct{ Diagnostics []Diagnostic }
+type ValidationError struct {
+	Diagnostics []Diagnostic
+	// trusted — снапшот диагностик, сформированных доверенным структурным
+	// обходом; указатели попадают в Feedback только при точном совпадении.
+	trusted []Diagnostic
+}
 
 func (e *ValidationError) Error() string { return string(CodeMismatch) }
 func (s Spec) EffectiveMaxRepairs() int {
@@ -160,11 +167,13 @@ func Compile(s Spec) (*Compiled, error) {
 		if s.Pattern != nil || len(s.Schema) == 0 || len(s.Schema) > MaxSchemaBytes || string(s.Schema) == "null" {
 			return nil, &Error{Code: CodeInvalid}
 		}
-		v, e := compileSchema(append([]byte(nil), s.Schema...))
+		v, root, registry, e := compileSchema(append([]byte(nil), s.Schema...))
 		if e != nil {
 			return nil, &Error{Code: CodeInvalid}
 		}
 		c.validator = v
+		c.schemaRoot = root
+		c.schemaRegistry = registry
 	default:
 		return nil, &Error{Code: CodeInvalid}
 	}
@@ -183,10 +192,10 @@ func (c *Compiled) Validate(candidate string) error {
 			return &Error{Code: CodeInvalid}
 		}
 		if !utf8.ValidString(candidate) {
-			return &ValidationError{[]Diagnostic{{Code: "regex_mismatch", SchemaPointer: "", Reason: "неверный UTF-8 или формат"}}}
+			return &ValidationError{Diagnostics: []Diagnostic{{Code: "regex_mismatch", SchemaPointer: "", Reason: "неверный UTF-8 или формат"}}}
 		}
 		if !c.re.MatchString(candidate) {
-			return &ValidationError{[]Diagnostic{{Code: "regex_mismatch", SchemaPointer: "", Reason: "не соответствует шаблону"}}}
+			return &ValidationError{Diagnostics: []Diagnostic{{Code: "regex_mismatch", SchemaPointer: "", Reason: "не соответствует шаблону"}}}
 		}
 		return nil
 	}
@@ -195,7 +204,30 @@ func (c *Compiled) Validate(candidate string) error {
 	}
 	v, e := ktavcodec.ParseJSONLossless([]byte(candidate))
 	if e != nil {
-		return &ValidationError{[]Diagnostic{{Code: "invalid_json", SchemaPointer: "", Reason: "некорректный JSON"}}}
+		return &ValidationError{Diagnostics: []Diagnostic{{Code: "invalid_json", SchemaPointer: "", Reason: "некорректный JSON"}}}
 	}
 	return validateCompiled(c, v)
+}
+
+func validateCompiled(c *Compiled, v any) error {
+	converted, e := numbersForValidator(v)
+	if e != nil {
+		return &ValidationError{Diagnostics: []Diagnostic{{Code: "number_not_representable", Reason: "number is not exactly representable"}}}
+	}
+	err := c.validator.Validate(converted)
+	if err == nil {
+		return nil
+	}
+	// Доверенный структурный обход выдаёт diagnostics только потому, что
+	// библиотечный Validate вернул ошибку; текст ошибки не разбирается.
+	diags := structuralDiagnostics(c.schemaRoot, c.schemaRegistry, converted)
+	if len(diags) > maxRequiredDiagnostics {
+		diags = diags[:maxRequiredDiagnostics]
+	}
+	if len(diags) == 0 {
+		diags = []Diagnostic{{Code: "schema_mismatch", Reason: "candidate does not satisfy schema"}}
+	}
+	trusted := make([]Diagnostic, len(diags))
+	copy(trusted, diags)
+	return &ValidationError{Diagnostics: diags, trusted: trusted}
 }

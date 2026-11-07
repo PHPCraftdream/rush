@@ -13,6 +13,8 @@ const (
 type Error struct {
 	Code        Code
 	Diagnostics []Diagnostic
+	// trusted — provenance-снапшот (см. ValidationError.trusted).
+	trusted []Diagnostic
 }
 
 func (e *Error) Error() string {
@@ -33,14 +35,14 @@ func (e *Error) Feedback(attempt, remaining int) string {
 	if e == nil {
 		return (&Error{Code: CodeInvalid}).Feedback(attempt, remaining)
 	}
-	return feedback(e.ContractCode(), e.Diagnostics, attempt, remaining)
+	return feedback(e.ContractCode(), e.Diagnostics, e.trusted, attempt, remaining)
 }
 
 func knownContractCode(code Code) bool {
 	return code == CodeInvalid || code == CodeMismatch || code == CodeTooLarge
 }
 
-func feedback(code Code, diagnostics []Diagnostic, attempt, remaining int) string {
+func feedback(code Code, diagnostics []Diagnostic, trusted []Diagnostic, attempt, remaining int) string {
 	if !knownContractCode(code) {
 		code = CodeInvalid
 	}
@@ -50,7 +52,12 @@ func feedback(code Code, diagnostics []Diagnostic, attempt, remaining int) strin
 	if remaining < 0 {
 		remaining = 0
 	}
-	// Диагностики формируются только из фиксированных безопасных значений; указатели и пользовательский текст исключены.
+	// Диагностики: причина всегда из фиксированного allowlist по коду.
+	// Указатели попадают в payload ТОЛЬКО если диагностика точно совпадает
+	// (сравнение по значению) с доверенным снапшотом структурного валидатора
+	// по тому же индексу: мутация, append, перестановка или конструирование
+	// снаружи ведут к пустым указателям. Для trusted указателей дополнительно
+	// применяется strict-фильтр sanitizeStrictPointer.
 	safe := make([]Diagnostic, 0, 8)
 	for i, d := range diagnostics {
 		if i >= 8 {
@@ -60,7 +67,12 @@ func feedback(code Code, diagnostics []Diagnostic, attempt, remaining int) strin
 		if !ok {
 			continue
 		}
-		safe = append(safe, Diagnostic{Code: d.Code, InstancePointer: "", SchemaPointer: "", Reason: reason})
+		schemaPointer, instancePointer := "", ""
+		if i < len(trusted) && d == trusted[i] {
+			schemaPointer = sanitizeStrictPointer(d.SchemaPointer)
+			instancePointer = sanitizeStrictPointer(d.InstancePointer)
+		}
+		safe = append(safe, Diagnostic{Code: d.Code, InstancePointer: instancePointer, SchemaPointer: schemaPointer, Reason: reason})
 	}
 	payload := struct {
 		Code        Code         `json:"code"`
@@ -91,7 +103,7 @@ func safeDiagnosticReason(code string) (string, bool) {
 	case "invalid_json":
 		return "candidate is not valid JSON", true
 	default:
-		return "", false
+		return fixedDiagnosticReason(code)
 	}
 }
 
@@ -100,7 +112,7 @@ func (e *Error) As(target any) bool {
 	if !ok || e == nil || e.Code != CodeMismatch {
 		return false
 	}
-	*p = &ValidationError{Diagnostics: e.Diagnostics}
+	*p = &ValidationError{Diagnostics: e.Diagnostics, trusted: e.trusted}
 	return true
 }
 
@@ -110,7 +122,7 @@ func (e *ValidationError) Feedback(attempt, remaining int) string {
 	if e == nil {
 		return (&Error{Code: CodeMismatch}).Feedback(attempt, remaining)
 	}
-	return feedback(CodeMismatch, e.Diagnostics, attempt, remaining)
+	return feedback(CodeMismatch, e.Diagnostics, e.trusted, attempt, remaining)
 }
 
 func (e *ValidationError) As(target any) bool {
@@ -118,6 +130,6 @@ func (e *ValidationError) As(target any) bool {
 	if !ok {
 		return false
 	}
-	*p = &Error{Code: CodeMismatch, Diagnostics: e.Diagnostics}
+	*p = &Error{Code: CodeMismatch, Diagnostics: e.Diagnostics, trusted: e.trusted}
 	return true
 }

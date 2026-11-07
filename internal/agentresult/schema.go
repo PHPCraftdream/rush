@@ -10,14 +10,14 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
-func compileSchema(raw []byte) (interface{ Validate(any) error }, error) {
+func compileSchema(raw []byte) (interface{ Validate(any) error }, map[string]any, map[string]map[string]any, error) {
 	tree, e := ktavcodec.ParseJSONLossless(raw)
 	if e != nil {
-		return nil, e
+		return nil, nil, nil, e
 	}
 	root, ok := tree.(map[string]any)
 	if !ok {
-		return nil, errors.New("schema must be object")
+		return nil, nil, nil, errors.New("schema must be object")
 	}
 	allowed := map[string]bool{}
 	for _, k := range []string{"$schema", "$defs", "$ref", "title", "description", "type", "properties", "required", "additionalProperties", "items", "minItems", "maxItems", "uniqueItems", "minProperties", "maxProperties", "minLength", "maxLength", "pattern", "enum", "const", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"} {
@@ -25,7 +25,7 @@ func compileSchema(raw []byte) (interface{ Validate(any) error }, error) {
 	}
 	registry, e := collectSchemaRefs(root)
 	if e != nil {
-		return nil, e
+		return nil, nil, nil, e
 	}
 	active := map[string]bool{}
 	nodes := 0
@@ -138,7 +138,7 @@ func compileSchema(raw []byte) (interface{ Validate(any) error }, error) {
 					return errors.New("integer")
 				}
 				f, e := numberFloat(n)
-				if e != nil || f < 0 || math.Trunc(f) != f || f > float64(int(^uint(0)>>1)) {
+				if e != nil || f < 0 || math.Trunc(f) != f {
 					return errors.New("integer")
 				}
 			case "pattern":
@@ -186,30 +186,30 @@ func compileSchema(raw []byte) (interface{ Validate(any) error }, error) {
 		return nil
 	}
 	if e = walk(root, "", 1); e != nil {
-		return nil, e
+		return nil, nil, nil, e
+	}
+	if _, e := numbersForValidator(tree); e != nil {
+		return nil, nil, nil, e
+	}
+	if e = clampSchemaSizeLimits(registry); e != nil {
+		return nil, nil, nil, e
 	}
 	converted, e := numbersForValidator(tree)
 	if e != nil {
-		return nil, e
+		return nil, nil, nil, e
 	}
 	normalized, e := json.Marshal(converted)
 	if e != nil {
-		return nil, e
+		return nil, nil, nil, e
 	}
 	var s jsonschema.Schema
 	if e = json.Unmarshal(normalized, &s); e != nil {
-		return nil, e
+		return nil, nil, nil, e
 	}
-	return s.Resolve(&jsonschema.ResolveOptions{})
-}
-
-func validateCompiled(c *Compiled, v any) error {
-	converted, e := numbersForValidator(v)
+	v, e := s.Resolve(&jsonschema.ResolveOptions{})
 	if e != nil {
-		return &ValidationError{[]Diagnostic{{Code: "number_not_representable", Reason: "number is not exactly representable"}}}
+		return nil, nil, nil, e
 	}
-	if c.validator.Validate(converted) != nil {
-		return &ValidationError{[]Diagnostic{{Code: "schema_mismatch", Reason: "candidate does not satisfy schema"}}}
-	}
-	return nil
+	// Возвращаем root: карта из ParseJSONLossless, общий с registry, clamp применён на месте.
+	return v, root, registry, nil
 }

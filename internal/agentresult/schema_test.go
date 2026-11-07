@@ -9,7 +9,7 @@ func TestCompileSchemaProfile(t *testing.T) {
 		`{"minItems":-1}`, `{"minimum":"1"}`, `{"items":true}`, `{"pattern":"["}`,
 		`{"$defs":{"unused":{"unknown":true}}}`, `{"unknown":true}`,
 	} {
-		if _, err := compileSchema([]byte(raw)); err == nil {
+		if _, _, _, err := compileSchema([]byte(raw)); err == nil {
 			t.Errorf("accepted %s", raw)
 		}
 	}
@@ -22,7 +22,7 @@ func TestCompileSchemaProfile(t *testing.T) {
 		`{"$defs":{"x":{"type":"integer","minimum":1,"maximum":3}},"$ref":"#/$defs/x","minimum":2,"maximum":4}`,
 		`{"type":"string","minLength":2}`,
 	} {
-		if _, err := compileSchema([]byte(raw)); err != nil {
+		if _, _, _, err := compileSchema([]byte(raw)); err != nil {
 			t.Errorf("rejected %s: %v", raw, err)
 		}
 	}
@@ -36,7 +36,7 @@ func TestCompileSchemaSemanticEdges(t *testing.T) {
 		`{"$defs":{"x":{"type":"string"}},"$ref":"#/$defs/x","minimum":1,"maximum":2}`,
 		`{"type":"string","minLength":2,"maxLength":2}`,
 	} {
-		if _, err := compileSchema([]byte(raw)); err != nil {
+		if _, _, _, err := compileSchema([]byte(raw)); err != nil {
 			t.Errorf("отклонена цель enum/const: %s: %v", raw, err)
 		}
 	}
@@ -46,7 +46,7 @@ func TestCompileSchemaSemanticEdges(t *testing.T) {
 		`{"$defs":{"x":{"const":{}}},"$ref":"#/$defs/x/const"}`,
 		`{"$defs":{"x":{"properties":{"a":{}}}},"$ref":"#/$defs/x/properties"}`,
 	} {
-		if _, err := compileSchema([]byte(raw)); err == nil {
+		if _, _, _, err := compileSchema([]byte(raw)); err == nil {
 			t.Errorf("принято некорректное правило: %s", raw)
 		}
 	}
@@ -76,7 +76,7 @@ func TestCompileSchemaRejectsCyclesAndLimits(t *testing.T) {
 		`{"$ref":"#/$defs/x"}`, `{"$ref":"#/$defs/a~2b"}`,
 		`{"$defs":{"a":{"type":"string"}},"$ref":"#/$defs"}`,
 	} {
-		if _, err := compileSchema([]byte(raw)); err == nil {
+		if _, _, _, err := compileSchema([]byte(raw)); err == nil {
 			t.Errorf("accepted %s", raw)
 		}
 	}
