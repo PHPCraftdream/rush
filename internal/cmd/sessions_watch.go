@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -46,9 +45,8 @@ them is live.
 On exit a summary block is printed: id, title, end reason, duration,
 tokens (prompt + completion) and cost (with budget if one was set).
 
-Ctrl+C interrupts and prints "(interrupted — session still running)"
-without a summary so you don't mistake "I stopped watching" for
-"the session ended".`,
+Ctrl+C stops this CLI immediately without a final summary or cleanup.
+It stops watching; it does not terminate the session being observed.`,
 	Example: `
 # Pick a session interactively and live-tail it
 rush sessions watch
@@ -747,7 +745,7 @@ func pickSessionForWatch(ctx context.Context, a *app.App) (string, error) {
 		cursor: 0,
 		binary: os.Args[0],
 	}
-	p := tea.NewProgram(&m)
+	p := newCLIProgram(&m)
 	if _, err := p.Run(); err != nil {
 		return "", fmt.Errorf("failed to run picker: %w", err)
 	}

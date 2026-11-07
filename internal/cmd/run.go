@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -662,58 +661,12 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			}
 		}
 
-		// On Windows, filter out console-close/logoff/shutdown events so
-		// only a genuine Ctrl+C cancels the run — otherwise a plain
-		// `rush run --session X "message"` typed directly in a terminal
-		// can abort with "Context canceled" from an ordinary console event
-		// that has nothing to do with the user asking to stop. No-op on
-		// other platforms. See console_ctrl_windows.go for the full
-		// rationale.
-		uninstallConsoleCtrlFilter := installConsoleCtrlFilter()
-		defer uninstallConsoleCtrlFilter()
-
 		// A closed stdout pipe fails the exit flush instead of killing the run
 		// (hook and Shutdown still run, R8C-7).
 		defer keepBrokenPipeAsError()()
 
-		// Cancel on SIGINT or SIGTERM.
-		ctx, cancel := signal.NotifyContext(context.Background(), cancelSignals...)
+		ctx, cancel := commandSignalContext(context.Background(), cancelSignals...)
 		defer cancel()
-
-		// Last-resort teardown for the second SIGINT.
-		//
-		// NotifyContext restores the default disposition after the signal it
-		// acts on, so a user who presses Ctrl-C again — the normal reaction
-		// when the first one appears to do nothing — kills rush outright,
-		// with none of its cleanup running. That used to be survivable: the
-		// terminal delivers the signal to its whole foreground process group,
-		// which the CLI child was part of, so the child died with us. It is
-		// not survivable since CLI children were given their own process
-		// groups; measured on Ubuntu 24.04, a SIGINT to the parent's group
-		// reaches a child spawned without Setpgid and does NOT reach one
-		// spawned with it (see internal/session/track_unix.go for the
-		// numbers). The child and its own descendants would simply keep
-		// running.
-		//
-		// So a second SIGINT is caught rather than left to the default:
-		// sweep the process groups (Unix) or jobs (Windows) this process
-		// registered, then exit. Registering a handler means the second
-		// Ctrl-C no longer kills us instantly, so the sweep must be
-		// unconditionally followed by os.Exit — a hang here would take away
-		// the user's ability to stop rush at all, which is worse than the
-		// leak it prevents. 130 is the conventional status for
-		// SIGINT-terminated.
-		hardStop := make(chan os.Signal, 2)
-		signal.Notify(hardStop, os.Interrupt)
-		defer signal.Stop(hardStop)
-		go func() {
-			<-hardStop // first: NotifyContext is cancelling the run
-			<-hardStop // second: the user means it
-			if n := session.KillAllTrackedTrees(); n > 0 {
-				fmt.Fprintf(os.Stderr, "\nrush: interrupted — killed %d CLI process tree(s)\n", n)
-			}
-			exitWithAudit(130)
-		}()
 
 		// Both run deadlines carry their owned cause through graceful cleanup.
 		// Only a process still alive past hardKillGrace is force-killed.

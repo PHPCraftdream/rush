@@ -4,6 +4,7 @@ package session
 
 import (
 	"sync"
+	"sync/atomic"
 	"syscall"
 )
 
@@ -32,8 +33,9 @@ import (
 // KillAllTrackedTrees is the sweep a last-resort signal handler runs before
 // exiting.
 var (
-	trackedGroups   = make(map[int]struct{})
-	trackedGroupsMu sync.Mutex
+	trackedGroups         = make(map[int]struct{})
+	trackedGroupsMu       sync.Mutex
+	trackedGroupsSnapshot atomic.Pointer[[]int]
 )
 
 // TrackProcessTree records pid as a process group this process must tear
@@ -54,7 +56,12 @@ func TrackProcessTree(pid int) error {
 		return nil
 	}
 	trackedGroupsMu.Lock()
-	trackedGroups[pid] = struct{}{}
+	if processTreesStopping.Load() {
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+	} else {
+		trackedGroups[pid] = struct{}{}
+		publishTrackedGroups()
+	}
 	trackedGroupsMu.Unlock()
 	return nil
 }
@@ -81,7 +88,12 @@ func RegisterSpawnedGroup(pid int) error {
 		return nil
 	}
 	trackedGroupsMu.Lock()
-	trackedGroups[pid] = struct{}{}
+	if processTreesStopping.Load() {
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+	} else {
+		trackedGroups[pid] = struct{}{}
+		publishTrackedGroups()
+	}
 	trackedGroupsMu.Unlock()
 	return nil
 }
@@ -94,6 +106,7 @@ func UntrackProcessTree(pid int) {
 	}
 	trackedGroupsMu.Lock()
 	delete(trackedGroups, pid)
+	publishTrackedGroups()
 	trackedGroupsMu.Unlock()
 }
 
@@ -113,6 +126,7 @@ func KillAllTrackedTrees() int {
 		pids = append(pids, pid)
 	}
 	trackedGroups = make(map[int]struct{})
+	publishTrackedGroups()
 	trackedGroupsMu.Unlock()
 
 	for _, pid := range pids {

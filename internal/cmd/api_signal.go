@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/signal"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/apiclient"
@@ -16,7 +15,7 @@ import (
 // than from the parent (deadline or caller); call it before stop.
 // apiNotifyContext is the signal seam: tests swap it because os.Interrupt cannot
 // be delivered to a Windows test process.
-var apiNotifyContext = signal.NotifyContext
+var apiNotifyContext = commandSignalContext
 
 func apiSignalContext(parent context.Context) (ctx context.Context, stop context.CancelFunc, interrupted func() bool) {
 	ctx, stop = apiNotifyContext(parent, os.Interrupt)
