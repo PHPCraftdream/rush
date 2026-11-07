@@ -54,7 +54,7 @@ func TestProcessStopHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	leaf := exec.Command(os.Args[0], "-test.run=^TestProcessStopHelper$")
+	leaf := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestProcessStopHelper$")
 	leaf.Env = append(os.Environ(), "RUSH_STOP_HELPER=leaf")
 	leaf.Stdout, leaf.Stderr = os.Stdout, os.Stderr
 	configureStopLeaf(leaf)
