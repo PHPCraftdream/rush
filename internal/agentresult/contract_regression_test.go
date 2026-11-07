@@ -31,8 +31,18 @@ func TestContractRegressionRegexFullMatchAndAdmission(t *testing.T) {
 		pattern, candidate string
 		want               bool
 	}{
-		{"", "", true}, {"", "x", false}, {"x", "x", true}, {"x", "prefixx", false}, {"x", "xsuffix", false}, {"x", "x\n", false}, {"x", " x", false}, {"x", "x ", false},
-		{"(?s).*", "a\nb", true}, {"(?m)^x$", "x", true}, {"(?m)^x$", "prefixx", false}, {"(?m)^x$", "x\ny", false},
+		{"", "", true},
+		{"", "x", false},
+		{"x", "x", true},
+		{"x", "prefixx", false},
+		{"x", "xsuffix", false},
+		{"x", "x\n", false},
+		{"x", " x", false},
+		{"x", "x ", false},
+		{"(?s).*", "a\nb", true},
+		{"(?m)^x$", "x", true},
+		{"(?m)^x$", "prefixx", false},
+		{"(?m)^x$", "x\ny", false},
 	}
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("%q/%q", tc.pattern, tc.candidate), func(t *testing.T) {

@@ -202,6 +202,7 @@ func compileSchema(raw []byte) (interface{ Validate(any) error }, error) {
 	}
 	return s.Resolve(&jsonschema.ResolveOptions{})
 }
+
 func validateCompiled(c *Compiled, v any) error {
 	converted, e := numbersForValidator(v)
 	if e != nil {

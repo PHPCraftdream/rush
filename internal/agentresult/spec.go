@@ -42,12 +42,14 @@ func (s Spec) EffectiveMaxRepairs() int {
 	}
 	return *s.MaxRepairs
 }
+
 func (c *Compiled) EffectiveMaxRepairs() int {
 	if c == nil {
 		return 0
 	}
 	return c.effectiveMaxRepairs
 }
+
 func DecodeSpec(raw []byte) (Spec, error) {
 	var s Spec
 	t, e := ktavcodec.ParseJSONLossless(raw)
@@ -115,6 +117,7 @@ func DecodeSpec(raw []byte) (Spec, error) {
 	}
 	return s, nil
 }
+
 func (s Spec) MarshalJSON() ([]byte, error) {
 	m := map[string]any{"type": s.Type}
 	if s.Pattern != nil {
@@ -128,6 +131,7 @@ func (s Spec) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(m)
 }
+
 func (s *Spec) UnmarshalJSON(b []byte) error {
 	v, e := DecodeSpec(b)
 	if e == nil {
@@ -135,6 +139,7 @@ func (s *Spec) UnmarshalJSON(b []byte) error {
 	}
 	return e
 }
+
 func Compile(s Spec) (*Compiled, error) {
 	max := s.EffectiveMaxRepairs()
 	if max < 0 || max > 5 {
@@ -165,6 +170,7 @@ func Compile(s Spec) (*Compiled, error) {
 	}
 	return c, nil
 }
+
 func (c *Compiled) Validate(candidate string) error {
 	if len(candidate) > MaxCandidateBytes {
 		return &Error{Code: CodeTooLarge}
