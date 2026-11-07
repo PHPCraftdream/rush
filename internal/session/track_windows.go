@@ -106,7 +106,12 @@ func TrackProcessTree(pid int) error {
 	if old, ok := trackedJobs[pid]; ok {
 		_ = windows.CloseHandle(old.handle)
 	}
-	trackedJobs[pid] = trackedJob{handle: job, createdAt: createdAt}
+	if processTreesStopping.Load() {
+		_ = windows.TerminateJobObject(job, 1)
+		windows.CloseHandle(job)
+	} else {
+		trackedJobs[pid] = trackedJob{handle: job, createdAt: createdAt}
+	}
 	trackedJobsMu.Unlock()
 	return nil
 }

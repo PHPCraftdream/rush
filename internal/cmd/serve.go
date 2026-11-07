@@ -21,6 +21,9 @@ import (
 
 var serveSignals = func() (<-chan os.Signal, func()) {
 	ch := make(chan os.Signal, 1)
+	if processStopInstalled.Load() {
+		return ch, func() {}
+	}
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	return ch, func() { signal.Stop(ch) }
 }

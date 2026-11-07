@@ -38,6 +38,9 @@ func (m *oauthLinkModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	// In raw mode Ctrl-C arrives as a key press, not SIGINT: abort, never copy.
 	if key.Mod.Contains(tea.ModCtrl) && (code == 'c' || code == 'C') {
+		if requestProcessInterrupt() {
+			return m, nil
+		}
 		if m.interrupt != nil {
 			m.interrupt()
 		}
@@ -95,7 +98,7 @@ func startOAuthLinkControls(ctx context.Context, url string, interrupt func()) f
 		return stop
 	}
 	programCtx, cancel := context.WithCancel(ctx)
-	program := tea.NewProgram(model, tea.WithContext(programCtx))
+	program := newCLIProgram(model, tea.WithContext(programCtx))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

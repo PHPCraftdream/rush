@@ -20,9 +20,11 @@ import (
 )
 
 func main() {
+	stopSignals := cmd.InstallProcessStop()
+	defer stopSignals()
 	// Guard against running from inside the source tree. Package init()
 	// functions (godotenv autoload, internal/dns) necessarily run before
-	// main(), but everything else — cmd dispatch, job-object assignment, the
+	// main(); cmd dispatch, job-object assignment, and the
 	// pprof listener — runs strictly after this check, because a stale dev
 	// binary can silently cause incorrect behavior even for --help and
 	// --version.

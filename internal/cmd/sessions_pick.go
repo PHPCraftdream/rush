@@ -108,7 +108,7 @@ func sessionsPickCmdRun(cmd *cobra.Command, args []string) error {
 		swapped: false,
 	}
 
-	p := tea.NewProgram(&m)
+	p := newCLIProgram(&m)
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("failed to run picker: %w", err)
 	}

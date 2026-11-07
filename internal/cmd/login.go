@@ -11,7 +11,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/signal"
 
 	"charm.land/lipgloss/v2"
 	hyperp "github.com/PHPCraftdream/rush/internal/agent/hyper"
@@ -245,7 +244,7 @@ func loginOpenAICodex(cfg *config.ConfigStore, force, device bool) error {
 		return nil
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := commandSignalContext(context.Background(), os.Interrupt)
 	defer cancel()
 	// Ctrl-C in the link controls cancels the login exactly like SIGINT.
 	ctx, interrupt := context.WithCancel(ctx)
@@ -293,7 +292,7 @@ func loginOpenAICodex(cfg *config.ConfigStore, force, device bool) error {
 }
 
 func getLoginContext() context.Context {
-	ctx, cancel := signal.NotifyContext(context.Background(), cancelSignals...)
+	ctx, cancel := commandSignalContext(context.Background(), cancelSignals...)
 	go func() {
 		<-ctx.Done()
 		cancel()

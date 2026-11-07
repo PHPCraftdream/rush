@@ -364,7 +364,7 @@ func Execute() {
 		// Fork patch: show the fork's own release-line version (not
 		// upstream's) plus build provenance. See version.VersionLine.
 		fang.WithVersion(version.VersionLine()),
-		fang.WithNotifySignal(os.Interrupt),
+		fang.WithNotifySignal(commandSignals(os.Interrupt)...),
 		fang.WithErrorHandler(commandErrorHandler),
 	}
 

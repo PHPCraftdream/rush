@@ -123,8 +123,10 @@ func psRunE(cmd *cobra.Command, _ []string) error {
 // Ctrl+C or the command context is done.
 func psWatchFrames(ctx context.Context, frame func() (string, error)) error {
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
-	defer signal.Stop(sig)
+	if !processStopInstalled.Load() {
+		signal.Notify(sig, os.Interrupt)
+		defer signal.Stop(sig)
+	}
 	ticker := time.NewTicker(psWatchInterval)
 	defer ticker.Stop()
 	for {
