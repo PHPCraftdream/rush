@@ -71,10 +71,15 @@ func (c *gatedCoordinator) Run(ctx context.Context, callData session.SessionAgen
 }
 
 func TestDrainSessionNow_WaitedExecution_CarriesAllAssistantIdentities(t *testing.T) {
+	tl := newTestTimeline()
 	gate := newGatedCoordinator()
 	gate.identities = []string{"assistant-tool-step", "assistant-final"}
-	pump, sessID := oneEntrySetup(t, "wait-identity", gate)
-	defer pump.Stop()
+	pump, sessID := oneEntrySetupReported(t, "wait-identity", gate, tl)
+	refused := make(chan struct{}, 1)
+	pump.SetTestAfterAdmissionRefusalForTest(func(string) {
+		tl.addf("drain observed background admission")
+		notifyAdmissionRefusal(refused)
+	})
 
 	var assistantIDs map[string]struct{}
 	var terminalAssistantID string
@@ -87,9 +92,19 @@ func TestDrainSessionNow_WaitedExecution_CarriesAllAssistantIdentities(t *testin
 	var drainErr error
 	go func() {
 		defer close(done)
+		tl.addf("identity drain entered")
 		result, drainErr = pump.DrainSessionNow(drainCtx, sessID)
+		tl.addf("identity drain returned result=%v err=%v", result, drainErr)
 	}()
 
+	select {
+	case <-refused:
+		tl.addf("releasing observed background execution")
+	case <-done:
+		t.Fatal("identity drain returned before observing the background admission")
+	case <-time.After(5 * time.Second):
+		t.Fatal("identity drain never observed the background admission")
+	}
 	gate.release <- nil
 	select {
 	case <-done:
@@ -154,10 +169,10 @@ func TestDrainSessionNow_WaitedExecution_PublishesAssistantIDBeforeCompletion(t 
 	defer pump.Stop()
 
 	liveID := make(chan string, 1)
-	refused := make(chan struct{})
-	pump.SetTestAfterAdmissionRefusalForTest(func(string) { close(refused) })
+	refused := make(chan struct{}, 1)
+	pump.SetTestAfterAdmissionRefusalForTest(func(string) { notifyAdmissionRefusal(refused) })
 	drainCtx := session.WithDrainAssistantIdentityLive(context.Background(), func(id string) {
-		liveID <- id
+		notifyLiveIdentity(liveID, id)
 	})
 	done := make(chan struct{})
 	var result session.DrainResult
@@ -207,7 +222,17 @@ func TestDrainSessionNow_WaitedExecution_PublishesAssistantIDBeforeCompletion(t 
 // no reason to send.
 func oneEntrySetup(t *testing.T, name string, gate *gatedCoordinator) (*session.RunQueuePump, string) {
 	t.Helper()
+	return oneEntrySetupReported(t, name, gate, newTestTimeline())
+}
+
+func oneEntrySetupReported(t *testing.T, name string, gate *gatedCoordinator, tl *testTimeline) (*session.RunQueuePump, string) {
+	t.Helper()
+	reportPumpSetupOnFailure(t, tl)
+	tl.addf("fixture setup started")
 	sess, svc := setupTestSession(t, name)
+	tl.addf("fixture ready")
+	registerPumpCalls(t, "gated", &gate.calls)
+	registerPumpQueueReport(t, tl, svc, name+"-idem-1")
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    gate,
@@ -217,13 +242,18 @@ func oneEntrySetup(t *testing.T, name string, gate *gatedCoordinator) (*session.
 
 	callData, err := json.Marshal(map[string]any{"SessionID": sess.ID, "Prompt": "continue"})
 	require.NoError(t, err)
-	require.NoError(t, svc.EnqueueRunQueueEntry(context.Background(), name+"-idem-1", sess.ID, callData))
+	tl.stepf(func() {
+		require.NoError(t, svc.EnqueueRunQueueEntry(context.Background(), name+"-idem-1", sess.ID, callData))
+	}, "enqueue")
 
 	pump.Start()
+	tl.addf("pump started")
 	stopPumpLoggingForcedShutdown(t, pump)
+	reportPumpOnFailure(t, tl)
 
 	select {
 	case <-gate.started:
+		tl.addf("background execution started")
 	case <-time.After(5 * time.Second):
 		t.Fatal("background tick never started executing — test setup is broken, proves nothing about the race under test")
 	}
