@@ -54,7 +54,7 @@ func TestProcessStopHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	leaf := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestProcessStopHelper$")
+	leaf := platform.Command(t.Context(), os.Args[0], "-test.run=^TestProcessStopHelper$")
 	leaf.Env = append(os.Environ(), "RUSH_STOP_HELPER=leaf")
 	leaf.Stdout, leaf.Stderr = os.Stdout, os.Stderr
 	configureStopLeaf(leaf)
@@ -83,7 +83,7 @@ func TestProcessStopFirstSignalSkipsCleanupAndRecoversDatabase(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			dir := t.TempDir()
 			marker, database := filepath.Join(dir, "cleanup-marker"), filepath.Join(dir, "recovery.db")
-			command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestProcessStopHelper$")
+			command := platform.Command(t.Context(), os.Args[0], "-test.run=^TestProcessStopHelper$")
 			command.Dir = dir
 			trace := &processStopTrace{}
 			command.Stderr = trace

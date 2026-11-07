@@ -3,9 +3,10 @@ package session
 import (
 	"context"
 	"os"
-	"os/exec"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/platform"
 )
 
 func TestProcessStopRejectsNewStarts(t *testing.T) {
@@ -27,7 +28,7 @@ func TestProcessStopLateRegistrationHelper(t *testing.T) {
 func TestProcessStopKillsLateRegistration(t *testing.T) {
 	previous := processTreesStopping.Swap(true)
 	t.Cleanup(func() { processTreesStopping.Store(previous) })
-	command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestProcessStopLateRegistrationHelper$")
+	command := platform.Command(t.Context(), os.Args[0], "-test.run=^TestProcessStopLateRegistrationHelper$")
 	command.Env = append(os.Environ(), "RUSH_LATE_STOP_HELPER=1", "GORACE=atexit_sleep_ms=0")
 	configureLateStopChild(command)
 	if err := command.Start(); err != nil {

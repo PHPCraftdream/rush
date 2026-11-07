@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
-	"syscall"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -14,11 +13,13 @@ import (
 )
 
 func configureStopParent(command *exec.Cmd) {
-	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_CONSOLE}
+	// Реальному console event нужна своя консоль; окно остаётся скрытым.
+	command.SysProcAttr.CreationFlags &^= windows.CREATE_NO_WINDOW
+	command.SysProcAttr.CreationFlags |= windows.CREATE_NEW_CONSOLE
 }
 
 func configureStopLeaf(command *exec.Cmd) {
-	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP}
+	command.SysProcAttr.CreationFlags |= windows.CREATE_NEW_PROCESS_GROUP
 }
 func trackStopLeaf(pid int) error { return session.TrackProcessTree(pid) }
 func triggerOwnStopConsole() error {
