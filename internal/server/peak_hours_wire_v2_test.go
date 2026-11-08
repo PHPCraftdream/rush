@@ -237,6 +237,7 @@ func TestScopeTablePeakHoursCommands(t *testing.T) {
 		CmdPauseProviderPeakHours, CmdResumeProviderPeakHours, CmdGetPeakHoursStatus,
 	} {
 		t.Run(command, func(t *testing.T) {
+			t.Parallel()
 			scope, ok := ScopeFor(command)
 			require.True(t, ok)
 			require.Equal(t, "admin", scope)
