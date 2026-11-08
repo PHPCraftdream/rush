@@ -220,14 +220,13 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// shared Set*-state, which a concurrent Run call can rewrite between
 	// the Set and this read. nil = legacy caller — the fallback paths keep
 	// the historical read-and-reset behavior byte-for-byte.
-	callOpts := callOptionsFrom(ctx)
 	// The durable session cap overrides a stale queued value.
 	depthCtx, err := WithPersistedSessionAgentDepth(ctx, c.sessions, sessionID)
 	if err != nil {
 		return nil, c.drainRefused(ctx, sessionID, fmt.Errorf("resolve session agent depth: %w", err))
 	}
 	ctx = depthCtx
-	callOpts = callOptionsFrom(ctx)
+	callOpts := callOptionsFrom(ctx)
 	// R12-H2b §2.4 ordinary/idle rebuilt calls — do not rely on the
 	// request carrying options: a session with a persisted fence must not
 	// run a turn that cannot name a live binding. Before any
