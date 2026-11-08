@@ -371,7 +371,9 @@ func TestSessionsKill_BatchHeldRootNote(t *testing.T) {
 	isolateKillCmdEnv(t, dataDir)
 
 	stderr := captureStderr(t, func() {
-		require.NoError(t, sessionsKillCmd.RunE(sessionsKillCmd, []string{sessID}))
+		err := sessionsKillCmd.RunE(sessionsKillCmd, []string{sessID})
+		require.ErrorIs(t, err, errBatchKillScopeUnconfirmed)
+		require.ErrorContains(t, err, "queued work is preserved")
 	})
 	require.Contains(t, stderr, "no lock file at")
 	require.Contains(t, stderr, "batch work for session "+sessID, "the note must report the held batch work")

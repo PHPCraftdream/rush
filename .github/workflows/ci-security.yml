@@ -112,9 +112,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Verify fail-closed Grype installer
+        run: python3 -I -m unittest discover -s .github/scripts -p test_install_grype_from_api.py
+      - name: Cache verified Grype from official release API
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I .github/scripts/install_grype_from_api.py --version v0.118.0
       - uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         id: scan
         with:
+          grype-version: v0.118.0
           path: "."
           fail-build: true
           severity-cutoff: critical
