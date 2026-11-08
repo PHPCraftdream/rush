@@ -105,7 +105,13 @@ func requireNoPlainBroadcast(t *testing.T, c *Client) {
 }
 
 func TestLockedConfigHandlersTrustedUIClientApplies(t *testing.T) {
-	var defaultContextPaths []string
+	var defaultContextPaths, beforeContextPaths []string
+	checkContextDisk := func(t *testing.T, disk []byte, paths []string) {
+		t.Helper()
+		want, err := json.Marshal(paths)
+		require.NoError(t, err)
+		require.JSONEq(t, string(want), gjson.GetBytes(disk, "options.context_paths").Raw)
+	}
 	checkContextWire := func(t *testing.T, payload gjson.Result, paths ...string) {
 		t.Helper()
 		expected := append(slices.Clone(defaultContextPaths), paths...)
@@ -198,10 +204,7 @@ func TestLockedConfigHandlersTrustedUIClientApplies(t *testing.T) {
 				handleAddContextPath(a, c, WSMessage{ID: "x", Payload: p})
 			},
 			diskCheck: func(t *testing.T, disk []byte) {
-				paths := gjson.GetBytes(disk, "options.context_paths").Array()
-				require.Len(t, paths, 2)
-				require.Equal(t, "kept", paths[0].String())
-				require.Equal(t, "added", paths[1].String())
+				checkContextDisk(t, disk, append(slices.Clone(beforeContextPaths), "added"))
 			},
 			wireCheck: func(t *testing.T, payload gjson.Result) {
 				checkContextWire(t, payload, "kept", "added")
@@ -215,8 +218,8 @@ func TestLockedConfigHandlersTrustedUIClientApplies(t *testing.T) {
 				handleRemoveContextPath(a, c, WSMessage{ID: "x", Payload: p})
 			},
 			diskCheck: func(t *testing.T, disk []byte) {
-				paths := gjson.GetBytes(disk, "options.context_paths").Array()
-				require.Len(t, paths, 0)
+				paths := slices.DeleteFunc(slices.Clone(beforeContextPaths), func(path string) bool { return path == "kept" })
+				checkContextDisk(t, disk, paths)
 			},
 			wireCheck: func(t *testing.T, payload gjson.Result) {
 				checkContextWire(t, payload)
@@ -420,6 +423,9 @@ func TestLockedConfigHandlersTrustedUIClientApplies(t *testing.T) {
 			require.NoError(t, err)
 			beforeRev := lockedSyncRev(t, beforeDisk)
 
+			beforeContextPaths = slices.Clone(store.Config().Options.ContextPaths)
+			require.Contains(t, beforeContextPaths, "kept")
+			require.NotContains(t, beforeContextPaths, "added")
 			client := newTestClient()
 			client.trustedSettingsWrite = true
 			tc.run(a, client)
