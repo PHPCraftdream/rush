@@ -76,8 +76,23 @@ func TestCompaction_DoesNotClearUnreactedDebt(t *testing.T) {
 func TestAnotherHolderPulling_DoesNotEraseDebt_RootStillReacts(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	f := newA2WakeDebtFixture(t, "another-holder-pulls", true)
+	var f *a2WakeDebtFixture
+	stage := "setup"
+	t.Cleanup(func() {
+		if t.Failed() && f != nil {
+			t.Logf("another-holder: stage=%s requests=%d db=%+v", stage, f.requests.Load(), f.conn.Stats())
+		}
+	})
+	f = newA2WakeDebtFixture(t, "another-holder-pulls", true)
+	t.Cleanup(func() {
+		// Callbacks должны завершиться до закрытия БД fixture.
+		f.sa.runWg.Wait()
+		f.coord.waitRecheckWakes()
+		f.coord.releaseWG.Wait()
+		f.coord.waitRecheckWakes()
+	})
 	f.a2ClaimAndFinish(t, ctx, "call-1")
+	stage = "debt seeded"
 
 	// "A web tab" pulls the notice into history directly -- NOT through
 	// wakeSession/the Drain machinery at all, just the raw pull primitive
@@ -87,10 +102,12 @@ func TestAnotherHolderPulling_DoesNotEraseDebt_RootStillReacts(t *testing.T) {
 
 	// The legitimate leader (a wakeSession call, standing in for `rush run`'s
 	// own loop reacting to its hint) still runs a real turn over it.
+	stage = "explicit wake"
 	err := f.coord.wakeSession(ctx, f.sessID, true)
 	require.NoError(t, err)
 	require.NotZero(t, f.requests.Load(), "the root must still get a real turn despite another holder's pull")
 	require.False(t, f.a2DebtVisible(t, ctx), "the root's own turn must react and clear the debt")
+	stage = "debt reacted"
 }
 
 // failingThenOKUpdateTxMessages fails UpdateTx exactly once, then delegates

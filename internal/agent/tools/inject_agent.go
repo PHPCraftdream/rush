@@ -14,9 +14,9 @@ const InjectAgentToolName = "inject_agent"
 var injectAgentDescription string
 
 type InjectAgentParams struct {
-	childSessionIDParam
-	Message   string `json:"message" description:"The message to deliver into the sub-agent's session."`
-	Interrupt bool   `json:"interrupt,omitempty" description:"Cancel the sub-agent's current turn and hand it this message immediately instead of waiting for the turn to end. Default false."`
+	ChildSessionID string `json:"child_session_id" description:"Full delegated child session id, including any $$call_ suffix. Take it from the child_question notice or inspect_agent listing."`
+	Message        string `json:"message" description:"The message to deliver into the sub-agent's session."`
+	Interrupt      bool   `json:"interrupt,omitempty" description:"Cancel the sub-agent's current turn and hand it this message immediately instead of waiting for the turn to end. Default false."`
 }
 
 // NewInjectAgentTool builds inject_agent (contract §4.2).
@@ -29,7 +29,7 @@ func NewInjectAgentTool(control AgentControl) fantasy.AgentTool {
 			if sessionID == "" {
 				return fantasy.NewTextErrorResponse("session ID is required to inject into a sub-agent"), nil
 			}
-			childSessionID, err := childSessionFromParams(params.childSessionIDParam)
+			childSessionID, err := childSessionFromParams(childSessionIDParam{ChildSessionID: params.ChildSessionID})
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
