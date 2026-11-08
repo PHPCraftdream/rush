@@ -41,6 +41,8 @@ try:
         source, count = re.subn(r'(?m)^\tChildSessionID\s+string `[^`]+`$', "\tchildSessionIDParam", source)
         if count != 1:
             raise SystemExit(f"old-layout mutation anchor changed: {path}")
+        source = source.replace("childSessionFromParams(childSessionIDParam(params))",
+                                "childSessionFromParams(params.childSessionIDParam)")
         path.write_text(source, encoding="utf-8")
     path = FILES[3]
     source = originals[path].decode("utf-8")
