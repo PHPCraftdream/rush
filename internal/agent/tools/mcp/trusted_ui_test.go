@@ -238,9 +238,9 @@ func TestTrustedUIReplaceAndRemoveUnderLock(t *testing.T) {
 	require.Equal(t, url, entry.Get("url").String())
 	require.Equal(t, int64(30), entry.Get("timeout").Int())
 	trustedUIAssertSyncRevIntact(t, before)
-	replaced, ok := store.MCPConfig(oldName)
+	_, ok = store.MCPConfig(oldName)
 	require.False(t, ok)
-	replaced, ok = store.MCPConfig(newName)
+	replaced, ok := store.MCPConfig(newName)
 	require.True(t, ok)
 	require.Equal(t, newCfg, replaced)
 

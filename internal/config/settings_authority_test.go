@@ -275,9 +275,10 @@ func TestConcurrentGuardedWritesStayRefusedWhileTrustedWritesLand(t *testing.T) 
 		if len(e.Keys) == 0 {
 			continue
 		}
-		if e.Source == "ui" {
+		switch e.Source {
+		case "ui":
 			uiKeys[e.Keys[0]]++
-		} else if e.Source == "" {
+		case "":
 			guardedKeys[e.Keys[0]]++
 		}
 	}

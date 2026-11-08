@@ -595,7 +595,7 @@ func TestHandleWSGrantsTrustedSettingsOnlyOnUIListener(t *testing.T) {
 	require.NoError(t, err)
 	httpClient := &http.Client{Jar: jar, Timeout: 5 * time.Second}
 	authBody := strings.NewReader(`{"token":"` + srv.Token() + `"}`)
-	req, err := http.NewRequest(http.MethodPost, endpoint+"/auth", authBody)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, endpoint+"/auth", authBody)
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := httpClient.Do(req)
