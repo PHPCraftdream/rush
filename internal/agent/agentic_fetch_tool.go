@@ -221,12 +221,12 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 			// fetch returns (the handler blocks until the delegated child
 			// completes). The coordinator's shared scope is no longer a
 			// fallback here.
-			scope := callBuildScopeFrom(ctx)
+			scope := callBuildScopeFrom(childCtx)
 			if scope == nil {
 				scope = newBuildResourceScope()
 				defer scope.close()
 			}
-			fetchBuild := buildPrivateFetchTools(ctx, fetchTools, restrictedRunAuthorizer(c.permissions), scope)
+			fetchBuild := buildPrivateFetchTools(childCtx, fetchTools, restrictedRunAuthorizer(c.permissions), scope)
 
 			// Sub-agent tools run without hook interception. The top-level
 			// `agentic_fetch` call itself is already wrapped from the coder's

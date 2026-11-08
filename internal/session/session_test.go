@@ -66,6 +66,11 @@ func newTestDB(t *testing.T) (*sql.DB, *db.Queries) {
 			git_branch TEXT NOT NULL DEFAULT ''
 		);
 
+		CREATE TABLE session_agent_depth (
+			session_id TEXT PRIMARY KEY NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			remaining_depth INTEGER NOT NULL CHECK (remaining_depth BETWEEN 0 AND 32)
+		);
+
 		CREATE TABLE session_permissions (
 			id TEXT PRIMARY KEY,
 			session_id TEXT NOT NULL,
