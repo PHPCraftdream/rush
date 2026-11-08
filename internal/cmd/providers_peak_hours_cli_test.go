@@ -470,7 +470,8 @@ func TestPeakHoursShowJSON_Shape(t *testing.T) {
 }
 
 // TestPeakHoursListJSON_Shape checks the NDJSON list item keys.
-func TestPeakHoursListJSON_Shape(t *testing.T) {	out, _ := runProvidersCmdInIsolatedApp(t, peakHoursListCmd, policySeedJSON, "--json")
+func TestPeakHoursListJSON_Shape(t *testing.T) {
+	out, _ := runProvidersCmdInIsolatedApp(t, peakHoursListCmd, policySeedJSON, "--json")
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	require.Len(t, lines, 1, "one provider must yield exactly one NDJSON line")
 	var doc map[string]any

@@ -157,8 +157,10 @@ func TestPeakHoursWireJSONShapes(t *testing.T) {
 		require.NoError(t, err)
 		var decoded map[string]any
 		require.NoError(t, json.Unmarshal(data, &decoded))
-		for _, absent := range []string{"paused", "pausedUntil", "reopensAt",
-			"nextTransition", "timezone", "message"} {
+		for _, absent := range []string{
+			"paused", "pausedUntil", "reopensAt",
+			"nextTransition", "timezone", "message",
+		} {
 			assert.NotContains(t, decoded, absent, "%s must be omitted when zero", absent)
 		}
 		assert.Contains(t, decoded, "providerId")
@@ -198,8 +200,10 @@ func TestPauseResumePayloadDecode(t *testing.T) {
 	}{
 		{"duration only", `{"id":"p","duration":"2h"}`, "p", "2h", "", ""},
 		{"until only", `{"id":"p","until":"2026-11-09T14:00:00Z"}`, "p", "", "2026-11-09T14:00:00Z", ""},
-		{"both set", `{"id":"p","duration":"2h","until":"2026-11-09T14:00:00Z"}`,
-			"p", "2h", "2026-11-09T14:00:00Z", ""},
+		{
+			"both set", `{"id":"p","duration":"2h","until":"2026-11-09T14:00:00Z"}`,
+			"p", "2h", "2026-11-09T14:00:00Z", "",
+		},
 		{"local scope", `{"id":"p","duration":"2h","scope":"local"}`, "p", "2h", "", "local"},
 		{"empty object", `{}`, "", "", "", ""},
 	}
