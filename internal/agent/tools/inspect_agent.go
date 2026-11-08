@@ -55,7 +55,7 @@ func NewInspectAgentTool(control AgentControl) fantasy.AgentTool {
 					return fantasy.NewTextResponse("Multiple live sub-agent delegations; call again with child_session_id from this list:\n" + string(data)), nil
 				}
 			}
-			childSessionID, err := childSessionFromParams(childSessionIDParam{ChildSessionID: params.ChildSessionID})
+			childSessionID, err := childSessionFromParams(childSessionIDParam(params))
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}

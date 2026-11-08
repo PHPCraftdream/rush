@@ -27,7 +27,7 @@ func NewStopAgentTool(control AgentControl) fantasy.AgentTool {
 			if sessionID == "" {
 				return fantasy.NewTextErrorResponse("session ID is required to stop a sub-agent"), nil
 			}
-			childSessionID, err := childSessionFromParams(childSessionIDParam{ChildSessionID: params.ChildSessionID})
+			childSessionID, err := childSessionFromParams(childSessionIDParam(params))
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
