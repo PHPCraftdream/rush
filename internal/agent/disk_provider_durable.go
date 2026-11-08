@@ -52,8 +52,18 @@ func callCarriesDiskProvider(call SessionAgentCall) bool {
 }
 
 // callCarriesNonDurableDependency reports whether rebuilding a call from a
-// durable row could change its execution identity. Both credentials and a
-// caller-supplied DiskProvider are process-local and must stay in-process.
+// durable row could change its execution identity. Credentials, a
+// caller-supplied DiskProvider and the batch question capability are all
+// process-local and must stay in-process.
 func callCarriesNonDurableDependency(call SessionAgentCall) bool {
-	return call.Credentials != nil || callCarriesDiskProvider(call)
+	return call.Credentials != nil || callCarriesDiskProvider(call) ||
+		callCarriesBatchQuestionCapability(call)
+}
+
+// callCarriesBatchQuestionCapability reports whether the call carries the
+// process-local batch question capability (route/binding/depth frozen for
+// one delegation). Like credentials and a caller-supplied DiskProvider, it
+// cannot cross the durable queue boundary.
+func callCarriesBatchQuestionCapability(call SessionAgentCall) bool {
+	return call.batchQuestion != nil
 }

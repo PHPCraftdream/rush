@@ -294,6 +294,16 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	if runTurnToolsSnapshotSeam != nil {
 		runTurnToolsSnapshotSeam()
 	}
+	// A batch delegation's question capability travels on the call, not
+	// the caller's context: a wake Drain arrives on a background
+	// callback context. Re-arm it for the whole turn and, for a no-route
+	// incarnation, keep even a fallback toolset stripped of the stale
+	// ask tool — fail closed, never a raw ask on an unattended child.
+	ctx = armBatchQuestionTurnContext(ctx, call)
+	if state := call.batchQuestion; state != nil && !state.Route {
+		agentTools = stripAskQuestionTools(agentTools)
+		call.Tools = agentTools
+	}
 	// One immutable snapshot for the whole turn (task #265). Resolving these
 	// individually here used to mean a concurrent session's
 	// applyModelOverrides could land BETWEEN the reads, so a single turn ran

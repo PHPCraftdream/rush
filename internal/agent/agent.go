@@ -330,6 +330,13 @@ type SessionAgentCall struct {
 	// shared path exactly like any other legacy caller.
 	Tools []fantasy.AgentTool `json:"-"`
 
+	// batchQuestion freezes one delegation's route, live answer binding and
+	// question depth across wake/replacement turns. The binding is not durable:
+	// producers refuse live capability-bearing calls, while durable consumers
+	// reconstruct deny-only state from durable delegation facts, including legacy rows.
+	// A batch leaf restart independently reads its durable question_route.
+	batchQuestion *batchChildQuestionState
+
 	// RunAllowlist pins THIS call's restricted-run permission policy
 	// (R3-4): the compiled matcher, armed by the turn loop (runOwned) ONLY
 	// when this call becomes the active turn — never at queue time. It is

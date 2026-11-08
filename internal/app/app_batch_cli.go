@@ -86,13 +86,18 @@ func (a *App) BatchCLISession(ctx context.Context, id string) (session.Session, 
 }
 
 func (a *App) BatchCLISpec(ctx context.Context, owner, messageID string, spec jobbatch.Spec) (jobbatch.Spec, func(), error) {
+	return a.BatchCLISpecWithQuestionRoute(ctx, owner, messageID, spec, true)
+}
+
+// BatchCLISpecWithQuestionRoute stamps the route chosen by trusted intake.
+func (a *App) BatchCLISpecWithQuestionRoute(ctx context.Context, owner, messageID string, spec jobbatch.Spec, questionRoute bool) (jobbatch.Spec, func(), error) {
 	if !a.BatchOwnerRuntime() || a.AgentCoordinator == nil {
 		return jobbatch.Spec{}, nil, errors.New("batch runtime unavailable")
 	}
 	if err := persistSessionExecutionIntent(ctx, a, owner, sessionExecutionProviderOmitted, nil, false); err != nil {
 		return jobbatch.Spec{}, nil, err
 	}
-	b, err := agent.NewBatchCLIBuilder(a.AgentCoordinator, a.batchWorkIngress)
+	b, err := agent.NewBatchCLIBuilderWithQuestionRoute(a.AgentCoordinator, a.batchWorkIngress, questionRoute)
 	if err != nil {
 		return jobbatch.Spec{}, nil, err
 	}
@@ -114,16 +119,17 @@ func (a *App) BatchAutoApproveOwner(owner string) {
 	a.Permissions.AutoApproveSession(owner)
 }
 
-// BatchSubmitRef is BatchSubmit with a caller-chosen submit reference (see
-// agent.BatchInstall.SubmitCLIRef).
-func (a *App) BatchSubmitRef(ctx context.Context, owner string, spec jobbatch.Spec, ref func(root string) string) (string, error) {
+// BatchSubmitRefWithQuestionRoute is BatchSubmit with a caller-chosen submit
+// reference (see agent.BatchInstall.SubmitCLIRef) and the intake's answer-route
+// decision.
+func (a *App) BatchSubmitRefWithQuestionRoute(ctx context.Context, owner string, spec jobbatch.Spec, ref func(root string) string, questionRoute bool) (string, error) {
 	if !a.BatchOwnerRuntime() {
 		return "", errors.New("batch submit requires owning runtime")
 	}
 	if spec.Batch == nil || spec.Task != nil {
 		return "", errors.New("batch submit requires batch root")
 	}
-	translated, release, err := a.BatchCLISpec(ctx, owner, uuid.NewString(), spec)
+	translated, release, err := a.BatchCLISpecWithQuestionRoute(ctx, owner, uuid.NewString(), spec, questionRoute)
 	if err != nil {
 		return "", err
 	}
@@ -137,6 +143,17 @@ func (a *App) BatchSubmitRef(ctx context.Context, owner string, spec jobbatch.Sp
 		return "", err
 	}
 	return string(batch.ID()), nil
+}
+
+// BatchSubmitRef is kept for the served intake and other route-ful callers.
+func (a *App) BatchSubmitRef(ctx context.Context, owner string, spec jobbatch.Spec, ref func(root string) string) (string, error) {
+	return a.BatchSubmitRefWithQuestionRoute(ctx, owner, spec, ref, true)
+}
+
+// BatchSubmitRefUnattended serves the standalone unattended CLI batch surface:
+// no answering process is bound, so agent leaves must not get ask_question.
+func (a *App) BatchSubmitRefUnattended(ctx context.Context, owner string, spec jobbatch.Spec) (string, error) {
+	return a.BatchSubmitRefWithQuestionRoute(ctx, owner, spec, nil, false)
 }
 
 // BatchNodeOutput returns the live output of one node of a root this process
@@ -301,7 +318,8 @@ func (a *App) BatchAdd(ctx context.Context, root, node string, items []jobbatch.
 	if a.batchInstall.CLIOwner(jobbatch.ID(rootID)) != rootIdentity.Owner {
 		return errors.New("batch add is owner-process-only; use rush batch stop for cross-process control")
 	}
-	b, err := agent.NewBatchCLIBuilder(a.AgentCoordinator, a.batchWorkIngress)
+	// CLI owner-process add = the same unattended surface.
+	b, err := agent.NewBatchCLIBuilderWithQuestionRoute(a.AgentCoordinator, a.batchWorkIngress, false)
 	if err != nil {
 		return err
 	}

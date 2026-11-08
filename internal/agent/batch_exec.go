@@ -37,6 +37,14 @@ type batchLeafPayload struct {
 	RegistryID      string                  `json:"registry_id,omitempty"`
 	Policy          *batchLeafPolicyContext `json:"policy,omitempty"`
 	CallCredentials bool                    `json:"call_credentials,omitempty"`
+	// QuestionRoute records whether THIS incarnation was submitted through
+	// a surface with an established held-question answer route (served API
+	// intake or a parent-owned orchestrator delegation). It is stamped by
+	// trusted intake code after parsing, never accepted from external or
+	// model input; absent means NO route (an unattended batch): ask_question
+	// is stripped from the incarnation's toolset and any stale or forged ask
+	// call is rejected before a hold or a child_question notice can exist.
+	QuestionRoute bool `json:"question_route,omitempty"`
 	// Timeout carries a normalized direct/explicit-leaf wake_only timeout
 	// intent: the originally requested seconds. The ABSOLUTE call-start due
 	// time is deliberately NOT carried: a now()-derived field would make

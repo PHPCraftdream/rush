@@ -281,6 +281,17 @@ func invokeBatchWithCallContext(ctx context.Context, ingress BatchWorkIngress, t
 		return fantasy.ToolResponse{}, ErrDiskProviderUnavailable
 	}
 	inv.Policy.CustomDisk = strings.TrimSpace(inv.Policy.CustomDisk)
+	// The calling session's own answer route — the same rule as the model
+	// control (modelInvocationAtCall): an absent marker is a top-level
+	// session whose own surface is the established route; a present marker
+	// is a batch incarnation inheriting its durable payload value. This
+	// adapter is the ordinary direct-call path, so without the stamp a
+	// parent-owned `agent` delegation would silently lose the route and a
+	// no-route child could mint route-ful leaves.
+	inv.QuestionRoute = true
+	if route, ok := batchQuestionRouteFrom(ctx); ok {
+		inv.QuestionRoute = route
+	}
 	return ingress.Invoke(ctx, inv, leaf, call)
 }
 

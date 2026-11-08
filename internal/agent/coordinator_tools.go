@@ -607,6 +607,7 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 	// -- so the disabled-tools list is a floor no layering can punch
 	// through (see applyNoRealWorkspaceToolFloor's doc).
 	agent = c.applyNoRealWorkspaceToolFloor(cfg, agent, disk)
+	agent = applyBatchQuestionRouteFloor(ctx, agent)
 
 	// SSRF guard escape hatch (Options.AllowPrivateNetworkFetch, off by
 	// default): when enabled, every model-facing HTTP tool below gets an

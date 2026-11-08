@@ -82,7 +82,7 @@ func TestR6_3_RunSessionAgentCall_DisableSubAgentsOnly_ReadyGateFailure_FailsClo
 	coord.currentAgent = neverRunAgent(t)
 
 	originalCall := SessionAgentCall{
-		SessionID: "r6-3-durable-disablesubagents-readygate",
+		SessionID: newRebuildFixtureSession(t, coord, "r6-3-durable-disablesubagents-readygate"),
 		Prompt:    "hello",
 		CallOptions: &CallOptions{
 			DisableSubAgents: true,
@@ -131,7 +131,7 @@ func TestR6_3_RunSessionAgentCall_DisableSubAgentsTrue_SmartWorkerBypass_BuildTo
 	coord.currentAgent = neverRunAgent(t)
 
 	originalCall := SessionAgentCall{
-		SessionID: "r6-3-durable-disablesubagents-bypass-buildtools",
+		SessionID: newRebuildFixtureSession(t, coord, "r6-3-durable-disablesubagents-bypass-buildtools"),
 		Prompt:    "hello",
 		CallOptions: &CallOptions{
 			DisableSubAgents: true,
@@ -172,7 +172,7 @@ func TestR6_3_RunSessionAgentCall_ModelRoleOnly_BuildToolsFailure_FailsClosed(t 
 	coord.currentAgent = neverRunAgent(t)
 
 	originalCall := SessionAgentCall{
-		SessionID: "r6-3-durable-modelrole-buildtools",
+		SessionID: newRebuildFixtureSession(t, coord, "r6-3-durable-modelrole-buildtools"),
 		Prompt:    "hello",
 		CallOptions: &CallOptions{
 			ModelRole: config.SelectedModelTypeFast,

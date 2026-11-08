@@ -155,6 +155,6 @@ func withoutCallOptions(ctx context.Context) context.Context {
 	// (an embedded agent tool's prompt, for instance) from a caller's
 	// per-call scope, exactly what this function exists to prevent.
 	return prompt.WithFolderScoped(
-		context.WithValue(ctx, callOptionsContextKey{}, (*CallOptions)(nil)),
+		context.WithValue(globalQuestionContext{Context: ctx}, callOptionsContextKey{}, (*CallOptions)(nil)),
 		false)
 }

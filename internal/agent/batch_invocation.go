@@ -116,6 +116,14 @@ type BatchInvocation struct {
 	Policy batchLeafPolicyContext `json:"policy"`
 	// WorkerStopScope is trusted tool-build policy; it is never model input.
 	WorkerStopScope bool `json:"-"`
+	// QuestionRoute is trusted tool-build policy: the calling session's own
+	// held-question answer route (top-level sessions have one — their
+	// operator answers; batch incarnations inherit the durable payload
+	// value). It is stamped from the call context in
+	// modelInvocationAtCall and flows into new agent leaf payloads, so a
+	// no-route delegation can never mint a route-ful nested batch. It is
+	// never model input.
+	QuestionRoute bool `json:"-"`
 }
 
 // batchCallIdentity returns the live-attach key of an invocation: the owner

@@ -56,6 +56,21 @@ var (
 	// ErrBatchAgentQuestionHeld: a second question cannot be held at the
 	// same time.
 	ErrBatchAgentQuestionHeld = errors.New("batch agent: question already held")
+	// ErrBatchQuestionNoRoute: the incarnation carries no held-question
+	// answer route (an unattended batch), so an ask — including a stale or
+	// forged ask_question call replayed from an old registry or prompt
+	// history — is rejected deterministically BEFORE any hold is taken or
+	// any child_question notice is published. The asking turn continues;
+	// there is no await and no question-shaped success.
+	ErrBatchQuestionNoRoute = errors.New("batch agent: no answer route is bound for held questions (unattended batch)")
+	// ErrBatchQuestionCapabilityNotDurable: a SessionAgentCall carrying batch
+	// question capability (the frozen route/binding/depth of ONE in-process
+	// delegation) has no serializable form — the held-answer binding is a live
+	// closure — so durable queue producers refuse it outright instead of
+	// replaying a rebuilt call that lost the capability and would run as a
+	// non-batch session (raw ask reachable, descendants minting route-ful
+	// leaves).
+	ErrBatchQuestionCapabilityNotDurable = errors.New("batch agent: a call carrying batch question capability cannot be durably queued")
 )
 
 func newBatchAgentScope() *batchAgentScope {

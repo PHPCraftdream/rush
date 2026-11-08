@@ -282,7 +282,8 @@ func (s *apiBatchService) submit(ctx context.Context, principal Principal, spec 
 	if principal.Permission == "auto" {
 		s.app.BatchAutoApproveOwner(owner)
 	}
-	root, err := s.app.BatchSubmitRef(ctx, owner, normalized, batchRef(principal.TokenID, key, bodyHash))
+	// The served intake carries the answer endpoint, so its roots keep working held questions.
+	root, err := s.app.BatchSubmitRefWithQuestionRoute(ctx, owner, normalized, batchRef(principal.TokenID, key, bodyHash), true)
 	if err != nil {
 		s.releaseReservation(reservation)
 		return apiBatchSubmitResult{}, err

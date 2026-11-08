@@ -25,7 +25,7 @@ func TestRebuildSessionAgentCall_RestoresRunAllowlistFromSpec(t *testing.T) {
 	coord := newRoleModelTestCoordinator(t, env, false)
 
 	data := session.SessionAgentCallData{
-		SessionID: "spec-rebuild-probe",
+		SessionID: newRebuildFixtureSession(t, coord, "spec-rebuild-probe"),
 		Prompt:    "hello",
 		RunAllowlistSpec: &session.RunAllowlistSpec{
 			Restrict:   true,

@@ -91,7 +91,15 @@ func startBatchAgentTurn(ctx context.Context, req batchAgentRunRequest, host bat
 		runCtx = withCallCredentials(runCtx, creds)
 	}
 	runCtx = withBatchAgentQuestionContext(runCtx, depth)
-	runCtx = withBatchAgentQuestionBinding(runCtx, batchAgentQuestionBinding{Ask: host.Ask})
+	// The question marker travels on EVERY batch incarnation's run context
+	// (both values), so the per-call child toolset shaping can tell a
+	// no-route incarnation from a non-batch one. The held-answer bridge
+	// itself is armed ONLY for route-ful incarnations: an unattended
+	// batch child never gets a working-looking ask.
+	runCtx = withBatchQuestionRoute(runCtx, req.QuestionRoute)
+	if req.QuestionRoute {
+		runCtx = withBatchAgentQuestionBinding(runCtx, batchAgentQuestionBinding{Ask: host.Ask})
+	}
 	var childBound atomic.Bool
 	childBound.Store(req.ChildSessionID != "")
 	var noChildOnce sync.Once

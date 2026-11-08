@@ -98,7 +98,7 @@ func TestRebuildSessionAgentCall_ProviderOptionsMatchModelGeneration(t *testing.
 	registerSmartProviderGen(coord.cfg, 0)
 
 	data := session.SessionAgentCallData{
-		SessionID: "probe-session",
+		SessionID: newRebuildFixtureSession(t, coord, "probe-session"),
 		Prompt:    "hello",
 	}
 
@@ -170,7 +170,7 @@ func TestRebuildSessionAgentCall_ProviderOptionsNeverTearFromModelGeneration(t *
 	})
 
 	data := session.SessionAgentCallData{
-		SessionID: "probe-session",
+		SessionID: newRebuildFixtureSession(t, coord, "probe-session"),
 		Prompt:    "hello",
 	}
 

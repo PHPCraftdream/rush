@@ -194,7 +194,7 @@ func TestRebuildSessionAgentCall_ReleasesRowKeyedHolderOnSuccess(t *testing.T) {
 	before := caps.ownerCount()
 
 	data := session.SessionAgentCallData{
-		SessionID:     "row-live-binding",
+		SessionID:     newRebuildFixtureSession(t, coord, "row-live-binding"),
 		LogicalCallID: "logical-live-1",
 		Prompt:        "hello",
 		DiskRequirement: &session.SessionExecutionRequirement{

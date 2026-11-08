@@ -45,7 +45,7 @@ func TestRebuildSessionAgentCall_RestoresOrigin(t *testing.T) {
 		origin := origin
 		t.Run(string(origin), func(t *testing.T) {
 			originalCall := SessionAgentCall{
-				SessionID: "r5-7-origin-probe-" + string(origin),
+				SessionID: newRebuildFixtureSession(t, coord, "r5-7-origin-probe-"+string(origin)),
 				Prompt:    "hello",
 				Origin:    origin,
 			}
