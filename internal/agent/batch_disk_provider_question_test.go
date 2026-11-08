@@ -186,6 +186,7 @@ func (l *questionProviderLeaf) Run(ctx context.Context, call fantasy.ToolCall) (
 	// driver-stamped batchAgentLifecycle).
 	if lifecycle, ok := ctx.Value(batchAgentLifecycleContextKey{}).(batchAgentLifecycle); ok && lifecycle.BindChildSession != nil {
 		if err := lifecycle.BindChildSession(ctx, l.childSession); err != nil {
+			l.t.Logf("q8 child bind failed: child=%s err=%v", l.childSession, err)
 			return fantasy.ToolResponse{}, err
 		}
 	}
@@ -517,8 +518,9 @@ func newQuestionInstallWithQuestionResolver(t *testing.T, resolver batchChildQue
 	messages := message.NewService(q)
 	ownerSession := "sess-owner-q8-" + uuid.NewString()[:8]
 	ensureFixtureSession(t, conn, ownerSession)
-	childSess, err := sessions.Create(context.Background(), "q8 child")
+	childSess, err := sessions.CreateTaskSession(context.Background(), uuid.NewString(), ownerSession, "q8 child")
 	require.NoError(t, err, "the child session row exists")
+	require.Equal(t, ownerSession, childSess.ParentSessionID, "durable binding requires the owning parent before launch")
 	childSession := childSess.ID
 	// The EXACT absolute OS targets, preseeded with sentinel content: if the
 	// driver fell back to the real disk, these files would change.
