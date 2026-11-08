@@ -233,38 +233,21 @@ func TestPauseResumePayloadDecode(t *testing.T) {
 func TestScopeTablePeakHoursCommands(t *testing.T) {
 	t.Parallel()
 
-	scope, ok := ScopeFor("pause_provider_peak_hours")
-	require.True(t, ok)
-	assert.Equal(t, "admin", scope)
-
-	scope, ok = ScopeFor("resume_provider_peak_hours")
-	require.True(t, ok)
-	assert.Equal(t, "admin", scope)
-
-	scope, ok = ScopeFor("get_peak_hours_status")
-	require.True(t, ok)
-	assert.Equal(t, "read", scope)
-
-	// A read-scoped principal must be refused the admin commands, even
-	// when admin commands are allowed on the listener.
-	p := Principal{Scopes: []string{"read"}}
-	assert.ErrorIs(t,
-		AuthorizeCommand(p, "pause_provider_peak_hours", CommandPolicy{AllowAdmin: true}),
-		ErrScopeForbidden)
-	assert.ErrorIs(t,
-		AuthorizeCommand(p, "resume_provider_peak_hours", CommandPolicy{AllowAdmin: true}),
-		ErrScopeForbidden)
-
-	// Scopes are hierarchical (read < run < config < admin), so a
-	// run-scoped principal IS allowed the read-scoped status command.
-	run := Principal{Scopes: []string{"run"}}
-	assert.NoError(t,
-		AuthorizeCommand(run, "get_peak_hours_status", CommandPolicy{AllowAdmin: false}))
-
-	// An admin-scoped principal passes with the listener policy armed.
-	admin := Principal{Scopes: []string{"admin"}}
-	assert.NoError(t,
-		AuthorizeCommand(admin, "pause_provider_peak_hours", CommandPolicy{AllowAdmin: true}))
-	assert.NoError(t,
-		AuthorizeCommand(admin, "get_peak_hours_status", CommandPolicy{AllowAdmin: false}))
+	for _, command := range []string{
+		CmdPauseProviderPeakHours, CmdResumeProviderPeakHours, CmdGetPeakHoursStatus,
+	} {
+		t.Run(command, func(t *testing.T) {
+			scope, ok := ScopeFor(command)
+			require.True(t, ok)
+			require.Equal(t, "admin", scope)
+			for _, insufficient := range []string{"read", "run", "config"} {
+				principal := Principal{Scopes: []string{insufficient}}
+				assert.ErrorIs(t, AuthorizeCommand(principal, command, CommandPolicy{AllowAdmin: true}),
+					ErrScopeForbidden, "scope=%s command=%s", insufficient, command)
+			}
+			admin := Principal{Scopes: []string{"admin"}}
+			assert.ErrorIs(t, AuthorizeCommand(admin, command, CommandPolicy{AllowAdmin: false}), ErrAdminDisallowed)
+			assert.NoError(t, AuthorizeCommand(admin, command, CommandPolicy{AllowAdmin: true}))
+		})
+	}
 }
