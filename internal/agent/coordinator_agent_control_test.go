@@ -168,7 +168,6 @@ func releaseDelegation(t *testing.T, conn *sql.DB, owner, childID, state string)
 }
 
 func TestAgentControl_MissingChildRefusedAllThree(t *testing.T) {
-	t.Parallel()
 	coord, _ := newControlCoordinator(t)
 	ctx := t.Context()
 
@@ -181,7 +180,6 @@ func TestAgentControl_MissingChildRefusedAllThree(t *testing.T) {
 }
 
 func TestAgentControl_ForeignChildRefusedAllThree(t *testing.T) {
-	t.Parallel()
 	coord, env := newControlCoordinator(t)
 	_, otherChild := controlChild(t, env, "foreign")
 	parent, _ := controlChild(t, env, "caller")
@@ -198,7 +196,6 @@ func TestAgentControl_ForeignChildRefusedAllThree(t *testing.T) {
 }
 
 func TestInspectAgent_Statuses(t *testing.T) {
-	t.Parallel()
 	coord, env := newControlCoordinator(t)
 	parent, child := controlChild(t, env, "insp")
 	ctx := t.Context()
@@ -259,7 +256,6 @@ func TestInspectAgent_Statuses(t *testing.T) {
 }
 
 func TestStopAgent_IdempotentRefusalWhenNothingToStop(t *testing.T) {
-	t.Parallel()
 	coord, env := newControlCoordinator(t)
 	parent, child := controlChild(t, env, "stop-idle")
 	ctx := t.Context()
@@ -286,7 +282,6 @@ func TestStopAgent_IdempotentRefusalWhenNothingToStop(t *testing.T) {
 }
 
 func TestStopAgent_StopsOnlyThisChild_DeliversExactlyOneEvent(t *testing.T) {
-	t.Parallel()
 	coord, env := newControlCoordinator(t)
 	parent, child := controlChild(t, env, "stop-hot")
 	siblingParent, siblingChild := controlChild(t, env, "sibling")
@@ -317,7 +312,6 @@ func TestStopAgent_StopsOnlyThisChild_DeliversExactlyOneEvent(t *testing.T) {
 }
 
 func TestInjectAgent_QueuesForIdleChildWithoutStartingTurn(t *testing.T) {
-	t.Parallel()
 	coord, env := newControlCoordinator(t)
 	parent, child := controlChild(t, env, "inj-idle")
 	ctx := t.Context()
@@ -338,7 +332,6 @@ func TestInjectAgent_QueuesForIdleChildWithoutStartingTurn(t *testing.T) {
 }
 
 func TestInjectAgent_InterruptOnIdleChildFallsBackToQueue(t *testing.T) {
-	t.Parallel()
 	coord, env := newControlCoordinator(t)
 	parent, child := controlChild(t, env, "inj-idle-int")
 	ctx := t.Context()
@@ -355,7 +348,6 @@ func TestInjectAgent_InterruptOnIdleChildFallsBackToQueue(t *testing.T) {
 }
 
 func TestInjectAgent_InterruptOnBusyChildRoutesToItsDriver(t *testing.T) {
-	t.Parallel()
 	coord, env := newControlCoordinator(t)
 	parent, child := controlChild(t, env, "inj-busy")
 	ctx := t.Context()
@@ -387,7 +379,6 @@ func TestInjectAgent_InterruptOnBusyChildRoutesToItsDriver(t *testing.T) {
 }
 
 func TestInjectAgent_CredentialedInterruptReusesDriverTemplate(t *testing.T) {
-	t.Parallel()
 	coord, env := newControlCoordinator(t)
 	parent, child := controlChild(t, env, "inj-credentialed-template")
 	pinned, err := coord.resolveSessionModels(t.Context(), child)
@@ -420,7 +411,6 @@ func TestInjectAgent_CredentialedInterruptReusesDriverTemplate(t *testing.T) {
 }
 
 func TestInjectAgent_NoncredentialedInterruptResolvesConfiguredModelsAndReplaces(t *testing.T) {
-	t.Parallel()
 	coord, env := newControlCoordinator(t)
 	parent, child := controlChild(t, env, "inj-noncredentialed-resolution")
 	pinned, err := coord.resolveSessionModels(t.Context(), child)
@@ -440,7 +430,6 @@ func TestInjectAgent_NoncredentialedInterruptResolvesConfiguredModelsAndReplaces
 }
 
 func TestInjectAgent_MarkedCredentialedChildWithNilCredentialsFailsClosed(t *testing.T) {
-	t.Parallel()
 	coord, env := newControlCoordinator(t)
 	parent, child := controlChild(t, env, "inj-marked-child-nil-creds")
 	coord.markCredentialedRoot(parent)
@@ -457,7 +446,6 @@ func TestInjectAgent_MarkedCredentialedChildWithNilCredentialsFailsClosed(t *tes
 }
 
 func TestInjectAgent_CredentialedInterruptRejectsUnusableDriverBinding(t *testing.T) {
-	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		model bool
@@ -470,7 +458,6 @@ func TestInjectAgent_CredentialedInterruptRejectsUnusableDriverBinding(t *testin
 		{name: "invalid credentials", model: true, creds: &CredentialSet{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			coord, env := newControlCoordinator(t)
 			parent, child := controlChild(t, env, "inj-unusable-binding-"+tc.name)
 			coord.markCredentialedRoot(parent)
@@ -497,7 +484,6 @@ func TestInjectAgent_CredentialedInterruptRejectsUnusableDriverBinding(t *testin
 }
 
 func TestInjectAgent_CredentialedInterruptWithoutDriverBindingFailsClosed(t *testing.T) {
-	t.Parallel()
 	coord, env := newControlCoordinator(t)
 	parent, child := controlChild(t, env, "inj-credentialed-unbound")
 	coord.markCredentialedRoot(child)
@@ -514,7 +500,6 @@ func TestInjectAgent_CredentialedInterruptWithoutDriverBindingFailsClosed(t *tes
 }
 
 func TestInjectAgent_CredentialedInterruptPreservesTemplateScopeOwnership(t *testing.T) {
-	t.Parallel()
 	coord, env := newControlCoordinator(t)
 	parent, child := controlChild(t, env, "inj-credentialed-scope")
 	pinned, err := coord.resolveSessionModels(t.Context(), child)
@@ -546,7 +531,6 @@ func TestInjectAgent_CredentialedInterruptPreservesTemplateScopeOwnership(t *tes
 }
 
 func TestInjectAgent_InterruptErrorSurfaced(t *testing.T) {
-	t.Parallel()
 	coord, env := newControlCoordinator(t)
 	parent, child := controlChild(t, env, "inj-err")
 	ctx := t.Context()
@@ -563,7 +547,6 @@ func TestInjectAgent_InterruptErrorSurfaced(t *testing.T) {
 }
 
 func TestListDelegations_ListsOnlyCallersLiveChildren(t *testing.T) {
-	t.Parallel()
 	coord, env := newControlCoordinator(t)
 	parent, child := controlChild(t, env, "list")
 	otherParent, otherChild := controlChild(t, env, "list-other")
