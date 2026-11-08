@@ -295,8 +295,9 @@ export function PeakHoursEditor({
             )}
           </div>
           <div>
-            <label className="block text-[11px] text-text-subtle mb-1">Timezone (optional)</label>
+            <label htmlFor={`${idPrefix}-timezone`} className="block text-[11px] text-text-subtle mb-1">Timezone (optional)</label>
             <input
+              id={`${idPrefix}-timezone`}
               type="text"
               value={value?.timezone ?? ""}
               onChange={(e) => onChange({ ...(value ?? defaultPolicy()), timezone: e.target.value })}
@@ -321,8 +322,8 @@ export function PeakHoursEditor({
           </div>
           {problems.length > 0 && (
             <p className="text-[10px] text-red">
-              {problems.map((p, i) => (
-                <span key={i} className="block">{p}</span>
+              {problems.map((p) => (
+                <span key={p} className="block">{p}</span>
               ))}
             </p>
           )}
