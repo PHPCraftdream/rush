@@ -55,7 +55,7 @@ func TestRebuildSessionAgentCall_RestoresFullCallOptions(t *testing.T) {
 	}
 
 	originalCall := SessionAgentCall{
-		SessionID:       "r5-3-full-calloptions-probe",
+		SessionID:       newRebuildFixtureSession(t, coord, "r5-3-full-calloptions-probe"),
 		Prompt:          "hello",
 		FolderScopeSpec: scopeSpec,
 		CallOptions: &CallOptions{
@@ -154,7 +154,7 @@ func TestRebuildSessionAgentCall_CallOptionsSpecAloneWithoutFolderScope(t *testi
 	coord := newToolPinningCoordinator(t, env, false)
 
 	originalCall := SessionAgentCall{
-		SessionID: "r5-3-calloptions-only-probe",
+		SessionID: newRebuildFixtureSession(t, coord, "r5-3-calloptions-only-probe"),
 		Prompt:    "hello",
 		CallOptions: &CallOptions{
 			DisableSubAgents: true,

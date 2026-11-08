@@ -39,7 +39,7 @@ func TestRebuildSessionAgentCall_RealSymlinkedDenyCarveOutUnderBroaderGrantStill
 	}
 
 	data := session.SessionAgentCallData{
-		SessionID: "scope-rebuild-symlink-probe",
+		SessionID: newRebuildFixtureSession(t, coord, "scope-rebuild-symlink-probe"),
 		Prompt:    "hello",
 		FolderScopeSpec: &session.FolderScopeSpec{
 			WorkingDir: workDir,

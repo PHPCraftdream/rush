@@ -36,7 +36,7 @@ func TestRebuildSessionAgentCall_RestoresFolderScopeFromSpec(t *testing.T) {
 	workDir, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
 	data := session.SessionAgentCallData{
-		SessionID: "scope-rebuild-probe",
+		SessionID: newRebuildFixtureSession(t, coord, "scope-rebuild-probe"),
 		Prompt:    "hello",
 		FolderScopeSpec: &session.FolderScopeSpec{
 			WorkingDir: workDir,
@@ -92,7 +92,7 @@ func TestRebuildSessionAgentCall_CorruptedFolderScopeSpecFailsClosed(t *testing.
 
 	workDir := t.TempDir()
 	data := session.SessionAgentCallData{
-		SessionID: "scope-corrupt-probe",
+		SessionID: newRebuildFixtureSession(t, coord, "scope-corrupt-probe"),
 		Prompt:    "hello",
 		FolderScopeSpec: &session.FolderScopeSpec{
 			WorkingDir: workDir,

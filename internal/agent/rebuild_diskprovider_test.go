@@ -66,14 +66,14 @@ func TestRebuildSessionAgentCall_RebuildsPlainRowsWithoutHostDiskProvider(t *tes
 	coord := newRoleModelTestCoordinator(t, env, false)
 
 	data := session.SessionAgentCallData{
-		SessionID:     "disk-provider-rebuild-control",
+		SessionID:     newRebuildFixtureSession(t, coord, "disk-provider-rebuild-control"),
 		LogicalCallID: "logical-2",
 		Prompt:        "hello",
 	}
 
 	call, err := coord.RebuildSessionAgentCall(t.Context(), "", data)
 	require.NoError(t, err)
-	require.Equal(t, "disk-provider-rebuild-control", call.SessionID)
+	require.Equal(t, data.SessionID, call.SessionID)
 }
 
 // TestSessionAgentCallDataHostDiskProviderJSONRoundTrip pins the durable
@@ -140,7 +140,7 @@ func TestRebuildSessionAgentCall_RowWithEnvelopeAndHostMarker_Rebuilds(t *testin
 	coord.diskCaps = caps
 
 	data := session.SessionAgentCallData{
-		SessionID:        "disk-provider-rebuild-envelope",
+		SessionID:        newRebuildFixtureSession(t, coord, "disk-provider-rebuild-envelope"),
 		LogicalCallID:    "logical-envelope-1",
 		Prompt:           "hello",
 		HostDiskProvider: true,
