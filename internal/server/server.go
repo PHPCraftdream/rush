@@ -533,6 +533,13 @@ func (s *Server) handleWS(ctx context.Context, w http.ResponseWriter, r *http.Re
 		}
 	}
 	c := newClient(s.hub, conn)
+	if s.uiAuth {
+		// The UI listener is the only transport that grants the
+		// trusted-UI settings-write authority: Auth.Middleware has
+		// already verified the operator's cookie/token for this
+		// connection before the upgrade completed.
+		c.trustedSettingsWrite = true
+	}
 	if !s.uiAuth {
 		if principal, ok := PrincipalFrom(r.Context()); ok {
 			c.auth = newClientAuth(principal, CommandPolicy{AllowAdmin: s.policy.AllowAdmin})

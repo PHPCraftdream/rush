@@ -27,7 +27,7 @@ func handleSetProviderKey(a *appPkg.App, c *Client, msg WSMessage) {
 		c.reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
-	if err := store.SetProviderAPIKey(config.ScopeGlobal, p.ProviderID, p.APIKey); err != nil {
+	if err := store.SetProviderAPIKeyWithAuthority(config.ScopeGlobal, p.ProviderID, p.APIKey, c.settingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to set provider API key", "provider", p.ProviderID, "err", err)
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
@@ -50,7 +50,7 @@ func handleRemoveProviderKey(a *appPkg.App, c *Client, msg WSMessage) {
 		c.reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
-	if err := store.RemoveProviderAPIKey(config.ScopeGlobal, p.ProviderID); err != nil {
+	if err := store.RemoveProviderAPIKeyWithAuthority(config.ScopeGlobal, p.ProviderID, c.settingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to remove provider API key", "provider", p.ProviderID, "err", err)
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
@@ -143,7 +143,7 @@ func handleAddCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 		Models:    models,
 		PeakHours: peakHours,
 	}
-	if err := store.SetConfigField(scopeFromWire(p.Scope), fmt.Sprintf("providers.%s", p.ID), providerCfg); err != nil {
+	if err := store.SetConfigFieldWithAuthority(scopeFromWire(p.Scope), fmt.Sprintf("providers.%s", p.ID), providerCfg, c.settingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to persist custom provider", "id", p.ID, "err", err)
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
@@ -172,7 +172,7 @@ func handleRemoveCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 		return
 	}
 	field := fmt.Sprintf("providers.%s", p.ID)
-	if err := store.RemoveConfigField(scopeFromWire(p.Scope), field); err != nil {
+	if err := store.RemoveConfigFieldWithAuthority(scopeFromWire(p.Scope), field, c.settingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to remove custom provider", "id", p.ID, "err", err)
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
@@ -246,15 +246,15 @@ func handleUpdateCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 			return
 		}
 	}
-	if err := store.SetConfigField(scope, newProviderField, providerCfg); err != nil {
+	if err := store.SetConfigFieldWithAuthority(scope, newProviderField, providerCfg, c.settingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to persist updated custom provider", "id", p.ID, "err", err)
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	if p.OldID != p.ID {
-		if err := store.RemoveConfigField(scope, fmt.Sprintf("providers.%s", p.OldID)); err != nil {
+		if err := store.RemoveConfigFieldWithAuthority(scope, fmt.Sprintf("providers.%s", p.OldID), c.settingsWriteAuthority()); err != nil {
 			slog.Warn("ws: failed to remove old custom provider; rolling back new provider", "id", p.OldID, "new_id", p.ID, "err", err)
-			if rollbackErr := store.RemoveConfigField(scope, newProviderField); rollbackErr != nil {
+			if rollbackErr := store.RemoveConfigFieldWithAuthority(scope, newProviderField, c.settingsWriteAuthority()); rollbackErr != nil {
 				slog.Warn("ws: failed to roll back new custom provider after rename failure", "id", p.ID, "err", rollbackErr)
 			}
 			c.reply(msg.ID, EventError, nil, err.Error())
@@ -308,11 +308,11 @@ func handleSetProviderPeakHours(a *appPkg.App, c *Client, msg WSMessage) {
 	scope := scopeFromWire(p.Scope)
 	fieldKey := fmt.Sprintf("providers.%s.peak_hours", p.ID)
 	if peakHours == nil {
-		if err := store.RemoveConfigField(scope, fieldKey); err != nil {
+		if err := store.RemoveConfigFieldWithAuthority(scope, fieldKey, c.settingsWriteAuthority()); err != nil {
 			slog.Warn("ws: failed to clear provider peak_hours", "id", p.ID, "err", err)
 		}
 	} else {
-		if err := store.SetConfigField(scope, fieldKey, peakHours); err != nil {
+		if err := store.SetConfigFieldWithAuthority(scope, fieldKey, peakHours, c.settingsWriteAuthority()); err != nil {
 			c.reply(msg.ID, EventError, nil, fmt.Sprintf("failed to persist peak_hours: %v", err))
 			return
 		}

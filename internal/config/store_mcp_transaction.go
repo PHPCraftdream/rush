@@ -15,14 +15,18 @@ import (
 )
 
 func (s *ConfigStore) mutateMCP(operation string, scope Scope, oldName, newName string, value MCPConfig, disabled *bool) (MCPMutationResult, error) {
-	return s.mutateMCPWithMode(operation, scope, oldName, newName, value, disabled, false)
+	return s.mutateMCPWithMode(operation, scope, oldName, newName, value, disabled, false, SettingsAuthorityGuarded)
 }
 
 func (s *ConfigStore) mutateMCPExact(operation string, scope Scope, oldName, newName string, value MCPConfig, disabled *bool) (MCPMutationResult, error) {
-	return s.mutateMCPWithMode(operation, scope, oldName, newName, value, disabled, true)
+	return s.mutateMCPWithMode(operation, scope, oldName, newName, value, disabled, true, SettingsAuthorityGuarded)
 }
 
 func (s *ConfigStore) mutatePendingRemoveMCP(scope Scope, name string) (MCPMutationResult, error) {
+	return s.mutatePendingRemoveMCPWithAuthority(scope, name, SettingsAuthorityGuarded)
+}
+
+func (s *ConfigStore) mutatePendingRemoveMCPWithAuthority(scope Scope, name string, authority SettingsWriteAuthority) (MCPMutationResult, error) {
 	if scope != ScopeGlobal {
 		return MCPMutationResult{}, fmt.Errorf("pending MCP removal requires global scope: %w", ErrMCPStale)
 	}
@@ -60,7 +64,7 @@ func (s *ConfigStore) mutatePendingRemoveMCP(scope Scope, name string) (MCPMutat
 			return err
 		}
 		result.committedFingerprints = committedMCPFingerprints(files)
-		writeErr := s.writeMCPFileChanges(files, &audit)
+		writeErr := s.writeMCPFileChanges(files, &audit, authority)
 		result.committedFingerprints = committedMCPFingerprints(files)
 		after, evalErr := s.evaluateMCPFiles(files)
 		if evalErr != nil {
@@ -89,6 +93,10 @@ func (s *ConfigStore) mutatePendingRemoveMCP(scope Scope, name string) (MCPMutat
 }
 
 func (s *ConfigStore) mutateMCPEnableRollback(scope Scope, name string, token MCPMutationResult) (MCPMutationResult, error) {
+	return s.mutateMCPEnableRollbackWithAuthority(scope, name, token, SettingsAuthorityGuarded)
+}
+
+func (s *ConfigStore) mutateMCPEnableRollbackWithAuthority(scope Scope, name string, token MCPMutationResult, authority SettingsWriteAuthority) (MCPMutationResult, error) {
 	path, err := s.configPath(scope)
 	if err != nil {
 		return MCPMutationResult{}, err
@@ -121,7 +129,7 @@ func (s *ConfigStore) mutateMCPEnableRollback(scope Scope, name string, token MC
 		if err := s.verifyMCPReadOnlyInputs(before.fingerprints, path); err != nil {
 			return err
 		}
-		writeErr := s.writeMCPFileChanges(files, &audit)
+		writeErr := s.writeMCPFileChanges(files, &audit, authority)
 		after, err := s.evaluateMCPFiles(files)
 		if err != nil {
 			return err
@@ -190,7 +198,9 @@ func mcpEvaluationFingerprint(fingerprints map[string]reloadFileFingerprint, pat
 	return reloadFileFingerprint{}, false
 }
 
-func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, newName string, value MCPConfig, disabled *bool, exact bool) (MCPMutationResult, error) {
+// mutateMCPWithMode is the shared MCP transaction core; authority carries
+// the per-call trusted-UI exception and only widens the settings-lock veto.
+func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, newName string, value MCPConfig, disabled *bool, exact bool, authority SettingsWriteAuthority) (MCPMutationResult, error) {
 	path, err := s.configPath(scope)
 	if err != nil {
 		return MCPMutationResult{}, err
@@ -249,7 +259,7 @@ func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, 
 		if err := s.verifyMCPReadOnlyInputs(before.fingerprints, path); err != nil {
 			return err
 		}
-		writeErr := s.writeMCPFileChanges(files, &audit)
+		writeErr := s.writeMCPFileChanges(files, &audit, authority)
 		after, err := s.evaluateMCPFiles(files)
 		if err != nil {
 			return err
@@ -322,7 +332,10 @@ func (s *ConfigStore) prepareMCPFileMutation(files *mcpLockedFiles, path, operat
 	return files.setMCPData(path, data)
 }
 
-func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settingsWriteAudit) error {
+// writeMCPFileChanges commits every changed transaction record; authority
+// carries the per-call trusted-UI exception into the settings-lock guard
+// and the audit event's Source label.
+func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settingsWriteAudit, authority SettingsWriteAuthority) error {
 	for key, changed := range files.changed {
 		if !changed {
 			continue
@@ -354,8 +367,8 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 			return fmt.Errorf("failed to determine config owner: %w", err)
 		}
 		keys := []string{mcpContainerName(record.commitPath)}
-		ev := &SettingsEvent{Scope: s.settingsScopeForPath(record.commitPath), Path: record.commitPath, Keys: keys}
-		refusedBy, guardErr := s.guardSettingsWrite(record.commitPath, record.data, keys)
+		ev := &SettingsEvent{Scope: s.settingsScopeForPath(record.commitPath), Path: record.commitPath, Keys: keys, Source: settingsAuditSource(authority)}
+		refusedBy, guardErr := s.guardSettingsWriteForAuthority(record.commitPath, record.data, keys, authority)
 		if guardErr != nil {
 			audit.event = ev
 			audit.refusedBy = refusedBy

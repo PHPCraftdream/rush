@@ -74,7 +74,14 @@ func (s *ConfigStore) ReadAllModelsAtScope(scope Scope) (map[SelectedModelType]*
 // UpdatePreferredModel updates the preferred model for the given type and
 // persists it to the config file at the given scope.
 func (s *ConfigStore) UpdatePreferredModel(scope Scope, modelType SelectedModelType, model SelectedModel) error {
-	return s.UpdatePreferredModels(scope, map[SelectedModelType]SelectedModel{modelType: model})
+	return s.UpdatePreferredModelWithAuthority(scope, modelType, model, SettingsAuthorityGuarded)
+}
+
+// UpdatePreferredModelWithAuthority is UpdatePreferredModel with an explicit
+// per-call write authority; see UpdatePreferredModelsWithAuthority for the
+// trusted-UI exception contract.
+func (s *ConfigStore) UpdatePreferredModelWithAuthority(scope Scope, modelType SelectedModelType, model SelectedModel, authority SettingsWriteAuthority) error {
+	return s.UpdatePreferredModelsWithAuthority(scope, map[SelectedModelType]SelectedModel{modelType: model}, authority)
 }
 
 // UpdatePreferredModels updates and persists multiple model slots (e.g.
@@ -86,6 +93,15 @@ func (s *ConfigStore) UpdatePreferredModel(scope Scope, modelType SelectedModelT
 // writes; it does not partially apply on error, but nor does it need to,
 // since validation is expected to have already happened.
 func (s *ConfigStore) UpdatePreferredModels(scope Scope, models map[SelectedModelType]SelectedModel) error {
+	return s.UpdatePreferredModelsWithAuthority(scope, models, SettingsAuthorityGuarded)
+}
+
+// UpdatePreferredModelsWithAuthority is UpdatePreferredModels with an
+// explicit per-call write authority; see SetConfigFieldsWithAuthority for
+// the trusted-UI exception contract. Only the password/settings-lock veto
+// is lifted for this single write; model-integrity signing and recent-model
+// bookkeeping are unchanged.
+func (s *ConfigStore) UpdatePreferredModelsWithAuthority(scope Scope, models map[SelectedModelType]SelectedModel, authority SettingsWriteAuthority) error {
 	if len(models) == 0 {
 		return nil
 	}
@@ -93,7 +109,7 @@ func (s *ConfigStore) UpdatePreferredModels(scope Scope, models map[SelectedMode
 	for modelType, model := range models {
 		fields[fmt.Sprintf("models.%s", modelType)] = model
 	}
-	if err := s.SetConfigFields(scope, fields); err != nil {
+	if err := s.SetConfigFieldsWithAuthority(scope, fields, authority); err != nil {
 		if errors.Is(err, ErrSettingsLocked) || errors.Is(err, ErrWrongPassword) {
 			return err
 		}
