@@ -22,7 +22,9 @@ func TestRebuildSessionAgentCall_UnmarkedFenceRefusesAndOSClearedRowRebuilds(t *
 	cfg, _ := coord.cfg.Snapshot()
 	smart := toSessionModelCfg(cfg.Models[config.SelectedModelTypeSmart])
 	fast := toSessionModelCfg(cfg.Models[config.SelectedModelTypeFast])
-	sessionID := "queue-fence-epoch"
+	sess, err := env.sessions.Create(t.Context(), "queue-fence-epoch")
+	require.NoError(t, err)
+	sessionID := sess.ID
 	fence := session.SessionExecutionRequirement{BindingID: "binding-from-earlier-epoch"}
 	require.NoError(t, store.StoreSessionExecutionRequirement(t.Context(), sessionID, fence))
 	data := session.SessionAgentCallData{

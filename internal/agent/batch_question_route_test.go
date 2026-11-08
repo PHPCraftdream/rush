@@ -205,11 +205,17 @@ func TestStartBatchAgentTurnRouteMarkerAndBinding(t *testing.T) {
 			host := batchAgentHost{Ask: func(context.Context, int, string) (json.RawMessage, error) {
 				return nil, errors.New("host ask must not run in this test")
 			}}
-			req := batchAgentRunRequest{Tool: "agent", QuestionRoute: route}
+			req := batchAgentRunRequest{Tool: "agent", Input: json.RawMessage(`{}`), QuestionRoute: route}
 			// The leaf runs on the stamped run context in the driver's
 			// goroutine; the driver settles itself once the leaf returns.
+			tl.addf("driver request: route=%v tool=%s input=%s", route, req.Tool, req.Input)
 			turn, err := startBatchAgentTurn(context.Background(), req, host, leaf, nil, func() {})
 			require.NoError(t, err)
+			t.Cleanup(func() {
+				if t.Failed() {
+					tl.addf("driver result: err=%v result=%+v", turn.Err(), turn.Result())
+				}
+			})
 			capturedCtx := func() context.Context {
 				mu.Lock()
 				defer mu.Unlock()
