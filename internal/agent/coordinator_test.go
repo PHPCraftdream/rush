@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -215,6 +218,88 @@ func agentResultWithText(text string) *fantasy.AgentResult {
 			},
 		},
 	}
+}
+
+func TestRunSubAgentDepthChargesOneChildEdge(t *testing.T) {
+	const providerID = "depth-provider"
+	for _, tc := range []struct {
+		depth int
+		want  int
+	}{{1, 0}, {2, 1}, {MaxAgentDepthForResume, MaxAgentDepthForResume - 1}} {
+		t.Run(fmt.Sprintf("depth-%d", tc.depth), func(t *testing.T) {
+			env := testEnv(t)
+			coord := newTestCoordinator(t, env, providerID, config.ProviderConfig{ID: providerID})
+			parent, err := env.sessions.Create(t.Context(), "depth parent")
+			require.NoError(t, err)
+			var childID string
+			childAgent := newMockAgent(providerID, 128, func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+				childID = call.SessionID
+				return agentResultWithText("done"), nil
+			})
+			spec, err := ParseBatchExternalSpecJSON([]byte(fmt.Sprintf(`{"max_agent_depth":%d,"items":[{"tool":"agent","input":{"prompt":"p"}}]}`, tc.depth)))
+			require.NoError(t, err)
+			var payload batchExternalDepthPayload
+			require.NoError(t, json.Unmarshal(spec.Batch.Items[0].Task.Payload, &payload))
+			ctx, err := WithAgentDepth(t.Context(), payload.AgentDepth)
+			require.NoError(t, err)
+			_, err = coord.runSubAgent(ctx, subAgentParams{Agent: childAgent, SessionID: parent.ID, AgentMessageID: "m", ToolCallID: "c", Prompt: "p", SessionTitle: "child"})
+			require.NoError(t, err)
+			store := env.sessions.(session.AgentDepthStore)
+			got, err := store.ResolveAgentDepth(t.Context(), childID, 32)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
+	t.Run("siblings keep independent budgets", func(t *testing.T) {
+		env := testEnv(t)
+		coord := newTestCoordinator(t, env, providerID, config.ProviderConfig{ID: providerID})
+		parent, err := env.sessions.Create(t.Context(), "siblings parent")
+		require.NoError(t, err)
+		store := env.sessions.(session.AgentDepthStore)
+		require.NoError(t, store.LowerAgentDepth(t.Context(), parent.ID, DefaultAgentDepth))
+		for i, depth := range []int{1, 2} {
+			beforeChildren, err := env.sessions.List(t.Context())
+			require.NoError(t, err)
+			var childID string
+			childAgent := newMockAgent(providerID, 128, func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+				childID = call.SessionID
+				return agentResultWithText("done"), nil
+			})
+			ctx, err := WithAgentDepth(t.Context(), depth)
+			require.NoError(t, err)
+			_, err = coord.runSubAgent(ctx, subAgentParams{Agent: childAgent, SessionID: parent.ID, AgentMessageID: "m", ToolCallID: fmt.Sprintf("c-%d", i), Prompt: "p", SessionTitle: "child"})
+			require.NoError(t, err)
+			remaining, err := store.ResolveAgentDepth(t.Context(), childID, 32)
+			require.NoError(t, err)
+			require.Equal(t, depth-1, remaining)
+			parentRemaining, err := store.ResolveSavedAgentDepth(t.Context(), parent.ID)
+			require.NoError(t, err)
+			require.Equal(t, DefaultAgentDepth, parentRemaining, "a narrowed sibling cannot lower the parent's durable cap")
+			afterChildren, err := env.sessions.List(t.Context())
+			require.NoError(t, err)
+			require.Len(t, afterChildren, len(beforeChildren)+1, "each sibling delegation adds one child")
+		}
+	})
+	t.Run("zero refuses before creating a child", func(t *testing.T) {
+		env := testEnv(t)
+		coord := newTestCoordinator(t, env, providerID, config.ProviderConfig{ID: providerID})
+		parent, err := env.sessions.Create(t.Context(), "zero depth parent")
+		require.NoError(t, err)
+		childAgent := newMockAgent(providerID, 128, func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
+			t.Fatal("agent ran despite exhausted depth")
+			return nil, nil
+		})
+		ctx, err := WithAgentDepth(t.Context(), 0)
+		require.NoError(t, err)
+		before, err := env.sessions.List(t.Context())
+		require.NoError(t, err)
+		response, err := coord.runSubAgent(ctx, subAgentParams{Agent: childAgent, SessionID: parent.ID, AgentMessageID: "m", ToolCallID: "c", Prompt: "p", SessionTitle: "child"})
+		require.NoError(t, err)
+		require.True(t, response.IsError)
+		after, err := env.sessions.List(t.Context())
+		require.NoError(t, err)
+		require.Len(t, after, len(before), "depth zero must not create a child session")
+	})
 }
 
 func TestRunSubAgent(t *testing.T) {

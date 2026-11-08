@@ -100,8 +100,10 @@ type BatchInvocation struct {
 	RegistryID string `json:"registry_id"`
 	// Origin names the ingress caller family (cli_bridge, agentic_fetch,
 	// coordinator) for audit.
-	Origin string `json:"origin"`
-	CallID string `json:"call_id,omitempty"`
+	Origin        string `json:"origin"`
+	CallID        string `json:"call_id,omitempty"`
+	AgentDepth    int    `json:"agent_depth,omitempty"`
+	AgentDepthSet bool   `json:"agent_depth_set,omitempty"`
 
 	Delivery         batchDeliveryChoice `json:"delivery"`
 	BackgroundEscape string              `json:"background_escape,omitempty"`
@@ -176,6 +178,9 @@ func (inv *BatchInvocation) Validate() error {
 	if inv.Policy.DiskBindingID != "" && !batchWellFormedBindingID(inv.Policy.DiskBindingID) {
 		return fmt.Errorf("%w: binding id %q", errBatchBadDiskBinding, inv.Policy.DiskBindingID)
 	}
+	if inv.AgentDepthSet && (inv.AgentDepth < 0 || inv.AgentDepth > 32) {
+		return errors.New("batch invocation: agent depth must be between 0 and 32")
+	}
 	if inv.SessionID == "" {
 		return fmt.Errorf("%w", errBatchMissingSessionID)
 	}
@@ -237,6 +242,13 @@ func batchWellFormedBindingID(id string) bool {
 // and validates the binding; it never reconstructs these ordinary leaves.
 func batchLeafRunContext(base context.Context, p batchLeafPayload) context.Context {
 	ctx := context.WithValue(base, tools.SessionIDContextKey, p.SessionID)
+	if p.AgentDepth != nil {
+		depthCtx, err := WithAgentDepth(ctx, *p.AgentDepth)
+		if err != nil {
+			return context.WithValue(ctx, batchAgentDepthInvalidContextKey{}, true)
+		}
+		ctx = depthCtx
+	}
 	if p.Policy == nil {
 		return ctx
 	}
@@ -259,9 +271,10 @@ func batchLeafRunContext(base context.Context, p batchLeafPayload) context.Conte
 }
 
 type (
-	batchFolderScopeContextKey  struct{}
-	batchRunAllowlistContextKey struct{}
-	batchCustomDiskContextKey   struct{}
+	batchFolderScopeContextKey       struct{}
+	batchRunAllowlistContextKey      struct{}
+	batchCustomDiskContextKey        struct{}
+	batchAgentDepthInvalidContextKey struct{}
 	// batchDiskProviderContextKey carries the resolved process-bound
 	// DiskProvider for a pinned leaf run.
 	batchDiskProviderContextKey struct{}

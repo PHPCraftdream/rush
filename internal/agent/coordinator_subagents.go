@@ -1,7 +1,6 @@
 // Sub-agent delegation (session creation/resume, cost transfer) and skill
 // discovery/logging. Extracted from coordinator.go — pure code move,
 // bodies unchanged.
-
 package agent
 
 import (
@@ -74,6 +73,38 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		return fantasy.ToolResponse{}, err
 	}
 	var session session.Session
+	var remaining int
+	var err error
+	if params.ResumeSessionID == "" {
+		remaining, err = effectiveParentAgentDepth(ctx, c.sessions, params.SessionID)
+		if err != nil {
+			return fantasy.ToolResponse{}, err
+		}
+		if remaining == 0 {
+			return fantasy.NewTextErrorResponse(ErrAgentDepthExceeded.Error()), nil
+		}
+	}
+	if params.ResumeSessionID != "" {
+		parentRemaining, depthErr := effectiveParentAgentDepth(ctx, c.sessions, params.SessionID)
+		if depthErr != nil {
+			return fantasy.ToolResponse{}, depthErr
+		}
+		remaining, err = MaxAgentDepthFrom(ctx)
+		if err != nil {
+			return fantasy.ToolResponse{}, err
+		}
+		if remaining > parentRemaining {
+			remaining = parentRemaining
+		}
+	}
+	childRemaining := remaining
+	if params.ResumeSessionID == "" {
+		childRemaining--
+	}
+	depthStore, depthStoreOK := c.sessions.(session.AgentDepthStore)
+	if !depthStoreOK {
+		return fantasy.ToolResponse{}, errors.New("agent depth persistence unavailable")
+	}
 	if params.ResumeSessionID != "" {
 		// Resume path (Gap 2 / phase 3.2): reuse the existing sub-session so
 		// the sub-agent's prior context (files read, work already done) is
@@ -109,12 +140,20 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			return fantasy.NewTextErrorResponse(refusal), nil
 		}
 		session = existing
+		resolved, depthErr := depthStore.ResolveAgentDepth(ctx, existing.ID, remaining)
+		if depthErr != nil {
+			return fantasy.ToolResponse{}, fmt.Errorf("resolve resumed agent depth: %w", depthErr)
+		}
+		childRemaining = resolved
+		if err := depthStore.LowerAgentDepth(ctx, existing.ID, childRemaining); err != nil {
+			return fantasy.ToolResponse{}, fmt.Errorf("lower resumed agent depth: %w", err)
+		}
 	} else {
-		// Create sub-session
+		// Child depth and lineage commit together before the child is driven.
 		agentToolSessionID := c.sessions.CreateAgentToolSessionID(params.AgentMessageID, params.ToolCallID)
-		created, err := c.sessions.CreateTaskSession(ctx, agentToolSessionID, params.SessionID, params.SessionTitle)
+		created, err := depthStore.CreateTaskSessionWithAgentDepth(ctx, agentToolSessionID, params.SessionID, params.SessionTitle, childRemaining)
 		if err != nil {
-			return fantasy.ToolResponse{}, fmt.Errorf("create session: %w", err)
+			return fantasy.ToolResponse{}, fmt.Errorf("create agent child session: %w", err)
 		}
 		session = created
 	}
@@ -307,6 +346,13 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	driverModel := *pinnedModel
 	// Driver slot provenance is maintained independently of refresh outcome.
 	driverSlotRole := dispatchSlotRole
+	childCallOptions := inheritWebPolicyCallOptions(ctx)
+	if childCallOptions == nil {
+		childCallOptions = &CallOptions{}
+	}
+	childCallOptions.MaxAgentDepth = childRemaining
+	childCallOptions.AgentDepthSet = true
+	ctx = WithCallOptions(ctx, childCallOptions)
 	// ONE shaping point for the batch child's per-call toolset: both
 	// the delegation turn and every later wake-driven turn must see
 	// the same ask surface (wrapped for a route-ful incarnation,
@@ -344,7 +390,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		NonInteractive:   true,
 		SmartModel:       &driverModel,
 		Credentials:      callCreds,
-		CallOptions:      inheritWebPolicyCallOptions(ctx),
+		CallOptions:      childCallOptions,
 	}
 	if lifecycleBound {
 		callTemplate.Tools = batchChildTools
@@ -393,6 +439,10 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// session; root inherited from the dispatching turn (design pt. 2).
 	ctx = inheritHeartbeat(ctx, session.ID, "worker", hbSource)
 	run := func() (*fantasy.AgentResult, error) {
+		runOptions := *childCallOptions
+		runOptions.MaxAgentDepth = childRemaining
+		runOptions.AgentDepthSet = true
+		runCtx := WithCallOptions(ctx, &runOptions)
 		call := SessionAgentCall{
 			SessionID:        session.ID,
 			Prompt:           params.Prompt,
@@ -406,13 +456,13 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			NonInteractive:   true,
 			SmartModel:       pinnedModel,
 			Credentials:      callCreds,
-			CallOptions:      inheritWebPolicyCallOptions(ctx),
+			CallOptions:      &runOptions,
 		}
 		if lifecycleBound {
 			call.Tools = batchChildTools
 			call.batchQuestion = batchQuestionState
 		}
-		result, runErr, _ := c.runAwaitingAdmission(ctx, params.Agent, call)
+		result, runErr, _ := c.runAwaitingAdmission(runCtx, params.Agent, call)
 		return result, runErr
 	}
 	var result *fantasy.AgentResult

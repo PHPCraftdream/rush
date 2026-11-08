@@ -16,11 +16,12 @@ const batchModelOutputLimit = 16 << 10
 
 type (
 	batchModelSpec struct {
-		Mode        string           `json:"mode"`
-		OnFail      string           `json:"on_fail,omitempty"`
-		Notify      string           `json:"notify,omitempty"`
-		MaxParallel int              `json:"max_parallel,omitempty"`
-		Items       []batchModelItem `json:"items"`
+		Mode          string           `json:"mode"`
+		MaxAgentDepth *int             `json:"max_agent_depth,omitempty"`
+		OnFail        string           `json:"on_fail,omitempty"`
+		Notify        string           `json:"notify,omitempty"`
+		MaxParallel   int              `json:"max_parallel,omitempty"`
+		Items         []batchModelItem `json:"items"`
 	}
 	batchModelItem struct {
 		Tool    string          `json:"tool,omitempty"`
@@ -54,13 +55,19 @@ func modelInvocationAtCall(ctx context.Context, inv BatchInvocation, call fantas
 	inv.Policy.SupportsImages = tools.GetSupportsImagesFromContext(ctx)
 	inv.Policy.ModelName = tools.GetModelNameFromContext(ctx)
 	if opts := callOptionsFrom(ctx); opts != nil {
+		if opts.AgentDepthSet {
+			if inv.AgentDepthSet && opts.MaxAgentDepth > inv.AgentDepth {
+				return BatchInvocation{}, errors.New("agent depth cannot be increased")
+			}
+			inv.AgentDepth = opts.MaxAgentDepth
+			inv.AgentDepthSet = true
+		} else if !inv.AgentDepthSet {
+			inv.AgentDepth = DefaultAgentDepth
+			inv.AgentDepthSet = true
+		}
 		if inv.Policy.DiskBindingID == "" && tools.IsCustomDiskProvider(opts.DiskProvider) {
-			// The binding handle is immutable and minted with the trusted
-			// call state; nothing re-mints through a copied options object.
 			if opts.DiskBindingID == "" {
-				return BatchInvocation{}, fmt.Errorf(
-					"%w: a custom disk provider must carry its binding handle before the call options are shared",
-					ErrDiskProviderUnavailable)
+				return BatchInvocation{}, fmt.Errorf("%w: a custom disk provider must carry its binding handle before the call options are shared", ErrDiskProviderUnavailable)
 			}
 			inv.Policy.DiskBindingID = opts.DiskBindingID
 		}
@@ -157,14 +164,41 @@ func newBatchModelTools(c batchModelControl, inv BatchInvocation, reg *policyLea
 }
 
 func modelBatchSpec(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRegistry) (jobbatch.Spec, error) {
+	if !inv.AgentDepthSet {
+		inv.AgentDepth = DefaultAgentDepth
+		inv.AgentDepthSet = true
+	}
+	if inv.AgentDepth < 0 || inv.AgentDepth > 32 {
+		return jobbatch.Spec{}, errors.New("agent depth must be between 0 and 32")
+	}
 	return modelBatchSpecAt(raw, inv, reg, "", nil, false)
 }
 
 func modelBatchSpecForAdmission(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRegistry, resolver batchMCPCapabilityResolver) (jobbatch.Spec, error) {
+	if !inv.AgentDepthSet {
+		inv.AgentDepth = DefaultAgentDepth
+		inv.AgentDepthSet = true
+	}
+	if inv.AgentDepth < 0 || inv.AgentDepth > 32 {
+		return jobbatch.Spec{}, errors.New("agent depth must be between 0 and 32")
+	}
 	return modelBatchSpecAt(raw, inv, reg, "", resolver, true)
 }
 
 func modelBatchSpecAt(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRegistry, path string, resolver batchMCPCapabilityResolver, admission bool) (jobbatch.Spec, error) {
+	inherited := inv.AgentDepth
+	if !inv.AgentDepthSet {
+		inherited = DefaultAgentDepth
+	}
+	if raw.MaxAgentDepth != nil {
+		if *raw.MaxAgentDepth < 0 || *raw.MaxAgentDepth > inherited {
+			return jobbatch.Spec{}, errors.New("nested max_agent_depth may only narrow the inherited cap")
+		}
+		if path == "" {
+			inv.AgentDepth = *raw.MaxAgentDepth
+			inv.AgentDepthSet = true
+		}
+	}
 	if reg == nil {
 		return jobbatch.Spec{}, errors.New("calling pinned tool registry is unavailable")
 	}
@@ -204,9 +238,22 @@ func modelBatchSpecAt(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRe
 		if (it.Batch != nil) == (it.Tool != "") {
 			return jobbatch.Spec{}, errors.New("each item must contain exactly one of tool or batch")
 		}
+		childPath := fmt.Sprintf("%s%d.", path, index)
 		if it.Batch != nil {
-			nestedPath := fmt.Sprintf("%s%d.", path, index)
-			nested, e := modelBatchSpecAt(*it.Batch, inv, reg, nestedPath, resolver, admission)
+			nestedPath := childPath
+			nestedInv := inv
+			nestedInv.AgentDepth = inv.AgentDepth
+			if !inv.AgentDepthSet {
+				nestedInv.AgentDepth = DefaultAgentDepth
+			}
+			nestedInv.AgentDepthSet = true
+			if it.Batch.MaxAgentDepth != nil {
+				if *it.Batch.MaxAgentDepth < 0 || *it.Batch.MaxAgentDepth > nestedInv.AgentDepth {
+					return jobbatch.Spec{}, errors.New("nested max_agent_depth may only narrow the inherited cap")
+				}
+				nestedInv.AgentDepth = *it.Batch.MaxAgentDepth
+			}
+			nested, e := modelBatchSpecAt(*it.Batch, nestedInv, reg, nestedPath, resolver, admission)
 			if e != nil {
 				return jobbatch.Spec{}, e
 			}
@@ -239,6 +286,19 @@ func modelBatchSpecAt(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRe
 			return jobbatch.Spec{}, errors.New("item timeout and the leaf tool input's timeout are ambiguous; provide at most one")
 		}
 		leafPayload := batchLeafPayload{Tool: it.Tool, ToolCallID: fmt.Sprintf("%s-item-%s%d", inv.CallID, path, index), SessionID: inv.SessionID, Input: input, RegistryID: inv.RegistryID, Policy: &inv.Policy, QuestionRoute: inv.QuestionRoute}
+		leafCap := inv.AgentDepth
+		if !inv.AgentDepthSet {
+			leafCap = DefaultAgentDepth
+		}
+		if raw.MaxAgentDepth != nil {
+			if *raw.MaxAgentDepth < 0 || *raw.MaxAgentDepth > leafCap {
+				return jobbatch.Spec{}, errors.New("nested max_agent_depth may only narrow the inherited cap")
+			}
+			leafCap = *raw.MaxAgentDepth
+		}
+		if it.Tool == AgentToolName || it.Tool == tools.AgenticFetchToolName {
+			leafPayload.AgentDepth = &leafCap
+		}
 		timeout := time.Duration(0)
 		if it.Timeout != "" {
 			timeout, e = time.ParseDuration(it.Timeout)

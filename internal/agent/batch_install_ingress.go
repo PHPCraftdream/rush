@@ -262,6 +262,16 @@ func invokeBatchWithCallContext(ctx context.Context, ingress BatchWorkIngress, t
 	inv.SessionID = tools.GetSessionFromContext(ctx)
 	inv.MessageID = tools.GetMessageFromContext(ctx)
 	inv.CallID = call.ID
+	if !inv.AgentDepthSet {
+		inv.AgentDepth = DefaultAgentDepth
+		inv.AgentDepthSet = true
+	}
+	if opts := callOptionsFrom(ctx); opts != nil && opts.AgentDepthSet && opts.MaxAgentDepth < inv.AgentDepth {
+		inv.AgentDepth = opts.MaxAgentDepth
+	}
+	if inv.AgentDepth < 0 || inv.AgentDepth > 32 {
+		return fantasy.ToolResponse{}, errors.New("agent depth must be between 0 and 32")
+	}
 	inv.Policy.MessageID = inv.MessageID
 	inv.Policy.SupportsImages = tools.GetSupportsImagesFromContext(ctx)
 	inv.Policy.ModelName = tools.GetModelNameFromContext(ctx)

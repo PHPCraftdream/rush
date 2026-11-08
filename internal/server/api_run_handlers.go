@@ -21,9 +21,10 @@ const (
 )
 
 type apiRunCreateRequest struct {
-	Prompt string `json:"prompt"`
-	Role   string `json:"role,omitempty"`
-	Model  string `json:"model,omitempty"`
+	Prompt        string `json:"prompt"`
+	Role          string `json:"role,omitempty"`
+	Model         string `json:"model,omitempty"`
+	MaxAgentDepth *int   `json:"max_agent_depth,omitempty"`
 }
 
 type apiRunInjectRequest struct {
@@ -73,6 +74,14 @@ func apiCreateRunHandler(store APIWriteStore, backend APIRunBackend, registry *A
 			WriteAPIProblem(w, r, http.StatusBadRequest, "Bad Request", "invalid role", "", nil)
 			return
 		}
+		maxAgentDepth := 2
+		if payload.MaxAgentDepth != nil {
+			maxAgentDepth = *payload.MaxAgentDepth
+		}
+		if maxAgentDepth < 0 || maxAgentDepth > 32 {
+			WriteAPIProblem(w, r, http.StatusBadRequest, "Bad Request", "max_agent_depth must be between 0 and 32", "", nil)
+			return
+		}
 		item, err := store.GetSession(r, r.PathValue("id"))
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -96,7 +105,7 @@ func apiCreateRunHandler(store APIWriteStore, backend APIRunBackend, registry *A
 			apiReadFailure(w, r, err)
 			return
 		}
-		done, err := backend.Start(context.WithoutCancel(r.Context()), run.ID, item.ID, payload.Prompt, payload.Role, payload.Model)
+		done, err := startAPIRunWithDepth(backend, context.WithoutCancel(r.Context()), run.ID, item.ID, payload.Prompt, payload.Role, payload.Model, maxAgentDepth)
 		if err != nil {
 			_, _ = registry.Transition(run.ID, APIRunFailed, "start_failed", "run could not be started", "")
 			switch {
@@ -132,6 +141,17 @@ func apiCreateRunHandler(store APIWriteStore, backend APIRunBackend, registry *A
 			State     APIRunState `json:"state"`
 		}{run.ID, item.ID, APIRunRunning})
 	}
+}
+
+type apiRunDepthBackend interface {
+	StartWithDepth(context.Context, string, string, string, string, string, int) (<-chan RunOutcome, error)
+}
+
+func startAPIRunWithDepth(backend APIRunBackend, ctx context.Context, runID, sessionID, prompt, role, model string, depth int) (<-chan RunOutcome, error) {
+	if depthBackend, ok := backend.(apiRunDepthBackend); ok {
+		return depthBackend.StartWithDepth(ctx, runID, sessionID, prompt, role, model, depth)
+	}
+	return backend.Start(ctx, runID, sessionID, prompt, role, model)
 }
 
 func apiGetRunHandler(registry *APIRunRegistry) http.HandlerFunc {

@@ -97,6 +97,18 @@ func (a *App) BatchCLISpecWithQuestionRoute(ctx context.Context, owner, messageI
 	if err := persistSessionExecutionIntent(ctx, a, owner, sessionExecutionProviderOmitted, nil, false); err != nil {
 		return jobbatch.Spec{}, nil, err
 	}
+	requestedDepth, depthErr := agent.MaxAgentDepthFrom(ctx)
+	if depthErr != nil {
+		return jobbatch.Spec{}, nil, depthErr
+	}
+	remainingDepth, depthErr := agent.PersistSessionAgentDepth(ctx, a.Sessions, owner, requestedDepth)
+	if depthErr != nil {
+		return jobbatch.Spec{}, nil, depthErr
+	}
+	ctx, err := agent.WithAgentDepth(ctx, remainingDepth)
+	if err != nil {
+		return jobbatch.Spec{}, nil, err
+	}
 	b, err := agent.NewBatchCLIBuilderWithQuestionRoute(a.AgentCoordinator, a.batchWorkIngress, questionRoute)
 	if err != nil {
 		return jobbatch.Spec{}, nil, err

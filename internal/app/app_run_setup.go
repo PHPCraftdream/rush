@@ -453,7 +453,16 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 	// per-call toolset build (resolveSessionModels -> buildTools) reads
 	// the DisableSubAgents filter and ModelRole from this context, and
 	// buildAgent captures the role synchronously at registration time.
+	maxAgentDepth := agent.DefaultAgentDepth
+	if overrides.MaxAgentDepth != nil {
+		maxAgentDepth = *overrides.MaxAgentDepth
+	}
+	if maxAgentDepth < 0 || maxAgentDepth > 32 {
+		return nil, cancel, nil, errors.New("max_agent_depth must be between 0 and 32")
+	}
 	callOpts := &agent.CallOptions{
+		MaxAgentDepth:            maxAgentDepth,
+		AgentDepthSet:            true,
 		ModelRole:                overrides.ModelRole,
 		TimeoutExtendsOnProgress: overrides.TimeoutExtendsOnProgress,
 		TimeoutHardCap:           overrides.TimeoutHardCap,
@@ -494,7 +503,6 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		FailIfSessionBusy: failIfSessionBusy,
 	}
 	if tools.IsCustomDiskProvider(overrides.DiskProvider) {
-		// resolveDiskBindings prefers the batch runtime install's registry
 		// (persisted Apps) and falls back to the ephemeral App's in-memory
 		// registry; nil still fails closed with the same sentinel — a
 		// persisted App whose install genuinely failed, or a flag-ON

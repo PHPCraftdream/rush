@@ -69,11 +69,22 @@ func newAPIRunBackendWithPolicy(app *appPkg.App, broker *APIPermissionBroker, al
 }
 
 func (b *appAPIRunBackend) Start(ctx context.Context, runID, sessionID, prompt, role, model string) (<-chan RunOutcome, error) {
+	return b.StartWithDepth(ctx, runID, sessionID, prompt, role, model, agent.DefaultAgentDepth)
+}
+
+func (b *appAPIRunBackend) StartWithDepth(ctx context.Context, runID, sessionID, prompt, role, model string, maxAgentDepth int) (<-chan RunOutcome, error) {
+	if maxAgentDepth < 0 || maxAgentDepth > 32 {
+		return nil, fmt.Errorf("max_agent_depth must be between 0 and 32")
+	}
 	if b.app == nil || b.app.AgentCoordinator == nil {
 		return nil, ErrAPIRunBackendCoordinator
 	}
 	if runID == "" || sessionID == "" || strings.TrimSpace(prompt) == "" {
 		return nil, errors.New("invalid run parameters")
+	}
+	maxAgentDepth, err := agent.PersistSessionAgentDepth(ctx, b.app.Sessions, sessionID, maxAgentDepth)
+	if err != nil {
+		return nil, fmt.Errorf("resolve API session agent depth: %w", err)
 	}
 	var (
 		manager  permission.SessionDenyManager
@@ -197,7 +208,9 @@ func (b *appAPIRunBackend) Start(ctx context.Context, runID, sessionID, prompt, 
 	b.mu.Unlock()
 	recorder := agent.NewCallResultRecorder()
 	runCtx = agent.WithCallResultRecorder(runCtx, recorder)
-	runCtx = agent.WithCallOptions(agent.WithCallOrigin(runCtx, message.OriginAPI), &agent.CallOptions{WebTurnOptIn: true, ModelRole: roleType})
+	runCtx = agent.WithCallOptions(agent.WithCallOrigin(runCtx, message.OriginAPI), &agent.CallOptions{
+		WebTurnOptIn: true, ModelRole: roleType, MaxAgentDepth: maxAgentDepth, AgentDepthSet: true,
+	})
 	b.app.AgentCoordinator.ResetAutoResumeCounter(sessionID)
 	done := make(chan RunOutcome, 1)
 	reservationOwned = false // the completion goroutine now owns reservation cleanup.

@@ -38,15 +38,17 @@ func (*apiRunHandlerStore) SessionBusy(string) bool            { return false }
 func (s *apiRunHandlerStore) OwnsSession(session.Session) bool { return !s.foreign }
 
 type apiRunHandlerBackend struct {
-	mu       sync.Mutex
-	starts   int
-	busy     bool
-	cancel   bool
-	inject   bool
-	injected []string
-	started  chan struct{}
-	outcomes chan RunOutcome
-	startErr error
+	mu          sync.Mutex
+	starts      int
+	depth       int
+	depthStarts int
+	busy        bool
+	cancel      bool
+	inject      bool
+	injected    []string
+	started     chan struct{}
+	outcomes    chan RunOutcome
+	startErr    error
 }
 
 func newAPIRunHandlerBackend() *apiRunHandlerBackend {
@@ -54,11 +56,26 @@ func newAPIRunHandlerBackend() *apiRunHandlerBackend {
 }
 
 func (b *apiRunHandlerBackend) Start(_ context.Context, _, _, _, _, _ string) (<-chan RunOutcome, error) {
+	return b.start(0, false)
+}
+
+func (b *apiRunHandlerBackend) StartWithDepth(_ context.Context, _, _, _, _, _ string, depth int) (<-chan RunOutcome, error) {
+	return b.start(depth, true)
+}
+
+func (b *apiRunHandlerBackend) start(depth int, hasDepth bool) (<-chan RunOutcome, error) {
 	if b.startErr != nil {
 		return nil, b.startErr
 	}
+	if !hasDepth {
+		depth = 2
+	}
 	b.mu.Lock()
 	b.starts++
+	b.depth = depth
+	if hasDepth {
+		b.depthStarts++
+	}
 	b.mu.Unlock()
 	b.started <- struct{}{}
 	return b.outcomes, nil
@@ -171,6 +188,24 @@ func TestAPIRunCreateResponseAndReplay(t *testing.T) {
 	backend.outcomes <- RunOutcome{State: APIRunSucceeded, ResultMessageID: "finished"}
 }
 
+func TestAPIRunCreateHonorsDepthOverride(t *testing.T) {
+	apiRunHandlerEnv(t)
+	backend := newAPIRunHandlerBackend()
+	got := apiRunRequest(t, apiRunHandler(&apiRunHandlerStore{item: session.Session{ID: "s"}}, backend), http.MethodPost,
+		"/api/v1/sessions/s/runs", `{"prompt":"x","max_agent_depth":0}`, Principal{TokenID: "t", Scopes: []string{"run"}}, nil)
+	if got.status != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", got.status, got.body)
+	}
+	awaitAPIRunStart(t, backend)
+	backend.mu.Lock()
+	depth, starts := backend.depth, backend.depthStarts
+	backend.mu.Unlock()
+	if starts != 1 || depth != 0 {
+		t.Fatalf("depth starts=%d depth=%d", starts, depth)
+	}
+	backend.outcomes <- RunOutcome{State: APIRunSucceeded}
+}
+
 func TestAPIRunCreateValidationAndConflicts(t *testing.T) {
 	apiRunHandlerEnv(t)
 	cases := []struct {
@@ -180,8 +215,10 @@ func TestAPIRunCreateValidationAndConflicts(t *testing.T) {
 		{"empty prompt", `{"prompt":"  "}`, 400},
 		{"oversize", `{"prompt":"` + strings.Repeat("x", apiRunMaxFieldBytes+1) + `"}`, 400},
 		{"unknown role", `{"prompt":"x","role":"not-a-role"}`, 400},
-		{"unknown field", `{"prompt":"x","extra":true}`, 400},
-		{"bad JSON", `{`, 400},
+		{"invalid max depth low", `{"prompt":"x","max_agent_depth":-1}`, 400},
+		{"invalid max depth high", `{"prompt":"x","max_agent_depth":33}`, 400},
+		{"unknown field", `{"prompt":"x","unknown":true}`, 400},
+		{"bad JSON", `{"prompt":`, 400},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

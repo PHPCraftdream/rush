@@ -569,6 +569,10 @@ func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, 
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, c.drainRefused(ctx, sessionID, err)
 	}
+	ctx, err := WithPersistedSessionAgentDepth(ctx, c.sessions, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve session agent depth: %w", err)
+	}
 
 	// Resolve the session's model configuration from the DB or config defaults.
 	// This always returns a valid snapshot (never nil), ensuring that every turn

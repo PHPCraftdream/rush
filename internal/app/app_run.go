@@ -101,6 +101,16 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 		return nil, fmt.Errorf("failed to create session for non-interactive mode: %w", err)
 	}
 	sessionID = sess.ID
+	if setup.callOpts == nil {
+		return nil, errors.New("agent depth call options unavailable")
+	}
+	depth, depthErr := agent.PersistSessionAgentDepth(ctx, app.Sessions, sess.ID, setup.callOpts.MaxAgentDepth)
+	if depthErr != nil {
+		return nil, fmt.Errorf("resolve session agent depth: %w", depthErr)
+	}
+	setup.callOpts.MaxAgentDepth = depth
+	setup.callOpts.AgentDepthSet = true
+	ctx = agent.WithCallOptions(ctx, setup.callOpts)
 	if req.onSessionResolved != nil {
 		if err := req.onSessionResolved(sess.ID); err != nil {
 			return nil, err

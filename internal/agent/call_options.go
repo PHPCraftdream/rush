@@ -63,6 +63,11 @@ type CallOptions struct {
 	// runtime metadata; never serialized.
 	buildScopeRetained bool
 
+	// MaxAgentDepth is the trusted remaining delegation-edge budget. Its
+	// presence is separate from the value so zero remains an enforced cap.
+	MaxAgentDepth int
+	AgentDepthSet bool
+
 	// ModelRole is the named model slot driving this run (smart, fast,
 	// worker, reviewer). Read by workerSubAgentActiveForCall to decide
 	// worker-slot preference for sub-agent builds, replacing the

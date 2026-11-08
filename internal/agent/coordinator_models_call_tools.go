@@ -59,7 +59,7 @@ func scopedCallToolsRequired(ctx context.Context) bool {
 // directly, ahead of calling WithCallOptions).
 func scopedCallOptionsRequireDistinctTools(opts *CallOptions) bool {
 	return opts != nil && (opts.FolderScope != nil || tools.HasDiskProvider(opts.DiskProvider) ||
-		opts.DisableSubAgents || opts.ModelRole != "")
+		opts.DisableSubAgents || opts.ModelRole != "" || opts.AgentDepthSet)
 }
 
 // pinCallToolsReadyGateSeam is a test-only hook: fires immediately after the

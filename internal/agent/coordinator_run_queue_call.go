@@ -5,6 +5,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -210,7 +211,7 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 	// whole restart closed instead of silently running with whatever
 	// subset of fields happened to decode.
 	var rebuiltCallOptions *CallOptions
-	if data.CallOptionsSpec != nil || data.FolderScopeSpec != nil {
+	{
 		var err error
 		rebuiltCallOptions, err = fromSessionCallOptionsSpec(data.CallOptionsSpec)
 		if err != nil {
@@ -221,10 +222,29 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 		if rebuiltCallOptions == nil {
 			rebuiltCallOptions = &CallOptions{}
 		}
-		// The rebuilt call is a bare internal call builder: it owns a fresh
-		// build-resource scope (R12-H2 §1.2 — no process-lifetime fallback),
-		// closed when RunSessionAgentCall's execution ends or fails.
-		EnsureCallBuildScope(rebuiltCallOptions)
+		if !rebuiltCallOptions.AgentDepthSet {
+			remaining := DefaultAgentDepth
+			if sess, getErr := c.sessions.Get(ctx, data.SessionID); getErr != nil {
+				releasePrep()
+				return SessionAgentCall{}, fmt.Errorf("resolve durable call session lineage: %w", getErr)
+			} else if sess.ParentSessionID != "" {
+				store, ok := c.sessions.(session.AgentDepthStore)
+				if !ok {
+					releasePrep()
+					return SessionAgentCall{}, errors.New("agent depth persistence unavailable")
+				}
+				remaining, err = store.ResolveAgentDepth(ctx, sess.ID, DefaultAgentDepth)
+				if err != nil {
+					releasePrep()
+					return SessionAgentCall{}, fmt.Errorf("resolve legacy child depth: %w", err)
+				}
+			}
+			rebuiltCallOptions.MaxAgentDepth = remaining
+			rebuiltCallOptions.AgentDepthSet = true
+		}
+		if rebuiltCallOptions.buildScope == nil {
+			EnsureCallBuildScope(rebuiltCallOptions)
+		}
 	}
 	if data.FolderScopeSpec != nil {
 		var compiledScope permission.FolderScope
@@ -277,9 +297,8 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 	// holder — the transfer is complete.
 	if prep != nil {
 		if rebuiltCallOptions == nil {
-			rebuiltCallOptions = &CallOptions{}
+			return SessionAgentCall{}, errors.New("durable call options unavailable")
 		}
-		EnsureCallBuildScope(rebuiltCallOptions)
 		requirement := prep.requirement
 		opts, callRelease, bindErr := bindExistingCallDiskBinding(c.diskCaps, requirement.BindingID, uuid.NewString(), rebuiltCallOptions)
 		if bindErr != nil {
@@ -398,8 +417,9 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 	}
 
 	ctx = WithCallOrigin(ctx, call.Origin)
-	if call.CallOptions != nil {
-		ctx = WithCallOptions(ctx, call.CallOptions)
+	ctx, remainingDepth, err := withPersistedCallAgentDepth(ctx, c.sessions, &call)
+	if err != nil {
+		return nil, fmt.Errorf("resolve queued session agent depth: %w", err)
 	}
 
 	// R4-3: after a REAL process restart the permission service's
@@ -463,14 +483,19 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 	// in every case this outer `if` is entered and the build fails; there
 	// is no longer a live "fall back to shared toolset" branch inside this
 	// block at all.
-	if scopedCallOptionsRequireDistinctTools(call.CallOptions) {
+	if scopedCallOptionsRequireDistinctTools(call.CallOptions) || remainingDepth == 0 {
 		ctx = WithCallOptions(ctx, call.CallOptions)
 		cfg, _ := c.cfg.Snapshot()
 		scopedTools, err := c.pinCallTools(ctx, cfg)
+		if err == nil && scopedTools == nil && remainingDepth == 0 {
+			err = errors.New("exhausted agent depth requires a pinned toolset")
+		}
 		if err != nil {
 			// Assembly error: the build scope closes here, releasing this
 			// call's construction owners (R12-H2 §1.2).
-			call.CallOptions.buildScope.close()
+			if call.CallOptions != nil {
+				call.CallOptions.buildScope.close()
+			}
 			return nil, fmt.Errorf(
 				"failed to build the rebuilt call's tool-shaping toolset; refusing to restart the turn on the shared unscoped toolset: %w", err)
 		}

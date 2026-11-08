@@ -57,7 +57,9 @@ type RunOverrides struct {
 	// (markdown fence + prose preamble removal); the unstripped
 	// original is preserved in RunResult.AssistantNotes.
 	DisableSubAgents bool
-	StripJSONFences  bool
+	// MaxAgentDepth narrows this invocation's delegation budget; nil uses default 2.
+	MaxAgentDepth   *int
+	StripJSONFences bool
 	// NoSupervision disables the periodic root-session supervision check-in
 	// (design doc §7) for this run (`rush run --no-supervision`). false
 	// (default) defers to config's supervision_enabled (on by default).

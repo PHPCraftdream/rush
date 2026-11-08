@@ -72,6 +72,10 @@ type subAgentDriver struct {
 func (d subAgentDriver) callFor(prompt string) SessionAgentCall {
 	call := callFromActive(d.call)
 	call.Prompt = prompt
+	if call.CallOptions != nil {
+		copy := *call.CallOptions
+		call.CallOptions = &copy
+	}
 	return call
 }
 

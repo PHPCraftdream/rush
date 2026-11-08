@@ -65,8 +65,10 @@ func batchAgentQuestionBindingFrom(ctx context.Context) (batchAgentQuestionBindi
 // driver on the delegation leaf's run context — never derived from session
 // state or user input.
 type batchBridgeInvocation struct {
-	RegistryID string
-	MessageID  string
+	RegistryID    string
+	MessageID     string
+	AgentDepth    int
+	AgentDepthSet bool
 }
 
 type batchBridgeInvocationKey struct{}

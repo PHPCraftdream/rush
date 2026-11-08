@@ -59,6 +59,8 @@ func TestRebuildSessionAgentCall_RestoresFullCallOptions(t *testing.T) {
 		Prompt:          "hello",
 		FolderScopeSpec: scopeSpec,
 		CallOptions: &CallOptions{
+			MaxAgentDepth:    1,
+			AgentDepthSet:    true,
 			DisableSubAgents: true,
 			ModelRole:        config.SelectedModelTypeFast,
 			// Deliberate all-zero timeout policy: TimeoutOptionsSet=true
@@ -78,6 +80,8 @@ func TestRebuildSessionAgentCall_RestoresFullCallOptions(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &decoded))
 
 	require.NotNil(t, decoded.CallOptionsSpec, "CallOptionsSpec must survive the JSON boundary")
+	assert.Equal(t, 1, decoded.CallOptionsSpec.MaxAgentDepth)
+	assert.True(t, decoded.CallOptionsSpec.AgentDepthSet)
 	assert.True(t, decoded.CallOptionsSpec.DisableSubAgents)
 	assert.Equal(t, "fast", decoded.CallOptionsSpec.ModelRole)
 	assert.True(t, decoded.CallOptionsSpec.TimeoutOptionsSet)
@@ -99,6 +103,8 @@ func TestRebuildSessionAgentCall_RestoresFullCallOptions(t *testing.T) {
 	assert.False(t, rebuilt.CallOptions.TimeoutExtendsOnProgress)
 	assert.Zero(t, rebuilt.CallOptions.TimeoutHardCap)
 	// (4) The folder scope still compiled (T12 must not regress).
+	assert.Equal(t, 1, rebuilt.CallOptions.MaxAgentDepth)
+	assert.True(t, rebuilt.CallOptions.AgentDepthSet)
 	require.NotNil(t, rebuilt.CallOptions.FolderScope)
 	inside := filepath.Join(workDir, "scoped", "f.txt")
 	require.NoError(t, rebuilt.CallOptions.FolderScope.Check(inside, permission.FileOpRead))

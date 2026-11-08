@@ -221,6 +221,13 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// the Set and this read. nil = legacy caller — the fallback paths keep
 	// the historical read-and-reset behavior byte-for-byte.
 	callOpts := callOptionsFrom(ctx)
+	// The durable session cap overrides a stale queued value.
+	depthCtx, err := WithPersistedSessionAgentDepth(ctx, c.sessions, sessionID)
+	if err != nil {
+		return nil, c.drainRefused(ctx, sessionID, fmt.Errorf("resolve session agent depth: %w", err))
+	}
+	ctx = depthCtx
+	callOpts = callOptionsFrom(ctx)
 	// R12-H2b §2.4 ordinary/idle rebuilt calls — do not rely on the
 	// request carrying options: a session with a persisted fence must not
 	// run a turn that cannot name a live binding. Before any
@@ -806,6 +813,10 @@ func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt st
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, c.drainRefused(ctx, sessionID, err)
 	}
+	ctx, depthErr := WithPersistedSessionAgentDepth(ctx, c.sessions, sessionID)
+	if depthErr != nil {
+		return nil, fmt.Errorf("resolve session agent depth: %w", depthErr)
+	}
 
 	// Carry session-level reasoning effort into the overrides so that
 	// applyModelOverrides restores it after resetting the model config.
@@ -843,21 +854,6 @@ func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt st
 	}
 
 	return c.runInternal(ctx, sessionID, prompt, pinned, attachments...)
-}
-
-// inheritSessionEffort fills an override slot's empty reasoning effort from
-// the session's durable effort, but only when the slot names the session's
-// own model: the effort was recorded for that model, and applyModelOverrides
-// deliberately clears the effort whenever the model differs.
-func inheritSessionEffort(smart, fast *ModelOverride, sess session.Session) {
-	if smart != nil && smart.ReasoningEffort == "" && sess.SmartModelReasoningEffort != "" &&
-		smart.Model == sess.SmartModelID && smart.Provider == sess.SmartModelProvider {
-		smart.ReasoningEffort = sess.SmartModelReasoningEffort
-	}
-	if fast != nil && fast.ReasoningEffort == "" && sess.FastModelReasoningEffort != "" &&
-		fast.Model == sess.FastModelID && fast.Provider == sess.FastModelProvider {
-		fast.ReasoningEffort = sess.FastModelReasoningEffort
-	}
 }
 
 // ReserveExclusive implements Coordinator — see the interface doc and
@@ -942,6 +938,11 @@ func (c *coordinator) RunWithReservedOwnership(ctx context.Context, sessionID, p
 	if err := c.readyWg.Wait(); err != nil {
 		c.currentAgent.ReleaseExclusive(sessionID, epoch, cancel)
 		return nil, err
+	}
+	ctx, depthErr := WithPersistedSessionAgentDepth(ctx, c.sessions, sessionID)
+	if depthErr != nil {
+		c.currentAgent.ReleaseExclusive(sessionID, epoch, cancel)
+		return nil, fmt.Errorf("resolve session agent depth: %w", depthErr)
 	}
 
 	// Invocation-only model selections must not inherit durable session pins.
