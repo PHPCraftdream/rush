@@ -11,6 +11,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync/atomic"
 	"testing"

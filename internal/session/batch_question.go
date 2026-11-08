@@ -172,12 +172,12 @@ func (s *BatchStore) BatchResolveChildQuestions(ctx context.Context, owner, node
 	if err != nil {
 		return 0, fmt.Errorf("batch store: question resolve list: %w", err)
 	}
+	defer rows.Close()
 	var stale []int64
 	for rows.Next() {
 		var id int64
 		var text string
 		if err := rows.Scan(&id, &text); err != nil {
-			_ = rows.Close()
 			return 0, fmt.Errorf("batch store: question resolve scan: %w", err)
 		}
 		mnode, mtoken, msequence, mchild, ok := parseBatchQuestionMarkerFull(text)
@@ -187,7 +187,6 @@ func (s *BatchStore) BatchResolveChildQuestions(ctx context.Context, owner, node
 		stale = append(stale, id)
 	}
 	if err := rows.Err(); err != nil {
-		_ = rows.Close()
 		return 0, fmt.Errorf("batch store: question resolve iterate: %w", err)
 	}
 	// Fully drained before any write: the writer pool has exactly ONE
