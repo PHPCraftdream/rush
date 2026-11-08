@@ -18,7 +18,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/home"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionpkg "github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/skills"
 )
 
@@ -72,7 +72,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	if err := c.readyWg.Wait(); err != nil {
 		return fantasy.ToolResponse{}, err
 	}
-	var session session.Session
+	var session sessionpkg.Session
 	var remaining int
 	var err error
 	if params.ResumeSessionID == "" {
@@ -101,7 +101,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	if params.ResumeSessionID == "" {
 		childRemaining--
 	}
-	depthStore, depthStoreOK := c.sessions.(session.AgentDepthStore)
+	depthStore, depthStoreOK := c.sessions.(sessionpkg.AgentDepthStore)
 	if !depthStoreOK {
 		return fantasy.ToolResponse{}, errors.New("agent depth persistence unavailable")
 	}
@@ -466,7 +466,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		return result, runErr
 	}
 	var result *fantasy.AgentResult
-	err := c.runWithUnauthorizedRetry(ctx, providerCfg, func() error {
+	err = c.runWithUnauthorizedRetry(ctx, providerCfg, func() error {
 		var runErr error
 		result, runErr = run()
 		return runErr
