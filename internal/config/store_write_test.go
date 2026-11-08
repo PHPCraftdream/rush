@@ -139,18 +139,7 @@ func TestConfigStore_HasConfigField_WorkspaceScopeGuard(t *testing.T) {
 // TestSetConfigField_AutoReloads verifies that SetConfigField automatically
 // reloads config into memory after writing, so subsequent reads see the new value.
 func TestSetConfigField_AutoReloads(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "rush.json")
-
-	// Create initial config file with debug = false
-	initialConfig := `{"options": {"debug": false}}`
-	require.NoError(t, os.WriteFile(configPath, []byte(initialConfig), 0o600))
-
-	// Load initial config
-	store, err := Load(dir, dir, false)
-	require.NoError(t, err)
+	store, configPath := newWriteReloadFixture(t, `{"options": {"debug": false}}`)
 
 	// Verify initial state
 	require.False(t, store.Config().Options.Debug)
@@ -160,7 +149,7 @@ func TestSetConfigField_AutoReloads(t *testing.T) {
 	store.CaptureStalenessSnapshot([]string{configPath})
 
 	// Use SetConfigField to change debug to true
-	err = store.SetConfigField(ScopeGlobal, "options.debug", true)
+	err := store.SetConfigField(ScopeGlobal, "options.debug", true)
 	require.NoError(t, err)
 
 	// Verify in-memory state was automatically reloaded and reflects the change
@@ -174,18 +163,7 @@ func TestSetConfigField_AutoReloads(t *testing.T) {
 // TestRemoveConfigField_AutoReloads verifies that RemoveConfigField automatically
 // reloads config into memory after writing.
 func TestRemoveConfigField_AutoReloads(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "rush.json")
-
-	// Create initial config file with a custom option
-	initialConfig := `{"options": {"debug": true, "custom_field": "value"}}`
-	require.NoError(t, os.WriteFile(configPath, []byte(initialConfig), 0o600))
-
-	// Load initial config
-	store, err := Load(dir, dir, false)
-	require.NoError(t, err)
+	store, configPath := newWriteReloadFixture(t, `{"options": {"debug": true, "custom_field": "value"}}`)
 
 	// Set globalDataPath and capture snapshot
 	store.globalDataPath = configPath
@@ -195,7 +173,7 @@ func TestRemoveConfigField_AutoReloads(t *testing.T) {
 	require.True(t, store.Config().Options.Debug)
 
 	// Remove the debug field
-	err = store.RemoveConfigField(ScopeGlobal, "options.debug")
+	err := store.RemoveConfigField(ScopeGlobal, "options.debug")
 	require.NoError(t, err)
 
 	// Verify auto-reload occurred and stale state is clean
