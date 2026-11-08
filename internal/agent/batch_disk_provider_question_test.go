@@ -233,6 +233,8 @@ func (l *questionProviderLeaf) Run(ctx context.Context, call fantasy.ToolCall) (
 			leaf: l, inner: tools.NewFSWriteTool(childScope, l.perms, l.files, l.tracker, l.workDir, opts.DiskProvider),
 		},
 	}
+	ctx, cancelChild := context.WithCancel(ctx)
+	defer cancelChild()
 	child := NewSessionAgent(SessionAgentOptions{
 		SmartModel: Model{Model: model, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 10000}},
 		FastModel:  Model{Model: model, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 10000}},
@@ -242,8 +244,11 @@ func (l *questionProviderLeaf) Run(ctx context.Context, call fantasy.ToolCall) (
 		Tools:      childTools,
 	})
 	if sa, ok := child.(*sessionAgent); ok {
-		// Registered after the harness cleanups, so (LIFO) it runs first.
-		l.t.Cleanup(sa.runWg.Wait)
+		// Сначала отменяем held Ask, затем ждём завершения Run.
+		l.t.Cleanup(func() {
+			cancelChild()
+			sa.runWg.Wait()
+		})
 	}
 	// The child inherits the leaf's run context: CallOptions (provider +
 	// immutable binding handle), question depth and the batch lifecycle all
@@ -508,6 +513,8 @@ func newQuestionInstallWithQuestionResolver(t *testing.T, resolver batchChildQue
 	q := db.New(conn)
 	sessions := session.NewService(q, conn)
 	messages := message.NewService(q)
+	ownerSession := "sess-owner-q8-" + uuid.NewString()[:8]
+	ensureFixtureSession(t, conn, ownerSession)
 	childSess, err := sessions.Create(context.Background(), "q8 child")
 	require.NoError(t, err, "the child session row exists")
 	childSession := childSess.ID
@@ -592,7 +599,7 @@ func newQuestionInstallWithQuestionResolver(t *testing.T, resolver batchChildQue
 		fake: fake, bindingID: bindingID, registryID: registryID,
 		fingerprint: fingerprint, realDir: realDir,
 		path1: path1, path2: path2, releaseConstruction: releaseConstruction,
-		sessionID: "sess-owner-q8-" + uuid.NewString()[:8],
+		sessionID: ownerSession,
 	}
 }
 
