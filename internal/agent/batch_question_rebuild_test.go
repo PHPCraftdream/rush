@@ -131,7 +131,7 @@ func TestNoRouteTurnKeepsAskHiddenAfterSharedToolsRefresh(t *testing.T) {
 		SmartModel: model, FastModel: model, SystemPrompt: "test", IsYolo: true,
 		Sessions: env.sessions, Messages: env.messages, Tools: []fantasy.AgentTool{view},
 	}).(*sessionAgent)
-	t.Cleanup(a.CancelAll)
+	t.Cleanup(func() { a.CancelAll() })
 	previous := runTurnToolsSnapshotSeam
 	runTurnToolsSnapshotSeam = func() { a.SetTools([]fantasy.AgentTool{view, ask}) }
 	t.Cleanup(func() { runTurnToolsSnapshotSeam = previous })
