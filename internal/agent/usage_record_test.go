@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/message"
 )
 
@@ -28,7 +29,7 @@ func TestProviderCacheSupport_KnownReportersStayNativeOnZeroCounters(t *testing.
 	knownReporters := []string{
 		anthropic.Name, bedrock.Name, vercel.Name,
 		openrouter.Name, google.Name, openai.Name,
-		cliprovider.ProviderID,
+		cliprovider.ProviderID, codexprovider.Name,
 	}
 	for _, provider := range knownReporters {
 		provider := provider

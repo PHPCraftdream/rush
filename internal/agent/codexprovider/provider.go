@@ -23,7 +23,8 @@ import (
 )
 
 const (
-	providerID      = "openai-codex"
+	// Name identifies the direct Codex Responses provider.
+	Name            = "openai-codex"
 	responsesURL    = "https://chatgpt.com/backend-api/codex/responses"
 	codexVersion    = "0.159.0"
 	maxErrorBody    = 1 << 20
@@ -43,7 +44,7 @@ func New(client *http.Client, token *oauth.Token) (fantasy.Provider, error) {
 	return NewWithSource(client, staticTokenSource{token: *token})
 }
 
-func (p *provider) Name() string { return providerID }
+func (p *provider) Name() string { return Name }
 
 func (p *provider) LanguageModel(_ context.Context, modelID string) (fantasy.LanguageModel, error) {
 	if strings.TrimSpace(modelID) == "" {
@@ -57,7 +58,7 @@ type languageModel struct {
 	modelID  string
 }
 
-func (m *languageModel) Provider() string { return providerID }
+func (m *languageModel) Provider() string { return Name }
 func (m *languageModel) Model() string    { return m.modelID }
 
 func (m *languageModel) GenerateObject(ctx context.Context, call fantasy.ObjectCall) (*fantasy.ObjectResponse, error) {
@@ -829,7 +830,8 @@ func decodeResponse(raw json.RawMessage) (decodedResponse, error) {
 		status: wire.Status,
 		output: wire.Output,
 		usage: fantasy.Usage{
-			InputTokens:     wire.Usage.InputTokens,
+			// Responses input includes cached tokens; fantasy uses disjoint counters.
+			InputTokens:     max(wire.Usage.InputTokens-wire.Usage.InputDetails.CachedTokens, 0),
 			OutputTokens:    wire.Usage.OutputTokens,
 			TotalTokens:     wire.Usage.TotalTokens,
 			CacheReadTokens: wire.Usage.InputDetails.CachedTokens,
@@ -838,7 +840,7 @@ func decodeResponse(raw json.RawMessage) (decodedResponse, error) {
 		finishReason: fantasy.FinishReasonStop,
 	}
 	if decoded.usage.TotalTokens == 0 {
-		decoded.usage.TotalTokens = decoded.usage.InputTokens + decoded.usage.OutputTokens
+		decoded.usage.TotalTokens = wire.Usage.InputTokens + wire.Usage.OutputTokens
 	}
 	switch wire.IncompleteDetails.Reason {
 	case "max_output_tokens":
@@ -880,7 +882,7 @@ func (s *streamState) finishReasonHasTools() bool {
 	return false
 }
 
-func (m *languageModel) String() string { return providerID + "/" + m.modelID }
+func (m *languageModel) String() string { return Name + "/" + m.modelID }
 
 func parseOutputIndex(raw json.RawMessage) string {
 	var value int

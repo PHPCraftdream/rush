@@ -10,6 +10,8 @@ import (
 	"charm.land/fantasy/providers/openrouter"
 	"charm.land/fantasy/providers/vercel"
 	"github.com/stretchr/testify/require"
+
+	"github.com/PHPCraftdream/rush/internal/agent/codexprovider"
 )
 
 func TestNormalizeProviderUsage_SubtractsCacheReadForInclusiveProviders(t *testing.T) {
@@ -36,7 +38,7 @@ func TestNormalizeProviderUsage_SubtractsCacheReadForInclusiveProviders(t *testi
 func TestNormalizeProviderUsage_PassthroughForExclusiveProviders(t *testing.T) {
 	t.Parallel()
 
-	for _, provider := range []string{anthropic.Name, openai.Name, "unknown-provider"} {
+	for _, provider := range []string{anthropic.Name, openai.Name, codexprovider.Name, "unknown-provider"} {
 		provider := provider
 		t.Run(provider, func(t *testing.T) {
 			t.Parallel()
