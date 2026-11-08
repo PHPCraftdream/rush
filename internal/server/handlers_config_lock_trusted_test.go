@@ -106,6 +106,20 @@ func requireNoPlainBroadcast(t *testing.T, c *Client) {
 
 func TestLockedConfigHandlersTrustedUIClientApplies(t *testing.T) {
 	var defaultContextPaths, beforeContextPaths []string
+	var beforeSkillsPaths, projectSkillsPaths []string
+	checkSkillsDisk := func(t *testing.T, disk []byte, paths []string) {
+		t.Helper()
+		want, err := json.Marshal(paths)
+		require.NoError(t, err)
+		require.JSONEq(t, string(want), gjson.GetBytes(disk, "options.skills_paths").Raw)
+	}
+	checkSkillsWire := func(t *testing.T, payload gjson.Result, paths []string) {
+		t.Helper()
+		expected := append(slices.Clone(paths), projectSkillsPaths...)
+		want, err := json.Marshal(expected)
+		require.NoError(t, err)
+		require.JSONEq(t, string(want), payload.Get("skillsPaths").Raw)
+	}
 	checkContextDisk := func(t *testing.T, disk []byte, paths []string) {
 		t.Helper()
 		want, err := json.Marshal(paths)
@@ -236,14 +250,10 @@ func TestLockedConfigHandlersTrustedUIClientApplies(t *testing.T) {
 				handleAddSkillsPath(a, c, WSMessage{ID: "x", Payload: p})
 			},
 			diskCheck: func(t *testing.T, disk []byte) {
-				paths := gjson.GetBytes(disk, "options.skills_paths").Array()
-				require.Len(t, paths, 2)
-				require.Equal(t, "added_skills", paths[1].String())
+				checkSkillsDisk(t, disk, append(slices.Clone(beforeSkillsPaths), "added_skills"))
 			},
 			wireCheck: func(t *testing.T, payload gjson.Result) {
-				paths := payload.Get("skillsPaths").Array()
-				require.Len(t, paths, 2)
-				require.Equal(t, "added_skills", paths[1].String())
+				checkSkillsWire(t, payload, append(slices.Clone(beforeSkillsPaths), "added_skills"))
 			},
 		},
 		{
@@ -257,10 +267,12 @@ func TestLockedConfigHandlersTrustedUIClientApplies(t *testing.T) {
 				handleRemoveSkillsPath(a, c, WSMessage{ID: "x", Payload: p})
 			},
 			diskCheck: func(t *testing.T, disk []byte) {
-				require.Len(t, gjson.GetBytes(disk, "options.skills_paths").Array(), 0)
+				paths := slices.DeleteFunc(slices.Clone(beforeSkillsPaths), func(path string) bool { return path == "kept_skills" })
+				checkSkillsDisk(t, disk, paths)
 			},
 			wireCheck: func(t *testing.T, payload gjson.Result) {
-				require.Len(t, payload.Get("skillsPaths").Array(), 0)
+				paths := slices.DeleteFunc(slices.Clone(beforeSkillsPaths), func(path string) bool { return path == "kept_skills" })
+				checkSkillsWire(t, payload, paths)
 			},
 		},
 		{
@@ -424,6 +436,12 @@ func TestLockedConfigHandlersTrustedUIClientApplies(t *testing.T) {
 			beforeRev := lockedSyncRev(t, beforeDisk)
 
 			beforeContextPaths = slices.Clone(store.Config().Options.ContextPaths)
+			beforeSkillsPaths = slices.Clone(store.Config().Options.SkillsPaths)
+			projectSkillsPaths = config.ProjectPromptSkillsDirs(store.WorkingDir())
+			if tc.name == "add_skills_path" || tc.name == "remove_skills_path" {
+				require.Contains(t, beforeSkillsPaths, "kept_skills")
+				require.NotContains(t, beforeSkillsPaths, "added_skills")
+			}
 			require.Contains(t, beforeContextPaths, "kept")
 			require.NotContains(t, beforeContextPaths, "added")
 			client := newTestClient()
