@@ -329,11 +329,11 @@ func batchOneItemSpec(inv BatchInvocation, call fantasy.ToolCall, input json.Raw
 		return jobbatch.Spec{}, batchToolInputError{err}
 	}
 	payload := batchLeafPayload{
-		Tool:       call.Name,
-		ToolCallID: call.ID,
-		SessionID:  inv.SessionID,
-		Input:      input,
-		RegistryID: inv.RegistryID,
+		Tool:          call.Name,
+		ToolCallID:    call.ID,
+		SessionID:     inv.SessionID,
+		Input:         input,
+		RegistryID:    inv.RegistryID,
 		Policy:        &inv.Policy,
 		QuestionRoute: inv.QuestionRoute,
 	}

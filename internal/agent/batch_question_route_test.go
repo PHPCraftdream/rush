@@ -369,9 +369,9 @@ func TestInvokeBatchWithCallContextStampsQuestionRoute(t *testing.T) {
 // mutex (they arrive on the caller's goroutine here, but the shape keeps
 // the cross-goroutine contract), so assertions read recorded effects.
 type routeCaptureIngress struct {
-	mu       sync.Mutex
-	invokes  int
-	lastInv  BatchInvocation
+	mu      sync.Mutex
+	invokes int
+	lastInv BatchInvocation
 }
 
 func (r *routeCaptureIngress) Invoke(_ context.Context, inv BatchInvocation, _ fantasy.AgentTool, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
