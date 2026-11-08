@@ -308,6 +308,10 @@ func (c *coordinator) startInterruptTicker(ctx context.Context, sessionID string
 // atomically removes that exact candidate and restores the source row before
 // the tick reports no delivery.
 func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string) (bool, error) {
+	return c.handleInterruptTickObserved(ctx, sessionID, nil)
+}
+
+func (c *coordinator) handleInterruptTickObserved(ctx context.Context, sessionID string, delivered func(string)) (bool, error) {
 	// Ownership is published before the first generation starts. If a
 	// reservation exists but its call snapshot is not visible yet, retry the
 	// tick: consuming now could rebuild with operator credentials or disk.
@@ -336,7 +340,11 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 	// message directly to that owner's mailbox so the replacement retains the
 	// exact in-process execution identity.
 	if published && callCarriesNonDurableDependency(activeCall) {
-		return c.handleActiveNonDurableInterrupt(ctx, pi, injMsg, activeCall, activeToken, tokenAvailable)
+		fired, err := c.handleActiveNonDurableInterrupt(ctx, pi, injMsg, activeCall, activeToken, tokenAvailable)
+		if fired && delivered != nil {
+			delivered(injMsg.ID)
+		}
+		return fired, err
 	}
 
 	var call SessionAgentCall
@@ -519,6 +527,9 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 		idlePrep.release()
 	}
 	c.messages.Notify(injMsg)
+	if delivered != nil {
+		delivered(injMsg.ID)
+	}
 	return true, nil
 }
 

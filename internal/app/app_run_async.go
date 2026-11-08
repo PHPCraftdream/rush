@@ -802,6 +802,21 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 		if l.ctx.Err() != nil {
 			return stepExit, "", l.ctx.Err()
 		}
+		if poller, ok := l.source.(agent.ExternalInterruptSource); ok {
+			if stopErr := l.stopError(); stopErr != nil {
+				return stepCanceled, "", stopErr
+			}
+			messageID, pollErr := poller.PollExternalInterrupt(l.ctx, l.sessionID)
+			if pollErr != nil {
+				return stepExit, "", fmt.Errorf("rush run: pending interrupt: %w", pollErr)
+			}
+			if messageID != "" {
+				if err := l.runWaitingInterrupt(messageID); err != nil {
+					return stepExit, "", err
+				}
+				continue
+			}
+		}
 		state, stateErr := l.source.CLIScope(l.ctx, l.sessionID)
 		if stateErr != nil {
 			if errors.Is(stateErr, agent.ErrBatchFactsSourceUnavailable) {
@@ -846,6 +861,9 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 		case scopeActWaitOpen:
 			if stopErr := l.stopError(); stopErr != nil {
 				return stepCanceled, "", stopErr
+			}
+			if cliLoopInterruptWaitSeam != nil {
+				cliLoopInterruptWaitSeam()
 			}
 			if now := time.Now(); l.lastOpenScopeNotice.IsZero() || now.Sub(l.lastOpenScopeNotice) >= cliOpenScopeWaitNoticeInterval {
 				l.lastOpenScopeNotice = now
