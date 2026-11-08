@@ -39,9 +39,15 @@ jobs:
         env:
           PROBE_RACE: ${{ matrix.race }}
         run: python -I -X utf8 .github/scripts/verify-shrinking-stream.py
+      - name: Verify release callback database cleanup
+        env:
+          PROBE_RACE: ${{ matrix.race }}
+        run: python -I -X utf8 .github/scripts/verify-debt-cleanup.py
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: shrinking-stream-${{ matrix.os }}
-          path: shrinking-stream-*.jsonl
+          path: |
+            shrinking-stream-*.jsonl
+            debt-cleanup-*.jsonl
           if-no-files-found: warn
