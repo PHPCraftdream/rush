@@ -578,11 +578,14 @@ func TestLockedConfigHandlersAdminScopedClientStillRefused(t *testing.T) {
 
 			reply := readTrustedReply(t, client)
 			require.Equal(t, EventError, reply.Type)
-			if tc.name == "set_mcp_disabled" {
+			switch tc.name {
+			case "set_mcp_disabled":
 				// The MCP owner wraps the guard error, so the lock text is
 				// carried inside the wrapper rather than verbatim.
 				require.Contains(t, reply.Error, exactLockedText)
-			} else {
+			case "set_provider_key":
+				require.Equal(t, "failed to save api key to config file: "+exactLockedText, reply.Error)
+			default:
 				require.Equal(t, exactLockedText, reply.Error)
 			}
 			requireNoMoreReplies(t, client)
