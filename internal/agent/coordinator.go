@@ -639,8 +639,7 @@ func (c *coordinator) consecutiveResume(sessionID string) int {
 // suspension, the reaction chain, await_tasks' sleep (its max_wait schedule
 // is cancelled too), and the launch gate.
 func (c *coordinator) resetConsecutiveResume(sessionID string) {
-	c.clearSleepAll(sessionID)
-	c.arb.resetForHumanMessage(sessionID)
+	c.cancelAwaitTimer(sessionID, c.arb.resetForHumanMessage(sessionID))
 }
 
 // ResetAutoResumeCounter is the exported wrapper around resetConsecutiveResume

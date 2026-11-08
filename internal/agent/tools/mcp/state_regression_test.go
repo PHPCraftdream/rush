@@ -545,25 +545,17 @@ func TestCandidateListChangedPublishesAfterCommitAndRefreshesNewSession(t *testi
 	newSession := &ClientSession{ClientSession: newClientSession}
 	require.NoError(t, owner.commitRenewal(&admission, name, newSession, Counts{}))
 
-	var rawEvents int
-	var refreshPublished bool
-	deadline := time.NewTimer(2 * time.Second)
-	defer deadline.Stop()
-	for !refreshPublished {
-		select {
-		case event := <-events:
-			if event.Payload.Type == EventToolsListChanged {
-				rawEvents++
-				require.Equal(t, name, event.Payload.Name)
-			}
-			if event.Payload.Type == EventStateChanged && event.Payload.State == StateConnected && event.Payload.Counts.Tools == 1 {
-				refreshPublished = true
-			}
-		case <-deadline.C:
-			t.Fatal("committed candidate did not publish its deferred notification")
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	observation, err := collectCandidateRefreshEvents(ctx, events, name)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("candidate refresh failure report: raw=%d refreshed=%v events=%+v old_calls=%d new_calls=%d",
+				observation.rawEvents, observation.refreshPublished, observation.events, oldListCalls.Load(), newListCalls.Load())
 		}
-	}
-	require.Equal(t, 1, rawEvents, "candidate notification published more than once")
+	})
+	require.NoError(t, err, "committed candidate did not publish its deferred notification and refresh")
+	require.Equal(t, 1, observation.rawEvents, "candidate notification count must be exactly one")
 	require.Equal(t, int32(1), newListCalls.Load())
 	require.Zero(t, oldListCalls.Load(), "candidate refresh used the old session")
 	require.Equal(t, []string{"new-tool"}, GetServerToolNames(name))

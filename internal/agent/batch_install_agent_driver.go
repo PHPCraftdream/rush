@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -91,7 +92,25 @@ func startBatchAgentTurn(ctx context.Context, req batchAgentRunRequest, host bat
 	}
 	runCtx = withBatchAgentQuestionContext(runCtx, depth)
 	runCtx = withBatchAgentQuestionBinding(runCtx, batchAgentQuestionBinding{Ask: host.Ask})
-	runCtx = withBatchAgentLifecycle(runCtx, batchAgentLifecycle{BindChildSession: host.BindChildSession, NoChildSelected: host.NoChildSelected})
+	var childBound atomic.Bool
+	childBound.Store(req.ChildSessionID != "")
+	var noChildOnce sync.Once
+	markNoChild := func() {
+		if !childBound.Load() && host.NoChildSelected != nil {
+			noChildOnce.Do(host.NoChildSelected)
+		}
+	}
+	lifecycle := batchAgentLifecycle{NoChildSelected: markNoChild}
+	if host.BindChildSession != nil {
+		lifecycle.BindChildSession = func(ctx context.Context, id string) error {
+			if err := host.BindChildSession(ctx, id); err != nil {
+				return err
+			}
+			childBound.Store(true)
+			return nil
+		}
+	}
+	runCtx = withBatchAgentLifecycle(runCtx, lifecycle)
 	runCtx = context.WithValue(runCtx, tools.SessionIDContextKey, req.SessionID)
 	runCtx = context.WithValue(runCtx, tools.MessageIDContextKey, req.MessageID)
 	// P1-4: stamp the TRUSTED enclosing invocation so the CLI bridge binds
@@ -121,6 +140,8 @@ func startBatchAgentTurn(ctx context.Context, req batchAgentRunRequest, host bat
 		defer releaseCredentials()
 		defer childScope.close()
 		defer close(turn.done)
+		// Отказы leaf до runSubAgent тоже должны закрывать scope без ребёнка.
+		defer markNoChild()
 		resp, runErr := func() (resp fantasy.ToolResponse, err error) {
 			defer func() {
 				if r := recover(); r != nil {
