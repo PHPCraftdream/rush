@@ -379,11 +379,11 @@ func handleSetScopedModel(a *appPkg.App, c *Client, msg WSMessage) {
 		c.reply(msg.ID, EventError, nil, "provider and model are required")
 		return
 	}
-	if err := store.UpdatePreferredModel(scope, slot, config.SelectedModel{
+	if err := store.UpdatePreferredModelWithAuthority(scope, slot, config.SelectedModel{
 		Provider:        p.Provider,
 		Model:           p.Model,
 		ReasoningEffort: p.ReasoningEffort,
-	}); err != nil {
+	}, c.settingsWriteAuthority()); err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
@@ -421,7 +421,7 @@ func handleClearScopedModel(a *appPkg.App, c *Client, msg WSMessage) {
 		c.reply(msg.ID, EventError, nil, fmt.Sprintf("unknown slot %q", p.Slot))
 		return
 	}
-	if err := store.RemoveConfigField(scope, "models."+string(slot)); err != nil {
+	if err := store.RemoveConfigFieldWithAuthority(scope, "models."+string(slot), c.settingsWriteAuthority()); err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
@@ -429,7 +429,7 @@ func handleClearScopedModel(a *appPkg.App, c *Client, msg WSMessage) {
 	// "models" object, strip the now-empty object so the file stays clean —
 	// same behavior as `rush models unset` (internal/cmd/models_unset.go).
 	if remaining, rerr := store.ReadAllModelsAtScope(scope); rerr == nil && len(remaining) == 0 {
-		_ = store.RemoveConfigField(scope, "models")
+		_ = store.RemoveConfigFieldWithAuthority(scope, "models", c.settingsWriteAuthority())
 	}
 	if wire, ok := buildConfigWire(a); ok {
 		c.hub.Broadcast(EventConfig, wire)

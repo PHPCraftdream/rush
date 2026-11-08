@@ -128,12 +128,12 @@ func (r *batchAgentTestQuestionRig) publishedNotices() []batchChildQuestionNotic
 	return append([]batchChildQuestionNotice(nil), r.published...)
 }
 
-func (r *batchAgentTestQuestionRig) inject(depth int, text string) error {
+func (r *batchAgentTestQuestionRig) inject(depth int, sequence uint64, text string) error {
 	exec := r.holder.Load()
 	if exec == nil {
 		return ErrBatchAgentNotHeld
 	}
-	payload, err := json.Marshal(batchAgentInjectMessage{Depth: depth, Text: json.RawMessage(text)})
+	payload, err := json.Marshal(batchAgentInjectMessage{Depth: depth, Sequence: sequence, Text: json.RawMessage(text)})
 	if err != nil {
 		return err
 	}
@@ -368,9 +368,13 @@ func TestBatchAgentHeldQuestionKeepsNodeLive(t *testing.T) {
 			// Even with descendants terminal, the held question keeps it open.
 			reader.set(false, true)
 			batchAgentTestNoReport(t, reports, "a question is held")
+			// The stamp happens after the hold, so wait for the publish before
+			// injecting (the sequence fence needs the stamped hold).
+			require.Eventually(t, func() bool { return len(factory.questionRig().publishedNotices()) >= 1 },
+				2*time.Second, time.Millisecond, "the question is published")
 			// The answer is injected at the held depth; the question-shaped
 			// response carries it and the node settles Completed.
-			require.NoError(t, jobbatch.Messenger(e).Inject(context.Background(), json.RawMessage(`{"depth":2,"text":"because"}`)))
+			require.NoError(t, jobbatch.Messenger(e).Inject(context.Background(), json.RawMessage(`{"depth":2,"sequence":1,"text":"because"}`)))
 			reader.set(false, true)
 			r := batchAgentTestReport(t, reports)
 			require.Equal(t, jobbatch.StateCompleted, r.State)
@@ -383,7 +387,8 @@ func TestBatchAgentHeldQuestionKeepsNodeLive(t *testing.T) {
 // open until the answer is injected.
 func TestBatchAgentHeldQuestionAfterTurnEnded(t *testing.T) {
 	turn := newBatchAgentTestTurn(batchAgentTurnResult{}, nil)
-	e, _, reader, reports := batchAgentTestRun(t, batchAgentDeps{}, newBatchAgentTestFactory(turn))
+	factory := newBatchAgentTestFactory(turn)
+	e, _, reader, reports := batchAgentTestRun(t, batchAgentDeps{}, factory)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -397,7 +402,11 @@ func TestBatchAgentHeldQuestionAfterTurnEnded(t *testing.T) {
 	turn.exitNow()
 	reader.set(false, true)
 	batchAgentTestNoReport(t, reports, "a question is held after the turn ended")
-	require.NoError(t, jobbatch.Messenger(e).Inject(context.Background(), json.RawMessage(`{"depth":4,"text":"because"}`)))
+	// The stamp happens after the hold, so wait for the publish before
+	// injecting (the sequence fence needs the stamped hold).
+	require.Eventually(t, func() bool { return len(factory.questionRig().publishedNotices()) >= 1 },
+		2*time.Second, time.Millisecond, "the question is published")
+	require.NoError(t, jobbatch.Messenger(e).Inject(context.Background(), json.RawMessage(`{"depth":4,"sequence":1,"text":"because"}`)))
 	r := batchAgentTestReport(t, reports)
 	require.Equal(t, jobbatch.StateCompleted, r.State)
 	// The report can arrive before the asker goroutine is scheduled again:
@@ -416,15 +425,21 @@ func TestBatchAgentInjectRoutesByDepth(t *testing.T) {
 	factory.useTurn = func(t2 *batchAgentTestTurn, host batchAgentHost) {
 		askAndShape(t2, host, 3, "why?")
 	}
-	e, _, reader, reports := batchAgentTestRun(t, batchAgentDeps{}, factory)
+	e, factory, reader, reports := batchAgentTestRun(t, batchAgentDeps{}, factory)
 	require.Eventually(t, func() bool {
 		depth, held := e.heldDepth()
 		return held && depth == 3
 	}, 2*time.Second, time.Millisecond)
+	// The stamp happens after the hold, so wait for the publish before
+	// injecting (the sequence fence needs the stamped hold).
+	require.Eventually(t, func() bool { return len(factory.questionRig().publishedNotices()) >= 1 },
+		2*time.Second, time.Millisecond, "the question is published")
 	inj := jobbatch.Messenger(e)
-	require.ErrorIs(t, inj.Inject(context.Background(), json.RawMessage(`{"depth":9}`)), ErrBatchAgentNotHeld)
-	require.ErrorIs(t, inj.Inject(context.Background(), json.RawMessage(`{"depth":1}`)), ErrBatchAgentNotHeld)
-	require.NoError(t, inj.Inject(context.Background(), json.RawMessage(`{"depth":3,"text":"answer"}`)))
+	// Wrong-depth negatives carry sequence 1 (the published sequence), so
+	// ONLY the depth mismatch can reject them.
+	require.ErrorIs(t, inj.Inject(context.Background(), json.RawMessage(`{"depth":9,"sequence":1}`)), ErrBatchAgentNotHeld)
+	require.ErrorIs(t, inj.Inject(context.Background(), json.RawMessage(`{"depth":1,"sequence":1}`)), ErrBatchAgentNotHeld)
+	require.NoError(t, inj.Inject(context.Background(), json.RawMessage(`{"depth":3,"sequence":1,"text":"answer"}`)))
 	reader.set(false, true)
 	r := batchAgentTestReport(t, reports)
 	require.Equal(t, jobbatch.StateCompleted, r.State)
@@ -586,7 +601,11 @@ func TestBatchAgentDisposeGenerationCleanup(t *testing.T) {
 		_, held := exec.heldDepth()
 		return held
 	}, 2*time.Second, time.Millisecond)
-	require.NoError(t, jobbatch.Messenger(e).Inject(context.Background(), json.RawMessage(`{"depth":1,"text":"because"}`)))
+	// The stamp happens after the hold, so wait for the publish before
+	// injecting (the sequence fence needs the stamped hold).
+	require.Eventually(t, func() bool { return len(factory.questionRig().publishedNotices()) >= 1 },
+		2*time.Second, time.Millisecond, "the question is published")
+	require.NoError(t, jobbatch.Messenger(e).Inject(context.Background(), json.RawMessage(`{"depth":1,"sequence":1,"text":"because"}`)))
 	reader.set(false, true)
 	require.Equal(t, jobbatch.StateCompleted, batchAgentTestReport(t, reports).State)
 	dctx, dcancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -729,12 +748,15 @@ func TestBatchScopeDeliverRejectsStopped(t *testing.T) {
 	require.ErrorIs(t, s.deliver(batchAgentInjectMessage{Depth: 1}), ErrBatchAgentStopped)
 
 	s2 := newBatchAgentScope()
-	_, err = s2.hold(2)
+	h, err := s2.hold(2)
 	require.NoError(t, err)
-	require.NoError(t, s2.deliver(batchAgentInjectMessage{Depth: 2}))
-	require.ErrorIs(t, s2.deliver(batchAgentInjectMessage{Depth: 2}), ErrBatchAgentNotHeld)
+	s2.mu.Lock()
+	h.sequence = 1 // Штамп публикации в этом локальном scope fixture.
+	s2.mu.Unlock()
+	require.NoError(t, s2.deliver(batchAgentInjectMessage{Depth: 2, Sequence: 1}))
+	require.ErrorIs(t, s2.deliver(batchAgentInjectMessage{Depth: 2, Sequence: 1}), ErrBatchAgentNotHeld)
 	s2.beginStop()
-	require.ErrorIs(t, s2.deliver(batchAgentInjectMessage{Depth: 2}), ErrBatchAgentStopped)
+	require.ErrorIs(t, s2.deliver(batchAgentInjectMessage{Depth: 2, Sequence: 1}), ErrBatchAgentStopped)
 }
 
 type batchAgentStaticFactory struct{ turn batchAgentTurn }

@@ -87,14 +87,26 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		existing, err := c.sessions.Get(ctx, params.ResumeSessionID)
 		if err != nil {
 			return fantasy.NewTextErrorResponse(fmt.Sprintf(
-				"resume_session_id %q not found: %s", params.ResumeSessionID, err,
+				"resume_session_id %q not found: %s%s", params.ResumeSessionID, err,
+				c.batchHeldQuestionResumeHint(ctx, params.SessionID),
 			)), nil
 		}
 		if existing.ParentSessionID != params.SessionID {
 			return fantasy.NewTextErrorResponse(fmt.Sprintf(
-				"resume_session_id %q is not a child of the current session; refusing to resume a session that does not belong to this agent call",
+				"resume_session_id %q is not a child of the current session; refusing to resume a session that does not belong to this agent call%s",
 				params.ResumeSessionID,
+				c.batchHeldQuestionResumeHint(ctx, params.SessionID),
 			)), nil
+		}
+		// A full, correct resume id must ALSO refuse while the child is parked
+		// inside a live held batch ask_question: the resume would queue a new
+		// run behind the held ask (the driver mailbox path) instead of
+		// answering it — the same deadlock shape as the truncated-id incident,
+		// with a correct id. The refusal is actionable: it names the exact
+		// inject_agent route. Legacy resumes (no live held question) are
+		// unchanged.
+		if refusal := c.batchHeldQuestionResumeRefusal(ctx, params.SessionID, existing.ID); refusal != "" {
+			return fantasy.NewTextErrorResponse(refusal), nil
 		}
 		session = existing
 	} else {

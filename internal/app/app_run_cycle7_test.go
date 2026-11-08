@@ -69,59 +69,6 @@ func (s *cycle7DoneEventMessages) Subscribe(context.Context) <-chan pubsub.Event
 	return s.events
 }
 
-type cycle7ShrinkingMessages struct {
-	message.Service
-	sessionID string
-	start     <-chan struct{}
-}
-
-func (s *cycle7ShrinkingMessages) Subscribe(ctx context.Context) <-chan pubsub.Event[message.Message] {
-	events := make(chan pubsub.Event[message.Message])
-	underlying := s.Service.Subscribe(ctx)
-	go func() {
-		defer close(events)
-		select {
-		case <-s.start:
-		case <-ctx.Done():
-			return
-		}
-		assistantID := ""
-		for assistantID == "" {
-			select {
-			case event, ok := <-underlying:
-				if !ok {
-					return
-				}
-				msg := event.Payload
-				if msg.SessionID == s.sessionID && msg.Role == message.Assistant {
-					assistantID = msg.ID
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
-		events <- pubsub.Event[message.Message]{
-			Type: pubsub.UpdatedEvent,
-			Payload: message.Message{
-				ID:        assistantID,
-				SessionID: s.sessionID,
-				Role:      message.Assistant,
-				Parts:     []message.ContentPart{message.TextContent{Text: "long"}},
-			},
-		}
-		events <- pubsub.Event[message.Message]{
-			Type: pubsub.UpdatedEvent,
-			Payload: message.Message{
-				ID:        assistantID,
-				SessionID: s.sessionID,
-				Role:      message.Assistant,
-				Parts:     []message.ContentPart{message.TextContent{Text: "x"}},
-			},
-		}
-	}()
-	return events
-}
-
 func TestExecuteRunCycle7ReconcilesDroppedTerminalEvent(t *testing.T) {
 	h := newCycle6RunApp(t)
 	h.app.Messages = &cycle7MessageSeam{Service: h.app.Messages, dropEvents: true}
@@ -622,12 +569,39 @@ func TestTerminalReconciliationExcludesForeignInterleavedToolCalls(t *testing.T)
 
 func TestExecuteRunCycle7ShrinkingStreamEventRemainsHardFailure(t *testing.T) {
 	h := newCycle6RunApp(t)
-	start := make(chan struct{})
-	h.app.Messages = &cycle7ShrinkingMessages{Service: h.app.Messages, sessionID: h.sess.ID, start: start}
-	executeRunBeforeTurnLaunchSeam = func() { close(start) }
-	t.Cleanup(func() { executeRunBeforeTurnLaunchSeam = nil })
+	underlying := h.app.Messages
+	events := make(chan pubsub.Event[message.Message], 2)
+	h.app.Messages = &cycle7DoneEventMessages{Service: underlying, events: events}
+	var assistantID string
+	var published int
+	executeRunDoneCaseSeam = func() {
+		messages, err := underlying.List(context.Background(), h.sess.ID)
+		require.NoError(t, err)
+		for i := len(messages) - 1; i >= 0; i-- {
+			if messages[i].Role == message.Assistant {
+				assistantID = messages[i].ID
+				break
+			}
+		}
+		require.NotEmpty(t, assistantID)
+		// Оба события готовы до terminal drain: sender goroutine не участвует.
+		for _, text := range []string{"long", "x"} {
+			events <- pubsub.Event[message.Message]{Type: pubsub.UpdatedEvent, Payload: message.Message{
+				ID: assistantID, SessionID: h.sess.ID, Role: message.Assistant,
+				Parts: []message.ContentPart{message.TextContent{Text: text}},
+			}}
+			published++
+		}
+		close(events)
+	}
+	t.Cleanup(func() { executeRunDoneCaseSeam = nil })
 
 	var output bytes.Buffer
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("shrinking stream: assistant=%s published=%d queued=%d output=%q", assistantID, published, len(events), output.String())
+		}
+	})
 	_, err := h.app.ExecuteRun(context.Background(), RunRequest{
 		Prompt:            "answer immediately",
 		Mode:              RunModeStream,
@@ -636,7 +610,9 @@ func TestExecuteRunCycle7ShrinkingStreamEventRemainsHardFailure(t *testing.T) {
 		Stderr:            io.Discard,
 		HideSpinner:       true,
 	})
+	require.Equal(t, 2, published, "both events precede terminal reconciliation")
 	require.EqualError(t, err, "message content is shorter than read bytes: 1 < 4")
+	require.Equal(t, "long\n", output.String(), "the first event and CLI trailing newline must be preserved")
 }
 
 func TestExecuteRunCycle7DoneFirstDrainDoesNotDuplicateTerseOrStream(t *testing.T) {

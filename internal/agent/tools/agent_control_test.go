@@ -66,7 +66,7 @@ func TestInspectAgentTool_RoutesThroughControl(t *testing.T) {
 		ChildSessionID: "child-1", Status: "running", QueuedMessages: 2,
 	}}
 	resp := runToolTool(t, NewInspectAgentTool(ctrl), agentControlContext("parent-1"),
-		InspectAgentParams{childSessionIDParam{"child-1"}})
+		InspectAgentParams{ChildSessionID: "child-1"})
 	require.False(t, resp.IsError)
 	require.Equal(t, "parent-1", ctrl.caller)
 	require.Equal(t, "child-1", ctrl.child)
@@ -77,7 +77,7 @@ func TestInspectAgentTool_RoutesThroughControl(t *testing.T) {
 func TestInspectAgentTool_MissingSessionIDRefused(t *testing.T) {
 	ctrl := &fakeAgentControl{}
 	resp := runToolTool(t, NewInspectAgentTool(ctrl), context.Background(),
-		InspectAgentParams{childSessionIDParam{"child-1"}})
+		InspectAgentParams{ChildSessionID: "child-1"})
 	require.True(t, resp.IsError)
 	require.Contains(t, resp.Content, "session ID is required")
 	require.Zero(t, ctrl.calls)
@@ -115,7 +115,7 @@ func TestInspectAgentTool_NoChildListsDelegations(t *testing.T) {
 func TestInjectAgentTool_PassesInterruptAndMessage(t *testing.T) {
 	ctrl := &fakeAgentControl{answer: "queued"}
 	resp := runToolTool(t, NewInjectAgentTool(ctrl), agentControlContext("parent-1"),
-		InjectAgentParams{childSessionIDParam: childSessionIDParam{"child-1"}, Message: "stop at X", Interrupt: true})
+		InjectAgentParams{ChildSessionID: "child-1", Message: "stop at X", Interrupt: true})
 	require.False(t, resp.IsError)
 	require.Equal(t, "stop at X", ctrl.msg)
 	require.True(t, ctrl.interrupt)
@@ -125,7 +125,7 @@ func TestInjectAgentTool_PassesInterruptAndMessage(t *testing.T) {
 func TestInjectAgentTool_EmptyMessageRefused(t *testing.T) {
 	ctrl := &fakeAgentControl{}
 	resp := runToolTool(t, NewInjectAgentTool(ctrl), agentControlContext("parent-1"),
-		InjectAgentParams{childSessionIDParam: childSessionIDParam{"child-1"}})
+		InjectAgentParams{ChildSessionID: "child-1"})
 	require.True(t, resp.IsError)
 	require.Contains(t, resp.Content, "message is required")
 	require.Zero(t, ctrl.calls)
@@ -155,7 +155,7 @@ func TestControlTools_MissingChildIDPointsAtInspectAgent(t *testing.T) {
 func TestStopAgentTool_ModelSafeErrorNotGoError(t *testing.T) {
 	ctrl := &fakeAgentControl{err: errors.New("child_session_id \"child-1\" has no active turn or pending delegation to stop")}
 	resp := runToolTool(t, NewStopAgentTool(ctrl), agentControlContext("parent-1"),
-		StopAgentParams{childSessionIDParam{"child-1"}})
+		StopAgentParams{ChildSessionID: "child-1"})
 	require.True(t, resp.IsError)
 	require.Contains(t, resp.Content, "no active turn or pending delegation")
 	require.Equal(t, "parent-1", ctrl.caller)

@@ -105,6 +105,120 @@ func parseBatchQuestionMarker(text string) (nodeID string, token int64, ok bool)
 	return nodeID, token, true
 }
 
+// parseBatchQuestionMarkerFull extracts (node, token, sequence, child) from
+// a published question marker header; ok=false when the header is absent,
+// unparseable, or any of the identity fields is zero/empty (the publisher
+// never writes those). Mirrors the agent-side parsers; the duplicate
+// exists because session cannot import agent.
+func parseBatchQuestionMarkerFull(text string) (node string, token, sequence int64, child string, ok bool) {
+	if !strings.HasPrefix(text, "[batch-question ") {
+		return "", 0, 0, "", false
+	}
+	header := strings.TrimPrefix(text, "[batch-question ")
+	if idx := strings.Index(header, "]"); idx >= 0 {
+		header = header[:idx]
+	}
+	for _, field := range strings.Fields(header) {
+		name, value, isField := strings.Cut(field, "=")
+		if !isField {
+			continue
+		}
+		switch name {
+		case "node":
+			node = value
+		case "child":
+			child = value
+		case "token":
+			t, perr := strconv.ParseInt(value, 10, 64)
+			if perr != nil {
+				return "", 0, 0, "", false
+			}
+			token = t
+		case "sequence":
+			sq, perr := strconv.ParseInt(value, 10, 64)
+			if perr != nil {
+				return "", 0, 0, "", false
+			}
+			sequence = sq
+		}
+	}
+	if node == "" || child == "" || token <= 0 || sequence <= 0 {
+		return "", 0, 0, "", false
+	}
+	return node, token, sequence, child, true
+}
+
+// BatchResolveChildQuestions durably closes (delivery='void', wake=0) every
+// pending-or-delivered child_question notice of owner whose marker names
+// EXACTLY this incarnation (node, token, child) with a sequence in
+// [1, sequence]: the notice must never outlive the hold it advertises. Rows
+// of a NEWER sequence — a question asked after this resolution began — are
+// untouched; rows naming a different child are not ours to close. Returns
+// the closed count; an unknown identity is a no-op (0, nil), never an
+// error. Runs in one serialized writer transaction like
+// BatchPublishQuestion (the writer pool has exactly ONE connection).
+func (s *BatchStore) BatchResolveChildQuestions(ctx context.Context, owner, node, child string, token, sequence int64) (int64, error) {
+	if owner == "" || node == "" || child == "" || token <= 0 || sequence <= 0 {
+		return 0, nil
+	}
+	tx, err := s.writer.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("batch store: question resolve begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id, text FROM session_notices WHERE owner = ? AND kind = ? AND delivery IN ('pending','done') AND wake = 1 ORDER BY id`,
+		owner, NoticeKindChildQuestion)
+	if err != nil {
+		return 0, fmt.Errorf("batch store: question resolve list: %w", err)
+	}
+	defer rows.Close()
+	var stale []int64
+	for rows.Next() {
+		var id int64
+		var text string
+		if err := rows.Scan(&id, &text); err != nil {
+			return 0, fmt.Errorf("batch store: question resolve scan: %w", err)
+		}
+		mnode, mtoken, msequence, mchild, ok := parseBatchQuestionMarkerFull(text)
+		if !ok || mnode != node || mtoken != token || msequence > sequence || mchild != child {
+			continue
+		}
+		stale = append(stale, id)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("batch store: question resolve iterate: %w", err)
+	}
+	// Fully drained before any write: the writer pool has exactly ONE
+	// connection, so the UPDATE cannot start while rows are open.
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("batch store: question resolve close: %w", err)
+	}
+	var closed int64
+	if len(stale) > 0 {
+		placeholders := make([]string, len(stale))
+		args := make([]any, 0, len(stale)+3)
+		args = append(args, time.Now().Unix(), NoticeKindChildQuestion)
+		for i, id := range stale {
+			placeholders[i] = fmt.Sprintf("?%d", i+3)
+			args = append(args, id)
+		}
+		res, err := tx.ExecContext(ctx, fmt.Sprintf(
+			`UPDATE session_notices SET delivery = 'void', wake = 0, updated_at = ?1 WHERE kind = ?2 AND id IN (%s)`,
+			strings.Join(placeholders, ", ")), args...)
+		if err != nil {
+			return 0, fmt.Errorf("batch store: question resolve update: %w", err)
+		}
+		if closed, err = res.RowsAffected(); err != nil {
+			return 0, fmt.Errorf("batch store: question resolve affected: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("batch store: question resolve commit: %w", err)
+	}
+	return closed, nil
+}
+
 // batchRerunVoidChildQuestionsOfVoidRoots voids (delivery='void', wake=0)
 // every pending-or-delivered child_question notice of owner whose marker
 // names a node of a void-delivery root (R12-EF fix F3): the question channel

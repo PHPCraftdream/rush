@@ -373,6 +373,16 @@ func (n nodeBatchCutoverFacts) LiveHeldQuestions(ctx context.Context, owner stri
 	return out, nil
 }
 
+// ActionableHeldQuestions lists the owner's held questions that still await
+// an ACCEPTED answer, independent of `reacted` (the owner's reaction flow
+// marks every notice reacted without answering the child). The sink lookup
+// and the await refusal share this fence. A nil writer is conservative:
+// one unknown route plus errBatchFactsUnavailable, mirroring
+// LiveHeldQuestions.
+func (n nodeBatchCutoverFacts) ActionableHeldQuestions(ctx context.Context, owner string) ([]BatchHeldQuestionRoute, error) {
+	return batchActionableHeldQuestionRoutes(ctx, n.writer, owner)
+}
+
 // parseBatchQuestionMarker extracts (nodeID, token) from a child-question
 // notice text whose header line is the production marker written by
 // batchCoordinatorQuestionPublisher (batch_install_question.go):

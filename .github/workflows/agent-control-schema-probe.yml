@@ -1,0 +1,47 @@
+name: agent-control-schema-probe
+
+on:
+  push:
+    branches: ['fix/agent-control-schema-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-control-schema-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - os: ubuntu-latest
+            race: '1'
+          - os: windows-latest
+            race: '0'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Verify generated schemas and old-layout regression mutant
+        env:
+          PROBE_RACE: ${{ matrix.race }}
+        run: python -I -X utf8 .github/scripts/verify-agent-control-schema.py
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: agent-control-schema-${{ matrix.os }}
+          path: control-schema-*.jsonl
+          if-no-files-found: warn

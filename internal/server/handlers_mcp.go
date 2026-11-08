@@ -23,15 +23,27 @@ func handleSetMCPDisabled(ctx context.Context, a *appPkg.App, c *Client, msg WSM
 		return
 	}
 	var err error
+	// Trusted-UI connections may write settings while the settings lock is
+	// active: route to the Owner's TrustedUI variants, which lift ONLY the
+	// settings-lock veto. Non-UI clients keep the guarded behavior.
+	trusted := c.settingsWriteAuthority() == config.SettingsAuthorityTrustedUI
 	if p.Disabled {
 		// Mutations route through the App's own MCP owner (task #923): a second
 		// application-mode App holds a standalone owner, and package-level calls
 		// would resolve the process-current (first App's) owner and fail with
 		// mcp.ErrMCPConfigStoreBusy. Nil-safe: a SkipMCP App keeps the legacy
 		// package-function behavior.
-		err = a.MCPOwner().DisableServer(ctx, store, p.Name)
+		if trusted {
+			err = a.MCPOwner().DisableServerTrustedUI(ctx, store, p.Name)
+		} else {
+			err = a.MCPOwner().DisableServer(ctx, store, p.Name)
+		}
 	} else {
-		err = a.MCPOwner().EnableServer(ctx, store, p.Name)
+		if trusted {
+			err = a.MCPOwner().EnableServerTrustedUI(ctx, store, p.Name)
+		} else {
+			err = a.MCPOwner().EnableServer(ctx, store, p.Name)
+		}
 	}
 	if err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())
@@ -64,6 +76,17 @@ func handleAddMCPServer(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		Headers: p.Headers,
 		Timeout: p.Timeout,
 	}
+	// Trusted-UI connections may write settings while the settings lock is
+	// active: route to the Owner's TrustedUI variant, which lifts ONLY the
+	// settings-lock veto. Non-UI clients keep the guarded behavior.
+	if c.settingsWriteAuthority() == config.SettingsAuthorityTrustedUI {
+		if err := a.MCPOwner().AddServerTrustedUI(ctx, store, p.Name, mcpCfg); err != nil {
+			c.reply(msg.ID, EventError, nil, err.Error())
+			return
+		}
+		c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+		return
+	}
 	if err := a.MCPOwner().AddServer(ctx, store, p.Name, mcpCfg); err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
@@ -80,6 +103,17 @@ func handleRemoveMCPServer(a *appPkg.App, c *Client, msg WSMessage) {
 	store := a.Store()
 	if store == nil {
 		c.reply(msg.ID, EventError, nil, "config not available")
+		return
+	}
+	// Trusted-UI connections may write settings while the settings lock is
+	// active: route to the Owner's TrustedUI variant, which lifts ONLY the
+	// settings-lock veto. Non-UI clients keep the guarded behavior.
+	if c.settingsWriteAuthority() == config.SettingsAuthorityTrustedUI {
+		if err := a.MCPOwner().RemoveServerTrustedUI(store, p.Name); err != nil {
+			c.reply(msg.ID, EventError, nil, err.Error())
+			return
+		}
+		c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 		return
 	}
 	if err := a.MCPOwner().RemoveServer(store, p.Name); err != nil {
@@ -112,6 +146,17 @@ func handleUpdateMCPServer(ctx context.Context, a *appPkg.App, c *Client, msg WS
 		Env:     p.Env,
 		Headers: p.Headers,
 		Timeout: p.Timeout,
+	}
+	// Trusted-UI connections may write settings while the settings lock is
+	// active: route to the Owner's TrustedUI variant, which lifts ONLY the
+	// settings-lock veto. Non-UI clients keep the guarded behavior.
+	if c.settingsWriteAuthority() == config.SettingsAuthorityTrustedUI {
+		if err := a.MCPOwner().ReplaceServerTrustedUI(ctx, store, p.OldName, p.Name, mcpCfg); err != nil {
+			c.reply(msg.ID, EventError, nil, err.Error())
+			return
+		}
+		c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+		return
 	}
 	if err := a.MCPOwner().ReplaceServer(ctx, store, p.OldName, p.Name, mcpCfg); err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())

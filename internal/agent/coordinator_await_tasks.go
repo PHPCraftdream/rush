@@ -41,6 +41,9 @@ var awaitTasksWorkerPollInterval = time.Second
 // leaves it nil; callbacks run after each complete legacy snapshot.
 var awaitTasksWorkerSnapshotHook atomic.Pointer[func(string, string)]
 
+// Тестовый барьер после первого чтения held-вопросов, не до него.
+var awaitTasksWorkerQuestionReadHook atomic.Pointer[func(string, string)]
+
 // AwaitTasks implements tools.AwaitControl. Refuses with a model-safe error
 // when nothing is running (open wake schedules do NOT count as work);
 // otherwise reports the live rows and, for "all", arms the arbiter's
@@ -87,26 +90,33 @@ func (c *coordinator) AwaitTasks(ctx context.Context, sessionID, mode string, ma
 		}
 	}
 
+	// A held child question refuses BOTH modes before any sleep/timer is
+	// armed: the parent must answer (inject_agent) rather than sleep past
+	// its own child. The tool layer (internal/agent/tools/await_tasks.go)
+	// turns any error into NewTextErrorResponse WITHOUT the StopTurn flag,
+	// so the refusal stays a model-visible turn-continuing message.
+	if refusal := c.heldQuestionAwaitRefusal(ctx, sessionID); refusal != nil {
+		return tools.AwaitTasksResult{}, refusal
+	}
+
 	if len(waiting) == 0 {
 		return tools.AwaitTasksResult{}, errors.New("nothing is running; continue or finish")
 	}
 	res := tools.AwaitTasksResult{Mode: mode, WaitingFor: waiting}
-	if mode == "all" {
-		c.arb.setSleepAll(sessionID)
-	}
+	var create func() (string, error)
 	if maxWaitSeconds > 0 {
-		view, err := c.ScheduleWakeOnceDelay(ctx, sessionID, int64(maxWaitSeconds),
-			fmt.Sprintf(session.AwaitTasksMaxWaitPrefix+" %d task(s) may still be running: %s",
-				len(waiting), awaitTaskSummary(waiting)))
-		if err != nil {
-			// The call failed: do not leave the sleep armed behind it.
-			c.arb.clearSleepAll(sessionID)
-			return tools.AwaitTasksResult{}, err
+		create = func() (string, error) {
+			view, err := c.ScheduleWakeOnceDelay(ctx, sessionID, int64(maxWaitSeconds),
+				fmt.Sprintf(session.AwaitTasksMaxWaitPrefix+" %d task(s) may still be running: %s",
+					len(waiting), awaitTaskSummary(waiting)))
+			return view.ScheduleID, err
 		}
-		res.MaxWaitScheduleID = view.ScheduleID
-		// Both modes own the timer; only all owns the sleep flag.
-		c.arb.setMaxWaitWake(sessionID, view.ScheduleID)
 	}
+	id, err := c.armAwait(ctx, sessionID, mode == "all", create)
+	if err != nil {
+		return tools.AwaitTasksResult{}, err
+	}
+	res.MaxWaitScheduleID = id
 	return res, nil
 }
 
@@ -129,6 +139,7 @@ func (c *coordinator) awaitTasksForBatchWorker(ctx context.Context, sessionID, m
 	}
 	var captured session.BatchCapturedRoots
 	capturedHook := false
+	questionHook := false
 	notifyByRef := make(map[session.BatchLiveRef]string)
 	result, err := BatchAwaitWorker(ctx, BatchAwaitParams{
 		Mode: mode, MaxWaitSeconds: maxWaitSeconds,
@@ -148,6 +159,25 @@ func (c *coordinator) awaitTasksForBatchWorker(ctx context.Context, sessionID, m
 			return bind.live.BatchCapturedLevel(ctx, captured)
 		},
 		NotifyModeOf: func(ref session.BatchLiveRef) string { return notifyByRef[ref] },
+		Hints:        func() (<-chan struct{}, func()) { return c.driverHints.subscribe(sessionID) },
+		// Reaction-independent held-question gate: an unanswered child
+		// question (even one marked reacted by the owner's reaction flow)
+		// breaks the wait instead of blocking in-tool for up to the 40m cap.
+		// unknown facts (capability absent) never gate: nil, nil.
+		HeldQuestions: func(ctx context.Context) ([]BatchHeldQuestionRoute, error) {
+			src, ok := coordinatorBatchCutoverFacts(c).(BatchHeldQuestionSource)
+			if !ok {
+				return nil, nil
+			}
+			routes, err := src.ActionableHeldQuestions(ctx, sessionID)
+			if !questionHook {
+				questionHook = true
+				if hook := awaitTasksWorkerQuestionReadHook.Load(); hook != nil {
+					(*hook)(sessionID, mode)
+				}
+			}
+			return routes, err
+		},
 	})
 	if err != nil {
 		return tools.AwaitTasksResult{}, err

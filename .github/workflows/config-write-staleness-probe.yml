@@ -1,0 +1,47 @@
+name: config-write-staleness-probe
+
+on:
+  push:
+    branches: ['fix/config-write-staleness-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: config-write-staleness-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - os: ubuntu-latest
+            race: '1'
+          - os: windows-latest
+            race: '0'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Verify isolation, clean snapshots and regression mutant
+        env:
+          PROBE_RACE: ${{ matrix.race }}
+        run: python -I -X utf8 .github/scripts/verify-config-write-staleness.py
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: config-write-staleness-${{ matrix.os }}
+          path: config-staleness-*.jsonl
+          if-no-files-found: warn

@@ -294,7 +294,7 @@ func enableServerWithPersistenceAndInitializerForOwner(
 	persist enableServerResultPersister,
 	initialize admittedClientInitializer,
 ) error {
-	return enableServerWithPersistenceAndInitializerAndRollbackForOwner(o, ctx, cfg, name, persist, initialize, nil)
+	return enableServerWithPersistenceAndInitializerAndRollbackForOwner(o, ctx, cfg, name, persist, initialize, nil, config.SettingsAuthorityGuarded)
 }
 
 func enableServerWithPersistenceAndInitializerAndRollback(
@@ -309,7 +309,7 @@ func enableServerWithPersistenceAndInitializerAndRollback(
 	if err != nil {
 		return err
 	}
-	return enableServerWithPersistenceAndInitializerAndRollbackForOwner(o, ctx, cfg, name, persist, initialize, rollbackPersist)
+	return enableServerWithPersistenceAndInitializerAndRollbackForOwner(o, ctx, cfg, name, persist, initialize, rollbackPersist, config.SettingsAuthorityGuarded)
 }
 
 func enableServerWithPersistenceAndInitializerAndRollbackForOwner(
@@ -320,6 +320,7 @@ func enableServerWithPersistenceAndInitializerAndRollbackForOwner(
 	persist enableServerResultPersister,
 	initialize admittedClientInitializer,
 	rollbackPersist enableServerResultPersister,
+	authority config.SettingsWriteAuthority,
 ) error {
 	if err := o.rememberConfig(cfg); err != nil {
 		return err
@@ -396,7 +397,7 @@ func enableServerWithPersistenceAndInitializerAndRollbackForOwner(
 			}
 			_, rollbackErr = rollbackPersist(cfg, scope, name, rollback)
 		} else {
-			_, rollbackErr = cfg.PersistMCPEnableRollbackResult(scope, name, result)
+			_, rollbackErr = cfg.PersistMCPEnableRollbackResultWithAuthority(scope, name, result, authority)
 		}
 		if rollbackErr == nil {
 			return rollbackResult{}
@@ -504,10 +505,7 @@ func enableServerWithPersistenceAndInitializerAndRollbackForOwner(
 }
 
 func enableMCPConfig(cfg *config.ConfigStore, scope config.Scope, name string, pending *config.MCPConfig) (config.MCPMutationResult, error) {
-	if pending != nil {
-		return cfg.PersistMCPConfigResult(scope, name, *pending)
-	}
-	return cfg.PersistMCPDisabledOverrideResult(scope, name, false)
+	return enableMCPConfigWithAuthority(cfg, scope, name, pending, config.SettingsAuthorityGuarded)
 }
 
 // resolveMCPMutationScope resolves the writable origin for a disable/enable

@@ -787,6 +787,9 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 	env := batchLeafEnv{OutputCache: cache, Leaves: deps.Registries.Resolve, DiskBindings: deps.DiskBindings, Ingress: runtime.ingress}
 	if deps.AgentDeps.Runs != nil {
 		deps.AgentDeps.QuestionPublisher = batchCoordinatorQuestionPublisher{store: deps.Store, wake: deps.QuestionWake}
+		// The store is the durable half of the question lifecycle: accepted
+		// answers and cancelled asks close the notices they advertised.
+		deps.AgentDeps.QuestionResolver = batchStoreQuestionResolver{store: deps.Store}
 		deps.AgentDeps.Host = deps.Host
 		deps.AgentDeps.RunnerID = deps.RunnerID
 		deps.AgentDeps.Bind = batchStoreChildBind(deps.Store, deps.Host, deps.RunnerID)

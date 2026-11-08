@@ -30,6 +30,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -58,6 +59,12 @@ var (
 // BatchHeldAnswerSink routes one inject_agent answer into the CURRENT
 // incarnation's held question of the child's batch node. Implemented over
 // the session_notices + batch_nodes fenced read and jobbatch.Runner.Inject.
+// The lookup is REACTED-INDEPENDENT: the owner's reaction flow marks every
+// notice reacted as soon as the parent produces any message, so `reacted`
+// never means "answered". Instead the sink CLOSES the notice rows on
+// acceptance (delivery='void', wake=0), so an answered question is gone
+// from every future lookup — a reacted question whose answer was never
+// accepted stays routable (the production hang).
 type BatchHeldAnswerSink interface {
 	DeliverHeldAnswer(ctx context.Context, owner, childSessionID, text string) (BatchHeldQuestionFact, error)
 	// Close disarms the sink permanently (the shutdown/drain path). After
@@ -86,13 +93,15 @@ func NewBatchHeldAnswerSink(writer *sql.DB, runner batchInjectRunner) (BatchHeld
 
 // batchHeldAnswerStoreSink is the production sink. The lookup reuses
 // LiveHeldQuestions' exact fence (batch_cutover_facts_node.go): the notice
-// must be a pending-or-delivered, unreacted, wake=1 child_question row of
-// the owner carrying a parseable production marker, and the named
-// batch_nodes row must exist for this owner with a live state and the
-// marker's exact token — the incarnation fence. On top of that fence the
-// sink filters to the marker's child field naming THIS child session and
-// extracts the marker's depth (the answer addresses exactly the held depth;
-// inject_agent's schema has no depth parameter).
+// must be a pending-or-delivered, wake=1 child_question row of the owner
+// (NO reacted predicate — see the file header) carrying a parseable
+// production marker, and the named batch_nodes row must exist for this
+// owner with a live state and the marker's exact token — the incarnation
+// fence. On top of that fence the sink filters to the marker's child field
+// naming THIS child session and extracts the marker's depth (the answer
+// addresses exactly the held depth; inject_agent's schema has no depth
+// parameter). On acceptance the matched notice rows are closed, which is
+// what keeps the reacted-independent lookup set from growing forever.
 type batchHeldAnswerStoreSink struct {
 	writer *sql.DB
 	runner batchInjectRunner
@@ -109,26 +118,38 @@ func closedErr() error {
 	return fmt.Errorf("batch inject bridge closed: %w", jobbatch.ErrReleased)
 }
 
-// heldQuestionNotices returns the texts of the owner's unreacted wake=1
-// child_question notices, oldest first. Same retained-debt predicate
-// LiveHeldQuestions runs (pending OR already-delivered rows still hold the
-// session while unreacted and wake=1). The result set is fully read and
-// closed before the caller issues another query on the pool.
-func (s *batchHeldAnswerStoreSink) heldQuestionNotices(ctx context.Context, owner string) ([]string, error) {
+// batchHeldQuestionNoticeRow is one candidate notice: its row id (for the
+// close-on-acceptance UPDATE) and text.
+type batchHeldQuestionNoticeRow struct {
+	id   int64
+	text string
+}
+
+// heldQuestionNotices returns the owner's wake=1 child_question notices,
+// oldest first. This is the retained-debt predicate WITHOUT the reacted
+// predicate (pending OR already-delivered rows still hold the session while
+// wake=1): the owner's reaction flow (BatchReactionMarkReactedWithMessageUpdate
+// → MarkSessionNoticesReactedForOwner) marks every notice reacted when the
+// parent produces any message, so a reacted question whose answer was never
+// accepted must stay routable (the production hang). The close-on-acceptance
+// UPDATE below is what prevents this set from growing forever. The result
+// set is fully read and closed before the caller issues another query on
+// the pool.
+func (s *batchHeldAnswerStoreSink) heldQuestionNotices(ctx context.Context, owner string) ([]batchHeldQuestionNoticeRow, error) {
 	rows, err := s.writer.QueryContext(ctx,
-		`SELECT text FROM session_notices WHERE owner = ?1 AND kind = ?2 AND delivery IN ('pending','done') AND wake = 1 AND reacted = 0 ORDER BY id`,
+		`SELECT id, text FROM session_notices WHERE owner = ?1 AND kind = ?2 AND delivery IN ('pending','done') AND wake = 1 ORDER BY id`,
 		owner, session.NoticeKindChildQuestion)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var notices []string
+	var notices []batchHeldQuestionNoticeRow
 	for rows.Next() {
-		var notice string
-		if err := rows.Scan(&notice); err != nil {
+		var n batchHeldQuestionNoticeRow
+		if err := rows.Scan(&n.id, &n.text); err != nil {
 			return nil, err
 		}
-		notices = append(notices, notice)
+		notices = append(notices, n)
 	}
 	return notices, rows.Err()
 }
@@ -137,7 +158,7 @@ func (s *batchHeldAnswerStoreSink) DeliverHeldAnswer(ctx context.Context, owner,
 	if s.closed.Load() {
 		return BatchHeldQuestionFact{}, closedErr()
 	}
-	// Phase 1: collect ALL candidate notice texts; the rows are closed when
+	// Phase 1: collect ALL candidate notice rows; the rows are closed when
 	// the helper returns, before any second pool query — the
 	// single-connection writer would otherwise deadlock on the nested
 	// batch_nodes reads.
@@ -149,31 +170,34 @@ func (s *batchHeldAnswerStoreSink) DeliverHeldAnswer(ctx context.Context, owner,
 	var (
 		candidate bool // some parseable marker names THIS child
 		hit       *BatchHeldQuestionFact
-		fenceErr  error // deterministic fence failure of the newest candidate
+		hitSeq    uint64 // the newest fence-in candidate's marker sequence
+		fenceErr  error  // deterministic fence failure of the newest candidate
 	)
 	for _, notice := range notices {
-		if childSessionID == "" || batchQuestionMarkerChild(notice) != childSessionID {
+		if childSessionID == "" || batchQuestionMarkerChild(notice.text) != childSessionID {
 			continue
 		}
-		node, token, ok := parseBatchQuestionMarker(notice)
-		depth := batchQuestionMarkerDepth(notice)
-		if !ok || depth <= 0 {
+		node, token, ok := parseBatchQuestionMarker(notice.text)
+		depth := batchQuestionMarkerDepth(notice.text)
+		seq := batchQuestionMarkerSequence(notice.text)
+		if !ok || depth <= 0 || seq <= 0 {
 			continue
 		}
 		candidate = true
-		hit, fenceErr = nil, nil
+		hit, hitSeq, fenceErr = nil, 0, nil
 		var rowToken int64
-		var state string
+		var state, rootDelivery string
 		ferr := s.writer.QueryRowContext(ctx,
-			`SELECT token, state FROM batch_nodes WHERE node_id = ?1 AND owner_session_id = ?2`,
-			node, owner).Scan(&rowToken, &state)
+			`SELECT n.token, n.state, r.delivery FROM batch_nodes n JOIN batch_nodes r ON r.node_id = n.root_id WHERE n.node_id = ?1 AND n.owner_session_id = ?2`,
+			node, owner).Scan(&rowToken, &state, &rootDelivery)
 		switch {
 		case ferr != nil:
 			fenceErr = fmt.Errorf("batch node %s: %w: no live batch_nodes row for this owner", node, ErrBatchAgentStaleGeneration)
-		case !batchNodeStateLive(state) || rowToken != token:
+		case !batchNodeStateLive(state) || rowToken != token || rootDelivery == "void":
 			fenceErr = fmt.Errorf("batch node %s: %w: notice token %d vs node token %d state %q", node, ErrBatchAgentStaleGeneration, token, rowToken, state)
 		default:
 			hit = &BatchHeldQuestionFact{Owner: owner, NodeID: node, Token: rowToken, Depth: depth}
+			hitSeq = uint64(seq) // safe: seq > 0 was required above
 		}
 	}
 	if hit == nil {
@@ -188,10 +212,11 @@ func (s *batchHeldAnswerStoreSink) DeliverHeldAnswer(ctx context.Context, owner,
 		return *hit, closedErr()
 	}
 	// The wire shape is the production batchAgentInjectMessage: the depth
-	// must name the held depth (deliver refuses any other depth) and the
-	// text is the JSON-encoded answer string (batchAgentAskQuestionTool
-	// unmarshals it back).
-	raw, err := json.Marshal(batchAgentInjectMessage{Depth: hit.Depth, Text: mustJSONString(text)})
+	// must name the held depth AND the sequence the exact published question
+	// the answer addresses (deliver refuses any other depth or sequence) and
+	// the text is the JSON-encoded answer string
+	// (batchAgentAskQuestionTool unmarshals it back).
+	raw, err := json.Marshal(batchAgentInjectMessage{Depth: hit.Depth, Sequence: hitSeq, Text: mustJSONString(text)})
 	if err != nil {
 		return *hit, err
 	}
@@ -203,6 +228,34 @@ func (s *batchHeldAnswerStoreSink) DeliverHeldAnswer(ctx context.Context, owner,
 		// jobbatch.ErrReleased, ...) propagate wrapped with the node —
 		// never swallowed, never delivered to a new incarnation.
 		return *hit, fmt.Errorf("batch node %s: %w", hit.NodeID, err)
+	}
+	// Accepted: close the matched notice rows with ONE ExecContext (no rows
+	// open here). Every open question of this child's incarnation is stale
+	// after the answer, so all matched rows close together. If the close
+	// fails, the answer WAS delivered: report it — a retry then fails
+	// deterministically (notice gone → ErrBatchHeldAnswerNone → legacy
+	// mailbox, or the runner's NotHeld), never double-delivering.
+	var matchedNotices []int64
+	for _, notice := range notices {
+		node, token, ok := parseBatchQuestionMarker(notice.text)
+		seq := batchQuestionMarkerSequence(notice.text)
+		if ok && node == hit.NodeID && token == hit.Token && seq > 0 && uint64(seq) <= hitSeq &&
+			batchQuestionMarkerChild(notice.text) == childSessionID {
+			matchedNotices = append(matchedNotices, notice.id)
+		}
+	}
+	placeholders := make([]string, len(matchedNotices))
+	args := make([]any, 0, len(matchedNotices)+2)
+	args = append(args, time.Now().Unix(), session.NoticeKindChildQuestion)
+	for i, id := range matchedNotices {
+		placeholders[i] = fmt.Sprintf("?%d", i+3)
+		args = append(args, id)
+	}
+	closeSQL := fmt.Sprintf(
+		`UPDATE session_notices SET delivery = 'void', wake = 0, updated_at = ?1 WHERE kind = ?2 AND id IN (%s)`,
+		strings.Join(placeholders, ", "))
+	if _, cerr := s.writer.ExecContext(ctx, closeSQL, args...); cerr != nil {
+		return *hit, fmt.Errorf("batch node %s: close answered question notice: %w", hit.NodeID, cerr)
 	}
 	return *hit, nil
 }
