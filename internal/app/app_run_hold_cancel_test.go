@@ -191,6 +191,7 @@ func TestExecuteRunMailboxCancelDuringAdmissionHoldAborts(t *testing.T) {
 // turn handoff.
 type systemPromptGateSessions struct {
 	session.Service
+	session.AgentDepthStore
 	entered chan struct{} // closed when UpdateSystemPrompt is entered
 	proceed chan struct{} // closed by the test to release the parked write
 	once    sync.Once
@@ -243,9 +244,10 @@ func TestExecuteRunMailboxCancelAfterLastMutationGateSkipsCleanupWrites(t *testi
 	require.NoError(t, application.Sessions.SetEndedReason(context.Background(), sessionID, "previous-run"))
 
 	spy := &systemPromptGateSessions{
-		Service: application.Sessions,
-		entered: make(chan struct{}),
-		proceed: make(chan struct{}),
+		Service:         application.Sessions,
+		AgentDepthStore: application.Sessions.(session.AgentDepthStore),
+		entered:         make(chan struct{}),
+		proceed:         make(chan struct{}),
 	}
 	application.Sessions = spy
 

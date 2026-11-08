@@ -267,6 +267,19 @@ func TestAPIBatchAgentDepthCaps(t *testing.T) {
 		resp := f.do(t, token, http.MethodPost, routeCase.path, routeCase.body)
 		require.Equal(t, http.StatusBadRequest, resp.Status, string(resp.Body))
 	}
-	zero := f.do(t, token, http.MethodPost, "/tasks", `{"prompt":"p","max_agent_depth":0}`)
-	require.Equal(t, http.StatusAccepted, zero.Status, string(zero.Body))
+	before, err := f.app.Sessions.List(t.Context())
+	require.NoError(t, err)
+	for _, routeCase := range []struct{ path, body string }{
+		{"/tasks", `{"prompt":"p","max_agent_depth":0}`},
+		{"/batches", `{"max_agent_depth":0,"items":[{"tool":"agent","input":{"prompt":"p"}}]}`},
+	} {
+		zero := f.do(t, token, http.MethodPost, routeCase.path, routeCase.body)
+		require.Equal(t, http.StatusBadRequest, zero.Status, string(zero.Body))
+		require.Contains(t, string(zero.Body), agent.ErrAgentDepthExceeded.Error())
+	}
+	after, err := f.app.Sessions.List(t.Context())
+	require.NoError(t, err)
+	require.Len(t, after, len(before), "exhausted intake must refuse before creating any service or child session")
+	valid := f.do(t, token, http.MethodPost, "/tasks", `{"prompt":"p","max_agent_depth":1}`)
+	require.Equal(t, http.StatusAccepted, valid.Status, "a refused zero-cap request must not lower the next request's budget: %s", string(valid.Body))
 }

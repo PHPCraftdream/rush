@@ -130,6 +130,9 @@ func (p batchIntakePolicy) walk(spec jobbatch.Spec, level int, nodes *int) (jobb
 			} else if *task.AgentDepth < 0 || *task.AgentDepth > apiBatchTrustedAgentDepth {
 				return jobbatch.Spec{}, 0, errors.New("max_agent_depth exceeds trusted API batch cap")
 			}
+			if *task.AgentDepth == 0 {
+				return jobbatch.Spec{}, 0, agent.ErrAgentDepthExceeded
+			}
 		}
 		payload, err := json.Marshal(task)
 		if err != nil {

@@ -247,7 +247,7 @@ func TestRebuildSessionAgentCallRejectsScopedCLIModelsAfterRestart(t *testing.T)
 		env := testEnv(t)
 		coord := newFolderScopeCLICoordinator(t, env, cliprovider.ProviderType, openai.Name, false)
 		data := session.SessionAgentCallData{
-			SessionID:  "replay-cli-smart",
+			SessionID:  newRebuildFixtureSession(t, coord, "replay-cli-smart"),
 			SmartModel: &session.ModelCfg{Provider: "smart-provider", Model: "cli-claude-sonnet"},
 			FolderScopeSpec: &session.FolderScopeSpec{
 				WorkingDir: env.workingDir,
@@ -267,7 +267,7 @@ func TestRebuildSessionAgentCallRejectsScopedCLIModelsAfterRestart(t *testing.T)
 		env := testEnv(t)
 		coord := newFolderScopeCLICoordinator(t, env, openai.Name, cliprovider.ProviderType, true)
 		data := session.SessionAgentCallData{
-			SessionID:  "replay-cli-worker",
+			SessionID:  newRebuildFixtureSession(t, coord, "replay-cli-worker"),
 			SmartModel: &session.ModelCfg{Provider: "smart-provider", Model: "cli-claude-sonnet"},
 			FolderScopeSpec: &session.FolderScopeSpec{
 				WorkingDir: env.workingDir,
