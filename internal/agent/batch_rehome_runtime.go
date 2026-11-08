@@ -33,7 +33,10 @@ func awaitTaskSummary(refs []tools.AwaitTaskRef) string {
 // (Cancel). Errors are logged, never fatal: the sleep flag itself is
 // already cleared by the time the cancel runs.
 func (c *coordinator) clearSleepAll(sessionID string) {
-	id := c.arb.clearSleepAll(sessionID)
+	c.cancelAwaitTimer(sessionID, c.arb.clearSleepAll(sessionID))
+}
+
+func (c *coordinator) cancelAwaitTimer(sessionID, id string) {
 	if id == "" {
 		return
 	}

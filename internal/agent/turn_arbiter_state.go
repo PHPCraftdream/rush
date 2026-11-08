@@ -39,6 +39,7 @@ type arbiterState struct {
 	// schedule so clear paths can cancel it even when sleepAll is false.
 	sleepAll      bool
 	maxWaitWakeID string
+	awaitEra      *awaitTasksEra
 	gate          GateFacts
 }
 
@@ -195,6 +196,7 @@ func (a *arbiter) clearSleepAll(sid string) string {
 		return ""
 	}
 	id := s.maxWaitWakeID
+	s.awaitEra = nil
 	s.sleepAll = false
 	s.maxWaitWakeID = ""
 	return id
@@ -307,18 +309,20 @@ func (a *arbiter) resetGate(sid string) {
 // gate. A rerun's hold is NOT a human message's to lift: the
 // holds survive the reset and the entry dies only when the last hold is
 // released (P1-2 of the R-ARB-2 review).
-func (a *arbiter) resetForHumanMessage(sid string) {
+func (a *arbiter) resetForHumanMessage(sid string) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	s := a.bySession[sid]
 	if s == nil {
-		return
+		return ""
 	}
+	id := s.maxWaitWakeID
 	holds := s.holds
 	*s = arbiterState{holds: holds}
 	if holds == 0 {
 		delete(a.bySession, sid)
 	}
+	return id
 }
 
 // chainLink accounts one finished Drain leg (the old per-leg link accounting):
@@ -472,7 +476,7 @@ func (s *arbiterState) idle(now time.Time) bool {
 	return s.holds == 0 && !s.suspended && s.autoResumes == 0 &&
 		len(s.overCap) == 0 && s.chainLinks == 0 && len(s.chainClaims) == 0 &&
 		len(s.chainBatchRoots) == 0 &&
-		!s.sleepAll && s.maxWaitWakeID == "" &&
+		!s.sleepAll && s.maxWaitWakeID == "" && s.awaitEra == nil &&
 		pauseOver && s.gate.FreeStreak == 0 && s.gate.PaidStreak == 0
 }
 

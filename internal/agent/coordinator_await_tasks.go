@@ -91,22 +91,20 @@ func (c *coordinator) AwaitTasks(ctx context.Context, sessionID, mode string, ma
 		return tools.AwaitTasksResult{}, errors.New("nothing is running; continue or finish")
 	}
 	res := tools.AwaitTasksResult{Mode: mode, WaitingFor: waiting}
-	if mode == "all" {
-		c.arb.setSleepAll(sessionID)
-	}
+	var create func() (string, error)
 	if maxWaitSeconds > 0 {
-		view, err := c.ScheduleWakeOnceDelay(ctx, sessionID, int64(maxWaitSeconds),
-			fmt.Sprintf(session.AwaitTasksMaxWaitPrefix+" %d task(s) may still be running: %s",
-				len(waiting), awaitTaskSummary(waiting)))
-		if err != nil {
-			// The call failed: do not leave the sleep armed behind it.
-			c.arb.clearSleepAll(sessionID)
-			return tools.AwaitTasksResult{}, err
+		create = func() (string, error) {
+			view, err := c.ScheduleWakeOnceDelay(ctx, sessionID, int64(maxWaitSeconds),
+				fmt.Sprintf(session.AwaitTasksMaxWaitPrefix+" %d task(s) may still be running: %s",
+					len(waiting), awaitTaskSummary(waiting)))
+			return view.ScheduleID, err
 		}
-		res.MaxWaitScheduleID = view.ScheduleID
-		// Both modes own the timer; only all owns the sleep flag.
-		c.arb.setMaxWaitWake(sessionID, view.ScheduleID)
 	}
+	id, err := c.armAwait(ctx, sessionID, mode == "all", create)
+	if err != nil {
+		return tools.AwaitTasksResult{}, err
+	}
+	res.MaxWaitScheduleID = id
 	return res, nil
 }
 
