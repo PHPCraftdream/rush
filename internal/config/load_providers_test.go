@@ -115,7 +115,7 @@ func TestConfig_configureProviders_PreservesLocalCLICustomFields(t *testing.T) {
 	cfg := &Config{
 		Providers: csync.NewMap[string, ProviderConfig](),
 	}
-	peakHours := &PeakHoursWindow{Start: "09:00", End: "18:00"}
+	peakHours := &ProviderPeakHours{Legacy: &PeakHoursWindow{Start: "09:00", End: "18:00"}}
 	cfg.Providers.Set(cliprovider.ProviderID, ProviderConfig{
 		Name:      "My Local CLI",
 		PeakHours: peakHours,
@@ -133,8 +133,8 @@ func TestConfig_configureProviders_PreservesLocalCLICustomFields(t *testing.T) {
 	require.Equal(t, "My Local CLI", pc.Name, "custom display name must survive re-synthesis")
 	require.True(t, pc.Disable, "disable flag must survive re-synthesis")
 	require.NotNil(t, pc.PeakHours, "peak_hours must survive re-synthesis")
-	require.Equal(t, "09:00", pc.PeakHours.Start)
-	require.Equal(t, "18:00", pc.PeakHours.End)
+	require.Equal(t, "09:00", pc.PeakHours.Legacy.Start)
+	require.Equal(t, "18:00", pc.PeakHours.Legacy.End)
 	// The auto-derived fields still refresh to the newly detected specs.
 	require.Equal(t, cliprovider.ProviderID, pc.ID)
 	require.EqualValues(t, cliprovider.ProviderType, pc.Type)

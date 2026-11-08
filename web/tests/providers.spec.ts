@@ -301,7 +301,9 @@ test("Add provider form sends peakHours when enabled", async ({ page }) => {
   await page.getByRole("button", { name: "Add Provider", exact: true }).click();
   const msg = await waitForWSSend(page, "add_custom_provider");
   const payload = msg.payload as Record<string, unknown>;
-  expect(payload.peakHours).toEqual({ start: "22:00", end: "06:00" });
+  // The form sends the weekly POLICY shape (one window, default every-day
+  // days spec "", empty exit message), not the legacy { start, end }.
+  expect(payload.peakHours).toEqual({ windows: [{ days: "", start: "22:00", end: "06:00" }], message: "" });
 });
 
 test("Add provider form omits window when peak-hours disabled", async ({ page }) => {
@@ -478,7 +480,9 @@ test("Built-in provider peak-hours editor sends set_provider_peak_hours", async 
   const msg = await waitForWSSend(page, "set_provider_peak_hours");
   const payload = msg.payload as Record<string, unknown>;
   expect(payload.id).toBe("anthropic");
-  expect(payload.peakHours).toEqual({ start: "09:00", end: "18:00" });
+  // The built-in editor now sends the weekly POLICY shape too (default
+  // every-day days spec "" and empty exit message).
+  expect(payload.peakHours).toEqual({ windows: [{ days: "", start: "09:00", end: "18:00" }], message: "" });
   expect(payload.scope).toBe("global");
 });
 

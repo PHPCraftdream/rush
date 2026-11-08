@@ -104,7 +104,7 @@ func TestGenerateUsesCodexOAuthAndResponsesWire(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "Codex reply", response.Content.Text())
 	require.Equal(t, fantasy.FinishReasonStop, response.FinishReason)
-	require.Equal(t, fantasy.Usage{InputTokens: 12, OutputTokens: 3, TotalTokens: 15, CacheReadTokens: 2, ReasoningTokens: 1}, response.Usage)
+	require.Equal(t, fantasy.Usage{InputTokens: 10, OutputTokens: 3, TotalTokens: 15, CacheReadTokens: 2, ReasoningTokens: 1}, response.Usage)
 
 	capture := <-requests
 	assert.Equal(t, http.MethodPost, capture.method)

@@ -15,6 +15,7 @@ import (
 	"charm.land/fantasy/providers/vercel"
 
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/codexprovider"
 )
 
 // cacheProfile is one provider's prompt-cache behavior. The zero value is the
@@ -87,6 +88,10 @@ var cacheProfiles = map[string]cacheProfile{
 		knownCacheReporter: true,
 	},
 	cliprovider.ProviderID: {
+		knownCacheReporter: true,
+	},
+	codexprovider.Name: {
+		// The provider decoder already makes input exclusive of cache reads.
 		knownCacheReporter: true,
 	},
 }

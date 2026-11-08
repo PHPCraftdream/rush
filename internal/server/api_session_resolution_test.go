@@ -40,6 +40,9 @@ func TestResolvePinnedCommandVisibilityBeforeClass(t *testing.T) {
 		{"foreign readable operation hidden", CmdLoadMessages, `{"sessionID":"foreign"}`, http.StatusNotFound},
 		{"pinned read allowed", CmdLoadMessages, `{"sessionID":"pinned"}`, 0},
 		{"missing target hidden", CmdLoadMessages, `{}`, http.StatusNotFound},
+		{"global peak pause denied", CmdPauseProviderPeakHours, `{"id":"provider","sessionID":"pinned"}`, http.StatusForbidden},
+		{"global peak resume denied", CmdResumeProviderPeakHours, `{"id":"provider","sessionID":"pinned"}`, http.StatusForbidden},
+		{"global peak status denied", CmdGetPeakHoursStatus, `{"id":"provider","sessionID":"pinned"}`, http.StatusForbidden},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

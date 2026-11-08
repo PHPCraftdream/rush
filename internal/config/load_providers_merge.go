@@ -45,8 +45,8 @@ func forgetDumpedUserSet(userSet map[string]map[string]discover.UserModelFacts, 
 }
 
 func mergeCodexModels(configured, discovered []catwalk.Model) []catwalk.Model {
-	models := make([]catwalk.Model, 0, len(configured)+len(discovered))
-	seen := make(map[string]struct{}, len(configured)+len(discovered))
+	models := make([]catwalk.Model, 0, len(configured))
+	seen := make(map[string]struct{}, len(configured))
 	for _, model := range configured {
 		if _, exists := seen[model.ID]; exists {
 			continue
@@ -81,9 +81,9 @@ func liveEffortsFromModels(models []catwalk.Model) map[string]ModelEffortInfo {
 }
 
 func mergeProviderModels(configured, live []catwalk.Model) []catwalk.Model {
-	result := make([]catwalk.Model, len(configured), len(configured)+len(live))
+	result := make([]catwalk.Model, len(configured))
 	copy(result, configured)
-	indices := make(map[string]int, len(configured)+len(live))
+	indices := make(map[string]int, len(configured))
 	for i := range result {
 		indices[result[i].ID] = i
 	}

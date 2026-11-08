@@ -308,6 +308,9 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		c.allowPeakHours = false
 		c.runLimitsMu.Unlock()
 	}
+	if callOpts == nil && allowPeak {
+		ctx = context.WithValue(ctx, legacyPeakHoursBypassKey{}, true)
+	}
 	if !allowPeak {
 		if err := checkPeakHours(providerCfg); err != nil {
 			return nil, c.drainRefused(ctx, sessionID, err)

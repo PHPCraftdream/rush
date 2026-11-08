@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef } from "react";
 import { useStore } from "@nanostores/react";
-import { $config, removeCustomProvider, type ConfigScope } from "../store";
+import { $config, removeCustomProvider, pauseProviderPeakHours, resumeProviderPeakHours, type ConfigScope } from "../store";
 import { X, Plus, Trash2, Pencil, AlertCircle, CheckCircle2, Loader2, ChevronDown, ChevronRight } from "lucide-react";
-import type { ProviderInfo } from "../types";
+import type { ProviderInfo, ProviderPeakHoursPolicy } from "../types";
 import { wsRequest } from "../ws";
+import { PeakHoursEditor, legacyToPolicy, peakHoursProblems, peakSummaryText } from "./PeakHoursEditor";
+import { PeakHoursStatus } from "./PeakHoursStatus";
 
 // ── Custom model editor ───────────────────────────────────────────────────────
 
@@ -72,25 +74,6 @@ function ModelEditor({
   );
 }
 
-// ── Peak-hours helper ────────────────────────────────────────────────────────
-
-// isPeakHoursActive returns true when the browser's local time-of-day falls
-// inside the [start, end) window. Handles overnight wrap (start > end), e.g.
-// "22:00"–"06:00". Returns false when the window is malformed/empty.
-const HH_MM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
-
-function isPeakHoursActive(peak: { start: string; end: string } | null | undefined): boolean {
-  if (!peak || !peak.start || !peak.end) return false;
-  const now = new Date();
-  const cur = now.getHours() * 60 + now.getMinutes();
-  const [sh, sm] = peak.start.split(":").map(Number);
-  const [eh, em] = peak.end.split(":").map(Number);
-  if ([sh, sm, eh, em].some((n) => Number.isNaN(n))) return false;
-  const start = sh * 60 + sm;
-  const end = eh * 60 + em;
-  return start <= end ? cur >= start && cur < end : cur >= start || cur < end;
-}
-
 // ── Provider form ─────────────────────────────────────────────────────────────
 
 const PROVIDER_TYPES = ["openai-compat", "openai", "anthropic", "gemini"];
@@ -101,11 +84,11 @@ function ProviderForm({
   onSubmit,
   onCancel,
 }: {
-  initial?: { id: string; name: string; type: string; baseUrl: string; models: ModelDraft[]; peakHours?: { start: string; end: string; message?: string } | null; scope?: ConfigScope };
+  initial?: { id: string; name: string; type: string; baseUrl: string; models: ModelDraft[]; peakHours?: ProviderPeakHoursPolicy | null; scope?: ConfigScope };
   submitLabel: string;
   onSubmit: (data: {
     id: string; name: string; type: string; baseUrl: string; apiKey: string; models: ModelDraft[];
-    peakHours: { start: string; end: string; message?: string } | null; scope: ConfigScope;
+    peakHours: ProviderPeakHoursPolicy | null; scope: ConfigScope;
   }) => Promise<unknown>;
   onCancel: () => void;
 }) {
@@ -115,10 +98,14 @@ function ProviderForm({
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
   const [apiKey, setApiKey] = useState("");
   const [models, setModels] = useState<ModelDraft[]>(initial?.models ?? [emptyModel()]);
-  const [peakEnabled, setPeakEnabled] = useState(!!initial?.peakHours?.start && !!initial?.peakHours?.end);
-  const [peakStart, setPeakStart] = useState(initial?.peakHours?.start ?? "09:00");
-  const [peakEnd, setPeakEnd] = useState(initial?.peakHours?.end ?? "18:00");
-  const [peakMessage, setPeakMessage] = useState(initial?.peakHours?.message ?? "");
+  // Whole peak-hours policy in one state value — null when the restriction
+  // is off. legacyToPolicy maps old { start, end, message } wire data onto
+  // the weekly policy so it edits fine and round-trips back as a policy.
+  const [peak, setPeak] = useState<ProviderPeakHoursPolicy | null>(legacyToPolicy(initial?.peakHours));
+  const livePausedUntil = initial?.peakHours?.pausedUntil;
+  useEffect(() => {
+    setPeak((draft) => draft ? { ...draft, pausedUntil: livePausedUntil } : draft);
+  }, [livePausedUntil]);
   // Prefill from the provider's effective scope as reported by the server
   // wire — editing must write back to the scope the effective config
   // actually lives in, not silently create a global entry under a
@@ -140,6 +127,22 @@ function ProviderForm({
     };
   }, []);
 
+  // Pause/resume are real request/reply roundtrips: the store helper's
+  // promise rejects on a server error, which surfaces in this form's
+  // inline error line like any other failed write.
+  async function handlePause(duration?: string) {
+    try { await pauseProviderPeakHours({ id: initial?.id ?? id, duration, scope }); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  }
+
+  async function handleResume() {
+    try {
+      await resumeProviderPeakHours({ id: initial?.id ?? id, scope });
+      if (!disposedRef.current) setPeak((draft) => draft ? { ...draft, pausedUntil: undefined } : draft);
+    }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  }
+
   function validate(): string | null {
     if (!id.trim()) return "Provider ID is required";
     if (!baseUrl.trim()) return "Base URL is required";
@@ -149,8 +152,7 @@ function ProviderForm({
       if (!m.id.trim()) return "Each model must have an ID";
       if (!m.name.trim()) return "Each model must have a display name";
     }
-    if (peakEnabled && (!peakStart || !peakEnd)) return "Peak-hours start and end are required";
-    if (peakEnabled && (!HH_MM_RE.test(peakStart) || !HH_MM_RE.test(peakEnd))) return "Peak-hours must be in 24-hour HH:MM format";
+    if (peak && peakHoursProblems(peak).length > 0) return peakHoursProblems(peak)[0];
     return null;
   }
 
@@ -159,11 +161,7 @@ function ProviderForm({
     baseUrl.trim() !== "" &&
     models.length > 0 &&
     models.every((m) => m.id.trim() !== "" && m.name.trim() !== "") &&
-    (!peakEnabled || (HH_MM_RE.test(peakStart) && HH_MM_RE.test(peakEnd)));
-
-  const peakHours = peakEnabled && peakStart && peakEnd
-    ? { start: peakStart, end: peakEnd, message: peakMessage.trim() || undefined }
-    : null;
+    (peak === null || peakHoursProblems(peak).length === 0);
 
   async function submit() {
     const err = validate();
@@ -171,7 +169,7 @@ function ProviderForm({
     setError(null);
     setBusy(true);
     try {
-      await onSubmit({ id: id.trim(), name: name.trim(), type, baseUrl: baseUrl.trim(), apiKey, models, peakHours, scope });
+      await onSubmit({ id: id.trim(), name: name.trim(), type, baseUrl: baseUrl.trim(), apiKey, models, peakHours: peak, scope });
       if (disposedRef.current) return;
       setBusy(false);
       onCancel();
@@ -289,77 +287,14 @@ function ProviderForm({
         <ModelEditor models={models} onChange={setModels} />
       </div>
 
-      <div className="space-y-2 border-t border-surface pt-3">
-        <label className="flex items-center gap-2 text-[11px] text-text-subtle cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={peakEnabled}
-            onChange={(e) => setPeakEnabled(e.target.checked)}
-            className="accent-accent"
-            data-test-id="provider-form-peak-toggle"
-          />
-          Restrict to hours
-        </label>
-        {peakEnabled && (
-          <div className="grid grid-cols-2 gap-2" data-test-id="provider-form-peak-inputs">
-            <div>
-              <label className="block text-[11px] text-text-subtle mb-1">Start (local)</label>
-              <input
-                type="text"
-                // A plain HH:MM text field, not <input type="time"> — the
-                // native time picker's AM/PM vs 24h display follows the OS
-                // locale in most non-Chromium browsers (lang="en-GB" doesn't
-                // override it there), but peak_hours is always 24h HH:MM
-                // server-side, so we own the format instead of fighting the
-                // picker.
-                inputMode="numeric"
-                pattern="([01]\d|2[0-3]):[0-5]\d"
-                placeholder="HH:MM"
-                maxLength={5}
-                value={peakStart}
-                onChange={(e) => setPeakStart(e.target.value)}
-                className="w-full text-xs font-mono bg-canvas border border-surface rounded-lg px-2.5 py-1.5 outline-none focus:border-accent/50 text-text"
-                data-test-id="provider-form-peak-start"
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] text-text-subtle mb-1">End (local)</label>
-              <input
-                type="text"
-                inputMode="numeric"
-                pattern="([01]\d|2[0-3]):[0-5]\d"
-                placeholder="HH:MM"
-                maxLength={5}
-                value={peakEnd}
-                onChange={(e) => setPeakEnd(e.target.value)}
-                className="w-full text-xs font-mono bg-canvas border border-surface rounded-lg px-2.5 py-1.5 outline-none focus:border-accent/50 text-text"
-                data-test-id="provider-form-peak-end"
-              />
-            </div>
-          </div>
-        )}
-        {peakEnabled && (
-          <div>
-            <label htmlFor="provider-form-peak-message" className="block text-[11px] text-text-subtle mb-1">
-              Exit message (optional)
-            </label>
-            <textarea
-              id="provider-form-peak-message"
-              rows={2}
-              placeholder="Shown after a blank line when rush exits because of this window"
-              value={peakMessage}
-              onChange={(e) => setPeakMessage(e.target.value)}
-              className="w-full text-xs bg-canvas border border-surface rounded-lg px-2.5 py-1.5 outline-none focus:border-accent/50 text-text placeholder:text-text-muted/50 resize-none"
-              data-test-id="provider-form-peak-message"
-            />
-          </div>
-        )}
-        {peakEnabled && (
-          <p className="text-[10px] text-text-muted">
-            {isPeakHoursActive(peakHours) ? "Active now" : "Outside window"} · overnight windows supported
-          </p>
-        )}
-      </div>
+      <PeakHoursEditor
+        idPrefix="provider-form-peak"
+        value={peak}
+        onChange={setPeak}
+        pausedUntil={peak?.pausedUntil}
+        onPause={(d) => handlePause(d)}
+        onResume={() => handleResume()}
+      />
 
       {error && (
         <p className="text-xs text-red flex items-center gap-1.5">
@@ -404,15 +339,20 @@ function BuiltinProviderEditor({
   onCancel,
 }: {
   id: string;
-  initial: { start: string; end: string; message?: string } | null | undefined;
+  initial: ProviderInfo["peakHours"];
   initialScope?: ConfigScope;
   apiKeySet?: boolean;
   onCancel: () => void;
 }) {
-  const [enabled, setEnabled] = useState(!!initial?.start && !!initial?.end);
-  const [start, setStart] = useState(initial?.start ?? "09:00");
-  const [end, setEnd] = useState(initial?.end ?? "18:00");
-  const [message, setMessage] = useState(initial?.message ?? "");
+  // Same shared weekly editor as the custom form; null = restriction off.
+  // legacyToPolicy maps old { start, end, message } data onto the policy.
+  const [peak, setPeak] = useState<ProviderPeakHoursPolicy | null>(legacyToPolicy(initial));
+  // `in` narrows the peakHours wire union: only the policy shape carries
+  // pausedUntil, so this stays strict-mode clean without a cast.
+  const initialPausedUntil = initial && "pausedUntil" in initial ? initial.pausedUntil : undefined;
+  useEffect(() => {
+    setPeak((draft) => draft ? { ...draft, pausedUntil: initialPausedUntil } : draft);
+  }, [initialPausedUntil]);
   const [scope, setScope] = useState<ConfigScope>(initialScope ?? "global");
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -431,16 +371,15 @@ function BuiltinProviderEditor({
     };
   }, []);
 
-  const canSubmit = !busy && (!enabled || (HH_MM_RE.test(start) && HH_MM_RE.test(end)));
+  const canSubmit = !busy && (peak === null || peakHoursProblems(peak).length === 0);
 
   async function submit() {
-    if (enabled && (!start || !end)) { setError("Start and end are required"); return; }
-    if (enabled && (!HH_MM_RE.test(start) || !HH_MM_RE.test(end))) { setError("Must be in 24-hour HH:MM format"); return; }
+    if (peak && peakHoursProblems(peak).length > 0) { setError(peakHoursProblems(peak)[0]); return; }
     setError(null);
     setBusy(true);
     try {
       await Promise.all([
-        wsRequest("set_provider_peak_hours", { id, peakHours: enabled ? { start, end, message: message.trim() || undefined } : null, scope }),
+        wsRequest("set_provider_peak_hours", { id, peakHours: peak, scope }),
         ...(apiKey.trim() ? [wsRequest("set_provider_key", { providerID: id, apiKey: apiKey.trim() })] : []),
       ]);
       if (disposedRef.current) return;
@@ -451,6 +390,20 @@ function BuiltinProviderEditor({
       setBusy(false);
       setError(e instanceof Error ? e.message : String(e));
     }
+  }
+
+  // Show roundtrip errors inline; broadcasts update only the draft pause field.
+  async function handlePause(duration?: string) {
+    try { await pauseProviderPeakHours({ id, duration, scope }); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  }
+
+  async function handleResume() {
+    try {
+      await resumeProviderPeakHours({ id, scope });
+      if (!disposedRef.current) setPeak((draft) => draft ? { ...draft, pausedUntil: undefined } : draft);
+    }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   }
 
   async function removeKey() {
@@ -519,66 +472,14 @@ function BuiltinProviderEditor({
         </div>
       </div>
 
-      <label className="flex items-center gap-2 text-[11px] text-text-subtle cursor-pointer select-none">
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(e) => setEnabled(e.target.checked)}
-          className="accent-accent"
-          data-test-id="peak-hours-only-toggle"
-        />
-        Restrict to hours
-      </label>
-      {enabled && (
-        <div className="grid grid-cols-2 gap-2" data-test-id="peak-hours-only-inputs">
-          <div>
-            <label className="block text-[11px] text-text-subtle mb-1">Start (local)</label>
-            <input
-              type="text"
-              // Plain HH:MM text field — see the comment on the equivalent
-              // input in ProviderForm above for why not <input type="time">.
-              inputMode="numeric"
-              pattern="([01]\d|2[0-3]):[0-5]\d"
-              placeholder="HH:MM"
-              maxLength={5}
-              value={start}
-              onChange={(e) => setStart(e.target.value)}
-              className="w-full text-xs font-mono bg-canvas border border-surface rounded-lg px-2.5 py-1.5 outline-none focus:border-accent/50 text-text"
-              data-test-id="peak-hours-only-start"
-            />
-          </div>
-          <div>
-            <label className="block text-[11px] text-text-subtle mb-1">End (local)</label>
-            <input
-              type="text"
-              inputMode="numeric"
-              pattern="([01]\d|2[0-3]):[0-5]\d"
-              placeholder="HH:MM"
-              maxLength={5}
-              value={end}
-              onChange={(e) => setEnd(e.target.value)}
-              className="w-full text-xs font-mono bg-canvas border border-surface rounded-lg px-2.5 py-1.5 outline-none focus:border-accent/50 text-text"
-              data-test-id="peak-hours-only-end"
-            />
-          </div>
-        </div>
-      )}
-      {enabled && (
-        <div>
-          <label htmlFor="peak-hours-only-message" className="block text-[11px] text-text-subtle mb-1">
-            Exit message (optional)
-          </label>
-          <textarea
-            id="peak-hours-only-message"
-            rows={2}
-            placeholder="Shown after a blank line when rush exits because of this window"
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            className="w-full text-xs bg-canvas border border-surface rounded-lg px-2.5 py-1.5 outline-none focus:border-accent/50 text-text placeholder:text-text-muted/50 resize-none"
-            data-test-id="peak-hours-only-message"
-          />
-        </div>
-      )}
+      <PeakHoursEditor
+        idPrefix="peak-hours-only"
+        value={peak}
+        onChange={setPeak}
+        pausedUntil={peak?.pausedUntil}
+        onPause={(duration) => handlePause(duration)}
+        onResume={() => handleResume()}
+      />
 
       {error && (
         <p className="text-xs text-red flex items-center gap-1.5">
@@ -699,17 +600,12 @@ function ProviderRow({
                 Key set
               </span>
             )}
-            {info.peakHours && info.peakHours.start && info.peakHours.end && (
-              <span
-                className="inline-flex items-center gap-1 text-[11px] font-mono bg-accent/10 border border-accent/20 rounded-full px-2 py-0.5"
-                data-test-id="provider-peak-badge"
-                title={isPeakHoursActive(info.peakHours) ? "Currently in peak-hours window" : "Outside peak-hours window"}
-              >
-                {info.peakHours.start}–{info.peakHours.end}
-                {isPeakHoursActive(info.peakHours) && (
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
-                )}
-              </span>
+            {info.peakHours && (
+              <PeakHoursStatus
+                providerId={id}
+                configured={!!info.peakHours}
+                summary={peakSummaryText(info.peakHours)}
+              />
             )}
           </div>
           <div className="text-[11px] text-text-subtle font-mono truncate">

@@ -167,6 +167,12 @@ func handleIncoming(ctx context.Context, s *Server, c *Client, raw []byte) {
 		c.dispatch("handleUpdateCustomProvider", msg.ID, func() { handleUpdateCustomProvider(a, c, msg) })
 	case CmdSetProviderPeakHours:
 		c.dispatch("handleSetProviderPeakHours", msg.ID, func() { handleSetProviderPeakHours(a, c, msg) })
+	case CmdPauseProviderPeakHours:
+		c.dispatch("handlePauseProviderPeakHours", msg.ID, func() { handlePauseProviderPeakHours(a, c, msg) })
+	case CmdResumeProviderPeakHours:
+		c.dispatch("handleResumeProviderPeakHours", msg.ID, func() { handleResumeProviderPeakHours(a, c, msg) })
+	case CmdGetPeakHoursStatus:
+		c.dispatch("handleGetPeakHoursStatus", msg.ID, func() { handleGetPeakHoursStatus(a, c, msg) })
 	case CmdUpdateTodos:
 		c.dispatch("handleUpdateTodos", msg.ID, func() { handleUpdateTodos(ctx, a, c, msg) })
 	case CmdGetSessionLiveWork:

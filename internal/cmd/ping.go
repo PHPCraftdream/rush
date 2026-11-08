@@ -233,7 +233,7 @@ func runPing(cmd *cobra.Command, a *app.App, modelType config.SelectedModelType,
 	// now available) and attached to every PingResult built below. Ping is a
 	// diagnostic: this never gates the real network call.
 	var peakHoursLabel *string
-	if s := formatPeakHoursStatus(providerCfg.PeakHours, time.Now()); s != "" {
+	if s := formatProviderPeakHoursStatus(providerCfg.PeakHours, time.Now()); s != "" {
 		peakHoursLabel = &s
 	}
 

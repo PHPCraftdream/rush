@@ -64,7 +64,7 @@ func newCallOptionsTestCoordinator(t *testing.T) (*coordinator, *callCaptureAgen
 	providerCfg := config.ProviderConfig{
 		ID:        providerID,
 		Type:      "openai",
-		PeakHours: peakWindowAroundNow(),
+		PeakHours: &config.ProviderPeakHours{Legacy: peakWindowAroundNow()},
 		Models: []catwalk.Model{
 			{ID: "test-model", Name: "Test Model", DefaultMaxTokens: 4096},
 		},
