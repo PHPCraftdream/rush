@@ -298,18 +298,21 @@ type AgentBusyPayload struct {
 
 // New command constants for settings management.
 const (
-	CmdSetDebug             = "set_debug"
-	CmdAddContextPath       = "add_context_path"
-	CmdRemoveContextPath    = "remove_context_path"
-	CmdGetSkills            = "get_skills"
-	CmdAddSkillsPath        = "add_skills_path"
-	CmdRemoveSkillsPath     = "remove_skills_path"
-	CmdInitializeProject    = "initialize_project"
-	CmdAddCustomProvider    = "add_custom_provider"
-	CmdRemoveCustomProvider = "remove_custom_provider"
-	CmdUpdateCustomProvider = "update_custom_provider"
-	CmdSetProviderPeakHours = "set_provider_peak_hours"
-	CmdUpdateTodos          = "update_todos"
+	CmdSetDebug                = "set_debug"
+	CmdAddContextPath          = "add_context_path"
+	CmdRemoveContextPath       = "remove_context_path"
+	CmdGetSkills               = "get_skills"
+	CmdAddSkillsPath           = "add_skills_path"
+	CmdRemoveSkillsPath        = "remove_skills_path"
+	CmdInitializeProject       = "initialize_project"
+	CmdAddCustomProvider       = "add_custom_provider"
+	CmdRemoveCustomProvider    = "remove_custom_provider"
+	CmdUpdateCustomProvider    = "update_custom_provider"
+	CmdSetProviderPeakHours    = "set_provider_peak_hours"
+	CmdPauseProviderPeakHours  = "pause_provider_peak_hours"
+	CmdResumeProviderPeakHours = "resume_provider_peak_hours"
+	CmdGetPeakHoursStatus      = "get_peak_hours_status"
+	CmdUpdateTodos             = "update_todos"
 )
 
 // SetDebugPayload controls debug logging options.
@@ -362,14 +365,19 @@ type CustomModelPayload struct {
 	CostPer1MOut  float64 `json:"costPer1mOut,omitempty"`
 }
 
-// PeakHoursWirePayload is the wire shape of config.PeakHoursWindow. It
-// uses the same lowerCamelCase JSON keys ("start"/"end") as the config
-// type so the WS layer can marshal/unmarshal it directly without a
-// remapping step.
+// PeakHoursWirePayload is the wire shape of config.ProviderPeakHours. It
+// carries either the legacy single-window form (start/end/message) or the
+// weekly policy form (timezone/windows/message/pausedUntil); a payload
+// mixing both forms is rejected server-side. It uses the same
+// lowerCamelCase JSON keys ("start"/"end") as the config types so the WS
+// layer can marshal/unmarshal directly without a remapping step.
 type PeakHoursWirePayload struct {
-	Start   string `json:"start,omitempty"`
-	End     string `json:"end,omitempty"`
-	Message string `json:"message,omitempty"`
+	Start       string                `json:"start,omitempty"`
+	End         string                `json:"end,omitempty"`
+	Message     string                `json:"message,omitempty"`
+	Timezone    string                `json:"timezone,omitempty"`
+	Windows     []PeakHoursWindowWire `json:"windows,omitempty"`
+	PausedUntil string                `json:"pausedUntil,omitempty"`
 }
 
 // AddCustomProviderPayload adds a fully custom provider.

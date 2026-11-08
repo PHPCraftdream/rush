@@ -177,12 +177,12 @@ type ProviderConfig struct {
 	LiveEfforts map[string]ModelEffortInfo `json:"-"`
 
 	// PeakHours, when non-nil, refuses all requests to this provider
-	// during the given local-time window. Useful for keeping a metered
-	// provider untouched during its expensive daytime band. Interpreted
-	// in the computer's LOCAL time; there is no timezone field and no
-	// weekday mask. An overnight window (start > end) wraps past
-	// midnight. Absent / null = feature off.
-	PeakHours *PeakHoursWindow `json:"peak_hours,omitempty" jsonschema:"description=Optional local-time window during which this provider is refused. Times are HH:MM in the machine local clock\\, no timezone\\, no weekday mask. Overnight window (start > end) wraps past midnight. Absent = feature off.,example={\"start\":\"09:00\",\"end\":\"18:00\"}"`
+	// during peak windows. It accepts either form under the same
+	// peak_hours key: the legacy single local-time window (start/end
+	// HH:MM in the machine local clock, overnight start > end wraps
+	// past midnight) or the weekly policy form (timezone, windows,
+	// paused_until). Absent / null = feature off.
+	PeakHours *ProviderPeakHours `json:"peak_hours,omitempty" jsonschema:"description=Optional peak-hours refusal settings. Legacy form: {start,end,message} with HH:MM in machine local time (overnight start > end wraps past midnight). Weekly form: {timezone,windows,message,paused_until} where each window has days (mon..sun, range or comma list), start HH:MM inclusive and end HH:MM exclusive. Absent = feature off.,example={\"start\":\"09:00\",\"end\":\"18:00\"}"`
 	// Network, when non-nil, overrides outbound network behavior (proxy,
 	// custom DNS/DoH) for this provider. Overrides are PER FIELD: an
 	// empty field inherits the global options.network value. A provider

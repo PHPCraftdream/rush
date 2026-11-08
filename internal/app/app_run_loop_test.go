@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -270,7 +271,7 @@ func TestRunNonInteractive_PeakRefusalNeverSettles(t *testing.T) {
 		cfg, ok := h.app.config.Config().Providers.Get("openaicompat")
 		require.True(t, ok)
 		window := peakWindowCovering(time.Now())
-		cfg.PeakHours = &window
+		cfg.PeakHours = &config.ProviderPeakHours{Legacy: &window}
 		h.app.config.Config().Providers.Set("openaicompat", cfg)
 	})
 

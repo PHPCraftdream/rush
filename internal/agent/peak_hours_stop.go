@@ -7,10 +7,10 @@ import (
 )
 
 // PeakHoursGuidance returns the orchestrator-facing instruction paragraph
-// for ANY peak-hours refusal — both the immediate "refused at the start of
-// a new invocation" case (checkPeakHours' pre-flight call sites) and the
-// "force-stopped an already-in-flight turn" case (the OnStepFinish
-// mid-turn re-check). Both must carry the same guidance: this is not a
+// for ANY peak-hours refusal — the "refused at the start of a new
+// invocation" case (checkPeakHours' pre-flight call sites). The gate is
+// pre-flight only (task #56): a window opening mid-turn never aborts a
+// running stream. The refusal must carry the same guidance: this is not a
 // crash, rush will not retry on its own, and an orchestrating agent
 // should schedule a resume for the exact reopen time rather than retry
 // immediately.
@@ -31,11 +31,20 @@ func PeakHoursGuidance(err error) string {
 	resumeLine := "RESUME AT: (see the time above)"
 	var pe *PeakHoursError
 	if errors.As(err, &pe) {
-		resumeLine = fmt.Sprintf(
-			"RESUME AT: %s (local time, RFC3339: %s)",
-			pe.ReopensAt.Format("2006-01-02 15:04"),
-			pe.ReopensAt.Format(time.RFC3339),
-		)
+		if pe.ReopensAt.IsZero() {
+			resumeLine = "RESUME AT: unknown — the provider is blocked around the clock; do not schedule a timed resume."
+		} else {
+			resumeLine = fmt.Sprintf(
+				"RESUME AT: %s (local time, RFC3339: %s)",
+				pe.ReopensAt.Format("2006-01-02 15:04"),
+				pe.ReopensAt.Format(time.RFC3339),
+			)
+		}
+		// The configured timezone is appended only when one is set, so
+		// legacy-shape output (no timezone configured) stays byte-identical.
+		if pe.Timezone != "" {
+			resumeLine += fmt.Sprintf(" (timezone: %s)", pe.Timezone)
+		}
 	}
 	guidance := fmt.Sprintf(
 		"%s\n\n"+
@@ -58,12 +67,11 @@ func PeakHoursGuidance(err error) string {
 	return guidance
 }
 
-// peakHoursStoppedFinishText builds the (msg, details) pair recorded as the
-// Finish part when a session is force-stopped mid-turn because its
-// provider's peak_hours window opened while the turn was already in
-// flight. checkPeakHours is normally only checked once, at the start of a
-// turn — this is the correction that also stops an ALREADY-RUNNING turn as
-// soon as the window opens, rather than letting it run to completion.
+// peakHoursStoppedFinishText builds the (msg, details) pair recorded as
+// the Finish part when a pre-flight peak-hours refusal renders through
+// the turn-failure path (agent_turn_failure.go). The gate is pre-flight
+// only (task #56): this renders a refusal that blocked the request before
+// it reached the provider.
 func peakHoursStoppedFinishText(err error) (msg, details string) {
 	msg = "Stopped: provider entered its peak-hours window mid-session"
 	details = fmt.Sprintf("%s\n\n%s", err.Error(), PeakHoursGuidance(err))

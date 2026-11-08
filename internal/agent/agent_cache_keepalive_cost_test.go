@@ -147,7 +147,7 @@ func TestFireCacheKeepAlive_SkipsDuringProviderPeakHours(t *testing.T) {
 	w := peakWindowAroundNow()
 	cfg, err := config.Init(env.workingDir, "", false)
 	require.NoError(t, err)
-	cfg.Config().Providers.Set(providerID, config.ProviderConfig{ID: providerID, PeakHours: w})
+	cfg.Config().Providers.Set(providerID, config.ProviderConfig{ID: providerID, PeakHours: &config.ProviderPeakHours{Legacy: w}})
 	a.coord = &coordinator{cfg: cfg}
 
 	lm := &keepAliveCountingModel{provider: providerID}

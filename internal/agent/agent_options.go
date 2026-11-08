@@ -92,10 +92,6 @@ type SessionAgentOptions struct {
 	// tests that want a short, non-zero grace instead of waiting out the
 	// real default.
 	ToolCleanupGrace time.Duration
-	// PeakHoursCheck, when non-nil, is called once per step to re-check
-	// whether the turn's pinned smart model provider has entered its peak_hours
-	// window mid-turn. See the field doc on sessionAgent.peakHoursCheck.
-	PeakHoursCheck func(providerID string) error
 	// SessionPreambleMaxDuration overrides sessionPreambleMaxDurationDefault
 	// when > 0 — the bound on Run()'s DB preamble before the stream watchdog
 	// starts. See sessionPreambleMaxDurationDefault's doc for the full

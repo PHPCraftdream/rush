@@ -401,7 +401,26 @@ func loadFromBytes(configs [][]byte) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := jsons.Merge(configs)
+	// Peak-hours scopes are resolved outside the generic merge: the
+	// weekly policy form must override between scopes entirely, and an
+	// incomplete legacy fragment over a policy is a hard error.
+	stripped, peakOverlays, err := stripPeakHoursOverlays(configs)
+	if err != nil {
+		return nil, err
+	}
+	resolvedPeakHours := make(map[string]json.RawMessage, len(peakOverlays))
+	for id, providerOverlays := range peakOverlays {
+		winner, err := resolvePeakHoursOverlays(id, providerOverlays)
+		if err != nil {
+			return nil, err
+		}
+		resolvedPeakHours[id] = winner
+	}
+	data, err := jsons.Merge(stripped)
+	if err != nil {
+		return nil, err
+	}
+	data, err = applyPeakHoursOverlays(data, resolvedPeakHours)
 	if err != nil {
 		return nil, err
 	}

@@ -165,11 +165,6 @@ const (
 	// SessionAgentOptions.CheckpointInterval.
 	// Fork patch: batch 8.
 	defaultCheckpointInterval = 2 * time.Second
-
-	// peakHoursPollInterval is the mid-turn safety check cadence. The
-	// OnStepFinish check catches normal step boundaries; this ticker catches
-	// long streams, retries, and tool execution.
-	peakHoursPollInterval = 10 * time.Second
 )
 
 // sessionPreambleMaxDurationDefault bounds the DB preamble at the top of
@@ -839,14 +834,6 @@ type sessionAgent struct {
 	// here would conflict with that "removed = free to reschedule" invariant.
 	// See fireCacheKeepAlive and cancelCacheKeepAlive.
 	cacheKeepAliveInFlight *csync.Map[string, cacheKeepAliveInFlightEntry]
-	// peakHoursCheck, when non-nil, is called once per step from
-	// OnStepFinish to re-check whether the turn's pinned smart model provider
-	// has entered its peak_hours refusal window mid-turn. Returns nil while
-	// outside the window. Plumbed from coordinator.buildAgent, which is
-	// the only layer with access to config.ProviderConfig — sessionAgent
-	// itself only knows about Model (SelectedModel + catwalk metadata),
-	// not the provider's peak_hours setting.
-	peakHoursCheck func(providerID string) error
 
 	// runAllowlists, when non-nil, lets the turn loop activate each call's
 	// carried restricted-run policy (SessionAgentCall.RunAllowlist) at
@@ -921,7 +908,6 @@ func NewSessionAgent(
 		timeoutHardCap:             opts.TimeoutHardCap,
 		toolMaxDuration:            opts.ToolMaxDuration,
 		toolCleanupGrace:           opts.ToolCleanupGrace,
-		peakHoursCheck:             opts.PeakHoursCheck,
 		runAllowlists:              opts.RunAllowlists,
 		restrictedRuns:             opts.RestrictedRuns,
 		sessionPreambleMaxDuration: opts.SessionPreambleMaxDuration,

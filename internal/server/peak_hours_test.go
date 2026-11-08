@@ -28,34 +28,34 @@ func TestPeakHoursFromWire_EmptyWindow(t *testing.T) {
 	w, err := peakHoursFromWire(&PeakHoursWirePayload{})
 	require.NoError(t, err)
 	require.NotNil(t, w)
-	require.Equal(t, "", w.Start)
-	require.Equal(t, "", w.End)
+	require.Equal(t, "", w.Legacy.Start)
+	require.Equal(t, "", w.Legacy.End)
 }
 
 func TestPeakHoursFromWire_Valid(t *testing.T) {
 	w, err := peakHoursFromWire(&PeakHoursWirePayload{Start: "09:00", End: "18:00"})
 	require.NoError(t, err)
-	require.Equal(t, &config.PeakHoursWindow{Start: "09:00", End: "18:00"}, w)
+	require.Equal(t, &config.ProviderPeakHours{Legacy: &config.PeakHoursWindow{Start: "09:00", End: "18:00"}}, w)
 }
 
 func TestPeakHoursFromWire_CarriesMessage(t *testing.T) {
 	w, err := peakHoursFromWire(&PeakHoursWirePayload{Start: "09:00", End: "18:00", Message: "Ping #ops-oncall first."})
 	require.NoError(t, err)
-	require.Equal(t, &config.PeakHoursWindow{Start: "09:00", End: "18:00", Message: "Ping #ops-oncall first."}, w)
+	require.Equal(t, &config.ProviderPeakHours{Legacy: &config.PeakHoursWindow{Start: "09:00", End: "18:00", Message: "Ping #ops-oncall first."}}, w)
 }
 
 func TestPeakHoursFromWire_EmptyMessageOmitted(t *testing.T) {
 	// No message set is the common case and must not synthesize one.
 	w, err := peakHoursFromWire(&PeakHoursWirePayload{Start: "09:00", End: "18:00"})
 	require.NoError(t, err)
-	require.Empty(t, w.Message)
+	require.Empty(t, w.Legacy.Message)
 }
 
 func TestPeakHoursFromWire_ValidOvernight(t *testing.T) {
 	w, err := peakHoursFromWire(&PeakHoursWirePayload{Start: "22:00", End: "06:00"})
 	require.NoError(t, err)
-	require.Equal(t, "22:00", w.Start)
-	require.Equal(t, "06:00", w.End)
+	require.Equal(t, "22:00", w.Legacy.Start)
+	require.Equal(t, "06:00", w.Legacy.End)
 }
 
 func TestPeakHoursFromWire_MissingEnd(t *testing.T) {
@@ -90,12 +90,12 @@ func TestPeakHoursToWire_Nil(t *testing.T) {
 }
 
 func TestPeakHoursToWire_Set(t *testing.T) {
-	w := peakHoursToWire(&config.PeakHoursWindow{Start: "22:00", End: "06:00"})
+	w := peakHoursToWire(&config.ProviderPeakHours{Legacy: &config.PeakHoursWindow{Start: "22:00", End: "06:00"}})
 	require.Equal(t, &PeakHoursWirePayload{Start: "22:00", End: "06:00"}, w)
 }
 
 func TestPeakHoursToWire_CarriesMessage(t *testing.T) {
-	w := peakHoursToWire(&config.PeakHoursWindow{Start: "22:00", End: "06:00", Message: "Ping #ops-oncall first."})
+	w := peakHoursToWire(&config.ProviderPeakHours{Legacy: &config.PeakHoursWindow{Start: "22:00", End: "06:00", Message: "Ping #ops-oncall first."}})
 	require.Equal(t, &PeakHoursWirePayload{Start: "22:00", End: "06:00", Message: "Ping #ops-oncall first."}, w)
 }
 

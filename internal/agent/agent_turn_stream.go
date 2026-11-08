@@ -67,8 +67,6 @@ type turnStreamConfig struct {
 	notifyUI        func() error
 	drainPendingUI  func()
 
-	setPeakHoursAbortErr func(error) bool
-
 	wd               streamWatchdog
 	watchdogCauseVal *atomic.Int32
 	toolMaxDuration  time.Duration
@@ -132,8 +130,6 @@ type turnStream struct {
 	stopCheckpoint  func()
 	notifyUI        func() error
 	drainPendingUI  func()
-
-	setPeakHoursAbortErr func(error) bool
 
 	wd               streamWatchdog
 	watchdogCauseVal *atomic.Int32
@@ -199,34 +195,33 @@ type turnStream struct {
 
 func newTurnStream(cfg turnStreamConfig) *turnStream {
 	return &turnStream{
-		a:                    cfg.a,
-		ctx:                  cfg.ctx,
-		genCtx:               cfg.genCtx,
-		cancel:               cfg.cancel,
-		call:                 cfg.call,
-		att:                  cfg.att,
-		fatalTools:           cfg.fatalTools,
-		genID:                cfg.genID,
-		stall:                cfg.stall,
-		smartModel:           cfg.smartModel,
-		promptPrefix:         cfg.promptPrefix,
-		historyIDs:           cfg.historyIDs,
-		currentSession:       cfg.currentSession,
-		bumpActivity:         cfg.bumpActivity,
-		toolStarted:          cfg.toolStarted,
-		toolFinished:         cfg.toolFinished,
-		startCheckpoint:      cfg.startCheckpoint,
-		stopCheckpoint:       cfg.stopCheckpoint,
-		notifyUI:             cfg.notifyUI,
-		drainPendingUI:       cfg.drainPendingUI,
-		setPeakHoursAbortErr: cfg.setPeakHoursAbortErr,
-		wd:                   cfg.wd,
-		watchdogCauseVal:     cfg.watchdogCauseVal,
-		toolMaxDuration:      cfg.toolMaxDuration,
-		timeoutHardCap:       cfg.timeoutHardCap,
-		idleTimeout:          cfg.idleTimeout,
-		phase:                phaseToolBoundary,
-		sanitizedToolCalls:   make(map[string]bool),
+		a:                  cfg.a,
+		ctx:                cfg.ctx,
+		genCtx:             cfg.genCtx,
+		cancel:             cfg.cancel,
+		call:               cfg.call,
+		att:                cfg.att,
+		fatalTools:         cfg.fatalTools,
+		genID:              cfg.genID,
+		stall:              cfg.stall,
+		smartModel:         cfg.smartModel,
+		promptPrefix:       cfg.promptPrefix,
+		historyIDs:         cfg.historyIDs,
+		currentSession:     cfg.currentSession,
+		bumpActivity:       cfg.bumpActivity,
+		toolStarted:        cfg.toolStarted,
+		toolFinished:       cfg.toolFinished,
+		startCheckpoint:    cfg.startCheckpoint,
+		stopCheckpoint:     cfg.stopCheckpoint,
+		notifyUI:           cfg.notifyUI,
+		drainPendingUI:     cfg.drainPendingUI,
+		wd:                 cfg.wd,
+		watchdogCauseVal:   cfg.watchdogCauseVal,
+		toolMaxDuration:    cfg.toolMaxDuration,
+		timeoutHardCap:     cfg.timeoutHardCap,
+		idleTimeout:        cfg.idleTimeout,
+		phase:              phaseToolBoundary,
+		sanitizedToolCalls: make(map[string]bool),
 	}
 }
 

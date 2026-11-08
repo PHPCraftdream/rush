@@ -57,6 +57,9 @@ var commandScopes = map[string]string{
 	"remove_skills_path":         "admin",  // Removes a filesystem path for skills.
 	"remove_custom_provider":     "admin",  // Removes provider configuration.
 	"set_provider_peak_hours":    "admin",  // Changes provider operating policy.
+	"pause_provider_peak_hours":  "admin",  // Pauses provider operating policy.
+	"resume_provider_peak_hours": "admin",  // Resumes provider operating policy.
+	"get_peak_hours_status":      "admin",  // Reads provider operating policy and status.
 	"update_todos":               "run",    // Updates task state.
 	"log_client_event":           "run",    // Records a client event.
 	"log_client_error":           "run",    // Records a client error.
