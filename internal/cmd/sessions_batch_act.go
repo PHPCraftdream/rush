@@ -20,6 +20,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
@@ -199,23 +200,29 @@ func compactBatchLiveSessions(ctx context.Context, a *app.App, dataDir string) (
 	return offenders, nil
 }
 
-// batchKillLiveNote is the `sessions kill` guard: a session
-// whose batch roots are held (or whose batch read was incomplete) must never
-// be reported as at rest just because its lock file is free -- batch nodes
-// are not process-lock holders. Returns "" when at rest or unreadable
-// (the read itself reports its own conservative note).
-func batchKillLiveNote(ctx context.Context, dataDir, sessionID string) string {
+// batchKillLiveNote разделяет физически живой/неизвестный scope и долг доставки.
+func batchKillLiveNote(ctx context.Context, dataDir, sessionID string) batchKillScopeState {
+	if _, err := os.Stat(storepath.StoreV1Path(dataDir)); err != nil {
+		if os.IsNotExist(err) {
+			return batchKillScopeState{} // Rescue не создаёт отсутствующую БД ради чтения.
+		}
+		return batchKillScopeState{Note: fmt.Sprintf("batch store is unreadable for session %s: %v", sessionID, err), Unconfirmed: true}
+	}
 	conn, err := db.Connect(ctx, dataDir)
 	if err != nil {
-		return fmt.Sprintf("note: batch work for session %s could not be read (%v); treat live batch work as unknown", sessionID, err)
+		return batchKillScopeState{Note: fmt.Sprintf("note: batch work for session %s could not be read (%v); treat live batch work as unknown", sessionID, err), Unconfirmed: true}
 	}
 	defer func() { _ = db.ReleaseConn(conn) }()
 	reader := session.NewBatchLiveReader(db.New(conn), dataDir)
 	facts := reduceBatchSessionFacts(ctx, reader, session.NewBatchStore(conn), db.New(conn), []string{sessionID})
 	f := facts[sessionID]
+	state := batchKillScopeState{Unconfirmed: f.Unknown}
+	for _, root := range f.Roots {
+		state.Unconfirmed = state.Unconfirmed || root.Held
+	}
 	if reason := batchSessionGuardReason(f); reason != "" {
-		return fmt.Sprintf("note: batch work for session %s is not stopped by killing the lock holder: %s "+
+		state.Note = fmt.Sprintf("note: batch work for session %s is not stopped by killing the lock holder: %s "+
 			"(inspect with `rush sessions jobs %s`; stop it with `rush batch stop`)", sessionID, reason, sessionID)
 	}
-	return ""
+	return state
 }
