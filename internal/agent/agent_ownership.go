@@ -509,6 +509,13 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 				return
 			}
 
+			if call.batchQuestion != nil {
+				slog.Error("agent: refusing to durably enqueue a call carrying batch question capability",
+					"session_id", call.SessionID, "logical_call_id", call.LogicalCallID)
+				callErrs[i] = fmt.Errorf("%w (session=%s)", ErrBatchQuestionCapabilityNotDurable, call.SessionID)
+				return
+			}
+
 			// P2-1: Generate idempotency key from LogicalCallID (stable per logical request)
 			// instead of timestamp (which changes on every retry). Fallback to timestamp
 			// with warning if LogicalCallID is empty (should not happen in normal flow).

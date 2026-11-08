@@ -29,6 +29,9 @@ type batchAgentRunRequest struct {
 	Policy          *batchLeafPolicyContext
 	pctHandoff      *pctDelegationHandoff // pct: owned by the executor through confirmed disposal.
 	CallCredentials bool
+	// QuestionRoute is carried verbatim from the durable payload; false
+	// means the incarnation must never hold or publish questions.
+	QuestionRoute bool
 	// R11F round-2 (P1-3): the RECORDED tool name of the delegation leaf.
 	// Dispatch resolves the pinned leaf by this name and names the call
 	// with it, so an "agentic_fetch" payload reaches its OWN leaf, never
@@ -168,18 +171,20 @@ func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 			return ""
 		}(),
 		Policy: p.Policy, Tool: p.Tool, CallCredentials: p.CallCredentials,
-		pctHandoff: pctClaimCapturedHandoff(env, p), // pct: claim the captured outer handoff once at executor start.
-		Ingress:    callIngress(env),
+		QuestionRoute: p.QuestionRoute,
+		pctHandoff:    pctClaimCapturedHandoff(env, p), // pct: claim the captured outer handoff once at executor start.
+		Ingress:       callIngress(env),
 	}
 	e := &batchAgentExecution{
 		cache: env.OutputCache, nodeID: l.ID, rootID: batchOutputRoot(l.ID),
-		deps:        f.deps,
-		req:         req,
-		pctHandoff:  req.pctHandoff,
-		scope:       newBatchAgentScope(),
-		driverDone:  make(chan struct{}),
-		watcherDone: make(chan struct{}),
-		finished:    make(chan struct{}),
+		deps:          f.deps,
+		req:           req,
+		pctHandoff:    req.pctHandoff,
+		scope:         newBatchAgentScope(),
+		driverDone:    make(chan struct{}),
+		watcherDone:   make(chan struct{}),
+		finished:      make(chan struct{}),
+		questionRoute: req.QuestionRoute,
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	e.cancel = cancel
@@ -296,6 +301,7 @@ type batchAgentExecution struct {
 	finished         chan struct{}  // Closed once, when the scope result is fixed.
 	internal         sync.WaitGroup // Adapter goroutines; zero again after Dispose.
 	questionSequence uint64
+	questionRoute    bool
 }
 
 var (
@@ -317,6 +323,13 @@ func (e *batchAgentExecution) heldDepth() (int, bool) {
 
 // ask implements the host question channel of one incarnation.
 func (e *batchAgentExecution) askBatchQuestion(ctx context.Context, depth int, question string) (json.RawMessage, error) {
+	// Runtime guard, ahead of hold AND publish: a no-route incarnation
+	// (stale wrapper, rebuilt payload without the field, or a forged
+	// ask call) can never park the scope or emit a child_question
+	// notice, so there is no eternal await and no fake success.
+	if !e.questionRoute {
+		return nil, ErrBatchQuestionNoRoute
+	}
 	h, err := e.scope.hold(depth)
 	if err != nil {
 		return nil, err

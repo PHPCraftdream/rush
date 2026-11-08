@@ -334,7 +334,8 @@ func batchOneItemSpec(inv BatchInvocation, call fantasy.ToolCall, input json.Raw
 		SessionID:  inv.SessionID,
 		Input:      input,
 		RegistryID: inv.RegistryID,
-		Policy:     &inv.Policy,
+		Policy:        &inv.Policy,
+		QuestionRoute: inv.QuestionRoute,
 	}
 	timeout := time.Duration(0)
 	if intent != nil {

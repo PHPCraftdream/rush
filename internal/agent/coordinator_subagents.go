@@ -307,6 +307,31 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	driverModel := *pinnedModel
 	// Driver slot provenance is maintained independently of refresh outcome.
 	driverSlotRole := dispatchSlotRole
+	// ONE shaping point for the batch child's per-call toolset: both
+	// the delegation turn and every later wake-driven turn must see
+	// the same ask surface (wrapped for a route-ful incarnation,
+	// stripped for a no-route one). Nil for non-batch delegations —
+	// their turns keep the agent's own base toolset, byte-identical.
+	var batchChildTools []fantasy.AgentTool
+	var batchQuestionState *batchChildQuestionState
+	if lifecycleBound {
+		if sa, ok := params.Agent.(*sessionAgent); ok {
+			batchChildTools, _ = buildBatchQuestionTools(sa.tools.Copy(), ctx)
+		}
+		// Freeze the same capability for the wake path: the driver template
+		// (callTemplate) is what a later Drain turn re-runs, and that turn's
+		// context — a background callback context — carries neither the
+		// route marker nor the held-answer binding. A lifecycle-bound child
+		// needs both; missing context cannot grant an answer route.
+		binding, bindingOK := batchAgentQuestionBindingFrom(ctx)
+		route, routeOK := batchQuestionRouteFrom(ctx)
+		batchQuestionState = &batchChildQuestionState{
+			Depth:     batchAgentQuestionDepth(ctx),
+			Route:     routeOK && route && bindingOK && binding.Ask != nil,
+			Binding:   binding,
+			BindingOK: bindingOK,
+		}
+	}
 	callTemplate := SessionAgentCall{
 		SessionID:        session.ID,
 		MaxOutputTokens:  maxTokens,
@@ -320,6 +345,10 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		SmartModel:       &driverModel,
 		Credentials:      callCreds,
 		CallOptions:      inheritWebPolicyCallOptions(ctx),
+	}
+	if lifecycleBound {
+		callTemplate.Tools = batchChildTools
+		callTemplate.batchQuestion = batchQuestionState
 	}
 	if params.pctHandoff != nil {
 		pctReleases = params.pctHandoff.pctClaimDriver()
@@ -380,9 +409,8 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			CallOptions:      inheritWebPolicyCallOptions(ctx),
 		}
 		if lifecycleBound {
-			if sa, ok := params.Agent.(*sessionAgent); ok {
-				call.Tools, _ = buildBatchQuestionTools(sa.tools.Copy(), ctx)
-			}
+			call.Tools = batchChildTools
+			call.batchQuestion = batchQuestionState
 		}
 		result, runErr, _ := c.runAwaitingAdmission(ctx, params.Agent, call)
 		return result, runErr
@@ -425,6 +453,40 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		return fantasy.NewTextErrorResponse("Sub-agent completed but produced no text output."), nil
 	}
 	return fantasy.NewTextResponse(output), nil
+}
+
+// inheritBatchQuestionState pins a registered batch delegation's frozen
+// question capability onto a freshly built call for the same child
+// session, together with the delegation's shaped child toolset. Without
+// it, a replacement call built from the parent's context runs the child
+// as a non-batch session: the raw ask tool is reachable and descendant
+// batch invocations default to route-ful. Top-level sessions (no
+// registered driver) and non-batch delegations (no capability on the
+// template) are untouched, byte-identical.
+func (c *coordinator) inheritBatchQuestionState(ctx context.Context, childSessionID string, call *SessionAgentCall) error {
+	if call == nil || call.batchQuestion != nil {
+		return nil
+	}
+	driver, ok := c.subAgentDrivers.get(childSessionID)
+	if !ok {
+		state, err := c.rebuiltChildQuestionState(ctx, childSessionID)
+		if err != nil {
+			return err
+		}
+		call.batchQuestion = state
+		if state != nil && call.Tools != nil {
+			call.Tools = stripAskQuestionTools(call.Tools)
+		}
+		return nil
+	}
+	if driver.call.batchQuestion == nil {
+		return nil
+	}
+	call.batchQuestion = driver.call.batchQuestion
+	if driver.call.Tools != nil {
+		call.Tools = driver.call.Tools
+	}
+	return nil
 }
 
 func subAgentOutput(result *fantasy.AgentResult) string {

@@ -402,6 +402,15 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 		}
 		return false, fmt.Errorf("%w (session=%s)", ErrDiskProviderNotDurable, sessionID)
 	}
+	// The capability is process-local like the provider above: the peeked
+	// row is left untouched (peek never deletes) as the operator's record
+	// instead of being consumed into a row a restart could only replay as
+	// a non-batch session.
+	if call.batchQuestion != nil {
+		slog.Error("coordinator: refusing to durably enqueue a call carrying batch question capability",
+			"session_id", call.SessionID, "logical_call_id", call.LogicalCallID)
+		return false, fmt.Errorf("%w (session=%s)", ErrBatchQuestionCapabilityNotDurable, call.SessionID)
+	}
 
 	// Reference the existing row; the agent must not re-create it.
 	call.ExistingMessageID = pi.MessageID
@@ -724,6 +733,11 @@ func (c *coordinator) startDetachedRun(ctx context.Context, call SessionAgentCal
 		slog.Error("coordinator: refusing to durably enqueue a call carrying per-call credentials",
 			"session_id", call.SessionID, "logical_call_id", call.LogicalCallID)
 		return fmt.Errorf("%w (session=%s)", ErrCredentialSetNotDurable, call.SessionID)
+	}
+	if call.batchQuestion != nil {
+		slog.Error("coordinator: refusing to durably enqueue a call carrying batch question capability",
+			"session_id", call.SessionID, "logical_call_id", call.LogicalCallID)
+		return fmt.Errorf("%w (session=%s)", ErrBatchQuestionCapabilityNotDurable, call.SessionID)
 	}
 
 	// P2-1: Generate idempotency key from LogicalCallID (stable per logical

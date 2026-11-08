@@ -17,8 +17,19 @@ import (
 )
 
 var (
-	batchCmd     = &cobra.Command{Use: "batch", Short: "Run and inspect durable job batches"}
-	batchRunCmd  = &cobra.Command{Use: "run", Args: cobra.NoArgs, RunE: batchRun}
+	batchCmd    = &cobra.Command{Use: "batch", Short: "Run and inspect durable job batches"}
+	batchRunCmd = &cobra.Command{
+		Use: "run", Args: cobra.NoArgs, RunE: batchRun, Long: `Run a batch spec (JSON file or standard input) in this process.
+
+The batch runs standalone and unattended: the owner session has no
+answering surface, so agent leaves are submitted WITHOUT a held-question
+answer route. ask_question is not advertised to them and any stale or
+forged ask call is rejected without a hold or a notice.
+
+Batches whose questions must be answerable go through the served intake
+(rush api batch run / POST /batches) and are answered with
+rush api batch answer; a held question stops the wait with exit code 6.`,
+	}
 	batchShowCmd = &cobra.Command{Use: "show <root-id|prefix>", Args: cobra.ExactArgs(1), RunE: batchShow}
 	batchAddCmd  = &cobra.Command{Use: "add <root-or-parent>", Args: cobra.ExactArgs(1), RunE: batchAdd}
 	batchStopCmd = &cobra.Command{Use: "stop <root-id|node-id>", Args: cobra.ExactArgs(1), RunE: batchStop}
@@ -107,7 +118,7 @@ func batchRun(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	a.Permissions.AutoApproveSession(sess.ID)
-	root, err := a.BatchSubmit(cmd.Context(), sess.ID, spec)
+	root, err := a.BatchSubmitRefUnattended(cmd.Context(), sess.ID, spec)
 	if err != nil {
 		return err
 	}

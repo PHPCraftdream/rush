@@ -56,7 +56,18 @@ func (p batchCoordinatorQuestionPublisher) PublishChildQuestion(ctx context.Cont
 	return nil
 }
 
+// buildBatchQuestionTools shapes the per-call child toolset of a batch
+// delegation. A no-route incarnation advertises NO ask_question at all; a
+// route-ful incarnation gets ask_question wrapped by the held-answer
+// bridge.
 func buildBatchQuestionTools(list []fantasy.AgentTool, ctx context.Context) ([]fantasy.AgentTool, error) {
+	// A no-route incarnation advertises NO ask_question at all: the
+	// stale tool must not be reachable from the prompt history of a
+	// resumed child either. Stripped via the shared stripAskQuestionTools
+	// helper so the strip surface can never drift from runTurn's floor.
+	if route, ok := batchQuestionRouteFrom(ctx); ok && !route {
+		return stripAskQuestionTools(list), nil
+	}
 	if _, ok := batchAgentQuestionBindingFrom(ctx); !ok {
 		return list, nil
 	}
@@ -81,6 +92,14 @@ func (t batchAgentAskQuestionTool) SetProviderOptions(p fantasy.ProviderOptions)
 }
 
 func (t batchAgentAskQuestionTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	// Stale-wrapper gate, ahead of the binding fallback: a no-route
+	// incarnation must never reach the raw ask tool, whose force-finish
+	// would park the run awaiting an answer nobody can deliver. The
+	// marker is present exactly inside batch-driven incarnations; its
+	// absence keeps the raw legacy contract for non-batch sessions.
+	if route, ok := batchQuestionRouteFrom(ctx); ok && !route {
+		return fantasy.NewTextErrorResponse("ask_question is not available: this batch incarnation has no answer route (unattended batch); finish the work without asking"), nil
+	}
 	binding, ok := batchAgentQuestionBindingFrom(ctx)
 	if !ok {
 		return t.AgentTool.Run(ctx, call)
@@ -99,6 +118,9 @@ func (t batchAgentAskQuestionTool) Run(ctx context.Context, call fantasy.ToolCal
 	}
 	answer, err := binding.Ask(ctx, depth, question)
 	if err != nil {
+		if errors.Is(err, ErrBatchQuestionNoRoute) {
+			return fantasy.NewTextErrorResponse("ask_question is not available: this batch incarnation has no answer route (unattended batch); finish the work without asking"), nil
+		}
 		// Снятый hold нельзя продолжать как обычную ошибку инструмента.
 		return fantasy.NewTextErrorResponse(err.Error()), err
 	}

@@ -33,19 +33,32 @@ type batchCLIBinding struct {
 }
 
 // BatchCLIBuilder binds trusted constructors to a concrete coordinator.
+// QuestionRoute is the intake's trusted answer-route decision, made once per
+// builder: true stamps batch leaves with a held-question answer route, false
+// leaves them unattended.
 type BatchCLIBuilder struct {
-	coord   *coordinator
-	ingress BatchWorkIngress
+	coord         *coordinator
+	ingress       BatchWorkIngress
+	questionRoute bool
 }
 
 // NewBatchCLIBuilder requires the installed ingress and the concrete Rush
 // coordinator, ensuring trees execute through its pinned policy tools.
+// Its callers are the served intake and parent-owned flows whose surfaces
+// carry an answer route; only NewBatchCLIBuilderWithQuestionRoute may stamp
+// the unattended (no-route) decision.
 func NewBatchCLIBuilder(c Coordinator, in BatchWorkIngress) (*BatchCLIBuilder, error) {
+	return NewBatchCLIBuilderWithQuestionRoute(c, in, true)
+}
+
+// NewBatchCLIBuilderWithQuestionRoute builds like NewBatchCLIBuilder and
+// stamps the answer-route capability carried by the calling intake surface.
+func NewBatchCLIBuilderWithQuestionRoute(c Coordinator, in BatchWorkIngress, questionRoute bool) (*BatchCLIBuilder, error) {
 	cc, ok := c.(*coordinator)
 	if !ok || in == nil {
 		return nil, errors.New("batch CLI: installed coordinator and runtime are required")
 	}
-	return &BatchCLIBuilder{coord: cc, ingress: in}, nil
+	return &BatchCLIBuilder{coord: cc, ingress: in, questionRoute: questionRoute}, nil
 }
 
 func (b *BatchCLIBuilder) bind(ctx context.Context, sessionID, messageID string) (batchCLIBinding, error) {
@@ -129,7 +142,8 @@ func (b *BatchCLIBuilder) translate(ctx context.Context, bind batchCLIBinding, s
 		_ = leaf
 		payload, err := json.Marshal(batchLeafPayload{
 			Tool: task.Tool, ToolCallID: uuid.NewString(), SessionID: bind.session, Input: task.Input, RegistryID: bind.id,
-			Policy: &batchLeafPolicyContext{RegistryID: bind.id, MessageID: bind.message, SupportsImages: bind.images, ModelName: bind.model, FolderScope: bind.folder, RunAllowlist: bind.allow, RestrictedToolset: bind.id},
+			Policy:        &batchLeafPolicyContext{RegistryID: bind.id, MessageID: bind.message, SupportsImages: bind.images, ModelName: bind.model, FolderScope: bind.folder, RunAllowlist: bind.allow, RestrictedToolset: bind.id},
+			QuestionRoute: b.questionRoute,
 		})
 		if err != nil {
 			return jobbatch.Spec{}, err

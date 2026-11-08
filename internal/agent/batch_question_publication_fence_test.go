@@ -55,9 +55,10 @@ func TestBatchQuestionPublicationSerializesWithAnswerAcceptance(t *testing.T) {
 	defer release()
 	resolver := &publicationOrderResolver{publication: pub}
 	e := &batchAgentExecution{
-		scope: newBatchAgentScope(),
-		req:   batchAgentRunRequest{NodeID: "root.1", Token: 7, SessionID: "owner", ChildSessionID: "child"},
-		deps:  batchAgentDeps{QuestionPublisher: pub, QuestionResolver: resolver},
+		scope:         newBatchAgentScope(),
+		req:           batchAgentRunRequest{NodeID: "root.1", Token: 7, SessionID: "owner", ChildSessionID: "child", QuestionRoute: true},
+		deps:          batchAgentDeps{QuestionPublisher: pub, QuestionResolver: resolver},
+		questionRoute: true,
 	}
 	type askResult struct {
 		answer json.RawMessage

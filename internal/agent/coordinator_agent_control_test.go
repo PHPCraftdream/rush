@@ -100,6 +100,7 @@ func newControlRealAgent(t *testing.T, env fakeEnv, srvURL string) SessionAgent 
 // (delegation state and ListDelegations read them).
 func newControlCoordinator(t *testing.T) (*coordinator, fakeEnv) {
 	t.Helper()
+	isolateAllGlobalConfigPaths(t)
 	env := testEnv(t)
 	srv := singleTurnSSEServer(nil)
 	t.Cleanup(srv.Close)

@@ -263,6 +263,12 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 		}
 	}
 
+	questionState, err := c.rebuiltChildQuestionState(ctx, data.SessionID)
+	if err != nil {
+		releasePrep()
+		return SessionAgentCall{}, err
+	}
+
 	// R12-H2b §2.2 fence transfer: every fallible rebuild step has passed.
 	// Bind a fresh Call owner to the fence's live binding, register its
 	// release on the rebuilt call's build scope (closed by
@@ -337,6 +343,7 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 		// skip mb.submitted for this call (P0-1: avoid double-execution).
 		// See agent.SessionAgentCall.FromDurableQueue documentation.
 		FromDurableQueue: true,
+		batchQuestion:    questionState,
 	}, nil
 }
 
@@ -359,6 +366,14 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
+	if call.batchQuestion == nil {
+		state, err := c.rebuiltChildQuestionState(ctx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		call.batchQuestion = state
+	}
+	ctx = armBatchQuestionTurnContext(ctx, call)
 	// Durable calls bypass runInternal, so wire both result identities here.
 	// The session callback is also required when a background pump execution is
 	// later observed by DrainSessionNow.

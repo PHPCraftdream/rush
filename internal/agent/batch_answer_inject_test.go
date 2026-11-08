@@ -55,7 +55,7 @@ func TestAWa5AgentChildAnswerViaRunnerInject(t *testing.T) {
 	root := "root-a5i"
 	payload, err := json.Marshal(batchLeafPayload{
 		Tool: "agent", ToolCallID: "call-a5i-agent", SessionID: env.sessionID,
-		Input: json.RawMessage(`{}`), RegistryID: env.registryID,
+		Input: json.RawMessage(`{}`), RegistryID: env.registryID, QuestionRoute: true,
 	})
 	require.NoError(t, err)
 	_, err = env.install.RunnerHandle.Submit(env.ctx, jobbatch.SubmitRequest{

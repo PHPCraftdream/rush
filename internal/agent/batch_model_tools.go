@@ -68,6 +68,15 @@ func modelInvocationAtCall(ctx context.Context, inv BatchInvocation, call fantas
 	}
 	inv.Policy.FolderScope = folderScopeSpecFrom(ctx)
 	inv.Policy.RunAllowlist = runAllowlistSpecFrom(ctx)
+	// The calling session's own answer route: absent marker = a
+	// top-level session whose operator/UI/orchestrator surface is the
+	// established route; present marker = a batch incarnation
+	// inheriting its durable payload value. A no-route caller therefore
+	// mints only no-route agent leaves.
+	inv.QuestionRoute = true
+	if route, ok := batchQuestionRouteFrom(ctx); ok {
+		inv.QuestionRoute = route
+	}
 	// A template-pinned DiskBindingID propagates verbatim: nested batches
 	// and Add inherit the binding, never re-resolving to another provider.
 	return inv, nil
@@ -229,7 +238,7 @@ func modelBatchSpecAt(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRe
 			// silently prefer one.
 			return jobbatch.Spec{}, errors.New("item timeout and the leaf tool input's timeout are ambiguous; provide at most one")
 		}
-		leafPayload := batchLeafPayload{Tool: it.Tool, ToolCallID: fmt.Sprintf("%s-item-%s%d", inv.CallID, path, index), SessionID: inv.SessionID, Input: input, RegistryID: inv.RegistryID, Policy: &inv.Policy}
+		leafPayload := batchLeafPayload{Tool: it.Tool, ToolCallID: fmt.Sprintf("%s-item-%s%d", inv.CallID, path, index), SessionID: inv.SessionID, Input: input, RegistryID: inv.RegistryID, Policy: &inv.Policy, QuestionRoute: inv.QuestionRoute}
 		timeout := time.Duration(0)
 		if it.Timeout != "" {
 			timeout, e = time.ParseDuration(it.Timeout)

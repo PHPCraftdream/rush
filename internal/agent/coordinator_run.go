@@ -157,6 +157,13 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 	// replacement and may not start for a while, so the gap between "options
 	// computed" and "turn starts" is unbounded rather than a few lines.
 	pinned.pin(&call)
+	// A batch delegation child's freshly built call (interrupt replacement,
+	// interrupt tick, InterruptAndSend) must carry the delegation's frozen
+	// question capability and its shaped child toolset — buildCall resolves
+	// from the caller's context and cannot know them.
+	if err := c.inheritBatchQuestionState(ctx, sessionID, &call); err != nil {
+		return SessionAgentCall{}, err
+	}
 	return call, nil
 }
 

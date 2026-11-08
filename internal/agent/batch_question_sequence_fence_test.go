@@ -83,7 +83,7 @@ func TestStaleAnswerCannotResolveNextQuestionSameDepth(t *testing.T) {
 	tl.addf("agent root %s submitted", root)
 	payload, err := json.Marshal(batchLeafPayload{
 		Tool: "agent", ToolCallID: "call-stale-seq", SessionID: env.sessionID,
-		Input: json.RawMessage(`{}`), RegistryID: env.registryID,
+		Input: json.RawMessage(`{}`), RegistryID: env.registryID, QuestionRoute: true,
 	})
 	require.NoError(t, err)
 	_, err = env.install.RunnerHandle.Submit(env.ctx, jobbatch.SubmitRequest{

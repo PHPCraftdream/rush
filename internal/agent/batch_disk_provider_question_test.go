@@ -619,7 +619,7 @@ func (env *questionInstall) submitAgentRoot() jobbatch.ID {
 	env.t.Helper()
 	payload, err := json.Marshal(batchLeafPayload{
 		Tool: "agent", ToolCallID: "call-q8", SessionID: env.sessionID,
-		Input: json.RawMessage(`{}`), RegistryID: env.registryID,
+		Input: json.RawMessage(`{}`), RegistryID: env.registryID, QuestionRoute: true,
 		Policy: &batchLeafPolicyContext{
 			RegistryID: env.registryID, RestrictedToolset: env.fingerprint,
 			DiskProvider: true, DiskBindingID: env.bindingID,

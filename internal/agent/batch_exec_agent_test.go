@@ -222,7 +222,7 @@ func (r *batchAgentTestReader) DescendantsLive(context.Context, batchAgentRunReq
 	return live, complete
 }
 
-func batchAgentTestRun(t *testing.T, deps batchAgentDeps, factory *batchAgentTestFactory) (*batchAgentExecution, *batchAgentTestFactory, *batchAgentTestReader, chan jobbatch.Result) {
+func batchAgentTestRunWithPayload(t *testing.T, deps batchAgentDeps, factory *batchAgentTestFactory, payload json.RawMessage) (*batchAgentExecution, *batchAgentTestFactory, *batchAgentTestReader, chan jobbatch.Result) {
 	t.Helper()
 	reader := newBatchAgentTestReader(false, false)
 	tr := batchAgentTraceFor(t)
@@ -240,8 +240,6 @@ func batchAgentTestRun(t *testing.T, deps batchAgentDeps, factory *batchAgentTes
 		deps.Poll = time.Millisecond
 	}
 	e := newBatchExecutor(batchLeafEnv{}, map[string]batchLeafFamily{batchKindAgent: newBatchAgentFamily(deps)})
-	payload, err := json.Marshal(batchLeafPayload{Tool: "agent", ToolCallID: "call", SessionID: t.Name(), Input: json.RawMessage(`{}`)})
-	require.NoError(t, err)
 	reports := make(chan jobbatch.Result, 4)
 	exec, err := e.Start(context.Background(), jobbatch.Launch{ID: "root.1", Token: 1, Task: jobbatch.TaskSpec{Kind: batchKindAgent, Payload: payload}}, func(r jobbatch.Result) {
 		tr.addf("scope report: state=%s summary=%q", r.State, r.Summary)
@@ -257,6 +255,16 @@ func batchAgentTestRun(t *testing.T, deps batchAgentDeps, factory *batchAgentTes
 	execE := exec.(*batchAgentExecution)
 	rig.holder.Store(execE)
 	return execE, factory, reader, reports
+}
+
+// batchAgentTestRun submits the shared route-ful fixture payload: every test
+// driving the ask path goes through an incarnation whose durable payload
+// carries question_route=true.
+func batchAgentTestRun(t *testing.T, deps batchAgentDeps, factory *batchAgentTestFactory) (*batchAgentExecution, *batchAgentTestFactory, *batchAgentTestReader, chan jobbatch.Result) {
+	t.Helper()
+	payload, err := json.Marshal(batchLeafPayload{Tool: "agent", ToolCallID: "call", SessionID: t.Name(), Input: json.RawMessage(`{}`), QuestionRoute: true})
+	require.NoError(t, err)
+	return batchAgentTestRunWithPayload(t, deps, factory, payload)
 }
 
 func batchAgentTestNoReport(t *testing.T, reports chan jobbatch.Result, why string) {
@@ -281,7 +289,7 @@ func batchAgentTestReport(t *testing.T, reports chan jobbatch.Result) jobbatch.R
 
 func batchAgentTestPayload(t *testing.T, session string) json.RawMessage {
 	t.Helper()
-	payload, err := json.Marshal(batchLeafPayload{Tool: "agent", ToolCallID: "call", SessionID: session, Input: json.RawMessage(`{}`)})
+	payload, err := json.Marshal(batchLeafPayload{Tool: "agent", ToolCallID: "call", SessionID: session, Input: json.RawMessage(`{}`), QuestionRoute: true})
 	require.NoError(t, err)
 	return payload
 }
