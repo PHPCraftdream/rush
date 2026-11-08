@@ -16,29 +16,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// parsePeakHoursWindow parses a "HH:MM-HH:MM" window string (e.g.
-// "09:00-18:00") into a *config.PeakHoursWindow, validating the HH:MM
-// values via PeakHoursWindow.Validate. An empty value or the literal
-// "off" returns nil (feature off). Returns an error for malformed input.
-func parsePeakHoursWindow(raw string) (*config.PeakHoursWindow, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" || strings.EqualFold(raw, "off") {
-		return nil, nil
-	}
-	parts := strings.SplitN(raw, "-", 2)
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid peak-hours %q: expected HH:MM-HH:MM", raw)
-	}
-	w := &config.PeakHoursWindow{
-		Start: strings.TrimSpace(parts[0]),
-		End:   strings.TrimSpace(parts[1]),
-	}
-	if err := w.Validate(); err != nil {
-		return nil, err
-	}
-	return w, nil
-}
-
 var providersCmd = &cobra.Command{
 	Use:   "providers",
 	Short: "Inspect and edit LLM-provider configuration",
@@ -121,13 +98,7 @@ rush providers list --json | jq 'select(.api_key_present)'
 			if len(p.Models) > 0 {
 				modelCount = fmt.Sprintf("%d", len(p.Models))
 			}
-			peak := "—"
-			if p.PeakHours != nil {
-				peak = p.PeakHours.Start + "-" + p.PeakHours.End
-				if p.PeakHours.InPeakHours(time.Now()) {
-					peak += " *"
-				}
-			}
+			peak := peakHoursSummary(p.PeakHours)
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				id,
 				dash(p.Name),
@@ -175,16 +146,19 @@ var providersShowCmd = &cobra.Command{
 		fmt.Fprintf(os.Stdout, "base_url:    %s\n", dash(item.BaseURL))
 		fmt.Fprintf(os.Stdout, "models:      %d\n", item.Models)
 		fmt.Fprintf(os.Stdout, "oauth:       %t\n", item.HasOAuth)
-		if p.PeakHours != nil {
+		if ph := p.PeakHours; ph != nil && ph.Legacy != nil {
 			state := "not in peak"
-			if p.PeakHours.InPeakHours(time.Now()) {
+			if ph.Legacy.InPeakHours(time.Now()) {
 				state = "in peak"
 			}
-			fmt.Fprintf(os.Stdout, "peak hours:  %s-%s (currently: %s)\n", p.PeakHours.Start, p.PeakHours.End, state)
-			if p.PeakHours.Message != "" {
-				// Show the configured refusal message (set via --peak-hours-message).
-				fmt.Fprintf(os.Stdout, "peak hours message: %s\n", p.PeakHours.Message)
+			fmt.Fprintf(os.Stdout, "peak hours:  %s-%s (currently: %s)\n", ph.Legacy.Start, ph.Legacy.End, state)
+			// Show the configured refusal message (set via --peak-hours-message).
+			if msg := ph.EffectiveMessage(); msg != "" {
+				fmt.Fprintf(os.Stdout, "peak hours message: %s\n", msg)
 			}
+		} else if ph := p.PeakHours; ph != nil && ph.Policy != nil {
+			// Weekly policy detail lives in 'rush providers peak-hours show'.
+			fmt.Fprintf(os.Stdout, "peak hours:  %s\n", peakHoursSummary(ph))
 		}
 		return nil
 	},
@@ -288,36 +262,74 @@ rush providers set openai --peak-hours 09:00-18:00 --peak-hours-message "Low quo
 			// The merged provider view this command already uses for
 			// every other field (workspace overrides global).
 			var existing *config.PeakHoursWindow
-			if p, ok := a.Store().Config().Providers.Get(id); ok && p.PeakHours != nil {
-				w := *p.PeakHours
-				existing = &w
+			existingMessage := ""
+			if p, ok := a.Store().Config().Providers.Get(id); ok {
+				existingMessage = p.PeakHours.EffectiveMessage()
+				if p.PeakHours != nil && p.PeakHours.Legacy != nil {
+					w := *p.PeakHours.Legacy
+					existing = &w
+				}
 			}
 			if peakHoursWindow != nil {
 				// --peak-hours alone only carries HH:MM-HH:MM: preserve
 				// the existing message; --peak-hours-message overrides it.
 				if messageChanged {
 					peakHoursWindow.Message = peakHoursMessage
-				} else if existing != nil {
-					peakHoursWindow.Message = existing.Message
+				} else {
+					peakHoursWindow.Message = existingMessage
 				}
 			} else {
 				// Message-only update: rewrite the effective window with
 				// the new message so the target scope keeps a complete,
 				// valid peak_hours object, never a bare message fragment.
 				if existing == nil {
-					return fmt.Errorf("provider %q has no peak-hours window — set one first with `rush providers set %s --peak-hours HH:MM-HH:MM`", id, id)
+					// The effective entry may be a weekly policy rather than
+					// a legacy window; rewrite an owned copy of it with the
+					// new message instead of refusing.
+					var eff *config.ProviderConfig
+					if p, ok := a.Store().Config().Providers.Get(id); ok {
+						eff = &p
+					}
+					if eff == nil || eff.PeakHours == nil || eff.PeakHours.Policy == nil {
+						return fmt.Errorf("provider %q has no peak-hours window — set one first with `rush providers set %s --peak-hours HH:MM-HH:MM`", id, id)
+					}
+					pol := *eff.PeakHours.Policy
+					pol.Windows = append([]config.PeakHoursWindowSpec(nil), eff.PeakHours.Policy.Windows...)
+					pol.Message = peakHoursMessage
+					updates["providers."+escapeSJSONPathComponent(id)+".peak_hours"] = &config.ProviderPeakHours{Policy: &pol}
+				} else {
+					peakHoursWindow = existing
+					peakHoursWindow.Message = peakHoursMessage
 				}
-				peakHoursWindow = existing
-				peakHoursWindow.Message = peakHoursMessage
 			}
-			updates["providers."+escapeSJSONPathComponent(id)+".peak_hours"] = peakHoursWindow
+			// Legacy empty/equal windows mean "off" — clear the field
+			// instead of writing a shell object (see NormalizeForWrite).
+			// Skipped for policy-form rewrites, which were already stored.
+			if peakHoursWindow != nil {
+				if (peakHoursWindow.Start == "" && peakHoursWindow.End == "") || peakHoursWindow.Start == peakHoursWindow.End {
+					clearPeakHours = true
+				} else {
+					current, _ := a.Store().Config().Providers.Get(id)
+					updates["providers."+escapeSJSONPathComponent(id)+".peak_hours"] = peakEntryWithLegacyWindow(current.PeakHours, peakHoursWindow)
+				}
+			}
 		}
 
 		if clearPeakHours {
-			if err := a.Store().RemoveConfigField(scope, "providers."+escapeSJSONPathComponent(id)+".peak_hours"); err != nil {
-				return fmt.Errorf("failed to clear peak_hours: %w", err)
+			fieldKey := "providers." + escapeSJSONPathComponent(id) + ".peak_hours"
+			if scope == config.ScopeWorkspace {
+				// Explicit off persists a null override so it suppresses a
+				// global policy instead of falling back to inheritance.
+				if err := a.Store().SetConfigField(scope, fieldKey, nil); err != nil {
+					return fmt.Errorf("failed to clear peak_hours: %w", err)
+				}
+				fmt.Fprintf(os.Stderr, "set peak_hours to explicit off (null) for provider %q in %s scope\n", id, scope)
+			} else {
+				if err := a.Store().RemoveConfigField(scope, fieldKey); err != nil {
+					return fmt.Errorf("failed to clear peak_hours: %w", err)
+				}
+				fmt.Fprintf(os.Stderr, "cleared peak_hours for provider %q in %s scope\n", id, scope)
 			}
-			fmt.Fprintf(os.Stderr, "cleared peak_hours for provider %q in %s scope\n", id, scope)
 		}
 		if len(updates) > 0 {
 			if err := a.Store().SetConfigFields(scope, updates); err != nil {
@@ -905,7 +917,7 @@ func init() {
 	providersSetCmd.Flags().String("type", "", "Provider type: openai|openai-compat|anthropic|gemini|azure|vertexai")
 	providersSetCmd.Flags().String("name", "", "Human-readable display name shown in the WUI")
 	providersSetCmd.Flags().Bool("disabled", false, "Mark provider as disabled (kept in config, ignored at runtime)")
-	providersSetCmd.Flags().String("peak-hours", "", "Peak-hours window as HH:MM-HH:MM (local time). Pass 'off' or empty to clear.")
+	providersSetCmd.Flags().String("peak-hours", "", "Daily peak-hours window as HH:MM-HH:MM. Legacy entries use local time; weekly entries keep their timezone and pause. Pass 'off' or empty to clear; --local preserves explicit off instead of inheriting the global policy.")
 	providersSetCmd.Flags().String("peak-hours-message", "", "Custom text shown when a request is refused during the peak-hours window. Empty string clears it. Requires an existing --peak-hours window.")
 
 	for _, c := range []*cobra.Command{providersEnableCmd, providersDisableCmd, providersAddCmd} {

@@ -200,34 +200,21 @@ func (a *sessionAgent) handleWatchdogFire(
 	}
 }
 
-// normalizeTurnError folds the two out-of-band ways a turn can end into the
-// single error every downstream consumer reads, so nothing past this point
-// has to know either shape.
+// normalizeTurnError folds the out-of-band way a turn can end (the
+// ask-question tool error) into the single error every downstream consumer
+// reads, so nothing past this point has to know either shape.
 //
 // Extracted from runTurn — one of only two blocks in that function that
 // cross no boundary worth worrying about: no defer, no early return, no
 // closure created, no lock held, two inputs and one output. See the
 // "runTurn is not being decomposed" commit for why the rest of runTurn
 // stays where it is.
-func normalizeTurnError(err error, getPeakHoursAbortErr func() error) error {
-	// If the peak-hours mid-turn check fired, it had to call cancelFn()
-	// to break fantasy's loop (OnStepFinish errors alone don't stop it).
-	// Depending on exactly when fantasy notices the cancellation relative
-	// to finishing the in-flight step, agent.Stream can come back with
-	// context.Canceled OR — if the step's own work had already fully
-	// completed by the time cancelFn() fired — a nil error, as if the
-	// turn ended cleanly. Either way, once peakHoursAbortErr is set it is
-	// authoritative for this Run() call: force it in unconditionally so
-	// the coordinator and RunNonInteractive never mistake this abort for
-	// a successful completion or a bare, unexplained cancellation.
-	if peakErr := getPeakHoursAbortErr(); peakErr != nil {
-		err = peakErr
-	}
+func normalizeTurnError(err error) error {
 	// The ask_question tool reports "agent asked a question" as the Go
 	// error its Run() returns; fantasy's executeSingleTool treats a
 	// non-nil tool error as critical and propagates it as the whole
-	// Stream() call's error, so it surfaces here exactly like the
-	// peak-hours abort err normalized just above. tools.AskQuestionError
+	// Stream() call's error, so it surfaces here exactly like any other
+	// stream error. tools.AskQuestionError
 	// (package tools) exists only because package tools cannot import
 	// this package back (this package already imports tools — see the
 	// comment on AskQuestionError in ask_question.go for the full import
@@ -750,12 +737,8 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		idleTimeout:      idleTimeout,
 	})
 
-	// Aborts this turn when the provider enters its peak-hours window
-	// mid-stream. See peakHoursWatcher's doc in agent_turn_peakhours.go.
-	peakHours := newPeakHoursWatcher(a, call.SessionID, ts.smartModel.ModelCfg.Provider, ctx, genCtx, &ts.mu, &ts.currentAssistant)
-	peakHours.bypass = peakHoursBypassed(call)
-	ts.setPeakHoursAbortErr = peakHours.setAbortErr
-	getPeakHoursAbortErr := peakHours.getAbortErr
+	// The peak-hours gate is pre-flight only (task #56): a window opening
+	// mid-turn never aborts a running stream.
 
 	// Mid-stream persistence (Fork patch: batch 8). See
 	// turnCheckpointWriter's doc in agent_turn_checkpoint.go for the full
@@ -772,11 +755,6 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	uiNotifier.start()
 	ts.notifyUI = uiNotifier.notify
 	ts.drainPendingUI = uiNotifier.drainPending
-
-	peakHoursWatchDone := peakHours.start()
-	if a.peakHoursCheck != nil {
-		defer func() { cancel(); <-peakHoursWatchDone }()
-	}
 
 	// Don't send MaxOutputTokens if 0 — some providers (e.g. LM Studio) reject it
 	var maxOutputTokens *int64
@@ -855,7 +833,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// so subsequent calls hit the nil guard and return immediately (no
 	// second wait, no double-close).
 	ts.stopCheckpoint()
-	err = normalizeTurnError(err, getPeakHoursAbortErr)
+	err = normalizeTurnError(err)
 	if err != nil {
 		return ts.handleStreamFailure(result, err, userMessageCreated)
 	}

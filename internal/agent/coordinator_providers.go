@@ -826,7 +826,7 @@ func (c *coordinator) buildProviderWithValuesAndAuth(cfg *config.Config, provide
 	if err != nil {
 		return nil, err
 	}
-	return NewHeartbeatProvider(p), nil
+	return c.withPeakHoursRequestGate(NewHeartbeatProvider(p), providerCfg), nil
 }
 
 func (c *coordinator) buildProviderWithValuesInner(cfg *config.Config, providerCfg config.ProviderConfig, model config.SelectedModel, isSubAgent bool, apiKey, baseURL string, allowAmbientAuth bool) (fantasy.Provider, error) {

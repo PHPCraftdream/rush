@@ -36,7 +36,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 	// paths) disagreed with each other -- an internally inconsistent agent
 	// built across two config generations. Threading this one cfg through
 	// closes that gap for all of the above; only explicitly-declared live
-	// *policy* reads remain (see PeakHoursCheck below), plus MCP tools,
+	// *policy* reads remain, plus MCP tools,
 	// which are deliberately NOT pinned -- see the MCP block in buildTools
 	// for why.
 	cfg, _ := c.cfg.Snapshot()
@@ -127,16 +127,6 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		OnSessionIdle:      c.onSessionIdleHook,
 		RestrictedRuns:     restrictedRunAuthorizer(c.permissions),
 		CheckpointInterval: checkpointInterval, // Fork patch: batch 8
-		// Fork patch: peak-hours mid-turn re-check. Deliberately LIVE, not
-		// pinned to cfg above: this is a runtime *policy* check re-evaluated
-		// on every mid-turn tick for the lifetime of the turn (see
-		// checkLivePeakHours), not a one-shot construction-time read, so
-		// pinning it to the build-time generation would defeat its purpose
-		// (a peak_hours edit made by another process while this turn is
-		// running must still take effect).
-		PeakHoursCheck: func(providerID string) error {
-			return c.checkLivePeakHours(providerID)
-		},
 	})
 
 	// R1-1: resolve the per-call worker-active predicate SYNCHRONOUSLY,

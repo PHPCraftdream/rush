@@ -1,5 +1,5 @@
 import { atom, computed } from "nanostores";
-import type { Session, Message, ConfigPayload, MCPState, Todo, SkillInfo } from "./types";
+import type { Session, Message, ConfigPayload, MCPState, Todo, SkillInfo, ProviderPeakHoursPolicy, ProviderPeakHoursStatus } from "./types";
 import { isAsyncCompletionNotice, indexAsyncJobCompletions } from "./asyncJobCompletion";
 import { buildMyPrompts, completionStatuses, mergeCompletionIndex } from "./completionIndex";
 import { $batchWorkBySession } from "./batchWork";
@@ -442,7 +442,7 @@ function roleFieldPrefix(role: ModelRole): string {
   return `${role[0].toUpperCase()}${role.slice(1)}`;
 }
 
-import { ws, forgetSessionRequestState, bumpDeleteHighWaterMark } from "./ws";
+import { ws, wsRequest, forgetSessionRequestState, bumpDeleteHighWaterMark } from "./ws";
 
 // The outbound command wrappers moved to store_commands.ts when the
 // 1000-line limit landed. Re-exported here so every existing
@@ -767,7 +767,7 @@ export type ConfigScope = "global" | "local";
 export function addCustomProvider(payload: {
   id: string; name?: string; type: string; baseUrl: string; apiKey?: string;
   models?: { id: string; name: string; contextWindow?: number; costPer1mIn?: number; costPer1mOut?: number }[];
-  peakHours?: { start: string; end: string; message?: string } | null;
+  peakHours?: ProviderPeakHoursPolicy | null;
   scope?: ConfigScope;
 }, msgID?: string) {
   ws.send("add_custom_provider", payload, msgID);
@@ -780,7 +780,7 @@ export function removeCustomProvider(id: string, scope?: ConfigScope, msgID?: st
 export function updateCustomProvider(payload: {
   oldId: string; id: string; name?: string; type: string; baseUrl: string; apiKey?: string;
   models?: { id: string; name: string; contextWindow?: number; costPer1mIn?: number; costPer1mOut?: number }[];
-  peakHours?: { start: string; end: string; message?: string } | null;
+  peakHours?: ProviderPeakHoursPolicy | null;
   scope?: ConfigScope;
 }, msgID?: string) {
   ws.send("update_custom_provider", payload, msgID);
@@ -795,10 +795,40 @@ export function updateCustomProvider(payload: {
 // key, or model list.
 export function setProviderPeakHours(payload: {
   id: string;
-  peakHours: { start: string; end: string; message?: string } | null;
+  peakHours: ProviderPeakHoursPolicy | null;
   scope?: ConfigScope;
 }, msgID?: string) {
   ws.send("set_provider_peak_hours", payload, msgID);
+}
+
+// pauseProviderPeakHours temporarily suspends a provider's peak-hours
+// enforcement (any provider, built-in or custom) until a backend-computed
+// expiry: either a relative duration ("2h", "7d"), an absolute RFC3339
+// "until" timestamp, or NO duration at all — the server then picks the end
+// of the currently active band. The server resolves and stores the
+// resulting pausedUntil — the browser never derives it. The returned
+// promise rejects on server errors; the caller renders them.
+export async function pauseProviderPeakHours(payload: { id: string; duration?: string; until?: string; scope?: ConfigScope }) {
+  const reply = await wsRequest<{ status: string }>("pause_provider_peak_hours", payload);
+  return reply.payload;
+}
+
+// resumeProviderPeakHours clears an earlier pause, restoring immediate
+// enforcement of the provider's configured peak-hours policy. The returned
+// promise rejects on server errors; the caller renders them.
+export async function resumeProviderPeakHours(payload: { id: string; scope?: ConfigScope }) {
+  const reply = await wsRequest<{ status: string }>("resume_provider_peak_hours", payload);
+  return reply.payload;
+}
+
+// fetchPeakHoursStatus asks the backend for its authoritative peak-hours
+// evaluation (get_peak_hours_status): whether each provider is currently in
+// peak/paused/blocked and when the next transition happens. The browser must
+// never compute this itself — all state and timestamps come from the server;
+// the UI only formats them.
+export async function fetchPeakHoursStatus(id?: string): Promise<{ checkedAt: string; statuses: ProviderPeakHoursStatus[] }> {
+  const reply = await wsRequest<{ checkedAt: string; statuses: ProviderPeakHoursStatus[] }>("get_peak_hours_status", { id });
+  return reply.payload ?? { checkedAt: "", statuses: [] };
 }
 
 // ── My prompts history ─────────────────────────────────────────────────────

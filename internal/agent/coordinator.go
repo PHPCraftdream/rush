@@ -67,10 +67,12 @@ var (
 )
 
 // PeakHoursError is the concrete error checkPeakHours returns while a
-// provider is inside its configured peak_hours window. It carries the exact
-// reopen time as a time.Time (not just formatted into the error string) so
-// callers that need to act on it precisely — e.g. an orchestrating agent
-// scheduling a resume — don't have to parse Error()'s text.
+// provider is inside its configured peak_hours window (and not paused).
+// It carries
+// the exact reopen time as a time.Time (not just formatted into the error
+// string) so callers that need to act on it precisely — e.g. an
+// orchestrating agent scheduling a resume — don't have to parse Error()'s
+// text.
 type PeakHoursError struct {
 	ProviderID string
 	Start, End string // HH:MM, as configured
@@ -78,9 +80,18 @@ type PeakHoursError struct {
 	// Message is the operator-authored config.PeakHoursWindow.Message, if
 	// any — appended to PeakHoursGuidance's output.
 	Message string
+	// Timezone is the configured peak-hours timezone string ("" = machine
+	// local), carried through so guidance can name it.
+	Timezone string
 }
 
 func (e *PeakHoursError) Error() string {
+	if e.ReopensAt.IsZero() {
+		return fmt.Sprintf(
+			"provider %s is in peak hours (%s–%s), refusing with no scheduled reopen (blocked around the clock)",
+			e.ProviderID, e.Start, e.End,
+		)
+	}
 	return fmt.Sprintf(
 		"provider %s is in peak hours (%s–%s), refusing until %s",
 		e.ProviderID, e.Start, e.End, e.ReopensAt.Format("15:04"),

@@ -67,8 +67,6 @@ type turnStreamConfig struct {
 	notifyUI        func() error
 	drainPendingUI  func()
 
-	setPeakHoursAbortErr func(error) bool
-
 	wd               streamWatchdog
 	watchdogCauseVal *atomic.Int32
 	toolMaxDuration  time.Duration
@@ -132,8 +130,6 @@ type turnStream struct {
 	stopCheckpoint  func()
 	notifyUI        func() error
 	drainPendingUI  func()
-
-	setPeakHoursAbortErr func(error) bool
 
 	wd               streamWatchdog
 	watchdogCauseVal *atomic.Int32
@@ -219,7 +215,6 @@ func newTurnStream(cfg turnStreamConfig) *turnStream {
 		stopCheckpoint:       cfg.stopCheckpoint,
 		notifyUI:             cfg.notifyUI,
 		drainPendingUI:       cfg.drainPendingUI,
-		setPeakHoursAbortErr: cfg.setPeakHoursAbortErr,
 		wd:                   cfg.wd,
 		watchdogCauseVal:     cfg.watchdogCauseVal,
 		toolMaxDuration:      cfg.toolMaxDuration,

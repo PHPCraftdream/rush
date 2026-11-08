@@ -64,28 +64,66 @@ func handleRemoveProviderKey(a *appPkg.App, c *Client, msg WSMessage) {
 // ── Custom providers ──────────────────────────────────────────────────────────
 
 // peakHoursFromWire converts the optional WS payload into a validated
-// config.PeakHoursWindow. Returns (nil, nil) when the payload is absent
+// config.ProviderPeakHours. The payload carries either the legacy
+// single-window form (start/end/message) or the weekly policy form
+// (timezone/windows/pausedUntil, optionally with message); mixing the two
+// forms is rejected. Returns (nil, nil) when the payload is absent
 // (feature off). Returns (nil, err) when the payload fails validation.
 // The caller is responsible for replying with EventError on err.
-func peakHoursFromWire(w *PeakHoursWirePayload) (*config.PeakHoursWindow, error) {
+func peakHoursFromWire(w *PeakHoursWirePayload) (*config.ProviderPeakHours, error) {
 	if w == nil {
 		return nil, nil
+	}
+	if w.Timezone != "" || w.Windows != nil || w.PausedUntil != "" {
+		if w.Start != "" || w.End != "" {
+			return nil, fmt.Errorf("peakHours mixes legacy start/end with the weekly windows form")
+		}
+		windows := make([]config.PeakHoursWindowSpec, len(w.Windows))
+		for i, win := range w.Windows {
+			windows[i] = config.PeakHoursWindowSpec{Days: win.Days, Start: win.Start, End: win.End}
+		}
+		policy := config.PeakHoursPolicy{
+			Timezone:    w.Timezone,
+			Windows:     windows,
+			Message:     w.Message,
+			PausedUntil: w.PausedUntil,
+		}
+		if err := policy.Validate(); err != nil {
+			return nil, err
+		}
+		return &config.ProviderPeakHours{Policy: &policy}, nil
 	}
 	window := config.PeakHoursWindow{Start: w.Start, End: w.End, Message: w.Message}
 	if err := window.Validate(); err != nil {
 		return nil, err
 	}
-	return &window, nil
+	return &config.ProviderPeakHours{Legacy: &window}, nil
 }
 
-// peakHoursToWire converts a config.PeakHoursWindow pointer into the WS
-// payload shape. Returns nil when the window is absent (feature off) so
-// the JSON field is omitted.
-func peakHoursToWire(w *config.PeakHoursWindow) *PeakHoursWirePayload {
+// peakHoursToWire converts a config.ProviderPeakHours pointer into the WS
+// payload shape, preserving which form (legacy single window or weekly
+// policy) the entry uses. Returns nil when the entry is absent (feature
+// off) so the JSON field is omitted.
+func peakHoursToWire(w *config.ProviderPeakHours) *PeakHoursWirePayload {
 	if w == nil {
 		return nil
 	}
-	return &PeakHoursWirePayload{Start: w.Start, End: w.End, Message: w.Message}
+	if w.Legacy != nil {
+		return &PeakHoursWirePayload{Start: w.Legacy.Start, End: w.Legacy.End, Message: w.Legacy.Message}
+	}
+	if w.Policy == nil {
+		return nil
+	}
+	windows := make([]PeakHoursWindowWire, len(w.Policy.Windows))
+	for i, win := range w.Policy.Windows {
+		windows[i] = PeakHoursWindowWire{Days: win.Days, Start: win.Start, End: win.End}
+	}
+	return &PeakHoursWirePayload{
+		Timezone:    w.Policy.Timezone,
+		Windows:     windows,
+		Message:     w.Policy.Message,
+		PausedUntil: w.Policy.PausedUntil,
+	}
 }
 
 // scopeFromWire resolves a provider-config wire scope string ("global" /
@@ -143,7 +181,9 @@ func handleAddCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 		Models:    models,
 		PeakHours: peakHours,
 	}
-	if err := store.SetConfigField(scopeFromWire(p.Scope), fmt.Sprintf("providers.%s", p.ID), providerCfg); err != nil {
+	scope := scopeFromWire(p.Scope)
+	field := fmt.Sprintf("providers.%s", p.ID)
+	if err := store.SetConfigFields(scope, customProviderWriteFields(field, providerCfg, scope)); err != nil {
 		slog.Warn("ws: failed to persist custom provider", "id", p.ID, "err", err)
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
@@ -246,7 +286,7 @@ func handleUpdateCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 			return
 		}
 	}
-	if err := store.SetConfigField(scope, newProviderField, providerCfg); err != nil {
+	if err := store.SetConfigFields(scope, customProviderWriteFields(newProviderField, providerCfg, scope)); err != nil {
 		slog.Warn("ws: failed to persist updated custom provider", "id", p.ID, "err", err)
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
@@ -278,7 +318,12 @@ func handleUpdateCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 // single-field write, mirroring `rush providers set <id> --peak-hours` on
 // the CLI side. This is what lets the web UI manage peak hours for a
 // built-in provider without needing to know/round-trip its type, base URL,
-// API key, or model list.
+// API key, or model list. The payload may use the legacy single-window
+// form or the weekly policy form; both are validated before persisting.
+// A null/off value persists an explicit null override in the workspace
+// scope (suppressing a global policy) and removes the field in the global
+// scope (inherit-nothing); persistence failure fails the request without
+// mutating in-memory state.
 func handleSetProviderPeakHours(a *appPkg.App, c *Client, msg WSMessage) {
 	var p SetProviderPeakHoursPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
@@ -307,19 +352,35 @@ func handleSetProviderPeakHours(a *appPkg.App, c *Client, msg WSMessage) {
 	}
 	scope := scopeFromWire(p.Scope)
 	fieldKey := fmt.Sprintf("providers.%s.peak_hours", p.ID)
-	if peakHours == nil {
-		if err := store.RemoveConfigField(scope, fieldKey); err != nil {
+	// NormalizeForWrite drops zero-valued entries so the stored field is
+	// either a real window/policy or removed entirely. A nil result means
+	// the entry must be removed instead of written.
+	normalized := peakHours.NormalizeForWrite()
+	if normalized == nil {
+		if scope == config.ScopeWorkspace {
+			// Explicit off persists an explicit null override so it
+			// suppresses a global policy instead of deleting the local
+			// key and falling back to inheritance.
+			if err := store.SetConfigField(scope, fieldKey, nil); err != nil {
+				slog.Warn("ws: failed to persist explicit peak_hours off", "id", p.ID, "err", err)
+				c.reply(msg.ID, EventError, nil, fmt.Sprintf("failed to persist peak_hours: %v", err))
+				return
+			}
+		} else if err := store.RemoveConfigField(scope, fieldKey); err != nil {
 			slog.Warn("ws: failed to clear provider peak_hours", "id", p.ID, "err", err)
+			c.reply(msg.ID, EventError, nil, fmt.Sprintf("failed to persist peak_hours: %v", err))
+			return
 		}
 	} else {
-		if err := store.SetConfigField(scope, fieldKey, peakHours); err != nil {
+		if err := store.SetConfigField(scope, fieldKey, normalized); err != nil {
 			c.reply(msg.ID, EventError, nil, fmt.Sprintf("failed to persist peak_hours: %v", err))
 			return
 		}
 	}
 	// Update the in-memory merged map so buildConfigWire reflects the
-	// change immediately, without a full config reload.
-	providerCfg.PeakHours = peakHours
+	// change immediately, without a full config reload. A nil normalized
+	// reflects the removal.
+	providerCfg.PeakHours = normalized
 	cfg.Providers.Set(p.ID, providerCfg)
 	if wire, ok := buildConfigWire(a); ok {
 		c.hub.Broadcast(EventConfig, wire)

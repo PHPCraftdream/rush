@@ -629,9 +629,10 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 		c.Providers.Set(id, pc)
 	}
 
-	// Validate peak_hours windows for every configured provider (known,
-	// custom, and CLI). A malformed HH:MM string is a hard config-load
-	// error, not a silent skip.
+	// Validate peak_hours for every configured provider (known, custom,
+	// and CLI) in either form: the legacy single window's HH:MM strings
+	// or the weekly policy's timezone, windows, and pause stamp. A
+	// malformed value is a hard config-load error, not a silent skip.
 	for id, pc := range c.Providers.Seq2() {
 		if pc.PeakHours == nil {
 			continue

@@ -10,7 +10,9 @@ import (
 // is refused. Start and End are "HH:MM" in the computer's local time.
 // An overnight window (Start > End, e.g. "22:00"–"06:00") wraps past
 // midnight. There is no weekday mask and no timezone field: the feature
-// is intentionally local-clock only.
+// is intentionally local-clock only. This is the LEGACY peak-hours
+// form, still accepted under providers.<id>.peak_hours; the weekly
+// policy form lives in PeakHoursPolicy.
 type PeakHoursWindow struct {
 	Start string `json:"start" jsonschema:"description=Window start in local time HH:MM,example=09:00"`
 	End   string `json:"end"   jsonschema:"description=Window end in local time HH:MM,example=18:00"`
