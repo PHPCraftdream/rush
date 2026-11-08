@@ -296,12 +296,13 @@ func TestRunNonInteractive_ChildQuestionRoundTrip(t *testing.T) {
 	require.Equal(t, before.rootID, afterRoot, "the held node's root must not change")
 	require.Equal(t, e3QuestionToken.Load(), afterToken,
 		"the persisted token must equal the marker's token")
-	var questionRows int
+	var questionRows, resolvedRows int
 	require.NoError(t, application.DB().QueryRowContext(context.Background(),
-		`SELECT COUNT(*) FROM session_notices
-		 WHERE owner = ? AND kind = 'child_question' AND delivery IN ('pending','done')`,
-		sessionID).Scan(&questionRows))
+		`SELECT COUNT(*), COALESCE(SUM(CASE WHEN delivery = 'void' AND wake = 0 THEN 1 ELSE 0 END), 0)
+		 FROM session_notices WHERE owner = ? AND kind = 'child_question'`,
+		sessionID).Scan(&questionRows, &resolvedRows))
 	require.Equal(t, 1, questionRows, "exactly one committed held-question notice")
+	require.Equal(t, 1, resolvedRows, "accepted answer closes the committed question notice")
 	var questionText string
 	require.NoError(t, application.DB().QueryRowContext(context.Background(),
 		`SELECT text FROM session_notices

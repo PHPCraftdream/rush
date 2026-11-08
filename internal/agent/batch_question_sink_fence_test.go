@@ -16,7 +16,8 @@ func TestBatchQuestionSinkRejectsRetiredRoot(t *testing.T) {
 	createSessionRow(t, db.New(conn), ctx, child)
 	root, node := seedDelegation(t, conn, owner, "retired-question-call", child, 7)
 	commitMarkerNotice(t, conn, owner, node, child, 7)
-	_, err := conn.ExecContext(ctx, `UPDATE batch_nodes SET delivery = 'void' WHERE node_id = ?1`, root)
+	_, err := conn.ExecContext(ctx, `UPDATE batch_nodes SET notice_selected=1, notice_kind='batch', notice_state='completed',
+		notice_cause='', notice_sequence=1, notice_ordinal=0, delivery='void', wake=0 WHERE node_id = ?1`, root)
 	require.NoError(t, err)
 	runner := &bridgeFakeRunner{}
 	sink, err := NewBatchHeldAnswerSink(conn, runner)

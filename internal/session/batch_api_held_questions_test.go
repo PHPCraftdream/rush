@@ -102,7 +102,8 @@ func TestBatchAPIHeldQuestionsLifecycleAndFences(t *testing.T) {
 	var root3 string
 	require.NoError(t, conn.QueryRowContext(ctx,
 		`SELECT root_id FROM batch_nodes WHERE node_id = ?1`, node3).Scan(&root3))
-	_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET delivery='void', wake=0 WHERE node_id = ?1`, root3)
+	_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET notice_selected=1, notice_kind='batch', notice_state='completed',
+		notice_cause='', notice_sequence=1, notice_ordinal=0, delivery='void', wake=0 WHERE node_id = ?1`, root3)
 	require.NoError(t, err)
 	listed, err = s.BatchAPIHeldQuestions(ctx, owner)
 	require.NoError(t, err)
