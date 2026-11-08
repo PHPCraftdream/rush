@@ -28,6 +28,7 @@ import (
 // before-cost is taken (C9-9/C9-11).
 type failingSubtreeSessions struct {
 	session.Service
+	session.AgentDepthStore
 	mu    sync.Mutex
 	armed bool
 	fails int // number of SubtreeSpent calls that must still fail
@@ -64,7 +65,9 @@ func TestRunLoop_CostBeforeReadFailureReportsZeroDelta(t *testing.T) {
 	_, err := h.app.Sessions.IncrementCost(context.Background(), h.sessionID, 5.0)
 	require.NoError(t, err)
 
-	spy := &failingSubtreeSessions{Service: h.app.Sessions}
+	depthStore, ok := h.app.Sessions.(session.AgentDepthStore)
+	require.True(t, ok)
+	spy := &failingSubtreeSessions{Service: h.app.Sessions, AgentDepthStore: depthStore}
 	spy.arm(1)
 	h.app.Sessions = spy
 

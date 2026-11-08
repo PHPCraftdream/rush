@@ -228,8 +228,6 @@ func TestAPIBatchResumeContinuesOnlyADirectChildOfTheServiceSession(t *testing.T
 }
 
 func TestAPIBatchAgentDepthCaps(t *testing.T) {
-	f := newBatchFixture(t, batchTextProvider("depth"))
-	token := f.token(t, "depth", []string{"read", "run"}, "ask", config.APITokenBinding{})
 	for _, tc := range []struct {
 		name string
 		body string
@@ -239,6 +237,8 @@ func TestAPIBatchAgentDepthCaps(t *testing.T) {
 		{"narrow", `{"max_agent_depth":1,"mode":"parallel","items":[{"tool":"agent","input":{"prompt":"p"}}]}`, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			f := newBatchFixture(t, batchTextProvider("depth"))
+			token := f.token(t, "depth", []string{"read", "run"}, "ask", config.APITokenBinding{})
 			accepted := f.do(t, token, http.MethodPost, "/batches", tc.body).accepted(t)
 			fac, err := f.app.BatchCLIStore()
 			require.NoError(t, err)
@@ -258,6 +258,8 @@ func TestAPIBatchAgentDepthCaps(t *testing.T) {
 			require.True(t, found)
 		})
 	}
+	f := newBatchFixture(t, batchTextProvider("depth"))
+	token := f.token(t, "depth", []string{"read", "run"}, "ask", config.APITokenBinding{})
 	for _, routeCase := range []struct{ path, body string }{
 		{"/tasks", `{"prompt":"p","max_agent_depth":3}`},
 		{"/batches", `{"max_agent_depth":3,"mode":"parallel","items":[{"tool":"agent","input":{"prompt":"p"}}]}`},
