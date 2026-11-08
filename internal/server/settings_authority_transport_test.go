@@ -77,7 +77,7 @@ func TestUISettingsAuthorityRequiresAcceptedOrigin(t *testing.T) {
 			t.Logf("settings authority transport: listener=ui origin=rejected status=%d", handshakeStatus)
 		}
 	})
-	// Валидная UI authentication не отменяет Origin check.
+	// Valid UI authentication does not waive the Origin check.
 	headers := http.Header{
 		"Authorization": {"Bearer " + srv.Token()},
 		"Origin":        {"https://untrusted.example"},

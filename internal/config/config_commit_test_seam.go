@@ -1,6 +1,6 @@
 package config
 
-// SetBeforeConfigCommitForTest открывает существующий pre-commit seam для межпакетных tests.
+// SetBeforeConfigCommitForTest exposes the existing seam to cross-package tests.
 func SetBeforeConfigCommitForTest(hook func()) func() {
 	configTestHooks.Lock()
 	previous := configTestHooks.beforeCommitCheck

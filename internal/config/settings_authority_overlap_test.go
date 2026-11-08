@@ -81,7 +81,7 @@ func TestTrustedUICommitDoesNotUnlockIndependentGuardedStore(t *testing.T) {
 		t.Fatal("trusted write did not reach the commit barrier")
 	}
 
-	// Другой target/store не сериализуется за UI, но подчиняется тому же global lock.
+	// A separate target/store avoids UI serialization but shares the global settings lock.
 	phase = "guarded write while trusted commit is blocked"
 	guardedStarted = true
 	go func() {

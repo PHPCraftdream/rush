@@ -225,8 +225,8 @@ func TestConcurrentGuardedWritesStayRefusedWhileTrustedWritesLand(t *testing.T) 
 	var wg sync.WaitGroup
 	guardedErrs := make(chan error, guardedCount)
 	trustedErrs := make(chan error, trustedCount)
-	// Audit отмечает завершение первой записи, не критическую фазу commit.
-	// Точное перекрытие разных stores проверяет settings_authority_overlap_test.go.
+	// Audit marks completion, not the critical commit phase.
+	// settings_authority_overlap_test.go checks the actual cross-store overlap.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

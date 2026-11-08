@@ -33,7 +33,7 @@ func TestTrustedUIDisableFailedCommitPreservesLiveRuntime(t *testing.T) {
 	var concurrentWriteErr error
 	restoreHook := config.SetBeforeConfigCommitForTest(func() {
 		if reachedCommit.CompareAndSwap(false, true) {
-			// Имитируется чужая запись после guard, но до CAS-проверки commit.
+			// Simulate a concurrent write after the guard but before the commit CAS check.
 			concurrentWriteErr = os.WriteFile(trustedUIDiskPath(), concurrent, 0o600)
 		}
 	})
@@ -81,7 +81,7 @@ func TestTrustedUIEnableRollsBackThroughOwnerAfterCallerCancellation(t *testing.
 	var commits atomic.Int32
 	restoreHook := config.SetBeforeConfigCommitForTest(func() {
 		if commits.Add(1) == 1 {
-			// Persist завершается, но новый admission уже не может стартовать.
+			// Persistence completes, but the cancelled caller cannot launch admission.
 			cancel()
 		}
 	})
