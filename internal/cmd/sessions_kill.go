@@ -122,6 +122,10 @@ rush sessions kill pr-42 --wait 10s      # wait up to 10s for the PID to die
 }
 
 func sessionsKillCmdRun(cmd *cobra.Command, args []string) error {
+	return sessionsKillCmdRunWithBatchNote(cmd, args, batchKillLiveNote)
+}
+
+func sessionsKillCmdRunWithBatchNote(cmd *cobra.Command, args []string, readBatchNote batchKillNoteReader) error {
 	id := args[0]
 	keepLock, _ := cmd.Flags().GetBool("keep-lock")
 	wait, _ := cmd.Flags().GetDuration("wait")
@@ -156,18 +160,19 @@ func sessionsKillCmdRun(cmd *cobra.Command, args []string) error {
 
 	lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(id)+".lock")
 
-	// Flag ON (R12-B part 2): batch nodes are not process-lock holders, so
-	// before any "nothing to kill" verdict is printed, say it when the
-	// session still owns live (or unknown) batch work. Additive note only:
-	// every legacy branch below keeps its exact output.
-	if note := batchKillLiveNote(cmd.Context(), dataDir, id); note != "" {
-		fmt.Fprintln(os.Stderr, note)
+	// Rescue не должен бесконечно ждать чтения batch metadata.
+	batchNote := readBoundedBatchKillNote(cmd.Context(), dataDir, id, readBatchNote)
+	if batchNote.Note != "" {
+		fmt.Fprintln(os.Stderr, batchNote.Note)
 	}
 
 	info, err := os.Stat(lockPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "no lock file at %s\n", lockPath)
+			if scopeErr := batchKillUnprovenError(batchNote); scopeErr != nil {
+				return scopeErr
+			}
 			return nil
 		}
 		return fmt.Errorf("stat lock: %w", err)
@@ -200,6 +205,12 @@ func sessionsKillCmdRun(cmd *cobra.Command, args []string) error {
 		var sweepReport strings.Builder
 		sweepChildGroupsUnderOwnLock(&sweepReport, dataDir, id, kr.VictimGeneration)
 		fmt.Fprint(os.Stderr, sweepReport.String())
+	}
+
+	if kr.State == holderAlreadyDead {
+		if scopeErr := batchKillUnprovenError(batchNote); scopeErr != nil {
+			return scopeErr
+		}
 	}
 
 	// Task #1153: the holder is proven dead, so its queued runs, pending
