@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -81,6 +82,16 @@ type batchAgentRunFactory interface {
 	StartAgentTurn(ctx context.Context, req batchAgentRunRequest, host batchAgentHost) (batchAgentTurn, error)
 }
 
+// batchChildQuestionResolver is the durable half of the question
+// lifecycle: it closes the published question notices of one incarnation
+// whenever its hold is resolved (answered) or discarded (cancelled), so a
+// notice never advertises a hold that no longer exists. *session.BatchStore
+// (BatchResolveChildQuestions) satisfies it; nil keeps the old
+// notice-outlives-hold behaviour (tests only).
+type batchChildQuestionResolver interface {
+	ResolveChildQuestions(ctx context.Context, owner, node, child string, token, sequence int64) error
+}
+
 // batchAgentDescendantReader is the injected live-root seam (R10a): it
 // reports whether the incarnation still has live descendants, with a
 // completeness flag; an incomplete read keeps the scope open.
@@ -96,6 +107,11 @@ type batchAgentDeps struct {
 	// Zero means a single read after the turn ends.
 	Poll              time.Duration
 	QuestionPublisher batchChildQuestionPublisher
+	// QuestionResolver durably closes this incarnation's published question
+	// notices when a hold resolves (deliver) or is discarded (cancel). Nil
+	// (unit rigs, flag-off) keeps the notice pending — production wires the
+	// batch store (batch_install_adapters.go, beside QuestionPublisher).
+	QuestionResolver batchChildQuestionResolver
 	// Host and RunnerID are the install's commit-hook identity; the bind
 	// closure fences the durable child-link write on them. Zero on
 	// flag-off and test installs.
@@ -306,6 +322,8 @@ func (e *batchAgentExecution) askBatchQuestion(ctx context.Context, depth int, q
 		return nil, err
 	}
 	if err := e.publishQuestion(ctx, depth, question); err != nil {
+		// Nothing was published for this question, so there is no published
+		// notice to resolve — discard WITHOUT resolution.
 		e.scope.discardHold(h)
 		return nil, err
 	}
@@ -313,10 +331,18 @@ func (e *batchAgentExecution) askBatchQuestion(ctx context.Context, depth int, q
 	case answer := <-h.answer:
 		return answer, nil
 	case <-ctx.Done():
+		resolved := h.sequence // stamped by publishQuestion before the wait
+		resolveErr := e.resolvePublishedQuestions(ctx, resolved)
+		if resolveErr != nil {
+			// Один повтор после transient SQL failure; затем завершаем turn ошибкой.
+			resolveErr = e.resolvePublishedQuestions(ctx, resolved)
+		}
 		e.scope.discardHold(h)
-		return nil, ctx.Err()
+		return nil, errors.Join(ctx.Err(), resolveErr)
 	}
 }
+
+const batchQuestionPersistenceTimeout = 5 * time.Second
 
 func (e *batchAgentExecution) publishQuestion(ctx context.Context, depth int, question string) error {
 	if e.deps.QuestionPublisher == nil {
@@ -324,10 +350,28 @@ func (e *batchAgentExecution) publishQuestion(ctx context.Context, depth int, qu
 	}
 	req := e.requestSnapshot()
 	e.scope.mu.Lock()
+	defer e.scope.mu.Unlock()
+	if e.scope.stopped || e.scope.closed {
+		return ErrBatchAgentStopped
+	}
 	e.scope.questionSequence++
 	sequence := e.scope.questionSequence
-	e.scope.mu.Unlock()
-	return e.deps.QuestionPublisher.PublishChildQuestion(context.WithoutCancel(ctx), batchChildQuestionNotice{Owner: req.SessionID, ChildSessionID: req.ChildSessionID, NodeID: string(req.NodeID), Token: req.Token, Depth: depth, Sequence: sequence, Question: question})
+	// Stamp the published sequence onto the hold: deliver fences on it, so
+	// an answer captured before an interrupted delivery can never resolve a
+	// different question of the same incarnation at the same depth.
+	// askBatchQuestion always holds before publishing; nil is defensive.
+	if held := e.scope.held; held != nil {
+		held.sequence = sequence
+	}
+	// Публикация и принятие ответа сериализованы одним scope mutex.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), batchQuestionPersistenceTimeout)
+	defer cancel()
+	err := e.deps.QuestionPublisher.PublishChildQuestion(ctx, batchChildQuestionNotice{Owner: req.SessionID, ChildSessionID: req.ChildSessionID, NodeID: string(req.NodeID), Token: req.Token, Depth: depth, Sequence: sequence, Question: question})
+	if err != nil {
+		e.scope.held = nil
+		e.scope.signal()
+	}
+	return err
 }
 
 // watch waits for turn completion, then confirmed scope closure, and reports exactly once.
@@ -413,11 +457,29 @@ func (e *batchAgentExecution) Stop(ctx context.Context) error {
 	return turn.Stop(ctx)
 }
 
+// Резолюция должна зафиксироваться до принятия ответа в held scope.
+func (e *batchAgentExecution) resolvePublishedQuestions(ctx context.Context, sequence uint64) error {
+	if e.deps.QuestionResolver == nil {
+		return nil
+	}
+	req := e.requestSnapshot()
+	if req.SessionID == "" || req.NodeID == "" || req.ChildSessionID == "" || req.Token == 0 || sequence == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), batchQuestionPersistenceTimeout)
+	defer cancel()
+	if err := e.deps.QuestionResolver.ResolveChildQuestions(ctx, req.SessionID, string(req.NodeID), req.ChildSessionID, int64(req.Token), int64(sequence)); err != nil {
+		slog.Warn("Batch question resolution failed", "node", string(req.NodeID), "err", err)
+		return err
+	}
+	return nil
+}
+
 // Inject delivers an answer or message into this incarnation. It is rejected
 // deterministically when the node is stopping, finished or holds no matching
 // question, so a message is never lost silently nor delivered to a new
 // incarnation.
-func (e *batchAgentExecution) Inject(_ context.Context, msg json.RawMessage) error {
+func (e *batchAgentExecution) Inject(ctx context.Context, msg json.RawMessage) error {
 	e.mu.Lock()
 	if e.disposed {
 		e.mu.Unlock()
@@ -436,7 +498,9 @@ func (e *batchAgentExecution) Inject(_ context.Context, msg json.RawMessage) err
 	if err := json.Unmarshal(msg, &m); err != nil {
 		return fmt.Errorf("%w: %v", ErrBatchAgentNotHeld, err)
 	}
-	return e.scope.deliver(m)
+	return e.scope.deliverWithCommit(m, func() error {
+		return e.resolvePublishedQuestions(ctx, m.Sequence)
+	})
 }
 
 // ReadOutput returns the retained result summary as one terminal chunk.
