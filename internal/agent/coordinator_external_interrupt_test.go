@@ -16,6 +16,7 @@ func (busyExternalInterruptAgent) IsSessionBusy(string) bool { return true }
 
 func TestExternalInterruptRequiresDriverAndIdleRoot(t *testing.T) {
 	c, current, env, sid := newInterruptDrainFixture(t, func(id string) SessionAgentCall { return SessionAgentCall{SessionID: id} })
+	c.driverHints = newBatchDriverHints()
 	trace := batchAgentTraceFor(t)
 	before, err := env.sessions.PeekInterruptInject(t.Context(), sid)
 	require.NoError(t, err)
@@ -24,6 +25,7 @@ func TestExternalInterruptRequiresDriverAndIdleRoot(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, id, "an unclaimed session must not consume an interrupt")
 	c.driverHints.claimExternalDriver(sid)
+	require.True(t, c.driverHints.isExternalDriver(sid), "fixture must exercise a claimed external driver")
 	c.currentAgent = busyExternalInterruptAgent{current}
 	id, err = c.PollExternalInterrupt(t.Context(), sid, nil)
 	require.NoError(t, err)
@@ -36,6 +38,7 @@ func TestExternalInterruptRequiresDriverAndIdleRoot(t *testing.T) {
 
 func TestInterruptObserverNamesCommittedMessage(t *testing.T) {
 	c, _, env, sid := newInterruptDrainFixture(t, func(id string) SessionAgentCall { return SessionAgentCall{SessionID: id} })
+	c.driverHints = newBatchDriverHints()
 	trace := batchAgentTraceFor(t)
 	source, err := env.sessions.PeekInterruptInject(t.Context(), sid)
 	require.NoError(t, err)
@@ -60,8 +63,10 @@ func TestExternalInterruptPreflightOnlyForPendingRow(t *testing.T) {
 	for _, pending := range []bool{false, true} {
 		t.Run(map[bool]string{false: "no_interrupt", true: "pending_interrupt"}[pending], func(t *testing.T) {
 			c, _, env, sid := newInterruptDrainFixture(t, func(id string) SessionAgentCall { return SessionAgentCall{SessionID: id} })
+			c.driverHints = newBatchDriverHints()
 			trace := batchAgentTraceFor(t)
 			c.driverHints.claimExternalDriver(sid)
+			require.True(t, c.driverHints.isExternalDriver(sid), "fixture must exercise a claimed external driver")
 			row, err := env.sessions.PeekInterruptInject(t.Context(), sid)
 			require.NoError(t, err)
 			require.NotNil(t, row)
