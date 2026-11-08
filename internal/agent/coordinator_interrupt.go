@@ -311,7 +311,7 @@ func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string)
 	return c.handleInterruptTickObserved(ctx, sessionID, nil)
 }
 
-func (c *coordinator) handleInterruptTickObserved(ctx context.Context, sessionID string, delivered func(string)) (bool, error) {
+func (c *coordinator) handleInterruptTickObserved(ctx context.Context, sessionID string, observeDelivery func(string)) (bool, error) {
 	// Ownership is published before the first generation starts. If a
 	// reservation exists but its call snapshot is not visible yet, retry the
 	// tick: consuming now could rebuild with operator credentials or disk.
@@ -341,8 +341,8 @@ func (c *coordinator) handleInterruptTickObserved(ctx context.Context, sessionID
 	// exact in-process execution identity.
 	if published && callCarriesNonDurableDependency(activeCall) {
 		fired, err := c.handleActiveNonDurableInterrupt(ctx, pi, injMsg, activeCall, activeToken, tokenAvailable)
-		if fired && delivered != nil {
-			delivered(injMsg.ID)
+		if fired && observeDelivery != nil {
+			observeDelivery(injMsg.ID)
 		}
 		return fired, err
 	}
@@ -527,8 +527,8 @@ func (c *coordinator) handleInterruptTickObserved(ctx context.Context, sessionID
 		idlePrep.release()
 	}
 	c.messages.Notify(injMsg)
-	if delivered != nil {
-		delivered(injMsg.ID)
+	if observeDelivery != nil {
+		observeDelivery(injMsg.ID)
 	}
 	return true, nil
 }
