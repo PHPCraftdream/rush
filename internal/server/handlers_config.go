@@ -253,7 +253,7 @@ func handleSetTheme(a *appPkg.App, c *Client, msg WSMessage) {
 		c.reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
-	if err := a.Store().SetConfigField(config.ScopeGlobal, "options.tui.theme", p.Theme); err != nil {
+	if err := a.Store().SetConfigFieldWithAuthority(config.ScopeGlobal, "options.tui.theme", p.Theme, c.settingsWriteAuthority()); err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
@@ -268,7 +268,7 @@ func handleSetKeepAlive(a *appPkg.App, c *Client, msg WSMessage) {
 		c.reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
-	if err := a.Store().SetConfigField(config.ScopeGlobal, "options.keep_alive_enabled", p.Enabled); err != nil {
+	if err := a.Store().SetConfigFieldWithAuthority(config.ScopeGlobal, "options.keep_alive_enabled", p.Enabled, c.settingsWriteAuthority()); err != nil {
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
@@ -291,7 +291,7 @@ func handleSetDebug(a *appPkg.App, c *Client, msg WSMessage) {
 		c.reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
-	if err := store.SetConfigField(config.ScopeGlobal, "options.debug", p.Debug); err != nil {
+	if err := store.SetConfigFieldWithAuthority(config.ScopeGlobal, "options.debug", p.Debug, c.settingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to persist debug setting", "err", err)
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
@@ -329,7 +329,7 @@ func handleAddContextPath(a *appPkg.App, c *Client, msg WSMessage) {
 		return
 	}
 	paths = append(slices.Clone(paths), p.Path)
-	if err := store.SetConfigField(config.ScopeGlobal, "options.context_paths", paths); err != nil {
+	if err := store.SetConfigFieldWithAuthority(config.ScopeGlobal, "options.context_paths", paths, c.settingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to persist context paths", "err", err)
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
@@ -357,7 +357,7 @@ func handleRemoveContextPath(a *appPkg.App, c *Client, msg WSMessage) {
 		return
 	}
 	paths := slices.DeleteFunc(slices.Clone(cfg.Options.ContextPaths), func(s string) bool { return s == p.Path })
-	if err := store.SetConfigField(config.ScopeGlobal, "options.context_paths", paths); err != nil {
+	if err := store.SetConfigFieldWithAuthority(config.ScopeGlobal, "options.context_paths", paths, c.settingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to persist context paths", "err", err)
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
@@ -420,7 +420,7 @@ func handleAddSkillsPath(a *appPkg.App, c *Client, msg WSMessage) {
 		return
 	}
 	paths := append(slices.Clone(cfg.Options.SkillsPaths), p.Path)
-	if err := store.SetConfigField(config.ScopeGlobal, "options.skills_paths", paths); err != nil {
+	if err := store.SetConfigFieldWithAuthority(config.ScopeGlobal, "options.skills_paths", paths, c.settingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to persist skills paths", "err", err)
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
@@ -449,7 +449,7 @@ func handleRemoveSkillsPath(a *appPkg.App, c *Client, msg WSMessage) {
 		return
 	}
 	paths := slices.DeleteFunc(slices.Clone(cfg.Options.SkillsPaths), func(s string) bool { return s == p.Path })
-	if err := store.SetConfigField(config.ScopeGlobal, "options.skills_paths", paths); err != nil {
+	if err := store.SetConfigFieldWithAuthority(config.ScopeGlobal, "options.skills_paths", paths, c.settingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to persist skills paths", "err", err)
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return

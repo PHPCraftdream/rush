@@ -245,7 +245,7 @@ var settingsAuditOnce sync.Once
 func setSettingsAudit(cmd *cobra.Command) {
 	ensureAuditDirFunc()
 	config.SetSettingsAuditSink(func(ev config.SettingsEvent) {
-		_ = audit.Write(audit.Event{"kind": "settings_change", "scope": ev.Scope, "path": ev.Path, "keys": ev.Keys, "models": ev.Models, "outcome": ev.Outcome, "reason": ev.Reason, "cmd": cmd.CommandPath()})
+		_ = audit.Write(audit.Event{"kind": "settings_change", "scope": ev.Scope, "source": ev.Source, "path": ev.Path, "keys": ev.Keys, "models": ev.Models, "outcome": ev.Outcome, "reason": ev.Reason, "cmd": cmd.CommandPath()})
 	})
 }
 

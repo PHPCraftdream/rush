@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/PHPCraftdream/rush/internal/config"
 )
 
 const (
@@ -97,6 +99,16 @@ type Client struct {
 	send chan []byte
 	auth *clientAuth
 
+	// trustedSettingsWrite marks a client that arrived through the
+	// UI-authenticated listener transport. It is set ONLY in Server.handleWS
+	// when s.uiAuth is true — i.e. after Auth.Middleware verified the
+	// session cookie or token on the uiAuth listener. No wire input can set
+	// or influence it: not a JSON payload field, not a header, not the
+	// absence of a Principal, not the WebSocket transport itself. Policy
+	// listeners (serve/API), synthetic Clients, and any non-UI connection
+	// keep it false and inherit the guarded settings-write behavior.
+	trustedSettingsWrite bool
+
 	// sendMu orders close(send) (hub goroutine) against replies sent from
 	// handler goroutines, so a reply racing shutdown is dropped instead of
 	// panicking into a recover.
@@ -147,6 +159,18 @@ func newClient(hub *Hub, conn *websocket.Conn) *Client {
 	}
 	c.startWorkers()
 	return c
+}
+
+// settingsWriteAuthority maps this connection to its config write
+// authority. Only a client whose connection was accepted on the
+// UI-authenticated listener gets the trusted-UI authority; everything
+// else stays guarded, so CLI, agent-facing, and serve/API WebSocket
+// clients keep today's settings-lock behavior.
+func (c *Client) settingsWriteAuthority() config.SettingsWriteAuthority {
+	if c != nil && c.trustedSettingsWrite {
+		return config.SettingsAuthorityTrustedUI
+	}
+	return config.SettingsAuthorityGuarded
 }
 
 // startWorkers launches the fixed pool of goroutines that drain workQueue.

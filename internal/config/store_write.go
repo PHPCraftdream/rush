@@ -374,6 +374,28 @@ func (s *ConfigStore) SetConfigField(scope Scope, key string, value any) error {
 // cross-process gap. After a successful write, it automatically reloads
 // config to keep in-memory state fresh.
 func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
+	return s.setConfigFieldsAuthority(scope, kv, SettingsAuthorityGuarded)
+}
+
+// SetConfigFieldsWithAuthority is SetConfigFields with an explicit per-call
+// write authority. The trusted-UI authority lifts ONLY the
+// password/settings-lock veto for this single write: reserved keys
+// (sync_rev, cache_rev), model-integrity signing, CAS/atomic commit, scope
+// ownership, interprocess locks, and reload semantics are identical to
+// SetConfigFields. Every other caller must keep using the guarded default.
+func (s *ConfigStore) SetConfigFieldsWithAuthority(scope Scope, kv map[string]any, authority SettingsWriteAuthority) error {
+	return s.setConfigFieldsAuthority(scope, kv, authority)
+}
+
+// SetConfigFieldWithAuthority is SetConfigField with an explicit per-call
+// write authority; see SetConfigFieldsWithAuthority for the contract.
+func (s *ConfigStore) SetConfigFieldWithAuthority(scope Scope, key string, value any, authority SettingsWriteAuthority) error {
+	return s.SetConfigFieldsWithAuthority(scope, map[string]any{key: value}, authority)
+}
+
+// setConfigFieldsAuthority is the core multi-key write; authority carries
+// the per-call trusted-UI exception and only widens the settings-lock veto.
+func (s *ConfigStore) setConfigFieldsAuthority(scope Scope, kv map[string]any, authority SettingsWriteAuthority) error {
 	path, err := s.configPath(scope)
 	if err != nil {
 		return fmt.Errorf("%s config path unavailable: %w", settingsScope(scope), err)
@@ -417,9 +439,9 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 			}
 		}
 		if !allRecent {
-			ev := &SettingsEvent{Scope: settingsScope(scope), Path: target.path, Keys: slices.Clone(keys), Models: selectedModelsAudit(keys, kv)}
+			ev := &SettingsEvent{Scope: settingsScope(scope), Path: target.path, Keys: slices.Clone(keys), Models: selectedModelsAudit(keys, kv), Source: settingsAuditSource(authority)}
 			audit = ev
-			refusedBy, err = s.guardSettingsWrite(target.path, doc.jsonBytes, keys)
+			refusedBy, err = s.guardSettingsWriteForAuthority(target.path, doc.jsonBytes, keys, authority)
 			if err != nil {
 				return err
 			}
@@ -514,7 +536,19 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 // this — use removeConfigFieldBestEffort instead, which bounds the wait
 // to internalConfigWriteLockTimeout so a contended/wedged lock cannot stall
 // the whole config subsystem. See internalConfigWriteLockTimeout's doc.
+//
+// RemoveConfigField always writes with the guarded authority: the
+// settings-lock veto applies exactly as it did before the authority
+// parameter existed.
 func (s *ConfigStore) RemoveConfigField(scope Scope, key string) error {
+	return s.RemoveConfigFieldWithAuthority(scope, key, SettingsAuthorityGuarded)
+}
+
+// RemoveConfigFieldWithAuthority is RemoveConfigField with an explicit
+// per-call write authority; see SetConfigFieldsWithAuthority for the
+// trusted-UI exception contract. Only the password/settings-lock veto is
+// lifted for this single removal.
+func (s *ConfigStore) RemoveConfigFieldWithAuthority(scope Scope, key string, authority SettingsWriteAuthority) error {
 	path, err := s.configPath(scope)
 	if err != nil {
 		return fmt.Errorf("%s config path unavailable: %w", settingsScope(scope), err)
@@ -522,7 +556,7 @@ func (s *ConfigStore) RemoveConfigField(scope Scope, key string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), configWriteLockTimeout)
 	defer cancel()
-	if err := s.removeConfigFieldAt(ctx, path, key, true); err != nil {
+	if err := s.removeConfigFieldAt(ctx, path, key, true, authority); err != nil {
 		if outcome, ok := CommitOutcomeFromError(err); ok && outcome.Committed {
 			if reloadErr := s.autoReloadAfterWrite(context.Background()); reloadErr != nil {
 				slog.Warn("Config field removal committed but in-memory reconciliation was incomplete", "path", path, "error", reloadErr)
@@ -546,11 +580,16 @@ func (s *ConfigStore) RemoveConfigField(scope Scope, key string) error {
 // path, bounding the inter-process lock wait to ctx's deadline. Shared so
 // both the full-timeout public API and the short-timeout internal caller
 // (configureProviders) go through one write implementation.
-func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string, userInitiated bool) error {
+func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string, userInitiated bool, authority SettingsWriteAuthority) error {
+	if !userInitiated {
+		// Defensive: internal cleanup writes never carry trust, regardless
+		// of what the caller passed in.
+		authority = SettingsAuthorityGuarded
+	}
 	path = writeTargetSlot(path)
 	if touchesReservedKey(key) {
 		if userInitiated {
-			ev := SettingsEvent{Scope: s.settingsScopeForPath(path), Path: path, Keys: []string{key}}
+			ev := SettingsEvent{Scope: s.settingsScopeForPath(path), Path: path, Keys: []string{key}, Source: settingsAuditSource(authority)}
 			finalizeSettingsEvent(&ev, "", errSettingsLockKeyReserved)
 			emitSettingsEvent(ev)
 		}
@@ -590,9 +629,9 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string,
 			return err
 		}
 		if userInitiated && !strings.HasPrefix(key, "recent_models.") {
-			audit = &SettingsEvent{Scope: s.settingsScopeForPath(target.path), Path: target.path, Keys: []string{key}}
+			audit = &SettingsEvent{Scope: s.settingsScopeForPath(target.path), Path: target.path, Keys: []string{key}, Source: settingsAuditSource(authority)}
 		}
-		refusedBy, err = s.guardSettingsWrite(target.path, doc.jsonBytes, []string{key})
+		refusedBy, err = s.guardSettingsWriteForAuthority(target.path, doc.jsonBytes, []string{key}, authority)
 		if err != nil {
 			return err
 		}
@@ -679,7 +718,7 @@ func (s *ConfigStore) removeConfigFieldBestEffort(scope Scope, key string) {
 
 	ctx, cancel := configContextWithTimeout(context.Background(), internalConfigWriteLockTimeout)
 	defer cancel()
-	if err := s.removeConfigFieldAt(ctx, path, key, false); err != nil {
+	if err := s.removeConfigFieldAt(ctx, path, key, false, SettingsAuthorityGuarded); err != nil {
 		if errors.Is(err, ErrSettingsLocked) {
 			slog.Debug("Best-effort config field removal was refused by settings lock")
 			return
