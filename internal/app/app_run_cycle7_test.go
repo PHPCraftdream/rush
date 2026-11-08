@@ -612,7 +612,7 @@ func TestExecuteRunCycle7ShrinkingStreamEventRemainsHardFailure(t *testing.T) {
 	})
 	require.Equal(t, 2, published, "both events precede terminal reconciliation")
 	require.EqualError(t, err, "message content is shorter than read bytes: 1 < 4")
-	require.Equal(t, "long", output.String(), "the first event must be consumed before the shrinking event")
+	require.Equal(t, "long\n", output.String(), "the first event and CLI trailing newline must be preserved")
 }
 
 func TestExecuteRunCycle7DoneFirstDrainDoesNotDuplicateTerseOrStream(t *testing.T) {
