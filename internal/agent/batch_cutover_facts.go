@@ -267,6 +267,16 @@ func (c *coordinator) readTurnFactsBatch(ctx context.Context, facts BatchCutover
 			f.Debt.CompletionOnly = false
 		}
 	}
+	// Reaction-independent held questions: a child question whose answer was
+	// never ACCEPTED stays non-completion debt even after the owner's
+	// reaction flow marked the notice reacted, so rule 4b's armed sleep
+	// cannot hold across a held child (the 45-minute hang). An unreadable
+	// read is conservative: not completion-only.
+	if src, ok := facts.(BatchHeldQuestionSource); ok {
+		if held, herr := src.ActionableHeldQuestions(ctx, sessionID); herr != nil || len(held) > 0 {
+			f.Debt.CompletionOnly = false
+		}
+	}
 	f.Debt.PendingIncl = len(rows.Nodes) > 0 || len(rows.Notices) > 0
 	// The session driver marker is retained host infrastructure
 	// (session_drivers, not batch rows).

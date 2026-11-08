@@ -291,10 +291,50 @@ func TestBatchInjectBridge_FenceRejectsStaleTokenTerminalOrMissingRow(t *testing
 	require.Zero(t, runner.count())
 }
 
+// TestBatchInjectBridge_ReactedDoneNoticeStillDelivers: the incident
+// state — the owner's reaction flow marked the notice reacted=1 and its
+// pull set delivery='done' — must NOT make the answer unroutable. A
+// fence-in candidate with reacted=1, delivery='done' still DELIVERS
+// through the sink (fake runner records the Inject). No close happens on
+// a miss/fence rejection, so the row stays untouched for this test.
+// Mutation caught: restoring `AND reacted = 0` in heldQuestionNotices
+// makes this fail (the delivery would answer ErrBatchHeldAnswerNone and
+// the runner counter stays zero).
+func TestBatchInjectBridge_ReactedDoneNoticeStillDelivers(t *testing.T) {
+	_, conn, _ := newTestBatchStore(t)
+	q := db.New(conn)
+	ctx := context.Background()
+	const owner = "bridge-owner-3"
+	const child = "bridge-child-3"
+	createSessionRow(t, q, ctx, owner)
+	createSessionRow(t, q, ctx, child)
+	_, node := seedDelegation(t, conn, owner, "call-bbridge-reacted", child, 77)
+	commitMarkerNotice(t, conn, owner, node, child, 77)
+	// Simulate the incident's pull+reaction.
+	_, err := conn.ExecContext(ctx,
+		`UPDATE session_notices SET delivery = 'done', reacted = 1 WHERE owner = ?1 AND kind = ?2`,
+		owner, session.NoticeKindChildQuestion)
+	require.NoError(t, err)
+	runner := &bridgeFakeRunner{}
+	sink, serr := NewBatchHeldAnswerSink(conn, runner)
+	require.NoError(t, serr)
+	fact, err := sink.DeliverHeldAnswer(ctx, owner, child, "proceed")
+	require.NoError(t, err, "a reacted, delivered question still routes")
+	require.Equal(t, BatchHeldQuestionFact{Owner: owner, NodeID: node, Token: 77, Depth: 1}, fact)
+	require.Equal(t, 1, runner.count(), "the Inject reached the runner")
+}
+
 // TestBatchInjectBridge_DeterministicRunnerRejections: a fenced-in
-// candidate delivers depth+text in the production wire shape, every
+// candidate delivers depth+sequence+text in the production wire shape, every
 // deterministic Inject rejection propagates named with the node, and a
 // CLOSED sink answers jobbatch.ErrReleased-shaped — never a legacy miss.
+// With close-on-acceptance a SUCCESS voids the notice row, so the
+// rejection cases run first (their notices must stay open — zero rows
+// closed) and the success case runs last.
+// Revert-check: removing the close-on-acceptance UPDATE makes the
+// delivery='void' assertion fail; closing the rows on a REJECTED delivery
+// makes the rejection cases fail (the late success finds no notice and
+// answers ErrBatchHeldAnswerNone instead of delivering).
 func TestBatchInjectBridge_DeterministicRunnerRejections(t *testing.T) {
 	_, conn, _ := newTestBatchStore(t)
 	q := db.New(conn)
@@ -310,21 +350,9 @@ func TestBatchInjectBridge_DeterministicRunnerRejections(t *testing.T) {
 	sink, serr := NewBatchHeldAnswerSink(conn, runner)
 	require.NoError(t, serr)
 
-	// Success: the wire message carries the marker's depth and the
-	// JSON-encoded answer text (batchAgentAskQuestionTool unmarshals it).
-	fact, err := sink.DeliverHeldAnswer(ctx, owner, child, "yes, proceed")
-	require.NoError(t, err)
-	require.Equal(t, BatchHeldQuestionFact{Owner: owner, NodeID: node, Token: 42, Depth: 1}, fact)
-	require.Equal(t, 1, runner.count())
-	var msg batchAgentInjectMessage
-	require.NoError(t, json.Unmarshal(runner.injects[0].msg, &msg))
-	require.Equal(t, 1, msg.Depth, "the answer addresses the held depth from the marker")
-	require.Equal(t, jobbatch.ID(node), runner.injects[0].id)
-	var answered string
-	require.NoError(t, json.Unmarshal(msg.Text, &answered))
-	require.Equal(t, "yes, proceed", answered, "the answer text survives the wire shape")
-
-	// Deterministic rejections propagate through the existing error values.
+	// Deterministic rejections propagate through the existing error values,
+	// with the notice row left OPEN (nothing was accepted — zero rows
+	// closed).
 	for _, tc := range []struct {
 		name string
 		err  error
@@ -340,7 +368,48 @@ func TestBatchInjectBridge_DeterministicRunnerRejections(t *testing.T) {
 		_, err := sink.DeliverHeldAnswer(ctx, owner, child, "late")
 		require.ErrorIs(t, err, tc.err, "%s must surface deterministically", tc.name)
 		require.ErrorContains(t, err, node, "%s names the node", tc.name)
+		var delivery string
+		var wake int64
+		require.NoError(t, conn.QueryRowContext(ctx,
+			`SELECT delivery, wake FROM session_notices WHERE owner = ?1 AND kind = ?2`,
+			owner, session.NoticeKindChildQuestion).Scan(&delivery, &wake),
+			"%s: the notice row survives a rejected delivery", tc.name)
+		require.NotEqual(t, "void", delivery, "%s: zero rows closed on rejection", tc.name)
+		require.Equal(t, int64(1), wake, "%s: the notice stays wake=1 on rejection", tc.name)
 	}
+
+	// Success: the wire message carries the marker's depth and the
+	// JSON-encoded answer text (batchAgentAskQuestionTool unmarshals it).
+	runner.mu.Lock()
+	runner.err = nil
+	runner.mu.Unlock()
+	fact, err := sink.DeliverHeldAnswer(ctx, owner, child, "yes, proceed")
+	require.NoError(t, err)
+	require.Equal(t, BatchHeldQuestionFact{Owner: owner, NodeID: node, Token: 42, Depth: 1}, fact)
+	require.Equal(t, 5, runner.count())
+	var msg batchAgentInjectMessage
+	require.NoError(t, json.Unmarshal(runner.injects[4].msg, &msg))
+	require.Equal(t, 1, msg.Depth, "the answer addresses the held depth from the marker")
+	require.Equal(t, uint64(1), msg.Sequence, "the answer names the marker's published question sequence")
+	require.Equal(t, jobbatch.ID(node), runner.injects[4].id)
+	var answered string
+	require.NoError(t, json.Unmarshal(msg.Text, &answered))
+	require.Equal(t, "yes, proceed", answered, "the answer text survives the wire shape")
+
+	// Close-on-acceptance: the answered notice row is void, wake=0.
+	var delivery string
+	var wake int64
+	require.NoError(t, conn.QueryRowContext(ctx,
+		`SELECT delivery, wake FROM session_notices WHERE owner = ?1 AND kind = ?2`,
+		owner, session.NoticeKindChildQuestion).Scan(&delivery, &wake))
+	require.Equal(t, "void", delivery, "the accepted answer closes the notice")
+	require.Equal(t, int64(0), wake, "the closed notice never wakes again")
+
+	// A further delivery proves the close: the notice is gone from the
+	// reacted-independent lookup, so the sink answers "none".
+	_, err = sink.DeliverHeldAnswer(ctx, owner, child, "again")
+	require.ErrorIs(t, err, ErrBatchHeldAnswerNone, "close-on-acceptance empties the route set")
+	require.Equal(t, 5, runner.count(), "no Inject after acceptance")
 
 	// A closed sink (the shutdown path) refuses deterministically: the
 	// ErrReleased shape, NOT the legacy "none" miss.
@@ -348,12 +417,7 @@ func TestBatchInjectBridge_DeterministicRunnerRejections(t *testing.T) {
 	_, err = sink.DeliverHeldAnswer(ctx, owner, child, "late")
 	require.ErrorIs(t, err, jobbatch.ErrReleased, "a closed sink fails like a released execution")
 	require.NotErrorIs(t, err, ErrBatchHeldAnswerNone)
-	runner.mu.Lock()
-	runner.err = nil
-	runner.mu.Unlock()
-	_, err = sink.DeliverHeldAnswer(ctx, owner, child, "late")
-	require.ErrorIs(t, err, jobbatch.ErrReleased, "close wins even with a healthy runner")
-	require.Equal(t, 5, runner.count(), "no Inject after Close")
+	require.Equal(t, 5, runner.count(), "4 rejections + 1 success; no Inject after Close")
 }
 
 // TestBatchInjectBridge_NoHeldQuestionLegacyPath: no committed held
