@@ -229,9 +229,13 @@ func newTurnStream(cfg turnStreamConfig) *turnStream {
 // invocation. Once every callback is a turnStream method value instead of a
 // closure, this is the whole "router": one flat struct literal, no branching.
 func (ts *turnStream) streamCall(history []fantasy.Message, files []fantasy.FilePart, maxOutputTokens *int64) fantasy.AgentStreamCall {
+	prompt := message.PromptWithTextAttachments(ts.call.Prompt, ts.call.Attachments)
+	if _, present := ts.historyIDs[ts.call.ExistingMessageID]; ts.call.ExistingMessageID != "" && present {
+		prompt = ""
+	}
 	return fantasy.AgentStreamCall{
 		MaxRetries:       &ProviderMaxRetries,
-		Prompt:           message.PromptWithTextAttachments(ts.call.Prompt, ts.call.Attachments),
+		Prompt:           prompt,
 		Files:            files,
 		Messages:         history,
 		Headers:          sessionHeaders(ts.call.SessionID),

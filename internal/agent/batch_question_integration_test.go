@@ -174,13 +174,15 @@ func TestBatchQuestionAnswerRoutesSameExecution(t *testing.T) {
 	batchAgentTestNoReport(t, reports, "a question is held")
 	// The answer routes through the executor's own Messenger seam into the
 	// SAME execution's hold (no re-entry through an adapter closure).
-	require.NoError(t, rig.inject(3, `"because"`))
+	require.NoError(t, rig.inject(3, 1, `"because"`))
 	reader.set(false, true)
 	r := batchAgentTestReport(t, reports)
 	require.Equal(t, jobbatch.StateCompleted, r.State)
 	require.Contains(t, r.Summary, "because")
+	// The sequence names the published question, so ONLY the stale
+	// generation gate can reject this inject.
 	require.ErrorIs(t, jobbatch.Messenger(e).Inject(context.Background(),
-		json.RawMessage(`{"depth":3,"text":"late"}`)), ErrBatchAgentStaleGeneration,
+		json.RawMessage(`{"depth":3,"sequence":1,"text":"late"}`)), ErrBatchAgentStaleGeneration,
 		"a terminal incarnation must reject further answers as stale")
 }
 

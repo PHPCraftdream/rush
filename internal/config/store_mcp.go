@@ -55,6 +55,18 @@ func (s *ConfigStore) PersistMCPConfig(scope Scope, name string, value MCPConfig
 	return err
 }
 
+// The PersistMCP*WithAuthority methods below are the persistence seams the
+// MCP Owner's trusted-UI mutations call: each delegates to the identical
+// guarded transaction machinery (the same ordered two-file write locks,
+// CAS/atomic commit, scope ownership checks, and audit events), with one
+// difference — the presented authority lifts ONLY the password/settings-
+// lock veto inside that single transaction. Every other caller must keep
+// using the guarded variants.
+
+func (s *ConfigStore) PersistMCPConfigResultWithAuthority(scope Scope, name string, value MCPConfig, authority SettingsWriteAuthority) (MCPMutationResult, error) {
+	return s.mutateMCPWithMode("add", scope, name, name, value, nil, false, authority)
+}
+
 // PersistMCPConfigExact adds a literal server entry to the selected scope.
 // Unlike the runtime lifecycle API, it deliberately ignores higher-priority
 // definitions in other files; this is the API used by exact-scope CLI edits.
@@ -64,7 +76,7 @@ func (s *ConfigStore) PersistMCPConfigExact(scope Scope, name string, value MCPC
 }
 
 func (s *ConfigStore) PersistMCPConfigResult(scope Scope, name string, value MCPConfig) (MCPMutationResult, error) {
-	return s.mutateMCP("add", scope, name, name, value, nil)
+	return s.PersistMCPConfigResultWithAuthority(scope, name, value, SettingsAuthorityGuarded)
 }
 
 func (s *ConfigStore) PersistRemoveMCPConfig(scope Scope, name string) error {
@@ -80,7 +92,11 @@ func (s *ConfigStore) PersistRemoveMCPConfigExact(scope Scope, name string) erro
 }
 
 func (s *ConfigStore) PersistRemoveMCPConfigResult(scope Scope, name string) (MCPMutationResult, error) {
-	return s.mutateMCP("remove", scope, name, name, MCPConfig{}, nil)
+	return s.PersistRemoveMCPConfigResultWithAuthority(scope, name, SettingsAuthorityGuarded)
+}
+
+func (s *ConfigStore) PersistRemoveMCPConfigResultWithAuthority(scope Scope, name string, authority SettingsWriteAuthority) (MCPMutationResult, error) {
+	return s.mutateMCPWithMode("remove", scope, name, name, MCPConfig{}, nil, false, authority)
 }
 
 // PersistRemovePendingMCPConfigResult conditionally completes a pending MCP
@@ -88,7 +104,11 @@ func (s *ConfigStore) PersistRemoveMCPConfigResult(scope Scope, name string) (MC
 // the server is absent from the durable configuration; an existing durable
 // definition is a collision and is left untouched.
 func (s *ConfigStore) PersistRemovePendingMCPConfigResult(scope Scope, name string) (MCPMutationResult, error) {
-	return s.mutatePendingRemoveMCP(scope, name)
+	return s.PersistRemovePendingMCPConfigResultWithAuthority(scope, name, SettingsAuthorityGuarded)
+}
+
+func (s *ConfigStore) PersistRemovePendingMCPConfigResultWithAuthority(scope Scope, name string, authority SettingsWriteAuthority) (MCPMutationResult, error) {
+	return s.mutatePendingRemoveMCPWithAuthority(scope, name, authority)
 }
 
 // PersistRemovePendingMCPConfig is the error-only form of
@@ -104,14 +124,22 @@ func (s *ConfigStore) PersistMCPDisabledOverride(scope Scope, name string, disab
 }
 
 func (s *ConfigStore) PersistMCPDisabledOverrideResult(scope Scope, name string, disabled bool) (MCPMutationResult, error) {
-	return s.mutateMCP("disable", scope, name, name, MCPConfig{}, &disabled)
+	return s.PersistMCPDisabledOverrideResultWithAuthority(scope, name, disabled, SettingsAuthorityGuarded)
+}
+
+func (s *ConfigStore) PersistMCPDisabledOverrideResultWithAuthority(scope Scope, name string, disabled bool, authority SettingsWriteAuthority) (MCPMutationResult, error) {
+	return s.mutateMCPWithMode("disable", scope, name, name, MCPConfig{}, &disabled, false, authority)
 }
 
 // PersistMCPEnableRollbackResult conditionally disables the exact definition
 // published by an Enable mutation. It is safe for both ordinary definitions
 // and pending global adds.
 func (s *ConfigStore) PersistMCPEnableRollbackResult(scope Scope, name string, token MCPMutationResult) (MCPMutationResult, error) {
-	return s.mutateMCPEnableRollback(scope, name, token)
+	return s.PersistMCPEnableRollbackResultWithAuthority(scope, name, token, SettingsAuthorityGuarded)
+}
+
+func (s *ConfigStore) PersistMCPEnableRollbackResultWithAuthority(scope Scope, name string, token MCPMutationResult, authority SettingsWriteAuthority) (MCPMutationResult, error) {
+	return s.mutateMCPEnableRollbackWithAuthority(scope, name, token, authority)
 }
 
 // PersistMCPDisabledOverrideExact changes only the selected scope. It may
@@ -142,7 +170,11 @@ func (s *ConfigStore) PersistReplaceMCP(oldName, newName string, value MCPConfig
 }
 
 func (s *ConfigStore) PersistReplaceMCPResult(scope Scope, oldName, newName string, value MCPConfig) (MCPMutationResult, error) {
-	return s.mutateMCP("replace", scope, oldName, newName, value, nil)
+	return s.PersistReplaceMCPResultWithAuthority(scope, oldName, newName, value, SettingsAuthorityGuarded)
+}
+
+func (s *ConfigStore) PersistReplaceMCPResultWithAuthority(scope Scope, oldName, newName string, value MCPConfig, authority SettingsWriteAuthority) (MCPMutationResult, error) {
+	return s.mutateMCPWithMode("replace", scope, oldName, newName, value, nil, false, authority)
 }
 
 func (s *ConfigStore) PersistReplaceMCPInScope(scope Scope, oldName, newName string, value MCPConfig) error {
@@ -204,7 +236,7 @@ func (s *ConfigStore) PersistMCPFields(scope Scope, name string, fields map[stri
 		effectiveExists, effective, _ = afterValue(after, name)
 		committedInputs = reconcileMCPInputs(s.loadSnapshot().mcpInputs, after.mcpInputs, name)
 		committed = committedMCPFingerprints(files)
-		writeErr := s.writeMCPFileChanges(files, &audit)
+		writeErr := s.writeMCPFileChanges(files, &audit, SettingsAuthorityGuarded)
 		committed = committedMCPFingerprints(files)
 		if writeErr != nil {
 			return writeErr
@@ -280,7 +312,7 @@ func (s *ConfigStore) PersistMCPFieldsExact(scope Scope, name string, fields map
 		effectiveExists, effective, _ = afterValue(after, name)
 		committedInputs = reconcileMCPInputs(s.loadSnapshot().mcpInputs, after.mcpInputs, name)
 		committed = committedMCPFingerprints(files)
-		writeErr := s.writeMCPFileChanges(files, &audit)
+		writeErr := s.writeMCPFileChanges(files, &audit, SettingsAuthorityGuarded)
 		committed = committedMCPFingerprints(files)
 		if writeErr != nil {
 			return writeErr

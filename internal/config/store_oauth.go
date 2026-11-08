@@ -26,8 +26,18 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// SetProviderAPIKey sets the API key for a provider and persists it.
+// SetProviderAPIKey sets the API key for a provider and persists it. It
+// always writes with the guarded authority: the settings-lock veto applies
+// as before the authority parameter existed.
 func (s *ConfigStore) SetProviderAPIKey(scope Scope, providerID string, apiKey any) error {
+	return s.SetProviderAPIKeyWithAuthority(scope, providerID, apiKey, SettingsAuthorityGuarded)
+}
+
+// SetProviderAPIKeyWithAuthority is SetProviderAPIKey with an explicit
+// per-call write authority; see SetConfigFieldsWithAuthority for the
+// trusted-UI exception contract. Only the password/settings-lock veto is
+// lifted for the persisted writes in this single call.
+func (s *ConfigStore) SetProviderAPIKeyWithAuthority(scope Scope, providerID string, apiKey any, authority SettingsWriteAuthority) error {
 	s.credentialWriteMu.Lock()
 	defer s.credentialWriteMu.Unlock()
 
@@ -37,15 +47,15 @@ func (s *ConfigStore) SetProviderAPIKey(scope Scope, providerID string, apiKey a
 
 	switch v := apiKey.(type) {
 	case string:
-		if err := s.SetConfigField(scope, fmt.Sprintf("providers.%s.api_key", providerID), v); err != nil {
+		if err := s.SetConfigFieldWithAuthority(scope, fmt.Sprintf("providers.%s.api_key", providerID), v, authority); err != nil {
 			return fmt.Errorf("failed to save api key to config file: %w", err)
 		}
 		setKeyOrToken = func() { providerConfig.APIKey = v }
 	case *oauth.Token:
-		if err := s.SetConfigFields(scope, map[string]any{
+		if err := s.SetConfigFieldsWithAuthority(scope, map[string]any{
 			fmt.Sprintf("providers.%s.api_key", providerID): v.AccessToken,
 			fmt.Sprintf("providers.%s.oauth", providerID):   v,
-		}); err != nil {
+		}, authority); err != nil {
 			return err
 		}
 		setKeyOrToken = func() {
@@ -594,10 +604,18 @@ func (s *ConfigStore) ImportCopilot() (*oauth.Token, bool) {
 // snapshot uses) and publish it under publishMu so the old snapshot's
 // Providers map is never touched.
 func (s *ConfigStore) RemoveProviderAPIKey(scope Scope, providerID string) error {
+	return s.RemoveProviderAPIKeyWithAuthority(scope, providerID, SettingsAuthorityGuarded)
+}
+
+// RemoveProviderAPIKeyWithAuthority is RemoveProviderAPIKey with an
+// explicit per-call write authority; see SetConfigFieldsWithAuthority for
+// the trusted-UI exception contract. Only the password/settings-lock veto
+// is lifted for this single removal.
+func (s *ConfigStore) RemoveProviderAPIKeyWithAuthority(scope Scope, providerID string, authority SettingsWriteAuthority) error {
 	s.credentialWriteMu.Lock()
 	defer s.credentialWriteMu.Unlock()
 
-	if err := s.RemoveConfigField(scope, fmt.Sprintf("providers.%s.api_key", providerID)); err != nil {
+	if err := s.RemoveConfigFieldWithAuthority(scope, fmt.Sprintf("providers.%s.api_key", providerID), authority); err != nil {
 		return fmt.Errorf("failed to remove provider API key: %w", err)
 	}
 

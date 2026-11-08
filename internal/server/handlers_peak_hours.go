@@ -122,7 +122,7 @@ func handlePauseProviderPeakHours(a *appPkg.App, c *Client, msg WSMessage) {
 		return
 	}
 	fieldKey := fmt.Sprintf("providers.%s.peak_hours", p.ID)
-	if err := store.SetConfigField(scope, fieldKey, wrapped); err != nil {
+	if err := store.SetConfigFieldWithAuthority(scope, fieldKey, wrapped, c.settingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to persist peak hours pause", "id", p.ID, "err", err)
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return
@@ -167,12 +167,12 @@ func handleResumeProviderPeakHours(a *appPkg.App, c *Client, msg WSMessage) {
 	normalized := wrapped.NormalizeForWrite()
 	fieldKey := fmt.Sprintf("providers.%s.peak_hours", p.ID)
 	if normalized == nil && scope == config.ScopeGlobal {
-		if err := store.RemoveConfigField(scope, fieldKey); err != nil {
+		if err := store.RemoveConfigFieldWithAuthority(scope, fieldKey, c.settingsWriteAuthority()); err != nil {
 			slog.Warn("ws: failed to clear provider peak_hours", "id", p.ID, "err", err)
 			c.reply(msg.ID, EventError, nil, err.Error())
 			return
 		}
-	} else if err := store.SetConfigField(scope, fieldKey, normalized); err != nil {
+	} else if err := store.SetConfigFieldWithAuthority(scope, fieldKey, normalized, c.settingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to persist peak hours resume", "id", p.ID, "err", err)
 		c.reply(msg.ID, EventError, nil, err.Error())
 		return

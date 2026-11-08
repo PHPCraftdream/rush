@@ -173,6 +173,9 @@ func newCutoverEnvDeps(t *testing.T, limits jobbatch.Limits, wrapExecutor func(j
 	// executor is built OUTSIDE InstallBatchRuntime.
 	if agentDeps.Runs != nil {
 		agentDeps.QuestionPublisher = batchCoordinatorQuestionPublisher{store: session.NewBatchStore(conn)}
+		// Same lifecycle seam production wires (batch_install_adapters.go):
+		// accepted answers and cancelled asks close their notices.
+		agentDeps.QuestionResolver = batchStoreQuestionResolver{store: session.NewBatchStore(conn)}
 	}
 	// R12-H2 §1.2: the executor's Execution owner names the pinned
 	// registry's construction record; hold its Construction owner for the

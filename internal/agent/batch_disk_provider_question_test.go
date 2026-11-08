@@ -185,7 +185,10 @@ func (l *questionProviderLeaf) Run(ctx context.Context, call fantasy.ToolCall) (
 	// turn (mirrors the coordinator's runSubAgent binding via the
 	// driver-stamped batchAgentLifecycle).
 	if lifecycle, ok := ctx.Value(batchAgentLifecycleContextKey{}).(batchAgentLifecycle); ok && lifecycle.BindChildSession != nil {
-		lifecycle.BindChildSession(context.Background(), l.childSession)
+		if err := lifecycle.BindChildSession(ctx, l.childSession); err != nil {
+			l.t.Logf("q8 child bind failed: child=%s err=%v", l.childSession, err)
+			return fantasy.ToolResponse{}, err
+		}
 	}
 	// The REAL child turn: a production sessionAgent over the SAME store
 	// with a SCRIPTED model (fake model BEHAVIOR only — the turn, the tool
@@ -233,6 +236,8 @@ func (l *questionProviderLeaf) Run(ctx context.Context, call fantasy.ToolCall) (
 			leaf: l, inner: tools.NewFSWriteTool(childScope, l.perms, l.files, l.tracker, l.workDir, opts.DiskProvider),
 		},
 	}
+	ctx, cancelChild := context.WithCancel(ctx)
+	defer cancelChild()
 	child := NewSessionAgent(SessionAgentOptions{
 		SmartModel: Model{Model: model, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 10000}},
 		FastModel:  Model{Model: model, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 10000}},
@@ -242,8 +247,11 @@ func (l *questionProviderLeaf) Run(ctx context.Context, call fantasy.ToolCall) (
 		Tools:      childTools,
 	})
 	if sa, ok := child.(*sessionAgent); ok {
-		// Registered after the harness cleanups, so (LIFO) it runs first.
-		l.t.Cleanup(sa.runWg.Wait)
+		// Сначала отменяем held Ask, затем ждём завершения Run.
+		l.t.Cleanup(func() {
+			cancelChild()
+			sa.runWg.Wait()
+		})
 	}
 	// The child inherits the leaf's run context: CallOptions (provider +
 	// immutable binding handle), question depth and the batch lifecycle all
@@ -492,6 +500,13 @@ type questionInstall struct {
 }
 
 func newQuestionInstall(t *testing.T) *questionInstall {
+	return newQuestionInstallWithQuestionResolver(t, nil)
+}
+
+// newQuestionInstallWithQuestionResolver is newQuestionInstall with the
+// execution-side question-resolution seam injectable: nil falls back to the
+// real store (production wiring), a test may pass a failing resolver.
+func newQuestionInstallWithQuestionResolver(t *testing.T, resolver batchChildQuestionResolver) *questionInstall {
 	t.Helper()
 	store, conn, _ := newTestBatchStore(t)
 	bindings := NewDiskProviderRegistry()
@@ -501,8 +516,11 @@ func newQuestionInstall(t *testing.T) *questionInstall {
 	q := db.New(conn)
 	sessions := session.NewService(q, conn)
 	messages := message.NewService(q)
-	childSess, err := sessions.Create(context.Background(), "q8 child")
+	ownerSession := "sess-owner-q8-" + uuid.NewString()[:8]
+	ensureFixtureSession(t, conn, ownerSession)
+	childSess, err := sessions.CreateTaskSession(context.Background(), uuid.NewString(), ownerSession, "q8 child")
 	require.NoError(t, err, "the child session row exists")
+	require.Equal(t, ownerSession, childSess.ParentSessionID, "durable binding requires the owning parent before launch")
 	childSession := childSess.ID
 	// The EXACT absolute OS targets, preseeded with sentinel content: if the
 	// driver fell back to the real disk, these files would change.
@@ -542,11 +560,20 @@ func newQuestionInstall(t *testing.T) *questionInstall {
 	live.ProbeHost = func(string, string) (session.HostLockStatus, error) {
 		return session.HostStatusAlive, nil
 	}
+	deps := installTestDeps(t, store, conn, "unused")
 	agentDeps := batchAgentDeps{
+		Host:              deps.Host,
+		RunnerID:          deps.RunnerID,
+		Bind:              batchStoreChildBind(store, deps.Host, deps.RunnerID),
 		Runs:              batchCoordinatorAgentRuns{},
 		Descendants:       batchCoordinatorDescendants{live: live},
 		QuestionPublisher: batchCoordinatorQuestionPublisher{store: store},
 	}
+	if resolver == nil {
+		// Production wiring: the real store closes the notices.
+		resolver = batchStoreQuestionResolver{store: store}
+	}
+	agentDeps.QuestionResolver = resolver
 	executor := newBatchExecutor(
 		batchLeafEnv{
 			Leaves:       registries.Resolve,
@@ -554,7 +581,6 @@ func newQuestionInstall(t *testing.T) *questionInstall {
 		},
 		newBatchExecutorFamilies(agentDeps),
 	)
-	deps := installTestDeps(t, store, conn, "unused")
 	deps.Executor = executor
 	deps.AgentDeps = agentDeps
 	deps.DiskBindings = bindings
@@ -580,7 +606,7 @@ func newQuestionInstall(t *testing.T) *questionInstall {
 		fake: fake, bindingID: bindingID, registryID: registryID,
 		fingerprint: fingerprint, realDir: realDir,
 		path1: path1, path2: path2, releaseConstruction: releaseConstruction,
-		sessionID: "sess-owner-q8-" + uuid.NewString()[:8],
+		sessionID: ownerSession,
 	}
 }
 
@@ -658,7 +684,7 @@ func TestBatchAgentQuestionHoldsScopeThenSecondProviderOp(t *testing.T) {
 	// tool — wakes with the answer.
 	runner := env.install.RunnerHandle.runner
 	require.NoError(t, runner.Inject(context.Background(), jobbatch.ID(node),
-		json.RawMessage(`{"depth":1,"text":"yes, proceed"}`)),
+		json.RawMessage(`{"depth":1,"sequence":1,"text":"yes, proceed"}`)),
 		"the answer is accepted into the parked incarnation")
 
 	// The child turn continued (round 2 wrote op2 on the SAME provider,

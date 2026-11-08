@@ -21,9 +21,12 @@ package agent
 //
 // TestStopWhileHeldKeepsQuestionAndRefusesLateInject (the §3 row's separate
 // Stop-while-held case):
-//   - the Stop ACK returns while the question is held; the durable question
-//     notice stays pending and the physical write count is unchanged — Stop
-//     does NOT settle admission or tear down the durable scope synchronously;
+//   - the Stop ACK returns while the question is held; the parked ask's
+//     cancelled context discards the hold and RESOLVES the durable question
+//     notice (delivery='void', wake=0 — the cancelled lifecycle: the
+//     question can never be answered) and the physical write count is
+//     unchanged — Stop does NOT settle admission or tear down the durable
+//     scope synchronously;
 //   - the frozen incarnation is NOT answerable after Stop: the scope's stop
 //     latches (batchAgentScope.stopped) make deliver refuse, so the SAME
 //     Inject is refused and no second provider write or replacement batch
@@ -90,7 +93,7 @@ func TestHeldQuestionInject(t *testing.T) {
 	// SAME node/token/depth the marker carries.
 	runner := env.install.RunnerHandle.runner
 	require.NoError(t, runner.Inject(context.Background(), jobbatch.ID(node),
-		json.RawMessage(`{"depth":1,"text":"yes, proceed"}`)),
+		json.RawMessage(`{"depth":1,"sequence":1,"text":"yes, proceed"}`)),
 		"the answer is accepted into the SAME held incarnation")
 
 	// The SAME incarnation wakes and finishes op2; the node settles.
@@ -161,10 +164,18 @@ func TestStopWhileHeldKeepsQuestionAndRefusesLateInject(t *testing.T) {
 	// returns without settling the node or answering the question.
 	require.NoError(t, env.install.RunnerHandle.Stop(context.Background(), root))
 	require.Equal(t, 1, env.fake.writeCount(), "Stop never runs the second filesystem op")
-	require.NoError(t, env.conn.QueryRowContext(context.Background(),
-		`SELECT text FROM session_notices WHERE owner = ?1 AND kind = ?2 AND delivery = 'pending'`,
-		env.sessionID, session.NoticeKindChildQuestion).Scan(&text),
-		"the question notice stays durably pending across the Stop ack")
+	// CANCELLED LIFECYCLE: Stop cancels the parked ask's context, the ask
+	// discards the hold and resolves the incarnation's published question —
+	// Stop cancels the ask, so the advertised question closes; it can never
+	// be answered.
+	require.Eventually(t, func() bool {
+		var delivery string
+		var wake int64
+		return env.conn.QueryRowContext(context.Background(),
+			`SELECT delivery, wake FROM session_notices WHERE owner = ?1 AND kind = ?2`,
+			env.sessionID, session.NoticeKindChildQuestion).Scan(&delivery, &wake) == nil &&
+			delivery == "void" && wake == 0
+	}, 5*time.Second, 5*time.Millisecond, "the cancelled ask resolves its published question notice")
 	_, err := env.install.DiskBindings.Lookup(env.bindingID)
 	require.NoError(t, err, "the binding owner survives the Stop acknowledgement (release is dispose-only)")
 
@@ -173,10 +184,10 @@ func TestStopWhileHeldKeepsQuestionAndRefusesLateInject(t *testing.T) {
 	// node refuses through the runner. Either way the SAME Inject is refused,
 	// never buffered for a revived incarnation.
 	runner := env.install.RunnerHandle.runner
-	require.Eventually(t, func() bool {
-		return runner.Inject(context.Background(), jobbatch.ID(node),
-			json.RawMessage(`{"depth":1,"text":"late"}`)) != nil
-	}, 5*time.Second, 5*time.Millisecond, "a post-Stop Inject into the held incarnation is refused")
+	err = runner.Inject(context.Background(), jobbatch.ID(node),
+		json.RawMessage(`{"depth":1,"sequence":1,"text":"late"}`))
+	require.ErrorIs(t, err, jobbatch.ErrTerminal,
+		"post-Stop refusal must come from lifecycle state, not a mismatched sequence")
 
 	// The incarnation unwinds through the real engine; op2 never runs, no
 	// replacement batch appears, and the OS targets stay untouched.

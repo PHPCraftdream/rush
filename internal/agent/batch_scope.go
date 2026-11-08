@@ -26,22 +26,26 @@ type batchAgentScope struct {
 // batchAgentHeldQuestion is one question awaiting an injected answer.
 type batchAgentHeldQuestion struct {
 	depth    int
+	sequence uint64 // Zero until publishQuestion stamps it; deliver fences on it.
 	answer   chan json.RawMessage
 	resolved bool
 }
 
 // batchAgentInjectMessage is the wire shape of an injected answer: it names
-// the nesting depth it addresses so an answer can never reach another depth.
+// the nesting depth it addresses AND the exact published question sequence
+// the answer addresses, so an answer can never reach another depth nor
+// resolve a different question of the same incarnation at the same depth.
 type batchAgentInjectMessage struct {
-	Depth int             `json:"depth"`
-	Text  json.RawMessage `json:"text,omitempty"`
+	Depth    int             `json:"depth"`
+	Sequence uint64          `json:"sequence"`
+	Text     json.RawMessage `json:"text,omitempty"`
 }
 
 // Errors of Inject and the question channel. All are deterministic: a caller
 // can branch on them instead of losing a message silently.
 var (
-	// ErrBatchAgentNotHeld: no question is held, or the addressed depth does
-	// not match the held one.
+	// ErrBatchAgentNotHeld: no question is held, or the addressed depth or
+	// published question sequence does not match the held one.
 	ErrBatchAgentNotHeld = errors.New("batch agent: no held question at that depth")
 	// ErrBatchAgentStopped: the incarnation is stopping or stopped; an
 	// injected message would be lost, so it is rejected instead.
@@ -129,8 +133,15 @@ func (s *batchAgentScope) discardHold(h *batchAgentHeldQuestion) {
 }
 
 // deliver routes an injected message to the held question at exactly its
-// depth. Any other depth is rejected, never buffered for later depths.
+// depth AND exactly the sequence publishQuestion stamped onto it: two
+// questions of one incarnation at the same depth are distinguished, so a
+// stale captured answer can never resolve a later question. Any other depth
+// or sequence is rejected, never buffered for later.
 func (s *batchAgentScope) deliver(msg batchAgentInjectMessage) error {
+	return s.deliverWithCommit(msg, nil)
+}
+
+func (s *batchAgentScope) deliverWithCommit(msg batchAgentInjectMessage, commit func() error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || s.stopped {
@@ -138,6 +149,14 @@ func (s *batchAgentScope) deliver(msg batchAgentInjectMessage) error {
 	}
 	if s.held == nil || s.held.depth != msg.Depth {
 		return ErrBatchAgentNotHeld
+	}
+	if msg.Sequence == 0 || s.held.sequence != msg.Sequence {
+		return ErrBatchAgentNotHeld
+	}
+	if commit != nil {
+		if err := commit(); err != nil {
+			return err
+		}
 	}
 	s.held.resolved = true
 	s.held.answer <- msg.Text

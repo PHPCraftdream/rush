@@ -52,6 +52,14 @@ func cloneTUIOptions(t *TUIOptions) *TUIOptions {
 
 // SetTheme sets the TUI theme and persists it.
 func (s *ConfigStore) SetTheme(scope Scope, theme string) error {
+	return s.SetThemeWithAuthority(scope, theme, SettingsAuthorityGuarded)
+}
+
+// SetThemeWithAuthority is SetTheme with an explicit per-call write
+// authority; see SetConfigFieldsWithAuthority for the trusted-UI exception
+// contract. Only the password/settings-lock veto is lifted for this single
+// write.
+func (s *ConfigStore) SetThemeWithAuthority(scope Scope, theme string, authority SettingsWriteAuthority) error {
 	s.updateConfig(func(cfgCopy *Config) {
 		optsCopy := cloneOptions(cfgCopy.Options)
 		tuiCopy := cloneTUIOptions(optsCopy.TUI)
@@ -59,7 +67,7 @@ func (s *ConfigStore) SetTheme(scope Scope, theme string) error {
 		optsCopy.TUI = tuiCopy
 		cfgCopy.Options = optsCopy
 	})
-	return s.SetConfigField(scope, "options.tui.theme", theme)
+	return s.SetConfigFieldWithAuthority(scope, "options.tui.theme", theme, authority)
 }
 
 // SetKeepAliveEnabled persists the WebAudio keep-alive preference.

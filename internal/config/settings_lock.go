@@ -62,6 +62,10 @@ type SettingsEvent struct {
 	Models  map[string]string
 	Outcome string
 	Reason  string
+	// Source identifies which transport performed the write: "" for
+	// ordinary writes, "ui" for trusted-UI writes. It is a fixed,
+	// secret-free token and never contains credentials.
+	Source string
 }
 
 type LockState struct{ Global, Local bool }
@@ -70,6 +74,7 @@ func (e SettingsEvent) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("scope", e.Scope),
 		slog.String("outcome", e.Outcome),
+		slog.String("source", e.Source),
 	)
 }
 
@@ -301,7 +306,17 @@ func touchesReservedKey(key string) bool {
 }
 
 // guardSettingsWrite rejects protected writes without taking any locks.
+// The authority parameter is the per-call trusted-UI exception; ordinary
+// writes keep the lock veto.
 func (s *ConfigStore) guardSettingsWrite(path string, data []byte, keys []string) (string, error) {
+	return s.guardSettingsWriteForAuthority(path, data, keys, SettingsAuthorityGuarded)
+}
+
+// guardSettingsWriteForAuthority is guardSettingsWrite parameterised on the
+// caller's write authority. The reserved-key and recent-models rules apply
+// to every authority; the settings-lock veto is the only check the
+// trusted-UI authority lifts, and it lifts it for this one call only.
+func (s *ConfigStore) guardSettingsWriteForAuthority(path string, data []byte, keys []string, authority SettingsWriteAuthority) (string, error) {
 	for _, key := range keys {
 		if touchesReservedKey(key) {
 			return "", errSettingsLockKeyReserved
@@ -318,6 +333,9 @@ func (s *ConfigStore) guardSettingsWrite(path string, data []byte, keys []string
 		}
 	}
 	if allRecent {
+		return "", nil
+	}
+	if authority.liftsSettingsLock() {
 		return "", nil
 	}
 	if err := s.checkExternalSettingsSources(path, data); err != nil {
