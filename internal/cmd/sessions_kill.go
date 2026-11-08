@@ -169,10 +169,10 @@ func sessionsKillCmdRunWithBatchNote(cmd *cobra.Command, args []string, readBatc
 	info, err := os.Stat(lockPath)
 	if err != nil {
 		if os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "no lock file at %s\n", lockPath)
 			if scopeErr := batchKillUnprovenError(batchNote); scopeErr != nil {
 				return scopeErr
 			}
-			fmt.Fprintf(os.Stderr, "no lock file at %s\n", lockPath)
 			return nil
 		}
 		return fmt.Errorf("stat lock: %w", err)
