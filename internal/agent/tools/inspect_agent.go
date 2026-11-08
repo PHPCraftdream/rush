@@ -15,7 +15,7 @@ const InspectAgentToolName = "inspect_agent"
 var inspectAgentDescription string
 
 type InspectAgentParams struct {
-	childSessionIDParam
+	ChildSessionID string `json:"child_session_id,omitempty" description:"Full delegated child session id, including any $$call_ suffix. Omit to list live delegations."`
 }
 
 // NewInspectAgentTool builds inspect_agent (contract §4.1): a read-only
@@ -55,7 +55,7 @@ func NewInspectAgentTool(control AgentControl) fantasy.AgentTool {
 					return fantasy.NewTextResponse("Multiple live sub-agent delegations; call again with child_session_id from this list:\n" + string(data)), nil
 				}
 			}
-			childSessionID, err := childSessionFromParams(params.childSessionIDParam)
+			childSessionID, err := childSessionFromParams(childSessionIDParam(params))
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}

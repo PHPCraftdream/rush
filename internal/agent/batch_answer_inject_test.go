@@ -93,7 +93,7 @@ func TestAWa5AgentChildAnswerViaRunnerInject(t *testing.T) {
 	// The answer goes through the REAL Runner.Inject seam: ACCEPTED.
 	runner := env.install.RunnerHandle.runner
 	require.NoError(t, runner.Inject(env.ctx, jobbatch.ID(node),
-		json.RawMessage(`{"depth":1,"text":"`+answer+`"}`)),
+		json.RawMessage(`{"depth":1,"sequence":1,"text":"`+answer+`"}`)),
 		"the answer is accepted into the SAME incarnation")
 
 	// The parked ask returned: the turn finished with the answer text.
@@ -118,21 +118,20 @@ func TestAWa5AgentChildAnswerViaRunnerInject(t *testing.T) {
 	}, 5*time.Second, 5*time.Millisecond, "the answered node settles completed")
 	require.False(t, cutoverStateLive(env.nodeState(root)), "the node is terminal after settling")
 
-	// What production did to the question notice on acceptance (VERIFIED
-	// shape, not fabricated): BatchPublishQuestion inserted the notice
-	// pending+wake=1 and NOTHING in the acceptance path reacts or deletes
-	// it -- scope.deliver only answers the in-memory hold. The notice is
-	// consumed by the OWNER's ordinary notice pull (the node is terminal
-	// now, so the pull no longer gates on it). Assert the durable shape:
-	// still present, delivery pending, unreacted, wake=1.
+	// Lifecycle after acceptance (the answer was accepted WITHOUT any sink,
+	// directly through Runner.Inject): the execution's resolution hook
+	// closes the advertised question — delivery='void', wake=0. This is the
+	// direct-inject regression: a direct Runner.Inject must leave no
+	// false-actionable notice behind. Resolution is NOT a reaction: the
+	// generic reacted semantics are untouched, and reacted stays 0.
 	var delivery string
 	var wake, reacted int64
 	require.NoError(t, env.conn.QueryRowContext(env.ctx,
 		`SELECT delivery, wake, reacted FROM session_notices WHERE owner = ?1 AND kind = ?2`,
 		env.sessionID, session.NoticeKindChildQuestion).Scan(&delivery, &wake, &reacted))
-	require.Equal(t, "pending", delivery, "the question notice stays until the owner's pull")
-	require.EqualValues(t, 1, wake, "the held question wakes the owner session")
-	require.EqualValues(t, 0, reacted, "acceptance does not react the question notice")
+	require.Equal(t, "void", delivery, "acceptance resolves the advertised question notice")
+	require.EqualValues(t, 0, wake, "the resolved notice never wakes the owner session")
+	require.EqualValues(t, 0, reacted, "resolution is not a reaction")
 
 	// A late answer on the terminal incarnation is refused: the public
 	// guard in runner_requests.go returns ErrTerminal for a terminal node

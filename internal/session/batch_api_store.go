@@ -48,28 +48,77 @@ type BatchAPIHeldQuestion struct {
 	Token, Sequence       int64
 }
 
-// BatchAPIHeldQuestions lists the owner's unanswered child questions, oldest
-// first: the unreacted wake=1 child_question notices. The question text and the
-// node/child identity come from the notice marker the publisher wrote.
+// BatchAPIHeldQuestions lists the owner's CURRENT-incarnation unresolved
+// child questions, oldest first: the wake=1 child_question notices of
+// pending-or-delivered delivery, regardless of `reacted` — the owner's
+// reaction flow marks every notice reacted without answering, so reacted
+// must never hide an unanswered question. ANSWERED questions disappear on
+// their own: both resolution paths (the sink close and
+// BatchResolveChildQuestions) set delivery='void', which the pending/done
+// predicate excludes. Per candidate the same incarnation + root fence as
+// the route reader applies: the node must be live with a matching token
+// and its root must not be durably retired. An unreadable fence read
+// returns the parsed prefix plus the error; the display consumer degrades
+// to an empty listing for that call (view.Held), while the ANSWER path
+// (answerHeld → BatchAnswerHeld) never depended on the listing, so no
+// question becomes unanswerable. markAnswered/questionAnswered stay
+// unchanged: their in-memory answered ledger remains the answer-side
+// filter; this listing shows exactly the current-incarnation unresolved
+// questions regardless of reacted.
 func (s *BatchStore) BatchAPIHeldQuestions(ctx context.Context, owner string) ([]BatchAPIHeldQuestion, error) {
 	rows, err := s.writer.QueryContext(ctx,
-		`SELECT text FROM session_notices WHERE owner = ?1 AND kind = ?2 AND delivery IN ('pending','done') AND wake = 1 AND reacted = 0 ORDER BY id`,
+		`SELECT text FROM session_notices WHERE owner = ?1 AND kind = ?2 AND delivery IN ('pending','done') AND wake = 1 ORDER BY id`,
 		owner, NoticeKindChildQuestion)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []BatchAPIHeldQuestion
+	type questionRow struct {
+		question  BatchAPIHeldQuestion
+		node      string
+		token     int64
+		state     string
+		rowToken  int64
+		rootDeliv string
+	}
+	var pending []questionRow
 	for rows.Next() {
 		var text string
 		if err = rows.Scan(&text); err != nil {
 			return nil, err
 		}
 		if question, ok := parseBatchAPIQuestion(text); ok {
-			out = append(out, question)
+			pending = append(pending, questionRow{question: question, node: question.Node, token: question.Token})
 		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var out []BatchAPIHeldQuestion
+	var firstErr error
+	for _, r := range pending {
+		// Incarnation + root fence per candidate, root-joined like
+		// BatchPublishQuestion. Fully drained before these reads: the writer
+		// pool has exactly ONE connection.
+		if err := s.writer.QueryRowContext(ctx,
+			`SELECT n.token, n.state, r.delivery FROM batch_nodes n JOIN batch_nodes r ON r.node_id = n.root_id WHERE n.node_id = ?1 AND n.owner_session_id = ?2`,
+			r.node, owner).Scan(&r.rowToken, &r.state, &r.rootDeliv); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue // Root/node уже удалён; это не ошибка чтения.
+			}
+			// Unreadable fence is never proven absence: remember the first
+			// error and keep scanning.
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if !BatchAPIRootLive(r.state) || r.rootDeliv == "void" || r.rowToken != r.token {
+			continue
+		}
+		out = append(out, r.question)
+	}
+	return out, firstErr
 }
 
 // parseBatchAPIQuestion reads the publisher's text:

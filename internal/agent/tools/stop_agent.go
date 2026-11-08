@@ -13,7 +13,7 @@ const StopAgentToolName = "stop_agent"
 var stopAgentDescription string
 
 type StopAgentParams struct {
-	childSessionIDParam
+	ChildSessionID string `json:"child_session_id" description:"Full delegated child session id, including any $$call_ suffix. Take it from the child_question notice or inspect_agent listing."`
 }
 
 // NewStopAgentTool builds stop_agent (contract §4.3): stops ONLY the child's
@@ -27,7 +27,7 @@ func NewStopAgentTool(control AgentControl) fantasy.AgentTool {
 			if sessionID == "" {
 				return fantasy.NewTextErrorResponse("session ID is required to stop a sub-agent"), nil
 			}
-			childSessionID, err := childSessionFromParams(params.childSessionIDParam)
+			childSessionID, err := childSessionFromParams(childSessionIDParam(params))
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}

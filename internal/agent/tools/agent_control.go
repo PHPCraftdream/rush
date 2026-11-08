@@ -37,6 +37,21 @@ type AgentInspection struct {
 	QueuedMessages      int    `json:"queued_messages"`
 	LastActivityAt      string `json:"last_activity_at,omitempty"`
 	LastActivitySummary string `json:"last_activity_summary,omitempty"`
+	// HeldQuestion is set when Status is "awaiting_answer" because a
+	// CURRENT batch question of this child is still actionable (the fenced
+	// marker identity of the held ask); empty for the legacy between-turns
+	// question stop.
+	HeldQuestion *AgentHeldQuestion `json:"held_question,omitempty"`
+}
+
+// AgentHeldQuestion is the fenced identity of a child's held batch
+// question: inspect_agent reports it when the child is parked inside a
+// live ask_question of a CURRENT batch incarnation.
+type AgentHeldQuestion struct {
+	NodeID   string `json:"node_id"`
+	Token    int64  `json:"token"`
+	Depth    int    `json:"depth"`
+	Sequence int64  `json:"sequence"`
 }
 
 // AgentDelegationSummary is one live delegation in ListDelegations' output.
