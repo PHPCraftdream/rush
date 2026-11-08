@@ -28,6 +28,16 @@ type batchCoordinatorQuestionPublisher struct {
 	wake  func(context.Context, string)
 }
 
+// batchStoreQuestionResolver adapts *session.BatchStore's
+// BatchResolveChildQuestions onto the execution-side resolver seam (the
+// store prefixes its public methods with Batch; the seam does not).
+type batchStoreQuestionResolver struct{ store *session.BatchStore }
+
+func (r batchStoreQuestionResolver) ResolveChildQuestions(ctx context.Context, owner, node, child string, token, sequence int64) error {
+	_, err := r.store.BatchResolveChildQuestions(ctx, owner, node, child, token, sequence)
+	return err
+}
+
 func (p batchCoordinatorQuestionPublisher) PublishChildQuestion(ctx context.Context, n batchChildQuestionNotice) error {
 	if p.store == nil {
 		return errors.New("batch question: publisher unavailable")
@@ -89,7 +99,8 @@ func (t batchAgentAskQuestionTool) Run(ctx context.Context, call fantasy.ToolCal
 	}
 	answer, err := binding.Ask(ctx, depth, question)
 	if err != nil {
-		return fantasy.NewTextErrorResponse(err.Error()), nil
+		// Снятый hold нельзя продолжать как обычную ошибку инструмента.
+		return fantasy.NewTextErrorResponse(err.Error()), err
 	}
 	var text string
 	if json.Unmarshal(answer, &text) == nil {

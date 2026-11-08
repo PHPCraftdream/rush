@@ -85,6 +85,13 @@ type BatchAwaitParams struct {
 	// defaults (batchAwaitMinWaitSeconds/batchAwaitMaxWaitSeconds).
 	MinWaitSeconds int
 	MaxWaitBounds  int
+	// HeldQuestions, when set, is consulted at every evaluation (initial and
+	// after each hint/poll/deadline read). A non-empty actionable held-question
+	// set — or an unreadable read — BREAKS the wait with the
+	// batchHeldQuestionAwaitError refusal, so a worker never blocks in-tool on
+	// a question it must answer, including one that appears mid-wait. nil (the
+	// zero value) preserves today's behaviour exactly.
+	HeldQuestions func(context.Context) ([]BatchHeldQuestionRoute, error)
 }
 
 // batchAwaitTarget is one captured root with its per-capture notify mode.
@@ -156,6 +163,22 @@ func BatchAwaitWorker(ctx context.Context, p BatchAwaitParams) (BatchAwaitResult
 	var out BatchAwaitResult
 	var outErr error
 	evaluated := false
+	// evaluate is batchAwaitEvaluateFor plus the held-question refusal: a
+	// non-empty actionable route set (or an unreadable read) breaks the wait
+	// with the refusal error — a worker must never block in-tool on a
+	// question it must answer. The refusal beats the deadline's TimedOut
+	// report (the deadline arm sets outErr before breaking).
+	evaluate := func() ([]BatchAwaitUnit, []BatchAwaitUnit, error) {
+		fin, rem := batchAwaitEvaluateFor(p.Mode, targets, p.Levels(ctx))
+		if p.HeldQuestions == nil {
+			return fin, rem, nil
+		}
+		routes, herr := p.HeldQuestions(ctx)
+		if herr != nil || len(routes) > 0 {
+			return fin, rem, batchHeldQuestionAwaitError(routes)
+		}
+		return fin, rem, nil
+	}
 	// Exactly ONE return for the whole wait: every branch breaks to it.
 loop:
 	for {
@@ -168,7 +191,12 @@ loop:
 			// Level-triggered initial evaluation so terminal state landing
 			// between capture and the first wait is not lost.
 			evaluated = true
-			out.Finished, out.Remaining = batchAwaitEvaluateFor(p.Mode, targets, p.Levels(ctx))
+			var herr error
+			out.Finished, out.Remaining, herr = evaluate()
+			if herr != nil {
+				outErr = herr
+				break loop
+			}
 			if batchAwaitSatisfied(p.Mode, out.Finished, out.Remaining) {
 				out.Mode = p.Mode
 				out.FinishedCount = len(out.Finished)
@@ -182,14 +210,29 @@ loop:
 		case <-hintCh:
 			// Hint: re-evaluate captured levels only. New roots are not
 			// captured (BatchCapturedLevel rereads captured refs alone).
-			out.Finished, out.Remaining = batchAwaitEvaluateFor(p.Mode, targets, p.Levels(ctx))
+			var herr error
+			out.Finished, out.Remaining, herr = evaluate()
+			if herr != nil {
+				outErr = herr
+				break loop
+			}
 		case <-poll.C:
 			// Poll fallback re-read; identical semantics to a hint.
-			out.Finished, out.Remaining = batchAwaitEvaluateFor(p.Mode, targets, p.Levels(ctx))
+			var herr error
+			out.Finished, out.Remaining, herr = evaluate()
+			if herr != nil {
+				outErr = herr
+				break loop
+			}
 		case <-deadline.C:
 			// Timeout reports remaining work without stopping it and
-			// without an error.
-			out.Finished, out.Remaining = batchAwaitEvaluateFor(p.Mode, targets, p.Levels(ctx))
+			// without an error — but a held-question refusal beats it.
+			var herr error
+			out.Finished, out.Remaining, herr = evaluate()
+			if herr != nil {
+				outErr = herr
+				break loop
+			}
 			out.TimedOut = true
 			out.Mode = p.Mode
 			out.FinishedCount = len(out.Finished)

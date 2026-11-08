@@ -97,8 +97,10 @@ func (c *coordinator) childLastActivity(ctx context.Context, childID string) (ms
 	return nil, false
 }
 
-// InspectAgent implements tools.AgentControl (§4.1). Priority: running
-// (driver-aware busy) beats everything; then awaiting_answer (the exact
+// InspectAgent implements tools.AgentControl (§4.1). Priority: a CONFIRMED
+// held batch question (the fenced actionable route; carries the fenced
+// held_question identity) beats everything; then running (driver-aware
+// busy); then awaiting_answer (the exact
 // question-stop finish literal); then a terminal registry state; then
 // armed-but-not-running (idle); then a history-derived terminal for an
 // already-delivered (gc'd) delegation; then idle for a never-run child.
@@ -108,7 +110,32 @@ func (c *coordinator) InspectAgent(ctx context.Context, callerSessionID, childSe
 	}
 	insp := tools.AgentInspection{ChildSessionID: childSessionID}
 	last, awaiting := c.childLastActivity(ctx, childSessionID)
+	// A confirmed CURRENT held batch question outranks the generic busy
+	// state: the batch ask parks the run INSIDE a tool call, so
+	// IsSessionBusy alone masks the question as "running" and the parent
+	// never learns it must answer. Only the fenced actionable route (live
+	// incarnation, exact token) promotes the status; an ordinary executing
+	// child stays "running"; an unreadable read falls through to the old
+	// behaviour (never a fabricated awaiting_answer); answered/stale/
+	// terminal/foreign-scope notices never change the status.
+	var heldRoute *BatchHeldQuestionRoute
+	if src, ok := coordinatorBatchCutoverFacts(c).(BatchHeldQuestionSource); ok {
+		if routes, rerr := src.ActionableHeldQuestions(ctx, callerSessionID); rerr == nil {
+			for i := range routes {
+				if routes[i].ChildSessionID == childSessionID {
+					heldRoute = &routes[i]
+					break
+				}
+			}
+		}
+	}
 	switch {
+	case heldRoute != nil:
+		insp.Status = "awaiting_answer"
+		insp.HeldQuestion = &tools.AgentHeldQuestion{
+			NodeID: heldRoute.NodeID, Token: heldRoute.Token,
+			Depth: heldRoute.Depth, Sequence: heldRoute.Sequence,
+		}
 	case c.agentFor(childSessionID).IsSessionBusy(childSessionID):
 		insp.Status = "running"
 	case awaiting:

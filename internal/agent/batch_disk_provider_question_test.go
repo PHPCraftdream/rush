@@ -492,6 +492,13 @@ type questionInstall struct {
 }
 
 func newQuestionInstall(t *testing.T) *questionInstall {
+	return newQuestionInstallWithQuestionResolver(t, nil)
+}
+
+// newQuestionInstallWithQuestionResolver is newQuestionInstall with the
+// execution-side question-resolution seam injectable: nil falls back to the
+// real store (production wiring), a test may pass a failing resolver.
+func newQuestionInstallWithQuestionResolver(t *testing.T, resolver batchChildQuestionResolver) *questionInstall {
 	t.Helper()
 	store, conn, _ := newTestBatchStore(t)
 	bindings := NewDiskProviderRegistry()
@@ -547,6 +554,11 @@ func newQuestionInstall(t *testing.T) *questionInstall {
 		Descendants:       batchCoordinatorDescendants{live: live},
 		QuestionPublisher: batchCoordinatorQuestionPublisher{store: store},
 	}
+	if resolver == nil {
+		// Production wiring: the real store closes the notices.
+		resolver = batchStoreQuestionResolver{store: store}
+	}
+	agentDeps.QuestionResolver = resolver
 	executor := newBatchExecutor(
 		batchLeafEnv{
 			Leaves:       registries.Resolve,
@@ -658,7 +670,7 @@ func TestBatchAgentQuestionHoldsScopeThenSecondProviderOp(t *testing.T) {
 	// tool — wakes with the answer.
 	runner := env.install.RunnerHandle.runner
 	require.NoError(t, runner.Inject(context.Background(), jobbatch.ID(node),
-		json.RawMessage(`{"depth":1,"text":"yes, proceed"}`)),
+		json.RawMessage(`{"depth":1,"sequence":1,"text":"yes, proceed"}`)),
 		"the answer is accepted into the parked incarnation")
 
 	// The child turn continued (round 2 wrote op2 on the SAME provider,
