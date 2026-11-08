@@ -308,10 +308,10 @@ func (c *coordinator) startInterruptTicker(ctx context.Context, sessionID string
 // atomically removes that exact candidate and restores the source row before
 // the tick reports no delivery.
 func (c *coordinator) handleInterruptTick(ctx context.Context, sessionID string) (bool, error) {
-	return c.handleInterruptTickObserved(ctx, sessionID, nil)
+	return c.handleInterruptTickObserved(ctx, sessionID, nil, nil)
 }
 
-func (c *coordinator) handleInterruptTickObserved(ctx context.Context, sessionID string, observeDelivery func(string)) (bool, error) {
+func (c *coordinator) handleInterruptTickObserved(ctx context.Context, sessionID string, observeDelivery func(string), beforeDelivery func() error) (bool, error) {
 	// Ownership is published before the first generation starts. If a
 	// reservation exists but its call snapshot is not visible yet, retry the
 	// tick: consuming now could rebuild with operator credentials or disk.
@@ -327,6 +327,11 @@ func (c *coordinator) handleInterruptTickObserved(ctx context.Context, sessionID
 	}
 	if pi == nil {
 		return false, nil
+	}
+	if beforeDelivery != nil {
+		if err := beforeDelivery(); err != nil {
+			return false, err
+		}
 	}
 
 	// Load the message to build call data

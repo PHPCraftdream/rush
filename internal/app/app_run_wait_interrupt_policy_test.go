@@ -15,7 +15,12 @@ type waitingInterruptProbe struct {
 	err   error
 }
 
-func (p *waitingInterruptProbe) PollExternalInterrupt(context.Context, string) (string, error) {
+func (p *waitingInterruptProbe) PollExternalInterrupt(_ context.Context, _ string, beforeDelivery func() error) (string, error) {
+	if beforeDelivery != nil {
+		if err := beforeDelivery(); err != nil {
+			return "", err
+		}
+	}
 	p.polls++
 	return "", p.err
 }

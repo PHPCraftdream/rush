@@ -803,10 +803,14 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 			return stepExit, "", l.ctx.Err()
 		}
 		if poller, ok := l.source.(agent.ExternalInterruptSource); ok {
-			if stopErr := l.stopError(); stopErr != nil {
+			var stopErr error
+			messageID, pollErr := poller.PollExternalInterrupt(l.ctx, l.sessionID, func() error {
+				stopErr = l.stopError()
+				return stopErr
+			})
+			if stopErr != nil {
 				return stepCanceled, "", stopErr
 			}
-			messageID, pollErr := poller.PollExternalInterrupt(l.ctx, l.sessionID)
 			if pollErr != nil {
 				return stepExit, "", fmt.Errorf("rush run: pending interrupt: %w", pollErr)
 			}
