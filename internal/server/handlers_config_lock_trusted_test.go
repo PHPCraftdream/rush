@@ -30,6 +30,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -104,6 +105,16 @@ func requireNoPlainBroadcast(t *testing.T, c *Client) {
 }
 
 func TestLockedConfigHandlersTrustedUIClientApplies(t *testing.T) {
+	var defaultContextPaths []string
+	checkContextWire := func(t *testing.T, payload gjson.Result, paths ...string) {
+		t.Helper()
+		expected := append(slices.Clone(defaultContextPaths), paths...)
+		slices.Sort(expected)
+		expected = slices.Compact(expected)
+		want, err := json.Marshal(expected)
+		require.NoError(t, err)
+		require.JSONEq(t, string(want), payload.Get("contextPaths").Raw)
+	}
 	// Same fixture rationale as TestLockedConfigHandlersRefuseWithoutMutation:
 	// the raw-bytes-on-disk assertions only have their meaning with the
 	// legacy-JSON migration gate off.
@@ -193,9 +204,7 @@ func TestLockedConfigHandlersTrustedUIClientApplies(t *testing.T) {
 				require.Equal(t, "added", paths[1].String())
 			},
 			wireCheck: func(t *testing.T, payload gjson.Result) {
-				paths := payload.Get("contextPaths").Array()
-				require.Len(t, paths, 2)
-				require.Equal(t, "added", paths[1].String())
+				checkContextWire(t, payload, "kept", "added")
 			},
 		},
 		{
@@ -210,7 +219,7 @@ func TestLockedConfigHandlersTrustedUIClientApplies(t *testing.T) {
 				require.Len(t, paths, 0)
 			},
 			wireCheck: func(t *testing.T, payload gjson.Result) {
-				require.Len(t, payload.Get("contextPaths").Array(), 0)
+				checkContextWire(t, payload)
 			},
 		},
 		{
@@ -384,6 +393,7 @@ func TestLockedConfigHandlersTrustedUIClientApplies(t *testing.T) {
 			isolateAllGlobalConfigPaths(t)
 			a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 			store := a.Store()
+			defaultContextPaths = slices.Clone(store.Config().Options.ContextPaths)
 			config.SetProcessPassword("")
 			t.Cleanup(func() { config.SetProcessPassword("") })
 			// Common seed values, mirroring the refusal test's fixture.
