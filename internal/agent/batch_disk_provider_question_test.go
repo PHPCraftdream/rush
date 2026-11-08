@@ -185,7 +185,9 @@ func (l *questionProviderLeaf) Run(ctx context.Context, call fantasy.ToolCall) (
 	// turn (mirrors the coordinator's runSubAgent binding via the
 	// driver-stamped batchAgentLifecycle).
 	if lifecycle, ok := ctx.Value(batchAgentLifecycleContextKey{}).(batchAgentLifecycle); ok && lifecycle.BindChildSession != nil {
-		lifecycle.BindChildSession(context.Background(), l.childSession)
+		if err := lifecycle.BindChildSession(ctx, l.childSession); err != nil {
+			return fantasy.ToolResponse{}, err
+		}
 	}
 	// The REAL child turn: a production sessionAgent over the SAME store
 	// with a SCRIPTED model (fake model BEHAVIOR only — the turn, the tool
@@ -556,7 +558,11 @@ func newQuestionInstallWithQuestionResolver(t *testing.T, resolver batchChildQue
 	live.ProbeHost = func(string, string) (session.HostLockStatus, error) {
 		return session.HostStatusAlive, nil
 	}
+	deps := installTestDeps(t, store, conn, "unused")
 	agentDeps := batchAgentDeps{
+		Host:              deps.Host,
+		RunnerID:          deps.RunnerID,
+		Bind:              batchStoreChildBind(store, deps.Host, deps.RunnerID),
 		Runs:              batchCoordinatorAgentRuns{},
 		Descendants:       batchCoordinatorDescendants{live: live},
 		QuestionPublisher: batchCoordinatorQuestionPublisher{store: store},
@@ -573,7 +579,6 @@ func newQuestionInstallWithQuestionResolver(t *testing.T, resolver batchChildQue
 		},
 		newBatchExecutorFamilies(agentDeps),
 	)
-	deps := installTestDeps(t, store, conn, "unused")
 	deps.Executor = executor
 	deps.AgentDeps = agentDeps
 	deps.DiskBindings = bindings
