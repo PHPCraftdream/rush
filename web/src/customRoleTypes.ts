@@ -16,6 +16,10 @@ export interface CustomRolesState {
 export type CustomRoleScope = "global" | "workspace";
 export type RoleToolsMode = "inherit" | "none" | "patterns";
 
+export function customRoleAt(roles: Record<string, CustomRole> | undefined, name: string): CustomRole | undefined {
+  return roles && Object.prototype.hasOwnProperty.call(roles, name) ? roles[name] : undefined;
+}
+
 export interface SetCustomRoleRequest {
   scope: CustomRoleScope;
   name: string;

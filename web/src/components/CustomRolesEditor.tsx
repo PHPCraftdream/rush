@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import type { CustomRole, CustomRoleScope, CustomRolesState, SetCustomRoleRequest } from "../types";
-import { roleToolsMode, roleToolsPayload, type RoleToolsMode } from "../customRoleTypes";
+import type { CustomRoleScope, CustomRolesState, SetCustomRoleRequest } from "../types";
+import { customRoleAt, roleToolsMode, roleToolsPayload, type RoleToolsMode } from "../customRoleTypes";
 import { effortLevelsFor } from "../effort";
 import { ws, wsRequest, WSRequestError } from "../ws";
 import type { ModelItem } from "./ModelSelector";
@@ -66,7 +66,8 @@ export function CustomRolesEditor({ models }: { models: ModelItem[] }) {
   ])].sort(), [state]);
 
   function loadDraft(nextName: string | null, nextScope: CustomRoleScope) {
-    const definition: CustomRole | undefined = nextName ? (state?.[nextScope][nextName] ?? state?.effective[nextName]) : undefined;
+    const scopedDefinition = nextName ? customRoleAt(state?.[nextScope], nextName) : undefined;
+    const definition = scopedDefinition ?? (nextName ? customRoleAt(state?.effective, nextName) : undefined);
     setEditingName(nextName);
     setName(nextName ?? "");
     setProvider(definition?.provider ?? "");
@@ -76,7 +77,7 @@ export function CustomRolesEditor({ models }: { models: ModelItem[] }) {
     setToolsMode(definition ? roleToolsMode(definition) : "inherit");
     setPatterns(JSON.stringify(definition?.tools ?? [], null, 2));
     setToolsChanged(false);
-    setHadScopedDefinition(!!nextName && state?.[nextScope][nextName] !== undefined);
+    setHadScopedDefinition(!!nextName && scopedDefinition !== undefined);
     setError("");
     setNotice("");
   }
@@ -97,7 +98,7 @@ export function CustomRolesEditor({ models }: { models: ModelItem[] }) {
     setNotice("");
     try {
       if (!name || name !== name.trim()) throw new Error("Enter a role name without leading or trailing spaces.");
-      if (!editingName && state[scope][name]) throw new Error("This role already exists at this scope. Choose Edit instead.");
+      if (!editingName && customRoleAt(state[scope], name)) throw new Error("This role already exists at this scope. Choose Edit instead.");
       if (!provider || !model) throw new Error("Provider and model are required.");
       const payload: SetCustomRoleRequest = {
         scope, name, provider, model,
@@ -161,8 +162,8 @@ export function CustomRolesEditor({ models }: { models: ModelItem[] }) {
       </label>
       <ul className="space-y-1">
         {names.map((roleName) => {
-          const effective = state?.effective[roleName];
-          const sources = [state?.global[roleName] && "global", state?.workspace[roleName] && "workspace"].filter(Boolean).join(", ") || "inherited";
+          const effective = customRoleAt(state?.effective, roleName);
+          const sources = [customRoleAt(state?.global, roleName) && "global", customRoleAt(state?.workspace, roleName) && "workspace"].filter(Boolean).join(", ") || "inherited";
           return <li key={roleName} className="flex items-center justify-between gap-2 text-xs">
             <span className="min-w-0 break-all text-text">{roleName} <span className="text-text-subtle">({sources}) {effective?.provider}/{effective?.model}</span></span>
             <button type="button" disabled={busy} onClick={() => loadDraft(roleName, scope)} aria-label={`Edit role ${roleName}`} className="text-accent disabled:opacity-40">Edit</button>
@@ -205,7 +206,7 @@ export function CustomRolesEditor({ models }: { models: ModelItem[] }) {
         <p className="text-[11px] text-text-subtle">Only * and ? are wildcards; matching is case-sensitive. An empty array means no tools. Removing a scoped definition may reveal an inherited one.</p>
         <div className="flex items-center gap-3">
           <button type="submit" disabled={busy || !state || !name || !provider || !model} className="text-xs text-accent disabled:opacity-40">{busy ? "Saving…" : "Save role"}</button>
-          <button type="button" disabled={busy || !editingName || !state?.[scope][editingName]} onClick={() => { void remove(); }} className="text-xs text-red-400 disabled:opacity-40">Remove scoped definition</button>
+          <button type="button" disabled={busy || !editingName || !customRoleAt(state?.[scope], editingName ?? "")} onClick={() => { void remove(); }} className="text-xs text-red-400 disabled:opacity-40">Remove scoped definition</button>
         </div>
       </form>
     </section>

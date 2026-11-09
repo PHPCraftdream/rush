@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { roleToolsMode, roleToolsPayload } from "./customRoleTypes.ts";
+import { roleToolsMode, roleToolsPayload, customRoleAt } from "./customRoleTypes.ts";
+
+test("custom role lookup distinguishes missing prototype names from own definitions", () => {
+  const role = { provider: "p", model: "m" };
+  const empty = JSON.parse("{}") as Record<string, typeof role>;
+  for (const name of ["constructor", "toString", "__proto__"]) {
+    assert.equal(customRoleAt(empty, name), undefined, `${name} is not a role in an empty map`);
+    const roles = JSON.parse(JSON.stringify({ [name]: role })) as Record<string, typeof role>;
+    assert.deepEqual(customRoleAt(roles, name), role);
+  }
+  assert.equal(customRoleAt(undefined, "constructor"), undefined);
+});
 
 test("custom role tools distinguish omitted, empty and pattern lists", () => {
   assert.equal(roleToolsMode({ provider: "p", model: "m" }), "inherit");

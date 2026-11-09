@@ -51,6 +51,50 @@ test.afterEach(async ({ page }, info) => {
   await info.attach("custom-role-wire-trace", { body: JSON.stringify(trace, null, 2), contentType: "application/json" });
 });
 
+for (const name of ["constructor", "toString", "__proto__"]) {
+  test(`creates prototype-named role ${name} in an empty scope`, async ({ page }) => {
+    const editor = await openEditor(page, stateWith());
+    await editor.getByLabel("Role name").fill(name);
+    await editor.getByLabel("Provider", { exact: true }).fill("role-provider");
+    await editor.getByLabel("Model", { exact: true }).fill("model-a");
+    await editor.getByRole("button", { name: "Save role", exact: true }).click();
+    const request = await waitForWSSend(page, "set_custom_role");
+    expect(request.payload).toMatchObject({ scope: "global", name, provider: "role-provider", model: "model-a" });
+  });
+}
+
+test("workspace model-only override of global constructor carries effective tools", async ({ page }) => {
+  const constructorRole: CustomRole = { provider: "role-provider", model: "model-a", reasoning_effort: "high", tools: ["view", "mcp_*"] };
+  const global = JSON.parse(JSON.stringify({ constructor: constructorRole })) as Record<string, CustomRole>;
+  const editor = await openEditor(page, stateWith(global));
+  await editor.getByLabel("Role scope").selectOption("workspace");
+  await editor.getByRole("button", { name: "Edit role constructor", exact: true }).click();
+  await expect(editor.getByText("constructor (global) role-provider/model-a")).toBeVisible();
+  await expect(editor.getByLabel("Provider", { exact: true })).toHaveValue("role-provider");
+  await expect(editor.getByLabel("Model", { exact: true })).toHaveValue("model-a");
+  await expect(editor.getByLabel("Allowed tools")).toHaveValue("patterns");
+  await expect(editor.getByLabel("Tool patterns (JSON array)")).toHaveValue('[\n  "view",\n  "mcp_*"\n]');
+  await expect(editor.getByRole("button", { name: "Remove scoped definition", exact: true })).toBeDisabled();
+  await editor.getByLabel("Model", { exact: true }).fill("model-b");
+  await editor.getByRole("button", { name: "Save role", exact: true }).click();
+  const request = await waitForWSSend(page, "set_custom_role");
+  expect(request.payload).toMatchObject({ scope: "workspace", name: "constructor", model: "model-b", tools: ["view", "mcp_*"] });
+});
+
+for (const name of ["constructor", "toString", "__proto__"]) {
+  test(`prototype-named scoped definitions are removable only when owned: ${name}`, async ({ page }) => {
+    const role: CustomRole = { provider: "role-provider", model: "model-a", tools: ["view"] };
+    const workspace = JSON.parse(JSON.stringify({ [name]: role })) as Record<string, CustomRole>;
+    const editor = await openEditor(page, stateWith({}, workspace));
+    await editor.getByLabel("Role scope").selectOption("workspace");
+    await editor.getByRole("button", { name: `Edit role ${name}`, exact: true }).click();
+    await expect(editor.getByRole("button", { name: "Remove scoped definition", exact: true })).toBeEnabled();
+    await editor.getByRole("button", { name: "Remove scoped definition", exact: true }).click();
+    const request = await waitForWSSend(page, "remove_custom_role");
+    expect(request.payload).toEqual({ scope: "workspace", name });
+  });
+}
+
 test("creates a role with explicit zero tools and the selected effort", async ({ page }) => {
   const editor = await openEditor(page, stateWith());
   await editor.getByLabel("Role name").fill("composer");
