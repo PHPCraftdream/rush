@@ -14,7 +14,10 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
-const apiBatchRetryAfter = 5 * time.Second
+const (
+	apiBatchRetryAfter        = 5 * time.Second
+	apiBatchTrustedAgentDepth = 2
+)
 
 // apiBatchNode is the explicit DTO of one batch node: never a raw row.
 type apiBatchNode struct {
@@ -55,6 +58,7 @@ type apiTaskRequest struct {
 	Prompt          string `json:"prompt"`
 	ResumeSessionID string `json:"resume_session_id,omitempty"`
 	TimeoutSeconds  int    `json:"timeout_seconds,omitempty"`
+	MaxAgentDepth   *int   `json:"max_agent_depth,omitempty"`
 }
 
 func batchStateDone(state string) bool {
@@ -171,12 +175,26 @@ func (s *apiBatchService) createBatchHandler() http.HandlerFunc {
 			WriteAPIProblem(w, r, http.StatusBadRequest, "Bad Request", "invalid request body", "", err)
 			return
 		}
-		spec, err := agent.ParseBatchExternalSpecJSON(body)
+		spec, err := agent.ParseBatchExternalSpecJSONWithAgentDepth(body, apiBatchTrustedAgentDepth)
 		if err != nil || spec.Batch == nil {
-			WriteAPIProblem(w, r, http.StatusBadRequest, "Bad Request", "request body must be a batch of the external batch schema", "", err)
+			WriteAPIProblem(w, r, http.StatusBadRequest, "Bad Request", "request body must be a batch within the trusted depth cap", "", err)
 			return
 		}
-		result, err := s.submit(r.Context(), principal, spec, key, string(body))
+		depth := apiBatchTrustedAgentDepth
+		var external agent.BatchExternalSpec
+		if err := json.Unmarshal(body, &external); err != nil {
+			WriteAPIProblem(w, r, http.StatusBadRequest, "Bad Request", "invalid request body", "", err)
+			return
+		}
+		if external.MaxAgentDepth != nil {
+			depth = *external.MaxAgentDepth
+		}
+		ctx, depthErr := agent.WithAgentDepth(r.Context(), depth)
+		if depthErr != nil {
+			apiReadFailure(w, r, depthErr)
+			return
+		}
+		result, err := s.submit(ctx, principal, spec, key, string(body))
 		if err != nil {
 			apiBatchFailure(w, r, err)
 			return
@@ -203,7 +221,7 @@ func (s *apiBatchService) createTaskHandler() http.HandlerFunc {
 				err = errors.New("trailing JSON value")
 			}
 		}
-		if err != nil || strings.TrimSpace(payload.Prompt) == "" || len(payload.Prompt) > apiRunMaxFieldBytes || payload.TimeoutSeconds < 0 {
+		if err != nil || strings.TrimSpace(payload.Prompt) == "" || len(payload.Prompt) > apiRunMaxFieldBytes || payload.TimeoutSeconds < 0 || (payload.MaxAgentDepth != nil && (*payload.MaxAgentDepth < 0 || *payload.MaxAgentDepth > apiBatchTrustedAgentDepth)) {
 			WriteAPIProblem(w, r, http.StatusBadRequest, "Bad Request", "invalid request body", "", err)
 			return
 		}
@@ -216,14 +234,23 @@ func (s *apiBatchService) createTaskHandler() http.HandlerFunc {
 			apiReadFailure(w, r, err)
 			return
 		}
-		leaf, err := json.Marshal(agent.BatchCLITask{Tool: agentToolName, Input: inputJSON})
+		depth := apiBatchTrustedAgentDepth
+		if payload.MaxAgentDepth != nil {
+			depth = *payload.MaxAgentDepth
+		}
+		leaf, err := json.Marshal(agent.BatchCLITask{Tool: agentToolName, Input: inputJSON, AgentDepth: &depth})
 		if err != nil {
 			apiReadFailure(w, r, err)
 			return
 		}
 		task := &jobbatch.TaskSpec{Payload: leaf, Timeout: time.Duration(payload.TimeoutSeconds) * time.Second}
 		spec := jobbatch.Spec{Batch: &jobbatch.BatchSpec{Mode: jobbatch.ModeSequential, OnFail: jobbatch.OnFailStop, Notify: jobbatch.NotifyAll, Items: []jobbatch.Spec{{Task: task}}}}
-		result, err := s.submit(r.Context(), principal, spec, key, string(raw))
+		ctx, depthErr := agent.WithAgentDepth(r.Context(), depth)
+		if depthErr != nil {
+			apiReadFailure(w, r, depthErr)
+			return
+		}
+		result, err := s.submit(ctx, principal, spec, key, string(raw))
 		if err != nil {
 			apiBatchFailure(w, r, err)
 			return

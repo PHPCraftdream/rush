@@ -239,6 +239,11 @@ type Session struct {
 	GitBranch                    string         `json:"git_branch"`
 }
 
+type SessionAgentDepth struct {
+	SessionID      string `json:"session_id"`
+	RemainingDepth int64  `json:"remaining_depth"`
+}
+
 type SessionDriver struct {
 	SessionID string `json:"session_id"`
 	HostID    string `json:"host_id"`

@@ -486,6 +486,7 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			formatFlag, _      = cmd.Flags().GetString("format")
 			agentsMode, _      = cmd.Flags().GetString("agents")
 			aggregationMode, _ = cmd.Flags().GetString("aggregation")
+			maxAgentDepth, _   = cmd.Flags().GetInt("max-agent-depth")
 			// Fork patch: batch 8 — timeout extension flags.
 			timeoutExtendsOnProgress, _ = cmd.Flags().GetBool("timeout-extends-on-progress")
 			timeoutHardCap, _           = cmd.Flags().GetString("timeout-hard-cap")
@@ -517,6 +518,9 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			jobTimeoutFlag, _          = cmd.Flags().GetString("job-timeout")
 		)
 
+		if maxAgentDepth < 0 || maxAgentDepth > 32 {
+			return fmt.Errorf("--max-agent-depth: must be between 0 and 32")
+		}
 		if effort != "" {
 			switch effort {
 			case "low", "medium", "high":
@@ -749,6 +753,7 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			RoleSmart:                   roleSmart,
 			ModelRole:                   modelType,
 			DisableSubAgents:            agentsDisable,
+			MaxAgentDepth:               &maxAgentDepth,
 			StripJSONFences:             formatFlag == "json" || strings.HasPrefix(formatFlag, "json-schema:"),
 			AggregationMode:             aggregationMode,
 			TimeoutExtendsOnProgress:    timeoutExtendsOnProgress, // Fork patch: batch 8
@@ -801,6 +806,7 @@ func init() {
 	// policy. Neither persists on the session.
 	runCmd.Flags().String("format", "", "Per-turn output-shape hint appended to the user prompt. Presets: 'json' (final answer must be a single JSON value, no fences, no prose) | 'json-schema:<file>' (json + conform to this schema) | '@<file>' (use file contents verbatim as the hint) | any other text (used as a freeform 'Output format:' instruction). With --json or --format json, the envelope's final_text is also post-processed to strip ```json fences and prose preamble; the original is preserved in assistant_notes.")
 	runCmd.Flags().String("agents", "", "Sub-agent dispatch policy for this run. Default (unset) = NO sub-agents: the `agent`/`agentic_fetch` tools are removed from the toolset for this non-interactive process (no UI to surface sub-agent work; a nested run burns tokens out of view). 'single' (same — explicit) | 'agent-allow' (opt in: tools present, model decides) | 'with-agents' (opt in + nudge the model to fan out). NOT an absolute guarantee: if --role smart is used AND a Worker model is configured, the `agent` tool is restored regardless of 'single' — a configured Worker always means orchestrator mode. `agentic_fetch` stays stripped either way.")
+	runCmd.Flags().Int("max-agent-depth", 2, "Maximum remaining agent delegation edges (0..32). Default 2.")
 	runCmd.Flags().String("aggregation", "", "How sub-agent fan-out output reaches the orchestrator. 'summary' (default — parent composes a wrap-up, sub-agent detail lives in DB only) | 'concat' (prompt-nudge: parent includes each sub-agent reply verbatim in final_text) | 'attach' (collect each sub-agent's last assistant text into envelope.sub_agent_outputs; final_text becomes a brief wrap-up). An always-on reduction-loss warning fires regardless when parent collapses sub-agent outputs to <40% of their combined size.")
 	// Fork patch: batch 8 — timeout extension flags.
 	runCmd.Flags().Bool("timeout-extends-on-progress", false, "Reset the stream watchdog deadline every time streaming progress occurs. Prevents killing healthy long compositions. Default: false (static deadline).")

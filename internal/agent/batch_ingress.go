@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 )
 
@@ -56,6 +57,21 @@ func (r *batchRuntime) Invoke(ctx context.Context, inv BatchInvocation, leaf fan
 			pctHandoff.pctRelease()
 		}
 		return fantasy.ToolResponse{}, err
+	}
+	if call.Name == AgentToolName || call.Name == tools.AgenticFetchToolName {
+		if !inv.AgentDepthSet {
+			inv.AgentDepth = DefaultAgentDepth
+			inv.AgentDepthSet = true
+		}
+		if inv.AgentDepth < 0 || inv.AgentDepth > MaxAgentDepthForResume {
+			if pctHandoff != nil {
+				pctHandoff.pctRelease()
+			}
+			return fantasy.ToolResponse{}, errors.New("agent depth must be between 0 and 32")
+		}
+		if opts := callOptionsFrom(ctx); opts != nil && opts.AgentDepthSet && opts.MaxAgentDepth < inv.AgentDepth {
+			inv.AgentDepth = opts.MaxAgentDepth
+		}
 	}
 	input, err := batchCanonicalInput(call.Input)
 	if err != nil {
@@ -337,31 +353,25 @@ func batchOneItemSpec(inv BatchInvocation, call fantasy.ToolCall, input json.Raw
 		Policy:        &inv.Policy,
 		QuestionRoute: inv.QuestionRoute,
 	}
+	if call.Name == AgentToolName || call.Name == tools.AgenticFetchToolName {
+		remaining := inv.AgentDepth
+		payload.AgentDepth = &remaining
+	}
 	timeout := time.Duration(0)
 	if intent != nil {
 		if intent.Kind == batchTimeoutTerminateAndWake {
-			// The termination deadline rides the spec, not the payload:
-			// the engine owns it.
 			timeout = intent.Duration
 		} else {
-			payload.Timeout = &batchLeafTimeoutSpec{
-				Kind:    batchTimeoutWakeOnly,
-				Seconds: intent.Seconds,
-			}
+			payload.Timeout = &batchLeafTimeoutSpec{Kind: batchTimeoutWakeOnly, Seconds: intent.Seconds}
 		}
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return jobbatch.Spec{}, fmt.Errorf("batch payload: %w", err)
 	}
-	spec := jobbatch.Spec{Task: &jobbatch.TaskSpec{
-		Kind:    batchLeafKind(call.Name),
-		Payload: raw,
-		Timeout: timeout,
-	}}
-	// Direct task specs are normalized by batchRunnerAdapter, the engine seam
-	// that enforces a batch root; keep this spec canonical for its durable hash.
-	return spec, nil
+	return jobbatch.Spec{Task: &jobbatch.TaskSpec{
+		Kind: batchLeafKind(call.Name), Payload: raw, Timeout: timeout,
+	}}, nil
 }
 
 // batchLeafKind maps the tool family onto the executor routing kind. MCP

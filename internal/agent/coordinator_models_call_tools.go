@@ -50,7 +50,8 @@ var ErrScopedCallToolsUnavailable = errors.New(
 // scopedCallOptionsRequireDistinctTools so the two can never drift apart
 // again.
 func scopedCallToolsRequired(ctx context.Context) bool {
-	return scopedCallOptionsRequireDistinctTools(callOptionsFrom(ctx))
+	remaining, err := MaxAgentDepthFrom(ctx)
+	return err != nil || remaining == 0 || scopedCallOptionsRequireDistinctTools(callOptionsFrom(ctx))
 }
 
 // scopedCallOptionsRequireDistinctTools is scopedCallToolsRequired's
@@ -59,7 +60,7 @@ func scopedCallToolsRequired(ctx context.Context) bool {
 // directly, ahead of calling WithCallOptions).
 func scopedCallOptionsRequireDistinctTools(opts *CallOptions) bool {
 	return opts != nil && (opts.FolderScope != nil || tools.HasDiskProvider(opts.DiskProvider) ||
-		opts.DisableSubAgents || opts.ModelRole != "")
+		opts.DisableSubAgents || opts.ModelRole != "" || (opts.AgentDepthSet && opts.MaxAgentDepth == 0))
 }
 
 // pinCallToolsReadyGateSeam is a test-only hook: fires immediately after the

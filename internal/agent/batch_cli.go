@@ -16,8 +16,9 @@ import (
 // BatchCLITask is the untrusted external task form. Payloads, registry IDs,
 // sessions and tool-call identities are deliberately not accepted from JSON.
 type BatchCLITask struct {
-	Tool  string          `json:"tool"`
-	Input json.RawMessage `json:"input"`
+	Tool       string          `json:"tool"`
+	Input      json.RawMessage `json:"input"`
+	AgentDepth *int            `json:"agent_depth,omitempty"`
 }
 
 type batchCLIBinding struct {
@@ -78,6 +79,10 @@ func (b *BatchCLIBuilder) bind(ctx context.Context, sessionID, messageID string)
 			return batchCLIBinding{}, errors.New("batch CLI does not support caller-supplied disk providers")
 		}
 		owned = *existing
+	}
+	if !owned.AgentDepthSet {
+		owned.MaxAgentDepth = DefaultAgentDepth
+		owned.AgentDepthSet = true
 	}
 	scope := newBuildResourceScope()
 	owned.buildScope = scope
@@ -140,10 +145,21 @@ func (b *BatchCLIBuilder) translate(ctx context.Context, bind batchCLIBinding, s
 		// Resolve the pinned decorated tool solely to ensure it exists. The
 		// executor runs its policy-preserving leaf with the same run context.
 		_ = leaf
+		depth := DefaultAgentDepth
+		if opts := callOptionsFrom(ctx); opts != nil && opts.AgentDepthSet {
+			depth = opts.MaxAgentDepth
+		}
+		if task.AgentDepth != nil {
+			if *task.AgentDepth < 0 || *task.AgentDepth > depth {
+				return jobbatch.Spec{}, errors.New("batch max_agent_depth exceeds trusted caller cap")
+			}
+			depth = *task.AgentDepth
+		}
 		payload, err := json.Marshal(batchLeafPayload{
 			Tool: task.Tool, ToolCallID: uuid.NewString(), SessionID: bind.session, Input: task.Input, RegistryID: bind.id,
 			Policy:        &batchLeafPolicyContext{RegistryID: bind.id, MessageID: bind.message, SupportsImages: bind.images, ModelName: bind.model, FolderScope: bind.folder, RunAllowlist: bind.allow, RestrictedToolset: bind.id},
 			QuestionRoute: b.questionRoute,
+			AgentDepth:    &depth,
 		})
 		if err != nil {
 			return jobbatch.Spec{}, err

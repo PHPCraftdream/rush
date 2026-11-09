@@ -285,7 +285,14 @@ func batchModelSpecNodes(items []batchModelItem, inv BatchInvocation, reg *polic
 		var spec jobbatch.Spec
 		var err error
 		if item.Batch != nil {
-			spec, err = modelBatchSpecForAdmission(*item.Batch, inv, reg, resolver)
+			wrapped := inv
+			if item.Batch.MaxAgentDepth != nil {
+				if *item.Batch.MaxAgentDepth < 0 || *item.Batch.MaxAgentDepth > inv.AgentDepth {
+					return nil, errors.New("batch_add max_agent_depth exceeds trusted caller cap")
+				}
+				wrapped.AgentDepth = *item.Batch.MaxAgentDepth
+			}
+			spec, err = modelBatchSpecForAdmission(*item.Batch, wrapped, reg, resolver)
 		} else {
 			var wrapper jobbatch.Spec
 			wrapper, err = modelBatchSpecForAdmission(batchModelSpec{Mode: "parallel", Notify: "each", Items: []batchModelItem{item}}, inv, reg, resolver)
@@ -300,6 +307,10 @@ func batchModelSpecNodes(items []batchModelItem, inv BatchInvocation, reg *polic
 			var payload batchLeafPayload
 			if err = json.Unmarshal(spec.Task.Payload, &payload); err != nil {
 				return nil, err
+			}
+			if (payload.Tool == AgentToolName || payload.Tool == "agentic_fetch") &&
+				(payload.AgentDepth == nil || *payload.AgentDepth > inv.AgentDepth) {
+				return nil, errors.New("batch_add agent leaf exceeds trusted depth")
 			}
 			payload.ToolCallID = fmt.Sprintf("%s-add-%d", inv.CallID, i)
 			spec.Task.Payload, err = json.Marshal(payload)
@@ -321,6 +332,13 @@ func (c *installedBatchModelControl) Add(ctx context.Context, caller, root, pare
 	}
 	if err := inv.Validate(); err != nil {
 		return nil, err
+	}
+	if !inv.AgentDepthSet {
+		inv.AgentDepth = DefaultAgentDepth
+		inv.AgentDepthSet = true
+	}
+	if inv.AgentDepth < 0 || inv.AgentDepth > 32 {
+		return nil, errors.New("batch_add agent depth must be between 0 and 32")
 	}
 	if inv.CallID == "" || reg == nil || inv.RegistryID != inv.Policy.RegistryID || !reg.hasToolset(inv.Policy.RestrictedToolset) {
 		return nil, errBatchMissingCallID

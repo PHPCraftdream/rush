@@ -101,6 +101,8 @@ func toSessionCallOptionsSpec(o *CallOptions) *session.CallOptionsSpec {
 		TimeoutHardCap:           o.TimeoutHardCap,
 		IdleTimeout:              o.IdleTimeout,
 		WebTurnOptIn:             o.WebTurnOptIn,
+		MaxAgentDepth:            o.MaxAgentDepth,
+		AgentDepthSet:            o.AgentDepthSet,
 	}
 }
 
@@ -143,6 +145,8 @@ func fromSessionCallOptionsSpec(spec *session.CallOptionsSpec) (*CallOptions, er
 		TimeoutHardCap:           spec.TimeoutHardCap,
 		IdleTimeout:              spec.IdleTimeout,
 		WebTurnOptIn:             spec.WebTurnOptIn,
+		MaxAgentDepth:            spec.MaxAgentDepth,
+		AgentDepthSet:            spec.AgentDepthSet,
 	}, nil
 }
 

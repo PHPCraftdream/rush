@@ -32,6 +32,7 @@ type batchAgentRunRequest struct {
 	// QuestionRoute is carried verbatim from the durable payload; false
 	// means the incarnation must never hold or publish questions.
 	QuestionRoute bool
+	AgentDepth    int
 	// R11F round-2 (P1-3): the RECORDED tool name of the delegation leaf.
 	// Dispatch resolves the pinned leaf by this name and names the call
 	// with it, so an "agentic_fetch" payload reaches its OWN leaf, never
@@ -153,6 +154,12 @@ func callIngress(env batchLeafEnv) BatchWorkIngress {
 }
 
 func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatch.Launch, p batchLeafPayload, report func(jobbatch.Result)) (jobbatch.Execution, error) {
+	if invalid, _ := ctx.Value(batchAgentDepthInvalidContextKey{}).(bool); invalid {
+		return nil, errors.New("batch agent depth must be between 0 and 32")
+	}
+	if p.AgentDepth != nil && (*p.AgentDepth < 0 || *p.AgentDepth > MaxAgentDepthForResume) {
+		return nil, errors.New("batch agent depth must be between 0 and 32")
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -172,8 +179,14 @@ func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 		}(),
 		Policy: p.Policy, Tool: p.Tool, CallCredentials: p.CallCredentials,
 		QuestionRoute: p.QuestionRoute,
-		pctHandoff:    pctClaimCapturedHandoff(env, p), // pct: claim the captured outer handoff once at executor start.
-		Ingress:       callIngress(env),
+		AgentDepth: func() int {
+			if p.AgentDepth != nil {
+				return *p.AgentDepth
+			}
+			return DefaultAgentDepth
+		}(),
+		pctHandoff: pctClaimCapturedHandoff(env, p), // pct: claim the captured outer handoff once at executor start.
+		Ingress:    callIngress(env),
 	}
 	e := &batchAgentExecution{
 		cache: env.OutputCache, nodeID: l.ID, rootID: batchOutputRoot(l.ID),
@@ -210,7 +223,24 @@ func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 	}
 	runCtx = context.WithValue(runCtx, tools.SessionIDContextKey, p.SessionID)
 	runCtx = context.WithValue(runCtx, tools.MessageIDContextKey, messageID)
-	runCtx = withBatchBridgeInvocation(runCtx, batchBridgeInvocation{RegistryID: p.RegistryID, MessageID: messageID})
+	runCtx = withBatchBridgeInvocation(runCtx, batchBridgeInvocation{
+		RegistryID: p.RegistryID, MessageID: messageID,
+		AgentDepth: func() int {
+			if p.AgentDepth != nil {
+				return *p.AgentDepth
+			}
+			return DefaultAgentDepth
+		}(), AgentDepthSet: true,
+	})
+	depthCap := DefaultAgentDepth
+	if p.AgentDepth != nil {
+		depthCap = *p.AgentDepth
+	}
+	runCtx, err := WithAgentDepth(runCtx, depthCap)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 	if e.pctHandoff != nil {
 		// pct: carry this executor's handoff into the child agent run context.
 		runCtx = context.WithValue(runCtx, pctDelegationHandoffKey{}, e.pctHandoff)

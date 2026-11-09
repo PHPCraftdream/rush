@@ -123,7 +123,23 @@ func (p batchIntakePolicy) walk(spec jobbatch.Spec, level int, nodes *int) (jobb
 		if err := p.toolAllowed(task.Tool); err != nil {
 			return jobbatch.Spec{}, 0, err
 		}
+		if task.Tool == agentToolName || task.Tool == "agentic_fetch" {
+			if task.AgentDepth == nil {
+				depth := apiBatchTrustedAgentDepth
+				task.AgentDepth = &depth
+			} else if *task.AgentDepth < 0 || *task.AgentDepth > apiBatchTrustedAgentDepth {
+				return jobbatch.Spec{}, 0, errors.New("max_agent_depth exceeds trusted API batch cap")
+			}
+			if *task.AgentDepth == 0 {
+				return jobbatch.Spec{}, 0, agent.ErrAgentDepthExceeded
+			}
+		}
+		payload, err := json.Marshal(task)
+		if err != nil {
+			return jobbatch.Spec{}, 0, err
+		}
 		task2 := *spec.Task
+		task2.Payload = payload
 		limit := p.itemTimeout()
 		switch {
 		case task2.Timeout < 0:

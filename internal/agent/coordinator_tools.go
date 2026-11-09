@@ -233,10 +233,18 @@ var orchestratorStrippedToolNames = []string{"edit", "multiedit", "write"}
 // the prompt/model chosen for the SAME call instead of with the shared
 // activeModelRole field.
 func (c *coordinator) buildToolsAgentConfigForCall(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) config.Agent {
+	if remaining, err := MaxAgentDepthFrom(ctx); err != nil || remaining == 0 {
+		stripped := make([]string, 0, len(agent.AllowedTools))
+		for _, name := range agent.AllowedTools {
+			if name != AgentToolName && name != tools.AgenticFetchToolName {
+				stripped = append(stripped, name)
+			}
+		}
+		agent.AllowedTools = stripped
+	}
 	if !c.workerSubAgentActiveForCall(ctx, cfg) {
 		return agent
 	}
-
 	if isSubAgent {
 		allowed := make([]string, len(agent.AllowedTools), len(agent.AllowedTools)+len(workerToolNames))
 		copy(allowed, agent.AllowedTools)
@@ -286,6 +294,16 @@ func (c *coordinator) buildToolsAgentConfig(cfg *config.Config, agent config.Age
 // CallOptions (legacy callers) changes nothing.
 func (c *coordinator) applyCallDisableSubAgents(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) config.Agent {
 	opts := callOptionsFrom(ctx)
+	if remaining, err := MaxAgentDepthFrom(ctx); err != nil || remaining == 0 {
+		stripped := make([]string, 0, len(agent.AllowedTools))
+		for _, name := range agent.AllowedTools {
+			if name != AgentToolName && name != tools.AgenticFetchToolName {
+				stripped = append(stripped, name)
+			}
+		}
+		agent.AllowedTools = stripped
+		return agent
+	}
 	if opts == nil || !opts.DisableSubAgents || isSubAgent {
 		return agent
 	}
@@ -900,6 +918,13 @@ func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fa
 				inv.SessionID = tools.GetSessionFromContext(ctx)
 				inv.MessageID = tools.GetMessageFromContext(ctx)
 				inv.CallID = ""
+				if opts := callOptionsFrom(ctx); opts != nil && opts.AgentDepthSet {
+					inv.AgentDepth = opts.MaxAgentDepth
+					inv.AgentDepthSet = true
+				} else {
+					inv.AgentDepth = DefaultAgentDepth
+					inv.AgentDepthSet = true
+				}
 				inv.Policy.MessageID = inv.MessageID
 				inv.Policy.SupportsImages = tools.GetSupportsImagesFromContext(ctx)
 				inv.Policy.ModelName = tools.GetModelNameFromContext(ctx)

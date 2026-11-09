@@ -8,24 +8,15 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
-// workerSubAgentActiveForCall is the per-call form of workerSubAgentActive
-// (R1-1): the active role comes from the context's CallOptions when present,
-// and only falls back to the coordinator-wide activeModelRole field for
-// legacy callers whose context carries none. The fallback read keeps the
-// existing mutex discipline; the per-call read is race-free by construction
-// (an immutable value bound to the context before the build started).
+// workerSubAgentActiveForCall combines the per-call role, credentials and depth gates.
 func (c *coordinator) workerSubAgentActiveForCall(ctx context.Context, cfg *config.Config) bool {
+	if remaining, err := MaxAgentDepthFrom(ctx); err != nil || remaining == 0 {
+		return false
+	}
 	if creds := callCredentialsFrom(ctx); creds != nil {
-		if opts := callOptionsFrom(ctx); opts != nil && opts.ModelRole != "" {
-			if opts.ModelRole != config.SelectedModelTypeSmart {
-				return false
-			}
+		if opts := callOptionsFrom(ctx); opts != nil && opts.ModelRole != "" && opts.ModelRole != config.SelectedModelTypeSmart {
+			return false
 		}
-		// An explicit tenant worker always enables worker/orchestrator
-		// policy. When it is omitted, retain the established smart-run
-		// orchestration policy driven by the configured worker slot; the
-		// actual credentialed sub-agent model still falls back to tenant
-		// smart and never uses that operator worker.
 		if _, covered := creds.Models[RoleWorker]; covered {
 			return true
 		}
@@ -85,8 +76,7 @@ func (c *coordinator) workerSubAgentActive(cfg *config.Config) bool {
 }
 
 // callModelRole returns the model role this call was started with (--role),
-// from the context's CallOptions. "" means no options or no role: the run
-// rides the smart slot with no role-derived resolution at all.
+// from the context's CallOptions. "" means no role override.
 func callModelRole(ctx context.Context) config.SelectedModelType {
 	opts := callOptionsFrom(ctx)
 	if opts == nil {

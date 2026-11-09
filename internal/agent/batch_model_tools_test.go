@@ -83,6 +83,34 @@ func TestBatchModelToolCallsPreserveInvocationAndAddEach(t *testing.T) {
 	require.Equal(t, "each", f.addedNotify, "later additions use NotifyEach")
 }
 
+func TestModelBatchLeavesCarryParentBudgetWithoutDecrement(t *testing.T) {
+	inv := BatchInvocation{
+		SessionID: "owner", CallID: "call", RegistryID: "reg", AgentDepth: 2, AgentDepthSet: true,
+		Policy: batchLeafPolicyContext{RegistryID: "reg", RestrictedToolset: AgentToolName},
+	}
+	for _, tc := range []struct {
+		depth int
+		want  int
+	}{{0, 0}, {1, 1}, {2, 2}} {
+		requested := tc.depth
+		spec, err := modelBatchSpec(batchModelSpec{
+			Mode: "parallel", MaxAgentDepth: &requested,
+			Items: []batchModelItem{{Tool: AgentToolName, Input: json.RawMessage(`{"prompt":"p"}`)}},
+		}, inv, modelRegistry(AgentToolName))
+		require.NoError(t, err)
+		var payload batchLeafPayload
+		require.NoError(t, json.Unmarshal(spec.Batch.Items[0].Task.Payload, &payload))
+		require.NotNil(t, payload.AgentDepth)
+		require.Equal(t, tc.depth, *payload.AgentDepth)
+	}
+	escalate := 3
+	_, err := modelBatchSpec(batchModelSpec{
+		Mode: "parallel", MaxAgentDepth: &escalate,
+		Items: []batchModelItem{{Tool: AgentToolName, Input: json.RawMessage(`{"prompt":"p"}`)}},
+	}, inv, modelRegistry(AgentToolName))
+	require.ErrorContains(t, err, "narrow")
+}
+
 func TestBatchModelToolInventory(t *testing.T) {
 	ts := newBatchModelTools(&modelControlFake{}, BatchInvocation{SessionID: "s", RegistryID: "r"}, modelRegistry())
 	names := map[string]bool{}

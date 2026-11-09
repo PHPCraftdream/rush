@@ -183,11 +183,13 @@ func TestOpenRunsWithWorkingDirDifferentFromProcessCwd(t *testing.T) {
 	// Options-level defaults from Open are used. ExecuteRun's contract:
 	// non-JSON modes return a nil envelope and stream the final text to
 	// stdout instead.
+	zeroDepth := 0
 	res1, err := client.Run(context.Background(), sdk.RunRequest{
 		Prompt:            "read " + cwdAuditFileName + " and summarise",
 		Mode:              sdk.RunModeTerse,
 		ContinueSessionID: sess.ID,
 		HideSpinner:       true,
+		Overrides:         sdk.RunOverrides{MaxAgentDepth: &zeroDepth},
 	})
 	require.NoError(t, err)
 	require.Nil(t, res1, "terse mode returns a nil envelope by contract; final text lands on stdout")

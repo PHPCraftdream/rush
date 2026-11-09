@@ -58,6 +58,8 @@ type batchLeafPayload struct {
 	// scanner reads this JSON shape from batch_nodes.task_payload; the json
 	// tags are a cross-package contract, do not rename them.
 	Timeout *batchLeafTimeoutSpec `json:"timeout,omitempty"`
+	// AgentDepth is the trusted parent budget remaining for an agent leaf.
+	AgentDepth *int `json:"agent_depth,omitempty"`
 	// diskProvider is the in-process resolution of Policy.DiskBindingID,
 	// stamped by the executor router before family start; never serialized.
 	diskProvider tools.DiskProvider `json:"-"`

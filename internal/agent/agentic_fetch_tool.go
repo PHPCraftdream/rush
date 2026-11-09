@@ -66,6 +66,17 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 		tools.AgenticFetchToolName,
 		agenticFetchToolDescription,
 		func(ctx context.Context, params tools.AgenticFetchParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			remaining, depthErr := MaxAgentDepthFrom(ctx)
+			if depthErr != nil {
+				return fantasy.ToolResponse{}, depthErr
+			}
+			if remaining == 0 {
+				return fantasy.NewTextErrorResponse(ErrAgentDepthExceeded.Error()), nil
+			}
+			childCtx, depthErr := WithAgentDepth(ctx, remaining)
+			if depthErr != nil {
+				return fantasy.ToolResponse{}, depthErr
+			}
 			// R12-H2a (P1-3): stamp the coordinator's OWN batch binding's
 			// ingress into the sub-agent context so the delegated child run
 			// (and the leaf invocation context it derives) resolves private
@@ -73,11 +84,23 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 			// eliminated process-global fallback. No binding, no stamp — the
 			// private tools keep their legacy in-process behavior.
 			if ingress := coordinatorPrivateFetchIngress(c); ingress != nil {
-				ctx = context.WithValue(ctx, privateFetchIngressKey{}, ingress)
+				childCtx = context.WithValue(childCtx, privateFetchIngressKey{}, ingress)
 			}
-			validationResult, err := validateAgenticFetchParams(ctx, params)
+			validationResult, err := validateAgenticFetchParams(childCtx, params)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
+			}
+
+			remaining, depthErr = effectiveParentAgentDepth(childCtx, c.sessions, validationResult.SessionID)
+			if depthErr != nil {
+				return fantasy.ToolResponse{}, depthErr
+			}
+			if remaining == 0 {
+				return fantasy.NewTextErrorResponse(ErrAgentDepthExceeded.Error()), nil
+			}
+			childCtx, depthErr = WithAgentDepth(childCtx, remaining)
+			if depthErr != nil {
+				return fantasy.ToolResponse{}, depthErr
 			}
 
 			// Determine description based on mode.
@@ -148,7 +171,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 
 			// Heartbeat attribution: fetch's real call-point role is fast, its
 			// model is an explicit per-call build (design pt. 1/3).
-			ctx = withHeartbeat(ctx, validationResult.SessionID, heartbeat.PurposeFetch, "fast", hbSourcePerCall)
+			childCtx = withHeartbeat(childCtx, validationResult.SessionID, heartbeat.PurposeFetch, "fast", hbSourcePerCall)
 
 			promptOpts := []prompt.Option{
 				prompt.WithWorkingDir(tmpDir),
@@ -198,12 +221,12 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 			// fetch returns (the handler blocks until the delegated child
 			// completes). The coordinator's shared scope is no longer a
 			// fallback here.
-			scope := callBuildScopeFrom(ctx)
+			scope := callBuildScopeFrom(childCtx)
 			if scope == nil {
 				scope = newBuildResourceScope()
 				defer scope.close()
 			}
-			fetchBuild := buildPrivateFetchTools(ctx, fetchTools, restrictedRunAuthorizer(c.permissions), scope)
+			fetchBuild := buildPrivateFetchTools(childCtx, fetchTools, restrictedRunAuthorizer(c.permissions), scope)
 
 			// Sub-agent tools run without hook interception. The top-level
 			// `agentic_fetch` call itself is already wrapped from the coder's
@@ -234,7 +257,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				RestrictedRuns: restrictedRunAuthorizer(c.permissions),
 			})
 
-			return c.runSubAgent(ctx, subAgentParams{
+			return c.runSubAgent(childCtx, subAgentParams{
 				Agent:          agent,
 				SessionID:      validationResult.SessionID,
 				AgentMessageID: validationResult.AgentMessageID,

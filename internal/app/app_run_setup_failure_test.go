@@ -20,6 +20,7 @@ import (
 // Drain iterations see (the flag is armed after the first turn).
 type runQueueFaultSessions struct {
 	session.Service
+	session.AgentDepthStore
 	armed atomic.Bool
 	calls atomic.Int64
 }
@@ -54,7 +55,7 @@ func TestRunNonInteractive_PersistentDrainSetupFailure_PacedBoundedVisible(t *te
 		}
 		loopText(w, "a", "first answer", 11, 3)
 	})
-	fault := &runQueueFaultSessions{Service: h.app.Sessions}
+	fault := &runQueueFaultSessions{Service: h.app.Sessions, AgentDepthStore: h.app.Sessions.(session.AgentDepthStore)}
 	h.app.Sessions = fault
 	h.afterFirstTurn(func() {
 		h.seedDebt()

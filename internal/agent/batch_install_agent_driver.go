@@ -82,6 +82,9 @@ func startBatchAgentTurn(ctx context.Context, req batchAgentRunRequest, host bat
 		releaseCredentials()
 		return nil, ErrDiskProviderUnavailable
 	}
+	if req.AgentDepth < 0 || req.AgentDepth > 32 {
+		return nil, errors.New("batch agent depth must be between 0 and 32")
+	}
 	depth := batchAgentQuestionDepth(ctx) + 1
 	if depth <= 0 {
 		depth = 1
@@ -123,20 +126,26 @@ func startBatchAgentTurn(ctx context.Context, req batchAgentRunRequest, host bat
 	runCtx = context.WithValue(runCtx, tools.MessageIDContextKey, req.MessageID)
 	// P1-4: stamp the TRUSTED enclosing invocation so the CLI bridge binds
 	// to THIS invocation's pinned registry (never the latest one).
-	runCtx = withBatchBridgeInvocation(runCtx, batchBridgeInvocation{RegistryID: req.RegistryID, MessageID: req.MessageID})
+	runCtx = withBatchBridgeInvocation(runCtx, batchBridgeInvocation{RegistryID: req.RegistryID, MessageID: req.MessageID, AgentDepth: req.AgentDepth, AgentDepthSet: true})
+	callOptions, err := WithAgentDepth(runCtx, req.AgentDepth)
+	if err != nil {
+		cancel()
+		releaseCredentials()
+		return nil, err
+	}
+	runCtx = callOptions
 	var childScope *buildResourceScope
+	var provider tools.DiskProvider
 	if req.DiskBindingID != "" {
-		provider := batchDiskProviderFrom(ctx)
+		provider = batchDiskProviderFrom(ctx)
 		if provider == nil {
 			cancel()
 			releaseCredentials()
 			return nil, ErrDiskProviderUnavailable
 		}
 		co := boundCallOptions(provider, req.DiskBindingID, batchDiskRegistryFromContext(ctx))
-		// R12-H2a round 2: the child incarnation owns its OWN
-		// build-resource scope (design §1.2): private-fetch constructions
-		// pin into it and release exactly when this incarnation's turn
-		// finishes below — never into the coordinator's shared scope.
+		co.MaxAgentDepth = req.AgentDepth
+		co.AgentDepthSet = true
 		co.buildScope = newBuildResourceScope()
 		childScope = co.buildScope
 		runCtx = WithCallOptions(runCtx, co)

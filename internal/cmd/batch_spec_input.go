@@ -39,9 +39,14 @@ func startsWithJSONValue(raw []byte) bool {
 }
 
 func parseBatchSpec(cmd *cobra.Command) (jobbatch.Spec, error) {
+	spec, _, err := parseBatchSpecWithDepth(cmd)
+	return spec, err
+}
+
+func parseBatchSpecWithDepth(cmd *cobra.Command) (jobbatch.Spec, int, error) {
 	raw, err := readBatchSpec(cmd)
 	if err != nil {
-		return jobbatch.Spec{}, err
+		return jobbatch.Spec{}, 0, err
 	}
 	format := "json"
 	name, _ := cmd.Flags().GetString("spec")
@@ -57,14 +62,28 @@ func parseBatchSpec(cmd *cobra.Command) (jobbatch.Spec, error) {
 		if decodeErr != nil {
 			if name == "-" && startsWithJSONValue(raw) {
 				// JSON followed by more input: the JSON diagnosis is the useful one.
-				return jobbatch.Spec{}, errors.New("trailing JSON value")
+				return jobbatch.Spec{}, 0, errors.New("trailing JSON value")
 			}
-			return jobbatch.Spec{}, decodeErr
+			return jobbatch.Spec{}, 0, decodeErr
 		}
 		raw, err = ktavcodec.ToJSON(tree)
 		if err != nil {
-			return jobbatch.Spec{}, err
+			return jobbatch.Spec{}, 0, err
 		}
 	}
-	return agent.ParseBatchExternalSpecJSON(raw)
+	spec, err := agent.ParseBatchExternalSpecJSON(raw)
+	if err != nil {
+		return jobbatch.Spec{}, 0, err
+	}
+	var root struct {
+		MaxAgentDepth *int `json:"max_agent_depth"`
+	}
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return jobbatch.Spec{}, 0, err
+	}
+	depth := agent.DefaultAgentDepth
+	if root.MaxAgentDepth != nil {
+		depth = *root.MaxAgentDepth
+	}
+	return spec, depth, nil
 }

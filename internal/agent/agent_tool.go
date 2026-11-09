@@ -56,6 +56,13 @@ func (c *coordinator) agentTool(ctx context.Context) (fantasy.AgentTool, error) 
 		AgentToolName,
 		agentToolDescription,
 		func(ctx context.Context, params AgentParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			remaining, depthErr := MaxAgentDepthFrom(ctx)
+			if depthErr != nil {
+				return fantasy.ToolResponse{}, depthErr
+			}
+			if params.ResumeSessionID == "" && remaining == 0 {
+				return fantasy.NewTextErrorResponse(ErrAgentDepthExceeded.Error()), nil
+			}
 			if params.Prompt == "" {
 				return fantasy.NewTextErrorResponse("prompt is required"), nil
 			}
@@ -70,8 +77,12 @@ func (c *coordinator) agentTool(ctx context.Context) (fantasy.AgentTool, error) 
 				return fantasy.ToolResponse{}, errors.New("agent message id missing from context")
 			}
 
-			handoff := pctHandoffFrom(ctx)
-			return c.runSubAgent(ctx, subAgentParams{
+			childCtx, depthErr := WithAgentDepth(ctx, remaining)
+			if depthErr != nil {
+				return fantasy.ToolResponse{}, depthErr
+			}
+			handoff := pctHandoffFrom(childCtx)
+			return c.runSubAgent(childCtx, subAgentParams{
 				Agent:           agent,
 				SessionID:       sessionID,
 				AgentMessageID:  agentMessageID,

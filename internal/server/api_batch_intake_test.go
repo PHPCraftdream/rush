@@ -1,10 +1,12 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
@@ -223,4 +225,61 @@ func TestAPIBatchResumeContinuesOnlyADirectChildOfTheServiceSession(t *testing.T
 		require.Equal(t, http.StatusBadRequest, resp.Status, "%s: %s", name, resp.Body)
 		require.Contains(t, string(resp.Body), "not a child")
 	}
+}
+
+func TestAPIBatchAgentDepthCaps(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want int
+	}{
+		{"default", `{"mode":"parallel","items":[{"tool":"agent","input":{"prompt":"p"}}]}`, 2},
+		{"narrow", `{"max_agent_depth":1,"mode":"parallel","items":[{"tool":"agent","input":{"prompt":"p"}}]}`, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBatchFixture(t, batchTextProvider("depth"))
+			token := f.token(t, "depth", []string{"read", "run"}, "ask", config.APITokenBinding{})
+			accepted := f.do(t, token, http.MethodPost, "/batches", tc.body).accepted(t)
+			fac, err := f.app.BatchCLIStore()
+			require.NoError(t, err)
+			snapshot, err := fac.Store.Read(t.Context(), serviceSessionID(token2ID(t, f, token)), accepted.RootID)
+			require.NoError(t, err)
+			found := false
+			for _, node := range snapshot.Nodes {
+				if node.Kind != "task" || !node.TaskPayload.Valid {
+					continue
+				}
+				var leaf agent.BatchCLITask
+				require.NoError(t, json.Unmarshal([]byte(node.TaskPayload.String), &leaf))
+				require.NotNil(t, leaf.AgentDepth)
+				require.Equal(t, tc.want, *leaf.AgentDepth)
+				found = true
+			}
+			require.True(t, found)
+		})
+	}
+	f := newBatchFixture(t, batchTextProvider("depth"))
+	token := f.token(t, "depth", []string{"read", "run"}, "ask", config.APITokenBinding{})
+	for _, routeCase := range []struct{ path, body string }{
+		{"/tasks", `{"prompt":"p","max_agent_depth":3}`},
+		{"/batches", `{"max_agent_depth":3,"mode":"parallel","items":[{"tool":"agent","input":{"prompt":"p"}}]}`},
+	} {
+		resp := f.do(t, token, http.MethodPost, routeCase.path, routeCase.body)
+		require.Equal(t, http.StatusBadRequest, resp.Status, string(resp.Body))
+	}
+	before, err := f.app.Sessions.ListAll(t.Context())
+	require.NoError(t, err)
+	for _, routeCase := range []struct{ path, body string }{
+		{"/tasks", `{"prompt":"p","max_agent_depth":0}`},
+		{"/batches", `{"max_agent_depth":0,"items":[{"tool":"agent","input":{"prompt":"p"}}]}`},
+	} {
+		zero := f.do(t, token, http.MethodPost, routeCase.path, routeCase.body)
+		require.Equal(t, http.StatusBadRequest, zero.Status, string(zero.Body))
+		require.Contains(t, string(zero.Body), agent.ErrAgentDepthExceeded.Error())
+	}
+	after, err := f.app.Sessions.ListAll(t.Context())
+	require.NoError(t, err)
+	require.Len(t, after, len(before), "exhausted intake must refuse before creating any service or child session")
+	valid := f.do(t, token, http.MethodPost, "/tasks", `{"prompt":"p","max_agent_depth":1}`)
+	require.Equal(t, http.StatusAccepted, valid.Status, "a refused zero-cap request must not lower the next request's budget: %s", string(valid.Body))
 }

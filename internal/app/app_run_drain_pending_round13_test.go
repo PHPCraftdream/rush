@@ -108,6 +108,7 @@ func TestExecuteRunDrainsPendingAfterLocalOwnerReleases_Round13_1(t *testing.T) 
 
 type round13PreflightFailureService struct {
 	session.Service
+	session.AgentDepthStore
 	err error
 }
 
@@ -122,7 +123,7 @@ func TestExecuteRunPreflightErrorBlocksTurn_Round13_1(t *testing.T) {
 		admissionWriteSSE(w, []string{admissionSSEText("unexpected", "unexpected"), admissionSSEStop("unexpected", "stop")})
 	})
 	wantErr := errors.New("injected queue check failure")
-	application.Sessions = round13PreflightFailureService{Service: application.Sessions, err: wantErr}
+	application.Sessions = round13PreflightFailureService{Service: application.Sessions, AgentDepthStore: application.Sessions.(session.AgentDepthStore), err: wantErr}
 
 	result, err := application.ExecuteRun(t.Context(), RunRequest{
 		Prompt: "ROUND13_MUST_NOT_RUN", Mode: RunModeJSON, ContinueSessionID: sessionID,

@@ -167,8 +167,10 @@ type CallOptionsSpec struct {
 	// three states (F7). Additive field: rows persisted before it existed
 	// decode as zero, which is the unset semantics they were written
 	// with, so CallOptionsSpecVersion stays at 2.
-	IdleTimeout  time.Duration `json:"idle_timeout,omitempty"`
-	WebTurnOptIn bool          `json:"web_turn_opt_in,omitempty"`
+	IdleTimeout   time.Duration `json:"idle_timeout,omitempty"`
+	WebTurnOptIn  bool          `json:"web_turn_opt_in,omitempty"`
+	MaxAgentDepth int           `json:"max_agent_depth,omitempty"`
+	AgentDepthSet bool          `json:"agent_depth_set,omitempty"`
 }
 
 // SessionAgentCallData is a durable, serializable subset of agent.SessionAgentCall

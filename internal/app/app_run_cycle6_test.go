@@ -155,6 +155,7 @@ func (p *cycle6MessageSubscriptionProbe) Subscribe(ctx context.Context) <-chan p
 
 type cycle6GetFailureSessions struct {
 	session.Service
+	session.AgentDepthStore
 	getCount   atomic.Int64
 	failOn     int64
 	failErr    error
@@ -194,10 +195,11 @@ func TestExecuteRunUsageReadSurvivesCallerCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var detachedOK atomic.Bool
 	h.app.Sessions = &cycle6GetFailureSessions{
-		Service:    h.service,
-		failOn:     2,
-		cancel:     cancel,
-		detachedOK: &detachedOK,
+		Service:         h.service,
+		AgentDepthStore: h.service.(session.AgentDepthStore),
+		failOn:          2,
+		cancel:          cancel,
+		detachedOK:      &detachedOK,
 	}
 	result, err := h.app.ExecuteRun(ctx, RunRequest{
 		Prompt:            "answer immediately",
@@ -220,9 +222,10 @@ func TestExecuteRunUsageLookupFailureUsesZeroDeltas(t *testing.T) {
 	seedCycle6Usage(t, h)
 	lookupErr := errors.New("transient session lookup failure")
 	h.app.Sessions = &cycle6GetFailureSessions{
-		Service: h.service,
-		failOn:  2,
-		failErr: lookupErr,
+		Service:         h.service,
+		AgentDepthStore: h.service.(session.AgentDepthStore),
+		failOn:          2,
+		failErr:         lookupErr,
 	}
 
 	result, err := h.app.ExecuteRun(context.Background(), RunRequest{

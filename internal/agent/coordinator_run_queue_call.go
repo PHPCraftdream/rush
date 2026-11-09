@@ -5,6 +5,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -221,10 +222,9 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 		if rebuiltCallOptions == nil {
 			rebuiltCallOptions = &CallOptions{}
 		}
-		// The rebuilt call is a bare internal call builder: it owns a fresh
-		// build-resource scope (R12-H2 §1.2 — no process-lifetime fallback),
-		// closed when RunSessionAgentCall's execution ends or fails.
-		EnsureCallBuildScope(rebuiltCallOptions)
+		if rebuiltCallOptions.buildScope == nil {
+			EnsureCallBuildScope(rebuiltCallOptions)
+		}
 	}
 	if data.FolderScopeSpec != nil {
 		var compiledScope permission.FolderScope
@@ -398,8 +398,9 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 	}
 
 	ctx = WithCallOrigin(ctx, call.Origin)
-	if call.CallOptions != nil {
-		ctx = WithCallOptions(ctx, call.CallOptions)
+	ctx, remainingDepth, err := withPersistedCallAgentDepth(ctx, c.sessions, &call)
+	if err != nil {
+		return nil, fmt.Errorf("resolve queued session agent depth: %w", err)
 	}
 
 	// R4-3: after a REAL process restart the permission service's
@@ -463,14 +464,19 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 	// in every case this outer `if` is entered and the build fails; there
 	// is no longer a live "fall back to shared toolset" branch inside this
 	// block at all.
-	if scopedCallOptionsRequireDistinctTools(call.CallOptions) {
+	if scopedCallOptionsRequireDistinctTools(call.CallOptions) || remainingDepth == 0 {
 		ctx = WithCallOptions(ctx, call.CallOptions)
 		cfg, _ := c.cfg.Snapshot()
 		scopedTools, err := c.pinCallTools(ctx, cfg)
+		if err == nil && scopedTools == nil && remainingDepth == 0 {
+			err = errors.New("exhausted agent depth requires a pinned toolset")
+		}
 		if err != nil {
 			// Assembly error: the build scope closes here, releasing this
 			// call's construction owners (R12-H2 §1.2).
-			call.CallOptions.buildScope.close()
+			if call.CallOptions != nil {
+				call.CallOptions.buildScope.close()
+			}
 			return nil, fmt.Errorf(
 				"failed to build the rebuilt call's tool-shaping toolset; refusing to restart the turn on the shared unscoped toolset: %w", err)
 		}

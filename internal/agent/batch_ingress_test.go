@@ -349,8 +349,26 @@ func TestInvokeMismatchedHashFails(t *testing.T) {
 	require.Zero(t, rt.inFlightCalls())
 }
 
-// TestInvokeAttachesLiveRoot: a seeded live root matching the hash attaches
-// and never submits; a fenced or mismatching live root fails closed.
+func TestBatchAgentLeafCarriesParentBudgetWithoutConsumingEdge(t *testing.T) {
+	inv := testInvocation()
+	inv.AgentDepth = 2
+	inv.AgentDepthSet = true
+	call := fantasy.ToolCall{ID: "agent-call", Name: AgentToolName, Input: `{"prompt":"p"}`}
+	spec, err := batchOneItemSpec(inv, call, mustCanonical(t, call.Input))
+	require.NoError(t, err)
+	var payload batchLeafPayload
+	require.NoError(t, json.Unmarshal(spec.Task.Payload, &payload))
+	require.NotNil(t, payload.AgentDepth)
+	require.Equal(t, 2, *payload.AgentDepth)
+	inv.AgentDepth = 0
+	spec, err = batchOneItemSpec(inv, call, mustCanonical(t, call.Input))
+	require.NoError(t, err)
+	payload, err = decodeLeafPayload(spec)
+	require.NoError(t, err)
+	require.NotNil(t, payload.AgentDepth)
+	require.Equal(t, 0, *payload.AgentDepth)
+}
+
 func TestInvokeAttachesLiveRoot(t *testing.T) {
 	t.Parallel()
 	inv := testInvocation()

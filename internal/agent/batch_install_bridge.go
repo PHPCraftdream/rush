@@ -11,16 +11,7 @@ import (
 // over the ONE authority); its single generated call id and no-fallback
 // behaviour live in cliprovider/tool_bridge.go and are untouched.
 
-// coordinatorBridgeFallback is the cliprovider bridge seam: a stream whose
-// invocation context carries an explicit TRUSTED bridge-invocation stamp
-// (P1-4: stamped by the agent-family driver on the delegation leaf's run
-// context — withBatchBridgeInvocation) resolves through THAT invocation's
-// pinned registry. R11F P1-4: the old "latest pinned registry of the
-// process" lookup is gone — it let two concurrent invocations with different
-// pinned registries cross-contaminate. No stamp (the coordinator's own
-// non-batch path), no process binding, an unknown identity, or a stamp
-// without a registry id returns nil — the legacy "no bridge" behaviour,
-// never a legacy dispatch substitute.
+// coordinatorBridgeFallback checks the trusted invocation budget before resolving the pinned bridge.
 func coordinatorBridgeFallback(ctx context.Context) cliprovider.ToolBridge {
 	if ctx == nil {
 		return nil
@@ -39,9 +30,11 @@ func coordinatorBridgeFallback(ctx context.Context) cliprovider.ToolBridge {
 		return nil
 	}
 	bridge, err := newCLIToolBridge(registry, batchPinnedInvoke(bind.ingress, BatchInvocation{
-		RegistryID: registryID,
-		Origin:     "cli_bridge",
-		Policy:     batchLeafPolicyContext{RegistryID: registryID, RestrictedToolset: registryID},
+		RegistryID:    registryID,
+		AgentDepth:    inv.AgentDepth,
+		AgentDepthSet: inv.AgentDepthSet,
+		Origin:        "cli_bridge",
+		Policy:        batchLeafPolicyContext{RegistryID: registryID, RestrictedToolset: registryID},
 	}), nil)
 	if err != nil {
 		return nil

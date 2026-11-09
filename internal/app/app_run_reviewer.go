@@ -924,6 +924,8 @@ func reviewerCallOptions(primary *agent.CallOptions) *agent.CallOptions {
 	opts := &agent.CallOptions{
 		ModelRole:                   config.SelectedModelTypeReviewer,
 		DisableSubAgents:            true,
+		MaxAgentDepth:               primary.MaxAgentDepth,
+		AgentDepthSet:               primary.AgentDepthSet,
 		TimeoutExtendsOnProgress:    primary.TimeoutExtendsOnProgress,
 		TimeoutHardCap:              primary.TimeoutHardCap,
 		TimeoutOptionsSet:           primary.TimeoutOptionsSet,

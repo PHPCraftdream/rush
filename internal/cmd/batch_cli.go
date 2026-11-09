@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -100,7 +101,7 @@ func batchRun(cmd *cobra.Command, _ []string) error {
 	if detach {
 		return errors.New("--detach is unsupported: no durable external host is available")
 	}
-	spec, err := parseBatchSpec(cmd)
+	spec, depth, err := parseBatchSpecWithDepth(cmd)
 	if err != nil {
 		return err
 	}
@@ -118,7 +119,14 @@ func batchRun(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	a.Permissions.AutoApproveSession(sess.ID)
-	root, err := a.BatchSubmitRefUnattended(cmd.Context(), sess.ID, spec)
+	ctx, err := agent.WithAgentDepth(cmd.Context(), depth)
+	if err != nil {
+		return err
+	}
+	if _, err := agent.PersistSessionAgentDepth(ctx, a.Sessions, sess.ID, depth); err != nil {
+		return err
+	}
+	root, err := a.BatchSubmitRefUnattended(ctx, sess.ID, spec)
 	if err != nil {
 		return err
 	}

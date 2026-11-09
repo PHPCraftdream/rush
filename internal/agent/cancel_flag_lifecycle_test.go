@@ -135,9 +135,14 @@ func TestCancelFlag_LoopOwnedTurnsKeepTheFlag(t *testing.T) {
 				return nil, nil
 			}}
 
-			_, _ = coord.Run(mark(ctx), f.sessID, "")
-
-			require.True(t, <-seen, "the flag is still set when the agent starts")
+			_, err := coord.Run(mark(ctx), f.sessID, "")
+			require.NoError(t, err, "the marked call must reach the agent before observing its cancel flag")
+			select {
+			case requested := <-seen:
+				require.True(t, requested, "the flag is still set when the agent starts")
+			default:
+				t.Fatalf("agent callback not reached: session_id=%s case=%s", f.sessID, name)
+			}
 		})
 	}
 }
