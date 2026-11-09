@@ -82,10 +82,6 @@ func (b *appAPIRunBackend) StartWithDepth(ctx context.Context, runID, sessionID,
 	if runID == "" || sessionID == "" || strings.TrimSpace(prompt) == "" {
 		return nil, errors.New("invalid run parameters")
 	}
-	maxAgentDepth, err := agent.PersistSessionAgentDepth(ctx, b.app.Sessions, sessionID, maxAgentDepth)
-	if err != nil {
-		return nil, fmt.Errorf("resolve API session agent depth: %w", err)
-	}
 	var (
 		manager  permission.SessionDenyManager
 		policies permission.SessionPolicyManager
@@ -196,6 +192,11 @@ func (b *appAPIRunBackend) StartWithDepth(ctx context.Context, runID, sessionID,
 	}()
 	if ctx.Err() != nil {
 		return nil, context.Canceled
+	}
+
+	maxAgentDepth, err = agent.PersistSessionAgentDepth(ctx, b.app.Sessions, sessionID, maxAgentDepth)
+	if err != nil {
+		return nil, fmt.Errorf("resolve API session agent depth: %w", err)
 	}
 
 	runCtx, cancelRun := context.WithCancel(context.WithoutCancel(ctx))

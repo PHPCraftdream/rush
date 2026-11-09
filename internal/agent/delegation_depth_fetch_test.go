@@ -34,7 +34,7 @@ func TestAgenticFetchExhaustedDepthRefusesBeforeResources(t *testing.T) {
 			coord := &coordinator{sessions: env.sessions}
 			tool, err := coord.agenticFetchTool(ctx, &http.Client{})
 			require.NoError(t, err)
-			before, err := env.sessions.List(t.Context())
+			before, err := env.sessions.ListAll(t.Context())
 			require.NoError(t, err)
 			response, err := tool.Run(ctx, fantasy.ToolCall{
 				ID: "fetch-call", Name: tools.AgenticFetchToolName,
@@ -43,7 +43,7 @@ func TestAgenticFetchExhaustedDepthRefusesBeforeResources(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, response.IsError)
 			require.Equal(t, ErrAgentDepthExceeded.Error(), response.Content)
-			after, err := env.sessions.List(t.Context())
+			after, err := env.sessions.ListAll(t.Context())
 			require.NoError(t, err)
 			require.Len(t, after, len(before), "refused fetch cannot create a child")
 		})

@@ -258,7 +258,7 @@ func TestRunSubAgentDepthChargesOneChildEdge(t *testing.T) {
 		store := env.sessions.(session.AgentDepthStore)
 		require.NoError(t, store.LowerAgentDepth(t.Context(), parent.ID, DefaultAgentDepth))
 		for i, depth := range []int{1, 2} {
-			beforeChildren, err := env.sessions.List(t.Context())
+			beforeChildren, err := env.sessions.ListAll(t.Context())
 			require.NoError(t, err)
 			var childID string
 			childAgent := newMockAgent(providerID, 128, func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
@@ -275,7 +275,7 @@ func TestRunSubAgentDepthChargesOneChildEdge(t *testing.T) {
 			parentRemaining, err := store.ResolveSavedAgentDepth(t.Context(), parent.ID)
 			require.NoError(t, err)
 			require.Equal(t, DefaultAgentDepth, parentRemaining, "a narrowed sibling cannot lower the parent's durable cap")
-			afterChildren, err := env.sessions.List(t.Context())
+			afterChildren, err := env.sessions.ListAll(t.Context())
 			require.NoError(t, err)
 			require.Len(t, afterChildren, len(beforeChildren)+1, "each sibling delegation adds one child")
 		}
@@ -291,12 +291,12 @@ func TestRunSubAgentDepthChargesOneChildEdge(t *testing.T) {
 		})
 		ctx, err := WithAgentDepth(t.Context(), 0)
 		require.NoError(t, err)
-		before, err := env.sessions.List(t.Context())
+		before, err := env.sessions.ListAll(t.Context())
 		require.NoError(t, err)
 		response, err := coord.runSubAgent(ctx, subAgentParams{Agent: childAgent, SessionID: parent.ID, AgentMessageID: "m", ToolCallID: "c", Prompt: "p", SessionTitle: "child"})
 		require.NoError(t, err)
 		require.True(t, response.IsError)
-		after, err := env.sessions.List(t.Context())
+		after, err := env.sessions.ListAll(t.Context())
 		require.NoError(t, err)
 		require.Len(t, after, len(before), "depth zero must not create a child session")
 	})
