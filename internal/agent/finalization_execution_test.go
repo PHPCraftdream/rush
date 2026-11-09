@@ -35,7 +35,7 @@ func TestFinalizationExecutionDoesNotLeakIntoAnotherCall(t *testing.T) {
 	require.Same(t, execution, finalizationExecutionFor(ctx, call))
 	require.Same(t, execution, newTurnStream(turnStreamConfig{ctx: ctx, call: call}).finalization)
 	require.Nil(t, finalizationExecutionFor(context.Background(), call))
-	require.Nil(t, finalizationExecutionFor(nil, call))
+	require.Nil(t, newTurnStream(turnStreamConfig{call: call}).finalization)
 	_, err = withFinalizationExecution(ctx, &finalizationExecution{sessionID: "session", logicalID: "logical"})
 	require.ErrorIs(t, err, ErrFinalizationFactsUnavailable)
 }
