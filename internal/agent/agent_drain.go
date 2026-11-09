@@ -122,7 +122,13 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 			mgr.InheritSessionRunAllowlistForGeneration(driver.parentSessionID, sessionID, driver.generation)
 		}
 		call := newDrainCall(driver.callFor(""))
-		if driver.slotRole != "" && call.Credentials == nil {
+		if call.RequestedModelRole != "" {
+			var roleErr error
+			call, roleErr = c.refreshRequestedDelegationCall(ctx, driver.parentSessionID, call)
+			if roleErr != nil {
+				return SessionAgentCall{}, nil, roleErr
+			}
+		} else if driver.slotRole != "" && call.Credentials == nil {
 			if refreshed, providerCfg, ok := c.refreshDrainModel(ctx, driver.slotRole); ok {
 				call = applyDrainModelOptions(call, refreshed)
 				call.ProviderOptions = getProviderOptions(sessionID, refreshed, providerCfg)
@@ -156,6 +162,9 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 			prep.release()
 		}
 	}()
+	if err := c.refuseLostRequestedRoleDriver(ctx, sessionID); err != nil {
+		return SessionAgentCall{}, nil, err
+	}
 	if prep != nil {
 		capOpts = &CallOptions{}
 		prep.applyToOptions(capOpts)

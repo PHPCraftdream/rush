@@ -340,6 +340,11 @@ func (e batchToolInputError) Unwrap() error { return e.err }
 // App-owned check-in scanner. Explicit specs and Notify selection are
 // represented by the batch model controls, not this direct-call adapter.
 func batchOneItemSpec(inv BatchInvocation, call fantasy.ToolCall, input json.RawMessage) (jobbatch.Spec, error) {
+	if call.Name == AgentToolName {
+		if err := validateAgentRoleInput(input); err != nil {
+			return jobbatch.Spec{}, batchToolInputError{err: err}
+		}
+	}
 	intent, err := batchParseTimeoutParam(call.Name, string(input))
 	if err != nil {
 		return jobbatch.Spec{}, batchToolInputError{err}

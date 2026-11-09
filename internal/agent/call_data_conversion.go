@@ -258,6 +258,8 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 		Attachments:          call.Attachments,
 		MaxOutputTokens:      call.MaxOutputTokens,
 		NonInteractive:       call.NonInteractive,
+		RequestedModelRole:   string(call.RequestedModelRole),
+		RequestedModelSource: call.RequestedModelSource,
 		SystemPromptOverride: call.SystemPromptOverride,
 		MaxCost:              call.MaxCost,
 		MaxTokens:            call.MaxTokens,
@@ -311,6 +313,10 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 // a version-mismatched row must not masquerade as that legacy case. A
 // nil CallOptionsSpec keeps decoding to a nil CallOptions with no error.
 func FromSessionAgentCallData(callData session.SessionAgentCallData) (SessionAgentCall, error) {
+	role := RequestedModelRole(callData.RequestedModelRole)
+	if role != "" && !role.valid() {
+		return SessionAgentCall{}, ErrAgentRoleInvalid
+	}
 	opts, err := fromSessionCallOptionsSpec(callData.CallOptionsSpec)
 	if err != nil {
 		return SessionAgentCall{}, err
@@ -322,6 +328,8 @@ func FromSessionAgentCallData(callData session.SessionAgentCallData) (SessionAge
 		Attachments:          callData.Attachments,
 		MaxOutputTokens:      callData.MaxOutputTokens,
 		NonInteractive:       callData.NonInteractive,
+		RequestedModelRole:   role,
+		RequestedModelSource: callData.RequestedModelSource,
 		SystemPromptOverride: callData.SystemPromptOverride,
 		MaxCost:              callData.MaxCost,
 		MaxTokens:            callData.MaxTokens,

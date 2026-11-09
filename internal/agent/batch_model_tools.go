@@ -271,6 +271,11 @@ func modelBatchSpecAt(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRe
 		if e != nil {
 			return jobbatch.Spec{}, fmt.Errorf("tool %q input: %w", it.Tool, e)
 		}
+		if it.Tool == AgentToolName {
+			if err := validateAgentRoleInput(input); err != nil {
+				return jobbatch.Spec{}, err
+			}
+		}
 		// Normalize the leaf's own tool-input timeout intent once, at
 		// ingress, exactly like the direct path: a terminate intent feeds
 		// the SAME timeout variable the explicit string form fills, a

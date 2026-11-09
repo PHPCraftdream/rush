@@ -191,9 +191,11 @@ type SessionAgentCallData struct {
 	// (task #265, P0-1, task #340 ROUND 3).
 	// LogicalCallID is the stable identifier for this logical request, used to build
 	// the idempotency key for durable queue operations (P2-1 fix).
-	LogicalCallID   string
-	MaxOutputTokens int64
-	NonInteractive  bool
+	LogicalCallID        string
+	MaxOutputTokens      int64
+	NonInteractive       bool
+	RequestedModelRole   string `json:"requested_model_role,omitempty"`
+	RequestedModelSource string `json:"requested_model_source,omitempty"`
 	// RunAllowlistSpec carries the caller's declared restricted-run policy
 	// SPEC (the uncompiled mirror of permission.RunAllowlistSpec), so a
 	// call rebuilt from this row by the run-queue pump can recompile and

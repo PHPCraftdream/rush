@@ -24,12 +24,13 @@ import (
 
 // subAgentParams holds the parameters for running a sub-agent.
 type subAgentParams struct {
-	Agent          SessionAgent
-	SessionID      string
-	AgentMessageID string
-	ToolCallID     string
-	Prompt         string
-	SessionTitle   string
+	Agent              SessionAgent
+	SessionID          string
+	AgentMessageID     string
+	ToolCallID         string
+	Prompt             string
+	SessionTitle       string
+	RequestedModelRole RequestedModelRole
 	// SessionSetup is an optional callback invoked after session creation
 	// but before agent execution, for custom session configuration.
 	SessionSetup func(sessionID string)
@@ -105,6 +106,22 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	if !depthStoreOK {
 		return fantasy.ToolResponse{}, errors.New("agent depth persistence unavailable")
 	}
+	cfg, _ := c.cfg.Snapshot()
+	requestedRole := params.RequestedModelRole
+	var explicitRoleModel *delegationRoleModel
+	resolveRole := func(childID string) error {
+		var roleErr error
+		requestedRole, roleErr = resolveDelegationRequestedRole(ctx, c.sessions, childID, requestedRole)
+		if roleErr != nil || requestedRole == "" {
+			return roleErr
+		}
+		selected, roleErr := c.resolveRequestedDelegationModel(ctx, cfg, params.SessionID, requestedRole)
+		if roleErr != nil {
+			return roleErr
+		}
+		explicitRoleModel = &selected
+		return nil
+	}
 	if params.ResumeSessionID != "" {
 		// Resume path (Gap 2 / phase 3.2): reuse the existing sub-session so
 		// the sub-agent's prior context (files read, work already done) is
@@ -139,6 +156,9 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		if refusal := c.batchHeldQuestionResumeRefusal(ctx, params.SessionID, existing.ID); refusal != "" {
 			return fantasy.NewTextErrorResponse(refusal), nil
 		}
+		if err := resolveRole(existing.ID); err != nil {
+			return fantasy.ToolResponse{}, err
+		}
 		session = existing
 		resolved, depthErr := depthStore.ResolveAgentDepth(ctx, existing.ID, remaining)
 		if depthErr != nil {
@@ -149,6 +169,9 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			return fantasy.ToolResponse{}, fmt.Errorf("lower resumed agent depth: %w", err)
 		}
 	} else {
+		if err := resolveRole(""); err != nil {
+			return fantasy.ToolResponse{}, err
+		}
 		// Child depth and lineage commit together before the child is driven.
 		agentToolSessionID := c.sessions.CreateAgentToolSessionID(params.AgentMessageID, params.ToolCallID)
 		created, err := depthStore.CreateTaskSessionWithAgentDepth(ctx, agentToolSessionID, params.SessionID, params.SessionTitle, childRemaining)
@@ -156,6 +179,10 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			return fantasy.ToolResponse{}, fmt.Errorf("create agent child session: %w", err)
 		}
 		session = created
+	}
+
+	if err := bindDelegationRequestedRole(ctx, c.sessions, session.ID, requestedRole); err != nil {
+		return fantasy.ToolResponse{}, fmt.Errorf("bind child model role: %w", err)
 	}
 
 	// Session selection has been validated; bind this exact ID, including
@@ -226,7 +253,6 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// cannot leak into a concurrent sub-agent dispatch from a different
 	// session sharing the same underlying agent object (task #466).
 	model := params.Agent.Model()
-	cfg, _ := c.cfg.Snapshot()
 
 	// Per-call CredentialSet (RunWithCredentials): the parent call's
 	// tenant credentials win for the slots they cover — worker first (the
@@ -241,7 +267,13 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	hbSource := hbSourceSlotStart
 	var credProviderCfg *config.ProviderConfig
 	var callCreds *CredentialSet
-	if creds := callCredentialsFrom(ctx); creds != nil {
+	if explicitRoleModel != nil {
+		model = explicitRoleModel.Model
+		credProviderCfg = &explicitRoleModel.Provider
+		callCreds = explicitRoleModel.Credentials
+		hbSource = explicitRoleModel.Source
+	}
+	if creds := callCredentialsFrom(ctx); explicitRoleModel == nil && creds != nil {
 		callCreds = creds
 		choice, covered := creds.Models[RoleWorker]
 		if !covered {
@@ -258,7 +290,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		}
 	}
 
-	if credProviderCfg == nil && WebModelPolicy(ctx) {
+	if explicitRoleModel == nil && credProviderCfg == nil && WebModelPolicy(ctx) {
 		if override, err := c.resolveSubAgentModelOverride(ctx, params.SessionID); err != nil {
 			slog.Error("runSubAgent: failed to resolve session worker override, falling back to default", "sessionID", params.SessionID, "err", err)
 		} else if override != nil {
@@ -268,7 +300,9 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	}
 	// The refresh is best-effort; preserve the selected role for future turns.
 	var dispatchSlotRole config.SelectedModelType
-	if params.slotModel && callCreds == nil && hbSource != hbSourceSessionOverride {
+	if requestedRole != "" {
+		dispatchSlotRole = config.SelectedModelType(requestedRole)
+	} else if params.slotModel && callCreds == nil && hbSource != hbSourceSessionOverride {
 		dispatchSlotRole = config.SelectedModelTypeSmart
 		if role := callModelRole(ctx); role == "" || role == config.SelectedModelTypeSmart {
 			if c.workerSubAgentActiveForCall(ctx, cfg) {
@@ -346,6 +380,10 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	driverModel := *pinnedModel
 	// Driver slot provenance is maintained independently of refresh outcome.
 	driverSlotRole := dispatchSlotRole
+	requestedSource := ""
+	if requestedRole != "" {
+		requestedSource = hbSource
+	}
 	childCallOptions := inheritWebPolicyCallOptions(ctx)
 	if childCallOptions == nil {
 		childCallOptions = &CallOptions{}
@@ -379,18 +417,20 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		}
 	}
 	callTemplate := SessionAgentCall{
-		SessionID:        session.ID,
-		MaxOutputTokens:  maxTokens,
-		ProviderOptions:  getProviderOptions(session.ID, model, providerCfg),
-		Temperature:      model.ModelCfg.Temperature,
-		TopP:             model.ModelCfg.TopP,
-		TopK:             model.ModelCfg.TopK,
-		FrequencyPenalty: model.ModelCfg.FrequencyPenalty,
-		PresencePenalty:  model.ModelCfg.PresencePenalty,
-		NonInteractive:   true,
-		SmartModel:       &driverModel,
-		Credentials:      callCreds,
-		CallOptions:      childCallOptions,
+		SessionID:            session.ID,
+		MaxOutputTokens:      maxTokens,
+		ProviderOptions:      getProviderOptions(session.ID, model, providerCfg),
+		Temperature:          model.ModelCfg.Temperature,
+		TopP:                 model.ModelCfg.TopP,
+		TopK:                 model.ModelCfg.TopK,
+		FrequencyPenalty:     model.ModelCfg.FrequencyPenalty,
+		PresencePenalty:      model.ModelCfg.PresencePenalty,
+		NonInteractive:       true,
+		RequestedModelRole:   requestedRole,
+		RequestedModelSource: requestedSource,
+		SmartModel:           &driverModel,
+		Credentials:          callCreds,
+		CallOptions:          childCallOptions,
 	}
 	if lifecycleBound {
 		callTemplate.Tools = batchChildTools
@@ -444,19 +484,21 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		runOptions.AgentDepthSet = true
 		runCtx := WithCallOptions(ctx, &runOptions)
 		call := SessionAgentCall{
-			SessionID:        session.ID,
-			Prompt:           params.Prompt,
-			MaxOutputTokens:  maxTokens,
-			ProviderOptions:  getProviderOptions(session.ID, model, providerCfg),
-			Temperature:      model.ModelCfg.Temperature,
-			TopP:             model.ModelCfg.TopP,
-			TopK:             model.ModelCfg.TopK,
-			FrequencyPenalty: model.ModelCfg.FrequencyPenalty,
-			PresencePenalty:  model.ModelCfg.PresencePenalty,
-			NonInteractive:   true,
-			SmartModel:       pinnedModel,
-			Credentials:      callCreds,
-			CallOptions:      &runOptions,
+			SessionID:            session.ID,
+			Prompt:               params.Prompt,
+			MaxOutputTokens:      maxTokens,
+			ProviderOptions:      getProviderOptions(session.ID, model, providerCfg),
+			Temperature:          model.ModelCfg.Temperature,
+			TopP:                 model.ModelCfg.TopP,
+			TopK:                 model.ModelCfg.TopK,
+			FrequencyPenalty:     model.ModelCfg.FrequencyPenalty,
+			PresencePenalty:      model.ModelCfg.PresencePenalty,
+			NonInteractive:       true,
+			RequestedModelRole:   requestedRole,
+			RequestedModelSource: requestedSource,
+			SmartModel:           pinnedModel,
+			Credentials:          callCreds,
+			CallOptions:          &runOptions,
 		}
 		if lifecycleBound {
 			call.Tools = batchChildTools

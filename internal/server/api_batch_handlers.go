@@ -55,10 +55,11 @@ type apiBatchAccepted struct {
 }
 
 type apiTaskRequest struct {
-	Prompt          string `json:"prompt"`
-	ResumeSessionID string `json:"resume_session_id,omitempty"`
-	TimeoutSeconds  int    `json:"timeout_seconds,omitempty"`
-	MaxAgentDepth   *int   `json:"max_agent_depth,omitempty"`
+	Role            agent.RequestedModelRole `json:"role,omitempty"`
+	Prompt          string                   `json:"prompt"`
+	ResumeSessionID string                   `json:"resume_session_id,omitempty"`
+	TimeoutSeconds  int                      `json:"timeout_seconds,omitempty"`
+	MaxAgentDepth   *int                     `json:"max_agent_depth,omitempty"`
 }
 
 func batchStateDone(state string) bool {
@@ -226,6 +227,9 @@ func (s *apiBatchService) createTaskHandler() http.HandlerFunc {
 			return
 		}
 		input := map[string]string{"prompt": payload.Prompt}
+		if payload.Role != "" {
+			input["role"] = string(payload.Role)
+		}
 		if payload.ResumeSessionID != "" {
 			input["resume_session_id"] = payload.ResumeSessionID
 		}

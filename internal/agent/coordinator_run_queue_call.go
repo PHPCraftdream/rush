@@ -89,6 +89,11 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 		releaseDurableContinuationOwner(c.diskCaps, bindingID, rowID)
 	}
 
+	if role := RequestedModelRole(data.RequestedModelRole); role != "" && !role.valid() {
+		releasePrep()
+		return SessionAgentCall{}, &ErrCallAlreadyAttempted{Err: ErrAgentRoleInvalid}
+	}
+
 	var smartModel, fastModel Model
 	var err error
 
@@ -296,18 +301,20 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 	}
 
 	return SessionAgentCall{
-		SessionID:        data.SessionID,
-		LogicalCallID:    data.LogicalCallID, // P2-1 fix: restore stable ID
-		Prompt:           data.Prompt,
-		Attachments:      data.Attachments,
-		ProviderOptions:  providerOptions,
-		MaxOutputTokens:  data.MaxOutputTokens,
-		Temperature:      temp,
-		TopP:             topP,
-		TopK:             topK,
-		FrequencyPenalty: freqPenalty,
-		PresencePenalty:  presPenalty,
-		NonInteractive:   data.NonInteractive,
+		SessionID:            data.SessionID,
+		LogicalCallID:        data.LogicalCallID, // P2-1 fix: restore stable ID
+		Prompt:               data.Prompt,
+		Attachments:          data.Attachments,
+		ProviderOptions:      providerOptions,
+		MaxOutputTokens:      data.MaxOutputTokens,
+		Temperature:          temp,
+		TopP:                 topP,
+		TopK:                 topK,
+		FrequencyPenalty:     freqPenalty,
+		PresencePenalty:      presPenalty,
+		NonInteractive:       data.NonInteractive,
+		RequestedModelRole:   RequestedModelRole(data.RequestedModelRole),
+		RequestedModelSource: data.RequestedModelSource,
 		// recompiled from the durable row's spec (R4-1).
 		RunAllowlist: rebuiltRunAllowlist,
 		// Keep the spec on the rebuilt call so a re-queued copy re-serializes it.
@@ -398,6 +405,11 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 	}
 
 	ctx = WithCallOrigin(ctx, call.Origin)
+	var roleErr error
+	call, roleErr = c.restoreRequestedDelegationCall(ctx, call)
+	if roleErr != nil {
+		return nil, roleErr
+	}
 	ctx, remainingDepth, err := withPersistedCallAgentDepth(ctx, c.sessions, &call)
 	if err != nil {
 		return nil, fmt.Errorf("resolve queued session agent depth: %w", err)

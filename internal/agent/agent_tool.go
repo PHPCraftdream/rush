@@ -16,7 +16,8 @@ import (
 var agentToolDescription string
 
 type AgentParams struct {
-	Prompt string `json:"prompt" description:"The task for the agent to perform. When resume_session_id is set, this is instead the answer/instruction to send to the paused sub-agent — it is appended to that sub-agent's existing conversation, not a new task."`
+	Role   RequestedModelRole `json:"role,omitempty" description:"Optional model profile: smart, fast, worker, or reviewer. Changes only the model and inference settings, not tools or permissions. Omitted preserves automatic legacy selection; explicit smart never selects worker."`
+	Prompt string             `json:"prompt" description:"The task for the agent to perform. When resume_session_id is set, this is instead the answer/instruction to send to the paused sub-agent — it is appended to that sub-agent's existing conversation, not a new task."`
 	// ResumeSessionID, when set, continues an existing sub-agent session
 	// instead of starting a new one. Use this to answer a sub-agent that
 	// stopped with a "SUB-AGENT QUESTION" tool result: the sub-agent's full
@@ -83,13 +84,14 @@ func (c *coordinator) agentTool(ctx context.Context) (fantasy.AgentTool, error) 
 			}
 			handoff := pctHandoffFrom(childCtx)
 			return c.runSubAgent(childCtx, subAgentParams{
-				Agent:           agent,
-				SessionID:       sessionID,
-				AgentMessageID:  agentMessageID,
-				ToolCallID:      call.ID,
-				Prompt:          params.Prompt,
-				SessionTitle:    "New Agent Session",
-				ResumeSessionID: params.ResumeSessionID,
+				Agent:              agent,
+				SessionID:          sessionID,
+				AgentMessageID:     agentMessageID,
+				ToolCallID:         call.ID,
+				Prompt:             params.Prompt,
+				SessionTitle:       "New Agent Session",
+				ResumeSessionID:    params.ResumeSessionID,
+				RequestedModelRole: params.Role,
 				// slotModel: this agent's model came from the buildAgent
 				// cascade (config role slots) — the only dispatch path the
 				// dispatch-time slot refresh may rebuild.
