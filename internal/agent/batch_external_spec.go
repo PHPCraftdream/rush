@@ -64,6 +64,11 @@ func (x BatchExternalSpec) specAt(depth int) (jobbatch.Spec, error) {
 		if x.Tool == "" || x.Mode != "" || x.OnFail != "" || x.Notify != "" || x.MaxParallel != 0 || len(x.Items) != 0 {
 			return jobbatch.Spec{}, errors.New("task and batch fields cannot be mixed")
 		}
+		if x.Tool == AgentToolName {
+			if err := validateAgentRoleInput(x.Input); err != nil {
+				return jobbatch.Spec{}, err
+			}
+		}
 		raw, err := json.Marshal(BatchCLITask{Tool: x.Tool, Input: x.Input})
 		if err != nil {
 			return jobbatch.Spec{}, err

@@ -138,6 +138,11 @@ func (b *BatchCLIBuilder) translate(ctx context.Context, bind batchCLIBinding, s
 		if batchControlTarget(task.Tool) || !batchWorkTarget(task.Tool) {
 			return jobbatch.Spec{}, fmt.Errorf("batch CLI: tool %q is unavailable or control-plane; use a supported work tool", task.Tool)
 		}
+		if task.Tool == AgentToolName {
+			if err := validateAgentRoleInput(task.Input); err != nil {
+				return jobbatch.Spec{}, err
+			}
+		}
 		leaf, err := bind.registry.resolve(task.Tool)
 		if err != nil {
 			return jobbatch.Spec{}, fmt.Errorf("batch CLI: tool %q is not in configured pinned policy toolset: %w", task.Tool, err)

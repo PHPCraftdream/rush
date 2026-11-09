@@ -71,6 +71,11 @@ func newTestDB(t *testing.T) (*sql.DB, *db.Queries) {
 			remaining_depth INTEGER NOT NULL CHECK (remaining_depth BETWEEN 0 AND 32)
 		);
 
+		CREATE TABLE session_agent_model_role (
+			session_id TEXT PRIMARY KEY NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			requested_role TEXT NOT NULL CHECK (requested_role IN ('', 'smart', 'fast', 'worker', 'reviewer'))
+		);
+
 		CREATE TABLE session_permissions (
 			id TEXT PRIMARY KEY,
 			session_id TEXT NOT NULL,

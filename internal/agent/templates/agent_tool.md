@@ -2,6 +2,8 @@ Launch a new agent that has access to the following tools: glob, grep, ls, view.
 
 In web and CLI sessions the call returns a job ID immediately. Continue independent work; Rush adds the child's final answer or error as a new message in this session and resumes you. Do not call this tool again just to check whether the child finished.
 
+Optional `role` selects a model profile: `smart`, `fast`, `worker`, or `reviewer`. It changes only the model and inference settings, never tools, permissions, or delegation depth. Explicit `smart` does not select `worker`. Omit `role` to retain the existing automatic selection. An unavailable profile is an error, not permission to select another profile. On resume, omit `role` to retain the child's saved role; an explicit role cannot replace the original contract.
+
 When running as a smart orchestrator with a worker model configured, the sub-agent may also get hands-on tools (edit, multiedit, write, bash, todos, download, fetch, ask_question) to actually perform delegated work, not just search.
 
 If the sub-agent calls its own question tool, its completion message (or the direct tool result outside web/CLI) says `SUB-AGENT QUESTION (session <id>): <question>` — or, when the sub-agent still has running background tasks of its own, a `child_question` notice arrives as a separate message right away; in both cases its `agent` job stays open and the final result still arrives under that original job. This is a pause, not a crash. Decide the answer, or ask the operator when necessary, then call this tool with `resume_session_id` set to that child session and the answer as `prompt`. The child's context is preserved; unrelated session IDs are rejected.

@@ -211,6 +211,9 @@ type SessionAgentCall struct {
 	FrequencyPenalty *float64
 	PresencePenalty  *float64
 	NonInteractive   bool
+	// RequestedModelRole and its source do not carry policy authority.
+	RequestedModelRole   RequestedModelRole
+	RequestedModelSource string
 	// SystemPromptOverride, if non-empty, replaces the agent's global system prompt
 	// for this single call. Used to apply per-session system prompts from the DB.
 	SystemPromptOverride string

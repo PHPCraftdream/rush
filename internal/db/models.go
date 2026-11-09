@@ -244,6 +244,11 @@ type SessionAgentDepth struct {
 	RemainingDepth int64  `json:"remaining_depth"`
 }
 
+type SessionAgentModelRole struct {
+	SessionID     string `json:"session_id"`
+	RequestedRole string `json:"requested_role"`
+}
+
 type SessionDriver struct {
 	SessionID string `json:"session_id"`
 	HostID    string `json:"host_id"`
