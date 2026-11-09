@@ -20,6 +20,7 @@ func TestCustomRoleToolsPresenceRoundTrip(t *testing.T) {
 		{name: "patterns", tools: `,"tools":["view","mcp_*","tool?"]`, present: true, count: 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			raw := []byte(`{"provider":"provider","model":"model"` + tc.tools + `}`)
 			var role CustomRole
 			require.NoError(t, json.Unmarshal(raw, &role))
@@ -55,6 +56,7 @@ func TestCustomRoleRejectsInvalidDefinitionWithoutReplacingValue(t *testing.T) {
 		`{"provider":"p","model":"m","tool":["*"]}`,
 	} {
 		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
 			role := CustomRole{SelectedModel: SelectedModel{Provider: "original", Model: "original"}}
 			before := role
 			require.Error(t, json.Unmarshal([]byte(raw), &role))
