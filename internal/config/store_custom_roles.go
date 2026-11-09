@@ -45,7 +45,7 @@ func (s *ConfigStore) SetCustomRoleWithAuthority(scope Scope, name string, updat
 		return err
 	}
 	prefix := customRoleConfigKey(name)
-	fields := make(map[string]any, len(profile)+3)
+	fields := make(map[string]any)
 	for field, value := range profile {
 		fields[prefix+"."+field] = value
 	}
