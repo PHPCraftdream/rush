@@ -103,7 +103,15 @@ func filter(modelFilter, providerFilter, model, provider string) bool {
 // to the operator (see findModels' doc comment for why this is allowed at
 // all). Returns an error on no-match or ambiguity.
 func (app *App) ResolveModel(modelStr string) (provider, modelID string, known bool, err error) {
-	providers := app.config.Config().Providers.Copy()
+	return ResolveConfiguredModel(app.config.Config(), modelStr)
+}
+
+// ResolveConfiguredModel resolves a model without starting an application runtime.
+func ResolveConfiguredModel(cfg *config.Config, modelStr string) (provider, modelID string, known bool, err error) {
+	if cfg == nil || cfg.Providers == nil {
+		return "", "", false, fmt.Errorf("model providers are not configured")
+	}
+	providers := cfg.Providers.Copy()
 	matches, _, fErr := findModels(providers, modelStr, "")
 	if fErr != nil {
 		return "", "", false, fErr

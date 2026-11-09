@@ -448,10 +448,17 @@ func (s *ConfigStore) setConfigFieldsAuthority(scope Scope, kv map[string]any, a
 		}
 		newValue := string(doc.jsonBytes)
 		for _, key := range keys {
-			newValue, err = sjson.Set(newValue, key, kv[key])
+			if _, remove := kv[key].(configFieldRemoval); remove {
+				newValue, err = sjson.Delete(newValue, key)
+			} else {
+				newValue, err = sjson.Set(newValue, key, kv[key])
+			}
 			if err != nil {
 				return fmt.Errorf("failed to set config field %s: %w", key, err)
 			}
+		}
+		if err := validateCustomRoleWrite([]byte(newValue), keys); err != nil {
+			return err
 		}
 		if touchesModelsKey(keys) {
 			newValue, err = applyModelsIntegrity(newValue)
@@ -639,7 +646,10 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string,
 		if err != nil {
 			return fmt.Errorf("failed to delete config field %s: %w", key, err)
 		}
-		if settingsKeyFirstComponent(key) == "models" {
+		if err := validateCustomRoleWrite([]byte(newValue), []string{key}); err != nil {
+			return err
+		}
+		if touchesModelsKey([]string{key}) {
 			newValue, err = applyModelsIntegrity(newValue)
 			if err != nil {
 				return fmt.Errorf("failed to update model settings signature: %w", err)

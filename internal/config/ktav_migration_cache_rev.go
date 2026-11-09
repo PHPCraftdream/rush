@@ -32,7 +32,7 @@ import (
 // sync_rev is never touched here; it is copied by the conversion as-is and
 // is read without the lock password.
 func applyKtavMigrationModelsIntegrity(source, ktavBytes []byte) ([]byte, error) {
-	canonical, present, err := canonicalModelsJSON(gjson.Get(string(source), "models").Raw)
+	canonical, present, err := canonicalModelsAndRolesJSON(source)
 	if err != nil || !present {
 		// Nothing hashable in the legacy document: leave the converted
 		// bytes (and whatever cache_rev they carry) untouched.
@@ -61,7 +61,7 @@ func applyKtavMigrationModelsIntegrity(source, ktavBytes []byte) ([]byte, error)
 	if err != nil {
 		return nil, fmt.Errorf("ktav round-trip failed while recomputing cache_rev: %w", err)
 	}
-	normalized, present, err := canonicalModelsJSON(gjson.GetBytes(jsonBytes, "models").Raw)
+	normalized, present, err := canonicalModelsAndRolesJSON(jsonBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to canonicalize model settings: %w", err)
 	}
