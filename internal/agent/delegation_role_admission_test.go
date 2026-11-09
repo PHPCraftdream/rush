@@ -39,6 +39,7 @@ func TestRequestedRoleDurableRoundTripDoesNotReplacePolicyRole(t *testing.T) {
 	t.Parallel()
 	original := SessionAgentCall{
 		SessionID: "child", RequestedModelRole: "reviewer", RequestedModelSource: hbSourceSessionOverride,
+		MaxCost:     9,
 		CallOptions: &CallOptions{ModelRole: config.SelectedModelTypeFast, DisableSubAgents: true, MaxAgentDepth: 1, AgentDepthSet: true, MaxCost: 9},
 	}
 	data := ToSessionAgentCallData(original)
@@ -53,7 +54,7 @@ func TestRequestedRoleDurableRoundTripDoesNotReplacePolicyRole(t *testing.T) {
 	require.Equal(t, config.SelectedModelTypeFast, got.CallOptions.ModelRole)
 	require.True(t, got.CallOptions.DisableSubAgents)
 	require.Equal(t, 1, got.CallOptions.MaxAgentDepth)
-	require.EqualValues(t, 9, got.CallOptions.MaxCost)
+	require.EqualValues(t, 9, got.MaxCost, "durable budgets live on the call, not CallOptionsSpec")
 	decoded.RequestedModelRole = "unknown"
 	_, err = FromSessionAgentCallData(decoded)
 	require.ErrorIs(t, err, ErrAgentRoleInvalid)
