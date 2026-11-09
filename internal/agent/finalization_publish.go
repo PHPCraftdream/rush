@@ -12,8 +12,17 @@ import (
 
 var ErrFinalizationScopeChanged = errors.New("finalization_scope_changed")
 
+type finalizationPublicationScope struct {
+	store    *session.AgentFinalizationStore
+	identity session.AgentFinalizationIdentity
+}
+
 // publishFinalizationCandidate runs only while the owner gate and session are held.
-func publishFinalizationCandidate(ctx context.Context, sessions session.Service, messages message.Service, owner string, identity message.FinalizationIdentity, candidate finalizationCandidate) (message.Message, error) {
+func publishFinalizationCandidate(ctx context.Context, sessions session.Service, messages message.Service, scope finalizationPublicationScope, identity message.FinalizationIdentity, candidate finalizationCandidate) (message.Message, error) {
+	owner := scope.identity.SessionID
+	if scope.store == nil || identity.Key != scope.identity.LogicalCallID || scope.identity.Generation <= 0 || identity.Generation != uint64(scope.identity.Generation) || identity.Revision > uint64(1<<63-1) {
+		return message.Message{}, ErrFinalizationScopeChanged
+	}
 	writer, supported := sessions.(session.FinalizationTransaction)
 	if !supported {
 		return message.Message{}, fmt.Errorf("%w: finalization transaction unavailable", ErrFinalizationFactsUnavailable)
@@ -33,12 +42,26 @@ func publishFinalizationCandidate(ctx context.Context, sessions session.Service,
 			return message.ErrFinalizationCandidateChanged
 		}
 		err = current.AcceptFinalizationCandidate(identity, candidate.hash)
-		if errors.Is(err, message.ErrFinalizationAlreadyAccepted) {
-			accepted = current
-			return nil // A verified receipt is not another terminal publication.
-		}
-		if err != nil {
+		alreadyAccepted := errors.Is(err, message.ErrFinalizationAlreadyAccepted)
+		if err != nil && !alreadyAccepted {
 			return err
+		}
+		sealErr := scope.store.SealTx(ctx, tx, scope.identity, int64(identity.Revision), candidate.messageID, candidate.hash)
+		if alreadyAccepted {
+			if !errors.Is(sealErr, session.ErrAgentFinalizationAccepted) {
+				if sealErr != nil {
+					return sealErr
+				}
+				return session.ErrAgentFinalizationChanged
+			}
+			accepted = current
+			return nil // Both durable receipts must agree; do not publish again.
+		}
+		if sealErr != nil {
+			if errors.Is(sealErr, session.ErrAgentFinalizationAccepted) {
+				return session.ErrAgentFinalizationChanged
+			}
+			return sealErr
 		}
 		postCommit, err = messages.UpdateTx(ctx, tx, current)
 		if err != nil {
@@ -48,7 +71,7 @@ func publishFinalizationCandidate(ctx context.Context, sessions session.Service,
 		return nil
 	})
 	if err != nil {
-		if errors.Is(err, message.ErrFinalizationCandidateChanged) {
+		if errors.Is(err, message.ErrFinalizationCandidateChanged) || errors.Is(err, session.ErrAgentFinalizationChanged) {
 			return message.Message{}, fmt.Errorf("%w: %w", ErrFinalizationScopeChanged, err)
 		}
 		return message.Message{}, err
