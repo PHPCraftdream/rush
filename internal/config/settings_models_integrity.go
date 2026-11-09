@@ -71,9 +71,9 @@ func modelsIntegritySignature(canonical string) string {
 	return hex.EncodeToString(digest[:])
 }
 
-// applyModelsIntegrity refreshes cache_rev on writes that touch models.
+// applyModelsIntegrity signs built-in models and custom role definitions.
 func applyModelsIntegrity(doc string) (string, error) {
-	canonical, present, err := canonicalModelsJSON(gjson.Get(doc, "models").Raw)
+	canonical, present, err := canonicalModelsAndRolesJSON([]byte(doc))
 	if err != nil {
 		return "", fmt.Errorf("failed to canonicalize model settings: %w", err)
 	}
@@ -83,10 +83,10 @@ func applyModelsIntegrity(doc string) (string, error) {
 	return sjson.Delete(doc, cacheRevKey)
 }
 
-// touchesModelsKey reports whether any key targets the models object.
+// touchesModelsKey includes custom roles in the model-integrity boundary.
 func touchesModelsKey(keys []string) bool {
 	for _, key := range keys {
-		if settingsKeyFirstComponent(key) == "models" {
+		if component := settingsKeyFirstComponent(key); component == "models" || strings.EqualFold(component, "roles") {
 			return true
 		}
 	}
@@ -169,7 +169,7 @@ func (s *ConfigStore) verifyModelsIntegrityAtLoad() {
 // cache_rev computed over Ktav-normalized values at migration time
 // verifies here unchanged.
 func modelsIntegrityOf(data []byte, lockExists bool) error {
-	canonical, present, err := canonicalModelsJSON(gjson.GetBytes(data, "models").Raw)
+	canonical, present, err := canonicalModelsAndRolesJSON(data)
 	if err != nil {
 		return ErrModelsEditedDirectly
 	}

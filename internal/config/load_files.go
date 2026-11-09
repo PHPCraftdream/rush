@@ -401,6 +401,10 @@ func loadFromBytes(configs [][]byte) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	configs, roles, err := stripCustomRoleOverlays(configs)
+	if err != nil {
+		return nil, err
+	}
 	// Peak-hours scopes are resolved outside the generic merge: the
 	// weekly policy form must override between scopes entirely, and an
 	// incomplete legacy fragment over a policy is a hard error.
@@ -427,6 +431,9 @@ func loadFromBytes(configs [][]byte) (*Config, error) {
 	var config Config
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, err
+	}
+	if len(roles) != 0 {
+		config.Roles = roles
 	}
 	warnUnknownModelSlots(data)
 	return &config, nil

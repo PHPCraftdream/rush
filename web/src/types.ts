@@ -1,5 +1,7 @@
 // ─── Shared types mirroring Go structs ────────────────────────────────────────
 
+export type { CustomRole, CustomRolesState, CustomRoleScope, SetCustomRoleRequest } from "./customRoleTypes";
+
 export type TodoStatus = "pending" | "in_progress" | "completed";
 
 export interface Todo {

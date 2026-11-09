@@ -98,6 +98,9 @@ const (
 	CmdGetScopedModels       = "get_scoped_models"
 	CmdSetScopedModel        = "set_scoped_model"
 	CmdClearScopedModel      = "clear_scoped_model"
+	CmdGetCustomRoles        = "get_custom_roles"
+	CmdSetCustomRole         = "set_custom_role"
+	CmdRemoveCustomRole      = "remove_custom_role"
 	// CmdGetSessionLiveWork asks for a fresh EventSessionLiveWork snapshot
 	// for one session -- sent when a session becomes active and after a
 	// reconnect; handleGetSessionLiveWork (handlers_livework.go) answers it.

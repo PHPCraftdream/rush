@@ -105,6 +105,12 @@ func handleIncoming(ctx context.Context, s *Server, c *Client, raw []byte) {
 		c.dispatch("handleSetScopedModel", msg.ID, func() { handleSetScopedModel(a, c, msg) })
 	case CmdClearScopedModel:
 		c.dispatch("handleClearScopedModel", msg.ID, func() { handleClearScopedModel(a, c, msg) })
+	case CmdGetCustomRoles:
+		c.dispatch("handleGetCustomRoles", msg.ID, func() { handleGetCustomRoles(a, c, msg) })
+	case CmdSetCustomRole:
+		c.dispatch("handleSetCustomRole", msg.ID, func() { handleSetCustomRole(a, c, msg) })
+	case CmdRemoveCustomRole:
+		c.dispatch("handleRemoveCustomRole", msg.ID, func() { handleRemoveCustomRole(a, c, msg) })
 	case CmdSetProviderKey:
 		c.dispatch("handleSetProviderKey", msg.ID, func() { handleSetProviderKey(a, c, msg) })
 	case CmdRemoveProviderKey:
