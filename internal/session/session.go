@@ -437,7 +437,7 @@ type service struct {
 	home bool
 
 	// readDB/qRead back the standalone, read-only hot paths (List, ListAll,
-	// ListSubSessions, Get, GetLast, GetCallTreeActivity(Batch)) that don't
+	// ListSubSessions, Get, GetLast, PeekInterruptInject, GetCallTreeActivity(Batch)) that don't
 	// need read-your-own-write consistency with a subsequent write in the
 	// same call. When a caller doesn't provide a separate reader (the
 	// common NewService constructor, used by every test and by anything
