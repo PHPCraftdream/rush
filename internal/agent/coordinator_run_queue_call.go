@@ -211,7 +211,7 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 	// whole restart closed instead of silently running with whatever
 	// subset of fields happened to decode.
 	var rebuiltCallOptions *CallOptions
-	{
+	if data.CallOptionsSpec != nil || data.FolderScopeSpec != nil {
 		var err error
 		rebuiltCallOptions, err = fromSessionCallOptionsSpec(data.CallOptionsSpec)
 		if err != nil {
@@ -221,26 +221,6 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 		}
 		if rebuiltCallOptions == nil {
 			rebuiltCallOptions = &CallOptions{}
-		}
-		if !rebuiltCallOptions.AgentDepthSet {
-			remaining := DefaultAgentDepth
-			if sess, getErr := c.sessions.Get(ctx, data.SessionID); getErr != nil {
-				releasePrep()
-				return SessionAgentCall{}, fmt.Errorf("resolve durable call session lineage: %w", getErr)
-			} else if sess.ParentSessionID != "" {
-				store, ok := c.sessions.(session.AgentDepthStore)
-				if !ok {
-					releasePrep()
-					return SessionAgentCall{}, errors.New("agent depth persistence unavailable")
-				}
-				remaining, err = store.ResolveAgentDepth(ctx, sess.ID, DefaultAgentDepth)
-				if err != nil {
-					releasePrep()
-					return SessionAgentCall{}, fmt.Errorf("resolve legacy child depth: %w", err)
-				}
-			}
-			rebuiltCallOptions.MaxAgentDepth = remaining
-			rebuiltCallOptions.AgentDepthSet = true
 		}
 		if rebuiltCallOptions.buildScope == nil {
 			EnsureCallBuildScope(rebuiltCallOptions)
@@ -297,8 +277,9 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 	// holder — the transfer is complete.
 	if prep != nil {
 		if rebuiltCallOptions == nil {
-			return SessionAgentCall{}, errors.New("durable call options unavailable")
+			rebuiltCallOptions = &CallOptions{}
 		}
+		EnsureCallBuildScope(rebuiltCallOptions)
 		requirement := prep.requirement
 		opts, callRelease, bindErr := bindExistingCallDiskBinding(c.diskCaps, requirement.BindingID, uuid.NewString(), rebuiltCallOptions)
 		if bindErr != nil {

@@ -159,6 +159,8 @@ func newAPIRunBackendGateApp(t *testing.T, manager *apiRunBackendGateManager, ru
 		t.Setenv(key, t.TempDir())
 	}
 	app := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
+	_, err := app.Sessions.CreateWithID(t.Context(), "api-gate-session", "API gate fixture")
+	require.NoError(t, err)
 	manager.Service = app.Permissions
 	events := &apiRunBackendGateEvents{}
 	manager.events = events
