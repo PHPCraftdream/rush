@@ -229,6 +229,14 @@ func checkpointContentBytes(parts []message.ContentPart) int {
 	return size
 }
 
+// fenceFinalization prevents an old partial checkpoint from replacing a candidate.
+func (cp *turnCheckpointWriter) fenceFinalization() int64 {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	cp.generation++
+	return cp.generation
+}
+
 func (cp *turnCheckpointWriter) stop() {
 	if cp.stopCh == nil {
 		return

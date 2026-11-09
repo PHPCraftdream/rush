@@ -33,6 +33,10 @@ type BatchCommitIdentity struct {
 	// transitions are unaffected: batchCommitProject already resolves each
 	// root's owner from the row (RootOwner).
 	OwnerFor func(spec jobbatch.Spec) string
+
+	// AdmitOwners acquires all affected scope tickets before writer I/O.
+	// The release runs after commit or failure, including admission failure.
+	AdmitOwners func(context.Context, jobbatch.Transition, []string) (func(), error)
 }
 
 // NewBatchCommitHook returns a RunnerConfig.CommitHook adapter. It maps one
@@ -115,6 +119,13 @@ func batchCommitSubmit(ctx context.Context, store *BatchStore, id BatchCommitIde
 			return err
 		}
 		notices[i] = p
+	}
+	release, err := admitBatchCommitOwners(ctx, id, t, []string{owner})
+	if release != nil {
+		defer release()
+	}
+	if err != nil {
+		return err
 	}
 	res, err := store.ReserveIdentity(ctx, BatchReservation{
 		Owner: owner, Host: id.Host, RunnerID: id.Runner, RootID: string(e.Root),
@@ -334,6 +345,7 @@ func batchCommitProject(ctx context.Context, store *BatchStore, id BatchCommitId
 		EventType: batchCommitCheckpointEvent(t), Final: batchCommitFlag(t.Final),
 		UpdatedAt: time.Now().Unix(),
 	}
+	owners := make([]string, 0, len(groups))
 	for root, g := range groups {
 		owner, err := store.RootOwner(ctx, string(root))
 		if err != nil {
@@ -341,7 +353,15 @@ func batchCommitProject(ctx context.Context, store *BatchStore, id BatchCommitId
 		}
 		g.Root = string(root)
 		g.Owner = owner
+		owners = append(owners, owner)
 		p.Roots = append(p.Roots, *g)
+	}
+	release, err := admitBatchCommitOwners(ctx, id, t, owners)
+	if release != nil {
+		defer release()
+	}
+	if err != nil {
+		return err
 	}
 	return store.Project(ctx, p)
 }

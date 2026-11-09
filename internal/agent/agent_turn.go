@@ -758,6 +758,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	checkpoint := newTurnCheckpointWriter(a, call.SessionID, genCtx, &ts.mu, &ts.currentAssistant, stall)
 	ts.startCheckpoint = checkpoint.start
 	ts.stopCheckpoint = checkpoint.stop
+	ts.fenceCheckpoint = checkpoint.fenceFinalization
 
 	// Decouples token arrival from UI render rate. See turnUINotifier's
 	// doc in agent_turn_ui_notify.go.
