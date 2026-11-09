@@ -79,6 +79,8 @@ func TestCustomRoleHandlerScopesAndPreservedModelOnlyCap(t *testing.T) {
 }
 
 func TestCustomRoleHandlerLockedNonUIClientsCannotMutate(t *testing.T) {
+	restore := config.SetKtavAutoMigrateForTest(false)
+	t.Cleanup(restore)
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	addTestProvider(t, a)
 	config.SetProcessPassword("")

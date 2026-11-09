@@ -11,7 +11,7 @@ const fieldClass = "w-full rounded-lg border border-surface bg-canvas px-2.5 py-
 export function CustomRolesEditor({ models }: { models: ModelItem[] }) {
   const id = useId();
   const mounted = useRef(false);
-  const requestGeneration = useRef(0);
+  const requestGeneration = useRef<symbol | null>(null);
   const [state, setState] = useState<CustomRolesState | null>(null);
   const [scope, setScope] = useState<CustomRoleScope>("global");
   const [editingName, setEditingName] = useState<string | null>(null);
@@ -29,7 +29,8 @@ export function CustomRolesEditor({ models }: { models: ModelItem[] }) {
   const [notice, setNotice] = useState("");
 
   const refresh = useCallback(async () => {
-    const generation = ++requestGeneration.current;
+    const generation = Symbol("role-request");
+    requestGeneration.current = generation;
     try {
       const reply = await wsRequest<CustomRolesState>("get_custom_roles", {});
       if (mounted.current && generation === requestGeneration.current && reply.payload) setState(reply.payload);
@@ -44,14 +45,14 @@ export function CustomRolesEditor({ models }: { models: ModelItem[] }) {
     mounted.current = true;
     const unsub = ws.on("custom_roles", (message) => {
       if (message.id || !message.payload) return;
-      requestGeneration.current++;
+      requestGeneration.current = null;
       setState(message.payload as CustomRolesState);
     });
     const reconnect = ws.on("_connected", () => { void refresh(); });
-    void refresh();
+    queueMicrotask(() => { if (mounted.current) void refresh(); });
     return () => {
       mounted.current = false;
-      requestGeneration.current++;
+      requestGeneration.current = null;
       unsub();
       reconnect();
     };
@@ -145,7 +146,7 @@ export function CustomRolesEditor({ models }: { models: ModelItem[] }) {
       </div>
       <p className="text-[11px] text-text-subtle">Named model profiles with optional tool restrictions. Roles never bypass permissions, depth or inherited tool limits.</p>
       {error && <p role="alert" className="text-xs text-red-400">{error}</p>}
-      {notice && <p role="status" className="text-xs text-text-subtle">{notice}</p>}
+      {notice && <output className="block text-xs text-text-subtle">{notice}</output>}
       {!state && !error && <p className="text-xs text-text-subtle">Loading roles…</p>}
       <label className="block text-xs text-text-subtle">
         Role scope
@@ -177,7 +178,7 @@ export function CustomRolesEditor({ models }: { models: ModelItem[] }) {
         <label className="block text-xs text-text-subtle">Provider
           <input className={fieldClass} value={provider} list={`${id}-providers`} disabled={busy || !state} onChange={(event) => { setProvider(event.target.value); setEffort(""); setThink(false); }} />
         </label>
-        <datalist id={`${id}-providers`}>{providers.map((value) => <option key={value} value={value} />)}</datalist>
+        <datalist id={`${id}-providers`}>{providers.map((value) => <option key={value} value={value}>{value}</option>)}</datalist>
         <label className="block text-xs text-text-subtle">Model
           <input className={fieldClass} value={model} list={`${id}-models`} disabled={busy || !state} onChange={(event) => { setModel(event.target.value); setEffort(""); setThink(false); }} />
         </label>
