@@ -333,11 +333,18 @@ func TestRunSubAgent(t *testing.T) {
 	})
 
 	t.Run("cost update failure preserves output", func(t *testing.T) {
-		// A failure to charge the parent session must not discard the
-		// sub-agent output that was already produced. Using a parent
-		// SessionID that was never created makes IncrementCost fail.
+		// A cost-side failure cannot replace valid child output or bypass lineage.
 		env := testEnv(t)
 		coord := newTestCoordinator(t, env, providerID, providerCfg)
+		parent, err := env.sessions.Create(t.Context(), "parent with unavailable cost writer")
+		require.NoError(t, err)
+		depthStore, ok := env.sessions.(session.AgentDepthStore)
+		require.True(t, ok)
+		costs := &parentCostFailureSessions{Service: env.sessions, AgentDepthStore: depthStore, parentID: parent.ID}
+		_, err = costs.IncrementCost(t.Context(), parent.ID, 1)
+		require.ErrorContains(t, err, "injected parent cost write failure", "control: the parent cost writer really refuses writes")
+		costs.attempts.Store(0)
+		coord.sessions = costs
 
 		agent := newMockAgent(providerID, 4096, func(_ context.Context, _ SessionAgentCall) (*fantasy.AgentResult, error) {
 			return agentResultWithText("output before cost failure"), nil
@@ -345,7 +352,7 @@ func TestRunSubAgent(t *testing.T) {
 
 		resp, err := coord.runSubAgent(t.Context(), subAgentParams{
 			Agent:          agent,
-			SessionID:      "missing-parent-session",
+			SessionID:      parent.ID,
 			AgentMessageID: "msg-1",
 			ToolCallID:     "call-1",
 			Prompt:         "test",
@@ -354,6 +361,7 @@ func TestRunSubAgent(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, resp.IsError)
 		assert.Equal(t, "output before cost failure", resp.Content)
+		require.Zero(t, costs.attempts.Load(), "child turns account for themselves; the parent must not be charged twice")
 	})
 
 	t.Run("nil result returns error response", func(t *testing.T) {
