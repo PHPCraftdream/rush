@@ -14,14 +14,15 @@ var (
 
 // finalizationFacts excludes the owner's driver, delegation node, and own gate.
 type finalizationFacts struct {
-	complete      bool
-	own           int
-	descendants   int
-	physicalHolds int
-	debt          int
-	queuedCalls   int
-	heldQuestion  bool
-	cancelled     bool
+	durableRevision uint64
+	complete        bool
+	own             int
+	descendants     int
+	physicalHolds   int
+	debt            int
+	queuedCalls     int
+	heldQuestion    bool
+	cancelled       bool
 }
 
 func (f finalizationFacts) quiet() bool {
@@ -29,7 +30,7 @@ func (f finalizationFacts) quiet() bool {
 }
 
 func (f finalizationFacts) valid() bool {
-	return f.complete && f.own >= 0 && f.descendants >= 0 && f.physicalHolds >= 0 && f.debt >= 0 && f.queuedCalls >= 0
+	return f.complete && f.durableRevision <= uint64(1<<63-1) && f.own >= 0 && f.descendants >= 0 && f.physicalHolds >= 0 && f.debt >= 0 && f.queuedCalls >= 0
 }
 
 type finalizationVerdict uint8
@@ -43,11 +44,12 @@ const (
 
 // finalizationStamp identifies the facts visible when a provider step began.
 type finalizationStamp struct {
-	owner    *finalizationGate
-	epoch    uint64
-	serial   uint64
-	revision uint64
-	ready    bool
+	owner           *finalizationGate
+	epoch           uint64
+	serial          uint64
+	revision        uint64
+	durableRevision uint64
+	ready           bool
 }
 
 type finalizationCandidate struct {
@@ -167,7 +169,7 @@ func (g *finalizationGate) beginCandidate(ctx context.Context, read func(context
 		g.mustCompose = true
 	}
 	g.candidateSerial++
-	return finalizationStamp{owner: g, epoch: g.epoch, serial: g.candidateSerial, revision: g.revision, ready: ready}, nil
+	return finalizationStamp{owner: g, epoch: g.epoch, serial: g.candidateSerial, revision: g.revision, durableRevision: facts.durableRevision, ready: ready}, nil
 }
 
 // trySeal performs the final facts read and publication under the admission gate.
@@ -194,7 +196,7 @@ func (g *finalizationGate) trySeal(ctx context.Context, stamp finalizationStamp,
 		g.signalLocked()
 		return finalizationWaitWork, nil
 	}
-	if stamp.owner != g || stamp.serial == 0 || stamp.serial != g.candidateSerial || stamp.epoch != g.epoch || stamp.revision != g.revision || g.mustCompose && !stamp.ready {
+	if stamp.owner != g || stamp.serial == 0 || stamp.serial != g.candidateSerial || stamp.epoch != g.epoch || stamp.revision != g.revision || stamp.durableRevision != facts.durableRevision || g.mustCompose && !stamp.ready {
 		g.mustCompose = true
 		return finalizationCompose, nil
 	}

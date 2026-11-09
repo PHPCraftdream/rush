@@ -55,7 +55,7 @@ func (ts *turnStream) markFinalizationStep() error {
 	}
 	if err := ts.currentAssistant.MarkFinalizationCandidate(message.FinalizationIdentity{
 		Key: ts.finalization.logicalID, Generation: stamp.epoch,
-		Revision: stamp.revision, Serial: stamp.serial,
+		Revision: stamp.durableRevision, Serial: stamp.serial,
 	}); err != nil {
 		return err
 	}
