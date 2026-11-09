@@ -18,9 +18,10 @@ func TestRequestedRoleContinuationRefreshesModelWithoutChangingAuthority(t *test
 	ctx := WithCallOptions(t.Context(), opts)
 	t.Cleanup(opts.buildScope.close)
 	before := *opts
+	taskPrompt, prefix := "unchanged task prompt", "unchanged prefix"
 	original := SessionAgentCall{
 		SessionID: child.ID, RequestedModelRole: "worker", RequestedModelSource: "old-source",
-		CallOptions: opts, Tools: batchTestTools("view"), SystemPrompt: "unchanged task prompt", SystemPromptPrefix: "unchanged prefix", MaxCost: 7,
+		CallOptions: opts, Tools: batchTestTools("view"), SystemPrompt: &taskPrompt, SystemPromptPrefix: &prefix, MaxCost: 7,
 	}
 	got, err := coord.refreshRequestedDelegationCall(ctx, parent, original)
 	require.NoError(t, err)
