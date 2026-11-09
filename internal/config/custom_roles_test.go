@@ -47,6 +47,9 @@ func TestCustomRoleRejectsInvalidDefinitionWithoutReplacingValue(t *testing.T) {
 	for _, raw := range []string{
 		`null`, `[]`, `{}`, `{"provider":"p"}`, `{"model":"m"}`,
 		`{"provider":"p","model":"m","tools":null}`,
+		`{"provider":"p","model":"m","Tools":null}`,
+		`{"provider":"p","model":"m","TOOLS":null}`,
+		`{"provider":"p","model":"m","tools":[],"Tools":null}`,
 		`{"provider":"p","model":"m","tools":"*"}`,
 		`{"provider":"p","model":"m","tools":[null]}`,
 		`{"provider":"p","model":"m","tools":[2]}`,
@@ -105,6 +108,8 @@ func TestCustomRoleValidatesEachScopeBeforeMerge(t *testing.T) {
 		`{"roles":{"reader":{"provider":"p","model":"m","tools":null}}}`,
 		`{"roles":{"smart":{"provider":"p","model":"m"}}}`,
 		`{"roles":null}`,
+		`{"Roles":{"reader":{"provider":"p","model":"m"}}}`,
+		`{"ROLES":{"reader":{"provider":"p","model":"m"}}}`,
 	} {
 		_, err := loadFromBytes([][]byte{[]byte(invalid), valid})
 		require.Error(t, err, "an invalid lower scope must not disappear under a later role: %s", invalid)

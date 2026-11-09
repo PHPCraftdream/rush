@@ -86,7 +86,7 @@ func applyModelsIntegrity(doc string) (string, error) {
 // touchesModelsKey includes custom roles in the model-integrity boundary.
 func touchesModelsKey(keys []string) bool {
 	for _, key := range keys {
-		if component := settingsKeyFirstComponent(key); component == "models" || component == "roles" {
+		if component := settingsKeyFirstComponent(key); component == "models" || strings.EqualFold(component, "roles") {
 			return true
 		}
 	}

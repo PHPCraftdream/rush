@@ -611,6 +611,7 @@ func TestHandleWSGrantsTrustedSettingsOnlyOnUIListener(t *testing.T) {
 	t.Cleanup(restore)
 
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
+	addTestProvider(t, a)
 	store := a.Store()
 	config.SetProcessPassword("")
 	t.Cleanup(func() { config.SetProcessPassword("") })
@@ -693,12 +694,36 @@ func TestHandleWSGrantsTrustedSettingsOnlyOnUIListener(t *testing.T) {
 	}
 	require.True(t, sawConfig, "never received the EventConfig broadcast")
 	require.True(t, sawResponse, "never received the EventResponse ok reply")
+
+	roleMessage := WSMessage{ID: "role-ui", Type: CmdSetCustomRole, Payload: json.RawMessage(`{"scope":"global","name":"reader","provider":"acme","model":"acme-large-v1","tools":[]}`)}
+	require.NoError(t, conn.WriteJSON(roleMessage))
+	var sawRole, sawRoleReply bool
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	for i := 0; i < 32 && !(sawRole && sawRoleReply); i++ {
+		var envelope WSMessage
+		require.NoError(t, conn.ReadJSON(&envelope))
+		require.NotEqual(t, EventError, envelope.Type, "custom-role write refused: %s", envelope.Error)
+		if envelope.Type == EventCustomRoles {
+			require.Equal(t, "acme-large-v1", gjson.GetBytes(envelope.Payload, "global.reader.model").String())
+			require.Equal(t, "[]", gjson.GetBytes(envelope.Payload, "global.reader.tools").Raw)
+			sawRole = true
+		}
+		if envelope.ID == "role-ui" {
+			require.Equal(t, EventResponse, envelope.Type)
+			require.Equal(t, "ok", gjson.GetBytes(envelope.Payload, "status").String())
+			sawRoleReply = true
+		}
+	}
+	require.True(t, sawRole, "never received the persisted role broadcast")
+	require.True(t, sawRoleReply, "never received the role write receipt")
 	_ = conn.Close()
 
 	// 4. Disk proof: the write landed behind the lock, and the lock survived.
 	afterDisk, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.True(t, gjson.GetBytes(afterDisk, "options.debug").Bool())
+	require.Equal(t, "acme-large-v1", gjson.GetBytes(afterDisk, "roles.reader.model").String())
+	require.Equal(t, "[]", gjson.GetBytes(afterDisk, "roles.reader.tools").Raw)
 	afterRev := lockedSyncRev(t, afterDisk)
 	require.Equal(t, beforeRev, afterRev, "trusted write must not disturb sync_rev")
 	require.True(t, config.VerifyPassword("locked", afterRev),

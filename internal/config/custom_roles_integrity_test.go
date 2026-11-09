@@ -40,6 +40,12 @@ func TestCustomRoleIntegrityRejectsUnsignedToolWidening(t *testing.T) {
 	require.NoError(t, err)
 	require.ErrorIs(t, modelsIntegrityOf([]byte(changedModel), false), ErrModelsEditedDirectly)
 	require.True(t, touchesModelsKey([]string{"roles.reader.tools"}))
+	legacySigned, err := applyModelsIntegrity(`{"models":{"smart":{"provider":"p","model":"m"}}}`)
+	require.NoError(t, err)
+	unsignedAlias, err := sjson.Set(legacySigned, "Roles.reader", map[string]string{"provider": "p", "model": "m"})
+	require.NoError(t, err)
+	require.ErrorIs(t, modelsIntegrityOf([]byte(unsignedAlias), false), ErrModelsEditedDirectly,
+		"encoding/json aliases cannot introduce roles outside the signed canonical namespace")
 }
 
 func TestCustomRoleIntegrityKtavMigrationPreservesValidation(t *testing.T) {

@@ -70,8 +70,10 @@ func (r *CustomRole) UnmarshalJSON(raw []byte) error {
 	if fields == nil {
 		return fmt.Errorf("custom role must be an object")
 	}
-	if tools, present := fields["tools"]; present && bytes.Equal(bytes.TrimSpace(tools), []byte("null")) {
-		return fmt.Errorf("custom role tools must be an array, not null")
+	for field, value := range fields {
+		if strings.EqualFold(field, "tools") && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return fmt.Errorf("custom role tools must be an array, not null")
+		}
 	}
 	type roleJSON CustomRole
 	var decoded roleJSON

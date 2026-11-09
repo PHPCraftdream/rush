@@ -98,8 +98,8 @@ func runCustomRoleSet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, exists := cfg.Providers.Get(selected.Provider); !exists {
-		return fmt.Errorf("provider %q is not configured", selected.Provider)
+	if err := config.ValidateCustomRoleSelection(cfg, config.CustomRole{SelectedModel: selected, Tools: patterns}); err != nil {
+		return err
 	}
 	inherit, _ := cmd.Flags().GetBool("inherit-tools")
 	if err := store.SetCustomRole(scope, args[0], config.CustomRoleUpdate{Model: selected, Tools: patterns, InheritTools: inherit}); err != nil {

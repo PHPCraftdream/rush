@@ -31,6 +31,7 @@ var sessionResolutionTable = map[string]sessionResolution{
 	CmdUpdateMessagePart: {"sessionID", "work"}, CmdTogglePinMessage: {"sessionID", "work"},
 	CmdRerunMessage: {"sessionID", "work"}, CmdGetScopedModels: {"", "deny"},
 	CmdSetScopedModel: {"", "deny"}, CmdClearScopedModel: {"", "deny"},
+	CmdGetCustomRoles: {"", "deny"}, CmdSetCustomRole: {"", "deny"}, CmdRemoveCustomRole: {"", "deny"},
 	CmdGetSessionLiveWork: {"sessionID", "read"}, CmdGetSessionWakeSchedules: {"sessionID", "read"},
 	CmdGetSessionBatchWork: {"sessionID", "read"}, CmdBatchStatus: {"sessionID", "read"},
 	CmdBatchOutput: {"sessionID", "read"}, CmdBatchStop: {"sessionID", "deny"},

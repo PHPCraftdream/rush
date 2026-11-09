@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 func decodeCustomRoles(raw json.RawMessage) (map[string]CustomRole, error) {
@@ -31,7 +32,10 @@ func stripCustomRoleOverlays(configs [][]byte) ([][]byte, map[string]CustomRole,
 		if err := json.Unmarshal(raw, &root); err != nil {
 			return nil, nil, err
 		}
-		roleData, present := root["roles"]
+		roleData, present, err := customRolesDocumentField(root)
+		if err != nil {
+			return nil, nil, err
+		}
 		if !present {
 			stripped = append(stripped, raw)
 			continue
@@ -55,7 +59,7 @@ func stripCustomRoleOverlays(configs [][]byte) ([][]byte, map[string]CustomRole,
 
 func validateCustomRoleWrite(raw []byte, keys []string) error {
 	for _, key := range keys {
-		if settingsKeyFirstComponent(key) == "roles" {
+		if strings.EqualFold(settingsKeyFirstComponent(key), "roles") {
 			return validateCustomRolesDocument(raw)
 		}
 	}
@@ -67,9 +71,24 @@ func validateCustomRolesDocument(raw []byte) error {
 	if err := json.Unmarshal(raw, &root); err != nil {
 		return err
 	}
-	if roles, present := root["roles"]; present {
+	roles, present, err := customRolesDocumentField(root)
+	if err != nil {
+		return err
+	}
+	if present {
 		_, err := decodeCustomRoles(roles)
 		return err
 	}
 	return nil
+}
+
+// Reject aliases that encoding/json would accept outside our merge/signing seam.
+func customRolesDocumentField(root map[string]json.RawMessage) (json.RawMessage, bool, error) {
+	for field := range root {
+		if strings.EqualFold(field, "roles") && field != "roles" {
+			return nil, false, fmt.Errorf("custom roles must use the canonical roles key, not %q", field)
+		}
+	}
+	value, present := root["roles"]
+	return value, present, nil
 }

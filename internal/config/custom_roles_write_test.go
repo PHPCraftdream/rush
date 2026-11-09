@@ -73,6 +73,11 @@ func TestCustomRoleInvalidWritesPreserveDocumentAndSnapshot(t *testing.T) {
 			require.False(t, store.Config().Options.Debug)
 			require.NotNil(t, store.Config().Roles["reader"].Tools)
 			require.Empty(t, *store.Config().Roles["reader"].Tools)
+			err = store.SetConfigField(ScopeGlobal, "Roles", map[string]any{"unsigned": map[string]any{"provider": "p", "model": "m"}})
+			require.ErrorContains(t, err, "canonical roles key")
+			after, err = os.ReadFile(path)
+			require.NoError(t, err)
+			require.Equal(t, encoded, after, "case-folded aliases must not bypass write validation")
 
 			err = store.RemoveConfigField(ScopeGlobal, "roles.reader.provider")
 			require.ErrorContains(t, err, "requires provider and model")

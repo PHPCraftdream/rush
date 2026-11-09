@@ -13,18 +13,25 @@ func canonicalModelsAndRolesJSON(data []byte) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	rawRoles := gjson.GetBytes(data, "roles")
-	if !rawRoles.Exists() {
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(data, &document); err != nil {
+		return "", false, err
+	}
+	rawRoles, rolesPresent, err := customRolesDocumentField(document)
+	if err != nil {
+		return "", false, err
+	}
+	if !rolesPresent {
 		return models, modelsPresent, nil
 	}
-	roles, err := decodeCustomRoles(json.RawMessage(rawRoles.Raw))
+	roles, err := decodeCustomRoles(rawRoles)
 	if err != nil {
 		return "", false, err
 	}
 	if len(roles) == 0 {
 		return models, modelsPresent, nil
 	}
-	canonicalRoles, _, err := canonicalModelsJSON(rawRoles.Raw)
+	canonicalRoles, _, err := canonicalModelsJSON(string(rawRoles))
 	if err != nil {
 		return "", false, err
 	}
