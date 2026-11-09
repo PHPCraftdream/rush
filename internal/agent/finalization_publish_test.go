@@ -26,7 +26,7 @@ func (p *finalizationPublishProbe) UpdateTx(ctx context.Context, tx *sql.Tx, can
 	}
 	p.updates.Add(1)
 	return func() {
-		stored, readErr := p.Service.Get(ctx, candidate.ID)
+		stored, readErr := p.Get(ctx, candidate.ID)
 		p.sawCommitted.Store(readErr == nil && stored.IsFinished())
 		p.publications.Add(1)
 		publish()
