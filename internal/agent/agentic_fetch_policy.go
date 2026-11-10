@@ -30,7 +30,7 @@ func buildPrivateFetchTools(ctx context.Context, list []fantasy.AgentTool, autho
 	// in-process tools.
 	ingress := privateFetchIngressFor(ctx)
 	if ingress != nil {
-		return armPrivateFetchIngress(built, ingress, scope)
+		return armPrivateFetchIngress(ctx, built, ingress, scope)
 	}
 	invoke, _ := ctx.Value(privateFetchIngressKey{}).(pinnedInvoke)
 	if invoke == nil {
@@ -62,7 +62,7 @@ func privateFetchIngressFor(ctx context.Context) BatchWorkIngress {
 // CustomDisk at this arming point.
 // R12-H2 §1.2: the pin takes a Construction owner released in the call's
 // build-resource scope; a missing manager or scope fails closed.
-func armPrivateFetchIngress(built policyToolBuild, ingress BatchWorkIngress, scope *buildResourceScope) policyToolBuild {
+func armPrivateFetchIngress(ctx context.Context, built policyToolBuild, ingress BatchWorkIngress, scope *buildResourceScope) policyToolBuild {
 	registryID, err := ingress.PinLeafRegistry(built.leaves)
 	if err == nil {
 		// Record the pinned identity on the build so owners of the build can

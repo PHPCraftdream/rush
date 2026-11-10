@@ -25,6 +25,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // ProviderType mirrors catwalk.Type (charm.land/catwalk,

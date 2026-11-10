@@ -111,7 +111,7 @@ func (a *App) BatchCLISpecWithQuestionRoute(ctx context.Context, owner, messageI
 	if depthErr != nil {
 		return jobbatch.Spec{}, nil, depthErr
 	}
-	ctx, err := agent.WithAgentDepth(ctx, remainingDepth)
+	ctx, err = agent.WithAgentDepth(ctx, remainingDepth)
 	if err != nil {
 		return jobbatch.Spec{}, nil, err
 	}

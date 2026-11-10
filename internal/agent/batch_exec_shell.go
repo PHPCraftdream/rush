@@ -9,7 +9,6 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
 

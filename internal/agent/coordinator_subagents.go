@@ -48,8 +48,8 @@ type subAgentParams struct {
 	pctHandoff *pctDelegationHandoff // pct: admission-held child construction refs.
 }
 
-func loadChildRoleContract(ctx context.Context, sessions session.Service, childID string) (*session.RoleContract, error) {
-	store, ok := sessions.(session.SessionRoleContractStore)
+func loadChildRoleContract(ctx context.Context, sessions sessionpkg.Service, childID string) (*sessionpkg.RoleContract, error) {
+	store, ok := sessions.(sessionpkg.SessionRoleContractStore)
 	if !ok {
 		return nil, fmt.Errorf("%w: child role contract store unavailable", ErrAgentRoleUnconfigured)
 	}
@@ -122,7 +122,8 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	cfg, _ := c.cfg.Snapshot()
 	requestedRole := params.RequestedModelRole
 	var explicitRoleModel *delegationRoleModel
-	var childRoleContract *session.RoleContract
+	var childRoleContract *sessionpkg.RoleContract
+	var session sessionpkg.Session
 	resolveRole := func(childID string) error {
 		var err error
 		requestedRole, err = resolveDelegationRequestedRole(ctx, c.sessions, childID, requestedRole)
@@ -191,7 +192,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			return fantasy.NewTextErrorResponse(fmt.Sprintf("resume_session_id %q not found: %s%s", params.ResumeSessionID, getErr, c.batchHeldQuestionResumeHint(ctx, params.SessionID))), nil
 		}
 		if existing.ParentSessionID != params.SessionID {
-			return fantasy.NewTextErrorResponse(fmt.Sprintf("resume_session_id %q is not a child of the current session; refusing to resume a session that does not belong to this agent call%s", params.ResumeSessionID, c.batchHeldQuestionResumeHint(ctx, params.SessionID)), nil)
+			return fantasy.NewTextErrorResponse(fmt.Sprintf("resume_session_id %q is not a child of the current session; refusing to resume a session that does not belong to this agent call%s", params.ResumeSessionID, c.batchHeldQuestionResumeHint(ctx, params.SessionID))), nil
 		}
 		if refusal := c.batchHeldQuestionResumeRefusal(ctx, params.SessionID, existing.ID); refusal != "" {
 			return fantasy.NewTextErrorResponse(refusal), nil
