@@ -31,8 +31,10 @@ func TestBatchInstallEnforcesPersistedFinalizationAuthority(t *testing.T) {
 			}
 			err = install.CommitHook(ctx, jobbatch.Transition{
 				Sequence: 1,
-				Event: jobbatch.Event{Type: jobbatch.EventSubmit, Root: "r", Ref: "ref",
-					Spec: jobbatch.OneItem(jobbatch.TaskSpec{Kind: "controlled"})},
+				Event: jobbatch.Event{
+					Type: jobbatch.EventSubmit, Root: "r", Ref: "ref",
+					Spec: jobbatch.OneItem(jobbatch.TaskSpec{Kind: "controlled"}),
+				},
 			})
 			var nodes int64
 			readErr := conn.QueryRowContext(ctx, `SELECT count(*) FROM batch_nodes`).Scan(&nodes)
