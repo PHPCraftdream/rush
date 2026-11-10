@@ -20,30 +20,36 @@ func TestRoleToolGuardEnforcesCapturedAndCurrentCeilings(t *testing.T) {
 	noTools := []string{}
 	empty := &session.RoleContract{Version: session.RoleContractVersion, Tools: &noTools}
 	zeroGuard := roleGuardTool{AgentTool: newProbe("probe"), contracts: []*session.RoleContract{empty}}
-	resp, err := zeroGuard.Run(context.Background(), fantasy.ToolCall{ID: "zero-forged", Name: "forged"})
+	resp, err := zeroGuard.Run(context.Background(), fantasy.ToolCall{ID: "zero-forged", Name: "forged", Input: `{}`})
 	require.NoError(t, err)
 	require.True(t, resp.IsError)
-	resp, err = zeroGuard.Run(context.Background(), fantasy.ToolCall{ID: "zero-canonical", Name: "probe"})
+	require.Contains(t, resp.Content, ErrRoleToolDenied.Error())
+	resp, err = zeroGuard.Run(context.Background(), fantasy.ToolCall{ID: "zero-canonical", Name: "probe", Input: `{}`})
 	require.NoError(t, err)
 	require.True(t, resp.IsError, "an explicit empty list denies the canonical tool too")
+	require.Contains(t, resp.Content, ErrRoleToolDenied.Error())
 	require.Zero(t, runs, "a denied forged or zero-tools dispatch must not reach the inner tool")
 
 	capturedTools := []string{"probe"}
 	captured := &session.RoleContract{Version: session.RoleContractVersion, Tools: &capturedTools}
 	capturedGuard := roleGuardTool{AgentTool: newProbe("write"), contracts: []*session.RoleContract{captured}}
-	resp, err = capturedGuard.Run(context.Background(), fantasy.ToolCall{ID: "captured", Name: "write"})
+	resp, err = capturedGuard.Run(context.Background(), fantasy.ToolCall{ID: "captured", Name: "write", Input: `{}`})
 	require.NoError(t, err)
 	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, ErrRoleToolDenied.Error())
 	require.Zero(t, runs, "a captured cap still denies after invocation context is lost")
 
 	currentOptions := &CallOptions{RoleContract: captured}
 	currentScope := EnsureCallBuildScope(currentOptions)
 	defer currentScope.close()
 	currentCtx := WithCallOptions(context.Background(), currentOptions)
-	currentGuard := roleGuardTool{AgentTool: newProbe("write"), contracts: []*session.RoleContract{captured}}
-	resp, err = currentGuard.Run(currentCtx, fantasy.ToolCall{ID: "current", Name: "write"})
+	widerTools := []string{"probe", "write"}
+	wider := &session.RoleContract{Version: session.RoleContractVersion, Tools: &widerTools}
+	currentGuard := roleGuardTool{AgentTool: newProbe("write"), contracts: []*session.RoleContract{wider}}
+	resp, err = currentGuard.Run(currentCtx, fantasy.ToolCall{ID: "current", Name: "write", Input: `{}`})
 	require.NoError(t, err)
 	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, ErrRoleToolDenied.Error())
 	require.Zero(t, runs, "the current call ceiling denies a mutable shared-set tool")
 
 	shared := []fantasy.AgentTool{newProbe("probe"), newProbe("write")}
@@ -55,8 +61,9 @@ func TestRoleToolGuardEnforcesCapturedAndCurrentCeilings(t *testing.T) {
 	require.Len(t, pruned, 1)
 	require.Equal(t, "probe", pruned[0].Info().Name)
 	require.Len(t, shared, 2, "filtering a shared wider tool generation must not mutate its source")
-	resp, err = pruned[0].Run(context.Background(), fantasy.ToolCall{ID: "allowed", Name: "probe"})
+	resp, err = pruned[0].Run(context.Background(), fantasy.ToolCall{ID: "allowed", Name: "probe", Input: `{}`})
 	require.NoError(t, err)
-	require.False(t, resp.IsError)
+	require.False(t, resp.IsError, "%s", resp.Content)
+	require.Equal(t, "ran", resp.Content)
 	require.Equal(t, 1, runs, "an allowed dispatch remains functional")
 }
