@@ -110,7 +110,7 @@ func TestResponsesWSManagerTwentyMinuteBoundaryAndActiveLease(t *testing.T) {
 }
 
 func TestResponsesWSManagerCredentialNetworkAndConversationIsolation(t *testing.T) {
-	m, options, handshakes, _ := responsesWSManagerFixture(t, 4)
+	m, options, handshakes, requests := responsesWSManagerFixture(t, 4)
 	first, err := m.Acquire(t.Context(), options, 0)
 	require.NoError(t, err)
 	completeResponsesWSLease(t, first)
@@ -120,7 +120,9 @@ func TestResponsesWSManagerCredentialNetworkAndConversationIsolation(t *testing.
 	require.NoError(t, err)
 	require.NotSame(t, first.Conn(), rotated.Conn())
 	completeResponsesWSLease(t, rotated)
-	options.Network = config.NetworkConfig{Proxy: config.ProxyNone}
+	target := strings.TrimPrefix(options.Endpoint, "ws://")
+	proxy := newResponsesWSTestProxy(t, map[string]string{target: target})
+	options.Network = ResolveNetworkConfig(nil, &config.NetworkConfig{Proxy: "http://" + proxy.addr()})
 	network, err := m.Acquire(t.Context(), options, 0)
 	require.NoError(t, err)
 	require.NotSame(t, rotated.Conn(), network.Conn())
@@ -134,6 +136,24 @@ func TestResponsesWSManagerCredentialNetworkAndConversationIsolation(t *testing.
 	require.False(t, child.Conn().Reusable())
 	require.True(t, network.Conn().Reusable())
 	require.EqualValues(t, 4, handshakes.Load())
+	require.EqualValues(t, 4, requests.Load())
+	require.Equal(t, []string{target, target}, proxy.authorities(), "both isolated network-policy connections must traverse the real proxy")
+}
+
+func TestResponsesWSManagerRejectsUnresolvedProxyNoneBeforeDial(t *testing.T) {
+	m, options, handshakes, requests := responsesWSManagerFixture(t, 1)
+	options.Network = config.NetworkConfig{Proxy: config.ProxyNone}
+	_, err := m.Acquire(t.Context(), options, 0)
+	require.Error(t, err)
+	require.Zero(t, handshakes.Load())
+	require.Zero(t, requests.Load())
+	options.Network = ResolveNetworkConfig(nil, &options.Network)
+	require.Empty(t, options.Network.Proxy)
+	lease, err := m.Acquire(t.Context(), options, 0)
+	require.NoError(t, err)
+	completeResponsesWSLease(t, lease)
+	require.EqualValues(t, 1, handshakes.Load())
+	require.EqualValues(t, 1, requests.Load())
 }
 
 func TestResponsesWSManagerCapabilityTTLDoesNotCacheAuthRateOrServerErrors(t *testing.T) {
