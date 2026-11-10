@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
+	"maps"
 	"sync/atomic"
 	"time"
 
@@ -303,23 +303,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 
 	slog.Info("SessionAgent.Run: starting", "sessionID", call.SessionID, "model", smartModel.ModelCfg.Model, "promptLen", len(systemPrompt))
 
-	var instructions strings.Builder
-	for name, server := range mcp.GetStates() { // deliberately on the package wrappers: read-only getters; the IsConfigured filter below is the isolation mechanism
-		if !mcp.IsConfigured(a.config, name) {
-			continue
-		}
-		if server.State != mcp.StateConnected {
-			continue
-		}
-		if s := server.Client.InitializeResult().Instructions; s != "" {
-			instructions.WriteString(s)
-			instructions.WriteString("\n\n")
-		}
-	}
-
-	if s := instructions.String(); s != "" {
-		systemPrompt += "\n\n<mcp-instructions>\n" + s + "\n</mcp-instructions>"
-	}
+	systemPrompt = withMCPInstructions(systemPrompt, a.config, maps.All(mcp.GetStates()))
 
 	// Add Anthropic caching to the last tool. Via a per-turn wrapper, NOT
 	// SetProviderOptions on the shared tool object: a.tools' ELEMENTS are one
