@@ -207,51 +207,42 @@ func TestRunSubAgent_401RebuildCarriesFreshProviderPair(t *testing.T) {
 	// calls t.Setenv, which Go forbids in a parallel test.
 	env := testEnv(t)
 	coord := newWorkerToolTestCoordinator(t, env, false)
-	// retryAfterUnauthorized only attempts a refresh when EITHER OAuthToken
-	// is set OR APIKeyTemplate contains "$" (coordinator_providers_auth.go)
-	// -- without one of those, the 401 propagates as a terminal failure and
-	// the rebuild this test exists to prove never runs. OAuthToken is used
-	// here (not APIKeyTemplate): the real refreshApiKeyTemplate helper
-	// re-publishes its OWN captured (pre-401, stale) providerCfg wholesale
-	// with just the API key swapped in, which would clobber the "concurrent
-	// reload" this test publishes moments earlier inside the mock's
-	// runFunc -- a real interaction of an UNRELATED existing mechanism, not
-	// what this test is trying to pin. coord.refreshOAuth2TokenFn (the same
-	// test seam coordinator_c6_auth_retry_test.go's own tests use) bypasses
-	// that helper's config republish entirely, so only the simulated reload
-	// touches provider config.
-	coord.refreshOAuth2TokenFn = func(context.Context, config.ProviderConfig) error { return nil }
-	// ExpiresAt must be in the FUTURE: an expired token makes runSubAgent's
-	// own proactive pre-check (OAuthToken != nil && IsExpired()) rebuild the
-	// pinned model BEFORE the first run() call, so the mock's runFunc would
-	// never see the "old-client" identity and the 401/rebuild path this
-	// test targets would never fire at all.
+	var calls []SessionAgentCall
+	preflightRefreshes, retryRefreshes := 0, 0
+	// Preflight rebuilds even an unexpired token's client. Keep it valid and
+	// distinguish it from the refresh after the first request returns 401.
+	coord.refreshOAuth2TokenFn = func(context.Context, config.ProviderConfig) error {
+		if len(calls) == 0 {
+			preflightRefreshes++
+		} else {
+			retryRefreshes++
+		}
+		return nil
+	}
 	c6ConfigureProvider(t, coord, "smart-provider", "pinned-model", "old-key",
 		&oauth.Token{AccessToken: "old-token", ExpiresAt: time.Now().Add(time.Hour).Unix()})
 	smartProviderCfg, ok := coord.cfg.Config().Providers.Get("smart-provider")
 	require.True(t, ok)
 	smartProviderCfg.FlatRate = true
+	smartProviderCfg.ProviderOptions = map[string]any{"user": "gen0"}
 	coord.cfg.SetProviderRuntimeConfig("smart-provider", smartProviderCfg)
 	oldModel := c6BuildModel(t, coord, true)
 	require.True(t, oldModel.FlatRate, "precondition: the initial model carries generation 0's FlatRate=true pairing")
-	oldModel.Model = &c6IdentityModel{tag: "old-client"}
 	parent, err := env.sessions.Create(t.Context(), "401 rebuild fresh pair")
 	require.NoError(t, err)
 
-	var calls []SessionAgentCall
 	agent := &mockSessionAgent{model: oldModel}
 	agent.runFunc = func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
 		calls = append(calls, call)
-		if _, old := call.SmartModel.Model.(*c6IdentityModel); old {
-			// Simulate the reload landing while the stale client is still
-			// running: a fresh generation for the SAME provider id, which
-			// is exactly what the rebuild's lookup must find as one pair.
+		if len(calls) == 1 {
+			// Reload during the first request, after the preflight rebuild.
 			coord.cfg.SetProviderRuntimeConfig("smart-provider", config.ProviderConfig{
-				ID:       "smart-provider",
-				Type:     openai.Name,
-				APIKey:   "new-key",
-				FlatRate: false,
-				Models:   []catwalk.Model{{ID: "pinned-model", DefaultMaxTokens: 321}},
+				ID:              "smart-provider",
+				Type:            openai.Name,
+				APIKey:          "new-key",
+				FlatRate:        false,
+				Models:          []catwalk.Model{{ID: "pinned-model", DefaultMaxTokens: 321}},
+				ProviderOptions: map[string]any{"user": "gen1"},
 			})
 			return nil, c6Unauthorized()
 		}
@@ -270,8 +261,15 @@ func TestRunSubAgent_401RebuildCarriesFreshProviderPair(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, response.IsError, "response content: %+v", response.Content)
 	require.Len(t, calls, 2)
+	require.Equal(t, 1, preflightRefreshes)
+	require.Equal(t, 1, retryRefreshes)
+	require.NotNil(t, calls[0].SmartModel)
+	require.True(t, calls[0].SmartModel.FlatRate, "preflight must retain the initial provider generation")
+	require.Equal(t, "gen0", providerOptionsUser(t, calls[0]))
 	require.NotNil(t, calls[1].SmartModel)
+	require.NotSame(t, calls[0].SmartModel.Model, calls[1].SmartModel.Model, "401 retry must rebuild the pinned client")
 	require.False(t, calls[1].SmartModel.FlatRate, "the rebuilt pinned model must carry the fresh generation's FlatRate, not the stale one")
+	require.Equal(t, "gen1", providerOptionsUser(t, calls[1]), "provider options must advance with the rebuilt model, not retain the stale provider config")
 	require.Equal(t, "smart-provider", calls[1].SmartModel.ModelCfg.Provider, "the pinned model config must survive the rebuild")
 	require.Equal(t, "pinned-model", calls[1].SmartModel.ModelCfg.Model)
 }
