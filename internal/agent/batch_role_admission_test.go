@@ -71,7 +71,7 @@ func TestBatchRoleAdmissionRequiresValidRoleInputBeforeResources(t *testing.T) {
 }
 
 func batchCustomRoleTask(name string) *jobbatch.TaskSpec {
-	return batchCLITaskSpec(AgentToolName, json.RawMessage(`{"role":`+mustJSON(name)+`,"prompt":"work"}`))
+	return batchCLITaskSpec(AgentToolName, json.RawMessage(`{"role":`+batchRoleJSONString(name)+`,"prompt":"work"}`))
 }
 
 func batchCLITaskSpec(tool string, input json.RawMessage) *jobbatch.TaskSpec {
@@ -86,4 +86,4 @@ func batchPayloadAt(t *testing.T, spec jobbatch.Spec) batchLeafPayload {
 	return p
 }
 
-func mustJSON(value string) string { raw, _ := json.Marshal(value); return string(raw) }
+func batchRoleJSONString(value string) string { raw, _ := json.Marshal(value); return string(raw) }
