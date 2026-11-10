@@ -233,6 +233,29 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		return fantasy.ToolResponse{}, fmt.Errorf("bind child model role: %w", err)
 	}
 
+	// Session selection has been validated; bind this exact ID, including
+	// resume. The bind persists the batch delegation child link BEFORE the
+	// child runs: a bind failure is fatal to this launch (the child must
+	// not start), so the error propagates and NoChildSelected marks the
+	// node through the defer above.
+	if lifecycleBound && lifecycle.BindChildSession != nil {
+		if err := lifecycle.BindChildSession(ctx, session.ID); err != nil {
+			return fantasy.ToolResponse{}, fmt.Errorf("bind batch child session: %w", err)
+		}
+	}
+	childSelected = true
+
+	// A delegation starting on this child lifts any suspension of its
+	// automatic turns (a Stop, or a question it asked earlier and the parent
+	// now answers by resuming it): from here it is driven by this delegation.
+	c.resetConsecutiveResume(session.ID)
+
+	// A resumed child starts with a stale `sessions cancel` request spent: the
+	// delegation is a fresh, deliberate turn (R8A-2). A new child has no flag.
+	if params.ResumeSessionID != "" {
+		clearCancelRequest(ctx, c.sessions, session.ID)
+	}
+
 	// Propagate the PARENT session's auto-approve status to this child.
 	//
 	// A sub-agent runs under its own child session id

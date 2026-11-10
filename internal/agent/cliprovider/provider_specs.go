@@ -314,6 +314,7 @@ var All = append([]CLISpec{
 		BuildArgs:               qwenArgs(),
 		NewPartParser:           claudePartParser,
 		ParseUsageLine:          claudeParseUsageLine,
+		AlwaysStdin:             true,
 		QwenMCPIntegration:      true,
 		SupportsRestrictedTools: true,
 	},

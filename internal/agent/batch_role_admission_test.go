@@ -55,17 +55,22 @@ func TestBatchRoleAdmissionRejectsUnknownInvalidAndForgedSnapshots(t *testing.T)
 			raw, err := json.Marshal(batchLeafPayload{Tool: AgentToolName, Input: json.RawMessage(tc.input), SelectedRoleContract: tc.contract})
 			require.NoError(t, err)
 			_, err = admitBatchRoleContracts(cfg, nil, jobbatch.Spec{Task: &jobbatch.TaskSpec{Payload: raw}})
-			require.Error(t, err)
+			switch tc.name {
+			case "unknown", "invalid builtin slot":
+				require.ErrorIs(t, err, ErrAgentRoleUnconfigured)
+			case "forged snapshot":
+				require.ErrorIs(t, err, ErrAgentRoleMismatch)
+			}
 		})
 	}
 }
 
 func TestBatchRoleAdmissionRequiresValidRoleInputBeforeResources(t *testing.T) {
-	for _, input := range []string{`{"role":null}`, `{"role":""}`, `{"role":"unknown"}`, `{"role":7}`} {
+	for _, input := range []string{`{"role":null}`, `{"role":""}`, `{"role":"custom/name"}`, `{"role":7}`} {
 		t.Run(input, func(t *testing.T) {
 			spec := jobbatch.Spec{Batch: &jobbatch.BatchSpec{Items: []jobbatch.Spec{{Task: batchCLITaskSpec(AgentToolName, json.RawMessage(input))}}}}
 			_, err := AdmitBatchRoleContracts(context.Background(), nil, spec)
-			require.Error(t, err)
+			require.ErrorIs(t, err, ErrAgentRoleInvalid)
 		})
 	}
 }

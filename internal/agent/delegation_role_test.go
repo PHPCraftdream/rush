@@ -40,13 +40,28 @@ func TestAgentRequestedRoleOmittedPreservesLegacy(t *testing.T) {
 
 func TestAgentRequestedRoleRejectsInvalidExplicitValues(t *testing.T) {
 	t.Parallel()
-	for _, value := range []string{`null`, `""`, `"SMART"`, `"auto"`, `"unknown"`, `7`, `true`, `{}`, `[]`} {
+	for _, value := range []string{`null`, `""`, `"SMART"`, `"smart/child"`, `"smart\\child"`, `" analyst"`, `7`, `true`, `{}`, `[]`} {
 		t.Run(value, func(t *testing.T) {
 			t.Parallel()
 			raw := []byte(`{"prompt":"p","role":` + value + `}`)
 			var params AgentParams
 			require.ErrorIs(t, json.Unmarshal(raw, &params), ErrAgentRoleInvalid)
 			require.ErrorIs(t, validateAgentRoleInput(raw), ErrAgentRoleInvalid)
+		})
+	}
+}
+
+func TestAgentRequestedRoleAcceptsValidCustomNamesAsSyntax(t *testing.T) {
+	t.Parallel()
+	for _, name := range []RequestedModelRole{"auto", "unknown", "Custom Role"} {
+		t.Run(string(name), func(t *testing.T) {
+			t.Parallel()
+			raw, err := json.Marshal(map[string]any{"prompt": "p", "role": name})
+			require.NoError(t, err)
+			var params AgentParams
+			require.NoError(t, json.Unmarshal(raw, &params))
+			require.Equal(t, name, params.Role)
+			require.NoError(t, validateAgentRoleInput(raw))
 		})
 	}
 }
