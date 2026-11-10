@@ -100,9 +100,10 @@ func TestChildBindAdmitsOwnerAndChildBeforeWriter(t *testing.T) {
 			env := &commitHookEnv{t: t, store: store, conn: conn, ctx: ctx}
 			finalizationCommitFailureDiagnostics(t, env, owner.identity, child.identity)
 			authorities := []*AgentFinalizationAuthority{owner, child}
-			if outcome == "missing_child" {
+			switch outcome {
+			case "missing_child":
 				authorities = []*AgentFinalizationAuthority{owner}
-			} else if outcome == "missing_owner" {
+			case "missing_owner":
 				authorities = []*AgentFinalizationAuthority{child}
 			}
 			ctx, err := WithAgentFinalizationContext(ctx, authorities...)
@@ -111,11 +112,12 @@ func TestChildBindAdmitsOwnerAndChildBeforeWriter(t *testing.T) {
 				WHEN (SELECT count(*) FROM session_agent_finalization_tickets WHERE released=0)<>2
 				BEGIN SELECT RAISE(ABORT, 'child bind missing tickets'); END`)
 			require.NoError(t, err)
-			if outcome == "rollback" {
+			switch outcome {
+			case "rollback":
 				_, err = conn.ExecContext(ctx, `CREATE TRIGGER child_bind_writer_abort BEFORE UPDATE OF child_session_id ON batch_nodes
 					BEGIN SELECT RAISE(ABORT, 'child bind writer rollback'); END`)
 				require.NoError(t, err)
-			} else if outcome == "cancelled" {
+			case "cancelled":
 				_, err = conn.ExecContext(ctx, `UPDATE sessions SET cancel_requested=1 WHERE id='owner-child'`)
 				require.NoError(t, err)
 			}
