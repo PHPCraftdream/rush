@@ -46,33 +46,34 @@ func finalizationCommitFailureDiagnostics(t *testing.T, env *commitHookEnv, iden
 			`SELECT host_id, runner_id, sequence, event_type FROM batch_runner_checkpoints ORDER BY host_id, runner_id`,
 		}
 		for _, query := range queries {
-			rows, err := env.conn.QueryContext(ctx, query)
-			if err != nil {
-				t.Logf("finalization diagnostic query=%q error=%v", query, err)
-				continue
-			}
-			columns, err := rows.Columns()
-			if err != nil {
-				t.Logf("finalization diagnostic columns error=%v", err)
-				_ = rows.Close()
-				continue
-			}
-			for rows.Next() {
-				values := make([]any, len(columns))
-				destinations := make([]any, len(columns))
-				for i := range values {
-					destinations[i] = &values[i]
+			func() {
+				rows, err := env.conn.QueryContext(ctx, query)
+				if err != nil {
+					t.Logf("finalization diagnostic query=%q error=%v", query, err)
+					return
 				}
-				if err := rows.Scan(destinations...); err != nil {
-					t.Logf("finalization diagnostic scan error=%v", err)
-					break
+				defer rows.Close()
+				columns, err := rows.Columns()
+				if err != nil {
+					t.Logf("finalization diagnostic columns error=%v", err)
+					return
 				}
-				t.Logf("finalization diagnostic row=%v", values)
-			}
-			if err := rows.Err(); err != nil {
-				t.Logf("finalization diagnostic rows error=%v", err)
-			}
-			_ = rows.Close()
+				for rows.Next() {
+					values := make([]any, len(columns))
+					destinations := make([]any, len(columns))
+					for i := range values {
+						destinations[i] = &values[i]
+					}
+					if err := rows.Scan(destinations...); err != nil {
+						t.Logf("finalization diagnostic scan error=%v", err)
+						break
+					}
+					t.Logf("finalization diagnostic row=%v", values)
+				}
+				if err := rows.Err(); err != nil {
+					t.Logf("finalization diagnostic rows error=%v", err)
+				}
+			}()
 		}
 	})
 }

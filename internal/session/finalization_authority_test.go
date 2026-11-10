@@ -10,8 +10,7 @@ import (
 
 func TestWithAgentFinalizationAuthoritiesRejectsMalformedAndConflictingSets(t *testing.T) {
 	env := newCommitHookEnv(t)
-	service := finalizationCommitService(env)
-	api := service.(AgentFinalizationService)
+	api := finalizationCommitService(env)
 	identity := AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "call", Generation: 1}
 	first, err := api.BindAgentFinalization(env.ctx, identity)
 	require.NoError(t, err)
