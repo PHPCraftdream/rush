@@ -400,11 +400,11 @@ func newResponsesWSTestConn(wire responsesWSWire, frameLimit, exchangeLimit int6
 }
 
 type responsesWSTestProxy struct {
-	listener   net.Listener
-	mu         sync.Mutex
-	routes     map[string]string
-	authority  []string
-	authValues []string
+	listener     net.Listener
+	mu           sync.Mutex
+	routes       map[string]string
+	authority    []string
+	recordedAuth []string
 }
 
 func newResponsesWSTestProxy(t *testing.T, routes map[string]string) *responsesWSTestProxy {
@@ -428,7 +428,7 @@ func (p *responsesWSTestProxy) authorities() []string {
 func (p *responsesWSTestProxy) authValues() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return append([]string(nil), p.authValues...)
+	return append([]string(nil), p.recordedAuth...)
 }
 
 func (p *responsesWSTestProxy) serve() {
@@ -454,7 +454,7 @@ func (p *responsesWSTestProxy) handle(client net.Conn) {
 	}
 	p.mu.Lock()
 	p.authority = append(p.authority, request.Host)
-	p.authValues = append(p.authValues, request.Header.Get("Proxy-Authorization"))
+	p.recordedAuth = append(p.recordedAuth, request.Header.Get("Proxy-Authorization"))
 	target := p.routes[request.Host]
 	p.mu.Unlock()
 	if target == "" {
