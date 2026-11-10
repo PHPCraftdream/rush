@@ -11,11 +11,19 @@ import (
 )
 
 func TestAPITaskRequestedRoleReachesDurableChildContract(t *testing.T) {
-	for _, role := range []string{"smart", "fast"} {
-		t.Run(role, func(t *testing.T) {
+	for _, role := range []string{"smart", "fast", ""} {
+		name := role
+		if name == "" {
+			name = "omitted legacy default"
+		}
+		t.Run(name, func(t *testing.T) {
 			f := newBatchFixture(t, batchTextProvider("role result"))
 			token := f.token(t, "role", []string{"read", "run"}, "ask", config.APITokenBinding{})
-			accepted := f.do(t, token, http.MethodPost, "/tasks", fmt.Sprintf(`{"prompt":"p","role":%q}`, role)).accepted(t)
+			body := `{"prompt":"p"}`
+			if role != "" {
+				body = fmt.Sprintf(`{"prompt":"p","role":%q}`, role)
+			}
+			accepted := f.do(t, token, http.MethodPost, "/tasks", body).accepted(t)
 			result := f.waitBatchDone(t, token, accepted.RootID)
 			require.Equal(t, "completed", result.State)
 			store, supported := f.app.Sessions.(session.AgentModelRoleStore)
@@ -31,7 +39,7 @@ func TestAPITaskRequestedRoleReachesDurableChildContract(t *testing.T) {
 				require.Equal(t, role, saved)
 				foundChild = true
 			}
-			require.True(t, foundChild, "the explicit API role must reach the actual child, not only the request schema")
+			require.True(t, foundChild, "explicit and omitted API role choices must reach the actual child, not only the request schema")
 		})
 	}
 }

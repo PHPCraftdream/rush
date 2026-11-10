@@ -1,8 +1,13 @@
 package agent
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/agent/prompt"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -60,6 +65,85 @@ func TestCustomRoleModelResolveUsesPinnedConfigWithoutChangingAuthority(t *testi
 			require.False(t, RoleContractAllowsTool(contract, "write"))
 		})
 	}
+}
+
+func TestCustomRoleDiskRefreshPinsResolvedModelPromptAndTools(t *testing.T) {
+	env := testEnv(t)
+	coord := newToolPinningCoordinator(t, env, false)
+	var err error
+	coord.prompt, err = prompt.NewPrompt("role acceptance", `{{.Provider}}|{{.Model}}|{{with index .Config.Roles "analyst"}}{{.Model}}{{end}}`, prompt.WithWorkingDir(env.workingDir))
+	require.NoError(t, err)
+	provider, ok := coord.cfg.Config().Providers.Get("smart-provider")
+	require.True(t, ok)
+	provider.APIKey = "role-acceptance-fixture-key"
+	provider.Models = []catwalk.Model{{ID: "before-refresh"}, {ID: "after-refresh"}}
+	model := config.SelectedModel{Provider: provider.ID, Model: "before-refresh"}
+	roleTools := []string{"view"}
+	roles := map[string]config.CustomRole{"analyst": {SelectedModel: model, Tools: &roleTools}}
+	document := map[string]any{
+		"providers": map[string]config.ProviderConfig{provider.ID: provider},
+		"models":    map[string]config.SelectedModel{"smart": model, "fast": model},
+		"roles":     roles,
+	}
+	writeConfig := func() {
+		t.Helper()
+		raw, err := json.Marshal(document)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(env.workingDir, "rush.json"), raw, 0o600))
+	}
+	writeConfig()
+	require.NoError(t, coord.cfg.ReloadFromDisk(t.Context()))
+	pinned, generation := coord.cfg.Snapshot()
+	require.NotNil(t, pinned.GetModel(provider.ID, "before-refresh"))
+	require.NotNil(t, pinned.GetModel(provider.ID, "after-refresh"))
+	require.NoError(t, config.ValidateCustomRoleSelection(pinned, pinned.Roles["analyst"]))
+	contract, err := ResolveRoleContract(pinned, "analyst", nil)
+	require.NoError(t, err)
+	ctx := WithCallOptions(t.Context(), &CallOptions{RoleContract: contract, DisableSubAgents: true})
+	t.Cleanup(callBuildScopeFrom(ctx).close)
+	before, err := coord.resolveSessionModels(ctx, "session")
+	require.NoError(t, err)
+	require.Equal(t, "before-refresh", before.smart.ModelCfg.Model)
+	require.Equal(t, "smart-provider|before-refresh|before-refresh", before.systemPrompt)
+	require.ElementsMatch(t, []string{"view"}, pinnedToolNames(before.tools))
+
+	changed := roles["analyst"]
+	changed.Model = "after-refresh"
+	changed.Tools = nil
+	roles["analyst"] = changed
+	writeConfig()
+	// Drive the production five-second poller's tick without wall-clock waiting.
+	result, err := coord.cfg.PollConfigDiskOnce(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, result.ReloadErr)
+	require.True(t, result.Reloaded)
+	current, nextGeneration := coord.cfg.Snapshot()
+	require.Greater(t, nextGeneration, generation)
+	require.Equal(t, "before-refresh", pinned.Roles["analyst"].Model, "publication must not mutate the request's config snapshot")
+	require.Equal(t, "after-refresh", current.Roles["analyst"].Model)
+	require.NotNil(t, current.GetModel(provider.ID, "after-refresh"))
+	require.NoError(t, config.ValidateCustomRoleSelection(current, current.Roles["analyst"]))
+	after, err := coord.resolveSessionModels(ctx, "session")
+	require.NoError(t, err)
+	require.Equal(t, "after-refresh", after.smart.ModelCfg.Model)
+	require.Equal(t, "smart-provider|after-refresh|after-refresh", after.systemPrompt)
+	require.ElementsMatch(t, []string{"view"}, pinnedToolNames(after.tools), "removing the live tools field cannot widen durable admission")
+	require.Equal(t, "before-refresh", before.smart.ModelCfg.Model)
+	require.Equal(t, "smart-provider|before-refresh|before-refresh", before.systemPrompt)
+
+	// Finish a build pinned before publication while the store already exposes new config.
+	finished, err := coord.finishCustomRoleResolveSnapshot(ctx, pinned, before.smart, model, hbSourceSlotLive, false)
+	require.NoError(t, err)
+	require.Equal(t, "smart-provider|before-refresh|before-refresh", finished.systemPrompt)
+	require.True(t, contract.Equal(callOptionsFrom(ctx).RoleContract))
+	delete(roles, "analyst")
+	writeConfig()
+	result, err = coord.cfg.PollConfigDiskOnce(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, result.ReloadErr)
+	require.True(t, result.Reloaded)
+	_, err = coord.resolveSessionModels(ctx, "session")
+	require.ErrorIs(t, err, ErrAgentRoleUnconfigured)
 }
 
 func TestCustomRoleNextModelResolveFailsClosed(t *testing.T) {

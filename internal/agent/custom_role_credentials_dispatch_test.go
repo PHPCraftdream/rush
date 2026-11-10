@@ -123,6 +123,31 @@ func TestCustomRoleCredentialsDispatchUsesExactTenantSlotWithoutChangingPolicy(t
 	require.Same(t, creds, selected.Credentials)
 	require.Equal(t, config.SelectedModelTypeSmart, opts.ModelRole)
 	require.Equal(t, []string{"view"}, *opts.RoleContract.Tools)
+
+	parentDepth, err := MaxAgentDepthFrom(ctx)
+	require.NoError(t, err)
+	var dispatched *SessionAgentCall
+	child := newMockAgent(customRoleDispatchTenant, 213, func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+		dispatched = &call
+		return agentResultWithText("tenant custom-role child"), nil
+	})
+	response, err := coord.runSubAgent(ctx, subAgentParams{
+		Agent: child, SessionID: parent, AgentMessageID: "tenant-role-message", ToolCallID: "tenant-role-call",
+		Prompt: "use the exact tenant role", SessionTitle: "tenant custom role", RequestedModelRole: customRoleDispatchName,
+	})
+	require.NoError(t, err)
+	require.False(t, response.IsError, "%s", response.Content)
+	require.NotNil(t, dispatched)
+	require.Equal(t, customRoleDispatchTenant, dispatched.SmartModel.ModelCfg.Provider)
+	require.Equal(t, customRoleDispatchTenantModel, dispatched.SmartModel.ModelCfg.Model)
+	require.Equal(t, creds, dispatched.Credentials)
+	require.Equal(t, RequestedModelRole(customRoleDispatchName), dispatched.RequestedModelRole)
+	require.Empty(t, dispatched.CallOptions.ModelRole, "a custom tenant model must not activate a builtin child policy role")
+	require.True(t, dispatched.CallOptions.AgentDepthSet)
+	require.Equal(t, parentDepth-1, dispatched.CallOptions.MaxAgentDepth, "choosing a custom tenant model cannot reset delegation depth")
+	require.True(t, contract.Equal(dispatched.RoleContract))
+	require.True(t, contract.Equal(dispatched.CallOptions.RoleContract))
+	require.False(t, RoleContractAllowsTool(dispatched.RoleContract, "write"))
 }
 
 func TestCustomRoleCredentialsMissingExactSlotFailsBeforeDelegationEffects(t *testing.T) {
