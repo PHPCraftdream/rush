@@ -400,6 +400,7 @@ func newResponsesWSTestConn(wire responsesWSWire, frameLimit, exchangeLimit int6
 }
 
 type responsesWSTestProxy struct {
+	ctx          context.Context
 	listener     net.Listener
 	mu           sync.Mutex
 	routes       map[string]string
@@ -409,9 +410,9 @@ type responsesWSTestProxy struct {
 
 func newResponsesWSTestProxy(t *testing.T, routes map[string]string) *responsesWSTestProxy {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	proxy := &responsesWSTestProxy{listener: listener, routes: routes}
+	proxy := &responsesWSTestProxy{ctx: t.Context(), listener: listener, routes: routes}
 	t.Cleanup(func() { _ = listener.Close() })
 	go proxy.serve()
 	return proxy
@@ -461,7 +462,7 @@ func (p *responsesWSTestProxy) handle(client net.Conn) {
 		_, _ = io.WriteString(client, "HTTP/1.1 502 Bad Gateway\r\n\r\n")
 		return
 	}
-	upstream, err := net.DialTimeout("tcp", target, time.Second)
+	upstream, err := (&net.Dialer{Timeout: time.Second}).DialContext(p.ctx, "tcp", target)
 	if err != nil {
 		_, _ = io.WriteString(client, "HTTP/1.1 502 Bad Gateway\r\n\r\n")
 		return
