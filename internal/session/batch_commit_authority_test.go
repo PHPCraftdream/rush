@@ -245,11 +245,12 @@ func TestBatchCommitAuthoritySetIsRunnerWideCeilingAndOrdersOwnerTickets(t *test
 		require.Equal(t, []string{"owner"}, owners)
 		return func() error { return nil }, nil
 	}
-	require.NoError(t, NewBatchCommitHook(env.store, identity)(env.ctx, admissionSubmit("r", "call-r", 1)))
+	// Runner checkpoints are monotonic across all owners and roots.
+	require.NoError(t, NewBatchCommitHook(env.store, identity)(env.ctx, admissionSubmit("r", "call-r", 4)))
 	require.EqualValues(t, 0, commitHookCount(t, env.conn, `SELECT count(*) FROM session_agent_finalization_tickets WHERE logical_call_id='z-call'`),
 		"a bound but unaffected runner owner is outside this transition's ticket set")
 	identity.AdmitOwners = nil
-	require.NoError(t, NewBatchCommitHook(env.store, identity)(env.ctx, admissionSubmit("s", "call-s", 2)))
+	require.NoError(t, NewBatchCommitHook(env.store, identity)(env.ctx, admissionSubmit("s", "call-s", 5)))
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	env.conn.SetMaxOpenConns(1)
