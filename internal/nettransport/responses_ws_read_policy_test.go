@@ -21,6 +21,7 @@ func (w *responsesWSDeadlineWire) SetReadDeadline(value time.Time) error {
 	w.readDeadline = value
 	return nil
 }
+
 func (w *responsesWSDeadlineWire) SetWriteDeadline(value time.Time) error {
 	w.writeDeadline = value
 	return nil

@@ -231,11 +231,13 @@ func (m *languageModel) webSocketConnectionOptions(options *WebSocketOptions, po
 	if account == "" {
 		account = hex.EncodeToString(revision[:])
 	}
-	return WebSocketRequest{Endpoint: endpoint, AuthToken: token.AccessToken, Headers: headers, Policy: policy,
+	return WebSocketRequest{
+		Endpoint: endpoint, AuthToken: token.AccessToken, Headers: headers, Policy: policy,
 		StillCurrent: func() bool {
 			current, ok := m.provider.source.Current()
 			latest, err := options.Current()
 			return ok && err == nil && reflect.DeepEqual(current, token) && latest.Transport == policy.Transport && latest.NetworkIdentity == policy.NetworkIdentity
 		},
-		AccountID: account, AuthRevision: hex.EncodeToString(revision[:]) + ":" + strconv.FormatUint(policy.Revision, 10), ConversationID: conversation}
+		AccountID: account, AuthRevision: hex.EncodeToString(revision[:]) + ":" + strconv.FormatUint(policy.Revision, 10), ConversationID: conversation,
+	}
 }

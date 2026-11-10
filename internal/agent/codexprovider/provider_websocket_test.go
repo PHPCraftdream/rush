@@ -36,6 +36,7 @@ func (m websocketCodexTestManager) Acquire(ctx context.Context, request WebSocke
 	}
 	return websocketCodexTestLease{lease}, nil
 }
+
 func (websocketCodexTestManager) UnauthorizedHandshake(err error) bool {
 	var handshake *nettransport.ResponsesWSHandshakeError
 	return errors.As(err, &handshake) && handshake.Status == http.StatusUnauthorized
@@ -45,8 +46,10 @@ func websocketCodexModel(t *testing.T, server *httptest.Server, source TokenSour
 	t.Helper()
 	manager := nettransport.NewResponsesWSManager(t.Context(), 2)
 	t.Cleanup(func() { _ = manager.Close() })
-	p, err := NewWithSource(newCodexTestClient(server), source, WebSocketOptions{Manager: websocketCodexTestManager{manager}, EncodeFrame: nettransport.ResponsesWSCodexFullFrame,
-		endpoint: strings.Replace(server.URL, "http://", "ws://", 1), Current: func() (WebSocketPolicy, error) { return WebSocketPolicy{Transport: WebSocketTransportAuto}, nil }})
+	p, err := NewWithSource(newCodexTestClient(server), source, WebSocketOptions{
+		Manager: websocketCodexTestManager{manager}, EncodeFrame: nettransport.ResponsesWSCodexFullFrame,
+		endpoint: strings.Replace(server.URL, "http://", "ws://", 1), Current: func() (WebSocketPolicy, error) { return WebSocketPolicy{Transport: WebSocketTransportAuto}, nil },
+	})
 	require.NoError(t, err)
 	model, err := p.LanguageModel(t.Context(), "gpt-5-codex")
 	require.NoError(t, err)

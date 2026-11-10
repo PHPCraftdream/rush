@@ -57,8 +57,10 @@ func NewResponsesWSManager(parent context.Context, limit int) *ResponsesWSManage
 	}
 	limit = min(limit, 128)
 	ctx, cancel := context.WithCancel(parent)
-	m := &ResponsesWSManager{ctx: ctx, cancel: cancel, limit: limit, now: time.Now,
-		entries: make(map[[32]byte]*responsesWSEntry), unsupported: make(map[[32]byte]time.Time), done: make(chan struct{})}
+	m := &ResponsesWSManager{
+		ctx: ctx, cancel: cancel, limit: limit, now: time.Now,
+		entries: make(map[[32]byte]*responsesWSEntry), unsupported: make(map[[32]byte]time.Time), done: make(chan struct{}),
+	}
 	go m.maintain()
 	return m
 }

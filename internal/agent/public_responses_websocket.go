@@ -42,15 +42,17 @@ type publicResponsesClient struct {
 	endpoint string
 }
 
-type publicResponsesAttemptKey struct{}
-type publicResponsesAttempt struct {
-	sent      atomic.Bool
-	mu        sync.Mutex
-	body      io.Closer
-	stop      func() bool
-	stream    bool
-	overrides map[string]bool
-}
+type (
+	publicResponsesAttemptKey struct{}
+	publicResponsesAttempt    struct {
+		sent      atomic.Bool
+		mu        sync.Mutex
+		body      io.Closer
+		stop      func() bool
+		stream    bool
+		overrides map[string]bool
+	}
+)
 
 func newPublicResponsesAttempt(headers map[string]string, userAgent string, stream bool) *publicResponsesAttempt {
 	a := &publicResponsesAttempt{stream: stream, overrides: make(map[string]bool)}
@@ -69,6 +71,7 @@ func (a *publicResponsesAttempt) own(ctx context.Context, body io.Closer) {
 	a.body = body
 	a.stop = context.AfterFunc(ctx, func() { _ = body.Close() })
 }
+
 func (a *publicResponsesAttempt) close() {
 	a.mu.Lock()
 	body, stop := a.body, a.stop
@@ -106,6 +109,7 @@ func (m *publicResponsesModel) Generate(ctx context.Context, call fantasy.Call) 
 	attempt := newPublicResponsesAttempt(call.Headers, call.UserAgent, false)
 	return m.LanguageModel.Generate(context.WithValue(ctx, publicResponsesAttemptKey{}, attempt), call)
 }
+
 func (m *publicResponsesModel) GenerateObject(ctx context.Context, call fantasy.ObjectCall) (*fantasy.ObjectResponse, error) {
 	attempt := newPublicResponsesAttempt(call.Headers, call.UserAgent, false)
 	return m.LanguageModel.GenerateObject(context.WithValue(ctx, publicResponsesAttemptKey{}, attempt), call)
@@ -130,6 +134,7 @@ func (m *publicResponsesModel) Stream(ctx context.Context, call fantasy.Call) (f
 		}
 	}, nil
 }
+
 func (m *publicResponsesModel) StreamObject(ctx context.Context, call fantasy.ObjectCall) (fantasy.ObjectStreamResponse, error) {
 	attempt := newPublicResponsesAttempt(call.Headers, call.UserAgent, true)
 	stream, err := m.LanguageModel.StreamObject(context.WithValue(ctx, publicResponsesAttemptKey{}, attempt), call)
@@ -149,6 +154,7 @@ func (m *publicResponsesModel) StreamObject(ctx context.Context, call fantasy.Ob
 		}
 	}, nil
 }
+
 func guardPublicResponsesError(attempt *publicResponsesAttempt, err error) error {
 	if err != nil && attempt.sent.Load() {
 		return nettransport.ResponsesWSNoReplay(err)
@@ -225,10 +231,12 @@ func (c *publicResponsesClient) Do(original *http.Request) (*http.Response, erro
 	}
 	revision := sha256.Sum256([]byte(auth))
 	owner := hex.EncodeToString(revision[:])
-	lease, err := c.manager.Acquire(request.Context(), nettransport.ResponsesWSOptions{Protocol: "public-openai-responses", Endpoint: endpoint, ReadPolicy: nettransport.ResponsesWSReadRequestContext,
+	lease, err := c.manager.Acquire(request.Context(), nettransport.ResponsesWSOptions{
+		Protocol: "public-openai-responses", Endpoint: endpoint, ReadPolicy: nettransport.ResponsesWSReadRequestContext,
 		AuthHeaders: http.Header{"Authorization": []string{auth}}, Headers: headers, Network: policy.network,
 		StillCurrent: func() bool { return c.valid == nil || c.valid(policy) },
-		Owner:        nettransport.ResponsesWSOwner{AccountID: owner, AuthRevision: owner + ":" + strconv.FormatUint(policy.revision, 10), ConversationID: conversation}}, nettransport.ResponsesWSPlannedMaxAge)
+		Owner:        nettransport.ResponsesWSOwner{AccountID: owner, AuthRevision: owner + ":" + strconv.FormatUint(policy.revision, 10), ConversationID: conversation},
+	}, nettransport.ResponsesWSPlannedMaxAge)
 	if err != nil {
 		return fallback()
 	}
@@ -333,7 +341,7 @@ func (b *publicResponsesWSBody) Read(p []byte) (int, error) {
 		}
 		switch event.Type {
 		case "error", "response.failed":
-			return 0, b.conn.Abort(errors.New("Responses server rejected exchange"))
+			return 0, b.conn.Abort(errors.New("responses server rejected exchange"))
 		case "response.completed":
 			if event.Response.Status != "completed" {
 				return 0, b.conn.Abort(errors.New("invalid Responses completion"))
@@ -353,6 +361,7 @@ func (b *publicResponsesWSBody) Read(p []byte) (int, error) {
 	b.buffer = b.buffer[n:]
 	return n, nil
 }
+
 func (b *publicResponsesWSBody) Close() error {
 	b.once.Do(func() {
 		b.closed.Store(true)
