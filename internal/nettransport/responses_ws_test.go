@@ -332,7 +332,8 @@ func TestResponsesWSFrameAndExchangeBudgets(t *testing.T) {
 
 func TestResponsesWSAuthAndProtocolHeadersAreAdapterOwned(t *testing.T) {
 	auth := http.Header{"Authorization": []string{"Bearer adapter-token"}, "X-Account": []string{"tenant-7"}}
-	headers := http.Header{"OpenAI-Beta": []string{"responses=v2"}}
+	headers := make(http.Header)
+	headers.Set("OpenAI-Beta", "responses=v2")
 	options := ResponsesWSOptions{
 		Protocol:    "responses-v2-opaque-protocol",
 		Endpoint:    "ws://127.0.0.1/v1/responses",
@@ -343,6 +344,7 @@ func TestResponsesWSAuthAndProtocolHeadersAreAdapterOwned(t *testing.T) {
 	require.NoError(t, validateResponsesWSOptions(&options))
 	require.Equal(t, "Bearer adapter-token", auth.Get("Authorization"))
 	require.Equal(t, "responses=v2", headers.Get("OpenAI-Beta"))
+	require.Equal(t, "responses=v2", options.Headers.Get("OpenAI-Beta"))
 }
 
 func TestResponsesWSOptionsHaveHardUpperBounds(t *testing.T) {
