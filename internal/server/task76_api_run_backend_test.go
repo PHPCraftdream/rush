@@ -35,9 +35,11 @@ func (c *task76BackendCoordinator) ReserveExclusive(ctx context.Context, _ strin
 func (*task76BackendCoordinator) ReleaseExclusive(string, uint64, context.CancelFunc) {}
 func (*task76BackendCoordinator) ResetAutoResumeCounter(string)                       {}
 func (*task76BackendCoordinator) Cancel(string)                                       {}
-func (*task76BackendCoordinator) CancelAll() bool                                     { return false }
-func (*task76BackendCoordinator) IsSessionBusy(string) bool                           { return false }
-func (*task76BackendCoordinator) IsBusy() bool                                        { return false }
+func (*task76BackendCoordinator) CancelAll() bool { return false }
+
+func (*task76BackendCoordinator) IsSessionBusy(string) bool { return false }
+
+func (*task76BackendCoordinator) IsBusy() bool { return false }
 
 func (c *task76BackendCoordinator) RunWithReservedOwnership(_ context.Context, _, _ string, _ uint64, _ context.CancelFunc, onHandoff func(), smart, _ *agent.ModelOverride, _ ...message.Attachment) (*fantasy.AgentResult, error) {
 	c.mu.Lock()
