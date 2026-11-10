@@ -68,7 +68,7 @@ func mcpOutputToolStore(t *testing.T) (*session.MCPOutputStore, *sql.DB) {
 }
 
 func TestMCPOutputPreviewMatchesBashPolicyAndBoundsLargeFragments(t *testing.T) {
-	for _, source := range []string{"", "small", strings.Repeat("x", MaxOutputLength), strings.Repeat("😀α\n", 12000)} {
+	for _, source := range []string{"", "brief", strings.Repeat("x", MaxOutputLength), strings.Repeat("😀α\n", 12000)} {
 		for _, chunk := range []int{1, 701, len(source) + 1} {
 			preview := &mcpOutputPreview{}
 			for offset := 0; offset < len(source); offset += chunk {
@@ -212,7 +212,7 @@ func TestMCPOutputRetentionFailureIsExplicitAfterExecution(t *testing.T) {
 	ctx := context.WithValue(t.Context(), SessionIDContextKey, "output-session")
 	for _, candidate := range []MCPOutputStore{store, failed} {
 		access := &MCPOutputAccess{Store: candidate, Allowed: map[string]bool{"mcp_output_source": true}}
-		source := strings.Repeat("large", MaxOutputLength)
+		source := strings.Repeat("chunk", MaxOutputLength)
 		if candidate == store {
 			source = strings.Repeat("q", session.MCPOutputLimit+1)
 		}

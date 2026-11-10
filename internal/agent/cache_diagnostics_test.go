@@ -88,7 +88,7 @@ func TestCachePrefix_PrepareStepDoesNotMutateRetainedMessagesOrPinnedTools(t *te
 	require.Equal(t, wantDiagnostic, preparedCacheDiagnostic(ts.stepMessages, ts.stepTools))
 	require.Equal(t, wantDiagnostic, ts.cacheDiagnostic, "the diagnostic must be captured after all step assembly")
 	output.Reset()
-	_, err = ts.applyStepUsage(fantasy.StepResult{Usage: fantasy.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}})
+	_, err = ts.applyStepUsage(fantasy.StepResult{Response: fantasy.Response{Usage: fantasy.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}}})
 	require.NoError(t, err)
 	var observation map[string]any
 	for _, line := range bytes.Split(bytes.TrimSpace(output.Bytes()), []byte("\n")) {
