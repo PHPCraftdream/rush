@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -67,24 +68,37 @@ func preparedCacheDiagnostic(messages []fantasy.Message, tools []fantasy.AgentTo
 	}
 }
 
-// A plain fantasy.Usage loses field presence. Zero must remain unknown here
-// until a provider supplies explicit presence evidence; reporter capability
-// alone cannot prove that this particular response contained cached_tokens.
-func observedCacheReadTokens(usage fantasy.Usage, estimated bool) *int64 {
-	if estimated || usage.CacheReadTokens <= 0 {
+// A plain fantasy.Usage loses field presence. Only the native Codex decoder
+// currently forwards typed evidence that this response actually reported zero.
+// Profiles/capability and metadata belonging to another provider prove nothing.
+func observedCacheReadTokens(usage fantasy.Usage, estimated bool, provider string, metadata fantasy.ProviderMetadata) *int64 {
+	if estimated || usage.CacheReadTokens < 0 {
 		return nil
 	}
-	value := usage.CacheReadTokens
-	return &value
+	if usage.CacheReadTokens > 0 {
+		value := usage.CacheReadTokens
+		return &value
+	}
+	if provider == codexprovider.Name {
+		if observed, ok := metadata[codexprovider.Name].(*codexprovider.UsageMetadata); ok && observed != nil && observed.CachedTokens != nil && *observed.CachedTokens == 0 {
+			zero := int64(0)
+			return &zero
+		}
+	}
+	return nil
 }
 
-func (ts *turnStream) logCacheStepUsage(usage fantasy.Usage, estimated bool) {
+func (ts *turnStream) logCacheStepUsage(usage fantasy.Usage, estimated bool, metadata fantasy.ProviderMetadata) {
 	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
 		return
 	}
 	d := ts.cacheDiagnostic
+	provider := ""
+	if ts.smartModel.Model != nil {
+		provider = ts.smartModel.Model.Provider()
+	}
 	var cachedTokens any
-	if observed := observedCacheReadTokens(usage, estimated); observed != nil {
+	if observed := observedCacheReadTokens(usage, estimated, provider, metadata); observed != nil {
 		cachedTokens = *observed
 	}
 	slog.Debug("agent: prompt cache observation",

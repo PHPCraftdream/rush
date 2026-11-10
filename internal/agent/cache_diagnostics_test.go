@@ -130,16 +130,16 @@ func TestCacheDiagnostic_MapPermutationsPreserveArraysAndSemantics(t *testing.T)
 }
 
 func TestCacheDiagnostic_AmbiguousZeroAndContentFreeLog(t *testing.T) {
-	require.Nil(t, observedCacheReadTokens(fantasy.Usage{}, false), "fantasy.Usage alone cannot distinguish omitted cached_tokens from explicit zero")
-	require.Nil(t, observedCacheReadTokens(fantasy.Usage{CacheReadTokens: 10}, true))
-	require.EqualValues(t, 10, *observedCacheReadTokens(fantasy.Usage{CacheReadTokens: 10}, false))
+	require.Nil(t, observedCacheReadTokens(fantasy.Usage{}, false, "", nil), "fantasy.Usage alone cannot distinguish omitted cached_tokens from explicit zero")
+	require.Nil(t, observedCacheReadTokens(fantasy.Usage{CacheReadTokens: 10}, true, "", nil))
+	require.EqualValues(t, 10, *observedCacheReadTokens(fantasy.Usage{CacheReadTokens: 10}, false, "", nil))
 	var output bytes.Buffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	messages := []fantasy.Message{fantasy.NewSystemMessage("system-secret"), fantasy.NewUserMessage("arguments-secret")}
 	ts := &turnStream{cacheDiagnostic: preparedCacheDiagnostic(messages, nil), cachePreparedAt: time.Now()}
-	ts.logCacheStepUsage(fantasy.Usage{}, false)
+	ts.logCacheStepUsage(fantasy.Usage{}, false, nil)
 	var row map[string]any
 	require.NoError(t, json.Unmarshal(output.Bytes(), &row))
 	require.Contains(t, row, "cached_tokens")

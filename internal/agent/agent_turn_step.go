@@ -670,7 +670,7 @@ func (ts *turnStream) applyStepUsage(stepResult fantasy.StepResult) (session.Ses
 	// recordMessageUsage, so InputTokens is exclusive-of-cache for
 	// every provider before either consumer sees it.
 	usage = normalizeProviderUsage(ts.smartModel.Model.Provider(), usage)
-	ts.logCacheStepUsage(usage, estimated)
+	ts.logCacheStepUsage(usage, estimated, stepResult.ProviderMetadata)
 	ts.runTotalTokens = addStepUsageTokens(ts.runTotalTokens, usage)
 	costDelta := ts.a.updateSessionUsage(ts.smartModel, &updatedSession, usage, ts.a.openrouterCost(stepResult.ProviderMetadata))
 	// Heartbeat usage: one add per accounted step, executing model identity (design pt. 4).
