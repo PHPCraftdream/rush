@@ -102,7 +102,7 @@ func TestBatchReadScopeDistinctionsCyclesAndChunks(t *testing.T) {
 	}
 	a := batchReadTestReserve(t, s, ctx, "owner", "a", "child")
 	batchReadTestReserve(t, s, ctx, "child", "b", "grandchild")
-	batchReadTestReserve(t, s, ctx, "grandchild", "c", "owner")
+	c := batchReadTestReserve(t, s, ctx, "grandchild", "c", "")
 	batchReadTestReserve(t, s, ctx, "unlinked", "d", "")
 	// A settled task link inside a still-live root remains scope evidence.
 	require.NoError(t, s.Project(ctx, BatchProjection{Host: "host", Sequence: 2, Roots: []BatchRootProjection{{Owner: "owner", Root: a.Root.RootID, Updates: []db.ProjectBatchNodeParams{func() db.ProjectBatchNodeParams {
@@ -110,6 +110,12 @@ func TestBatchReadScopeDistinctionsCyclesAndChunks(t *testing.T) {
 		v.ChildSessionID = batchStoreTestString("child")
 		return v
 	}()}}}}))
+	// Corrupt the read fixture only after all guarded writer setup finishes.
+	result, err := conn.ExecContext(ctx, `UPDATE batch_nodes SET child_session_id='owner' WHERE node_id=?`, c.Root.RootID+".1")
+	require.NoError(t, err)
+	changed, err := result.RowsAffected()
+	require.NoError(t, err)
+	require.EqualValues(t, 1, changed)
 	r := batchReadTestReader(t, conn)
 	source := &batchReadTestSource{BatchLiveSource: q}
 	r.Source = source
