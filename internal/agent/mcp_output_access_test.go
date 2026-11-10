@@ -39,12 +39,19 @@ func TestMCPOutputFinalAssemblyControlsRetentionAndRetrievalAuthority(t *testing
 	owner, err := mcp.AcquireStandalone()
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, owner.Close(context.Background())) })
-	cfg := *coord.cfg.Config()
-	cfg.MCP = config.MCPs{"final-output": {Type: config.MCPHttp, URL: httpServer.URL}}
-	coord.cfg = config.NewLibraryStore(&cfg, env.workingDir)
+	// Nonempty working directories require a real, isolated admission source.
+	require.NoError(t, coord.cfg.PersistMCPConfig(config.ScopeGlobal, "final-output", config.MCPConfig{Type: config.MCPHttp, URL: httpServer.URL}))
 	coord.mcpOwner = owner
 	owner.Initialize(t.Context(), nil, coord.cfg, false)
 	require.NoError(t, owner.WaitForInit(t.Context()))
+	state, exists := owner.GetState("final-output")
+	require.True(t, exists)
+	require.Equal(t, mcp.StateConnected, state.State, "MCP fixture initialization failed: %v", state.Error)
+	require.Equal(t, []string{"source"}, owner.GetServerToolNames("final-output"))
+	published := tools.GetMCPTools(coord.permissions, coord.cfg, coord.cfg.WorkingDir(), owner)
+	require.Len(t, published, 1)
+	require.Equal(t, "mcp_final-output_source", published[0].Name())
+	cfg := *coord.cfg.Config()
 	transaction := func(ctx context.Context, _ string, effect func(*sql.Tx) error) error {
 		tx, err := env.conn.BeginTx(ctx, nil)
 		if err != nil {
