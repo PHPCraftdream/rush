@@ -256,6 +256,18 @@ type SessionAgentFinalization struct {
 	CandidateHash      string `json:"candidate_hash"`
 }
 
+type SessionAgentFinalizationContinuation struct {
+	RowID         string `json:"row_id"`
+	SessionID     string `json:"session_id"`
+	LogicalCallID string `json:"logical_call_id"`
+	PayloadHash   string `json:"payload_hash"`
+	Identities    string `json:"identities"`
+	Ancestry      string `json:"ancestry"`
+	LeaseToken    string `json:"lease_token"`
+	FailureCode   string `json:"failure_code"`
+	Consumed      int64  `json:"consumed"`
+}
+
 type SessionAgentFinalizationTicket struct {
 	SessionID     string `json:"session_id"`
 	LogicalCallID string `json:"logical_call_id"`

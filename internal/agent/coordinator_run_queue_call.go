@@ -40,6 +40,13 @@ import (
 // token and the row-keyed holder are released, so a refused row never leaks
 // the binding pin.
 func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (SessionAgentCall, error) {
+	authorities, authorityErr := c.restoreFinalizationQueuedCall(ctx, rowID, data)
+	if authorityErr != nil {
+		if data.DiskRequirement != nil {
+			releaseDurableContinuationOwner(c.diskCaps, data.DiskRequirement.BindingID, rowID)
+		}
+		return SessionAgentCall{}, &ErrCallAlreadyAttempted{Err: authorityErr}
+	}
 	// R12-H2b §2.2: a legacy row says a provider rode the call, but the
 	// envelope that names it does not exist — rebuilding could only mean
 	// OS disk. Terminal, so the pump never retries a row that can never
@@ -301,20 +308,21 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 	}
 
 	return SessionAgentCall{
-		SessionID:            data.SessionID,
-		LogicalCallID:        data.LogicalCallID, // P2-1 fix: restore stable ID
-		Prompt:               data.Prompt,
-		Attachments:          data.Attachments,
-		ProviderOptions:      providerOptions,
-		MaxOutputTokens:      data.MaxOutputTokens,
-		Temperature:          temp,
-		TopP:                 topP,
-		TopK:                 topK,
-		FrequencyPenalty:     freqPenalty,
-		PresencePenalty:      presPenalty,
-		NonInteractive:       data.NonInteractive,
-		RequestedModelRole:   RequestedModelRole(data.RequestedModelRole),
-		RequestedModelSource: data.RequestedModelSource,
+		finalizationAuthorities: authorities,
+		SessionID:               data.SessionID,
+		LogicalCallID:           data.LogicalCallID, // P2-1 fix: restore stable ID
+		Prompt:                  data.Prompt,
+		Attachments:             data.Attachments,
+		ProviderOptions:         providerOptions,
+		MaxOutputTokens:         data.MaxOutputTokens,
+		Temperature:             temp,
+		TopP:                    topP,
+		TopK:                    topK,
+		FrequencyPenalty:        freqPenalty,
+		PresencePenalty:         presPenalty,
+		NonInteractive:          data.NonInteractive,
+		RequestedModelRole:      RequestedModelRole(data.RequestedModelRole),
+		RequestedModelSource:    data.RequestedModelSource,
 		// recompiled from the durable row's spec (R4-1).
 		RunAllowlist: rebuiltRunAllowlist,
 		// Keep the spec on the rebuilt call so a re-queued copy re-serializes it.
@@ -372,6 +380,10 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 	}
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
+	}
+	runAgent, driverErr := c.finalizationQueueDriver(call)
+	if driverErr != nil {
+		return nil, &ErrCallAlreadyAttempted{Err: driverErr}
 	}
 	if call.batchQuestion == nil {
 		state, err := c.rebuiltChildQuestionState(ctx, sessionID)
@@ -515,5 +527,5 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 	// gh#10d: the queued-call-owned-scope distinction and the durable scope
 	// close now live in the ENTRY defer at the top of this method.
 
-	return c.currentAgent.Run(ctx, call)
+	return runAgent.Run(ctx, call)
 }

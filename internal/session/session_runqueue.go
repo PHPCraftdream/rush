@@ -31,6 +31,8 @@ type RunQueueEntry struct {
 	TerminalFailure bool
 	CreatedAt       int64
 	UpdatedAt       int64
+
+	finalizationLease *agentFinalizationQueueLease
 }
 
 // ModelCfg is a JSON-serializable subset of config.SelectedModel
@@ -196,6 +198,8 @@ type SessionAgentCallData struct {
 	NonInteractive       bool
 	RequestedModelRole   string `json:"requested_model_role,omitempty"`
 	RequestedModelSource string `json:"requested_model_source,omitempty"`
+	// Declaration only; executable authority requires trusted queue provenance.
+	FinalizationRequirement *AgentFinalizationRequirement `json:"finalization_requirement,omitempty"`
 	// RunAllowlistSpec carries the caller's declared restricted-run policy
 	// SPEC (the uncompiled mirror of permission.RunAllowlistSpec), so a
 	// call rebuilt from this row by the run-queue pump can recompile and
@@ -311,18 +315,7 @@ func (s *service) EnqueueRunQueueEntry(ctx context.Context, idempotencyKey, sess
 	if idempotencyKey == "" {
 		idempotencyKey = uuid.NewString()
 	}
-	now := time.Now().Unix()
-	_, err := s.q.EnqueueRunQueueEntry(ctx, db.EnqueueRunQueueEntryParams{
-		ID:        idempotencyKey,
-		SessionID: sessionID,
-		CallData:  string(callData),
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
-	return err
+	return s.enqueueFinalizationAware(ctx, idempotencyKey, sessionID, callData)
 }
 
 // ceilUnixSeconds converts t to a whole-Unix-seconds timestamp, rounding UP
@@ -427,11 +420,15 @@ func (s *service) LeaseRunQueueEntry(ctx context.Context, sessionID, leasedBy st
 		return nil, err
 	}
 
+	entry := dbToRunQueueEntry(leased)
+	if err := s.bindFinalizationQueueLeaseTx(ctx, tx, entry); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 
-	return dbToRunQueueEntry(leased), nil
+	return entry, nil
 }
 
 // RenewRunQueueLease — see the Service interface for the full contract.

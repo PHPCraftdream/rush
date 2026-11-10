@@ -9,7 +9,13 @@ import (
 // AgentFinalizationContext is an opaque, in-process capability snapshot.
 // It is not a serialized identity or permission to bind another incarnation.
 type AgentFinalizationContext struct {
-	authorities []*AgentFinalizationAuthority
+	authorities         []*AgentFinalizationAuthority
+	managedContinuation bool
+}
+
+// RequiresManagedDriver reports lineage verified by the queue writer snapshot.
+func (snapshot AgentFinalizationContext) RequiresManagedDriver() bool {
+	return snapshot.managedContinuation
 }
 
 func CaptureAgentFinalizationContext(ctx context.Context) AgentFinalizationContext {
@@ -17,12 +23,20 @@ func CaptureAgentFinalizationContext(ctx context.Context) AgentFinalizationConte
 		return AgentFinalizationContext{}
 	}
 	authorities, _ := ctx.Value(agentFinalizationAuthoritiesKey{}).([]*AgentFinalizationAuthority)
-	return AgentFinalizationContext{authorities: slices.Clone(authorities)}
+	managed, _ := ctx.Value(agentFinalizationManagedContinuationKey{}).(bool)
+	return AgentFinalizationContext{authorities: slices.Clone(authorities), managedContinuation: managed}
 }
 
 // Restore merges without replacing any conflicting authority already present.
 func (snapshot AgentFinalizationContext) Restore(ctx context.Context) (context.Context, error) {
-	return WithAgentFinalizationContext(ctx, snapshot.authorities...)
+	restored, err := WithAgentFinalizationContext(ctx, snapshot.authorities...)
+	if err != nil {
+		return nil, err
+	}
+	if snapshot.managedContinuation {
+		restored = context.WithValue(restored, agentFinalizationManagedContinuationKey{}, true)
+	}
+	return restored, nil
 }
 
 // RestoreCall refuses a carried owner capability for another logical call.
@@ -47,6 +61,7 @@ func (snapshot AgentFinalizationContext) RestoreCall(ctx context.Context, sessio
 }
 
 type agentFinalizationAuthoritiesKey struct{}
+type agentFinalizationManagedContinuationKey struct{}
 
 // WithAgentFinalizationContext carries bound capabilities, never raw model IDs.
 // Descendant calls keep ancestor capabilities until their physical work closes.

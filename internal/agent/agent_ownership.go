@@ -568,7 +568,7 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 
 			// Durably enqueue the call BEFORE returning control (P0-2 requirement)
 			// This ensures the call will eventually be executed even if this goroutine exits
-			if enqueueErr := a.sessions.EnqueueRunQueueEntry(enqueueCtx, idempotencyKey, call.SessionID, callDataJSON); enqueueErr != nil {
+			if enqueueErr := enqueueFinalizationCall(enqueueCtx, a.sessions, idempotencyKey, call, callDataJSON); enqueueErr != nil {
 				// Build safe log fields (SEC-1 fix: never log raw prompt)
 				logFields := []any{
 					"session_id", call.SessionID,
