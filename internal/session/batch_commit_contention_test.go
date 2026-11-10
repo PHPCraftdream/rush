@@ -56,7 +56,7 @@ func TestBatchCommitExternalWriterLockPreservesTypedBusy(t *testing.T) {
 			runner, executor, _ := commitHookRunner(t, hook)
 			var commitErr error
 			if operation == "submit" {
-				_, commitErr = runner.Submit(ctx, jobbatch.SubmitRequest{Root: "r", Spec: commitHookTask()})
+				_, commitErr = runner.Submit(ctx, jobbatch.SubmitRequest{Root: "r", Spec: commitHookBatch(jobbatch.NotifyAll, commitHookTask())})
 			} else {
 				commitErr = runner.CapacityAvailable(ctx, "")
 			}
@@ -117,7 +117,7 @@ func TestBatchCommitReleasedPoolCommitsOnceBeforeDispatch(t *testing.T) {
 	}
 	replied := make(chan reply, 1)
 	go func() {
-		b, err := runner.Submit(ctx, jobbatch.SubmitRequest{Root: "r", Spec: commitHookTask()})
+		b, err := runner.Submit(ctx, jobbatch.SubmitRequest{Root: "r", Spec: commitHookBatch(jobbatch.NotifyAll, commitHookTask())})
 		replied <- reply{batch: b, err: err}
 	}()
 	// Observe the real database/sql queue, not a sleep or presumed hook entry.
@@ -170,7 +170,7 @@ func TestBatchCommitFinalPhaseForReservationAndRootlessProjection(t *testing.T) 
 			})
 			var err error
 			if operation == "submit" {
-				_, err = runner.Submit(ctx, jobbatch.SubmitRequest{Root: "r", Spec: commitHookTask()})
+				_, err = runner.Submit(ctx, jobbatch.SubmitRequest{Root: "r", Spec: commitHookBatch(jobbatch.NotifyAll, commitHookTask())})
 			} else {
 				err = runner.CapacityAvailable(ctx, "")
 			}
@@ -196,7 +196,7 @@ func TestBatchCommitStatementFailurePhaseIsAtomic(t *testing.T) {
 			require.NoError(t, err)
 			runner, executor, ctx := commitHookRunner(t, env.adapter())
 			if operation == "submit" {
-				_, err = runner.Submit(ctx, jobbatch.SubmitRequest{Root: "r", Spec: commitHookTask()})
+				_, err = runner.Submit(ctx, jobbatch.SubmitRequest{Root: "r", Spec: commitHookBatch(jobbatch.NotifyAll, commitHookTask())})
 			} else {
 				err = runner.CapacityAvailable(ctx, "")
 			}
