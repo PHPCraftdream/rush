@@ -643,6 +643,7 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 		return tools.NewSSRFGuardedClient(timeout, true)
 	}
 
+	outputAccess := c.mcpOutputAccess()
 	var allTools []fantasy.AgentTool
 	if slices.Contains(agent.AllowedTools, AgentToolName) {
 		if isSubAgent {
@@ -776,7 +777,7 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 		allTools = append(
 			allTools,
 			tools.NewListMCPResourcesTool(c.cfg, c.permissions, c.mcpOwner),
-			tools.NewReadMCPResourceTool(c.cfg, c.permissions, c.mcpOwner),
+			tools.NewReadMCPResourceTool(c.cfg, c.permissions, c.mcpOwner, outputAccess),
 		)
 	}
 
@@ -805,7 +806,7 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 	}
 
 	// GetMCPTools reads the live MCP tool registry; apply the configured MCP allowlist below.
-	for _, tool := range tools.GetMCPTools(c.permissions, c.cfg, c.cfg.WorkingDir(), c.mcpOwner) {
+	for _, tool := range tools.GetMCPTools(c.permissions, c.cfg, c.cfg.WorkingDir(), c.mcpOwner, outputAccess) {
 		if agent.AllowedMCP == nil {
 			// No MCP restrictions
 			filteredTools = append(filteredTools, tool)
@@ -828,6 +829,7 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 			slog.Debug("MCP not allowed", "tool", tool.Name(), "agent", agent.Name)
 		}
 	}
+	admitMCPOutputSources(outputAccess, filteredTools)
 	slices.SortFunc(filteredTools, func(a, b fantasy.AgentTool) int {
 		return strings.Compare(a.Info().Name, b.Info().Name)
 	})

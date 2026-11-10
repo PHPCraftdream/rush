@@ -450,7 +450,7 @@ func TruncateOutput(content string) string {
 	end, endStartPos := stringext.TruncateEndAt(content, halfLength)
 
 	truncatedLinesCount := countLines(content[startPos:endStartPos])
-	return fmt.Sprintf("%s\n\n... [%d lines truncated] ...\n\n%s", start, truncatedLinesCount, end)
+	return formatTruncatedOutput(start, end, truncatedLinesCount)
 }
 
 func truncateOutput(content string) string {
