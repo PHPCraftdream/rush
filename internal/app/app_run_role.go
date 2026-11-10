@@ -45,7 +45,6 @@ func (app *App) resolveRunRole(overrides *RunOverrides) error {
 		contract.Model.ReasoningEffort = overrides.ReasoningEffort
 	}
 	overrides.roleContract = contract.Clone()
-	overrides.DisableSubAgents = true
 	return nil
 }
 

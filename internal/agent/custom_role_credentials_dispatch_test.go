@@ -26,6 +26,7 @@ func customRoleCredentialDispatchFixture(t *testing.T) (*coordinator, string, *s
 	env := testEnv(t)
 	coord := newWorkerToolTestCoordinator(t, env, true)
 	cfg := coord.cfg.Config()
+	cfg.Roles = make(map[string]config.CustomRole)
 	cfg.Providers.Set(customRoleDispatchOperator, config.ProviderConfig{
 		ID:     customRoleDispatchOperator,
 		Type:   openai.Name,

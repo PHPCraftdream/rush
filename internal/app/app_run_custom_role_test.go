@@ -64,3 +64,16 @@ func TestRoleContractSnapshotIsDeepCopied(t *testing.T) {
 	require.NoError(t, copy.Validate())
 	require.Equal(t, session.RoleContractVersion, copy.Version)
 }
+
+func TestResolveRunRolePreservesExplicitDelegationPolicy(t *testing.T) {
+	a := newModelEffortApp(t)
+	require.NoError(t, a.config.SetCustomRole(config.ScopeWorkspace, "policy-profile", config.CustomRoleUpdate{
+		Model: config.SelectedModel{Provider: "openaicompat", Model: "role-model"},
+	}))
+	for _, disabled := range []bool{false, true} {
+		overrides := &RunOverrides{RequestedRole: "policy-profile", DisableSubAgents: disabled}
+		require.NoError(t, a.resolveRunRole(overrides))
+		require.Equal(t, disabled, overrides.DisableSubAgents, "model-profile selection must preserve the caller's delegation policy")
+		require.NotNil(t, overrides.roleContract)
+	}
+}
