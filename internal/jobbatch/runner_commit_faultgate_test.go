@@ -90,6 +90,11 @@ func TestRuntimeCommitTimeoutBeforeHookStart(t *testing.T) {
 	runtimeTestReceive(t, ctx, r.Faulted())
 	runtimeTestReceive(t, ctx, physicalReturned)
 	require.Empty(t, calls, "hook entered after timeout had claimed fault")
+	var fault *CommitFault
+	require.ErrorAs(t, err, &fault)
+	require.Equal(t, "timeout", fault.Details().Kind)
+	require.Equal(t, CommitPhaseWaitingHook, fault.Details().Phase)
+	require.Equal(t, EventSubmit, fault.Details().Event)
 	require.Empty(t, e.starts)
 	require.ErrorIs(t, r.Close(ctx), ErrCommitFailed)
 }

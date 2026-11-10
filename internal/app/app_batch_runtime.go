@@ -105,7 +105,8 @@ const DefaultBatchFaultContainment = 10 * time.Second
 // signal handler, no Runner registration. Start arms the fault watcher;
 // Stop disarms it.
 type BatchRuntime struct {
-	cfg BatchRuntimeConfig
+	cfg               BatchRuntimeConfig
+	commitDiagnostics batchCommitDiagnostics
 
 	mu        sync.Mutex
 	runner    batchRunner

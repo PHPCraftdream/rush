@@ -71,12 +71,13 @@ func (r *Runner) committer() {
 }
 
 func (r *Runner) commit(t Transition) string {
-	ctx, cancel := context.WithCancel(context.WithoutCancel(r.host))
+	progress := newCommitProgress()
+	ctx, cancel := context.WithCancel(context.WithValue(context.WithoutCancel(r.host), commitProgressKey{}, progress))
 	defer cancel()
 	result := make(chan string, 1)
 	var gate sync.Mutex
 	claimed := false
-	claim := func(reason string) {
+	claim := func(reason string, cause error) {
 		gate.Lock()
 		if claimed {
 			gate.Unlock()
@@ -84,20 +85,23 @@ func (r *Runner) commit(t Transition) string {
 		}
 		claimed = true
 		if reason != "" {
-			r.signalFault(reason)
+			fault := progress.fault(reason, t, r.commitTimeout, cause)
+			cancel()
+			r.signalFaultError(fault)
 		}
 		result <- reason
 		gate.Unlock()
 	}
-	timer := r.clock.AfterFunc(r.commitTimeout, func() { claim("timeout") })
+	timer := r.clock.AfterFunc(r.commitTimeout, func() { claim("timeout", nil) })
 	defer timer.Stop()
 	go func() {
 		reason := "error"
+		var hookErr error
 		defer func() {
 			if recover() != nil {
 				reason = "panic"
 			}
-			claim(reason)
+			claim(reason, hookErr)
 			if r.requestHooks != nil && r.requestHooks.commitReturned != nil {
 				r.requestHooks.commitReturned()
 			}
@@ -114,7 +118,9 @@ func (r *Runner) commit(t Transition) string {
 		if !allowed {
 			return
 		}
-		if r.commitHook(ctx, t) == nil {
+		MarkCommitPhase(ctx, CommitPhaseHook)
+		hookErr = r.commitHook(ctx, t)
+		if hookErr == nil {
 			reason = ""
 		}
 	}()
@@ -349,12 +355,16 @@ func (r *Runner) publish(item *runnerPublication) {
 }
 
 func (r *Runner) signalFault(reason string) {
+	r.signalFaultError(fmt.Errorf("%w: %s", ErrCommitFailed, reason))
+}
+
+func (r *Runner) signalFaultError(err error) {
 	r.mu.Lock()
 	if r.faultErr != nil {
 		r.mu.Unlock()
 		return
 	}
-	r.faultErr = fmt.Errorf("%w: %s", ErrCommitFailed, reason)
+	r.faultErr = err
 	close(r.faulted)
 	r.mu.Unlock()
 	r.feed.mu.Lock()
