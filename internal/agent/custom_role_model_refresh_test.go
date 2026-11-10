@@ -76,6 +76,7 @@ func TestCustomRoleDiskRefreshPinsResolvedModelPromptAndTools(t *testing.T) {
 	provider, ok := coord.cfg.Config().Providers.Get("smart-provider")
 	require.True(t, ok)
 	provider.APIKey = "role-acceptance-fixture-key"
+	provider.BaseURL = "https://example.invalid/v1"
 	provider.Models = []catwalk.Model{{ID: "before-refresh"}, {ID: "after-refresh"}}
 	model := config.SelectedModel{Provider: provider.ID, Model: "before-refresh"}
 	roleTools := []string{"view"}
