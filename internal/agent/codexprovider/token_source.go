@@ -33,8 +33,8 @@ func NewWithSource(client *http.Client, source TokenSource, websocketOptions ...
 	p := &provider{client: client, source: source}
 	if len(websocketOptions) > 0 {
 		options := websocketOptions[0]
-		if options.Manager == nil || options.Current == nil {
-			return nil, errors.New("openai-codex websocket requires an owner and current policy")
+		if options.Manager == nil || options.Current == nil || options.EncodeFrame == nil {
+			return nil, errors.New("openai-codex websocket requires an owner, current policy and frame encoder")
 		}
 		p.websocket = &options
 	}

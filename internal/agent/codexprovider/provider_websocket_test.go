@@ -3,6 +3,7 @@ package codexprovider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,19 +13,40 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/nettransport"
 	"github.com/PHPCraftdream/rush/internal/oauth"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 )
 
+type websocketCodexTestManager struct {
+	*nettransport.ResponsesWSManager
+}
+type websocketCodexTestLease struct{ *nettransport.ResponsesWSLease }
+
+func (l websocketCodexTestLease) Conn() WebSocketConnection { return l.ResponsesWSLease.Conn() }
+func (m websocketCodexTestManager) Acquire(ctx context.Context, request WebSocketRequest) (WebSocketLease, error) {
+	lease, err := m.ResponsesWSManager.Acquire(ctx, nettransport.ResponsesWSOptions{
+		Protocol: "codex-responses", Endpoint: request.Endpoint, ReadPolicy: nettransport.ResponsesWSReadRequestContext,
+		AuthToken: request.AuthToken, Headers: request.Headers, StillCurrent: request.StillCurrent,
+		Owner: nettransport.ResponsesWSOwner{AccountID: request.AccountID, AuthRevision: request.AuthRevision, ConversationID: request.ConversationID},
+	}, nettransport.ResponsesWSPlannedMaxAge)
+	if err != nil {
+		return nil, err
+	}
+	return websocketCodexTestLease{lease}, nil
+}
+func (websocketCodexTestManager) UnauthorizedHandshake(err error) bool {
+	var handshake *nettransport.ResponsesWSHandshakeError
+	return errors.As(err, &handshake) && handshake.Status == http.StatusUnauthorized
+}
+
 func websocketCodexModel(t *testing.T, server *httptest.Server, source TokenSource) fantasy.LanguageModel {
 	t.Helper()
 	manager := nettransport.NewResponsesWSManager(t.Context(), 2)
 	t.Cleanup(func() { _ = manager.Close() })
-	p, err := NewWithSource(newCodexTestClient(server), source, WebSocketOptions{Manager: manager,
-		endpoint: strings.Replace(server.URL, "http://", "ws://", 1), Current: func() (WebSocketPolicy, error) { return WebSocketPolicy{Transport: config.ResponsesTransportAuto}, nil }})
+	p, err := NewWithSource(newCodexTestClient(server), source, WebSocketOptions{Manager: websocketCodexTestManager{manager}, EncodeFrame: nettransport.ResponsesWSCodexFullFrame,
+		endpoint: strings.Replace(server.URL, "http://", "ws://", 1), Current: func() (WebSocketPolicy, error) { return WebSocketPolicy{Transport: WebSocketTransportAuto}, nil }})
 	require.NoError(t, err)
 	model, err := p.LanguageModel(t.Context(), "gpt-5-codex")
 	require.NoError(t, err)

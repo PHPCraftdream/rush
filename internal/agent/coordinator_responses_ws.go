@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"maps"
 	"net/http"
@@ -23,7 +26,8 @@ func (c *coordinator) codexWebSocketOptions() []codexprovider.WebSocketOptions {
 	if c.responsesWS == nil {
 		return nil
 	}
-	return []codexprovider.WebSocketOptions{{Manager: c.responsesWS, HTTPClient: func() (*http.Client, error) {
+	manager := &codexWebSocketTransport{ResponsesWSManager: c.responsesWS, current: c.currentCodexWebSocketPolicy}
+	return []codexprovider.WebSocketOptions{{Manager: manager, EncodeFrame: nettransport.ResponsesWSCodexFullFrame, HTTPClient: func() (*http.Client, error) {
 		cfg, _ := c.cfg.Snapshot()
 		pc, ok := cfg.Providers.Get(codexTokenProviderID)
 		if !ok || pc.Disable || pc.OAuthToken == nil {
@@ -31,20 +35,72 @@ func (c *coordinator) codexWebSocketOptions() []codexprovider.WebSocketOptions {
 		}
 		return c.resolveProviderHTTPClient(cfg, pc)
 	}, Current: func() (codexprovider.WebSocketPolicy, error) {
-		cfg, revision := c.cfg.Snapshot()
-		pc, ok := cfg.Providers.Get(codexTokenProviderID)
-		if !ok || pc.Disable || pc.OAuthToken == nil {
-			return codexprovider.WebSocketPolicy{}, errors.New("openai-codex credentials unavailable")
-		}
-		var global *config.NetworkConfig
-		var transport config.ResponsesTransport
-		if cfg.Options != nil {
-			global = cfg.Options.Network
-			transport = cfg.Options.ResponsesTransport
-		}
-		return codexprovider.WebSocketPolicy{Transport: config.EffectiveResponsesTransport(transport, pc.ResponsesTransport), Network: nettransport.ResolveNetworkConfig(global, pc.Network), Revision: revision}, nil
+		policy, _, err := c.currentCodexWebSocketPolicy()
+		return policy, err
 	}}}
 }
+
+func (c *coordinator) currentCodexWebSocketPolicy() (codexprovider.WebSocketPolicy, config.NetworkConfig, error) {
+	cfg, revision := c.cfg.Snapshot()
+	pc, ok := cfg.Providers.Get(codexTokenProviderID)
+	if !ok || pc.Disable || pc.OAuthToken == nil {
+		return codexprovider.WebSocketPolicy{}, config.NetworkConfig{}, errors.New("openai-codex credentials unavailable")
+	}
+	var global *config.NetworkConfig
+	var transport config.ResponsesTransport
+	if cfg.Options != nil {
+		global = cfg.Options.Network
+		transport = cfg.Options.ResponsesTransport
+	}
+	network := nettransport.ResolveNetworkConfig(global, pc.Network)
+	encoded, err := json.Marshal(network)
+	if err != nil {
+		return codexprovider.WebSocketPolicy{}, config.NetworkConfig{}, errors.New("openai-codex invalid network identity")
+	}
+	digest := sha256.Sum256(encoded)
+	policy := codexprovider.WebSocketPolicy{Transport: codexprovider.WebSocketTransport(config.EffectiveResponsesTransport(transport, pc.ResponsesTransport)), NetworkIdentity: hex.EncodeToString(digest[:]), Revision: revision}
+	return policy, network, nil
+}
+
+type codexWebSocketTransport struct {
+	*nettransport.ResponsesWSManager
+	current func() (codexprovider.WebSocketPolicy, config.NetworkConfig, error)
+}
+
+func (t *codexWebSocketTransport) Acquire(ctx context.Context, request codexprovider.WebSocketRequest) (codexprovider.WebSocketLease, error) {
+	policy, network, err := t.current()
+	if err != nil {
+		return nil, err
+	}
+	if policy != request.Policy {
+		return nil, errors.New("openai-codex connection policy changed before handshake")
+	}
+	lease, err := t.ResponsesWSManager.Acquire(ctx, nettransport.ResponsesWSOptions{
+		Protocol: "codex-responses", Endpoint: request.Endpoint, ReadPolicy: nettransport.ResponsesWSReadRequestContext,
+		AuthToken: request.AuthToken, Headers: request.Headers, Network: network, StillCurrent: request.StillCurrent,
+		Owner: nettransport.ResponsesWSOwner{AccountID: request.AccountID, AuthRevision: request.AuthRevision, ConversationID: request.ConversationID},
+	}, nettransport.ResponsesWSPlannedMaxAge)
+	if err != nil {
+		return nil, err
+	}
+	return codexWebSocketLease{lease}, nil
+}
+
+func (*codexWebSocketTransport) UnauthorizedHandshake(err error) bool {
+	var handshake *nettransport.ResponsesWSHandshakeError
+	return errors.As(err, &handshake) && handshake.Status == http.StatusUnauthorized
+}
+
+type codexWebSocketLease struct{ *nettransport.ResponsesWSLease }
+
+func (l codexWebSocketLease) Conn() codexprovider.WebSocketConnection {
+	return l.ResponsesWSLease.Conn()
+}
+
+var (
+	_ codexprovider.WebSocketManager       = (*codexWebSocketTransport)(nil)
+	_ codexprovider.WebSocketExchangeError = (*nettransport.ResponsesWSError)(nil)
+)
 
 func (c *coordinator) buildPublicResponsesProvider(pc config.ProviderConfig, baseURL, apiKey string, headers map[string]string, client *http.Client) (fantasy.Provider, error) {
 	if c.responsesWS == nil || pc.ID != "openai" || apiKey == "" || pc.OAuthToken != nil || (baseURL != "" && baseURL != "https://api.openai.com/v1" && baseURL != "https://api.openai.com/v1/") {

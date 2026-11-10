@@ -10,26 +10,67 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
-	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/nettransport"
 	"github.com/PHPCraftdream/rush/internal/oauth"
 )
 
-// WebSocketPolicy is resolved from the current config before each exchange.
+type WebSocketTransport string
+
+const (
+	WebSocketTransportAuto WebSocketTransport = "auto"
+	WebSocketTransportHTTP WebSocketTransport = "http"
+)
+
+// WebSocketPolicy contains opaque ownership identity, not config dependencies.
 type WebSocketPolicy struct {
-	Transport config.ResponsesTransport
-	Network   config.NetworkConfig
-	Revision  uint64
+	Transport       WebSocketTransport
+	NetworkIdentity string
+	Revision        uint64
 }
 
+type WebSocketExchangeError interface {
+	error
+	RetrySafe() bool
+	NoReplay() bool
+}
+
+type WebSocketConnection interface {
+	BeginExchange() error
+	SendRaw(context.Context, []byte) error
+	ReceiveRaw(context.Context) ([]byte, error)
+	MarkCompleted() error
+	Abort(error) error
+	Close() error
+}
+
+type WebSocketLease interface {
+	Conn() WebSocketConnection
+	Release()
+}
+
+type WebSocketManager interface {
+	Closed() bool
+	InvalidateConversation(string)
+	Acquire(context.Context, WebSocketRequest) (WebSocketLease, error)
+	UnauthorizedHandshake(error) bool
+}
+
+type WebSocketRequest struct {
+	Endpoint, AuthToken                     string
+	Headers                                 http.Header
+	AccountID, AuthRevision, ConversationID string
+	Policy                                  WebSocketPolicy
+	StillCurrent                            func() bool
+}
+
+// Config's OAuth tests consume this provider, so transport dependencies are injected.
 type WebSocketOptions struct {
-	Manager    *nettransport.ResponsesWSManager
-	Current    func() (WebSocketPolicy, error)
-	HTTPClient func() (*http.Client, error)
+	Manager     WebSocketManager
+	Current     func() (WebSocketPolicy, error)
+	EncodeFrame func([]byte) ([]byte, error)
+	HTTPClient  func() (*http.Client, error)
 	// Endpoint is intentionally private: production always uses the Codex origin.
 	endpoint string
 }
@@ -50,14 +91,14 @@ func (m *languageModel) streamWebSocket(ctx context.Context, payload []byte, use
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: err})
 		return true
 	}
-	if policy.Transport == config.ResponsesTransportHTTP {
+	if policy.Transport == WebSocketTransportHTTP {
 		options.Manager.InvalidateConversation(conversation)
 		return false
 	}
 	if conversation == "" {
 		return false
 	}
-	frame, err := nettransport.ResponsesWSCodexFullFrame(payload)
+	frame, err := options.EncodeFrame(payload)
 	if err != nil {
 		return false
 	}
@@ -67,7 +108,7 @@ func (m *languageModel) streamWebSocket(ctx context.Context, payload []byte, use
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: errors.New("openai-codex OAuth credentials unavailable")})
 		return true
 	}
-	var lease *nettransport.ResponsesWSLease
+	var lease WebSocketLease
 	for attempt := 0; attempt < 2; attempt++ {
 		if attempt > 0 {
 			policy, err = options.Current()
@@ -76,19 +117,15 @@ func (m *languageModel) streamWebSocket(ctx context.Context, payload []byte, use
 				yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: err})
 				return true
 			}
-			if policy.Transport == config.ResponsesTransportHTTP {
+			if policy.Transport == WebSocketTransportHTTP {
 				return false
 			}
 		}
-		lease, err = options.Manager.Acquire(ctx, m.webSocketConnectionOptions(options, policy, used, conversation, userAgent), 20*time.Minute)
+		lease, err = options.Manager.Acquire(ctx, m.webSocketConnectionOptions(options, policy, used, conversation, userAgent))
 		if err == nil {
 			break
 		}
-		var handshake *nettransport.ResponsesWSHandshakeError
-		if !errors.As(err, &handshake) {
-			return false
-		}
-		if handshake.Status != http.StatusUnauthorized {
+		if !options.Manager.UnauthorizedHandshake(err) {
 			return false
 		}
 		if attempt != 0 || m.provider.source.Refresh(ctx, used) != nil {
@@ -119,7 +156,7 @@ func (m *languageModel) streamWebSocket(ctx context.Context, payload []byte, use
 		return false
 	}
 	if err = conn.SendRaw(ctx, frame); err != nil {
-		var send *nettransport.ResponsesWSError
+		var send WebSocketExchangeError
 		if errors.As(err, &send) && send.RetrySafe() {
 			return false
 		}
@@ -169,7 +206,7 @@ func (m *languageModel) streamWebSocket(ctx context.Context, payload []byte, use
 	}
 }
 
-func (m *languageModel) webSocketConnectionOptions(options *WebSocketOptions, policy WebSocketPolicy, token oauth.Token, conversation, userAgent string) nettransport.ResponsesWSOptions {
+func (m *languageModel) webSocketConnectionOptions(options *WebSocketOptions, policy WebSocketPolicy, token oauth.Token, conversation, userAgent string) WebSocketRequest {
 	endpoint := options.endpoint
 	if endpoint == "" {
 		endpoint = "wss://chatgpt.com/backend-api/codex/responses"
@@ -194,11 +231,11 @@ func (m *languageModel) webSocketConnectionOptions(options *WebSocketOptions, po
 	if account == "" {
 		account = hex.EncodeToString(revision[:])
 	}
-	return nettransport.ResponsesWSOptions{Protocol: "codex-responses", Endpoint: endpoint, ReadPolicy: nettransport.ResponsesWSReadRequestContext, AuthToken: token.AccessToken, Headers: headers, Network: policy.Network,
+	return WebSocketRequest{Endpoint: endpoint, AuthToken: token.AccessToken, Headers: headers, Policy: policy,
 		StillCurrent: func() bool {
 			current, ok := m.provider.source.Current()
 			latest, err := options.Current()
-			return ok && err == nil && reflect.DeepEqual(current, token) && latest.Transport == policy.Transport && latest.Network == policy.Network
+			return ok && err == nil && reflect.DeepEqual(current, token) && latest.Transport == policy.Transport && latest.NetworkIdentity == policy.NetworkIdentity
 		},
-		Owner: nettransport.ResponsesWSOwner{AccountID: account, AuthRevision: hex.EncodeToString(revision[:]) + ":" + strconv.FormatUint(policy.Revision, 10), ConversationID: conversation}}
+		AccountID: account, AuthRevision: hex.EncodeToString(revision[:]) + ":" + strconv.FormatUint(policy.Revision, 10), ConversationID: conversation}
 }
