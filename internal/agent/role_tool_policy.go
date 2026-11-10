@@ -111,6 +111,7 @@ func filterRoleToolNames(ctx context.Context, names []string) []string {
 	}
 	return filtered
 }
+
 func filterRoleContractTools(ctx context.Context, tools []fantasy.AgentTool) []fantasy.AgentTool {
 	currentContracts := roleToolContractsFrom(ctx)
 	filtered := make([]fantasy.AgentTool, 0, len(tools))

@@ -84,6 +84,7 @@ func TestCustomRoleContinuationRejectsForgedBroaderStoredContract(t *testing.T) 
 	_, err = coord.restoreRequestedDelegationCall(t.Context(), boundCall)
 	require.ErrorIs(t, err, ErrAgentRoleMismatch)
 }
+
 func TestCustomRoleSnapshotSurvivesConfigRemoval(t *testing.T) {
 	cfg := customRoleResolverConfig()
 	contract, err := ResolveRoleContract(cfg, "analyst", nil)

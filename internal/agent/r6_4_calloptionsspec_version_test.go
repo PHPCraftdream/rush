@@ -60,6 +60,7 @@ func TestCallOptionsSpecV3RoundTripAndV2Compatibility(t *testing.T) {
 	_, err = fromSessionCallOptionsSpec(legacy)
 	require.NoError(t, err)
 }
+
 func TestFromSessionCallOptionsSpec_RejectsV1WithMarker(t *testing.T) {
 	opts, err := fromSessionCallOptionsSpec(&session.CallOptionsSpec{Version: 1, WebTurnOptIn: true})
 	require.ErrorIs(t, err, ErrCallOptionsSpecVersionUnsupported)

@@ -4,10 +4,14 @@
 package agent
 
 import (
-	"charm.land/fantasy"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/hyper"
 	"github.com/PHPCraftdream/rush/internal/agent/notify"
 	"github.com/PHPCraftdream/rush/internal/heartbeat"
@@ -15,9 +19,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/google/uuid"
-	"log/slog"
-	"sync"
-	"time"
 )
 
 const (

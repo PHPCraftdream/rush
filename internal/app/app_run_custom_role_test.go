@@ -31,12 +31,14 @@ func TestPrepareExecuteRunCustomRoleAdmissionSnapshotsExactProfile(t *testing.T)
 	require.True(t, setup.callOpts.RoleContract.Model.Think)
 	require.Equal(t, "high", setup.callOpts.RoleContract.Model.ReasoningEffort)
 }
+
 func TestResolveRunRoleRejectsUnknownAndMalformedWithoutFallback(t *testing.T) {
 	a := newModelEffortApp(t)
 	for _, role := range []string{"missing", " smart", "smart"} {
 		require.Error(t, a.resolveRunRole(&RunOverrides{RequestedRole: role}))
 	}
 }
+
 func TestResolveRunRoleUsesNewPublishedConfigForEachExecution(t *testing.T) {
 	a := newModelEffortApp(t)
 	require.NoError(t, a.config.SetCustomRole(config.ScopeWorkspace, "writer", config.CustomRoleUpdate{Model: config.SelectedModel{Provider: "openaicompat", Model: "m1"}}))
@@ -49,6 +51,7 @@ func TestResolveRunRoleUsesNewPublishedConfigForEachExecution(t *testing.T) {
 	require.Equal(t, "m2", second.roleContract.Model.Model)
 	require.Equal(t, "m1", first.roleContract.Model.Model)
 }
+
 func TestRoleContractSnapshotIsDeepCopied(t *testing.T) {
 	allow := []string{"view", "grep"}
 	cfg := &config.Config{Roles: map[string]config.CustomRole{"reader": {SelectedModel: config.SelectedModel{Provider: "p", Model: "m"}, Tools: &allow}}}

@@ -86,6 +86,7 @@ func cloneFloat64(value *float64) *float64 {
 	copy := *value
 	return &copy
 }
+
 func cloneInt64(value *int64) *int64 {
 	if value == nil {
 		return nil
@@ -93,6 +94,7 @@ func cloneInt64(value *int64) *int64 {
 	copy := *value
 	return &copy
 }
+
 func cloneOptionMap(values map[string]any) map[string]any {
 	if values == nil {
 		return nil
@@ -103,6 +105,7 @@ func cloneOptionMap(values map[string]any) map[string]any {
 	}
 	return out
 }
+
 func cloneOptionValue(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
@@ -169,9 +172,11 @@ func cloneRoleContractForCall(contract *session.RoleContract) *session.RoleContr
 	}
 	return contract.Clone()
 }
+
 func roleContractAllowsTool(contract *session.RoleContract, name string) bool {
 	return roleContractAllowsName(contract, name)
 }
+
 func copyInheritedRoleContract(parent *session.RoleContract) (*session.RoleContract, error) {
 	groups, err := inheritedRoleCeilings(parent)
 	if err != nil {
@@ -183,6 +188,7 @@ func copyInheritedRoleContract(parent *session.RoleContract) (*session.RoleContr
 	}
 	return contract, nil
 }
+
 func roleContractWithName(model config.SelectedModel, name string, inherited *session.RoleContract) *session.RoleContract {
 	groups, err := inheritedRoleCeilings(inherited)
 	if err != nil {
