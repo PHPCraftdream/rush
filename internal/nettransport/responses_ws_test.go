@@ -132,8 +132,10 @@ func TestResponsesWSProxyAndCustomDNSPolicy(t *testing.T) {
 	require.Equal(t, []byte("raw reply"), reply)
 	require.NoError(t, conn.MarkCompleted())
 	require.True(t, conn.Reusable())
-	require.Equal(t, []string{dns.tcpAddr(), net.JoinHostPort("127.0.0.1", strconv.Itoa(targetPort))}, proxy.authorities())
-	require.Equal(t, []string{"Basic " + base64.StdEncoding.EncodeToString([]byte("proxy-user:proxy-pass"))}, proxy.authValues())
+	// A and AAAA each use a separate authenticated DNS tunnel before the WS tunnel.
+	require.Equal(t, []string{dns.tcpAddr(), dns.tcpAddr(), net.JoinHostPort("127.0.0.1", strconv.Itoa(targetPort))}, proxy.authorities())
+	proxyAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("proxy-user:proxy-pass"))
+	require.Equal(t, []string{proxyAuth, proxyAuth, proxyAuth}, proxy.authValues())
 	require.Contains(t, dns.names(), "responses-dns.invalid")
 	require.Equal(t, int32(1), wsRequests.Load())
 }
