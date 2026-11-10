@@ -8,7 +8,7 @@ import (
 )
 
 func editMadeNoWrite(call fantasy.ToolCallContent, result fantasy.ToolResultContent) bool {
-	if call.ToolName != tools.EditToolName || result.Result == nil || result.Result.GetType() != fantasy.ToolResultContentTypeError {
+	if (call.ToolName != tools.EditToolName && call.ToolName != tools.MultiEditToolName) || result.Result == nil || result.Result.GetType() != fantasy.ToolResultContentTypeError {
 		return false
 	}
 	var metadata tools.EditEffectMetadata
@@ -16,8 +16,10 @@ func editMadeNoWrite(call fantasy.ToolCallContent, result fantasy.ToolResultCont
 		return false
 	}
 	switch metadata.EditEffect.Reason {
-	case "missing_old", "equal_content":
-		return true
+	case "missing_old", "equal_content", "multiple_matches":
+		return call.ToolName == tools.EditToolName
+	case "unchanged_content":
+		return call.ToolName == tools.MultiEditToolName
 	default:
 		return false
 	}
