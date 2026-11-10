@@ -113,7 +113,8 @@ func TestCustomRoleDiskRefreshPinsResolvedModelPromptAndTools(t *testing.T) {
 	}
 	writeConfig(jsonConfigPath)
 	require.NoError(t, coord.cfg.ReloadFromDisk(t.Context()))
-	configPath := filepath.Join(env.workingDir, "rush.ktav")
+	configPath, err := filepath.Abs(filepath.Join(env.workingDir, "rush.ktav"))
+	require.NoError(t, err)
 	require.FileExists(t, configPath)
 	require.Contains(t, coord.cfg.LoadedPaths(), configPath)
 	pinned, generation := coord.cfg.Snapshot()
