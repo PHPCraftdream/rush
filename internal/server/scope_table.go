@@ -37,6 +37,9 @@ var commandScopes = map[string]string{
 	"update_message_part":        "run",    // Edits message content.
 	"toggle_pin_message":         "run",    // Mutates a session message.
 	"rerun_message":              "run",    // Re-executes prior work.
+	"get_custom_roles":           "read",   // Reads role configuration.
+	"set_custom_role":            "config", // Changes a custom role.
+	"remove_custom_role":         "config", // Removes a custom role.
 	"get_scoped_models":          "read",   // Reads model configuration.
 	"set_scoped_model":           "config", // Changes model configuration.
 	"clear_scoped_model":         "config", // Clears model configuration.

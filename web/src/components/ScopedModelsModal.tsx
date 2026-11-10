@@ -6,6 +6,7 @@ import { ws } from "../ws";
 import { buildModelList, type ModelItem } from "./ModelSelector";
 import type { Session, WSMessage } from "../types";
 import { effortLevelsFor, clampEffort, defaultEffortFor } from "../effort";
+import { CustomRolesEditor } from "./CustomRolesEditor";
 
 // ── Wire types (mirror internal/server/protocol.go) ─────────────────────────
 
@@ -399,6 +400,8 @@ export function ScopedModelsModal({ onClose, activeSession }: { onClose: () => v
               ))}
             </div>
           </section>
+
+          <CustomRolesEditor models={allModels} />
 
           {/* Session block */}
           <section data-test-id="scoped-models-session">

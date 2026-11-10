@@ -326,6 +326,9 @@ type Config struct {
 	// See SelectedModelType.
 	Models map[SelectedModelType]SelectedModel `json:"models,omitempty" jsonschema:"description=Model configurations for different model types (smart\\, fast\\, worker\\, reviewer),example={\"smart\":{\"model\":\"gpt-4o\",\"provider\":\"openai\"}}"`
 
+	// Custom role definitions replace whole entries across configuration scopes.
+	Roles map[string]CustomRole `json:"roles,omitempty" jsonschema:"description=Named model profiles with optional tool-name glob restrictions"`
+
 	// Recently used models stored in the data directory config.
 	RecentModels map[SelectedModelType][]SelectedModel `json:"recent_models,omitempty" jsonschema:"-"`
 

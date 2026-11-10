@@ -122,13 +122,14 @@ func (s *service) DrainPendingInjects(ctx context.Context, sessionID string) ([]
 // the message reference before building call data, so it can call
 // ConsumeInterruptInjectAndEnqueue atomically.
 //
-// Returns (nil, nil) when no interrupt row is pending.
+// Uses the standalone WAL reader so a busy writer cannot time out CLI waiting.
+// Returns (nil, nil) when no committed interrupt row is pending.
 func (s *service) PeekInterruptInject(ctx context.Context, sessionID string) (*PendingInject, error) {
 	var (
 		pi        PendingInject
 		interrupt int64
 	)
-	row := s.db.QueryRowContext(ctx,
+	row := s.readDB.QueryRowContext(ctx,
 		`SELECT id, session_id, message_id, content, interrupt, created_at
 		 FROM pending_injects
 		 WHERE session_id = ? AND interrupt = 1
