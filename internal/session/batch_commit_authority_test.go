@@ -453,6 +453,6 @@ func TestBatchCommitAuthorityPartialAdmissionCleanupSucceeds(t *testing.T) {
 	zState, err := NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, zAuthority.identity)
 	require.NoError(t, err)
 	require.Zero(t, zState.Revision)
-	require.Equal(t, 1, commitHookCount(t, env.conn, `SELECT count(*) FROM session_agent_finalization_tickets WHERE logical_call_id='owner-call' AND released=1`))
+	require.Equal(t, int64(1), commitHookCount(t, env.conn, `SELECT count(*) FROM session_agent_finalization_tickets WHERE logical_call_id='owner-call' AND released=1`))
 	require.Zero(t, commitHookCount(t, env.conn, `SELECT count(*) FROM batch_nodes WHERE state='running'`))
 }
