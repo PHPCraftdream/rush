@@ -3,20 +3,23 @@ package agent
 import (
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
 func TestRequestedCustomRoleUsesSelectedContractBeforeCredentialFallback(t *testing.T) {
-	contract, err := ResolveRoleContract(customRoleResolverConfig(), "analyst", nil)
+	cfg := customRoleResolverConfig()
+	cfg.Options = &config.Options{}
+	contract, err := ResolveRoleContract(cfg, "analyst", nil)
 	require.NoError(t, err)
-	coord := &coordinator{}
+	coord := &coordinator{cfg: config.NewLibraryStore(cfg, t.TempDir())}
 	creds := &CredentialSet{Models: map[Role]ModelChoice{RoleSmart: {Provider: "tenant", Model: "tenant-smart"}}}
 	ctx := WithSelectedRoleContract(withCallCredentials(t.Context(), creds), contract)
-	_, err = coord.resolveRequestedDelegationModel(ctx, customRoleResolverConfig(), "", "analyst")
+	_, err = coord.resolveRequestedDelegationModel(ctx, cfg, "", "analyst")
 	require.ErrorIs(t, err, ErrAgentRoleUnconfigured, "missing exact tenant role slot cannot use tenant smart or operator fallback")
 	creds.AllowConfiguredRoleFallback = true
-	_, err = coord.resolveRequestedDelegationModel(ctx, customRoleResolverConfig(), "", "analyst")
+	_, err = coord.resolveRequestedDelegationModel(ctx, cfg, "", "analyst")
 	require.ErrorIs(t, err, ErrAgentRoleUnconfigured, "fallback still fails when the operator profile cannot be constructed")
 }
 
