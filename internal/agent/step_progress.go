@@ -14,8 +14,8 @@ import (
 )
 
 // stepCallClass is what one tool call of one step WAS, judged from the call's
-// own input plus its result -- never from the result's text (a failed edit is
-// still a real attempt, a red herring is still a read). It is the single
+// own input plus structured result metadata, never inferred from error text.
+// Untagged errors remain potentially effectful. It is the single
 // verdict the in-turn progress guard and the reaction chain guard (#1113)
 // both read.
 type stepCallClass int
@@ -39,6 +39,8 @@ const (
 	// stepCallNeutral neither advances nor launches: batch_output/todos, or
 	// an unknown tool name (nothing was in the set to run).
 	stepCallNeutral
+	// stepCallNoWrite is a native edit proven to have made no file write.
+	stepCallNoWrite
 )
 
 func (c stepCallClass) String() string {
@@ -55,6 +57,8 @@ func (c stepCallClass) String() string {
 		return "refused"
 	case stepCallNeutral:
 		return "neutral"
+	case stepCallNoWrite:
+		return "no_write"
 	}
 	return "unknown"
 }
@@ -328,6 +332,9 @@ func classifyStepCall(call fantasy.ToolCallContent, result fantasy.ToolResultCon
 	}
 	if unknownToolResult(result) {
 		return stepCallNeutral
+	}
+	if editMadeNoWrite(call, result) {
+		return stepCallNoWrite
 	}
 	if isWaitOnlyCall(call) {
 		var meta asyncToolMetadata

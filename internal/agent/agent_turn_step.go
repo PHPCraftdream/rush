@@ -456,7 +456,7 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 			switch class {
 			case stepCallWait:
 				ts.att.chainBatchRoots = append(ts.att.chainBatchRoots, call.ToolCallID)
-			case stepCallRefused, stepCallNeutral:
+			case stepCallRefused, stepCallNeutral, stepCallNoWrite:
 				// started nothing this leg may claim
 			default:
 				if repeated {
@@ -492,7 +492,7 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 			if meta.Async && meta.ClaimID != "" {
 				ts.att.chainIdleClaims = append(ts.att.chainIdleClaims, meta.ClaimID)
 			}
-		case stepCallRefused, stepCallNeutral:
+		case stepCallRefused, stepCallNeutral, stepCallNoWrite:
 			// a guard refusal is neither progress nor a claim: it started nothing
 		default: // act, read, reread: progress, as #1113 counts reread as progress
 			if ts.a != nil && ts.a.coord != nil {
