@@ -17,73 +17,78 @@ type batchFinalizationTicket struct {
 	ticket   string
 }
 
+type batchFinalizationAdmission struct {
+	ancestry finalizationAncestry
+	tickets  []batchFinalizationTicket
+}
+
 // admitBatchCommitOwners resolves one ordered, distinct ticket set before SQL.
-func admitBatchCommitOwners(store *BatchStore, ctx context.Context, id BatchCommitIdentity, transition jobbatch.Transition, owners []string) (func() error, error) {
+func admitBatchCommitOwners(store *BatchStore, ctx context.Context, id BatchCommitIdentity, transition jobbatch.Transition, owners []string) (func() error, *batchFinalizationAdmission, error) {
 	if len(owners) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	owners = slices.Clone(owners)
 	slices.Sort(owners)
 	owners = slices.Compact(owners)
 	if owners[0] == "" {
-		return nil, errors.New("batch commit admission: missing owner")
+		return nil, nil, errors.New("batch commit admission: missing owner")
 	}
 
 	if id.finalizationService == nil {
 		if len(id.finalizationAuthorities) != 0 {
-			return nil, errors.New("batch commit admission: authority service missing")
+			return nil, nil, errors.New("batch commit admission: authority service missing")
 		}
 		if id.AdmitOwners == nil {
-			return nil, nil
+			return nil, nil, nil
 		}
 		release, err := id.AdmitOwners(ctx, transition, owners)
 		if err == nil && release == nil {
-			return nil, errors.New("batch commit admission: missing release")
+			return nil, nil, errors.New("batch commit admission: missing release")
 		}
-		return release, err
+		return release, nil, err
 	}
 
 	service := id.finalizationService
 	if service.db == nil || store == nil || store.writer != service.db {
-		return nil, errors.New("batch commit admission: authority and batch writer must share the service database")
+		return nil, nil, errors.New("batch commit admission: authority and batch writer must share the service database")
 	}
+	ancestry, err := readFinalizationAncestry(ctx, service.db, owners)
+	if err != nil {
+		return nil, nil, fmt.Errorf("batch commit admission: resolve managed ancestors: %w", err)
+	}
+	owners = ancestry.owners
 	authorities := make(map[string]*AgentFinalizationAuthority, len(id.finalizationAuthorities))
 	for _, authority := range id.finalizationAuthorities {
 		if authority == nil || authority.service != service || authority.service.db != service.db || !authority.identity.valid() {
-			return nil, errors.New("batch commit admission: conflicting authority binding")
+			return nil, nil, errors.New("batch commit admission: conflicting authority binding")
 		}
 		owner := authority.identity.SessionID
 		if _, exists := authorities[owner]; exists {
-			return nil, fmt.Errorf("batch commit admission: duplicate authority for owner %q", owner)
+			return nil, nil, fmt.Errorf("batch commit admission: duplicate authority for owner %q", owner)
 		}
 		authorities[owner] = authority
 	}
 
-	for owner := range authorities {
-		if _, affected := slices.BinarySearch(owners, owner); !affected {
-			delete(authorities, owner)
-		}
-	}
 	tickets := make([]batchFinalizationTicket, 0, len(owners))
 	for _, owner := range owners {
 		authority := authorities[owner]
 		if authority == nil {
 			exists, err := service.hasFinalizationScope(ctx, owner)
 			if err != nil {
-				return finalizationTicketRelease(ctx, service, tickets), fmt.Errorf("batch commit admission: inspect owner %q: %w", owner, err)
+				return finalizationTicketRelease(ctx, service, tickets), nil, fmt.Errorf("batch commit admission: inspect owner %q: %w", owner, err)
 			}
 			if exists {
-				return finalizationTicketRelease(ctx, service, tickets), fmt.Errorf("batch commit admission: explicit authority required for owner %q", owner)
+				return finalizationTicketRelease(ctx, service, tickets), nil, fmt.Errorf("batch commit admission: explicit authority required for owner %q", owner)
 			}
 			continue
 		}
 		if err := authority.revalidate(ctx); err != nil {
-			return finalizationTicketRelease(ctx, service, tickets), fmt.Errorf("batch commit admission: authority for owner %q: %w", owner, err)
+			return finalizationTicketRelease(ctx, service, tickets), nil, fmt.Errorf("batch commit admission: authority for owner %q: %w", owner, err)
 		}
 		ticket := uuid.NewString()
 		store := NewAgentFinalizationStore(service.db)
 		if _, err := store.Admit(ctx, authority.identity, ticket); err != nil {
-			return finalizationTicketRelease(ctx, service, tickets), fmt.Errorf("batch commit admission: admit owner %q: %w", owner, err)
+			return finalizationTicketRelease(ctx, service, tickets), nil, fmt.Errorf("batch commit admission: admit owner %q: %w", owner, err)
 		}
 		tickets = append(tickets, batchFinalizationTicket{identity: authority.identity, ticket: ticket})
 	}
@@ -95,15 +100,16 @@ func admitBatchCommitOwners(store *BatchStore, ctx context.Context, id BatchComm
 		if err != nil {
 			callbackReleases := combineTicketReleases(callbackRelease, finalizationTicketRelease(ctx, service, tickets))
 			if callbackRelease == nil {
-				return callbackReleases, errors.Join(err, errors.New("batch commit admission: callback error without release"))
+				return callbackReleases, nil, errors.Join(err, errors.New("batch commit admission: callback error without release"))
 			}
-			return callbackReleases, err
+			return callbackReleases, nil, err
 		}
 		if callbackRelease == nil {
-			return finalizationTicketRelease(ctx, service, tickets), errors.New("batch commit admission: missing release")
+			return finalizationTicketRelease(ctx, service, tickets), nil, errors.New("batch commit admission: missing release")
 		}
 	}
-	return combineTicketReleases(callbackRelease, finalizationTicketRelease(ctx, service, tickets)), nil
+	admission := &batchFinalizationAdmission{ancestry: ancestry, tickets: slices.Clone(tickets)}
+	return combineTicketReleases(callbackRelease, finalizationTicketRelease(ctx, service, tickets)), admission, nil
 }
 
 func finalizationTicketRelease(ctx context.Context, service *service, tickets []batchFinalizationTicket) func() error {

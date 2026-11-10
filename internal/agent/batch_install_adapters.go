@@ -802,9 +802,16 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 	}
 	// R11F P1-1: the commit hook reserves every Submit under the INVOKING
 	// session (OwnerFor); the fixed Owner stays the dormant default.
-	commitHook := session.NewBatchCommitHook(deps.Store, session.BatchCommitIdentity{
+	commitIdentity := session.BatchCommitIdentity{
 		Host: deps.Host, Runner: deps.RunnerID, Owner: owner, OwnerFor: batchCommitOwnerFor,
-	})
+	}
+	if authorityService, ok := deps.Sessions.(session.AgentFinalizationService); ok {
+		commitIdentity, err = authorityService.WithAgentFinalizationAuthorities(commitIdentity)
+		if err != nil {
+			return nil, fmt.Errorf("batch install: finalization authority: %w", err)
+		}
+	}
+	commitHook := session.NewBatchCommitHook(deps.Store, commitIdentity)
 	// Ordinary-completion wake bridge: after a SUCCESSFUL durable commit
 	// that selected completion notices, notify the owning session so the
 	// coordinator can run the reaction through its existing gates. The

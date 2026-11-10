@@ -64,9 +64,9 @@ func (a *AgentFinalizationAuthority) revalidate(ctx context.Context) error {
 	return nil
 }
 
-// WithAgentFinalizationAuthorities attaches only the explicitly named affected
-// owners; it never expands parent links to ancestors. Callers bind scopes before
-// constructing the hook. Unbound legacy owners are not cross-process locked.
+// WithAgentFinalizationAuthorities attaches trusted owner capabilities. Admission
+// also requires capabilities for managed batch ancestors, never session forks.
+// Unbound legacy owners retain their existing behavior.
 func (s *service) WithAgentFinalizationAuthorities(identity BatchCommitIdentity, authorities ...*AgentFinalizationAuthority) (BatchCommitIdentity, error) {
 	if s == nil || s.db == nil {
 		return BatchCommitIdentity{}, errors.New("finalization authority service unavailable")

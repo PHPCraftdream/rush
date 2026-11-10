@@ -54,7 +54,11 @@ func NewBatchCommitHook(store *BatchStore, id BatchCommitIdentity) func(context.
 	// serialized by the Runner, so a plain bool is safe.
 	closing := false
 	return func(ctx context.Context, t jobbatch.Transition) error {
-		err := batchCommitTransition(ctx, store, id, closing, t)
+		activeIdentity, err := batchFinalizationIdentityFromContext(ctx, id)
+		if err != nil {
+			return err
+		}
+		err = batchCommitTransition(ctx, store, activeIdentity, closing, t)
 		if err == nil && t.Event.Type == jobbatch.EventHostClosing {
 			closing = true
 		}
@@ -123,7 +127,7 @@ func batchCommitSubmit(ctx context.Context, store *BatchStore, id BatchCommitIde
 		}
 		notices[i] = p
 	}
-	release, err := admitBatchCommitOwners(store, ctx, id, t, []string{owner})
+	release, admission, err := admitBatchCommitOwners(store, ctx, id, t, []string{owner})
 	if release != nil {
 		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
 	}
@@ -131,7 +135,8 @@ func batchCommitSubmit(ctx context.Context, store *BatchStore, id BatchCommitIde
 		return err
 	}
 	res, err := store.ReserveIdentity(ctx, BatchReservation{
-		Owner: owner, Host: id.Host, RunnerID: id.Runner, RootID: string(e.Root),
+		finalizationAdmission: admission,
+		Owner:                 owner, Host: id.Host, RunnerID: id.Runner, RootID: string(e.Root),
 		ToolCallID: e.Ref, InputHash: batchCommitSpecHash(e.Spec),
 		OriginCLI: len(e.Ref) >= len("batch-cli:") && e.Ref[:len("batch-cli:")] == "batch-cli:",
 		Sequence:  int64(t.Sequence), Root: root, Notices: notices,
@@ -359,13 +364,14 @@ func batchCommitProject(ctx context.Context, store *BatchStore, id BatchCommitId
 		owners = append(owners, owner)
 		p.Roots = append(p.Roots, *g)
 	}
-	release, err := admitBatchCommitOwners(store, ctx, id, t, owners)
+	release, admission, err := admitBatchCommitOwners(store, ctx, id, t, owners)
 	if release != nil {
 		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
 	}
 	if err != nil {
 		return err
 	}
+	p.finalizationAdmission = admission
 	return store.Project(ctx, p)
 }
 
