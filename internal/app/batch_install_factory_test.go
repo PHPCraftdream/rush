@@ -55,6 +55,7 @@ func TestBatchRuntimeFactoryCommitBudgetOutlastsLockWait(t *testing.T) {
 	factory, err := newBatchRuntimeFactory(a, batchFactoryDeps())
 	require.NoError(t, err)
 	require.Greater(t, factory.deps.CommitTimeout, db.BusyTimeout)
+	require.Equal(t, 45*time.Second, factory.deps.CommitTimeout)
 	explicit := batchFactoryDeps()
 	explicit.CommitTimeout = time.Second
 	factory, err = newBatchRuntimeFactory(a, explicit)
@@ -76,6 +77,8 @@ func TestBatchRuntimeFactoryBuildDormant(t *testing.T) {
 	rt, install, err := factory.build(context.Background())
 	require.NoError(t, err)
 	t.Cleanup(rt.Stop)
+	require.Same(t, a.DB(), rt.commitDiagnostics.writer, "diagnostics must use the installed single writer")
+	require.Equal(t, factory.writer.Stats(), rt.commitDiagnostics.baseline, "dormant build captures the pool baseline")
 	// R11F P1-6: the deferred install keeps NO Runner at build — the Runner
 	// is constructed at BatchRuntime.Start through the RunnerFactory.
 	require.Nil(t, rt.Runner(), "dormant build constructs no Runner")
