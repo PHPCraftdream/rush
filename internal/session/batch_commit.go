@@ -34,9 +34,12 @@ type BatchCommitIdentity struct {
 	// root's owner from the row (RootOwner).
 	OwnerFor func(spec jobbatch.Spec) string
 
-	// AdmitOwners acquires all affected scope tickets before writer I/O.
-	// The release runs after commit or failure, including admission failure.
-	AdmitOwners func(context.Context, jobbatch.Transition, []string) (func(), error)
+	// AdmitOwners runs after durable tickets and before batch writer I/O. Its
+	// error-returning release is attempted after success or failure.
+	AdmitOwners func(context.Context, jobbatch.Transition, []string) (func() error, error)
+
+	finalizationService     *service
+	finalizationAuthorities []*AgentFinalizationAuthority
 }
 
 // NewBatchCommitHook returns a RunnerConfig.CommitHook adapter. It maps one
@@ -90,7 +93,7 @@ func batchCommitTransition(ctx context.Context, store *BatchStore, id BatchCommi
 // keyed by (owner, tool_call_id=e.Ref); the input hash is the canonical hash
 // of the accepted Spec, so concurrent matching retries attach once and
 // mismatched Specs are refused with ErrBatchInputMismatch.
-func batchCommitSubmit(ctx context.Context, store *BatchStore, id BatchCommitIdentity, t jobbatch.Transition) error {
+func batchCommitSubmit(ctx context.Context, store *BatchStore, id BatchCommitIdentity, t jobbatch.Transition) (retErr error) {
 	e := t.Event
 	// P1-1: the reservation's owner_session_id REFERENCES sessions(id), so
 	// it must be the invoking session, never the host UUID. The resolver
@@ -120,9 +123,9 @@ func batchCommitSubmit(ctx context.Context, store *BatchStore, id BatchCommitIde
 		}
 		notices[i] = p
 	}
-	release, err := admitBatchCommitOwners(ctx, id, t, []string{owner})
+	release, err := admitBatchCommitOwners(store, ctx, id, t, []string{owner})
 	if release != nil {
-		defer release()
+		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
 	}
 	if err != nil {
 		return err
@@ -253,7 +256,7 @@ func batchCommitControlState(c jobbatch.ControlState) string {
 // BatchProjection per root set inside one store transaction. Add appends
 // subtrees at accepted parent ordinals inside Project without a root Reserve;
 // Release and transitions touching other roots group exactly like any event.
-func batchCommitProject(ctx context.Context, store *BatchStore, id BatchCommitIdentity, closing bool, t jobbatch.Transition) error {
+func batchCommitProject(ctx context.Context, store *BatchStore, id BatchCommitIdentity, closing bool, t jobbatch.Transition) (retErr error) {
 	e := t.Event
 	groups := make(map[jobbatch.ID]*BatchRootProjection)
 	group := func(root jobbatch.ID) *BatchRootProjection {
@@ -356,9 +359,9 @@ func batchCommitProject(ctx context.Context, store *BatchStore, id BatchCommitId
 		owners = append(owners, owner)
 		p.Roots = append(p.Roots, *g)
 	}
-	release, err := admitBatchCommitOwners(ctx, id, t, owners)
+	release, err := admitBatchCommitOwners(store, ctx, id, t, owners)
 	if release != nil {
-		defer release()
+		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
 	}
 	if err != nil {
 		return err
