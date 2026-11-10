@@ -55,7 +55,7 @@ func TestResolveCredentialsModelsKeepsTenantCustomRoleModel(t *testing.T) {
 	testEnvironment := testEnv(t)
 	coord := newWorkerToolTestCoordinator(t, testEnvironment, false)
 	coord.cfg = config.NewLibraryStore(&config.Config{
-		Options: &config.Options{},
+		Options: &config.Options{Attribution: coord.cfg.Config().Options.Attribution},
 		Agents: map[string]config.Agent{
 			config.AgentCoder: {AllowedTools: []string{"view"}},
 		},
