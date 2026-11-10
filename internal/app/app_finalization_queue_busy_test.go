@@ -62,8 +62,9 @@ func TestFinalizationQueueBusyAppMappingRetainsConsumedFailure(t *testing.T) {
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{Sessions: sessions, Coordinator: adapter, PumpInstanceID: "pump"})
 	defer pump.Stop()
 	result, err := pump.DrainSessionNow(ctx, "owner")
-	require.Error(t, err)
-	require.NotEqual(t, session.DrainComplete, result)
+	// Initial contention is DrainNoWork/nil, never a completed continuation.
+	require.NoError(t, err)
+	require.Equal(t, session.DrainNoWork, result)
 	require.Equal(t, 1, probe.dispatches, "actual nil/nil app mapping does not report execution")
 	var consumed, attempts int64
 	var code, status string
