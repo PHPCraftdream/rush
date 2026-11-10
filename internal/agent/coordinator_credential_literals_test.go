@@ -50,8 +50,13 @@ func credentialLiteralStore(probe *credentialLiteralProbe) *config.ConfigStore {
 }
 
 func TestResolveCredentialsModelsKeepsTenantCustomRoleModel(t *testing.T) {
+	t.Setenv("RUSH_GLOBAL_DATA", t.TempDir())
+	t.Setenv("RUSH_GLOBAL_CONFIG", t.TempDir())
 	cfg := config.NewLibraryStore(&config.Config{
 		Options: &config.Options{},
+		Agents: map[string]config.Agent{
+			config.AgentCoder: {AllowedTools: []string{"view"}},
+		},
 		Providers: csync.NewMapFrom(map[string]config.ProviderConfig{
 			"operator": {ID: "operator", Type: openai.Name, APIKey: "operator-key", Models: []catwalk.Model{{ID: "operator-model"}, {ID: "fast-model"}}},
 		}),
@@ -79,6 +84,8 @@ func TestResolveCredentialsModelsKeepsTenantCustomRoleModel(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "tenant-analyst", resolved.smart.ModelCfg.Model,
 		"a covered custom tenant slot must not be overwritten by the operator snapshot")
+	require.Len(t, resolved.tools, 1, "the custom-role call must build its own admitted toolset")
+	require.Equal(t, "view", resolved.tools[0].Info().Name)
 }
 
 func TestResolveCredentialsModelsUsesInvocationEffortWithoutSessionInheritance(t *testing.T) {

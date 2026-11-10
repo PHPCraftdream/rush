@@ -85,15 +85,21 @@ func TestCustomRoleContinuationRejectsForgedBroaderStoredContract(t *testing.T) 
 	require.ErrorIs(t, err, ErrAgentRoleMismatch)
 }
 
-func TestCustomRoleSnapshotSurvivesConfigRemoval(t *testing.T) {
+func TestCustomRoleDurableContractRejectsRemovedRoleOnNextResolve(t *testing.T) {
 	cfg := customRoleResolverConfig()
 	contract, err := ResolveRoleContract(cfg, "analyst", nil)
 	require.NoError(t, err)
-	delete(cfg.Roles, "analyst")
-	selected, _, err := currentOrSnapshotRoleModel(cfg, contract)
+	data := ToSessionAgentCallData(SessionAgentCall{SessionID: "removed-role", RoleContract: contract})
+	raw, err := json.Marshal(data)
 	require.NoError(t, err)
-	require.Equal(t, "m", selected.Model)
-	require.Equal(t, "high", selected.ReasoningEffort)
+	var decoded session.SessionAgentCallData
+	require.NoError(t, json.Unmarshal(raw, &decoded))
+	restored, err := FromSessionAgentCallData(decoded)
+	require.NoError(t, err)
+	delete(cfg.Roles, "analyst")
+	_, _, err = currentOrSnapshotRoleModel(cfg, restored.RoleContract)
+	require.ErrorIs(t, err, ErrAgentRoleUnconfigured)
+	require.True(t, contract.Equal(restored.RoleContract), "refusal must preserve the durable binding")
 }
 
 func TestCustomRoleResolverRejectsUnavailableExactKey(t *testing.T) {

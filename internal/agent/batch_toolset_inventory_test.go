@@ -297,10 +297,7 @@ func TestWorkerStopScopeComesFromTrustedCoordinatorBuild(t *testing.T) {
 		capturedMu sync.Mutex
 		captured   []BatchInvocation
 	)
-	controls := make([]fantasy.AgentTool, 0, 1)
-	controls = append(controls, fantasy.NewAgentTool("batch_stop", "control", func(context.Context, batchModelParams, fantasy.ToolCall) (fantasy.ToolResponse, error) {
-		return fantasy.NewTextResponse("ok"), nil
-	}))
+	controls := batchInventoryControls()
 	controlInstaller := modelControlCapture{
 		modelControlInventory: modelControlInventory{tools: controls},
 		capture: func(inv BatchInvocation) {

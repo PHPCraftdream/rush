@@ -124,21 +124,6 @@ func cloneOptionValue(value any) any {
 }
 
 func roleContractPromptSource(cfg *config.Config, contract *session.RoleContract) (config.SelectedModel, string, error) {
-	if cfg == nil || contract == nil || contract.Name == "" {
-		return currentOrSnapshotRoleModel(cfg, contract)
-	}
-	if err := contract.Validate(); err != nil {
-		return config.SelectedModel{}, "", fmt.Errorf("%w: invalid custom role contract: %v", ErrAgentRoleUnconfigured, err)
-	}
-	if definition, ok := cfg.Roles[contract.Name]; ok {
-		if err := definition.Validate(); err != nil {
-			return config.SelectedModel{}, "", fmt.Errorf("%w: custom role %q: %v", ErrAgentRoleUnconfigured, contract.Name, err)
-		}
-		if _, ok := cfg.Providers.Get(definition.Provider); !ok {
-			return config.SelectedModel{}, "", fmt.Errorf("%w: provider %q for custom role %q", ErrAgentRoleUnconfigured, definition.Provider, contract.Name)
-		}
-		return cloneSelectedModel(definition.SelectedModel), hbSourceSlotLive, nil
-	}
 	return currentOrSnapshotRoleModel(cfg, contract)
 }
 
@@ -149,14 +134,18 @@ func currentOrSnapshotRoleModel(cfg *config.Config, contract *session.RoleContra
 	if err := contract.Validate(); err != nil {
 		return config.SelectedModel{}, "", fmt.Errorf("%w: invalid custom role contract: %v", ErrAgentRoleUnconfigured, err)
 	}
-	selected := fromSessionModelCfg(contract.Model)
-	if selected.Provider == "" || selected.Model == "" {
-		return config.SelectedModel{}, "", fmt.Errorf("%w: custom role snapshot is incomplete", ErrAgentRoleUnconfigured)
+	definition, ok := cfg.Roles[contract.Name]
+	if !ok {
+		return config.SelectedModel{}, "", fmt.Errorf("%w: custom role %q", ErrAgentRoleUnconfigured, contract.Name)
 	}
-	if _, ok := cfg.Providers.Get(selected.Provider); !ok {
-		return config.SelectedModel{}, "", fmt.Errorf("%w: snapshot provider %q for custom role %q", ErrAgentRoleUnconfigured, selected.Provider, contract.Name)
+	if err := definition.Validate(); err != nil {
+		return config.SelectedModel{}, "", fmt.Errorf("%w: custom role %q: %v", ErrAgentRoleUnconfigured, contract.Name, err)
 	}
-	return cloneSelectedModel(selected), hbSourceSessionOverride, nil
+	if _, ok := cfg.Providers.Get(definition.Provider); !ok {
+		return config.SelectedModel{}, "", fmt.Errorf("%w: provider %q for custom role %q", ErrAgentRoleUnconfigured, definition.Provider, contract.Name)
+	}
+	// The caller pins cfg for this request; durable tool ceilings stay unchanged.
+	return cloneSelectedModel(definition.SelectedModel), hbSourceSlotLive, nil
 }
 
 func cloneRoleContractFromCallOptions(opts *CallOptions) *session.RoleContract {
