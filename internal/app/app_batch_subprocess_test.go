@@ -113,6 +113,7 @@ func batchFaultSubprocessHelper() {
 	if err != nil {
 		os.Exit(3)
 	}
+	defer func() { _ = db.ReleaseConn(writer) }()
 	diagnostic := batchCommitDiagnostics{writer: writer, baseline: writer.Stats()}
 	held, err := writer.Conn(context.Background())
 	if err != nil {

@@ -83,6 +83,7 @@ func TestCommitFaultPreservesCauseWithoutExposingContent(t *testing.T) {
 	secret := errors.New("secret-hook-payload")
 	for _, kind := range []string{"error", "panic"} {
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			r, executor, _, ctx := runtimeTestCommitHooks(t, func(ctx context.Context, _ Transition) error {
 				MarkCommitPhase(ctx, CommitPhaseStatements)
 				if kind == "panic" {
