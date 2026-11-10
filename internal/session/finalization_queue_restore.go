@@ -18,6 +18,13 @@ type AgentFinalizationQueueService interface {
 // A crash after consumption leaves the durable obligation unresolved, not ready
 // for an automatic replay. Consumed receipts survive queue-row deletion.
 func (s *service) RestoreAgentFinalizationQueue(ctx context.Context, rowID string, data SessionAgentCallData) (AgentFinalizationContext, error) {
+	return s.restoreFinalizationQueue(ctx, rowID, data, true)
+}
+
+func (s *service) restoreFinalizationQueue(ctx context.Context, rowID string, data SessionAgentCallData, consume bool) (AgentFinalizationContext, error) {
+	if err := ctx.Err(); err != nil {
+		return AgentFinalizationContext{}, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return AgentFinalizationContext{}, err
@@ -64,8 +71,11 @@ func (s *service) RestoreAgentFinalizationQueue(ctx context.Context, rowID strin
 		return AgentFinalizationContext{}, ErrAgentFinalizationChanged
 	}
 	proof, _ := ctx.Value(agentFinalizationQueueLeaseKey{}).(*agentFinalizationQueueLease)
-	if proof == nil || proof.writer != s.db || proof.rowID != rowID || proof.token == "" || proof.token != token {
+	if proof == nil || proof.writer != s.db || proof.rowID != rowID || proof.token == "" {
 		return AgentFinalizationContext{}, ErrAgentFinalizationChanged
+	}
+	if proof.token != token {
+		return AgentFinalizationContext{}, finalizationQueueLeaseChanged()
 	}
 	var actualOwner, raw, status string
 	var leasedBy sql.NullString
@@ -78,7 +88,7 @@ func (s *service) RestoreAgentFinalizationQueue(ctx context.Context, rowID strin
 	}
 	if actualOwner != owner || status != RunQueueStatusLeased || !leasedBy.Valid || leasedBy.String != proof.leasedBy ||
 		!leasedAt.Valid || leasedAt.Int64 != proof.leasedAt || attempts != proof.attempts || !expires.Valid || expires.Int64 <= time.Now().Unix() {
-		return AgentFinalizationContext{}, ErrAgentFinalizationChanged
+		return AgentFinalizationContext{}, finalizationQueueLeaseChanged()
 	}
 	var actual SessionAgentCallData
 	if err := json.Unmarshal([]byte(raw), &actual); err != nil {
@@ -135,7 +145,10 @@ func (s *service) RestoreAgentFinalizationQueue(ctx context.Context, rowID strin
 			return AgentFinalizationContext{}, ErrAgentFinalizationChanged
 		}
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE session_agent_finalization_continuations SET consumed=1
+	if !consume {
+		return snapshot, nil
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE session_agent_finalization_continuations SET consumed=1, failure_code=''
 		WHERE row_id=? AND lease_token=? AND consumed=0`, rowID, proof.token)
 	if err != nil {
 		return AgentFinalizationContext{}, err

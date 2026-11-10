@@ -685,15 +685,18 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		}
 		call = reclaimed
 		inheritReplacementIdentityCallback(&previousCall, &call)
-		if err := persistCallModels(call); err != nil {
-			a.noteRefusal(call.SessionID, err)
-			if durableErr := a.restartOrphanedWithRetry([]SessionAgentCall{call}); durableErr != nil {
-				err = fmt.Errorf("%w; failed to durably recover the admitted call: %v", err, durableErr)
+		driverBindingErr := a.bindFinalizationDriverCall(call)
+		if driverBindingErr == nil {
+			if err := persistCallModels(call); err != nil {
+				a.noteRefusal(call.SessionID, err)
+				if durableErr := a.restartOrphanedWithRetry([]SessionAgentCall{call}); durableErr != nil {
+					err = fmt.Errorf("%w; failed to durably recover the admitted call: %v", err, durableErr)
+				}
+				if replacedDurableCallID != "" {
+					return nil, fmt.Errorf("%w: durable call %q was replaced but never executed; replacement failed: %s", session.ErrCallQueuedNotExecuted, replacedDurableCallID, err)
+				}
+				return nil, notAttempted(call, err)
 			}
-			if replacedDurableCallID != "" {
-				return nil, fmt.Errorf("%w: durable call %q was replaced but never executed; replacement failed: %s", session.ErrCallQueuedNotExecuted, replacedDurableCallID, err)
-			}
-			return nil, notAttempted(call, err)
 		}
 		mb.setCurrentCall(call)
 		// R3-4: activate THIS call's carried restricted-run policy exactly
@@ -745,7 +748,15 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 			replacementError = ""
 		}
 		att := a.newDrainAttempt(call)
-		result, next, hasNext, err := a.runTurn(turnCtx, call, lk, epoch, runCancel, att)
+		var result *fantasy.AgentResult
+		var next SessionAgentCall
+		var hasNext bool
+		var err error
+		if driverBindingErr != nil {
+			err = &ErrCallAlreadyAttempted{Err: driverBindingErr}
+		} else {
+			result, next, hasNext, err = a.runTurn(turnCtx, call, lk, epoch, runCancel, att)
+		}
 		err = a.afterTurn(call, att, err, turnCtx.Err() != nil)
 		if replacedDurableCallID != "" && call.LogicalCallID != replacedDurableCallID && err != nil {
 			replacementError = err.Error()

@@ -4,9 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 
 	"github.com/google/uuid"
 )
+
+// ErrAgentFinalizationLeaseChanged permits only a fresh real lease to retry.
+var ErrAgentFinalizationLeaseChanged = errors.New("finalization_queue_lease_changed")
+
+func finalizationQueueLeaseChanged() error {
+	return errors.Join(ErrAgentFinalizationChanged, ErrAgentFinalizationLeaseChanged)
+}
 
 type agentFinalizationQueueLease struct {
 	writer                 *sql.DB

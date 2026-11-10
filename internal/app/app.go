@@ -58,6 +58,9 @@ func (a *coordinatorAdapterImpl) Run(ctx context.Context, callData session.Sessi
 	if coord == nil {
 		return nil, fmt.Errorf("app: coordinator not ready yet")
 	}
+	if handled, result, err := runMarkedFinalizationQueue(ctx, coord, callData); handled {
+		return result, err
+	}
 
 	// Convert session.SessionAgentCallData to agent.SessionAgentCall
 	// This requires rebuilding the full Model from the serialized ModelCfg,

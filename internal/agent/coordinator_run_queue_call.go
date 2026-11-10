@@ -96,6 +96,17 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 		releaseDurableContinuationOwner(c.diskCaps, bindingID, rowID)
 	}
 
+	var rebuiltCallOptions *CallOptions
+	defer func() {
+		if value := recover(); value != nil {
+			releasePrep()
+			if rebuiltCallOptions != nil {
+				rebuiltCallOptions.buildScope.close()
+			}
+			panic(value)
+		}
+	}()
+
 	if role := RequestedModelRole(data.RequestedModelRole); role != "" && !role.valid() {
 		releasePrep()
 		return SessionAgentCall{}, &ErrCallAlreadyAttempted{Err: ErrAgentRoleInvalid}
@@ -222,7 +233,6 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 	// written by a newer/older binary's incompatible schema fails the
 	// whole restart closed instead of silently running with whatever
 	// subset of fields happened to decode.
-	var rebuiltCallOptions *CallOptions
 	if data.CallOptionsSpec != nil || data.FolderScopeSpec != nil {
 		var err error
 		rebuiltCallOptions, err = fromSessionCallOptionsSpec(data.CallOptionsSpec)
@@ -381,7 +391,7 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
-	runAgent, driverErr := c.finalizationQueueDriver(call)
+	runAgent, driverErr := c.finalizationQueueDriverForRun(ctx, call)
 	if driverErr != nil {
 		return nil, &ErrCallAlreadyAttempted{Err: driverErr}
 	}

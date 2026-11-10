@@ -76,6 +76,7 @@ func (d subAgentDriver) callFor(prompt string) SessionAgentCall {
 	call := callFromActive(d.call)
 	call.Prompt = prompt
 	call.finalizationAuthorities = d.finalizationAuthorities
+	call.driverGeneration = d.generation
 	if call.CallOptions != nil {
 		copy := *call.CallOptions
 		call.CallOptions = &copy
