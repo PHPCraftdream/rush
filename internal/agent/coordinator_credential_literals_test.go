@@ -52,7 +52,9 @@ func credentialLiteralStore(probe *credentialLiteralProbe) *config.ConfigStore {
 func TestResolveCredentialsModelsKeepsTenantCustomRoleModel(t *testing.T) {
 	t.Setenv("RUSH_GLOBAL_DATA", t.TempDir())
 	t.Setenv("RUSH_GLOBAL_CONFIG", t.TempDir())
-	cfg := config.NewLibraryStore(&config.Config{
+	testEnvironment := testEnv(t)
+	coord := newWorkerToolTestCoordinator(t, testEnvironment, false)
+	coord.cfg = config.NewLibraryStore(&config.Config{
 		Options: &config.Options{},
 		Agents: map[string]config.Agent{
 			config.AgentCoder: {AllowedTools: []string{"view"}},
@@ -68,7 +70,6 @@ func TestResolveCredentialsModelsKeepsTenantCustomRoleModel(t *testing.T) {
 			config.SelectedModelTypeFast:  {Provider: "operator", Model: "fast-model"},
 		},
 	}, t.TempDir())
-	coord := &coordinator{cfg: cfg}
 	creds := &CredentialSet{
 		Credentials: []Credential{{Provider: "tenant", Type: ProviderTypeOpenAI, APIKey: "tenant-key"}},
 		Models: map[Role]ModelChoice{
@@ -77,7 +78,7 @@ func TestResolveCredentialsModelsKeepsTenantCustomRoleModel(t *testing.T) {
 			Role("analyst"): {Provider: "tenant", Model: "tenant-analyst"},
 		},
 	}
-	contract, err := ResolveRoleContract(cfg.Config(), "analyst", nil)
+	contract, err := ResolveRoleContract(coord.cfg.Config(), "analyst", nil)
 	require.NoError(t, err)
 	ctx := withCallCredentials(WithCallOptions(t.Context(), &CallOptions{RoleContract: contract}), creds)
 	resolved, err := coord.resolveCredentialsModels(ctx, "", creds)
