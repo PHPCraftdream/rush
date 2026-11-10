@@ -270,7 +270,22 @@ func (s *SessionNoticeStore) InsertSessionNoticeReturningID(ctx context.Context,
 	return row.ID, nil
 }
 
-func (s *SessionNoticeStore) insertSessionNotice(ctx context.Context, owner, kind, text string, wake bool, jobToolCallID string) (db.SessionNotice, error) {
+func (s *SessionNoticeStore) insertSessionNotice(ctx context.Context, owner, kind, text string, wake bool, jobToolCallID string) (row db.SessionNotice, retErr error) {
+	release, admission, err := admitFinalizationMutation(ctx, s.sqlDB, owner)
+	if release != nil {
+		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
+	}
+	if err != nil {
+		return db.SessionNotice{}, err
+	}
+	tx, err := s.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return db.SessionNotice{}, err
+	}
+	defer tx.Rollback()
+	if err := validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
+		return db.SessionNotice{}, err
+	}
 	wakeInt := int64(0)
 	if wake {
 		wakeInt = 1
@@ -280,10 +295,17 @@ func (s *SessionNoticeStore) insertSessionNotice(ctx context.Context, owner, kin
 		jobToolCallIDParam = sql.NullString{String: jobToolCallID, Valid: true}
 	}
 	now := time.Now().Unix()
-	return s.q.InsertSessionNotice(ctx, db.InsertSessionNoticeParams{
+	row, err = db.New(tx).InsertSessionNotice(ctx, db.InsertSessionNoticeParams{
 		Owner: owner, Kind: kind, Text: text, Wake: wakeInt,
 		JobToolCallID: jobToolCallIDParam, CreatedAt: now, UpdatedAt: now,
 	})
+	if err != nil {
+		return db.SessionNotice{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return db.SessionNotice{}, err
+	}
+	return row, nil
 }
 
 // ListSessionNotices is the legacy reader (notice_pull.go), unchanged:

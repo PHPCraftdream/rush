@@ -70,6 +70,14 @@ func admitBatchCommitOwners(store *BatchStore, ctx context.Context, id BatchComm
 	}
 
 	tickets := make([]batchFinalizationTicket, 0, len(owners))
+	defer func() {
+		if value := recover(); value != nil {
+			if release := finalizationTicketRelease(ctx, service, tickets); release != nil {
+				_ = release() // A failed release remains a durable hold.
+			}
+			panic(value)
+		}
+	}()
 	for _, owner := range owners {
 		authority := authorities[owner]
 		if authority == nil {

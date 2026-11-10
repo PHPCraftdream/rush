@@ -57,9 +57,16 @@ var (
 // different child fails with ErrBatchBindChildConflict. Any zero-row fenced
 // update after a passing classification is ErrBatchBindLostUpdate and fails
 // closed.
-func (s *BatchStore) BatchBindChildSession(ctx context.Context, owner, host, runner, root, node string, token uint64, child string) error {
+func (s *BatchStore) BatchBindChildSession(ctx context.Context, owner, host, runner, root, node string, token uint64, child string) (retErr error) {
 	if token >= batchCommitInt63 {
 		return ErrBatchValueOverflow
+	}
+	release, admission, err := admitFinalizationMutation(ctx, s.writer, owner, child)
+	if release != nil {
+		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
+	}
+	if err != nil {
+		return err
 	}
 	tok := int64(token)
 	tx, err := s.writer.BeginTx(ctx, nil)
@@ -125,6 +132,9 @@ func (s *BatchStore) BatchBindChildSession(ctx context.Context, owner, host, run
 		return ErrBatchBindChildForeign
 	}
 
+	if err := validateBatchFinalizationTx(ctx, tx, []string{owner, child}, admission); err != nil {
+		return err
+	}
 	res, err := tx.ExecContext(ctx, `
 UPDATE batch_nodes
 SET child_session_id = ?, updated_at = ?

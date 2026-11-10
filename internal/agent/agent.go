@@ -214,6 +214,8 @@ type SessionAgentCall struct {
 	// RequestedModelRole and its source do not carry policy authority.
 	RequestedModelRole   RequestedModelRole
 	RequestedModelSource string
+	// In-process capabilities only; durable IDs cannot reconstruct authority.
+	finalizationAuthorities session.AgentFinalizationContext
 	// SystemPromptOverride, if non-empty, replaces the agent's global system prompt
 	// for this single call. Used to apply per-session system prompts from the DB.
 	SystemPromptOverride string

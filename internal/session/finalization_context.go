@@ -3,7 +3,48 @@ package session
 import (
 	"context"
 	"errors"
+	"slices"
 )
+
+// AgentFinalizationContext is an opaque, in-process capability snapshot.
+// It is not a serialized identity or permission to bind another incarnation.
+type AgentFinalizationContext struct {
+	authorities []*AgentFinalizationAuthority
+}
+
+func CaptureAgentFinalizationContext(ctx context.Context) AgentFinalizationContext {
+	if ctx == nil {
+		return AgentFinalizationContext{}
+	}
+	authorities, _ := ctx.Value(agentFinalizationAuthoritiesKey{}).([]*AgentFinalizationAuthority)
+	return AgentFinalizationContext{authorities: slices.Clone(authorities)}
+}
+
+// Restore merges without replacing any conflicting authority already present.
+func (snapshot AgentFinalizationContext) Restore(ctx context.Context) (context.Context, error) {
+	return WithAgentFinalizationContext(ctx, snapshot.authorities...)
+}
+
+// RestoreCall refuses a carried owner capability for another logical call.
+func (snapshot AgentFinalizationContext) RestoreCall(ctx context.Context, sessionID, logicalID string) (context.Context, error) {
+	restored, err := snapshot.Restore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	authorities, _ := restored.Value(agentFinalizationAuthoritiesKey{}).([]*AgentFinalizationAuthority)
+	for _, authority := range authorities {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if authority.identity.SessionID == sessionID && authority.identity.LogicalCallID != logicalID {
+			return nil, ErrAgentFinalizationChanged
+		}
+		if err := authority.revalidate(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return restored, nil
+}
 
 type agentFinalizationAuthoritiesKey struct{}
 

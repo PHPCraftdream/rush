@@ -439,7 +439,11 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	if params.pctHandoff != nil {
 		pctReleases = params.pctHandoff.pctClaimDriver()
 	}
-	generation := c.subAgentDrivers.register(session.ID, subAgentDriver{agent: params.Agent, call: callTemplate, parentSessionID: params.SessionID, slotRole: driverSlotRole, pctReleases: pctReleases})
+	generation := c.subAgentDrivers.register(session.ID, subAgentDriver{
+		agent: params.Agent, call: callTemplate, parentSessionID: params.SessionID,
+		slotRole: driverSlotRole, pctReleases: pctReleases,
+		finalizationAuthorities: sessionpkg.CaptureAgentFinalizationContext(ctx),
+	})
 	pctDriverTransferred = generation != 0
 	if !pctDriverTransferred {
 		pctReleaseScopeRefs(pctReleases)

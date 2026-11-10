@@ -40,6 +40,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 	// (idempotent). Evaluated immediately so the captured scope cannot be
 	// affected by any later field mutation.
 	defer deferReleaseRetainedRunScope(&call)()
+	restoredCtx, authorityErr := a.restoreFinalizationCallContext(ctx, &call)
+	if authorityErr != nil {
+		return nil, authorityErr
+	}
+	ctx = restoredCtx
 	// R7-1: capture the DIRECT caller's admission recorder, then detach it
 	// for everything downstream. A queued admission is only this Run
 	// invocation's own outcome; a nested Run reached through this turn's
