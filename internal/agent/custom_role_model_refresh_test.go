@@ -9,6 +9,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/ktavcodec"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -86,14 +87,35 @@ func TestCustomRoleDiskRefreshPinsResolvedModelPromptAndTools(t *testing.T) {
 		"models":    map[string]config.SelectedModel{"smart": model, "fast": model},
 		"roles":     roles,
 	}
-	writeConfig := func() {
+	jsonConfigPath := filepath.Join(env.workingDir, "rush.json")
+	writeConfig := func(path string) map[string]config.CustomRole {
 		t.Helper()
 		raw, err := json.Marshal(document)
 		require.NoError(t, err)
-		require.NoError(t, os.WriteFile(filepath.Join(env.workingDir, "rush.json"), raw, 0o600))
+		if filepath.Ext(path) == ".ktav" {
+			raw, err = ktavcodec.ConvertJSONToKtav(raw)
+			require.NoError(t, err)
+		}
+		require.NoError(t, os.WriteFile(path, raw, 0o600))
+		diskBytes, err := os.ReadFile(path)
+		require.NoError(t, err)
+		if filepath.Ext(path) == ".ktav" {
+			tree, err := ktavcodec.DecodeKtav(diskBytes)
+			require.NoError(t, err)
+			diskBytes, err = ktavcodec.ToJSON(tree)
+			require.NoError(t, err)
+		}
+		var serialized struct {
+			Roles map[string]config.CustomRole `json:"roles"`
+		}
+		require.NoError(t, json.Unmarshal(diskBytes, &serialized))
+		return serialized.Roles
 	}
-	writeConfig()
+	writeConfig(jsonConfigPath)
 	require.NoError(t, coord.cfg.ReloadFromDisk(t.Context()))
+	configPath := filepath.Join(env.workingDir, "rush.ktav")
+	require.FileExists(t, configPath)
+	require.Contains(t, coord.cfg.LoadedPaths(), configPath)
 	pinned, generation := coord.cfg.Snapshot()
 	require.NotNil(t, pinned.GetModel(provider.ID, "before-refresh"))
 	require.NotNil(t, pinned.GetModel(provider.ID, "after-refresh"))
@@ -112,7 +134,9 @@ func TestCustomRoleDiskRefreshPinsResolvedModelPromptAndTools(t *testing.T) {
 	changed.Model = "after-refresh"
 	changed.Tools = nil
 	roles["analyst"] = changed
-	writeConfig()
+	serializedRoles := writeConfig(configPath)
+	require.Equal(t, "after-refresh", serializedRoles["analyst"].Model)
+	require.Nil(t, serializedRoles["analyst"].Tools)
 	// Drive the production five-second poller's tick without wall-clock waiting.
 	result, err := coord.cfg.PollConfigDiskOnce(t.Context())
 	require.NoError(t, err)
@@ -121,7 +145,10 @@ func TestCustomRoleDiskRefreshPinsResolvedModelPromptAndTools(t *testing.T) {
 	current, nextGeneration := coord.cfg.Snapshot()
 	require.Greater(t, nextGeneration, generation)
 	require.Equal(t, "before-refresh", pinned.Roles["analyst"].Model, "publication must not mutate the request's config snapshot")
+	require.NotNil(t, pinned.Roles["analyst"].Tools)
+	require.Equal(t, []string{"view"}, *pinned.Roles["analyst"].Tools)
 	require.Equal(t, "after-refresh", current.Roles["analyst"].Model)
+	require.Nil(t, current.Roles["analyst"].Tools)
 	require.NotNil(t, current.GetModel(provider.ID, "after-refresh"))
 	require.NoError(t, config.ValidateCustomRoleSelection(current, current.Roles["analyst"]))
 	after, err := coord.resolveSessionModels(ctx, "session")
@@ -138,7 +165,8 @@ func TestCustomRoleDiskRefreshPinsResolvedModelPromptAndTools(t *testing.T) {
 	require.Equal(t, "smart-provider|before-refresh|before-refresh", finished.systemPrompt)
 	require.True(t, contract.Equal(callOptionsFrom(ctx).RoleContract))
 	delete(roles, "analyst")
-	writeConfig()
+	serializedRoles = writeConfig(configPath)
+	require.NotContains(t, serializedRoles, "analyst")
 	result, err = coord.cfg.PollConfigDiskOnce(t.Context())
 	require.NoError(t, err)
 	require.NoError(t, result.ReloadErr)
