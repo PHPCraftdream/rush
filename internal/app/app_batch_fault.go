@@ -33,6 +33,7 @@ var batchFaultExit = os.Exit
 func (rt *BatchRuntime) handleFault(faultErr error) {
 	// Fence first: from this instant no normal cleanup path may release.
 	rt.fenced.Store(true)
+	diagnostics := rt.commitDiagnostics.snapshot(faultErr)
 
 	wait := rt.cfg.ContainmentWait
 	if wait <= 0 {
@@ -46,9 +47,11 @@ func (rt *BatchRuntime) handleFault(faultErr error) {
 	// the Runner's own containment a moment. Never unbounded; never a drain.
 	<-after(wait)
 
-	slog.Error("Batch runtime: commit fault - exiting process",
-		"error", faultErr, "exit_code", BatchFaultExitCode,
-		"containment", wait.String())
+	attrs := append([]any{
+		"error", batchCommitSafeFaultText(faultErr), "exit_code", BatchFaultExitCode,
+		"containment", wait.String(),
+	}, diagnostics...)
+	slog.Error("Batch runtime: commit fault - exiting process", attrs...)
 
 	// Retain, don't release: forget the in-memory host-lock handle the same
 	// way the forced shutdown path does (CloseKeepLock), leaving the OS lock
