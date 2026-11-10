@@ -28,7 +28,9 @@ func TestEditNoWriteProofPrecedesPermissionsAndHistory(t *testing.T) {
 		{"equal replacement", "alpha\nbeta\n", "beta", "beta", "equal_content", false},
 		{"equal all replacements", "alpha\nbeta\n", "beta", "beta", "equal_content", true},
 		{"equal CRLF replacement", "alpha\r\nbeta\r\n", "beta", "beta", "equal_content", false},
-		{"multiple matches untagged", "alpha\nalpha\n", "alpha", "new", "", false},
+		{"multiple matches", "alpha\nalpha\n", "alpha", "new", "multiple_matches", false},
+		{"multiple equal matches", "alpha\nalpha\n", "alpha", "alpha", "multiple_matches", false},
+		{"multiple deletions", "alpha\nalpha\n", "alpha", "", "multiple_matches", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -111,4 +113,34 @@ func TestEditPostWriteHistoryErrorHasNoNoWriteProof(t *testing.T) {
 	content, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, "beta\n", string(content), "history failure must not be mistaken for a no-write outcome")
+}
+
+func TestEditMultipleMatchesProofRequiresSentinelAndNoRefresh(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		err       error
+		refreshed bool
+		proof     bool
+	}{
+		{"typed", errEditMultipleMatches, false, true},
+		{"generic same text", errors.New(errEditMultipleMatches.Error()), false, false},
+		{"typed refreshed", errEditMultipleMatches, true, false},
+		{"generic missing same text", errors.New(errEditOldStringNotFound.Error()), false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			response := editReplacementErrorResponse(tc.err, tc.refreshed)
+			require.True(t, response.IsError)
+			require.Equal(t, tc.err.Error(), response.Content)
+			if !tc.proof {
+				require.Empty(t, response.Metadata)
+				return
+			}
+			var proof EditEffectMetadata
+			require.NoError(t, json.Unmarshal([]byte(response.Metadata), &proof))
+			require.True(t, proof.EditEffect.NoWrite)
+			require.Equal(t, "multiple_matches", proof.EditEffect.Reason)
+		})
+	}
 }
