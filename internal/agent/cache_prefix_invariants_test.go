@@ -16,6 +16,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type cachePrefixIdentityTool struct {
+	fantasy.AgentTool
+}
+
 func TestCachePrefix_ContextBuildDeterministicDedupeAndRefresh(t *testing.T) {
 	isolateAllGlobalConfigPaths(t)
 	root := t.TempDir()
@@ -142,6 +146,10 @@ func TestCachePrefix_ToolOrderStableAndMarkerPreservesPinnedSlices(t *testing.T)
 		require.Equal(t, forward[i].Info(), pinnedReverse[i].Info(), "reversed pinCallTools definition differs for %q", name)
 	}
 
+	// Production tools may be values; use explicit pointer identities for the marker contract.
+	for i, tool := range pinnedForward {
+		pinnedForward[i] = &cachePrefixIdentityTool{AgentTool: tool}
+	}
 	original := slices.Clone(pinnedForward)
 	marked := withProviderOptionsOnLast(pinnedForward, cacheOpts())
 	require.Equal(t, pinnedToolNames(original), pinnedToolNames(marked))
@@ -158,7 +166,10 @@ func TestCachePrefix_ToolOrderStableAndMarkerPreservesPinnedSlices(t *testing.T)
 		require.Same(t, original[i], marked[i])
 	}
 
-	customOrder := []fantasy.AgentTool{newProviderOptionsTestTool("zeta-custom"), newProviderOptionsTestTool("alpha-custom")}
+	customOrder := []fantasy.AgentTool{
+		&cachePrefixIdentityTool{AgentTool: newProviderOptionsTestTool("zeta-custom")},
+		&cachePrefixIdentityTool{AgentTool: newProviderOptionsTestTool("alpha-custom")},
+	}
 	customOriginal := slices.Clone(customOrder)
 	customMarked := withProviderOptionsOnLast(customOrder, cacheOpts())
 	require.Equal(t, []string{"zeta-custom", "alpha-custom"}, pinnedToolNames(customMarked), "marking must preserve intentional pinned order, not sort it")
