@@ -274,7 +274,7 @@ func processMultiEditWithCreation(edit editContext, params MultiEditParams, call
 }
 
 func processMultiEditExistingFile(edit editContext, params MultiEditParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	sessionID, oldContent, isCrlf, resp, err := loadExistingFile(edit, params.FilePath, "session ID is required for editing a file")
+	sessionID, oldContent, isCrlf, readRefreshed, resp, err := loadExistingFileWithReadRefresh(edit, params.FilePath, "session ID is required for editing a file")
 	if err != nil {
 		return fantasy.ToolResponse{}, err
 	}
@@ -286,17 +286,24 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 
 	// Check if content actually changed
 	if oldContent == currentContent {
-		// If we have failed edits, report them
-		if len(failedEdits) > 0 {
-			return fantasy.WithResponseMetadata(
-				fantasy.NewTextErrorResponse(fmt.Sprintf("no changes made - all %d edit(s) failed", len(failedEdits))),
-				MultiEditResponseMetadata{
-					EditsApplied: 0,
-					EditsFailed:  failedEdits,
-				},
-			), nil
+		metadata := struct {
+			MultiEditResponseMetadata
+			*EditEffectMetadata
+		}{
+			MultiEditResponseMetadata: MultiEditResponseMetadata{
+				EditsApplied: 0,
+				EditsFailed:  failedEdits,
+			},
 		}
-		return fantasy.NewTextErrorResponse("no changes made - all edits resulted in identical content"), nil
+		if !readRefreshed {
+			metadata.EditEffectMetadata = &EditEffectMetadata{}
+			metadata.EditEffect.NoWrite = true
+			metadata.EditEffect.Reason = "unchanged_content"
+		}
+		return fantasy.WithResponseMetadata(
+			fantasy.NewTextErrorResponse(fmt.Sprintf("no changes made; %d edit operation(s) failed", len(failedEdits))),
+			metadata,
+		), nil
 	}
 
 	// Generate diff and check permissions
