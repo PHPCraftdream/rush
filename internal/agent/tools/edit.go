@@ -269,7 +269,7 @@ func findAndReplace(content, old, new string, replaceAll bool) (string, error) {
 
 	lastIndex := strings.LastIndex(content, old)
 	if index != lastIndex {
-		return "", fmt.Errorf("old_string appears multiple times in the file. Please provide more context to ensure a unique match, or set replace_all to true")
+		return "", errEditMultipleMatches
 	}
 
 	return content[:index] + new + content[index+len(old):], nil

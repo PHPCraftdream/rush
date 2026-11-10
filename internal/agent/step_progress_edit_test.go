@@ -89,7 +89,7 @@ func TestNativeNoWriteEditMetadataSurvivesFantasyAndStopsRereadCycle(t *testing.
 	require.Equal(t, inTurnStopAfter, progress.streak)
 	require.True(t, progress.stopped)
 	require.Equal(t, 4, progress.noWrites)
-	require.Contains(t, guardStopDetails(progress), "4 edit call(s) were rejected without writing file content")
+	require.Contains(t, guardStopDetails(progress), "4 native edit/multiedit call(s) made no file content write")
 	require.True(t, progress.seen.covered("fixture.txt", readSpan{start: 0, end: 10}))
 
 	ts := &turnStream{att: &drainAttempt{}}
