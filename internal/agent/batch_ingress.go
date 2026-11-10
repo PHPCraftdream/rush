@@ -340,15 +340,6 @@ func (e batchToolInputError) Unwrap() error { return e.err }
 // App-owned check-in scanner. Explicit specs and Notify selection are
 // represented by the batch model controls, not this direct-call adapter.
 func batchOneItemSpec(inv BatchInvocation, call fantasy.ToolCall, input json.RawMessage) (jobbatch.Spec, error) {
-	if call.Name == AgentToolName {
-		if err := validateAgentRoleInput(input); err != nil {
-			return jobbatch.Spec{}, batchToolInputError{err: err}
-		}
-	}
-	intent, err := batchParseTimeoutParam(call.Name, string(input))
-	if err != nil {
-		return jobbatch.Spec{}, batchToolInputError{err}
-	}
 	payload := batchLeafPayload{
 		Tool:          call.Name,
 		ToolCallID:    call.ID,
@@ -357,6 +348,31 @@ func batchOneItemSpec(inv BatchInvocation, call fantasy.ToolCall, input json.Raw
 		RegistryID:    inv.RegistryID,
 		Policy:        &inv.Policy,
 		QuestionRoute: inv.QuestionRoute,
+	}
+	if call.Name == AgentToolName {
+		if err := validateAgentRoleInput(input); err != nil {
+			return jobbatch.Spec{}, batchToolInputError{err: err}
+		}
+		var selected struct {
+			Role RequestedModelRole `json:"role"`
+		}
+		if err := json.Unmarshal(input, &selected); err != nil {
+			return jobbatch.Spec{}, batchToolInputError{err: err}
+		}
+		if selected.Role != "" && !selected.Role.builtin() {
+			cfg, err := configForBatchInvocation(inv)
+			if err != nil {
+				return jobbatch.Spec{}, err
+			}
+			payload.SelectedRoleContract, err = ResolveRoleContract(cfg, string(selected.Role), inv.Policy.RoleContract)
+			if err != nil {
+				return jobbatch.Spec{}, err
+			}
+		}
+	}
+	intent, err := batchParseTimeoutParam(call.Name, string(input))
+	if err != nil {
+		return jobbatch.Spec{}, batchToolInputError{err}
 	}
 	if call.Name == AgentToolName || call.Name == tools.AgenticFetchToolName {
 		remaining := inv.AgentDepth

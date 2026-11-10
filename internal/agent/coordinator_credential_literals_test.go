@@ -48,6 +48,38 @@ func credentialLiteralStore(probe *credentialLiteralProbe) *config.ConfigStore {
 	}, probe.resolver())
 }
 
+func TestResolveCredentialsModelsKeepsTenantCustomRoleModel(t *testing.T) {
+	cfg := config.NewLibraryStore(&config.Config{
+		Options: &config.Options{},
+		Providers: csync.NewMapFrom(map[string]config.ProviderConfig{
+			"operator": {ID: "operator", Type: openai.Name, APIKey: "operator-key", Models: []catwalk.Model{{ID: "operator-model"}, {ID: "fast-model"}}},
+		}),
+		Roles: map[string]config.CustomRole{
+			"analyst": {SelectedModel: config.SelectedModel{Provider: "operator", Model: "operator-model"}},
+		},
+		Models: map[config.SelectedModelType]config.SelectedModel{
+			config.SelectedModelTypeSmart: {Provider: "operator", Model: "operator-model"},
+			config.SelectedModelTypeFast:  {Provider: "operator", Model: "fast-model"},
+		},
+	}, t.TempDir())
+	coord := &coordinator{cfg: cfg}
+	creds := &CredentialSet{
+		Credentials: []Credential{{Provider: "tenant", Type: ProviderTypeOpenAI, APIKey: "tenant-key"}},
+		Models: map[Role]ModelChoice{
+			RoleSmart:       {Provider: "tenant", Model: "tenant-smart"},
+			RoleFast:        {Provider: "tenant", Model: "tenant-fast"},
+			Role("analyst"): {Provider: "tenant", Model: "tenant-analyst"},
+		},
+	}
+	contract, err := ResolveRoleContract(cfg.Config(), "analyst", nil)
+	require.NoError(t, err)
+	ctx := withCallCredentials(WithCallOptions(t.Context(), &CallOptions{RoleContract: contract}), creds)
+	resolved, err := coord.resolveCredentialsModels(ctx, "", creds)
+	require.NoError(t, err)
+	require.Equal(t, "tenant-analyst", resolved.smart.ModelCfg.Model,
+		"a covered custom tenant slot must not be overwritten by the operator snapshot")
+}
+
 func TestResolveCredentialsModelsUsesInvocationEffortWithoutSessionInheritance(t *testing.T) {
 	probe := &credentialLiteralProbe{}
 	coord := &coordinator{cfg: credentialLiteralStore(probe)}

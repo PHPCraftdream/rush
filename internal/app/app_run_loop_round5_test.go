@@ -75,6 +75,7 @@ func TestReviewerCallOptionsCarryEveryPrimaryField(t *testing.T) {
 	// R12-H2b §2.4: the durable requirement envelope must ride along with
 	// the binding identity — a reviewer follow-up without it would lose
 	// the admitted policy baseline.
+	primary.RoleContract = &session.RoleContract{Version: session.RoleContractVersion, Name: "reader", Model: session.ModelCfg{Provider: "p", Model: "m"}}
 	primary.Requirement = &session.SessionExecutionRequirement{BindingID: "binding-review"}
 	got := reviewerCallOptions(primary)
 
@@ -98,6 +99,11 @@ func TestReviewerCallOptionsCarryEveryPrimaryField(t *testing.T) {
 	// R12-H2b §2.4: the reviewer follow-up carries the invocation's
 	// requirement envelope (same pointer: trusted state, not a rebuild).
 	require.Same(t, primary.Requirement, got.Requirement)
+	if primary.RoleContract.Version != session.RoleContractVersion {
+		t.Fatalf("role contract version=%d", primary.RoleContract.Version)
+	}
+	require.NotSame(t, primary.RoleContract, got.RoleContract)
+	require.True(t, primary.RoleContract.Equal(got.RoleContract))
 }
 
 const (

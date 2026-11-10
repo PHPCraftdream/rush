@@ -9,6 +9,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
@@ -51,6 +52,9 @@ func (batchShellFamily) start(ctx context.Context, env batchLeafEnv, l jobbatch.
 	if p.Tool != tools.BashToolName {
 		return nil, &batchStartError{batchCodeBadPayload, errors.New("shell kind requires bash")}
 	}
+	if p.Policy != nil && p.Policy.RoleContract != nil && !roleContractAllowsTool(p.Policy.RoleContract, p.Tool) {
+		return nil, &batchStartError{batchCodeNoLeaf, fmt.Errorf("role tool denied: %s", p.Tool)}
+	}
 	leaf, err := env.resolveLeaf(p)
 	if err != nil {
 		return nil, err
@@ -62,6 +66,12 @@ func (batchShellFamily) start(ctx context.Context, env batchLeafEnv, l jobbatch.
 	// R11F round-2 (P1-5c): the PINNED policy wins — rebuilt exclusively
 	// from the payload's immutable policy transport.
 	runCtx = batchLeafRunContext(runCtx, p)
+	if p.Policy != nil && p.Policy.RoleContract != nil {
+		runCtx = withRoleToolContract(runCtx, p.Policy.RoleContract)
+	}
+	if p.SelectedRoleContract != nil {
+		runCtx = WithSelectedRoleContract(runCtx, p.SelectedRoleContract)
+	}
 	e := &batchShellExecution{cache: env.OutputCache, nodeID: l.ID, rootID: batchOutputRoot(l.ID), cancel: cancel, finished: make(chan struct{}), published: make(chan struct{})}
 	runCtx = tools.WithShellLeaf(runCtx, tools.ShellLeaf{OnStart: func(h *shell.BackgroundExecution) { e.mu.Lock(); e.handle = h; close(e.published); e.mu.Unlock() }})
 	go e.run(runCtx, leaf, fantasy.ToolCall{ID: p.ToolCallID, Name: p.Tool, Input: string(p.Input)}, report)

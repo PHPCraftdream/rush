@@ -13,6 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/format"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/permission"
@@ -150,6 +151,16 @@ func persistSessionExecutionIntent(ctx context.Context, app *App, sessionID stri
 // meant to be deferred on success.
 func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ context.Context, cancel context.CancelFunc, setup *runExecSetup, err error) {
 	overrides := req.Overrides
+	if err := app.resolveRunRole(&overrides); err != nil {
+		return nil, cancel, nil, err
+	}
+	if overrides.roleContract != nil {
+		if overrides.ModelRole != "" || req.reviewerConfig || req.reviewerTurn {
+			return nil, cancel, nil, errors.New("custom role cannot be combined with built-in role execution")
+		}
+	}
+	req.Overrides = overrides
+	req.Overrides.roleContract = overrides.roleContract.Clone()
 	hideSpinner := req.HideSpinner
 	smartModel := overrides.SmartModel
 	fastModel := overrides.FastModel
@@ -464,6 +475,7 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		MaxAgentDepth:            maxAgentDepth,
 		AgentDepthSet:            true,
 		ModelRole:                overrides.ModelRole,
+		RoleContract:             overrides.roleContract.Clone(),
 		TimeoutExtendsOnProgress: overrides.TimeoutExtendsOnProgress,
 		TimeoutHardCap:           overrides.TimeoutHardCap,
 		// R3-6: RunOverrides cannot distinguish "flag not passed" from

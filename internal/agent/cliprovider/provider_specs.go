@@ -36,7 +36,9 @@ type CLISpec struct {
 	// Called on every line; returns (usage, true) when usage data is found.
 	// If nil, usage will be zero in the Finish stream part.
 	ParseUsageLine func(line []byte) (fantasy.Usage, bool)
-	// UseRushMCP controls whether rush starts an internal MCP server and
+	// SupportsRestrictedTools means StartStream can confine both Rush MCP
+	// tools and provider-native tools to a per-invocation allowlist.
+	SupportsRestrictedTools bool
 	// passes it to the CLI process via --mcp-config.  When true and the
 	// provider is running in non-yolo mode, tool calls are routed through
 	// rush's permission system instead of the CLI's own permission handling.
@@ -190,33 +192,27 @@ func geminiArgs(model string) func(bool) []string {
 // time and rewrites the `--effort` flag in BuildArgs.
 func claudeSpec(modelID, modelName, modelArg string, ctxWindow int64) CLISpec {
 	return CLISpec{
-		ModelID:        modelID,
-		ModelName:      modelName,
-		ContextWindow:  ctxWindow,
-		Binary:         "claude",
-		PromptFlag:     "-p",
-		StdinPrintFlag: "-p",
-		BuildArgs:      claudeArgs(modelArg),
-		NewPartParser:  claudePartParser,
-		ParseUsageLine: claudeParseUsageLine,
-		UseRushMCP:     true,
-		SupportsResume: true,
-		ApplyEffort:    applyClaudeEffort,
-		EffortLevels:   claudeEffortLevels,
+		ModelID:                 modelID,
+		ModelName:               modelName,
+		ContextWindow:           ctxWindow,
+		Binary:                  "claude",
+		PromptFlag:              "-p",
+		StdinPrintFlag:          "-p",
+		BuildArgs:               claudeArgs(modelArg),
+		NewPartParser:           claudePartParser,
+		ParseUsageLine:          claudeParseUsageLine,
+		UseRushMCP:              true,
+		SupportsRestrictedTools: true,
+		SupportsResume:          true,
+		ApplyEffort:             applyClaudeEffort,
+		EffortLevels:            claudeEffortLevels,
 	}
 }
 
-// codexSpec builds a codex CLI entry.
-//
-// ContextWindow is fixed at 272_000 because codex's own embedded registry
-// reports that for every model it serves, including the fallback metadata it
-// applies to slugs it no longer knows. The previous per-entry 400_000 was a
-// 48% overstatement of a number that gates auto-summarization.
-//
-// effortLevels differs per MODEL, which is why it is a parameter rather than a
-// constant: sol/terra accept "ultra", luna stops at "max", the rest at
-// "xhigh". A level outside the set is dropped by applyEffort instead of
-// reaching the provider as a 400.
+// codexSpec builds a CLI spec. Codex has no proven per-invocation native
+// tool restriction in this adapter, so constrained role calls are refused.
+// ContextWindow is fixed at 272_000 because Codex reports that for all models.
+// Effort levels remain model-specific and are validated before dispatch.
 func codexSpec(modelID, modelName, modelArg string, effortLevels []string) CLISpec {
 	return CLISpec{
 		ModelID:             modelID,
@@ -233,14 +229,19 @@ func codexSpec(modelID, modelName, modelArg string, effortLevels []string) CLISp
 	}
 }
 
-// geminiSpec builds a gemini CLI entry.
-//
-// ApplyEffort/EffortLevels are deliberately left nil: the gemini CLI has no
-// reasoning-effort option and aborts with "Unknown argument: effort" if one is
-// passed, so applyEffort must drop whatever the session stored.
-//
-// ContextWindow is 1M for every model currently exposed here.
+// ApplyEffort/EffortLevels are deliberately left nil: the Gemini CLI has no
+// reasoning-effort option. It also has no supported per-invocation native-tool
+// cap, so constrained role calls are rejected rather than widened.
 func geminiSpec(modelID, modelName, modelArg string) CLISpec {
+	if modelID == "cli-qwen" {
+		// Qwen supports per-invocation --allowed-tools with --exclude-tools.
+		return CLISpec{
+			ModelID: modelID, ModelName: modelName, ContextWindow: 1_000_000,
+			Binary: "qwen", BuildArgs: qwenArgs(), NewPartParser: claudePartParser,
+			ParseUsageLine: claudeParseUsageLine, AlwaysStdin: true,
+			QwenMCPIntegration: true, SupportsRestrictedTools: true,
+		}
+	}
 	return CLISpec{
 		ModelID:              modelID,
 		ModelName:            modelName,
@@ -306,15 +307,15 @@ var All = append([]CLISpec{
 	geminiSpec("cli-gemini-flash-lite", "Gemini 3.1 Flash-Lite (CLI)", "gemini-3.1-flash-lite"),
 	geminiSpec("cli-gemini-pro", "Gemini 3.1 Pro (CLI)", "gemini-3.1-pro-preview"),
 	{
-		ModelID:            "cli-qwen",
-		ModelName:          "Qwen 3.5 Plus (CLI)",
-		ContextWindow:      1_000_000,
-		Binary:             "qwen",
-		BuildArgs:          qwenArgs(),
-		NewPartParser:      claudePartParser,
-		ParseUsageLine:     claudeParseUsageLine,
-		AlwaysStdin:        true,
-		QwenMCPIntegration: true,
+		ModelID:                 "cli-qwen",
+		ModelName:               "Qwen 3.5 Plus (CLI)",
+		ContextWindow:           1_000_000,
+		Binary:                  "qwen",
+		BuildArgs:               qwenArgs(),
+		NewPartParser:           claudePartParser,
+		ParseUsageLine:          claudeParseUsageLine,
+		QwenMCPIntegration:      true,
+		SupportsRestrictedTools: true,
 	},
 	// OpenAI's `codex` CLI. Context windows and effort levels come from the
 	// model registry embedded in codex.exe itself (codex-cli 0.147.0), which

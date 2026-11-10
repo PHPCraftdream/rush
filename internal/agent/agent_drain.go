@@ -108,6 +108,33 @@ func applyDrainModelOptions(call SessionAgentCall, model Model) SessionAgentCall
 // transferred to the successful return. A lost binding fails closed typed
 // before anything runs.
 func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (SessionAgentCall, *preparedContinuation, error) {
+	var rootLogicalID string
+	var rootRoleContract *session.RoleContract
+	if _, ok := c.subAgentDrivers.get(sessionID); !ok {
+		rootCall := SessionAgentCall{SessionID: sessionID}
+		if store, supported := c.sessions.(session.SessionRootRoleContractStore); supported {
+			logicalID, contract, found, err := store.GetRootRoleContract(ctx, sessionID)
+			if err != nil {
+				return SessionAgentCall{}, nil, err
+			}
+			if found && logicalID != "" {
+				rootLogicalID = logicalID
+				rootRoleContract = contract.Clone()
+				rootCall.LogicalCallID = logicalID
+				if contract != nil {
+					rootCall.CallOptions = &CallOptions{RoleContract: contract}
+				}
+			}
+		}
+		var restoreErr error
+		rootCall, restoreErr = restoreRootRoleContract(ctx, c.sessions, rootCall)
+		if restoreErr != nil {
+			return SessionAgentCall{}, nil, restoreErr
+		}
+		if rootCall.CallOptions != nil && rootCall.CallOptions.RoleContract != nil {
+			ctx = WithCallOptions(ctx, rootCall.CallOptions)
+		}
+	}
 	if _, ok := c.subAgentDrivers.get(sessionID); !ok && c.drainCredentialBoundary(ctx, sessionID) {
 		return SessionAgentCall{}, nil, fmt.Errorf("%w: session %s", ErrCredentialBindingUnavailable, sessionID)
 	}
@@ -122,6 +149,9 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 			mgr.InheritSessionRunAllowlistForGeneration(driver.parentSessionID, sessionID, driver.generation)
 		}
 		call := newDrainCall(driver.callFor(""))
+		if driver.call.RoleContract != nil && (call.CallOptions == nil || call.CallOptions.RoleContract == nil) {
+			call.CallOptions = WithRoleContractCopy(call.CallOptions, driver.call.RoleContract)
+		}
 		if call.RequestedModelRole != "" {
 			var roleErr error
 			call, roleErr = c.refreshRequestedDelegationCall(ctx, driver.parentSessionID, call)
@@ -173,6 +203,9 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 			return SessionAgentCall{}, nil, policyErr
 		}
 		ctx = WithCallOptions(ctx, capOpts)
+		if rootRoleContract != nil {
+			capOpts.RoleContract = rootRoleContract.Clone()
+		}
 		// CallOptions remain the source of call policy; the marker now reflects
 		// the latest persisted user-message origin rather than inherited setup.
 		origin, hasUserMessage := lastUserMessageOrigin(ctx, c.messages, sessionID)
@@ -211,6 +244,9 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 			ctx = WithCallOptions(ctx, &opts)
 		}
 	}
+	if rootRoleContract != nil {
+		ctx = WithCallRoleContract(ctx, rootRoleContract)
+	}
 	pinned, err := c.resolveSessionModels(ctx, sessionID)
 	if err != nil {
 		return SessionAgentCall{}, nil, err
@@ -231,6 +267,19 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 		return SessionAgentCall{}, nil, err
 	}
 	call = newDrainCall(call)
+	if rootLogicalID != "" {
+		call.LogicalCallID = rootLogicalID
+	}
+
+	call.RoleContract = cloneRoleContractForCall(rootRoleContract)
+	call.CallOptions = func() *CallOptions {
+		if opts := callOptionsFrom(ctx); opts != nil {
+			copy := *opts
+			copy.RoleContract = cloneRoleContractForCall(rootRoleContract)
+			return &copy
+		}
+		return &CallOptions{RoleContract: cloneRoleContractForCall(rootRoleContract)}
+	}()
 	// Idempotent stamping: keeps DiskRequirement on the struct itself even
 	// though the ctx-carried options already carry it (R12-H2b §2.3).
 	prep.applyTo(&call)

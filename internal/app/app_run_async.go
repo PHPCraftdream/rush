@@ -283,6 +283,13 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 	if output == nil {
 		output = io.Discard
 	}
+	if err := app.resolveRunRole(&overrides); err != nil {
+		return nil, err
+	}
+	if overrides.roleContract != nil {
+		overrides.DisableSubAgents = true
+		overrides.roleContract = overrides.roleContract.Clone()
+	}
 	if app.batchFaultWriter != nil && mode == RunModeJSON {
 		output = app.batchFaultWriter
 		app.batchFaultOutputMu.Lock()

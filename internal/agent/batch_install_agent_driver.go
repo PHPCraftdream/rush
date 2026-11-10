@@ -90,6 +90,12 @@ func startBatchAgentTurn(ctx context.Context, req batchAgentRunRequest, host bat
 		depth = 1
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	if req.Policy != nil && req.Policy.RoleContract != nil {
+		runCtx = WithCallRoleContract(runCtx, req.Policy.RoleContract)
+	}
+	if req.SelectedRoleContract != nil {
+		runCtx = WithSelectedRoleContract(runCtx, req.SelectedRoleContract)
+	}
 	if req.CallCredentials {
 		runCtx = withCallCredentials(runCtx, creds)
 	}

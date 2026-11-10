@@ -1,18 +1,13 @@
 // Turn execution: SessionAgentCall assembly, the 401-retry run loop, and
 // transient-failure retry classification. Extracted from coordinator.go —
 // pure code move, bodies unchanged.
-
 package agent
 
 import (
+	"charm.land/fantasy"
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
-	"sync"
-	"time"
-
-	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/hyper"
 	"github.com/PHPCraftdream/rush/internal/agent/notify"
 	"github.com/PHPCraftdream/rush/internal/heartbeat"
@@ -20,6 +15,9 @@ import (
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/google/uuid"
+	"log/slog"
+	"sync"
+	"time"
 )
 
 const (
@@ -130,7 +128,8 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 		SystemPromptOverride: sessionSystemPrompt,
 		// Preserve the accepted call's policy when this run is queued as a
 		// mailbox follow-up and later executed under the owner's context.
-		CallOptions: callOpts,
+		CallOptions:  callOpts,
+		RoleContract: cloneRoleContractFromCallOptions(callOpts),
 		// R3-4: this call's restricted-run policy, armed at turn start; the
 		// uncompiled spec travels too so the durable queue can persist it.
 		RunAllowlist:        runAllowlistFrom(ctx),
@@ -402,8 +401,8 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		// R1-1/R1-4: per-call policy travels with the call — the caps the
 		// turn enforces, this run's full options snapshot, and the
 		// fail-fast busy contract enforced at the mailbox reservation.
-		CallOptions: callOpts,
-		// R3-4: this call's restricted-run policy, armed at turn start; the
+		CallOptions:  callOpts,
+		RoleContract: cloneRoleContractFromCallOptions(callOpts),
 		// uncompiled spec travels too so the durable queue can persist it.
 		RunAllowlist:         runAllowlistFrom(ctx),
 		RunAllowlistSpec:     runAllowlistSpecFrom(ctx),
@@ -550,6 +549,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 			MaxCost:              trackCall.MaxCost,
 			MaxTokens:            trackCall.MaxTokens,
 			CallOptions:          trackCall.CallOptions,
+			RoleContract:         cloneRoleContractForCall(trackCall.RoleContract),
 			// Preserve the per-call restricted-run policy across the
 			// credential-refresh rebuild: a retried call must stay judged
 			// by its own declared policy, not fall back to the session or

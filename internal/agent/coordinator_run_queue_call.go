@@ -300,7 +300,32 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 		releaseDurableContinuationOwner(c.diskCaps, requirement.BindingID, rowID)
 	}
 
-	return SessionAgentCall{
+	contract := cloneRoleContractForCall(data.RoleContract)
+	if contract != nil {
+		if err := contract.Validate(); err != nil {
+			releasePrep()
+			return SessionAgentCall{}, fmt.Errorf("RebuildSessionAgentCall: invalid durable role contract: %w", err)
+		}
+		if rebuiltCallOptions != nil && rebuiltCallOptions.RoleContract != nil && !rebuiltCallOptions.RoleContract.Equal(contract) {
+			releasePrep()
+			return SessionAgentCall{}, ErrAgentRoleMismatch
+		}
+	}
+	if contract == nil && rebuiltCallOptions != nil {
+		contract = cloneRoleContractForCall(rebuiltCallOptions.RoleContract)
+	}
+	if contract != nil && data.RequestedModelRole != "" && contract.Name != data.RequestedModelRole {
+		releasePrep()
+		return SessionAgentCall{}, ErrAgentRoleMismatch
+	}
+	if contract == nil && data.RequestedModelRole != "" && !RequestedModelRole(data.RequestedModelRole).builtin() {
+		releasePrep()
+		return SessionAgentCall{}, ErrAgentRoleUnconfigured
+	}
+	if contract != nil && (rebuiltCallOptions == nil || rebuiltCallOptions.RoleContract == nil) {
+		rebuiltCallOptions = WithRoleContractCopy(rebuiltCallOptions, contract)
+	}
+	call := SessionAgentCall{
 		SessionID:            data.SessionID,
 		LogicalCallID:        data.LogicalCallID, // P2-1 fix: restore stable ID
 		Prompt:               data.Prompt,
@@ -323,6 +348,7 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 		// The recompiled scope rides in CallOptions (json:"-",
 		// process-local); RunSessionAgentCall rebinds the toolset from it.
 		CallOptions:          rebuiltCallOptions,
+		RoleContract:         contract,
 		SystemPromptOverride: data.SystemPromptOverride,
 		MaxCost:              data.MaxCost,
 		MaxTokens:            data.MaxTokens,
@@ -351,7 +377,14 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 		// See agent.SessionAgentCall.FromDurableQueue documentation.
 		FromDurableQueue: true,
 		batchQuestion:    questionState,
-	}, nil
+	}
+	if call.RoleContract != nil {
+		if call.CallOptions == nil {
+			call.CallOptions = &CallOptions{}
+		}
+		call.CallOptions.RoleContract = cloneRoleContractForCall(call.RoleContract)
+	}
+	return call, nil
 }
 
 // RunSessionAgentCall executes a SessionAgentCall directly for run queue pump execution

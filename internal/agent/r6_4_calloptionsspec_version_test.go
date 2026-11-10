@@ -48,26 +48,41 @@ func TestFromSessionCallOptionsSpec_AcceptsLegacyV1WithoutMarker(t *testing.T) {
 	assert.False(t, opts.WebTurnOptIn)
 }
 
+func TestCallOptionsSpecV3RoundTripAndV2Compatibility(t *testing.T) {
+	original := &CallOptions{DisableSubAgents: true, WebTurnOptIn: true}
+	durable := toSessionCallOptionsSpec(original)
+	require.Equal(t, 3, durable.Version)
+	restored, err := fromSessionCallOptionsSpec(durable)
+	require.NoError(t, err)
+	require.True(t, restored.DisableSubAgents)
+	require.True(t, restored.WebTurnOptIn)
+	legacy := &session.CallOptionsSpec{Version: 2, WebTurnOptIn: true}
+	_, err = fromSessionCallOptionsSpec(legacy)
+	require.NoError(t, err)
+}
 func TestFromSessionCallOptionsSpec_RejectsV1WithMarker(t *testing.T) {
 	opts, err := fromSessionCallOptionsSpec(&session.CallOptionsSpec{Version: 1, WebTurnOptIn: true})
 	require.ErrorIs(t, err, ErrCallOptionsSpecVersionUnsupported)
 	assert.Nil(t, opts)
 }
 
-func TestCallOptionsSpecV2RoundTrip(t *testing.T) {
-	original := &CallOptions{DisableSubAgents: true, WebTurnOptIn: true}
-	durable := toSessionCallOptionsSpec(original)
-	require.Equal(t, 2, durable.Version)
-	restored, err := fromSessionCallOptionsSpec(durable)
+func TestFromSessionCallOptionsSpec_AcceptsLegacyV2WithoutContract(t *testing.T) {
+	opts, err := fromSessionCallOptionsSpec(&session.CallOptionsSpec{Version: 2, WebTurnOptIn: true})
 	require.NoError(t, err)
-	assert.Equal(t, original.DisableSubAgents, restored.DisableSubAgents)
-	assert.Equal(t, original.WebTurnOptIn, restored.WebTurnOptIn)
+	require.True(t, opts.WebTurnOptIn)
+}
+
+func TestFromSessionCallOptionsSpec_RejectsV2WithContract(t *testing.T) {
+	contract, err := ResolveRoleContract(customRoleResolverConfig(), "analyst", nil)
+	require.NoError(t, err)
+	_, err = fromSessionCallOptionsSpec(&session.CallOptionsSpec{Version: 2, RoleContract: contract})
+	require.ErrorIs(t, err, ErrCallOptionsSpecVersionUnsupported)
 }
 
 // TestFromSessionCallOptionsSpec_ZeroVersion_FailsClosed is the
 // "malformed/zero version" case: a non-nil spec whose Version is the zero
 // value (never a legitimate stamped version — toSessionCallOptionsSpec
-// always stamps session.CallOptionsSpecVersion, currently 2) must be
+// always stamps session.CallOptionsSpecVersion, currently 3) must be
 // refused rather than partially decoded.
 func TestFromSessionCallOptionsSpec_ZeroVersion_FailsClosed(t *testing.T) {
 	spec := &session.CallOptionsSpec{

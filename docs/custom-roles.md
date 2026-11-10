@@ -1,9 +1,6 @@
-# Custom role registry
+# Custom roles
 
-A custom role names a provider/model profile and an optional tool-name restriction.
-The built-in `smart`, `fast`, `worker` and `reviewer` slots remain separate and cannot be redefined through this registry.
-
-> Delivery boundary: this change adds the registry, CLI and Web editing. Selecting custom roles during agent execution, inherited tool ceilings and durable continuation enforcement are delivered by the dependent runtime integration. A stored definition alone does not change an existing agent's tools or the built-in slots.
+A custom role names a configured provider/model profile and an optional tool-name restriction. The built-in `smart`, `fast`, `worker` and `reviewer` slots remain separate and cannot be redefined through this registry. A custom role name is a case-sensitive configuration key; it is not a new built-in policy slot.
 
 ## Create and inspect roles
 
@@ -18,6 +15,36 @@ rush roles show researcher --scope global --json
 Provider/model specifications use the existing model resolver. Model atoms are also accepted. Effort is optional and validated against the known model's advertised capabilities where available. Raw model IDs outside the cached catalog retain the existing unverified passthrough; editing a role does not make a paid model request to verify them.
 
 The provider must already exist in the effective configuration. Names may contain Unicode and internal spaces; quote such names in the shell. Empty names, leading/trailing whitespace, control characters, path separators and built-in names (including their case variants) are rejected.
+
+## Select a custom role for execution
+
+A custom role affects an execution only when its exact configured name is requested. For a top-level run, use `rush run --role <name>`; an SDK caller supplies the requested name through `RunOverrides.RequestedRole`; delegated `agent` input uses its `role` field. Batch and API task/run adapters carry the same exact name. For example:
+
+```sh
+rush run --role researcher "Summarize the project"
+```
+
+```go
+req := sdk.RunRequest{
+    Prompt: "Summarize the project",
+    Overrides: sdk.RunOverrides{RequestedRole: "researcher"},
+}
+result, err := client.Run(ctx, req)
+```
+
+The name must resolve to a configured role. Invalid, absent-from-configuration, or mismatched explicit selections are errors; they must not silently fall back to `smart` or another model. The selected custom role is a model choice, separate from `ModelRole`, which remains the built-in policy role used by existing behaviors such as worker preference and reviewer policy. Selecting a custom name does not itself grant tools or permissions.
+
+A delegated `agent.input.role` is likewise a requested model profile, not a request to replace the caller's policy. If omitted, existing automatic legacy model selection remains available. If explicitly set, it must be a valid built-in or configured custom role. On resume, an already-bound role is authoritative: omitting the role preserves it, while requesting a different role is rejected rather than rebinding the session.
+
+## Runtime snapshot, inheritance, and continuation
+
+At admission, the exact custom-role definition is resolved into a role contract containing the role name, full model-profile snapshot, tools-field presence/value, and inherited tool-cap groups. The contract is associated with the logical call and with any child session that is bound to that role. This keeps concurrent calls and resumed work from borrowing another call's selection.
+
+A role's own tool list and every inherited cap group are intersected: a tool must be allowed by all present groups. A child role can narrow its parent's authority, never widen it. A missing `tools` field means that role adds no restriction of its own; it does not erase an inherited ceiling. The role contract's model snapshot, tool presence, and inherited groups are fixed for that logical call/child binding. Editing a role applies to a later admission, not to an already-bound call; if the role definition is removed after admission, bound work continues with its admitted model snapshot (provided its provider remains available). This is not a promise that an already-running provider request changes model mid-request. Built-in role model refresh behavior is unchanged.
+
+The role contract is durable in the additive `session_role_contracts` table; root logical-call bindings are stored separately in `session_root_role_contracts` (migration `20261110000001_session_role_contracts`). A binding is immutable for its session or root logical call: a conflicting replacement or corrupt snapshot fails closed. Durable call options use schema version 3 to carry the role contract. Legacy v1 and v2 call-option rows remain readable only without a role contract; v1 is also rejected if it carries the v2-only `WebTurnOptIn` marker. Legacy sessions without a custom-role contract retain their pre-existing behavior; the new cap is not retroactively inferred for those rows.
+
+In a credentialed/tenant call, the requested custom name must have an exact role slot in the tenant's credential model map. The operator's configured role is not an implicit substitute for a tenant slot. Configured-role fallback is available only through the trusted, existing `AllowConfiguredRoleFallback` exception; an untrusted request cannot enable it. An operator-side role cap, when present in the inherited contract, remains immutable and applies in addition to the tenant's selected model.
 
 ## Tools: omitted is different from empty
 
@@ -44,13 +71,13 @@ The provider must already exist in the effective configuration. Names may contai
 ```
 
 - No `tools` field: no additional restriction from this role.
-- `tools: []`: no tools.
-- A nonempty array: any matching name is permitted by this role's filter.
+- `tools: []`: no tools are allowed by this role, including `ask_question`, `await_tasks`, and batch-control tools. No runtime repair or control-tool exception makes an empty list nonempty.
+- A nonempty array: a tool is allowed by this role's filter when any entry matches its full canonical name.
 - `tools: null`: invalid. It is never interpreted as unlimited access.
 
-The matching contract uses full canonical tool names, case-sensitive, with only `*` (any sequence) and `?` (one character) as wildcards. All other characters are literal. Names and masks must be nonempty; masks do not have to match a currently connected MCP tool when saved. `mcp_*` includes every matching MCP tool, not only read operations.
+Matching is case-sensitive and against the whole canonical tool name. `*` matches any sequence, `?` matches one Unicode code point, and every other character is literal. For example, `mcp_*` can match any name with that prefix; it does not mean “read-only MCP tools.” The filter is a tool-name policy, not a sandbox: allowing `bash` does not constrain shell command arguments or filesystem access.
 
-A role filter does not grant tools beyond existing permissions, allowed-tool baselines, depth/folder constraints or inherited ceilings. Allowing `bash` is not a filesystem sandbox and does not restrict shell command arguments.
+Role filters only narrow the tools otherwise available. They do not bypass permissions, allowed-tool baselines, depth/folder constraints, or any inherited role ceiling. A denied tool call is not repaired into a different tool or dispatched under a broader driver.
 
 The canonical registry key is lowercase `roles`; case aliases such as `Roles` are rejected rather than bypassing whole-definition merging or integrity protection.
 
@@ -80,7 +107,7 @@ rush roles set researcher provider/model --scope local --tools '["view","grep"]'
 rush roles remove researcher --scope local
 ```
 
-Removing a local definition may reveal the global definition. It is not a global ban on that name. `list` and `show` display effective definitions and source labels; an explicit scope reads only that scope's document.
+Removing a local definition may reveal the global definition. It is not a global ban on that name. `list` and `show` display effective definitions and source labels; an explicit scope reads only that scope's document. Removing a role prevents new admissions by that exact name, but does not discard a previously admitted role contract from already-bound work.
 
 ## Web settings
 

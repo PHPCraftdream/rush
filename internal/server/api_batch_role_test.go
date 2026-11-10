@@ -36,12 +36,44 @@ func TestAPITaskRequestedRoleReachesDurableChildContract(t *testing.T) {
 	}
 }
 
+func TestAPITaskCustomRolePersistsExactProfileAndToolCapOnChild(t *testing.T) {
+	f := newBatchFixture(t, batchTextProvider("custom role result"))
+	tools := []string{"view", "grep"}
+	require.NoError(t, f.cfg.SetCustomRole(config.ScopeWorkspace, "Research Analyst", config.CustomRoleUpdate{
+		Model: config.SelectedModel{Provider: "openaicompat", Model: "probe"},
+		Tools: &tools,
+	}))
+	token := f.token(t, "custom-role", []string{"read", "run"}, "ask", config.APITokenBinding{})
+	accepted := f.do(t, token, http.MethodPost, "/tasks", `{"prompt":"p","role":"Research Analyst"}`).accepted(t)
+	result := f.waitBatchDone(t, token, accepted.RootID)
+	require.Equal(t, "completed", result.State)
+
+	store, supported := f.app.Sessions.(session.SessionRoleContractStore)
+	require.True(t, supported)
+	foundChild := false
+	for _, node := range result.Nodes {
+		if node.Kind != "task" || node.ChildSessionID == "" {
+			continue
+		}
+		contract, found, err := store.GetSessionRoleContract(t.Context(), node.ChildSessionID)
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Equal(t, "Research Analyst", contract.Name)
+		require.Equal(t, "openaicompat", contract.Model.Provider)
+		require.Equal(t, "probe", contract.Model.Model)
+		require.NotNil(t, contract.Tools)
+		require.Equal(t, tools, *contract.Tools)
+		foundChild = true
+	}
+	require.True(t, foundChild, "the exact custom profile and tool cap must be durable on the task child")
+}
+
 func TestAPITaskInvalidRolesRefuseBeforeCreatingSessions(t *testing.T) {
 	f := newBatchFixture(t, batchTextProvider("must not execute"))
 	token := f.token(t, "role", []string{"read", "run"}, "ask", config.APITokenBinding{})
 	before, err := f.app.Sessions.ListAll(t.Context())
 	require.NoError(t, err)
-	for _, value := range []string{`null`, `""`, `"auto"`, `"unknown"`, `7`} {
+	for _, value := range []string{`null`, `""`, `"auto"`, `"unknown"`, `"Research Analyst"`, `7`} {
 		response := f.do(t, token, http.MethodPost, "/tasks", `{"prompt":"p","role":`+value+`}`)
 		require.Equal(t, http.StatusBadRequest, response.Status, string(response.Body))
 	}

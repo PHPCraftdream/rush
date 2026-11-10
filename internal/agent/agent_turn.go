@@ -273,6 +273,16 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	if agentTools == nil {
 		agentTools = a.tools.Copy()
 	}
+	// A custom-role ceiling is a live per-turn capability cap, including on
+	// calls whose tools came from the shared SetTools generation. Refreshes
+	// may publish new tools, but cannot grant them to this invocation.
+	if call.CallOptions != nil && call.CallOptions.RoleContract != nil {
+		ctx = WithCallRoleContract(ctx, call.CallOptions.RoleContract)
+	}
+	if len(roleToolContractsFrom(ctx)) > 0 {
+		agentTools = filterRoleContractTools(ctx, agentTools)
+		call.Tools = agentTools
+	}
 	// Test-only seam: fires right after the snapshot above, before PrepareStep
 	// re-reads a.tools for the actual request (see stepTools' doc). Lets a
 	// test deterministically simulate a SetTools/MCP update landing in that
@@ -300,6 +310,13 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	smartModel := cfg.smartModel
 	systemPrompt := cfg.systemPrompt
 	promptPrefix := cfg.promptPrefix
+	if roleToolsConstrained(ctx) && smartModel.ModelCfg.Provider == cliprovider.ProviderType {
+		allowed := make([]string, 0, len(agentTools))
+		for _, tool := range agentTools {
+			allowed = append(allowed, tool.Info().Name)
+		}
+		ctx = cliprovider.WithToolPolicy(ctx, cliprovider.ToolPolicy{Allowed: allowed, Constrained: true})
+	}
 
 	slog.Info("SessionAgent.Run: starting", "sessionID", call.SessionID, "model", smartModel.ModelCfg.Model, "promptLen", len(systemPrompt))
 

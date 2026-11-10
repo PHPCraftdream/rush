@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/permission"
@@ -21,7 +22,7 @@ func withPrivateFetchIngress(ctx context.Context, invoke pinnedInvoke) context.C
 // fallback. A nil scope with an armed ingress fails closed through
 // armPrivateFetchIngress.
 func buildPrivateFetchTools(ctx context.Context, list []fantasy.AgentTool, authorizer permission.RestrictedRunAuthorizer, scope *buildResourceScope) policyToolBuild {
-	built := newPolicyToolBuild(decoratePolicyTools(list, authorizer, nil, true))
+	built := newPolicyToolBuildForContext(ctx, decoratePolicyTools(list, authorizer, nil, true))
 	// R11F (M3) flag-on: resolve the ONE authority (explicit ctx binding
 	// only — the process-global fallback is eliminated, R12-H2 §1.3), pin
 	// this build's leaves under a fresh identity and re-arm every private
@@ -98,7 +99,7 @@ func armPrivateFetchIngress(built policyToolBuild, ingress BatchWorkIngress, sco
 		// the comma-joined leaf names), not the registry ID — a
 		// provider-backed private payload must pass hasToolset at the
 		// executor without bypassing it.
-		Policy: batchLeafPolicyContext{RegistryID: registryID, RestrictedToolset: batchToolsetFingerprint(built.tools)},
+		Policy: batchLeafPolicyContext{RegistryID: registryID, RestrictedToolset: batchToolsetFingerprint(built.tools), RoleContract: cloneRoleContractForCall(roleContractForToolBuild(ctx, built.tools))},
 	}
 	invoke := batchPinnedInvoke(ingress, tpl)
 	ingressList := make([]fantasy.AgentTool, len(built.tools))
@@ -118,7 +119,13 @@ type privateFetchIngressTool struct {
 func (t *privateFetchIngressTool) restrictedRunWrapped() {}
 
 func (t *privateFetchIngressTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	leaf, err := t.registry.resolve(t.Info().Name)
+	if err := guardRoleToolCall(ctx, t.Info().Name); err != nil {
+		return fantasy.NewTextErrorResponse(err.Error()), nil
+	}
+	if call.Name != "" && call.Name != t.Info().Name {
+		return fantasy.NewTextErrorResponse(fmt.Sprintf("%v: forged tool name %q does not match %q", ErrRoleToolDenied, call.Name, t.Info().Name)), nil
+	}
+	leaf, err := t.registry.resolveForContext(ctx, t.Info().Name)
 	if err != nil {
 		return fantasy.ToolResponse{}, err
 	}
