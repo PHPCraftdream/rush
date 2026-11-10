@@ -51,7 +51,7 @@ func inheritedRoleCeilings(parent *session.RoleContract) ([][]string, error) {
 	if err := parent.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: invalid inherited role contract: %v", ErrAgentRoleUnconfigured, err)
 	}
-	groups := make([][]string, 0, len(parent.Inherited)+1)
+	groups := make([][]string, 0)
 	for _, group := range parent.Inherited {
 		groups = append(groups, append([]string{}, group...))
 	}

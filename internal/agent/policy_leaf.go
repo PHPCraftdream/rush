@@ -109,7 +109,7 @@ func contractFromContractGroups(contracts []*session.RoleContract) *session.Role
 }
 
 func mergeRoleToolContracts(contracts []*session.RoleContract) []*session.RoleContract {
-	groups := make([][]string, 0, len(contracts)*2)
+	groups := make([][]string, 0)
 	for _, contract := range contracts {
 		if contract == nil || contract.Validate() != nil {
 			// A malformed captured cap must poison the merged policy rather
