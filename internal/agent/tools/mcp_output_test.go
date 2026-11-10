@@ -8,7 +8,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"unicode/utf8"
@@ -93,12 +96,46 @@ func TestMCPOutputActualToolAdmissionDurableReplayAndPermissionFloors(t *testing
 	full := fragment + "\n" + fragment + "\nlast fragment"
 	server := modelmcp.NewServer(&modelmcp.Implementation{Name: "output"}, nil)
 	var executions atomic.Int32
+	var traceMu sync.Mutex
+	var handlerTrace []struct {
+		Error bool
+		Media bool
+	}
+	var runResponses []struct {
+		CallID  string
+		Content string
+	}
+	traceResponse := func(callID, content string) {
+		traceMu.Lock()
+		defer traceMu.Unlock()
+		runResponses = append(runResponses, struct {
+			CallID  string
+			Content string
+		}{CallID: callID, Content: content})
+	}
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		traceMu.Lock()
+		defer traceMu.Unlock()
+		t.Logf("MCP output fixture handler inputs: %+v", handlerTrace)
+		for _, response := range runResponses {
+			t.Logf("MCP output fixture Run %s response.Content: %q", response.CallID, response.Content)
+		}
+	})
 	modelmcp.AddTool(server, &modelmcp.Tool{Name: "source"}, func(_ context.Context, _ *modelmcp.CallToolRequest, input struct {
-		Error bool `json:"error"`
-		Media bool `json:"media"`
+		Error bool `json:"error,omitempty"`
+		Media bool `json:"media,omitempty"`
 	},
 	) (*modelmcp.CallToolResult, any, error) {
 		executions.Add(1)
+		traceMu.Lock()
+		handlerTrace = append(handlerTrace, struct {
+			Error bool
+			Media bool
+		}{Error: input.Error, Media: input.Media})
+		traceMu.Unlock()
 		result := &modelmcp.CallToolResult{IsError: input.Error, Content: []modelmcp.Content{
 			&modelmcp.TextContent{Text: fragment}, &modelmcp.TextContent{Text: fragment}, &modelmcp.TextContent{Text: "last fragment"},
 		}}
@@ -112,11 +149,39 @@ func TestMCPOutputActualToolAdmissionDurableReplayAndPermissionFloors(t *testing
 	owner, err := mcp.AcquireStandalone()
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, owner.Close(context.Background())) })
-	cfg := config.NewLibraryStore(&config.Config{MCP: config.MCPs{"output": {Type: config.MCPHttp, URL: httpServer.URL}}}, t.TempDir())
+	t.Setenv("RUSH_DISABLE_DEFAULT_PROVIDERS", "1")
+	globalConfigDir := os.Getenv("RUSH_GLOBAL_CONFIG")
+	require.NoError(t, os.MkdirAll(globalConfigDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(globalConfigDir, "rush.json"), []byte(`{
+  "providers": {
+    "test": {
+      "id": "test",
+      "base_url": "https://example.invalid/v1",
+      "api_key": "test-key",
+      "discover_models": false,
+      "models": [{"id": "model", "name": "Test model"}]
+    }
+  }
+}`), 0o600))
+	workingDir := t.TempDir()
+	cfg, err := config.Init(workingDir, workingDir, false)
+	require.NoError(t, err)
+	require.NoError(t, cfg.PersistMCPConfig(config.ScopeGlobal, "output", config.MCPConfig{Type: config.MCPHttp, URL: httpServer.URL}))
+	admission := cfg.SnapshotMCPAdmission("output")
+	require.True(t, admission.Exists, "fixture MCP definition must be present in the loaded config")
+	require.True(t, admission.HasMCPInput, "fixture MCP source must be captured from supported persisted config")
 	owner.Initialize(t.Context(), nil, cfg, false)
 	require.NoError(t, owner.WaitForInit(t.Context()))
+	state, exists := owner.GetState("output")
+	require.True(t, exists, "initialized MCP owner must publish its state")
+	require.NoError(t, state.Error, "MCP initialization state error; published tool names: %v", owner.GetServerToolNames("output"))
+	require.Equal(t, mcp.StateConnected, state.State, "MCP fixture initialization failed; state error: %v; published tool names: %v", state.Error, owner.GetServerToolNames("output"))
+	require.Equal(t, []string{"source"}, owner.GetServerToolNames("output"), "published MCP source inventory")
 	ctx := context.WithValue(t.Context(), SessionIDContextKey, "output-session")
-	tool := &Tool{mcpName: "output", tool: &mcp.Tool{Name: "source"}, cfg: cfg, permissions: permissions, owner: owner, output: access}
+	published := GetMCPTools(permissions, cfg, cfg.WorkingDir(), owner, access)
+	require.Len(t, published, 1, "published source tools: %v", owner.GetServerToolNames("output"))
+	tool := published[0]
+	require.Equal(t, "mcp_output_source", tool.Name())
 	var ref string
 	for _, sourceError := range []bool{false, true} {
 		callID, input := "success-call", `{"error":false}`
@@ -124,12 +189,13 @@ func TestMCPOutputActualToolAdmissionDurableReplayAndPermissionFloors(t *testing
 			callID, input = "error-call", `{"error":true}`
 		}
 		response, err := tool.Run(ctx, fantasy.ToolCall{ID: callID, Name: tool.Name(), Input: input})
-		require.NoError(t, err)
-		require.Equal(t, sourceError, response.IsError)
-		require.True(t, strings.HasPrefix(response.Content, TruncateOutput(full)))
-		require.Less(t, len(response.Content), MaxOutputLength+1000)
+		traceResponse(callID, response.Content)
+		require.NoError(t, err, "MCP source Run response content: %q", response.Content)
+		require.Equal(t, sourceError, response.IsError, "unexpected MCP source Run status; response content: %q", response.Content)
+		require.True(t, strings.HasPrefix(response.Content, TruncateOutput(full)), "unexpected MCP source Run content: %q", response.Content)
+		require.Less(t, len(response.Content), MaxOutputLength+1000, "unexpected MCP source Run content length; response content: %q", response.Content)
 		require.NoError(t, conn.QueryRowContext(t.Context(), `SELECT id FROM mcp_outputs WHERE tool_call_id = ?`, callID).Scan(&ref))
-		require.Contains(t, response.Content, "rush-mcp-output://"+ref)
+		require.Contains(t, response.Content, "rush-mcp-output://"+ref, "unexpected MCP source Run artifact response content: %q", response.Content)
 		// Reserved artifact dispatch must work with NO MCP resource transport.
 		reader := NewReadMCPResourceTool(cfg, permissions, nil, access)
 		uri := "rush-mcp-output://" + ref
@@ -138,8 +204,9 @@ func TestMCPOutputActualToolAdmissionDurableReplayAndPermissionFloors(t *testing
 			input, err := json.Marshal(ReadMCPResourceParams{MCPName: "output", URI: uri})
 			require.NoError(t, err)
 			page, err := reader.Run(ctx, fantasy.ToolCall{ID: "read-output", Name: ReadMCPResourceToolName, Input: string(input)})
-			require.NoError(t, err)
-			require.False(t, page.IsError)
+			traceResponse("read-output", page.Content)
+			require.NoError(t, err, "MCP output page Run response content: %q", page.Content)
+			require.False(t, page.IsError, "unexpected MCP output page Run status; response content: %q", page.Content)
 			var metadata struct {
 				Offset      int64  `json:"offset"`
 				Next        int64  `json:"next_offset"`
@@ -159,50 +226,61 @@ func TestMCPOutputActualToolAdmissionDurableReplayAndPermissionFloors(t *testing
 	}
 	mediaCtx := context.WithValue(ctx, SupportsImagesContextKey, true)
 	media, err := tool.Run(mediaCtx, fantasy.ToolCall{ID: "media-call", Name: tool.Name(), Input: `{"media":true}`})
-	require.NoError(t, err)
-	require.Equal(t, full, media.Content, "media text and payload must not enter text-only retention")
-	require.Equal(t, []byte{255, 1}, media.Data)
+	traceResponse("media-call", media.Content)
+	require.NoError(t, err, "MCP media Run response content: %q", media.Content)
+	require.False(t, media.IsError, "unexpected MCP media Run status; response content: %q", media.Content)
+	require.Equal(t, full, media.Content, "media Run text mismatch; response content: %q", media.Content)
+	require.Equal(t, []byte{255, 1}, media.Data, "media Run payload mismatch; response content: %q", media.Content)
 	var artifacts int
 	require.NoError(t, conn.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM mcp_outputs`).Scan(&artifacts))
 	require.Equal(t, 2, artifacts)
 	refuseTransaction := func(context.Context, string, func(*sql.Tx) error) error { return errors.New("finalized") }
 	access.Store = session.NewMCPOutputStore(refuseTransaction, refuseTransaction)
 	failure, err := tool.Run(ctx, fantasy.ToolCall{ID: "retention-failed", Name: tool.Name(), Input: `{}`})
-	require.NoError(t, err)
-	require.True(t, failure.IsError)
-	require.Contains(t, failure.Content, "RETENTION FAILED after MCP tool ran")
-	require.NotContains(t, failure.Content, "rush-mcp-output://")
+	traceResponse("retention-failed", failure.Content)
+	require.NoError(t, err, "retention-failure Run response content: %q", failure.Content)
+	require.True(t, failure.IsError, "retention-failure Run unexpectedly succeeded; response content: %q", failure.Content)
+	require.Contains(t, failure.Content, "RETENTION FAILED after MCP tool ran", "unexpected retention-failure Run content: %q", failure.Content)
+	require.NotContains(t, failure.Content, "rush-mcp-output://", "unexpected retention-failure Run content: %q", failure.Content)
 	require.EqualValues(t, 4, executions.Load(), "retention failure must not rerun the original side effect")
 	access.Store = store
 	reader := NewReadMCPResourceTool(cfg, permissions, nil, access)
 	read := func(ctx context.Context, uri string) fantasy.ToolResponse {
 		input, err := json.Marshal(ReadMCPResourceParams{MCPName: "output", URI: uri})
 		require.NoError(t, err)
-		response, err := reader.Run(ctx, fantasy.ToolCall{ID: "read", Name: ReadMCPResourceToolName, Input: string(input)})
-		require.NoError(t, err)
-		return response
+		page, err := reader.Run(ctx, fantasy.ToolCall{ID: "read", Name: ReadMCPResourceToolName, Input: string(input)})
+		traceResponse("read", page.Content)
+		require.NoError(t, err, "MCP output page Run response content: %q", page.Content)
+		return page
 	}
 	uri := "rush-mcp-output://" + ref
 	permissions.deny = ReadMCPResourceToolName
 	permissions.asks = nil
-	require.True(t, read(ctx, uri).IsError)
+	deniedResource := read(ctx, uri)
+	require.True(t, deniedResource.IsError, "unexpected resource permission response content: %q", deniedResource.Content)
 	require.Equal(t, []string{ReadMCPResourceToolName}, permissions.asks)
 	permissions.deny = tool.Name()
-	require.True(t, read(ctx, uri).IsError, "source permission is independent of resource permission")
+	deniedSource := read(ctx, uri)
+	require.True(t, deniedSource.IsError, "source permission is independent of resource permission; response content: %q", deniedSource.Content)
 	permissions.deny = ""
 	restricted := &mcpOutputRestrictedPermissions{mcpOutputPermissions: permissions}
 	access.Permissions = restricted
-	require.True(t, read(permission.WithHookApproval(ctx, "read"), uri).IsError, "resource hook approval must not authorize the original source tool")
+	hookDenied := read(permission.WithHookApproval(ctx, "read"), uri)
+	require.True(t, hookDenied.IsError, "resource hook approval must not authorize the original source tool; response content: %q", hookDenied.Content)
 	require.False(t, restricted.hookLeaked)
 	access.Permissions = permissions
 	delete(access.Allowed, tool.Name())
-	require.True(t, read(ctx, uri).IsError, "revoked source tools must stay inaccessible")
+	revokedSource := read(ctx, uri)
+	require.True(t, revokedSource.IsError, "revoked source tools must stay inaccessible; response content: %q", revokedSource.Content)
 	access.Allowed[tool.Name()] = true
 	other := context.WithValue(ctx, SessionIDContextKey, "other-session")
-	require.True(t, read(other, uri).IsError)
+	wrongSession := read(other, uri)
+	require.True(t, wrongSession.IsError, "unexpected cross-session resource response content: %q", wrongSession.Content)
 	for _, invalid := range []string{uri + "/path", uri + "?offset=-1", uri + "?secret=x", "rush-mcp-output://missing"} {
-		require.True(t, read(ctx, invalid).IsError, "reserved local URIs must not reach an MCP transport")
+		invalidResponse := read(ctx, invalid)
+		require.True(t, invalidResponse.IsError, "reserved local URIs must not reach an MCP transport; response content: %q", invalidResponse.Content)
 	}
+	require.EqualValues(t, 4, executions.Load(), "replay and authorization denials must not rerun the source MCP tool")
 }
 
 func TestMCPOutputRetentionFailureIsExplicitAfterExecution(t *testing.T) {
