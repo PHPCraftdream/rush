@@ -23,12 +23,20 @@ func (s staticTokenSource) Refresh(context.Context, oauth.Token) error {
 }
 
 // NewWithSource creates a provider that snapshots credentials for each send.
-func NewWithSource(client *http.Client, source TokenSource) (fantasy.Provider, error) {
+func NewWithSource(client *http.Client, source TokenSource, websocketOptions ...WebSocketOptions) (fantasy.Provider, error) {
 	if source == nil {
 		return nil, errors.New("openai-codex requires a token source")
 	}
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return &provider{client: client, source: source}, nil
+	p := &provider{client: client, source: source}
+	if len(websocketOptions) > 0 {
+		options := websocketOptions[0]
+		if options.Manager == nil || options.Current == nil {
+			return nil, errors.New("openai-codex websocket requires an owner and current policy")
+		}
+		p.websocket = &options
+	}
+	return p, nil
 }

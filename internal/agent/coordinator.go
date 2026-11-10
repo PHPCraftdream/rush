@@ -35,6 +35,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/filetracker"
 	"github.com/PHPCraftdream/rush/internal/history"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/nettransport"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -276,6 +277,7 @@ type coordinator struct {
 	prompt      *prompt.Prompt
 	notify      pubsub.Publisher[notify.Notification]
 	background  *shell.BackgroundShellManager
+	responsesWS *nettransport.ResponsesWSManager
 	// inlineWindowDisabled is the SetInlineWindowForTest seam: when set, the
 	// bash delivery window is off (the pre-A14 "started" flow).
 	inlineWindowDisabled atomic.Bool
@@ -558,8 +560,10 @@ func NewCoordinator(
 		return nil, errCoderAgentNotConfigured
 	}
 
+	c.responsesWS = nettransport.NewResponsesWSManager(ctx, 16)
 	agent, err := c.buildAgent(ctx, p, agentCfg, false)
 	if err != nil {
+		_ = c.responsesWS.Close()
 		return nil, err
 	}
 	c.currentAgent = agent

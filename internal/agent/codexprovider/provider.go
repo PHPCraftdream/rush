@@ -32,8 +32,9 @@ const (
 )
 
 type provider struct {
-	client *http.Client
-	source TokenSource
+	client    *http.Client
+	source    TokenSource
+	websocket *WebSocketOptions
 }
 
 // New creates a provider that authenticates only with a ChatGPT OAuth token.
@@ -357,6 +358,9 @@ func sanitizeCallID(raw string) string {
 }
 
 func (m *languageModel) stream(ctx context.Context, payload []byte, userAgent string, yield func(fantasy.StreamPart) bool) {
+	if m.streamWebSocket(ctx, payload, userAgent, yield) {
+		return
+	}
 	response, err := m.acquireResponse(ctx, payload, userAgent)
 	if err != nil {
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: err})

@@ -131,7 +131,8 @@ type ProviderConfig struct {
 	// The original API key template before resolution (for re-resolution on auth errors).
 	APIKeyTemplate string `json:"-"`
 	// OAuthToken for providers that use OAuth2 authentication.
-	OAuthToken *oauth.Token `json:"oauth,omitempty" jsonschema:"description=OAuth2 token for authentication with the provider"`
+	OAuthToken         *oauth.Token       `json:"oauth,omitempty" jsonschema:"description=OAuth2 token for authentication with the provider"`
+	ResponsesTransport ResponsesTransport `json:"responses_transport,omitempty" jsonschema:"description=Transport for direct Codex and public OpenAI Responses,enum=auto,enum=http,default=auto"`
 	// Marks the provider as disabled.
 	Disable bool `json:"disable,omitempty" jsonschema:"description=Whether this provider is disabled,default=false"`
 

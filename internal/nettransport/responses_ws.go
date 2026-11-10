@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -36,6 +37,15 @@ const (
 	ResponsesWSCompleted
 )
 
+type ResponsesWSReadPolicy uint8
+
+const (
+	ResponsesWSReadBounded ResponsesWSReadPolicy = iota
+	// ResponsesWSReadRequestContext delegates idle/hard-stop policy to the
+	// caller's existing stream watchdog; owner shutdown still closes the wire.
+	ResponsesWSReadRequestContext
+)
+
 type ResponsesWSOwner struct {
 	AccountID      string
 	AuthRevision   string
@@ -53,8 +63,11 @@ type ResponsesWSOptions struct {
 	Network          config.NetworkConfig
 	HandshakeTimeout time.Duration
 	IOTimeout        time.Duration
+	ReadPolicy       ResponsesWSReadPolicy
 	MaxFrameBytes    int64
 	MaxExchangeBytes int64
+	// StillCurrent is a non-blocking, memory-only ownership check.
+	StillCurrent func() bool
 }
 
 type ResponsesWSHandshakeError struct {
@@ -82,6 +95,11 @@ func (e *ResponsesWSError) Error() string {
 		return fmt.Sprintf("responses websocket: %s deadline exceeded (%s)", e.stage, e.state)
 	}
 	return fmt.Sprintf("responses websocket: %s failed (%s)", e.stage, e.state)
+}
+
+// ResponsesWSNoReplay hides provider/network retry classifications after send.
+func ResponsesWSNoReplay(cause error) error {
+	return &ResponsesWSError{state: ResponsesWSSendPossiblySent, stage: "response", cause: cause}
 }
 
 func (e *ResponsesWSError) State() ResponsesWSSendState { return e.state }
@@ -122,6 +140,7 @@ type ResponsesWSConn struct {
 	endpoint         string
 	protocol         string
 	ioTimeout        time.Duration
+	readPolicy       ResponsesWSReadPolicy
 	maxFrameBytes    int64
 	maxExchangeBytes int64
 	stateMu          sync.Mutex
@@ -265,12 +284,16 @@ func DialResponsesWebSocket(ctx context.Context, options ResponsesWSOptions) (*R
 		endpoint:         options.Endpoint,
 		protocol:         options.Protocol,
 		ioTimeout:        options.IOTimeout,
+		readPolicy:       options.ReadPolicy,
 		maxFrameBytes:    options.MaxFrameBytes,
 		maxExchangeBytes: options.MaxExchangeBytes,
 	}, nil
 }
 
 func validateResponsesWSOptions(options *ResponsesWSOptions) error {
+	if options.ReadPolicy > ResponsesWSReadRequestContext {
+		return errors.New("responses websocket: invalid read policy")
+	}
 	if options.Protocol == "" || strings.ContainsAny(options.Protocol, "\r\n") || options.Endpoint == "" || options.Owner.AccountID == "" || options.Owner.AuthRevision == "" || options.Owner.ConversationID == "" {
 		return errors.New("responses websocket: incomplete connection options")
 	}
@@ -410,7 +433,11 @@ func (c *ResponsesWSConn) ReceiveRaw(ctx context.Context) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, c.fail("receive", state, err)
 	}
-	if err := c.wire.SetReadDeadline(ioDeadline(ctx, c.ioTimeout)); err != nil {
+	readDeadline := ioDeadline(ctx, c.ioTimeout)
+	if c.readPolicy == ResponsesWSReadRequestContext {
+		readDeadline, _ = ctx.Deadline()
+	}
+	if err := c.wire.SetReadDeadline(readDeadline); err != nil {
 		return nil, c.fail("receive", state, err)
 	}
 	stopClose := contextDeadlineFunc(ctx, func() { _ = c.Close() })
@@ -450,6 +477,11 @@ func (c *ResponsesWSConn) MarkCompleted() error {
 	return nil
 }
 
+// Abort retires a protocol-invalid exchange without exposing replayable causes.
+func (c *ResponsesWSConn) Abort(cause error) error {
+	return c.fail("protocol", c.State(), cause)
+}
+
 func (c *ResponsesWSConn) isActive() bool {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
@@ -474,6 +506,12 @@ func (c *ResponsesWSConn) fail(stage string, state ResponsesWSSendState, cause e
 	}
 	c.stateMu.Unlock()
 	_ = c.Close()
+	closeStatus := 0
+	var closeError *websocket.CloseError
+	if errors.As(cause, &closeError) {
+		closeStatus = closeError.Code
+	}
+	slog.Debug("responses websocket exchange failed", "protocol", c.protocol, "stage", stage, "send_state", state.String(), "close_status", closeStatus)
 	return &ResponsesWSError{state: state, stage: stage, cause: cause}
 }
 

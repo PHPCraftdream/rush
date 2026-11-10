@@ -82,6 +82,9 @@ const (
 // separately by their persisted finish title in shouldRetryTurn, because
 // a stall surfaces only as context.Canceled.
 func classifyProviderError(err error) retryClass {
+	if responsesWSReplayForbidden(err) {
+		return classTerminal
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return classTerminal
 	}
@@ -258,6 +261,9 @@ func (c *coordinator) ownAttemptAssistantMessage(ctx context.Context, sessionID,
 //   - turn returned no error (empty-stream close)                → retry
 //   - otherwise classify the returned error                      → transient/rate limit?
 func (c *coordinator) shouldRetryTurn(ctx context.Context, sessionID string, err error, attemptAssistantMsgID string) bool {
+	if responsesWSReplayForbidden(err) {
+		return false
+	}
 	// R3-1: an admission refusal means this call never started a provider
 	// request — classify nothing, not even the message lookup.
 	if turnAttemptRefused(err) {
@@ -325,6 +331,9 @@ func (c *coordinator) shouldRetryTurn(ctx context.Context, sessionID string, err
 // only for the empty-stream-close case, which by definition has no
 // content), so it's surfaced rather than guessed at.
 func (c *coordinator) shouldContinueTurn(ctx context.Context, sessionID string, err error, attemptAssistantMsgID string) (message.Message, bool) {
+	if responsesWSReplayForbidden(err) {
+		return message.Message{}, false
+	}
 	// R3-1: an admission refusal means this call never started a provider
 	// request — classify nothing, not even the message lookup.
 	if turnAttemptRefused(err) {

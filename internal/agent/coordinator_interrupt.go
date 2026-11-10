@@ -135,6 +135,9 @@ func (c *coordinator) CancelAll() (stillBusy bool) {
 	// Stop timer admission before closing callback admission. Detached timer
 	// deliveries and recheck wakes remain separate lifecycle backlog.
 	c.timeouts.close()
+	if c.responsesWS != nil {
+		_ = c.responsesWS.Close()
+	}
 	// Close admission before cancelling agent work: releases during unwind
 	// must not create new DB readers. Ownership cleanup already happened in
 	// agent_ownership.go.

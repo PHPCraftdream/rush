@@ -95,5 +95,20 @@ func (m *languageModel) send(ctx context.Context, payload []byte, userAgent stri
 		request.Header.Set("session_id", sessionID)
 		request.Header.Set("x-client-request-id", sessionID)
 	}
-	return m.provider.client.Do(request)
+	client := m.provider.client
+	if options := m.provider.websocket; options != nil {
+		if options.Manager.Closed() {
+			return nil, errors.New("openai-codex websocket owner closed")
+		}
+		if options.HTTPClient != nil {
+			client, err = options.HTTPClient()
+			if err != nil {
+				return nil, err
+			}
+			if client == nil {
+				client = http.DefaultClient
+			}
+		}
+	}
+	return client.Do(request)
 }
