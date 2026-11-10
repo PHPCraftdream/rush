@@ -100,7 +100,7 @@ type turnProgress struct {
 	seen     readCoverage // line windows already returned in this turn; lazily built
 	waits    int          // wait calls, for the finish text
 	rereads  int          // re-read calls, for the finish text
-	noWrites int          // native edit calls proven not to write
+	noWrites int          // native edit/multiedit calls proven not to write
 	stopped  bool
 	guard    stepGuard
 }
@@ -359,7 +359,7 @@ func guardStopDetails(p turnProgress) string {
 	details := fmt.Sprintf("The in-turn progress guard stopped this turn: %d consecutive steps with no progress, "+
 		"%d wait call(s) and %d already-read window(s). ", p.streak, p.waits, p.rereads)
 	if p.noWrites > 0 {
-		details += fmt.Sprintf("%d edit call(s) were rejected without writing file content. ", p.noWrites)
+		details += fmt.Sprintf("%d native edit/multiedit call(s) made no file content write. ", p.noWrites)
 	}
 	if p.guard.ownWork {
 		details += "Your own job/delegation was running; its completion reports by itself and starts your next turn. "
