@@ -136,6 +136,7 @@ func (f *batchRuntimeFactory) build(ctx context.Context) (rt *BatchRuntime, inst
 		checkin.SetWakeFunc(f.wake)
 	}
 	rt = NewBatchRuntime(BatchRuntimeConfig{CommitHook: install.CommitHook, TimeoutCheckin: checkin})
+	rt.commitDiagnostics = batchCommitDiagnostics{writer: f.writer, baseline: f.writer.Stats()}
 	// R11F P1-6: Start constructs the Runner from the install's deps before
 	// any Invoke can run (Start happens at New-time install; Invoke only
 	// after the App is built).
