@@ -962,6 +962,11 @@ func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fa
 				}
 			}
 		}
+		// Controls are installed after leaf admission; canonicalize the final
+		// model-facing set, not just the earlier placeholder/leaf inventory.
+		slices.SortStableFunc(built.tools, func(a, b fantasy.AgentTool) int {
+			return strings.Compare(a.Info().Name, b.Info().Name)
+		})
 		return built, nil
 	}
 	// Per-call pinned tool slices bypass sessionAgent.SetTools, so apply the
