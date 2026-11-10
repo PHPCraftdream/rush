@@ -60,8 +60,10 @@ func (snapshot AgentFinalizationContext) RestoreCall(ctx context.Context, sessio
 	return restored, nil
 }
 
-type agentFinalizationAuthoritiesKey struct{}
-type agentFinalizationManagedContinuationKey struct{}
+type (
+	agentFinalizationAuthoritiesKey         struct{}
+	agentFinalizationManagedContinuationKey struct{}
+)
 
 // WithAgentFinalizationContext carries bound capabilities, never raw model IDs.
 // Descendant calls keep ancestor capabilities until their physical work closes.
