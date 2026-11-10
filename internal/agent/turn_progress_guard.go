@@ -53,13 +53,13 @@ func refuseReread(streak int) bool {
 }
 
 // nextStreak folds one step's class into the streak (§1.1): progress resets it,
-// a wait/re-read/refusal extends it, a neutral step (`todos`, `batch_output`,
+// a wait/re-read/refusal/no-write extends it, a neutral step (`todos`, `batch_output`,
 // an unknown tool) leaves it alone.
 func nextStreak(streak int, class stepCallClass) int {
 	switch class {
 	case stepCallAct, stepCallRead:
 		return 0
-	case stepCallReread, stepCallWait, stepCallRefused:
+	case stepCallReread, stepCallWait, stepCallRefused, stepCallNoWrite:
 		return streak + 1
 	default:
 		return streak
@@ -82,7 +82,7 @@ func classOfStep(classes []stepCallClass) stepCallClass {
 		switch class {
 		case stepCallAct, stepCallRead:
 			return stepCallAct
-		case stepCallReread, stepCallWait, stepCallRefused:
+		case stepCallReread, stepCallWait, stepCallRefused, stepCallNoWrite:
 			if acc == stepCallNeutral {
 				acc = class
 			}
@@ -96,12 +96,13 @@ func classOfStep(classes []stepCallClass) stepCallClass {
 // and by recordStepHistory (classes, streak, stopped), read by StopWhen — all
 // sequential callbacks of one agent.Stream loop, so no lock.
 type turnProgress struct {
-	streak  int
-	seen    readCoverage // line windows already returned in this turn; lazily built
-	waits   int          // wait calls, for the finish text
-	rereads int          // re-read calls, for the finish text
-	stopped bool
-	guard   stepGuard
+	streak   int
+	seen     readCoverage // line windows already returned in this turn; lazily built
+	waits    int          // wait calls, for the finish text
+	rereads  int          // re-read calls, for the finish text
+	noWrites int          // native edit/multiedit calls proven not to write
+	stopped  bool
+	guard    stepGuard
 }
 
 // stepGuard is the immutable snapshot of one step's worth of guard state,
@@ -175,6 +176,8 @@ func (p *turnProgress) applyStep(classes []stepCallClass, spans [][]namedSpan) (
 			}
 		case stepCallWait:
 			p.waits++
+		case stepCallNoWrite:
+			p.noWrites++
 		case stepCallRefused:
 			refused++
 		}
@@ -355,6 +358,9 @@ func spanLines(sp readSpan) string {
 func guardStopDetails(p turnProgress) string {
 	details := fmt.Sprintf("The in-turn progress guard stopped this turn: %d consecutive steps with no progress, "+
 		"%d wait call(s) and %d already-read window(s). ", p.streak, p.waits, p.rereads)
+	if p.noWrites > 0 {
+		details += fmt.Sprintf("%d native edit/multiedit call(s) made no file content write. ", p.noWrites)
+	}
 	if p.guard.ownWork {
 		details += "Your own job/delegation was running; its completion reports by itself and starts your next turn. "
 	} else {

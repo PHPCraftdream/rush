@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/google/uuid"
 )
 
@@ -128,14 +129,17 @@ func (s *BatchStore) ReserveIdentity(ctx context.Context, p BatchReservation) (B
 	// deadlock (PdaBatchTxQueries itself never prepares; on a miss it falls
 	// back to raw SQL, which would only happen if a pool release raced with
 	// the Ensure above).
+	jobbatch.MarkCommitPhase(ctx, jobbatch.CommitPhasePrepare)
 	if err := db.PdaBatchEnsure(ctx, s.writer); err != nil {
 		return BatchReservationResult{}, err
 	}
+	jobbatch.MarkCommitPhase(ctx, jobbatch.CommitPhaseAcquire)
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return BatchReservationResult{}, err
 	}
 	defer tx.Rollback()
+	jobbatch.MarkCommitPhase(ctx, jobbatch.CommitPhaseStatements)
 	q := db.PdaBatchTxQueries(ctx, s.writer, tx)
 	live, err := q.GetLiveBatchRoot(ctx, db.GetLiveBatchRootParams{OwnerSessionID: p.Owner, ToolCallID: sql.NullString{String: p.ToolCallID, Valid: true}})
 	attached := err == nil
@@ -175,6 +179,7 @@ func (s *BatchStore) ReserveIdentity(ctx context.Context, p BatchReservation) (B
 	if err != nil {
 		return BatchReservationResult{}, err
 	}
+	jobbatch.MarkCommitPhase(ctx, jobbatch.CommitPhaseCommit)
 	if err = tx.Commit(); err != nil {
 		return BatchReservationResult{}, err
 	}
@@ -244,14 +249,17 @@ func batchRequireRow(n int64, err error) error {
 func (s *BatchStore) Project(ctx context.Context, p BatchProjection) error {
 	// See ReserveIdentity: prepare before the tx holds the pool's only
 	// connection.
+	jobbatch.MarkCommitPhase(ctx, jobbatch.CommitPhasePrepare)
 	if err := db.PdaBatchEnsure(ctx, s.writer); err != nil {
 		return err
 	}
+	jobbatch.MarkCommitPhase(ctx, jobbatch.CommitPhaseAcquire)
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	jobbatch.MarkCommitPhase(ctx, jobbatch.CommitPhaseStatements)
 	q := db.PdaBatchTxQueries(ctx, s.writer, tx)
 	if p.Checkpoint != nil {
 		if err = batchRequireRow(q.UpdateBatchRunnerCheckpoint(ctx, *p.Checkpoint)); err != nil {
@@ -263,6 +271,7 @@ func (s *BatchStore) Project(ctx context.Context, p BatchProjection) error {
 			return err
 		}
 	}
+	jobbatch.MarkCommitPhase(ctx, jobbatch.CommitPhaseCommit)
 	return tx.Commit()
 }
 
