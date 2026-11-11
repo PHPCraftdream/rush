@@ -154,7 +154,7 @@ func TestCustomRoleProcessLifetimeHelper(t *testing.T) {
 	tracker := filetracker.NewService(q)
 	t.Cleanup(func() {
 		messages.Shutdown()
-		hist.Shutdown()
+		hist.(interface{ Shutdown() }).Shutdown()
 		permissions.(interface{ Shutdown() }).Shutdown()
 	})
 
