@@ -52,11 +52,23 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, snapshot
 	// a concurrent CancelAll could set shuttingDown and start its Wait goroutine
 	// while the counter was still 0, letting Wait return before Add(1) landed
 	// (panics or admits work after "shutdown complete").
+	return a.summarize(ctx, sessionID, snapshot, true)
+}
+
+func (a *sessionAgent) SummarizeNow(ctx context.Context, sessionID string, snapshot *SummarizeSnapshot) error {
+	if snapshot == nil {
+		return fmt.Errorf("standalone summary snapshot is required")
+	}
+	return a.summarize(ctx, sessionID, snapshot, false)
+}
+
+func (a *sessionAgent) summarize(ctx context.Context, sessionID string, snapshot *SummarizeSnapshot, queueWhenBusy bool) error {
 	if !a.tryAdmitRunWg() {
 		return ErrAgentShuttingDown
 	}
 	defer a.runWg.Done()
-
+	genCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	mb := a.getMailbox(sessionID)
 	// Atomic check-and-reserve (#268/P0-4, design §6): beginCompact makes
 	// us the sole owner of sessionID's mailbox or returns false if a turn
 	// or another compaction already owns it. This replaces the old
@@ -64,15 +76,16 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, snapshot
 	// between the busy check and the compaction's DB writes — a concurrent
 	// Run could start between the check and the first delete, corrupting
 	// history.
-	genCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-	mb := a.getMailbox(sessionID)
 	epoch, ok := mb.beginCompact(cancel)
 	if !ok {
 		cancel()
+		if !queueWhenBusy {
+			return fmt.Errorf("session %q is already processing another request: %w", sessionID, ErrSessionBusy)
+		}
 		a.summarizeQueue.Set(sessionID, snapshot)
 		return ErrSummarizeQueued
 	}
-	return a.runSummarize(ctx, genCtx, sessionID, snapshot, mb, epoch, cancel)
+	return a.runSummarize(ctx, genCtx, sessionID, snapshot, mb, epoch, cancel, queueWhenBusy)
 }
 
 // runSummarize runs a manual /compact under mailbox ownership acquired by
@@ -105,7 +118,7 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, snapshot
 // prefix resolved from the target session (or shared state for sessions without
 // overrides), ensuring the entire summarize operation uses consistent
 // configuration regardless of concurrent SetModels calls (task #341, P1-1).
-func (a *sessionAgent) runSummarize(ctx context.Context, genCtx context.Context, sessionID string, snapshot *SummarizeSnapshot, mb *mailbox, epoch uint64, cancel context.CancelFunc) error {
+func (a *sessionAgent) runSummarize(ctx context.Context, genCtx context.Context, sessionID string, snapshot *SummarizeSnapshot, mb *mailbox, epoch uint64, cancel context.CancelFunc, queueOnLockFailure bool) error {
 	// Determine idle timeout for summarization stream watchdog
 	idleTimeout := streamIdleTimeoutDefault
 	if a.streamIdleTimeout > 0 {
@@ -185,15 +198,21 @@ func (a *sessionAgent) runSummarize(ctx context.Context, genCtx context.Context,
 				)
 				// Release mailbox ownership with handoff so queued work gets a runner.
 				a.abandonOwnershipWithHandoff(sessionID, epoch)
-				a.requeueSummarizeSnapshot(sessionID, snapshot)
-				return fmt.Errorf("%w: session %q is already in use: %w", ErrSummarizeQueued, sessionID, lockErr)
+				if queueOnLockFailure {
+					a.requeueSummarizeSnapshot(sessionID, snapshot)
+					return fmt.Errorf("%w: session %q is already in use: %w", ErrSummarizeQueued, sessionID, lockErr)
+				}
+				return fmt.Errorf("session %q is already in use: %w", sessionID, ErrSessionBusy)
 			}
 			slog.Error("agent.runSummarize: failed to acquire inter-process session lock, refusing to compact unprotected",
 				"session_id", sessionID, "err", lockErr)
 			// Release mailbox ownership with handoff so queued work gets a runner.
 			a.abandonOwnershipWithHandoff(sessionID, epoch)
-			a.requeueSummarizeSnapshot(sessionID, snapshot)
-			return fmt.Errorf("%w: session %q: could not acquire session lock: %w", ErrSummarizeQueued, sessionID, lockErr)
+			if queueOnLockFailure {
+				a.requeueSummarizeSnapshot(sessionID, snapshot)
+				return fmt.Errorf("%w: session %q: could not acquire session lock: %w", ErrSummarizeQueued, sessionID, lockErr)
+			}
+			return fmt.Errorf("session %q: could not acquire session lock: %w", sessionID, lockErr)
 		}
 	}
 

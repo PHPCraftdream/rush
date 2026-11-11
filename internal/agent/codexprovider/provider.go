@@ -464,13 +464,14 @@ func providerError(response *http.Response, requestBody, body []byte) error {
 		}
 	}
 	return &fantasy.ProviderError{
-		Message:         message,
-		Title:           fantasy.ErrorTitleForStatusCode(response.StatusCode),
-		URL:             responsesURL,
-		StatusCode:      response.StatusCode,
-		RequestBody:     append([]byte(nil), requestBody...),
-		ResponseHeaders: headers,
-		ResponseBody:    append([]byte(nil), body...),
+		Message:            message,
+		Title:              fantasy.ErrorTitleForStatusCode(response.StatusCode),
+		URL:                responsesURL,
+		StatusCode:         response.StatusCode,
+		RequestBody:        append([]byte(nil), requestBody...),
+		ResponseHeaders:    headers,
+		ResponseBody:       append([]byte(nil), body...),
+		ContextTooLargeErr: isContextLengthExceeded(decoded.Error),
 	}
 }
 

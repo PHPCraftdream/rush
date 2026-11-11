@@ -28,6 +28,10 @@ func codexFailureMessage(failure codexFailure, fallback string) string {
 	return message
 }
 
+func isContextLengthExceeded(failure codexFailure) bool {
+	return failure.Code == "context_length_exceeded" || failure.Type == "context_length_exceeded"
+}
+
 func codexStreamFailure(data []byte) error {
 	var failure struct {
 		Error    codexFailure `json:"error"`
@@ -48,5 +52,6 @@ func codexStreamFailure(data []byte) error {
 		Message: codexFailureMessage(selected, strings.TrimSpace(string(data))),
 		Title:   "Codex response error", StatusCode: streamFailureStatus(code),
 		URL: responsesURL, ResponseBody: append([]byte(nil), data...),
+		ContextTooLargeErr: isContextLengthExceeded(selected),
 	}
 }
