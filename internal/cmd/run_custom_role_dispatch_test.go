@@ -4,23 +4,28 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	openai "github.com/charmbracelet/openai-go"
+	"github.com/charmbracelet/openai-go/packages/ssestream"
+	"github.com/spf13/pflag"
+	"github.com/stretchr/testify/require"
 
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	rushlog "github.com/PHPCraftdream/rush/internal/log"
 	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/spf13/pflag"
-	"github.com/stretchr/testify/require"
 )
 
 // TestRunCustomRoleProviderDispatch exercises the real top-level Cobra run
@@ -72,32 +77,50 @@ func TestRunCustomRoleProviderDispatch(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			trace := newRunCustomRoleDispatchTrace()
+			t.Cleanup(func() {
+				if t.Failed() {
+					requestStages, droppedRequests, executeStages, droppedExecute := trace.snapshot()
+					t.Logf("custom-role dispatch failure trace: provider_stages=%q provider_stages_dropped=%d execute_stages=%q execute_stages_dropped=%d", requestStages, droppedRequests, executeStages, droppedExecute)
+				}
+			})
 			var (
 				mu               sync.Mutex
 				requests         []runCLIFakeProviderRequest
 				overflowRequests int
 			)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestID := trace.requestStage("handler entered", runCLIEndpointClass(r.URL.Path))
+				defer func() {
+					if r.Context().Err() != nil {
+						trace.requestStageFor(requestID, "context canceled")
+					}
+				}()
 				body, err := io.ReadAll(r.Body)
 				if err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
+					trace.requestStageFor(requestID, "request read failed")
+					http.Error(w, "request read failed", http.StatusBadRequest)
 					return
 				}
+				trace.requestStageFor(requestID, fmt.Sprintf("request read done bytes=%d", len(body)))
 				recorded := runCLIFakeProviderRequest{
-					method:    r.Method,
-					path:      r.URL.Path,
-					hasPrompt: bytes.Contains(body, []byte("test custom role dispatch")),
+					method:      r.Method,
+					path:        r.URL.Path,
+					hasPrompt:   bytes.Contains(body, []byte("test custom role dispatch")),
+					titlePrompt: bytes.Contains(body, []byte("Generate a concise title for the following content:")),
 				}
-				if r.Method == http.MethodPost && (r.URL.Path == "/chat/completions" || r.URL.Path == "/v1/chat/completions") {
+				if r.Method == http.MethodPost && runCLIEndpointClass(r.URL.Path) == "completion" {
 					var request struct {
 						Model string `json:"model"`
 					}
 					if err := json.Unmarshal(body, &request); err != nil {
-						http.Error(w, err.Error(), http.StatusBadRequest)
+						trace.requestStageFor(requestID, "request classification=invalid-json")
+						http.Error(w, "invalid completion request", http.StatusBadRequest)
 						return
 					}
 					recorded.model = request.Model
 				}
+				trace.requestStageFor(requestID, fmt.Sprintf("request classification=%s model_class=%s endpoint=%s", runCLIRequestClass(recorded), runCLIModelClass(recorded.model), runCLIEndpointClass(recorded.path)))
 				mu.Lock()
 				if len(requests) < 8 {
 					requests = append(requests, recorded)
@@ -107,17 +130,23 @@ func TestRunCustomRoleProviderDispatch(t *testing.T) {
 				requestCount := len(requests) + overflowRequests
 				mu.Unlock()
 				if requestCount > 8 {
+					trace.requestStageFor(requestID, "response rejected request limit")
 					http.Error(w, "fake provider request limit exceeded", http.StatusTooManyRequests)
 					return
 				}
 				if recorded.method != http.MethodPost || recorded.model == "" {
+					trace.requestStageFor(requestID, "response rejected non-completion request")
 					http.NotFound(w, r)
 					return
 				}
 				w.Header().Set("Content-Type", "text/event-stream")
-				_, _ = fmt.Fprintln(w, `data: {"id":"cli-role","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{"role":"assistant","content":"custom role dispatched"},"finish_reason":null}]}`)
-				_, _ = fmt.Fprintln(w, `data: {"id":"cli-role","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
-				_, _ = fmt.Fprintln(w, "data: [DONE]")
+				trace.requestStageFor(requestID, "response writes starting")
+				written, writeErr := writeRunCustomRoleSSE(w)
+				if writeErr != nil {
+					trace.requestStageFor(requestID, fmt.Sprintf("response writes failed after frames=%d", written))
+					return
+				}
+				trace.requestStageFor(requestID, fmt.Sprintf("response writes returned frames=%d", written))
 			}))
 			t.Cleanup(server.Close)
 
@@ -160,7 +189,7 @@ func TestRunCustomRoleProviderDispatch(t *testing.T) {
 				require.FileExists(t, activeConfig)
 			}
 
-			stdout, runErr := executeTopLevelRun(t, cwd, dataDir, tc.role)
+			stdout, runErr := executeTopLevelRun(t, cwd, dataDir, tc.role, trace)
 			mu.Lock()
 			observedRequests := append([]runCLIFakeProviderRequest(nil), requests...)
 			providerRequestOverflow := overflowRequests
@@ -169,16 +198,22 @@ func TestRunCustomRoleProviderDispatch(t *testing.T) {
 			if tc.wantModel != "" {
 				require.NoError(t, runErr)
 				var result struct {
-					SessionID string `json:"session_id"`
+					SessionID  string `json:"session_id"`
+					FinalText  string `json:"final_text"`
+					ExitReason string `json:"exit_reason"`
+					Error      string `json:"error"`
 				}
-				require.NoError(t, json.Unmarshal(stdout, &result), "run stdout: %s", stdout)
+				require.NoError(t, json.Unmarshal(stdout, &result), "run stdout must be a JSON envelope")
 				require.Equal(t, "custom-role-cli-session", result.SessionID)
+				require.Equal(t, "custom role dispatched", result.FinalText)
+				require.Equal(t, "end_turn", result.ExitReason)
+				require.Empty(t, result.Error)
 				rootRequestFound := false
 				for _, request := range observedRequests {
 					require.Equal(t, http.MethodPost, request.method, "unexpected non-completion provider request: %+v", request)
 					require.True(t, request.path == "/chat/completions" || request.path == "/v1/chat/completions",
 						"unexpected provider endpoint: %+v", request)
-					if request.model == tc.wantModel && request.hasPrompt {
+					if runCLIRequestClass(request) == "root" && request.model == tc.wantModel {
 						rootRequestFound = true
 					}
 					require.NotEqual(t, "smart-only-model", request.model,
@@ -206,10 +241,215 @@ func TestRunCustomRoleProviderDispatch(t *testing.T) {
 }
 
 type runCLIFakeProviderRequest struct {
-	method    string
-	path      string
-	model     string
-	hasPrompt bool
+	method      string
+	path        string
+	model       string
+	hasPrompt   bool
+	titlePrompt bool
+}
+
+const runCustomRoleDispatchTraceLimit = 64
+
+type runCustomRoleDispatchTrace struct {
+	mu              sync.Mutex
+	started         time.Time
+	nextRequest     int
+	requestStages   []string
+	droppedRequests int
+	executeStages   []string
+	droppedExecute  int
+}
+
+func newRunCustomRoleDispatchTrace() *runCustomRoleDispatchTrace {
+	return &runCustomRoleDispatchTrace{started: time.Now()}
+}
+
+func (trace *runCustomRoleDispatchTrace) requestStage(stage, endpoint string) int {
+	trace.mu.Lock()
+	defer trace.mu.Unlock()
+	trace.nextRequest++
+	requestID := trace.nextRequest
+	trace.recordBounded(&trace.requestStages, &trace.droppedRequests, fmt.Sprintf("request#%d %s endpoint=%s", requestID, stage, endpoint))
+	return requestID
+}
+
+func (trace *runCustomRoleDispatchTrace) requestStageFor(requestID int, stage string) {
+	trace.mu.Lock()
+	defer trace.mu.Unlock()
+	trace.recordBounded(&trace.requestStages, &trace.droppedRequests, fmt.Sprintf("request#%d %s", requestID, stage))
+}
+
+func (trace *runCustomRoleDispatchTrace) executeStage(stage string) {
+	trace.mu.Lock()
+	defer trace.mu.Unlock()
+	trace.recordBounded(&trace.executeStages, &trace.droppedExecute, stage)
+}
+
+func (trace *runCustomRoleDispatchTrace) recordBounded(target *[]string, dropped *int, stage string) {
+	if len(*target) == runCustomRoleDispatchTraceLimit {
+		*dropped = *dropped + 1
+		return
+	}
+	elapsed := time.Since(trace.started).Round(time.Millisecond).Milliseconds()
+	*target = append(*target, fmt.Sprintf("+%dms %s", elapsed, stage))
+}
+
+func runCLICommandErrorClass(err error) string {
+	switch {
+	case err == nil:
+		return "nil"
+	case strings.HasPrefix(strings.ToLower(err.Error()), "run timeout "):
+		return "owned-timeout"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	default:
+		return "other"
+	}
+}
+
+func (trace *runCustomRoleDispatchTrace) snapshot() ([]string, int, []string, int) {
+	trace.mu.Lock()
+	defer trace.mu.Unlock()
+	return append([]string(nil), trace.requestStages...), trace.droppedRequests,
+		append([]string(nil), trace.executeStages...), trace.droppedExecute
+}
+
+func TestRunCLICommandErrorClass(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{want: "nil"},
+		{err: errors.New("run timeout 10s exceeded (source: --timeout)"), want: "owned-timeout"},
+		{err: context.DeadlineExceeded, want: "deadline"},
+		{err: context.Canceled, want: "canceled"},
+		{err: errors.New("configured role was refused"), want: "other"},
+	} {
+		require.Equal(t, tc.want, runCLICommandErrorClass(tc.err))
+	}
+}
+
+func runCLIEndpointClass(path string) string {
+	if path == "/chat/completions" || path == "/v1/chat/completions" {
+		return "completion"
+	}
+	return "other"
+}
+
+func runCLIRequestClass(request runCLIFakeProviderRequest) string {
+	switch {
+	case request.titlePrompt:
+		return "title"
+	case request.hasPrompt:
+		return "root"
+	default:
+		return "other"
+	}
+}
+
+func TestRunCLIRequestClassPrioritizesTitlePrompt(t *testing.T) {
+	require.Equal(t, "title", runCLIRequestClass(runCLIFakeProviderRequest{
+		hasPrompt:   true,
+		titlePrompt: true,
+	}))
+}
+
+func runCLIModelClass(model string) string {
+	switch model {
+	case "custom-only-model":
+		return "custom"
+	case "smart-only-model":
+		return "smart"
+	case "title-only-model":
+		return "title"
+	case "":
+		return "missing"
+	default:
+		return "other"
+	}
+}
+
+func runCustomRoleSSEFrames() []string {
+	return []string{
+		`data: {"id":"cli-role","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{"role":"assistant","content":"custom role dispatched"},"finish_reason":null}]}` + "\n\n",
+		`data: {"id":"cli-role","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n\n",
+		"data: [DONE]\n\n",
+	}
+}
+
+func writeRunCustomRoleSSE(w io.Writer) (int, error) {
+	wrote := 0
+	for _, frame := range runCustomRoleSSEFrames() {
+		if _, err := io.WriteString(w, frame); err != nil {
+			return wrote, err
+		}
+		wrote++
+	}
+	return wrote, nil
+}
+
+func TestRunCustomRoleSSEFramesDecodeAsOpenAIStream(t *testing.T) {
+	var body bytes.Buffer
+	var written int
+	decodedEvents := 0
+	decodedKinds := make([]string, 0, 3)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("SSE framing failure trace: response_bytes=%d frames_written=%d events_decoded=%d event_kinds=%q", body.Len(), written, decodedEvents, decodedKinds)
+		}
+	})
+	var err error
+	written, err = writeRunCustomRoleSSE(&body)
+	require.NoError(t, err)
+	require.Equal(t, 3, written)
+
+	response := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:   io.NopCloser(bytes.NewReader(body.Bytes())),
+	}
+	decoder := ssestream.NewDecoder(response)
+	defer func() { require.NoError(t, decoder.Close()) }()
+
+	var text strings.Builder
+	var finishReason string
+	var usage openai.CompletionUsage
+	for decoder.Next() {
+		decodedEvents++
+		event := decoder.Event()
+		data := strings.TrimSpace(string(event.Data))
+		switch {
+		case data == "[DONE]":
+			decodedKinds = append(decodedKinds, "done")
+		case data != "":
+			var chunk openai.ChatCompletionChunk
+			require.NoError(t, json.Unmarshal([]byte(data), &chunk), "decoded SSE data event must be a chat completion chunk")
+			if len(chunk.Choices) > 0 {
+				choice := chunk.Choices[0]
+				text.WriteString(choice.Delta.Content)
+				if choice.FinishReason != "" {
+					finishReason = choice.FinishReason
+				}
+			}
+			if chunk.Usage.TotalTokens != 0 {
+				usage = chunk.Usage
+				decodedKinds = append(decodedKinds, "usage")
+			} else {
+				decodedKinds = append(decodedKinds, "completion")
+			}
+		default:
+			decodedKinds = append(decodedKinds, "empty")
+		}
+	}
+	require.NoError(t, decoder.Err())
+	require.Equal(t, 3, decodedEvents, "all three separately-delimited events, including [DONE], must decode")
+	require.Equal(t, []string{"completion", "usage", "done"}, decodedKinds)
+	require.Equal(t, "custom role dispatched", text.String())
+	require.Equal(t, "stop", finishReason)
+	require.EqualValues(t, 1, usage.PromptTokens)
+	require.EqualValues(t, 1, usage.CompletionTokens)
+	require.EqualValues(t, 2, usage.TotalTokens)
 }
 
 func isolateRunCLIConfig(t *testing.T) {
@@ -225,8 +465,18 @@ func isolateRunCLIConfig(t *testing.T) {
 	rushlog.Setup("", false)
 }
 
-func executeTopLevelRun(t *testing.T, cwd, dataDir, role string) ([]byte, error) {
+func executeTopLevelRun(t *testing.T, cwd, dataDir, role string, traces ...*runCustomRoleDispatchTrace) ([]byte, error) {
 	t.Helper()
+	var trace *runCustomRoleDispatchTrace
+	if len(traces) > 0 {
+		trace = traces[0]
+	}
+	recordExecute := func(stage string) {
+		if trace != nil {
+			trace.executeStage(stage)
+		}
+	}
+	recordExecute("top-level command setup started")
 	originalCwd, err := os.Getwd()
 	require.NoError(t, err)
 	previousStdout := os.Stdout
@@ -272,10 +522,17 @@ func executeTopLevelRun(t *testing.T, cwd, dataDir, role string) ([]byte, error)
 		"run", "--role", role, "--json", "--session", "custom-role-cli-session",
 		"--timeout", "10s", "test custom role dispatch",
 	})
+	recordExecute("Cobra Execute entered")
 	runErr := rootCmd.Execute()
+	ctxState := "active"
+	if ctx.Err() != nil {
+		ctxState = "canceled-or-deadline"
+	}
+	recordExecute(fmt.Sprintf("Cobra Execute returned error_class=%s outer_context=%s", runCLICommandErrorClass(runErr), ctxState))
 	rootCmd.SetArgs(nil)
 	_ = write.Close()
 	output := <-captured
+	recordExecute(fmt.Sprintf("stdout capture completed bytes=%d", len(output)))
 	os.Stdout = previousStdout
 	_ = read.Close()
 	return output, runErr
