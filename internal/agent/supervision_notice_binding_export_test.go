@@ -89,25 +89,29 @@ func NewSupervisionNoticeProbeForTest(c Coordinator, owner string, conn *sql.DB,
 		if err != nil {
 			observation.ReadErr = true
 		} else {
-			for rows.Next() {
-				var kind string
-				var wake int64
-				if err := rows.Scan(&kind, &wake); err != nil {
+			func() {
+				defer func() {
+					if rows.Close() != nil {
+						observation.ReadErr = true
+					}
+				}()
+				for rows.Next() {
+					var kind string
+					var wake int64
+					if err := rows.Scan(&kind, &wake); err != nil {
+						observation.ReadErr = true
+						break
+					}
+					if observation.NoticeCount == 0 {
+						observation.Kind = kind
+						observation.Wake = wake
+					}
+					observation.NoticeCount++
+				}
+				if rows.Err() != nil {
 					observation.ReadErr = true
-					break
 				}
-				if observation.NoticeCount == 0 {
-					observation.Kind = kind
-					observation.Wake = wake
-				}
-				observation.NoticeCount++
-			}
-			if rows.Err() != nil {
-				observation.ReadErr = true
-			}
-			if rows.Close() != nil {
-				observation.ReadErr = true
-			}
+			}()
 		}
 		probe.Wakes <- observation
 		return nil, nil
