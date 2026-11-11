@@ -20,7 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const requestedSDKRole = "Rôle Analyste α"
+const requestedSDKRole = "Rôle Research α"
 
 type requestedSDKRequest struct {
 	Method string `json:"-"`
@@ -279,7 +279,7 @@ func TestClientRunRequestedRoleUnknownAndWrongCaseFailBeforeEffects(t *testing.T
 		sessionID string
 	}{
 		{role: "missing profile", sessionID: "sdk-requested-role-missing"},
-		{role: "rôle analyste α", sessionID: "sdk-requested-role-wrong-case"},
+		{role: "rôle research α", sessionID: "sdk-requested-role-wrong-case"},
 	} {
 		t.Run(tc.sessionID, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
