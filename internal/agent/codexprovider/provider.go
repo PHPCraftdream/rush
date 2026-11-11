@@ -271,6 +271,9 @@ func makeRequestBody(ctx context.Context, modelID string, call fantasy.Call) (ma
 		"store":   false,
 		"include": []string{"reasoning.encrypted_content"},
 	}
+	if cacheKey, ok := promptCacheKey(ctx, call); ok {
+		body["prompt_cache_key"] = cacheKey
+	}
 	if len(call.Tools) > 0 {
 		tools := make([]any, 0, len(call.Tools))
 		for _, tool := range call.Tools {
