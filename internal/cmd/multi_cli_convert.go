@@ -267,16 +267,9 @@ const (
 		"   output files and verify the result. Redirect\n" +
 		"   `.rush/stdin/<task>.{out,err}` to the\n" +
 		"   PRIMARY checkout so results survive the eventual worktree removal."
-	claudeWcrushBackgroundGuidance = "**OOM discipline belongs to phase 2** — the other half of the same\n" +
-		"  bargain: `-parallel 2` for heavy packages, never two heavy runs at\n" +
-		"  once, long runs backgrounded via the Bash tool's\n" +
-		"  `run_in_background: true` parameter and never with a trailing `&`."
-	codexWcrushBackgroundGuidance = "**OOM discipline belongs to phase 2** — the other half of the same\n" +
-		"  bargain: `-parallel 2` for heavy packages, never two heavy runs at\n" +
-		"  once. Run long phase-2 tests with Codex's `exec_command`. If it\n" +
-		"  returns a session handle, retain it and repeatedly call blocking\n" +
-		"  `write_stdin` with empty input until the test process exits. Then read\n" +
-		"  the output and verify the result."
+	claudeWcrushBackgroundGuidance = "**Phase-2 verification follows caller policy** — run long phase-2 tests only when explicitly authorized; a CI-only request means do not run them locally. When execution is authorized, honor project memory and concurrency limits and wait for every started process to finish; never detach a child with `&`."
+	codexWcrushBackgroundGuidance = "**Phase-2 verification follows caller policy** — run long phase-2 tests only when explicitly authorized; a CI-only request means do not run them locally. When execution is authorized, honor project memory and concurrency limits. Run long phase-2 tests with Codex's `exec_command`. If it returns a session handle, retain it and repeatedly call blocking `write_stdin` with empty input until the test process exits. Then read the output and verify the result."
+
 	claudeWcrushResumeBlock = "```\n" +
 		"rush run --role smart --session <same id> \"<permission and what to run>\"\n" +
 		"```"
@@ -296,19 +289,8 @@ const (
 		"   `.rush/stdin/<task>.{out,err}` to the PRIMARY checkout's ABSOLUTE\n" +
 		"   path (a relative path lands inside the worktree, because `cwd`\n" +
 		"   is the worktree) so results survive the eventual worktree removal."
-	opencodeWcrushBackgroundGuidance = "**OOM discipline belongs to phase 2** — the other half of the same\n" +
-		"  bargain: `-parallel 2` for heavy packages, never two heavy runs at\n" +
-		"  once. Run long phase-2 tests in the FOREGROUND with a large\n" +
-		"  `timeout` in MILLISECONDS (the 120000 default kills a long test\n" +
-		"  run); the call returning is the completion signal. Never append\n" +
-		"  `&` — it false-completes instantly and the child is untracked."
-	ompWcrushBackgroundGuidance = "**OOM discipline belongs to phase 2** — the other half of the same\n" +
-		"  bargain: `-parallel 2` for heavy packages, never two heavy runs at\n" +
-		"  once. Run long phase-2 tests with the bash tool's `\"async\": true` and\n" +
-		"  `\"timeout\": 0` (without `timeout: 0` the 300 s deadline applies even\n" +
-		"  in background); the returned job id auto-wakes this conversation on\n" +
-		"  completion — in print mode, keep calling `wait` until the tests\n" +
-		"  finish. Never `&`, `nohup`, or `disown`."
+	opencodeWcrushBackgroundGuidance = "**Phase-2 verification follows caller policy** — run long phase-2 tests only when explicitly authorized; a CI-only request means do not run them locally. When execution is authorized, honor project memory and concurrency limits. Run long phase-2 tests in the FOREGROUND with a caller-approved `timeout` in MILLISECONDS sufficient for the run; the call returning is the completion signal. Never append `&` — it false-completes instantly and the child is untracked."
+	ompWcrushBackgroundGuidance = "**Phase-2 verification follows caller policy** — run long phase-2 tests only when explicitly authorized; a CI-only request means do not run them locally. When execution is authorized, honor project memory and concurrency limits. Run long phase-2 tests with the bash tool's `\"async\": true` and `\"timeout\": 0` (without `timeout: 0` the 300 s deadline applies even in background); the returned job id auto-wakes this conversation on completion — in print mode, keep calling `wait` until the tests finish. Never `&`, `nohup`, or `disown`."
 )
 
 // toCodexWrushSkillMD converts the canonical Claude /wrush body to Codex's

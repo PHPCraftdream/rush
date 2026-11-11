@@ -24,16 +24,17 @@ Unlike `/rush`, which isolates parallel/overlapping runs, `/wrush` always uses a
    inside that tree. Redirect `.rush/stdin/<task>.{out,err}` to the
    PRIMARY checkout so results survive the eventual worktree removal.**
 
-   Worktree-scoped `rush run` is delegation layer one. `/rush`'s `--agents single` and orchestrator-mode rules govern layer two: whether that sub-agent may delegate to workers via `agent`. `--agents single` neither enables nor disables worktree isolation, and isolation neither changes the flag's effect. Cwd isolation is inherited by the process and its workers; no separate isolation step is needed.
+   This is operational scoping, not a sandbox or enforced filesystem boundary: absolute paths, subprocesses, other tools, or external workers may still access outside the worktree. Do not claim the launcher confines every tool path; inspect actual changes and honor the task's explicit path scope.
 
-   Task text may constrain the deliverable, but must not prohibit smart's internal delegation. Nested executors starting is expected, not a reason to stop or ask the operator: launch and wait for the run to finish.
-4. If `/rush`'s refusal list means doing the work yourself, still create the worktree first; edit, verify, and merge its diff as for a sub-agent. Never edit the primary checkout directly.
-5. After verification using `/rush`'s checklist inside the worktree, merge the reviewed diff into the primary checkout yourself: use `cp`/`Edit` for non-overlapping files and hand-reconcile concurrent `/wrush` edits to the same file. Prefer this to `git merge`/`git pull` unless explicitly requested.
-6. Review the **staged diff** (`git diff --cached`) before committing. Stage only this task's files; preserve unrelated changes. The sub-agent never commits; this does not authorize a push. Skip an empty commit. Commit the transferred changes in the primary branch only after this staged-diff review.
-7. After the merge is committed, remove the worktree (`git worktree remove`) and branch (`git branch -D`), unless asked to keep them. It is always an in-repo ignored-directory cleanup.
-8. Parallel `/wrush` runs follow `/rush` unchanged: disjoint scopes, sibling names, no git writes, scoped tests; only isolation becomes mandatory.
+   Worktree-scoped `rush run` is delegation layer one. `/rush`'s `--agents single` and orchestrator-mode rules govern layer two: whether that sub-agent may delegate to workers via `agent`. `--agents single` neither enables nor disables worktree isolation, and isolation neither changes the flag's effect. Cwd is an instruction, not an enforced boundary.
 
-Do not report completion or stop until steps 5–7 are personally done: unmerged or unremoved worktrees are unfinished and not delivered. Never delegate or defer this cleanup.
+   Task text may constrain the deliverable, but must not prohibit smart's internal delegation. Nested executors starting is expected, not a reason to stop or ask the operator: launch and wait for the run to finish; inspect the actual diff and respect the assigned scope.
+4. If `/rush`'s refusal list means doing the work yourself, still create the required worktree first and keep task edits scoped to it. Never edit the primary checkout directly; any transfer or merge is parent-owned, explicitly authorized, and subject to steps 5–6.
+5. The invoking parent owns worktree integration. Only after the `rush run` process has physically exited, the task's relevant owned/related batch work is terminal, and integration is authorized, transfer and review the diff in the primary checkout. Do not copy, merge, stage, or commit unconditionally; preserve unrelated work and follow the caller's explicit git-write policy. The commit is conditional on authorization after those gates. Commit the transferred changes in the primary branch only after reviewing the staged diff; skip empty commits.
+6. The invoking parent owns any commit and worktree/branch cleanup. After the merge is committed, remove the worktree (`git worktree remove`) and branch (`git branch -D`) only when explicitly authorized and after process/relevant batch termination; unless asked to keep them. Otherwise preserve the checkout. No push unless separately authorized.
+7. Parallel `/wrush` runs follow `/rush` unchanged: disjoint scopes, sibling names, no git writes, scoped tests; only isolation becomes mandatory.
+
+Do not report delivery as integrated until an authorized parent has completed any requested integration. Worktree transfer, commit, and removal are not automatic cleanup requirements.
 
 ## Task
 

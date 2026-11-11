@@ -3,10 +3,7 @@
 **Rush is a coding agent you run from the command line — but built
 to be driven by *other* AI agents, not by a human typing into a
 terminal.** Point an orchestrator (Claude Code, your own LLM wrapper,
-a CI pipeline, a multi-agent fleet) at `rush run`, and it gets a
-model-agnostic, wrapper-stable JSON envelope back: one process it can
-spawn any number of times in parallel against the same repository
-without the instances corrupting each other's state.
+a CI pipeline, a multi-agent fleet) at `rush run`, and it gets a model-agnostic, wrapper-stable JSON envelope back. Multiple runs can use separate sessions against the same repository, but Rush's session/database coordination does not isolate or serialize workspace-file edits; use separate worktrees or sandboxes for overlapping edits.
 
 - **npm package:** [`@phpcraftdream/rush`](https://www.npmjs.com/package/@phpcraftdream/rush)
 - **Source:** [github.com/PHPCraftdream/rush](https://github.com/PHPCraftdream/rush)
@@ -35,10 +32,11 @@ Typical ways people actually use it:
   just doesn't need its own context window — it shells out to
   `rush run`, gets a JSON envelope back, and keeps going. See the
   `/rush` skill shipped with this fork for the exact pattern.
-- **Fan-out over a codebase.** Five, ten, fifty `rush run` invocations
-  against the same `.rush/` directory at once — each one a separate
-  session, each one safe from the others' writes (SQLite, file locks,
-  cost accounting are all defended for exactly this).
+- **Fan-out over a codebase.** Multiple `rush run` invocations can use
+  distinct sessions against a shared data directory. Session locks and
+  SQLite protect session/store state; they do **not** isolate concurrent
+  workspace-file writes. Use separate git worktrees or sandboxes when
+  delegated work overlaps on files.
 - **CI pipelines that need an LLM step.** A build step that asks a
   model to review a diff, write a migration, or fix a failing test —
   and needs a predictable exit code and a parseable result, not a
@@ -72,20 +70,20 @@ companion. Every divergence below follows from that single repositioning:
   without surprises. New flags (`--role`, `--session`, `--format`,
   `--agents`, `--timeout`, …) all exist to give the upper LLM precise
   control over a delegated turn.
-- Multiple instances are a first-class concern. Five `rush run` against
-  one `.rush/` directory cannot corrupt each other's state — sessions,
-  cost accounting, log writes, MCP-id files and SQLite are all
-  defended explicitly.
+- Separate sessions can share one data directory, but session/store
+  coordination does not isolate workspace-file edits; use separate
+  worktrees when parallel work overlaps on files.
 - Honest error reporting. When the model fails its contract (returns
   invalid JSON, runs out of context, stalls the stream) the envelope
   says so — there is no silent success because the agent on top
   cannot read the operator's mind.
-- Bootstrap helper (`rush claude-init`) installs `/rush`, `/rush-fallback`
-  and `/wrush` slash commands into the workspace so the upper LLM knows
-  when and how to delegate to `rush run` instead of grepping the
-  codebase itself. `/wrush` is `/rush` with mandatory git-worktree
-  isolation — every delegation runs in a dedicated worktree instead of
-  the primary checkout.
+- Bootstrap helpers (`rush claude-init`, `rush codex-init`, and the other
+  `*-init` commands) install Rush delegation commands for supported CLI
+  orchestrators. Install scope is global by default; `--local` or `--cwd`
+  selects a project. After updating Rush, use the matching new binary's
+  targeted init command to refresh explicitly chosen integrations. See
+  [delegation installation](docs/delegation-installation.md) for paths and
+  ownership limits.
 
 The browser UI is the second-class entry point for humans peeking in,
 the orchestrator-facing CLI is first-class.
@@ -98,7 +96,7 @@ the orchestrator-facing CLI is first-class.
 | Auth | None (local-socket trust) | Token-based, see `internal/server/auth.go` |
 | Sessions | One model per agent role, set globally | Per-session model overrides + per-session system prompt, all persisted in SQLite |
 | Permissions | In-memory rules during a TUI run | Persistent per-session rules in SQLite; cross-process visible |
-| Parallel runs | Not a target | First-class — flock per session, OS-level lock release on crash, atomic file writes, additive cost SQL, MCP-id flock |
+| Parallel runs | Not a target | Separate sessions with shared data; session locks and SQLite protect store state, not overlapping workspace-file edits (use separate worktrees or another isolation boundary). |
 | `crush run` | Single-shot quick fire | Wrapper-friendly: `--role`, `--session` get-or-create, `--json`/`--format`/`--agents`/`--timeout`/`--stream`, JSON-envelope validation, `assistant_notes`, fallback error messages |
 | CLI providers | Limited bridge | npx Claude Code, Gemini CLI, Codex CLI, MCP bridge for external tools, session resume for Anthropic prompt caching; Haiku available as `local-cli/cli-claude-haiku` (200k ctx, `@low\|medium\|high` effort) |
 | Web UI features | n/a | Slash-command + skill autocomplete, dark/light theme, pinned messages, fork-session button, LSP/MCP/provider management modals, file/image attachments |
@@ -126,14 +124,15 @@ Requeued imported work may repeat external side effects, so this is not an
 exactly-once execution promise. For rollback, stop new hosts and run the previous
 binary against untouched `.rush/rush.db`: this restores the old snapshot, not
 post-import activity. Preserve `rush_store_v1.db` and its sidecars; there is no
-reverse importer or merge-back. See [job-batch rollout and controls](docs/jobbatch.md).
+reverse importer or merge-back. See [job-batch rollout and controls](docs/jobbatch.md)
+and [session operations](docs/session-operations.md).
 
 ## Running an experimental build side by side
 
 `rush --global-dir <DIR>` (or the `RUSH_GLOBAL_DIR` environment variable; the flag wins) relocates ALL Rush-owned global state under `DIR` with a fixed layout: `DIR/config` (config, Rush-owned skills/commands), `DIR/data` (data file, OAuth journals, provider/model-catalog caches, projects.json, audit logs, heartbeat, bin) and `DIR/cache`. When set, `RUSH_GLOBAL_CONFIG`, `RUSH_GLOBAL_DATA`, `RUSH_CACHE_DIR` and `XDG_*` are ignored for Rush-owned global paths, so an experimental build never touches a production install's state. Things belonging to other tools deliberately do NOT move: `~/.claude`, `~/.agents/skills`, `agents/skills`, `~/.aws`, the GitHub Copilot CLI token file, and the legacy `crush.*` migration source paths.
 
 ```bash
-rush --global-dir ~/rush-experimental run "try the new provider config"
+rush --global-dir ~/rush-experimental run --role smart "try the new provider config"
 ```
 
 The experimental instance needs its own login: run `rush providers login` (or configure API keys) inside the root. NEVER copy an OAuth refresh token from the stable instance into the experimental one — refresh-token rotation by either instance invalidates the other's token, which is exactly what the isolation prevents. The local-cli providers (claude/gemini/codex) use those CLIs' own credentials, which live outside Rush's control and are shared by design.
@@ -144,30 +143,21 @@ Use `rush lock <password>` to protect global settings, or `rush lock --local <pa
 
 When a command reports an unrecognized or legacy settings lock, it names the settings file that holds it: remove the `sync_rev` entry from that file by hand, then run `rush lock` again.
 
-## Security — `rush run` has no permission gating at all
+## Security — `rush run` permissions
 
-**`rush run` (the non-interactive CLI mode this fork is built around)
-auto-approves every tool call — bash, write, edit, fetch, everything.**
-There is no dialog, no allow/deny prompt, no toggle to turn this off:
-it is how non-interactive mode works by design, because there is no
-human on the keyboard to click Allow. The model has the same file and
-process access as the OS user running `rush`.
+`rush run` has no interactive approval prompt. By default, non-interactive runs
+auto-approve permission requests; opt into enforceable deny-by-default gating
+with `--restrict-run` or `permissions.run.restrict: true`, then scope access with
+`--allow-tool` / `--allow-bash` or the config allowlists. CLI and config
+allowlists are unioned. The global `permissions.allowed_tools` list is checked
+before this gate and can bypass it (listing `bash` approves every bash command).
+See [Restricting `rush run`](#restricting-rush-run) for details.
 
-This is **not** the old per-session "YOLO" toggle (that UI feature has
-been removed entirely — see `CHANGELOG.fork.md`). It is unconditional
-for every `rush run` invocation, with no flag to restore per-request
-prompting. In the web UI (`rush web`), tool calls are also auto-approved
-without a permission dialog, and that auto-approval is re-armed whenever
-a human sends a message.
-
-**Run `rush run` inside an isolated environment — Docker, Podman, a
-VM, or at minimum an OS-level sandbox/dedicated worktree** — whenever
-the prompt or the repository content is not fully trusted, or when
-model-written code will execute. Do not point it at a host you can't
-afford to have fully modified. See `--cwd` and `RUSH_FORBID_WRITES`
-below for lighter-weight mitigations when a full container isn't
-practical, but they are not a substitute for real isolation — they
-only block specific tool-call targets, not arbitrary shell execution.
+This tool gate is not an OS sandbox or arbitrary filesystem boundary. `--cwd`
+selects the working directory; a worktree is an operational boundary, not a
+sandbox guarantee. Neither prevents access outside that location, and
+`--restrict-run` does not contain filesystem access by allowed commands. Use an
+OS-level sandbox when containment is required.
 
 ## Running Rush in this fork
 
@@ -235,19 +225,13 @@ jq -r '.error' "$out"         # error.message if non-success
   a `json.SyntaxError` with a byte offset. Wrappers can branch on
   `exit_reason` instead of trusting the model's optimistic `"stop"`.
 - **`--agents single | with-agents | agent-allow`** — sub-agent fan-out
-  policy. Leaving the flag **unset is the default and disables
-  fan-out** — the `agent` and `agentic_fetch` tools are removed from
-  the toolset entirely, same as passing `single` explicitly (a
-  non-interactive run has no UI to surface sub-agent work). `with-agents`
-  nudges the model to fan out. `agent-allow` opts in without a nudge,
-  leaving the choice to the model. **Automatic exception:** when
-  `--agents` is left unset (not explicitly `single`) AND `--role smart`
-  AND a `worker` model is configured, the ban on the `agent` tool
-  specifically is lifted automatically — this is "orchestrator mode"
-  (see below); `agentic_fetch` stays banned regardless, since it always
-  runs on the fast model and isn't part of hands-on delegation. An
-  explicit `--agents single` always overrides this and keeps both tools
-  banned.
+  policy. Unset or `single` normally removes `agent` and `agentic_fetch`.
+  A configured worker model on a `--role smart` run overrides that ban
+  for the `agent` tool (including with explicit `--agents single`), so
+  this flag is not a hard no-delegation guarantee in that configuration;
+  `agentic_fetch` remains disabled. Without that worker override,
+  `with-agents` nudges fan-out and `agent-allow` enables the tools without
+  a nudge.
 - **`--aggregation summary | concat | attach`** — how sub-agent fan-out
   output reaches the orchestrator. `summary` (default) lets the parent
   compose a wrap-up; detail lives in the DB only. `concat` adds a
@@ -258,14 +242,14 @@ jq -r '.error' "$out"         # error.message if non-success
   warning fires in `envelope.warnings` when parent collapses sub-agent
   outputs to <40% of their combined character count, regardless of
   which mode is in use.
-- **`--timeout-extends-on-progress`** — when set, the stream watchdog
-  resets its idle deadline every time streaming activity occurs, so
-  long compositions (code generation, multi-section reports) are not
-  killed prematurely. Capped by `--timeout-hard-cap` if set.
-- **`--timeout-hard-cap <duration>`** — maximum wall-clock time the
-  watchdog will allow even with `--timeout-extends-on-progress`.
-  Without a cap a continuously-streaming response runs forever.
-  Typically set to 3–4× the idle timeout.
+- **`--timeout-extends-on-progress`** — when set, the stream watchdog resets
+  its idle deadline whenever streaming activity occurs. This affects the
+  per-turn stream watchdog only, not the total run deadline; see the
+  [`--timeout` total run cap below](#run-time-cap).
+- **`--timeout-hard-cap <duration>`** — maximum wall-clock time the stream
+  watchdog allows even with progress. Without this watchdog cap, progress can
+  keep that watchdog from firing; the whole run is still bounded by `--timeout`
+  or the default cap below.
 - **`--allow-peak-hours`** — bypasses a provider's configured
   `peak_hours` refusal window for this single invocation only. No
   persistent config-level equivalent exists; the override is conscious
@@ -281,27 +265,30 @@ jq -r '.error' "$out"         # error.message if non-success
   unlike a plain provider stall elsewhere, it never silently retries.
   It watches turns only: a run waiting between turns on a job, a
   delegation or a retry pause is not covered by it. Usually left alone.
-- **`--timeout <duration>`** (default `0`, i.e. no explicit deadline) —
-  a hard wall-clock cap on the whole run, for when a task must fit an
-  external deadline (a CI slot, a cron window) or must outlive the
-  default cap. A run is never unbounded: without `--timeout` a **6 h
-  default wall-clock cap** applies (override with
-  `RUSH_RUN_DEFAULT_HARD_TIMEOUT`: seconds or a Go duration such as
-  `30m`/`2h`; invalid or non-positive falls back to 6 h). Reaching the
-  cap or `--timeout` ends the run gracefully (exit reason `timeout`,
-  exit 1, an envelope; the jobs the run started are cancelled), so a
-  wait longer than 6 h (an 8-hour soak test) needs an explicit `--timeout`.
-  The envelope's `error` names the effective duration and source;
-  `resume_command` is `rush run --role <role> --session <id>`. Stderr
-  prints one plain line with the same error, exact command and a stored-work
-  hint. Session history/partial work remains available for continuation.
-  A process still alive 60 seconds past its deadline is force-killed (124).
-  **Compatibility:** owned deadlines previously reported `canceled`; now
-  they report `timeout`. Ctrl-C, caller cancellation and parent deadlines
-  still report `canceled`. An inner provider/reviewer deadline while the
-  run context is live is not a run timeout.
+- <a id="run-time-cap"></a>**`--timeout <duration>`** (default `0`, meaning no explicit
+  deadline) — sets a fixed wall-clock cap for the whole run. When unset or
+  zero, the 6 h default wall-clock cap is six hours total elapsed time, including active
+  healthy work and time spent waiting on delegations or jobs; progress does not
+  reset it. Override the default with `RUSH_RUN_DEFAULT_HARD_TIMEOUT` (seconds
+  or a Go duration such as `30m`/`2h`; invalid or non-positive values fall back
+  to 6 hours). At the deadline Rush requests cancellation and attempts normal
+  shutdown. If the process follows that path, the run reports `timeout` (exit
+  1, with an envelope); graceful shutdown and an envelope are not guaranteed.
+  If the process is still alive 60 seconds after the deadline, it is
+  force-killed with exit 124. On the graceful path, the envelope's `error`
+  names the effective duration and source, and `resume_command` preserves the
+  role and session; stderr prints the error, exact command and stored-work
+  hint. Partial work remains available for continuation. **Compatibility:**
+  owned deadlines previously reported `canceled`; now they report `timeout`.
+  Ctrl-C, caller cancellation and parent deadlines still report `canceled`. An
+  inner provider/reviewer deadline while the run context is live is not a run
+  timeout.
 
-#### Background shell ownership
+#### Session liveness, batch state, and completion
+
+For safe retry, require physical process exit and no live or unknown batch scope; inspect current roots/nodes rather than relying on session-only `why`/`watch` or `end_turn`. Resume in the original checkout with the original role and session. `rush sessions compact` has two meanings: without a session argument it runs SQLite `VACUUM`; with a session ID it summarizes that session's model history.
+
+Model-context compaction summarizes existing session history; it is distinct from SQLite maintenance and from summarization that may happen during a normal turn. For the explicit session command and its safeguards, see [session compaction](docs/sessions-compact.md); for lifecycle context, see [session operations](docs/session-operations.md).
 
 The batch controls identify work directly. `batch_run` returns the batch
 `root_id`; `batch_status` reports the root and its task `node_id`s.
@@ -353,14 +340,10 @@ native replacements and how stale names behave in `AllowedTools`,
 
 #### Pausing mid-turn: `ask_question` and orchestrator mode
 
-The model has an `ask_question` tool it can call when it genuinely
-needs input to proceed (ambiguous scope, a destructive choice, missing
-info) instead of guessing. Because `rush run` has no synchronous way
-to block mid-turn for an answer, calling it **force-finishes the turn
-cleanly**:
+Because `rush run` has no synchronous way to block mid-turn for an answer, calling `ask_question` can force-finish the turn only when no live own jobs or delegations would be orphaned; otherwise the tool returns a hint and the run continues. When it exits with `exit_reason: "awaiting_answer"`, that is an intentional continuation point, not a failure: resume the same session with the original role and checkout, as shown below.
 
 ```bash
-rush run --role smart --session "deploy-1" "deploy the release" > out.json
+rush run --json --role smart --session "deploy-1" "deploy the release" > out.json
 jq -r '.exit_reason' out.json   # "awaiting_answer"
 jq -r '.error'       out.json   # question + suggested options + resume command
 ```
@@ -383,26 +366,18 @@ worker-context-sized chunks instead of implementing inline — one file
 or logical change per delegation, with enough standalone context since
 the worker doesn't see the parent conversation.
 
-**Reviewer auto-pass:** when a `reviewer` model is configured and a
-`--role smart` run finishes cleanly, `rush run` automatically continues
-the SAME session with one more turn on the Reviewer model that reviews
-everything the session did and states its own conclusion. That
-conclusion — not the smart agent's own last message — becomes the run's
-actual output (`final_text` in `--json`, the printed text in the other
-modes). Runs that failed, were canceled, timed out, or queued are
-returned unchanged; an explicit `--role reviewer` invocation is never
-extended; and the reviewer's model override is a one-off (never
-persisted on the session's slots, so a later plain `rush run --session
-<id>` still resolves the session's normal smart model). Unconfiguring
-the reviewer turns the pass off — there is no flag.
+**Reviewer auto-pass:** when a `reviewer` model is configured and a `--role smart` run finishes cleanly, Rush automatically continues the same session with one read-only reviewer turn. The executor's answer remains `final_text`; the reviewer's conclusion is added in the `review` field and its parsed first line in `review_verdict`. The verdict is advisory and does not change the run's exit code. Runs that failed, were canceled, timed out, or queued are returned unchanged; an explicit `--role reviewer` invocation is never extended.
 
-A worker sub-agent can itself call `ask_question` and pause. That
-does **not** end the orchestrator's turn (unlike the top-level case
-above) — it surfaces as a normal, non-error tool result along the
-lines of `SUB-AGENT QUESTION (session <id>): <question>`. The
-orchestrator answers by calling the `agent` tool again with
-`resume_session_id="<id>"` and the answer as the prompt, continuing
-the same sub-session instead of starting a fresh one.
+A worker sub-agent can itself call `ask_question` and pause. That does
+**not** end the orchestrator's turn — it surfaces as a normal,
+non-error tool result such as `SUB-AGENT QUESTION (session <id>): <question>`.
+For a legacy child paused between turns, answer by calling `agent` again
+with `resume_session_id="<id>"` and the answer as the prompt. If
+`inspect_agent` reports a current batch `held_question`, do **not**
+resume or re-delegate: answer the held ask in that same batch execution
+with `inject_agent(child_session_id="<exact child id>", message="<answer>")`.
+Resuming in that case queues a new run behind the held ask. See
+[session operations](docs/session-operations.md).
 
 #### Env-vars to know
 
@@ -437,17 +412,15 @@ the same sub-session instead of starting a fresh one.
   > it took effect, or you'll see the old behavior and wrongly
   > conclude the flag doesn't work.
 
-Permissions are unconditionally auto-approved in `rush run` — see
-"Security" above. `--cwd /tmp/sandbox` or a worktree narrows the blast
-radius somewhat, but a container (Docker/Podman) or VM is the only
-real isolation boundary; use it whenever the prompt or repo content
-isn't fully trusted.
-
 ### 3. Parallel processes against one `.rush/`
 
-The fork explicitly supports running 5+ `rush run --session X` against
-the same working directory concurrently (the canonical use case is
-multi-section code audits). The defence layers:
+For a run assigned to a particular session, include its required role flag, for example:
+
+```sh
+rush run --role smart --session X "..."
+```
+
+Locks, SQLite and additive accounting protect Rush-owned state, but do not isolate concurrent workspace-file edits; use separate worktrees or another isolation boundary for overlapping changes.
 
 - Per-session OS flock (`internal/session/lock.go`) — two processes
   cannot share a session id.
@@ -548,81 +521,23 @@ cache visibility differs.
 
 ### 5. Bootstrap helpers for an orchestrator
 
-If you drive Rush from another LLM (e.g. Claude Code), run once:
+Install or refresh Rush delegation commands after updating the Rush binary. The embedded sources are `claude_slash_command.yaml` and `claude_crush_fallback_command.yaml` for `/rush` and `/rush-fallback`, plus `claude_wrush_command.md` and `claude_wcrush_command.md` for `/wrush` and `/wcrush`; `multi_cli_convert.go` renders them for each supported CLI. The commands manage only the artifacts in the table below. Use the matching `*-init` command for each explicitly selected integration and scope; do not infer ownership from a directory or recursively refresh installations. See [delegation installation](docs/delegation-installation.md) for file-level ownership behavior and refresh limits.
 
-```bash
-rush claude-init                 # install /rush, /rush-fallback, /wrush, /wcrush
-```
+| CLI | Init command | Artifacts written (global default / project with `--local` or `--cwd`) |
+| --- | --- | --- |
+| Claude Code | `rush claude-init` | `~/.claude/commands/{rush,rush-fallback,wrush,wcrush}.md` / `<cwd>/.claude/commands/` |
+| Codex CLI | `rush codex-init` | `~/.agents/skills/{rush,rush-fallback,wrush,wcrush}/SKILL.md` / `<cwd>/.agents/skills/` |
+| OpenCode | `rush opencode-init` | `~/.config/opencode/commands/{rush,rush-fallback,wrush,wcrush}.md` / `<cwd>/.opencode/commands/` |
+| Oh My Pi | `rush omp-init` | `~/.omp/agent/commands/{rush,rush-fallback,wrush,wcrush}.md` / `<cwd>/.omp/commands/` |
+| Gemini CLI | `rush gemini-init` | `~/.gemini/commands/{rush,rush-fallback}.toml` / `<cwd>/.gemini/commands/` |
+| Grok Build CLI | `rush grok-init` | `~/.grok/skills/{rush,rush-fallback}/SKILL.md` / `<cwd>/.grok/skills/` |
+| Qwen Code CLI | `rush qwen-init` | `~/.qwen/commands/{rush,rush-fallback}.md` / `<cwd>/.qwen/commands/` |
 
-For Codex CLI, install the four Rush-owned delegation commands as
-Skills (global by default, or local with `--local`):
+The default is global; `--local` or `--cwd <project>` selects project scope (`--cwd` implies local). `--global` is explicit global scope. Existing artifacts containing Rush's ownership sentinel are replaced in full with the current embedded version; edits to those files are not merged. A same-name artifact without the sentinel is skipped with a warning, which may still result in exit status 0. The init commands do not install external per-model artifacts; see the separate `cc-arch-hands` installer for those.
 
-```bash
-rush codex-init                  # install rush, rush-fallback, wrush and wcrush
-```
+`claude-init --local` also strips legacy Rush delegation blocks from that project's `CLAUDE.md`, and removes the file if stripping leaves it empty. Do not use it when the update must not touch `CLAUDE.md`; choose the global scope or make that side effect part of the explicit project target decision.
 
-This writes `rush/SKILL.md`, `rush-fallback/SKILL.md`, `wrush/SKILL.md` and
-`wcrush/SKILL.md`
-under `~/.agents/skills/` (or the project's `.agents/skills/` in local mode).
-Each file starts with valid YAML frontmatter; Rush's ownership sentinel follows
-the closing frontmatter delimiter so Codex can parse the Skill normally.
-The generated `wrush` Skill inherits its base instructions from the sibling
-`../rush/SKILL.md`, matching Codex's nested Skill-directory layout.
-`rush codex-del` removes only those Skills when they carry Rush's sentinel;
-foreign files with the same names are preserved.
-
-This installs four slash-commands into `.claude/commands/`, each
-triggered explicitly by the operator — never auto-discovered:
-
-- **`rush.md`** — `/rush <task>`, an operator-triggered command that
-  builds a `rush run` invocation with sensible defaults and launches
-  it in the primary checkout (or, for genuinely parallel/overlapping
-  delegations, in a git worktree the orchestrator sets up itself).
-- **`rush-fallback.md`** — `/rush-fallback <agent>`, arms a reroute to
-  a named local agent for the rest of the session when `rush run` hits
-  a hard rate/quota limit.
-- **`wrush.md`** — `/wrush <task>`, identical to `/rush` except
-  isolation is mandatory rather than situational: every delegation —
-  solo or parallel, trivial or not — runs inside a freshly created git
-  worktree, never the primary checkout, and the orchestrator merges the
-  verified diff back and cleans up the worktree afterward. Reach for
-  `/wrush` when you want a hard guarantee that a delegated task cannot
-  disturb the primary checkout's working tree or index, even if the
-  sub-agent misbehaves.
-
-  **Trust boundary, stated explicitly:** `/wrush` is a slash-command
-  convention — plain text the orchestrating LLM reads and follows.
-  There is no code-level guard in the `rush` binary itself that
-  verifies a `rush run` invocation's `cwd` is actually under
-  `<repo-root>/worktrees/`; the isolation guarantee holds only as long
-  as the orchestrator (and any sub-agent it delegates to) actually
-  follows the template. An operator who manually launches `/wrush`
-  from the primary checkout, or an orchestrator that ignores the
-  instruction, gets no runtime enforcement catching the mistake.
-
-- **`wcrush.md`** — `/wcrush <task>`, `/wrush` with the same mandatory worktree isolation; the sub-agent does not run tests until the orchestrator grants explicit phase-2 permission.
-
-OpenCode and Oh My Pi use the same four Markdown commands, with global installs by default and `--local`/`--cwd` project scope:
-
-```bash
-rush opencode-init              # ~/.config/opencode/commands/
-rush omp-init                   # ~/.omp/agent/commands/
-```
-
-Local installs use `<cwd>/.opencode/commands/` for OpenCode and `<cwd>/.omp/commands/` for OMP. OpenCode may also load Codex-targeted Rush Skills from global or project `.agents/skills/`; when found, its installer emits one warning. Use OpenCode's `/rush` command entry point; no OpenCode Skills are installed. Generated Markdown starts with real YAML frontmatter and places the Rush ownership sentinel after its closing delimiter so native parsers see valid frontmatter. OpenCode uses foreground bash calls with large millisecond timeouts; OMP uses managed async bash jobs and requires keeping the conversation alive through verification. `rush opencode-del` and `rush omp-del` remove only the four sentinel-owned command files.
-
-Earlier versions of this fork also wrote a long "delegate everything to
-rush" block into `CLAUDE.md`. That block turned out to be a recursive-
-delegation footgun: a sub-agent reading it on startup would try to
-delegate every task back into `rush run`, spawning another sub-agent
-which read the same block, and so on (see CHANGELOG.fork.md batch 22 for
-the postmortem). `claude-init` now strips that legacy block on every
-invocation (matching any version, v1..vN) and removes `CLAUDE.md`
-entirely if stripping leaves it empty. Re-run `claude-init` at any time
-— it's idempotent.
-
-To uninstall completely: `rush claude-del` removes all four
-slash-command files and strips any remaining legacy `CLAUDE.md` block.
+`cli-refresh` is not a substitute for refreshing every installer. It covers only Claude, Codex, Gemini, Grok, and Qwen (not OpenCode or OMP); moreover, its Claude path writes and removes only `/rush` and `/rush-fallback`, not `/wrush` or `/wcrush`. Use each intended `*-init` after the binary update instead.
 
 ### 6. `rush models` — picking and inspecting models
 
@@ -1351,7 +1266,7 @@ The same options are available as CLI flags on `rush run`, which merge
 when the config has it off:
 
 ```sh
-rush run --restrict-run \
+rush run --role fast --restrict-run \
   --allow-bash 'git diff' \
   --allow-bash 'glob:ls *' \
   --allow-tool view \
