@@ -796,9 +796,10 @@ func TestPrepareStepSpliceClearsReadCoverage(t *testing.T) {
 // the sliding window cut is no longer in the prompt, so what was read from it
 // is no longer "already in your context" either (agent_turn_step.go's
 // `if remaining <= slideThreshold` branch, §1.2). The mutant leg is the
-// fixture's own model narrowed to a 100-token window against a session whose
-// recorded usage already exceeds the slide threshold; the control leg is the
-// same agent with the model's real window, which has slack and trims nothing.
+// fixture's model narrowed to a 100-token window with a 10-token output
+// reserve, leaving a positive 90-token input budget; its recorded usage is 90,
+// so remaining=0 triggers trimming. The control leg is unchanged: the same
+// agent's real window has slack and trims nothing.
 //
 // Revert-check performed: dropping `ts.progress.seen.clear()` from the trim
 // branch makes the sliding_window_trim_clears_coverage leg red — the repeated
@@ -830,7 +831,14 @@ func TestPrepareStepTrimClearsReadCoverage(t *testing.T) {
 		f.sa.disableAutoSummarize = false
 		narrow := f.model
 		narrow.CatwalkCfg.ContextWindow = 100
-		ts := guardPrepareStream(t, f, narrow, 90)
+		const outputReserve int64 = 10
+		narrow.CatwalkCfg.DefaultMaxTokens = outputReserve
+		const recordedUsage int64 = 90
+		effectiveOutput := effectiveMaxOutputTokens(narrow, 0)
+		inputBudget := contextInputBudget(int64(narrow.CatwalkCfg.ContextWindow), effectiveOutput)
+		require.Equal(t, outputReserve, effectiveOutput, "fixture's effective output reserve")
+		require.Equal(t, int64(90), inputBudget, "fixture must retain a positive input budget")
+		ts := guardPrepareStream(t, f, narrow, recordedUsage)
 		guardSeedCoverage(ts, guardTrimPath)
 
 		_, _, err := ts.prepareStep(context.Background(), fantasy.PrepareStepFunctionOptions{
@@ -838,6 +846,12 @@ func TestPrepareStepTrimClearsReadCoverage(t *testing.T) {
 		})
 		require.NoError(t, err)
 
+		if !ts.silentCompactNeeded {
+			threshold := contextAutoSummarizeThreshold(int64(narrow.CatwalkCfg.ContextWindow), inputBudget)
+			t.Logf("trim fixture metadata: context_window=%d default_max_tokens=%d call_max_output_tokens=%d effective_output_reserve=%d input_budget=%d recorded_usage=%d remaining=%d threshold=%d auto_summarize_disabled=%t",
+				narrow.CatwalkCfg.ContextWindow, narrow.CatwalkCfg.DefaultMaxTokens, ts.call.MaxOutputTokens,
+				effectiveOutput, inputBudget, recordedUsage, inputBudget-recordedUsage, threshold, f.sa.disableAutoSummarize)
+		}
 		require.True(t, ts.silentCompactNeeded, "the trimmed window also flagged the silent compact")
 		class, refuses := guardCoverageVerdict(ts, guardTrimPath)
 		require.Equal(t, stepCallRead, class, "a step that trimmed the prompt dropped the coverage")
