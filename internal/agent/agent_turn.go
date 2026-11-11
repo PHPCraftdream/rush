@@ -310,7 +310,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	smartModel := cfg.smartModel
 	systemPrompt := cfg.systemPrompt
 	promptPrefix := cfg.promptPrefix
-	if roleToolsConstrained(ctx) && smartModel.ModelCfg.Provider == cliprovider.ProviderType {
+	if roleToolsConstrained(ctx) {
 		allowed := make([]string, 0, len(agentTools))
 		for _, tool := range agentTools {
 			allowed = append(allowed, tool.Info().Name)
