@@ -269,9 +269,9 @@ func TestRunSummarize_QueuedMessage_RunsAsFollowOnTurn(t *testing.T) {
 // thresholdCrossingSSEServer streams a single text-only completion whose
 // final usage chunk reports promptTokens+completionTokens high enough to
 // cross runTurn's shouldSummarize StopWhen threshold for a small
-// ContextWindow model (agent.go ~1922-1940): with ContextWindow=1000 and
-// smallContextWindowRatio=0.2, threshold=200, so usage totalling >=800
-// makes remaining=200<=200 fire.
+// ContextWindow model (agent.go ~1922-1940): with ContextWindow=1000 and a
+// 200-token output reserve, the input budget is 800; smallContextWindowRatio
+// 0.2 yields threshold=160, so usage 800 leaves zero input tokens and fires.
 //
 // Like requestStartedSSEServer (run_lock_test.go's sibling file,
 // run_queue_drain_test.go), it signals requestStarted after its first chunk
@@ -302,7 +302,9 @@ func thresholdCrossingSSEServer(callCount *atomic.Int64, requestStarted chan<- s
 		if proceed != nil {
 			<-proceed
 		}
-		// total 800 >= 800 threshold trigger (ContextWindow=1000, ratio=0.2 -> threshold=200)
+		// ContextWindow=1000 and a 200-token output reserve leave an
+		// 800-token input budget; the 0.2 threshold is 160. Usage=800
+		// leaves zero input tokens, so shouldSummarize fires.
 		fmt.Fprintf(w, "data: %s\n\n", `{"id":"c1","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":600,"completion_tokens":200,"total_tokens":800}}`)
 		if fl != nil {
 			fl.Flush()
@@ -333,7 +335,9 @@ func TestRunTurn_ShouldSummarize_QueuedMessageContinuesWithoutLockDeadlock(t *te
 	env := testEnv(t)
 	dataDir := t.TempDir()
 
+	const autoSummarizeOutputReserve int64 = 200
 	var mainCalls, summarizeCalls, followUpCalls atomic.Int64
+	var summaryPromptRequests, ordinaryPromptRequests atomic.Int64
 	requestStarted := make(chan struct{}, 1)
 	proceed := make(chan struct{})
 	mainSrv := thresholdCrossingSSEServer(&mainCalls, requestStarted, proceed)
@@ -350,6 +354,11 @@ func TestRunTurn_ShouldSummarize_QueuedMessageContinuesWithoutLockDeadlock(t *te
 	// first response needs the threshold-crossing usage; the rest just need
 	// to be well-formed).
 	dispatchSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isSummaryPromptRequest(r) {
+			summaryPromptRequests.Add(1)
+		} else {
+			ordinaryPromptRequests.Add(1)
+		}
 		switch mainCalls.Load() {
 		case 0:
 			mainSrv.Config.Handler.ServeHTTP(w, r)
@@ -365,16 +374,14 @@ func TestRunTurn_ShouldSummarize_QueuedMessageContinuesWithoutLockDeadlock(t *te
 	lm := languageModelFromServer(t, dispatchSrv)
 
 	// Separate, uncounted server for the fast model / title generation —
-	// same rationale as run_queue_drain_test.go's newQueueDrainTestAgent:
-	// needsTitle fires in the background on a session's first turn and must
-	// not pollute the main-model call-count routing above.
+	// needsTitle runs separately from the main-model routing above.
 	titleSrv := summarizeSSEServer(1, 1, nil)
 	t.Cleanup(titleSrv.Close)
 	titleLM := languageModelFromServer(t, titleSrv)
 
 	model := Model{
 		Model:      lm,
-		CatwalkCfg: catwalk.Model{ContextWindow: 1000, DefaultMaxTokens: 1000},
+		CatwalkCfg: catwalk.Model{ContextWindow: 1000, DefaultMaxTokens: autoSummarizeOutputReserve},
 	}
 	fastModel := Model{
 		Model:      titleLM,
@@ -428,7 +435,7 @@ func TestRunTurn_ShouldSummarize_QueuedMessageContinuesWithoutLockDeadlock(t *te
 		res, err := a.Run(t.Context(), SessionAgentCall{
 			SessionID:       sess.ID,
 			Prompt:          "first message",
-			MaxOutputTokens: 1000,
+			MaxOutputTokens: autoSummarizeOutputReserve,
 		})
 		resultCh <- struct {
 			res *fantasy.AgentResult
@@ -441,9 +448,28 @@ func TestRunTurn_ShouldSummarize_QueuedMessageContinuesWithoutLockDeadlock(t *te
 	case r := <-resultCh:
 		runErr = r.err
 	case <-time.After(20 * time.Second):
+		outputReserve := effectiveMaxOutputTokens(model, autoSummarizeOutputReserve)
+		inputBudget := contextInputBudget(int64(model.CatwalkCfg.ContextWindow), outputReserve)
+		t.Logf("queued auto-summarize timeout: main_requests=%d summary_prompt_requests=%d summarize_handler_requests=%d ordinary_prompt_requests=%d follow_up_requests=%d; primary_context_window=%d default_max_tokens=%d initial_call_max_output_tokens=%d effective_output_reserve=%d input_budget=%d threshold=%d auto_summarize_disabled=%t",
+			mainCalls.Load(), summaryPromptRequests.Load(), summarizeCalls.Load(), ordinaryPromptRequests.Load(), followUpCalls.Load(),
+			model.CatwalkCfg.ContextWindow, model.CatwalkCfg.DefaultMaxTokens, autoSummarizeOutputReserve,
+			outputReserve, inputBudget, contextAutoSummarizeThreshold(int64(model.CatwalkCfg.ContextWindow), inputBudget), sa.disableAutoSummarize)
 		t.Fatal("Run did not return within 20s — possible deadlock on shouldSummarize's queued-message drain")
 	}
 
+	logStageDiagnostics := func() {
+		outputReserve := effectiveMaxOutputTokens(model, autoSummarizeOutputReserve)
+		inputBudget := contextInputBudget(int64(model.CatwalkCfg.ContextWindow), outputReserve)
+		t.Logf("queued auto-summarize stages: main_requests=%d summary_prompt_requests=%d summarize_handler_requests=%d ordinary_prompt_requests=%d queued_follow_up_requests=%d run_error=%t; primary_context_window=%d default_max_tokens=%d initial_call_max_output_tokens=%d effective_output_reserve=%d input_budget=%d threshold=%d auto_summarize_disabled=%t",
+			mainCalls.Load(), summaryPromptRequests.Load(), summarizeCalls.Load(), ordinaryPromptRequests.Load(), followUpCalls.Load(),
+			runErr != nil, model.CatwalkCfg.ContextWindow, model.CatwalkCfg.DefaultMaxTokens,
+			autoSummarizeOutputReserve, outputReserve, inputBudget,
+			contextAutoSummarizeThreshold(int64(model.CatwalkCfg.ContextWindow), inputBudget), sa.disableAutoSummarize)
+	}
+	if runErr != nil || mainCalls.Load() != 1 || summarizeCalls.Load() != 1 ||
+		summaryPromptRequests.Load() != 1 || ordinaryPromptRequests.Load() != 2 || followUpCalls.Load() != 1 {
+		logStageDiagnostics()
+	}
 	require.NoError(t, runErr, "Run must not fail with a lock error when draining a queued message after auto-summarize")
 	var busyErr *session.SessionLockBusyError
 	assert.False(t, errors.As(runErr, &busyErr), "must not be a SessionLockBusyError — that would mean the recursive-Run()-into-itself deadlock (task #195) regressed for this path")
@@ -462,6 +488,8 @@ func TestRunTurn_ShouldSummarize_QueuedMessageContinuesWithoutLockDeadlock(t *te
 	}
 	assert.True(t, foundQueuedUserMsg, "expected the queued prompt to show up as a real user message after the auto-summarize turn completed")
 	assert.Equal(t, int64(1), followUpCalls.Load(), "expected exactly one follow-on provider call for the queued message's own turn")
+	require.Equal(t, int64(1), summaryPromptRequests.Load(), "expected exactly one classified summary provider request")
+	require.Equal(t, int64(2), ordinaryPromptRequests.Load(), "expected main and queued follow-up provider requests to be classified as ordinary")
 
 	// The compaction itself must also have happened: SummaryMessageID set,
 	// proving both halves (compaction AND queued continuation) occurred.

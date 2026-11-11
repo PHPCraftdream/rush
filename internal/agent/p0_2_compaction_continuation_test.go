@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +19,18 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
+
+// isSummaryPromptRequest identifies only the summary operation for test-side
+// request accounting. The body is inspected in memory and never logged.
+func isSummaryPromptRequest(r *http.Request) bool {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return false
+	}
+	_ = r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	return bytes.Contains(body, []byte("You are summarizing a conversation to preserve context"))
+}
 
 // ackObservingSessionService wraps session.Service to capture the exact
 // moment AckRunQueueEntry is called, via a buffered channel. This is the
@@ -98,7 +112,9 @@ func TestP0_2_CompactionContinuation_DurableAckAfterContinuationExecutes(t *test
 	env := testEnv(t)
 	dataDir := t.TempDir()
 
+	const autoSummarizeOutputReserve int64 = 200
 	var mainCalls, summarizeCalls, continuationCalls atomic.Int64
+	var summaryPromptRequests, ordinaryPromptRequests atomic.Int64
 
 	// Main turn: emits a pending tool call AND usage that crosses the
 	// auto-summarize threshold in its finishing chunk. This is what makes
@@ -110,8 +126,9 @@ func TestP0_2_CompactionContinuation_DurableAckAfterContinuationExecutes(t *test
 		fl, _ := w.(http.Flusher)
 		chunks := []string{
 			`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"probe_tool","arguments":"{}"}}]},"finish_reason":null}]}`,
-			// ContextWindow=1000, smallContextWindowRatio=0.2 -> threshold=200.
-			// total=800 -> remaining=200 <= 200 fires shouldSummarize.
+			// ContextWindow=1000 and a 200-token output reserve leave an
+			// 800-token input budget; the 0.2 threshold is 160. Usage=800
+			// leaves zero input tokens, so shouldSummarize fires.
 			`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":600,"completion_tokens":200,"total_tokens":800}}`,
 		}
 		for _, c := range chunks {
@@ -139,6 +156,11 @@ func TestP0_2_CompactionContinuation_DurableAckAfterContinuationExecutes(t *test
 	t.Cleanup(continuationSrv.Close)
 
 	dispatchSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isSummaryPromptRequest(r) {
+			summaryPromptRequests.Add(1)
+		} else {
+			ordinaryPromptRequests.Add(1)
+		}
 		switch {
 		case mainCalls.Load() == 0:
 			mainSrv.Config.Handler.ServeHTTP(w, r)
@@ -151,18 +173,15 @@ func TestP0_2_CompactionContinuation_DurableAckAfterContinuationExecutes(t *test
 	t.Cleanup(dispatchSrv.Close)
 	lm := languageModelFromServer(t, dispatchSrv)
 
-	// Separate, uncounted server for the fast model / title generation, so
-	// the background needsTitle call can't steal a slot from the
-	// mainCalls/summarizeCalls/continuationCalls routing above (same
-	// isolation TestRunTurn_ShouldSummarize_QueuedMessageContinuesWithoutLockDeadlock
-	// and TestP312_InlineCompactionDoesNotDeadlock rely on).
+	// Separate, uncounted server for title generation; its fast-model
+	// metadata is unrelated to this primary model's automatic summarize gate.
 	titleSrv := summarizeSSEServer(1, 1, nil)
 	t.Cleanup(titleSrv.Close)
 	titleLM := languageModelFromServer(t, titleSrv)
 
 	model := Model{
 		Model:      lm,
-		CatwalkCfg: catwalk.Model{ContextWindow: 1000, DefaultMaxTokens: 1000},
+		CatwalkCfg: catwalk.Model{ContextWindow: 1000, DefaultMaxTokens: autoSummarizeOutputReserve},
 	}
 	fastModel := Model{
 		Model:      titleLM,
@@ -202,7 +221,7 @@ func TestP0_2_CompactionContinuation_DurableAckAfterContinuationExecutes(t *test
 	durableCall := SessionAgentCall{
 		SessionID:       sessionID,
 		Prompt:          "do the thing",
-		MaxOutputTokens: 1000,
+		MaxOutputTokens: autoSummarizeOutputReserve,
 	}
 	callDataJSON, err := json.Marshal(ToSessionAgentCallData(durableCall))
 	require.NoError(t, err)
@@ -234,6 +253,19 @@ func TestP0_2_CompactionContinuation_DurableAckAfterContinuationExecutes(t *test
 		},
 	}
 
+	logStageDiagnostics := func() {
+		finalSess, sessionErr := env.sessions.Get(ctx, sessionID)
+		summaryPersisted := sessionErr == nil && finalSess.SummaryMessageID != ""
+		outputReserve := effectiveMaxOutputTokens(model, durableCall.MaxOutputTokens)
+		inputBudget := contextInputBudget(int64(model.CatwalkCfg.ContextWindow), outputReserve)
+		t.Logf("compaction continuation stages: main_requests=%d summarize_handler_requests=%d continuation_requests=%d continuation_requests_at_callback=%d summary_prompt_requests=%d ordinary_prompt_requests=%d summary_persisted=%t session_read_error=%t; primary_context_window=%d default_max_tokens=%d call_max_output_tokens=%d effective_output_reserve=%d input_budget=%d threshold=%d auto_summarize_disabled=%t",
+			mainCalls.Load(), summarizeCalls.Load(), continuationCalls.Load(),
+			continuationCallsAtResolution.Load(), summaryPromptRequests.Load(), ordinaryPromptRequests.Load(),
+			summaryPersisted, sessionErr != nil, model.CatwalkCfg.ContextWindow,
+			model.CatwalkCfg.DefaultMaxTokens, durableCall.MaxOutputTokens, outputReserve,
+			inputBudget, contextAutoSummarizeThreshold(int64(model.CatwalkCfg.ContextWindow), inputBudget),
+			sessionAgent.disableAutoSummarize)
+	}
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       ackObserver,
 		Coordinator:    mockCoord,
@@ -250,6 +282,7 @@ func TestP0_2_CompactionContinuation_DurableAckAfterContinuationExecutes(t *test
 	select {
 	case ackedID = <-ackObserver.acked:
 	case <-time.After(10 * time.Second):
+		logStageDiagnostics()
 		t.Fatal("durable row was never Acked within 10s")
 	}
 	require.NotEmpty(t, ackedID, "AckRunQueueEntry must report the deleted row's ID")
@@ -265,7 +298,14 @@ func TestP0_2_CompactionContinuation_DurableAckAfterContinuationExecutes(t *test
 	select {
 	case resolution = <-resolved:
 	case <-time.After(10 * time.Second):
+		logStageDiagnostics()
 		t.Fatal("durable queue callback was not resolved after continuation execution")
+	}
+	if resolutionCount.Load() != 1 || resolution.err != nil || resolution.result == nil ||
+		mainCalls.Load() != 1 || summarizeCalls.Load() != 1 || continuationCalls.Load() != 1 ||
+		continuationCallsAtResolution.Load() != 1 || summaryPromptRequests.Load() != 1 ||
+		ordinaryPromptRequests.Load() != 2 {
+		logStageDiagnostics()
 	}
 	require.Equal(t, int64(1), resolutionCount.Load(), "queue callback must be invoked exactly once")
 	require.NoError(t, resolution.err, "durable queue callback must resolve successfully")
@@ -285,10 +325,15 @@ func TestP0_2_CompactionContinuation_DurableAckAfterContinuationExecutes(t *test
 	// through both the direct-return path AND mb.submit).
 	require.Equal(t, int64(1), mainCalls.Load(), "main turn must execute exactly once")
 	require.Equal(t, int64(1), summarizeCalls.Load(), "compaction must execute exactly once")
+	require.Equal(t, int64(1), summaryPromptRequests.Load(), "summary provider request must be classified exactly once")
+	require.Equal(t, int64(2), ordinaryPromptRequests.Load(), "main and continuation provider requests must be classified exactly once each")
 
-	// Core proof 3: compaction actually happened (summary message wired up).
 	finalSess, err := env.sessions.Get(ctx, sessionID)
 	require.NoError(t, err)
+	if finalSess.SummaryMessageID == "" {
+		logStageDiagnostics()
+	}
+	// Core proof 3: compaction actually happened (summary message wired up).
 	require.NotEmpty(t, finalSess.SummaryMessageID, "expected inline compaction to have created a summary")
 
 	// Core proof 4: the continuation's own turn produced real, persisted
