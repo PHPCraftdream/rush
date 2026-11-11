@@ -87,9 +87,10 @@ func coordinatorReplayPeer(t *testing.T, ctx context.Context, noProgress bool) (
 			}
 			n := wsRequests.Add(1)
 			path := "unexpected-request"
-			if n == 1 {
+			switch n {
+			case 1:
 				path = "first-tool-turn"
-			} else if n == 2 {
+			case 2:
 				path = "second-partial-turn"
 				if noProgress {
 					path = "second-no-progress-turn"

@@ -129,7 +129,6 @@ func TestPublicResponsesWebSocketHistoryMatchesFantasyHTTPComposition(t *testing
 					}
 				}
 			}
-			return
 		}
 
 		body, err := io.ReadAll(io.LimitReader(r.Body, (1<<20)+1))
