@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
@@ -65,6 +66,44 @@ type WebSocketRequest struct {
 	StillCurrent                            func() bool
 }
 
+type websocketObjectAcceptanceKey struct{}
+
+type websocketObjectAcceptance struct {
+	mu       sync.Mutex
+	resolveF func(bool)
+	resolved bool
+}
+
+func (a *websocketObjectAcceptance) hold(resolve func(bool)) {
+	a.mu.Lock()
+	if a.resolved {
+		a.mu.Unlock()
+		resolve(false)
+		return
+	}
+	previous := a.resolveF
+	a.resolveF = resolve
+	a.mu.Unlock()
+	if previous != nil {
+		previous(false)
+	}
+}
+
+func (a *websocketObjectAcceptance) resolve(accepted bool) {
+	a.mu.Lock()
+	if a.resolved {
+		a.mu.Unlock()
+		return
+	}
+	a.resolved = true
+	resolve := a.resolveF
+	a.resolveF = nil
+	a.mu.Unlock()
+	if resolve != nil {
+		resolve(accepted)
+	}
+}
+
 // Config's OAuth tests consume this provider, so transport dependencies are injected.
 type WebSocketOptions struct {
 	Manager     WebSocketManager
@@ -108,7 +147,8 @@ func (m *languageModel) streamWebSocket(ctx context.Context, payload []byte, use
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: errors.New("openai-codex OAuth credentials unavailable")})
 		return true
 	}
-	var lease WebSocketLease
+	acceptance, _ := ctx.Value(websocketObjectAcceptanceKey{}).(*websocketObjectAcceptance)
+	lease := WebSocketLease(nil)
 	for attempt := 0; attempt < 2; attempt++ {
 		if attempt > 0 {
 			policy, err = options.Current()
@@ -143,7 +183,12 @@ func (m *languageModel) streamWebSocket(ctx context.Context, payload []byte, use
 	if lease == nil {
 		return false
 	}
-	defer lease.Release()
+	held := false
+	defer func() {
+		if !held {
+			lease.Release()
+		}
+	}()
 	conn := lease.Conn()
 	current, exists := m.provider.source.Current()
 	latestPolicy, policyErr := options.Current()
@@ -164,19 +209,30 @@ func (m *languageModel) streamWebSocket(ctx context.Context, payload []byte, use
 		return true
 	}
 	state := newStreamState()
+	allAccepted, finishAccepted := true, false
+	acceptPart := func(part fantasy.StreamPart) bool {
+		accepted := yield(part)
+		if !accepted {
+			allAccepted = false
+		}
+		if part.Type == fantasy.StreamPartTypeFinish && accepted {
+			finishAccepted = true
+		}
+		return accepted
+	}
 	for {
 		raw, receiveErr := conn.ReceiveRaw(ctx)
 		if receiveErr != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				receiveErr = conn.Abort(ctxErr)
 			}
-			yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: receiveErr})
+			acceptPart(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: receiveErr})
 			return true
 		}
-		if err = state.consume(raw, yield); err != nil {
+		if err = state.consume(raw, acceptPart); err != nil {
 			terminal := conn.Abort(err)
 			if !errors.Is(err, errStreamStopped) {
-				yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: terminal})
+				acceptPart(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: terminal})
 			}
 			return true
 		}
@@ -189,18 +245,46 @@ func (m *languageModel) streamWebSocket(ctx context.Context, payload []byte, use
 				} `json:"response"`
 			}
 			_ = json.Unmarshal(raw, &event)
-			if event.Type == "response.completed" && event.Response.Status == "completed" {
-				if err = conn.MarkCompleted(); err != nil {
-					yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: conn.Abort(err)})
-					return true
-				}
-			} else if event.Type == "response.incomplete" && event.Response.Status == "incomplete" {
-				_ = conn.Close()
-			} else {
-				yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: conn.Abort(errors.New("invalid Codex terminal response"))})
+			if event.Type == "response.completed" && event.Response.Status != "completed" {
+				acceptPart(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: conn.Abort(errors.New("invalid Codex terminal response"))})
 				return true
 			}
-			state.finish(yield)
+			if event.Type == "response.incomplete" && event.Response.Status != "incomplete" {
+				acceptPart(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: conn.Abort(errors.New("invalid Codex terminal response"))})
+				return true
+			}
+			if event.Type != "response.completed" && event.Type != "response.incomplete" {
+				acceptPart(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: conn.Abort(errors.New("invalid Codex terminal response"))})
+				return true
+			}
+			state.finish(acceptPart)
+			if event.Type == "response.incomplete" && event.Response.Status == "incomplete" {
+				_ = conn.Close()
+				return true
+			}
+			if !allAccepted || !finishAccepted || ctx.Err() != nil {
+				_ = conn.Close()
+				return true
+			}
+			if event.Type != "response.completed" || event.Response.Status != "completed" {
+				_ = conn.Close()
+				return true
+			}
+			if acceptance != nil {
+				acceptance.hold(func(accepted bool) {
+					if accepted && ctx.Err() == nil {
+						if err := conn.MarkCompleted(); err == nil {
+							lease.Release()
+							return
+						}
+					}
+					_ = conn.Close()
+					lease.Release()
+				})
+				held = true
+			} else if err = conn.MarkCompleted(); err != nil {
+				acceptPart(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: conn.Abort(err)})
+			}
 			return true
 		}
 	}

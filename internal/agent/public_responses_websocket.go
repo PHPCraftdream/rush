@@ -47,8 +47,9 @@ type (
 	publicResponsesAttempt    struct {
 		sent      atomic.Bool
 		mu        sync.Mutex
-		body      io.Closer
+		body      *publicResponsesWSBody
 		stop      func() bool
+		resolved  bool
 		stream    bool
 		overrides map[string]bool
 	}
@@ -65,15 +66,35 @@ func newPublicResponsesAttempt(headers map[string]string, userAgent string, stre
 	return a
 }
 
-func (a *publicResponsesAttempt) own(ctx context.Context, body io.Closer) {
+func (a *publicResponsesAttempt) own(ctx context.Context, body *publicResponsesWSBody) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	if a.resolved {
+		a.mu.Unlock()
+		_ = body.conn.Close()
+		body.lease.Release()
+		return
+	}
+	body.managed.Store(true)
 	a.body = body
-	a.stop = context.AfterFunc(ctx, func() { _ = body.Close() })
+	a.mu.Unlock()
+	stop := context.AfterFunc(ctx, func() { a.resolve(false) })
+	a.mu.Lock()
+	if a.resolved {
+		a.mu.Unlock()
+		stop()
+		return
+	}
+	a.stop = stop
+	a.mu.Unlock()
 }
 
-func (a *publicResponsesAttempt) close() {
+func (a *publicResponsesAttempt) resolve(accepted bool) {
 	a.mu.Lock()
+	if a.resolved {
+		a.mu.Unlock()
+		return
+	}
+	a.resolved = true
 	body, stop := a.body, a.stop
 	a.body, a.stop = nil, nil
 	a.mu.Unlock()
@@ -81,9 +102,14 @@ func (a *publicResponsesAttempt) close() {
 		stop()
 	}
 	if body != nil {
-		_ = body.Close()
+		if !accepted {
+			_ = body.conn.Close()
+		}
+		body.resolve(accepted)
 	}
 }
+
+func (a *publicResponsesAttempt) close() { a.resolve(false) }
 
 func newPublicResponsesSDKProvider(baseURL, apiKey string, headers map[string]string, client *publicResponsesClient) (fantasy.Provider, error) {
 	opts := []openai.Option{openai.WithAPIKey(apiKey), openai.WithHeaders(headers), openai.WithUseResponsesAPI(), openai.WithHTTPClient(client)}
@@ -123,15 +149,27 @@ func (m *publicResponsesModel) Stream(ctx context.Context, call fantasy.Call) (f
 		return nil, guardPublicResponsesError(attempt, err)
 	}
 	return func(yield func(fantasy.StreamPart) bool) {
-		defer attempt.close()
+		accepted := false
+		defer func() { attempt.resolve(accepted && ctx.Err() == nil) }()
+		finished := false
 		for part := range stream {
+			if finished {
+				return
+			}
 			if part.Type == fantasy.StreamPartTypeError {
 				part.Error = guardPublicResponsesError(attempt, part.Error)
+			}
+			if part.Type == fantasy.StreamPartTypeFinish {
+				finished = true
 			}
 			if !yield(part) {
 				return
 			}
+			if part.Type == fantasy.StreamPartTypeError {
+				return
+			}
 		}
+		accepted = finished
 	}, nil
 }
 
@@ -143,15 +181,27 @@ func (m *publicResponsesModel) StreamObject(ctx context.Context, call fantasy.Ob
 		return nil, guardPublicResponsesError(attempt, err)
 	}
 	return func(yield func(fantasy.ObjectStreamPart) bool) {
-		defer attempt.close()
+		accepted := false
+		defer func() { attempt.resolve(accepted && ctx.Err() == nil) }()
+		finished := false
 		for part := range stream {
+			if finished {
+				return
+			}
 			if part.Type == fantasy.ObjectStreamPartTypeError {
 				part.Error = guardPublicResponsesError(attempt, part.Error)
+			}
+			if part.Type == fantasy.ObjectStreamPartTypeFinish {
+				finished = true
 			}
 			if !yield(part) {
 				return
 			}
+			if part.Type == fantasy.ObjectStreamPartTypeError {
+				return
+			}
 		}
+		accepted = finished
 	}, nil
 }
 
@@ -300,16 +350,21 @@ func (b *publicResponsesJoinedBody) Close() error { return b.closer.Close() }
 // Read performs one bounded frame read at a time: no producer goroutine and no
 // unbounded queue. The SDK's consumer directly supplies backpressure.
 type publicResponsesWSBody struct {
-	ctx      context.Context
-	lease    *nettransport.ResponsesWSLease
-	conn     *nettransport.ResponsesWSConn
-	buffer   []byte
-	terminal bool
-	closed   atomic.Bool
-	once     sync.Once
+	ctx       context.Context
+	lease     *nettransport.ResponsesWSLease
+	conn      *nettransport.ResponsesWSConn
+	mu        sync.Mutex
+	buffer    []byte
+	terminal  bool
+	completed bool
+	resolved  bool
+	managed   atomic.Bool
+	closed    atomic.Bool
 }
 
 func (b *publicResponsesWSBody) Read(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if len(p) == 0 {
 		return 0, nil
 	}
@@ -346,11 +401,12 @@ func (b *publicResponsesWSBody) Read(p []byte) (int, error) {
 			if event.Response.Status != "completed" {
 				return 0, b.conn.Abort(errors.New("invalid Responses completion"))
 			}
-			if err = b.conn.MarkCompleted(); err != nil {
-				return 0, b.conn.Abort(err)
-			}
+			b.completed = true
 			b.terminal = true
 		case "response.incomplete":
+			if event.Response.Status != "incomplete" {
+				return 0, b.conn.Abort(errors.New("invalid Responses incomplete status"))
+			}
 			b.terminal = true
 			_ = b.conn.Close()
 		}
@@ -363,12 +419,46 @@ func (b *publicResponsesWSBody) Read(p []byte) (int, error) {
 }
 
 func (b *publicResponsesWSBody) Close() error {
-	b.once.Do(func() {
-		b.closed.Store(true)
-		if !b.conn.Reusable() {
-			_ = b.conn.Close()
-		}
-		b.lease.Release()
-	})
+	b.closed.Store(true)
+	if b.managed.Load() {
+		return nil
+	}
+	// An unmanaged Close abandons the exchange. Close the wire before acquiring
+	// the parser lock because Read may be blocked in ReceiveRaw.
+	_ = b.conn.Close()
+	b.mu.Lock()
+	if b.resolved {
+		b.mu.Unlock()
+		return nil
+	}
+	b.resolved = true
+	b.mu.Unlock()
+	b.lease.Release()
 	return nil
+}
+
+func (b *publicResponsesWSBody) resolve(accepted bool) {
+	b.mu.Lock()
+	if b.resolved {
+		b.mu.Unlock()
+		return
+	}
+	accepted = accepted && b.completed && b.terminal && len(b.buffer) == 0 && b.ctx.Err() == nil
+	b.resolved = true
+	b.mu.Unlock()
+	b.finish(accepted)
+}
+
+func (b *publicResponsesWSBody) finish(accepted bool) {
+	b.mu.Lock()
+	completed := b.completed && b.terminal && len(b.buffer) == 0 && b.ctx.Err() == nil
+	b.mu.Unlock()
+	if accepted && completed {
+		if err := b.conn.MarkCompleted(); err == nil {
+			b.lease.Release()
+			return
+		}
+	}
+	_ = b.conn.Close()
+	b.lease.Release()
 }

@@ -144,6 +144,9 @@ type ResponsesWSConn struct {
 	maxFrameBytes    int64
 	maxExchangeBytes int64
 	stateMu          sync.Mutex
+	deltaMu          sync.Mutex
+	delta            responsesWSDeltaState
+	deltaEnabled     bool
 	opMu             sync.Mutex
 	state            ResponsesWSSendState
 	exchangeBytes    int64
@@ -287,6 +290,8 @@ func DialResponsesWebSocket(ctx context.Context, options ResponsesWSOptions) (*R
 		readPolicy:       options.ReadPolicy,
 		maxFrameBytes:    options.MaxFrameBytes,
 		maxExchangeBytes: options.MaxExchangeBytes,
+		deltaEnabled:     responsesWSDeltaAllowed(options.Protocol, header),
+		delta:            responsesWSDeltaState{requireStream: options.Protocol == "codex-responses"},
 	}, nil
 }
 
@@ -396,6 +401,9 @@ func (c *ResponsesWSConn) SendRaw(ctx context.Context, frame []byte) error {
 	if err := c.wire.SetWriteDeadline(ioDeadline(ctx, c.ioTimeout)); err != nil {
 		return c.fail("send", ResponsesWSSendNotSent, err)
 	}
+	c.deltaMu.Lock()
+	wireFrame, _ := c.delta.prepare(frame, c.deltaEnabled)
+	c.deltaMu.Unlock()
 	stopClose := contextDeadlineFunc(ctx, func() { _ = c.Close() })
 	defer stopClose()
 	c.stateMu.Lock()
@@ -406,14 +414,14 @@ func (c *ResponsesWSConn) SendRaw(ctx context.Context, frame []byte) error {
 	}
 	c.state = ResponsesWSSendPossiblySent
 	c.stateMu.Unlock()
-	if err := c.wire.WriteMessage(websocket.TextMessage, frame); err != nil {
+	if err := c.wire.WriteMessage(websocket.TextMessage, wireFrame); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			err = ctxErr
 		}
 		return c.fail("send", ResponsesWSSendPossiblySent, err)
 	}
 	c.stateMu.Lock()
-	c.exchangeBytes += int64(len(frame))
+	c.exchangeBytes += int64(len(wireFrame))
 	c.stateMu.Unlock()
 	return nil
 }
@@ -460,6 +468,9 @@ func (c *ResponsesWSConn) ReceiveRaw(ctx context.Context) ([]byte, error) {
 	if int64(len(raw)) > c.maxFrameBytes || overBudget {
 		return nil, c.fail("receive bounds", ResponsesWSStreaming, errors.New("frame exceeds bounds"))
 	}
+	c.deltaMu.Lock()
+	c.delta.observe(raw)
+	c.deltaMu.Unlock()
 	return raw, nil
 }
 
@@ -474,6 +485,9 @@ func (c *ResponsesWSConn) MarkCompleted() error {
 	c.state = ResponsesWSCompleted
 	c.active = false
 	c.hasCompleted = true
+	c.deltaMu.Lock()
+	c.delta.commit()
+	c.deltaMu.Unlock()
 	return nil
 }
 
@@ -494,6 +508,9 @@ func (c *ResponsesWSConn) Close() error {
 		c.stateMu.Lock()
 		c.closed = true
 		c.stateMu.Unlock()
+		c.deltaMu.Lock()
+		c.delta.clear()
+		c.deltaMu.Unlock()
 		closeErr = c.wire.Close()
 	})
 	return closeErr
@@ -505,6 +522,9 @@ func (c *ResponsesWSConn) fail(stage string, state ResponsesWSSendState, cause e
 		state = c.state
 	}
 	c.stateMu.Unlock()
+	c.deltaMu.Lock()
+	c.delta.clear()
+	c.deltaMu.Unlock()
 	_ = c.Close()
 	closeStatus := 0
 	var closeError *websocket.CloseError

@@ -67,7 +67,35 @@ func (m *languageModel) GenerateObject(ctx context.Context, call fantasy.ObjectC
 }
 
 func (m *languageModel) StreamObject(ctx context.Context, call fantasy.ObjectCall) (fantasy.ObjectStreamResponse, error) {
-	return object.StreamWithTool(ctx, m, call)
+	acceptance := &websocketObjectAcceptance{}
+	stream, err := object.StreamWithTool(context.WithValue(ctx, websocketObjectAcceptanceKey{}, acceptance), m, call)
+	if err != nil {
+		acceptance.resolve(false)
+		return nil, err
+	}
+	stopCancel := context.AfterFunc(ctx, func() { acceptance.resolve(false) })
+	return func(yield func(fantasy.ObjectStreamPart) bool) {
+		accepted, finished := false, false
+		defer func() {
+			stopCancel()
+			acceptance.resolve(accepted && ctx.Err() == nil)
+		}()
+		for part := range stream {
+			if finished {
+				return
+			}
+			if part.Type == fantasy.ObjectStreamPartTypeFinish {
+				finished = true
+			}
+			if !yield(part) {
+				return
+			}
+			if part.Type == fantasy.ObjectStreamPartTypeError {
+				return
+			}
+		}
+		accepted = finished
+	}, nil
 }
 
 func (m *languageModel) Generate(ctx context.Context, call fantasy.Call) (*fantasy.Response, error) {
