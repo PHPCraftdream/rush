@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
@@ -17,11 +19,12 @@ import (
 )
 
 const (
-	runRoleChildEnv      = "RUSH_TEST_ROLE_CLI_CHILD"
-	runRoleChildFileEnv  = "RUSH_TEST_ROLE_CLI_CHILD_FILE"
-	runRoleChildPrompt   = "test custom role dispatch"
-	runRoleChildSession  = "custom-role-cli-session"
-	runRoleChildRoleName = "Research Analyst"
+	runRoleChildEnv         = "RUSH_TEST_ROLE_CLI_CHILD"
+	runRoleChildFileEnv     = "RUSH_TEST_ROLE_CLI_CHILD_FILE"
+	runRoleChildPrompt      = "test custom role dispatch"
+	runRoleChildSession     = "custom-role-cli-session"
+	runRoleChildRoleName    = "Research Analyst"
+	runRoleChildTitlePrompt = "Generate a concise title for the following content:"
 )
 
 var (
@@ -49,6 +52,44 @@ type runRoleChildEvidence struct {
 	GlobalConfig string   `json:"global_config"`
 	Temp         string   `json:"temp"`
 	WorkingDir   string   `json:"working_dir"`
+}
+
+type runRoleChildDiagnostic struct {
+	PID    int
+	Kind   string
+	Model  string
+	Effort string
+	Args   []string
+}
+
+type runRoleChildConstructorAssertion struct {
+	Expected string
+	Actual   string
+	Error    string
+}
+
+type runRoleChildBuildArgsTrace struct {
+	mu       sync.Mutex
+	modelIDs []string
+	dropped  int
+}
+
+const runRoleChildBuildArgsLimit = 64
+
+func (trace *runRoleChildBuildArgsTrace) record(modelID string) {
+	trace.mu.Lock()
+	defer trace.mu.Unlock()
+	if len(trace.modelIDs) >= runRoleChildBuildArgsLimit {
+		trace.dropped++
+		return
+	}
+	trace.modelIDs = append(trace.modelIDs, modelID)
+}
+
+func (trace *runRoleChildBuildArgsTrace) snapshot() ([]string, int) {
+	trace.mu.Lock()
+	defer trace.mu.Unlock()
+	return append([]string(nil), trace.modelIDs...), trace.dropped
 }
 
 func TestRunCustomRoleCLIChildDispatch(t *testing.T) {
@@ -87,7 +128,7 @@ func TestRunCustomRoleCLIChildDispatch(t *testing.T) {
 	}
 	require.NotEmpty(t, claude.ModelID, "expected a real Claude stream parser in cliprovider.All")
 
-	makeSpec := func(modelID string) cliprovider.CLISpec {
+	makeSpec := func(modelID string, buildArgsTrace *runRoleChildBuildArgsTrace) cliprovider.CLISpec {
 		spec := claude
 		spec.ModelID = modelID
 		spec.ModelName = modelID
@@ -97,6 +138,7 @@ func TestRunCustomRoleCLIChildDispatch(t *testing.T) {
 		spec.PromptFlag = ""
 		spec.StdinPrintFlag = ""
 		spec.BuildArgs = func(yolo bool) []string {
+			buildArgsTrace.record(modelID)
 			args := []string{"-test.run=^TestRunCustomRoleCLIChildHelper$", "--model", modelID}
 			if yolo {
 				args = append(args, "--dangerously-skip-permissions")
@@ -106,11 +148,8 @@ func TestRunCustomRoleCLIChildDispatch(t *testing.T) {
 		return spec
 	}
 	smartModelID, customModelID := "cli-role-smart-default", "cli-role-custom-child"
-	available := []cliprovider.CLISpec{makeSpec(smartModelID), makeSpec(customModelID)}
 	originalAll := cliprovider.All
 	t.Cleanup(func() { cliprovider.All = originalAll })
-	cliprovider.All = available
-	cliprovider.AvailableFunc = func() []cliprovider.CLISpec { return available }
 
 	for _, tc := range []struct {
 		name   string
@@ -125,8 +164,35 @@ func TestRunCustomRoleCLIChildDispatch(t *testing.T) {
 		{name: "deleted role starts no child", role: runRoleChildRoleName, delete: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			buildArgsTrace := &runRoleChildBuildArgsTrace{}
+			available := []cliprovider.CLISpec{
+				makeSpec(smartModelID, buildArgsTrace),
+				makeSpec(customModelID, buildArgsTrace),
+			}
+			cliprovider.All = available
+			cliprovider.AvailableFunc = func() []cliprovider.CLISpec { return available }
+			registryModelIDs := runRoleChildSpecModelIDs(cliprovider.All)
+			catalogModelIDs := runRoleChildSpecModelIDs(cliprovider.Available())
+			constructorAssertions := runRoleChildPreflightConstructors([]string{smartModelID, customModelID})
 			isolateRunCLIConfig(t)
 			base := filepath.Join(tempRoot, strings.ReplaceAll(tc.name, " ", "-"))
+			childFile := filepath.Join(base, "child-evidence.jsonl")
+			t.Cleanup(func() {
+				if !t.Failed() {
+					return
+				}
+				buildModels, droppedBuildModels := buildArgsTrace.snapshot()
+				children, readErr := runRoleChildDiagnosticEvidence(childFile)
+				t.Logf("custom-role CLI failure diagnosis: provider.New_registry_ModelIDs=%v config_catalog_ModelIDs=%v constructor_model_assertions=%+v BuildArgs_modelIDs=%v BuildArgs_dropped=%d child_evidence=%+v evidence_read_error=%v", registryModelIDs, catalogModelIDs, constructorAssertions, buildModels, droppedBuildModels, children, readErr)
+			})
+			require.Contains(t, registryModelIDs, customModelID, "fixture provider.New registry (cliprovider.All) must include the distinct custom-role model")
+			require.Contains(t, registryModelIDs, smartModelID, "fixture provider.New registry (cliprovider.All) must include the distinct smart model")
+			require.Contains(t, catalogModelIDs, customModelID, "fixture config catalog (cliprovider.AvailableFunc) must include the custom-role model")
+			require.Contains(t, catalogModelIDs, smartModelID, "fixture config catalog (cliprovider.AvailableFunc) must include the distinct smart model")
+			for _, assertion := range constructorAssertions {
+				require.Empty(t, assertion.Error, "cliprovider.New/LanguageModel preflight must construct the registered model %q: %s", assertion.Expected, assertion.Error)
+				require.Equal(t, assertion.Expected, assertion.Actual, "cliprovider.New/LanguageModel preflight must preserve the registered model ID")
+			}
 			require.NoError(t, os.MkdirAll(base, 0o700))
 			home := filepath.Join(base, "home")
 			require.NoError(t, os.MkdirAll(home, 0o700))
@@ -162,7 +228,6 @@ func TestRunCustomRoleCLIChildDispatch(t *testing.T) {
 				require.NotContains(t, document.Roles, runRoleChildRoleName, "the active config document %s must persist deletion", activePath)
 			}
 
-			childFile := filepath.Join(base, "child-evidence.jsonl")
 			t.Setenv(runRoleChildEnv, "1")
 			t.Setenv(runRoleChildFileEnv, childFile)
 			stdout, runErr := executeTopLevelRun(t, cwd, dataDir, tc.role)
@@ -174,7 +239,7 @@ func TestRunCustomRoleCLIChildDispatch(t *testing.T) {
 				return
 			}
 
-			require.NoError(t, runErr, "run stdout: %s", stdout)
+			require.NoError(t, runErr, "top-level custom-role run failed; fixture spec registry ModelIDs=%v; config catalog ModelIDs=%v; run stdout: %s", registryModelIDs, catalogModelIDs, stdout)
 			var result struct {
 				SessionID string `json:"session_id"`
 				FinalText string `json:"final_text"`
@@ -194,21 +259,33 @@ func TestRunCustomRoleCLIChildDispatch(t *testing.T) {
 			require.NotEmpty(t, records, "the top-level run must launch the fake CLI child")
 			rootPromptFound := false
 			var rootEvidence runRoleChildEvidence
+			var rootChildModels []string
+			var titleChildModels []string
 			for _, evidence := range records {
 				require.Positive(t, evidence.PID)
 				require.NotEqual(t, os.Getpid(), evidence.PID, "the CLI boundary must be a real child process")
+				if strings.Contains(evidence.Prompt, runRoleChildTitlePrompt) {
+					titleChildModels = append(titleChildModels, evidence.Model)
+					continue
+				}
 				if strings.Contains(evidence.Prompt, runRoleChildPrompt) {
+					if !rootPromptFound {
+						rootEvidence = evidence
+					}
 					rootPromptFound = true
-					rootEvidence = evidence
+					rootChildModels = append(rootChildModels, evidence.Model)
 				}
 			}
-			require.True(t, rootPromptFound, "no child received the top-level run prompt")
+			require.NotEmpty(t, rootChildModels, "no non-title CLI child received the top-level run prompt; title-child models=%v; provider.New registry ModelIDs=%v; config catalog ModelIDs=%v", titleChildModels, registryModelIDs, catalogModelIDs)
+			require.Contains(t, registryModelIDs, rootEvidence.Model, "root child reported a model absent from provider.New's cliprovider.All registry; root child model=%q; registry ModelIDs=%v; config catalog ModelIDs=%v", rootEvidence.Model, registryModelIDs, catalogModelIDs)
 			require.True(t, runRoleChildPathUnder(rootEvidence.Home, filepath.Dir(tempRoot)), "child HOME escaped test temp root")
 			require.True(t, runRoleChildPathUnder(rootEvidence.GlobalData, filepath.Dir(tempRoot)), "child global data escaped test temp root")
 			require.True(t, runRoleChildPathUnder(rootEvidence.GlobalConfig, filepath.Dir(tempRoot)), "child global config escaped test temp root")
 			require.True(t, runRoleChildPathUnder(rootEvidence.Temp, filepath.Dir(tempRoot)), "child temp dir escaped test temp root")
 			require.True(t, runRoleChildPathUnder(rootEvidence.WorkingDir, filepath.Dir(tempRoot)), "child working dir escaped test temp root")
-			require.Equal(t, customModelID, rootEvidence.Model, "custom role must select its distinct CLI model, not the smart default")
+			for _, modelID := range rootChildModels {
+				require.Equal(t, customModelID, modelID, "every non-title top-level custom-role child must select its distinct CLI model, not the smart default; request-selection diagnostic: non-title root child models=%v; title-child models=%v; provider.New spec-registry ModelIDs=%v; config catalog ModelIDs=%v", rootChildModels, titleChildModels, registryModelIDs, catalogModelIDs)
+			}
 			require.Equal(t, "high", rootEvidence.Effort)
 			require.True(t, rootEvidence.Yolo, "non-interactive run should pass the CLI bypass flag")
 			require.Empty(t, rootEvidence.Tools, "role-limited CLI must disable native tools")
@@ -218,6 +295,106 @@ func TestRunCustomRoleCLIChildDispatch(t *testing.T) {
 			require.Equal(t, "TodoWrite", rootEvidence.Disallowed)
 		})
 	}
+}
+
+func runRoleChildPreflightConstructors(modelIDs []string) []runRoleChildConstructorAssertion {
+	provider := cliprovider.New("", "", func() bool { return false }, nil, nil, nil)
+	assertions := make([]runRoleChildConstructorAssertion, 0, len(modelIDs))
+	for _, modelID := range modelIDs {
+		assertion := runRoleChildConstructorAssertion{Expected: modelID}
+		model, err := provider.LanguageModel(context.Background(), modelID)
+		if err != nil {
+			assertion.Error = err.Error()
+		} else {
+			assertion.Actual = model.Model()
+		}
+		assertions = append(assertions, assertion)
+	}
+	return assertions
+}
+
+func runRoleChildDiagnosticEvidence(path string) ([]runRoleChildDiagnostic, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var records []runRoleChildEvidence
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if line == "" {
+			continue
+		}
+		var evidence runRoleChildEvidence
+		if err := json.Unmarshal([]byte(line), &evidence); err != nil {
+			return nil, err
+		}
+		records = append(records, evidence)
+	}
+	diagnostics := make([]runRoleChildDiagnostic, 0, len(records))
+	for _, evidence := range records {
+		kind := "other"
+		if strings.Contains(evidence.Prompt, runRoleChildTitlePrompt) {
+			kind = "title"
+		} else if strings.Contains(evidence.Prompt, runRoleChildPrompt) {
+			kind = "root"
+		}
+		diagnostics = append(diagnostics, runRoleChildDiagnostic{
+			PID: evidence.PID, Kind: kind, Model: evidence.Model,
+			Effort: evidence.Effort, Args: runRoleChildSafeArgs(evidence.Args),
+		})
+	}
+	return diagnostics, nil
+}
+
+func runRoleChildSafeArgs(args []string) []string {
+	redactNext := false
+	result := make([]string, len(args))
+	for i, arg := range args {
+		lower := strings.ToLower(arg)
+		if redactNext {
+			result[i] = "[REDACTED]"
+			redactNext = false
+			continue
+		}
+		if strings.HasPrefix(lower, "--mcp-config=") || runRoleChildArgHasSensitiveValue(lower) {
+			result[i] = "[REDACTED]"
+			continue
+		}
+		result[i] = arg
+		redactNext = runRoleChildArgTakesSensitiveValue(lower)
+	}
+	return result
+}
+
+func runRoleChildArgHasSensitiveValue(arg string) bool {
+	for _, key := range []string{"token", "secret", "password", "authorization", "bearer", "api-key", "apikey", "credential"} {
+		if strings.Contains(arg, key+"=") || strings.HasPrefix(arg, key+":") || strings.Contains(arg, key+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+func runRoleChildArgTakesSensitiveValue(arg string) bool {
+	if strings.EqualFold(arg, "--mcp-config") {
+		return true
+	}
+	if strings.Contains(arg, "=") {
+		return false
+	}
+	for _, key := range []string{"token", "secret", "password", "authorization", "bearer", "api-key", "apikey", "credential"} {
+		if strings.Contains(arg, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func runRoleChildSpecModelIDs(specs []cliprovider.CLISpec) []string {
+	modelIDs := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		modelIDs = append(modelIDs, spec.ModelID)
+	}
+	return modelIDs
 }
 
 func isolateRunRoleChildEnvironment(t *testing.T, tempRoot, guardRoot string) {

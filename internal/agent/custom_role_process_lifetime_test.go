@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -22,6 +21,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/ktavcodec"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -144,9 +144,18 @@ func TestCustomRoleProcessLifetimeHelper(t *testing.T) {
 	conn, queries, sessions := openRoleProcessDatabase(t, ctx, dbDir)
 	cfg, err := config.Init(workDir, filepath.Join(workDir, "config-data"), false)
 	require.NoError(t, err)
-	activeConfig, err := filepath.Abs(filepath.Join(workDir, "rush.ktav"))
-	require.NoError(t, err)
-	require.Contains(t, cfg.LoadedPaths(), activeConfig, "new process must have reloaded the migrated workspace config")
+	activeConfig := filepath.Join(workDir, "rush.ktav")
+	activeInfo, err := os.Stat(activeConfig)
+	require.NoError(t, err, "active workspace config must remain present")
+	loadedActiveConfig := false
+	for _, loadedPath := range cfg.LoadedPaths() {
+		loadedInfo, statErr := os.Stat(loadedPath)
+		if statErr == nil && os.SameFile(loadedInfo, activeInfo) {
+			loadedActiveConfig = true
+			break
+		}
+	}
+	require.True(t, loadedActiveConfig, "new process must have reloaded the active workspace rush.ktav config")
 	q := queries
 	messages := message.NewService(q)
 	permissions := permission.NewPermissionService(ctx, workDir, true, nil, q)
@@ -458,7 +467,7 @@ func runRoleProcessHelper(t *testing.T, mode, result, bootstrap, workDir, dbDir,
 	defer cancel()
 	executable, err := os.Executable()
 	require.NoError(t, err)
-	cmd := exec.CommandContext(ctx, executable, "-test.run=^"+roleProcessHelperTest+"$")
+	cmd := platform.Command(ctx, executable, "-test.run=^"+roleProcessHelperTest+"$")
 	cmd.Dir = workDir
 	cmd.Env = roleProcessHelperEnvironment(map[string]string{
 		"RUSH_ROLE_PROCESS_HELPER":        mode,

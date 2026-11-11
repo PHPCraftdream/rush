@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -60,9 +61,32 @@ type schedulerRoleWireBody struct {
 }
 
 type schedulerRoleHandlerDiagnostics struct {
-	mu    sync.Mutex
-	count int
-	first error
+	mu          sync.Mutex
+	count       int
+	first       error
+	requests    int
+	gates       int
+	model       string
+	stage       string
+	lastRequest string
+	events      []string
+}
+
+func (d *schedulerRoleHandlerDiagnostics) eventLocked(event string) {
+	if len(d.events) >= 32 {
+		d.events = d.events[1:]
+	}
+	d.events = append(d.events, event)
+}
+
+func (d *schedulerRoleHandlerDiagnostics) setStage(requestID int, stage, model string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.stage = stage
+	if model != "" {
+		d.model = model
+	}
+	d.eventLocked(fmt.Sprintf("request#%d %s model=%q", requestID, stage, d.model))
 }
 
 func (d *schedulerRoleHandlerDiagnostics) record(err error) {
@@ -72,6 +96,53 @@ func (d *schedulerRoleHandlerDiagnostics) record(err error) {
 	if d.first == nil {
 		d.first = err
 	}
+	d.eventLocked(fmt.Sprintf("handler error#%d: %v", d.count, err))
+}
+
+func (d *schedulerRoleHandlerDiagnostics) requestRecorded(request schedulerRoleRequest) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.requests++
+	requestID := d.requests
+	d.model = request.Model
+	temperature := "unset"
+	if request.Temperature != nil {
+		temperature = fmt.Sprint(*request.Temperature)
+	}
+	d.lastRequest = fmt.Sprintf("model=%q max_tokens=%d temperature=%s system_bytes=%d err=%v", request.Model, request.MaxTokens, temperature, len(request.System), request.Err)
+	d.stage = "request recorded"
+	d.eventLocked(fmt.Sprintf("request#%d recorded {%s}", requestID, d.lastRequest))
+	return requestID
+}
+
+func (d *schedulerRoleHandlerDiagnostics) gateWaiting(requestID int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.stage = fmt.Sprintf("request#%d waiting for a response gate", requestID)
+	d.eventLocked(d.stage)
+}
+
+func (d *schedulerRoleHandlerDiagnostics) gateReceived(requestID int) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.gates++
+	gateID := d.gates
+	d.stage = fmt.Sprintf("request#%d received gate#%d; waiting for release", requestID, gateID)
+	d.eventLocked(d.stage)
+	return gateID
+}
+
+func (d *schedulerRoleHandlerDiagnostics) gateReleased(requestID, gateID int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.stage = fmt.Sprintf("request#%d gate#%d released", requestID, gateID)
+	d.eventLocked(d.stage)
+}
+
+func (d *schedulerRoleHandlerDiagnostics) snapshot() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return fmt.Sprintf("requests=%d gates=%d last_model=%q stage=%q last_request={%s} errors=%d first_error=%v history=%q", d.requests, d.gates, d.model, d.stage, d.lastRequest, d.count, d.first, d.events)
 }
 
 func (d *schedulerRoleHandlerDiagnostics) err() error {
@@ -92,6 +163,7 @@ type customRoleSchedulerApp struct {
 	gates              chan *schedulerRoleGate
 	handlerDiagnostics *schedulerRoleHandlerDiagnostics
 	lifecycleCtx       context.Context
+	teardownDiagnostic *func()
 }
 
 func newCustomRoleSchedulerApp(t *testing.T) customRoleSchedulerApp {
@@ -109,7 +181,9 @@ func newCustomRoleSchedulerApp(t *testing.T) customRoleSchedulerApp {
 	gates := make(chan *schedulerRoleGate, 8)
 	lifecycleCtx, cancelLifecycle := context.WithCancel(t.Context())
 	handlerDiagnostics := &schedulerRoleHandlerDiagnostics{}
+	teardownDiagnostic := new(func())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerDiagnostics.setStage(0, "reading request", "")
 		body, readErr := io.ReadAll(r.Body)
 		recorded := schedulerRoleRequest{Err: readErr}
 		if readErr == nil {
@@ -136,6 +210,7 @@ func newCustomRoleSchedulerApp(t *testing.T) customRoleSchedulerApp {
 		if recorded.Err != nil {
 			handlerDiagnostics.record(recorded.Err)
 		}
+		requestID := handlerDiagnostics.requestRecorded(recorded)
 		select {
 		case requests <- recorded:
 		case <-r.Context().Done():
@@ -151,8 +226,12 @@ func newCustomRoleSchedulerApp(t *testing.T) customRoleSchedulerApp {
 		}
 
 		var gate *schedulerRoleGate
+		var gateID int
+		handlerDiagnostics.gateWaiting(requestID)
 		select {
 		case gate = <-gates:
+			gateID = handlerDiagnostics.gateReceived(requestID)
+			handlerDiagnostics.setStage(requestID, fmt.Sprintf("waiting for gate#%d release", gateID), recorded.Model)
 		case <-r.Context().Done():
 			return
 		case <-lifecycleCtx.Done():
@@ -160,15 +239,25 @@ func newCustomRoleSchedulerApp(t *testing.T) customRoleSchedulerApp {
 		}
 		select {
 		case <-gate.ch:
+			handlerDiagnostics.gateReleased(requestID, gateID)
+			handlerDiagnostics.setStage(requestID, fmt.Sprintf("writing SSE for gate#%d", gateID), recorded.Model)
 		case <-r.Context().Done():
 			return
 		case <-lifecycleCtx.Done():
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = fmt.Fprintln(w, `data: {"id":"role-scheduler","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}`)
-		_, _ = fmt.Fprintln(w, `data: {"id":"role-scheduler","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
-		_, _ = fmt.Fprintln(w, "data: [DONE]")
+		for _, event := range []string{
+			`data: {"id":"role-scheduler","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}` + "\n\n",
+			`data: {"id":"role-scheduler","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n\n",
+			"data: [DONE]\n\n",
+		} {
+			if _, err := fmt.Fprint(w, event); err != nil {
+				handlerDiagnostics.record(fmt.Errorf("provider response write failed: %w", err))
+				return
+			}
+		}
+		handlerDiagnostics.setStage(requestID, fmt.Sprintf("SSE body writes returned for gate#%d", gateID), recorded.Model)
 	}))
 	var application *App
 	t.Cleanup(func() {
@@ -181,9 +270,33 @@ func newCustomRoleSchedulerApp(t *testing.T) customRoleSchedulerApp {
 			default:
 				cancelLifecycle()
 				if application != nil {
-					application.Shutdown()
+					shutdownDone := make(chan struct{})
+					go func() {
+						application.Shutdown()
+						close(shutdownDone)
+					}()
+					select {
+					case <-shutdownDone:
+					case <-time.After(20 * time.Second):
+						t.Errorf("App.Shutdown did not finish within 20s")
+						if teardownDiagnostic != nil && *teardownDiagnostic != nil {
+							(*teardownDiagnostic)()
+						}
+					}
 				}
-				server.Close()
+				serverCloseDone := make(chan struct{})
+				go func() {
+					server.Close()
+					close(serverCloseDone)
+				}()
+				select {
+				case <-serverCloseDone:
+				case <-time.After(5 * time.Second):
+					t.Errorf("provider test server did not close within 5s")
+					if teardownDiagnostic != nil && *teardownDiagnostic != nil {
+						(*teardownDiagnostic)()
+					}
+				}
 				if err := handlerDiagnostics.err(); err != nil {
 					t.Errorf("%v", err)
 				}
@@ -249,10 +362,11 @@ func newCustomRoleSchedulerApp(t *testing.T) customRoleSchedulerApp {
 		gates:              gates,
 		handlerDiagnostics: handlerDiagnostics,
 		lifecycleCtx:       lifecycleCtx,
+		teardownDiagnostic: teardownDiagnostic,
 	}
 }
 
-func startCustomRoleSchedulerRun(t *testing.T, application *App, ctx context.Context, sess session.Session, prompt string) <-chan runOutcome {
+func startCustomRoleSchedulerRun(t *testing.T, application *App, ctx context.Context, sess session.Session, prompt string) schedulerRoleRun {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	t.Cleanup(cancel)
@@ -270,27 +384,95 @@ func startCustomRoleSchedulerRun(t *testing.T, application *App, ctx context.Con
 		})
 		outcome <- runOutcome{result: result, err: err}
 	}()
-	return outcome
+	return schedulerRoleRun{ctx: ctx, outcome: outcome}
 }
 
-func waitCustomRoleSchedulerRequest(t *testing.T, requests <-chan schedulerRoleRequest) schedulerRoleRequest {
+type schedulerRoleRun struct {
+	ctx     context.Context
+	outcome <-chan runOutcome
+}
+
+type schedulerRoleRunState struct {
+	mu        sync.Mutex
+	sessionID string
+	run       *schedulerRoleRun
+	captured  bool
+}
+
+func (s *schedulerRoleRunState) setSession(sessionID string) {
+	s.mu.Lock()
+	s.sessionID = sessionID
+	s.mu.Unlock()
+}
+
+func (s *schedulerRoleRunState) setRun(run *schedulerRoleRun) {
+	s.mu.Lock()
+	s.run = run
+	s.mu.Unlock()
+}
+
+func (s *schedulerRoleRunState) clearRun() {
+	s.mu.Lock()
+	s.run = nil
+	s.mu.Unlock()
+}
+
+func (s *schedulerRoleRunState) capture(t *testing.T, h customRoleSchedulerApp) {
+	t.Helper()
+	diagnostics := h.handlerDiagnostics
+	s.mu.Lock()
+	if s.captured {
+		s.mu.Unlock()
+		return
+	}
+	s.captured = true
+	sessionID := s.sessionID
+	run := s.run
+	s.mu.Unlock()
+
+	cfg, generation := h.store.Snapshot()
+	role, exists := cfg.Roles[schedulerCustomRoleName]
+	busy := sessionID != "" && h.app.AgentCoordinator.IsSessionBusy(sessionID)
+	runErr := "not started"
+	outcomeState := "run completed before failure snapshot"
+	if run != nil {
+		runErr = fmt.Sprint(run.ctx.Err())
+		select {
+		case outcome := <-run.outcome:
+			outcomeState = fmt.Sprintf("completed result_nil=%v err=%v", outcome.result == nil, outcome.err)
+		default:
+			outcomeState = "pending"
+		}
+	}
+	t.Logf("custom-role scheduler trace: generation=%d role_exists=%v model=%q active_config=%q disk_sync_running=%v session_id=%q session_busy=%v run_context_err=%s run_outcome=%s provider={%s} queued_requests=%d", generation, exists, role.Model, config.ActiveConfigFileName(filepath.Join(h.dataDir, "rush.json")), h.store.ConfigDiskSyncRunning(), sessionID, busy, runErr, outcomeState, diagnostics.snapshot(), len(h.requests))
+	stacks := make([]byte, 4<<20)
+	n := runtime.Stack(stacks, true)
+	if n == len(stacks) {
+		t.Log("goroutine trace may be truncated at 4 MiB")
+	}
+	t.Logf("goroutine trace:\n%s", stacks[:n])
+}
+
+func waitCustomRoleSchedulerRequest(t *testing.T, requests <-chan schedulerRoleRequest, timeoutTrace func()) schedulerRoleRequest {
 	t.Helper()
 	select {
 	case request := <-requests:
 		return request
 	case <-time.After(30 * time.Second):
+		timeoutTrace()
 		t.Fatal("no custom-role provider request arrived within 30s")
 		return schedulerRoleRequest{}
 	}
 }
 
-func waitCustomRoleSchedulerRun(t *testing.T, outcome <-chan runOutcome) runOutcome {
+func waitCustomRoleSchedulerRun(t *testing.T, run schedulerRoleRun, timeoutTrace func()) runOutcome {
 	t.Helper()
 	select {
-	case result := <-outcome:
+	case result := <-run.outcome:
 		return result
 	case <-time.After(30 * time.Second):
-		t.Fatal("custom-role ExecuteRun did not finish within 30s")
+		timeoutTrace()
+		t.Fatalf("custom-role ExecuteRun did not finish within 30s (run_context_err=%v)", run.ctx.Err())
 		return runOutcome{}
 	}
 }
@@ -319,21 +501,24 @@ func readSchedulerCustomRoleFromKtav(t *testing.T, path string) config.CustomRol
 
 func TestExecuteRunCustomRoleRefreshesFromForeignKtavWriteByScheduler(t *testing.T) {
 	h := newCustomRoleSchedulerApp(t)
+	activeRun := &schedulerRoleRunState{}
+	trace := func() { activeRun.capture(t, h) }
+	*h.teardownDiagnostic = trace
 	t.Cleanup(func() {
 		if t.Failed() {
-			cfg, generation := h.store.Snapshot()
-			role, exists := cfg.Roles[schedulerCustomRoleName]
-			t.Logf("custom-role scheduler trace: generation=%d role_exists=%v model=%q active_config=%q disk_sync_running=%v", generation, exists, role.Model, config.ActiveConfigFileName(filepath.Join(h.dataDir, "rush.json")), h.store.ConfigDiskSyncRunning())
+			trace()
 		}
 	})
 	require.True(t, h.store.ConfigDiskSyncRunning(), "App.New must own the live config disk scheduler")
 	initialGeneration := h.store.Generation()
 	sess := createRoleSyncSession(t, h.app, "custom-role-scheduler-refresh")
+	activeRun.setSession(sess.ID)
 	firstGate := newSchedulerRoleGate(t)
 	h.gates <- firstGate
 	firstOutcome := startCustomRoleSchedulerRun(t, h.app, h.lifecycleCtx, sess, "first role request")
+	activeRun.setRun(&firstOutcome)
 
-	first := waitCustomRoleSchedulerRequest(t, h.requests)
+	first := waitCustomRoleSchedulerRequest(t, h.requests, trace)
 	require.NoError(t, first.Err)
 	require.Equal(t, "role-before", first.Model)
 	require.EqualValues(t, 111, first.MaxTokens)
@@ -389,24 +574,27 @@ func TestExecuteRunCustomRoleRefreshesFromForeignKtavWriteByScheduler(t *testing
 	require.Equal(t, first.System, stored.SystemPrompt, "the in-flight prompt remains the prompt admitted before publication")
 
 	firstGate.Release()
-	completed := waitCustomRoleSchedulerRun(t, firstOutcome)
+	completed := waitCustomRoleSchedulerRun(t, firstOutcome, trace)
 	require.NoError(t, completed.err)
 	require.NotNil(t, completed.result)
+	activeRun.clearRun()
 
 	secondGate := newSchedulerRoleGate(t)
 	secondGate.Release()
 	h.gates <- secondGate
 	secondOutcome := startCustomRoleSchedulerRun(t, h.app, h.lifecycleCtx, sess, "next role request")
-	second := waitCustomRoleSchedulerRequest(t, h.requests)
+	activeRun.setRun(&secondOutcome)
+	second := waitCustomRoleSchedulerRequest(t, h.requests, trace)
 	require.NoError(t, second.Err)
 	require.Equal(t, "role-after", second.Model, "the next ExecuteRun must resolve the scheduler-published role")
 	require.EqualValues(t, 222, second.MaxTokens)
 	require.NotNil(t, second.Temperature)
 	require.Equal(t, 0.75, *second.Temperature)
 	require.Equal(t, first.System, second.System, "the same session continues using its stored system prompt after the model refresh")
-	completed = waitCustomRoleSchedulerRun(t, secondOutcome)
+	completed = waitCustomRoleSchedulerRun(t, secondOutcome, trace)
 	require.NoError(t, completed.err)
 	require.NotNil(t, completed.result)
+	activeRun.clearRun()
 
 	_, latestAdmission, found, err := rootContracts.GetRootRoleContract(t.Context(), sess.ID)
 	require.NoError(t, err)
