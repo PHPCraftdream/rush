@@ -226,6 +226,8 @@ func newRecoveryFailureHarness(t *testing.T, workerMode, codexMode string) *reco
 			} else {
 				stage, status = "codex-terminal-http-400", http.StatusBadRequest
 			}
+		case "safe-sse-error-nested", "safe-sse-error-flat", "no-replay-safe-sse-error-nested", "no-replay-safe-sse-error-flat":
+			stage, status = "codex-safe-sse-rejection", http.StatusOK
 		}
 		if call > 2 && h.codexMode == "transport-failure" {
 			stage, status = "codex-request-ceiling", http.StatusPaymentRequired
@@ -267,6 +269,10 @@ func newRecoveryFailureHarness(t *testing.T, workerMode, codexMode string) *reco
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = io.WriteString(w, `{"error":{"code":"invalid_prompt","message":"fixture terminal transport control"}}`)
+		case "safe-sse-error-nested", "no-replay-safe-sse-error-nested":
+			overflowRecoverySSERejection(w, "error-nested")
+		case "safe-sse-error-flat", "no-replay-safe-sse-error-flat":
+			overflowRecoverySSERejection(w, "error-flat")
 		default:
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
@@ -285,7 +291,7 @@ func newRecoveryFailureHarness(t *testing.T, workerMode, codexMode string) *reco
 	require.NoError(t, err)
 	codexModel, err := provider.LanguageModel(t.Context(), "gpt-5-codex")
 	require.NoError(t, err)
-	if codexMode == "no-replay-safe-http" {
+	if codexMode == "no-replay-safe-http" || codexMode == "no-replay-safe-sse-error-nested" || codexMode == "no-replay-safe-sse-error-flat" {
 		codexModel = &recoveryNoReplayModel{LanguageModel: codexModel}
 	}
 	d.localProxyNone = transport.Proxy == nil
@@ -486,53 +492,61 @@ func TestCodexRecoveryCancellationDuringWorkerStreamCleansSummary(t *testing.T) 
 }
 
 func TestCodexRecoverySecondOverflowStopsAfterOneSummary(t *testing.T) {
-	h := newRecoveryFailureHarness(t, "success", "safe-http-400")
-	tool := &overflowRecoveryTool{text: "must never execute"}
-	h.f.sa.SetTools([]fantasy.AgentTool{tool})
-	err := h.execute(t, "Report the scheduled work briefly.")
-	require.Error(t, err)
-	recordRecoverySummaryPointer(t, h)
-	require.EqualValues(t, 2, h.trace.codexCount.Load(), "one initial rejection and one continuation rejection")
-	require.EqualValues(t, 1, h.trace.workerCount.Load(), "continuation failure must not schedule another summary")
-	var codexModels []string
-	h.trace.mu.Lock()
-	for i, stage := range h.trace.stages {
-		if strings.HasPrefix(stage, "codex-") {
-			codexModels = append(codexModels, h.trace.models[i])
-		}
+	for _, codexMode := range []string{"safe-http-400", "safe-sse-error-nested", "safe-sse-error-flat"} {
+		t.Run(codexMode, func(t *testing.T) {
+			h := newRecoveryFailureHarness(t, "success", codexMode)
+			tool := &overflowRecoveryTool{text: "must never execute"}
+			h.f.sa.SetTools([]fantasy.AgentTool{tool})
+			err := h.execute(t, "Report the scheduled work briefly.")
+			require.Error(t, err)
+			recordRecoverySummaryPointer(t, h)
+			require.EqualValues(t, 2, h.trace.codexCount.Load(), "one initial rejection and one continuation rejection")
+			require.EqualValues(t, 1, h.trace.workerCount.Load(), "continuation failure must not schedule another summary")
+			var codexModels []string
+			h.trace.mu.Lock()
+			for i, stage := range h.trace.stages {
+				if strings.HasPrefix(stage, "codex-") {
+					codexModels = append(codexModels, h.trace.models[i])
+				}
+			}
+			h.trace.mu.Unlock()
+			require.Equal(t, []string{"gpt-5-codex", "gpt-5-codex"}, codexModels)
+			require.Zero(t, tool.calls.Load(), "no rejected request can replay a tool")
+			sess, err := h.f.env.sessions.Get(t.Context(), h.f.sessID)
+			require.NoError(t, err)
+			require.NotEmpty(t, sess.SummaryMessageID)
+			rows, err := h.f.env.messages.List(t.Context(), h.f.sessID)
+			require.NoError(t, err)
+			summaries := 0
+			for _, row := range rows {
+				if row.IsSummaryMessage {
+					summaries++
+				}
+			}
+			require.Equal(t, 1, summaries)
+			require.True(t, h.trace.codexAuthOK)
+			require.True(t, h.trace.codexHostOK)
+			require.True(t, h.trace.workerAuthOK)
+			require.True(t, h.trace.workerHostOK)
+		})
 	}
-	h.trace.mu.Unlock()
-	require.Equal(t, []string{"gpt-5-codex", "gpt-5-codex"}, codexModels)
-	require.Zero(t, tool.calls.Load(), "no rejected request can replay a tool")
-	sess, err := h.f.env.sessions.Get(t.Context(), h.f.sessID)
-	require.NoError(t, err)
-	require.NotEmpty(t, sess.SummaryMessageID)
-	rows, err := h.f.env.messages.List(t.Context(), h.f.sessID)
-	require.NoError(t, err)
-	summaries := 0
-	for _, row := range rows {
-		if row.IsSummaryMessage {
-			summaries++
-		}
-	}
-	require.Equal(t, 1, summaries)
-	require.True(t, h.trace.codexAuthOK)
-	require.True(t, h.trace.codexHostOK)
-	require.True(t, h.trace.workerAuthOK)
-	require.True(t, h.trace.workerHostOK)
 }
 
 func TestCodexRecoveryNoReplayMarkerStopsOtherwiseSafeHTTPRecovery(t *testing.T) {
-	h := newRecoveryFailureHarness(t, "success", "no-replay-safe-http")
-	before := recoveryFailureSnapshot(t, h.f)
-	err := h.execute(t, "Report the scheduled work briefly.")
-	require.Error(t, err)
-	recordRecoverySummaryPointer(t, h)
-	require.EqualValues(t, 1, h.trace.codexCount.Load())
-	require.Zero(t, h.trace.workerCount.Load(), "NoReplay wrapped rejection must not launch worker")
-	require.Empty(t, h.trace.workerModel, "configured worker must exist so this check is non-vacuous")
-	requireRecoveryHistoryPreserved(t, before, recoveryFailureSnapshot(t, h.f))
-	requireNoRecoverySummary(t, h.f)
+	for _, codexMode := range []string{"no-replay-safe-http", "no-replay-safe-sse-error-nested", "no-replay-safe-sse-error-flat"} {
+		t.Run(codexMode, func(t *testing.T) {
+			h := newRecoveryFailureHarness(t, "success", codexMode)
+			before := recoveryFailureSnapshot(t, h.f)
+			err := h.execute(t, "Report the scheduled work briefly.")
+			require.Error(t, err)
+			recordRecoverySummaryPointer(t, h)
+			require.EqualValues(t, 1, h.trace.codexCount.Load())
+			require.Zero(t, h.trace.workerCount.Load(), "NoReplay wrapped rejection must not launch worker")
+			require.Empty(t, h.trace.workerModel, "configured worker must exist so this check is non-vacuous")
+			requireRecoveryHistoryPreserved(t, before, recoveryFailureSnapshot(t, h.f))
+			requireNoRecoverySummary(t, h.f)
+		})
+	}
 }
 
 func TestCodexRecoveryOpaqueOrPartialFailureNeverStartsWorker(t *testing.T) {

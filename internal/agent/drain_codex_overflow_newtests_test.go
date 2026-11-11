@@ -42,7 +42,8 @@ func (rt overflowRecoveryRT) RoundTrip(req *http.Request) (*http.Response, error
 }
 
 type overflowRecoveryBodyFacts struct {
-	summary, pin, user, toolCall, toolResult bool
+	summary, pin, user, followUp, toolCall, toolResult, toolSchema bool
+	toolSchemaJSON                                                 string
 }
 
 type overflowRecoveryTrace struct {
@@ -83,7 +84,7 @@ func overflowRecoveryModelClass(model string) string {
 func (d *overflowRecoveryTrace) add(stage, modelClass string, body []byte, status int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if len(d.stages) >= 4 {
+	if len(d.stages) >= 6 {
 		return
 	}
 	h := sha256.Sum256(body)
@@ -108,6 +109,11 @@ func (d *overflowRecoveryTrace) inspectCodexRequest(r *http.Request, body []byte
 				Text string `json:"text"`
 			} `json:"content"`
 		} `json:"input"`
+		Tools []struct {
+			Type       string          `json:"type"`
+			Name       string          `json:"name"`
+			Parameters json.RawMessage `json:"parameters"`
+		} `json:"tools"`
 	}
 	_ = json.Unmarshal(body, &req)
 	facts := overflowRecoveryBodyFacts{}
@@ -116,9 +122,25 @@ func (d *overflowRecoveryTrace) inspectCodexRequest(r *http.Request, body []byte
 			facts.summary = facts.summary || strings.Contains(part.Text, "Persisted summary of earlier context")
 			facts.pin = facts.pin || strings.Contains(part.Text, "pinned authority: preserve this scope")
 			facts.user = facts.user || strings.Contains(part.Text, "Summarize the useful details and continue the current task.")
+			facts.followUp = facts.followUp || strings.Contains(part.Text, "same-session follow-up")
 		}
 		facts.toolCall = facts.toolCall || item.Type == "function_call" && item.CallID == "call_recovery_once" && item.Name == "overflow_once"
 		facts.toolResult = facts.toolResult || item.Type == "function_call_output" && strings.Contains(item.Output, "tool-result-")
+	}
+	if len(req.Tools) == 1 && req.Tools[0].Type == "function" && req.Tools[0].Name == "overflow_once" {
+		var schemaFacts struct {
+			Type       string                     `json:"type"`
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		if json.Unmarshal(req.Tools[0].Parameters, &schemaFacts) == nil && schemaFacts.Type == "object" && schemaFacts.Properties != nil && len(schemaFacts.Properties) == 0 {
+			var schema any
+			if json.Unmarshal(req.Tools[0].Parameters, &schema) == nil {
+				if canonical, err := json.Marshal(schema); err == nil {
+					facts.toolSchema = true
+					facts.toolSchemaJSON = string(canonical)
+				}
+			}
+		}
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -176,7 +198,26 @@ func TestCodexOverflowAutomaticRecoveryAfterAcceptedToolStep(t *testing.T) {
 	runCodexOverflowRecovery(t, true, true, "session-worker")
 }
 
+func TestCodexOverflowSSERecoveryAfterAcceptedToolAndSameSessionFollowUp(t *testing.T) {
+	for _, rejection := range []struct {
+		name string
+		kind string
+	}{
+		{name: "response.failed nested response error", kind: "response.failed"},
+		{name: "error nested error", kind: "error-nested"},
+		{name: "error flat Responses fields", kind: "error-flat"},
+	} {
+		t.Run(rejection.name, func(t *testing.T) {
+			runCodexOverflowRecoveryCase(t, true, true, "session-worker", rejection.kind, true)
+		})
+	}
+}
+
 func runCodexOverflowRecovery(t *testing.T, acceptedTool, workerOverride bool, wantWorker string) {
+	runCodexOverflowRecoveryCase(t, acceptedTool, workerOverride, wantWorker, "http", false)
+}
+
+func runCodexOverflowRecoveryCase(t *testing.T, acceptedTool, workerOverride bool, wantWorker, rejection string, followUp bool) {
 	t.Helper()
 	// Reuse the isolated session/services and pinned seed. Recovery and summary
 	// are performed by ordinary production paths; no summary is pre-created.
@@ -223,10 +264,11 @@ func runCodexOverflowRecovery(t *testing.T, acceptedTool, workerOverride bool, w
 	t.Cleanup(workerServer.Close)
 	workerHost = overflowRecoveryHost(workerServer.URL)
 
+	maxCodexCalls := 4
 	codexHost := ""
 	codexServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		call := int(codexCalls.Add(1))
-		if call > 4 {
+		if call > maxCodexCalls {
 			http.Error(w, "bounded Codex test request ceiling", http.StatusPaymentRequired)
 			return
 		}
@@ -243,11 +285,20 @@ func runCodexOverflowRecovery(t *testing.T, acceptedTool, workerOverride bool, w
 		if acceptedTool && call == 1 {
 			stage = "codex-accepted-tool-step"
 		} else if len(body) > codexBodyLimit {
-			stage, status = "codex-context-overflow", http.StatusBadRequest
+			stage = "codex-context-overflow"
+			if rejection == "http" {
+				status = http.StatusBadRequest
+			}
+		} else if followUp && call == maxCodexCalls {
+			stage = "codex-follow-up"
 		}
 		trace.add(stage, overflowRecoveryModelClass(req.Model), body, status)
 		trace.inspectCodexRequest(r, body, f.sessID)
-		if status == http.StatusBadRequest {
+		if stage == "codex-context-overflow" {
+			if rejection != "http" {
+				overflowRecoverySSERejection(w, rejection)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
 			_, _ = io.WriteString(w, `{"error":{"code":"context_length_exceeded","type":"invalid_request_error","message":"request exceeds context"}}`)
@@ -326,6 +377,11 @@ func runCodexOverflowRecovery(t *testing.T, acceptedTool, workerOverride bool, w
 	_, err = f.coord.runInternal(ctx, f.sessID, prompt, pinned)
 	require.NoError(t, err, "Codex requests=%d worker requests=%d", codexCalls.Load(), workerCalls.Load())
 	require.EqualValues(t, 1, workerCalls.Load())
+	if followUp {
+		_, err = f.coord.runInternal(ctx, f.sessID, "same-session follow-up: report what was preserved.", pinned)
+		require.NoError(t, err, "Codex requests=%d worker requests=%d", codexCalls.Load(), workerCalls.Load())
+		require.EqualValues(t, 1, workerCalls.Load(), "same-session follow-up must not trigger another summary")
+	}
 
 	trace.mu.Lock()
 	trace.contextCanceled = ctx.Err() != nil
@@ -335,26 +391,58 @@ func runCodexOverflowRecovery(t *testing.T, acceptedTool, workerOverride bool, w
 	requestBytes := append([]int(nil), trace.bodyBytes...)
 	trace.mu.Unlock()
 	if acceptedTool {
-		require.Equal(t, []string{"codex-accepted-tool-step", "codex-context-overflow", "worker-summary", "codex-original"}, stages)
-		require.Equal(t, http.StatusBadRequest, statuses[1])
+		wantStages := []string{"codex-accepted-tool-step", "codex-context-overflow", "worker-summary", "codex-original"}
+		if followUp {
+			wantStages = append(wantStages, "codex-follow-up")
+		}
+		require.Equal(t, wantStages, stages)
+		wantOverflowStatus := http.StatusBadRequest
+		if rejection != "http" {
+			wantOverflowStatus = http.StatusOK
+		}
+		require.Equal(t, wantOverflowStatus, statuses[1], "overflow response status")
 		require.Less(t, requestBytes[0], codexBodyLimit, "accepted tool step fits the fake size cap")
 		require.Greater(t, requestBytes[1], codexBodyLimit, "accepted result enlarges the actual attempted request beyond the fake size cap")
 		require.Less(t, requestBytes[3], codexBodyLimit, "summary makes the actual next body fit the fake size cap")
 		require.Less(t, requestBytes[3], requestBytes[1], "summary makes the actual next body smaller")
 		require.EqualValues(t, 1, tool.calls.Load())
-		require.EqualValues(t, 3, codexCalls.Load())
+		wantCalls := 3
+		if followUp {
+			wantCalls++
+		}
+		require.EqualValues(t, wantCalls, codexCalls.Load())
 	} else {
-		require.Equal(t, []string{"codex-context-overflow", "worker-summary", "codex-original"}, stages)
+		wantStages := []string{"codex-context-overflow", "worker-summary", "codex-original"}
+		if followUp {
+			wantStages = append(wantStages, "codex-follow-up")
+		}
+		require.Equal(t, wantStages, stages)
 		require.Greater(t, requestBytes[0], codexBodyLimit+simpleCodexBodyMargin, "initial request exceeds fake size cap with controlled overflow margin")
-		require.Equal(t, http.StatusBadRequest, statuses[0])
+		wantOverflowStatus := http.StatusBadRequest
+		if rejection != "http" {
+			wantOverflowStatus = http.StatusOK
+		}
+		require.Equal(t, wantOverflowStatus, statuses[0], "overflow response status")
 		require.Less(t, requestBytes[2], codexBodyLimit-simpleCodexBodyMargin, "compacted request fits fake size cap with controlled fit margin")
 		require.Less(t, requestBytes[2], requestBytes[0], "compaction must shrink actual request")
-		require.EqualValues(t, 2, codexCalls.Load())
+		wantCalls := 2
+		if followUp {
+			wantCalls++
+		}
+		require.EqualValues(t, wantCalls, codexCalls.Load())
 	}
 	for i, stage := range stages {
 		if stage != "worker-summary" {
 			require.Equal(t, "original", classes[i], "the codex continuation uses the configured original model")
 		}
+	}
+	if rejection != "http" {
+		failureIndex := 0
+		if acceptedTool {
+			failureIndex = 1
+		}
+		require.Equal(t, http.StatusOK, statuses[failureIndex], "SSE rejection is an HTTP-success response")
+		require.Greater(t, requestBytes[failureIndex], codexBodyLimit, "SSE rejection is triggered by the actual oversized request")
 	}
 	require.True(t, trace.codexModelExact, "decoded Codex model must remain exactly gpt-5-codex")
 	if workerOverride {
@@ -371,7 +459,7 @@ func runCodexOverflowRecovery(t *testing.T, acceptedTool, workerOverride bool, w
 	require.NotEmpty(t, finalSession.SummaryMessageID)
 	finalRows, err := f.env.messages.List(ctx, f.sessID)
 	require.NoError(t, err)
-	var summaryPersisted, currentUser, pinnedAuthority, acceptedCall, acceptedResult bool
+	var summaryPersisted, currentUser, followUpUser, pinnedAuthority, acceptedCall, acceptedResult bool
 	for _, row := range finalRows {
 		if row.Pinned {
 			trace.pins++
@@ -379,6 +467,7 @@ func runCodexOverflowRecovery(t *testing.T, acceptedTool, workerOverride bool, w
 		trace.acceptedToolCalls += len(row.ToolCalls())
 		summaryPersisted = summaryPersisted || row.ID == finalSession.SummaryMessageID && row.IsSummaryMessage && strings.Contains(row.FullText(), "Persisted summary")
 		currentUser = currentUser || row.Role == message.User && row.FullText() == prompt
+		followUpUser = followUpUser || row.Role == message.User && row.FullText() == "same-session follow-up: report what was preserved."
 		pinnedAuthority = pinnedAuthority || row.ID == pinID && row.Pinned && strings.Contains(row.FullText(), "pinned authority")
 		for _, call := range row.ToolCalls() {
 			acceptedCall = acceptedCall || call.ID == "call_recovery_once" && call.Name == "overflow_once"
@@ -399,14 +488,44 @@ func runCodexOverflowRecovery(t *testing.T, acceptedTool, workerOverride bool, w
 	require.True(t, trace.summaryPointerSet)
 	require.True(t, summaryPersisted)
 	require.True(t, currentUser)
+	require.Equal(t, followUp, followUpUser)
 	require.True(t, pinnedAuthority)
 	require.True(t, len(trace.codexBodies) >= 2)
-	resumed := trace.codexBodies[len(trace.codexBodies)-1]
+	recoveryIndex := len(trace.codexBodies) - 1
+	if followUp {
+		recoveryIndex--
+		require.True(t, trace.codexBodies[len(trace.codexBodies)-1].followUp)
+		require.True(t, trace.codexBodies[len(trace.codexBodies)-1].summary)
+		require.True(t, trace.codexBodies[len(trace.codexBodies)-1].pin)
+	}
+	resumed := trace.codexBodies[recoveryIndex]
 	require.True(t, resumed.summary)
 	require.True(t, resumed.pin)
 	require.True(t, resumed.user)
 	require.Equal(t, acceptedTool, resumed.toolCall)
 	require.Equal(t, acceptedTool, resumed.toolResult)
+	if acceptedTool {
+		require.True(t, trace.codexBodies[0].toolSchema, "the original authority must send the exact overflow_once function tool schema")
+		require.Equal(t, trace.codexBodies[0].toolSchemaJSON, resumed.toolSchemaJSON, "recovery must preserve the original overflow_once tool schema")
+	}
+}
+
+func overflowRecoverySSERejection(w http.ResponseWriter, kind string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	lifecycle := `{"type":"response.in_progress","response":{"id":"resp-overflow","object":"response","status":"in_progress","model":"gpt-5-codex","reasoning":{"effort":"high","summary":"auto"},"text":{"format":{"type":"text"},"verbosity":"medium"},"output":[],"usage":null}}`
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", lifecycle)
+	var failure string
+	switch kind {
+	case "response.failed":
+		failure = `{"type":"response.failed","response":{"id":"resp-overflow","object":"response","status":"failed","model":"gpt-5-codex","reasoning":{"effort":"high","summary":"auto"},"text":{"format":{"type":"text"},"verbosity":"medium"},"output":[],"usage":null,"error":{"code":"context_length_exceeded","message":"request exceeds context"}}}`
+	case "error-nested":
+		failure = `{"type":"error","error":{"code":"context_length_exceeded","message":"request exceeds context"}}`
+	case "error-flat":
+		failure = `{"type":"error","code":"context_length_exceeded","message":"request exceeds context"}`
+	default:
+		panic("unknown overflow rejection form")
+	}
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", failure)
 }
 
 func overflowRecoveryReply(w http.ResponseWriter, text string) {

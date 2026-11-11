@@ -12,7 +12,7 @@ The source metadata records a 922k maximum input against a 1.03m gate, documenti
 
 ## Current runtime recovery behavior
 
-The runtime implementation now includes a one-shot automatic recovery path; this is no longer classification-only. Recovery is eligible only for an exact certified Codex context-overflow HTTP 400 or an SSE `response.failed` context-overflow, and only when the failed response produced no output. Partial output, transport failures, and opaque or uncertified errors are not replayed.
+The runtime implementation now includes a one-shot automatic recovery path; this is no longer classification-only. Recovery is eligible only for an exact structured `context_length_exceeded` error certified before any output or usage (HTTP 400 or SSE `response.failed` or strictly guarded nested/flat `type=error` envelopes). Narrowly validated nested response lifecycle configuration metadata does not count as output; accepted or opaque output and any usage preclude recovery. Partial, opaque, or uncertified output, transport failures, and opaque or uncertified errors are not replayed.
 
 For an eligible failure, the runtime attempts a silent-prefix summary with the ordinary worker while retaining the same mailbox admission and OS session lock. Compaction preserves the context pin, original user message, and accepted tool-call tail. It then makes one continuation using the same original model and persisted history. An overflow on that continuation is terminal; there is no second recovery cycle.
 
