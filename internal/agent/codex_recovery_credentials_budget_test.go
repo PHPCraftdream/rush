@@ -26,8 +26,10 @@ import (
 
 const credentialRecoveryOverflow = `{"error":{"code":"context_length_exceeded","type":"invalid_request_error","message":"request exceeds context"}}`
 
-const credentialRecoveryMaxBody = 38 << 10
-const credentialRecoveryMaxRequests = 6
+const (
+	credentialRecoveryMaxBody     = 38 << 10
+	credentialRecoveryMaxRequests = 6
+)
 
 type credentialRecoveryFacts struct {
 	mu                                        sync.Mutex
@@ -187,8 +189,10 @@ func newCredentialRecoveryHarness(t *testing.T, acceptedTool bool) *credentialRe
 	operatorCfg := config.ProviderConfig{
 		ID: "operator-worker", Type: catwalk.TypeOpenAICompat, BaseURL: operatorServer.URL + "/v1", APIKey: "operator-fixture-key",
 		Network: &config.NetworkConfig{Proxy: config.ProxyNone},
-		Models: []catwalk.Model{{ID: "operator-worker-model", ContextWindow: 200000, DefaultMaxTokens: 1000,
-			CostPer1MIn: 1000, CostPer1MOut: 1000}},
+		Models: []catwalk.Model{{
+			ID: "operator-worker-model", ContextWindow: 200000, DefaultMaxTokens: 1000,
+			CostPer1MIn: 1000, CostPer1MOut: 1000,
+		}},
 	}
 	store.Config().Providers.Set(codexCfg.ID, codexCfg)
 	store.Config().Providers.Set(operatorCfg.ID, operatorCfg)
@@ -286,9 +290,13 @@ func credentialRecoverySet(worker, allowFallback bool, baseURL string) *Credenti
 		models[RoleWorker] = ModelChoice{Provider: "tenant-recovery", Model: "tenant-worker-model"}
 	}
 	return &CredentialSet{
-		Credentials: []Credential{{Provider: "tenant-recovery", Type: ProviderTypeOpenAICompat, APIKey: "tenant-fixture-key", BaseURL: baseURL,
-			Models: []CredentialModel{{ID: "tenant-smart-model", ContextWindow: 200000, DefaultMaxTokens: 1000},
-				{ID: "tenant-worker-model", ContextWindow: 200000, DefaultMaxTokens: 1000}}}},
+		Credentials: []Credential{{
+			Provider: "tenant-recovery", Type: ProviderTypeOpenAICompat, APIKey: "tenant-fixture-key", BaseURL: baseURL,
+			Models: []CredentialModel{
+				{ID: "tenant-smart-model", ContextWindow: 200000, DefaultMaxTokens: 1000},
+				{ID: "tenant-worker-model", ContextWindow: 200000, DefaultMaxTokens: 1000},
+			},
+		}},
 		Models: models, AllowConfiguredRoleFallback: allowFallback,
 	}
 }

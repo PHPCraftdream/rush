@@ -252,5 +252,7 @@ func TestCodexStreamFailureOneArgumentRemainsUncertified(t *testing.T) {
 	require.True(t, providerErr.IsContextTooLarge())
 }
 
-var _ contextRejectedBeforeOutput = (*safeContextRejection)(nil)
-var _ error = (*safeContextRejection)(nil)
+var (
+	_ contextRejectedBeforeOutput = (*safeContextRejection)(nil)
+	_ error                       = (*safeContextRejection)(nil)
+)

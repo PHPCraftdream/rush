@@ -37,7 +37,7 @@ is unsupported.`,
 	batchShowCmd = &cobra.Command{Use: "show <root-id|prefix>", Args: cobra.ExactArgs(1), RunE: batchShow, Long: `Show the current node tree for a batch root. This reads a live snapshot;
 an incomplete tree or unknown host status returns an error rather than a
 partial tree. Use --json for structured output.`}
-	batchAddCmd  = &cobra.Command{Use: "add <root-or-parent>", Args: cobra.ExactArgs(1), RunE: batchAdd, Long: `Add direct items to a batch from inside its owner process. This is
+	batchAddCmd = &cobra.Command{Use: "add <root-or-parent>", Args: cobra.ExactArgs(1), RunE: batchAdd, Long: `Add direct items to a batch from inside its owner process. This is
 owner-process-only: a separate rush CLI process cannot access the owner's
 runtime and cannot add items. The spec must contain batch items.`}
 	batchStopCmd = &cobra.Command{Use: "stop <root-id|node-id>", Args: cobra.ExactArgs(1), RunE: batchStop, Long: `Queue a request to stop a batch root or node. By default the result is
