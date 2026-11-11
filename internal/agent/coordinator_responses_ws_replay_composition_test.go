@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,6 +27,114 @@ import (
 
 const coordinatorReplayFirstPrompt = "Carry out the requested side effect, then answer the user."
 
+type coordinatorReplayTrace struct {
+	mu             sync.Mutex
+	modelEvents    []string
+	modelErrors    []error
+	ownerEvents    []string
+	ownerErrors    []error
+	joinedErrors   []error
+	peerEvents     []string
+	modelPairBuild atomic.Int32
+	ownerRuns      atomic.Int32
+}
+
+func (tr *coordinatorReplayTrace) recordModel(event string, err error) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	appendCoordinatorReplayEvent(&tr.modelEvents, event)
+	if err != nil && len(tr.modelErrors) < 4 {
+		tr.modelErrors = append(tr.modelErrors, err)
+	}
+}
+
+func (tr *coordinatorReplayTrace) recordOwner(event string, rawErr, joinedErr error) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	appendCoordinatorReplayEvent(&tr.ownerEvents, event)
+	if rawErr != nil && len(tr.ownerErrors) < 4 {
+		tr.ownerErrors = append(tr.ownerErrors, rawErr)
+	}
+	if joinedErr != nil && len(tr.joinedErrors) < 4 {
+		tr.joinedErrors = append(tr.joinedErrors, joinedErr)
+	}
+}
+
+func (tr *coordinatorReplayTrace) recordPeer(event string) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	appendCoordinatorReplayEvent(&tr.peerEvents, event)
+}
+
+func appendCoordinatorReplayEvent(events *[]string, event string) {
+	const maxEvents, maxEventBytes = 24, 1024
+	if len(*events) >= maxEvents {
+		return
+	}
+	if len(event) > maxEventBytes {
+		event = event[:maxEventBytes] + "…[truncated]"
+	}
+	*events = append(*events, event)
+}
+
+func (tr *coordinatorReplayTrace) snapshot() (modelEvents []string, modelErrors []error, ownerEvents []string, ownerErrors []error, joinedErrors []error, peerEvents []string) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	return append([]string(nil), tr.modelEvents...), append([]error(nil), tr.modelErrors...),
+		append([]string(nil), tr.ownerEvents...), append([]error(nil), tr.ownerErrors...),
+		append([]error(nil), tr.joinedErrors...), append([]string(nil), tr.peerEvents...)
+}
+
+func coordinatorReplayErrorTree(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	const maxTreeBytes = 4096
+	var lines []string
+	var visit func(error, string, int)
+	visit = func(current error, prefix string, depth int) {
+		if current == nil || depth > 8 || len(lines) >= 24 {
+			return
+		}
+		details := fmt.Sprintf("%s: %v", fmt.Sprintf("%T", current), current)
+		if guard, ok := current.(interface{ NoReplay() bool }); ok {
+			details += fmt.Sprintf(" NoReplay=%t", guard.NoReplay())
+		}
+		if state, ok := current.(interface {
+			State() nettransport.ResponsesWSSendState
+		}); ok {
+			details += fmt.Sprintf(" State=%s", state.State())
+		}
+		if retrySafe, ok := current.(interface{ RetrySafe() bool }); ok {
+			details += fmt.Sprintf(" RetrySafe=%t", retrySafe.RetrySafe())
+		}
+		if providerErr, ok := current.(*fantasy.ProviderError); ok {
+			details += fmt.Sprintf(" StatusCode=%d retryable=%t coordinatorClass=%d", providerErr.StatusCode, providerErr.IsRetryable(), classifyProviderError(providerErr))
+		}
+		lines = append(lines, prefix+coordinatorReplayDiagnosticText(details, 2048))
+		if multi, ok := current.(interface{ Unwrap() []error }); ok {
+			for index, child := range multi.Unwrap() {
+				visit(child, fmt.Sprintf("%s  [%d] ", prefix, index), depth+1)
+			}
+			return
+		}
+		if single, ok := current.(interface{ Unwrap() error }); ok {
+			visit(single.Unwrap(), prefix+"  -> ", depth+1)
+		}
+	}
+	visit(err, "", 0)
+	return coordinatorReplayDiagnosticText(strings.Join(lines, "\n"), maxTreeBytes)
+}
+
+func coordinatorReplayDiagnosticText(text string, maxBytes int) string {
+	text = strings.ReplaceAll(text, "local-only-test-key", "<redacted-api-key>")
+	text = strings.ReplaceAll(text, "refreshable-local-token", "<redacted-oauth-token>")
+	if len(text) > maxBytes {
+		return text[:maxBytes] + "…[truncated]"
+	}
+	return text
+}
+
 type coordinatorReplayCallLog struct {
 	frame []byte
 	path  string
@@ -33,18 +142,22 @@ type coordinatorReplayCallLog struct {
 
 type coordinatorReplayFailureModel struct {
 	fantasy.LanguageModel
-	syntheticStatus int
+	trace   *coordinatorReplayTrace
+	streams *atomic.Int32
 }
 
-func (m coordinatorReplayFailureModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
+func (m *coordinatorReplayFailureModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
+	streamNumber := m.streams.Add(1)
+	m.trace.recordModel(fmt.Sprintf("Stream #%d started model=%s/%s ctx_err=%v ctx_cause=%v", streamNumber, m.LanguageModel.Provider(), m.LanguageModel.Model(), ctx.Err(), context.Cause(ctx)), nil)
 	stream, err := m.LanguageModel.Stream(ctx, call)
 	if err != nil {
-		return nil, m.withSyntheticStatus(err)
+		m.trace.recordModel(fmt.Sprintf("Stream #%d returned startup error", streamNumber), err)
+		return nil, err
 	}
 	return func(yield func(fantasy.StreamPart) bool) {
 		for part := range stream {
 			if part.Type == fantasy.StreamPartTypeError {
-				part.Error = m.withSyntheticStatus(part.Error)
+				m.trace.recordModel(fmt.Sprintf("Stream #%d yielded error part ctx_err=%v ctx_cause=%v", streamNumber, ctx.Err(), context.Cause(ctx)), part.Error)
 			}
 			if !yield(part) || part.Type == fantasy.StreamPartTypeError {
 				return
@@ -53,22 +166,40 @@ func (m coordinatorReplayFailureModel) Stream(ctx context.Context, call fantasy.
 	}, nil
 }
 
-func (m coordinatorReplayFailureModel) withSyntheticStatus(err error) error {
-	if m.syntheticStatus == 0 || err == nil {
-		return err
-	}
-	// This synthetic provider status exists only to exercise downstream retry-owner vetoes.
-	// It does not reinterpret the server's actual 400 missing-parent fixture.
-	return errors.Join(&fantasy.ProviderError{StatusCode: m.syntheticStatus, Message: "synthetic owner-path status"}, err)
+type coordinatorReplayOwnerAgent struct {
+	SessionAgent
+	trace           *coordinatorReplayTrace
+	syntheticStatus int
 }
 
-func coordinatorReplayPeer(t *testing.T, ctx context.Context, noProgress bool) (*httptest.Server, <-chan coordinatorReplayCallLog, *atomic.Int32, *atomic.Int32, *atomic.Int32) {
+func (a *coordinatorReplayOwnerAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+	run := a.trace.ownerRuns.Add(1)
+	modelIdentity := "<unpinned>"
+	if call.SmartModel != nil {
+		modelIdentity = call.SmartModel.ModelCfg.Provider + "/" + call.SmartModel.ModelCfg.Model
+	}
+	a.trace.recordOwner(fmt.Sprintf("SessionAgent.Run #%d started model=%s ctx_err=%v ctx_cause=%v", run, modelIdentity, ctx.Err(), context.Cause(ctx)), nil, nil)
+	result, rawErr := a.SessionAgent.Run(ctx, call)
+	joinedErr := rawErr
+	if rawErr != nil && a.syntheticStatus != 0 {
+		// Injection here keeps the joined status outside Fantasy's retry
+		// classifier. Otherwise, a synthetic 5xx can be retried and a canceled
+		// retry wait can return only ctx.Err(), losing the bridge error. The
+		// actual bridge error remains the coordinator-owner input.
+		joinedErr = errors.Join(&fantasy.ProviderError{StatusCode: a.syntheticStatus, Message: "synthetic owner-path status"}, rawErr)
+	}
+	a.trace.recordOwner(fmt.Sprintf("SessionAgent.Run #%d returned raw=%t syntheticStatus=%d ctx_err=%v ctx_cause=%v", run, rawErr != nil, a.syntheticStatus, ctx.Err(), context.Cause(ctx)), rawErr, joinedErr)
+	return result, joinedErr
+}
+
+func coordinatorReplayPeer(t *testing.T, ctx context.Context, noProgress bool, trace *coordinatorReplayTrace) (*httptest.Server, <-chan coordinatorReplayCallLog, *atomic.Int32, *atomic.Int32, *atomic.Int32) {
 	t.Helper()
 	calls := make(chan coordinatorReplayCallLog, 8)
 	var upgrades, httpInference, wsRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !websocket.IsWebSocketUpgrade(r) {
 			httpInference.Add(1)
+			trace.recordPeer(fmt.Sprintf("unexpected HTTP inference %s %s", r.Method, r.URL.Path))
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusBadGateway)
 			_, _ = w.Write([]byte(`data: {"error":{"message":"unexpected bounded local HTTP inference"}}` + "\n\n"))
@@ -77,12 +208,15 @@ func coordinatorReplayPeer(t *testing.T, ctx context.Context, noProgress bool) (
 		upgrades.Add(1)
 		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
 		if err != nil {
+			trace.recordPeer(fmt.Sprintf("websocket upgrade error: %v", err))
 			return
 		}
+		trace.recordPeer("websocket upgrade accepted")
 		defer conn.Close()
 		for {
 			_, frame, readErr := conn.ReadMessage()
 			if readErr != nil {
+				trace.recordPeer(fmt.Sprintf("websocket read error after %d requests: %v", wsRequests.Load(), readErr))
 				return
 			}
 			n := wsRequests.Add(1)
@@ -96,11 +230,14 @@ func coordinatorReplayPeer(t *testing.T, ctx context.Context, noProgress bool) (
 					path = "second-no-progress-turn"
 				}
 			}
+			trace.recordPeer(fmt.Sprintf("websocket request #%d path=%s frame=%s", n, path, string(frame)))
 			select {
 			case calls <- coordinatorReplayCallLog{frame: append([]byte(nil), frame...), path: path}:
 			case <-ctx.Done():
+				trace.recordPeer(fmt.Sprintf("peer call log dropped on context completion: %v", ctx.Err()))
 				return
 			default:
+				trace.recordPeer("peer call log channel was full; request frame retained only in trace")
 			}
 			switch n {
 			case 1:
@@ -111,8 +248,10 @@ func coordinatorReplayPeer(t *testing.T, ctx context.Context, noProgress bool) (
 					`{"type":"response.completed","response":{"id":"resp-real-first","status":"completed","output":[{"type":"function_call","id":"fc-real-side-effect","call_id":"call-real-side-effect","name":"record_side_effect","arguments":"{}"}]}}`,
 				} {
 					if err := conn.WriteMessage(websocket.TextMessage, []byte(event)); err != nil {
+						trace.recordPeer(fmt.Sprintf("websocket event write failed for request #%d event=%s: %v", n, event, err))
 						return
 					}
+					trace.recordPeer(fmt.Sprintf("websocket event written for request #%d: %s", n, event))
 				}
 			case 2:
 				// This is a full-history fallback request without previous_response_id, not a legitimate parent delta.
@@ -130,13 +269,16 @@ func coordinatorReplayPeer(t *testing.T, ctx context.Context, noProgress bool) (
 				}
 				for _, event := range events {
 					if err := conn.WriteMessage(websocket.TextMessage, []byte(event)); err != nil {
+						trace.recordPeer(fmt.Sprintf("websocket event write failed for request #%d event=%s: %v", n, event, err))
 						return
 					}
+					trace.recordPeer(fmt.Sprintf("websocket event written for request #%d: %s", n, event))
 				}
 				return
 			default:
 				// Any buggy automatic replay gets a bounded terminal failure, never a hanging peer.
 				_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","status":400,"error":{"type":"invalid_request_error","code":"fixture_unexpected_extra_request","message":"unexpected extra inference attempt"}}`))
+				trace.recordPeer("unexpected extra WebSocket request received; bounded fixture error sent")
 				return
 			}
 		}
@@ -183,12 +325,56 @@ func TestCoordinatorRunResponsesReplayFailureComposition(t *testing.T) {
 		{name: "no progress joined 503 vetoes blind replay", syntheticStatus: http.StatusServiceUnavailable, noProgress: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			trace := &coordinatorReplayTrace{}
+			var modelStreams, toolCalls, refreshCalls atomic.Int32
+			var runCtx context.Context
+			var runErr error
+			var modelName, providerName string
+			var providerTokenExpired bool
+			var upgrades, httpInference, wsRequests *atomic.Int32
+			defer func() {
+				if !t.Failed() {
+					return
+				}
+				modelEvents, modelErrors, ownerEvents, ownerErrors, joinedErrors, peerEvents := trace.snapshot()
+				ctxErr, ctxCause := error(nil), error(nil)
+				if runCtx != nil {
+					ctxErr = runCtx.Err()
+					ctxCause = context.Cause(runCtx)
+				}
+				var upgradeCount, httpCount, requestCount int32
+				if upgrades != nil {
+					upgradeCount = upgrades.Load()
+				}
+				if httpInference != nil {
+					httpCount = httpInference.Load()
+				}
+				if wsRequests != nil {
+					requestCount = wsRequests.Load()
+				}
+				t.Logf("replay diagnostic: case=%q synthetic_status=%d runErr=%s\nrunErr tree:\n%s\ncontext err=%v cause=%v model=%s/%s provider_token_expired=%t model_pair_builds=%d owner_runs=%d model_streams=%d tool_calls=%d refresh_calls=%d websocket_upgrades=%d websocket_requests=%d http_inference=%d",
+					tc.name, tc.syntheticStatus, coordinatorReplayDiagnosticText(fmt.Sprintf("%T %+v", runErr, runErr), 8192), coordinatorReplayErrorTree(runErr), ctxErr, ctxCause,
+					providerName, modelName, providerTokenExpired, trace.modelPairBuild.Load(), trace.ownerRuns.Load(), modelStreams.Load(), toolCalls.Load(), refreshCalls.Load(), upgradeCount, requestCount, httpCount)
+				for i, err := range modelErrors {
+					t.Logf("model boundary error[%d] tree:\n%s", i, coordinatorReplayErrorTree(err))
+				}
+				for i, err := range ownerErrors {
+					t.Logf("real SessionAgent.Run error[%d] tree:\n%s", i, coordinatorReplayErrorTree(err))
+				}
+				for i, err := range joinedErrors {
+					t.Logf("synthetic outer owner error[%d] tree:\n%s", i, coordinatorReplayErrorTree(err))
+				}
+				t.Logf("model events: %s", coordinatorReplayDiagnosticText(strings.Join(modelEvents, " | "), 8192))
+				t.Logf("real owner events: %s", coordinatorReplayDiagnosticText(strings.Join(ownerEvents, " | "), 8192))
+				t.Logf("peer events: %s", coordinatorReplayDiagnosticText(strings.Join(peerEvents, " | "), 8192))
+			}()
 			env := testEnv(t)
 			coord := newWorkerToolTestCoordinator(t, env, false)
 			coord.cfg.Config().Options.Network = &config.NetworkConfig{Proxy: config.ProxyNone}
 			coord.cfg.Config().Options.ResponsesTransport = config.ResponsesTransportAuto
 			oneRetry := 1
 			coord.cfg.Config().Options.StreamStallRetries = &oneRetry
+			require.Equal(t, 1, *coord.cfg.Config().Options.StreamStallRetries, "coordinator retry budget must remain positive")
 			coord.cfg.Config().Options.DisableAutoSummarize = true
 			providerCfg, ok := coord.cfg.Config().Providers.Get("smart-provider")
 			require.True(t, ok)
@@ -205,26 +391,26 @@ func TestCoordinatorRunResponsesReplayFailureComposition(t *testing.T) {
 			coord.cfg.Config().Models[config.SelectedModelTypeFast] = config.SelectedModel{Provider: "openai", Model: "gpt-5.4"}
 
 			ctx, cancel := context.WithTimeout(context.WithValue(t.Context(), cliprovider.SessionIDContextKey, "responses-replay"), 5*time.Second)
-			defer cancel()
-			server, peerCalls, upgrades, httpInference, wsRequests := coordinatorReplayPeer(t, ctx, tc.noProgress)
-			defer server.Close()
+			t.Cleanup(cancel)
+			server, peerCalls, upgradeCounter, httpCounter, requestCounter := coordinatorReplayPeer(t, ctx, tc.noProgress, trace)
+			upgrades, httpInference, wsRequests = upgradeCounter, httpCounter, requestCounter
+			t.Cleanup(server.Close)
 			baseModel := coordinatorReplayPublicModel(t, coord, server)
-			var modelStreams, toolCalls, refreshCalls atomic.Int32
-			// The synthetic 503/401 classification is joined to the unchanged real bridge error only at this model wrapper.
-			model := coordinatorReplayFailureModel{LanguageModel: &coordinatorReplayCountingModel{LanguageModel: baseModel, streams: &modelStreams}, syntheticStatus: tc.syntheticStatus}
+			model := &coordinatorReplayFailureModel{LanguageModel: baseModel, trace: trace, streams: &modelStreams}
 			coord.modelPairBuilder = func(_ context.Context, _ *config.Config, smart, fast config.SelectedModel) (Model, Model, error) {
+				trace.modelPairBuild.Add(1)
+				trace.recordModel(fmt.Sprintf("modelPairBuilder smart=%s/%s fast=%s/%s", smart.Provider, smart.Model, fast.Provider, fast.Model), nil)
 				return Model{Model: model, CatwalkCfg: catwalk.Model{ID: smart.Model, Name: smart.Model, ContextWindow: 200000, DefaultMaxTokens: 2048}, ModelCfg: smart}, Model{Model: model, CatwalkCfg: catwalk.Model{ID: fast.Model, Name: fast.Model, ContextWindow: 200000, DefaultMaxTokens: 2048}, ModelCfg: fast}, nil
 			}
 
-			// The retry budget is deliberately positive and its backoff is tiny.
-			// NoReplay is checked both at shouldRetryTurn entry and again by
-			// classifyProviderError, so this exercises the effective owner fence
-			// without pretending removal of only the first check would replay.
+			// Add synthetic owner classification after the real SessionAgent/
+			// Fantasy retry boundary.
 			previousBackoff := streamStallRetryBaseBackoff
 			streamStallRetryBaseBackoff = time.Millisecond
 			t.Cleanup(func() { streamStallRetryBaseBackoff = previousBackoff })
 			coord.refreshOAuth2TokenFn = func(context.Context, config.ProviderConfig) error {
 				refreshCalls.Add(1)
+				trace.recordOwner("OAuth refresh callback invoked", nil, nil)
 				return nil
 			}
 			tool := fantasy.NewAgentTool("record_side_effect", "Record the requested local fixture side effect.", func(context.Context, struct{}, fantasy.ToolCall) (fantasy.ToolResponse, error) {
@@ -238,7 +424,7 @@ func TestCoordinatorRunResponsesReplayFailureComposition(t *testing.T) {
 			sessionAgent.streamIdleTimeout = time.Second
 			sessionAgent.streamWatchdogTick = 10 * time.Millisecond
 			sessionAgent.toolMaxDuration = time.Second
-			coord.currentAgent = sessionAgent
+			coord.currentAgent = &coordinatorReplayOwnerAgent{SessionAgent: sessionAgent, trace: trace, syntheticStatus: tc.syntheticStatus}
 			coord.driverHints = newBatchDriverHints()
 			coord.subAgentDrivers = newSubAgentDriverRegistry()
 			coord.skillTracker = skills.NewTracker(nil)
@@ -253,7 +439,7 @@ func TestCoordinatorRunResponsesReplayFailureComposition(t *testing.T) {
 			_, err = env.messages.Create(ctx, sess.ID, message.CreateMessageParams{Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: "prior answer"}, message.Finish{Reason: message.FinishReasonEndTurn}}})
 			require.NoError(t, err)
 
-			runCtx := ctx
+			runCtx = ctx
 			var callResult *CallResultRecorder
 			if tc.noProgress {
 				callResult = NewCallResultRecorder()
@@ -261,9 +447,19 @@ func TestCoordinatorRunResponsesReplayFailureComposition(t *testing.T) {
 			}
 			pinned, err := coord.resolveSessionModelsInternal(ctx, sess.ID, false)
 			require.NoError(t, err)
-			_, runErr := coord.runInternal(runCtx, sess.ID, coordinatorReplayFirstPrompt, pinned)
+			modelName, providerName = pinned.smart.ModelCfg.Model, pinned.smart.ModelCfg.Provider
+			providerCfg, providerTokenExists := coord.cfg.Config().Providers.Get(providerName)
+			providerTokenExpired = providerTokenExists && providerCfg.OAuthToken != nil && providerCfg.OAuthToken.IsExpired()
+			_, runErr = coord.runInternal(runCtx, sess.ID, coordinatorReplayFirstPrompt, pinned)
 			require.Error(t, runErr)
-			require.True(t, responsesWSReplayForbidden(runErr), "the actual public bridge send must surface the replay guard")
+			_, modelBoundaryErrors, _, ownerErrors, _, _ := trace.snapshot()
+			require.Len(t, modelBoundaryErrors, 1, "the real public bridge error must reach the model boundary once")
+			require.True(t, responsesWSReplayForbidden(modelBoundaryErrors[0]), "the bridge error must carry NoReplay before coordinator owner classification")
+			require.Len(t, ownerErrors, 1, "the real SessionAgent owner must return exactly one raw error")
+			require.True(t, responsesWSReplayForbidden(ownerErrors[0]), "the actual SessionAgent error must preserve the bridge NoReplay guard")
+			require.EqualValues(t, 1, trace.ownerRuns.Load(), "the coordinator must not invoke its SessionAgent owner again")
+			require.True(t, responsesWSReplayForbidden(runErr), "the joined coordinator error must preserve the real bridge replay guard")
+			require.ErrorIs(t, runErr, ownerErrors[0], "the joined coordinator error must retain the unchanged real owner error")
 			if tc.noProgress {
 				// A plain 503 is retryable; the joined live bridge NoReplay error must veto it.
 				require.Equal(t, classTransient, classifyProviderError(&fantasy.ProviderError{StatusCode: http.StatusServiceUnavailable}))
@@ -272,8 +468,12 @@ func TestCoordinatorRunResponsesReplayFailureComposition(t *testing.T) {
 			}
 			if tc.syntheticStatus != 0 {
 				var syntheticErr *fantasy.ProviderError
-				require.ErrorAs(t, runErr, &syntheticErr, "synthetic classification must remain joined to the actual bridge error")
+				require.ErrorAs(t, runErr, &syntheticErr, "synthetic status must be joined after the real SessionAgent error returns")
 				require.Equal(t, tc.syntheticStatus, syntheticErr.StatusCode)
+				var rawProviderErr *fantasy.ProviderError
+				if errors.As(ownerErrors[0], &rawProviderErr) {
+					require.NotEqual(t, tc.syntheticStatus, rawProviderErr.StatusCode, "synthetic provider classification must not enter Fantasy's model/step retry boundary")
+				}
 			}
 			if tc.syntheticStatus == http.StatusUnauthorized {
 				require.Equal(t, int32(0), refreshCalls.Load(), "synthetic joined 401 must not trigger the real refresh callback")
@@ -328,8 +528,10 @@ func TestCoordinatorRunResponsesReplayFailureComposition(t *testing.T) {
 			// The pinned SDK serializer has no Responses output item IDs on its replayed function call,
 			// so this real history is full-frame fallback—not a fabricated delta-compatible transcript.
 			require.Contains(t, string(second.frame), `"type":"function_call_output"`)
+			require.Greater(t, ProviderMaxRetries, 0, "Fantasy's provider retry budget must remain enabled")
 			require.Equal(t, int32(1), toolCalls.Load(), "real Fantasy must execute the tool call once before the failing continuation request")
 			require.Equal(t, int32(2), modelStreams.Load(), "only two bounded inference streams are expected")
+			require.Equal(t, int32(1), trace.ownerRuns.Load(), "one coordinator owner run, without coordinator retry")
 			require.Equal(t, int32(2), wsRequests.Load(), "first tool turn plus one continuation request; no coordinator retry")
 			require.Equal(t, int32(1), upgrades.Load(), "the accepted first exchange reuses one local WebSocket")
 			require.Zero(t, httpInference.Load(), "no inference may fall back to HTTP")
@@ -392,14 +594,4 @@ func TestCoordinatorRunResponsesReplayFailureComposition(t *testing.T) {
 			}
 		})
 	}
-}
-
-type coordinatorReplayCountingModel struct {
-	fantasy.LanguageModel
-	streams *atomic.Int32
-}
-
-func (m *coordinatorReplayCountingModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
-	m.streams.Add(1)
-	return m.LanguageModel.Stream(ctx, call)
 }
