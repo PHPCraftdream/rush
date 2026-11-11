@@ -203,7 +203,7 @@ func newCodexOverflowRun(t *testing.T, title string, tools []fantasy.AgentTool, 
 	f.sa.SetModels(model, model)
 	pinned := &resolvedOverrides{smart: model, fast: model, providerCfg: providerConfig}
 
-	_, err := f.env.messages.Create(t.Context(), f.sessID, message.CreateMessageParams{
+	_, err = f.env.messages.Create(t.Context(), f.sessID, message.CreateMessageParams{
 		Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "Earlier request: return a concise report about the scheduled update."}},
 	})
 	require.NoError(t, err)
