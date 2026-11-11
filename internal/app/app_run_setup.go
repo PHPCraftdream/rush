@@ -229,7 +229,7 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 	})
 
 	// Per-call credentials (sdk.Client.RunWithCredentials): validate the
-	// bundle before any session work so a malformed set fails fast, and
+	// bundle and selected custom-role coverage before any session work, and
 	// keep the credentials-capable coordinator for the run handoff below.
 	var credsRunner credentialsRunner
 	if req.Credentials != nil {
@@ -241,6 +241,12 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 			return nil, cancel, nil, fmt.Errorf("per-call credentials are not supported by this coordinator")
 		}
 		credsRunner = cr
+		if roleContract := overrides.roleContract; roleContract != nil && roleContract.Name != "" {
+			if _, covered := req.Credentials.Models[agent.Role(roleContract.Name)]; !covered &&
+				!req.Credentials.AllowConfiguredRoleFallback {
+				return nil, cancel, nil, fmt.Errorf("credential set does not cover requested custom role %q", roleContract.Name)
+			}
+		}
 	}
 
 	smartOverride, fastOverride, err := app.resolveModelOverridesForNonInteractive(smartModel, fastModel)
