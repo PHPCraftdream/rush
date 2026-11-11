@@ -148,7 +148,7 @@ type coordinatorReplayFailureModel struct {
 
 func (m *coordinatorReplayFailureModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
 	streamNumber := m.streams.Add(1)
-	m.trace.recordModel(fmt.Sprintf("Stream #%d started model=%s/%s ctx_err=%v ctx_cause=%v", streamNumber, m.LanguageModel.Provider(), m.LanguageModel.Model(), ctx.Err(), context.Cause(ctx)), nil)
+	m.trace.recordModel(fmt.Sprintf("Stream #%d started model=%s/%s ctx_err=%v ctx_cause=%v", streamNumber, m.Provider(), m.Model(), ctx.Err(), context.Cause(ctx)), nil)
 	stream, err := m.LanguageModel.Stream(ctx, call)
 	if err != nil {
 		m.trace.recordModel(fmt.Sprintf("Stream #%d returned startup error", streamNumber), err)
