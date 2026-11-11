@@ -288,7 +288,7 @@ jq -r '.error' "$out"         # error.message if non-success
 
 For safe retry, require physical process exit and no live or unknown batch scope; inspect current roots/nodes rather than relying on session-only `why`/`watch` or `end_turn`. Resume in the original checkout with the original role and session. `rush sessions compact` has two meanings: without a session argument it runs SQLite `VACUUM`; with a session ID it summarizes that session's model history.
 
-Model-context compaction summarizes existing session history; it is distinct from SQLite maintenance and from summarization that may happen during a normal turn. For the explicit session command and its safeguards, see [session compaction](docs/sessions-compact.md); for lifecycle context, see [session operations](docs/session-operations.md).
+Model-context compaction summarizes existing session history, distinct from SQLite maintenance. In an ordinary direct Codex run/resume, only an exact structured `context_length_exceeded` certified before any output may trigger one silent-prefix summary and continuation in the same session; partial, opaque, uncertified output, transport errors, and NoReplay-fenced failures are never replayed. See [session operations](docs/session-operations.md) for recovery limits and [session compaction](docs/sessions-compact.md) for the explicit command.
 
 The batch controls identify work directly. `batch_run` returns the batch
 `root_id`; `batch_status` reports the root and its task `node_id`s.
