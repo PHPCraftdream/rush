@@ -78,7 +78,6 @@ func TestToolPolicySnapshotIsImmutableOnWriteAndRead(t *testing.T) {
 	allowed := []string{"view"}
 	ctx := WithToolPolicy(context.Background(), ToolPolicy{Allowed: allowed, Constrained: true})
 	allowed[0] = "bash"
-	allowed = append(allowed, "todos")
 
 	policy, ok := ToolPolicyFrom(ctx)
 	require.True(t, ok)
