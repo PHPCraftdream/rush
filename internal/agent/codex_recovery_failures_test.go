@@ -79,6 +79,7 @@ type recoveryFailureTrace struct {
 	bodyHashes       []string
 	codexCount       atomic.Int32
 	workerCount      atomic.Int32
+	transportHijack  atomic.Bool
 	workerModel      string
 	summaryPointer   bool
 	pinnedHash       string
@@ -220,9 +221,20 @@ func newRecoveryFailureHarness(t *testing.T, workerMode, codexMode string) *reco
 		case "partial-stream":
 			stage, status = "codex-partial-stream", http.StatusOK
 		case "transport-failure":
-			stage, status = "codex-transport-failure", 0
+			if call == 1 {
+				stage, status = "codex-transport-failure", 0
+			} else {
+				stage, status = "codex-terminal-http-400", http.StatusBadRequest
+			}
+		}
+		if call > 2 && h.codexMode == "transport-failure" {
+			stage, status = "codex-request-ceiling", http.StatusPaymentRequired
 		}
 		h.trace.record(stage, recoveryFailureRequestModel(body), body, status)
+		if call > 2 && h.codexMode == "transport-failure" {
+			http.Error(w, "bounded fixture request ceiling", http.StatusPaymentRequired)
+			return
+		}
 		if call > 5 {
 			http.Error(w, "bounded fixture request ceiling", http.StatusPaymentRequired)
 			return
@@ -237,15 +249,24 @@ func newRecoveryFailureHarness(t *testing.T, workerMode, codexMode string) *reco
 			_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial output\"}\n\n")
 			_, _ = io.WriteString(w, "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"context_length_exceeded\",\"message\":\"request exceeds context\"}}}\n\n")
 		case "transport-failure":
-			hijacker, ok := w.(http.Hijacker)
-			if ok {
-				conn, _, err := hijacker.Hijack()
-				if err == nil {
-					_ = conn.Close()
+			if call == 1 {
+				hijacker, ok := w.(http.Hijacker)
+				if !ok {
+					http.Error(w, "fixture cannot hijack transport", http.StatusBadGateway)
+					return
 				}
+				conn, _, err := hijacker.Hijack()
+				if err != nil {
+					http.Error(w, "fixture cannot hijack transport", http.StatusBadGateway)
+					return
+				}
+				_ = conn.Close()
+				h.trace.transportHijack.Store(true)
 				return
 			}
-			http.Error(w, "fixture transport interruption", http.StatusBadGateway)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"code":"invalid_prompt","message":"fixture terminal transport control"}}`)
 		default:
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
@@ -515,7 +536,7 @@ func TestCodexRecoveryNoReplayMarkerStopsOtherwiseSafeHTTPRecovery(t *testing.T)
 }
 
 func TestCodexRecoveryOpaqueOrPartialFailureNeverStartsWorker(t *testing.T) {
-	for _, codexMode := range []string{"opaque-http", "partial-stream", "transport-failure"} {
+	for _, codexMode := range []string{"opaque-http", "partial-stream"} {
 		t.Run(codexMode, func(t *testing.T) {
 			h := newRecoveryFailureHarness(t, "success", codexMode)
 			before := recoveryFailureSnapshot(t, h.f)
@@ -528,6 +549,103 @@ func TestCodexRecoveryOpaqueOrPartialFailureNeverStartsWorker(t *testing.T) {
 			requireNoRecoverySummary(t, h.f)
 		})
 	}
+}
+
+func TestCodexRecoveryTransportRetryNeverStartsWorker(t *testing.T) {
+	h := newRecoveryFailureHarness(t, "success", "transport-failure")
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer cancel()
+	const seededCallID = "call_transport_seed"
+	seededAssistant, err := h.f.env.messages.Create(ctx, h.f.sessID, message.CreateMessageParams{
+		Role: message.Assistant,
+		Parts: []message.ContentPart{
+			message.ToolCall{ID: seededCallID, Name: "overflow_once", Input: `{}`, Finished: true},
+		},
+	})
+	require.NoError(t, err)
+	seededAssistant.AddFinish(message.FinishReasonToolUse, "", "")
+	require.NoError(t, h.f.env.messages.Update(ctx, seededAssistant))
+	seededResult, err := h.f.env.messages.Create(ctx, h.f.sessID, message.CreateMessageParams{
+		Role: message.Tool,
+		Parts: []message.ContentPart{
+			message.ToolResult{ToolCallID: seededCallID, Name: "overflow_once", Content: "seeded tool result"},
+		},
+	})
+	require.NoError(t, err)
+	tool := &overflowRecoveryTool{text: "must never execute"}
+	h.f.sa.SetTools([]fantasy.AgentTool{tool})
+
+	before := recoveryFailureSnapshot(t, h.f)
+	beforeRows, err := h.f.env.messages.List(ctx, h.f.sessID)
+	require.NoError(t, err)
+	beforeMessages := make(map[string]message.Message, len(beforeRows))
+	for _, row := range beforeRows {
+		beforeMessages[row.ID] = row
+	}
+	beforeSeeded := map[string]string{seededAssistant.ID: seededAssistant.FullText(), seededResult.ID: seededResult.FullText()}
+	err = h.execute(t, "Report the scheduled work briefly.")
+	require.Error(t, err)
+	recordRecoverySummaryPointer(t, h)
+	require.EqualValues(t, 2, h.trace.codexCount.Load(), "the terminal fixture response must bound the retry")
+	require.True(t, h.trace.transportHijack.Load(), "first request must fail by hijacking and closing the connection")
+	require.Zero(t, h.trace.workerCount.Load(), "a transport failure is not a certified context rejection")
+	var providerErr *fantasy.ProviderError
+	require.ErrorAs(t, err, &providerErr)
+	require.Equal(t, http.StatusBadRequest, providerErr.StatusCode)
+	require.False(t, providerErr.IsContextTooLarge())
+	require.Contains(t, providerErr.Message, "fixture terminal transport control")
+
+	h.trace.mu.Lock()
+	stages := append([]string(nil), h.trace.stages...)
+	statuses := append([]int(nil), h.trace.statuses...)
+	models := append([]string(nil), h.trace.models...)
+	bodyBytes := append([]int(nil), h.trace.bodyBytes...)
+	bodyHashes := append([]string(nil), h.trace.bodyHashes...)
+	h.trace.mu.Unlock()
+	require.Equal(t, []string{"codex-transport-failure", "codex-terminal-http-400"}, stages)
+	require.Equal(t, []int{0, http.StatusBadRequest}, statuses)
+	require.Equal(t, []string{"gpt-5-codex", "gpt-5-codex"}, models)
+	require.Equal(t, bodyBytes[0], bodyBytes[1])
+	require.Equal(t, bodyHashes[0], bodyHashes[1])
+	requireRecoveryHistoryPreserved(t, before, recoveryFailureSnapshot(t, h.f))
+	requireNoRecoverySummary(t, h.f)
+
+	rows, err := h.f.env.messages.List(t.Context(), h.f.sessID)
+	require.NoError(t, err)
+	afterMessages := make(map[string]message.Message, len(rows))
+	for _, row := range rows {
+		afterMessages[row.ID] = row
+	}
+	for id, original := range beforeMessages {
+		got, ok := afterMessages[id]
+		require.True(t, ok, "original message %s remains", recoveryFailureHash(id))
+		require.Equal(t, original.FullText(), got.FullText())
+		require.Equal(t, original.Pinned, got.Pinned)
+	}
+	seededFound := make(map[string]string, len(beforeSeeded))
+	toolCalls, toolResults := 0, 0
+	for _, row := range rows {
+		for _, call := range row.ToolCalls() {
+			toolCalls++
+			require.Equal(t, seededCallID, call.ID)
+		}
+		for _, result := range row.ToolResults() {
+			toolResults++
+			require.Equal(t, seededCallID, result.ToolCallID)
+		}
+		if row.ID == seededAssistant.ID {
+			seededFound[row.ID] = row.FullText()
+			require.Equal(t, seededAssistant.ToolCalls(), row.ToolCalls(), "seeded accepted tool call remains unchanged")
+		}
+		if row.ID == seededResult.ID {
+			seededFound[row.ID] = row.FullText()
+			require.Equal(t, seededResult.ToolResults(), row.ToolResults(), "seeded tool result remains unchanged")
+		}
+	}
+	require.Equal(t, 1, toolCalls, "failed requests must not add a tool call")
+	require.Equal(t, 1, toolResults, "failed requests must not add a tool result")
+	require.Equal(t, beforeSeeded, seededFound, "seeded completed tool exchange remains unchanged")
+	require.Zero(t, tool.calls.Load(), "the configured tool must not execute")
 }
 
 func TestCodexRecoverySafeHTTPRejectionFollowsOverlargeOriginalRequest(t *testing.T) {
