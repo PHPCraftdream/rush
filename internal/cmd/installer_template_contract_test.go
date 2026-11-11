@@ -157,6 +157,54 @@ func TestInstalledRushTemplatesPreserveLivenessAndCallerPolicyContract(t *testin
 	}
 }
 
+func TestInstalledFallbackGuidanceDistinguishesContextCapacityFromQuota(t *testing.T) {
+	temp := t.TempDir()
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(temp, "global-data"))
+	t.Setenv("RUSH_GLOBAL_CONFIG", filepath.Join(temp, "global-config"))
+	t.Setenv("HOME", filepath.Join(temp, "home"))
+	t.Setenv("USERPROFILE", filepath.Join(temp, "userprofile"))
+
+	cases := []struct {
+		name    string
+		path    string
+		install func(root string) error
+	}{
+		{name: "claude", path: filepath.Join(".claude", "commands", "rush-fallback.md"), install: func(root string) error {
+			return installClaudeCommands(filepath.Join(root, ".claude", "commands"))
+		}},
+		{name: "codex", path: filepath.Join("rush-fallback", "SKILL.md"), install: installCodexSkills},
+		{name: "gemini", path: "rush-fallback.toml", install: installGeminiCommands},
+		{name: "grok", path: filepath.Join("rush-fallback", "SKILL.md"), install: installGrokSkills},
+		{name: "qwen", path: "rush-fallback.md", install: installQwenCommands},
+		{name: "opencode", path: "rush-fallback.md", install: func(root string) error {
+			return installMarkdownCommands(root, skillTargetOpenCode)
+		}},
+		{name: "omp", path: "rush-fallback.md", install: func(root string) error {
+			return installMarkdownCommands(root, skillTargetOmp)
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := filepath.Join(temp, tc.name)
+			require.NoError(t, tc.install(root))
+			fallback := readTemplateFixture(t, filepath.Join(root, tc.path))
+			require.Contains(t, fallback, "A context-capacity overflow is NOT account quota exhaustion and does not arm or activate fallback.")
+			require.Contains(t, fallback, "Follow `/rush`'s bounded context recovery or its reported refusal; do not route around terminal recovery.")
+			require.NotContains(t, fallback, `"context window exceeded"`)
+			require.NotContains(t, fallback, `"quota exceeded"`)
+
+			if tc.name == "claude" {
+				require.Contains(t, fallback, "provider explicitly reports account quota exhaustion")
+				require.Contains(t, fallback, "is in peak hours (")
+				require.Contains(t, fallback, "rush-fallback state (persistent — do not complete)")
+				require.Contains(t, fallback, "CronCreate")
+				require.Contains(t, fallback, "Only `/rush-fallback clear` ends it.")
+			}
+		})
+	}
+}
+
 func TestInstalledWrushAndWcrushRespectParentOwnershipAndCIOnly(t *testing.T) {
 	temp := t.TempDir()
 	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(temp, "global-data"))
