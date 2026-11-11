@@ -20,29 +20,40 @@ import (
 var (
 	batchCmd    = &cobra.Command{Use: "batch", Short: "Run and inspect durable job batches"}
 	batchRunCmd = &cobra.Command{
-		Use: "run", Args: cobra.NoArgs, RunE: batchRun, Long: `Run a batch spec (JSON file or standard input) in this process.
+		Use: "run", Args: cobra.NoArgs, RunE: batchRun, Long: `Run a batch spec (JSON or Ktav, from a file or standard input) in this
+process. A .ktav file is parsed as Ktav; standard input is parsed as JSON
+when it is a JSON document, otherwise as Ktav.
 
 The batch runs standalone and unattended: the owner session has no
 answering surface, so agent leaves are submitted WITHOUT a held-question
 answer route. ask_question is not advertised to them and any stale or
-forged ask call is rejected without a hold or a notice.
+forged ask call is rejected without a hold or a notice. If tasks need an
+answerable question route, use the served intake (rush api batch run / POST
+/batches) and answer with rush api batch answer.
 
-Batches whose questions must be answerable go through the served intake
-(rush api batch run / POST /batches) and are answered with
-rush api batch answer; a held question stops the wait with exit code 6.`,
+This command waits for the batch. There is no detached execution; --detach
+is unsupported.`,
 	}
-	batchShowCmd = &cobra.Command{Use: "show <root-id|prefix>", Args: cobra.ExactArgs(1), RunE: batchShow}
-	batchAddCmd  = &cobra.Command{Use: "add <root-or-parent>", Args: cobra.ExactArgs(1), RunE: batchAdd}
-	batchStopCmd = &cobra.Command{Use: "stop <root-id|node-id>", Args: cobra.ExactArgs(1), RunE: batchStop}
+	batchShowCmd = &cobra.Command{Use: "show <root-id|prefix>", Args: cobra.ExactArgs(1), RunE: batchShow, Long: `Show the current node tree for a batch root. This reads a live snapshot;
+an incomplete tree or unknown host status returns an error rather than a
+partial tree. Use --json for structured output.`}
+	batchAddCmd = &cobra.Command{Use: "add <root-or-parent>", Args: cobra.ExactArgs(1), RunE: batchAdd, Long: `Add direct items to a batch from inside its owner process. This is
+owner-process-only: a separate rush CLI process cannot access the owner's
+runtime and cannot add items. The spec must contain batch items.`}
+	batchStopCmd = &cobra.Command{Use: "stop <root-id|node-id>", Args: cobra.ExactArgs(1), RunE: batchStop, Long: `Queue a request to stop a batch root or node. By default the result is
+queued; --wait (up to 30s) waits for the owner acknowledgement. An
+applied/accepted acknowledgement confirms the request was accepted, not
+that the node or process has terminated. Inspect the batch with
+rush batch show.`}
 )
 
 func init() {
-	batchRunCmd.Flags().StringP("spec", "f", "-", "BatchSpec JSON file (default stdin)")
+	batchRunCmd.Flags().StringP("spec", "f", "-", "BatchSpec JSON or Ktav file (default stdin)")
 	batchRunCmd.Flags().String("session", "", "Owner session ID (created when omitted)")
 	batchRunCmd.Flags().Bool("json", false, "Emit structured JSON")
-	batchRunCmd.Flags().Bool("detach", false, "Request detached execution (unsupported)")
-	batchAddCmd.Flags().StringP("spec", "f", "-", "Items JSON file (default stdin)")
-	batchStopCmd.Flags().Duration("wait", 0, "Wait duration for owner acknowledgement; zero reports queued")
+	batchRunCmd.Flags().Bool("detach", false, "Unsupported: detached execution is unavailable")
+	batchAddCmd.Flags().StringP("spec", "f", "-", "Items JSON or Ktav file (default stdin)")
+	batchStopCmd.Flags().Duration("wait", 0, "Wait up to 30s for owner acknowledgement; zero reports queued")
 	batchShowCmd.Flags().Bool("json", false, "Emit structured JSON")
 	batchStopCmd.Flags().Bool("json", false, "Emit structured JSON")
 	batchCmd.AddCommand(batchRunCmd, batchShowCmd, batchAddCmd, batchStopCmd)

@@ -464,13 +464,14 @@ func providerError(response *http.Response, requestBody, body []byte) error {
 		}
 	}
 	return &fantasy.ProviderError{
-		Message:         message,
-		Title:           fantasy.ErrorTitleForStatusCode(response.StatusCode),
-		URL:             responsesURL,
-		StatusCode:      response.StatusCode,
-		RequestBody:     append([]byte(nil), requestBody...),
-		ResponseHeaders: headers,
-		ResponseBody:    append([]byte(nil), body...),
+		Message:            message,
+		Title:              fantasy.ErrorTitleForStatusCode(response.StatusCode),
+		URL:                responsesURL,
+		StatusCode:         response.StatusCode,
+		RequestBody:        append([]byte(nil), requestBody...),
+		ResponseHeaders:    headers,
+		ResponseBody:       append([]byte(nil), body...),
+		ContextTooLargeErr: isContextLengthExceeded(decoded.Error),
 	}
 }
 
@@ -488,6 +489,7 @@ type streamState struct {
 	reasoningStarted bool
 	textSeen         bool
 	reasoningSeen    bool
+	acceptedOutput   bool
 	completed        bool
 	finishReason     fantasy.FinishReason
 	usage            fantasy.Usage
@@ -507,9 +509,29 @@ func (s *streamState) consume(data []byte, yield func(fantasy.StreamPart) bool) 
 	}
 	kind := rawString(event["type"])
 	switch kind {
+	case "response.failed", "error":
+		if codexEventHasOutput(event) {
+			s.acceptedOutput = true
+		}
+	case "rush.stream_error", "response.created", "response.in_progress", "response.queued":
+		if codexEventHasOutput(event) {
+			s.acceptedOutput = true
+		}
+		// Lifecycle-only failures may still be safely retried.
+	case "response.output_text.delta", "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+		// Empty text/reasoning deltas carry no accepted content.
+	case "response.output_item.added", "response.output_item.done", "response.function_call_arguments.delta", "response.function_call_arguments.done", "response.completed", "response.incomplete":
+		s.acceptedOutput = true
+	default:
+		// Unknown/ambiguous events fail closed: they might represent accepted
+		// provider output the local decoder does not understand.
+		s.acceptedOutput = true
+	}
+	switch kind {
 	case "response.output_text.delta":
 		delta := rawString(event["delta"])
 		if delta != "" {
+			s.acceptedOutput = true
 			s.textSeen = true
 			if !s.textStarted {
 				s.textStarted = true
@@ -524,6 +546,7 @@ func (s *streamState) consume(data []byte, yield func(fantasy.StreamPart) bool) 
 	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
 		delta := rawString(event["delta"])
 		if delta != "" {
+			s.acceptedOutput = true
 			s.reasoningSeen = true
 			if !s.reasoningStarted {
 				s.reasoningStarted = true
@@ -575,6 +598,7 @@ func (s *streamState) consume(data []byte, yield func(fantasy.StreamPart) bool) 
 			}
 		}
 	case "response.function_call_arguments.delta":
+		s.acceptedOutput = true
 		key := rawString(event["item_id"])
 		call := s.getTool(key, parseOutputIndex(event["output_index"]))
 		if call.itemID == "" {
@@ -597,6 +621,7 @@ func (s *streamState) consume(data []byte, yield func(fantasy.StreamPart) bool) 
 			}
 		}
 	case "response.function_call_arguments.done":
+		s.acceptedOutput = true
 		key := rawString(event["item_id"])
 		call := s.getTool(key, parseOutputIndex(event["output_index"]))
 		if call.itemID == "" {
@@ -625,6 +650,7 @@ func (s *streamState) consume(data []byte, yield func(fantasy.StreamPart) bool) 
 			return err
 		}
 		if !s.reasoningSeen && response.reasoning != "" {
+			s.acceptedOutput = true
 			s.reasoningSeen = true
 			s.reasoningStarted = true
 			if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeReasoningStart, ID: "reasoning"}) {
@@ -635,6 +661,7 @@ func (s *streamState) consume(data []byte, yield func(fantasy.StreamPart) bool) 
 			}
 		}
 		if !s.textSeen && response.text != "" {
+			s.acceptedOutput = true
 			s.textSeen = true
 			s.textStarted = true
 			if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextStart, ID: "text"}) {
@@ -645,7 +672,11 @@ func (s *streamState) consume(data []byte, yield func(fantasy.StreamPart) bool) 
 			}
 		}
 		for _, item := range response.output {
+			if item.Type != "" && item.Type != "function_call" && item.Type != "message" && item.Type != "reasoning" {
+				s.acceptedOutput = true
+			}
 			if item.Type == "function_call" {
+				s.acceptedOutput = true
 				call := s.getTool(item.ID, "")
 				call.itemID = item.ID
 				if item.CallID != "" {
@@ -675,7 +706,7 @@ func (s *streamState) consume(data []byte, yield func(fantasy.StreamPart) bool) 
 		}
 		s.completed = true
 	case "response.failed", "error":
-		return codexStreamFailure(data)
+		return codexStreamFailure(data, !s.acceptedOutput)
 	case "rush.stream_error":
 		return fmt.Errorf("read Codex event stream: %s", rawString(event["message"]))
 	}

@@ -176,7 +176,9 @@ func TestP312_InlineCompactionDoesNotDeadlock(t *testing.T) {
 	env := testEnv(t)
 	dataDir := t.TempDir()
 
-	var mainCalls, summarizeCalls atomic.Int64
+	const autoSummarizeOutputReserve int64 = 200
+	var mainCalls, summarizeCalls, followUpCalls atomic.Int64
+	var summaryPromptRequests, ordinaryPromptRequests atomic.Int64
 	requestStarted := make(chan struct{}, 1)
 	var proceedOnce sync.Once
 	proceed := make(chan struct{})
@@ -184,10 +186,15 @@ func TestP312_InlineCompactionDoesNotDeadlock(t *testing.T) {
 	t.Cleanup(mainSrv.Close)
 	summarizeSrv := summarizeSSEServer(5, 2, &summarizeCalls)
 	t.Cleanup(summarizeSrv.Close)
-	followUpSrv := summarizeSSEServer(5, 2, nil)
+	followUpSrv := summarizeSSEServer(5, 2, &followUpCalls)
 	t.Cleanup(followUpSrv.Close)
 
 	dispatchSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isSummaryPromptRequest(r) {
+			summaryPromptRequests.Add(1)
+		} else {
+			ordinaryPromptRequests.Add(1)
+		}
 		switch mainCalls.Load() {
 		case 0:
 			mainSrv.Config.Handler.ServeHTTP(w, r)
@@ -223,7 +230,7 @@ func TestP312_InlineCompactionDoesNotDeadlock(t *testing.T) {
 
 	model := Model{
 		Model:      lm,
-		CatwalkCfg: catwalk.Model{ContextWindow: 1000, DefaultMaxTokens: 1000},
+		CatwalkCfg: catwalk.Model{ContextWindow: 1000, DefaultMaxTokens: autoSummarizeOutputReserve},
 	}
 	fastModel := Model{
 		Model:      titleLM,
@@ -272,7 +279,7 @@ func TestP312_InlineCompactionDoesNotDeadlock(t *testing.T) {
 		res, err := a.Run(t.Context(), SessionAgentCall{
 			SessionID:       sess.ID,
 			Prompt:          "first message",
-			MaxOutputTokens: 1000,
+			MaxOutputTokens: autoSummarizeOutputReserve,
 		})
 		resultCh <- struct {
 			res *fantasy.AgentResult
@@ -285,20 +292,41 @@ func TestP312_InlineCompactionDoesNotDeadlock(t *testing.T) {
 	case r := <-resultCh:
 		runErr = r.err
 	case <-time.After(20 * time.Second):
+		outputReserve := effectiveMaxOutputTokens(model, autoSummarizeOutputReserve)
+		inputBudget := contextInputBudget(int64(model.CatwalkCfg.ContextWindow), outputReserve)
+		t.Logf("inline compaction timeout: main_requests=%d summary_prompt_requests=%d summarize_handler_requests=%d ordinary_prompt_requests=%d follow_up_requests=%d; primary_context_window=%d default_max_tokens=%d initial_call_max_output_tokens=%d effective_output_reserve=%d input_budget=%d threshold=%d auto_summarize_disabled=%t",
+			mainCalls.Load(), summaryPromptRequests.Load(), summarizeCalls.Load(), ordinaryPromptRequests.Load(), followUpCalls.Load(),
+			model.CatwalkCfg.ContextWindow, model.CatwalkCfg.DefaultMaxTokens, autoSummarizeOutputReserve,
+			outputReserve, inputBudget, contextAutoSummarizeThreshold(int64(model.CatwalkCfg.ContextWindow), inputBudget), a.(*sessionAgent).disableAutoSummarize)
 		t.Fatal("Run did not return within 20s — possible deadlock on shouldSummarize")
+	}
+
+	finalSess, sessionErr := env.sessions.Get(t.Context(), sess.ID)
+	summaryPersisted := sessionErr == nil && finalSess.SummaryMessageID != ""
+	if runErr != nil || mainCalls.Load() != 1 || summarizeCalls.Load() != 1 ||
+		summaryPromptRequests.Load() != 1 || ordinaryPromptRequests.Load() != 2 ||
+		followUpCalls.Load() != 1 || sessionErr != nil || !summaryPersisted {
+		outputReserve := effectiveMaxOutputTokens(model, autoSummarizeOutputReserve)
+		inputBudget := contextInputBudget(int64(model.CatwalkCfg.ContextWindow), outputReserve)
+		t.Logf("inline compaction stages: main_requests=%d summary_prompt_requests=%d summarize_handler_requests=%d ordinary_prompt_requests=%d queued_follow_up_requests=%d summary_persisted=%t run_error=%t session_read_error=%t; primary_context_window=%d default_max_tokens=%d initial_call_max_output_tokens=%d effective_output_reserve=%d input_budget=%d threshold=%d auto_summarize_disabled=%t",
+			mainCalls.Load(), summaryPromptRequests.Load(), summarizeCalls.Load(), ordinaryPromptRequests.Load(), followUpCalls.Load(),
+			summaryPersisted, runErr != nil, sessionErr != nil, model.CatwalkCfg.ContextWindow,
+			model.CatwalkCfg.DefaultMaxTokens, autoSummarizeOutputReserve, outputReserve,
+			inputBudget, contextAutoSummarizeThreshold(int64(model.CatwalkCfg.ContextWindow), inputBudget),
+			a.(*sessionAgent).disableAutoSummarize)
 	}
 
 	// Must succeed without deadlock and without a lock error.
 	require.NoError(t, runErr, "inline compaction must not deadlock or fail with lock error")
+	require.NoError(t, sessionErr)
 	var busyErr *session.SessionLockBusyError
 	assert.False(t, errors.As(runErr, &busyErr), "must not be a SessionLockBusyError")
-
-	// Verify that compaction actually occurred by checking the session state.
-	// The compaction creates a summary message and sets SummaryMessageID.
-	finalSess, err := env.sessions.Get(t.Context(), sess.ID)
-	require.NoError(t, err)
 	assert.NotEmpty(t, finalSess.SummaryMessageID, "expected auto-summarize compaction to have created a summary")
+	require.Equal(t, int64(1), mainCalls.Load(), "main turn must execute exactly once")
 	assert.Equal(t, int64(1), summarizeCalls.Load(), "expected exactly one summarize call")
+	require.Equal(t, int64(1), summaryPromptRequests.Load(), "expected one classified summary provider request")
+	require.Equal(t, int64(2), ordinaryPromptRequests.Load(), "expected main and queued follow-up requests to be classified as ordinary")
+	require.Equal(t, int64(1), followUpCalls.Load(), "queued follow-up provider call must execute exactly once")
 }
 
 // TestP312_ManualCompactionDrainsQueuedWork_WithDataDir is the regression

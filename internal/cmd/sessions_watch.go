@@ -16,31 +16,33 @@ import (
 
 var sessionsWatchCmd = &cobra.Command{
 	Use:   "watch [session-id]",
-	Short: "Pick a session (or take one by id) and live-tail it until it ends",
+	Short: "Pick a session (or take one by id) and live-tail it while activity remains open",
 	Long: `One-stop "open a live view of a session" command.
 
 Without arguments: shows an interactive picker (arrow keys, Enter to
-select) and then drops into live-tail of the chosen session. The picker
-shows the 15 most recently active sessions and a "(+N not shown)"
-footer when there are older ones — use "rush sessions list" to see
-every session.
+select) and then live-tails the chosen session. The picker shows the 15
+most recently active sessions and a "(+N not shown)" footer when there are
+older ones — use "rush sessions list" to see every session.
 
 With a <session-id> argument: skips the picker and live-tails that
 session directly. Short hashes (the HASH column of "sessions list")
 are accepted.
 
-Live-tail prints every existing message in the session, then polls
-every --interval (default 1s) for new messages and prints them as they
-arrive. The loop exits automatically when the session ends — detected
-via any of:
-  (a) the session row has an ended_reason
-  (b) the lock file disappears (process exited / was killed)
-  (c) the latest assistant message has a non-partial Finish part
-but never while the session is still worked on: the lock is held only
-during a turn, so a "rush run" waiting between turns (on a background job,
-a delegation or a retry) is kept open by its durable driver marker, running
-job or live delegation; watch says what it waits on and ends once none of
-them is live.
+Live-tail prints existing messages, then polls every --interval (default
+1s) for new messages. Its end decision uses the shared session-activity
+view and session/message state: a held session lock or live activity keeps
+watching, including work between turns. Live activity can include a run
+driver, an own running job, a delegation, an open one-shot wake schedule,
+or unreadable live-work evidence. The session lock is held only during a
+turn, so a released lock alone does not mean the session is idle. An
+incomplete batch read is treated as unknown/live evidence, not as proof
+that batch work finished.
+
+A terminal assistant finish such as end_turn finishes a turn, not
+necessarily the session or a batch task. Watch is a session monitor; its
+summary reports the reason watch used to stop monitoring and does not
+independently confirm termination of every related process or task. Use
+"rush batch show <root-id>" to inspect a batch tree.
 
 On exit a summary block is printed: id, title, end reason, duration,
 tokens (prompt + completion) and cost (with budget if one was set).
