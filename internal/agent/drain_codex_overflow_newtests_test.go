@@ -188,7 +188,8 @@ func runCodexOverflowRecovery(t *testing.T, acceptedTool, workerOverride bool, w
 	trace.sessionHash = overflowRecoveryHash(f.sessID)
 
 	var codexCalls, workerCalls atomic.Int32
-	const simpleCodexBodyLimit = 48000
+	const simpleCodexBodyLimit = 60000
+	const simpleCodexBodyMargin = 8000
 	const acceptedToolCodexBodyLimit = 32000
 	codexBodyLimit := simpleCodexBodyLimit
 	if acceptedTool {
@@ -344,9 +345,9 @@ func runCodexOverflowRecovery(t *testing.T, acceptedTool, workerOverride bool, w
 		require.EqualValues(t, 3, codexCalls.Load())
 	} else {
 		require.Equal(t, []string{"codex-context-overflow", "worker-summary", "codex-original"}, stages)
-		require.Greater(t, requestBytes[0], codexBodyLimit, "actual initial request exceeds exact fake size cap")
+		require.Greater(t, requestBytes[0], codexBodyLimit+simpleCodexBodyMargin, "initial request exceeds fake size cap with controlled overflow margin")
 		require.Equal(t, http.StatusBadRequest, statuses[0])
-		require.Less(t, requestBytes[2], codexBodyLimit, "compaction makes the actual request fit the fake size cap")
+		require.Less(t, requestBytes[2], codexBodyLimit-simpleCodexBodyMargin, "compacted request fits fake size cap with controlled fit margin")
 		require.Less(t, requestBytes[2], requestBytes[0], "compaction must shrink actual request")
 		require.EqualValues(t, 2, codexCalls.Load())
 	}
