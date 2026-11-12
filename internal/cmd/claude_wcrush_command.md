@@ -2,7 +2,7 @@
 description: Delegate this task to a rush sub-agent that must work only inside an isolated git worktree and never run the tests — execution and verification move to a second, orchestrator-driven phase
 ---
 
-`/wcrush <task>` is opt-in; do not auto-invoke on later turns. **Before doing anything else, read the `wrush.md` file in this same directory in full** — `/wcrush` inherits its worktree, refusal/fallback, `--allow-peak-hours`, `awaiting_answer`, smart/orchestrator, launch flags, `--restrict-run`, monitoring, `sessions inject`, lock recovery, and verification/merge/cleanup rules. Follow it except where this skill assigns testing to phase 2.
+`/wcrush <task>` is opt-in; do not auto-invoke on later turns. **Before doing anything else, read the `wrush.md` file in this same directory in full** — `/wcrush` inherits its worktree, refusal/fallback, `--allow-peak-hours`, `awaiting_answer`, smart/orchestrator, launch flags, monitoring, `sessions inject`, lock recovery, and verification/merge/cleanup rules. Follow it except where this skill assigns testing to phase 2.
 
 ## Mandatory: two phases — the sub-agent does not run tests
 

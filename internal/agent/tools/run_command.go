@@ -59,7 +59,7 @@ type RunCommandPermissionsParams struct {
 }
 
 // RunAllowlistCommand synthesizes a single shell-like command string from
-// program and args so `--allow-bash` patterns written for the bash tool
+// program and args so allow_bash patterns (permissions.run) written for the bash tool
 // match run_command calls the same way (e.g. "go test" matches
 // program "go", args ["test", "./..."]). Each argument that is not
 // already shell-safe is quoted with mvdan.cc/sh/v3/syntax.Quote

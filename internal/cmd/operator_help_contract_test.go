@@ -87,7 +87,11 @@ func TestReadmeRunSecurity_DescribesRestrictedModeAndBoundaries(t *testing.T) {
 
 	require.Contains(t, section, "no interactive approval prompt")
 	require.Contains(t, section, "auto-approve permission requests")
-	require.Contains(t, section, "--restrict-run")
+	require.NotContains(t, section, "--restrict-run")
+	require.NotContains(t, section, "--allow-bash")
+	require.NotContains(t, section, "--allow-tool")
+	require.Contains(t, section, "run.allow_tools")
+	require.Contains(t, section, "run.allow_bash")
 	require.Contains(t, section, "deny-by-default")
 	require.Contains(t, section, "permissions.run.restrict")
 	require.Contains(t, section, "permissions.allowed_tools")

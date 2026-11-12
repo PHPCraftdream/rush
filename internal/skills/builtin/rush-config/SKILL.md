@@ -458,15 +458,10 @@ documented escape hatch for a full bash bypass. For command-level
 control, leave `bash` out of `allowed_tools` and use `run.allow_bash`
 instead.
 
-CLI equivalents (merged with config; flags union with the lists and
-`--restrict-run` forces restrict on):
-
-```
-rush run --restrict-run \
-          --allow-bash 'git diff' --allow-bash 'glob:ls *' \
-          --allow-tool view \
-          --role fast "..."
-```
+CLI equivalents were removed: `rush run` no longer takes
+`--restrict-run` / `--allow-bash` / `--allow-tool`. Scoping is
+configured only through the `permissions.run` block above, and further
+run-permission management is planned through roles, not CLI flags.
 
 ## Environment Variables
 

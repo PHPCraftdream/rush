@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Breaking: the `rush run` permission flags `--restrict-run`, `--allow-bash` and `--allow-tool` are removed, and passing any of them is now an unknown-flag error. Scope an unattended run through the `permissions.run` block in rush.json (`restrict` / `allow_tools` / `allow_bash`) as before; behavior without the flags is unchanged. Further run-permission management is expected to arrive through roles, not CLI flags.
+
 - A model without a price (not in the catalog and no cost override) now logs a one-time warning at its first billable step: its usage is counted as free, so no budget applies to it. Flat-rate models and steps with a provider-reported cost are not affected. Nothing is blocked.
 
 - The WebSocket `config` event (the `get_config` reply and config broadcasts) no longer carries `cwd`, `contextPaths` or `skillsPaths` for API tokens below the `config` scope, so a `read`/`run` token cannot learn the server's local paths; `config` and `admin` tokens and the built-in web UI are unchanged.

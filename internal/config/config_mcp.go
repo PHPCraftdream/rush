@@ -157,7 +157,7 @@ type Permissions struct {
 	// auto-approval flips to deny-by-default and only the requests that
 	// match the allowlists below are approved. Interactive sessions
 	// (TUI / web) are never affected by this setting.
-	Run          *RunPermissions `json:"run,omitempty" jsonschema:"description=Restricted permission model for non-interactive 'rush run'. Off by default; opt in with run.restrict=true or the --restrict-run flag."`
+	Run          *RunPermissions `json:"run,omitempty" jsonschema:"description=Restricted permission model for non-interactive 'rush run'. Off by default; opt in with run.restrict=true."`
 	SkipRequests bool            `json:"-"`
 }
 

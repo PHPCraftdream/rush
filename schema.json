@@ -606,7 +606,7 @@
         },
         "run": {
           "$ref": "#/$defs/RunPermissions",
-          "description": "Restricted permission model for non-interactive 'rush run'. Off by default; opt in with run.restrict=true or the --restrict-run flag."
+          "description": "Restricted permission model for non-interactive 'rush run'. Off by default; opt in with run.restrict=true."
         }
       },
       "additionalProperties": false,

@@ -156,22 +156,23 @@ func TestRunGate_NonBashToolAllowedByToolTable(t *testing.T) {
 	})
 }
 
-// TestRunGate_ConfigAndCLIMerge exercises the documented merge: CLI
-// patterns union with config patterns, and --restrict-run forces
-// restrict on even when config has it off.
+// TestRunGate_ConfigAndCLIMerge exercises the documented merge:
+// override patterns (app.RunOverrides, SDK hosts) union with config
+// patterns, and a Restrict override forces restrict on even when
+// config has it off.
 func TestRunGate_ConfigAndCLIMerge(t *testing.T) {
 	// "Config" spec: restrict OFF, allows only git diff.
 	configSpec := RunAllowlistSpec{
 		Restrict:  false,
 		AllowBash: []string{"git diff"},
 	}
-	// "CLI" override: --restrict-run + --allow-bash 'ls'.
+	// Override spec as an SDK host would set it: Restrict + AllowBash 'ls'.
 	cliSpec := RunAllowlistSpec{
 		Restrict:  true,
 		AllowBash: []string{"ls"},
 	}
 	merged := MergeRunAllowlistSpecs(configSpec, cliSpec)
-	require.True(t, merged.Restrict, "CLI --restrict-run must arm the gate")
+	require.True(t, merged.Restrict, "overrides.Restrict must arm the gate")
 
 	compiled, err := BuildRunAllowlist(merged)
 	require.NoError(t, err)

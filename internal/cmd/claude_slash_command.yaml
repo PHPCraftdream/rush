@@ -8,7 +8,7 @@ blocks:
 
       ## Smart means launch and wait
       `rush run --role smart` reads the repo, plans, delegates, reviews, and reports. Tell it **what and why** (goal, observable acceptance, evidence, hard scope/constraints), not how. Honor caller hard constraints and policy, including CI-only verification when requested. Launch in repo/worktree and await completion. Do not prescribe implementation plans, file:line edits, sequence, tools/roles/workers, or a verification checklist; do not forbid its internal delegation. Nested executors are expected: don't stop or ask; wait.
-      Only `--role`, `--session`, `--json`, and when warranted `--restrict-run`; don't tune models/effort/`--agents`. Don't coach mid-run: `sessions inject` is only for genuinely new facts or changed operator requirements. A follow-up passes reviewer findings, CI output, or new requirements verbatim into the same `--session`.
+      Only `--role`, `--session`, and `--json`; don't tune models/effort/`--agents`. Don't coach mid-run: `sessions inject` is only for genuinely new facts or changed operator requirements. A follow-up passes reviewer findings, CI output, or new requirements verbatim into the same `--session`.
 
   - common: |-
       ## Fallback when `rush` hits rate limits
@@ -46,7 +46,7 @@ blocks:
       ```
       Bash({ command: "rush run --role smart --session foo --json < .rush/stdin/foo.prompt > .rush/stdin/foo.out 2> .rush/stdin/foo.err", run_in_background: true })
       ```
-      Write multiline prompt to `.rush/stdin/<task>.prompt`, feed `< file`; avoid multiline positional quotes. Rush permissions are auto-approved: use only workspaces you can lose; consider `--restrict-run`.
+      Write multiline prompt to `.rush/stdin/<task>.prompt`, feed `< file`; avoid multiline positional quotes. Rush permissions are auto-approved: use only workspaces you can lose; consider scoping the run via `permissions.run` in rush.json.
       Default one run per worktree. Parallelize only for independent file sets when user asks or task requires fan-out. Every prompt must name its scope and siblings/scopes, forbid touching other scopes, and forbid git writes (`commit`, `add`, `stash`, `reset`, `checkout`/`restore`, `rebase`, `merge`); read-only `status`/`diff`/`log` okay. Orchestrator stages/commits sequentially after verifying diffs. Use separate worktrees for overlapping edits. Tests must stay within assigned packages (e.g. `go test ./internal/foo/...`, never `./...`) or be skipped and reported; run shared suite once after merge. Honor caller CI-only policy and do not claim local checks ran.
     codex: |-
       ## Launching (Codex)
@@ -68,13 +68,13 @@ blocks:
       Retain returned job ID; completion/failure wakes conversation. `read proc://<job-id>` inspects; `write proc://<job-id>/kill` cancels. Multiline prompt in `.rush/stdin/<task>.prompt` via stdin. In `omp -p`, keep turn alive and `wait` when idle until complete and verified; disposing session cancels. Non-yolo approval may fail closed; allow-list Rush invocations, including full redirection command; never bypass via another execution tool. OMP `task` isn't Rush delegation.
       **Completion:** retained job completion proves this process ended, not batch termination. Do not infer process exit from `why crashed`, `locks offline`, output, or a child status. Check related batch state separately before dependent actions.
   - common: |-
-      ## Scoping permissions for a delegation — `--restrict-run`
-      Permissions auto-approve by default. For untrusted/exploratory prompts or overly broad workspaces, use deny-by-default:
+      ## Scoping permissions for a delegation — `permissions.run`
+      Permissions auto-approve by default. For untrusted/exploratory prompts or overly broad workspaces, use deny-by-default configured in `rush.json` (the per-run permission CLI flags were removed; `permissions.run` is the only way to arm it):
       ```
-      rush run --restrict-run --role fast --allow-tool view --allow-bash 'git diff' --allow-bash 'glob:go *' --session "ci-123" "summarize the diff"
+      {"permissions":{"run":{"restrict":true,"allow_tools":["view"],"allow_bash":["git diff","glob:go *"]}}}
       ```
-      `--allow-tool <name>` repeats for non-bash tools or `tool:action` (e.g. `view`, `edit:write`); `bash`/`bash:execute` are no-ops. `--allow-bash '<pattern>'` repeats: word-boundary prefix (`git diff` matches `git diff HEAD~1`, not `git difftool`), `exact:cmd`, `glob:pat`, `regex:pat`. First three reject chaining metacharacters (`;`, `|`, `&&`, `$(`, backtick); regex alone bypasses guard, use deliberately. `run_command` program+argv is synthesized and matched like bash. `git_read` supports fixed read-only git commands and needs only `--allow-tool git_read`. Any tool call or command not matched by an allow rule is denied immediately; there is no permission prompt.
-      Equivalent `rush.json`: `{"permissions":{"run":{"restrict":true,"allow_tools":["view"],"allow_bash":["git diff","glob:ls *"]}}}`. CLI lists union with config; `--restrict-run` forces restrict on. Global non-run `permissions.allowed_tools` is an earlier bypass: `bash` there approves all shell regardless, so leave it clear when patterns should govern. Applies only to noninteractive `rush run`, not TUI/web. Add restrict when appropriate without human authorization: narrows risk, unlike peak-hours bypass.
+      `allow_tools` entries are non-bash tools or `tool:action` (e.g. `view`, `edit:write`); `bash`/`bash:execute` are no-ops there. `allow_bash` entries: word-boundary prefix (`git diff` matches `git diff HEAD~1`, not `git difftool`), `exact:cmd`, `glob:pat`, `regex:pat`. First three reject chaining metacharacters (`;`, `|`, `&&`, `$(`, backtick); regex alone bypasses guard, use deliberately. `run_command` program+argv is synthesized and matched like bash. `git_read` supports fixed read-only git commands and needs only `git_read` in `allow_tools`. Any tool call or command not matched by an allow rule is denied immediately; there is no permission prompt.
+      Global non-run `permissions.allowed_tools` is an earlier bypass: `bash` there approves all shell regardless, so leave it clear when patterns should govern. Applies only to noninteractive `rush run`, not TUI/web. Add restrict when appropriate without human authorization: narrows risk, unlike peak-hours bypass. Run-permission management is expected to grow through roles, not CLI flags.
   - common: |-
       ## Run completion, session liveness, and batches
       The harness's foreground-call return or retained process/job handle completion establishes whether that specific `rush run` process exited; retain the handle and wait for that evidence. A CLI status snapshot, log/redirect contents, message finish, or a child's status is not a substitute. In particular, never infer physical process exit from `sessions why` saying `crashed`, `sessions locks` saying `offline`, or `sessions show` alone. Locks are held during turns and can be absent between turns; `why` and `show` are snapshots. Use `sessions watch <id>` to follow session activity; use `sessions why <id>` for combined session/batch evidence, `sessions jobs <id>` for owned jobs, and `rush batch show <root>` for a batch tree.
