@@ -455,8 +455,27 @@ func (r sealBatchRootReader) FinalizationSealScopeFacts(ctx context.Context, tx 
 	return AgentFinalizationScopeFacts{Complete: true, ActiveDescendants: live}, nil
 }
 
+// newReservedScopeEnv binds the scope after one admitted live-root
+// reservation: the S1 ingress fence refuses reservations for an owner that
+// already has a bound finalization scope, so the root must exist first.
+func newReservedScopeEnv(t *testing.T) candidateEnv {
+	t.Helper()
+	_, conn, ctx := batchStoreTestDB(t)
+	messages := message.NewService(db.New(conn))
+	store := NewAgentFinalizationStore(conn)
+	id := AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "logical", Generation: 1}
+	batchStoreTestReserve(t, NewBatchStore(conn), ctx)
+	require.NoError(t, store.Bind(ctx, id))
+	writer, ok := messages.(message.FinalizationWriter)
+	require.True(t, ok)
+	reader, ok := messages.(message.FinalizationReader)
+	require.True(t, ok)
+	return candidateEnv{conn: conn, store: store, messages: messages, writer: writer, reader: reader, id: id}
+}
+
 // Revert-check: a fail-open default (missing reader or !Complete treated as
-// "clear") lets the seal proceed — this test's refusal assertions fail.
+// "clear") lets the seal proceed, and a reader that reads outside the seal's
+// transaction misses the admitted root — both fail this test's assertions.
 func TestTrySealScopeReaderReadsInsideTransaction(t *testing.T) {
 	e := newCandidateEnv(t)
 	_, presented := sealStoredCandidate(t, e, 0, 1)
@@ -464,10 +483,9 @@ func TestTrySealScopeReaderReadsInsideTransaction(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, outcome.Sealed, "an established reader observing zero live roots must seal")
 
-	busy := newCandidateEnv(t)
+	busy := newReservedScopeEnv(t)
 	_, busyPresented := sealStoredCandidate(t, busy, 0, 1)
 	before := sealStateDump(t, busy.conn)
-	batchStoreTestReserve(t, NewBatchStore(busy.conn), t.Context())
 	outcome, err = busy.store.TrySeal(t.Context(), busy.id, busyPresented, busy.sealWriter(t), sealBatchRootReader{owner: busy.id.SessionID})
 	require.NoError(t, err)
 	require.False(t, outcome.Sealed)
