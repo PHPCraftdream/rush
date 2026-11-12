@@ -21,6 +21,11 @@ interface Props {
   busy?: boolean;
 }
 
+/** Classes of the confirm button shared by both variants. */
+const CONFIRM_BASE =
+  "px-4 py-2 text-sm font-semibold text-white/90 rounded-xl transition-all active:scale-[0.97] shadow-sm " +
+  "disabled:opacity-40 disabled:cursor-not-allowed";
+
 /** Modal confirm/cancel dialog; Enter confirms and Escape cancels unless busy. */
 export class ConfirmDialog extends AntiHookComponent<Props> {
   /** Subscribes the keyboard handler; re-subscribes when its inputs change. */
@@ -135,7 +140,7 @@ export class ConfirmDialog extends AntiHookComponent<Props> {
             <button
               onClick={onConfirm}
               disabled={busy}
-              className={`px-4 py-2 text-sm font-semibold text-white/90 rounded-xl transition-all active:scale-[0.97] shadow-sm disabled:opacity-40 disabled:cursor-not-allowed ${
+              className={`${CONFIRM_BASE} ${
                 isDanger
                   ? "bg-red-fill hover:opacity-90 shadow-red/20"
                   : "bg-yellow-fill hover:opacity-90 shadow-yellow/20"
