@@ -136,9 +136,11 @@ func TestFinalizationSealWrapperMapsPersistedCancel(t *testing.T) {
 	execution.scope = finalizationStoredScope(t, env, id)
 	execution.scopeFacts = &sessionScopeStub{AgentFinalizationScopeFacts: session.AgentFinalizationScopeFacts{Complete: true}}
 	candidate := finalizationStoredCandidate(t, env, execution.scope, id)
+	require.NoError(t, env.sessions.RequestCancel(t.Context(), "session"))
+	// The persisted cancel is the one expected change; the refused seal must
+	// add nothing on top of it.
 	before, err := execution.scope.store.Snapshot(t.Context(), execution.scope.identity)
 	require.NoError(t, err)
-	require.NoError(t, env.sessions.RequestCancel(t.Context(), "session"))
 	_, err = sealFinalizationCandidate(t.Context(), execution, env.messages, id, candidate)
 	require.ErrorIs(t, err, context.Canceled)
 	after, err := execution.scope.store.Snapshot(t.Context(), execution.scope.identity)

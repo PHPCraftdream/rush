@@ -412,7 +412,9 @@ func TestTrySealSealAndStoreRaceKeepsFencing(t *testing.T) {
 	require.ErrorIs(t, <-late, ErrAgentFinalizationChanged)
 	sealed := 0
 	for _, outcome := range collected {
-		require.NotEqual(t, AgentFinalizationSealNone, outcome.Reason, "a race loser cannot claim a bare success")
+		if !outcome.Sealed && !outcome.Accepted {
+			require.NotEqual(t, AgentFinalizationSealNone, outcome.Reason, "a race loser cannot claim a bare success")
+		}
 		switch {
 		case outcome.Sealed:
 			sealed++
