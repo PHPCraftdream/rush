@@ -337,7 +337,33 @@ alive 60s later is force-killed (exit 124). Only set --timeout when
 intentionally imposing a hard external deadline or allowing the run past its
 default cap. The timeout error reports the deadline source and gives the
 session/role resume command; follow operator authorization and safe-resume
-rules; do not infer deadlock or its absence or automatically raise --timeout.`,
+rules; do not infer deadlock or its absence or automatically raise --timeout.
+
+Git-worktree isolation:
+  --worktree <slug> [--base <ref>] [--branch <name>]
+                     resolves the MAIN checkout (works when rush
+                     itself runs inside a linked worktree), creates
+                     <main>/worktrees/<slug> on branch <branch|slug>
+                     from <base> (default: the main checkout's HEAD),
+                     and runs this invocation with cwd inside the
+                     worktree. An existing registered worktree whose
+                     branch matches is reused and announced; a path
+                     occupied by anything else, or a branch mismatch,
+                     is a clean error. The slug is a single path
+                     segment ([a-z0-9][a-z0-9._-]*, no ".."), so a
+                     worktree can only ever be created under
+                     <main>/worktrees/. Without --session the session
+                     id is the slug. The run's stdout (the --json
+                     envelope, or the terse final answer) and stderr
+                     are ALSO written to <main>/.rush/stdin/<session>.out
+                     and .err so results survive ` + "`rush worktree remove`" + `;
+                     shell redirection keeps working as before. If
+                     worktrees/ is not git-ignored a warning is printed
+                     to stderr (rush never edits .gitignore).
+                     --worktree is incompatible with --cwd and
+                     --data-dir. Lifecycle: ` + "`rush worktree list`" + `
+                     and ` + "`rush worktree remove <slug>" + ` [--keep-branch]
+                     [--force]` + "`" + `.`,
 	Example: `
 # Run a simple prompt
 rush run --role smart "Guess my 5 favorite Pokémon"
@@ -454,6 +480,14 @@ rush run --role fast --session "ci-123" "summarize the diff"
 # wait). --timeout is for fitting a hard external deadline, e.g. a CI job
 # slot, or for waiting longer than that cap.
 rush run --role smart --timeout 5m --session "long-task" "refactor the storage layer"
+
+# One command instead of the manual chain: create/reuse an isolated
+# worktree, run inside it, and mirror the results into the main
+# checkout's .rush/stdin (they survive worktree removal).
+rush run --role smart --worktree "task-a" --json "refactor the parser" \
+          > /tmp/out.json 2>/tmp/out.err
+rush worktree list
+rush worktree remove "task-a"
   `,
 	RunE: func(cmd *cobra.Command, args []string) (runErr error) {
 		// FIRST, before any slow boot work (config load, MCP init): if all
@@ -512,6 +546,10 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			noSupervision, _           = cmd.Flags().GetBool("no-supervision")
 			supervisionIntervalFlag, _ = cmd.Flags().GetString("supervision-interval")
 			jobTimeoutFlag, _          = cmd.Flags().GetString("job-timeout")
+			// Fork patch (worktree delegation): --worktree/--base/--branch.
+			worktreeSlug, _   = cmd.Flags().GetString("worktree")
+			worktreeBase, _   = cmd.Flags().GetString("base")
+			worktreeBranch, _ = cmd.Flags().GetString("branch")
 		)
 
 		if maxAgentDepth < 0 || maxAgentDepth > 32 {
@@ -675,6 +713,24 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			resolveDefaultHardTimeout(os.Getenv("RUSH_RUN_DEFAULT_HARD_TIMEOUT")),
 			hardKillGrace, os.Stderr, exitWithAudit)
 		defer stopDeadline()
+
+		// Fork patch (worktree delegation): --worktree resolves or
+		// creates <main>/worktrees/<slug>, chdirs the run into it,
+		// defaults --session to the slug, and mirrors stdout/stderr
+		// into the main checkout's .rush/stdin so results survive
+		// `rush worktree remove` (see run_worktree.go). Validated even
+		// without --worktree so stray --base/--branch fail fast.
+		if err := validateRunWorktreeFlags(cmd, worktreeSlug, worktreeBase, worktreeBranch); err != nil {
+			return err
+		}
+		if worktreeSlug != "" {
+			wt, err := prepareRunWorktree(ctx, cmd, worktreeSlug, worktreeBase, worktreeBranch, sessionID)
+			if err != nil {
+				return err
+			}
+			defer wt.finish()
+			sessionID = wt.sessionID
+		}
 
 		a, err := setupRunApp(cmd, asJSON, sessionID)
 		if err != nil {
@@ -847,6 +903,12 @@ func init() {
 	runCmd.Flags().Bool("no-supervision", false, "Disable the periodic root-session supervision check-in for this run (default on, fires after 5m of chat silence while background jobs/delegations are still open; never fires with no open work or mid-turn).")
 	runCmd.Flags().String("supervision-interval", "", "Override the supervision check-in's initial/reset silence interval (e.g. 10m, 600 — plain number = seconds). Empty = config's supervision_interval_minutes or the built-in 5m default.")
 	runCmd.Flags().String("job-timeout", "", "Default terminate_and_wake deadline for background bash/run_command jobs that pass no explicit timeout (e.g. 2m, 90s — plain number = seconds). Empty = off (config's background_job_default_timeout_seconds can also set it; a per-call timeout always wins).")
+	// Fork patch (worktree delegation): run inside an isolated git
+	// worktree created/reused under the main checkout's worktrees/
+	// directory. See run_worktree.go.
+	runCmd.Flags().String("worktree", "", "Resolve or create the git worktree <main>/worktrees/<slug> and run this invocation with cwd inside it. The slug is a single path segment ([a-z0-9][a-z0-9._-]*). Reuses a registered worktree whose branch matches; refuses a path occupied by anything else or a branch mismatch (pass --branch to match). Defaults --session to the slug and mirrors stdout/stderr into <main>/.rush/stdin/<session>.{out,err}. Incompatible with --cwd and --data-dir. Manage with `rush worktree list` / `rush worktree remove <slug>`.")
+	runCmd.Flags().String("base", "", "With --worktree: the ref the worktree's branch is created from (default: the main checkout's HEAD). Ignored when the branch already exists. Requires --worktree.")
+	runCmd.Flags().String("branch", "", "With --worktree: the branch the worktree uses, created when missing (default: the slug). Required to match when reusing a worktree that sits on a different branch. Requires --worktree.")
 	runCmd.MarkFlagsMutuallyExclusive("session", "continue")
 	runCmd.MarkFlagsMutuallyExclusive("system-prompt", "system-prompt-file")
 	runCmd.MarkFlagsMutuallyExclusive("stream", "json")
