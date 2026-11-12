@@ -156,7 +156,7 @@ var codexWSRejections = []struct{ name, event string }{
 
 // runCodexWSOverflow drives one oversized Codex WebSocket turn through the
 // real coordinator and returns the run error plus the worker request count.
-func runCodexWSOverflow(t *testing.T, peer *codexWSPeer) (runErr error, workers int32) {
+func runCodexWSOverflow(t *testing.T, peer *codexWSPeer) (workers int32, runErr error) {
 	t.Helper()
 	f, _, _ := newCodexOverflowRun(t, "codex-ws-overflow", nil, func(int) http.HandlerFunc {
 		return func(w http.ResponseWriter, _ *http.Request) {
@@ -216,7 +216,7 @@ func runCodexWSOverflow(t *testing.T, peer *codexWSPeer) (runErr error, workers 
 	}
 	require.NoError(t, f.env.messages.SetPinned(ctx, pinID, true))
 	_, runErr = f.coord.runInternal(ctx, f.sessID, "Summarize the useful details and continue the current task.", pinned)
-	return runErr, workerCount.Load()
+	return workerCount.Load(), runErr
 }
 
 func TestCodexWebSocketContextRejectionRecoversOnceWithFullFrame(t *testing.T) {
@@ -228,7 +228,7 @@ func TestCodexWebSocketContextRejectionRecoversOnceWithFullFrame(t *testing.T) {
 				}
 				return codexWSReply("continued after persisted summary")
 			})
-			runErr, workers := runCodexWSOverflow(t, peer)
+			workers, runErr := runCodexWSOverflow(t, peer)
 			require.NoError(t, runErr, "ws requests=%d upgrades=%d workers=%d", peer.requests.Load(), peer.upgrades.Load(), workers)
 			require.EqualValues(t, 1, workers, "automatic recovery must run exactly once")
 			require.EqualValues(t, 2, peer.requests.Load(), "oversized request plus one continuation")
@@ -250,7 +250,7 @@ func TestCodexWebSocketContextRejectionAfterOutputDoesNotRecover(t *testing.T) {
 		}
 		return codexWSReply("must not be reached")
 	})
-	runErr, workers := runCodexWSOverflow(t, peer)
+	workers, runErr := runCodexWSOverflow(t, peer)
 	require.Error(t, runErr)
 	require.Zero(t, workers, "a post-output rejection must not trigger summarization")
 	require.EqualValues(t, 1, peer.requests.Load(), "a post-output rejection must not be replayed")
