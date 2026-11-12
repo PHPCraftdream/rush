@@ -45,6 +45,13 @@ const (
 	largeContextWindowBuffer    = 20_000
 	smallContextWindowRatio     = 0.2
 
+	// largeContextHeadroomDivisor makes large-window headroom proportional:
+	// inputBudget/20 (5%), never below largeContextWindowBuffer.
+	largeContextHeadroomDivisor = 20
+	// unreportedCharsPerToken is the conservative ratio used for content
+	// appended since the last usage report (trimming assumes 4).
+	unreportedCharsPerToken = 3
+
 	// streamIdleTimeoutDefault is the default tolerance for "no streaming
 	// event for this long" before the watchdog cancels the LLM request.
 	// Configurable per-app via Options.StreamIdleTimeoutSeconds, plumbed

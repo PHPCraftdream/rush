@@ -24,7 +24,7 @@ func recoveryInputCapacity(model Model, outputOverride int64, prefix string, mes
 	if model.Model == nil || int64(model.CatwalkCfg.ContextWindow) <= 0 || effectiveMaxOutputTokens(model, outputOverride) <= 0 {
 		return errors.New("automatic context recovery requires known context and output limits")
 	}
-	inputBudget := contextInputBudget(int64(model.CatwalkCfg.ContextWindow), effectiveMaxOutputTokens(model, outputOverride))
+	inputBudget := modelInputBudget(model, outputOverride)
 	if inputBudget <= 0 {
 		return errors.New("automatic context recovery requires known context and output limits")
 	}

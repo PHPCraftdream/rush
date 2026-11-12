@@ -56,14 +56,16 @@ func TestTurnStreamStopConditionsUsesConfiguredOutputOverride(t *testing.T) {
 		ModelCfg: config.SelectedModel{MaxTokens: 300_000},
 	}
 	ts := newContextCapacityRuntimeStream(model, SessionAgentCall{}, fantasy.Usage{
-		InputTokens:  729_990,
+		InputTokens:  712_490,
 		OutputTokens: 10,
 	})
 
-	// The configured 300k maximum leaves exactly the summarize threshold;
-	// using the catalog's 128k default instead would leave 192k.
+	// The configured 300k maximum leaves exactly the summarize threshold
+	// (budget 750k, headroom 750k/20 = 37.5k); using the catalog's 128k
+	// default instead would leave 210k.
 	budget := contextInputBudget(contextWindow, effectiveMaxOutputTokens(model, 0))
-	require.Equal(t, int64(20_000), budget-ts.currentSession.PromptTokens-ts.currentSession.CompletionTokens)
+	require.Equal(t, int64(37_500), contextAutoSummarizeThreshold(contextWindow, budget))
+	require.Equal(t, int64(37_500), budget-ts.currentSession.PromptTokens-ts.currentSession.CompletionTokens)
 	conditions := ts.stopConditions()
 	require.True(t, conditions[0](nil))
 	require.True(t, ts.shouldSummarize)

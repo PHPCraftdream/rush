@@ -117,3 +117,24 @@ func TestLookupModelFacts(t *testing.T) {
 	require.Zero(t, cw)
 	require.Zero(t, mt)
 }
+
+// A documented max input must be exactly window minus default max output for
+// the family that documents all three numbers (GPT-6: 1,050,000 / 922,000 /
+// 128,000), and may never exceed the window. Undocumented rows report 0.
+func TestLookupModelMaxInput(t *testing.T) {
+	for _, id := range []string{"gpt-6-astra", "gpt-6.1-sol", "gpt-6.2-luna", "gpt-6.1-sol-wm"} {
+		require.Equal(t, int64(922_000), LookupModelMaxInput("openai-codex", id), id)
+	}
+	require.Equal(t, codexGPT6ContextWindow-codexDefaultMaxTokens, codexGPT6MaxInput)
+	for _, id := range []string{"gpt-6-orion", "gpt-5.6-sol", "gpt-5.6", "codex-model"} {
+		require.Zero(t, LookupModelMaxInput("openai-codex", id), id)
+	}
+	require.Zero(t, LookupModelMaxInput("zai", "glm-5.3"))
+	require.Zero(t, LookupModelMaxInput("unknown-provider", "gpt-6.1-sol"))
+	for i := range modelFactRules {
+		rule := &modelFactRules[i]
+		if rule.maxInputTokens > 0 {
+			require.LessOrEqual(t, rule.maxInputTokens, rule.contextWindow, rule.source)
+		}
+	}
+}
