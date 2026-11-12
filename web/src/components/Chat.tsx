@@ -5,7 +5,6 @@ import {
   $activeSessionID,
   $sessions,
   $busySessions,
-  $agentError,
   $selectedMessageIDs,
   $asyncJobCompletions,
   $messageQueue,
@@ -30,6 +29,21 @@ import { ChatToolbar } from "./ChatToolbar";
 import { LiveWorkPanel } from "./LiveWorkPanel";
 import { MessageSquare, Pencil, PlusCircle, Send, Sparkles, Square, Trash2, X, Zap } from "lucide-react";
 import type { Message as Msg, ContentPart } from "../types";
+import { useCarburetorValue } from "@react-carburetor/core/interop";
+import { noticesCarburetor } from "../state/notices";
+import type { INoticesState } from "../state/NoticesCarburetor";
+
+/**
+ * Picks the agent error text out of the notices state.
+ *
+ * @param state - the notices state
+ */
+const selectAgentError = (state: INoticesState) => state.agentError;
+
+/** Dismisses the agent error banner. */
+const dismissAgentError = (): void => {
+  noticesCarburetor.clearAgentError();
+};
 
 // ── Queued message item ───────────────────────────────────────────────────────
 
@@ -349,7 +363,7 @@ export function Chat() {
   const jobCompletions = useStore($asyncJobCompletions);
   const activeSessionID = useStore($activeSessionID);
   const busySessions  = useStore($busySessions);
-  const agentError    = useStore($agentError);
+  const agentError    = useCarburetorValue(noticesCarburetor, selectAgentError);
   const selectedIDs   = useStore($selectedMessageIDs);
   const messageQueue  = useStore($messageQueue);
   const sessions      = useStore($sessions);
@@ -564,7 +578,7 @@ export function Chat() {
             <div className="chat-error-banner">
               <span className="text-red text-lg shrink-0 mt-0.5">⚠</span>
               <p className="text-[15px] text-red/80 leading-relaxed flex-1 break-words">{agentError}</p>
-              <button onClick={() => $agentError.set(null)} aria-label="Dismiss" className="text-red/40 hover:text-red/70 transition-colors shrink-0 text-xl leading-none mt-0.5">
+              <button onClick={dismissAgentError} aria-label="Dismiss" className="text-red/40 hover:text-red/70 transition-colors shrink-0 text-xl leading-none mt-0.5">
                 <X size={16} />
               </button>
             </div>

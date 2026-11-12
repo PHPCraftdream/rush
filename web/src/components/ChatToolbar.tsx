@@ -8,8 +8,6 @@ import {
   $busySessions,
   $summarizeQueued,
   $config,
-  $updateAvailable,
-  $serverShuttingDown,
   summarizeSession,
   cancelQueuedSummarize,
   setTheme,
@@ -26,6 +24,17 @@ import { ProvidersModal } from "./ProvidersModal";
 import { ScopedModelsModal } from "./ScopedModelsModal";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ws, wsRequest } from "../ws";
+import { useCarburetorValue } from "@react-carburetor/core/interop";
+import { connectionCarburetor } from "../state/connection";
+import { noticesCarburetor } from "../state/notices";
+import type { INoticesState } from "../state/NoticesCarburetor";
+
+/**
+ * Picks the update announcement out of the notices state.
+ *
+ * @param state - the notices state
+ */
+const selectUpdateAvailable = (state: INoticesState) => state.updateAvailable;
 
 // ── System Prompt Modal ───────────────────────────────────────────────────────
 
@@ -218,7 +227,7 @@ export function ChatToolbar() {
   const busySessions = useStore($busySessions);
   const summarizeQueued = useStore($summarizeQueued);
   const config = useStore($config);
-  const updateInfo = useStore($updateAvailable);
+  const updateInfo = useCarburetorValue(noticesCarburetor, selectUpdateAvailable);
   const sitter = useStore($sitter);
 
   // Modal state
@@ -346,7 +355,7 @@ export function ChatToolbar() {
       // Acked: the server is now shutting down for good. Enter the terminal
       // UI state and stop the auto-reconnect loop from retrying a server
       // that is intentionally gone.
-      $serverShuttingDown.set(true);
+      connectionCarburetor.markServerShuttingDown();
       ws.disableReconnect();
       setConfirmShutdown(false);
     } catch (e) {

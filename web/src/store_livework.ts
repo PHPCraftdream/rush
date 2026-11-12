@@ -165,12 +165,6 @@ export function isWakeSchedulesGetRequestID(id: string | undefined): boolean {
   return !!id && id.startsWith(WAKE_SCHEDULES_GET_PREFIX);
 }
 
-/** Inline error from a rejected cancel (unknown/foreign scheduleID,
- * transport): shown inside the still-open ConfirmDialog via its error prop,
- * never the global banner -- the operator's attention is already on the
- * dialog. Cleared by WakeScheduleList when the dialog closes or reopens. */
-export const $wakeScheduleCancelError = atom<string | null>(null);
-
 /** True if id belongs to a wake-schedules CANCEL request -- see
  * WAKE_SCHEDULES_CANCEL_PREFIX above. */
 export function isWakeSchedulesCancelRequestID(id: string | undefined): boolean {

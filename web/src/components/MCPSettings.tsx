@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from "react";
-import { useStore } from "@nanostores/react";
-import { $mcpState } from "../store";
+import type { TReadonly } from "@react-carburetor/core";
+import { useCarburetorValue } from "@react-carburetor/core/interop";
+import { mcpCarburetor } from "../state/mcp";
+import type { IMcpState } from "../state/McpCarburetor";
 import { ws, wsRequest } from "../ws";
 import {
   X,
@@ -20,7 +22,7 @@ import type { MCPServerInfo } from "../types";
 
 // ── Status badge ──────────────────────────────────────────────────────────────
 
-function StatusBadge({ info }: { info: MCPServerInfo }) {
+function StatusBadge({ info }: { info: TReadonly<MCPServerInfo> }) {
   if (info.disabled) {
     return (
       <span className="inline-flex items-center gap-1 text-[11px] font-medium text-text-muted bg-base-overlay border border-surface rounded-full px-2 py-0.5">
@@ -68,7 +70,7 @@ const PLACEHOLDER_JSON = `{
   "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 }`;
 
-function buildInitialJson(info: MCPServerInfo): string {
+function buildInitialJson(info: TReadonly<MCPServerInfo>): string {
   const obj: Record<string, unknown> = { name: info.name };
   if (info.serverType) obj.type = info.serverType;
   if (info.command) obj.command = info.command;
@@ -85,7 +87,7 @@ function MCPForm({
   onSubmit,
   onCancel,
 }: {
-  initial?: MCPServerInfo;
+  initial?: TReadonly<MCPServerInfo>;
   submitLabel: string;
   onSubmit: (parsed: Record<string, unknown>) => Promise<unknown>;
   onCancel: () => void;
@@ -198,7 +200,7 @@ function MCPForm({
 
 // ── Server row ────────────────────────────────────────────────────────────────
 
-function ServerRow({ info, onRemove }: { info: MCPServerInfo; onRemove: () => void }) {
+function ServerRow({ info, onRemove }: { info: TReadonly<MCPServerInfo>; onRemove: () => void }) {
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -336,10 +338,17 @@ function ServerRow({ info, onRemove }: { info: MCPServerInfo; onRemove: () => vo
   );
 }
 
+/**
+ * Picks the MCP snapshot out of the MCP state.
+ *
+ * @param state - the MCP state
+ */
+const selectMcp = (state: TReadonly<IMcpState>) => state.mcp;
+
 // ── MCP Settings Modal ────────────────────────────────────────────────────────
 
 export function MCPSettings({ onClose }: { onClose: () => void }) {
-  const mcpState = useStore($mcpState);
+  const mcpState = useCarburetorValue(mcpCarburetor, selectMcp);
   const [showAdd, setShowAdd] = useState(false);
 
   useEffect(() => {

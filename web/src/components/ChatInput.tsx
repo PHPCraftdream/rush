@@ -3,7 +3,6 @@ import { useStore } from "@nanostores/react";
 import {
   $activeSessionID,
   $busySessions,
-  $connected,
   $sessions,
   $skills,
   $lastUsedSkill,
@@ -22,6 +21,16 @@ import { ListOrdered, Send, SendHorizonal, Paperclip, X, Zap, History, CornerLef
 import type { SkillInfo } from "../types";
 import type { MyPromptItem } from "../store";
 import { isAttachmentPayloadWithinLimit } from "../attachmentLimit";
+import { useCarburetorValue } from "@react-carburetor/core/interop";
+import { connectionCarburetor } from "../state/connection";
+import type { IConnectionState } from "../state/ConnectionCarburetor";
+
+/**
+ * Picks the socket-connected flag out of the connection state.
+ *
+ * @param state - the connection state
+ */
+const selectConnected = (state: IConnectionState) => state.connected;
 
 interface PendingAttachment {
   fileName: string;
@@ -215,7 +224,7 @@ export function ChatInput() {
   const [attachmentError, setAttachmentError] = useState("");
   const activeSessionID = useStore($activeSessionID);
   const busySessions = useStore($busySessions);
-  const connected = useStore($connected);
+  const connected = useCarburetorValue(connectionCarburetor, selectConnected);
   const outboxCount = useStore($wsOutboxCount);
   const sessions = useStore($sessions);
   const activeSession = useMemo(

@@ -1,18 +1,10 @@
 import { atom, computed } from "nanostores";
-import type { Session, Message, ConfigPayload, MCPState, Todo, SkillInfo, ProviderPeakHoursPolicy, ProviderPeakHoursStatus } from "./types";
+import type { Session, Message, ConfigPayload, Todo, SkillInfo, ProviderPeakHoursPolicy, ProviderPeakHoursStatus } from "./types";
 import { isAsyncCompletionNotice, indexAsyncJobCompletions } from "./asyncJobCompletion";
 import { buildMyPrompts, completionStatuses, mergeCompletionIndex } from "./completionIndex";
 import { $batchWorkBySession } from "./batchWork";
 import { drainSendableQueue } from "./queueOnIdle";
-
-// ── Connection state ─────────────────────────────────────────────────────────
-export const $connected = atom(false);
-
-// True once the server confirmed our shutdown_server request (task #714).
-// Terminal for the page: App renders a full-screen "server is shutting
-// down" state and suppresses the reconnect banner — the server is
-// intentionally gone, not transiently unreachable.
-export const $serverShuttingDown = atom(false);
+import { noticesCarburetor } from "./state/notices";
 
 // ── Data ─────────────────────────────────────────────────────────────────────
 export const $skills = atom<SkillInfo[]>([]);
@@ -34,12 +26,6 @@ export const $asyncJobCompletions = computed(
 );
 export const $asyncJobStatuses = computed($asyncJobCompletions, completionStatuses);
 export const $config = atom<ConfigPayload | null>(null);
-// Set once per server start, and only when a newer release exists — the
-// backend sends nothing otherwise, so a non-null value always means
-// "there is an update". Replaces the notification path that was lost when
-// the TUI was removed.
-export const $updateAvailable = atom<{ current: string; latest: string } | null>(null);
-export const $mcpState = atom<MCPState | null>(null);
 export const $busySessions = atom<Set<string>>(new Set());
 // Sessions where the user has queued a compact/summarise request.
 export const $summarizeQueued = atom<Set<string>>(new Set());
@@ -196,7 +182,7 @@ export function removeSession(id: string) {
 export function setActiveSession(id: string | null) {
   $activeSessionID.set(id);
   $messages.set([]);
-  $agentError.set(null);
+  noticesCarburetor.clearAgentError();
   if (id) {
     window.location.hash = `#/${id}`;
   } else {
@@ -610,9 +596,6 @@ export function selectMessageIDs(ids: readonly string[]) {
   for (const id of ids) s.add(id);
   $selectedMessageIDs.set(s);
 }
-
-// Last agent error to display in chat
-export const $agentError = atom<string | null>(null);
 
 // ── Message queue (client-side) ────────────────────────────────────────────────
 export interface QueuedMessage {
