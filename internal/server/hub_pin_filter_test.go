@@ -181,11 +181,16 @@ func TestHub_PinnedViewNeverReceivesForeignSessionEvents(t *testing.T) {
 	require.Equal(t, []string{own.ID}, sessionIDs(pinnedSessions))
 	require.ElementsMatch(t, []string{own.ID, foreign.ID}, sessionIDs(controlSessions))
 
+	server.hub.BroadcastSticky(EventSkills, map[string]string{"skill": "LIVE_STICKY_CLASS_SKILLS_SECRET"})
+	select {
+	case <-server.hub.WaitDelivery():
+	case <-time.After(5 * time.Second):
+		t.Fatal("hub live sticky delivery timeout")
+	}
 	server.hub.Broadcast(EventSessionUpdated, map[string]string{"sessionID": foreign.ID, "sentinel": "LIVE_SECRET"})
 	server.hub.Broadcast(EventSessionUpdated, map[string]string{"sessionID": own.ID, "sentinel": "OWN_VISIBLE"})
 	server.hub.Broadcast(EventMCPState, map[string]any{"headers": map[string]string{"X-Sentinel": "MCP_LIVE_SECRET"}})
 	broadcastClasses("LIVE_")
-	server.hub.BroadcastSticky(EventSkills, map[string]string{"skill": "LIVE_STICKY_CLASS_SKILLS_SECRET"})
 	server.hub.Broadcast(EventSessionCreated, map[string]string{"sessionID": own.ID, "id": "delivery-barrier"})
 	select {
 	case <-server.hub.WaitDelivery():

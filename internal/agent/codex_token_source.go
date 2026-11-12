@@ -70,10 +70,10 @@ func (s *codexTokenSource) Refresh(ctx context.Context, used oauth.Token) error 
 	return s.store.RefreshOAuthTokenWithClient(ctx, config.ScopeGlobal, refreshConfig, client)
 }
 
-func newCodexTokenProvider(client *http.Client, source *codexTokenSource) (fantasy.Provider, error) {
+func newCodexTokenProvider(client *http.Client, source *codexTokenSource, options ...codexprovider.WebSocketOptions) (fantasy.Provider, error) {
 	token, ok := source.Current()
 	if !ok || strings.TrimSpace(token.AccessToken) == "" {
 		return nil, errors.New("openai-codex requires an OAuth access token; credentials unavailable, removed or logged out")
 	}
-	return codexprovider.NewWithSource(client, source)
+	return codexprovider.NewWithSource(client, source, options...)
 }

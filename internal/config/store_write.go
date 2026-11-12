@@ -457,6 +457,9 @@ func (s *ConfigStore) setConfigFieldsAuthority(scope Scope, kv map[string]any, a
 				return fmt.Errorf("failed to set config field %s: %w", key, err)
 			}
 		}
+		if err := validateResponsesTransportWrite([]byte(newValue), keys); err != nil {
+			return err
+		}
 		if err := validateCustomRoleWrite([]byte(newValue), keys); err != nil {
 			return err
 		}
@@ -645,6 +648,9 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string,
 		newValue, err := sjson.Delete(string(doc.jsonBytes), key)
 		if err != nil {
 			return fmt.Errorf("failed to delete config field %s: %w", key, err)
+		}
+		if err := validateResponsesTransportWrite([]byte(newValue), []string{key}); err != nil {
+			return err
 		}
 		if err := validateCustomRoleWrite([]byte(newValue), []string{key}); err != nil {
 			return err

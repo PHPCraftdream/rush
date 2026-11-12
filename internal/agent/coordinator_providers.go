@@ -858,7 +858,7 @@ func (c *coordinator) buildProviderWithValuesInner(cfg *config.Config, providerC
 	}
 	if providerCfg.ID == "openai-codex" {
 		if c != nil && c.cfg != nil {
-			return newCodexTokenProvider(httpClient, &codexTokenSource{store: c.cfg, resolve: c.resolveProviderHTTPClient})
+			return newCodexTokenProvider(httpClient, &codexTokenSource{store: c.cfg, resolve: c.resolveProviderHTTPClient}, c.codexWebSocketOptions()...)
 		}
 		return codexprovider.New(httpClient, providerCfg.OAuthToken)
 	}
@@ -866,6 +866,9 @@ func (c *coordinator) buildProviderWithValuesInner(cfg *config.Config, providerC
 
 	switch providerCfg.Type {
 	case openai.Name:
+		if allowAmbientAuth {
+			return c.buildPublicResponsesProvider(providerCfg, baseURL, apiKey, headers, httpClient)
+		}
 		return c.buildOpenaiProvider(baseURL, apiKey, headers, httpClient)
 	case anthropic.Name:
 		return c.buildAnthropicProvider(baseURL, apiKey, headers, providerCfg.ID, httpClient)
