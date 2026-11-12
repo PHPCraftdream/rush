@@ -20,6 +20,7 @@ CLI access to the session store for scripting, orchestration, and debugging.
 Core:        list (with STATUS column), show (with purpose + budget), delete, reset (--force)
 Observe:     last (with timestamps), tail --follow, locks (heartbeat + budget),
              watch (live dashboard), pick (interactive TUI),
+             status <id> (one-shot machine truth: process/phase/activity/children/batch),
              why <id> (the evidence behind a status), jobs <id> (durable async
              jobs of a session and its delegation tree),
              audit (anomaly scan — strictly read-only)
@@ -57,11 +58,13 @@ func init() {
 	sessionsLastCmd.Flags().String("format", "text", "Output format: text or ndjson")
 	sessionsLastCmd.Flags().Bool("with-subagents", false, "After the parent messages, render each sub-agent delegation's transcript as a demarcated block")
 
+	sessionsStatusCmd.Flags().Bool("json", false, "Emit a single JSON object instead of text")
+
 	sessionsCacheCmd.Flags().Bool("json", false, "Emit JSON instead of a table")
 	sessionsCacheCmd.Flags().String("since", "", "Only count messages newer than this: Go duration (30m, 24h), day suffix (7d), or a bare integer read as days. Aggregates across all sessions; omit the session argument.")
 	sessionsCacheCmd.Flags().String("by", "", "Grouping for the cross-session view: model (default) or day")
 
-	sessionsCmd.AddCommand(sessionsListCmd, sessionsDeleteCmd, sessionsResetCmd, sessionsShowCmd, sessionsLocksCmd, sessionsTailCmd, sessionsLastCmd, sessionsWhyCmd, sessionsGcCmd, sessionsPurgeCmd, sessionsKillCmd, sessionsReapCmd, sessionsWatchCmd, sessionsPickCmd, sessionsGrepCmd, sessionsCostCmd, sessionsCacheCmd, sessionsDiffCmd, sessionsCancelCmd, sessionsForkCmd, sessionsTreeCmd, sessionsAuditCmd, sessionsCompactCmd)
+	sessionsCmd.AddCommand(sessionsListCmd, sessionsDeleteCmd, sessionsResetCmd, sessionsShowCmd, sessionsLocksCmd, sessionsTailCmd, sessionsLastCmd, sessionsStatusCmd, sessionsWhyCmd, sessionsGcCmd, sessionsPurgeCmd, sessionsKillCmd, sessionsReapCmd, sessionsWatchCmd, sessionsPickCmd, sessionsGrepCmd, sessionsCostCmd, sessionsCacheCmd, sessionsDiffCmd, sessionsCancelCmd, sessionsForkCmd, sessionsTreeCmd, sessionsAuditCmd, sessionsCompactCmd)
 	rootCmd.AddCommand(sessionsCmd)
 }
 
