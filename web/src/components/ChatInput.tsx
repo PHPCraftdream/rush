@@ -1,29 +1,28 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { useStore } from "@nanostores/react";
 import {
-  $activeSessionID,
-  $busySessions,
-  $sessions,
-  $skills,
-  $lastUsedSkill,
-  $myPrompts,
-  $messageQueue,
-  enqueueMessage,
-  dequeueAllMessages,
   sendWithFastModel,
-  setLastUsedSkill,
   jumpToMessage,
   type WireAttachment,
 } from "../store";
-import { ws, $wsOutboxCount } from "../ws";
-import { handleSitterCommand } from "../sitter";
+import { ws } from "../ws";
+import { sitterLoop } from "../sitter/sitterLoop";
 import { ListOrdered, Send, SendHorizonal, Paperclip, X, Zap, History, CornerLeftUp, PlusCircle, WifiOff } from "lucide-react";
-import type { SkillInfo } from "../types";
+import type { Session, SkillInfo } from "../types";
 import type { MyPromptItem } from "../store";
 import { isAttachmentPayloadWithinLimit } from "../attachmentLimit";
-import { useCarburetorValue } from "@react-carburetor/core/interop";
+import type { TReadonly } from "@react-carburetor/core";
+import { useCarburetorValue, useComputedValue } from "@react-carburetor/core/interop";
+import { busyCarburetor } from "../state/busy";
+import type { IBusyState } from "../state/BusyCarburetor";
 import { connectionCarburetor } from "../state/connection";
 import type { IConnectionState } from "../state/ConnectionCarburetor";
+import { myPrompts as myPromptsComputed } from "../state/myPrompts";
+import { queueCarburetor } from "../state/queue";
+import type { IQueueState, QueuedMessage } from "../state/QueueCarburetor";
+import { sessionsCarburetor } from "../state/sessions";
+import type { ISessionsState } from "../state/SessionsCarburetor";
+import { skillsCarburetor } from "../state/skills";
+import type { ISkillsState } from "../state/SkillsCarburetor";
 
 /**
  * Picks the socket-connected flag out of the connection state.
@@ -31,6 +30,27 @@ import type { IConnectionState } from "../state/ConnectionCarburetor";
  * @param state - the connection state
  */
 const selectConnected = (state: IConnectionState) => state.connected;
+
+/** Picks the offline-outbox size out of the connection state. */
+const selectOutboxCount = (state: IConnectionState) => state.outboxCount;
+
+/** Picks the active session id out of the sessions state. */
+const selectActiveSessionID = (state: TReadonly<ISessionsState>) => state.activeSessionID;
+
+/** Picks the sessions list out of the sessions state. */
+const selectSessions = (state: TReadonly<ISessionsState>) => state.sessions;
+
+/** Picks the busy-session set out of the busy state. */
+const selectBusySessions = (state: TReadonly<IBusyState>) => new Set(state.busySessions);
+
+/** Picks the skills list out of the skills state. */
+const selectSkills = (state: TReadonly<ISkillsState>) => state.skills;
+
+/** Picks the last used skill name out of the skills state. */
+const selectLastUsedSkill = (state: TReadonly<ISkillsState>) => state.lastUsedSkill;
+
+/** Picks the client message queue out of the queue state. */
+const selectMessageQueue = (state: TReadonly<IQueueState>) => new Map(Object.entries(state.messageQueue));
 
 interface PendingAttachment {
   fileName: string;
@@ -222,11 +242,11 @@ export function ChatInput() {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
-  const activeSessionID = useStore($activeSessionID);
-  const busySessions = useStore($busySessions);
+  const activeSessionID = useCarburetorValue(sessionsCarburetor, selectActiveSessionID);
+  const busySessions = useCarburetorValue(busyCarburetor, selectBusySessions) as Set<string>;
   const connected = useCarburetorValue(connectionCarburetor, selectConnected);
-  const outboxCount = useStore($wsOutboxCount);
-  const sessions = useStore($sessions);
+  const outboxCount = useCarburetorValue(connectionCarburetor, selectOutboxCount);
+  const sessions = useCarburetorValue(sessionsCarburetor, selectSessions) as Session[];
   const activeSession = useMemo(
     () => sessions.find((s) => s.ID === activeSessionID) ?? null,
     [sessions, activeSessionID],
@@ -236,15 +256,15 @@ export function ChatInput() {
   // all action buttons are replaced by a read-only banner.
   const foreignOwned = !!activeSession?.OwnedExternal;
   const ownerPID = activeSession?.OwnedByPID ?? 0;
-  const skills = useStore($skills);
-  const lastUsedSkill = useStore($lastUsedSkill);
-  const myPrompts = useStore($myPrompts);
-  const messageQueue = useStore($messageQueue);
+  const skills = useCarburetorValue(skillsCarburetor, selectSkills) as SkillInfo[];
+  const lastUsedSkill = useCarburetorValue(skillsCarburetor, selectLastUsedSkill);
+  const myPrompts = useComputedValue(myPromptsComputed);
+  const messageQueue = useCarburetorValue(queueCarburetor, selectMessageQueue) as Map<string, QueuedMessage[]>;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── History recall state ──────────────────────────────────────────────────
-  // histIdx:  -1 = live draft, 0..N-1 = a prompt from $myPrompts (newest=0).
+  // histIdx:  -1 = live draft, 0..N-1 = a prompt from myPrompts (newest=0).
   // stash:    text the user was typing when they started recalling, so
   //           returning to histIdx=-1 (or pressing Esc) restores it.
   // historyOpen: whether the dropdown is visible. Independent of histIdx:
@@ -308,7 +328,7 @@ export function ChatInput() {
   }, [slashQuery, filteredSkills.length, lastUsedSkill]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleSkillSelect(skill: SkillInfo, sendNow: boolean) {
-    setLastUsedSkill(skill.name);
+    skillsCarburetor.setLastUsedSkill(skill.name);
     setSlashOpen(false);
     if (sendNow) {
       if (!activeSessionID) return;
@@ -377,7 +397,7 @@ export function ChatInput() {
     // pure-client toggle (start/stop the auto-resume loop). Other slash
     // commands flow through unchanged. The msg guard makes the
     // text-only-command rule above explicit.
-    if (msg && handleSitterCommand(msg)) {
+    if (msg && sitterLoop.handleCommand(msg)) {
       setText("");
       setHistIdx(-1);
       setStash("");
@@ -398,7 +418,7 @@ export function ChatInput() {
       }
       // The attachment is captured by the queued message — it will go out
       // with the flushed send, so clearing the badge here is honest.
-      enqueueMessage(activeSessionID, msg, toWireAttachments(attachments));
+      queueCarburetor.enqueue(activeSessionID, msg, toWireAttachments(attachments));
     } else {
       const payload: Record<string, unknown> = { sessionID: activeSessionID, content: msg };
       const wire = toWireAttachments(attachments);
@@ -492,7 +512,7 @@ export function ChatInput() {
     // as the user asked. Both delivery worlds are safe, so the frame
     // keeps its original type.
     if (!ws.sendQueued("interrupt_and_send", payload)) return;
-    if (queued) dequeueAllMessages(activeSessionID);
+    if (queued) queueCarburetor.dequeueAll(activeSessionID);
     setText("");
     setAttachments([]);
     setHistIdx(-1);
@@ -554,7 +574,7 @@ export function ChatInput() {
     // online case still needs the real inject_message type.
     const type = ws.isOpen() ? "inject_message" : "send_message";
     if (!ws.sendQueued(type, payload)) return;
-    if (queued) dequeueAllMessages(activeSessionID);
+    if (queued) queueCarburetor.dequeueAll(activeSessionID);
     setText("");
     setAttachments([]);
     setHistIdx(-1);

@@ -1,9 +1,29 @@
 import { useState, useRef, useEffect } from "react";
-import { useStore } from "@nanostores/react";
-import { $sessions, $activeSessionID, $busySessions, $config, setActiveSession, removeSession } from "../store";
+import type { TReadonly } from "@react-carburetor/core";
+import { useCarburetorValue } from "@react-carburetor/core/interop";
+import { setActiveSession, removeSession } from "../store";
 import { ws, wsRequest, sendLoadMessages } from "../ws";
+import type { ConfigPayload, Session } from "../types";
+import { busyCarburetor } from "../state/busy";
+import type { IBusyState } from "../state/BusyCarburetor";
+import { configCarburetor } from "../state/config";
+import type { IConfigState } from "../state/ConfigCarburetor";
+import { sessionsCarburetor } from "../state/sessions";
+import type { ISessionsState } from "../state/SessionsCarburetor";
 import { MessageSquare, Plus, Pencil, X, Check, Folder, Trash2 } from "lucide-react";
 import { ConfirmDialog } from "./ConfirmDialog";
+
+/** Picks the sessions list out of the sessions state. */
+const selectSessions = (state: TReadonly<ISessionsState>) => state.sessions;
+
+/** Picks the active session id out of the sessions state. */
+const selectActiveSessionID = (state: TReadonly<ISessionsState>) => state.activeSessionID;
+
+/** Picks the busy-session set out of the busy state. */
+const selectBusySessions = (state: TReadonly<IBusyState>) => new Set(state.busySessions);
+
+/** Picks the server config out of the config state. */
+const selectConfig = (state: TReadonly<IConfigState>) => state.config;
 
 // Wire shape of a delete_other_sessions reply payload (task #684). Mirrors
 // internal/server/protocol.go's DeleteOtherSessionsResult: only DeletedIDs
@@ -21,11 +41,11 @@ function formatTokens(n: number): string {
 }
 
 export function Sidebar() {
-  const allSessions = useStore($sessions);
+  const allSessions = useCarburetorValue(sessionsCarburetor, selectSessions) as Session[];
   const sessions = allSessions.filter((s) => !s.ParentSessionID);
-  const activeID = useStore($activeSessionID);
-  const busySessions = useStore($busySessions);
-  const config = useStore($config);
+  const activeID = useCarburetorValue(sessionsCarburetor, selectActiveSessionID);
+  const busySessions = useCarburetorValue(busyCarburetor, selectBusySessions) as Set<string>;
+  const config = useCarburetorValue(configCarburetor, selectConfig) as ConfigPayload | null;
   const [editingID, setEditingID] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -90,7 +110,7 @@ export function Sidebar() {
       // auto-focus, hashchange, sessions_list routing). Clearing from a
       // stale capture would wipe the now-active session's transcript and
       // hash for a delete that no longer concerns it.
-      if ($activeSessionID.get() === target.id) setActiveSession(null);
+      if (sessionsCarburetor.getData().activeSessionID === target.id) setActiveSession(null);
       setPendingDelete(null);
     } catch (e) {
       if (disposedRef.current) return;
@@ -121,10 +141,10 @@ export function Sidebar() {
       // is still the active one clears the active session.
       const result = msg.payload;
       const deletedIDs = new Set(result?.deletedIDs ?? []);
-      for (const s of $sessions.get()) {
+      for (const s of sessionsCarburetor.getData().sessions) {
         if (!deletedIDs.has(s.ID)) continue;
         removeSession(s.ID);
-        if ($activeSessionID.get() === s.ID) setActiveSession(null);
+        if (sessionsCarburetor.getData().activeSessionID === s.ID) setActiveSession(null);
       }
       if (result && result.failedIDs.length > 0) {
         setDeleteOthersError(

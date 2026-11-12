@@ -3,9 +3,13 @@
 
 import { useState, useCallback, useMemo, memo } from "react";
 import { Check, Star } from "lucide-react";
-import { useStore } from "@nanostores/react";
+import type { TReadonly } from "@react-carburetor/core";
+import { useCarburetorValue } from "@react-carburetor/core/interop";
 import type { Message as Msg } from "../../types";
-import { toggleMessageSelection, updateMessageContent, $busySessions } from "../../store";
+import { updateMessageContent } from "../../store";
+import { busyCarburetor } from "../../state/busy";
+import type { IBusyState } from "../../state/BusyCarburetor";
+import { selectionCarburetor } from "../../state/selection";
 import { ForkSessionModal } from "../ForkSessionModal";
 import { AssistantContent } from "./AssistantContent";
 import { AssistantHoverActions } from "./AssistantHoverActions";
@@ -19,6 +23,9 @@ import { extractText, isTerminallyFinished } from "./textParts";
 import { isAsyncCompletionNotice } from "../../asyncJobCompletion";
 
 // ── Message ───────────────────────────────────────────────────────────────────
+
+/** Picks the busy-session set out of the busy state. */
+const selectBusySessions = (state: TReadonly<IBusyState>) => new Set(state.busySessions);
 
 export interface MessageProps {
   message: Msg;
@@ -45,7 +52,7 @@ export const Message = memo(function Message({
 
   const copyText     = useMemo(() => extractText(message.Parts), [message.Parts]);
   const hasContent   = useMemo(() => !isUser && message.Parts.some(p => ["text","tool_call","tool_result","finish"].includes(p.type)), [isUser, message.Parts]);
-  const busySessions = useStore($busySessions);
+  const busySessions = useCarburetorValue(busyCarburetor, selectBusySessions) as Set<string>;
 
   // Orphan: an assistant message that is NOT terminally finished AND its
   // session is NOT busy. This represents a message from a crashed/killed turn
@@ -119,7 +126,7 @@ export const Message = memo(function Message({
       e.preventDefault(); // Prevent text selection between clicks
       onRangeSelect(index);
     }
-    else { toggleMessageSelection(message.ID); }
+    else { selectionCarburetor.toggle(message.ID); }
   }, [message.ID, index, onRangeSelect, selectable]);
 
   const handleCheckboxContextMenu = useCallback((e: React.MouseEvent) => {

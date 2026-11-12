@@ -2,10 +2,15 @@
 // Pure code move from the former components/Message.tsx.
 
 import { useState, useEffect, useMemo, memo } from "react";
-import { useStore } from "@nanostores/react";
+import type { TReadonly } from "@react-carburetor/core";
+import { useCarburetorValue } from "@react-carburetor/core/interop";
 import type { Message as Msg } from "../../types";
-import { $busySessions } from "../../store";
+import { busyCarburetor } from "../../state/busy";
+import type { IBusyState } from "../../state/BusyCarburetor";
 import { isTerminallyFinished } from "./textParts";
+
+/** Picks the busy-session set out of the busy state. */
+const selectBusySessions = (state: TReadonly<IBusyState>) => new Set(state.busySessions);
 
 function formatDuration(s: number) {
   if (s < 60) return `${s.toFixed(1)}s`;
@@ -16,7 +21,7 @@ function formatDuration(s: number) {
 
 export const DurationBadge = memo(function DurationBadge({ message }: { message: Msg }) {
   const isFinished = useMemo(() => isTerminallyFinished(message.Parts), [message.Parts]);
-  const busy = useStore($busySessions);
+  const busy = useCarburetorValue(busyCarburetor, selectBusySessions) as Set<string>;
   const isLive = !isFinished && busy.has(message.SessionID);
   const [elapsed, setElapsed] = useState(0);
 

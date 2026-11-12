@@ -1,20 +1,14 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { useStore } from "@nanostores/react";
 import { Minimize2, X, CheckCheck, ScrollText, Plug, Sun, Moon, Settings, ServerCog, FileText, Headphones, Eye, ChevronsDownUp, ChevronDown, SlidersHorizontal, ArrowUpCircle, MoreHorizontal, PowerOff } from "lucide-react";
-import { $sitter, stopSitter } from "../sitter";
+import { sitterLoop } from "../sitter/sitterLoop";
 import {
-  $sessions,
-  $activeSessionID,
-  $busySessions,
-  $summarizeQueued,
-  $config,
   summarizeSession,
   cancelQueuedSummarize,
   setTheme,
   setKeepAliveEnabled,
   getDefaultModelKey,
-  collapseAllSpoilers,
 } from "../store";
+import type { ConfigPayload, Session } from "../types";
 import { ModelSelector, buildModelList } from "./ModelSelector";
 import { StatusBar } from "./StatusBar";
 import { LogsModal } from "./LogsModal";
@@ -24,10 +18,43 @@ import { ProvidersModal } from "./ProvidersModal";
 import { ScopedModelsModal } from "./ScopedModelsModal";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ws, wsRequest } from "../ws";
+import type { TReadonly } from "@react-carburetor/core";
 import { useCarburetorValue } from "@react-carburetor/core/interop";
+import { busyCarburetor } from "../state/busy";
+import type { IBusyState } from "../state/BusyCarburetor";
+import { configCarburetor } from "../state/config";
+import type { IConfigState } from "../state/ConfigCarburetor";
 import { connectionCarburetor } from "../state/connection";
 import { noticesCarburetor } from "../state/notices";
 import type { INoticesState } from "../state/NoticesCarburetor";
+import { sessionsCarburetor } from "../state/sessions";
+import type { ISessionsState } from "../state/SessionsCarburetor";
+import { signalsCarburetor } from "../state/signals";
+import { sitterCarburetor } from "../state/sitter";
+import type { ISitterState } from "../state/SitterCarburetor";
+
+/** Picks the sessions list out of the sessions state. */
+const selectSessions = (state: TReadonly<ISessionsState>) => state.sessions;
+
+/** Picks the active session id out of the sessions state. */
+const selectActiveSessionID = (state: TReadonly<ISessionsState>) => state.activeSessionID;
+
+/** Picks the busy-session set out of the busy state. */
+const selectBusySessions = (state: TReadonly<IBusyState>) => new Set(state.busySessions);
+
+/** Picks the queued-summarize set out of the busy state. */
+const selectSummarizeQueued = (state: TReadonly<IBusyState>) => new Set(state.summarizeQueued);
+
+/** Picks the server config out of the config state. */
+const selectConfig = (state: TReadonly<IConfigState>) => state.config;
+
+/** Picks the sitter status out of the sitter state. */
+const selectSitter = (state: TReadonly<ISitterState>) => state.sitter;
+
+/** Closes every collapsible spoiler in the transcript. */
+const collapseAllSpoilers = (): void => {
+  signalsCarburetor.collapseAll();
+};
 
 /**
  * Picks the update announcement out of the notices state.
@@ -222,13 +249,13 @@ function pctColor(pct: number): string {
 }
 
 export function ChatToolbar() {
-  const sessions = useStore($sessions);
-  const activeSessionID = useStore($activeSessionID);
-  const busySessions = useStore($busySessions);
-  const summarizeQueued = useStore($summarizeQueued);
-  const config = useStore($config);
+  const sessions = useCarburetorValue(sessionsCarburetor, selectSessions) as Session[];
+  const activeSessionID = useCarburetorValue(sessionsCarburetor, selectActiveSessionID);
+  const busySessions = useCarburetorValue(busyCarburetor, selectBusySessions) as Set<string>;
+  const summarizeQueued = useCarburetorValue(busyCarburetor, selectSummarizeQueued) as Set<string>;
+  const config = useCarburetorValue(configCarburetor, selectConfig) as ConfigPayload | null;
   const updateInfo = useCarburetorValue(noticesCarburetor, selectUpdateAvailable);
-  const sitter = useStore($sitter);
+  const sitter = useCarburetorValue(sitterCarburetor, selectSitter);
 
   // Modal state
   const [showSystemPrompt, setShowSystemPrompt] = useState(false);
@@ -592,7 +619,7 @@ export function ChatToolbar() {
         {sitter.running && (
           <button
             data-test-id="header-sitter-pill"
-            onClick={() => stopSitter()}
+            onClick={() => sitterLoop.stop()}
             title={`Sitter armed — checking session every ${sitter.intervalMin}m. Resumes the agent if it stalls AND there are open todos. Click to disable. (Or type /sitter in the chat.)`}
             className="flex items-center gap-1.5 text-xs font-medium rounded-lg px-2.5 py-1.5 border bg-accent/10 border-accent/40 text-accent hover:bg-red/10 hover:border-red/40 hover:text-red transition-colors"
           >

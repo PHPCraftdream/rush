@@ -1,11 +1,17 @@
 import { useState, useEffect, useRef } from "react";
-import { useStore } from "@nanostores/react";
-import { $config, removeCustomProvider, pauseProviderPeakHours, resumeProviderPeakHours, type ConfigScope } from "../store";
+import type { TReadonly } from "@react-carburetor/core";
+import { useCarburetorValue } from "@react-carburetor/core/interop";
+import { removeCustomProvider, pauseProviderPeakHours, resumeProviderPeakHours, type ConfigScope } from "../store";
 import { X, Plus, Trash2, Pencil, AlertCircle, CheckCircle2, Loader2, ChevronDown, ChevronRight } from "lucide-react";
-import type { ProviderInfo, ProviderPeakHoursPolicy } from "../types";
+import type { ConfigPayload, ProviderInfo, ProviderPeakHoursPolicy } from "../types";
 import { wsRequest } from "../ws";
+import { configCarburetor } from "../state/config";
+import type { IConfigState } from "../state/ConfigCarburetor";
 import { PeakHoursEditor, legacyToPolicy, peakHoursProblems, peakSummaryText } from "./PeakHoursEditor";
 import { PeakHoursStatus } from "./PeakHoursStatus";
+
+/** Picks the server config out of the config state. */
+const selectConfig = (state: TReadonly<IConfigState>) => state.config;
 
 // ── Custom model editor ───────────────────────────────────────────────────────
 
@@ -677,7 +683,7 @@ function ProviderRow({
 // ── Providers Modal ───────────────────────────────────────────────────────────
 
 export function ProvidersModal({ onClose }: { onClose: () => void }) {
-  const config = useStore($config);
+  const config = useCarburetorValue(configCarburetor, selectConfig) as ConfigPayload | null;
   const [showAdd, setShowAdd] = useState(false);
 
   useEffect(() => {

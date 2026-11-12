@@ -2,14 +2,20 @@
 // message. Pure code move from the former components/Message.tsx.
 
 import { useState, useCallback } from "react";
-import { useStore } from "@nanostores/react";
+import type { TReadonly } from "@react-carburetor/core";
+import { useCarburetorValue } from "@react-carburetor/core/interop";
 import { GitFork, Pencil, Trash2 } from "lucide-react";
-import { $activeSessionID, updateMessagePart, deleteMessagePart } from "../../store";
+import { updateMessagePart, deleteMessagePart } from "../../store";
+import { sessionsCarburetor } from "../../state/sessions";
+import type { ISessionsState } from "../../state/SessionsCarburetor";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { ForkSessionModal } from "../ForkSessionModal";
 import { CopyButton } from "./CopyButton";
 import { EditForm } from "./EditForm";
 import { TextBlock } from "./TextBlock";
+
+/** Picks the active session id out of the sessions state. */
+const selectActiveSessionID = (state: TReadonly<ISessionsState>) => state.activeSessionID;
 
 // IntermediateAssistantMessage renders a text part that was extracted from
 // an otherwise-tool-bearing assistant message (the model's running narrative
@@ -32,7 +38,7 @@ export function IntermediateAssistantMessage({
   const [forking, setForking] = useState(false);
   const [hovered, setHovered] = useState(false);
 
-  const activeSessionID = useStore($activeSessionID);
+  const activeSessionID = useCarburetorValue(sessionsCarburetor, selectActiveSessionID);
 
   const handleSave = useCallback(
     (newText: string) => {

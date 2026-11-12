@@ -3,7 +3,8 @@
 // Pure code move from the former components/Message.tsx.
 
 import { useState, useRef, useEffect, useMemo, useCallback, memo } from "react";
-import { useStore } from "@nanostores/react";
+import type { TReadonly } from "@react-carburetor/core";
+import { useCarburetorValue, useComputedValue } from "@react-carburetor/core/interop";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import type { ContentPart } from "../../types";
 import { SubAgentBlock } from "../SubAgentBlock";
@@ -11,8 +12,9 @@ import { ActionRow } from "./ActionRow";
 import type { ActionItem } from "./ActionRow";
 import { TimeBadge } from "./TimeBadge";
 import { useCollapseAllSignal } from "./useCollapseAllSignal";
-import { $asyncJobCompletions } from "../../store";
-import { $expandToolCallRequest } from "../../store_livework";
+import { asyncJobCompletions } from "../../state/asyncJobCompletions";
+import { signalsCarburetor } from "../../state/signals";
+import type { ISignalsState } from "../../state/SignalsCarburetor";
 
 // ── Tool activity group ───────────────────────────────────────────────────────
 //
@@ -45,8 +47,11 @@ interface ToolActivityGroupProps {
   effort?: string;
 }
 
+/** Picks the expand-tool-call request out of the signals state. */
+const selectExpandRequest = (state: TReadonly<ISignalsState>) => state.expandToolCallRequest;
+
 export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, isCurrent, startedAt, model, effort }: ToolActivityGroupProps) {
-  const jobCompletions = useStore($asyncJobCompletions);
+  const jobCompletions = useComputedValue(asyncJobCompletions);
   // Group open/close state machine.
   //
   // The default collapsed state follows `isCurrent`: the most recent group
@@ -97,7 +102,7 @@ export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, 
   // `actions`/`rawAgentParts` below so it's available up here -- folded
   // into the grew/becameCurrent effect right below instead of a separate
   // effect, so opening the group doesn't add a second synchronization point.
-  const expandReq = useStore($expandToolCallRequest);
+  const expandReq = useCarburetorValue(signalsCarburetor, selectExpandRequest);
   const containsRequestedID = useMemo(() => {
     if (!expandReq) return false;
     const id = expandReq.toolCallID;

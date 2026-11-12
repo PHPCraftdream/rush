@@ -1,12 +1,8 @@
 import { useState, useRef, useEffect, useMemo } from "react";
-import { useStore } from "@nanostores/react";
+import type { TReadonly } from "@react-carburetor/core";
+import { useCarburetorValue } from "@react-carburetor/core/interop";
 import { BrainCircuit, Zap, Hammer, ShieldCheck, ChevronLeft, ChevronRight, Undo2 } from "lucide-react";
 import {
-  $config,
-  $recentSmartModels,
-  $recentFastModels,
-  $recentWorkerModels,
-  $recentReviewerModels,
   trackModelUsage,
   removeRecentModel,
   getDefaultModelKey,
@@ -16,6 +12,8 @@ import {
   type ModelRole,
 } from "../store";
 import type { ConfigPayload, Session } from "../types";
+import { configCarburetor } from "../state/config";
+import type { IConfigState } from "../state/ConfigCarburetor";
 import { effortLevelsFor, defaultEffortFor, supportsEffort, clampEffort, effortLabel } from "../effort";
 
 // Per-role icon and toolbar title, keyed the same way as every other
@@ -33,11 +31,15 @@ const ROLE_TITLE: Record<ModelRole, string> = {
   worker: "Worker model (delegated sub-tasks)",
   reviewer: "Reviewer model (explicit review pass)",
 };
-const ROLE_RECENT_STORE: Record<ModelRole, typeof $recentSmartModels> = {
-  smart: $recentSmartModels,
-  fast: $recentFastModels,
-  worker: $recentWorkerModels,
-  reviewer: $recentReviewerModels,
+/** Picks the server config out of the config state. */
+const selectConfig = (state: TReadonly<IConfigState>) => state.config;
+
+// Per-role selectors of the recent-model lists, indexed like the other role tables.
+const ROLE_RECENT_SELECTOR: Record<ModelRole, (state: TReadonly<IConfigState>) => readonly string[]> = {
+  smart: (state) => state.recent.smart,
+  fast: (state) => state.recent.fast,
+  worker: (state) => state.recent.worker,
+  reviewer: (state) => state.recent.reviewer,
 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -117,8 +119,8 @@ function ModelRow({ model, isSelected, onSelect }: { model: ModelItem, isSelecte
 // ── ModelSelector ─────────────────────────────────────────────────────────────
 
 export function ModelSelector({ session, modelType }: { session: Session | null; modelType: ModelRole }) {
-  const config = useStore($config);
-  const recentKeys = useStore(ROLE_RECENT_STORE[modelType]);
+  const config = useCarburetorValue(configCarburetor, selectConfig) as ConfigPayload | null;
+  const recentKeys = useCarburetorValue(configCarburetor, ROLE_RECENT_SELECTOR[modelType]) as string[];
 
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");

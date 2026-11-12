@@ -2,15 +2,26 @@
 // empty-response handling. Pure code move from the former components/Message.tsx.
 
 import { useMemo, memo } from "react";
-import { useStore } from "@nanostores/react";
+import type { TReadonly } from "@react-carburetor/core";
+import { useCarburetorValue } from "@react-carburetor/core/interop";
 import type { Message as Msg } from "../../types";
-import { $busySessions, $messageBlockBreaks } from "../../store";
+import { busyCarburetor } from "../../state/busy";
+import type { IBusyState } from "../../state/BusyCarburetor";
+import { messagesCarburetor } from "../../state/messages";
+import { MessagesCarburetor } from "../../state/MessagesCarburetor";
+import type { IMessagesState } from "../../state/MessagesCarburetor";
 import { EditForm } from "./EditForm";
 import { FinishErrorBlock } from "./FinishErrorBlock";
 import { Part } from "./Part";
 import { ToolActivityGroup } from "./ToolActivityGroup";
 import { EMPTY_BREAKS, groupPartsIntoBlocks } from "./blocks";
 import { extractText } from "./textParts";
+
+/** Picks the busy-session set out of the busy state. */
+const selectBusySessions = (state: TReadonly<IBusyState>) => new Set(state.busySessions);
+
+/** Picks the message-block break table out of the messages state. */
+const selectBlockBreaks = (state: TReadonly<IMessagesState>) => MessagesCarburetor.blockBreakSets(state);
 
 export const AssistantContent = memo(function AssistantContent({
   message, editing, onSaveEdit, onCancelEdit,
@@ -20,10 +31,10 @@ export const AssistantContent = memo(function AssistantContent({
   onSaveEdit: (text: string) => void;
   onCancelEdit: () => void;
 }) {
-  const breakMap = useStore($messageBlockBreaks);
+  const breakMap = useCarburetorValue(messagesCarburetor, selectBlockBreaks) as Map<string, Set<number>>;
   const breaks = useMemo(() => breakMap.get(message.ID) ?? EMPTY_BREAKS, [breakMap, message.ID]);
   const blocks = useMemo(() => groupPartsIntoBlocks(message.Parts, breaks), [message.Parts, breaks]);
-  const busy = useStore($busySessions);
+  const busy = useCarburetorValue(busyCarburetor, selectBusySessions) as Set<string>;
 
   // Fork patch: detect assistant messages that produced no visible content
   // (no text / tool_call / tool_result / thinking). This used to render as a

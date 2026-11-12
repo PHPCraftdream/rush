@@ -4,4 +4,5 @@ import { ConnectionCarburetor } from "./ConnectionCarburetor";
 export const connectionCarburetor = new ConnectionCarburetor({
   connected: false,
   serverShuttingDown: false,
+  outboxCount: 0,
 });

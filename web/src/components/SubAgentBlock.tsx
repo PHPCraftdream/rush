@@ -1,11 +1,15 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { useStore } from "@nanostores/react";
+import type { TReadonly } from "@react-carburetor/core";
+import { useCarburetorValue, useComputedValue } from "@react-carburetor/core/interop";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
 import { Bot } from "lucide-react";
-import { $subAgentMessages, $messages, $asyncJobStatuses, $activeSessionID, registerSubAgentSession } from "../store";
+import { asyncJobStatuses } from "../state/asyncJobStatuses";
+import { messagesCarburetor } from "../state/messages";
+import type { IMessagesState } from "../state/MessagesCarburetor";
+import { sessionsCarburetor } from "../state/sessions";
 import { sendLoadMessages } from "../ws";
 import type { Message, ContentPart, FinishPart } from "../types";
 import { formatActionArgs } from "../toolFormat";
@@ -15,6 +19,12 @@ import { TimeBadge } from "./Message/TimeBadge";
 import { EffortBadge } from "./Message/EffortBadge";
 import { isTerminallyFinished } from "./Message/textParts";
 import { useExpandToolCallSignal } from "./Message/useExpandToolCallSignal";
+
+/** Picks the sub-agent transcripts out of the messages state. */
+const selectSubAgentMessages = (state: TReadonly<IMessagesState>) => new Map(Object.entries(state.subAgentMessages));
+
+/** Picks the active transcript out of the messages state. */
+const selectMessages = (state: TReadonly<IMessagesState>) => state.messages;
 
 const MD_REMARK = [remarkGfm, remarkBreaks];
 const MD_REHYPE = [rehypeHighlight];
@@ -79,14 +89,14 @@ export const SubAgentBlock = memo(function SubAgentBlock({
   // to the bare toolCallID only when messageID is unavailable (defensive;
   // should not happen for a live sub-agent).
   const subSessionID = messageID ? `${messageID}$$${toolCallID}` : toolCallID;
-  const allSubMessages = useStore($subAgentMessages);
+  const allSubMessages = useCarburetorValue(messagesCarburetor, selectSubAgentMessages) as Map<string, Message[]>;
   // The parent message (the one whose agent tool_call part rendered this
   // block) lives in the active transcript whenever this block is mounted.
   // Look it up by ID: its SessionID is the owning session used to register
   // the lazy load below, and its finish state is the hard-kill fallback
   // for `done`.
-  const parentMessages = useStore($messages);
-  const asyncStatuses = useStore($asyncJobStatuses);
+  const parentMessages = useCarburetorValue(messagesCarburetor, selectMessages) as Message[];
+  const asyncStatuses = useComputedValue(asyncJobStatuses);
   const parent = useMemo(
     () => parentMessages.find((m) => m.ID === messageID),
     [parentMessages, messageID],
@@ -225,8 +235,8 @@ export const SubAgentBlock = memo(function SubAgentBlock({
     // reply fell through to the main-chat branch and was silently
     // dropped, leaving this block empty forever. The owning session is
     // the parent message's own SessionID.
-    const owner = parent?.SessionID ?? $activeSessionID.get();
-    if (owner) registerSubAgentSession(subSessionID, owner);
+    const owner = parent?.SessionID ?? sessionsCarburetor.getData().activeSessionID;
+    if (owner) messagesCarburetor.registerSubAgentSession(subSessionID, owner);
     sendLoadMessages(subSessionID);
   }, [subSessionID, messages.length, parent]);
 

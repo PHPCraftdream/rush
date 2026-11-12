@@ -1,9 +1,15 @@
 import { useState, useEffect, useRef } from "react";
-import { useStore } from "@nanostores/react";
-import { $config, addContextPath, removeContextPath, addSkillsPath, removeSkillsPath, setActiveSession } from "../store";
+import type { TReadonly } from "@react-carburetor/core";
+import { useCarburetorValue } from "@react-carburetor/core/interop";
+import { addContextPath, removeContextPath, addSkillsPath, removeSkillsPath, setActiveSession } from "../store";
 import { wsRequest } from "../ws";
 import { X, Plus, Trash2, RefreshCw, FolderOpen, Loader2 } from "lucide-react";
-import type { SkillsSnapshot } from "../types";
+import type { ConfigPayload, SkillsSnapshot } from "../types";
+import { configCarburetor } from "../state/config";
+import type { IConfigState } from "../state/ConfigCarburetor";
+
+/** Picks the server config out of the config state. */
+const selectConfig = (state: TReadonly<IConfigState>) => state.config;
 
 // ── Path list (reused for context_paths and skills_paths) ─────────────────────
 
@@ -153,7 +159,7 @@ function SkillsSection({ skillsPaths: _skillsPaths }: { skillsPaths: string[] })
 // ── Main Settings Modal ───────────────────────────────────────────────────────
 
 export function SettingsModal({ onClose }: { onClose: () => void }) {
-  const config = useStore($config);
+  const config = useCarburetorValue(configCarburetor, selectConfig) as ConfigPayload | null;
   const [initBusy, setInitBusy] = useState(false);
   const [initDone, setInitDone] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);

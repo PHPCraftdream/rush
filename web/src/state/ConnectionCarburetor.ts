@@ -4,6 +4,8 @@ import { Carburetor } from "@react-carburetor/core";
 export interface IConnectionState {
   connected: boolean;
   serverShuttingDown: boolean;
+  /** Frames parked in the offline outbox, shown as "N queued". */
+  outboxCount: number;
 }
 
 /**
@@ -14,6 +16,16 @@ export interface IConnectionState {
  */
 const writeConnected = (draft: IConnectionState, connected: boolean): void => {
   draft.connected = connected;
+};
+
+/**
+ * Writes the offline-outbox size into the draft.
+ *
+ * @param draft - state to change
+ * @param count - frames currently parked
+ */
+const writeOutboxCount = (draft: IConnectionState, count: number): void => {
+  draft.outboxCount = count;
 };
 
 /**
@@ -39,6 +51,15 @@ export class ConnectionCarburetor extends Carburetor<IConnectionState> {
    */
   public setConnected(connected: boolean): void {
     this.update(writeConnected, connected);
+  }
+
+  /**
+   * Records how many frames wait in the offline outbox.
+   *
+   * @param count - frames currently parked
+   */
+  public setOutboxCount(count: number): void {
+    this.update(writeOutboxCount, count);
   }
 
   /** Records that the server confirmed our shutdown_server request. */

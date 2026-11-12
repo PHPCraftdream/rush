@@ -1,12 +1,18 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { useStore } from "@nanostores/react";
+import type { TReadonly } from "@react-carburetor/core";
+import { useCarburetorValue } from "@react-carburetor/core/interop";
 import { X, Undo2 } from "lucide-react";
-import { $config, clearSessionModelSlot } from "../store";
+import { clearSessionModelSlot } from "../store";
+import { configCarburetor } from "../state/config";
+import type { IConfigState } from "../state/ConfigCarburetor";
 import { ws } from "../ws";
 import { buildModelList, type ModelItem } from "./ModelSelector";
-import type { Session, WSMessage } from "../types";
+import type { ConfigPayload, Session, WSMessage } from "../types";
 import { effortLevelsFor, clampEffort, defaultEffortFor } from "../effort";
 import { CustomRolesEditor } from "./CustomRolesEditor";
+
+/** Picks the server config out of the config state. */
+const selectConfig = (state: TReadonly<IConfigState>) => state.config;
 
 // ── Wire types (mirror internal/server/protocol.go) ─────────────────────────
 
@@ -294,7 +300,7 @@ function setSessionModelSlot(sessionID: string, slot: Slot, provider: string, mo
 // ── Main modal ────────────────────────────────────────────────────────────────
 
 export function ScopedModelsModal({ onClose, activeSession }: { onClose: () => void; activeSession: Session | null }) {
-  const config = useStore($config);
+  const config = useCarburetorValue(configCarburetor, selectConfig) as ConfigPayload | null;
   const [scopedModels, setScopedModels] = useState<ScopedModelsWire | null>(null);
 
   const allModels = useMemo(() => buildModelList(config), [config]);

@@ -9,7 +9,7 @@ const selectConnected = (state: IConnectionState): boolean => state.connected;
 const selectShuttingDown = (state: IConnectionState): boolean => state.serverShuttingDown;
 
 test("starts disconnected, not shutting down; setConnected flips only the link flag", () => {
-  const store = new ConnectionCarburetor({ connected: false, serverShuttingDown: false });
+  const store = new ConnectionCarburetor({ connected: false, serverShuttingDown: false, outboxCount: 0 });
   assert.equal(store.getData().connected, false);
   assert.equal(store.getData().serverShuttingDown, false);
   store.setConnected(true);
@@ -20,7 +20,7 @@ test("starts disconnected, not shutting down; setConnected flips only the link f
 });
 
 test("markServerShuttingDown is terminal and independent of the link flag", () => {
-  const store = new ConnectionCarburetor({ connected: true, serverShuttingDown: false });
+  const store = new ConnectionCarburetor({ connected: true, serverShuttingDown: false, outboxCount: 0 });
   store.markServerShuttingDown();
   assert.equal(store.getData().serverShuttingDown, true);
   assert.equal(store.getData().connected, true);
@@ -30,7 +30,7 @@ test("markServerShuttingDown is terminal and independent of the link flag", () =
 });
 
 test("watchers see each real change of their own field and ignore same-value writes", () => {
-  const store = new ConnectionCarburetor({ connected: false, serverShuttingDown: false });
+  const store = new ConnectionCarburetor({ connected: false, serverShuttingDown: false, outboxCount: 0 });
   const link: boolean[] = [];
   const down: boolean[] = [];
   const stopLink = store.watch(selectConnected, (next) => {

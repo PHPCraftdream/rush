@@ -1,20 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import { useStore } from "@nanostores/react";
 import {
-  $messages,
-  $activeSessionID,
-  $sessions,
-  $busySessions,
-  $selectedMessageIDs,
-  $asyncJobCompletions,
-  $messageQueue,
-  clearSelection,
-  toggleMessageSelection,
   deleteMessage,
   deleteMessages,
-  selectMessageIDs,
-  removeQueuedMessage,
-  updateQueuedMessage,
   sendQueuedMessageNow,
   interruptAndSendQueuedMessage,
   sendQueuedMessageDirect,
@@ -28,10 +15,22 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { ChatToolbar } from "./ChatToolbar";
 import { LiveWorkPanel } from "./LiveWorkPanel";
 import { MessageSquare, Pencil, PlusCircle, Send, Sparkles, Square, Trash2, X, Zap } from "lucide-react";
-import type { Message as Msg, ContentPart } from "../types";
-import { useCarburetorValue } from "@react-carburetor/core/interop";
+import type { Message as Msg, ContentPart, Session } from "../types";
+import type { TReadonly } from "@react-carburetor/core";
+import { useCarburetorValue, useComputedValue } from "@react-carburetor/core/interop";
+import { asyncJobCompletions } from "../state/asyncJobCompletions";
+import { busyCarburetor } from "../state/busy";
+import type { IBusyState } from "../state/BusyCarburetor";
+import { messagesCarburetor } from "../state/messages";
+import type { IMessagesState } from "../state/MessagesCarburetor";
 import { noticesCarburetor } from "../state/notices";
 import type { INoticesState } from "../state/NoticesCarburetor";
+import { queueCarburetor } from "../state/queue";
+import type { IQueueState } from "../state/QueueCarburetor";
+import { selectionCarburetor } from "../state/selection";
+import type { ISelectionState } from "../state/SelectionCarburetor";
+import { sessionsCarburetor } from "../state/sessions";
+import type { ISessionsState } from "../state/SessionsCarburetor";
 
 /**
  * Picks the agent error text out of the notices state.
@@ -39,6 +38,29 @@ import type { INoticesState } from "../state/NoticesCarburetor";
  * @param state - the notices state
  */
 const selectAgentError = (state: INoticesState) => state.agentError;
+
+/** Picks the transcript out of the messages state. */
+const selectMessages = (state: TReadonly<IMessagesState>) => state.messages;
+
+/** Picks the active session id out of the sessions state. */
+const selectActiveSessionID = (state: TReadonly<ISessionsState>) => state.activeSessionID;
+
+/** Picks the sessions list out of the sessions state. */
+const selectSessions = (state: TReadonly<ISessionsState>) => state.sessions;
+
+/** Picks the busy-session set out of the busy state. */
+const selectBusySessions = (state: TReadonly<IBusyState>) => new Set(state.busySessions);
+
+/** Picks the selected message ids out of the selection state. */
+const selectSelectedIDs = (state: TReadonly<ISelectionState>) => new Set(state.selectedMessageIDs);
+
+/** Picks the client message queue out of the queue state. */
+const selectMessageQueue = (state: TReadonly<IQueueState>) => new Map(Object.entries(state.messageQueue));
+
+/** Empties the batch selection. */
+const clearSelection = (): void => {
+  selectionCarburetor.clear();
+};
 
 /** Dismisses the agent error banner. */
 const dismissAgentError = (): void => {
@@ -82,7 +104,7 @@ function QueuedMessageItem({
 
   const save = useCallback(() => {
     const trimmed = draft.trim();
-    if (trimmed) updateQueuedMessage(sessionID, item.id, trimmed);
+    if (trimmed) queueCarburetor.updateContent(sessionID, item.id, trimmed);
     setEditing(false);
   }, [draft, sessionID, item.id]);
 
@@ -97,7 +119,7 @@ function QueuedMessageItem({
     e.target.style.height = e.target.scrollHeight + "px";
   }, []);
 
-  const handleRemove = useCallback(() => removeQueuedMessage(sessionID, item.id), [sessionID, item.id]);
+  const handleRemove = useCallback(() => queueCarburetor.remove(sessionID, item.id), [sessionID, item.id]);
 
   // Both fire-and-forget: the item vanishes from the queue the instant one
   // of these is clicked (takeQueuedMessage runs synchronously inside them),
@@ -326,7 +348,7 @@ function buildRenderItems(messages: readonly Msg[], attachedNoticeIDs: Set<strin
 }
 
 function ToolRun({ parts, firstMsgID, isLive, isCurrent }: { parts: BurstPart[]; firstMsgID: string; sessionID: string; isLive: boolean; isCurrent: boolean }) {
-  const messages = useStore($messages);
+  const messages = useCarburetorValue(messagesCarburetor, selectMessages) as Msg[];
   // ToolActivityGroup pairs call↔result by ToolCallID — no further prep
   // needed here, just give each part a stable index for its key. createdAt
   // travels with each part so action rows can render per-row timestamps.
@@ -359,14 +381,14 @@ function ToolRun({ parts, firstMsgID, isLive, isCurrent }: { parts: BurstPart[];
 // ── Chat ─────────────────────────────────────────────────────────────────────
 
 export function Chat() {
-  const messages      = useStore($messages);
-  const jobCompletions = useStore($asyncJobCompletions);
-  const activeSessionID = useStore($activeSessionID);
-  const busySessions  = useStore($busySessions);
+  const messages      = useCarburetorValue(messagesCarburetor, selectMessages) as Msg[];
+  const jobCompletions = useComputedValue(asyncJobCompletions);
+  const activeSessionID = useCarburetorValue(sessionsCarburetor, selectActiveSessionID);
+  const busySessions  = useCarburetorValue(busyCarburetor, selectBusySessions) as Set<string>;
   const agentError    = useCarburetorValue(noticesCarburetor, selectAgentError);
-  const selectedIDs   = useStore($selectedMessageIDs);
-  const messageQueue  = useStore($messageQueue);
-  const sessions      = useStore($sessions);
+  const selectedIDs   = useCarburetorValue(selectionCarburetor, selectSelectedIDs) as Set<string>;
+  const messageQueue  = useCarburetorValue(queueCarburetor, selectMessageQueue) as Map<string, QueuedMessage[]>;
+  const sessions      = useCarburetorValue(sessionsCarburetor, selectSessions) as Session[];
 
   const bottomRef   = useRef<HTMLDivElement>(null);
   const scrollRef   = useRef<HTMLDivElement>(null);
@@ -436,7 +458,7 @@ export function Chat() {
   const handleRangeSelect = useCallback((clickedIndex: number) => {
     const selected = selectedIDs;
     if (selected.size === 0) {
-      toggleMessageSelection(messages[clickedIndex].ID);
+      selectionCarburetor.toggle(messages[clickedIndex].ID);
       return;
     }
     let above = -1;
@@ -450,15 +472,15 @@ export function Chat() {
     const from = above !== -1 ? above : clickedIndex;
     const to   = below !== -1 ? below : clickedIndex;
     const ids  = messages.slice(Math.min(from, clickedIndex), Math.max(to, clickedIndex) + 1).map(m => m.ID);
-    selectMessageIDs(ids);
+    selectionCarburetor.selectAll(ids);
   }, [messages, selectedIDs]);
 
   const handleSelectAbove = useCallback((index: number) => {
-    selectMessageIDs(messages.slice(0, index + 1).map(m => m.ID));
+    selectionCarburetor.selectAll(messages.slice(0, index + 1).map(m => m.ID));
   }, [messages]);
 
   const handleSelectBelow = useCallback((index: number) => {
-    selectMessageIDs(messages.slice(index).map(m => m.ID));
+    selectionCarburetor.selectAll(messages.slice(index).map(m => m.ID));
   }, [messages]);
 
   const requestDeleteOne = useCallback((id: string) => {

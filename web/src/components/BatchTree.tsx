@@ -1,12 +1,18 @@
 import { useState } from "react";
-import { useStore } from "@nanostores/react";
-import type { BatchTreeNode } from "../batchWork";
-import { $batchWorkBySession, applyBatchWorkSnapshot, buildBatchTree, pickBatchWork } from "../batchWork";
+import type { TReadonly } from "@react-carburetor/core";
+import { useCarburetorValue } from "@react-carburetor/core/interop";
+import type { BatchTreeNode, BatchWorkState } from "../batchWork";
+import { buildBatchTree, pickBatchWork } from "../batchWork";
+import { batchWorkCarburetor } from "../state/batchWork";
+import type { IBatchWorkState } from "../state/BatchWorkCarburetor";
 import { batchNodeNotice, batchNodeStatus, batchResultMessage, isStopConfirmed, requestBatchControl, type BatchControlTarget } from "./batchControls";
 import type { BatchWorkSnapshot } from "../types";
 
+/** Picks the per-session batch table out of the batch-work state. */
+const selectBatchBySession = (state: TReadonly<IBatchWorkState>) => new Map(Object.entries(state.bySession));
+
 export function BatchTree({ sessionID }: { sessionID: string }) {
-  const batchMap = useStore($batchWorkBySession);
+  const batchMap = useCarburetorValue(batchWorkCarburetor, selectBatchBySession) as ReadonlyMap<string, BatchWorkState>;
   const snapshot = pickBatchWork(batchMap, sessionID)?.lastGood;
   const tree = buildBatchTree(snapshot?.roots ?? []);
   const [message, setMessage] = useState("");
@@ -18,7 +24,7 @@ export function BatchTree({ sessionID }: { sessionID: string }) {
       if (reply.type !== "session_batch_work") { setMessage("Unexpected status response."); return null; }
       const next = reply.payload as BatchWorkSnapshot;
       if (next.sessionID !== sessionID) { setMessage("Status response belongs to another session."); return null; }
-      applyBatchWorkSnapshot(next);
+      batchWorkCarburetor.applySnapshot(next);
       setMessage("");
       return next;
     } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); return null; }
