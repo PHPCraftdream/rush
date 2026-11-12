@@ -190,6 +190,10 @@ func TestWorktreeRemoveLiveLockInLocalStore(t *testing.T) {
 	main := makeWorktreeTestRepo(t)
 	wt := wtAddWorktree(t, main, "task-a")
 	dataDir := filepath.Join(wt, ".rush")
+	// A real data directory ignores itself (.rush/.gitignore is "*"); without it the
+	// lock files would make the worktree dirty and the final removal would refuse.
+	require.NoError(t, os.MkdirAll(dataDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, ".gitignore"), []byte("*\n"), 0o644))
 	lock, err := session.TryAcquireSessionLock(dataDir, "live-one")
 	require.NoError(t, err)
 	_, err = wtRunRemove(t, main, "task-a", nil)
