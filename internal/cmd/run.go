@@ -749,6 +749,7 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			SystemPrompt:                systemPrompt,
 			ReasoningEffort:             effort,
 			RoleSmart:                   roleSmart,
+			RequestedRole:               requestedRunRole(role),
 			ModelRole:                   modelType,
 			DisableSubAgents:            agentsDisable,
 			MaxAgentDepth:               &maxAgentDepth,
@@ -787,7 +788,7 @@ func init() {
 	runCmd.SilenceUsage = true
 	runCmd.Flags().BoolP("quiet", "q", false, "Hide spinner")
 	runCmd.Flags().BoolP("verbose", "v", false, "Show logs")
-	runCmd.Flags().String("role", "", "REQUIRED. Which preselected model slot to use: smart (the strong default; --role smart + a configured worker also enables orchestrator-mode sub-agent delegation) | fast (the cheap slot) | worker (cheap slot for delegated sub-task work, never auto-selected) | reviewer (the strongest slot, for explicit review invocations, never auto-selected). The actual model id comes from `rush models show`; override with --model.")
+	runCmd.Flags().String("role", "", "REQUIRED. Built-in model slot smart|fast|worker|reviewer, or an exact configured custom role name.")
 	runCmd.Flags().String("effort", "", "Reasoning effort for this turn: low|medium|high. Applies to whichever slot --role picked. Not persisted by rush run.")
 	runCmd.Flags().Bool("stream", false, "Stream every assistant token to stdout. Default is terse: tool-call names on stderr + final answer on stdout.")
 	runCmd.Flags().Bool("json", false, "Emit one JSON object on stdout summarising the run (session_id, final_text, tool_calls, usage, duration, exit_reason). Mutually exclusive with --stream.")

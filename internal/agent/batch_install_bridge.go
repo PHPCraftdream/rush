@@ -29,12 +29,16 @@ func coordinatorBridgeFallback(ctx context.Context) cliprovider.ToolBridge {
 	if err != nil {
 		return nil
 	}
-	bridge, err := newCLIToolBridge(registry, batchPinnedInvoke(bind.ingress, BatchInvocation{
-		RegistryID:    registryID,
-		AgentDepth:    inv.AgentDepth,
-		AgentDepthSet: inv.AgentDepthSet,
-		Origin:        "cli_bridge",
-		Policy:        batchLeafPolicyContext{RegistryID: registryID, RestrictedToolset: registryID},
+	bridgeCtx := ctx
+	roleContract := cloneRoleContractForCall(roleContractFromContext(ctx))
+	if roleContract != nil {
+		bridgeCtx = withRoleToolContract(bridgeCtx, roleContract)
+	}
+	bridge, err := newCLIToolBridgeForContext(bridgeCtx, registry, batchPinnedInvoke(bind.ingress, BatchInvocation{
+		RegistryID: inv.RegistryID,
+		AgentDepth: inv.AgentDepth, AgentDepthSet: inv.AgentDepthSet,
+		Origin: "cli_bridge",
+		Policy: batchLeafPolicyContext{RegistryID: inv.RegistryID, RestrictedToolset: registryID, RoleContract: roleContract},
 	}), nil)
 	if err != nil {
 		return nil

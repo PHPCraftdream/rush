@@ -14,11 +14,26 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAPIRunBackendRoleContractAdmissionUsesExactCustomProfile(t *testing.T) {
+	cfg := &config.Config{Roles: map[string]config.CustomRole{"writer": {SelectedModel: config.SelectedModel{Provider: "p", Model: "raw"}}}}
+	cfg.Providers = csync.NewMapFrom(map[string]config.ProviderConfig{"p": {ID: "p"}})
+	role, err := validateAPIRunSelection(cfg, "writer", "")
+	require.NoError(t, err)
+	require.Empty(t, role)
+	contract, err := agent.ResolveRoleContract(cfg, "writer", nil)
+	require.NoError(t, err)
+	require.Equal(t, "writer", contract.Name)
+	_, err = validateAPIRunSelection(cfg, "missing", "")
+	require.ErrorIs(t, err, ErrAPIRunBackendInvalidRole)
+}
 
 type apiRunBackendGateManager struct {
 	permission.Service

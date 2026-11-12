@@ -148,6 +148,10 @@ func pctClaimCapturedHandoff(env batchLeafEnv, p batchLeafPayload) *pctDelegatio
 func pctCapturedToolFrom(tool fantasy.AgentTool) *pctCapturedAgentTool {
 	for tool != nil {
 		switch wrapped := tool.(type) {
+		case roleGuardTool:
+			tool = wrapped.AgentTool
+		case *roleGuardTool:
+			tool = wrapped.AgentTool
 		case *pctCapturedAgentTool:
 			return wrapped
 		case *restrictedTool:

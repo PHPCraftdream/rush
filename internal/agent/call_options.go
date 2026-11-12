@@ -77,6 +77,12 @@ type CallOptions struct {
 	// between registration and the actual read.
 	ModelRole config.SelectedModelType
 
+	// RoleContract is the immutable custom-role snapshot selected for this
+	// logical execution. Treat it as immutable after publication; adapters and
+	// durable conversion clone it at trusted boundaries. ModelRole remains
+	// reserved for built-in policy-driving roles.
+	RoleContract *session.RoleContract
+
 	// TimeoutExtendsOnProgress/TimeoutHardCap are this run's stream
 	// watchdog policy (batch 8). Read per turn from the call instead of
 	// the sessionAgent's shared fields written by SetTimeoutOptions.

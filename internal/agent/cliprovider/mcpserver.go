@@ -16,6 +16,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -87,8 +88,16 @@ func (s *rushMCPServer) mcpURL() string {
 // If token is empty a cryptographically random one is generated.
 // sessions and sessionID are used by the todos tool to persist task updates.
 func newRushMCPServer(ctx context.Context, perms permission.Service, sessions session.Service, sessionID string, workingDir string, token string, mcpProxy ExternalMCPProxy) (*rushMCPServer, error) {
-	if invocationToolBridge(ctx) == nil && perms != nil && sessionID == "" {
+	policy, constrained := ToolPolicyFrom(ctx)
+	bridge := invocationToolBridge(ctx)
+	if bridge == nil && perms != nil && sessionID == "" {
 		return nil, fmt.Errorf("cliprovider: MCP server requires a session ID when permissions are enabled")
+	}
+	if constrained && bridge == nil && mcpProxy != nil && len(mcpProxy.ListTools()) > 0 {
+		return nil, errors.New("cliprovider: constrained external MCP tools are unavailable without a pinned bridge")
+	}
+	if constrained && bridge == nil && !mcpToolsCanBeScoped(mcpProxy) {
+		return nil, errors.New("cliprovider: unscoped MCP tools cannot be enabled for a constrained call")
 	}
 
 	if token == "" {
@@ -107,14 +116,13 @@ func newRushMCPServer(ctx context.Context, perms permission.Service, sessions se
 	}, nil)
 
 	toolCh := make(chan mcpToolEvent, 32)
-	bridge := invocationToolBridge(ctx)
 	if bridge != nil {
 		if err := registerBridgeTools(ctx, srv, bridge, toolCh); err != nil {
 			return nil, err
 		}
 	} else {
-		registerMCPTools(srv, perms, sessions, sessionID, workingDir, toolCh)
-		if mcpProxy != nil {
+		registerMCPTools(srv, perms, sessions, sessionID, workingDir, toolCh, policy, constrained)
+		if mcpProxy != nil && !constrained {
 			registerExternalMCPTools(ctx, srv, perms, sessionID, workingDir, mcpProxy, toolCh)
 		}
 	}
@@ -164,16 +172,29 @@ func newRushMCPServer(ctx context.Context, perms permission.Service, sessions se
 	}, nil
 }
 
-// registerMCPTools adds rush tool implementations to the MCP server.
-// Each tool requests permission via perms.Request before executing.
-// toolCh, if non-nil, receives start/end notifications for each tool call.
-func registerMCPTools(srv *mcp.Server, perms permission.Service, sessions session.Service, sessionID string, workingDir string, toolCh chan mcpToolEvent) {
-	registerBashTool(srv, perms, sessionID, workingDir, toolCh)
-	registerViewTool(srv, perms, sessionID, workingDir, toolCh)
-	registerWriteTool(srv, perms, sessionID, workingDir, toolCh)
-	registerGlobTool(srv, perms, sessionID, workingDir, toolCh)
-	registerGrepTool(srv, perms, sessionID, workingDir, toolCh)
-	if sessions != nil && sessionID != "" {
+func mcpToolsCanBeScoped(proxy ExternalMCPProxy) bool {
+	return proxy == nil || len(proxy.ListTools()) == 0
+}
+
+// registerMCPTools adds Rush native MCP tools. The constrained path includes
+// only the canonical names present in the invocation allowlist.
+func registerMCPTools(srv *mcp.Server, perms permission.Service, sessions session.Service, sessionID string, workingDir string, toolCh chan mcpToolEvent, policy ToolPolicy, constrained bool) {
+	if !constrained || policyHasMCPTool(policy, "bash") {
+		registerBashTool(srv, perms, sessionID, workingDir, toolCh)
+	}
+	if !constrained || policyHasMCPTool(policy, "view") {
+		registerViewTool(srv, perms, sessionID, workingDir, toolCh)
+	}
+	if !constrained || policyHasMCPTool(policy, "write") {
+		registerWriteTool(srv, perms, sessionID, workingDir, toolCh)
+	}
+	if !constrained || policyHasMCPTool(policy, "glob") {
+		registerGlobTool(srv, perms, sessionID, workingDir, toolCh)
+	}
+	if !constrained || policyHasMCPTool(policy, "grep") {
+		registerGrepTool(srv, perms, sessionID, workingDir, toolCh)
+	}
+	if sessions != nil && sessionID != "" && (!constrained || policyHasMCPTool(policy, "todos")) {
 		registerTodosTool(srv, sessions, sessionID)
 	}
 }
@@ -211,6 +232,21 @@ func emitToolEnd(toolCh chan mcpToolEvent, id string) {
 // TodoWrite is denied so the model uses mcp__rush__todos, which persists to
 // the rush session.
 func rushMCPToolArgs(bridge ToolBridge, proxy ExternalMCPProxy) []string {
+	return rushMCPToolArgsWithPolicy(bridge, proxy, ToolPolicy{})
+}
+
+func rushMCPToolArgsWithPolicy(bridge ToolBridge, proxy ExternalMCPProxy, policy ToolPolicy) []string {
+	if policy.Constrained {
+		tools, err := policyBridgeTools(policy, bridge, proxy)
+		if err != nil {
+			return []string{"--tools", "", "--allowedTools", ""}
+		}
+		allowed := make([]string, 0, len(tools))
+		for _, tool := range tools {
+			allowed = append(allowed, "mcp__rush__"+tool.WireName)
+		}
+		return []string{"--tools", "", "--allowedTools", strings.Join(allowed, ","), "--disallowedTools", "TodoWrite"}
+	}
 	allowed := []string{
 		// Rush MCP bridge tools (go through rush's permission system).
 		"mcp__rush__Bash",
@@ -226,7 +262,14 @@ func rushMCPToolArgs(bridge ToolBridge, proxy ExternalMCPProxy) []string {
 		"Agent",
 	}
 	// Include external MCP tools registered on the rush MCP bridge.
-	if bridge != nil {
+	if bridge != nil && policy.Constrained {
+		allowed = nil
+		for _, tool := range bridge.Tools() {
+			if policyHasMCPTool(policy, tool.CanonicalName) {
+				allowed = append(allowed, "mcp__rush__"+tool.WireName)
+			}
+		}
+	} else if bridge != nil {
 		allowed = nil
 		for _, tool := range bridge.Tools() {
 			allowed = append(allowed, "mcp__rush__"+tool.WireName)

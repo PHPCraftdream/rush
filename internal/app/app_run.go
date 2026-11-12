@@ -57,7 +57,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	runCtx := ctx
 	sessionID := req.ContinueSessionID
 	defer func() {
-		result, runErr = classifyRunTimeout(runCtx, result, runErr, sessionID, string(req.Overrides.ModelRole))
+		result, runErr = classifyRunTimeout(runCtx, result, runErr, sessionID, runRoleName(req.Overrides))
 	}()
 	mode := req.Mode
 	continueSessionID := req.ContinueSessionID
@@ -499,7 +499,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	}
 
 	defer func() {
-		result, runErr = classifyRunTimeout(runCtx, result, runErr, sess.ID, string(overrides.ModelRole))
+		result, runErr = classifyRunTimeout(runCtx, result, runErr, sess.ID, runRoleName(overrides))
 		var timeoutErr *RunTimeoutError
 		if errors.As(runErr, &timeoutErr) {
 			hookExitReason = "timeout"

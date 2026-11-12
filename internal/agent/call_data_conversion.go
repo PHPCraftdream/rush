@@ -103,6 +103,7 @@ func toSessionCallOptionsSpec(o *CallOptions) *session.CallOptionsSpec {
 		WebTurnOptIn:             o.WebTurnOptIn,
 		MaxAgentDepth:            o.MaxAgentDepth,
 		AgentDepthSet:            o.AgentDepthSet,
+		RoleContract:             cloneRoleContractForCall(o.RoleContract),
 	}
 }
 
@@ -133,9 +134,18 @@ func fromSessionCallOptionsSpec(spec *session.CallOptionsSpec) (*CallOptions, er
 		return nil, nil
 	}
 	if spec.Version != session.CallOptionsSpecVersion &&
-		!(spec.Version == 1 && !spec.WebTurnOptIn) {
-		return nil, fmt.Errorf("%w: got %d, want %d (or legacy v1 without WebTurnOptIn)",
+		!(spec.Version == 2 && spec.RoleContract == nil) &&
+		!(spec.Version == 1 && spec.RoleContract == nil && !spec.WebTurnOptIn) {
+		return nil, fmt.Errorf("%w: got %d, want %d (or legacy v1/v2 without RoleContract)",
 			ErrCallOptionsSpecVersionUnsupported, spec.Version, session.CallOptionsSpecVersion)
+	}
+	if spec.RoleContract != nil {
+		if spec.Version != session.CallOptionsSpecVersion {
+			return nil, fmt.Errorf("%w: RoleContract requires version %d", ErrCallOptionsSpecVersionUnsupported, session.CallOptionsSpecVersion)
+		}
+		if err := spec.RoleContract.Validate(); err != nil {
+			return nil, fmt.Errorf("%w: invalid RoleContract: %v", ErrCallOptionsSpecVersionUnsupported, err)
+		}
 	}
 	return &CallOptions{
 		DisableSubAgents:         spec.DisableSubAgents,
@@ -147,6 +157,7 @@ func fromSessionCallOptionsSpec(spec *session.CallOptionsSpec) (*CallOptions, er
 		WebTurnOptIn:             spec.WebTurnOptIn,
 		MaxAgentDepth:            spec.MaxAgentDepth,
 		AgentDepthSet:            spec.AgentDepthSet,
+		RoleContract:             cloneRoleContractForCall(spec.RoleContract),
 	}, nil
 }
 
@@ -250,7 +261,13 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 		cfg := toSessionModelCfg(call.FastModel.ModelCfg)
 		fastModel = &cfg
 	}
-
+	callOptions := call.CallOptions
+	if callOptions != nil && call.RoleContract == nil {
+		call.RoleContract = cloneRoleContractForCall(callOptions.RoleContract)
+	}
+	if call.RoleContract != nil && (callOptions == nil || callOptions.RoleContract == nil) {
+		callOptions = WithRoleContractCopy(callOptions, call.RoleContract)
+	}
 	return session.SessionAgentCallData{
 		SessionID:               call.SessionID,
 		LogicalCallID:           call.LogicalCallID,
@@ -277,7 +294,8 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 		BackgroundJobNotice:     call.BackgroundJobNotice,
 		RunAllowlistSpec:        toSessionRunAllowlistSpec(call.RunAllowlistSpec),
 		FolderScopeSpec:         toSessionFolderScopeSpec(call.FolderScopeSpec),
-		CallOptionsSpec:         toSessionCallOptionsSpec(call.CallOptions),
+		CallOptionsSpec:         toSessionCallOptionsSpec(callOptions),
+		RoleContract:            cloneRoleContractForCall(call.RoleContract),
 		// Layer 2 (belt and braces, design doc §7.3): mark the row so a
 		// consumer that somehow receives it (a producer added later, or a
 		// row written by a different binary version) still fails closed
@@ -325,6 +343,30 @@ func FromSessionAgentCallData(callData session.SessionAgentCallData) (SessionAge
 	if err != nil {
 		return SessionAgentCall{}, err
 	}
+	if callData.RoleContract != nil && (callData.CallOptionsSpec == nil || callData.CallOptionsSpec.Version != session.CallOptionsSpecVersion) {
+		return SessionAgentCall{}, fmt.Errorf("%w: RoleContract requires version %d", ErrCallOptionsSpecVersionUnsupported, session.CallOptionsSpecVersion)
+	}
+	contract := cloneRoleContractForCall(callData.RoleContract)
+	if contract != nil {
+		if err := contract.Validate(); err != nil {
+			return SessionAgentCall{}, fmt.Errorf("invalid durable role contract: %w", err)
+		}
+		if role != "" && contract.Name != string(role) {
+			return SessionAgentCall{}, ErrAgentRoleMismatch
+		}
+		if opts != nil && opts.RoleContract != nil && !opts.RoleContract.Equal(contract) {
+			return SessionAgentCall{}, ErrAgentRoleMismatch
+		}
+	}
+	if contract == nil && opts != nil {
+		contract = cloneRoleContractForCall(opts.RoleContract)
+	}
+	if contract == nil && role != "" && !role.builtin() {
+		return SessionAgentCall{}, ErrAgentRoleUnconfigured
+	}
+	if contract != nil && (opts == nil || opts.RoleContract == nil) {
+		opts = WithRoleContractCopy(opts, contract)
+	}
 	return SessionAgentCall{
 		SessionID:            callData.SessionID,
 		LogicalCallID:        callData.LogicalCallID,
@@ -332,7 +374,7 @@ func FromSessionAgentCallData(callData session.SessionAgentCallData) (SessionAge
 		Attachments:          callData.Attachments,
 		MaxOutputTokens:      callData.MaxOutputTokens,
 		NonInteractive:       callData.NonInteractive,
-		RequestedModelRole:   role,
+		RequestedModelRole:   RequestedModelRole(callData.RequestedModelRole),
 		RequestedModelSource: callData.RequestedModelSource,
 		SystemPromptOverride: callData.SystemPromptOverride,
 		MaxCost:              callData.MaxCost,
@@ -349,6 +391,7 @@ func FromSessionAgentCallData(callData session.SessionAgentCallData) (SessionAge
 		RunAllowlistSpec:     fromSessionRunAllowlistSpec(callData.RunAllowlistSpec),
 		FolderScopeSpec:      fromSessionFolderScopeSpec(callData.FolderScopeSpec),
 		CallOptions:          opts,
+		RoleContract:         contract,
 		DiskRequirement:      callData.DiskRequirement,
 		// SmartModel and FastModel are NOT set here — they will be reconstructed
 		// by coordinator.RebuildSessionAgentCall.

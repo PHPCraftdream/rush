@@ -48,7 +48,21 @@ type subAgentParams struct {
 	pctHandoff *pctDelegationHandoff // pct: admission-held child construction refs.
 }
 
-// runSubAgent runs a sub-agent and handles session management and cost accumulation.
+func loadChildRoleContract(ctx context.Context, sessions sessionpkg.Service, childID string) (*sessionpkg.RoleContract, error) {
+	store, ok := sessions.(sessionpkg.SessionRoleContractStore)
+	if !ok {
+		return nil, fmt.Errorf("%w: child role contract store unavailable", ErrAgentRoleUnconfigured)
+	}
+	contract, found, err := store.GetSessionRoleContract(ctx, childID)
+	if err != nil || !found {
+		return contract, err
+	}
+	if err := contract.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: invalid child role contract: %v", ErrAgentRoleUnconfigured, err)
+	}
+	return contract.Clone(), nil
+}
+
 // It creates a sub-session (or resumes an existing one, see ResumeSessionID),
 // runs the agent with the given prompt, and propagates the cost to the parent
 // session.
@@ -70,12 +84,11 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// A batch node starts its child without an enclosing turn, so nothing has
 	// drained the asynchronous prompt/tool build of params.Agent yet; a child
 	// run before that would go out with an empty system prompt and toolset.
+	var remaining int
+	var err error
 	if err := c.readyWg.Wait(); err != nil {
 		return fantasy.ToolResponse{}, err
 	}
-	var session sessionpkg.Session
-	var remaining int
-	var err error
 	if params.ResumeSessionID == "" {
 		remaining, err = effectiveParentAgentDepth(ctx, c.sessions, params.SessionID)
 		if err != nil {
@@ -109,50 +122,78 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	cfg, _ := c.cfg.Snapshot()
 	requestedRole := params.RequestedModelRole
 	var explicitRoleModel *delegationRoleModel
+	var childRoleContract *sessionpkg.RoleContract
+	var session sessionpkg.Session
 	resolveRole := func(childID string) error {
-		var roleErr error
-		requestedRole, roleErr = resolveDelegationRequestedRole(ctx, c.sessions, childID, requestedRole)
-		if roleErr != nil || requestedRole == "" {
-			return roleErr
+		var err error
+		requestedRole, err = resolveDelegationRequestedRole(ctx, c.sessions, childID, requestedRole)
+		if err != nil {
+			return err
 		}
-		selected, roleErr := c.resolveRequestedDelegationModel(ctx, cfg, params.SessionID, requestedRole)
-		if roleErr != nil {
-			return roleErr
+		if requestedRole == "" {
+			if params.ResumeSessionID != "" {
+				childRoleContract, err = loadChildRoleContract(ctx, c.sessions, childID)
+				return err
+			}
+			if parent := parentRoleContractFrom(ctx); parent != nil && (parent.Tools != nil || len(parent.Inherited) > 0) {
+				childRoleContract, err = copyInheritedRoleContract(parent)
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if admitted := selectedRoleContractFrom(ctx); admitted != nil {
+			if admitted.Name != string(requestedRole) {
+				return ErrAgentRoleMismatch
+			}
+			childRoleContract = admitted.Clone()
+		} else if childID != "" {
+			childRoleContract, err = loadChildRoleContract(ctx, c.sessions, childID)
+			if err != nil {
+				return err
+			}
+			if childRoleContract != nil && childRoleContract.Name != string(requestedRole) {
+				return ErrAgentRoleMismatch
+			}
+		}
+		if !requestedRole.builtin() && childRoleContract == nil {
+			childRoleContract, err = ResolveRoleContract(cfg, string(requestedRole), parentRoleContractFrom(ctx))
+			if err != nil {
+				return err
+			}
+		}
+		if childRoleContract != nil {
+			ctx = WithSelectedRoleContract(ctx, childRoleContract)
+		}
+		selected, err := c.resolveRequestedDelegationModel(ctx, cfg, params.SessionID, requestedRole)
+		if err != nil {
+			return err
+		}
+		if requestedRole.builtin() && childRoleContract == nil {
+			if parent := parentRoleContractFrom(ctx); parent != nil && (parent.Tools != nil || len(parent.Inherited) > 0) {
+				childRoleContract = roleContractWithName(selected.Model.ModelCfg, string(requestedRole), parent)
+				if childRoleContract == nil {
+					return fmt.Errorf("%w: cannot snapshot inherited role cap", ErrAgentRoleUnconfigured)
+				}
+			}
+		}
+		if childRoleContract != nil && childID != "" {
+			if err := bindDelegationRoleContract(ctx, c.sessions, childID, childRoleContract); err != nil {
+				return err
+			}
 		}
 		explicitRoleModel = &selected
 		return nil
 	}
 	if params.ResumeSessionID != "" {
-		// Resume path (Gap 2 / phase 3.2): reuse the existing sub-session so
-		// the sub-agent's prior context (files read, work already done) is
-		// preserved instead of thrown away. SECURITY: verify the session
-		// being resumed is genuinely a child of the CURRENT parent session
-		// before touching it — otherwise a model could pass an arbitrary
-		// session id (someone else's session, or an unrelated top-level
-		// session) and read/append to it. A bad id here is a model mistake,
-		// not a crash: return a normal tool error (nil Go error) so the
-		// caller can retry rather than aborting the parent's turn.
-		existing, err := c.sessions.Get(ctx, params.ResumeSessionID)
-		if err != nil {
-			return fantasy.NewTextErrorResponse(fmt.Sprintf(
-				"resume_session_id %q not found: %s%s", params.ResumeSessionID, err,
-				c.batchHeldQuestionResumeHint(ctx, params.SessionID),
-			)), nil
+		existing, getErr := c.sessions.Get(ctx, params.ResumeSessionID)
+		if getErr != nil {
+			return fantasy.NewTextErrorResponse(fmt.Sprintf("resume_session_id %q not found: %s%s", params.ResumeSessionID, getErr, c.batchHeldQuestionResumeHint(ctx, params.SessionID))), nil
 		}
 		if existing.ParentSessionID != params.SessionID {
-			return fantasy.NewTextErrorResponse(fmt.Sprintf(
-				"resume_session_id %q is not a child of the current session; refusing to resume a session that does not belong to this agent call%s",
-				params.ResumeSessionID,
-				c.batchHeldQuestionResumeHint(ctx, params.SessionID),
-			)), nil
+			return fantasy.NewTextErrorResponse(fmt.Sprintf("resume_session_id %q is not a child of the current session; refusing to resume a session that does not belong to this agent call%s", params.ResumeSessionID, c.batchHeldQuestionResumeHint(ctx, params.SessionID))), nil
 		}
-		// A full, correct resume id must ALSO refuse while the child is parked
-		// inside a live held batch ask_question: the resume would queue a new
-		// run behind the held ask (the driver mailbox path) instead of
-		// answering it — the same deadlock shape as the truncated-id incident,
-		// with a correct id. The refusal is actionable: it names the exact
-		// inject_agent route. Legacy resumes (no live held question) are
-		// unchanged.
 		if refusal := c.batchHeldQuestionResumeRefusal(ctx, params.SessionID, existing.ID); refusal != "" {
 			return fantasy.NewTextErrorResponse(refusal), nil
 		}
@@ -160,11 +201,15 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			return fantasy.ToolResponse{}, err
 		}
 		session = existing
-		resolved, depthErr := depthStore.ResolveAgentDepth(ctx, existing.ID, remaining)
-		if depthErr != nil {
-			return fantasy.ToolResponse{}, fmt.Errorf("resolve resumed agent depth: %w", depthErr)
+		if childRoleContract != nil {
+			if err := bindDelegationRoleContract(ctx, c.sessions, session.ID, childRoleContract); err != nil {
+				return fantasy.ToolResponse{}, err
+			}
 		}
-		childRemaining = resolved
+		childRemaining, err = depthStore.ResolveAgentDepth(ctx, existing.ID, remaining)
+		if err != nil {
+			return fantasy.ToolResponse{}, fmt.Errorf("resolve resumed agent depth: %w", err)
+		}
 		if err := depthStore.LowerAgentDepth(ctx, existing.ID, childRemaining); err != nil {
 			return fantasy.ToolResponse{}, fmt.Errorf("lower resumed agent depth: %w", err)
 		}
@@ -172,15 +217,18 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		if err := resolveRole(""); err != nil {
 			return fantasy.ToolResponse{}, err
 		}
-		// Child depth and lineage commit together before the child is driven.
 		agentToolSessionID := c.sessions.CreateAgentToolSessionID(params.AgentMessageID, params.ToolCallID)
-		created, err := depthStore.CreateTaskSessionWithAgentDepth(ctx, agentToolSessionID, params.SessionID, params.SessionTitle, childRemaining)
-		if err != nil {
-			return fantasy.ToolResponse{}, fmt.Errorf("create agent child session: %w", err)
+		created, createErr := depthStore.CreateTaskSessionWithAgentDepth(ctx, agentToolSessionID, params.SessionID, params.SessionTitle, childRemaining)
+		if createErr != nil {
+			return fantasy.ToolResponse{}, fmt.Errorf("create agent child session: %w", createErr)
 		}
 		session = created
+		if childRoleContract != nil {
+			if err := bindDelegationRoleContract(ctx, c.sessions, session.ID, childRoleContract); err != nil {
+				return fantasy.ToolResponse{}, fmt.Errorf("bind child role contract: %w", err)
+			}
+		}
 	}
-
 	if err := bindDelegationRequestedRole(ctx, c.sessions, session.ID, requestedRole); err != nil {
 		return fantasy.ToolResponse{}, fmt.Errorf("bind child model role: %w", err)
 	}
@@ -253,6 +301,16 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// cannot leak into a concurrent sub-agent dispatch from a different
 	// session sharing the same underlying agent object (task #466).
 	model := params.Agent.Model()
+	if explicitRoleModel == nil && childRoleContract != nil && childRoleContract.Name != "" {
+		selected, _, resolveErr := currentOrSnapshotRoleModel(cfg, childRoleContract)
+		if resolveErr != nil {
+			return fantasy.ToolResponse{}, resolveErr
+		}
+		model, _, resolveErr = c.buildModelsFromCfg(ctx, cfg, selected, selected, true)
+		if resolveErr != nil {
+			return fantasy.ToolResponse{}, resolveErr
+		}
+	}
 
 	// Per-call CredentialSet (RunWithCredentials): the parent call's
 	// tenant credentials win for the slots they cover — worker first (the
@@ -279,6 +337,9 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		if !covered {
 			choice, covered = creds.Models[RoleSmart]
 		}
+		if childRoleContract != nil && childRoleContract.Name != "" {
+			choice, covered = creds.Models[Role(childRoleContract.Name)]
+		}
 		if covered {
 			credModel, provCfg, err := c.buildCredentialModel(ctx, cfg, creds, choice)
 			if err != nil {
@@ -290,7 +351,19 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		}
 	}
 
-	if explicitRoleModel == nil && credProviderCfg == nil && WebModelPolicy(ctx) {
+	if explicitRoleModel == nil && childRoleContract != nil && childRoleContract.Name != "" && callCreds == nil {
+		selected, source, resolveErr := currentOrSnapshotRoleModel(cfg, childRoleContract)
+		if resolveErr != nil {
+			return fantasy.ToolResponse{}, resolveErr
+		}
+		model, _, resolveErr = c.buildModelsFromCfg(ctx, cfg, selected, selected, true)
+		if resolveErr != nil {
+			return fantasy.ToolResponse{}, resolveErr
+		}
+		hbSource = source
+	}
+
+	if explicitRoleModel == nil && childRoleContract == nil && credProviderCfg == nil && WebModelPolicy(ctx) {
 		if override, err := c.resolveSubAgentModelOverride(ctx, params.SessionID); err != nil {
 			slog.Error("runSubAgent: failed to resolve session worker override, falling back to default", "sessionID", params.SessionID, "err", err)
 		} else if override != nil {
@@ -300,9 +373,9 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	}
 	// The refresh is best-effort; preserve the selected role for future turns.
 	var dispatchSlotRole config.SelectedModelType
-	if requestedRole != "" {
-		dispatchSlotRole = config.SelectedModelType(requestedRole)
-	} else if params.slotModel && callCreds == nil && hbSource != hbSourceSessionOverride {
+	if requestedRole != "" && !requestedRole.builtin() {
+		dispatchSlotRole = ""
+	} else if requestedRole == "" && params.slotModel && callCreds == nil && hbSource != hbSourceSessionOverride {
 		dispatchSlotRole = config.SelectedModelTypeSmart
 		if role := callModelRole(ctx); role == "" || role == config.SelectedModelTypeSmart {
 			if c.workerSubAgentActiveForCall(ctx, cfg) {
@@ -359,7 +432,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		return nil
 	}
 
-	if callCreds == nil && providerCfg.OAuthToken != nil && providerCfg.OAuthToken.IsExpired() {
+	if callCreds == nil && explicitRoleModel == nil && childRoleContract == nil && hbSource != hbSourceSessionOverride {
 		if err := c.refreshOAuth2Token(ctx, providerCfg); err != nil {
 			slog.Error("Failed to refresh OAuth2 token before sub-agent run. Proceeding with existing token.", "error", err)
 		} else if err := rebuildCall(); err != nil {
@@ -387,6 +460,21 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	childCallOptions := inheritWebPolicyCallOptions(ctx)
 	if childCallOptions == nil {
 		childCallOptions = &CallOptions{}
+	}
+	if childRoleContract != nil {
+		childCallOptions = WithRoleContractCopy(childCallOptions, childRoleContract)
+	}
+	if childRoleContract != nil && childRoleContract.Name != "" && explicitRoleModel == nil && callCreds == nil {
+		selected, source, resolveErr := currentOrSnapshotRoleModel(cfg, childRoleContract)
+		if resolveErr != nil {
+			return fantasy.ToolResponse{}, resolveErr
+		}
+		model, _, resolveErr = c.buildModelsFromCfg(ctx, cfg, selected, selected, true)
+		if resolveErr != nil {
+			return fantasy.ToolResponse{}, resolveErr
+		}
+		providerCfg, _ = cfg.Providers.Get(selected.Provider)
+		hbSource = source
 	}
 	childCallOptions.MaxAgentDepth = childRemaining
 	childCallOptions.AgentDepthSet = true
@@ -431,6 +519,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		SmartModel:           &driverModel,
 		Credentials:          callCreds,
 		CallOptions:          childCallOptions,
+		RoleContract:         cloneRoleContractForCall(childRoleContract),
 	}
 	if lifecycleBound {
 		callTemplate.Tools = batchChildTools
@@ -509,6 +598,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			RequestedModelSource: requestedSource,
 			SmartModel:           pinnedModel,
 			Credentials:          callCreds,
+			RoleContract:         cloneRoleContractForCall(runOptions.RoleContract),
 			CallOptions:          &runOptions,
 		}
 		if lifecycleBound {
