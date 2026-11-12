@@ -120,7 +120,7 @@ func TestInstalledRushTemplatesPreserveLivenessAndCallerPolicyContract(t *testin
 				"This is direct-provider-only; CLI backends are refused",
 				"Combined live or unreadable activity refuses immediately under mailbox/OS-lock coordination; busy work is not killed, bypassed, queued, or automatically resumed",
 				"A summary may exceed worker capacity; errors preserve original history, without a universal recovery guarantee",
-				"`context_length_exceeded` certified before any output (HTTP 400 or SSE `response.failed`)",
+				"an exact structured `context_length_exceeded` error certified before any output or usage (HTTP 400 or SSE `response.failed` or strictly guarded nested/flat `type=error` envelopes)",
 				"one silent-prefix summary and continuation in that same session",
 				"Partial, opaque, or uncertified output, transport errors, and NoReplay-fenced failures are never replayed",
 				"captured matching worker session override/config (or covered per-call credentials)",
