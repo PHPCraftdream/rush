@@ -585,6 +585,11 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 }
 
 func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) (policyToolBuild, error) {
+	if opts := callOptionsFrom(ctx); opts != nil {
+		if opts.RoleContract != nil {
+			ctx = WithParentRoleConfigSnapshot(ctx, cfg)
+		}
+	}
 	agent = c.applyCallDisableSubAgents(ctx, cfg, agent, isSubAgent)
 	agent = c.buildToolsAgentConfigForCall(ctx, cfg, agent, isSubAgent)
 	agent = c.applyCallFolderScope(ctx, agent)
@@ -788,6 +793,7 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 	}
 
 	allowedControls := batchControlAvailability(filteredTools, agent.AllowedTools)
+	allowedControls = filterRoleToolNames(ctx, allowedControls)
 	{
 		if bind := coordinatorBatchBindingFor(c); bind != nil && bind.controls != nil {
 			for _, name := range allowedControls {
@@ -828,10 +834,11 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 			slog.Debug("MCP not allowed", "tool", tool.Name(), "agent", agent.Name)
 		}
 	}
+	filteredTools = filterRoleContractTools(ctx, filteredTools)
 	slices.SortFunc(filteredTools, func(a, b fantasy.AgentTool) int {
 		return strings.Compare(a.Info().Name, b.Info().Name)
 	})
-	return c.finishToolAssembly(ctx, filteredTools, hookRunner, isSubAgent, allowedControls)
+	return c.finishToolAssembly(ctx, filteredTools, hookRunner, isSubAgent, allowedControls, cfg)
 }
 
 // sharedBuildScopeFor lazily creates the coordinator-level build scope for
@@ -843,136 +850,4 @@ func (c *coordinator) sharedBuildScopeFor() *buildResourceScope {
 		c.sharedBuildScope = newBuildResourceScope()
 	}
 	return c.sharedBuildScope
-}
-
-// finishToolAssembly is the final construction boundary. Flag OFF (no batch
-// binding): the historical branch, byte-for-byte — async wrappers, then
-// hooks/restrictions, then the stall-detach wrapper. Flag ON: hooks and
-// restrictions run once here, then every batch-admissible work tool is
-// re-armed through the ONE authority (batchRuntime.Invoke) and the old
-// async/stall wrappers are NOT installed. allowed is the build's control
-// grant list: batchControlAvailability over the final filtered tools and
-// AllowedTools, computed once in buildPolicyTools.
-func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fantasy.AgentTool, hookRunner *hooks.Runner, isSubAgent bool, allowed []string) (policyToolBuild, error) {
-	if bind := coordinatorBatchBindingFor(c); bind != nil {
-		allowedControls := allowed
-		filteredTools = withoutBatchControlPlaceholders(filteredTools)
-		filteredTools = decoratePolicyTools(filteredTools, restrictedRunAuthorizer(c.permissions), hookRunner, isSubAgent)
-		// Construction ownership (R12-H2 §1.2): the build's pins register
-		// in the trusted call state's build-resource scope. A build WITHOUT
-		// trusted call state (the coordinator's shared toolset) uses the
-		// coordinator's shared scope; a custom provider whose options carry
-		// no scope has NO fallback and fails closed.
-		scope := callBuildScopeFrom(ctx)
-		if scope == nil {
-			if opts := callOptionsFrom(ctx); opts != nil && tools.IsCustomDiskProvider(opts.DiskProvider) {
-				return policyToolBuild{}, fmt.Errorf(
-					"%w: a custom disk provider must carry its binding handle before the call options are shared",
-					ErrDiskProviderUnavailable)
-			}
-		}
-		// shared tracks whether the build carries NO trusted call state
-		// (the coordinator's eager default toolset). Design §1.2: bare
-		// builders create AND close a scope — no process-lifetime
-		// fallback. The shared build therefore runs under an EPHEMERAL
-		// scope (closed at assembly end, pinning nothing) and DEFERS its
-		// registry publication + Construction ownership to first dispatch
-		// (batchIngressTool.ensurePinned).
-		shared := scope == nil
-		deferred := shared
-		if shared {
-			scope = newBuildResourceScope()
-			defer scope.close()
-		}
-		// failBuildScope closes the CALL's scope on a build-then-error
-		// sequence (R12-H2a P1-1): newBatchWorkToolBuild succeeded and pinned
-		// construction owners into it, so a later failure (registry resolve,
-		// custom-provider handle, InstallBatchModelControls) must not leak
-		// them past this assembly boundary.
-		failBuildScope := func(err error) (policyToolBuild, error) {
-			if !shared {
-				scope.close()
-			}
-			return policyToolBuild{}, err
-		}
-		built, err := newBatchWorkToolBuild(bind, filteredTools, scope, deferred)
-		if err != nil {
-			return failBuildScope(err)
-		}
-		// A deferred (shared default toolset) build has no published
-		// registry identity until first dispatch, so the model controls
-		// install per-call, never in the shared build.
-		if bind.controls != nil && !deferred {
-			allowed := allowedControls
-			if len(allowed) > 0 {
-				registry, err := bind.ingress.Registry(built.registryID)
-				if err != nil {
-					return failBuildScope(err)
-				}
-				inv := BatchInvocation{
-					RegistryID: built.registryID, Origin: "coordinator", Delivery: batchDeliveryChoice{Mode: batchDeliveryDetached},
-					BackgroundEscape: batchEscapeNever,
-					WorkerStopScope:  isSubAgent,
-					Policy:           batchLeafPolicyContext{RegistryID: built.registryID, RestrictedToolset: batchToolsetFingerprint(filteredTools)},
-				}
-				inv.SessionID = tools.GetSessionFromContext(ctx)
-				inv.MessageID = tools.GetMessageFromContext(ctx)
-				inv.CallID = ""
-				if opts := callOptionsFrom(ctx); opts != nil && opts.AgentDepthSet {
-					inv.AgentDepth = opts.MaxAgentDepth
-					inv.AgentDepthSet = true
-				} else {
-					inv.AgentDepth = DefaultAgentDepth
-					inv.AgentDepthSet = true
-				}
-				inv.Policy.MessageID = inv.MessageID
-				inv.Policy.SupportsImages = tools.GetSupportsImagesFromContext(ctx)
-				inv.Policy.ModelName = tools.GetModelNameFromContext(ctx)
-				if inv.WaiterRank == 0 {
-					inv.WaiterRank = batchGroupRanks[batchGroupDefault]
-				}
-				inv.Policy.FolderScope = folderScopeSpecFrom(ctx)
-				inv.Policy.RunAllowlist = runAllowlistSpecFrom(ctx)
-				// A custom (non-OS) call provider carries its IMMUTABLE
-				// binding handle, minted when the trusted call state was
-				// created (BindCallDiskProvider) — never lazily here: a
-				// copied options object must not re-mint a binding, and a
-				// custom provider without one fails closed.
-				if opts := callOptionsFrom(ctx); opts != nil {
-					if bindingID := opts.DiskBindingID; bindingID != "" {
-						inv.Policy.DiskBindingID = bindingID
-						inv.Policy.DiskProvider = true
-					} else if tools.IsCustomDiskProvider(opts.DiskProvider) {
-						return failBuildScope(fmt.Errorf(
-							"%w: a custom disk provider must carry its binding handle before the call options are shared",
-							ErrDiskProviderUnavailable))
-					}
-				}
-				controls, err := bind.controls.InstallBatchModelControls(registry, inv)
-				if err != nil {
-					return failBuildScope(err)
-				}
-				for _, control := range controls {
-					if control.Info().Name == tools.AwaitTasksToolName {
-						continue
-					}
-					if slices.Contains(allowed, control.Info().Name) {
-						built.tools = append(built.tools, wrapToolsWithHooks(wrapToolsWithRestrictedRun([]fantasy.AgentTool{control}, restrictedRunAuthorizer(c.permissions)), hookRunner, isSubAgent)[0])
-					}
-				}
-			}
-		}
-		return built, nil
-	}
-	// Per-call pinned tool slices bypass sessionAgent.SetTools, so apply the
-	// restricted-run gate at this assembly boundary as well as at the agent
-	// boundary. This keeps every actual dispatch path fail-closed. Hooks are
-	// applied outside this wrapper below so PreToolUse runs first.
-	filteredTools = decoratePolicyTools(filteredTools, restrictedRunAuthorizer(c.permissions), hookRunner, isSubAgent)
-	// Wrap tools with hook interception for the top-level agent only.
-	// Sub-agents (the `agent` task tool, `agentic_fetch`, etc.) run
-	// without hook interception to avoid firing the user's hook N times
-	// per delegated turn. The top-level invocation of the sub-agent tool
-	// itself is still wrapped from the coder's side.
-	return newPolicyToolBuild(filteredTools), nil
 }

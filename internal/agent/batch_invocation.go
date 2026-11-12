@@ -12,8 +12,10 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // Delivery modes of one invocation. R11D owns the elections; the ingress only
@@ -77,6 +79,10 @@ type batchLeafPolicyContext struct {
 	// executor's job; the ID flows into the canonical spec payload hash.
 	DiskBindingID     string `json:"disk_binding_id,omitempty"`
 	RestrictedToolset string `json:"restricted_toolset"`
+	// RoleContract is the trusted parent's immutable tool ceiling. It is
+	// carried separately from a leaf's selected role snapshot and is never
+	// populated from public request fields.
+	RoleContract *session.RoleContract `json:"role_contract,omitempty"`
 }
 
 // batchDeliveryChoice is the mode/window pair R11D elects on.
@@ -126,6 +132,8 @@ type BatchInvocation struct {
 	// no-route delegation can never mint a route-ful nested batch. It is
 	// never model input.
 	QuestionRoute bool `json:"-"`
+	// roleConfig carries the admission config snapshot for model controls.
+	roleConfig *config.Config
 }
 
 // batchCallIdentity returns the live-attach key of an invocation: the owner
@@ -175,6 +183,11 @@ func (inv *BatchInvocation) Validate() error {
 	// A non-empty binding ID is a required process binding: Validate checks
 	// well-formedness only; liveness is resolved by the executor before any
 	// leaf side effect (batch_exec.go).
+	if inv.Policy.RoleContract != nil {
+		if err := inv.Policy.RoleContract.Validate(); err != nil {
+			return fmt.Errorf("%w: invalid trusted role contract: %v", errBatchMissingPolicy, err)
+		}
+	}
 	if inv.Policy.DiskBindingID != "" && !batchWellFormedBindingID(inv.Policy.DiskBindingID) {
 		return fmt.Errorf("%w: binding id %q", errBatchBadDiskBinding, inv.Policy.DiskBindingID)
 	}
@@ -258,6 +271,9 @@ func batchLeafRunContext(base context.Context, p batchLeafPayload) context.Conte
 	ctx = context.WithValue(ctx, tools.MessageIDContextKey, p.Policy.MessageID)
 	ctx = context.WithValue(ctx, tools.SupportsImagesContextKey, p.Policy.SupportsImages)
 	ctx = context.WithValue(ctx, tools.ModelNameContextKey, p.Policy.ModelName)
+	if p.Policy.RoleContract != nil {
+		ctx = withRoleToolContract(ctx, p.Policy.RoleContract)
+	}
 	if p.Policy.FolderScope != nil {
 		ctx = context.WithValue(ctx, batchFolderScopeContextKey{}, p.Policy.FolderScope)
 	}

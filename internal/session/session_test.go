@@ -76,6 +76,17 @@ func newTestDB(t *testing.T) (*sql.DB, *db.Queries) {
 			requested_role TEXT NOT NULL CHECK (requested_role IN ('', 'smart', 'fast', 'worker', 'reviewer'))
 		);
 
+		CREATE TABLE session_role_contracts (
+			session_id TEXT PRIMARY KEY NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			contract_json TEXT NOT NULL
+		);
+
+		CREATE TABLE session_root_role_contracts (
+			session_id TEXT PRIMARY KEY NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			logical_call_id TEXT NOT NULL,
+			contract_json TEXT
+		);
+
 		CREATE TABLE session_permissions (
 			id TEXT PRIMARY KEY,
 			session_id TEXT NOT NULL,

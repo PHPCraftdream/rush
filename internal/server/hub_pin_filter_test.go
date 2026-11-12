@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"log/slog"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -59,6 +61,164 @@ func TestEventSessionClassificationExhaustive(t *testing.T) {
 	}
 	for value := range eventClasses {
 		require.Contains(t, values, value, "classification %q has no Event* constant", value)
+	}
+}
+
+func broadcastMarkerAfterDelivery(h *Hub, payload any) error {
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	done := make(chan struct{})
+	select {
+	case h.deliveryBarrier <- done:
+	case <-h.stopped:
+		return errors.New("hub stopped before delivery barrier was accepted")
+	case <-timer.C:
+		return errors.New("timed out submitting hub delivery barrier")
+	}
+	select {
+	case <-h.stopped:
+		return errors.New("hub stopped before delivery barrier completed")
+	default:
+	}
+	select {
+	case <-done:
+	case <-h.stopped:
+		return errors.New("hub stopped before delivery barrier completed")
+	case <-timer.C:
+		return errors.New("timed out waiting for hub delivery barrier")
+	}
+	select {
+	case <-h.stopped:
+		return errors.New("hub stopped before marker broadcast")
+	default:
+	}
+	h.Broadcast(EventSessionCreated, payload)
+	return nil
+}
+
+func isPinnedViewDeliveryMarker(message WSMessage, sessionID string) bool {
+	if message.Type != EventSessionCreated {
+		return false
+	}
+	var marker struct {
+		SessionID string `json:"sessionID"`
+		ID        string `json:"id"`
+	}
+	if json.Unmarshal(message.Payload, &marker) != nil {
+		return false
+	}
+	return marker.SessionID == sessionID && marker.ID == "delivery-barrier"
+}
+
+func logHubFrameDiagnostics(t *testing.T, frames, sentinel string) {
+	t.Helper()
+	present := strings.Contains(frames, sentinel)
+	const maxDiagnosticBytes = 64 * 1024
+	if len(frames) > maxDiagnosticBytes {
+		t.Logf("hub frame diagnostics: bytes=%d summary=omitted sentinel_present=%t", len(frames), present)
+		return
+	}
+	var messages []WSMessage
+	if err := json.Unmarshal([]byte(frames), &messages); err != nil {
+		t.Logf("hub frame diagnostics: parse_ok=false sentinel_present=%t", present)
+		return
+	}
+	counts := make(map[string]int)
+	for _, message := range messages {
+		typ := message.Type
+		if len(typ) > 48 {
+			typ = typ[:48]
+		}
+		counts[typ]++
+	}
+	types := make([]string, 0, len(counts))
+	for typ := range counts {
+		types = append(types, typ)
+	}
+	sort.Strings(types)
+	if len(types) > 16 {
+		types = types[:16]
+	}
+	boundedCounts := make(map[string]int, len(types))
+	for _, typ := range types {
+		boundedCounts[typ] = counts[typ]
+	}
+	t.Logf("hub frame diagnostics: frame_count=%d type_counts=%v sentinel_present=%t", len(messages), boundedCounts, present)
+}
+
+func logHubFrameDiagnosticsOnUnexpected(t *testing.T, frames, sentinel string, wantPresent bool) {
+	t.Helper()
+	if strings.Contains(frames, sentinel) != wantPresent {
+		logHubFrameDiagnostics(t, frames, sentinel)
+	}
+}
+
+func TestPinnedViewDeliveryMarkerMatchesExactMarker(t *testing.T) {
+	valid := WSMessage{Type: EventSessionCreated, Payload: json.RawMessage(`{"sessionID":"own","id":"delivery-barrier"}`)}
+	for _, tc := range []struct {
+		name      string
+		message   WSMessage
+		sessionID string
+		want      bool
+	}{
+		{name: "exact marker", message: valid, sessionID: "own", want: true},
+		{name: "foreign session", message: valid, sessionID: "foreign"},
+		{name: "other marker id", message: WSMessage{Type: EventSessionCreated, Payload: json.RawMessage(`{"sessionID":"own","id":"other"}`)}, sessionID: "own"},
+		{name: "unrelated session created", message: WSMessage{Type: EventSessionCreated, Payload: json.RawMessage(`{"sessionID":"own","id":"ordinary"}`)}, sessionID: "own"},
+		{name: "malformed payload", message: WSMessage{Type: EventSessionCreated, Payload: json.RawMessage(`{`)}, sessionID: "own"},
+		{name: "other event type", message: WSMessage{Type: EventSessionUpdated, Payload: valid.Payload}, sessionID: "own"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, isPinnedViewDeliveryMarker(tc.message, tc.sessionID))
+		})
+	}
+}
+
+func TestHubMarkerWaitsForPriorDeliveryBeforeBroadcast(t *testing.T) {
+	h := newHub()
+	t.Cleanup(func() { close(h.stopped) })
+	result := make(chan error, 1)
+	go func() {
+		result <- broadcastMarkerAfterDelivery(h, map[string]string{"sessionID": "own", "id": "delivery-barrier"})
+	}()
+
+	var ack chan struct{}
+	ackClosed := false
+	defer func() {
+		if ack != nil && !ackClosed {
+			close(ack)
+		}
+	}()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case ack = <-h.deliveryBarrier:
+	case err := <-result:
+		t.Fatalf("marker helper returned before its barrier was accepted: %v", err)
+	case <-timer.C:
+		t.Fatal("marker helper did not request a delivery barrier")
+	}
+	select {
+	case raw := <-h.broadcast:
+		t.Fatalf("marker was queued before the barrier acknowledgement: type=%q", envelopeType(raw))
+	default:
+	}
+
+	close(ack)
+	ackClosed = true
+	select {
+	case err := <-result:
+		require.NoError(t, err)
+	case <-timer.C:
+		t.Fatal("marker helper did not finish after barrier acknowledgement")
+	}
+	select {
+	case raw := <-h.broadcast:
+		var message WSMessage
+		require.NoError(t, json.Unmarshal(raw, &message))
+		require.True(t, isPinnedViewDeliveryMarker(message, "own"), "queued event is not the exact delivery marker")
+	case <-timer.C:
+		t.Fatal("marker helper did not queue the marker after barrier acknowledgement")
 	}
 }
 
@@ -150,16 +310,26 @@ func TestHub_PinnedViewNeverReceivesForeignSessionEvents(t *testing.T) {
 		require.NoError(t, marshalErr)
 		return string(raw)
 	}
+	logHubFrameDiagnosticsOnUnexpected(t, messagesText(pinnedInitial), "REPLAY_SECRET", false)
 	require.NotContains(t, messagesText(pinnedInitial), "REPLAY_SECRET")
+	logHubFrameDiagnosticsOnUnexpected(t, messagesText(pinnedInitial), "STICKY_SECRET", false)
 	require.NotContains(t, messagesText(pinnedInitial), "STICKY_SECRET")
+	logHubFrameDiagnosticsOnUnexpected(t, messagesText(pinnedInitial), "MCP_REPLAY_SECRET", false)
 	require.NotContains(t, messagesText(pinnedInitial), "MCP_REPLAY_SECRET")
+	logHubFrameDiagnosticsOnUnexpected(t, messagesText(pinnedInitial), "MCP_STICKY_SECRET", false)
 	require.NotContains(t, messagesText(pinnedInitial), "MCP_STICKY_SECRET")
+	logHubFrameDiagnosticsOnUnexpected(t, messagesText(controlInitial), "REPLAY_SECRET", true)
 	require.Contains(t, messagesText(controlInitial), "REPLAY_SECRET")
+	logHubFrameDiagnosticsOnUnexpected(t, messagesText(controlInitial), "STICKY_SECRET", true)
 	require.Contains(t, messagesText(controlInitial), "STICKY_SECRET")
+	logHubFrameDiagnosticsOnUnexpected(t, messagesText(controlInitial), "MCP_REPLAY_SECRET", true)
 	require.Contains(t, messagesText(controlInitial), "MCP_REPLAY_SECRET")
+	logHubFrameDiagnosticsOnUnexpected(t, messagesText(controlInitial), "MCP_STICKY_SECRET", true)
 	require.Contains(t, messagesText(controlInitial), "MCP_STICKY_SECRET")
 	for _, sentinel := range append(append([]string{}, classSentinels...), stickyClassSentinels...) {
+		logHubFrameDiagnosticsOnUnexpected(t, messagesText(pinnedInitial), sentinel, false)
 		require.NotContains(t, messagesText(pinnedInitial), sentinel, "replay leaked a non-session event class to the pinned view")
+		logHubFrameDiagnosticsOnUnexpected(t, messagesText(controlInitial), sentinel, true)
 		require.Contains(t, messagesText(controlInitial), sentinel, "the unpinned control must receive %s", sentinel)
 	}
 	var pinnedSessions []struct {
@@ -181,12 +351,17 @@ func TestHub_PinnedViewNeverReceivesForeignSessionEvents(t *testing.T) {
 	require.Equal(t, []string{own.ID}, sessionIDs(pinnedSessions))
 	require.ElementsMatch(t, []string{own.ID, foreign.ID}, sessionIDs(controlSessions))
 
+	server.hub.BroadcastSticky(EventSkills, map[string]string{"skill": "LIVE_STICKY_CLASS_SKILLS_SECRET"})
+	select {
+	case <-server.hub.WaitDelivery():
+	case <-time.After(5 * time.Second):
+		t.Fatal("hub live sticky delivery timeout")
+	}
 	server.hub.Broadcast(EventSessionUpdated, map[string]string{"sessionID": foreign.ID, "sentinel": "LIVE_SECRET"})
 	server.hub.Broadcast(EventSessionUpdated, map[string]string{"sessionID": own.ID, "sentinel": "OWN_VISIBLE"})
 	server.hub.Broadcast(EventMCPState, map[string]any{"headers": map[string]string{"X-Sentinel": "MCP_LIVE_SECRET"}})
 	broadcastClasses("LIVE_")
-	server.hub.BroadcastSticky(EventSkills, map[string]string{"skill": "LIVE_STICKY_CLASS_SKILLS_SECRET"})
-	server.hub.Broadcast(EventSessionCreated, map[string]string{"sessionID": own.ID, "id": "delivery-barrier"})
+	require.NoError(t, broadcastMarkerAfterDelivery(server.hub, map[string]string{"sessionID": own.ID, "id": "delivery-barrier"}))
 	select {
 	case <-server.hub.WaitDelivery():
 	case <-time.After(5 * time.Second):
@@ -198,29 +373,40 @@ func TestHub_PinnedViewNeverReceivesForeignSessionEvents(t *testing.T) {
 		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		for {
 			_, raw, readErr := conn.ReadMessage()
-			require.NoError(t, readErr)
+			if readErr != nil {
+				logHubFrameDiagnostics(t, messagesText(frames), "delivery-barrier")
+				require.NoError(t, readErr)
+			}
 			var message WSMessage
 			require.NoError(t, json.Unmarshal(raw, &message))
 			frames = append(frames, message)
-			if message.Type == EventSessionCreated {
+			if isPinnedViewDeliveryMarker(message, own.ID) {
 				return messagesText(frames)
 			}
 		}
 	}
 	pinnedLive := readThroughBarrier(pinned)
+	logHubFrameDiagnosticsOnUnexpected(t, pinnedLive, "LIVE_SECRET", false)
 	require.NotContains(t, pinnedLive, "LIVE_SECRET")
+	logHubFrameDiagnosticsOnUnexpected(t, pinnedLive, "MCP_LIVE_SECRET", false)
 	require.NotContains(t, pinnedLive, "MCP_LIVE_SECRET")
+	logHubFrameDiagnosticsOnUnexpected(t, pinnedLive, "OWN_VISIBLE", true)
 	require.Contains(t, pinnedLive, "OWN_VISIBLE")
 	controlLive := readThroughBarrier(control)
+	logHubFrameDiagnosticsOnUnexpected(t, controlLive, "LIVE_SECRET", true)
 	require.Contains(t, controlLive, "LIVE_SECRET")
+	logHubFrameDiagnosticsOnUnexpected(t, controlLive, "OWN_VISIBLE", true)
 	require.Contains(t, controlLive, "OWN_VISIBLE")
+	logHubFrameDiagnosticsOnUnexpected(t, controlLive, "MCP_LIVE_SECRET", true)
 	require.Contains(t, controlLive, "MCP_LIVE_SECRET")
 	for _, sentinel := range append(append([]string{}, classSentinels...), "LIVE_STICKY_CLASS_SKILLS_SECRET") {
 		live := sentinel
 		if sentinel != "LIVE_STICKY_CLASS_SKILLS_SECRET" {
 			live = "LIVE_" + sentinel
 		}
+		logHubFrameDiagnosticsOnUnexpected(t, pinnedLive, live, false)
 		require.NotContains(t, pinnedLive, live, "live delivery leaked a non-session event class to the pinned view")
+		logHubFrameDiagnosticsOnUnexpected(t, controlLive, live, true)
 		require.Contains(t, controlLive, live, "the unpinned control must receive %s", live)
 	}
 

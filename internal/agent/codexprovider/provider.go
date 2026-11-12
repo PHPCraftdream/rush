@@ -32,8 +32,9 @@ const (
 )
 
 type provider struct {
-	client *http.Client
-	source TokenSource
+	client    *http.Client
+	source    TokenSource
+	websocket *WebSocketOptions
 }
 
 // New creates a provider that authenticates only with a ChatGPT OAuth token.
@@ -66,7 +67,35 @@ func (m *languageModel) GenerateObject(ctx context.Context, call fantasy.ObjectC
 }
 
 func (m *languageModel) StreamObject(ctx context.Context, call fantasy.ObjectCall) (fantasy.ObjectStreamResponse, error) {
-	return object.StreamWithTool(ctx, m, call)
+	acceptance := &websocketObjectAcceptance{}
+	stream, err := object.StreamWithTool(context.WithValue(ctx, websocketObjectAcceptanceKey{}, acceptance), m, call)
+	if err != nil {
+		acceptance.resolve(false)
+		return nil, err
+	}
+	stopCancel := context.AfterFunc(ctx, func() { acceptance.resolve(false) })
+	return func(yield func(fantasy.ObjectStreamPart) bool) {
+		accepted, finished := false, false
+		defer func() {
+			stopCancel()
+			acceptance.resolve(accepted && ctx.Err() == nil)
+		}()
+		for part := range stream {
+			if finished {
+				return
+			}
+			if part.Type == fantasy.ObjectStreamPartTypeFinish {
+				finished = true
+			}
+			if !yield(part) {
+				return
+			}
+			if part.Type == fantasy.ObjectStreamPartTypeError {
+				return
+			}
+		}
+		accepted = finished
+	}, nil
 }
 
 func (m *languageModel) Generate(ctx context.Context, call fantasy.Call) (*fantasy.Response, error) {
@@ -80,6 +109,7 @@ func (m *languageModel) Generate(ctx context.Context, call fantasy.Call) (*fanta
 	var tools []fantasy.ToolCallContent
 	finishReason := fantasy.FinishReasonUnknown
 	var usage fantasy.Usage
+	var metadata fantasy.ProviderMetadata
 	for part := range stream {
 		switch part.Type {
 		case fantasy.StreamPartTypeError:
@@ -97,6 +127,7 @@ func (m *languageModel) Generate(ctx context.Context, call fantasy.Call) (*fanta
 		case fantasy.StreamPartTypeFinish:
 			finishReason = part.FinishReason
 			usage = part.Usage
+			metadata = part.ProviderMetadata
 		}
 	}
 	if text.Len() > 0 {
@@ -108,7 +139,7 @@ func (m *languageModel) Generate(ctx context.Context, call fantasy.Call) (*fanta
 	for _, tool := range tools {
 		content = append(content, tool)
 	}
-	return &fantasy.Response{Content: content, FinishReason: finishReason, Usage: usage}, nil
+	return &fantasy.Response{Content: content, FinishReason: finishReason, Usage: usage, ProviderMetadata: metadata}, nil
 }
 
 func (m *languageModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
@@ -360,6 +391,9 @@ func sanitizeCallID(raw string) string {
 }
 
 func (m *languageModel) stream(ctx context.Context, payload []byte, userAgent string, yield func(fantasy.StreamPart) bool) {
+	if m.streamWebSocket(ctx, payload, userAgent, yield) {
+		return
+	}
 	response, err := m.acquireResponse(ctx, payload, userAgent)
 	if err != nil {
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: err})
@@ -493,6 +527,7 @@ type streamState struct {
 	completed        bool
 	finishReason     fantasy.FinishReason
 	usage            fantasy.Usage
+	metadata         fantasy.ProviderMetadata
 	tools            map[string]*toolCall
 	toolOrder        []string
 	err              error
@@ -696,6 +731,7 @@ func (s *streamState) consume(data []byte, yield func(fantasy.StreamPart) bool) 
 			}
 		}
 		s.usage = response.usage
+		s.metadata = response.metadata
 		s.finishReason = response.finishReason
 		if kind == "response.incomplete" || response.status == "incomplete" {
 			if s.finishReason == fantasy.FinishReasonStop {
@@ -807,7 +843,7 @@ func (s *streamState) finish(yield func(fantasy.StreamPart) bool) {
 	if s.reasoningStarted && !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeReasoningEnd, ID: "reasoning"}) {
 		return
 	}
-	if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeFinish, FinishReason: s.finishReason, Usage: s.usage}) {
+	if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeFinish, FinishReason: s.finishReason, Usage: s.usage, ProviderMetadata: s.metadata}) {
 		return
 	}
 }
@@ -833,6 +869,7 @@ type decodedResponse struct {
 	reasoning    string
 	output       []responseOutputItem
 	usage        fantasy.Usage
+	metadata     fantasy.ProviderMetadata
 	finishReason fantasy.FinishReason
 }
 
@@ -845,7 +882,7 @@ func decodeResponse(raw json.RawMessage) (decodedResponse, error) {
 			OutputTokens int64 `json:"output_tokens"`
 			TotalTokens  int64 `json:"total_tokens"`
 			InputDetails struct {
-				CachedTokens int64 `json:"cached_tokens"`
+				CachedTokens *int64 `json:"cached_tokens"`
 			} `json:"input_tokens_details"`
 			OutputDetails struct {
 				ReasoningTokens int64 `json:"reasoning_tokens"`
@@ -860,18 +897,25 @@ func decodeResponse(raw json.RawMessage) (decodedResponse, error) {
 			return decodedResponse{}, fmt.Errorf("decode Codex response: %w", err)
 		}
 	}
+	cachedTokens := int64(0)
+	if wire.Usage.InputDetails.CachedTokens != nil {
+		cachedTokens = *wire.Usage.InputDetails.CachedTokens
+	}
 	decoded := decodedResponse{
 		status: wire.Status,
 		output: wire.Output,
 		usage: fantasy.Usage{
 			// Responses input includes cached tokens; fantasy uses disjoint counters.
-			InputTokens:     max(wire.Usage.InputTokens-wire.Usage.InputDetails.CachedTokens, 0),
+			InputTokens:     max(wire.Usage.InputTokens-cachedTokens, 0),
 			OutputTokens:    wire.Usage.OutputTokens,
 			TotalTokens:     wire.Usage.TotalTokens,
-			CacheReadTokens: wire.Usage.InputDetails.CachedTokens,
+			CacheReadTokens: cachedTokens,
 			ReasoningTokens: wire.Usage.OutputDetails.ReasoningTokens,
 		},
 		finishReason: fantasy.FinishReasonStop,
+	}
+	if wire.Usage.InputDetails.CachedTokens != nil {
+		decoded.metadata = fantasy.ProviderMetadata{Name: &UsageMetadata{CachedTokens: wire.Usage.InputDetails.CachedTokens}}
 	}
 	if decoded.usage.TotalTokens == 0 {
 		decoded.usage.TotalTokens = wire.Usage.InputTokens + wire.Usage.OutputTokens

@@ -10,6 +10,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -94,6 +95,50 @@ func TestRequestedRoleResumeInheritsContractAndRejectsReplacement(t *testing.T) 
 	_, err = coord.runSubAgent(t.Context(), params)
 	require.ErrorIs(t, err, ErrAgentRoleMismatch)
 	require.EqualValues(t, 2, calls.Load(), "a mismatched resume must not drive another turn")
+}
+
+func TestBuiltinRoleResumeUsesSlotModelUnderCustomParentCeiling(t *testing.T) {
+	coord, parent := requestedRoleCoordinator(t)
+	ceiling := []string{"view"}
+	parentContract := &session.RoleContract{
+		Version: session.RoleContractVersion, Name: "analyst",
+		Model: session.ModelCfg{Provider: "role-fixture", Model: "smart-model"}, Tools: &ceiling,
+	}
+	require.NoError(t, parentContract.Validate())
+	ctx := WithCallRoleContract(t.Context(), parentContract)
+	var calls []SessionAgentCall
+	child := newMockAgent("role-fixture", 128, func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+		calls = append(calls, call)
+		return agentResultWithText("review result"), nil
+	})
+	params := subAgentParams{Agent: child, SessionID: parent, AgentMessageID: "m", ToolCallID: "c", Prompt: "p", SessionTitle: "review", RequestedModelRole: "reviewer", slotModel: true}
+	_, err := coord.runSubAgent(ctx, params)
+	require.NoError(t, err)
+	require.Len(t, calls, 1)
+	childID := calls[0].SessionID
+
+	for _, role := range []RequestedModelRole{"reviewer", ""} {
+		params.ResumeSessionID = childID
+		params.RequestedModelRole = role
+		response, err := coord.runSubAgent(ctx, params)
+		require.NoError(t, err, "resume with role %q must not require a custom role entry", role)
+		require.False(t, response.IsError)
+	}
+	require.Len(t, calls, 3)
+	stored, found, err := coord.sessions.(session.SessionRoleContractStore).GetSessionRoleContract(t.Context(), childID)
+	require.NoError(t, err)
+	require.True(t, found)
+	for i, got := range calls {
+		require.Equal(t, RequestedModelRole("reviewer"), got.RequestedModelRole, "call %d", i)
+		require.Equal(t, "reviewer-model", got.SmartModel.ModelCfg.Model, "call %d", i)
+		require.Equal(t, hbSourceSlotLive, got.RequestedModelSource, "call %d", i)
+		require.EqualValues(t, 103, got.MaxOutputTokens, "call %d", i)
+		require.True(t, stored.Equal(got.RoleContract), "call %d keeps the stored contract", i)
+		require.Equal(t, "reviewer", got.RoleContract.Name, "call %d", i)
+		require.True(t, roleContractAllowsName(got.RoleContract, "view"), "call %d", i)
+		require.False(t, roleContractAllowsName(got.RoleContract, "bash"), "call %d tools stay capped", i)
+		require.False(t, roleContractAllowsName(got.CallOptions.RoleContract, "bash"), "call %d", i)
+	}
 }
 
 func TestUnconfiguredExplicitRoleRefusesBeforeChildCreation(t *testing.T) {

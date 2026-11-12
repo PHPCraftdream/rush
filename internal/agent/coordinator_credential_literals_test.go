@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openai"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -46,6 +47,46 @@ func credentialLiteralStore(probe *credentialLiteralProbe) *config.ConfigStore {
 			},
 		}),
 	}, probe.resolver())
+}
+
+func TestResolveCredentialsModelsKeepsTenantCustomRoleModel(t *testing.T) {
+	t.Setenv("RUSH_GLOBAL_DATA", t.TempDir())
+	t.Setenv("RUSH_GLOBAL_CONFIG", t.TempDir())
+	testEnvironment := testEnv(t)
+	coord := newWorkerToolTestCoordinator(t, testEnvironment, false)
+	coord.cfg = config.NewLibraryStore(&config.Config{
+		Options: &config.Options{Attribution: coord.cfg.Config().Options.Attribution},
+		Agents: map[string]config.Agent{
+			config.AgentCoder: {AllowedTools: []string{"view"}},
+		},
+		Providers: csync.NewMapFrom(map[string]config.ProviderConfig{
+			"operator": {ID: "operator", Type: openai.Name, APIKey: "operator-key", Models: []catwalk.Model{{ID: "operator-model"}, {ID: "fast-model"}}},
+		}),
+		Roles: map[string]config.CustomRole{
+			"analyst": {SelectedModel: config.SelectedModel{Provider: "operator", Model: "operator-model"}},
+		},
+		Models: map[config.SelectedModelType]config.SelectedModel{
+			config.SelectedModelTypeSmart: {Provider: "operator", Model: "operator-model"},
+			config.SelectedModelTypeFast:  {Provider: "operator", Model: "fast-model"},
+		},
+	}, t.TempDir())
+	creds := &CredentialSet{
+		Credentials: []Credential{{Provider: "tenant", Type: ProviderTypeOpenAI, APIKey: "tenant-key"}},
+		Models: map[Role]ModelChoice{
+			RoleSmart:       {Provider: "tenant", Model: "tenant-smart"},
+			RoleFast:        {Provider: "tenant", Model: "tenant-fast"},
+			Role("analyst"): {Provider: "tenant", Model: "tenant-analyst"},
+		},
+	}
+	contract, err := ResolveRoleContract(coord.cfg.Config(), "analyst", nil)
+	require.NoError(t, err)
+	ctx := withCallCredentials(WithCallOptions(t.Context(), &CallOptions{RoleContract: contract}), creds)
+	resolved, err := coord.resolveCredentialsModels(ctx, "", creds)
+	require.NoError(t, err)
+	require.Equal(t, "tenant-analyst", resolved.smart.ModelCfg.Model,
+		"a covered custom tenant slot must not be overwritten by the operator snapshot")
+	require.Len(t, resolved.tools, 1, "the custom-role call must build its own admitted toolset")
+	require.Equal(t, "view", resolved.tools[0].Info().Name)
 }
 
 func TestResolveCredentialsModelsUsesInvocationEffortWithoutSessionInheritance(t *testing.T) {

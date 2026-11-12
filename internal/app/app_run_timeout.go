@@ -24,10 +24,7 @@ func (e *RunTimeoutError) Error() string { return e.Cause.Error() }
 func (e *RunTimeoutError) Unwrap() error { return e.Cause }
 
 func runResumeRole(role string) string {
-	if role != "" {
-		return role
-	}
-	return "smart"
+	return shellQuoteRunRole(role)
 }
 
 // classifyRunTimeout maps an owned run deadline onto the timeout exit: the

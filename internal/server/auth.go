@@ -89,6 +89,9 @@ func (a *Auth) HandleAuth(w http.ResponseWriter, r *http.Request) {
 		Value:    a.token,
 		Path:     "/",
 		HttpOnly: true,
+		// Secure only over TLS: cleartext loopback listeners are allowed and a
+		// Secure cookie would never be stored by browsers there.
+		Secure:   r.TLS != nil,
 		SameSite: http.SameSiteStrictMode,
 		Expires:  time.Now().Add(30 * 24 * time.Hour),
 	})

@@ -10,6 +10,9 @@ import (
 
 // workerSubAgentActiveForCall combines the per-call role, credentials and depth gates.
 func (c *coordinator) workerSubAgentActiveForCall(ctx context.Context, cfg *config.Config) bool {
+	if opts := callOptionsFrom(ctx); opts != nil && opts.RoleContract != nil && opts.RoleContract.Name != "" && !RequestedModelRole(opts.RoleContract.Name).builtin() {
+		return false
+	}
 	if remaining, err := MaxAgentDepthFrom(ctx); err != nil || remaining == 0 {
 		return false
 	}

@@ -32,9 +32,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// workingModelControls is a BatchModelControl stub whose install step
-// SUCCEEDS (with no control tools), so the pinCallTools failure under test
-// comes from the ready gate, not from the controls.
+// workingModelControls installs real controls so scope tests reach their intended boundary.
 type workingModelControls struct{}
 
 func (workingModelControls) Run(context.Context, BatchInvocation, *policyLeafRegistry, batchModelSpec) (jobbatch.ID, error) {
@@ -57,8 +55,8 @@ func (workingModelControls) Stop(context.Context, string, string, string) (any, 
 	return nil, nil
 }
 
-func (workingModelControls) InstallBatchModelControls(*BatchLeafRegistry, BatchInvocation) ([]fantasy.AgentTool, error) {
-	return nil, nil
+func (workingModelControls) InstallBatchModelControls(registry *BatchLeafRegistry, inv BatchInvocation) ([]fantasy.AgentTool, error) {
+	return NewInstalledBatchModelControl(nil, nil, nil, nil, nil, "", "", nil, nil).InstallBatchModelControls(registry, inv)
 }
 
 func TestPinCallToolsReadyGateErrorReleasesConstruction(t *testing.T) {

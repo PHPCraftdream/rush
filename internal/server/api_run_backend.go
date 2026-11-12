@@ -14,6 +14,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 var (
@@ -73,6 +74,66 @@ func (b *appAPIRunBackend) Start(ctx context.Context, runID, sessionID, prompt, 
 }
 
 func (b *appAPIRunBackend) StartWithDepth(ctx context.Context, runID, sessionID, prompt, role, model string, maxAgentDepth int) (<-chan RunOutcome, error) {
+	return b.StartWithSelection(ctx, runID, sessionID, prompt, role, model, maxAgentDepth, nil)
+}
+
+func apiRunBackendSelection(cfg *config.Config, role, model string, selection *apiRunSelection) (config.SelectedModelType, *agent.ModelOverride, *session.RoleContract, error) {
+	if cfg == nil {
+		return "", nil, nil, ErrAPIRunBackendInvalidModel
+	}
+	roleType, err := apiRunRole(role)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	var contract *session.RoleContract
+	if role != "" && roleType == "" {
+		if model != "" {
+			return "", nil, nil, ErrAPIRunBackendInvalidModel
+		}
+		if selection != nil && selection.Contract != nil {
+			if err := selection.Contract.Validate(); err != nil || selection.Contract.Name != role {
+				return "", nil, nil, ErrAPIRunBackendInvalidRole
+			}
+			if _, err := agent.ResolveRoleContract(cfg, role, nil); err != nil {
+				return "", nil, nil, fmt.Errorf("%w: %v", ErrAPIRunBackendInvalidRole, err)
+			}
+			contract = selection.Contract.Clone()
+		} else {
+			contract, err = agent.ResolveRoleContract(cfg, role, nil)
+			if err != nil {
+				return "", nil, nil, fmt.Errorf("%w: %v", ErrAPIRunBackendInvalidRole, err)
+			}
+		}
+		return "", nil, contract, nil
+	}
+	if role != "" {
+		selected, exists := cfg.Models[roleType]
+		if !exists || selected.Provider == "" || selected.Model == "" {
+			return "", nil, nil, fmt.Errorf("%w: no %s model configured", ErrAPIRunBackendInvalidModel, roleType)
+		}
+	}
+	if model != "" {
+		override, err := apiRunModelOverride(cfg, model)
+		return roleType, override, nil, err
+	}
+	if role != "" {
+		selected := cfg.Models[roleType]
+		return roleType, &agent.ModelOverride{Provider: selected.Provider, Model: selected.Model, ReasoningEffort: selected.ReasoningEffort}, nil, nil
+	}
+	selected, exists := cfg.Models[config.SelectedModelTypeSmart]
+	if !exists {
+		return roleType, nil, nil, nil
+	}
+	if (selected.Provider == "") != (selected.Model == "") {
+		return "", nil, nil, fmt.Errorf("%w: incomplete smart model configured", ErrAPIRunBackendInvalidModel)
+	}
+	if selected.Provider == "" {
+		return roleType, nil, nil, nil
+	}
+	return roleType, &agent.ModelOverride{Provider: selected.Provider, Model: selected.Model, ReasoningEffort: selected.ReasoningEffort}, nil, nil
+}
+
+func (b *appAPIRunBackend) StartWithSelection(ctx context.Context, runID, sessionID, prompt, role, model string, maxAgentDepth int, selection *apiRunSelection) (<-chan RunOutcome, error) {
 	if maxAgentDepth < 0 || maxAgentDepth > 32 {
 		return nil, fmt.Errorf("max_agent_depth must be between 0 and 32")
 	}
@@ -82,6 +143,16 @@ func (b *appAPIRunBackend) StartWithDepth(ctx context.Context, runID, sessionID,
 	if runID == "" || sessionID == "" || strings.TrimSpace(prompt) == "" {
 		return nil, errors.New("invalid run parameters")
 	}
+	cfg := b.app.Config()
+	if selection != nil && selection.Config != nil {
+		cfg = selection.Config
+	}
+
+	roleType, smart, roleContract, err := apiRunBackendSelection(cfg, role, model, selection)
+	if err != nil {
+		return nil, err
+	}
+
 	var (
 		manager  permission.SessionDenyManager
 		policies permission.SessionPolicyManager
@@ -115,24 +186,6 @@ func (b *appAPIRunBackend) StartWithDepth(ctx context.Context, runID, sessionID,
 	if mode == "auto" {
 		slog.Warn("API run uses auto-approve", "token_id", principal.TokenID)
 	}
-	cfg := b.app.Config()
-	if cfg == nil {
-		return nil, ErrAPIRunBackendInvalidModel
-	}
-	roleType, err := apiRunRole(role)
-	if err != nil {
-		return nil, err
-	}
-	var smart *agent.ModelOverride
-	if model != "" {
-		smart, err = apiRunModelOverride(cfg, model)
-	} else if selected, exists := cfg.Models[roleType]; exists {
-		smart = &agent.ModelOverride{Provider: selected.Provider, Model: selected.Model, ReasoningEffort: selected.ReasoningEffort}
-	}
-	if err != nil {
-		return nil, err
-	}
-
 	// Reserve first: only the winner may check and arm the per-run deny gate.
 	_, epoch, reserveCancel, reserved := b.app.AgentCoordinator.ReserveExclusive(context.WithoutCancel(ctx), sessionID)
 	if !reserved {
@@ -210,7 +263,7 @@ func (b *appAPIRunBackend) StartWithDepth(ctx context.Context, runID, sessionID,
 	recorder := agent.NewCallResultRecorder()
 	runCtx = agent.WithCallResultRecorder(runCtx, recorder)
 	runCtx = agent.WithCallOptions(agent.WithCallOrigin(runCtx, message.OriginAPI), &agent.CallOptions{
-		WebTurnOptIn: true, ModelRole: roleType, MaxAgentDepth: maxAgentDepth, AgentDepthSet: true,
+		WebTurnOptIn: true, ModelRole: roleType, RoleContract: roleContract.Clone(), MaxAgentDepth: maxAgentDepth, AgentDepthSet: true,
 	})
 	b.app.AgentCoordinator.ResetAutoResumeCounter(sessionID)
 	done := make(chan RunOutcome, 1)
@@ -344,6 +397,9 @@ func apiRunRole(role string) (config.SelectedModelType, error) {
 	case config.SelectedModelTypeSmart, config.SelectedModelTypeFast, config.SelectedModelTypeWorker, config.SelectedModelTypeReviewer:
 		return parsed, nil
 	default:
+		if config.ValidateCustomRoleName(role) == nil {
+			return "", nil
+		}
 		return "", ErrAPIRunBackendInvalidRole
 	}
 }

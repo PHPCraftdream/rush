@@ -15,9 +15,33 @@ import (
 // without starting a run.
 func validateRunRole(role string) (config.SelectedModelType, error) {
 	if role == "" {
-		return "", fmt.Errorf("--role is required: pass --role smart, --role fast, or, if configured, --role worker / --role reviewer")
+		return "", fmt.Errorf("--role is required: pass --role smart, --role fast, worker, reviewer, or an exact configured custom role name")
 	}
-	return resolveModelRole(role)
+	if err := config.ValidateCustomRoleName(role); err == nil {
+		return "", nil
+	}
+	parsed, err := resolveModelRole(role)
+	if err == nil {
+		return parsed, nil
+	}
+	return "", fmt.Errorf("--role: invalid value %q (built-in role or valid exact custom name required)", role)
+}
+
+func customRunRole(role string) bool {
+	if role == "" {
+		return false
+	}
+	if _, err := resolveModelRole(role); err == nil {
+		return false
+	}
+	return config.ValidateCustomRoleName(role) == nil
+}
+
+func requestedRunRole(role string) string {
+	if customRunRole(role) {
+		return role
+	}
+	return ""
 }
 
 // foldRoleModel validates --role and resolves --continue's session first
@@ -35,6 +59,12 @@ func validateRunRole(role string) (config.SelectedModelType, error) {
 // useLast cleared so the caller passes THAT pair on (R3C-10). Without a
 // fold nothing is resolved and (sessionID, useLast) come back unchanged.
 func foldRoleModel(ctx context.Context, a *app.App, models map[config.SelectedModelType]config.SelectedModel, role string, modelType config.SelectedModelType, smartModel, sessionID string, useLast bool) (model, resolvedSessionID string, resolvedUseLast bool, err error) {
+	if customRunRole(role) {
+		if smartModel != "" {
+			return "", sessionID, useLast, fmt.Errorf("--model cannot be combined with custom --role %q", role)
+		}
+		return "", sessionID, useLast, nil
+	}
 	if modelType == config.SelectedModelTypeSmart || smartModel != "" {
 		return smartModel, sessionID, useLast, nil
 	}
