@@ -28,8 +28,11 @@ type AgentFinalizationRecord struct {
 	Revision                          int64
 	Phase                             string
 	CandidateMessageID, CandidateHash string
-	OpenTickets                       int64
-	Cancelled                         bool
+	// CandidateSerial is a high-water mark: it survives clearing a candidate so
+	// an older provider step can never be recorded after a newer one.
+	CandidateSerial int64
+	OpenTickets     int64
+	Cancelled       bool
 }
 
 func (r AgentFinalizationRecord) active() bool {
@@ -72,14 +75,14 @@ func readAgentFinalization(ctx context.Context, query finalizationQueryRow, id A
 	var node string
 	var token int64
 	err := query.QueryRowContext(ctx, `SELECT f.revision, f.phase, f.node_id, f.node_token,
-		f.candidate_message_id, f.candidate_hash, s.cancel_requested,
+		f.candidate_message_id, f.candidate_hash, f.candidate_serial, s.cancel_requested,
 		(SELECT count(*) FROM session_agent_finalization_tickets t
 		 WHERE t.session_id=f.session_id AND t.logical_call_id=f.logical_call_id
 		 AND t.generation=f.generation AND t.released=0)
 		FROM session_agent_finalizations f JOIN sessions s ON s.id=f.session_id
 		WHERE f.session_id=? AND f.logical_call_id=? AND f.generation=?`,
 		id.SessionID, id.LogicalCallID, id.Generation).Scan(
-		&r.Revision, &r.Phase, &node, &token, &r.CandidateMessageID, &r.CandidateHash, &r.Cancelled, &r.OpenTickets)
+		&r.Revision, &r.Phase, &node, &token, &r.CandidateMessageID, &r.CandidateHash, &r.CandidateSerial, &r.Cancelled, &r.OpenTickets)
 	if err != nil {
 		return AgentFinalizationRecord{}, err
 	}
@@ -191,8 +194,10 @@ func (s *AgentFinalizationStore) Release(ctx context.Context, id AgentFinalizati
 
 // SealTx shares the candidate publication's writer transaction. It does not read
 // every owned-work source: the caller must also validate complete facts in tx.
-func (s *AgentFinalizationStore) SealTx(ctx context.Context, tx *sql.Tx, id AgentFinalizationIdentity, revision int64, messageID, hash string) error {
-	if messageID == "" || hash == "" {
+// It seals only the candidate previously recorded in the record (same message,
+// stored-parts hash and provider-step serial) at the same revision.
+func (s *AgentFinalizationStore) SealTx(ctx context.Context, tx *sql.Tx, id AgentFinalizationIdentity, c AgentFinalizationCandidate) error {
+	if !c.valid() {
 		return ErrAgentFinalizationChanged
 	}
 	r, err := readAgentFinalization(ctx, tx, id)
@@ -202,22 +207,24 @@ func (s *AgentFinalizationStore) SealTx(ctx context.Context, tx *sql.Tx, id Agen
 	if r.Cancelled {
 		return context.Canceled
 	}
-	if r.Phase == "accepted" && r.Revision == revision && r.CandidateMessageID == messageID && r.CandidateHash == hash {
+	matches := r.CandidateMessageID == c.MessageID && r.CandidateHash == c.Hash && r.CandidateSerial == c.Serial
+	if r.Phase == "accepted" && r.Revision == c.Revision && matches {
 		return ErrAgentFinalizationAccepted
 	}
-	if !r.active() || r.Revision != revision || r.OpenTickets != 0 {
+	if !r.active() || r.Revision != c.Revision || r.OpenTickets != 0 || !matches {
 		return ErrAgentFinalizationChanged
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE session_agent_finalizations
-		SET phase='accepted', candidate_message_id=?, candidate_hash=?
+		SET phase='accepted'
 		WHERE session_id=? AND logical_call_id=? AND generation=? AND revision=?
+		AND candidate_message_id=? AND candidate_hash=? AND candidate_serial=?
 		AND phase IN ('executing', 'waiting_work', 'composing')
 		AND NOT EXISTS (SELECT 1 FROM session_agent_finalization_tickets t
 		 WHERE t.session_id=session_agent_finalizations.session_id
 		 AND t.logical_call_id=session_agent_finalizations.logical_call_id
 		 AND t.generation=session_agent_finalizations.generation AND t.released=0)
 		AND EXISTS (SELECT 1 FROM sessions s WHERE s.id=session_agent_finalizations.session_id AND s.cancel_requested=0)`,
-		messageID, hash, id.SessionID, id.LogicalCallID, id.Generation, revision)
+		id.SessionID, id.LogicalCallID, id.Generation, c.Revision, c.MessageID, c.Hash, c.Serial)
 	if err != nil {
 		return err
 	}

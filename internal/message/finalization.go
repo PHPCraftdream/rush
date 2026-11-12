@@ -96,3 +96,31 @@ func (m *Message) AcceptFinalizationCandidate(id FinalizationIdentity, expectedH
 	}
 	return ErrFinalizationCandidateChanged
 }
+
+// VerifyFinalizationCandidate reports whether m is still the provisional
+// candidate (an unfinished Partial footer carrying exactly id) whose stored
+// parts hash to expectedHash. It never mutates m.
+func (m Message) VerifyFinalizationCandidate(id FinalizationIdentity, expectedHash string) error {
+	if m.Role != Assistant || !id.valid() || expectedHash == "" {
+		return ErrFinalizationCandidateChanged
+	}
+	finish := m.FinishPart()
+	if finish == nil || !finish.Partial ||
+		finish.FinalizationKey != id.Key || finish.FinalizationGeneration != id.Generation ||
+		finish.FinalizationRevision != id.Revision || finish.FinalizationSerial != id.Serial {
+		return ErrFinalizationCandidateChanged
+	}
+	hash, err := m.FinalizationContentHash()
+	if err != nil {
+		return err
+	}
+	if hash != expectedHash {
+		return ErrFinalizationCandidateChanged
+	}
+	return nil
+}
+
+// FinalizationIdentity returns the identity carried by a candidate footer.
+func (f Finish) FinalizationIdentity() FinalizationIdentity {
+	return FinalizationIdentity{Key: f.FinalizationKey, Generation: f.FinalizationGeneration, Revision: f.FinalizationRevision, Serial: f.FinalizationSerial}
+}

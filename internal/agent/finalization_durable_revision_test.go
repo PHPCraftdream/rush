@@ -38,7 +38,12 @@ func TestFinalizationDurableRevisionSurvivesLocalGateReconstruction(t *testing.T
 	require.EqualValues(t, 2, first.durableRevision)
 	require.NoError(t, ts.markFinalizationStep())
 	require.EqualValues(t, 2, ts.currentAssistant.FinishPart().FinalizationRevision)
-	require.NoError(t, env.messages.Update(t.Context(), *ts.currentAssistant))
+	persistCandidate := func() {
+		stepID := ts.currentAssistant.FinishPart().FinalizationIdentity()
+		_, persistErr := persistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, stepID, *ts.currentAssistant)
+		require.NoError(t, persistErr)
+	}
+	persistCandidate()
 	hash, err := ts.currentAssistant.FinalizationContentHash()
 	require.NoError(t, err)
 	candidate := finalizationCandidate{messageID: created.ID, hash: hash}
@@ -71,7 +76,7 @@ func TestFinalizationDurableRevisionSurvivesLocalGateReconstruction(t *testing.T
 	require.Zero(t, ts.finalizationStamp.revision)
 	require.EqualValues(t, 4, ts.finalizationStamp.durableRevision)
 	require.NoError(t, ts.markFinalizationStep())
-	require.NoError(t, env.messages.Update(t.Context(), *ts.currentAssistant))
+	persistCandidate()
 	verdict, err = execution.gate.trySeal(t.Context(), ts.finalizationStamp, candidate, execution.read, publish)
 	require.NoError(t, err)
 	require.Equal(t, finalizationAccepted, verdict)

@@ -9,13 +9,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// recordCandidateForTest records a candidate identity directly, bypassing the
+// message write, for tests that exercise only the seal.
+func recordCandidateForTest(ctx context.Context, tx *sql.Tx, id AgentFinalizationIdentity, revision int64) AgentFinalizationCandidate {
+	c := AgentFinalizationCandidate{MessageID: "candidate", Hash: "hash", Revision: revision, Serial: 1}
+	_, _ = tx.ExecContext(ctx, `UPDATE session_agent_finalizations SET candidate_message_id=?, candidate_hash=?, candidate_serial=?
+		WHERE session_id=? AND logical_call_id=? AND generation=?`, c.MessageID, c.Hash, c.Serial, id.SessionID, id.LogicalCallID, id.Generation)
+	return c
+}
+
 func sealFinalizationForTest(ctx context.Context, conn *sql.DB, store *AgentFinalizationStore, id AgentFinalizationIdentity, revision int64) error {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if err := store.SealTx(ctx, tx, id, revision, "candidate", "hash"); err != nil {
+	candidate := recordCandidateForTest(ctx, tx, id, revision)
+	if err := store.SealTx(ctx, tx, id, candidate); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -73,7 +83,7 @@ func TestAgentFinalizationSealRollsBackWithPublicationTransaction(t *testing.T) 
 	tx, err := conn.BeginTx(t.Context(), nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = tx.Rollback() })
-	require.NoError(t, store.SealTx(t.Context(), tx, id, 0, "candidate", "hash"))
+	require.NoError(t, store.SealTx(t.Context(), tx, id, recordCandidateForTest(t.Context(), tx, id, 0)))
 	require.NoError(t, tx.Rollback(), "a failed candidate publication must roll back the same authority seal")
 	restarted := NewAgentFinalizationStore(conn)
 	state, err := restarted.Snapshot(t.Context(), id)
