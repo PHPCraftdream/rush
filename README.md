@@ -284,6 +284,82 @@ jq -r '.error' "$out"         # error.message if non-success
   Ctrl-C, caller cancellation and parent deadlines still report `canceled`. An
   inner provider/reviewer deadline while the run context is live is not a run
   timeout.
+- **`--worktree <slug>`** (+ `--base`/`--branch`) — run inside an
+  isolated git worktree under `<main>/worktrees/<slug>` instead of the
+  current checkout. Creation is idempotent (an existing matching
+  worktree is reused), the run's output is mirrored into
+  `<main>/.rush/stdin/<session>.{out,err}` so results survive
+  `rush worktree remove`, and `rush worktree list|remove` manage the
+  worktrees. Incompatible with `--cwd` and `--data-dir`. See
+  [Worktree delegation](#worktree-delegation-worktree) below and
+  [docs/worktree-run.md](docs/worktree-run.md).
+
+#### <a id="worktree-delegation-worktree"></a>Worktree delegation (`--worktree`)
+
+One command instead of the manual chain. Before, an orchestrator had
+to run `git worktree add -b <slug> worktrees/<slug> <base>`, `cd` into
+it, invoke `rush run ... < prompt > main/.rush/stdin/<s>.out 2> .err`
+by hand, and afterwards do a manual `git worktree remove` plus branch
+cleanup — which on Windows routinely leaves locked directories behind.
+`--worktree` does all of it atomically and cleans up honestly:
+
+```bash
+rush run --role smart --worktree "task-a" --json "refactor the parser" \
+  > /tmp/out.json 2>/tmp/out.err
+jq -r '.exit_reason' /tmp/out.json
+rush worktree list
+rush worktree remove "task-a"
+```
+
+The redirection above is optional: stdout (the `--json` envelope, or
+the terse final answer) and everything on stderr are ALSO mirrored
+into `<main>/.rush/stdin/task-a.{out,err}` (each capped at the last
+8 MiB), so results survive `rush worktree remove`.
+
+- **Slug rules & containment** — the slug must match
+  `[a-z0-9][a-z0-9._-]*`: no uppercase, no leading punctuation, no
+  separators, no `..`; Windows reserved device names (`con`, `prn`,
+  `aux`, `nul`, `com1-9`, `lpt1-9`) are rejected. A worktree can
+  therefore only ever be created under `<main>/worktrees/`. The main
+  checkout is resolved via git, so this works when rush itself runs
+  inside a linked worktree.
+- **Creation & reuse** — branch `<branch|slug>` is created from
+  `--base` (default: the main checkout's HEAD); if the branch already
+  exists locally it is checked out instead of created (then `--base`
+  is ignored with a note). Idempotent: a registered worktree whose
+  branch matches is reused (`reusing worktree <path> (branch <b>)` on
+  stderr). A path occupied by anything else, a detached worktree, or a
+  branch mismatch (which names both branches and suggests `--branch`)
+  are clean errors.
+- **Session** — if `--session` is not given, the session id is the
+  slug. Inside a linked worktree rush already resolves the data
+  directory to the main checkout's shared `<main>/.rush` (production
+  binaries; dev builds isolate to `<wt>/.rush/dev`), so sessions live
+  with the project.
+- **Ignore warning** — if `worktrees/` is not git-ignored (`git
+  check-ignore`), a warning is printed to stderr; rush never edits
+  `.gitignore` itself.
+- **Flag conflicts** — `--worktree` is incompatible with `--cwd` and
+  `--data-dir` (clean errors); `--base`/`--branch` without `--worktree`
+  is an error. All other run flags (`--json`, `--role`, `--session`,
+  `--timeout`, ...) work unchanged.
+- **`rush worktree list`** — SLUG / BRANCH / SESSION / PATH table for
+  every registered worktree directly under `<main>/worktrees`; SESSION
+  shows the id of a session whose lock is held right now or `-`.
+- **`rush worktree remove <slug> [--keep-branch] [--force]`** —
+  refuses while a live run holds a session lock for this worktree (the
+  slug-named session in `<main>/.rush`, or any lock in
+  `<wt>/.rush/locks`); **this refusal holds even with `--force`** —
+  stop the run first (`rush sessions kill <id>`). Refuses a dirty
+  worktree (uncommitted or untracked changes) without `--force`.
+  Branch policy: default deletes with `git branch -d` (merged only —
+  an unmerged branch is kept with a stderr notice and the command
+  still succeeds, exit 0); `--force` deletes with `-D` (unmerged
+  commits discarded); `--keep-branch` skips deletion; detached
+  worktrees have no branch to delete. On Windows removal retries
+  while AV/indexers hold the directory and, if a process still holds
+  it, honestly reports what remains on disk instead of claiming
+  success. Works from any checkout of the repo.
 
 #### Session liveness, batch state, and completion
 
@@ -421,7 +497,7 @@ For a run assigned to a particular session, include its required role flag, for 
 rush run --role smart --session X "..."
 ```
 
-Locks, SQLite and additive accounting protect Rush-owned state, but do not isolate concurrent workspace-file edits; use separate worktrees or another isolation boundary for overlapping changes.
+Locks, SQLite and additive accounting protect Rush-owned state, but do not isolate concurrent workspace-file edits; for overlapping changes use [`rush run --worktree`](#worktree-delegation-worktree) or another isolation boundary.
 
 - Per-session OS flock (`internal/session/lock.go`) — two processes
   cannot share a session id.
