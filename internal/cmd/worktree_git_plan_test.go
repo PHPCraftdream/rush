@@ -114,10 +114,11 @@ func TestSameWorktreePath(t *testing.T) {
 	// Revert-check: drop the Windows case fold or separator cleanup and
 	// registered worktrees would be re-created instead of reused.
 	require.True(t, sameWorktreePath("D:/x/y", "D:/x/y"))
-	require.True(t, sameWorktreePath("D:/x/y", `D:\x\y`))
 	require.True(t, sameWorktreePath("D:/x/y", "D:/x/./y"))
 	mixedCase := sameWorktreePath("D:/x/y", "D:/x/Y")
 	if runtime.GOOS == "windows" {
+		// Only Windows treats a backslash as a path separator.
+		require.True(t, sameWorktreePath("D:/x/y", `D:\x\y`))
 		require.True(t, mixedCase)
 	} else {
 		require.False(t, mixedCase)
@@ -307,12 +308,12 @@ func TestLocalBranchExistsAndRemoveBranch(t *testing.T) {
 	require.NoError(t, removeGitBranch(ctx, root, "feature", false))
 
 	// An unmerged commit refuses a plain delete but yields to force.
+	defBranch := wtTestGitRun(t, root, "symbolic-ref", "--short", "HEAD")
 	wtTestGitRun(t, root, "branch", "feature")
 	wtTestGitRun(t, root, "checkout", "-q", "feature")
 	require.NoError(t, os.WriteFile(filepath.Join(root, "unmerged.txt"), []byte("x\n"), 0o644))
 	wtTestGitRun(t, root, "add", ".")
 	wtTestGitRun(t, root, "commit", "-q", "-m", "unmerged")
-	defBranch := wtTestGitRun(t, root, "symbolic-ref", "--short", "HEAD")
 	wtTestGitRun(t, root, "checkout", "-q", defBranch)
 	require.Error(t, removeGitBranch(ctx, root, "feature", false))
 	require.NoError(t, removeGitBranch(ctx, root, "feature", true))
