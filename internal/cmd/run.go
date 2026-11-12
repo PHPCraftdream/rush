@@ -475,6 +475,8 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			smartModel, _       = cmd.Flags().GetString("model")
 			fastModel, _        = cmd.Flags().GetString("fast-model")
 			sessionID, _        = cmd.Flags().GetString("session")
+			findingsFrom, _     = cmd.Flags().GetString("findings-from")
+			failOnReview, _     = cmd.Flags().GetBool("fail-on-review")
 			useLast, _          = cmd.Flags().GetBool("continue")
 			systemPrompt, _     = cmd.Flags().GetString("system-prompt")
 			systemPromptFile, _ = cmd.Flags().GetString("system-prompt-file")
@@ -726,6 +728,14 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 		// favours the start).
 		prompt = composeUserPrompt(prompt, formatHint, agentsHint, aggregationHint)
 
+		// Fork patch: --findings-from appends another run's review
+		// findings (verdict, review, warnings) after the user's prompt;
+		// a missing or invalid envelope aborts before the run starts.
+		prompt, err = applyFindingsFrom(prompt, findingsFrom)
+		if err != nil {
+			return err
+		}
+
 		if stream && asJSON {
 			return fmt.Errorf("--stream and --json are mutually exclusive")
 		}
@@ -768,7 +778,16 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 		// facade no longer re-exports an internal *app.App wrapper in
 		// its public API (sdk.Wrap and sdk.Client.RunNonInteractive
 		// were removed as internal-only seams).
-		_, runErr = a.RunNonInteractiveWithResult(ctx, os.Stdout, prompt, overrides, hideSpinner, mode, sessionID, useLast)
+		res, runErr := a.RunNonInteractiveWithResult(ctx, os.Stdout, prompt, overrides, hideSpinner, mode, sessionID, useLast)
+		// Fork patch: --fail-on-review maps a "fail" reviewer verdict
+		// to a dedicated exit code. Guarded by runErr == nil so a run
+		// that itself failed keeps its own error exit code, and by
+		// res != nil for defensive symmetry with the result contract.
+		if runErr == nil && res != nil {
+			if _, hit := reviewVerdictExitCode(res.ReviewVerdict, failOnReview); hit {
+				return &reviewFailError{verdict: res.ReviewVerdict, sessionID: res.SessionID}
+			}
+		}
 		return runErr
 	},
 }
@@ -791,6 +810,8 @@ func init() {
 	runCmd.Flags().StringP("model", "m", "", "Model to use. Accepts 'model' or 'provider/model' to disambiguate models with the same name across providers")
 	runCmd.Flags().String("fast-model", "", "Fast model to use. If not provided, uses the default fast model for the provider")
 	runCmd.Flags().StringP("session", "s", "", "Session ID to continue OR create. If a session with this id exists it is continued; otherwise a new one is created with this id. Accepts a hash prefix for existing sessions only.")
+	runCmd.Flags().String("findings-from", "", "Append a 'Findings from previous review' block (review verdict, review text, warnings) read from another run's envelope to this run's prompt. Value: a session id (resolves <main-checkout>/.rush/stdin/<id>.out, the file 'rush run --worktree' writes; see 'rush result') or a path to an envelope file. Missing or invalid envelope fails the run BEFORE it starts. Example: rush run --role smart --session fix-2 --findings-from fix-1 \"fix every finding\"")
+	runCmd.Flags().Bool("fail-on-review", false, "Exit with code 3 when this run's automatic reviewer verdict is \"fail\". pass and pass_with_notes stay 0; a run with no reviewer pass keeps 0; a run that itself failed keeps its own exit code (1/124). The stdout envelope is unchanged — only the process exit code is affected. Read the review afterwards with 'rush result <session> --review'.")
 	runCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
 	runCmd.Flags().String("system-prompt", "", "Override the session's system prompt with this string (persisted on the session)")
 	runCmd.Flags().String("system-prompt-file", "", "Read the system prompt from this file (mutually exclusive with --system-prompt)")

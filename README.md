@@ -413,6 +413,60 @@ Resuming in that case queues a new run behind the held ask. See
   > it took effect, or you'll see the old behavior and wrongly
   > conclude the flag doesn't work.
 
+#### Reading a run's result: rush result
+
+`rush run --json` writes a JSON result envelope. `rush result
+<session-id|path>` prints it back as readable text without fighting Windows
+codepages, and `rush run --findings-from <session-id|path>` feeds a previous
+run's review findings into the next run without manual copy-paste. Full
+details: [docs/result-command.md](docs/result-command.md).
+
+The argument is a session id — looked up as
+`<main-checkout>/.rush/stdin/<id>.out` via `git rev-parse --git-common-dir`,
+so id lookup also works from inside a linked git worktree (it resolves the
+file `rush run --worktree` writes) — or a direct path to an envelope file (a
+path that exists always wins). Four modes:
+
+```
+rush result s1-review                    # human-readable text
+rush result s1-review --review           # verdict + review only
+rush result s1-review --field final_text # raw final_text for scripting
+rush result s1-review --json | jq .exit_reason
+rush result /abs/path/envelope.out       # explicit file
+```
+
+`--json` writes the stored bytes exactly (no re-marshalling); `--field`
+prints string values raw (no quotes) and other types as JSON. Output is
+always raw UTF-8 bytes on stdout regardless of the Windows console code page
+(Go performs no ANSI/OEM transcoding on `os.Stdout`). Exit codes: 0 = envelope
+read, non-zero = not found or not valid JSON.
+
+`rush run --findings-from <session-id|path>` appends a `## Findings from
+previous review` block (verdict, review text, warnings) read from another
+run's envelope after the prompt; a missing or invalid envelope fails the run
+before it starts. Typical loop:
+
+```sh
+rush run --role smart --session t1 --json "review the diff"   # (with --worktree, the envelope lands in <main>/.rush/stdin/t1.out)
+rush result t1 --review                                       # read the verdict
+rush run --role smart --session t2 --findings-from t1 "fix every finding"
+```
+
+`rush run --fail-on-review` gives a `review_verdict: "fail"` a dedicated
+exit code instead of the default exit 0 (which makes background completion
+notifications look successful): exit 3 when the run succeeded and the verdict
+is exactly `"fail"`; `pass`/`pass_with_notes`, other verdicts and runs with
+no reviewer pass stay 0, a failed run keeps its own exit code, and the stdout
+envelope is byte-identical either way. Without the flag nothing changes.
+`rush run` exit codes:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | success (including review-fail without the flag, and `pass`/`pass_with_notes` with `--fail-on-review`) |
+| 1 | generic run error |
+| 3 | review verdict `"fail"` with `--fail-on-review` (public contract for wrapper scripts; `rush ping` uses its own separate code 3 for "degraded") |
+| 124 | timeout hard backstop force-kill |
+
 ### 3. Parallel processes against one `.rush/`
 
 For a run assigned to a particular session, include its required role flag, for example:
