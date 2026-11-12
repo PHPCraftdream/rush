@@ -63,7 +63,11 @@ func TestAPIMatrixOversizeWSMessageClosesConnectionAndListenerSurvives(t *testin
 			var closeErr *websocket.CloseError
 			require.ErrorAs(t, err, &closeErr, "the server must close the connection, not let the read time out")
 			require.Equal(t, websocket.CloseMessageTooBig, closeErr.Code)
-			require.NoError(t, conn.Close())
+			// The server already ended the connection; on TLS the closeNotify write to the dead
+			// socket can legitimately fail with a broken pipe, which is not what this test checks.
+			if cerr := conn.Close(); cerr != nil {
+				require.ErrorContains(t, cerr, "closeNotify")
+			}
 			require.NoError(t, response.Body.Close())
 
 			request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, f.base+"/api/v1/sessions", nil)

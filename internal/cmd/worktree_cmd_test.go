@@ -58,7 +58,14 @@ func wtRunRemove(t *testing.T, mainRoot, slug string, flags map[string]string) (
 func wtWorktreeRegistered(t *testing.T, main, path string) bool {
 	t.Helper()
 	out := wtTestGitRun(t, main, "worktree", "list", "--porcelain")
-	return strings.Contains(out, path)
+	for _, line := range strings.Split(out, "\n") {
+		listed, ok := strings.CutPrefix(strings.TrimSpace(line), "worktree ")
+		// git prints forward slashes on Windows; compare as the product does.
+		if ok && sameWorktreePath(listed, path) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestWorktreeRemoveHappyPath(t *testing.T) {
