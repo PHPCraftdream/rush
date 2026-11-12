@@ -251,6 +251,10 @@ jq -r '.error' "$out"         # error.message if non-success
   watchdog allows even with progress. Without this watchdog cap, progress can
   keep that watchdog from firing; the whole run is still bounded by `--timeout`
   or the default cap below.
+- **`--on-finish "cmd"`** — runs a shell command after the agent finishes.
+  Environment variables set for it: `RUSH_SESSION_ID`, `RUSH_EXIT_REASON`,
+  `RUSH_COST_USD`, `RUSH_TOKENS`, `RUSH_DURATION_SEC`. Hook errors are
+  printed to stderr but do not affect the exit code.
 - **`--allow-peak-hours`** — bypasses a provider's configured
   `peak_hours` refusal window for this single invocation only. No
   persistent config-level equivalent exists; the override is conscious
@@ -366,6 +370,17 @@ into `<main>/.rush/stdin/task-a.{out,err}` (each capped at the last
 For safe retry, require physical process exit and no live or unknown batch scope; inspect current roots/nodes rather than relying on session-only `why`/`watch` or `end_turn`. Resume in the original checkout with the original role and session. `rush sessions compact` has two meanings: without a session argument it runs SQLite `VACUUM`; with a session ID it summarizes that session's model history.
 
 `rush sessions status <id> [--json]` answers all of this in one read-only, machine-readable snapshot: process liveness (a real OS probe, not a recorded fact), phase, seconds since real activity (sub-agent tree included), live children, and whether the session's batch work is terminal. It combines what `why`, `locks`, `last` and `watch` each show partially. Its honesty rule: anything the evidence cannot establish is the literal value `"unknown"` instead of a guess, and a recorded `ended_reason` is never treated as proof that a process exited. Field reference and guarantees: [sessions status](docs/sessions-status.md).
+
+For a diagnosis rather than a verdict, the snapshot commands are available
+individually: `rush sessions why <id>` prints a combined session/batch
+evidence snapshot (session lock, batch root, host locks under `.rush/hosts`,
+live-work classification such as `batch live` / `batch unknown` / `crashed`);
+`rush sessions locks` lists the lock files; `rush sessions watch <id>` shows a
+live activity view. None of `why`, `locks`, `watch` or `show` proves that a
+process physically exited — `why` saying `crashed` or `locks` saying
+`offline` is evidence, never process-exit proof; only the launched process's
+completion establishes that. `sessions status` above is the one-shot
+machine-readable snapshot combining them.
 
 Model-context compaction summarizes existing session history, distinct from SQLite maintenance. In an ordinary direct Codex run/resume, only an exact structured `context_length_exceeded` certified before any output may trigger one silent-prefix summary and continuation in the same session; partial, opaque, uncertified output, transport errors, and NoReplay-fenced failures are never replayed. See [session operations](docs/session-operations.md) for recovery limits and [session compaction](docs/sessions-compact.md) for the explicit command.
 

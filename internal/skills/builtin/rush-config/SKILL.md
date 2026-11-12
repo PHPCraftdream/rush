@@ -463,6 +463,17 @@ CLI equivalents were removed: `rush run` no longer takes
 configured only through the `permissions.run` block above, and further
 run-permission management is planned through roles, not CLI flags.
 
+Related run/session surface (independent of this gate): `rush run
+--worktree <slug>` runs inside an isolated git worktree managed with
+`rush worktree list` / `rush worktree remove`; `rush result
+<session|path>` (with `--text`/`--json`/`--review`/`--field`) reads a
+run's JSON envelope back, `rush run --findings-from <session|path>`
+feeds a previous run's review findings into the next run, and
+`rush run --fail-on-review` turns a `review_verdict: "fail"` into exit
+code 3; `rush sessions status <id> [--json]` prints a one-shot
+machine-readable session/batch snapshot (unestablishable facts are
+reported as `"unknown"`, never guessed).
+
 ## Environment Variables
 
 - `RUSH_GLOBAL_CONFIG` - Override global config location

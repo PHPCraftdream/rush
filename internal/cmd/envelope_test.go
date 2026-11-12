@@ -75,7 +75,7 @@ func TestResolveEnvelopePathMissingEverything(t *testing.T) {
 	// t.Chdir is sequential-only; do not parallelise this test.
 	tmp := t.TempDir()
 	t.Chdir(tmp)
-	// Not a git repo, so the mainCheckoutRoot probe fails here.
+	// Not a git repo, so the envelopeMainCheckoutRoot probe fails here.
 	_, err := resolveEnvelopePath("nope-123")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no envelope for session")

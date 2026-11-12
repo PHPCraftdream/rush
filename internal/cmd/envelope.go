@@ -36,7 +36,7 @@ func resolveEnvelopePath(ref string) (string, error) {
 		return p, nil
 	}
 	idPath := filepath.Join(".rush", "stdin", ref+".out")
-	mainRoot, err := mainCheckoutRoot()
+	mainRoot, err := envelopeMainCheckoutRoot()
 	if err != nil {
 		return "", fmt.Errorf("no envelope for session %q; resolving it needs the main checkout, which failed: %w (pass a direct path to the envelope file instead)", ref, err)
 	}
@@ -51,9 +51,9 @@ func resolveEnvelopePath(ref string) (string, error) {
 	return "", fmt.Errorf("no envelope for session %q (looked for %s) and %q is not a readable file", ref, path, ref)
 }
 
-// mainCheckoutRoot returns the main checkout's root directory, derived
+// envelopeMainCheckoutRoot returns the main checkout's root directory, derived
 // from the git common dir. Works from inside a linked worktree too.
-func mainCheckoutRoot() (string, error) {
+func envelopeMainCheckoutRoot() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("cannot determine the working directory: %w", err)
