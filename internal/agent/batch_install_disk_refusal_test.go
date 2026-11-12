@@ -264,7 +264,7 @@ func TestDiskProviderSupportedThroughModelFacingIngressRoutes(t *testing.T) {
 				require.NotNil(t, bridge)
 				resp, err = bridge.Call(stamped, fantasy.ToolCall{ID: "disk-route", Name: "view", Input: `{"path":"x"}`})
 			case "agentic_fetch":
-				built := armPrivateFetchIngress(newPolicyToolBuild([]fantasy.AgentTool{env.leaf}), processCoordinatorBatchBinding().ingress, newBuildResourceScope())
+				built := armPrivateFetchIngress(ctx, newPolicyToolBuild([]fantasy.AgentTool{env.leaf}), processCoordinatorBatchBinding().ingress, newBuildResourceScope())
 				resp, err = built.tools[0].Run(ctx, fantasy.ToolCall{ID: "disk-route", Name: "view", Input: `{}`})
 			}
 			require.NoError(t, err)

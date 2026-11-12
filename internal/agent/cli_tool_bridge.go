@@ -21,6 +21,10 @@ type cliToolBridge struct {
 }
 
 func newCLIToolBridge(registry *policyLeafRegistry, invoke pinnedInvoke, external []cliprovider.BridgeTool) (*cliToolBridge, error) {
+	return newCLIToolBridgeForContext(context.Background(), registry, invoke, external)
+}
+
+func newCLIToolBridgeForContext(ctx context.Context, registry *policyLeafRegistry, invoke pinnedInvoke, external []cliprovider.BridgeTool) (*cliToolBridge, error) {
 	if registry == nil || invoke == nil {
 		return nil, fmt.Errorf("CLI bridge requires pinned registry and ingress")
 	}
@@ -32,7 +36,10 @@ func newCLIToolBridge(registry *policyLeafRegistry, invoke pinnedInvoke, externa
 	seenWire, seenCanonical := map[string]bool{}, map[string]bool{}
 	for _, definition := range definitions {
 		seenWire[definition.WireName], seenCanonical[definition.CanonicalName] = true, true
-		if _, err := registry.resolve(definition.CanonicalName); err != nil {
+		if !roleToolAllowed(ctx, definition.CanonicalName) {
+			continue
+		}
+		if _, err := registry.resolveForContext(ctx, definition.CanonicalName); err != nil {
 			continue
 		}
 		bridge.advertised = append(bridge.advertised, definition)
@@ -43,7 +50,10 @@ func newCLIToolBridge(registry *policyLeafRegistry, invoke pinnedInvoke, externa
 		if !strings.Contains(definition.WireName, "__") || !strings.HasPrefix(definition.CanonicalName, "mcp_") || seenWire[definition.WireName] || seenCanonical[definition.CanonicalName] {
 			return nil, fmt.Errorf("ambiguous CLI bridge mapping %q -> %q", definition.WireName, definition.CanonicalName)
 		}
-		if _, err := registry.resolve(definition.CanonicalName); err != nil {
+		if !roleToolAllowed(ctx, definition.CanonicalName) {
+			continue
+		}
+		if _, err := registry.resolveForContext(ctx, definition.CanonicalName); err != nil {
 			continue
 		}
 		definition.InputSchema = append(json.RawMessage(nil), definition.InputSchema...)
@@ -62,6 +72,9 @@ func (b *cliToolBridge) Tools() []cliprovider.BridgeTool {
 }
 
 func (b *cliToolBridge) Call(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	if err := guardRoleToolCall(ctx, call.Name); err != nil {
+		return fantasy.ToolResponse{}, err
+	}
 	accepted := false
 	for _, tool := range b.advertised {
 		if tool.CanonicalName == call.Name {
@@ -72,7 +85,7 @@ func (b *cliToolBridge) Call(ctx context.Context, call fantasy.ToolCall) (fantas
 	if !accepted {
 		return fantasy.ToolResponse{}, fmt.Errorf("CLI bridge target %q is not advertised", call.Name)
 	}
-	leaf, err := b.registry.resolve(call.Name)
+	leaf, err := b.registry.resolveForContext(ctx, call.Name)
 	if err != nil {
 		return fantasy.ToolResponse{}, err
 	}

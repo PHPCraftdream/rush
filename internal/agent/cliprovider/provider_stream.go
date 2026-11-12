@@ -84,6 +84,33 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 	var resumePrompt string
 
 	args := m.spec.BuildArgs(yolo)
+	var err error
+	policy, hasToolPolicy := ToolPolicyFrom(ctx)
+	bridge := invocationToolBridge(ctx)
+	if !hasToolPolicy {
+		policy = ToolPolicy{}
+	}
+	if hasToolPolicy && policy.Constrained {
+		if !m.spec.SupportsRestrictedTools {
+			if attachTmpDir != "" {
+				_ = os.RemoveAll(attachTmpDir)
+			}
+			return nil, fmt.Errorf("cliprovider: selected CLI %s cannot enforce this invocation's restricted tool policy", m.spec.ModelID)
+		}
+		if bridge == nil && m.spec.QwenMCPIntegration {
+			if attachTmpDir != "" {
+				_ = os.RemoveAll(attachTmpDir)
+			}
+			return nil, fmt.Errorf("cliprovider: constrained qwen calls require an invocation-pinned tool bridge")
+		}
+		args, err = applyRestrictedToolArgs(args, m.spec, bridge, m.mcpProxy, policy)
+		if err != nil {
+			if attachTmpDir != "" {
+				_ = os.RemoveAll(attachTmpDir)
+			}
+			return nil, err
+		}
+	}
 
 	// Apply dynamic reasoning effort from context so the UI toggle takes
 	// effect. Dispatch is per-spec: this used to append `--effort <level>` to
@@ -144,8 +171,9 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 	// Write / Task tools, bypassing agentguard (batch 16) and the MCP permission
 	// dialog. yolo only controls whether claude needs the bypass-permissions flag,
 	// not whether our MCP bridge sits in the loop.
-	bridge := invocationToolBridge(ctx)
-	if m.spec.UseRushMCP && (m.perms != nil || bridge != nil) {
+	// This bridge is invocation-bound; do not replace it with a broader
+	// process bridge after the policy was captured above.
+	if m.spec.UseRushMCP && (m.perms != nil || bridge != nil || policy.Constrained) {
 		var err error
 		mcpSrv, err = newRushMCPServer(ctx, m.perms, m.sessions, sessionID, m.workingDir, "", m.mcpProxy)
 		if err != nil {
@@ -185,10 +213,21 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 		slog.Info("cliprovider: MCP config written", "path", mcpTmpCfg, "addr", mcpSrv.addr)
 	}
 
-	// When rush's own MCP server is active, the CLI may use only rush's MCP
-	// tools plus a few built-ins rush doesn't replicate (see rushMCPToolArgs).
 	if mcpSrv != nil {
-		args = append(args, rushMCPToolArgs(bridge, m.mcpProxy)...)
+		if policy.Constrained {
+			if m.spec.Binary != "qwen" {
+				args, err = applyRestrictedToolArgs(args, m.spec, bridge, m.mcpProxy, policy)
+				if err != nil {
+					mcpSrv.stop()
+					if attachTmpDir != "" {
+						_ = os.RemoveAll(attachTmpDir)
+					}
+					return nil, err
+				}
+			}
+		} else {
+			args = append(args, rushMCPToolArgsWithPolicy(bridge, m.mcpProxy, policy)...)
+		}
 	}
 
 	// Qwen MCP integration: register rush's MCP server in ~/.qwen/settings.json
@@ -198,7 +237,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 	// The Authorization: Bearer header is stored in the settings (qwen CLI
 	// supports custom headers for httpUrl transports); the server is
 	// localhost-only with a random port.
-	if m.spec.QwenMCPIntegration && (m.perms != nil || bridge != nil) {
+	if m.spec.QwenMCPIntegration && (m.perms != nil || bridge != nil || policy.Constrained) {
 		id, idErr := qwenMCPID(m.workingDir)
 		if idErr != nil {
 			mcpSetupErr = idErr
@@ -210,12 +249,6 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 				mcpSetupErr = err
 				slog.Warn("cliprovider: failed to start qwen MCP server", "err", err)
 			} else {
-				// registerQwenMCP below unconditionally replaces
-				// mcpServers[id] with a fresh map, so a leading
-				// deregister-then-register here was always redundant
-				// (removed: it also used to unsafely delete a possibly
-				// concurrent session's live entry — see
-				// deregisterQwenMCP's own doc for the full story).
 				serverName := sessionMCPName(id, sessionID)
 				if regErr := registerQwenMCP(serverName, mcpSrv.addr, mcpSrv.token); regErr != nil {
 					mcpSetupErr = regErr
@@ -224,43 +257,36 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 					mcpSrv = nil
 				} else {
 					qwenMCPName = serverName
-					args = append(args, "--allowed-mcp-server-names", qwenMCPName)
-					// Restrict qwen to only rush MCP tools so its built-in
-					// tools (read_file, glob, etc.) cannot bypass rush's
-					// permission system.
-					// Also block the native todo_write so the model uses
-					// mcp__rush__todos which persists tasks to the rush session.
-					if bridge != nil {
-						args = append(args, "--allowed-tools")
-						for _, tool := range bridge.Tools() {
+					args = append(args, "--allowed-mcp-server-names", qwenMCPName, "--allowed-tools")
+					var allowed []BridgeTool
+					if policy.Constrained {
+						allowed, mcpSetupErr = policyBridgeTools(policy, bridge, m.mcpProxy)
+					} else if bridge != nil {
+						allowed = bridge.Tools()
+					} else {
+						allowed, _ = BuiltinBridgeTools()
+					}
+					if mcpSetupErr != nil {
+						mcpSrv.stop()
+						mcpSrv = nil
+					} else {
+						if len(allowed) == 0 {
+							args = append(args, "")
+						}
+						for _, tool := range allowed {
 							args = append(args, "mcp__"+qwenMCPName+"__"+tool.WireName)
 						}
 						args = append(args, "--exclude-tools", "todo_write")
-					} else {
-						args = append(
-							args,
-							"--allowed-tools",
-							"mcp__"+qwenMCPName+"__Bash",
-							"mcp__"+qwenMCPName+"__Read",
-							"mcp__"+qwenMCPName+"__Write",
-							"mcp__"+qwenMCPName+"__Glob",
-							"mcp__"+qwenMCPName+"__Grep",
-							"mcp__"+qwenMCPName+"__todos",
-							"--exclude-tools",
-							"todo_write",
-						)
 					}
 				}
 			}
 		}
 	}
 
-	// Gemini MCP integration: register rush's MCP server in ~/.gemini/settings.json
-	// using a stable per-project ID, suffixed with a session-specific hash so
-	// concurrent rush sessions retain independent registrations.
-	// Authorization: Bearer headers and trust:true to bypass its own confirmation
-	// prompts, so tool calls go directly to our MCP server and Rush permission UI.
-	if m.spec.GeminiMCPIntegration && (m.perms != nil || bridge != nil) {
+	// Gemini MCP integration: register Rush's MCP server in the user's settings.
+	// This provider has no supported per-invocation native-tool allowlist;
+	// constrained calls were rejected above before any MCP setup or process start.
+	if m.spec.GeminiMCPIntegration && (m.perms != nil || bridge != nil || policy.Constrained) {
 		id, idErr := geminiMCPID(m.workingDir)
 		if idErr != nil {
 			mcpSetupErr = idErr
@@ -272,12 +298,6 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 				mcpSetupErr = err
 				slog.Warn("cliprovider: failed to start gemini MCP server", "err", err)
 			} else {
-				// registerGeminiMCP below unconditionally replaces
-				// mcpServers[id] with a fresh map, so a leading
-				// deregister-then-register here was always redundant
-				// (removed: it also used to unsafely delete a possibly
-				// concurrent session's live entry — see
-				// deregisterGeminiMCP's own doc for the full story).
 				serverName := sessionMCPName(id, sessionID)
 				if regErr := registerGeminiMCP(serverName, mcpSrv.addr, mcpSrv.token); regErr != nil {
 					mcpSetupErr = regErr
@@ -297,7 +317,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 	// (inline config override). No persistent changes to ~/.codex/config.toml.
 	// The token is passed via environment variable and Authorization: Bearer header
 	// to avoid leaking secrets in process lists (query params are visible in /proc/<pid>/cmdline).
-	if m.spec.CodexMCPIntegration && (m.perms != nil || bridge != nil) {
+	if m.spec.CodexMCPIntegration && (m.perms != nil || bridge != nil || policy.Constrained) {
 		var err error
 		mcpSrv, err = newRushMCPServer(ctx, m.perms, m.sessions, sessionID, m.workingDir, "", m.mcpProxy)
 		if err != nil {
@@ -309,7 +329,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 		}
 	}
 
-	if mcpSrv == nil && (bridge != nil || (m.perms != nil && (m.spec.UseRushMCP || m.spec.QwenMCPIntegration || m.spec.GeminiMCPIntegration || m.spec.CodexMCPIntegration))) {
+	if mcpSrv == nil && (hasToolPolicy && policy.Constrained || bridge != nil || (m.perms != nil && (m.spec.UseRushMCP || m.spec.QwenMCPIntegration || m.spec.GeminiMCPIntegration || m.spec.CodexMCPIntegration))) {
 		if attachTmpDir != "" {
 			_ = os.RemoveAll(attachTmpDir)
 		}

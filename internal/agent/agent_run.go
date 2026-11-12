@@ -574,6 +574,12 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 			return nil, notAttempted(call, fmt.Errorf("session %q: admission setup failed: %w", call.SessionID, err))
 		}
 	}
+	if !a.isSubAgent {
+		if err := bindRootRoleContract(runCtx, a.sessions, call); err != nil {
+			a.noteRefusal(call.SessionID, err)
+			return nil, notAttempted(call, fmt.Errorf("session %q: bind root role contract: %w", call.SessionID, err))
+		}
+	}
 
 	// R3-4: drop THIS dispatch loop's policy entry when the loop ends —
 	// identified by the LAST call whose policy was armed below, so a
@@ -680,6 +686,19 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		}
 		call = reclaimed
 		inheritReplacementIdentityCallback(&previousCall, &call)
+		if call.LogicalCallID != previousCall.LogicalCallID {
+			if restored, restoreErr := restoreRootRoleContract(runCtx, a.sessions, call); restoreErr != nil {
+				return nil, notAttempted(call, restoreErr)
+			} else {
+				call = restored
+			}
+		}
+		if !a.isSubAgent {
+			if err := bindRootRoleContract(runCtx, a.sessions, call); err != nil {
+				a.noteRefusal(call.SessionID, err)
+				return nil, notAttempted(call, fmt.Errorf("session %q: bind root role contract: %w", call.SessionID, err))
+			}
+		}
 		if err := persistCallModels(call); err != nil {
 			a.noteRefusal(call.SessionID, err)
 			if durableErr := a.restartOrphanedWithRetry([]SessionAgentCall{call}); durableErr != nil {

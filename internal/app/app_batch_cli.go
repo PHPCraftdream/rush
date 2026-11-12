@@ -94,6 +94,12 @@ func (a *App) BatchCLISpecWithQuestionRoute(ctx context.Context, owner, messageI
 	if !a.BatchOwnerRuntime() || a.AgentCoordinator == nil {
 		return jobbatch.Spec{}, nil, errors.New("batch runtime unavailable")
 	}
+	admitted, err := agent.AdmitBatchRoleContracts(ctx, a.AgentCoordinator, spec)
+	if err != nil {
+		return jobbatch.Spec{}, nil, err
+	}
+	ctx = agent.WithAdmittedBatchRoleContracts(ctx)
+	spec = admitted
 	if err := persistSessionExecutionIntent(ctx, a, owner, sessionExecutionProviderOmitted, nil, false); err != nil {
 		return jobbatch.Spec{}, nil, err
 	}
@@ -105,7 +111,7 @@ func (a *App) BatchCLISpecWithQuestionRoute(ctx context.Context, owner, messageI
 	if depthErr != nil {
 		return jobbatch.Spec{}, nil, depthErr
 	}
-	ctx, err := agent.WithAgentDepth(ctx, remainingDepth)
+	ctx, err = agent.WithAgentDepth(ctx, remainingDepth)
 	if err != nil {
 		return jobbatch.Spec{}, nil, err
 	}

@@ -923,6 +923,7 @@ func (app *App) buildReviewerPassTurn(ctx context.Context, primary *agent.CallOp
 func reviewerCallOptions(primary *agent.CallOptions) *agent.CallOptions {
 	opts := &agent.CallOptions{
 		ModelRole:                   config.SelectedModelTypeReviewer,
+		RoleContract:                primary.RoleContract.Clone(),
 		DisableSubAgents:            true,
 		MaxAgentDepth:               primary.MaxAgentDepth,
 		AgentDepthSet:               primary.AgentDepthSet,

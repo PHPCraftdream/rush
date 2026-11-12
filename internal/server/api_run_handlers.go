@@ -12,7 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 const (
@@ -64,15 +66,47 @@ func writeAPIRunGateUnavailable(w http.ResponseWriter, r *http.Request) {
 }
 
 func apiCreateRunHandler(store APIWriteStore, backend APIRunBackend, registry *APIRunRegistry) http.HandlerFunc {
+	var snapshotFn func() (*config.Config, error)
+	if appBackend, ok := backend.(*appAPIRunBackend); ok && appBackend.app != nil {
+		snapshotFn = func() (*config.Config, error) { cfg, _ := appBackend.app.Store().Snapshot(); return cfg, nil }
+	}
+	return apiRunCreateHandlerWithSnapshot(store, backend, registry, snapshotFn)
+}
+
+func apiRunCreateHandlerWithSnapshot(store APIWriteStore, backend APIRunBackend, registry *APIRunRegistry, snapshotFn func() (*config.Config, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var payload apiRunCreateRequest
 		if err := apiDecodeStrictBody(r, &payload); err != nil || strings.TrimSpace(payload.Prompt) == "" || len(payload.Prompt) > apiRunMaxFieldBytes {
 			WriteAPIProblem(w, r, http.StatusBadRequest, "Bad Request", "invalid request body", "", err)
 			return
 		}
-		if _, err := apiRunRole(payload.Role); err != nil {
-			WriteAPIProblem(w, r, http.StatusBadRequest, "Bad Request", "invalid role", "", nil)
-			return
+		var selection *apiRunSelection
+		if snapshotFn != nil {
+			cfg, snapshotErr := snapshotFn()
+			if snapshotErr != nil || cfg == nil {
+				WriteAPIProblem(w, r, http.StatusServiceUnavailable, "Service Unavailable", "role configuration unavailable", "", snapshotErr)
+				return
+			}
+			if _, err := validateAPIRunSelection(cfg, payload.Role, payload.Model); err != nil {
+				WriteAPIProblem(w, r, http.StatusBadRequest, "Bad Request", err.Error(), "", nil)
+				return
+			}
+			selection = &apiRunSelection{Config: cfg}
+			if payload.Role != "" {
+				if parsed, roleErr := apiRunRole(payload.Role); roleErr == nil && parsed == "" {
+					selection.Contract, roleErr = agent.ResolveRoleContract(cfg, payload.Role, nil)
+					if roleErr != nil {
+						WriteAPIProblem(w, r, http.StatusBadRequest, "Bad Request", roleErr.Error(), "", nil)
+						return
+					}
+				}
+			}
+		} else {
+			parsed, parseErr := apiRunRole(payload.Role)
+			if parseErr != nil || (payload.Role != "" && parsed == "") {
+				WriteAPIProblem(w, r, http.StatusBadRequest, "Bad Request", "invalid role", "", nil)
+				return
+			}
 		}
 		maxAgentDepth := 2
 		if payload.MaxAgentDepth != nil {
@@ -105,7 +139,7 @@ func apiCreateRunHandler(store APIWriteStore, backend APIRunBackend, registry *A
 			apiReadFailure(w, r, err)
 			return
 		}
-		done, err := startAPIRunWithDepth(backend, context.WithoutCancel(r.Context()), run.ID, item.ID, payload.Prompt, payload.Role, payload.Model, maxAgentDepth)
+		done, err := startAPIRunWithDepth(backend, context.WithoutCancel(r.Context()), run.ID, item.ID, payload.Prompt, payload.Role, payload.Model, maxAgentDepth, selection)
 		if err != nil {
 			_, _ = registry.Transition(run.ID, APIRunFailed, "start_failed", "run could not be started", "")
 			switch {
@@ -143,11 +177,21 @@ func apiCreateRunHandler(store APIWriteStore, backend APIRunBackend, registry *A
 	}
 }
 
+type apiRunSelection struct {
+	Config   *config.Config
+	Contract *session.RoleContract
+}
+type apiRunSelectionBackend interface {
+	StartWithSelection(context.Context, string, string, string, string, string, int, *apiRunSelection) (<-chan RunOutcome, error)
+}
 type apiRunDepthBackend interface {
 	StartWithDepth(context.Context, string, string, string, string, string, int) (<-chan RunOutcome, error)
 }
 
-func startAPIRunWithDepth(backend APIRunBackend, ctx context.Context, runID, sessionID, prompt, role, model string, depth int) (<-chan RunOutcome, error) {
+func startAPIRunWithDepth(backend APIRunBackend, ctx context.Context, runID, sessionID, prompt, role, model string, depth int, selection *apiRunSelection) (<-chan RunOutcome, error) {
+	if selected, ok := backend.(apiRunSelectionBackend); ok {
+		return selected.StartWithSelection(ctx, runID, sessionID, prompt, role, model, depth, selection)
+	}
 	if depthBackend, ok := backend.(apiRunDepthBackend); ok {
 		return depthBackend.StartWithDepth(ctx, runID, sessionID, prompt, role, model, depth)
 	}

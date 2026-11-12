@@ -22,6 +22,15 @@ func (r RequestedModelRole) valid() bool {
 	case config.SelectedModelTypeSmart, config.SelectedModelTypeFast, config.SelectedModelTypeWorker, config.SelectedModelTypeReviewer:
 		return true
 	default:
+		return config.ValidateCustomRoleName(string(r)) == nil
+	}
+}
+
+func (r RequestedModelRole) builtin() bool {
+	switch config.SelectedModelType(r) {
+	case config.SelectedModelTypeSmart, config.SelectedModelTypeFast, config.SelectedModelTypeWorker, config.SelectedModelTypeReviewer:
+		return true
+	default:
 		return false
 	}
 }
@@ -30,11 +39,11 @@ func (r RequestedModelRole) valid() bool {
 func (r *RequestedModelRole) UnmarshalJSON(raw []byte) error {
 	var name string
 	if err := json.Unmarshal(raw, &name); err != nil {
-		return fmt.Errorf("%w: expected smart, fast, worker, or reviewer", ErrAgentRoleInvalid)
+		return fmt.Errorf("%w: expected a built-in or valid custom role name", ErrAgentRoleInvalid)
 	}
 	role := RequestedModelRole(name)
 	if !role.valid() {
-		return fmt.Errorf("%w: expected smart, fast, worker, or reviewer", ErrAgentRoleInvalid)
+		return fmt.Errorf("%w: expected a built-in or valid custom role name", ErrAgentRoleInvalid)
 	}
 	*r = role
 	return nil

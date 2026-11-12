@@ -46,6 +46,9 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	if pinnedStepTools == nil {
 		pinnedStepTools = ts.a.tools.Copy()
 	}
+	if roleToolsConstrained(callContext) {
+		pinnedStepTools = filterRoleContractTools(callContext, pinnedStepTools)
+	}
 	prepared.Tools = withProviderOptionsOnLast(pinnedStepTools, ts.a.getCacheControlOptions())
 
 	// stepSplices collects every message THIS step's boundary inserts mid-

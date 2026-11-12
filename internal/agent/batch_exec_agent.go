@@ -12,6 +12,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // batchAgentRunRequest identifies one incarnation attempt of the leaf.
@@ -23,12 +24,13 @@ type batchAgentRunRequest struct {
 	Input      json.RawMessage
 	// R11F (M3): the invocation's pinned registry identity (leaf resolution
 	// through the ingress) and enclosing message id (child-session creation).
-	RegistryID      string
-	MessageID       string
-	DiskBindingID   string
-	Policy          *batchLeafPolicyContext
-	pctHandoff      *pctDelegationHandoff // pct: owned by the executor through confirmed disposal.
-	CallCredentials bool
+	RegistryID           string
+	MessageID            string
+	DiskBindingID        string
+	Policy               *batchLeafPolicyContext
+	SelectedRoleContract *session.RoleContract
+	pctHandoff           *pctDelegationHandoff // pct: owned by the executor through confirmed disposal.
+	CallCredentials      bool
 	// QuestionRoute is carried verbatim from the durable payload; false
 	// means the incarnation must never hold or publish questions.
 	QuestionRoute bool
@@ -177,7 +179,7 @@ func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 			}
 			return ""
 		}(),
-		Policy: p.Policy, Tool: p.Tool, CallCredentials: p.CallCredentials,
+		Policy: p.Policy, SelectedRoleContract: cloneRoleContractForCall(p.SelectedRoleContract), Tool: p.Tool, CallCredentials: p.CallCredentials,
 		QuestionRoute: p.QuestionRoute,
 		AgentDepth: func() int {
 			if p.AgentDepth != nil {
@@ -201,6 +203,9 @@ func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	e.cancel = cancel
+	if p.Policy != nil && p.Policy.RoleContract != nil {
+		runCtx = withRoleToolContract(runCtx, p.Policy.RoleContract)
+	}
 	if p.Policy != nil && p.Policy.DiskBindingID != "" && p.diskProvider == nil {
 		cancel()
 		if e.pctHandoff != nil {

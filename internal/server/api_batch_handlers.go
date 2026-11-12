@@ -242,7 +242,8 @@ func (s *apiBatchService) createTaskHandler() http.HandlerFunc {
 		if payload.MaxAgentDepth != nil {
 			depth = *payload.MaxAgentDepth
 		}
-		leaf, err := json.Marshal(agent.BatchCLITask{Tool: agentToolName, Input: inputJSON, AgentDepth: &depth})
+		leafTask := agent.BatchCLITask{Tool: agentToolName, Input: inputJSON, AgentDepth: &depth}
+		leaf, err := json.Marshal(leafTask)
 		if err != nil {
 			apiReadFailure(w, r, err)
 			return

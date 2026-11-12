@@ -425,6 +425,8 @@ type SessionAgentCall struct {
 	// same logical request.
 	LogicalCallID string
 
+	RoleContract *session.RoleContract `json:"-"`
+
 	// CallOptions pins THIS call's execution policy (R1-1) - model role,
 	// cost/token caps, peak-hours bypass, timeout watchdog policy, the
 	// sub-agent ban and the fail-fast busy contract. Stamped by

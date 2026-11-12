@@ -9,6 +9,7 @@ import (
 	"charm.land/fantasy/providers/openrouter"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // TODO: when we support multiple agents we need to change this so that we pass in the agent specific model config
@@ -31,6 +32,9 @@ func (c *coordinator) buildAgentModels(ctx context.Context, isSubAgent bool) (Mo
 // caller with nothing to pin (buildAgentModels above) takes its own fresh
 // Snapshot() and delegates here, so behavior for those callers is unchanged.
 func (c *coordinator) buildAgentModelsFromCfg(ctx context.Context, cfg *config.Config, isSubAgent bool) (Model, Model, error) {
+	if opts := callOptionsFrom(ctx); opts != nil && opts.RoleContract != nil && opts.RoleContract.Name != "" {
+		return c.buildRoleContractModels(ctx, cfg, opts.RoleContract)
+	}
 	if creds := callCredentialsFrom(ctx); creds != nil {
 		choice := creds.Models[RoleSmart]
 		if isSubAgent {
@@ -72,6 +76,14 @@ func (c *coordinator) buildAgentModelsFromCfg(ctx context.Context, cfg *config.C
 	}
 
 	return c.buildModelsFromCfg(ctx, cfg, smartModelCfg, fastModelCfg, isSubAgent)
+}
+
+func (c *coordinator) buildRoleContractModels(ctx context.Context, cfg *config.Config, contract *session.RoleContract) (Model, Model, error) {
+	selected, _, err := currentOrSnapshotRoleModel(cfg, contract)
+	if err != nil {
+		return Model{}, Model{}, err
+	}
+	return c.buildModelsFromCfg(ctx, cfg, selected, selected, true)
 }
 
 // buildModelsFromCfg builds Model objects from explicit SelectedModel configs.

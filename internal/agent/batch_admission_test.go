@@ -1,13 +1,16 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
 	"testing"
 
+	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,12 +33,30 @@ var batchKinds = []string{
 	batchKindGeneric, batchKindMCP, batchKindShell, batchKindArgv, batchKindAgent,
 }
 
+func TestBatchExecutorRejectsRoleForbiddenGenericToolBeforeLeaf(t *testing.T) {
+	allowed := []string{"view"}
+	contract := &session.RoleContract{Version: session.RoleContractVersion, Name: "reader", Model: session.ModelCfg{Provider: "p", Model: "m"}, Tools: &allowed}
+	started := false
+	leaf := &batchGenericTestTool{name: "bash", run: func(context.Context, fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		started = true
+		return fantasy.NewTextResponse("unexpected"), nil
+	}}
+	env := batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) {
+		return &policyLeafRegistry{entries: map[string]policyLeafEntry{"bash": {tool: leaf}}}, nil
+	}}
+	family := newBatchExecutor(env, map[string]batchLeafFamily{batchKindGeneric: newBatchGenericFamily()})
+	payload, err := json.Marshal(batchLeafPayload{Tool: "bash", SessionID: "s", Policy: &batchLeafPolicyContext{RoleContract: contract}})
+	require.NoError(t, err)
+	_, err = family.Start(context.Background(), jobbatch.Launch{Task: jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: payload}}, func(jobbatch.Result) {})
+	require.Error(t, err)
+	require.False(t, started, "forbidden leaf must not dispatch")
+}
+
 func TestBatchClassifyControlPlane(t *testing.T) {
 	t.Parallel()
 	for _, name := range batchControlPlaneNames {
 		for _, kind := range batchKinds {
-			kind := kind
-			name := name
+			kind, name := kind, name
 			t.Run(kind+"/"+name, func(t *testing.T) {
 				t.Parallel()
 				_, _, err := classifyBatchLeaf(kind, name, batchMCPCapability{Reentrant: true, Annotated: true})

@@ -262,6 +262,19 @@ If you need enforced in-process tenant isolation today, put it in your
 own authorization layer and only hand Rush ids that the caller is allowed
 to touch.
 
+## Selecting a custom role: `RunOverrides.RequestedRole`
+
+`RequestedRole` selects an exact custom profile from the Client's current effective configuration. The name is case-sensitive; built-in `smart`, `fast`, `worker`, and `reviewer` continue to be selected with the built-in role API and must not be placed in `ModelRole`. A role's optional tool list narrows the existing permissions and inherited ceilings; it never grants access. Unknown or incomplete profiles fail before session or provider work. Each new `Run` resolves the current profile, while continuations and background work in that same execution retain its admission snapshot.
+
+```go
+res, err := client.Run(ctx, sdk.RunRequest{
+    Prompt: "Research the APIs",
+    Overrides: sdk.RunOverrides{RequestedRole: "Research Analyst"},
+})
+```
+
+`RunOverrides` is aliased by the SDK, so `RequestedRole` is available without a separate SDK wrapper type. Custom roles are configured in the effective `roles` map (see [custom roles](../docs/custom-roles.md)).
+
 ## Scoped filesystem access: `RunOverrides.FolderScopes`
 
 By default a run gets the standard coder toolset. Set `FolderScopes` on

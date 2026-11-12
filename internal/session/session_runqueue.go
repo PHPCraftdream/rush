@@ -106,8 +106,9 @@ type FolderScopeSpec struct {
 }
 
 // CallOptionsSpecVersion is the current schema version. Version 1 predates
-// WebTurnOptIn; version 2 adds it so older readers reject marker-bearing rows.
-const CallOptionsSpecVersion = 2
+// WebTurnOptIn, version 2 adds it, and version 3 adds the fail-closed
+// custom-role contract snapshot.
+const CallOptionsSpecVersion = 3
 
 // CallOptionsSpec is a JSON-serializable mirror of the replay-relevant
 // subset of agent.CallOptions (R5-3, P0 security review). It exists for
@@ -166,11 +167,15 @@ type CallOptionsSpec struct {
 	// conversion-side value, so a plain duration round-trip preserves all
 	// three states (F7). Additive field: rows persisted before it existed
 	// decode as zero, which is the unset semantics they were written
-	// with, so CallOptionsSpecVersion stays at 2.
+	// with, so CallOptionsSpecVersion stays at 3.
 	IdleTimeout   time.Duration `json:"idle_timeout,omitempty"`
 	WebTurnOptIn  bool          `json:"web_turn_opt_in,omitempty"`
 	MaxAgentDepth int           `json:"max_agent_depth,omitempty"`
 	AgentDepthSet bool          `json:"agent_depth_set,omitempty"`
+	// RoleContract is a versioned immutable custom-role/model/tool-cap snapshot.
+	// It is a separate envelope so the role contract can evolve without
+	// changing the surrounding CallOptionsSpec version again.
+	RoleContract *RoleContract `json:"role_contract,omitempty"`
 }
 
 // SessionAgentCallData is a durable, serializable subset of agent.SessionAgentCall
@@ -235,6 +240,7 @@ type SessionAgentCallData struct {
 	// field existed) — such rows keep the historical fallback to the
 	// shared toolset/watchdog policy, exactly as before this fix.
 	CallOptionsSpec *CallOptionsSpec
+	RoleContract    *RoleContract `json:"role_contract,omitempty"`
 	// HostDiskProvider records that the call this row was built from
 	// carried a caller-supplied filesystem (agent.CallOptions.DiskProvider).
 	// The provider itself is arbitrary in-process Go code (typically a

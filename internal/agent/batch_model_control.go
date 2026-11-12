@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -60,6 +62,24 @@ func (c *installedBatchModelControl) Run(ctx context.Context, inv BatchInvocatio
 	if c.runner == nil || c.store == nil || c.delivery == nil {
 		return "", errors.New("batch runtime unavailable")
 	}
+	if !inv.AgentDepthSet {
+		inv.AgentDepth = DefaultAgentDepth
+		inv.AgentDepthSet = true
+	}
+	if inv.roleConfig == nil {
+		if cfg, ok := parentRoleConfigFrom(ctx); ok {
+			inv.roleConfig = cfg
+		}
+	}
+	if inv.roleConfig == nil && inv.Policy.RoleContract != nil {
+		return "", ErrAgentRoleUnconfigured
+	}
+	if inv.roleConfig == nil && modelSpecHasCustomRole(raw) {
+		return "", ErrAgentRoleUnconfigured
+	}
+	if inv.roleConfig == nil {
+		inv.roleConfig = &config.Config{}
+	}
 	if err := inv.Validate(); err != nil {
 		return "", err
 	}
@@ -67,6 +87,10 @@ func (c *installedBatchModelControl) Run(ctx context.Context, inv BatchInvocatio
 		return "", errBatchMissingCallID
 	}
 	spec, err := modelBatchSpecForAdmission(raw, inv, reg, c.resolver)
+	if err != nil {
+		return "", err
+	}
+	spec, err = admitBatchRoleContracts(inv.roleConfig, inv.Policy.RoleContract, spec)
 	if err != nil {
 		return "", err
 	}
@@ -323,6 +347,36 @@ func batchModelSpecNodes(items []batchModelItem, inv BatchInvocation, reg *polic
 	return out, nil
 }
 
+func modelSpecHasCustomRole(spec batchModelSpec) bool {
+	for _, item := range spec.Items {
+		if batchModelItemHasCustomRole(item) {
+			return true
+		}
+	}
+	return false
+}
+
+func batchModelItemHasCustomRole(item batchModelItem) bool {
+	if item.Batch != nil {
+		for _, child := range item.Batch.Items {
+			if batchModelItemHasCustomRole(child) {
+				return true
+			}
+		}
+		return false
+	}
+	if item.Tool != AgentToolName {
+		return false
+	}
+	var input struct {
+		Role RequestedModelRole `json:"role"`
+	}
+	if json.Unmarshal(item.Input, &input) != nil {
+		return false
+	}
+	return input.Role != "" && !input.Role.builtin()
+}
+
 func (c *installedBatchModelControl) Add(ctx context.Context, caller, root, parent string, inv BatchInvocation, reg *policyLeafRegistry, items []batchModelItem) ([]jobbatch.ID, error) {
 	if c.runner == nil || c.store == nil {
 		return nil, errors.New("batch runtime unavailable")
@@ -330,18 +384,25 @@ func (c *installedBatchModelControl) Add(ctx context.Context, caller, root, pare
 	if caller == "" || caller != inv.SessionID || root == "" || len(items) == 0 {
 		return nil, errors.New("batch_add requires caller, root and items")
 	}
+	if !inv.AgentDepthSet {
+		inv.AgentDepth, inv.AgentDepthSet = DefaultAgentDepth, true
+	}
+	if inv.roleConfig == nil {
+		if cfg, ok := parentRoleConfigFrom(ctx); ok {
+			inv.roleConfig = cfg
+		}
+	}
+	if inv.roleConfig == nil && slices.ContainsFunc(items, batchModelItemHasCustomRole) {
+		return nil, ErrAgentRoleUnconfigured
+	}
+	if inv.roleConfig == nil && inv.Policy.RoleContract != nil {
+		return nil, ErrAgentRoleUnconfigured
+	}
+	if inv.roleConfig == nil {
+		inv.roleConfig = &config.Config{}
+	}
 	if err := inv.Validate(); err != nil {
 		return nil, err
-	}
-	if !inv.AgentDepthSet {
-		inv.AgentDepth = DefaultAgentDepth
-		inv.AgentDepthSet = true
-	}
-	if inv.AgentDepth < 0 || inv.AgentDepth > 32 {
-		return nil, errors.New("batch_add agent depth must be between 0 and 32")
-	}
-	if inv.CallID == "" || reg == nil || inv.RegistryID != inv.Policy.RegistryID || !reg.hasToolset(inv.Policy.RestrictedToolset) {
-		return nil, errBatchMissingCallID
 	}
 	s, err := c.readAuthorized(ctx, caller, root)
 	if err != nil {
@@ -379,6 +440,12 @@ func (c *installedBatchModelControl) Add(ctx context.Context, caller, root, pare
 	specs, err := batchModelSpecNodes(items, inv, reg, c.resolver)
 	if err != nil {
 		return nil, err
+	}
+	for i := range specs {
+		specs[i], err = admitBatchRoleContracts(inv.roleConfig, inv.Policy.RoleContract, specs[i])
+		if err != nil {
+			return nil, err
+		}
 	}
 	used := len(s.Nodes)
 	for i := range specs {
