@@ -290,6 +290,29 @@ func (ts *turnStream) handleStreamFailure(
 		)
 		return nil, SessionAgentCall{}, false, &ErrCallAlreadyAttempted{Err: updateErr}
 	}
+	if !isCancelErr && !turnCtxDone && !ts.call.recoveryContinuation && ts.recovery != nil &&
+		ts.smartModel.Model.Provider() == "openai-codex" && codexContextRejectedBeforeOutput(err) &&
+		len(toolCalls) == 0 && snap.FullText() == "" && snap.FullReasoningText() == "" {
+		next, ok, recoveryErr := ts.a.recoverCodexContext(ts.genCtx, ts.call, ts.smartModel, ts.promptPrefix, ts.recovery)
+		if recoveryErr == nil && ok {
+			next.drainTurnCommitted = next.IsDrain
+			ts.cancel()
+			return nil, next, true, nil
+		}
+		if recoveryErr != nil {
+			slog.Warn("automatic Codex context recovery stopped", "session_id", ts.call.SessionID, "err", recoveryErr)
+			recoveryFailure := errors.Join(err, fmt.Errorf("automatic context recovery failed: %w", recoveryErr))
+			var attempted *ErrCallAlreadyAttempted
+			if errors.As(err, &attempted) {
+				attempted.Err = errors.Join(attempted.Err, fmt.Errorf("automatic context recovery failed: %w", recoveryErr))
+				err = attempted
+			} else {
+				err = &ErrCallAlreadyAttempted{Err: recoveryFailure}
+			}
+		} else if ok {
+			err = &ErrCallAlreadyAttempted{Err: errors.Join(err, errors.New("automatic recovery did not schedule a continuation"))}
+		}
+	}
 
 	// Drain on cancel via the mailbox's generation-aware drain (design
 	// §4): an interrupt-and-replace payload (mb.replacement) takes

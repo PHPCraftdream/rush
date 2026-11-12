@@ -54,11 +54,11 @@ type turnStreamConfig struct {
 	// fatalTools records the turn-ending tool error (tool_fatal_error.go).
 	fatalTools *fatalToolCollector
 
-	smartModel     Model
-	promptPrefix   string
-	historyIDs     map[string]struct{}
-	currentSession session.Session
-
+	smartModel      Model
+	promptPrefix    string
+	historyIDs      map[string]struct{}
+	currentSession  session.Session
+	recovery        *codexRecoveryState
 	bumpActivity    func()
 	toolStarted     func()
 	toolFinished    func()
@@ -146,6 +146,7 @@ type turnStream struct {
 	shouldSummarize     bool
 	silentCompactNeeded bool
 	currentSession      session.Session
+	recovery            *codexRecoveryState
 	runTotalTokens      int64
 
 	// progress is the in-turn progress guard's state (turn_progress_guard.go).
@@ -208,6 +209,7 @@ func newTurnStream(cfg turnStreamConfig) *turnStream {
 		promptPrefix:       cfg.promptPrefix,
 		historyIDs:         cfg.historyIDs,
 		currentSession:     cfg.currentSession,
+		recovery:           cfg.recovery,
 		bumpActivity:       cfg.bumpActivity,
 		toolStarted:        cfg.toolStarted,
 		toolFinished:       cfg.toolFinished,
@@ -222,6 +224,7 @@ func newTurnStream(cfg turnStreamConfig) *turnStream {
 		idleTimeout:        cfg.idleTimeout,
 		phase:              phaseToolBoundary,
 		sanitizedToolCalls: make(map[string]bool),
+		runTotalTokens:     cfg.call.recoverySpentTokens,
 	}
 }
 
@@ -230,7 +233,9 @@ func newTurnStream(cfg turnStreamConfig) *turnStream {
 // closure, this is the whole "router": one flat struct literal, no branching.
 func (ts *turnStream) streamCall(history []fantasy.Message, files []fantasy.FilePart, maxOutputTokens *int64) fantasy.AgentStreamCall {
 	prompt := message.PromptWithTextAttachments(ts.call.Prompt, ts.call.Attachments)
-	if _, present := ts.historyIDs[ts.call.ExistingMessageID]; ts.call.ExistingMessageID != "" && present {
+	if ts.call.recoveryContinuation {
+		prompt = codexRecoveryNudge
+	} else if _, present := ts.historyIDs[ts.call.ExistingMessageID]; ts.call.ExistingMessageID != "" && present {
 		prompt = ""
 	}
 	return fantasy.AgentStreamCall{

@@ -256,14 +256,26 @@ func TestSessionsCompactHelp_DocumentsTheContract(t *testing.T) {
 	require.Contains(t, long, "free disk space", "the space reservation must be in the help")
 	require.Contains(t, long, "blind spot", "the idle-web-server blind spot must be in the help")
 	require.Contains(t, long, "--force skips ONLY these two checks", "what --force does and does not bypass must be explicit")
+	require.Contains(t, long, "With a session ID, compact its conversation history instead.")
+	require.Contains(t, long, "The default role is worker")
+	require.Contains(t, long, "Each requested role resolves from the session's matching role override first")
+	require.Contains(t, long, "Only direct providers are supported")
+	require.Contains(t, long, "no fallback")
+	require.Contains(t, long, "Live or unreadable ownership state is refused")
+	require.Contains(t, long, "busy admission does not queue a later compaction")
+	require.Contains(t, long, "--dry-run, --force and --json are database-only options")
+	require.Contains(t, long, "Summary input capacity is not guaranteed")
 
-	require.Equal(t, "compact", sessionsCompactCmd.Use)
+	require.Equal(t, "compact [session]", sessionsCompactCmd.Use)
+	require.Equal(t, "worker", sessionsCompactCmd.Flags().Lookup("role").DefValue)
 	for _, name := range []string{"dry-run", "force", "json"} {
 		require.NotNilf(t, sessionsCompactCmd.Flags().Lookup(name), "flag --%s is missing", name)
 	}
 	example := oneLine(sessionsCompactCmd.Example)
 	require.Contains(t, example, "--dry-run")
 	require.Contains(t, example, "--json")
+	require.Contains(t, example, "rush sessions compact my-session")
+	require.Contains(t, example, "rush sessions compact my-session --role reviewer")
 }
 
 func TestSessionsParentHelp_ListsCompact(t *testing.T) {

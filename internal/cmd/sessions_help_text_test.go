@@ -91,10 +91,17 @@ func timeLimitsParagraph(t *testing.T, s, marker string) string {
 // the help assertions red; the old README bullet the README ones.
 func TestRunHelp_TimeLimitsNamesTheDefaultCap(t *testing.T) {
 	para := timeLimitsParagraph(t, runCmd.Long, "Time limits (usually")
-	require.Contains(t, para, "6h default wall-clock cap")
-	require.Contains(t, para, "RUSH_RUN_DEFAULT_HARD_TIMEOUT")
-	require.Contains(t, para, "DURING A TURN", "idle-timeout watches turns only")
+	require.Contains(t, para, "default six-hour (6 h) TOTAL wall-clock cap")
+	require.Contains(t, para, "RUSH_RUN_DEFAULT_HARD_TIMEOUT overrides this default cap only")
+	require.Contains(t, para, "A positive --timeout replaces the default cap")
+	require.Contains(t, para, "including active work and all waits")
+	require.Contains(t, para, "Progress does not reset this total cap")
+	require.Contains(t, para, "alive 60s later is force-killed (exit 124)")
+	require.Contains(t, para, "--idle-timeout (default 15m)")
+	require.Contains(t, para, "DURING A TURN")
 	require.Contains(t, para, "bounded only by --timeout or the cap")
+	require.Contains(t, para, "It watches turns only")
+	require.Contains(t, para, "do not infer deadlock or its absence or automatically raise --timeout")
 	require.NotContains(t, para, "no limit")
 	require.NotContains(t, para, "don't need --timeout at all")
 }
@@ -119,9 +126,14 @@ func TestRushGuidanceTimeLimits_IdleTimeoutWatchesTurnsOnly(t *testing.T) {
 	_, body, err := loadSkillSource("claude_slash_command", skillTargetClaude)
 	require.NoError(t, err)
 	para := timeLimitsParagraph(t, body, "## Time limits")
-	require.Contains(t, para, "6 h")
-	require.Contains(t, para, "RUSH_RUN_DEFAULT_HARD_TIMEOUT")
+	require.Contains(t, para, "default six-hour (6 h) TOTAL wall-clock cap")
+	require.Contains(t, para, "`RUSH_RUN_DEFAULT_HARD_TIMEOUT` overrides the default cap only")
+	require.Contains(t, para, "active work and all waits")
+	require.Contains(t, para, "progress does not reset this cap")
+	require.Contains(t, para, "If the process remains alive 60 seconds later, the hard backstop force-kills it (exit 124)")
+	require.Contains(t, para, "`--idle-timeout` (default `15m`)")
 	require.Contains(t, para, "It watches turns only")
+	require.Contains(t, para, "do not automatically raise `--timeout` or infer deadlock or its absence from a timeout")
 }
 
 // R8A-2 / R8C-2: the cancel help states the one-shot flag and the --all scope.
