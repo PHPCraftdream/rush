@@ -3,18 +3,18 @@
  * for Codex, StepFun, and Z.AI are covered by provider-catalog-effort.spec.ts.
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  setupMockWS,
-  sendMockWSMessage,
-  waitForWSSend,
-} from "./helpers/mock-ws";
-import { makeSession, makeConfig } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeConfig } from "./helpers/make-config";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 // ── Real wire payload generation for effort badge test ───────────────────────────
 
@@ -64,6 +64,7 @@ func TestZZEffortWireProbe(t *testing.T) {
 }
 `;
 
+/** A message payload produced by the real server wire encoder at max effort. */
 function realWireEffortMaxMessage(): Record<string, any> {
   const tmp = mkdtempSync(join(tmpdir(), "rush-effort-wire-"));
   const probePath = join(tmp, "zz_effort_wire_probe_test.go").replace(/\\/g, "/");
@@ -82,7 +83,7 @@ function realWireEffortMaxMessage(): Record<string, any> {
     out = execFileSync(
       "go",
       ["test", `-overlay=${overlayPath}`, "./internal/server/", "-run", "TestZZEffortWireProbe", "-v", "-count=1"],
-      { cwd: REPO_ROOT, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 },
+      { cwd: REPO_ROOT, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 150_000 },
     );
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string; message?: string };
@@ -103,13 +104,12 @@ function realWireEffortMaxMessage(): Record<string, any> {
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
 // ── Config factory ────────────────────────────────────────────────────────────
 
+/** Config with CLI Claude models. */
 function makeClaudeConfig() {
   return makeConfig({
     models: {
@@ -133,6 +133,7 @@ function makeClaudeConfig() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/** Opens the session with the CLI Claude config and waits for an enabled composer. */
 async function setup(page: any) {
   await page.goto("/");
   const sessionID = "test-session-reasoning";
@@ -159,196 +160,219 @@ async function setup(page: any) {
   return sessionID;
 }
 
+/** Test body: effort controls are visible for CLI Claude models. */
+async function effortControlsAreVisible({ page }: { page: Page }) {
+  await setup(page);
+
+  // Smart model selector should show effort controls
+  await expect(page.locator('[data-test-id="reasoning-effort-smart"]')).toBeVisible();
+  await expect(
+    page.locator('[data-test-id="reasoning-effort-smart-decrease"]'),
+  ).toBeVisible();
+  await expect(
+    page.locator('[data-test-id="reasoning-effort-smart-label"]'),
+  ).toBeVisible();
+  await expect(
+    page.locator('[data-test-id="reasoning-effort-smart-increase"]'),
+  ).toBeVisible();
+
+  // Fast model selector should also show effort controls
+  await expect(page.locator('[data-test-id="reasoning-effort-fast"]')).toBeVisible();
+}
+
+/** Test body: effort label shows the initial medium value. */
+async function effortLabelShowsInitialMedium({ page }: { page: Page }) {
+  await setup(page);
+
+  const largeLabel = page.locator('[data-test-id="reasoning-effort-smart-label"]');
+  await expect(largeLabel).toHaveText("M");
+
+  const smallLabel = page.locator('[data-test-id="reasoning-effort-fast-label"]');
+  await expect(smallLabel).toHaveText("M");
+}
+
+/** Test body: the increase button cycles through effort levels. */
+async function increaseButtonCyclesEffort({ page }: { page: Page }) {
+  await setup(page);
+
+  const label = page.locator('[data-test-id="reasoning-effort-smart-label"]');
+
+  // M (medium) → H (high)
+  await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
+  await expect(label).toHaveText("H");
+
+  // Verify set_session_models was sent
+  const sentMsg = await waitForWSSend(page, "set_session_models");
+  expect(sentMsg.type).toBe("set_session_models");
+  expect(sentMsg.payload.smartModel.reasoning_effort).toBe("high");
+
+  // H (high) → X (xhigh)
+  await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
+  await expect(label).toHaveText("X");
+
+  // X (xhigh) → XX (max)
+  await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
+  await expect(label).toHaveText("XX");
+
+  // XX (max) → L (low)
+  await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
+  await expect(label).toHaveText("L");
+
+  // L (low) → M (medium) - cycle completes
+  await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
+  await expect(label).toHaveText("M");
+}
+
+/** Test body: the decrease button cycles through effort levels in reverse. */
+async function decreaseButtonCyclesEffortInReverse({ page }: { page: Page }) {
+  await setup(page);
+  const label = page.locator('[data-test-id="reasoning-effort-smart-label"]');
+
+  // Mirror of the increase test above — same 5-level cycle, reverse order.
+
+  // M (medium) → L (low)
+  await page.locator('[data-test-id="reasoning-effort-smart-decrease"]').click();
+  await expect(label).toHaveText("L");
+
+  // L (low) → XX (max)
+  await page.locator('[data-test-id="reasoning-effort-smart-decrease"]').click();
+  await expect(label).toHaveText("XX");
+
+  // XX (max) → X (xhigh)
+  await page.locator('[data-test-id="reasoning-effort-smart-decrease"]').click();
+  await expect(label).toHaveText("X");
+
+  // X (xhigh) → H (high)
+  await page.locator('[data-test-id="reasoning-effort-smart-decrease"]').click();
+  await expect(label).toHaveText("H");
+
+  // H (high) → M (medium) - cycle completes
+  await page.locator('[data-test-id="reasoning-effort-smart-decrease"]').click();
+  await expect(label).toHaveText("M");
+}
+
+/** Test body: effort is persisted when the session is reloaded. */
+async function effortPersistsAcrossReload({ page }: { page: Page }) {
+  await setup(page);
+  const sessionID = "test-session-reasoning";
+
+  // Change effort to high
+  await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
+  await expect(
+    page.locator('[data-test-id="reasoning-effort-smart-label"]'),
+  ).toHaveText("H");
+
+  // Wait for the update to be sent
+  await waitForWSSend(page, "set_session_models");
+
+  // Simulate page reload by sending updated session data
+  await sendMockWSMessage(page, {
+    type: "session_updated",
+    payload: makeSession({
+      ID: sessionID,
+      Title: "Reasoning Effort Test",
+      SmartModelProvider: "local-cli",
+      SmartModelID: "cli-claude-opus",
+      SmartModelReasoningEffort: "high",
+    }),
+  });
+
+  // Label should still show H after "reload"
+  await expect(
+    page.locator('[data-test-id="reasoning-effort-smart-label"]'),
+  ).toHaveText("H");
+}
+
+/** Test body: the effort badge renders from the real server wire payload. */
+async function effortBadgeFromRealWirePayload({ page }: { page: Page }) {
+  // The Go wire probe compiles internal/server, which takes 20s+ on a warm
+  // cache and far longer cold. A numeric 3rd argument to test() is ignored by
+  // Playwright, so the budget must be set here or the 30s default applies.
+  test.setTimeout(180_000);
+  await setup(page);
+
+  // Set effort to xhigh (M → H → X). The real server wire JSON payload below
+  // is generated by running toMessageWire via a Go probe (see
+  // realWireEffortMaxMessage) and carries its own independent ReasoningEffort: "max".
+  // The badge reflects the message's own field (message.ReasoningEffort via
+  // EffortBadge.tsx), not the selector value, so this click sequence only needs
+  // to move the selector off the default; it isn't asserting the selector reaches "max".
+  await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
+  await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
+  await expect(
+    page.locator('[data-test-id="reasoning-effort-smart-label"]'),
+  ).toHaveText("X");
+
+  // Send a message
+  await page.locator('[data-test-id="chat-input-textarea"]').fill("Hello");
+  await page.locator('[data-test-id="chat-input-send-button"]').click();
+
+  // Wait for send_message
+  await waitForWSSend(page, "send_message");
+
+  // Drive the badge through the REAL server→wire path: the payload below
+  // is the actual JSON toMessageWire emits for a max-effort assistant
+  // message, produced by running the Go conversion (see
+  // realWireEffortMaxMessage). No field is hand-written here.
+  const wirePayload = realWireEffortMaxMessage();
+  await sendMockWSMessage(page, {
+    type: "message_created",
+    payload: wirePayload,
+  });
+
+  // Wait for message text to appear
+  await expect(page.getByText("Response with max effort")).toBeVisible({ timeout: 3000 });
+
+  // EffortBadge lives inside AssistantHoverActions, which Message.tsx only
+  // mounts while the row is hovered ({hovered && <AssistantHoverActions .../>})
+  // — not just CSS-hidden, actually unmounted. Hover the row first. Message.tsx
+  // renders the row as `<div id={`msg-${message.ID}`} className="msg-row" ...>`
+  // (NB: not "group/msg" — that class doesn't exist here; other specs
+  // referencing it may themselves be stale, out of scope for this test).
+  const msgRow = page.locator("#msg-resp-max");
+  await msgRow.hover();
+
+  // Check that the model badge shows effort level XX (max).
+  // The badge is a small span with the effort letter(s) in brackets next to
+  // the model name — EffortBadge.tsx renders `[XX]` for effort === "max"
+  // and sets title={`Reasoning effort: ${effort}`} (the raw effort string,
+  // not the abbreviated label).
+  const effortBadge = msgRow.locator("span[title='Reasoning effort: max']");
+  await expect(effortBadge).toBeVisible();
+  await expect(effortBadge).toHaveText("[XX]");
+}
+
+/** Test body: changing the small model effort works independently. */
+async function smallModelEffortIsIndependent({ page }: { page: Page }) {
+  await setup(page);
+
+  const largeLabel = page.locator('[data-test-id="reasoning-effort-smart-label"]');
+  const smallLabel = page.locator('[data-test-id="reasoning-effort-fast-label"]');
+
+  // Set large to high
+  await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
+  await expect(largeLabel).toHaveText("H");
+  await expect(smallLabel).toHaveText("M"); // Fast unchanged
+
+  // Set small to max
+  await page.locator('[data-test-id="reasoning-effort-fast-increase"]').click();
+  await page.locator('[data-test-id="reasoning-effort-fast-increase"]').click();
+  await expect(smallLabel).toHaveText("X");
+  await expect(largeLabel).toHaveText("H"); // Smart unchanged
+}
+
 test.describe("Reasoning Effort Controls", () => {
-  test("effort controls are visible for CLI Claude models", async ({ page }) => {
-    await setup(page);
+  test("effort controls are visible for CLI Claude models", effortControlsAreVisible);
 
-    // Smart model selector should show effort controls
-    await expect(page.locator('[data-test-id="reasoning-effort-smart"]')).toBeVisible();
-    await expect(
-      page.locator('[data-test-id="reasoning-effort-smart-decrease"]'),
-    ).toBeVisible();
-    await expect(
-      page.locator('[data-test-id="reasoning-effort-smart-label"]'),
-    ).toBeVisible();
-    await expect(
-      page.locator('[data-test-id="reasoning-effort-smart-increase"]'),
-    ).toBeVisible();
+  test("effort label displays correct initial value (M for medium)", effortLabelShowsInitialMedium);
 
-    // Fast model selector should also show effort controls
-    await expect(page.locator('[data-test-id="reasoning-effort-fast"]')).toBeVisible();
-  });
+  test("clicking increase button cycles through effort levels", increaseButtonCyclesEffort);
 
-  test("effort label displays correct initial value (M for medium)", async ({ page }) => {
-    await setup(page);
+  test("clicking decrease button cycles through effort levels in reverse", decreaseButtonCyclesEffortInReverse);
 
-    const largeLabel = page.locator('[data-test-id="reasoning-effort-smart-label"]');
-    await expect(largeLabel).toHaveText("M");
+  test("effort is persisted when session is reloaded", effortPersistsAcrossReload);
 
-    const smallLabel = page.locator('[data-test-id="reasoning-effort-fast-label"]');
-    await expect(smallLabel).toHaveText("M");
-  });
+  test("effort badge renders from the real server wire payload", effortBadgeFromRealWirePayload);
 
-  test("clicking increase button cycles through effort levels", async ({ page }) => {
-    await setup(page);
-
-    const label = page.locator('[data-test-id="reasoning-effort-smart-label"]');
-
-    // M (medium) → H (high)
-    await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
-    await expect(label).toHaveText("H");
-
-    // Verify set_session_models was sent
-    const sentMsg = await waitForWSSend(page, "set_session_models");
-    expect(sentMsg.type).toBe("set_session_models");
-    expect(sentMsg.payload.smartModel.reasoning_effort).toBe("high");
-
-    // H (high) → X (xhigh)
-    await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
-    await expect(label).toHaveText("X");
-
-    // X (xhigh) → XX (max)
-    await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
-    await expect(label).toHaveText("XX");
-
-    // XX (max) → L (low)
-    await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
-    await expect(label).toHaveText("L");
-
-    // L (low) → M (medium) - cycle completes
-    await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
-    await expect(label).toHaveText("M");
-  });
-
-  test("clicking decrease button cycles through effort levels in reverse", async ({
-    page,
-  }) => {
-    await setup(page);
-    const label = page.locator('[data-test-id="reasoning-effort-smart-label"]');
-
-    // Mirror of the increase test above — same 5-level cycle, reverse order.
-
-    // M (medium) → L (low)
-    await page.locator('[data-test-id="reasoning-effort-smart-decrease"]').click();
-    await expect(label).toHaveText("L");
-
-    // L (low) → XX (max)
-    await page.locator('[data-test-id="reasoning-effort-smart-decrease"]').click();
-    await expect(label).toHaveText("XX");
-
-    // XX (max) → X (xhigh)
-    await page.locator('[data-test-id="reasoning-effort-smart-decrease"]').click();
-    await expect(label).toHaveText("X");
-
-    // X (xhigh) → H (high)
-    await page.locator('[data-test-id="reasoning-effort-smart-decrease"]').click();
-    await expect(label).toHaveText("H");
-
-    // H (high) → M (medium) - cycle completes
-    await page.locator('[data-test-id="reasoning-effort-smart-decrease"]').click();
-    await expect(label).toHaveText("M");
-  });
-
-  test("effort is persisted when session is reloaded", async ({ page }) => {
-    await setup(page);
-    const sessionID = "test-session-reasoning";
-
-    // Change effort to high
-    await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
-    await expect(
-      page.locator('[data-test-id="reasoning-effort-smart-label"]'),
-    ).toHaveText("H");
-
-    // Wait for the update to be sent
-    await waitForWSSend(page, "set_session_models");
-
-    // Simulate page reload by sending updated session data
-    await sendMockWSMessage(page, {
-      type: "session_updated",
-      payload: makeSession({
-        ID: sessionID,
-        Title: "Reasoning Effort Test",
-        SmartModelProvider: "local-cli",
-        SmartModelID: "cli-claude-opus",
-        SmartModelReasoningEffort: "high",
-      }),
-    });
-
-    // Label should still show H after "reload"
-    await expect(
-      page.locator('[data-test-id="reasoning-effort-smart-label"]'),
-    ).toHaveText("H");
-  });
-
-  test("effort badge renders from the real server wire payload", async ({ page }) => {
-    await setup(page);
-
-    // Set effort to xhigh (M → H → X). The real server wire JSON payload below
-    // is generated by running toMessageWire via a Go probe (see
-    // realWireEffortMaxMessage) and carries its own independent ReasoningEffort: "max".
-    // The badge reflects the message's own field (message.ReasoningEffort via
-    // EffortBadge.tsx), not the selector value, so this click sequence only needs
-    // to move the selector off the default; it isn't asserting the selector reaches "max".
-    await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
-    await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
-    await expect(
-      page.locator('[data-test-id="reasoning-effort-smart-label"]'),
-    ).toHaveText("X");
-
-    // Send a message
-    await page.locator('[data-test-id="chat-input-textarea"]').fill("Hello");
-    await page.locator('[data-test-id="chat-input-send-button"]').click();
-
-    // Wait for send_message
-    await waitForWSSend(page, "send_message");
-
-    // Drive the badge through the REAL server→wire path: the payload below
-    // is the actual JSON toMessageWire emits for a max-effort assistant
-    // message, produced by running the Go conversion (see
-    // realWireEffortMaxMessage). No field is hand-written here.
-    const wirePayload = realWireEffortMaxMessage();
-    await sendMockWSMessage(page, {
-      type: "message_created",
-      payload: wirePayload,
-    });
-
-    // Wait for message text to appear
-    await expect(page.getByText("Response with max effort")).toBeVisible({ timeout: 3000 });
-
-    // EffortBadge lives inside AssistantHoverActions, which Message.tsx only
-    // mounts while the row is hovered ({hovered && <AssistantHoverActions .../>})
-    // — not just CSS-hidden, actually unmounted. Hover the row first. Message.tsx
-    // renders the row as `<div id={`msg-${message.ID}`} className="msg-row" ...>`
-    // (NB: not "group/msg" — that class doesn't exist here; other specs
-    // referencing it may themselves be stale, out of scope for this test).
-    const msgRow = page.locator("#msg-resp-max");
-    await msgRow.hover();
-
-    // Check that the model badge shows effort level XX (max).
-    // The badge is a small span with the effort letter(s) in brackets next to
-    // the model name — EffortBadge.tsx renders `[XX]` for effort === "max"
-    // and sets title={`Reasoning effort: ${effort}`} (the raw effort string,
-    // not the abbreviated label).
-    const effortBadge = msgRow.locator("span[title='Reasoning effort: max']");
-    await expect(effortBadge).toBeVisible();
-    await expect(effortBadge).toHaveText("[XX]");
-  }, 180_000);
-
-  test("changing small model effort works independently", async ({ page }) => {
-    await setup(page);
-
-    const largeLabel = page.locator('[data-test-id="reasoning-effort-smart-label"]');
-    const smallLabel = page.locator('[data-test-id="reasoning-effort-fast-label"]');
-
-    // Set large to high
-    await page.locator('[data-test-id="reasoning-effort-smart-increase"]').click();
-    await expect(largeLabel).toHaveText("H");
-    await expect(smallLabel).toHaveText("M"); // Fast unchanged
-
-    // Set small to max
-    await page.locator('[data-test-id="reasoning-effort-fast-increase"]').click();
-    await page.locator('[data-test-id="reasoning-effort-fast-increase"]').click();
-    await expect(smallLabel).toHaveText("X");
-    await expect(largeLabel).toHaveText("H"); // Smart unchanged
-  });
+  test("changing small model effort works independently", smallModelEffortIsIndependent);
 });

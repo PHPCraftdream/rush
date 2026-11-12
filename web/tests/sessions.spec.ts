@@ -1,12 +1,14 @@
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeSession, makeMessage } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
 // ── Listing ────────────────────────────────────────────────────────────────
@@ -362,7 +364,15 @@ test("header shows summarized indicator when session has SummaryMessageID", asyn
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "sessions_list",
-    payload: [makeSession({ ID: "sum-1", Title: "Summarized Session", SummaryMessageID: "msg-sum-1", PromptTokens: 5000, CompletionTokens: 1000 })],
+    payload: [
+      makeSession({
+        ID: "sum-1",
+        Title: "Summarized Session",
+        SummaryMessageID: "msg-sum-1",
+        PromptTokens: 5000,
+        CompletionTokens: 1000,
+      }),
+    ],
   });
   await expect(page.getByTestId("session-title-sum-1")).toBeVisible({ timeout: 3000 });
   await page.getByTestId("session-sum-1").click();

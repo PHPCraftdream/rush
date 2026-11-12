@@ -22,16 +22,19 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeConfig, makeSession } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeConfig } from "./helpers/make-config";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Opens the app with one session selected. */
 async function setupWithSession(page: import("@playwright/test").Page) {
   await page.goto("/");
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
@@ -43,6 +46,7 @@ async function setupWithSession(page: import("@playwright/test").Page) {
   await page.getByText("Prompt Session").first().click();
 }
 
+/** Opens the header More menu. */
 async function openMoreMenu(page: import("@playwright/test").Page) {
   await page.getByTestId("header-more-button").click();
   await expect(page.getByTestId("header-logs-button")).toBeVisible({ timeout: 2000 });
@@ -246,7 +250,8 @@ test("CONTROL: Save disabled only after a genuine EventResponse", async ({ page 
   await expect(page.locator(".fixed button", { hasText: "Reset" })).toHaveCount(0);
 });
 
-test("BUG regression: a rejected save (EventError) leaves the edit dirty and shows the error inside the modal", async ({ page }) => {
+test("BUG regression: a rejected save (EventError) leaves " +
+  "the edit dirty and shows the error inside the modal", async ({ page }) => {
   await setupWithSession(page);
   await openMoreMenu(page);
   await page.getByTestId("header-prompt-button").click();
@@ -278,7 +283,8 @@ test("BUG regression: a rejected save (EventError) leaves the edit dirty and sho
   await expect(textarea).toHaveValue("Edited content that will be rejected");
 });
 
-test("BUG regression: reopening the modal after a rejected save does not silently discard the edit", async ({ page }) => {
+test("BUG regression: reopening the modal after a " +
+  "rejected save does not silently discard the edit", async ({ page }) => {
   await setupWithSession(page);
   await openMoreMenu(page);
   await page.getByTestId("header-prompt-button").click();

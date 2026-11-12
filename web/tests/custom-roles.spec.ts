@@ -1,17 +1,26 @@
 import { test, expect, type Page } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeConfig, makeSession } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeConfig } from "./helpers/make-config";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 import type { CustomRole, CustomRolesState } from "../src/customRoleTypes";
 
 const reader: CustomRole = { provider: "role-provider", model: "model-a", reasoning_effort: "high", tools: ["view"] };
 
-function stateWith(global: Record<string, CustomRole> = {}, workspace: Record<string, CustomRole> = {}): CustomRolesState {
+/** Builds a custom-roles state from global and workspace roles. */
+function stateWith(
+  global: Record<string, CustomRole> = {},
+  workspace: Record<string, CustomRole> = {},
+): CustomRolesState {
   return { global, workspace, effective: { ...global, ...workspace }, hasWorkspace: true };
 }
 
+/** Opens the custom-roles editor loaded with the given state. */
 async function openEditor(page: Page, state: CustomRolesState) {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) => route.fulfill({ status: 200, body: "OK" }));
+  await page.route("/auth/check", fulfillAuthOk);
   await page.goto("/");
   await sendMockWSMessage(page, { type: "sessions_list", payload: [makeSession({ ID: "role-editor-session", Title: "Role editor" })] });
   await sendMockWSMessage(page, { type: "config", payload: makeConfig({
@@ -30,25 +39,48 @@ async function openEditor(page: Page, state: CustomRolesState) {
   return editor;
 }
 
+/** Browser-side: how many frames the page has sent. */
+function countSentFrames() {
+  return ((window as unknown as Record<string, unknown>).__wsSent as unknown[]).length;
+}
+
+/** Browser-side: the first get_custom_roles frame sent at or after the given index, else null. */
+function firstGetCustomRolesAfter(offset: number) {
+  const sent = (window as unknown as Record<string, unknown>).__wsSent as Array<{ type: string; id?: string }>;
+  for (let i = offset; i < sent.length; i++) {
+    if (sent[i].type === "get_custom_roles") return sent[i];
+  }
+  return null;
+}
+
+/** Acknowledges a save and answers the follow-up get_custom_roles refresh. */
 async function acknowledge(page: Page, id: string | undefined, state: CustomRolesState) {
-  const previousCount = await page.evaluate(() => ((window as unknown as Record<string, unknown>).__wsSent as unknown[]).length);
+  const previousCount = await page.evaluate(countSentFrames);
   await sendMockWSMessage(page, { type: "response", id, payload: { status: "ok" } });
-  const next = await page.waitForFunction((offset: number) => {
-    const sent = (window as unknown as Record<string, unknown>).__wsSent as Array<{ type: string; id?: string }>;
-    return sent.slice(offset).find((message) => message.type === "get_custom_roles") ?? null;
-  }, previousCount);
+  const next = await page.waitForFunction(firstGetCustomRolesAfter, previousCount);
   const refresh = await next.jsonValue() as { type: string; id?: string };
   await next.dispose();
   await sendMockWSMessage(page, { type: "custom_roles", id: refresh.id, payload: state });
 }
 
+/** Browser-side: the frames the page has sent and received. */
+function readWireTrace() {
+  const recorded = window as unknown as Record<string, unknown>;
+  return { sent: recorded.__wsSent, received: recorded.__wsReceived };
+}
+
+/** Fallback trace when the page is gone. */
+function traceUnavailable() {
+  return { unavailable: true };
+}
+
 test.afterEach(async ({ page }, info) => {
   if (info.status === info.expectedStatus || page.isClosed()) return;
-  const trace = await page.evaluate(() => {
-    const recorded = window as unknown as Record<string, unknown>;
-    return { sent: recorded.__wsSent, received: recorded.__wsReceived };
-  }).catch(() => ({ unavailable: true }));
-  await info.attach("custom-role-wire-trace", { body: JSON.stringify(trace, null, 2), contentType: "application/json" });
+  const trace = await page.evaluate(readWireTrace).catch(traceUnavailable);
+  await info.attach("custom-role-wire-trace", {
+    body: JSON.stringify(trace, null, 2),
+    contentType: "application/json",
+  });
 });
 
 for (const name of ["constructor", "toString", "__proto__"]) {
@@ -100,12 +132,23 @@ test("creates a role with explicit zero tools and the selected effort", async ({
   await editor.getByLabel("Role name").fill("composer");
   await editor.getByLabel("Provider", { exact: true }).fill("role-provider");
   await editor.getByLabel("Model", { exact: true }).fill("model-a");
-  await editor.getByLabel("Reasoning effort", { exact: true }).selectOption("high");
+  await editor.getByLabel("Reasoning effort").selectOption("high");
   await editor.getByLabel("Allowed tools").selectOption("none");
   await editor.getByRole("button", { name: "Save role", exact: true }).click();
   const request = await waitForWSSend(page, "set_custom_role");
-  expect(request.payload).toEqual({ scope: "global", name: "composer", provider: "role-provider", model: "model-a", reasoning_effort: "high", tools: [] });
-  await acknowledge(page, request.id, stateWith({ composer: { provider: "role-provider", model: "model-a", reasoning_effort: "high", tools: [] } }));
+  expect(request.payload).toEqual({
+    scope: "global",
+    name: "composer",
+    provider: "role-provider",
+    model: "model-a",
+    reasoning_effort: "high",
+    tools: [],
+  });
+  await acknowledge(
+    page,
+    request.id,
+    stateWith({ composer: { provider: "role-provider", model: "model-a", reasoning_effort: "high", tools: [] } }),
+  );
   await expect(editor.getByRole("status")).toHaveText("Role saved.");
 });
 
@@ -113,7 +156,10 @@ test("model-only editing does not overwrite a concurrent tools change", async ({
   const editor = await openEditor(page, stateWith({ reader }));
   await editor.getByRole("button", { name: "Edit role reader", exact: true }).click();
   await expect(editor.getByLabel("Allowed tools")).toHaveValue("patterns");
-  await sendMockWSMessage(page, { type: "custom_roles", payload: stateWith({ reader: { ...reader, tools: ["view", "grep"] } }) });
+  await sendMockWSMessage(page, {
+    type: "custom_roles",
+    payload: stateWith({ reader: { ...reader, tools: ["view", "grep"] } }),
+  });
   await editor.getByLabel("Model", { exact: true }).fill("model-b");
   await editor.getByRole("button", { name: "Save role", exact: true }).click();
   const request = await waitForWSSend(page, "set_custom_role");

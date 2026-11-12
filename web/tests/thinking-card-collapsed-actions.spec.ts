@@ -20,16 +20,19 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeSession, makeMessage } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Opens the session and delivers a thinking message. */
 async function setupWithThinkingMessage(
   page: import("@playwright/test").Page,
   messageID: string,
@@ -158,7 +161,8 @@ test("edit click on a collapsed card auto-expands and shows the edit form", asyn
 
   // Verify update_message_thinking command sent
   const cmd = await waitForWSSend(page, "update_message_thinking");
-  expect(cmd.payload).toEqual({ messageID: "tca-4", thinking: "Edited reasoning" });
+  // partIndex addresses the exact reasoning part (the only part of this message -> 0).
+  expect(cmd.payload).toEqual({ messageID: "tca-4", thinking: "Edited reasoning", partIndex: 0 });
 });
 
 test("control: delete and edit still work from an already-expanded card", async ({ page }) => {

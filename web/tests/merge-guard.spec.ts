@@ -18,18 +18,27 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend, clearWSSent } from "./helpers/mock-ws";
-import { makeSession, makeMessage } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { clearWSSent } from "./helpers/clear-ws-sent";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 const TERMINAL_FINISH = { type: "finish", Reason: "end_turn", Message: "", Details: "" };
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Re-tags a message into the mg-sess session. */
+function inMergeGuardSession(m: object) {
+  return { ...m, SessionID: "mg-sess" };
+}
+
+/** Opens the session and delivers the given messages. */
 async function setupWithMessages(
   page: import("@playwright/test").Page,
   messages: readonly ReturnType<typeof makeMessage>[]
@@ -44,7 +53,7 @@ async function setupWithMessages(
   // Pin SessionID to "mg-sess" for all messages (see comment in thinking-parts.spec.ts)
   await sendMockWSMessage(page, {
     type: "messages_list",
-    payload: messages.map((m) => ({ ...m, SessionID: "mg-sess" })),
+    payload: messages.map(inMergeGuardSession),
   });
 }
 
@@ -110,6 +119,12 @@ test("deleting a thinking row removes it from the DOM and does not resurrect it"
   await expect(page.getByText(NARRATION_SENTINEL)).toBeVisible();
 });
 
+/** Browser-side: how many frames of the given type the page has sent. */
+function countSentOfType(type: string) {
+  const sent = (window as any).__wsSent || [];
+  return sent.filter((m: any) => m.type === type).length;
+}
+
 // ── Test (b): A second click after a successful delete cannot silently corrupt an unrelated part
 
 test("a second click after a successful delete cannot silently corrupt an unrelated part", async ({ page }) => {
@@ -166,10 +181,7 @@ test("a second click after a successful delete cannot silently corrupt an unrela
   await expect(page.getByText(NARRATION_SENTINEL)).toBeVisible();
 
   // Assert: window.__wsSent contains EXACTLY ONE delete_message_part
-  const sentCount = await page.evaluate(() => {
-    const sent = (window as any).__wsSent || [];
-    return sent.filter((m: any) => m.type === "delete_message_part").length;
-  });
+  const sentCount = await page.evaluate(countSentOfType, "delete_message_part");
   expect(sentCount).toBe(1);
 });
 

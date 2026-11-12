@@ -1,12 +1,15 @@
 import { expect, test } from "@playwright/test";
-import { makeMessage, makeSession } from "./helpers/fixtures";
-import { sendMockWSMessage, setupMockWS } from "./helpers/mock-ws";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 const sessionID = "async-status-session";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) => route.fulfill({ status: 200, body: "OK" }));
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
 test("async command remains running until its completion notice arrives", async ({ page }) => {
@@ -18,12 +21,30 @@ test("async command remains running until its completion notice arrives", async 
   await page.getByText("Async Status").first().click();
 
   const messages = [
-    makeMessage({ ID: "user-async", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "run command" }] }),
+    makeMessage({
+      ID: "user-async",
+      SessionID: sessionID,
+      Role: "user",
+      Parts: [{ type: "text", Text: "run command" }],
+    }),
     makeMessage({ ID: "assistant-async", SessionID: sessionID, Role: "assistant", Parts: [
-      { type: "tool_call", ID: "call-async", Name: "run_command", Input: '{"program":"go","args":["version"]}', Finished: true },
+      {
+        type: "tool_call",
+        ID: "call-async",
+        Name: "run_command",
+        Input: '{"program":"go","args":["version"]}',
+        Finished: true,
+      },
     ] }),
     makeMessage({ ID: "result-async", SessionID: sessionID, Role: "tool", Parts: [
-      { type: "tool_result", ToolCallID: "call-async", Name: "run_command", Content: "Async job started", IsError: false, Metadata: '{"async":true,"job_id":"call-async","status":"running"}' },
+      {
+        type: "tool_result",
+        ToolCallID: "call-async",
+        Name: "run_command",
+        Content: "Async job started",
+        IsError: false,
+        Metadata: '{"async":true,"job_id":"call-async","status":"running"}',
+      },
     ] }),
   ];
   await sendMockWSMessage(page, { type: "messages_list", payload: { SessionID: sessionID, Messages: messages } });
@@ -52,12 +73,24 @@ test("legacy background shell output attaches to its original command", async ({
   await page.getByText("Legacy Background Status").first().click();
 
   const messages = [
-    makeMessage({ ID: "user-legacy", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "run npm test" }] }),
+    makeMessage({
+      ID: "user-legacy",
+      SessionID: sessionID,
+      Role: "user",
+      Parts: [{ type: "text", Text: "run npm test" }],
+    }),
     makeMessage({ ID: "assistant-legacy", SessionID: sessionID, Role: "assistant", Parts: [
       { type: "tool_call", ID: "call-legacy", Name: "bash", Input: '{"command":"npm test"}', Finished: true },
     ] }),
     makeMessage({ ID: "result-legacy", SessionID: sessionID, Role: "tool", Parts: [
-      { type: "tool_result", ToolCallID: "call-legacy", Name: "bash", Content: "Background shell ID: 00A", IsError: false, Metadata: '{"background":true,"shell_id":"00A"}' },
+      {
+        type: "tool_result",
+        ToolCallID: "call-legacy",
+        Name: "bash",
+        Content: "Background shell ID: 00A",
+        IsError: false,
+        Metadata: '{"background":true,"shell_id":"00A"}',
+      },
     ] }),
   ];
   await sendMockWSMessage(page, { type: "messages_list", payload: { SessionID: sessionID, Messages: messages } });
@@ -89,7 +122,14 @@ test("async sub-agent remains running until its completion notice arrives", asyn
       { type: "tool_call", ID: "call-agent", Name: "agent", Input: '{"prompt":"inspect files"}', Finished: true },
     ] }),
     makeMessage({ ID: "result-agent", SessionID: sessionID, Role: "tool", Parts: [
-      { type: "tool_result", ToolCallID: "call-agent", Name: "agent", Content: "Async agent job started", IsError: false, Metadata: '{"async":true,"job_id":"call-agent","status":"running"}' },
+      {
+        type: "tool_result",
+        ToolCallID: "call-agent",
+        Name: "agent",
+        Content: "Async agent job started",
+        IsError: false,
+        Metadata: '{"async":true,"job_id":"call-agent","status":"running"}',
+      },
     ] }),
   ];
   await sendMockWSMessage(page, { type: "messages_list", payload: { SessionID: sessionID, Messages: messages } });

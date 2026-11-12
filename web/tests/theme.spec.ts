@@ -1,12 +1,14 @@
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeConfig, makeSession } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeConfig } from "./helpers/make-config";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
 // The theme toggle used to live in the standalone Header.tsx, which rendered
@@ -19,6 +21,7 @@ test.beforeEach(async ({ page }) => {
 // reachable with none selected — see docs/checkpoints or task #567 report for
 // the regression writeup; re-pointing here does not paper over it.
 
+/** Injects a session with the given title and opens it. */
 async function selectSession(page: Parameters<typeof sendMockWSMessage>[0], title: string) {
   await sendMockWSMessage(page, {
     type: "sessions_list",
@@ -92,6 +95,11 @@ test("Clicking theme toggle in dark mode sends light theme", async ({
   expect(payload.theme).toBe("light");
 });
 
+/** Browser-side: true once the dark class is on the document root. */
+function isDarkApplied() {
+  return document.documentElement.classList.contains("dark");
+}
+
 // ── Dark class on document ───────────────────────────────────────────────────
 
 test("Theme applies dark class to document", async ({ page }) => {
@@ -102,11 +110,10 @@ test("Theme applies dark class to document", async ({ page }) => {
   });
   // Wait for react to apply the class
   await page.waitForFunction(
-    () => document.documentElement.classList.contains("dark"),
+    isDarkApplied,
     { timeout: 5000 }
   );
-  const hasDark = await page.evaluate(() =>
-    document.documentElement.classList.contains("dark")
+  const hasDark = await page.evaluate(isDarkApplied
   );
   expect(hasDark).toBe(true);
 });

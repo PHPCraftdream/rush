@@ -16,16 +16,25 @@
  */
 
 import { test, expect, Page } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend, clearWSSent } from "./helpers/mock-ws";
-import { makeSession } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { clearWSSent } from "./helpers/clear-ws-sent";
+import { makeSession } from "./helpers/make-session";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) => route.fulfill({ status: 200, body: "OK" }));
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Browser-side: fires a visibilitychange event on the document. */
+function dispatchVisibilityChange() {
+  return document.dispatchEvent(new Event("visibilitychange"));
+}
+
 const triggerListSessions = (page: Page) =>
-  page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  page.evaluate(dispatchVisibilityChange);
 
 test("a stale sessions_list reply superseded by a newer request is dropped, not applied", async ({ page }) => {
   await page.clock.install();
@@ -73,7 +82,8 @@ test("a stale sessions_list reply superseded by a newer request is dropped, not 
   await expect(page.getByTestId("session-title-reorder-a")).toBeVisible();
 });
 
-test("a session_created push landing between list_sessions send and its reply is not dropped by the reply", async ({ page }) => {
+test("a session_created push landing between list_sessions " +
+  "send and its reply is not dropped by the reply", async ({ page }) => {
   await page.clock.install();
   await page.goto("/");
 
@@ -106,7 +116,8 @@ test("a session_created push landing between list_sessions send and its reply is
   await expect(page.getByTestId("session-title-created-keep")).toBeVisible();
 });
 
-test("a session_deleted push is not undone by a sessions_list reply whose read predated the delete", async ({ page }) => {
+test("a session_deleted push is not undone by a " +
+  "sessions_list reply whose read predated the delete", async ({ page }) => {
   await page.clock.install();
   await page.goto("/");
 

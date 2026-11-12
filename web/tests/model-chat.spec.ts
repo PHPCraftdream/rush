@@ -14,13 +14,15 @@
  */
 
 import { test, expect } from "@playwright/test";
-import {
-  setupMockWS,
-  sendMockWSMessage,
-  waitForWSSend,
-} from "./helpers/mock-ws";
-import { makeSession, makeMessage, makeConfig } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { makeConfig } from "./helpers/make-config";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
+/** Config with two models under one provider. */
 function makeTwoModelConfig() {
   return makeConfig({
     enabled: true,
@@ -43,11 +45,10 @@ function makeTwoModelConfig() {
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Opens the session and injects the two-model config. */
 async function setupSessionAndConfig(
   page: import("@playwright/test").Page,
   sessionID: string,
@@ -63,16 +64,22 @@ async function setupSessionAndConfig(
   await page.getByText(title).first().click();
 }
 
+/** Browser-side: the payloads of the sent frames of the given type. */
+function pickSentPayloads(type: string) {
+  const sent = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{
+    type: string;
+    payload: unknown;
+  }>;
+  const payloads: Array<Record<string, unknown>> = [];
+  for (const m of sent) {
+    if (m.type === type) payloads.push(m.payload as Record<string, unknown>);
+  }
+  return payloads;
+}
+
+/** The payload of the last send_message frame the page sent. */
 async function getLastSentMessage(page: import("@playwright/test").Page) {
-  const payloads = await page.evaluate(() => {
-    const sent = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{
-      type: string;
-      payload: unknown;
-    }>;
-    return sent
-      .filter((m) => m.type === "send_message")
-      .map((m) => m.payload) as Array<Record<string, unknown>>;
-  });
+  const payloads = await page.evaluate(pickSentPayloads, "send_message");
   return payloads[payloads.length - 1];
 }
 
@@ -194,6 +201,14 @@ test("switching small model sends set_session_models and response appears in cha
   await expect(page.getByText("GLM-5 response here.")).toBeVisible({ timeout: 3000 });
 });
 
+/** Browser-side: true once at least two frames of the given type were sent. */
+function hasTwoSentOfType(type: string) {
+  const sent = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{
+    type: string;
+  }>;
+  return sent.filter((m) => m.type === type).length >= 2;
+}
+
 // ── Switch between models mid-session ────────────────────────────────────────
 
 test("switching model mid-session: set_session_models sent each time, no send_message override", async ({ page }) => {
@@ -226,12 +241,7 @@ test("switching model mid-session: set_session_models sent each time, no send_me
   await page.locator('[data-test-id="chat-input-textarea"]').fill("second message");
   await page.locator('[data-test-id="chat-input-send-button"]').click();
 
-  await page.waitForFunction(() => {
-    const sent = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{
-      type: string;
-    }>;
-    return sent.filter((m) => m.type === "send_message").length >= 2;
-  }, { timeout: 5000 });
+  await page.waitForFunction(hasTwoSentOfType, "send_message", { timeout: 5000 });
 
   const second = await getLastSentMessage(page);
   expect(second.content).toBe("second message");
@@ -294,7 +304,7 @@ test("error banner can be dismissed with × button", async ({ page }) => {
 
 test("error banner disappears after 8 seconds automatically", async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) => route.fulfill({ status: 200, body: "OK" }));
+  await page.route("/auth/check", fulfillAuthOk);
   await page.clock.install();
   await page.goto("/");
   await sendMockWSMessage(page, {

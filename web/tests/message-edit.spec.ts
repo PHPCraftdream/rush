@@ -17,16 +17,19 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeSession, makeMessage } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Opens the session and delivers the single message. */
 async function setupWithMessage(
   page: import("@playwright/test").Page,
   msg: ReturnType<typeof makeMessage>
@@ -79,7 +82,9 @@ test("edit button appears on hover for assistant message", async ({ page }) => {
   await setupWithMessage(page, msg);
   await expect(page.getByText("Editable assistant message")).toBeVisible({ timeout: 2000 });
 
-  const msgRow = page.getByText("Editable assistant message").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
+  const msgRow = page.getByText("Editable assistant message").locator(
+    "xpath=ancestor::div[contains(@class,'msg-row')]",
+  );
   await msgRow.hover();
   await expect(msgRow.getByTitle("Edit")).toBeVisible({ timeout: 2000 });
 });
@@ -134,7 +139,8 @@ test("edit AND delete buttons hidden for assistant message with no finish part (
 // message in an IDLE session (i.e., the turn crashed or was killed) can be
 // deleted, so we now mark the session as BUSY in this test to keep Delete
 // hidden. Edit stays hidden regardless.
-test("edit AND delete buttons hidden for assistant message with only a Partial finish (checkpoint ticker, BUSY session)", async ({ page }) => {
+test("edit AND delete buttons hidden for assistant message with " +
+  "only a Partial finish (checkpoint ticker, BUSY session)", async ({ page }) => {
   const msg = makeMessage({
     ID: "stream-2",
     Role: "assistant",
@@ -301,6 +307,12 @@ test("Ctrl+Enter commits edit for assistant message", async ({ page }) => {
   expect(payload.content).toBe("After ctrl-enter");
 });
 
+/** Browser-side: true when the page has sent a frame of the given type. */
+function hasSentOfType(type: string) {
+  const s = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string }>;
+  return s.some((m) => m.type === type);
+}
+
 // ── No-op edits ─────────────────────────────────────────────────────────
 
 test("unchanged content does not send WS command", async ({ page }) => {
@@ -319,9 +331,6 @@ test("unchanged content does not send WS command", async ({ page }) => {
   await msgRow.locator("button", { hasText: "Save" }).click();
 
   // Verify no update_message_content was sent
-  const sent = await page.evaluate(() => {
-    const s = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string }>;
-    return s.some((m) => m.type === "update_message_content");
-  });
+  const sent = await page.evaluate(hasSentOfType, "update_message_content");
   expect(sent).toBe(false);
 });

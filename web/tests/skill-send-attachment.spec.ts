@@ -5,16 +5,18 @@
 // missed this one.
 
 import { test, expect, Page } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeSession } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Opens the app with the session injected and waits for an enabled composer. */
 async function openSession(page: Page, id: string, title: string) {
   await page.goto("/");
   await sendMockWSMessage(page, {
@@ -26,27 +28,33 @@ async function openSession(page: Page, id: string, title: string) {
   await expect(page.getByTestId("chat-input-textarea")).toBeEnabled({ timeout: 5000 });
 }
 
-// Drop a file onto the composer and wait for its badge to appear.
+/** Browser-side: drops a file onto the composer drop area. */
+function dropFileOnComposer({ name: fileName, contents: fileContents }: { name: string; contents: string }) {
+  const dropArea = document.querySelector("div[class*='rounded-2xl'][class*='bg-base-overlay']");
+  if (!dropArea) throw new Error("composer drop area not found");
+  const file = new File([fileContents], fileName, { type: "image/png" });
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  dropArea.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true }));
+}
+
+/** Drop a file onto the composer and wait for its badge to appear. */
 async function dropFile(page: Page, name: string, contents: string) {
-  await page.evaluate(({ name: fileName, contents: fileContents }) => {
-    const dropArea = document.querySelector("div[class*='rounded-2xl'][class*='bg-base-overlay']");
-    if (!dropArea) throw new Error("composer drop area not found");
-    const file = new File([fileContents], fileName, { type: "image/png" });
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    dropArea.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true }));
-  }, { name, contents });
+  await page.evaluate(dropFileOnComposer, { name, contents });
   await expect(page.getByText(name).first()).toBeVisible({ timeout: 5000 });
 }
 
+/** Base64 of a UTF-8 string. */
 function b64(s: string): string {
   return Buffer.from(s, "utf8").toString("base64");
 }
 
+/** The payload of a frame, or an empty object. */
 function payloadOf(msg: { payload?: unknown }): Record<string, unknown> {
   return (msg.payload ?? {}) as Record<string, unknown>;
 }
 
+/** The attachments carried by a frame payload. */
 function attachmentsOf(msg: { payload?: unknown }): { fileName: string; mimeType: string; data: string }[] {
   return ((payloadOf(msg).attachments ?? []) as { fileName: string; mimeType: string; data: string }[]);
 }
@@ -87,7 +95,8 @@ test("skill send-now carries pending attachments and clears the badge", async ({
   await expect(page.getByText("notes.png")).toBeHidden();
 });
 
-test("skill without instructions falls back to the /name command and still carries the attachment", async ({ page }) => {
+test("skill without instructions falls back to the " +
+  "/name command and still carries the attachment", async ({ page }) => {
   await openSession(page, "skill-att-2", "Skill Attachment No Instr");
 
   // Send a skill WITHOUT instructions — the content must be the command string.

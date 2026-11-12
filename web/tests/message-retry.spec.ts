@@ -19,16 +19,24 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeSession, makeMessage } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Re-tags a message into the retry-sess session. */
+function inRetrySession(m: object) {
+  return { ...m, SessionID: "retry-sess" };
+}
+
+/** Opens the session and delivers the given messages. */
 async function setupWithMessages(
   page: import("@playwright/test").Page,
   messages: readonly ReturnType<typeof makeMessage>[]
@@ -42,7 +50,7 @@ async function setupWithMessages(
   await page.getByText("Retry Session").first().click();
   await sendMockWSMessage(page, {
     type: "messages_list",
-    payload: messages.map((m) => ({ ...m, SessionID: "retry-sess" })),
+    payload: messages.map(inRetrySession),
   });
 }
 
@@ -96,6 +104,12 @@ test("retrying the last user message sends rerun_message immediately, no confirm
   await expect(page.getByText("Retry message")).not.toBeVisible({ timeout: 500 });
 });
 
+/** Browser-side: true when the page has sent a frame of the given type. */
+function hasSentOfType(type: string) {
+  const s = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string }>;
+  return s.some((m) => m.type === type);
+}
+
 // ── Earlier user message: confirmation required (deletes everything below) ─
 
 test("retrying an earlier user message shows a confirm dialog warning about deleted messages", async ({ page }) => {
@@ -122,10 +136,7 @@ test("retrying an earlier user message shows a confirm dialog warning about dele
   await expect(page.getByTestId("confirm-dialog").getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
 
   // Nothing sent yet -- confirmation is pending.
-  const sentBeforeConfirm = await page.evaluate(() => {
-    const s = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string }>;
-    return s.some((m) => m.type === "rerun_message");
-  });
+  const sentBeforeConfirm = await page.evaluate(hasSentOfType, "rerun_message");
   expect(sentBeforeConfirm).toBe(false);
 });
 
@@ -152,10 +163,7 @@ test("clicking Cancel in retry confirm dialog dismisses without sending rerun_me
   await expect(page.getByText("Retry message")).not.toBeVisible({ timeout: 2000 });
   await expect(page.getByText("Reply that would be lost")).toBeVisible();
 
-  const sent = await page.evaluate(() => {
-    const s = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string }>;
-    return s.some((m) => m.type === "rerun_message");
-  });
+  const sent = await page.evaluate(hasSentOfType, "rerun_message");
   expect(sent).toBe(false);
 });
 

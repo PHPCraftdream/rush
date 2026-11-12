@@ -45,12 +45,17 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend, clearWSSent } from "./helpers/mock-ws";
-import { makeSession, makeMessage } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { clearWSSent } from "./helpers/clear-ws-sent";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) => route.fulfill({ status: 200, body: "OK" }));
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
 test("an epoch-clean reply with a STALE watermark does not resurrect an already-deleted message", async ({ page }) => {
@@ -81,7 +86,12 @@ test("an epoch-clean reply with a STALE watermark does not resurrect an already-
       Messages: [
         makeMessage({ ID: "wm-1", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "WM-KEEP-ONE" }] }),
         makeMessage({ ID: "wm-2", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "WM-VICTIM" }] }),
-        makeMessage({ ID: "wm-3", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "WM-KEEP-THREE" }] }),
+        makeMessage({
+          ID: "wm-3",
+          SessionID: sessionID,
+          Role: "user",
+          Parts: [{ type: "text", Text: "WM-KEEP-THREE" }],
+        }),
       ],
     },
   });
@@ -129,7 +139,12 @@ test("an epoch-clean reply with a STALE watermark does not resurrect an already-
       Messages: [
         makeMessage({ ID: "wm-1", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "WM-KEEP-ONE" }] }),
         makeMessage({ ID: "wm-2", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "WM-VICTIM" }] }),
-        makeMessage({ ID: "wm-3", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "WM-KEEP-THREE" }] }),
+        makeMessage({
+          ID: "wm-3",
+          SessionID: sessionID,
+          Role: "user",
+          Parts: [{ type: "text", Text: "WM-KEEP-THREE" }],
+        }),
       ],
     },
   });
@@ -142,7 +157,8 @@ test("an epoch-clean reply with a STALE watermark does not resurrect an already-
   await expect(page.getByText("WM-KEEP-THREE")).toBeVisible();
 });
 
-test("CONTROL: an epoch-clean reply with a FRESH watermark still wholesale-replaces (compaction converges normally)", async ({ page }) => {
+test("CONTROL: an epoch-clean reply with a FRESH watermark " +
+  "still wholesale-replaces (compaction converges normally)", async ({ page }) => {
   await page.clock.install();
   await page.goto("/");
 
@@ -166,7 +182,12 @@ test("CONTROL: an epoch-clean reply with a FRESH watermark still wholesale-repla
       SessionID: sessionID,
       Watermark: 1,
       Messages: [
-        makeMessage({ ID: "ctrl-1", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "WMC-KEEP-ONE" }] }),
+        makeMessage({
+          ID: "ctrl-1",
+          SessionID: sessionID,
+          Role: "user",
+          Parts: [{ type: "text", Text: "WMC-KEEP-ONE" }],
+        }),
         makeMessage({ ID: "ctrl-2", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "WMC-SHOULD-VANISH" }] }),
       ],
     },
@@ -200,7 +221,12 @@ test("CONTROL: an epoch-clean reply with a FRESH watermark still wholesale-repla
       SessionID: sessionID,
       Watermark: 3,
       Messages: [
-        makeMessage({ ID: "ctrl-1", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "WMC-KEEP-ONE" }] }),
+        makeMessage({
+          ID: "ctrl-1",
+          SessionID: sessionID,
+          Role: "user",
+          Parts: [{ type: "text", Text: "WMC-KEEP-ONE" }],
+        }),
       ],
     },
   });

@@ -38,12 +38,17 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend, clearWSSent } from "./helpers/mock-ws";
-import { makeSession, makeMessage } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { clearWSSent } from "./helpers/clear-ws-sent";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) => route.fulfill({ status: 200, body: "OK" }));
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
 test("CONTROL: in-order load_messages replies render normally", async ({ page }) => {
@@ -65,7 +70,9 @@ test("CONTROL: in-order load_messages replies render normally", async ({ page })
     id: cmd.id,
     payload: {
       SessionID: "reorder-ctrl",
-      Messages: [makeMessage({ ID: "m1", SessionID: "reorder-ctrl", Parts: [{ type: "text", Text: "First message" }] })],
+      Messages: [
+        makeMessage({ ID: "m1", SessionID: "reorder-ctrl", Parts: [{ type: "text", Text: "First message" }] }),
+      ],
     },
   });
 
