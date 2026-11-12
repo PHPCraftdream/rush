@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -89,7 +90,7 @@ func TestResolveEnvelopePathSessionID(t *testing.T) {
 	}
 	repo := t.TempDir()
 	run := func(args ...string) {
-		cmd := exec.CommandContext(t.Context(), "git", args...)
+		cmd := platform.Command(t.Context(), "git", args...)
 		cmd.Dir = repo
 		cmd.Env = append(os.Environ(),
 			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",

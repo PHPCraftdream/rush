@@ -45,6 +45,7 @@ func wtRunRemove(t *testing.T, mainRoot, slug string, flags map[string]string) (
 	for name, value := range flags {
 		require.NoError(t, worktreeRemoveCmd.Flags().Set(name, value))
 	}
+	worktreeRemoveCmd.SetContext(t.Context())
 	var out bytes.Buffer
 	worktreeRemoveCmd.SetOut(&out)
 	worktreeRemoveCmd.SetErr(&out)
@@ -231,6 +232,7 @@ func TestWorktreeListOutput(t *testing.T) {
 	var out bytes.Buffer
 	worktreeListCmd.SetOut(&out)
 	worktreeListCmd.SetErr(&out)
+	worktreeListCmd.SetContext(t.Context())
 	require.NoError(t, runWorktreeList(worktreeListCmd, nil))
 	text := out.String()
 	require.Contains(t, text, "task-a")
@@ -242,6 +244,7 @@ func TestWorktreeListOutput(t *testing.T) {
 	require.NoError(t, err)
 	var out2 bytes.Buffer
 	worktreeListCmd.SetOut(&out2)
+	worktreeListCmd.SetContext(t.Context())
 	require.NoError(t, runWorktreeList(worktreeListCmd, nil))
 	require.Contains(t, out2.String(), "no rush-managed worktrees")
 }
@@ -258,6 +261,7 @@ func TestWorktreeListLiveSession(t *testing.T) {
 	wtRegisterCwdFlag(t, worktreeListCmd, main)
 	var out bytes.Buffer
 	worktreeListCmd.SetOut(&out)
+	worktreeListCmd.SetContext(t.Context())
 	require.NoError(t, runWorktreeList(worktreeListCmd, nil))
 	require.Contains(t, out.String(), "task-a")
 }
