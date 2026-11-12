@@ -82,7 +82,7 @@ function realWireEffortMaxMessage(): Record<string, any> {
     out = execFileSync(
       "go",
       ["test", `-overlay=${overlayPath}`, "./internal/server/", "-run", "TestZZEffortWireProbe", "-v", "-count=1"],
-      { cwd: REPO_ROOT, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 },
+      { cwd: REPO_ROOT, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 150_000 },
     );
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string; message?: string };
@@ -281,6 +281,10 @@ test.describe("Reasoning Effort Controls", () => {
   });
 
   test("effort badge renders from the real server wire payload", async ({ page }) => {
+    // The Go wire probe compiles internal/server, which takes 20s+ on a warm
+    // cache and far longer cold. A numeric 3rd argument to test() is ignored by
+    // Playwright, so the budget must be set here or the 30s default applies.
+    test.setTimeout(180_000);
     await setup(page);
 
     // Set effort to xhigh (M → H → X). The real server wire JSON payload below
@@ -332,7 +336,7 @@ test.describe("Reasoning Effort Controls", () => {
     const effortBadge = msgRow.locator("span[title='Reasoning effort: max']");
     await expect(effortBadge).toBeVisible();
     await expect(effortBadge).toHaveText("[XX]");
-  }, 180_000);
+  });
 
   test("changing small model effort works independently", async ({ page }) => {
     await setup(page);
