@@ -56,6 +56,7 @@ type responsesWSDeltaState struct {
 	seed          *responsesWSDeltaSeed
 	pending       *responsesWSDeltaCandidate
 	requireStream bool
+	last          ResponsesWSFrameInfo
 }
 
 func responsesWSDeltaAllowed(protocol string, headers http.Header) bool {
@@ -76,73 +77,103 @@ func (s *responsesWSDeltaState) clear() {
 
 func (s *responsesWSDeltaState) prepare(frame []byte, enabled bool) ([]byte, *responsesWSDeltaCandidate) {
 	s.pending = nil
-	if !enabled || len(frame) > responsesWSDeltaMaxBytes {
+	s.last = newResponsesWSFrameInfo(len(frame))
+	full := func(reason string) ([]byte, *responsesWSDeltaCandidate) {
 		s.seed = nil
+		s.last.Reason = reason
 		return frame, nil
+	}
+	if !enabled {
+		return full(ResponsesWSFullDisabled)
+	}
+	if len(frame) > responsesWSDeltaMaxBytes {
+		return full(ResponsesWSFullTooLarge)
 	}
 	root, err := parseResponsesWSDeltaJSON(frame)
 	if err != nil || root.kind != 'o' {
-		s.seed = nil
-		return frame, nil
+		return full(ResponsesWSFullUnparseable)
 	}
 	request, ok := responsesWSDeltaRequest(root, s.requireStream)
 	if !ok {
-		s.seed = nil
-		return frame, nil
+		return full(ResponsesWSFullIneligible)
 	}
 	options := responsesWSDeltaOptions(root)
 	if options == nil {
-		s.seed = nil
-		return frame, nil
+		return full(ResponsesWSFullIneligible)
 	}
+	s.last.InputItems = len(request.array)
+	s.last.WireItems = len(request.array)
 	input := make([][]byte, len(request.array))
 	requestBytes := len(options)
 	for i, item := range request.array {
 		canonical, canonicalErr := responsesWSDeltaCanonical(item)
 		if canonicalErr != nil {
-			s.seed = nil
-			return frame, nil
+			return full(ResponsesWSFullUnparseable)
 		}
 		input[i] = canonical
 		requestBytes += len(canonical)
 	}
 	plan := &responsesWSDeltaCandidate{seed: responsesWSDeltaSeed{input: input, options: options, bytes: requestBytes}}
 	wireFrame := frame
-	if requestBytes <= responsesWSDeltaMaxBytes && len(request.array) <= responsesWSDeltaMaxItems && s.seed != nil && bytes.Equal(options, s.seed.options) {
-		expected := len(s.seed.input) + len(s.seed.outputCanonical)
-		if expected <= len(request.array) {
-			matches := true
-			for i, item := range s.seed.input {
-				if !bytes.Equal(item, input[i]) {
-					matches = false
-					break
-				}
-			}
-			for i, item := range s.seed.outputCanonical {
-				index := len(s.seed.input) + i
-				if index >= len(request.array) {
-					matches = false
-					break
-				}
-				canonical, canonicalErr := responsesWSDeltaCanonical(request.array[index])
-				if canonicalErr != nil || !bytes.Equal(item, canonical) {
-					matches = false
-				}
-			}
-			if matches {
-				delta, deltaErr := responsesWSDeltaFrame(root, request.array[expected:], s.seed.responseID)
-				if deltaErr == nil && len(delta) < len(frame) {
-					wireFrame = delta
-				}
-			}
-		}
+	overBudget := requestBytes > responsesWSDeltaMaxBytes || len(request.array) > responsesWSDeltaMaxItems
+	switch {
+	case s.seed == nil:
+		s.last.Reason = ResponsesWSFullNoParent
+	case !bytes.Equal(options, s.seed.options):
+		s.last.Reason = ResponsesWSFullOptionsChanged
+	case overBudget:
+		s.last.Reason = ResponsesWSFullOverBudget
+	default:
+		wireFrame = s.deltaFrame(root, request, input, frame)
 	}
-	if requestBytes > responsesWSDeltaMaxBytes || len(request.array) > responsesWSDeltaMaxItems {
+	if overBudget {
 		plan = nil
 	}
 	s.seed = nil
 	s.pending = plan
 	return wireFrame, plan
+}
+
+// deltaFrame returns the chained frame when the request exactly extends the
+// seed's accepted history, else the full frame with s.last explaining why.
+func (s *responsesWSDeltaState) deltaFrame(root, request *responsesWSDeltaValue, input [][]byte, frame []byte) []byte {
+	expected := len(s.seed.input) + len(s.seed.outputCanonical)
+	if expected > len(request.array) {
+		s.last.Reason = ResponsesWSFullHistoryDiverged
+		s.last.DivergedAt = len(request.array)
+		return frame
+	}
+	diverged := -1
+	for i, item := range s.seed.input {
+		if !bytes.Equal(item, input[i]) {
+			diverged = i
+			break
+		}
+	}
+	if diverged < 0 {
+		for i, item := range s.seed.outputCanonical {
+			index := len(s.seed.input) + i
+			canonical, canonicalErr := responsesWSDeltaCanonical(request.array[index])
+			if canonicalErr != nil || !bytes.Equal(item, canonical) {
+				diverged = index
+				break
+			}
+		}
+	}
+	if diverged >= 0 {
+		s.last.Reason = ResponsesWSFullHistoryDiverged
+		s.last.DivergedAt = diverged
+		return frame
+	}
+	delta, deltaErr := responsesWSDeltaFrame(root, request.array[expected:], s.seed.responseID)
+	if deltaErr != nil || len(delta) >= len(frame) {
+		s.last.Reason = ResponsesWSFullNotSmaller
+		return frame
+	}
+	s.last.Mode = ResponsesWSFrameDelta
+	s.last.WireBytes = len(delta)
+	s.last.WireItems = len(request.array) - expected
+	return delta
 }
 
 func (s *responsesWSDeltaState) observe(raw []byte) {
