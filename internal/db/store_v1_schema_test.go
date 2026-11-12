@@ -14,7 +14,7 @@ import (
 var storeV1Tables = []string{
 	"sessions", "messages", "files", "read_files", "session_permissions", "queue_tasks",
 	"pending_injects", "session_run_queue", "orphan_call_outbox", "async_hosts",
-	"session_agent_depth", "session_agent_model_role", "session_role_contracts", "session_root_role_contracts", "session_drivers", "session_notices", "wake_schedules", "batch_nodes",
+	"session_agent_depth", "session_agent_model_role", "session_agent_finalizations", "session_agent_finalization_tickets", "session_role_contracts", "session_root_role_contracts", "session_agent_finalization_continuations", "session_drivers", "session_notices", "wake_schedules", "batch_nodes",
 	"batch_control_requests", "batch_runner_checkpoints", "batch_timeout_checkins",
 	"mcp_outputs", "mcp_output_chunks",
 }
@@ -261,7 +261,7 @@ func TestStoreV1FixtureMatchesEmbeddedSchemaMinusOmittedObjects(t *testing.T) {
 			t.Errorf("unexpected embedded sqlite_master object: %s", key)
 		}
 	}
-	for _, tableKey := range []string{"table:sessions", "table:messages", "table:files", "table:read_files", "table:session_permissions", "table:queue_tasks", "table:pending_injects", "table:session_run_queue", "table:orphan_call_outbox", "table:async_hosts", "table:session_agent_depth", "table:session_agent_model_role", "table:session_role_contracts", "table:session_root_role_contracts", "table:session_drivers", "table:session_notices", "table:wake_schedules", "table:batch_nodes", "table:batch_control_requests", "table:batch_runner_checkpoints", "table:batch_timeout_checkins"} {
+	for _, tableKey := range []string{"table:sessions", "table:messages", "table:files", "table:read_files", "table:session_permissions", "table:queue_tasks", "table:pending_injects", "table:session_run_queue", "table:orphan_call_outbox", "table:async_hosts", "table:session_agent_depth", "table:session_agent_model_role", "table:session_agent_finalizations", "table:session_agent_finalization_tickets", "table:session_role_contracts", "table:session_root_role_contracts", "table:session_agent_finalization_continuations", "table:session_drivers", "table:session_notices", "table:wake_schedules", "table:batch_nodes", "table:batch_control_requests", "table:batch_runner_checkpoints", "table:batch_timeout_checkins"} {
 		require.Contains(t, fixtureObjects, tableKey)
 	}
 	require.Equal(t, embeddedObjects, fixtureObjects)

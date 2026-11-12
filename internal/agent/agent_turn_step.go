@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -212,6 +213,10 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	ts.stepTools = append([]fantasy.AgentTool(nil), prepared.Tools...)
 	ts.mu.Unlock()
 
+	if err := ts.beginFinalizationStep(callContext); err != nil {
+		return callContext, prepared, err
+	}
+
 	var assistantMsg message.Message
 	// Provenance is recorded from the model that ACTUALLY produced
 	// the message, not from the configuration that selected it.
@@ -276,7 +281,7 @@ func (ts *turnStream) onStepFinish(stepResult fantasy.StepResult) error {
 	ts.stopStepTicker()
 
 	finishReason := classifyStepFinishReason(stepResult)
-	ts.recordStepFinish(finishReason)
+	finishErr := ts.recordStepFinish(finishReason)
 
 	updatedSession, err := ts.applyStepUsage(stepResult)
 	if err != nil {
@@ -293,6 +298,9 @@ func (ts *turnStream) onStepFinish(stepResult fantasy.StepResult) error {
 			slog.Warn("agent: step finish not persisted before a cap abort", "session_id", ts.call.SessionID, "err", persistErr)
 		}
 		return err
+	}
+	if finishErr != nil {
+		return errors.Join(finishErr, persistErr)
 	}
 	return persistErr
 }
@@ -608,7 +616,8 @@ func classifyStepFinishReason(stepResult fantasy.StepResult) message.FinishReaso
 // them sequentially from one loop), but it DOES run concurrently with the
 // checkpoint ticker goroutines, which also touch
 // currentAssistant.
-func (ts *turnStream) recordStepFinish(finishReason message.FinishReason) {
+func (ts *turnStream) recordStepFinish(finishReason message.FinishReason) error {
+	var finishErr error
 	ts.mu.Lock()
 	if finishReason == message.FinishReasonUnknown &&
 		ts.currentAssistant.FullText() == "" &&
@@ -646,6 +655,8 @@ func (ts *turnStream) recordStepFinish(finishReason message.FinishReason) {
 		// message/details let an operator tell it apart from a
 		// voluntary end.
 		ts.currentAssistant.AddFinish(message.FinishReasonEndTurn, InTurnGuardStopTitle, guardStopDetails(ts.progress))
+	} else if ts.finalization != nil && finishReason == message.FinishReasonEndTurn && len(ts.currentAssistant.ToolCalls()) == 0 {
+		finishErr = ts.markFinalizationStep()
 	} else {
 		ts.currentAssistant.AddFinish(finishReason, "", "")
 	}
@@ -653,6 +664,7 @@ func (ts *turnStream) recordStepFinish(finishReason message.FinishReason) {
 	// Drain any pending UI snapshot so the ticker goroutine does not
 	// publish a stale state after messages.Update writes the final one.
 	ts.drainPendingUI()
+	return finishErr
 }
 
 // applyStepUsage fetches the session row this step just updated, folds in

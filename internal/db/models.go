@@ -259,6 +259,38 @@ type SessionAgentDepth struct {
 	RemainingDepth int64  `json:"remaining_depth"`
 }
 
+type SessionAgentFinalization struct {
+	SessionID          string `json:"session_id"`
+	LogicalCallID      string `json:"logical_call_id"`
+	Generation         int64  `json:"generation"`
+	Revision           int64  `json:"revision"`
+	Phase              string `json:"phase"`
+	NodeID             string `json:"node_id"`
+	NodeToken          int64  `json:"node_token"`
+	CandidateMessageID string `json:"candidate_message_id"`
+	CandidateHash      string `json:"candidate_hash"`
+}
+
+type SessionAgentFinalizationContinuation struct {
+	RowID         string `json:"row_id"`
+	SessionID     string `json:"session_id"`
+	LogicalCallID string `json:"logical_call_id"`
+	PayloadHash   string `json:"payload_hash"`
+	Identities    string `json:"identities"`
+	Ancestry      string `json:"ancestry"`
+	LeaseToken    string `json:"lease_token"`
+	FailureCode   string `json:"failure_code"`
+	Consumed      int64  `json:"consumed"`
+}
+
+type SessionAgentFinalizationTicket struct {
+	SessionID     string `json:"session_id"`
+	LogicalCallID string `json:"logical_call_id"`
+	Generation    int64  `json:"generation"`
+	TicketID      string `json:"ticket_id"`
+	Released      int64  `json:"released"`
+}
+
 type SessionAgentModelRole struct {
 	SessionID     string `json:"session_id"`
 	RequestedRole string `json:"requested_role"`

@@ -49,7 +49,7 @@ type BatchToolResultIdentity struct {
 
 // BatchConsumeToolResult atomically persists the actual tool message and consumes
 // the matching root. A lost incarnation CAS is a successful ordinary result write.
-func (s *BatchStore) BatchConsumeToolResult(ctx context.Context, messages message.Service, owner string, identity BatchToolResultIdentity, params message.CreateMessageParams) (message.Message, bool, error) {
+func (s *BatchStore) BatchConsumeToolResult(ctx context.Context, messages message.Service, owner string, identity BatchToolResultIdentity, params message.CreateMessageParams) (msg message.Message, consumed bool, retErr error) {
 	if owner == "" || owner != identity.Owner || identity.RootID == "" || identity.NodeID != identity.RootID || identity.HostID == "" || identity.RunnerID == "" || identity.ToolCallID == "" || params.Role != message.Tool {
 		return message.Message{}, false, ErrBatchToolResultIdentity
 	}
@@ -61,13 +61,25 @@ func (s *BatchStore) BatchConsumeToolResult(ctx context.Context, messages messag
 	if err := db.PdaBatchEnsure(ctx, s.writer); err != nil {
 		return message.Message{}, false, err
 	}
+	// A lost incarnation CAS still persists the result message, so every
+	// call is a productive write and is admitted.
+	release, admission, err := admitFinalizationMutation(ctx, s.writer, owner)
+	if release != nil {
+		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
+	}
+	if err != nil {
+		return message.Message{}, false, err
+	}
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return message.Message{}, false, err
 	}
 	defer tx.Rollback()
+	if err := validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
+		return message.Message{}, false, err
+	}
 	q := db.PdaBatchTxQueries(ctx, s.writer, tx)
-	msg, err := pdcCreateTx(ctx, q, tx, messages, owner, params)
+	msg, err = pdcCreateTx(ctx, q, tx, messages, owner, params)
 	if err != nil {
 		return message.Message{}, false, err
 	}
@@ -77,6 +89,9 @@ func (s *BatchStore) BatchConsumeToolResult(ctx context.Context, messages messag
 		RunnerID: identity.RunnerID, ToolCallID: sql.NullString{String: identity.ToolCallID, Valid: true},
 	})
 	if err != nil {
+		return message.Message{}, false, err
+	}
+	if err = validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
 		return message.Message{}, false, err
 	}
 	if err = tx.Commit(); err != nil {

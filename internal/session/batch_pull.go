@@ -171,6 +171,9 @@ func (s *BatchStore) BatchPullNotices(ctx context.Context, messages message.Serv
 	for _, row := range rows {
 		pulled, ok, err := s.batchPullOneNotice(ctx, messages, owner, row.RootID, row.NodeID, build)
 		if err != nil {
+			if errors.Is(err, ErrAgentFinalizationChanged) {
+				return nil, err
+			}
 			slog.Warn("Batch notice pull failed; row stays pending", "owner", owner, "node", row.NodeID, "err", err)
 			continue
 		}
@@ -181,7 +184,35 @@ func (s *BatchStore) BatchPullNotices(ctx context.Context, messages message.Serv
 	return out, nil
 }
 
-func (s *BatchStore) batchPullOneNotice(ctx context.Context, messages message.Service, owner, root, node string, build func(BatchNoticeRow) message.CreateMessageParams) (BatchPulledNotice, bool, error) {
+func (s *BatchStore) batchPullOneNotice(ctx context.Context, messages message.Service, owner, root, node string, build func(BatchNoticeRow) message.CreateMessageParams) (pulled BatchPulledNotice, ok bool, retErr error) {
+	scoped := finalizationScoped(ctx)
+	var admission *batchFinalizationAdmission
+	if scoped {
+		// Only a row still pending is a productive delivery; anything else is
+		// the legacy no-op and must not mint a finalization revision.
+		pending, err := batchOutboxPendingVoidAware(ctx, s.writer, owner)
+		if err != nil {
+			return BatchPulledNotice{}, false, err
+		}
+		candidate := false
+		for _, row := range pending {
+			if row.RootID == root && row.NodeID == node {
+				candidate = true
+				break
+			}
+		}
+		if !candidate {
+			return BatchPulledNotice{}, false, nil
+		}
+		var release func() error
+		release, admission, err = admitFinalizationMutation(ctx, s.writer, owner)
+		if release != nil {
+			defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
+		}
+		if err != nil {
+			return BatchPulledNotice{}, false, err
+		}
+	}
 	// See batch_tool_result.go: prepare before the tx holds the pool's only
 	// connection.
 	if err := db.PdaBatchEnsure(ctx, s.writer); err != nil {
@@ -192,6 +223,9 @@ func (s *BatchStore) batchPullOneNotice(ctx context.Context, messages message.Se
 		return BatchPulledNotice{}, false, err
 	}
 	defer tx.Rollback()
+	if err := validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
+		return BatchPulledNotice{}, false, err
+	}
 	q := db.PdaBatchTxQueries(ctx, s.writer, tx)
 	// Go-side CAS: BatchOutboxPull + the root-void NOT EXISTS (see
 	// batchOutboxPullVoidAware; fold back into batch_outbox.sql when sqlc
@@ -225,6 +259,9 @@ func (s *BatchStore) batchPullOneNotice(ctx context.Context, messages message.Se
 		return BatchPulledNotice{}, false, err
 	}
 	if err = batchRequireRow(q.BatchOutboxNameMessage(ctx, db.BatchOutboxNameMessageParams{Owner: owner, RootID: root, NodeID: node, MessageID: sql.NullString{String: msg.ID, Valid: true}, UpdatedAt: time.Now().Unix()})); err != nil {
+		return BatchPulledNotice{}, false, err
+	}
+	if err = validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
 		return BatchPulledNotice{}, false, err
 	}
 	if err = tx.Commit(); err != nil {

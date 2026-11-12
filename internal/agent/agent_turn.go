@@ -47,6 +47,11 @@ var runTurnToolsSnapshotSeam func()
 // the preamble above and the tail below are deliberately NOT moved there,
 // since neither is fantasy callback state.
 func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *session.SessionLock, epoch uint64, runCancel context.CancelFunc, att *drainAttempt) (res *fantasy.AgentResult, next SessionAgentCall, hasNext bool, resErr error) {
+	restoredCtx, authorityErr := a.restoreFinalizationCallContext(ctx, &call)
+	if authorityErr != nil {
+		return nil, SessionAgentCall{}, false, authorityErr
+	}
+	ctx = restoredCtx
 	// A real turn is starting: any stale keep-alive scheduled for this
 	// session's prior idle state is moot and must not race this turn's own
 	// request.
@@ -588,6 +593,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	checkpoint := newTurnCheckpointWriter(a, call.SessionID, genCtx, &ts.mu, &ts.currentAssistant, stall)
 	ts.startCheckpoint = checkpoint.start
 	ts.stopCheckpoint = checkpoint.stop
+	ts.fenceCheckpoint = checkpoint.fenceFinalization
 
 	// Decouples token arrival from UI render rate. See turnUINotifier's
 	// doc in agent_turn_ui_notify.go.

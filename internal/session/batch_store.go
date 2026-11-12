@@ -93,6 +93,8 @@ type BatchReservation struct {
 	Notices                                              []db.SelectBatchNodeNoticeParams
 	// Checkpoint is written inside the same transaction when non-nil.
 	Checkpoint *db.UpdateBatchRunnerCheckpointParams
+
+	finalizationAdmission *batchFinalizationAdmission
 }
 
 type (
@@ -140,6 +142,9 @@ func (s *BatchStore) ReserveIdentity(ctx context.Context, p BatchReservation) (B
 	}
 	defer tx.Rollback()
 	jobbatch.MarkCommitPhase(ctx, jobbatch.CommitPhaseStatements)
+	if err := validateBatchFinalizationTx(ctx, tx, []string{p.Owner}, p.finalizationAdmission); err != nil {
+		return BatchReservationResult{}, err
+	}
 	q := db.PdaBatchTxQueries(ctx, s.writer, tx)
 	live, err := q.GetLiveBatchRoot(ctx, db.GetLiveBatchRootParams{OwnerSessionID: p.Owner, ToolCallID: sql.NullString{String: p.ToolCallID, Valid: true}})
 	attached := err == nil
@@ -225,6 +230,8 @@ type (
 		// Checkpoint records the (host, incarnation) transition sequence for
 		// rootless transitions and Final; optional, applied in the same tx.
 		Checkpoint *db.UpdateBatchRunnerCheckpointParams
+
+		finalizationAdmission *batchFinalizationAdmission
 	}
 	BatchRootProjection struct {
 		Owner, Root string
@@ -260,6 +267,13 @@ func (s *BatchStore) Project(ctx context.Context, p BatchProjection) error {
 	}
 	defer tx.Rollback()
 	jobbatch.MarkCommitPhase(ctx, jobbatch.CommitPhaseStatements)
+	owners := make([]string, 0, len(p.Roots))
+	for _, root := range p.Roots {
+		owners = append(owners, root.Owner)
+	}
+	if err := validateBatchFinalizationTx(ctx, tx, owners, p.finalizationAdmission); err != nil {
+		return err
+	}
 	q := db.PdaBatchTxQueries(ctx, s.writer, tx)
 	if p.Checkpoint != nil {
 		if err = batchRequireRow(q.UpdateBatchRunnerCheckpoint(ctx, *p.Checkpoint)); err != nil {

@@ -33,6 +33,13 @@ type BatchCommitIdentity struct {
 	// transitions are unaffected: batchCommitProject already resolves each
 	// root's owner from the row (RootOwner).
 	OwnerFor func(spec jobbatch.Spec) string
+
+	// AdmitOwners runs after durable tickets and before batch writer I/O. Its
+	// error-returning release is attempted after success or failure.
+	AdmitOwners func(context.Context, jobbatch.Transition, []string) (func() error, error)
+
+	finalizationService     *service
+	finalizationAuthorities []*AgentFinalizationAuthority
 }
 
 // NewBatchCommitHook returns a RunnerConfig.CommitHook adapter. It maps one
@@ -47,7 +54,11 @@ func NewBatchCommitHook(store *BatchStore, id BatchCommitIdentity) func(context.
 	// serialized by the Runner, so a plain bool is safe.
 	closing := false
 	return func(ctx context.Context, t jobbatch.Transition) error {
-		err := batchCommitTransition(ctx, store, id, closing, t)
+		activeIdentity, err := batchFinalizationIdentityFromContext(ctx, id)
+		if err != nil {
+			return err
+		}
+		err = batchCommitTransition(ctx, store, activeIdentity, closing, t)
 		if err == nil && t.Event.Type == jobbatch.EventHostClosing {
 			closing = true
 		}
@@ -86,7 +97,7 @@ func batchCommitTransition(ctx context.Context, store *BatchStore, id BatchCommi
 // keyed by (owner, tool_call_id=e.Ref); the input hash is the canonical hash
 // of the accepted Spec, so concurrent matching retries attach once and
 // mismatched Specs are refused with ErrBatchInputMismatch.
-func batchCommitSubmit(ctx context.Context, store *BatchStore, id BatchCommitIdentity, t jobbatch.Transition) error {
+func batchCommitSubmit(ctx context.Context, store *BatchStore, id BatchCommitIdentity, t jobbatch.Transition) (retErr error) {
 	e := t.Event
 	// P1-1: the reservation's owner_session_id REFERENCES sessions(id), so
 	// it must be the invoking session, never the host UUID. The resolver
@@ -116,8 +127,16 @@ func batchCommitSubmit(ctx context.Context, store *BatchStore, id BatchCommitIde
 		}
 		notices[i] = p
 	}
+	release, admission, err := admitBatchCommitOwners(store, ctx, id, t, []string{owner})
+	if release != nil {
+		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
+	}
+	if err != nil {
+		return err
+	}
 	res, err := store.ReserveIdentity(ctx, BatchReservation{
-		Owner: owner, Host: id.Host, RunnerID: id.Runner, RootID: string(e.Root),
+		finalizationAdmission: admission,
+		Owner:                 owner, Host: id.Host, RunnerID: id.Runner, RootID: string(e.Root),
 		ToolCallID: e.Ref, InputHash: batchCommitSpecHash(e.Spec),
 		OriginCLI: len(e.Ref) >= len("batch-cli:") && e.Ref[:len("batch-cli:")] == "batch-cli:",
 		Sequence:  int64(t.Sequence), Root: root, Notices: notices,
@@ -242,7 +261,7 @@ func batchCommitControlState(c jobbatch.ControlState) string {
 // BatchProjection per root set inside one store transaction. Add appends
 // subtrees at accepted parent ordinals inside Project without a root Reserve;
 // Release and transitions touching other roots group exactly like any event.
-func batchCommitProject(ctx context.Context, store *BatchStore, id BatchCommitIdentity, closing bool, t jobbatch.Transition) error {
+func batchCommitProject(ctx context.Context, store *BatchStore, id BatchCommitIdentity, closing bool, t jobbatch.Transition) (retErr error) {
 	e := t.Event
 	groups := make(map[jobbatch.ID]*BatchRootProjection)
 	group := func(root jobbatch.ID) *BatchRootProjection {
@@ -334,6 +353,7 @@ func batchCommitProject(ctx context.Context, store *BatchStore, id BatchCommitId
 		EventType: batchCommitCheckpointEvent(t), Final: batchCommitFlag(t.Final),
 		UpdatedAt: time.Now().Unix(),
 	}
+	owners := make([]string, 0, len(groups))
 	for root, g := range groups {
 		owner, err := store.RootOwner(ctx, string(root))
 		if err != nil {
@@ -341,8 +361,17 @@ func batchCommitProject(ctx context.Context, store *BatchStore, id BatchCommitId
 		}
 		g.Root = string(root)
 		g.Owner = owner
+		owners = append(owners, owner)
 		p.Roots = append(p.Roots, *g)
 	}
+	release, admission, err := admitBatchCommitOwners(store, ctx, id, t, owners)
+	if release != nil {
+		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
+	}
+	if err != nil {
+		return err
+	}
+	p.finalizationAdmission = admission
 	return store.Project(ctx, p)
 }
 

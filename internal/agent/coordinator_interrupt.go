@@ -840,7 +840,7 @@ func (c *coordinator) startDetachedRun(ctx context.Context, call SessionAgentCal
 
 	// Durably enqueue the call BEFORE returning control (P0-2 requirement)
 	// This ensures the call will eventually be executed even if this goroutine exits
-	if enqueueErr := c.sessions.EnqueueRunQueueEntry(ctx, idempotencyKey, call.SessionID, callDataJSON); enqueueErr != nil {
+	if enqueueErr := enqueueFinalizationCall(ctx, c.sessions, idempotencyKey, call, callDataJSON); enqueueErr != nil {
 		slog.Error("coordinator: failed to durably enqueue call for recovery",
 			"session_id", call.SessionID, "err", enqueueErr)
 		// For interrupt inject path, recreate the row so a future tick can retry

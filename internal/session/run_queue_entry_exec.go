@@ -584,7 +584,7 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 	// Attempt to execute via coordinator.Run. The leased row's durable id
 	// rides the context (R12-H2b §2.4): the coordinator's rebuild releases
 	// this row's Continuation holder in both outcomes.
-	_, err := p.cfg.Coordinator.Run(WithRunQueueRowID(execCtx, leased.ID), callData)
+	_, err := p.cfg.Coordinator.Run(WithRunQueueRowID(withFinalizationQueueLease(execCtx, leased), leased.ID), callData)
 	sealAssistantIdentities()
 
 	// Stop renewing IMMEDIATELY once Run returns, synchronously, before any
@@ -632,6 +632,10 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 	// entire Run() call was the bug.
 	dbCtx, dbCancel := newDBCtx()
 	defer dbCancel()
+	if recordErr := recordFinalizationQueueFailure(dbCtx, leased, err); recordErr != nil {
+		ids, terminalID := resultIdentity()
+		return ids, terminalID, errors.Join(ErrTurnCommitFailed, err, recordErr)
+	}
 
 	// Handle outcome
 	if err == nil {

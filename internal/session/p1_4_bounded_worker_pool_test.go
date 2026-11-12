@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db/dbtest"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
@@ -178,6 +179,7 @@ func TestP1_4_BoundedWorkerPoolRespectsLimit(t *testing.T) {
 		CREATE INDEX idx_session_run_queue_leased ON session_run_queue(status, lease_expires_at);
 	`)
 	require.NoError(t, err)
+	require.NoError(t, dbtest.ApplyFinalizationFencingSchema(context.Background(), conn))
 
 	dbq := db.New(conn)
 	svc := session.NewService(dbq, conn)

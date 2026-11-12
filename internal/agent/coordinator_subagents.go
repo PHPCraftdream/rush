@@ -525,10 +525,19 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		callTemplate.Tools = batchChildTools
 		callTemplate.batchQuestion = batchQuestionState
 	}
+	delegatedFinalization := sessionpkg.CaptureAgentFinalizationContext(ctx)
+	callTemplate.LogicalCallID, err = finalizationLogicalIdentity(delegatedFinalization, session.ID, callTemplate.LogicalCallID)
+	if err != nil {
+		return fantasy.ToolResponse{}, err
+	}
 	if params.pctHandoff != nil {
 		pctReleases = params.pctHandoff.pctClaimDriver()
 	}
-	generation := c.subAgentDrivers.register(session.ID, subAgentDriver{agent: params.Agent, call: callTemplate, parentSessionID: params.SessionID, slotRole: driverSlotRole, pctReleases: pctReleases})
+	generation := c.subAgentDrivers.register(session.ID, subAgentDriver{
+		agent: params.Agent, call: callTemplate, parentSessionID: params.SessionID,
+		slotRole: driverSlotRole, pctReleases: pctReleases,
+		finalizationAuthorities: delegatedFinalization,
+	})
 	pctDriverTransferred = generation != 0
 	if !pctDriverTransferred {
 		pctReleaseScopeRefs(pctReleases)
@@ -574,6 +583,8 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		runCtx := WithCallOptions(ctx, &runOptions)
 		call := SessionAgentCall{
 			SessionID:            session.ID,
+			LogicalCallID:        callTemplate.LogicalCallID,
+			driverGeneration:     generation,
 			Prompt:               params.Prompt,
 			MaxOutputTokens:      maxTokens,
 			ProviderOptions:      getProviderOptions(session.ID, model, providerCfg),

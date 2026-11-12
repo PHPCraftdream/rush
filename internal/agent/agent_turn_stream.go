@@ -118,6 +118,10 @@ type turnStream struct {
 
 	fatalTools *fatalToolCollector
 
+	finalization      *finalizationExecution
+	finalizationStamp finalizationStamp
+	fenceCheckpoint   func() int64
+
 	smartModel   Model
 	promptPrefix string
 
@@ -207,6 +211,7 @@ func newTurnStream(cfg turnStreamConfig) *turnStream {
 		call:               cfg.call,
 		att:                cfg.att,
 		fatalTools:         cfg.fatalTools,
+		finalization:       finalizationExecutionFor(cfg.ctx, cfg.call),
 		genID:              cfg.genID,
 		stall:              cfg.stall,
 		smartModel:         cfg.smartModel,

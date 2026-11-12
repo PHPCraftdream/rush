@@ -29,6 +29,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // subAgentDriver is a frozen snapshot of the SessionAgentCall shape
@@ -38,9 +39,11 @@ import (
 // model/provider/sampling shape the delegation was launched with -- only the
 // prompt changes.
 type subAgentDriver struct {
-	agent       SessionAgent
-	call        SessionAgentCall
-	pctReleases []func() // pct: retained child construction refs released at confirmed closure.
+	agent SessionAgent
+	call  SessionAgentCall
+	// Frozen at delegation; wakes never bind or infer replacement capabilities.
+	finalizationAuthorities session.AgentFinalizationContext
+	pctReleases             []func() // pct: retained child construction refs released at confirmed closure.
 	// parentSessionID is the delegating session that originally armed this
 	// child's restricted-run allowlist baseline (runSubAgent's
 	// InheritSessionRunAllowlistForGeneration). wakeSession re-inherits from
@@ -72,6 +75,8 @@ type subAgentDriver struct {
 func (d subAgentDriver) callFor(prompt string) SessionAgentCall {
 	call := callFromActive(d.call)
 	call.Prompt = prompt
+	call.finalizationAuthorities = d.finalizationAuthorities
+	call.driverGeneration = d.generation
 	if call.CallOptions != nil {
 		copy := *call.CallOptions
 		call.CallOptions = &copy

@@ -144,14 +144,14 @@ type Finish struct {
 	Time    int64        `json:"time"`
 	Message string       `json:"message,omitempty"`
 	Details string       `json:"details,omitempty"`
-	// Partial is set to true when this Finish was written by the
-	// auto-checkpoint ticker (batch 8). A process that dies mid-stream
-	// leaves an unfinished row where Finish has Partial=true and
-	// Reason="" — recovery code uses this to distinguish "mid-stream
-	// checkpoint" from "properly finished turn". A proper Finish
-	// overwrite removes this marker.
-	// Fork patch: batch 8 — see CHANGELOG.fork.md section 6.
+	// Partial checkpoints and finalization candidates do not finish the row.
 	Partial bool `json:"partial,omitempty"`
+	// Backend-only identity; model text cannot set acceptance metadata.
+	FinalizationKey        string `json:"finalization_key,omitempty"`
+	FinalizationGeneration uint64 `json:"finalization_generation,omitempty"`
+	FinalizationRevision   uint64 `json:"finalization_revision,omitempty"`
+	FinalizationSerial     uint64 `json:"finalization_serial,omitempty"`
+	FinalizationHash       string `json:"finalization_hash,omitempty"`
 }
 
 func (Finish) isPart() {}

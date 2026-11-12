@@ -40,6 +40,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 	// (idempotent). Evaluated immediately so the captured scope cannot be
 	// affected by any later field mutation.
 	defer deferReleaseRetainedRunScope(&call)()
+	restoredCtx, authorityErr := a.restoreFinalizationCallContext(ctx, &call)
+	if authorityErr != nil {
+		return nil, authorityErr
+	}
+	ctx = restoredCtx
 	// R7-1: capture the DIRECT caller's admission recorder, then detach it
 	// for everything downstream. A queued admission is only this Run
 	// invocation's own outcome; a nested Run reached through this turn's
@@ -686,6 +691,13 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		}
 		call = reclaimed
 		inheritReplacementIdentityCallback(&previousCall, &call)
+		// Order: restore the root role contract first (pure read, may swap in
+		// the persisted contract for a continuation), then the finalization
+		// driver identity binding (in-memory, idempotent), and only when both
+		// admit the call do the durable writes run: root role binding, then
+		// the per-call model persistence. A failed driver binding therefore
+		// never replaces the root role row nor persists models for a call
+		// that is reported as already attempted below.
 		if call.LogicalCallID != previousCall.LogicalCallID {
 			if restored, restoreErr := restoreRootRoleContract(runCtx, a.sessions, call); restoreErr != nil {
 				return nil, notAttempted(call, restoreErr)
@@ -693,21 +705,24 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 				call = restored
 			}
 		}
-		if !a.isSubAgent {
-			if err := bindRootRoleContract(runCtx, a.sessions, call); err != nil {
+		driverBindingErr := a.bindFinalizationDriverCall(call)
+		if driverBindingErr == nil {
+			if !a.isSubAgent {
+				if err := bindRootRoleContract(runCtx, a.sessions, call); err != nil {
+					a.noteRefusal(call.SessionID, err)
+					return nil, notAttempted(call, fmt.Errorf("session %q: bind root role contract: %w", call.SessionID, err))
+				}
+			}
+			if err := persistCallModels(call); err != nil {
 				a.noteRefusal(call.SessionID, err)
-				return nil, notAttempted(call, fmt.Errorf("session %q: bind root role contract: %w", call.SessionID, err))
+				if durableErr := a.restartOrphanedWithRetry([]SessionAgentCall{call}); durableErr != nil {
+					err = fmt.Errorf("%w; failed to durably recover the admitted call: %v", err, durableErr)
+				}
+				if replacedDurableCallID != "" {
+					return nil, fmt.Errorf("%w: durable call %q was replaced but never executed; replacement failed: %s", session.ErrCallQueuedNotExecuted, replacedDurableCallID, err)
+				}
+				return nil, notAttempted(call, err)
 			}
-		}
-		if err := persistCallModels(call); err != nil {
-			a.noteRefusal(call.SessionID, err)
-			if durableErr := a.restartOrphanedWithRetry([]SessionAgentCall{call}); durableErr != nil {
-				err = fmt.Errorf("%w; failed to durably recover the admitted call: %v", err, durableErr)
-			}
-			if replacedDurableCallID != "" {
-				return nil, fmt.Errorf("%w: durable call %q was replaced but never executed; replacement failed: %s", session.ErrCallQueuedNotExecuted, replacedDurableCallID, err)
-			}
-			return nil, notAttempted(call, err)
 		}
 		mb.setCurrentCall(call)
 		// R3-4: activate THIS call's carried restricted-run policy exactly
@@ -759,7 +774,15 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 			replacementError = ""
 		}
 		att := a.newDrainAttempt(call)
-		result, next, hasNext, err := a.runTurn(turnCtx, call, lk, epoch, runCancel, att)
+		var result *fantasy.AgentResult
+		var next SessionAgentCall
+		var hasNext bool
+		var err error
+		if driverBindingErr != nil {
+			err = &ErrCallAlreadyAttempted{Err: driverBindingErr}
+		} else {
+			result, next, hasNext, err = a.runTurn(turnCtx, call, lk, epoch, runCancel, att)
+		}
 		err = a.afterTurn(call, att, err, turnCtx.Err() != nil)
 		if replacedDurableCallID != "" && call.LogicalCallID != replacedDurableCallID && err != nil {
 			replacementError = err.Error()

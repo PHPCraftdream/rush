@@ -16,19 +16,74 @@ import (
 // family launches on child nodes like "root.1"), then the exact-header
 // idempotency insert runs into the existing session_notices outbox with
 // job_tool_call_id NULL so the pull-time void rule retains the row.
-func (s *BatchStore) BatchPublishQuestion(ctx context.Context, owner, node string, token int64, marker, text string) error {
+func (s *BatchStore) BatchPublishQuestion(ctx context.Context, owner, node string, token int64, marker, text string) (retErr error) {
 	if owner == "" || node == "" || token <= 0 || marker == "" || !strings.HasSuffix(marker, "\n") {
 		return errors.New("batch store: invalid question identity")
+	}
+	// Refusals and duplicates are decided before admission: neither is
+	// productive work, so neither may mint a finalization revision.
+	if err := batchQuestionCheckLive(ctx, s.writer, owner, node, token); err != nil {
+		return err
+	}
+	if duplicate, err := batchQuestionDuplicate(ctx, s.writer, owner, marker); err != nil {
+		return fmt.Errorf("batch store: question insert: %w", err)
+	} else if duplicate {
+		return nil
+	}
+	release, admission, err := admitFinalizationMutation(ctx, s.writer, owner)
+	if release != nil {
+		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
+	}
+	if err != nil {
+		return finalizationFenceError(err)
 	}
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("batch store: question begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
+		return finalizationFenceError(err)
+	}
+	if err := batchQuestionCheckLive(ctx, tx, owner, node, token); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO session_notices (owner, kind, text, wake, delivery, job_tool_call_id, created_at, updated_at)
+SELECT ?, ?, ?, 1, 'pending', NULL, ?, ?
+WHERE NOT EXISTS (SELECT 1 FROM session_notices WHERE owner = ? AND kind = ? AND substr(text, 1, length(?)) = ?)`,
+		owner, NoticeKindChildQuestion, text, time.Now().Unix(), time.Now().Unix(),
+		owner, NoticeKindChildQuestion, marker, marker)
+	if err != nil {
+		return fmt.Errorf("batch store: question insert: %w", err)
+	}
+	inserted, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("batch store: question insert: %w", err)
+	}
+	if inserted == 0 {
+		// Exact identity already durably published: dedup hit, commit the
+		// validated read and report success so concurrent publishers agree.
+		return tx.Commit()
+	}
+	if err := validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
+		return finalizationFenceError(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("batch store: question commit: %w", err)
+	}
+	return nil
+}
+
+type batchQuestionRower interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+// batchQuestionCheckLive pins the exact live node incarnation.
+func batchQuestionCheckLive(ctx context.Context, q batchQuestionRower, owner, node string, token int64) error {
 	var rowToken int64
 	var state string
 	var rootDelivery string
-	err = tx.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`SELECT n.token, n.state, r.delivery FROM batch_nodes n JOIN batch_nodes r ON r.node_id = n.root_id
 WHERE n.node_id = ? AND n.owner_session_id = ?`,
 		node, owner).Scan(&rowToken, &state, &rootDelivery)
@@ -49,24 +104,14 @@ WHERE n.node_id = ? AND n.owner_session_id = ?`,
 	if rootDelivery == "void" {
 		return errors.New("batch store: question root is durably retired")
 	}
-	var inserted int64
-	err = tx.QueryRowContext(ctx, `INSERT INTO session_notices (owner, kind, text, wake, delivery, job_tool_call_id, created_at, updated_at)
-SELECT ?, ?, ?, 1, 'pending', NULL, ?, ?
-WHERE NOT EXISTS (SELECT 1 FROM session_notices WHERE owner = ? AND kind = ? AND substr(text, 1, length(?)) = ?)`,
-		owner, NoticeKindChildQuestion, text, time.Now().Unix(), time.Now().Unix(),
-		owner, NoticeKindChildQuestion, marker, marker).Scan(&inserted)
-	if errors.Is(err, sql.ErrNoRows) {
-		// Exact identity already durably published: dedup hit, commit the
-		// validated read and report success so concurrent publishers agree.
-		return tx.Commit()
-	}
-	if err != nil {
-		return fmt.Errorf("batch store: question insert: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("batch store: question commit: %w", err)
-	}
 	return nil
+}
+
+func batchQuestionDuplicate(ctx context.Context, q batchQuestionRower, owner, marker string) (bool, error) {
+	var duplicate bool
+	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM session_notices WHERE owner = ? AND kind = ? AND substr(text, 1, length(?)) = ?)`,
+		owner, NoticeKindChildQuestion, marker, marker).Scan(&duplicate)
+	return duplicate, err
 }
 
 // parseBatchQuestionMarker extracts (nodeID, token) from a child-question
@@ -157,44 +202,38 @@ func parseBatchQuestionMarkerFull(text string) (node string, token, sequence int
 // the closed count; an unknown identity is a no-op (0, nil), never an
 // error. Runs in one serialized writer transaction like
 // BatchPublishQuestion (the writer pool has exactly ONE connection).
-func (s *BatchStore) BatchResolveChildQuestions(ctx context.Context, owner, node, child string, token, sequence int64) (int64, error) {
+func (s *BatchStore) BatchResolveChildQuestions(ctx context.Context, owner, node, child string, token, sequence int64) (closed int64, retErr error) {
 	if owner == "" || node == "" || child == "" || token <= 0 || sequence <= 0 {
 		return 0, nil
+	}
+	// Matching is decided before admission: a no-op resolve is not
+	// productive work and must not mint a finalization revision.
+	matched, err := batchMatchingChildQuestionIDs(ctx, s.writer, owner, node, child, token, sequence)
+	if err != nil {
+		return 0, err
+	}
+	if len(matched) == 0 {
+		return 0, nil
+	}
+	release, admission, err := admitFinalizationMutation(ctx, s.writer, owner)
+	if release != nil {
+		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
+	}
+	if err != nil {
+		return 0, finalizationFenceError(err)
 	}
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("batch store: question resolve begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx,
-		`SELECT id, text FROM session_notices WHERE owner = ? AND kind = ? AND delivery IN ('pending','done') AND wake = 1 ORDER BY id`,
-		owner, NoticeKindChildQuestion)
+	if err := validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
+		return 0, finalizationFenceError(err)
+	}
+	stale, err := batchMatchingChildQuestionIDs(ctx, tx, owner, node, child, token, sequence)
 	if err != nil {
-		return 0, fmt.Errorf("batch store: question resolve list: %w", err)
+		return 0, err
 	}
-	defer rows.Close()
-	var stale []int64
-	for rows.Next() {
-		var id int64
-		var text string
-		if err := rows.Scan(&id, &text); err != nil {
-			return 0, fmt.Errorf("batch store: question resolve scan: %w", err)
-		}
-		mnode, mtoken, msequence, mchild, ok := parseBatchQuestionMarkerFull(text)
-		if !ok || mnode != node || mtoken != token || msequence > sequence || mchild != child {
-			continue
-		}
-		stale = append(stale, id)
-	}
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("batch store: question resolve iterate: %w", err)
-	}
-	// Fully drained before any write: the writer pool has exactly ONE
-	// connection, so the UPDATE cannot start while rows are open.
-	if err := rows.Close(); err != nil {
-		return 0, fmt.Errorf("batch store: question resolve close: %w", err)
-	}
-	var closed int64
 	if len(stale) > 0 {
 		placeholders := make([]string, len(stale))
 		args := make([]any, 0, len(stale)+3)
@@ -212,11 +251,51 @@ func (s *BatchStore) BatchResolveChildQuestions(ctx context.Context, owner, node
 		if closed, err = res.RowsAffected(); err != nil {
 			return 0, fmt.Errorf("batch store: question resolve affected: %w", err)
 		}
+		if err := validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
+			return 0, finalizationFenceError(err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("batch store: question resolve commit: %w", err)
 	}
 	return closed, nil
+}
+
+type batchQuestionQuerier interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+// batchMatchingChildQuestionIDs lists the owner's pending-or-delivered
+// question notices naming exactly this incarnation, fully drained before
+// return (the writer pool has exactly ONE connection).
+func batchMatchingChildQuestionIDs(ctx context.Context, q batchQuestionQuerier, owner, node, child string, token, sequence int64) ([]int64, error) {
+	rows, err := q.QueryContext(ctx,
+		`SELECT id, text FROM session_notices WHERE owner = ? AND kind = ? AND delivery IN ('pending','done') AND wake = 1 ORDER BY id`,
+		owner, NoticeKindChildQuestion)
+	if err != nil {
+		return nil, fmt.Errorf("batch store: question resolve list: %w", err)
+	}
+	defer rows.Close()
+	var stale []int64
+	for rows.Next() {
+		var id int64
+		var text string
+		if err := rows.Scan(&id, &text); err != nil {
+			return nil, fmt.Errorf("batch store: question resolve scan: %w", err)
+		}
+		mnode, mtoken, msequence, mchild, ok := parseBatchQuestionMarkerFull(text)
+		if !ok || mnode != node || mtoken != token || msequence > sequence || mchild != child {
+			continue
+		}
+		stale = append(stale, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("batch store: question resolve iterate: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("batch store: question resolve close: %w", err)
+	}
+	return stale, nil
 }
 
 // batchRerunVoidChildQuestionsOfVoidRoots voids (delivery='void', wake=0)

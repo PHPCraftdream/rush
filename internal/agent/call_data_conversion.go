@@ -269,32 +269,33 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 		callOptions = WithRoleContractCopy(callOptions, call.RoleContract)
 	}
 	return session.SessionAgentCallData{
-		SessionID:            call.SessionID,
-		LogicalCallID:        call.LogicalCallID,
-		Prompt:               call.Prompt,
-		Attachments:          call.Attachments,
-		MaxOutputTokens:      call.MaxOutputTokens,
-		NonInteractive:       call.NonInteractive,
-		RequestedModelRole:   string(call.RequestedModelRole),
-		RequestedModelSource: call.RequestedModelSource,
-		SystemPromptOverride: call.SystemPromptOverride,
-		MaxCost:              call.MaxCost,
-		MaxTokens:            call.MaxTokens,
-		ExistingMessageID:    call.ExistingMessageID,
-		InjectID:             call.InjectID,
-		SmartModel:           smartModel,
-		FastModel:            fastModel,
-		PersistSmartModel:    toSessionModelSlotUpdate(call.PersistSmartModel),
-		PersistFastModel:     toSessionModelSlotUpdate(call.PersistFastModel),
-		SystemPromptPrefix:   call.SystemPromptPrefix,
-		SystemPrompt:         call.SystemPrompt,
-		Origin:               call.Origin,
-		AutoResumed:          call.AutoResumed,
-		BackgroundJobNotice:  call.BackgroundJobNotice,
-		RunAllowlistSpec:     toSessionRunAllowlistSpec(call.RunAllowlistSpec),
-		FolderScopeSpec:      toSessionFolderScopeSpec(call.FolderScopeSpec),
-		CallOptionsSpec:      toSessionCallOptionsSpec(callOptions),
-		RoleContract:         cloneRoleContractForCall(call.RoleContract),
+		SessionID:               call.SessionID,
+		LogicalCallID:           call.LogicalCallID,
+		Prompt:                  call.Prompt,
+		Attachments:             call.Attachments,
+		MaxOutputTokens:         call.MaxOutputTokens,
+		NonInteractive:          call.NonInteractive,
+		RequestedModelRole:      string(call.RequestedModelRole),
+		RequestedModelSource:    call.RequestedModelSource,
+		FinalizationRequirement: call.finalizationAuthorities.Requirement(),
+		SystemPromptOverride:    call.SystemPromptOverride,
+		MaxCost:                 call.MaxCost,
+		MaxTokens:               call.MaxTokens,
+		ExistingMessageID:       call.ExistingMessageID,
+		InjectID:                call.InjectID,
+		SmartModel:              smartModel,
+		FastModel:               fastModel,
+		PersistSmartModel:       toSessionModelSlotUpdate(call.PersistSmartModel),
+		PersistFastModel:        toSessionModelSlotUpdate(call.PersistFastModel),
+		SystemPromptPrefix:      call.SystemPromptPrefix,
+		SystemPrompt:            call.SystemPrompt,
+		Origin:                  call.Origin,
+		AutoResumed:             call.AutoResumed,
+		BackgroundJobNotice:     call.BackgroundJobNotice,
+		RunAllowlistSpec:        toSessionRunAllowlistSpec(call.RunAllowlistSpec),
+		FolderScopeSpec:         toSessionFolderScopeSpec(call.FolderScopeSpec),
+		CallOptionsSpec:         toSessionCallOptionsSpec(callOptions),
+		RoleContract:            cloneRoleContractForCall(call.RoleContract),
 		// Layer 2 (belt and braces, design doc §7.3): mark the row so a
 		// consumer that somehow receives it (a producer added later, or a
 		// row written by a different binary version) still fails closed
@@ -331,6 +332,9 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 // a version-mismatched row must not masquerade as that legacy case. A
 // nil CallOptionsSpec keeps decoding to a nil CallOptions with no error.
 func FromSessionAgentCallData(callData session.SessionAgentCallData) (SessionAgentCall, error) {
+	if callData.FinalizationRequirement != nil {
+		return SessionAgentCall{}, session.ErrAgentFinalizationChanged
+	}
 	role := RequestedModelRole(callData.RequestedModelRole)
 	if role != "" && !role.valid() {
 		return SessionAgentCall{}, ErrAgentRoleInvalid
@@ -389,6 +393,8 @@ func FromSessionAgentCallData(callData session.SessionAgentCallData) (SessionAge
 		CallOptions:          opts,
 		RoleContract:         contract,
 		DiskRequirement:      callData.DiskRequirement,
+		// SmartModel and FastModel are NOT set here — they will be reconstructed
+		// by coordinator.RebuildSessionAgentCall.
 	}, nil
 }
 
