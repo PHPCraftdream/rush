@@ -1,7 +1,6 @@
 // Compaction and summarisation: the manual /compact path under mailbox
-// ownership (Summarize/runSummarize), the inline bodies reused by
-// auto-summarize and the silent sliding-window compact (runSummarizeBody,
-// runSummarizeSilent), and the summarize-queue accessors.
+// ownership (Summarize/runSummarize), the inline body reused by auto-summarize
+// (runSummarizeBody), and the summarize-queue accessors.
 package agent
 
 import (
@@ -52,11 +51,23 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, snapshot
 	// a concurrent CancelAll could set shuttingDown and start its Wait goroutine
 	// while the counter was still 0, letting Wait return before Add(1) landed
 	// (panics or admits work after "shutdown complete").
+	return a.summarize(ctx, sessionID, snapshot, true)
+}
+
+func (a *sessionAgent) SummarizeNow(ctx context.Context, sessionID string, snapshot *SummarizeSnapshot) error {
+	if snapshot == nil {
+		return fmt.Errorf("standalone summary snapshot is required")
+	}
+	return a.summarize(ctx, sessionID, snapshot, false)
+}
+
+func (a *sessionAgent) summarize(ctx context.Context, sessionID string, snapshot *SummarizeSnapshot, queueWhenBusy bool) error {
 	if !a.tryAdmitRunWg() {
 		return ErrAgentShuttingDown
 	}
 	defer a.runWg.Done()
-
+	genCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	mb := a.getMailbox(sessionID)
 	// Atomic check-and-reserve (#268/P0-4, design §6): beginCompact makes
 	// us the sole owner of sessionID's mailbox or returns false if a turn
 	// or another compaction already owns it. This replaces the old
@@ -64,15 +75,16 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, snapshot
 	// between the busy check and the compaction's DB writes — a concurrent
 	// Run could start between the check and the first delete, corrupting
 	// history.
-	genCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-	mb := a.getMailbox(sessionID)
 	epoch, ok := mb.beginCompact(cancel)
 	if !ok {
 		cancel()
+		if !queueWhenBusy {
+			return fmt.Errorf("session %q is already processing another request: %w", sessionID, ErrSessionBusy)
+		}
 		a.summarizeQueue.Set(sessionID, snapshot)
 		return ErrSummarizeQueued
 	}
-	return a.runSummarize(ctx, genCtx, sessionID, snapshot, mb, epoch, cancel)
+	return a.runSummarize(ctx, genCtx, sessionID, snapshot, mb, epoch, cancel, queueWhenBusy)
 }
 
 // runSummarize runs a manual /compact under mailbox ownership acquired by
@@ -105,7 +117,7 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, snapshot
 // prefix resolved from the target session (or shared state for sessions without
 // overrides), ensuring the entire summarize operation uses consistent
 // configuration regardless of concurrent SetModels calls (task #341, P1-1).
-func (a *sessionAgent) runSummarize(ctx context.Context, genCtx context.Context, sessionID string, snapshot *SummarizeSnapshot, mb *mailbox, epoch uint64, cancel context.CancelFunc) error {
+func (a *sessionAgent) runSummarize(ctx context.Context, genCtx context.Context, sessionID string, snapshot *SummarizeSnapshot, mb *mailbox, epoch uint64, cancel context.CancelFunc, queueOnLockFailure bool) error {
 	// Determine idle timeout for summarization stream watchdog
 	idleTimeout := streamIdleTimeoutDefault
 	if a.streamIdleTimeout > 0 {
@@ -185,15 +197,21 @@ func (a *sessionAgent) runSummarize(ctx context.Context, genCtx context.Context,
 				)
 				// Release mailbox ownership with handoff so queued work gets a runner.
 				a.abandonOwnershipWithHandoff(sessionID, epoch)
-				a.requeueSummarizeSnapshot(sessionID, snapshot)
-				return fmt.Errorf("%w: session %q is already in use: %w", ErrSummarizeQueued, sessionID, lockErr)
+				if queueOnLockFailure {
+					a.requeueSummarizeSnapshot(sessionID, snapshot)
+					return fmt.Errorf("%w: session %q is already in use: %w", ErrSummarizeQueued, sessionID, lockErr)
+				}
+				return fmt.Errorf("session %q is already in use: %w", sessionID, ErrSessionBusy)
 			}
 			slog.Error("agent.runSummarize: failed to acquire inter-process session lock, refusing to compact unprotected",
 				"session_id", sessionID, "err", lockErr)
 			// Release mailbox ownership with handoff so queued work gets a runner.
 			a.abandonOwnershipWithHandoff(sessionID, epoch)
-			a.requeueSummarizeSnapshot(sessionID, snapshot)
-			return fmt.Errorf("%w: session %q: could not acquire session lock: %w", ErrSummarizeQueued, sessionID, lockErr)
+			if queueOnLockFailure {
+				a.requeueSummarizeSnapshot(sessionID, snapshot)
+				return fmt.Errorf("%w: session %q: could not acquire session lock: %w", ErrSummarizeQueued, sessionID, lockErr)
+			}
+			return fmt.Errorf("session %q: could not acquire session lock: %w", sessionID, lockErr)
 		}
 	}
 
@@ -561,257 +579,6 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 		}
 	}
 
-	return nil
-}
-
-// runSummarizeSilent compacts the older portion of the session history
-// synchronously under the caller's mailbox ownership without any visible
-// change in the UI. It retains the recent tail verbatim, summarizes eligible
-// older messages, creates a hidden summary, and deletes only the messages it
-// summarized. Pinned messages are never deleted.
-//
-// DESIGN (intentional, not a bug): The sliding window preserves recent
-// messages verbatim for continuity while replacing older context with a
-// summary. Summarizing everything defeats that purpose. A prior review
-// mistook the summary sorting after the retained tail (which hid it from the
-// reader) for a design flaw; the summary belongs before the verbatim tail.
-func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, smartModel Model, systemPromptPrefix string) error {
-	// Heartbeat attribution: same summary purpose, silent path (design pt. 1).
-	role, source := hbInherited(ctx)
-	ctx = withHeartbeat(ctx, sessionID, heartbeat.PurposeSummary, role, source)
-	currentSession, err := a.sessions.Get(ctx, sessionID)
-	if err != nil {
-		return fmt.Errorf("failed to get session: %w", err)
-	}
-	msgs, err := a.getSessionMessages(ctx, currentSession)
-	if err != nil {
-		return err
-	}
-	if len(msgs) < 4 {
-		// Too few messages to bother summarising.
-		return nil
-	}
-
-	// sliding window: keep the recent tail verbatim. Start at the first
-	// eligible non-tool message in the latter half so a tool exchange is not
-	// split; if none exists, summarize the entire history.
-	boundary := len(msgs)
-	for i := len(msgs) / 2; i < len(msgs); i++ {
-		if msgs[i].Role != message.Tool {
-			boundary = i
-			break
-		}
-	}
-	var toSummarise []message.Message
-	for _, m := range msgs[:boundary] {
-		if !m.Pinned {
-			toSummarise = append(toSummarise, m)
-		}
-	}
-	if len(toSummarise) == 0 {
-		return nil
-	}
-	aiMsgs, _ := a.preparePrompt(toSummarise, nil, smartModel.Model.Provider())
-
-	agent := fantasy.NewAgent(
-		smartModel.Model,
-		fantasy.WithSystemPrompt(string(summaryPrompt)),
-	)
-	// Create the summary message as hidden so it is invisible in the UI.
-	summaryMessage, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
-		Role:             message.Assistant,
-		Model:            smartModel.Model.Model(),
-		Provider:         smartModel.Model.Provider(),
-		ReasoningEffort:  turnSmartReasoningEffort(smartModel),
-		IsSummaryMessage: true,
-		Hidden:           true,
-	})
-	if err != nil {
-		return err
-	}
-
-	summaryPromptText := buildSummaryPrompt(currentSession.Todos)
-	var discardRetryContent bool
-	truncateAbandonedContent := func() error {
-		if !discardRetryContent {
-			return nil
-		}
-		discardRetryContent = false
-		if !summaryMessage.TruncateStreamedContent() {
-			return nil
-		}
-		return a.messages.Update(ctx, summaryMessage.Clone())
-	}
-
-	resp, err := agent.Stream(ctx, fantasy.AgentStreamCall{
-		MaxRetries:      &ProviderMaxRetries,
-		Prompt:          summaryPromptText,
-		Messages:        aiMsgs,
-		Headers:         sessionHeaders(sessionID),
-		ProviderOptions: opts,
-		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
-			prepared.Messages = options.Messages
-			if systemPromptPrefix != "" {
-				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(systemPromptPrefix)}, prepared.Messages...)
-			}
-			return callContext, prepared, nil
-		},
-		OnRetry: func(_ *fantasy.ProviderError, _ time.Duration) {
-			discardRetryContent = true
-		},
-		OnReasoningStart: func(id string, reasoning fantasy.ReasoningContent) error {
-			notifyActivity(ctx)
-			notifyWatchdog(ctx)
-			if err := truncateAbandonedContent(); err != nil {
-				return err
-			}
-			summaryMessage.StartReasoningContent(reasoning.Text)
-			return a.messages.Update(ctx, summaryMessage)
-		},
-		OnReasoningDelta: func(id string, text string) error {
-			notifyActivity(ctx)
-			notifyWatchdog(ctx)
-			if err := truncateAbandonedContent(); err != nil {
-				return err
-			}
-			summaryMessage.AppendReasoningContent(text)
-			return a.messages.Update(ctx, summaryMessage)
-		},
-		OnReasoningEnd: func(id string, reasoning fantasy.ReasoningContent) error {
-			notifyActivity(ctx)
-			notifyWatchdog(ctx)
-			if anthropicData, ok := reasoning.ProviderMetadata["anthropic"]; ok {
-				if signature, ok := anthropicData.(*anthropic.ReasoningOptionMetadata); ok && signature.Signature != "" {
-					summaryMessage.AppendReasoningSignature(signature.Signature)
-				}
-			}
-			summaryMessage.FinishThinking()
-			return a.messages.Update(ctx, summaryMessage)
-		},
-		OnTextDelta: func(id, text string) error {
-			notifyActivity(ctx)
-			notifyWatchdog(ctx)
-			if err := truncateAbandonedContent(); err != nil {
-				return err
-			}
-			summaryMessage.AppendContent(text)
-			return a.messages.Update(ctx, summaryMessage)
-		},
-	})
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			// User cancelled summarize; remove the summary message.
-			// Use a bounded cancel-immune context for cleanup (P1-4): the
-			// stream's context is already canceled, so Delete would silently
-			// fail and leave an orphaned summary message in the DB.
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), summaryCommitMaxDuration)
-			defer cleanupCancel()
-			deleteErr := a.messages.Delete(cleanupCtx, summaryMessage.ID)
-			if deleteErr != nil {
-				slog.Warn("Silent summarize: failed to delete orphaned summary message after cancel", "session_id", sessionID, "err", deleteErr)
-			}
-		}
-		return err
-	}
-
-	summaryMessage.AddFinish(message.FinishReasonEndTurn, "", "")
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), summaryCommitMaxDuration)
-	defer cleanupCancel()
-	if err = a.messages.Update(cleanupCtx, summaryMessage); err != nil {
-		return err
-	}
-
-	// COMMIT PHASE — the order and the context were both wrong here, and
-	// P0-4's own change is what made that reachable.
-	//
-	// Order: wire up SummaryMessageID BEFORE deleting the messages it
-	// replaces, exactly as runSummarizeBody does (see its comment at the
-	// equivalent point). This function did the opposite. Interrupted between
-	// the two, that leaves the old half deleted with no summary pointer
-	// standing in for it — getSessionMessages then finds neither, and the
-	// history is unrecoverably holed.
-	//
-	// Context: the commit must not be tearable by cancellation. While the
-	// silent compaction was a detached goroutine on context.WithoutCancel,
-	// this window was unreachable. Making it synchronous (P0-4) put it on the
-	// turn's cancellable genCtx and turned a long-standing latent ordering
-	// bug into a live one, reachable via Stop in the web UI, CancelAll on
-	// shutdown, --timeout, or the turn's own stream watchdog. Bounded rather
-	// than unbounded: the provider stream is already finished, so what
-	// remains is local DB work.
-	commitCtx, commitCancel := context.WithTimeout(context.WithoutCancel(ctx), summaryCommitMaxDuration)
-	defer commitCancel()
-
-	// Point SummaryMessageID at the new hidden summary and reset token
-	// counters so the next call gets an accurate remaining-context estimate.
-	freshSession, err := a.sessions.Get(commitCtx, sessionID)
-	if err != nil {
-		return fmt.Errorf("silent summarise: failed to re-fetch session: %w", err)
-	}
-	var openrouterCost *float64
-	for _, step := range resp.Steps {
-		if stepCost := a.openrouterCost(step.ProviderMetadata); stepCost != nil {
-			if openrouterCost == nil {
-				openrouterCost = new(float64)
-			}
-			*openrouterCost += *stepCost
-		}
-	}
-	// Normalize once, upstream of both sinks (see agent_turn.go's OnStepFinish).
-	totalUsage := normalizeProviderUsage(smartModel.Model.Provider(), resp.TotalUsage)
-	costDelta := a.updateSessionUsage(smartModel, &freshSession, totalUsage, openrouterCost)
-	// Heartbeat usage: one add per accounted silent compaction (design pt. 4).
-	addHeartbeatUsage(ctx, smartModel.Model.Provider(), smartModel.Model.Model(), totalUsage, costDelta)
-	if costDelta != 0 {
-		if _, costErr := a.sessions.IncrementCost(commitCtx, freshSession.ID, costDelta); costErr != nil {
-			return costErr
-		}
-	}
-	// Per-message usage for the silent-summarise turn (task #469), same
-	// rationale as the manual /compact path above.
-	a.recordMessageUsage(commitCtx, summaryMessage.ID, smartModel, totalUsage, costDelta, false)
-
-	if boundary < len(msgs) {
-		// Place summary immediately before the first kept message before
-		// updating the pointer, or timestamp-based reads may omit it.
-		// A pinned older row at keptAt sorts after the summary in the same second,
-		// so it stays in the tail in chronological order; manual compaction differs.
-		keptAt := msgs[boundary].CreatedAt
-		timestampService, ok := a.messages.(interface {
-			SetSummaryCreatedAt(context.Context, string, string, int64) (bool, error)
-		})
-		if !ok {
-			cleanupErr := a.messages.Delete(commitCtx, summaryMessage.ID)
-			return errors.Join(errors.New("message service does not support summary timestamps"), cleanupErr)
-		}
-		if applied, stampErr := timestampService.SetSummaryCreatedAt(commitCtx, sessionID, summaryMessage.ID, keptAt-1); stampErr != nil || !applied {
-			cleanupErr := a.messages.Delete(commitCtx, summaryMessage.ID)
-			if stampErr != nil {
-				if cleanupErr != nil {
-					return errors.Join(fmt.Errorf("set sliding summary timestamp: %w", stampErr), fmt.Errorf("delete orphaned summary: %w", cleanupErr))
-				}
-				return fmt.Errorf("set sliding summary timestamp: %w", stampErr)
-			}
-			if cleanupErr != nil {
-				return errors.Join(errors.New("set sliding summary timestamp: no matching summary row updated"), fmt.Errorf("delete orphaned summary: %w", cleanupErr))
-			}
-			return errors.New("set sliding summary timestamp: no matching summary row updated")
-		}
-	}
-	if err := a.sessions.SetSummaryAndUsage(commitCtx, freshSession.ID, summaryMessage.ID, 0, resp.Response.Usage.OutputTokens); err != nil {
-		// Nothing has been deleted yet, so the session is still whole: the
-		// compaction simply did not happen, and the next turn retries it.
-		return err
-	}
-
-	// Only now, with the summary persisted AND pointed at, drop what it
-	// replaces. A failure here is survivable — the summary already stands in
-	// for these rows, so the worst case is redundant history, not a hole.
-	for _, m := range toSummarise {
-		if delErr := a.messages.Delete(commitCtx, m.ID); delErr != nil {
-			slog.Warn("silent summarise: failed to delete old message", "id", m.ID, "err", delErr)
-		}
-	}
 	return nil
 }
 

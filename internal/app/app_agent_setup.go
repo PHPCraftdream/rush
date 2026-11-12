@@ -149,6 +149,12 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 		slog.Error("Failed to create coder agent", "err", err)
 		return err
 	}
+	if noticeStore := app.batchNoticeStore(); noticeStore != nil {
+		if err := agent.SetCoordinatorSessionNoticeStore(app.AgentCoordinator, noticeStore); err != nil {
+			slog.Error("Failed to bind session notice store", "err", err)
+			return err
+		}
+	}
 	// R12-H2b §2.3: wire the durable session-execution-fence store so
 	// continuations resolve the fence through the same session service; a
 	// service that does not implement the store simply means no fence.

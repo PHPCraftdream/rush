@@ -340,7 +340,7 @@ func TestCodexGuidanceRewritesFailClosedOnTemplateDrift(t *testing.T) {
 	assert.ErrorContains(t, err, "Bash call")
 
 	_, err = toCodexWcrushSkillMD("description", "Read the `wrush.md` file in this same directory.")
-	assert.ErrorContains(t, err, "run_in_background: true")
+	assert.ErrorContains(t, err, "Phase-2 verification follows caller policy")
 }
 
 // ---------------------------------------------------------------------------

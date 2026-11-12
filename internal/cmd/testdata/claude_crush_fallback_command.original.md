@@ -4,9 +4,11 @@ description: Handle peak-hours refusals and hard quota limits with harness-speci
 
 `/rush-fallback <agent>` arms local `Agent` type `<agent>` (e.g. `sh`, `oh`, `fm`) for later; it does **not** switch now. Keep using `/rush` (`rush run`) until exactly one trigger:
 1. **Peak hours:** `rush run` refused inside the provider's configured peak-hours window.
-2. **Hard limit:** weekly/monthly quota exhausted, account suspended, or "context window exceeded"/"quota exceeded" without a retry-after within this session.
+2. **Hard limit:** weekly/monthly quota exhausted, account suspended, or the provider explicitly reports account quota exhaustion with no retry-after within this session.
 
 Nothing else counts. A slow run, a transient 5xx, a `Process restarted`, your own `--timeout`/`--idle-timeout` firing, a confusing error — all of those mean **re-run `rush run` against the same `--session`**, not switch.
+
+A context-capacity overflow is NOT account quota exhaustion and does not arm or activate fallback. Follow `/rush`'s bounded context recovery or its reported refusal; do not route around terminal recovery.
 
 When either trigger fires, switch to that agent immediately and silently: `Agent({subagent_type: "<agent>"})`. Arming is consent. Don't ask permission, request refusal text, or confirm. Say one line. Stay switched until the peak-hours cron fires or `/rush-fallback clear` ends a hard-limit fallback; do not retry `rush run` meanwhile (see active-state rules).
 
@@ -72,7 +74,7 @@ CronCreate({
 
 ## Trigger 2 — hard limit
 
-Weekly/monthly budget exhausted, account suspended, or "context window exceeded"/"quota exceeded" with no retry-after inside this session. No reopen time exists, so: marker → `STATUS: active`, `TRIGGER: hard-limit`, `UNTIL: none`, `CRON_JOB_ID: none`, no cron armed. Route work through `<agent>`. Only `/rush-fallback clear` ends it.
+Weekly/monthly budget exhausted, account suspended, or the provider explicitly reports account quota exhaustion with no retry-after inside this session. No reopen time exists, so: marker → `STATUS: active`, `TRIGGER: hard-limit`, `UNTIL: none`, `CRON_JOB_ID: none`, no cron armed. Route work through `<agent>`. Only `/rush-fallback clear` ends it.
 
 ## While active
 

@@ -384,6 +384,8 @@ func TestClaudeInit_WrushCommandSkipsWithoutSentinel(t *testing.T) {
 
 func TestClaudeInit_CreatesWcrushCommand(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(dir, "global-data"))
+	t.Setenv("RUSH_GLOBAL_CONFIG", filepath.Join(dir, "global-config"))
 	runClaudeInitInDir(t, dir)
 
 	wcrushPath := filepath.Join(dir, ".claude", "commands", "wcrush.md")
@@ -395,7 +397,11 @@ func TestClaudeInit_CreatesWcrushCommand(t *testing.T) {
 	assert.Contains(t, got, "/wcrush")
 	assert.Contains(t, got, "/wcrush <task>` is opt-in")
 	assert.Contains(t, got, "## Mandatory: two phases")
-	assert.Contains(t, got, "`/wrush`'s dedicated git worktree, no-sub-agent-commit/push, orchestrator transfer/commit, and worktree removal rules remain in force")
+	assert.Contains(t, got, "`/wrush`'s dedicated git worktree and no-sub-agent-commit/push rule remain in force.")
+	assert.Contains(t, got, "The invoking parent owns transfer, commit, and cleanup")
+	assert.Contains(t, got, "only when authorized and after physical process plus relevant batch termination.")
+	assert.Contains(t, got, "Do not report integration complete until any explicitly requested, authorized transfer is complete")
+	assert.Contains(t, got, "do not commit or remove the worktree unconditionally.")
 	assert.Contains(t, got, "commits only those changes before removing the worktree")
 	assert.Contains(t, got, "read the `wrush.md` file in this")
 	assert.NotContains(t, got, "NAME PROVISIONAL")

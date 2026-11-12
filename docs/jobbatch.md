@@ -39,42 +39,26 @@ reductions are implied. Detailed rollout is also summarized in the
 
 ## CLI batch run
 
-See [batch CLI results and lifecycle](batch-cli-results.md) for leaf-result output and disposal semantics.
+`rush batch run` executes the root synchronously and waits for it to settle. Its JSON result is `{root_id, owner_session_id, state, leaves}`; each task leaf includes `node_id`, `state`, `code`, `summary`, `output`, and optional `details`. Text output lists the root state and each leaf; `details` is JSON-only. See [batch CLI results and lifecycle](batch-cli-results.md) for output capture, disposal, retention, and safe recovery guidance.
 
-`rush batch run -f spec.json` (or stdin) accepts a minimal external schema:
-`{ "mode": "parallel", "items": [ { "tool": "run_command", "input": { "program": "go", "args": ["version"] } } ] }`.
-File extension selects JSON or Ktav (`.ktav`); stdin is JSON only when the entire
-payload is a valid JSON document, otherwise Ktav is selected. For example, the following Ktav document is
-equivalent to the JSON schema above:
+Example JSON root spec:
 
-```ktav
-mode: parallel
-items: [
-    {
-        tool: run_command
-        input: {
-            program: go
-            args: [
-                version
-            ]
-        }
-    }
-]
+```json
+{"mode":"parallel","items":[{"tool":"run_command","input":{"program":"git","args":["status","--short"]}}]}
 ```
 
-Use `rush batch run -f spec.ktav` for a root spec. `rush batch add ROOT -f
-items.ktav` accepts the same format; its `items` are appended. See
-[batch spec formats](batch-spec-formats.md) for details.
-Omitted `mode` is parallel; `on_fail` is only valid on `mode: "sequential"`
-(defaulting to `stop` there) and a nonempty `on_fail` on a parallel batch is
-rejected naming the field. Each item is a task (`tool` + `input`) or a nested
-batch. Tools resolve only in the pinned coder toolset of the owning process;
-submission requires an owning runtime in the same process.
+```sh
+rush batch run --json -f jobs.json
+rush batch run --json < jobs.json
+```
+
+Files ending in `.ktav` use Ktav; other files use JSON. Stdin is JSON only if the complete input is a valid JSON document, otherwise Ktav is selected. See [batch spec formats](batch-spec-formats.md) for equivalent examples. Omitted `mode` defaults to `parallel`; notification defaults to `NotifyAll`. `on_fail` is valid only for sequential batches (default `stop`) and a nonempty `on_fail` on a parallel batch is rejected. Each item is a task (`tool` + `input`) or nested batch; unknown fields and trailing JSON values are rejected. `max_agent_depth` is bounded and nested values may only narrow the inherited cap.
+
+Standalone `rush batch run` is unattended and has no held-question answer route; use served batch intake when a task needs an answer. `--detach` is unsupported. `rush batch add` accepts an items spec only in the owning process; a separate CLI process cannot add to a live runner. `rush batch stop` queues a cross-process cancellation request. `--wait` waits up to 30 seconds for an owner acknowledgement (`applied` means accepted, not terminated); check batch state when termination matters.
 
 ## Layout and ownership
 
-The standalone engine, laboratory and `batchlab` remain as documented below;
-this section covers only that half of the project.
+The standalone engine, laboratory and `batchlab` remain as documented below; this section covers only that half of the project.
 
 | Location | Responsibility |
 |---|---|
@@ -139,9 +123,7 @@ are invalid. Run validates the complete scenario before opening the events
 file. Replay validates metadata and applies recorded events to a fresh Engine;
 it constructs no executor and does not execute scenario programs.
 
-All current execution and verification are GitHub CI only. Prior local command examples have been removed; do not run verification locally. Current
-acceptance evidence required for rollout is listed in
-[jobbatch-acceptance.md](jobbatch-acceptance.md).
+The standalone engine/lab's release and acceptance verification is a maintainer CI policy, not a restriction on ordinary product CLI use such as `rush batch run`. This documentation update ran no builds, tests, vet, lint, typecheck, generators, probes, or executable checks. See [jobbatch-acceptance.md](jobbatch-acceptance.md) for required CI evidence.
 
 ### Exit precedence
 
@@ -260,10 +242,7 @@ metadata. An explicit exit-code oracle can still yield a replay mismatch.
 
 ## Historical verification limits
 
-The execution observations recorded in the following section are historical,
-not runs performed for the current H4 documentation update. They do not certify
-the current integrated runtime or any platform beyond the evidence explicitly
-recorded. Current gates are CI-only; see the acceptance ledger.
+Current release verification is a CI gate for the standalone engine/lab project; it is maintainer/development policy, not a restriction on ordinary product CLI usage. No builds, tests, vet, lint, typecheck, generators, probes, or executable checks were run for this documentation change. See [jobbatch-acceptance.md](jobbatch-acceptance.md) for required CI evidence.
 
 Observed native execution is Windows. Process tests exercise real isolated
 process trees, but standalone external CLI run/replay, Unix runtime behavior,
