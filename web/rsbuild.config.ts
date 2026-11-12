@@ -3,6 +3,7 @@ import { pluginReact } from "@rsbuild/plugin-react";
 import { pluginBabel } from "@rsbuild/plugin-babel";
 import { execSync } from "child_process";
 
+/** Runs a git command and returns its trimmed output, or the fallback when it fails. */
 function git(cmd: string, fallback: string): string {
   try {
     return execSync(cmd, { encoding: "utf8" }).trim();

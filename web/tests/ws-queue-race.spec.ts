@@ -1,6 +1,9 @@
 import { test, expect, Page } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeSession } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 // Regression coverage for task #726 (review 2026-08-25 P2): the
 // agent_busy=false queue flush used to dequeueAllMessages() FIRST and then
@@ -16,11 +19,10 @@ import { makeSession } from "./helpers/fixtures";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Opens the app with the session injected and waits for an enabled composer. */
 async function openSession(page: Page, id: string, title: string) {
   await page.goto("/");
   await sendMockWSMessage(page, {
@@ -32,6 +34,7 @@ async function openSession(page: Page, id: string, title: string) {
   await expect(page.getByTestId("chat-input-textarea")).toBeEnabled({ timeout: 5000 });
 }
 
+/** Delivers an agent_busy frame for the session. */
 async function setBusy(page: Page, sessionID: string, busy: boolean) {
   await sendMockWSMessage(page, {
     type: "agent_busy",
@@ -39,42 +42,59 @@ async function setBusy(page: Page, sessionID: string, busy: boolean) {
   });
 }
 
-// Kill the /ws socket from the inside, exactly like a network blip.
+/** Browser-side: closes the mock /ws socket via its real onclose path. */
+function closeMockSocket() {
+  const mock = ((window as unknown) as Record<string, unknown>)["__mockWS"] as { close: () => void } | null;
+  if (!mock) throw new Error("mock WS not created yet");
+  mock.close();
+}
+
+/** Kill the /ws socket from the inside, exactly like a network blip. */
 async function goOffline(page: Page) {
-  await page.evaluate(() => {
-    const mock = ((window as unknown) as Record<string, unknown>)["__mockWS"] as { close: () => void } | null;
-    if (!mock) throw new Error("mock WS not created yet");
-    mock.close();
-  });
+  await page.evaluate(closeMockSocket);
   await expect(page.getByTestId("chat-input-offline-indicator")).toBeVisible({ timeout: 5000 });
 }
 
-// Wait for the ~1s auto-reconnect to bring a live mock socket back.
+/** Wait for the ~1s auto-reconnect to bring a live mock socket back. */
 async function waitForReconnect(page: Page) {
   await expect(page.getByTestId("chat-input-offline-indicator")).toBeHidden({ timeout: 15_000 });
 }
 
-// Deliver a server frame through the DEAD mock — exactly the browser race
-// this task fixes: readyState is already CLOSED, but a message the server
-// sent before the close is still dispatched. sendMockWSMessage cannot be
-// used here because it (rightly) waits for readyState OPEN.
+/** Browser-side: dispatches a serialized server frame to the mock's onmessage. */
+function dispatchThroughMock(data: string) {
+  const mock = ((window as unknown) as Record<string, unknown>)["__mockWS"] as
+    | { onmessage: ((ev: MessageEvent) => void) | null }
+    | null;
+  if (!mock || !mock.onmessage) throw new Error("dead mock has no onmessage");
+  mock.onmessage(new MessageEvent("message", { data }));
+}
+
+/**
+ * Deliver a server frame through the DEAD mock — exactly the browser race
+ * this task fixes: readyState is already CLOSED, but a message the server
+ * sent before the close is still dispatched. sendMockWSMessage cannot be
+ *
+ * used here because it (rightly) waits for readyState OPEN.
+ */
 async function deliverThroughDeadSocket(page: Page, msg: unknown) {
-  await page.evaluate((data: string) => {
-    const mock = ((window as unknown) as Record<string, unknown>)["__mockWS"] as
-      | { onmessage: ((ev: MessageEvent) => void) | null }
-      | null;
-    if (!mock || !mock.onmessage) throw new Error("dead mock has no onmessage");
-    mock.onmessage(new MessageEvent("message", { data }));
-  }, JSON.stringify(msg));
+  await page.evaluate(dispatchThroughMock, JSON.stringify(msg));
 }
 
+/** Browser-side: the sent frames of the given type. */
+function pickSentFrames(t: string) {
+  const sent = (((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{
+    type: string;
+    payload?: unknown;
+  }>) ?? [];
+  return sent.filter((m) => m.type === t);
+}
+
+/** All frames of the given type the page has sent so far. */
 async function framesOfType(page: Page, type: string) {
-  return page.evaluate((t: string) => {
-    const sent = (((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string; payload?: unknown }>) ?? [];
-    return sent.filter((m) => m.type === t);
-  }, type);
+  return page.evaluate(pickSentFrames, type);
 }
 
+/** The payload of a frame, or an empty object. */
 function payloadOf(msg: { payload?: unknown }): Record<string, unknown> {
   return (msg.payload ?? {}) as Record<string, unknown>;
 }

@@ -1,14 +1,16 @@
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage } from "./helpers/mock-ws";
-import { makeSession, makeConfig } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { makeSession } from "./helpers/make-session";
+import { makeConfig } from "./helpers/make-config";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Injects one session and opens it. */
 async function selectASession(page: Parameters<typeof sendMockWSMessage>[0], id: string, title: string) {
   await sendMockWSMessage(page, {
     type: "sessions_list",
@@ -18,6 +20,7 @@ async function selectASession(page: Parameters<typeof sendMockWSMessage>[0], id:
   await page.getByText(title).first().click();
 }
 
+/** Opens the header More menu. */
 async function openMoreMenu(page: import("@playwright/test").Page) {
   await page.getByTestId("header-more-button").click();
   await expect(page.getByTestId("header-logs-button")).toBeVisible({ timeout: 2000 });

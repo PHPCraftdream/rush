@@ -15,16 +15,24 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeSession, makeMessage } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Re-tags a message into the del-sess session. */
+function inDelSession(m: object) {
+  return { ...m, SessionID: "del-sess" };
+}
+
+/** Opens the session and delivers the given messages. */
 async function setupWithMessages(
   page: import("@playwright/test").Page,
   messages: readonly ReturnType<typeof makeMessage>[]
@@ -43,7 +51,7 @@ async function setupWithMessages(
   // assertion below times out waiting for text that was silently dropped.
   await sendMockWSMessage(page, {
     type: "messages_list",
-    payload: messages.map((m) => ({ ...m, SessionID: "del-sess" })),
+    payload: messages.map(inDelSession),
   });
 }
 
@@ -76,6 +84,12 @@ test("clicking delete shows confirmation dialog", async ({ page }) => {
   await expect(page.getByTestId("confirm-dialog").getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
 });
 
+/** Browser-side: true when the page has sent a frame of the given type. */
+function hasSentOfType(type: string) {
+  const s = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string }>;
+  return s.some((m) => m.type === type);
+}
+
 test("clicking Cancel in confirm dialog dismisses without deleting", async ({ page }) => {
   await setupWithMessages(page, [
     makeMessage({ ID: "d-cc1", Role: "user", Parts: [{ type: "text", Text: "Cancel delete" }] }),
@@ -91,10 +105,7 @@ test("clicking Cancel in confirm dialog dismisses without deleting", async ({ pa
   await expect(page.getByText("Delete this message?")).not.toBeVisible({ timeout: 2000 });
   await expect(page.getByText("Cancel delete")).toBeVisible();
 
-  const sent = await page.evaluate(() => {
-    const s = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string }>;
-    return s.some((m) => m.type === "delete_message");
-  });
+  const sent = await page.evaluate(hasSentOfType, "delete_message");
   expect(sent).toBe(false);
 });
 
@@ -176,7 +187,8 @@ test("delete button hidden for assistant message with no finish part (mid-stream
   await expect(msgRow.getByTitle("Delete")).not.toBeVisible({ timeout: 2000 });
 });
 
-test("delete button hidden for assistant message with only a Partial finish (checkpoint ticker, BUSY session)", async ({ page }) => {
+test("delete button hidden for assistant message with only " +
+  "a Partial finish (checkpoint ticker, BUSY session)", async ({ page }) => {
   await setupWithMessages(page, [
     makeMessage({
       ID: "d-stream2",
@@ -216,12 +228,15 @@ test("delete button visible for a terminally finished assistant message", async 
   ]);
   await expect(page.getByText("Finished assistant message")).toBeVisible({ timeout: 2000 });
 
-  const msgRow = page.getByText("Finished assistant message").locator("xpath=ancestor::div[contains(@class,'msg-row')]");
+  const msgRow = page.getByText("Finished assistant message").locator(
+    "xpath=ancestor::div[contains(@class,'msg-row')]",
+  );
   await msgRow.hover();
   await expect(msgRow.getByTitle("Delete")).toBeVisible({ timeout: 2000 });
 });
 
-test("selection checkbox does not reveal on hover for a still-streaming assistant message (BUSY session)", async ({ page }) => {
+test("selection checkbox does not reveal on hover for a " +
+  "still-streaming assistant message (BUSY session)", async ({ page }) => {
   // The OTHER path into delete_messages besides the Trash button: if the
   // checkbox could still be checked, the message could still end up
   // selected and passed to the bulk delete_messages payload even with
@@ -302,7 +317,8 @@ test("clicking Delete on orphan sends delete_message", async ({ page }) => {
   expect((cmd.payload as { messageID: string }).messageID).toBe("d-orphan-del");
 });
 
-test("selection checkbox reveals on hover for an orphaned streaming assistant message (IDLE session)", async ({ page }) => {
+test("selection checkbox reveals on hover for an orphaned " +
+  "streaming assistant message (IDLE session)", async ({ page }) => {
   await setupWithMessages(page, [
     makeMessage({
       ID: "d-orphan-sel",

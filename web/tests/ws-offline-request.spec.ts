@@ -1,6 +1,10 @@
 import { test, expect, Page } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeConfig, makeSession } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeConfig } from "./helpers/make-config";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 // Regression coverage for review 2026-08-25 P1/P2 (task #725): a UI
 // action that owns busy/loading state used to register an ad-hoc WS
@@ -16,31 +20,40 @@ import { makeConfig, makeSession } from "./helpers/fixtures";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
-// Kill the /ws socket from the inside, exactly like a network blip: the
-// mock's close() runs the real onclose path synchronously, so the client
-// emits _disconnected immediately (wsRequest rejects right away — the
-// 3s assertions below double as fail-fast checks: a slow-timeout
-// implementation would still be busy at 3s and fail).
+/** Browser-side: closes the mock /ws socket via its real onclose path. */
+function closeMockSocket() {
+  const mock = ((window as unknown) as Record<string, unknown>)["__mockWS"] as { close: () => void } | null;
+  if (!mock) throw new Error("mock WS not created yet");
+  mock.close();
+}
+
+/**
+ * Kill the /ws socket from the inside, exactly like a network blip: the
+ * mock's close() runs the real onclose path synchronously, so the client
+ * emits _disconnected immediately (wsRequest rejects right away — the
+ *
+ * 3s assertions below double as fail-fast checks: a slow-timeout
+ * implementation would still be busy at 3s and fail).
+ */
 async function goOffline(page: Page) {
-  await page.evaluate(() => {
-    const mock = ((window as unknown) as Record<string, unknown>)["__mockWS"] as { close: () => void } | null;
-    if (!mock) throw new Error("mock WS not created yet");
-    mock.close();
-  });
+  await page.evaluate(closeMockSocket);
 }
 
+/** Browser-side: the sent frames of the given type. */
+function pickSentFrames(t: string) {
+  const sent = (((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string }>) ?? [];
+  return sent.filter((m) => m.type === t);
+}
+
+/** All frames of the given type the page has sent so far. */
 async function framesOfType(page: Page, type: string) {
-  return page.evaluate((t: string) => {
-    const sent = (((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string }>) ?? [];
-    return sent.filter((m) => m.type === t);
-  }, type);
+  return page.evaluate(pickSentFrames, type);
 }
 
+/** Config with the built-in anthropic provider. */
 function builtinProviderConfig() {
   return makeConfig({
     providers: {
@@ -49,9 +62,11 @@ function builtinProviderConfig() {
   });
 }
 
-// Opens the peak-hours-only editor for the built-in anthropic provider
-// and fills a draft API key (submit always sends set_provider_peak_hours;
-// a non-empty key additionally sends set_provider_key).
+/**
+ * Opens the peak-hours-only editor for the built-in anthropic provider
+ * and fills a draft API key (submit always sends set_provider_peak_hours;
+ * a non-empty key additionally sends set_provider_key).
+ */
 async function openBuiltinEditorWithDraftKey(page: Page) {
   await page.goto("/");
   await sendMockWSMessage(page, { type: "config", payload: builtinProviderConfig() });
@@ -74,7 +89,8 @@ test("builtin provider editor: disconnect after save fails fast, un-busies and k
   await expect(page.getByTestId("peak-hours-only-api-key")).toHaveValue("sk-offline-123");
 });
 
-test("builtin provider editor: save with an already-dead socket never sends and recovers immediately", async ({ page }) => {
+test("builtin provider editor: save with an already-dead " +
+  "socket never sends and recovers immediately", async ({ page }) => {
   await openBuiltinEditorWithDraftKey(page);
   await goOffline(page);
   await page.getByTestId("peak-hours-only-save").click();
@@ -174,6 +190,7 @@ test("delete-other-sessions: disconnect after send un-busies and shows an inline
   await expect(page.getByTestId("session-req-do-other")).toBeVisible();
 });
 
+/** Opens the MCP add-server form with a draft filled in. */
 async function openMCPAddForm(page: Page) {
   await page.goto("/");
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
@@ -209,6 +226,7 @@ test("MCP add server: an already-dead socket never sends and recovers immediatel
   expect(await framesOfType(page, "add_mcp_server")).toHaveLength(0);
 });
 
+/** Opens the provider add form with a draft filled in. */
 async function openProviderAddForm(page: Page) {
   await page.goto("/");
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
@@ -222,7 +240,8 @@ async function openProviderAddForm(page: Page) {
   await page.getByPlaceholder("Display name").first().fill("Offline Model");
 }
 
-test("ProviderForm add: disconnect after send un-busies the form, keeps the draft, shows the error", async ({ page }) => {
+test("ProviderForm add: disconnect after send un-busies " +
+  "the form, keeps the draft, shows the error", async ({ page }) => {
   await openProviderAddForm(page);
   await page.getByRole("button", { name: "Add Provider", exact: true }).click();
   await waitForWSSend(page, "add_custom_provider");

@@ -11,24 +11,27 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage } from "./helpers/mock-ws";
-import { makeSession } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { makeSession } from "./helpers/make-session";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
-// StatusBar.tsx (data-test-id="status-bar", holding status-connection and
-// status-mcp-*) is only ever mounted from inside ChatToolbar.tsx (inline,
-// in the `foreignOwned` early-return branch only) or LiveWorkTabBar.tsx
-// (task #1059, formerly TodoList.tsx) — and LiveWorkPanel itself is only
-// rendered when `{activeSessionID && <LiveWorkPanel .../>}` in Chat.tsx.
-// There is no standalone always-mounted status footer, so every test here
-// must select a session first (mirrors the identical fix already applied
-// in ui.spec.ts's "Status bar" section).
+/**
+ * StatusBar.tsx (data-test-id="status-bar", holding status-connection and
+ * status-mcp-*) is only ever mounted from inside ChatToolbar.tsx (inline,
+ * in the `foreignOwned` early-return branch only) or LiveWorkTabBar.tsx
+ *
+ * (task #1059, formerly TodoList.tsx) — and LiveWorkPanel itself is only
+ * rendered when `{activeSessionID && <LiveWorkPanel .../>}` in Chat.tsx.
+ * There is no standalone always-mounted status footer, so every test here
+ * must select a session first (mirrors the identical fix already applied
+ * in ui.spec.ts's "Status bar" section).
+ */
 async function selectASession(page: import("@playwright/test").Page, id: string, title: string) {
   await sendMockWSMessage(page, {
     type: "sessions_list",

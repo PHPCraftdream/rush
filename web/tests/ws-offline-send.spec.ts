@@ -1,6 +1,9 @@
 import { test, expect, Page } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeSession } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 // Regression coverage for review F4 (P1): a send landing while the /ws
 // socket is down used to vanish silently — ws.send() no-opped and
@@ -11,11 +14,10 @@ import { makeSession } from "./helpers/fixtures";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Opens the app with the session injected and waits for an enabled composer. */
 async function openSession(page: Page, id: string, title: string) {
   await page.goto("/");
   await sendMockWSMessage(page, {
@@ -27,6 +29,7 @@ async function openSession(page: Page, id: string, title: string) {
   await expect(page.getByTestId("chat-input-textarea")).toBeEnabled({ timeout: 5000 });
 }
 
+/** Delivers an agent_busy frame for the session. */
 async function setBusy(page: Page, sessionID: string, busy: boolean) {
   await sendMockWSMessage(page, {
     type: "agent_busy",
@@ -34,42 +37,64 @@ async function setBusy(page: Page, sessionID: string, busy: boolean) {
   });
 }
 
-// Drop a file onto the composer and wait for its badge.
+/** Browser-side: drops a file onto the composer drop area. */
+function dropFileOnComposer({ name: fileName, contents: fileContents }: { name: string; contents: string }) {
+  const dropArea = document.querySelector("div[class*='rounded-2xl'][class*='bg-base-overlay']");
+  if (!dropArea) throw new Error("composer drop area not found");
+  const file = new File([fileContents], fileName, { type: "image/png" });
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  dropArea.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true }));
+}
+
+/** Drop a file onto the composer and wait for its badge. */
 async function dropFile(page: Page, name: string, contents: string) {
-  await page.evaluate(({ name: fileName, contents: fileContents }) => {
-    const dropArea = document.querySelector("div[class*='rounded-2xl'][class*='bg-base-overlay']");
-    if (!dropArea) throw new Error("composer drop area not found");
-    const file = new File([fileContents], fileName, { type: "image/png" });
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    dropArea.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true }));
-  }, { name, contents });
+  await page.evaluate(dropFileOnComposer, { name, contents });
   await expect(page.getByText(name).first()).toBeVisible({ timeout: 5000 });
 }
 
-// Kill the /ws socket from the inside, exactly like a network blip: the
-// mock's close() runs the real onclose path, so the client drops the
-// socket, flips $connected off and schedules its normal ~1s reconnect.
-// Resolve the composer work (typing, attachments, busy flags) BEFORE
-// calling this — server→client pushes are impossible while offline.
+/** Browser-side: closes the mock /ws socket via its real onclose path. */
+function closeMockSocket() {
+  const mock = ((window as unknown) as Record<string, unknown>)["__mockWS"] as { close: () => void } | null;
+  if (!mock) throw new Error("mock WS not created yet");
+  mock.close();
+}
+
+/**
+ * Kill the /ws socket from the inside, exactly like a network blip: the
+ * mock's close() runs the real onclose path, so the client drops the
+ * socket, flips $connected off and schedules its normal ~1s reconnect.
+ *
+ * Resolve the composer work (typing, attachments, busy flags) BEFORE
+ * calling this — server→client pushes are impossible while offline.
+ */
 async function goOffline(page: Page) {
-  await page.evaluate(() => {
-    const mock = ((window as unknown) as Record<string, unknown>)["__mockWS"] as { close: () => void } | null;
-    if (!mock) throw new Error("mock WS not created yet");
-    mock.close();
-  });
+  await page.evaluate(closeMockSocket);
   await expect(page.getByTestId("chat-input-offline-indicator")).toBeVisible({ timeout: 5000 });
 }
 
-async function framesOfType(page: Page, type: string) {
-  return page.evaluate((t: string) => {
-    const sent = (((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string; payload?: unknown }>) ?? [];
-    return sent.filter((m) => m.type === t);
-  }, type);
+/** Browser-side: the sent frames of the given type. */
+function pickSentFrames(t: string) {
+  const sent = (((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{
+    type: string;
+    payload?: unknown;
+  }>) ?? [];
+  return sent.filter((m) => m.type === t);
 }
 
+/** All frames of the given type the page has sent so far. */
+async function framesOfType(page: Page, type: string) {
+  return page.evaluate(pickSentFrames, type);
+}
+
+/** The payload of a frame, or an empty object. */
 function payloadOf(msg: { payload?: unknown }): Record<string, unknown> {
   return (msg.payload ?? {}) as Record<string, unknown>;
+}
+
+/** The file name of an attachment. */
+function fileNameOf(a: { fileName: string }) {
+  return a.fileName;
 }
 
 // ── Idle send: held while offline, delivered on reconnect ──────────────────
@@ -93,7 +118,7 @@ test("idle send during a disconnect is held in the outbox and delivered on recon
   // The ~1s auto-reconnect flushes the outbox with content + attachment.
   const msg = await waitForWSSend(page, "send_message", 15_000);
   expect(payloadOf(msg).content).toBe("held message");
-  expect((payloadOf(msg).attachments as { fileName: string }[]).map((a) => a.fileName)).toEqual(["held.png"]);
+  expect((payloadOf(msg).attachments as { fileName: string }[]).map(fileNameOf)).toEqual(["held.png"]);
   await expect(page.getByTestId("chat-input-offline-indicator")).toBeHidden({ timeout: 5000 });
 });
 
@@ -134,6 +159,11 @@ test("interrupt during a disconnect is held and delivered on reconnect", async (
   expect(payloadOf(msg).content).toBe("interrupt me");
 });
 
+/** The content field of a frame payload. */
+function contentOf(m: { payload?: unknown }) {
+  return payloadOf(m).content;
+}
+
 // ── FIFO order across multiple offline sends ────────────────────────────────
 
 test("offline sends flush in FIFO order", async ({ page }) => {
@@ -149,5 +179,5 @@ test("offline sends flush in FIFO order", async ({ page }) => {
 
   await waitForWSSend(page, "send_message", 15_000);
   const frames = await framesOfType(page, "send_message");
-  expect(frames.map((m) => payloadOf(m).content)).toEqual(["first offline", "second offline"]);
+  expect(frames.map(contentOf)).toEqual(["first offline", "second offline"]);
 });
