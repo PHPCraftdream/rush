@@ -132,16 +132,14 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	if !ts.a.disableAutoSummarize {
 		cw := int64(ts.smartModel.CatwalkCfg.ContextWindow)
 		if cw > 0 {
-			effectiveOutput := effectiveMaxOutputTokens(ts.smartModel, ts.call.MaxOutputTokens)
-			inputBudget := contextInputBudget(cw, effectiveOutput)
-			if effectiveOutput <= 0 {
-				// Preserve the legacy context-window gate when the model has
-				// no known output reserve; this is not an input-bound claim.
-				inputBudget = cw
-			}
+			// Window minus output reserve (legacy: whole window when no
+			// reserve is known), capped by the documented max input.
+			inputBudget := modelInputBudget(ts.smartModel, ts.call.MaxOutputTokens)
 			if inputBudget > 0 {
 				usedTokens := ts.currentSession.CompletionTokens + ts.currentSession.PromptTokens
-				remaining := inputBudget - usedTokens
+				// Usage reflects the previous request only; add what this step's
+				// prompt appended since (e.g. large tool results).
+				remaining := inputBudget - usedTokens - unreportedTailTokens(prepared.Messages)
 				threshold := contextAutoSummarizeThreshold(cw, inputBudget)
 				if remaining <= threshold {
 					targetTokens := min(int64(float64(inputBudget)*contextSlideRatio), inputBudget)
@@ -839,13 +837,7 @@ func (ts *turnStream) stopConditions() []fantasy.StopCondition {
 				return false
 			}
 			tokens := ts.currentSession.CompletionTokens + ts.currentSession.PromptTokens
-			outputReserve := effectiveMaxOutputTokens(ts.smartModel, ts.call.MaxOutputTokens)
-			budget := contextInputBudget(cw, outputReserve)
-			if outputReserve <= 0 {
-				// Match prepareStep's legacy context-window behavior when
-				// no output reserve is known.
-				budget = cw
-			}
+			budget := modelInputBudget(ts.smartModel, ts.call.MaxOutputTokens)
 			threshold := contextAutoSummarizeThreshold(cw, budget)
 			if budget > 0 && budget-tokens <= threshold && !ts.a.disableAutoSummarize {
 				ts.shouldSummarize = true
