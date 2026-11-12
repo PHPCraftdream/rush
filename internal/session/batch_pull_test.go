@@ -86,7 +86,9 @@ func batchOutboxTwoStores(t *testing.T) (*BatchStore, *BatchStore, context.Conte
 	require.NoError(t, seedSession(ctx, db.New(conn), "owner"))
 	require.NoError(t, db.ReleaseConn(conn))
 	open := func() *BatchStore {
-		c, e := sql.Open("sqlite", storepath.DataDirPath(dir, storepath.ActiveFilename)+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+		// _txlock=immediate mirrors db.openDB: a deferred tx whose first
+		// statement is a read fails its write upgrade with SQLITE_BUSY.
+		c, e := sql.Open("sqlite", storepath.DataDirPath(dir, storepath.ActiveFilename)+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_txlock=immediate")
 		require.NoError(t, e)
 		c.SetMaxOpenConns(1)
 		t.Cleanup(func() { require.NoError(t, c.Close()) })
