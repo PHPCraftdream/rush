@@ -811,6 +811,12 @@ func (ts *turnStream) persistStepFinish() error {
 	ts.mu.Lock()
 	snap := ts.currentAssistant.Clone()
 	ts.mu.Unlock()
+	// A provisional candidate commits with its durable identity in one
+	// transaction. Reaction debt is not settled here: the candidate is not yet
+	// the accepted answer, so acceptance (not this write) owns that marker.
+	if ts.finalization != nil && isFinalizationCandidate(snap) {
+		return ts.persistFinalizationCandidate(snap)
+	}
 	if stepIsReaction(snap) {
 		// The batch one-transaction write marks the BATCH debt reacted
 		// (batch_nodes + session_notices, reacted_failed cleared on both).

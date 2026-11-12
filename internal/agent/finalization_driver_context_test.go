@@ -132,7 +132,9 @@ func TestRunRefusesStaleCarriedAuthorityBeforePreamble(t *testing.T) {
 				tx, err := fixture.conn.BeginTx(fixture.ctx, nil)
 				require.NoError(t, err)
 				defer tx.Rollback()
-				require.NoError(t, session.NewAgentFinalizationStore(fixture.conn).SealTx(fixture.ctx, tx, fixture.child, 0, "candidate", "hash"))
+				_, err = tx.ExecContext(fixture.ctx, `UPDATE session_agent_finalizations SET candidate_message_id='candidate', candidate_hash='hash', candidate_serial=1 WHERE session_id='child'`)
+				require.NoError(t, err)
+				require.NoError(t, session.NewAgentFinalizationStore(fixture.conn).SealTx(fixture.ctx, tx, fixture.child, session.AgentFinalizationCandidate{MessageID: "candidate", Hash: "hash", Serial: 1}))
 				require.NoError(t, tx.Commit())
 			} else {
 				_, err := fixture.conn.ExecContext(fixture.ctx, `UPDATE session_agent_finalizations SET phase='failed' WHERE session_id='child'`)

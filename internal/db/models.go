@@ -254,6 +254,7 @@ type SessionAgentFinalization struct {
 	NodeToken          int64  `json:"node_token"`
 	CandidateMessageID string `json:"candidate_message_id"`
 	CandidateHash      string `json:"candidate_hash"`
+	CandidateSerial    int64  `json:"candidate_serial"`
 }
 
 type SessionAgentFinalizationContinuation struct {

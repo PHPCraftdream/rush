@@ -151,8 +151,9 @@ func TestFinalizationCandidateFencesAnOlderCheckpoint(t *testing.T) {
 	old.CheckpointGeneration = 3
 	require.NoError(t, env.messages.Update(t.Context(), old))
 	checkpoint := &turnCheckpointWriter{generation: 3}
+	execution.scope = finalizationStoredScope(t, env, message.FinalizationIdentity{Key: "logical", Generation: 7})
 	ts := &turnStream{
-		a: &sessionAgent{messages: env.messages}, genCtx: t.Context(),
+		a: &sessionAgent{sessions: env.sessions, messages: env.messages}, genCtx: t.Context(),
 		call:         SessionAgentCall{SessionID: "session", LogicalCallID: "logical"},
 		finalization: execution, currentAssistant: &created,
 		fenceCheckpoint: checkpoint.fenceFinalization, drainPendingUI: func() {},

@@ -17,10 +17,21 @@ type finalizationPublicationScope struct {
 	identity session.AgentFinalizationIdentity
 }
 
+// matches reports whether a step identity belongs to this scope's logical
+// call and generation.
+func (s finalizationPublicationScope) matches(identity message.FinalizationIdentity) bool {
+	return s.store != nil && identity.Key == s.identity.LogicalCallID && s.identity.Generation > 0 &&
+		identity.Generation == uint64(s.identity.Generation) && identity.Revision <= uint64(1<<63-1)
+}
+
 // publishFinalizationCandidate runs only while the owner gate and session are held.
 func publishFinalizationCandidate(ctx context.Context, sessions session.Service, messages message.Service, scope finalizationPublicationScope, identity message.FinalizationIdentity, candidate finalizationCandidate) (message.Message, error) {
 	owner := scope.identity.SessionID
-	if scope.store == nil || identity.Key != scope.identity.LogicalCallID || scope.identity.Generation <= 0 || identity.Generation != uint64(scope.identity.Generation) || identity.Revision > uint64(1<<63-1) {
+	if !scope.matches(identity) {
+		return message.Message{}, ErrFinalizationScopeChanged
+	}
+	sealed, ok := session.CandidateOf(candidate.messageID, candidate.hash, identity)
+	if !ok {
 		return message.Message{}, ErrFinalizationScopeChanged
 	}
 	writer, supported := sessions.(session.FinalizationTransaction)
@@ -46,7 +57,7 @@ func publishFinalizationCandidate(ctx context.Context, sessions session.Service,
 		if err != nil && !alreadyAccepted {
 			return err
 		}
-		sealErr := scope.store.SealTx(ctx, tx, scope.identity, int64(identity.Revision), candidate.messageID, candidate.hash)
+		sealErr := scope.store.SealTx(ctx, tx, scope.identity, sealed)
 		if alreadyAccepted {
 			if !errors.Is(sealErr, session.ErrAgentFinalizationAccepted) {
 				if sealErr != nil {

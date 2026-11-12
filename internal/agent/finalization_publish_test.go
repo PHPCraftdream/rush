@@ -44,7 +44,7 @@ func finalizationStoredScope(t *testing.T, env fakeEnv, id message.FinalizationI
 	return scope
 }
 
-func finalizationStoredCandidate(t *testing.T, env fakeEnv, id message.FinalizationIdentity) finalizationCandidate {
+func finalizationStoredCandidate(t *testing.T, env fakeEnv, scope finalizationPublicationScope, id message.FinalizationIdentity) finalizationCandidate {
 	t.Helper()
 	candidate, err := env.messages.Create(t.Context(), "session", message.CreateMessageParams{
 		Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: "settled final"}},
@@ -52,13 +52,12 @@ func finalizationStoredCandidate(t *testing.T, env fakeEnv, id message.Finalizat
 	require.NoError(t, err)
 	require.NoError(t, candidate.MarkFinalizationCandidate(id))
 	candidate.CheckpointGeneration = 1
-	require.NoError(t, env.messages.Update(t.Context(), candidate))
+	persisted, err := persistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, candidate)
+	require.NoError(t, err)
 	stored, err := env.messages.Get(t.Context(), candidate.ID)
 	require.NoError(t, err)
 	require.False(t, stored.IsFinished())
-	hash, err := stored.FinalizationContentHash()
-	require.NoError(t, err)
-	return finalizationCandidate{messageID: candidate.ID, hash: hash}
+	return persisted.finalizationCandidate
 }
 
 func TestFinalizationPublicationCommitsBeforeItsTerminalEvent(t *testing.T) {
@@ -70,7 +69,7 @@ func TestFinalizationPublicationCommitsBeforeItsTerminalEvent(t *testing.T) {
 	_, err := scope.store.Admit(ctx, scope.identity, "completed-work")
 	require.NoError(t, err)
 	require.NoError(t, scope.store.Release(ctx, scope.identity, "completed-work"))
-	candidate := finalizationStoredCandidate(t, env, id)
+	candidate := finalizationStoredCandidate(t, env, scope, id)
 	reader, supported := env.messages.(message.FinalizationReader)
 	require.True(t, supported)
 	probe := &finalizationPublishProbe{Service: env.messages, FinalizationReader: reader}
@@ -96,7 +95,7 @@ func TestFinalizationPersistedCancelRefusesBeforeCandidateWrite(t *testing.T) {
 	env := testEnv(t)
 	id := message.FinalizationIdentity{Key: "logical", Generation: 1, Serial: 1}
 	scope := finalizationStoredScope(t, env, id)
-	candidate := finalizationStoredCandidate(t, env, id)
+	candidate := finalizationStoredCandidate(t, env, scope, id)
 	require.NoError(t, env.sessions.RequestCancel(t.Context(), "session"))
 	reader, supported := env.messages.(message.FinalizationReader)
 	require.True(t, supported)
@@ -114,7 +113,7 @@ func TestFinalizationChangedCandidateRollsBackWithoutTerminalEvent(t *testing.T)
 	env := testEnv(t)
 	id := message.FinalizationIdentity{Key: "logical", Generation: 1, Serial: 1}
 	scope := finalizationStoredScope(t, env, id)
-	candidate := finalizationStoredCandidate(t, env, id)
+	candidate := finalizationStoredCandidate(t, env, scope, id)
 	reader, supported := env.messages.(message.FinalizationReader)
 	require.True(t, supported)
 	probe := &finalizationPublishProbe{Service: env.messages, FinalizationReader: reader}
@@ -138,7 +137,7 @@ func TestFinalizationPublicationRefusesDurableWorkAndStaleRevision(t *testing.T)
 			env := testEnv(t)
 			id := message.FinalizationIdentity{Key: "logical", Generation: 1, Serial: 1}
 			scope := finalizationStoredScope(t, env, id)
-			candidate := finalizationStoredCandidate(t, env, id)
+			candidate := finalizationStoredCandidate(t, env, scope, id)
 			_, err := scope.store.Admit(t.Context(), scope.identity, "productive-write")
 			require.NoError(t, err)
 			if release {
@@ -185,7 +184,7 @@ func TestFinalizationMessageWriteFailureRollsBackDurableSeal(t *testing.T) {
 	env := testEnv(t)
 	id := message.FinalizationIdentity{Key: "logical", Generation: 1, Serial: 1}
 	scope := finalizationStoredScope(t, env, id)
-	candidate := finalizationStoredCandidate(t, env, id)
+	candidate := finalizationStoredCandidate(t, env, scope, id)
 	reader, supported := env.messages.(message.FinalizationReader)
 	require.True(t, supported)
 	probe := &finalizationPublishProbe{Service: env.messages, FinalizationReader: reader}
@@ -194,8 +193,8 @@ func TestFinalizationMessageWriteFailureRollsBackDurableSeal(t *testing.T) {
 	record, err := scope.store.Snapshot(t.Context(), scope.identity)
 	require.NoError(t, err)
 	require.Equal(t, "executing", record.Phase)
-	require.Empty(t, record.CandidateMessageID)
-	require.Empty(t, record.CandidateHash)
+	require.Equal(t, candidate.messageID, record.CandidateMessageID, "the committed candidate record survives the failed seal")
+	require.Equal(t, candidate.hash, record.CandidateHash)
 	stored, err := env.messages.Get(t.Context(), candidate.messageID)
 	require.NoError(t, err)
 	require.False(t, stored.IsFinished())
@@ -216,7 +215,7 @@ func TestFinalizationPublicationRequiresMatchingDurableReceipts(t *testing.T) {
 			env := testEnv(t)
 			id := message.FinalizationIdentity{Key: "logical", Generation: 1, Serial: 1}
 			scope := finalizationStoredScope(t, env, id)
-			candidate := finalizationStoredCandidate(t, env, id)
+			candidate := finalizationStoredCandidate(t, env, scope, id)
 			if messageAccepted {
 				stored, err := env.messages.Get(t.Context(), candidate.messageID)
 				require.NoError(t, err)
@@ -226,7 +225,7 @@ func TestFinalizationPublicationRequiresMatchingDurableReceipts(t *testing.T) {
 				writer, supported := env.sessions.(session.FinalizationTransaction)
 				require.True(t, supported)
 				require.NoError(t, writer.WithFinalizationTx(t.Context(), "session", func(tx *sql.Tx) error {
-					return scope.store.SealTx(t.Context(), tx, scope.identity, 0, candidate.messageID, candidate.hash)
+					return scope.store.SealTx(t.Context(), tx, scope.identity, session.AgentFinalizationCandidate{MessageID: candidate.messageID, Hash: candidate.hash, Serial: int64(id.Serial)})
 				}))
 			}
 			before, err := scope.store.Snapshot(t.Context(), scope.identity)

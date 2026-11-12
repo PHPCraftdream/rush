@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 
 	"github.com/PHPCraftdream/rush/internal/message"
 )
@@ -12,6 +13,9 @@ type finalizationExecution struct {
 	logicalID string
 	gate      *finalizationGate
 	read      func(context.Context) (finalizationFacts, error)
+	// scope is the durable record candidates are persisted against; without
+	// it a candidate cannot be persisted and the step fails closed.
+	scope finalizationPublicationScope
 }
 
 type finalizationExecutionContextKey struct{}
@@ -61,4 +65,30 @@ func (ts *turnStream) markFinalizationStep() error {
 	}
 	ts.currentAssistant.CheckpointGeneration = ts.fenceCheckpoint()
 	return nil
+}
+
+// persistFinalizationCandidate replaces the plain step write for a candidate
+// footer. A stale candidate is dropped (no candidate is recorded) and is not a
+// turn error: the owner composes again.
+func (ts *turnStream) persistFinalizationCandidate(snap message.Message) error {
+	ts.finalizationCandidate = persistedFinalizationCandidate{}
+	finish := snap.FinishPart()
+	if finish == nil || ts.finalization.scope.store == nil {
+		return ErrFinalizationFactsUnavailable
+	}
+	persisted, err := persistFinalizationCandidate(ts.genCtx, ts.a.sessions, ts.a.messages, ts.finalization.scope, finish.FinalizationIdentity(), snap)
+	if errors.Is(err, ErrFinalizationScopeChanged) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	ts.finalizationCandidate = persisted
+	return nil
+}
+
+// isFinalizationCandidate reports an unfinished provisional footer.
+func isFinalizationCandidate(m message.Message) bool {
+	finish := m.FinishPart()
+	return finish != nil && finish.Partial && finish.FinalizationKey != ""
 }

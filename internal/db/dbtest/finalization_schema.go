@@ -11,7 +11,8 @@ import (
 // transaction (batch_nodes, orphan_call_outbox, session_agent_finalization*).
 // Hand-written partial fixture schemas run it after their own setup via
 // ApplyFinalizationFencingSchema. It is copied verbatim from the migrations;
-// the drift guard in internal/db fails when it diverges. Foreign keys reference
+// the drift guard in internal/db fails when it diverges (columns added by a
+// later ALTER TABLE migration live in finalizationFencingColumns). Foreign keys reference
 // only sessions and batch_nodes, so no other table is required.
 const FinalizationFencingSchema = `
 CREATE TABLE batch_nodes (
@@ -172,11 +173,34 @@ var finalizationIfNotExists = strings.NewReplacer(
 // execer is satisfied by *sql.DB, *sql.Conn and *sql.Tx.
 type execer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// finalizationFencingColumns are the columns migrations add with ALTER TABLE.
+// They are applied the same way (SQLite records ALTER-added columns in a shape
+// a CREATE TABLE cannot reproduce byte for byte) and only when still missing.
+var finalizationFencingColumns = []struct{ table, column, ddl string }{
+	{"session_agent_finalizations", "candidate_serial", "INTEGER NOT NULL DEFAULT 0 CHECK (candidate_serial >= 0)"},
 }
 
 // ApplyFinalizationFencingSchema creates the FinalizationFencingSchema tables
-// and indexes on e, skipping any the fixture already created.
+// and indexes on e, skipping any the fixture already created, then adds the
+// migration-added columns that are still missing.
 func ApplyFinalizationFencingSchema(ctx context.Context, e execer) error {
-	_, err := e.ExecContext(ctx, finalizationIfNotExists.Replace(FinalizationFencingSchema))
-	return err
+	if _, err := e.ExecContext(ctx, finalizationIfNotExists.Replace(FinalizationFencingSchema)); err != nil {
+		return err
+	}
+	for _, col := range finalizationFencingColumns {
+		var present int
+		if err := e.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, col.table, col.column).Scan(&present); err != nil {
+			return err
+		}
+		if present != 0 {
+			continue
+		}
+		if _, err := e.ExecContext(ctx, "ALTER TABLE "+col.table+" ADD COLUMN "+col.column+" "+col.ddl); err != nil {
+			return err
+		}
+	}
+	return nil
 }

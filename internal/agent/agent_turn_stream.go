@@ -120,7 +120,9 @@ type turnStream struct {
 
 	finalization      *finalizationExecution
 	finalizationStamp finalizationStamp
-	fenceCheckpoint   func() int64
+	// finalizationCandidate is the last committed candidate of this turn.
+	finalizationCandidate persistedFinalizationCandidate
+	fenceCheckpoint       func() int64
 
 	smartModel   Model
 	promptPrefix string
