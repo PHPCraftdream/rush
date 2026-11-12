@@ -191,6 +191,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			Models:             p.Models,
 			PeakHours:          config.PeakHours,
 			Network:            config.Network, // provider-level network override must survive the rebuild
+			ResponsesTransport: config.ResponsesTransport,
 		}
 
 		switch {

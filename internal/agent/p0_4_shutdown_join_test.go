@@ -217,6 +217,21 @@ func TestP0_4_CancelAllJoinsAbandonedTitleGoroutine(t *testing.T) {
 	turnModel := newFastSSEModel(t, "hello back")
 
 	env := testEnv(t)
+	runDone := make(chan struct{})
+	runStarted := false
+	cancelAllCalled := false
+	joined := false
+	joinFailed := false
+	var unblockOnce sync.Once
+	var joinDeadline time.Time
+	var runWgDone chan struct{}
+	unblock := func() {
+		unblockOnce.Do(func() {
+			joinDeadline = time.Now().Add(5 * time.Second)
+			close(client.unblock)
+		})
+	}
+	var joinRunAndTitle func() bool
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel:           turnModel,
 		FastModel:            titleModel, // generateTitle tries the fast model first
@@ -230,12 +245,53 @@ func TestP0_4_CancelAllJoinsAbandonedTitleGoroutine(t *testing.T) {
 		TitleJoinGrace: testTitleJoinGrace,
 		CancelAllGrace: testCancelAllGrace,
 	})
+	t.Cleanup(func() {
+		unblock()
+		if !cancelAllCalled {
+			cancelAllCalled = true
+			sa.CancelAll()
+		}
+		if joined {
+			return
+		}
+		if joinFailed || !joinRunAndTitle() {
+			t.Fatalf("Run/title goroutines did not join within 5s after unblocking")
+		}
+		joined = true
+	})
+	joinRunAndTitle = func() bool {
+		waitFor := func(done <-chan struct{}) bool {
+			remaining := time.Until(joinDeadline)
+			if remaining <= 0 {
+				return false
+			}
+			timer := time.NewTimer(remaining)
+			defer timer.Stop()
+			select {
+			case <-done:
+				return true
+			case <-timer.C:
+				return false
+			}
+		}
+		if runStarted && !waitFor(runDone) {
+			return false
+		}
+		if runWgDone == nil {
+			runWgDone = make(chan struct{})
+			go func() {
+				sa.(*sessionAgent).runWg.Wait()
+				close(runWgDone)
+			}()
+		}
+		return waitFor(runWgDone)
+	}
 
 	ctx := context.Background()
 	sess, err := env.sessions.Create(ctx, "p0-4-cancelall-title-test")
 	require.NoError(t, err)
 
-	runDone := make(chan struct{})
+	runStarted = true
 	go func() {
 		defer close(runDone)
 		// First turn (no prior messages) triggers title generation.
@@ -262,6 +318,7 @@ func TestP0_4_CancelAllJoinsAbandonedTitleGoroutine(t *testing.T) {
 	// The title goroutine is STILL blocked in client.Do(). CancelAll must
 	// still see it as live.
 	cancelStart := time.Now()
+	cancelAllCalled = true
 	stillBusy := sa.CancelAll()
 	cancelElapsed := time.Since(cancelStart)
 
@@ -269,6 +326,14 @@ func TestP0_4_CancelAllJoinsAbandonedTitleGoroutine(t *testing.T) {
 	require.GreaterOrEqual(t, cancelElapsed, testCancelAllGraceLowerBound,
 		"CancelAll must have genuinely waited close to its own grace period for the abandoned title goroutine, not returned early because Run() had already finished; got %v", cancelElapsed)
 
-	// Unblock so the goroutine can finish and the test doesn't leak it.
-	close(client.unblock)
+	unblock()
+	if !joinRunAndTitle() {
+		joinFailed = true
+		t.Fatal("Run/title goroutines did not join within 5s after unblocking")
+	}
+	joined = true
+
+	require.False(t, sa.CancelAll(), "CancelAll must report no work after the abandoned title goroutine has joined")
+	_, err = env.sessions.Get(ctx, sess.ID)
+	require.NoError(t, err, "fixture database must remain usable after title work has joined")
 }
