@@ -1,29 +1,29 @@
-import { useState, useRef, useEffect } from "react";
+import type { KeyboardEvent } from "react";
+import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
-import { useCarburetorValue } from "@react-carburetor/core/interop";
 import { setActiveSession, removeSession } from "../store";
 import { ws, wsRequest, sendLoadMessages } from "../ws";
-import type { ConfigPayload, Session } from "../types";
-import { busyCarburetor } from "../state/busy";
-import type { IBusyState } from "../state/BusyCarburetor";
+import type { Session } from "../types";
 import { configCarburetor } from "../state/config";
-import type { IConfigState } from "../state/ConfigCarburetor";
 import { sessionsCarburetor } from "../state/sessions";
 import type { ISessionsState } from "../state/SessionsCarburetor";
-import { MessageSquare, Plus, Pencil, X, Check, Folder, Trash2 } from "lucide-react";
+import { MessageSquare, Plus, Folder, Trash2 } from "lucide-react";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { SessionRow } from "./sidebar/SessionRow";
 
-/** Picks the sessions list out of the sessions state. */
+/**
+ * Picks the sessions list out of the sessions state.
+ *
+ * @param state - the sessions state
+ */
 const selectSessions = (state: TReadonly<ISessionsState>) => state.sessions;
 
-/** Picks the active session id out of the sessions state. */
-const selectActiveSessionID = (state: TReadonly<ISessionsState>) => state.activeSessionID;
-
-/** Picks the busy-session set out of the busy state. */
-const selectBusySessions = (state: TReadonly<IBusyState>) => new Set(state.busySessions);
-
-/** Picks the server config out of the config state. */
-const selectConfig = (state: TReadonly<IConfigState>) => state.config;
+/**
+ * Whether a session is a top-level one (not a sub-agent's child).
+ *
+ * @param s - the session
+ */
+const isTopLevel = (s: TReadonly<Session>): boolean => !s.ParentSessionID;
 
 // Wire shape of a delete_other_sessions reply payload (task #684). Mirrors
 // internal/server/protocol.go's DeleteOtherSessionsResult: only DeletedIDs
@@ -34,74 +34,107 @@ interface DeleteOtherSessionsResult {
   failedIDs: string[];
 }
 
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
-  return String(n);
+/** Local state of the sidebar. */
+interface ISidebarState {
+  editingID: string | null;
+  editTitle: string;
+  pendingDelete: { id: string; title: string } | null;
+  deleteError: string | null;
+  deleting: boolean;
+  confirmDeleteOthers: boolean;
+  deleteOthersError: string | null;
+  deletingOthers: boolean;
 }
 
-export function Sidebar() {
-  const allSessions = useCarburetorValue(sessionsCarburetor, selectSessions) as Session[];
-  const sessions = allSessions.filter((s) => !s.ParentSessionID);
-  const activeID = useCarburetorValue(sessionsCarburetor, selectActiveSessionID);
-  const busySessions = useCarburetorValue(busyCarburetor, selectBusySessions) as Set<string>;
-  const config = useCarburetorValue(configCarburetor, selectConfig) as ConfigPayload | null;
-  const [editingID, setEditingID] = useState<string | null>(null);
-  const [editTitle, setEditTitle] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [pendingDelete, setPendingDelete] = useState<{ id: string; title: string } | null>(null);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
-  const [confirmDeleteOthers, setConfirmDeleteOthers] = useState(false);
-  const [deleteOthersError, setDeleteOthersError] = useState<string | null>(null);
-  const [deletingOthers, setDeletingOthers] = useState(false);
+/** Session list with create, rename, delete and delete-others. */
+export class Sidebar extends AntiHookComponent<{}, ISidebarState> {
+  public state: ISidebarState = {
+    editingID: null,
+    editTitle: "",
+    pendingDelete: null,
+    deleteError: null,
+    deleting: false,
+    confirmDeleteOthers: false,
+    deleteOthersError: null,
+    deletingOthers: false,
+  };
 
-  useEffect(() => {
-    if (editingID && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
-    }
-  }, [editingID]);
+  /** Detached snapshot of the sessions list; unchanged sessions keep their identity. */
+  private readonly sessionsView = this.connectSelection(sessionsCarburetor, selectSessions);
 
   // Continuations of confirmDelete()/confirmDeleteOtherSessions() check this
   // flag after their await so a reply landing after this component
-  // unmounted cannot resolve a dead delete (same intent as the disposedRef
+  // unmounted cannot resolve a dead delete (same intent as the disposed
   // continuation guard in ChatToolbar.tsx's SystemPromptModal.save(), task
   // #683; the wsRequest listeners themselves are always detached on settle:
   // reply, disconnect, timeout or a failed send).
-  const disposedRef = useRef(false);
-  useEffect(() => {
-    disposedRef.current = false;
-    return () => {
-      disposedRef.current = true;
-    };
-  }, []);
+  private disposed = false;
 
-  function selectSession(id: string) {
-    if (editingID === id) return;
+  /** Tracks mount state. */
+  protected useEffects(): void {
+    super.useEffects();
+    this.useEffect("lifecycle", this.markMounted, []);
+  }
+
+  /** Clears the disposed flag; returns the cleanup that sets it. */
+  @bind
+  protected markMounted(): () => void {
+    this.disposed = false;
+    return this.markDisposed;
+  }
+
+  /** Marks the sidebar as unmounted. */
+  @bind
+  protected markDisposed(): void {
+    this.disposed = true;
+  }
+
+  /**
+   * Makes a session the active one and loads its messages.
+   *
+   * @param id - the session id
+   */
+  @bind
+  protected selectSession(id: string): void {
+    if (this.state.editingID === id) return;
     setActiveSession(id);
     sendLoadMessages(id);
   }
 
-  function newSession() {
+  /** Asks the server for a new session. */
+  @bind
+  protected newSession(): void {
     ws.send("create_session");
   }
 
-  function deleteSession(e: React.MouseEvent, id: string, title: string) {
-    e.stopPropagation();
-    setDeleteError(null);
-    setPendingDelete({ id, title: title || "Untitled session" });
+  /**
+   * Opens the delete confirmation for a session.
+   *
+   * @param id - the session id
+   * @param title - its title
+   */
+  @bind
+  protected deleteSession(id: string, title: string): void {
+    this.setState({ deleteError: null, pendingDelete: { id, title: title || "Untitled session" } });
   }
 
-  async function confirmDelete() {
+  /** Closes the delete confirmation and forgets its error. */
+  @bind
+  protected cancelDelete(): void {
+    this.setState({ pendingDelete: null, deleteError: null });
+  }
+
+  /** Deletes the session pending confirmation. */
+  @bind
+  protected async confirmDelete(): Promise<void> {
+    const { pendingDelete } = this.state;
     if (!pendingDelete) return;
     const target = pendingDelete;
-    setDeleteError(null);
-    setDeleting(true);
+    this.setState({ deleteError: null, deleting: true });
     try {
       await wsRequest("delete_session", { sessionID: target.id });
-      if (disposedRef.current) return;
-      setDeleting(false);
+      if (this.disposed) return;
+      this.setState({ deleting: false });
       removeSession(target.id);
       // Decide against the store's CURRENT active session, not the one
       // captured when the request was sent (task #694): the confirm
@@ -111,22 +144,35 @@ export function Sidebar() {
       // stale capture would wipe the now-active session's transcript and
       // hash for a delete that no longer concerns it.
       if (sessionsCarburetor.getData().activeSessionID === target.id) setActiveSession(null);
-      setPendingDelete(null);
+      this.setState({ pendingDelete: null });
     } catch (e) {
-      if (disposedRef.current) return;
-      setDeleting(false);
-      setDeleteError(e instanceof Error ? e.message : String(e));
+      if (this.disposed) return;
+      this.setState({ deleting: false, deleteError: e instanceof Error ? e.message : String(e) });
     }
   }
 
-  async function confirmDeleteOtherSessions() {
+  /** Opens the delete-all-others confirmation. */
+  @bind
+  protected openDeleteOthers(): void {
+    this.setState({ deleteOthersError: null, confirmDeleteOthers: true });
+  }
+
+  /** Closes the delete-all-others confirmation and forgets its error. */
+  @bind
+  protected cancelDeleteOthers(): void {
+    this.setState({ confirmDeleteOthers: false, deleteOthersError: null });
+  }
+
+  /** Deletes every session except the active one. */
+  @bind
+  protected async confirmDeleteOtherSessions(): Promise<void> {
+    const activeID = sessionsCarburetor.getData().activeSessionID;
     if (!activeID) return;
-    setDeleteOthersError(null);
-    setDeletingOthers(true);
+    this.setState({ deleteOthersError: null, deletingOthers: true });
     try {
       const msg = await wsRequest<DeleteOtherSessionsResult>("delete_other_sessions", { keepID: activeID });
-      if (disposedRef.current) return;
-      setDeletingOthers(false);
+      if (this.disposed) return;
+      this.setState({ deletingOthers: false });
       // Only drop rows the server actually confirms deleted (task #684) —
       // a partial failure (deletedIDs missing some non-kept session) must
       // leave the survivor's row in place, not vanish on a blanket "ok".
@@ -147,220 +193,195 @@ export function Sidebar() {
         if (sessionsCarburetor.getData().activeSessionID === s.ID) setActiveSession(null);
       }
       if (result && result.failedIDs.length > 0) {
-        setDeleteOthersError(
-          `${result.failedIDs.length} session${result.failedIDs.length === 1 ? "" : "s"} could not be deleted`
-        );
+        this.setState({
+          deleteOthersError:
+            `${result.failedIDs.length} session${result.failedIDs.length === 1 ? "" : "s"} could not be deleted`,
+        });
         return;
       }
-      setConfirmDeleteOthers(false);
+      this.setState({ confirmDeleteOthers: false });
     } catch (e) {
-      if (disposedRef.current) return;
-      setDeletingOthers(false);
-      setDeleteOthersError(e instanceof Error ? e.message : String(e));
+      if (this.disposed) return;
+      this.setState({ deletingOthers: false, deleteOthersError: e instanceof Error ? e.message : String(e) });
     }
   }
 
-  function startEditing(e: React.MouseEvent, id: string, title: string) {
-    e.stopPropagation();
-    setEditingID(id);
-    setEditTitle(title || "Untitled session");
+  /**
+   * Starts renaming a session.
+   *
+   * @param id - the session id
+   * @param title - its current title
+   */
+  @bind
+  protected startEditing(id: string, title: string): void {
+    this.setState({ editingID: id, editTitle: title || "Untitled session" });
   }
 
-  function saveRename() {
+  /**
+   * Stores the typed rename draft.
+   *
+   * @param editTitle - the draft
+   */
+  @bind
+  protected onEditTitleChange(editTitle: string): void {
+    this.setState({ editTitle });
+  }
+
+  /** Sends the rename and closes the editor. */
+  @bind
+  protected saveRename(): void {
+    const { editingID, editTitle } = this.state;
     if (editingID) {
       ws.send("rename_session", { sessionID: editingID, title: editTitle.trim() || "Untitled session" });
-      setEditingID(null);
+      this.setState({ editingID: null });
     }
   }
 
-  function handleKeyDown(e: React.KeyboardEvent) {
+  /** Closes the rename editor without saving. */
+  @bind
+  protected cancelEditing(): void {
+    this.setState({ editingID: null });
+  }
+
+  /**
+   * Enter saves the rename, Escape cancels it.
+   *
+   * @param e - the keydown event
+   */
+  @bind
+  protected handleKeyDown(e: KeyboardEvent): void {
     if (e.key === "Enter") {
-      saveRename();
+      this.saveRename();
     } else if (e.key === "Escape") {
-      setEditingID(null);
+      this.setState({ editingID: null });
     }
   }
 
-  return (
-    <aside className="w-64 bg-base-subtle border-r border-surface flex flex-col overflow-hidden shrink-0" data-test-id="sidebar">
-      {/* Header */}
-      <div className="flex items-center justify-between px-6 py-5 border-b border-surface" data-test-id="sidebar-header">
-        <div className="flex flex-col gap-0.5">
-          <span className="text-xl font-black text-accent tracking-tighter">Rush~</span>
-          <span className="text-[10px] text-text-subtle font-mono opacity-60">#{__GIT_COUNT__} · {__GIT_COMMIT__}</span>
-          <span className="text-[10px] text-text-subtle font-mono opacity-50">{__GIT_BRANCH__}</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={newSession}
-            title="New session"
-            data-test-id="sidebar-new-session"
-            className="flex items-center gap-2 px-4 py-2 bg-accent-fill text-white/90 text-sm font-bold rounded-xl hover:bg-accent/90 active:scale-95 transition-all shadow-sm"
-          >
-            <Plus size={18} />
-            New
-          </button>
-          <button
-            onClick={() => {
-              setDeleteOthersError(null);
-              setConfirmDeleteOthers(true);
-            }}
-            disabled={!activeID || sessions.length <= 1}
-            title="Delete all sessions except the current one"
-            data-test-id="sidebar-delete-others"
-            className="flex items-center justify-center w-9 h-9 rounded-xl text-text-subtle hover:text-red hover:bg-red/10 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-subtle transition-all"
-          >
-            <Trash2 size={16} />
-          </button>
-        </div>
-      </div>
+  /**
+   * Renders one session row.
+   *
+   * @param s - the session
+   */
+  @bind
+  protected renderSession(s: TReadonly<Session>) {
+    const { editingID, editTitle } = this.state;
+    const isEditing = editingID === s.ID;
+    return (
+      <SessionRow
+        key={s.ID}
+        session={s}
+        isEditing={isEditing}
+        editTitle={isEditing ? editTitle : ""}
+        onSelect={this.selectSession}
+        onStartEdit={this.startEditing}
+        onDelete={this.deleteSession}
+        onEditTitleChange={this.onEditTitleChange}
+        onEditKeyDown={this.handleKeyDown}
+        onSaveRename={this.saveRename}
+        onCancelEdit={this.cancelEditing}
+      />
+    );
+  }
 
-      {/* Working directory */}
-      {config?.cwd && (
-        <div className="flex items-center gap-1.5 px-6 py-2 border-t border-surface/50 text-[11px] text-text-subtle font-mono truncate" title={config.cwd}>
-          <Folder size={11} className="shrink-0" />
-          <span className="truncate">{config.cwd}</span>
-        </div>
-      )}
+  /** Renders the sidebar. */
+  public render() {
+    const { pendingDelete, deleteError, deleting, confirmDeleteOthers, deleteOthersError, deletingOthers } = this.state;
+    const sessions = this.sessionsView().filter(isTopLevel);
+    const { activeSessionID: activeID } = this.useCarburetor(sessionsCarburetor);
+    const cwd = this.useCarburetor(configCarburetor).config?.cwd;
 
-      {/* Session list */}
-      <div className="flex-1 overflow-y-auto py-3 px-3" data-test-id="sidebar-session-list">
-        {sessions.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 px-6 text-center" data-test-id="sidebar-empty">
-            <div className="w-12 h-12 rounded-2xl bg-base-overlay flex items-center justify-center mb-4 text-text-subtle">
-              <MessageSquare size={24} />
-            </div>
-            <p className="text-text-muted text-base font-semibold">No sessions yet</p>
-            <p className="text-text-subtle text-sm mt-1.5">Click New to get started</p>
+    return (
+      <aside
+        className="w-64 bg-base-subtle border-r border-surface flex flex-col overflow-hidden shrink-0"
+        data-test-id="sidebar"
+      >
+        {/* Header */}
+        <div
+          className="flex items-center justify-between px-6 py-5 border-b border-surface"
+          data-test-id="sidebar-header"
+        >
+          <div className="flex flex-col gap-0.5">
+            <span className="text-xl font-black text-accent tracking-tighter">Rush~</span>
+            <span className="text-[10px] text-text-subtle font-mono opacity-60">
+              #{__GIT_COUNT__} · {__GIT_COMMIT__}
+            </span>
+            <span className="text-[10px] text-text-subtle font-mono opacity-50">{__GIT_BRANCH__}</span>
           </div>
-        ) : (
-          sessions.map((s) => {
-            const isBusy = busySessions.has(s.ID);
-            const totalTokens = s.PromptTokens + s.CompletionTokens;
-            const isActive = s.ID === activeID;
-            const isEditing = editingID === s.ID;
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={this.newSession}
+              title="New session"
+              data-test-id="sidebar-new-session"
+              className="flex items-center gap-2 px-4 py-2 bg-accent-fill text-white/90 text-sm font-bold rounded-xl hover:bg-accent/90 active:scale-95 transition-all shadow-sm"
+            >
+              <Plus size={18} />
+              New
+            </button>
+            <button
+              onClick={this.openDeleteOthers}
+              disabled={!activeID || sessions.length <= 1}
+              title="Delete all sessions except the current one"
+              data-test-id="sidebar-delete-others"
+              className="flex items-center justify-center w-9 h-9 rounded-xl text-text-subtle hover:text-red hover:bg-red/10 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-subtle transition-all"
+            >
+              <Trash2 size={16} />
+            </button>
+          </div>
+        </div>
 
-            return (
-              <div
-                key={s.ID}
-                onClick={() => selectSession(s.ID)}
-                onDoubleClick={(e) => startEditing(e, s.ID, s.Title)}
-                data-test-id={`session-${s.ID}`}
-                data-session-id={s.ID}
-                className={`group relative px-4 py-4 rounded-xl cursor-pointer transition-all mb-1 ${
-                  isActive
-                    ? "bg-canvas shadow-sm border border-accent/20"
-                    : "hover:bg-canvas/50 border border-transparent"
-                }`}
-              >
-                <div className={`flex items-start gap-3 ${!isEditing ? "pr-12" : ""}`}>
-                  {isBusy && !isEditing && (
-                    <span
-                      data-test-id={`session-busy-${s.ID}`}
-                      className="w-2 h-2 rounded-full bg-accent shrink-0 animate-pulse mt-2"
-                    />
-                  )}
-                  {isEditing ? (
-                    <div className="flex-1 flex flex-col gap-1.5 min-w-0" onClick={(e) => e.stopPropagation()}>
-                      <input
-                        ref={inputRef}
-                        value={editTitle}
-                        onChange={(e) => setEditTitle(e.target.value)}
-                        onKeyDown={handleKeyDown}
-                        data-test-id="session-edit-input"
-                        className="font-medium w-full bg-canvas border border-accent rounded-lg px-2 py-1 outline-none shadow-sm"
-                        style={{ fontSize: "var(--chat-font-size)" }}
-                      />
-                      <div className="flex gap-1.5">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); saveRename(); }}
-                          title="Save (Enter)"
-                          data-test-id="session-edit-save"
-                          className="flex items-center gap-1 px-2 py-1 rounded-lg btn-primary text-xs font-semibold"
-                        >
-                          <Check size={12} /> Save
-                        </button>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setEditingID(null); }}
-                          title="Cancel (Esc)"
-                          data-test-id="session-edit-cancel"
-                          className="flex items-center gap-1 px-2 py-1 rounded-lg bg-base-overlay text-text-subtle hover:text-text border border-surface text-xs"
-                        >
-                          <X size={12} /> Cancel
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div
-                      data-test-id={`session-title-${s.ID}`}
-                      className={`font-semibold ${isActive ? "text-accent" : "text-text"}`}
-                      style={{ fontSize: "var(--chat-font-size)" }}
-                    >
-                      {s.Title || "Untitled session"}
-                    </div>
-                  )}
-                </div>
-                {!isEditing && (
-                  <div className="flex items-center gap-2.5 mt-1 text-text-subtle pl-0 font-medium" style={{ fontSize: "var(--chat-font-size)" }}>
-                    <span data-test-id={`session-msg-count-${s.ID}`}>{s.MessageCount} msg{s.MessageCount !== 1 ? "s" : ""}</span>
-                    {totalTokens > 0 && (
-                      <>
-                        <span>·</span>
-                        <span data-test-id={`session-tokens-${s.ID}`}>{formatTokens(totalTokens)} tok</span>
-                      </>
-                    )}
-                  </div>
-                )}
-
-                {!isEditing && (
-                  <div className="session-hover-btns">
-                    <button
-                      onClick={(e) => startEditing(e, s.ID, s.Title)}
-                      title="Rename session"
-                      data-test-id={`session-rename-${s.ID}`}
-                      className="sidebar-icon-btn"
-                    >
-                      <Pencil size={14} />
-                    </button>
-                    <button
-                      onClick={(e) => deleteSession(e, s.ID, s.Title)}
-                      title="Delete session"
-                      data-test-id={`session-delete-${s.ID}`}
-                      className="sidebar-icon-btn-danger"
-                    >
-                      <X size={16} />
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })
+        {/* Working directory */}
+        {cwd && (
+          <div
+            className="flex items-center gap-1.5 px-6 py-2 border-t border-surface/50 text-[11px] text-text-subtle font-mono truncate"
+            title={cwd}
+          >
+            <Folder size={11} className="shrink-0" />
+            <span className="truncate">{cwd}</span>
+          </div>
         )}
-      </div>
 
-      {pendingDelete && (
-        <ConfirmDialog
-          title="Delete session"
-          message={`"${pendingDelete.title}" and all its messages will be permanently deleted.`}
-          confirmLabel={deleting ? "Deleting…" : "Delete"}
-          onConfirm={confirmDelete}
-          onCancel={() => { setPendingDelete(null); setDeleteError(null); }}
-          error={deleteError}
-          busy={deleting}
-        />
-      )}
+        {/* Session list */}
+        <div className="flex-1 overflow-y-auto py-3 px-3" data-test-id="sidebar-session-list">
+          {sessions.length === 0 ? (
+            <div
+              className="flex flex-col items-center justify-center py-16 px-6 text-center"
+              data-test-id="sidebar-empty"
+            >
+              <div className="w-12 h-12 rounded-2xl bg-base-overlay flex items-center justify-center mb-4 text-text-subtle">
+                <MessageSquare size={24} />
+              </div>
+              <p className="text-text-muted text-base font-semibold">No sessions yet</p>
+              <p className="text-text-subtle text-sm mt-1.5">Click New to get started</p>
+            </div>
+          ) : (
+            sessions.map(this.renderSession)
+          )}
+        </div>
 
-      {confirmDeleteOthers && (
-        <ConfirmDialog
-          title="Delete all other sessions"
-          message="Delete all sessions except the current one? This cannot be undone."
-          confirmLabel={deletingOthers ? "Deleting…" : "Delete all"}
-          onConfirm={confirmDeleteOtherSessions}
-          onCancel={() => { setConfirmDeleteOthers(false); setDeleteOthersError(null); }}
-          error={deleteOthersError}
-          busy={deletingOthers}
-        />
-      )}
-    </aside>
-  );
+        {pendingDelete && (
+          <ConfirmDialog
+            title="Delete session"
+            message={`"${pendingDelete.title}" and all its messages will be permanently deleted.`}
+            confirmLabel={deleting ? "Deleting…" : "Delete"}
+            onConfirm={this.confirmDelete}
+            onCancel={this.cancelDelete}
+            error={deleteError}
+            busy={deleting}
+          />
+        )}
+
+        {confirmDeleteOthers && (
+          <ConfirmDialog
+            title="Delete all other sessions"
+            message="Delete all sessions except the current one? This cannot be undone."
+            confirmLabel={deletingOthers ? "Deleting…" : "Delete all"}
+            onConfirm={this.confirmDeleteOtherSessions}
+            onCancel={this.cancelDeleteOthers}
+            error={deleteOthersError}
+            busy={deletingOthers}
+          />
+        )}
+      </aside>
+    );
+  }
 }

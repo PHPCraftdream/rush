@@ -1,443 +1,202 @@
-import { useState, useEffect, useRef } from "react";
+import type { MouseEvent } from "react";
+import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
-import { useCarburetorValue } from "@react-carburetor/core/interop";
 import { mcpCarburetor } from "../state/mcp";
 import type { IMcpState } from "../state/McpCarburetor";
 import { ws, wsRequest } from "../ws";
-import {
-  X,
-  Plus,
-  Trash2,
-  AlertCircle,
-  CheckCircle2,
-  Loader2,
-  ToggleLeft,
-  ToggleRight,
-  ChevronDown,
-  ChevronRight,
-  Pencil,
-  Wrench,
-} from "lucide-react";
+import { X, Plus } from "lucide-react";
 import type { MCPServerInfo } from "../types";
+import { MCPForm } from "./mcp/MCPForm";
+import { ServerRow } from "./mcp/ServerRow";
+import { mcpServerPayload } from "./mcp/mcpServerPayload";
 
-// ── Status badge ──────────────────────────────────────────────────────────────
-
-function StatusBadge({ info }: { info: TReadonly<MCPServerInfo> }) {
-  if (info.disabled) {
-    return (
-      <span className="inline-flex items-center gap-1 text-[11px] font-medium text-text-muted bg-base-overlay border border-surface rounded-full px-2 py-0.5">
-        Off
-      </span>
-    );
-  }
-  switch (info.status) {
-    case "connected":
-      return (
-        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-green bg-green/10 border border-green/20 rounded-full px-2 py-0.5">
-          <CheckCircle2 size={10} />
-          Connected · {info.toolCount} tool{info.toolCount !== 1 ? "s" : ""}
-        </span>
-      );
-    case "starting":
-      return (
-        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-accent bg-accent/10 border border-accent/20 rounded-full px-2 py-0.5 animate-pulse">
-          <Loader2 size={10} className="animate-spin" />
-          Starting…
-        </span>
-      );
-    case "error":
-      return (
-        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-red bg-red/10 border border-red/20 rounded-full px-2 py-0.5">
-          <AlertCircle size={10} />
-          Error
-        </span>
-      );
-    default:
-      return (
-        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-text-subtle bg-base-overlay border border-surface rounded-full px-2 py-0.5">
-          {info.status}
-        </span>
-      );
-  }
-}
-
-// ── Add / Edit MCP form ───────────────────────────────────────────────────────
-
-const PLACEHOLDER_JSON = `{
-  "name": "my-server",
-  "type": "stdio",
-  "command": "npx",
-  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-}`;
-
-function buildInitialJson(info: TReadonly<MCPServerInfo>): string {
-  const obj: Record<string, unknown> = { name: info.name };
-  if (info.serverType) obj.type = info.serverType;
-  if (info.command) obj.command = info.command;
-  if (info.args?.length) obj.args = info.args;
-  if (info.url) obj.url = info.url;
-  if (info.env && Object.keys(info.env).length > 0) obj.env = info.env;
-  if (info.headers && Object.keys(info.headers).length > 0) obj.headers = info.headers;
-  return JSON.stringify(obj, null, 2);
-}
-
-function MCPForm({
-  initial,
-  submitLabel,
-  onSubmit,
-  onCancel,
-}: {
-  initial?: TReadonly<MCPServerInfo>;
-  submitLabel: string;
-  onSubmit: (parsed: Record<string, unknown>) => Promise<unknown>;
-  onCancel: () => void;
-}) {
-  const [json, setJson] = useState(() =>
-    initial ? buildInitialJson(initial) : ""
-  );
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const taRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => { taRef.current?.focus(); }, []);
-
-  // Continuation of submit() checks this flag after its await so a reply
-  // landing after this form was cancelled cannot fire onCancel on a later
-  // form (the wsRequest listeners themselves are always detached on
-  // settle: reply, disconnect, timeout or a failed send).
-  const disposedRef = useRef(false);
-  useEffect(() => {
-    disposedRef.current = false;
-    return () => {
-      disposedRef.current = true;
-    };
-  }, []);
-
-  async function submit() {
-    setError(null);
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(json.trim());
-    } catch {
-      setError("Invalid JSON — check your syntax");
-      return;
-    }
-    const name = (parsed.name as string | undefined)?.trim();
-    if (!name) { setError('"name" field is required'); return; }
-    const type = (parsed.type as string | undefined) || "stdio";
-    if (!["stdio", "http", "sse"].includes(type)) {
-      setError('"type" must be "stdio", "http", or "sse"');
-      return;
-    }
-
-    setBusy(true);
-    try {
-      await onSubmit(parsed);
-      if (disposedRef.current) return;
-      setBusy(false);
-      onCancel();
-    } catch (e) {
-      if (disposedRef.current) return;
-      setBusy(false);
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }
-
-  function onKey(e: React.KeyboardEvent) {
-    if (e.key === "Escape") onCancel();
-  }
-
-  return (
-    <div className="border-t border-surface bg-base-subtle/50 p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-semibold text-text">
-          {initial ? `Edit: ${initial.name}` : "Add MCP Server"}
-        </h3>
-        <button onClick={onCancel} className="text-text-subtle hover:text-text transition-colors">
-          <X size={15} />
-        </button>
-      </div>
-      {!initial && (
-        <p className="text-xs text-text-subtle mb-3 leading-relaxed">
-          Paste the server config as JSON. The server will be connected immediately.
-        </p>
-      )}
-      <textarea
-        ref={taRef}
-        value={json}
-        onChange={e => setJson(e.target.value)}
-        onKeyDown={onKey}
-        placeholder={initial ? undefined : PLACEHOLDER_JSON}
-        rows={8}
-        spellCheck={false}
-        className="w-full font-mono text-xs text-text bg-canvas border border-surface rounded-xl px-3 py-2.5 resize-none outline-none focus:border-accent/50 transition-colors placeholder:text-text-muted/50"
-      />
-      {error && (
-        <p className="text-xs text-red mt-2 flex items-center gap-1.5">
-          <AlertCircle size={12} />
-          {error}
-        </p>
-      )}
-      <div className="flex justify-end gap-2 mt-3">
-        <button
-          onClick={onCancel}
-          className="px-3 py-1.5 text-xs text-text-subtle hover:text-text transition-colors rounded-lg hover:bg-base-overlay"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={submit}
-          disabled={!json.trim() || busy}
-          className="px-4 py-1.5 text-xs font-semibold bg-accent-fill text-white/90 rounded-lg hover:opacity-90 transition-opacity disabled:opacity-40 flex items-center gap-1.5"
-        >
-          {busy ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
-          {busy ? "Connecting…" : submitLabel}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ── Server row ────────────────────────────────────────────────────────────────
-
-function ServerRow({ info, onRemove }: { info: TReadonly<MCPServerInfo>; onRemove: () => void }) {
-  const [confirmRemove, setConfirmRemove] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-  const [editing, setEditing] = useState(false);
-
-  function toggle() {
-    ws.send("set_mcp_disabled", { name: info.name, disabled: !info.disabled });
-  }
-
-  if (editing) {
-    return (
-      <div className="border-b border-surface last:border-0">
-        <MCPForm
-          initial={info}
-          submitLabel="Update Server"
-          onSubmit={(parsed) =>
-            wsRequest("update_mcp_server", {
-              oldName: info.name,
-              name: (parsed.name as string).trim(),
-              type: (parsed.type as string) || "stdio",
-              command: parsed.command as string | undefined,
-              args: parsed.args as string[] | undefined,
-              url: parsed.url as string | undefined,
-              env: parsed.env as Record<string, string> | undefined,
-              headers: parsed.headers as Record<string, string> | undefined,
-              timeout: parsed.timeout as number | undefined,
-            })
-          }
-          onCancel={() => setEditing(false)}
-        />
-      </div>
-    );
-  }
-
-  const hasTools = (info.tools?.length ?? 0) > 0;
-
-  return (
-    <div className="border-b border-surface last:border-0">
-      <div className="flex items-center gap-3 px-4 py-3">
-        {/* Expand tools toggle */}
-        <button
-          onClick={() => hasTools && setExpanded(e => !e)}
-          className={`shrink-0 transition-colors ${hasTools ? "text-text-subtle hover:text-text cursor-pointer" : "text-surface cursor-default"}`}
-          title={hasTools ? (expanded ? "Hide tools" : "Show tools") : "No tools"}
-        >
-          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        </button>
-
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-text truncate">{info.name}</span>
-            <StatusBadge info={info} />
-            {info.source === "external" && (
-              <span className="px-1.5 py-0.5 text-[10px] font-mono bg-surface text-text-subtle rounded">.mcp.json</span>
-            )}
-          </div>
-          {info.serverType && (
-            <span className="text-[11px] text-text-subtle font-mono">
-              {info.serverType}
-              {info.command ? ` · ${info.command}` : ""}
-              {info.url ? ` · ${info.url}` : ""}
-            </span>
-          )}
-        </div>
-
-        <div className="flex items-center gap-1 shrink-0">
-          {/* Edit (not available for external/.mcp.json servers) */}
-          {info.source !== "external" && (
-            <button
-              onClick={() => setEditing(true)}
-              title="Edit server"
-              className="p-1 text-text-subtle hover:text-accent transition-colors rounded"
-            >
-              <Pencil size={14} />
-            </button>
-          )}
-
-          {/* Toggle */}
-          <button
-            onClick={toggle}
-            title={info.disabled ? "Enable" : "Disable"}
-            className={`transition-colors ${info.disabled ? "text-text-subtle hover:text-accent" : "text-accent hover:text-accent/70"}`}
-          >
-            {info.disabled ? <ToggleLeft size={22} /> : <ToggleRight size={22} />}
-          </button>
-
-          {/* Remove (not available for external/.mcp.json servers) */}
-          {info.source !== "external" && (
-            <>
-              {confirmRemove ? (
-                <div className="flex items-center gap-1 ml-1">
-                  <span className="text-xs text-text-subtle">Remove?</span>
-                  <button
-                    onClick={() => { onRemove(); setConfirmRemove(false); }}
-                    className="px-2 py-0.5 text-xs font-medium bg-red-fill text-white/90 rounded hover:opacity-90 transition-opacity"
-                  >Yes</button>
-                  <button
-                    onClick={() => setConfirmRemove(false)}
-                    className="px-2 py-0.5 text-xs text-text-subtle hover:text-text transition-colors rounded"
-                  >No</button>
-                </div>
-              ) : (
-                <button
-                  onClick={() => setConfirmRemove(true)}
-                  title="Remove server"
-                  className="p-1 text-text-subtle hover:text-red transition-colors rounded"
-                >
-                  <Trash2 size={14} />
-                </button>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* Tools list */}
-      {expanded && hasTools && (
-        <div className="px-4 pb-3 pl-10">
-          <div className="flex items-center gap-1.5 mb-2">
-            <Wrench size={11} className="text-text-subtle" />
-            <span className="text-[11px] font-semibold text-text-subtle uppercase tracking-wider">Tools</span>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {info.tools!.map(tool => (
-              <span
-                key={tool}
-                className="text-[11px] font-mono text-text-muted bg-base-overlay border border-surface rounded-md px-2 py-0.5"
-              >
-                {tool}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+/** Shared empty server list for a missing snapshot. */
+const NO_SERVERS: TReadonly<MCPServerInfo[]> = [];
 
 /**
- * Picks the MCP snapshot out of the MCP state.
+ * Picks the server list out of the MCP state.
  *
  * @param state - the MCP state
  */
-const selectMcp = (state: TReadonly<IMcpState>) => state.mcp;
+const selectServers = (state: TReadonly<IMcpState>) => state.mcp?.servers ?? NO_SERVERS;
+
+/**
+ * Orders servers by name.
+ *
+ * @param a - first server
+ * @param b - second server
+ */
+const byName = (a: TReadonly<MCPServerInfo>, b: TReadonly<MCPServerInfo>): number => a.name.localeCompare(b.name);
+
+/**
+ * Whether a server is enabled.
+ *
+ * @param s - the server
+ */
+const isEnabled = (s: TReadonly<MCPServerInfo>): boolean => !s.disabled;
 
 // ── MCP Settings Modal ────────────────────────────────────────────────────────
 
-export function MCPSettings({ onClose }: { onClose: () => void }) {
-  const mcpState = useCarburetorValue(mcpCarburetor, selectMcp);
-  const [showAdd, setShowAdd] = useState(false);
+/** Props of the MCP settings dialog. */
+interface IMCPSettingsProps {
+  onClose: () => void;
+}
 
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+/** Local state of the MCP settings dialog. */
+interface IMCPSettingsState {
+  showAdd: boolean;
+}
 
-  function removeServer(name: string) {
+/** Dialog listing the MCP servers, with add/edit/enable/remove. */
+export class MCPSettings extends AntiHookComponent<IMCPSettingsProps, IMCPSettingsState> {
+  public state: IMCPSettingsState = { showAdd: false };
+
+  /** Detached snapshot of the server list, safe to hand to rows. */
+  private readonly serversView = this.connectSelection(mcpCarburetor, selectServers);
+
+  /** Closes the dialog on Escape while mounted. */
+  protected useEffects(): void {
+    super.useEffects();
+    this.useEffect("escapeKey", this.bindEscape, [this.props.onClose]);
+  }
+
+  /** Attaches the Escape handler; returns its detach function. */
+  @bind
+  protected bindEscape(): () => void {
+    document.addEventListener("keydown", this.onKey);
+    return this.unbindEscape;
+  }
+
+  /** Detaches the Escape handler. */
+  @bind
+  protected unbindEscape(): void {
+    document.removeEventListener("keydown", this.onKey);
+  }
+
+  /**
+   * Closes the dialog on Escape.
+   *
+   * @param e - the keydown event
+   */
+  @bind
+  protected onKey(e: KeyboardEvent): void {
+    if (e.key === "Escape") this.props.onClose();
+  }
+
+  /**
+   * Keeps clicks inside the panel from reaching the backdrop.
+   *
+   * @param e - the click event
+   */
+  @bind
+  protected stopPropagation(e: MouseEvent): void {
+    e.stopPropagation();
+  }
+
+  /** Opens the add form. */
+  @bind
+  protected openAdd(): void {
+    this.setState({ showAdd: true });
+  }
+
+  /** Closes the add form. */
+  @bind
+  protected closeAdd(): void {
+    this.setState({ showAdd: false });
+  }
+
+  /**
+   * Removes a server.
+   *
+   * @param name - the server name
+   */
+  @bind
+  protected removeServer(name: string): void {
     ws.send("remove_mcp_server", { name });
   }
 
-  const servers = mcpState?.servers ?? [];
-  const sorted = [...servers].sort((a, b) => a.name.localeCompare(b.name));
+  /**
+   * Sends the new server config.
+   *
+   * @param parsed - the parsed form JSON
+   */
+  @bind
+  protected submitAdd(parsed: Record<string, unknown>): Promise<unknown> {
+    return wsRequest("add_mcp_server", mcpServerPayload(parsed));
+  }
 
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
-      onClick={onClose}
-    >
+  /**
+   * Renders one server row.
+   *
+   * @param info - the server
+   */
+  @bind
+  protected renderServer(info: TReadonly<MCPServerInfo>) {
+    return <ServerRow key={info.name} info={info} onRemove={this.removeServer} />;
+  }
+
+  /** Renders the dialog. */
+  public render() {
+    const { onClose } = this.props;
+    const { showAdd } = this.state;
+    const servers = this.serversView();
+    const sorted = [...servers].sort(byName);
+
+    return (
       <div
-        className="bg-canvas border border-surface rounded-2xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[80vh] chat-font"
-        onClick={e => e.stopPropagation()}
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+        onClick={onClose}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-surface shrink-0">
-          <div>
-            <h2 className="text-base font-semibold text-text">MCP Servers</h2>
-            <p className="text-xs text-text-subtle mt-0.5">
-              {servers.length === 0
-                ? "No servers configured"
-                : `${servers.filter(s => !s.disabled).length} of ${servers.length} enabled`}
-            </p>
-          </div>
-          <button onClick={onClose} className="text-text-subtle hover:text-text transition-colors p-1 rounded-lg hover:bg-base-overlay">
-            <X size={16} />
-          </button>
-        </div>
-
-        {/* Server list */}
-        <div className="flex-1 overflow-y-auto">
-          {sorted.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 px-6 text-center">
-              <p className="text-text-muted text-sm font-medium mb-1">No MCP servers</p>
-              <p className="text-text-subtle text-xs">Add a server to get started</p>
+        <div
+          className="bg-canvas border border-surface rounded-2xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[80vh] chat-font"
+          onClick={this.stopPropagation}
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between px-5 py-4 border-b border-surface shrink-0">
+            <div>
+              <h2 className="text-base font-semibold text-text">MCP Servers</h2>
+              <p className="text-xs text-text-subtle mt-0.5">
+                {servers.length === 0
+                  ? "No servers configured"
+                  : `${servers.filter(isEnabled).length} of ${servers.length} enabled`}
+              </p>
             </div>
-          ) : (
-            sorted.map(info => (
-              <ServerRow
-                key={info.name}
-                info={info}
-                onRemove={() => removeServer(info.name)}
-              />
-            ))
-          )}
-        </div>
-
-        {/* Add server */}
-        {showAdd ? (
-          <MCPForm
-            submitLabel="Add Server"
-            onSubmit={(parsed) =>
-              wsRequest("add_mcp_server", {
-                name: (parsed.name as string).trim(),
-                type: (parsed.type as string) || "stdio",
-                command: parsed.command as string | undefined,
-                args: parsed.args as string[] | undefined,
-                url: parsed.url as string | undefined,
-                env: parsed.env as Record<string, string> | undefined,
-                headers: parsed.headers as Record<string, string> | undefined,
-                timeout: parsed.timeout as number | undefined,
-              })
-            }
-            onCancel={() => setShowAdd(false)}
-          />
-        ) : (
-          <div className="border-t border-surface px-4 py-3 shrink-0">
             <button
-              onClick={() => setShowAdd(true)}
-              className="flex items-center gap-2 w-full px-4 py-2.5 text-sm font-medium text-accent border border-accent/30 rounded-xl hover:bg-accent/5 transition-colors"
+              onClick={onClose}
+              className="text-text-subtle hover:text-text transition-colors p-1 rounded-lg hover:bg-base-overlay"
             >
-              <Plus size={15} />
-              Add MCP server
+              <X size={16} />
             </button>
           </div>
-        )}
+
+          {/* Server list */}
+          <div className="flex-1 overflow-y-auto">
+            {sorted.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 px-6 text-center">
+                <p className="text-text-muted text-sm font-medium mb-1">No MCP servers</p>
+                <p className="text-text-subtle text-xs">Add a server to get started</p>
+              </div>
+            ) : (
+              sorted.map(this.renderServer)
+            )}
+          </div>
+
+          {/* Add server */}
+          {showAdd ? (
+            <MCPForm submitLabel="Add Server" onSubmit={this.submitAdd} onCancel={this.closeAdd} />
+          ) : (
+            <div className="border-t border-surface px-4 py-3 shrink-0">
+              <button
+                onClick={this.openAdd}
+                className="flex items-center gap-2 w-full px-4 py-2.5 text-sm font-medium text-accent border border-accent/30 rounded-xl hover:bg-accent/5 transition-colors"
+              >
+                <Plus size={15} />
+                Add MCP server
+              </button>
+            </div>
+          )}
+        </div>
       </div>
-    </div>
-  );
+    );
+  }
 }
