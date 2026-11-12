@@ -120,3 +120,17 @@ func TestWithMCPInstructionsReflectsCurrentTextConfigurationAndState(t *testing.
 	require.Equal(t, prompt, got, "empty instruction must preserve original prompt")
 	require.Equal(t, prompt, withMCPInstructions(prompt, cfg, mcpInstructionStates(nil)), "no-output assembly")
 }
+
+func TestWithTurnMCPInstructionsRecoveryContinuationKeepsPinnedPrompt(t *testing.T) {
+	isolateAllGlobalConfigPaths(t)
+
+	cfg := config.NewTestStore(&config.Config{MCP: config.MCPs{"srv": {}}})
+	states := mcpInstructionStates([]namedMCPInstructionState{{
+		name:   "srv",
+		server: mcp.ClientInfo{Name: "srv", State: mcp.StateConnected, Client: newMCPInstructionClient(t, "live text")},
+	}})
+	const pinned = "pinned prompt\n\n<mcp-instructions>\nfirst attempt\n\n\n</mcp-instructions>"
+
+	require.Equal(t, pinned, withTurnMCPInstructions(pinned, true, cfg, states), "recovery must not append a second instruction block")
+	require.Equal(t, "fresh\n\n<mcp-instructions>\nlive text\n\n\n</mcp-instructions>", withTurnMCPInstructions("fresh", false, cfg, states), "a normal turn still appends")
+}

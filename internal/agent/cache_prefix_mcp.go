@@ -41,3 +41,13 @@ func withMCPInstructions(systemPrompt string, cfg *config.ConfigStore, states it
 	}
 	return systemPrompt
 }
+
+// withTurnMCPInstructions leaves a pinned recovery prompt untouched: it already
+// carries the first attempt's instructions, and re-appending would duplicate
+// them and change the prefix.
+func withTurnMCPInstructions(systemPrompt string, recoveryContinuation bool, cfg *config.ConfigStore, states iter.Seq2[string, mcp.ClientInfo]) string {
+	if recoveryContinuation {
+		return systemPrompt
+	}
+	return withMCPInstructions(systemPrompt, cfg, states)
+}
