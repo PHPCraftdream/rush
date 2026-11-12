@@ -133,30 +133,34 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	if !ts.a.disableAutoSummarize {
 		cw := int64(ts.smartModel.CatwalkCfg.ContextWindow)
 		if cw > 0 {
-			usedTokens := ts.currentSession.CompletionTokens + ts.currentSession.PromptTokens
-			remaining := cw - usedTokens
-			var slideThreshold int64
-			if cw > largeContextWindowThreshold {
-				slideThreshold = largeContextWindowBuffer
-			} else {
-				slideThreshold = int64(float64(cw) * smallContextWindowRatio)
+			effectiveOutput := effectiveMaxOutputTokens(ts.smartModel, ts.call.MaxOutputTokens)
+			inputBudget := contextInputBudget(cw, effectiveOutput)
+			if effectiveOutput <= 0 {
+				// Preserve the legacy context-window gate when the model has
+				// no known output reserve; this is not an input-bound claim.
+				inputBudget = cw
 			}
-			if remaining <= slideThreshold {
-				targetTokens := int64(float64(cw) * contextSlideRatio)
-				prepared.Messages = trimMessagesToWindow(prepared.Messages, targetTokens)
+			if inputBudget > 0 {
+				usedTokens := ts.currentSession.CompletionTokens + ts.currentSession.PromptTokens
+				remaining := inputBudget - usedTokens
+				threshold := contextAutoSummarizeThreshold(cw, inputBudget)
+				if remaining <= threshold {
+					targetTokens := min(int64(float64(inputBudget)*contextSlideRatio), inputBudget)
+					prepared.Messages = trimMessagesToWindow(prepared.Messages, targetTokens)
 
-				// Trimmed away content is no longer in the prompt, so what was
-				// read from it is no longer "already in your context" either
-				// (§1.2).
-				ts.progress.seen.clear()
+					// Trimmed away content is no longer in the prompt, so what was
+					// read from it is no longer "already in your context" either
+					// (§1.2).
+					ts.progress.seen.clear()
 
-				// Record that a silent compact is needed — it runs
-				// synchronously AFTER the turn completes (under the
-				// turn's mailbox ownership), not as a concurrent
-				// goroutine. A goroutine deleting messages while the
-				// turn is still streaming was the P0-4 data corruption
-				// bug (#268).
-				ts.silentCompactNeeded = true
+					// Record that a silent compact is needed — it runs
+					// synchronously AFTER the turn completes (under the
+					// turn's mailbox ownership), not as a concurrent
+					// goroutine. A goroutine deleting messages while the
+					// turn is still streaming was the P0-4 data corruption
+					// bug (#268).
+					ts.silentCompactNeeded = true
+				}
 			}
 		}
 	}
@@ -674,6 +678,9 @@ func (ts *turnStream) applyStepUsage(stepResult fantasy.StepResult) (session.Ses
 	// every provider before either consumer sees it.
 	usage = normalizeProviderUsage(ts.smartModel.Model.Provider(), usage)
 	ts.runTotalTokens = addStepUsageTokens(ts.runTotalTokens, usage)
+	if ts.recovery != nil {
+		ts.recovery.spent.Add(addStepUsageTokens(0, usage))
+	}
 	costDelta := ts.a.updateSessionUsage(ts.smartModel, &updatedSession, usage, ts.a.openrouterCost(stepResult.ProviderMetadata))
 	// Heartbeat usage: one add per accounted step, executing model identity (design pt. 4).
 	addHeartbeatUsage(ts.genCtx, ts.smartModel.Model.Provider(), ts.smartModel.Model.Model(), usage, costDelta)
@@ -767,6 +774,9 @@ func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 		// spent. The rush run loop re-checks on its own cadence.
 	}
 	totalTokens := ts.runTotalTokens
+	if ts.recovery != nil {
+		totalTokens = ts.recovery.spent.Load()
+	}
 	if ts.call.MaxTokens > 0 && totalTokens > ts.call.MaxTokens {
 		slog.Warn(
 			"agent: aborting — max-tokens exceeded",
@@ -787,7 +797,6 @@ func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 }
 
 // persistStepFinish is OnStepFinish's normal-path final write. Doc sec.3.4
-// (DUR-4): when this step's finish carries real content (stepIsReaction),
 // the write and the reaction-debt marker (reacted=1 on every currently
 // wake=1/reacted=0/delivery='done' row of this session, across async_jobs
 // AND session_notices) happen in ONE transaction via the store -- not two
@@ -842,14 +851,15 @@ func (ts *turnStream) stopConditions() []fantasy.StopCondition {
 				return false
 			}
 			tokens := ts.currentSession.CompletionTokens + ts.currentSession.PromptTokens
-			remaining := cw - tokens
-			var threshold int64
-			if cw > largeContextWindowThreshold {
-				threshold = largeContextWindowBuffer
-			} else {
-				threshold = int64(float64(cw) * smallContextWindowRatio)
+			outputReserve := effectiveMaxOutputTokens(ts.smartModel, ts.call.MaxOutputTokens)
+			budget := contextInputBudget(cw, outputReserve)
+			if outputReserve <= 0 {
+				// Match prepareStep's legacy context-window behavior when
+				// no output reserve is known.
+				budget = cw
 			}
-			if (remaining <= threshold) && !ts.a.disableAutoSummarize {
+			threshold := contextAutoSummarizeThreshold(cw, budget)
+			if budget > 0 && budget-tokens <= threshold && !ts.a.disableAutoSummarize {
 				ts.shouldSummarize = true
 				return true
 			}

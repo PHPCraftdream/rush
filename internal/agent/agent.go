@@ -267,6 +267,11 @@ type SessionAgentCall struct {
 
 	// compactionContinuation marks an internal continuation of this call's turn.
 	compactionContinuation bool
+	// recoveryContinuation is an internal same-logical-call continuation after
+	// a certified pre-output Codex context rejection; it never creates a user row.
+	recoveryContinuation bool
+	recovery             *codexRecoveryState
+	recoverySpentTokens  int64
 
 	// InjectID, when non-empty, is the ID of a pending_injects row that
 	// must be deleted AFTER successful OS lock acquisition. Set by the

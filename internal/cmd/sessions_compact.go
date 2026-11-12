@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/filelock"
@@ -24,9 +26,9 @@ import (
 )
 
 var sessionsCompactCmd = &cobra.Command{
-	Use:   "compact",
-	Args:  cobra.NoArgs,
-	Short: "Reclaim free space in the session store (SQLite VACUUM)",
+	Use:   "compact [session]",
+	Args:  cobra.RangeArgs(0, 1),
+	Short: "Compact a session history or reclaim store space with SQLite VACUUM",
 	Long: `Rebuild the session store with SQLite VACUUM to return freed pages to the
 filesystem.
 
@@ -57,18 +59,28 @@ Known blind spot: a rush process that holds an open database pool but
 registers no host lock and no session lock is invisible to the liveness
 gates. As of this writing the web server registers its host lock lazily —
 only when it first claims batch work (internal/app) — so an IDLE web server
-with no claimed work is exactly
-such an invisible process. SQLite still protects the file itself (the
-idle server's writers get SQLITE_BUSY after the 30s busy timeout), and
-the checkpoint gate catches an open transaction, but a wedged idle server
-may leave the compaction unable to truncate the WAL. Stop other rush
-processes on this data directory for a clean run.
+with no claimed work is exactly such an invisible process. SQLite still
+protects the file itself (the idle server's writers get SQLITE_BUSY after
+the 30s busy timeout), and the checkpoint gate catches an open transaction,
+but a wedged idle server may leave the compaction unable to truncate the WAL.
+Stop other rush processes on this data directory for a clean run.
 
 Use --dry-run to print the current size, freelist, estimated result and
 the liveness-gate verdicts without compacting (the only side effect is a
 WAL checkpoint truncation). Use --json for a single machine-readable
 summary object. Use --force to compact despite live hosts/session locks
-(documented above: their writers may fail with SQLITE_BUSY).`,
+(documented above: their writers may fail with SQLITE_BUSY).
+
+With a session ID, compact its conversation history instead. The default
+role is worker; --role also accepts smart, fast, or reviewer. Each requested
+role resolves from the session's matching role override first, then the
+configured role slot. Only direct providers are supported; a role resolving to
+local-cli is refused without native tools or authority bypass. A missing,
+unavailable, or unsupported requested role is an error with no fallback. Live or unreadable ownership state is refused, and busy
+admission does not queue a later compaction. Session mode uses normal summary
+persistence, including its cancellation and failure cleanup behavior;
+--dry-run, --force and --json are database-only options. Summary input capacity
+is not guaranteed; provider errors leave the existing history available.`,
 	Example: `
 # What would be reclaimed, without touching anything
 rush sessions compact --dry-run
@@ -78,6 +90,10 @@ rush sessions compact
 
 # Machine-readable summary
 rush sessions compact --json
+
+# Compact one conversation with the worker model
+rush sessions compact my-session
+rush sessions compact my-session --role reviewer
   `,
 	RunE: sessionsCompactCmdRun,
 }
@@ -110,10 +126,54 @@ type compactResult struct {
 	DurationMS     int64  `json:"duration_ms"`
 }
 
+func sessionsCompactConversation(cmd *cobra.Command, sessionArg, roleArg string) error {
+	a, err := setupAppLite(cmd)
+	if err != nil {
+		return err
+	}
+	defer a.Shutdown()
+	sess, err := resolveSessionID(cmd.Context(), a.Sessions, sessionArg)
+	if err != nil {
+		return err
+	}
+	activity, err := a.SessionActivity(cmd.Context(), sess.ID)
+	if err != nil {
+		return fmt.Errorf("cannot verify session ownership: %w", err)
+	}
+	if kindIsLive(activity.Verdict.Kind) || len(activity.Facts.Unreadable) > 0 {
+		return fmt.Errorf("session %s is still being worked on; stop it before compacting", sess.ID)
+	}
+	if a.AgentCoordinator != nil {
+		return fmt.Errorf("standalone summary is not available in this setup")
+	}
+	summarizer := agent.NewStandaloneSummarizer(a.Store(), a.Sessions, a.Messages)
+	if err := summarizer.SummarizeWithRole(cmd.Context(), sess.ID, config.SelectedModelType(roleArg)); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "compacted session %s (%s) with %s model\n", sess.ID, short(session.HashID(sess.ID)), roleArg)
+	return nil
+}
+
 func sessionsCompactCmdRun(cmd *cobra.Command, args []string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	force, _ := cmd.Flags().GetBool("force")
 	asJSON, _ := cmd.Flags().GetBool("json")
+	role, _ := cmd.Flags().GetString("role")
+	if cmd.Flags().Changed("role") && !agent.SummaryRoleAllowed(config.SelectedModelType(role)) {
+		return fmt.Errorf("unsupported summary role %q", role)
+	}
+	if len(args) == 1 {
+		if cmd.Flags().Changed("dry-run") || cmd.Flags().Changed("force") || cmd.Flags().Changed("json") {
+			return fmt.Errorf("--dry-run, --force, and --json apply only to database compaction")
+		}
+		return sessionsCompactConversation(cmd, args[0], role)
+	}
+	if len(args) != 0 {
+		return fmt.Errorf("compact accepts zero arguments for the session database or one session ID for conversation history")
+	}
+	if cmd.Flags().Changed("role") {
+		return fmt.Errorf("--role applies only when compacting a session conversation")
+	}
 
 	a, err := setupAppLite(cmd)
 	if err != nil {
@@ -434,4 +494,5 @@ func init() {
 	sessionsCompactCmd.Flags().Bool("dry-run", false, "Print size, freelist, estimate and gate verdicts without compacting")
 	sessionsCompactCmd.Flags().Bool("force", false, "Compact despite live rush hosts or live session locks (their writers may fail with SQLITE_BUSY); never bypasses migrate.lock or a busy WAL checkpoint")
 	sessionsCompactCmd.Flags().Bool("json", false, "Emit a single JSON summary object instead of text")
+	sessionsCompactCmd.Flags().String("role", "worker", "Model role used for session-history compaction (smart, fast, worker, or reviewer)")
 }

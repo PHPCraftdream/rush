@@ -98,8 +98,9 @@ override (set via the web UI's model selector), that override wins over
 the config default — same precedence as the smart/fast per-session pin.
 
 Prompt sources (combined as "<stdin>\n\n<args>"):
-  - positional args:   rush run "your prompt"
-  - stdin pipe/redir:  echo "hello" | rush run     |     rush run < prompt.md
+  - positional args:   rush run --role smart "your prompt"
+  - stdin pipe:         echo "hello" | rush run --role smart
+  - stdin redir:        rush run --role smart < prompt.md
   - both (stdin = context, args = question)
 
 Sessions: --session takes either an existing session id (or hash prefix)
@@ -225,18 +226,8 @@ Runaway protection:
                       (supports k/M suffixes: 100k = 100000, 1M = 1000000)
   Both checks fire after each agent step. The session is saved with its
   partial work so you can inspect or fork from it.
-  Without --timeout a 6h default wall-clock cap applies: a GRACEFUL deadline
-  like --timeout (a run waiting on jobs ends through its normal exit, with an
-  envelope and exit_reason "timeout"); a process still alive 60s past it
-  (deadlock / a read that ignores ctx) is force-killed. A wait longer than the
-  cap needs an explicit --timeout. Override the cap via
-  RUSH_RUN_DEFAULT_HARD_TIMEOUT (plain number = seconds, or a Go duration like
-  30m/2h; invalid/non-positive falls back to the 6h default).
-  Timeout error names duration/source; resume_command preserves role/session.
-  Stderr: plain error + exact resume command + stored-work hint; exit 1 (124
-  for the hard backstop). Compatibility: owned deadlines changed "canceled"
-  to "timeout"; caller/parent cancellation remains "canceled". Inner deadlines
-  while the run context is live are not run timeouts.
+  Total run deadlines, timeout reporting and the 60s hard backstop are described
+  under "Time limits" below.
 
 Peak-hours override:
   --allow-peak-hours  bypass a provider's configured peak_hours refusal for
@@ -321,61 +312,68 @@ tools must NOT touch. Example:
 
   out=/tmp/audit.json
   RUSH_FORBID_WRITES="$out" \
-    rush run --json --format json ... > "$out" 2>"$out.err"
+    rush run --json --role smart --format json ... > "$out" 2>"$out.err"
 
 The tools fail with a visible error to the model when a forbidden path
 is targeted; the model then either retries with a different path or
 falls back to returning the content via final_text — both of which
 keep the redirect target intact.
 
-Time limits (usually leave both alone): --timeout bounds the WHOLE run and
-defaults to 0 (disabled), but a run is never unbounded: without --timeout
-the 6h default wall-clock cap applies (see "Runaway protection" above;
-override via RUSH_RUN_DEFAULT_HARD_TIMEOUT), and a wait known to be longer
-(an 8h soak test) needs an explicit --timeout. --idle-timeout (default 15m)
-ends the run if the agent goes quiet for that long DURING A TURN; it does not
-watch a run that is waiting between turns on a job, a delegation or a retry
-pause -- that wait is bounded only by --timeout or the cap. Only reach for
---timeout when a run must fit a hard external deadline (a CI job slot, a
-cron window) or must outlive the cap.`,
+Time limits (usually leave both alone): --timeout bounds the WHOLE run's total
+wall-clock time, including active work and all waits, and defaults to 0 (no explicit
+deadline), but a run is never unbounded: without --timeout the default six-hour
+(6 h) TOTAL wall-clock cap applies. RUSH_RUN_DEFAULT_HARD_TIMEOUT overrides this
+default cap only. A positive --timeout replaces the default cap. Progress does
+not reset this total cap. This deadline is separate from the per-turn stream
+watchdog: --timeout-extends-on-progress can extend that watchdog, not the total
+run limit. --idle-timeout (default 15m) ends the run if the agent goes quiet for
+that long DURING A TURN; it does not watch a run that is waiting between turns
+on a job, a delegation or a retry pause -- that wait is bounded only by
+--timeout or the cap. It watches turns only. At a total deadline Rush attempts
+graceful cancellation; a final envelope is not guaranteed, and a process still
+alive 60s later is force-killed (exit 124). Only set --timeout when
+intentionally imposing a hard external deadline or allowing the run past its
+default cap. The timeout error reports the deadline source and gives the
+session/role resume command; follow operator authorization and safe-resume
+rules; do not infer deadlock or its absence or automatically raise --timeout.`,
 	Example: `
 # Run a simple prompt
-rush run "Guess my 5 favorite Pokémon"
+rush run --role smart "Guess my 5 favorite Pokémon"
 
 # Pipe input from stdin (stdin is prepended to the args prompt)
-curl https://charm.land | rush run "Summarize this website"
+curl https://charm.land | rush run --role smart "Summarize this website"
 
 # Read the prompt from a file
-rush run < prompt.md
+rush run --role smart < prompt.md
 
 # Redirect output to a file
-rush run "Generate a hot README for this project" > MY_HOT_README.md
+rush run --role smart "Generate a hot README for this project" > MY_HOT_README.md
 
 # Quiet mode (hide the spinner) / verbose mode (show logs)
-rush run --quiet  "Generate a README for this project"
-rush run --verbose "Generate a README for this project"
+rush run --quiet --role smart "Generate a README for this project"
+rush run --verbose --role smart "Generate a README for this project"
 
 # Continue a previous session by id (or hash prefix)
-rush run --session {session-id} "Follow up on your last response"
+rush run --role smart --session {session-id} "Follow up on your last response"
 
 # Continue the most recent session
-rush run --continue "Follow up on your last response"
+rush run --role smart --continue "Follow up on your last response"
 
 # Idempotent CI: same id across runs continues the same conversation;
 # the first run creates it. Use a stable key like a PR number.
-rush run --session "pr-42" "Review the latest changes"
+rush run --role smart --session "pr-42" "Review the latest changes"
 
 # Override the session's system prompt from a flag
-rush run --system-prompt "You are a terse senior reviewer." \
+rush run --role smart --system-prompt "You are a terse senior reviewer." \
           --session "pr-42" "Review the latest changes"
 
 # Or from a file (mutually exclusive with --system-prompt)
-rush run --system-prompt-file ./reviewer-prompt.md \
+rush run --role smart --system-prompt-file ./reviewer-prompt.md \
           --session "pr-42" "Review the latest changes"
 
 # Stdin user-prompt + file system-prompt + stable session id — the three
 # inputs are independent, so this works as one pipeline:
-git diff HEAD~1 | rush run --system-prompt-file ./reviewer-prompt.md \
+git diff HEAD~1 | rush run --role smart --system-prompt-file ./reviewer-prompt.md \
                             --session "pr-42" \
                             "Review this diff"
 
@@ -400,7 +398,7 @@ rush run --role smart --session "pr-42" "review this PR"
 # → auto-loads scope-control / summary-required rules without --system-prompt-file
 
 # Machine-readable summary for wrapper scripts
-rush run --json --session "pr-42" "review the diff" | jq .final_text
+rush run --json --role smart --session "pr-42" "review the diff" | jq .final_text
 
 # Force raw JSON in final_text (model is instructed AND envelope is
 # post-stripped; markdown fences and prose preamble go to
@@ -793,7 +791,7 @@ func init() {
 	runCmd.Flags().String("effort", "", "Reasoning effort for this turn: low|medium|high. Applies to whichever slot --role picked. Not persisted by rush run.")
 	runCmd.Flags().Bool("stream", false, "Stream every assistant token to stdout. Default is terse: tool-call names on stderr + final answer on stdout.")
 	runCmd.Flags().Bool("json", false, "Emit one JSON object on stdout summarising the run (session_id, final_text, tool_calls, usage, duration, exit_reason). Mutually exclusive with --stream.")
-	runCmd.Flags().String("timeout", "0", "Abort the run after this duration (e.g. 30s, 5m, 900 — plain number = seconds). A hard wall-clock kill force-exits the process 60s past this even on a freeze. Default 0 (no --timeout deadline; a graceful 6h default cap still applies, RUSH_RUN_DEFAULT_HARD_TIMEOUT overrides it, and --timeout is how to wait longer; see --idle-timeout for the inactivity backstop).")
+	runCmd.Flags().String("timeout", "0", "Abort the whole run after this total wall-clock duration (e.g. 30s, 5m, 900 — plain number = seconds), including active work and waits. On deadline Rush requests graceful cancellation; if the process remains alive 60s later, the hard backstop force-exits it. Default 0 means no explicit deadline, but a 6h total default cap still applies; streaming progress does not reset it. RUSH_RUN_DEFAULT_HARD_TIMEOUT overrides that cap. See --idle-timeout for the separate inactivity backstop.")
 	runCmd.Flags().String("idle-timeout", "15m", "End the run if the agent produces no activity (no streamed output, no tool call/result) for this long — a stuck tool call still counts as activity and is bounded separately. Terminal: unlike a provider stall on other rush entry points, this never silently retries. e.g. 5m, 900, 0 to disable. Default 15m.")
 	runCmd.Flags().Duration("stall-timeout", 30*60*time.Second, "Abort a turn that has made no durable progress (tool call/result, step finish, checkpoint) for this long (turn-stall abort policy). Default 30m; 0 disables the abort.")
 	runCmd.Flags().StringP("model", "m", "", "Model to use. Accepts 'model' or 'provider/model' to disambiguate models with the same name across providers")
@@ -809,8 +807,8 @@ func init() {
 	runCmd.Flags().Int("max-agent-depth", 2, "Maximum remaining agent delegation edges (0..32). Default 2.")
 	runCmd.Flags().String("aggregation", "", "How sub-agent fan-out output reaches the orchestrator. 'summary' (default — parent composes a wrap-up, sub-agent detail lives in DB only) | 'concat' (prompt-nudge: parent includes each sub-agent reply verbatim in final_text) | 'attach' (collect each sub-agent's last assistant text into envelope.sub_agent_outputs; final_text becomes a brief wrap-up). An always-on reduction-loss warning fires regardless when parent collapses sub-agent outputs to <40% of their combined size.")
 	// Fork patch: batch 8 — timeout extension flags.
-	runCmd.Flags().Bool("timeout-extends-on-progress", false, "Reset the stream watchdog deadline every time streaming progress occurs. Prevents killing healthy long compositions. Default: false (static deadline).")
-	runCmd.Flags().String("timeout-hard-cap", "0", "Maximum wall-clock time the watchdog allows even with --timeout-extends-on-progress (e.g. 30s, 5m, 900 — plain number = seconds). Default: 0 (no cap).")
+	runCmd.Flags().Bool("timeout-extends-on-progress", false, "Reset the per-turn stream watchdog deadline every time streaming progress occurs. Does not extend the total --timeout/default-cap run deadline. Default: false (static watchdog deadline).")
+	runCmd.Flags().String("timeout-hard-cap", "0", "Maximum wall-clock time the stream watchdog allows even with --timeout-extends-on-progress (e.g. 30s, 5m, 900 — plain number = seconds); watchdog-only, separate from the total run deadline. Default: 0 (no cap).")
 	// Fork patch: batch 24 — on-finish hook.
 	runCmd.Flags().String("on-finish", "", "Shell command to execute after the run completes. Environment variables: RUSH_SESSION_ID, RUSH_EXIT_REASON, RUSH_COST_USD, RUSH_TOKENS, RUSH_DURATION_SEC. Hook errors are printed to stderr but don't affect exit code.")
 	// Fork patch: batch 30 — runaway protection.

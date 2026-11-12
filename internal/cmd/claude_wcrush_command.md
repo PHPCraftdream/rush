@@ -10,49 +10,41 @@ description: Delegate this task to a rush sub-agent that must work only inside a
 
 ### Phase 1 — write and static checks, in parallel
 
-The sub-agent writes production code and tests. It MUST run these memory-light checks (and the project's linter if cheap):
+The sub-agent writes production code and tests. It follows the caller's verification policy: do not run local checks when CI-only execution is requested, report CI-only status, and list exact CI commands for the parent; otherwise run only explicitly authorized checks. No execution is implicitly authorized by `/wcrush`.
 
-```
-go build ./...
-go vet ./...
-gofmt -l .
-```
-
-Hand over code that compiles and passes static analysis. Phase 1 forbids `go test` in any form, revert-checks, debugging by running anything, and neutering production code to observe failure. These belong to phase 2.
+Hand over code without claiming execution checks that were not authorized or run. State clearly what was and was not verified, and list the tests written with the failure scenarios they are intended to catch. Where caller policy is CI-only, provide the exact CI commands for the parent without claiming execution or adding revert-check requirements.
 
 ### Handover — final message contract
 
-The agent's final assistant message must state plainly that work is **NOT verified by execution**, and list:
+The agent's final assistant message must state what verification policy applied and plainly identify anything **NOT verified by execution**, then list:
 
-1. Tests written and the failure scenario each catches.
-2. For each, the exact revert-check (what to neuter and expected failure output).
-3. Exactly what to run, and in what order.
+1. Tests written and the failure scenario each is intended to catch.
+2. What checks were run, or the exact CI commands required by the caller's policy (not run locally when CI-only).
+3. Any known limitations or assumptions.
 
 Without this, phase 2 must reverse-engineer the intent.
 
 ### Phase 2 — with orchestrator permission, same session
 
-Resume the **same** session from the worktree that created it. A session belongs to its creating checkout, so run this command with the worktree as the current directory; do not resume it from the primary checkout:
+Resume the **same** session from the worktree that created it, only after the original physical `rush run` process has exited and all owned batch work is terminal. A session belongs to its creating checkout, so run this command with the worktree as the current directory; do not resume it from the primary checkout. A child paused on a question is not an exited top-level run; use `/rush`'s legacy-child or held-batch-question route as appropriate. This phase is only for verification the caller authorizes; it does not override CI-only policy.
 
 ```
 rush run --role smart --session <same id> "<permission and what to run>"
 ```
 
-Context is preserved; only now may the agent run tests, perform revert-checks, and fix failures. `--role` is mandatory when resuming; omitting it exits with code 1.
+Context is preserved. Run only checks authorized by the caller's policy; never presume phase-2 execution permission. `--role` is mandatory when resuming; omitting it exits with code 1.
 
 **Reviewer auto-pass:** with a reviewer configured, this successful `--role smart` resume adds a Reviewer turn reviewing the complete phase-1+phase-2 session. Its conclusion is carried in the JSON envelope's additive `review` field; the executor's answer remains `final_text`. This is Rush-driven, not extra requested work; unconfigure the reviewer to disable it.
 
 ## Inherited rules that phase split changes
 
 - **Delegation stays enabled:** task text may constrain the deliverable, but must not prohibit smart's internal delegation. Nested executors starting is expected, not a reason to stop or ask the operator: launch and wait for the run to finish.
-- **OOM discipline belongs to phase 2** — the other half of the same
-  bargain: `-parallel 2` for heavy packages, never two heavy runs at
-  once, long runs backgrounded via the Bash tool's
-  `run_in_background: true` parameter and never with a trailing `&`.
-- **Zero trust:** phase-1 handover and phase-2 pass reports are claims, not receipts. The orchestrator personally verifies the diff, tests, and revert-checks, one at a time, inside the worktree, using wrush.md's checklist.
+- **Verification follows caller policy** — CI-only requests remain CI-only; `/wcrush` does not require local build, vet, formatting, or test commands.
+- **Phase-2 verification follows caller policy** — run long phase-2 tests only when explicitly authorized; a CI-only request means do not run them locally. When execution is authorized, honor project memory and concurrency limits and wait for every started process to finish; never detach a child with `&`.
+- **Zero trust:** handover reports are claims, not receipts. The parent personally reviews the diff and tests against the caller's verification policy, one at a time, inside the worktree using wrush.md's checklist.
 - Do not touch `CLAUDE.md`, `.github/workflows/`, or `web/dist/.gitkeep`; do not use `ReportFindings` or the `code-review` skill.
 
-**`/wrush`'s dedicated git worktree, no-sub-agent-commit/push, orchestrator transfer/commit, and worktree removal rules remain in force. The orchestrator commits only those changes before removing the worktree. Do not report done until changes are merged, committed, and the worktree removed.**
+**`/wrush`'s dedicated git worktree and no-sub-agent-commit/push rule remain in force. The invoking parent owns transfer, commit, and cleanup, only when authorized and after physical process plus relevant batch termination. Do not report integration complete until any explicitly requested, authorized transfer is complete; do not commit or remove the worktree unconditionally. When authorized after these gates, the parent commits only those changes before removing the worktree.**
 
 ## Task
 
