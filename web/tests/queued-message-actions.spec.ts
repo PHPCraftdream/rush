@@ -230,12 +230,27 @@ test("a failed send-now restores the message to its original queue position with
   await expect(bubbles.nth(2)).toContainText("three");
 
   // Nothing was double-sent: exactly one inject_message frame went out for
-  // the failed attempt, and the eventual flush carries all three texts
-  // (the restored message is a normal queued message again).
+  // the failed attempt. The restored message is NOT a normal queued message
+  // again: the busy=false flush carries only the clean items (a failed item
+  // may already have been acted on, so auto-resending it risks a duplicate;
+  // see drainSendableQueue in queueOnIdle.ts).
   expect(await framesOfType(page, "inject_message")).toHaveLength(1);
   await setBusy(page, "fail-1", false);
   const flushed = await waitForWSSend(page, "send_message");
-  expect(payloadOf(flushed).content).toBe("one\n\ntwo\n\nthree");
+  expect(payloadOf(flushed).content).toBe("one\n\nthree");
+
+  // "two" is retained, not lost: still queued with its error, and only an
+  // explicit user action (the idle plain Send) sends it, exactly once.
+  await expect(page.getByText("Queue · 1")).toBeVisible();
+  await expect(page.getByTestId("queued-message-error")).toContainText("session busy elsewhere");
+  await expect(bubbles).toHaveCount(1);
+  await expect(bubbles.first()).toContainText("two");
+  expect(await framesOfType(page, "send_message")).toHaveLength(1);
+  await page.getByTestId("queued-message-send").click();
+  await expect(page.getByText("Queue ·")).toBeHidden();
+  const retried = await framesOfType(page, "send_message");
+  expect(retried).toHaveLength(2);
+  expect(payloadOf(retried[1]).content).toBe("two");
 });
 
 /** Browser-side: closes the mock /ws socket via its real onclose path. */

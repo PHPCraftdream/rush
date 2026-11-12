@@ -132,7 +132,7 @@ test("creates a role with explicit zero tools and the selected effort", async ({
   await editor.getByLabel("Role name").fill("composer");
   await editor.getByLabel("Provider", { exact: true }).fill("role-provider");
   await editor.getByLabel("Model", { exact: true }).fill("model-a");
-  await editor.getByLabel("Reasoning effort", { exact: true }).selectOption("high");
+  await editor.getByLabel("Reasoning effort").selectOption("high");
   await editor.getByLabel("Allowed tools").selectOption("none");
   await editor.getByRole("button", { name: "Save role", exact: true }).click();
   const request = await waitForWSSend(page, "set_custom_role");

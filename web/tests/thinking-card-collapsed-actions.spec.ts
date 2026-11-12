@@ -161,7 +161,8 @@ test("edit click on a collapsed card auto-expands and shows the edit form", asyn
 
   // Verify update_message_thinking command sent
   const cmd = await waitForWSSend(page, "update_message_thinking");
-  expect(cmd.payload).toEqual({ messageID: "tca-4", thinking: "Edited reasoning" });
+  // partIndex addresses the exact reasoning part (the only part of this message -> 0).
+  expect(cmd.payload).toEqual({ messageID: "tca-4", thinking: "Edited reasoning", partIndex: 0 });
 });
 
 test("control: delete and edit still work from an already-expanded card", async ({ page }) => {
