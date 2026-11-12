@@ -154,6 +154,13 @@ type ResponsesWSConn struct {
 	hasCompleted     bool
 	closed           bool
 	closeOnce        sync.Once
+	created          time.Time
+	sentAt           time.Time
+	exchanges        int
+	deltaExchanges   int
+	fullBytesTotal   int64
+	wireBytesTotal   int64
+	frameInfo        ResponsesWSFrameInfo
 }
 
 func DialResponsesWebSocket(ctx context.Context, options ResponsesWSOptions) (*ResponsesWSConn, error) {
@@ -283,6 +290,7 @@ func DialResponsesWebSocket(ctx context.Context, options ResponsesWSOptions) (*R
 	wire.SetReadLimit(options.MaxFrameBytes)
 	return &ResponsesWSConn{
 		wire:             wire,
+		created:          time.Now(),
 		owner:            options.Owner,
 		endpoint:         options.Endpoint,
 		protocol:         options.Protocol,
@@ -377,6 +385,8 @@ func (c *ResponsesWSConn) BeginExchange() error {
 	c.state = ResponsesWSSendNotSent
 	c.exchangeBytes = 0
 	c.active = true
+	c.exchanges++
+	c.frameInfo = ResponsesWSFrameInfo{}
 	return nil
 }
 
@@ -403,6 +413,7 @@ func (c *ResponsesWSConn) SendRaw(ctx context.Context, frame []byte) error {
 	}
 	c.deltaMu.Lock()
 	wireFrame, _ := c.delta.prepare(frame, c.deltaEnabled)
+	info := c.delta.last
 	c.deltaMu.Unlock()
 	stopClose := contextDeadlineFunc(ctx, func() { _ = c.Close() })
 	defer stopClose()
@@ -413,6 +424,19 @@ func (c *ResponsesWSConn) SendRaw(ctx context.Context, frame []byte) error {
 		return c.fail("send", state, errors.New("invalid exchange state"))
 	}
 	c.state = ResponsesWSSendPossiblySent
+	if info.Reason == ResponsesWSFullNoParent && c.exchanges <= 1 {
+		info.Reason = ResponsesWSFullFirstExchange
+	}
+	c.frameInfo = info
+	c.sentAt = time.Now()
+	c.fullBytesTotal += int64(info.FullBytes)
+	c.wireBytesTotal += int64(info.WireBytes)
+	if info.Mode == ResponsesWSFrameDelta {
+		c.deltaExchanges++
+	}
+	if debugEnabled() {
+		slog.Debug("responses websocket frame sent", c.diagAttrsLocked()...)
+	}
 	c.stateMu.Unlock()
 	if err := c.wire.WriteMessage(websocket.TextMessage, wireFrame); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -485,6 +509,9 @@ func (c *ResponsesWSConn) MarkCompleted() error {
 	c.state = ResponsesWSCompleted
 	c.active = false
 	c.hasCompleted = true
+	if debugEnabled() {
+		slog.Debug("responses websocket exchange completed", append(c.diagAttrsLocked(), "exchange_ms", time.Since(c.sentAt).Milliseconds())...)
+	}
 	c.deltaMu.Lock()
 	c.delta.commit()
 	c.deltaMu.Unlock()
@@ -521,6 +548,7 @@ func (c *ResponsesWSConn) fail(stage string, state ResponsesWSSendState, cause e
 	if c.state > state {
 		state = c.state
 	}
+	attrs := c.diagAttrsLocked()
 	c.stateMu.Unlock()
 	c.deltaMu.Lock()
 	c.delta.clear()
@@ -531,7 +559,7 @@ func (c *ResponsesWSConn) fail(stage string, state ResponsesWSSendState, cause e
 	if errors.As(cause, &closeError) {
 		closeStatus = closeError.Code
 	}
-	slog.Debug("responses websocket exchange failed", "protocol", c.protocol, "stage", stage, "send_state", state.String(), "close_status", closeStatus)
+	slog.Debug("responses websocket exchange failed", append(attrs, "stage", stage, "send_state", state.String(), "close_status", closeStatus)...)
 	return &ResponsesWSError{state: state, stage: stage, cause: cause}
 }
 

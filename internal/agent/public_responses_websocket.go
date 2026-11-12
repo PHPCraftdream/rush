@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"strconv"
@@ -20,6 +21,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/nettransport"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // The bridge retains fantasy v0.45.5's serializer, event parser and usage logic.
@@ -222,7 +224,8 @@ func (c *publicResponsesClient) Do(original *http.Request) (*http.Response, erro
 	attempt, _ := original.Context().Value(publicResponsesAttemptKey{}).(*publicResponsesAttempt)
 	request := original.Clone(original.Context())
 	request.Header = c.requestHeaders(original.Header, policy, attempt)
-	fallback := func() (*http.Response, error) {
+	fallback := func(reason string) (*http.Response, error) {
+		logPublicResponsesFallback(conversation, reason)
 		if c.manager.Closed() {
 			return nil, errors.New("responses websocket: owner closed")
 		}
@@ -242,13 +245,13 @@ func (c *publicResponsesClient) Do(original *http.Request) (*http.Response, erro
 	}
 	if policy.transport == config.ResponsesTransportHTTP {
 		c.manager.InvalidateConversation(conversation)
-		return fallback()
+		return fallback("policy_http")
 	}
 	if attempt == nil || !attempt.stream || conversation == "" || request.Context().Value(cliprovider.TitleGenerationContextKey) == true || request.Method != http.MethodPost || request.URL.Scheme != "https" || request.URL.Host != "api.openai.com" || request.URL.Path != "/v1/responses" || request.URL.RawQuery != "" {
-		return fallback()
+		return fallback("ineligible_request")
 	}
 	if request.Body == nil {
-		return fallback()
+		return fallback("ineligible_request")
 	}
 	payload, err := io.ReadAll(io.LimitReader(request.Body, (8<<20)+1))
 	if err != nil {
@@ -258,18 +261,18 @@ func (c *publicResponsesClient) Do(original *http.Request) (*http.Response, erro
 	if len(payload) > 8<<20 {
 		// Preserve unread bytes for the unchanged HTTP path, without buffering them.
 		request.Body = &publicResponsesJoinedBody{Reader: io.MultiReader(bytes.NewReader(payload), request.Body), closer: request.Body}
-		return fallback()
+		return fallback("frame_too_large")
 	}
 	_ = request.Body.Close()
 	request.Body = io.NopCloser(bytes.NewReader(payload))
 	frame, err := nettransport.ResponsesWSFullFrame(payload)
 	if err != nil {
-		return fallback()
+		return fallback("frame_encode")
 	}
 	headers := request.Header.Clone()
 	auth := headers.Get("Authorization")
 	if auth == "" {
-		return fallback()
+		return fallback("no_authorization")
 	}
 	headers.Del("Authorization")
 	for _, key := range []string{"Content-Type", "Content-Length", "Accept", "Connection", "Upgrade"} {
@@ -281,40 +284,101 @@ func (c *publicResponsesClient) Do(original *http.Request) (*http.Response, erro
 	}
 	revision := sha256.Sum256([]byte(auth))
 	owner := hex.EncodeToString(revision[:])
-	lease, err := c.manager.Acquire(request.Context(), nettransport.ResponsesWSOptions{
-		Protocol: "public-openai-responses", Endpoint: endpoint, ReadPolicy: nettransport.ResponsesWSReadRequestContext,
-		AuthHeaders: http.Header{"Authorization": []string{auth}}, Headers: headers, Network: policy.network,
-		StillCurrent: func() bool { return c.valid == nil || c.valid(policy) },
-		Owner:        nettransport.ResponsesWSOwner{AccountID: owner, AuthRevision: owner + ":" + strconv.FormatUint(policy.revision, 10), ConversationID: conversation},
-	}, nettransport.ResponsesWSPlannedMaxAge)
-	if err != nil {
-		return fallback()
-	}
-	conn := lease.Conn()
-	latest, policyErr := c.current(request.Context())
-	if policyErr != nil || latest.revision != policy.revision || latest.apiKey != policy.apiKey || latest.transport != policy.transport || latest.network != policy.network || !maps.Equal(latest.headers, policy.headers) {
-		_ = conn.Close()
-		lease.Release()
-		return fallback()
-	}
-	if err = conn.BeginExchange(); err != nil {
-		_ = conn.Close()
-		lease.Release()
-		return fallback()
-	}
-	if err = conn.SendRaw(request.Context(), frame); err != nil {
-		lease.Release()
-		var send *nettransport.ResponsesWSError
-		if errors.As(err, &send) && send.RetrySafe() {
-			return fallback()
+	// open leases a connection and sends the frame. Chain recovery runs it a
+	// second time, on a fresh connection, so its first frame is a full one.
+	open := func() (*nettransport.ResponsesWSLease, *nettransport.ResponsesWSConn, string, error) {
+		lease, err := c.manager.Acquire(request.Context(), nettransport.ResponsesWSOptions{
+			Protocol: "public-openai-responses", Endpoint: endpoint, ReadPolicy: nettransport.ResponsesWSReadRequestContext,
+			AuthHeaders: http.Header{"Authorization": []string{auth}}, Headers: headers, Network: policy.network,
+			StillCurrent: func() bool { return c.valid == nil || c.valid(policy) },
+			Owner:        nettransport.ResponsesWSOwner{AccountID: owner, AuthRevision: owner + ":" + strconv.FormatUint(policy.revision, 10), ConversationID: conversation},
+		}, nettransport.ResponsesWSPlannedMaxAge)
+		if err != nil {
+			slog.Debug("responses transport: websocket unavailable, using http", "provider", "openai", "reason", "acquire_failed", "error", err.Error())
+			return nil, nil, "acquire_failed", nil
+		}
+		conn := lease.Conn()
+		latest, policyErr := c.current(request.Context())
+		if policyErr != nil || latest.revision != policy.revision || latest.apiKey != policy.apiKey || latest.transport != policy.transport || latest.network != policy.network || !maps.Equal(latest.headers, policy.headers) {
+			_ = conn.Close()
+			lease.Release()
+			return nil, nil, "credentials_or_policy_changed", nil
+		}
+		if err = conn.BeginExchange(); err != nil {
+			_ = conn.Close()
+			lease.Release()
+			return nil, nil, "exchange_state", nil
+		}
+		if err = conn.SendRaw(request.Context(), frame); err != nil {
+			lease.Release()
+			var send *nettransport.ResponsesWSError
+			if errors.As(err, &send) && send.RetrySafe() {
+				return nil, nil, "send_not_sent", nil
+			}
+			attempt.sent.Store(true)
+			return nil, nil, "", err
 		}
 		attempt.sent.Store(true)
+		return lease, conn, "", nil
+	}
+	lease, conn, reason, err := open()
+	if err != nil {
 		return nil, err
 	}
-	attempt.sent.Store(true)
-	body := &publicResponsesWSBody{ctx: request.Context(), lease: lease, conn: conn}
+	if reason != "" {
+		return fallback(reason)
+	}
+	var first []byte
+	hasFirst, recovered := false, false
+	if conn.Chained() {
+		// A chained frame's unknown parent is rejected before any generation.
+		// Read the first event here so that rejection is recovered with a full
+		// frame instead of reaching the SDK as a failed turn.
+		first, err = conn.ReceiveRaw(request.Context())
+		hasFirst = true
+		if err != nil {
+			lease.Release()
+			if ctxErr := request.Context().Err(); ctxErr != nil {
+				return nil, nettransport.ResponsesWSNoReplay(ctxErr)
+			}
+			return nil, err
+		}
+		if nettransport.ResponsesWSChainRejected(first) {
+			slog.Debug("responses websocket chain rejected before output, retrying with a full frame", "provider", "openai", "session_hash", session.HashID(conversation))
+			_ = conn.Close()
+			lease.Release()
+			attempt.sent.Store(false)
+			first, hasFirst, recovered = nil, false, true
+			if lease, conn, reason, err = open(); err != nil {
+				return nil, err
+			}
+			if reason != "" {
+				return fallback(reason)
+			}
+		}
+	}
+	logPublicResponsesExchange(conversation, conn, recovered)
+	body := &publicResponsesWSBody{ctx: request.Context(), lease: lease, conn: conn, first: first, hasFirst: hasFirst}
 	attempt.own(request.Context(), body)
 	return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: body, Request: request}, nil
+}
+
+// logPublicResponsesFallback and logPublicResponsesExchange emit the same
+// transport fields the Codex provider reports, so turns can be compared.
+func logPublicResponsesFallback(conversation, reason string) {
+	slog.Debug("responses transport exchange", "provider", "openai", "session_hash", session.HashID(conversation), "transport", "http", "http_fallback_reason", reason)
+}
+
+func logPublicResponsesExchange(conversation string, conn *nettransport.ResponsesWSConn, recovered bool) {
+	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		return
+	}
+	recoveries := 0
+	if recovered {
+		recoveries = 1
+	}
+	attrs := []any{"provider", "openai", "session_hash", session.HashID(conversation), "transport", "websocket", "chain_recoveries", recoveries}
+	slog.Debug("responses transport exchange", append(attrs, conn.FrameAttrs()...)...)
 }
 
 func (c *publicResponsesClient) requestHeaders(original http.Header, policy publicResponsesPolicy, attempt *publicResponsesAttempt) http.Header {
@@ -355,6 +419,8 @@ type publicResponsesWSBody struct {
 	conn      *nettransport.ResponsesWSConn
 	mu        sync.Mutex
 	buffer    []byte
+	first     []byte // event already read by Do, consumed before the wire
+	hasFirst  bool
 	terminal  bool
 	completed bool
 	resolved  bool
@@ -378,12 +444,18 @@ func (b *publicResponsesWSBody) Read(p []byte) (int, error) {
 		if b.terminal {
 			return 0, io.EOF
 		}
-		raw, err := b.conn.ReceiveRaw(b.ctx)
-		if err != nil {
-			if ctxErr := b.ctx.Err(); ctxErr != nil {
-				return 0, nettransport.ResponsesWSNoReplay(ctxErr)
+		raw := b.first
+		hadFirst := b.hasFirst
+		b.first, b.hasFirst = nil, false
+		if !hadFirst {
+			var err error
+			raw, err = b.conn.ReceiveRaw(b.ctx)
+			if err != nil {
+				if ctxErr := b.ctx.Err(); ctxErr != nil {
+					return 0, nettransport.ResponsesWSNoReplay(ctxErr)
+				}
+				return 0, err
 			}
-			return 0, err
 		}
 		var event struct {
 			Type     string `json:"type"`
