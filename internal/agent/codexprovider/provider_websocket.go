@@ -230,10 +230,11 @@ func (m *languageModel) streamWebSocket(ctx context.Context, payload []byte, use
 			return true
 		}
 		if err = state.consume(raw, acceptPart); err != nil {
-			terminal := conn.Abort(err)
-			if !errors.Is(err, errStreamStopped) {
-				acceptPart(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: terminal})
+			if errors.Is(err, errStreamStopped) {
+				_ = conn.Abort(err)
+				return true
 			}
+			acceptPart(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: webSocketStreamFailure(conn, err, state.acceptedOutput)})
 			return true
 		}
 		if state.completed {
