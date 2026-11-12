@@ -371,6 +371,7 @@ unaffected and always starts every non-disabled server.
               run, ignoring enabled_in_cli. Use when this specific run
               genuinely needs an MCP server rush would otherwise skip.
 `
+
 const runExample = `
 # Run a simple prompt
 rush run --role smart "Guess my 5 favorite Pokémon"

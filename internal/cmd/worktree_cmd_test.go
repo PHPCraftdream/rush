@@ -36,8 +36,8 @@ func wtAddWorktree(t *testing.T, main, slug string) string {
 }
 
 // wtRunRemove invokes runWorktreeRemove with the given flags and returns
-// its error and stdout.
-func wtRunRemove(t *testing.T, mainRoot, slug string, flags map[string]string) (error, string) {
+// its stdout and error.
+func wtRunRemove(t *testing.T, mainRoot, slug string, flags map[string]string) (string, error) {
 	t.Helper()
 	wtRegisterCwdFlag(t, worktreeRemoveCmd, mainRoot)
 	require.NoError(t, worktreeRemoveCmd.Flags().Set("keep-branch", "false"))
@@ -49,7 +49,7 @@ func wtRunRemove(t *testing.T, mainRoot, slug string, flags map[string]string) (
 	worktreeRemoveCmd.SetOut(&out)
 	worktreeRemoveCmd.SetErr(&out)
 	err := runWorktreeRemove(worktreeRemoveCmd, []string{slug})
-	return err, out.String()
+	return out.String(), err
 }
 
 // wtWorktreeRegistered reports whether `git worktree list` in main still
@@ -66,7 +66,7 @@ func TestWorktreeRemoveHappyPath(t *testing.T) {
 	// behind in the main checkout.
 	main := makeWorktreeTestRepo(t)
 	wt := wtAddWorktree(t, main, "task-a")
-	err, out := wtRunRemove(t, main, "task-a", nil)
+	out, err := wtRunRemove(t, main, "task-a", nil)
 	require.NoError(t, err)
 	require.Contains(t, out, "removed worktree task-a")
 	_, statErr := os.Stat(wt)
@@ -82,7 +82,7 @@ func TestWorktreeRemoveKeepBranch(t *testing.T) {
 	// disappears — callers keeping a branch across runs lose it.
 	main := makeWorktreeTestRepo(t)
 	wt := wtAddWorktree(t, main, "task-a")
-	err, out := wtRunRemove(t, main, "task-a",
+	out, err := wtRunRemove(t, main, "task-a",
 		map[string]string{"keep-branch": "true"})
 	require.NoError(t, err)
 	require.Contains(t, out, "keeping branch task-a")
@@ -109,7 +109,7 @@ func TestWorktreeRemoveUnmergedBranchKeptWithoutForce(t *testing.T) {
 	main := makeWorktreeTestRepo(t)
 	wt := wtAddWorktree(t, main, "task-a")
 	wtCommitInWorktree(t, wt)
-	err, out := wtRunRemove(t, main, "task-a", nil)
+	out, err := wtRunRemove(t, main, "task-a", nil)
 	require.NoError(t, err)
 	require.Contains(t, out, "removed worktree task-a")
 	_, statErr := os.Stat(wt)
@@ -125,7 +125,7 @@ func TestWorktreeRemoveUnmergedBranchForceDeletes(t *testing.T) {
 	main := makeWorktreeTestRepo(t)
 	wt := wtAddWorktree(t, main, "task-a")
 	wtCommitInWorktree(t, wt)
-	err, _ := wtRunRemove(t, main, "task-a", map[string]string{"force": "true"})
+	_, err := wtRunRemove(t, main, "task-a", map[string]string{"force": "true"})
 	require.NoError(t, err)
 	exists, err := localBranchExists(context.Background(), main, "task-a")
 	require.NoError(t, err)
@@ -138,7 +138,7 @@ func TestWorktreeRemoveDirtyRefusedWithoutForce(t *testing.T) {
 	main := makeWorktreeTestRepo(t)
 	wt := wtAddWorktree(t, main, "task-a")
 	require.NoError(t, os.WriteFile(filepath.Join(wt, "untracked.txt"), []byte("x\n"), 0o644))
-	err, _ := wtRunRemove(t, main, "task-a", nil)
+	_, err := wtRunRemove(t, main, "task-a", nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "--force")
 	require.True(t, wtWorktreeRegistered(t, main, wt))
@@ -150,7 +150,7 @@ func TestWorktreeRemoveDirtyForceSucceeds(t *testing.T) {
 	main := makeWorktreeTestRepo(t)
 	wt := wtAddWorktree(t, main, "task-a")
 	require.NoError(t, os.WriteFile(filepath.Join(wt, "untracked.txt"), []byte("x\n"), 0o644))
-	err, _ := wtRunRemove(t, main, "task-a", map[string]string{"force": "true"})
+	_, err := wtRunRemove(t, main, "task-a", map[string]string{"force": "true"})
 	require.NoError(t, err)
 	_, statErr := os.Stat(wt)
 	require.True(t, os.IsNotExist(statErr))
@@ -164,15 +164,15 @@ func TestWorktreeRemoveLiveLockInMainDataDir(t *testing.T) {
 	dataDir := filepath.Join(main, ".rush")
 	lock, err := session.TryAcquireSessionLock(dataDir, "task-a")
 	require.NoError(t, err)
-	err, _ = wtRunRemove(t, main, "task-a", nil)
+	_, err = wtRunRemove(t, main, "task-a", nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "task-a")
 	// --force must NOT bypass the live-run refusal.
-	err, _ = wtRunRemove(t, main, "task-a", map[string]string{"force": "true"})
+	_, err = wtRunRemove(t, main, "task-a", map[string]string{"force": "true"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "task-a")
 	require.NoError(t, lock.Release())
-	err, _ = wtRunRemove(t, main, "task-a", nil)
+	_, err = wtRunRemove(t, main, "task-a", nil)
 	require.NoError(t, err)
 }
 
@@ -184,11 +184,11 @@ func TestWorktreeRemoveLiveLockInLocalStore(t *testing.T) {
 	dataDir := filepath.Join(wt, ".rush")
 	lock, err := session.TryAcquireSessionLock(dataDir, "live-one")
 	require.NoError(t, err)
-	err, _ = wtRunRemove(t, main, "task-a", nil)
+	_, err = wtRunRemove(t, main, "task-a", nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "live-one")
 	require.NoError(t, lock.Release())
-	err, _ = wtRunRemove(t, main, "task-a", nil)
+	_, err = wtRunRemove(t, main, "task-a", nil)
 	require.NoError(t, err)
 }
 
@@ -197,7 +197,7 @@ func TestWorktreeRemoveUnknownSlug(t *testing.T) {
 	// empty-plan path) and the command reports success without doing
 	// anything, or fails with the wrong message.
 	main := makeWorktreeTestRepo(t)
-	err, _ := wtRunRemove(t, main, "nope", nil)
+	_, err := wtRunRemove(t, main, "nope", nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not a rush-managed worktree")
 }
@@ -206,7 +206,7 @@ func TestWorktreeRemoveInvalidSlug(t *testing.T) {
 	// Revert-check: skip slug validation in the remove path and a path
 	// traversal slug could resolve outside the worktrees directory.
 	main := makeWorktreeTestRepo(t)
-	err, _ := wtRunRemove(t, main, "../evil", nil)
+	_, err := wtRunRemove(t, main, "../evil", nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "slug")
 }
@@ -238,7 +238,7 @@ func TestWorktreeListOutput(t *testing.T) {
 	require.NotContains(t, text, filepath.Base(other))
 
 	// After removal the list reports the empty case.
-	err, _ := wtRunRemove(t, main, "task-a", nil)
+	_, err := wtRunRemove(t, main, "task-a", nil)
 	require.NoError(t, err)
 	var out2 bytes.Buffer
 	worktreeListCmd.SetOut(&out2)
