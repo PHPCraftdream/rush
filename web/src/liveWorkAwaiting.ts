@@ -7,12 +7,14 @@ export interface AwaitingAnswerInfo {
   question: string;
 }
 
-// awaitingAnswerInfo returns the badge data for a delegation paused on a
-// question, or null when the item is not awaiting an answer (or carries no
-// question text).
-export function awaitingAnswerInfo(
-  item: LiveWorkItem,
-): AwaitingAnswerInfo | null {
+/**
+ * The badge data for a delegation paused on a question.
+ *
+ * Null when the item is not awaiting an answer (or carries no question text).
+ *
+ * @param item - the live-work item
+ */
+export function awaitingAnswerInfo(item: LiveWorkItem): AwaitingAnswerInfo | null {
   if (!item.awaitingAnswer) return null;
   const question = (item.awaitingQuestion ?? "").trim();
   if (!question) return null;

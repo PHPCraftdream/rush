@@ -21,14 +21,20 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend, type MockWSMessage } from "./helpers/mock-ws";
-import { makeSession, makeMessage, makeConfig } from "./helpers/fixtures";
+import { setupMockWS, type MockWSMessage } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { makeConfig } from "./helpers/make-config";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) => route.fulfill({ status: 200, body: "OK" }));
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Opens the session by its stable row test id. */
 async function selectSession(page: import("@playwright/test").Page, id: string, _title: string) {
   await page.goto("/");
   await sendMockWSMessage(page, { type: "sessions_list", payload: [makeSession({ ID: id, Title: _title })] });
@@ -45,6 +51,7 @@ async function selectSession(page: import("@playwright/test").Page, id: string, 
   await row.click();
 }
 
+/** Builds a wake schedule. */
 function schedule(overrides: Record<string, unknown> = {}) {
   return {
     id: "wake_1",
@@ -102,6 +109,12 @@ test("activating a session requests a wake-schedule snapshot", async ({ page }) 
   expect((sent.payload as { sessionID?: string }).sessionID).toBe("ws-req");
 });
 
+/** Browser-side: how many frames of the given type the page has sent. */
+function countSentOfType(type: string) {
+  return (((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string }>)
+    .filter((m) => m.type === type).length;
+}
+
 // ── 4. Cancel with confirmation ──────────────────────────────────────────────
 
 test("cancel asks for confirmation, sends the command, and the fresh snapshot removes the row", async ({ page }) => {
@@ -118,10 +131,7 @@ test("cancel asks for confirmation, sends the command, and the fresh snapshot re
   // Dismissing must NOT send anything.
   await page.getByTestId("confirm-dialog").getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(page.getByTestId("confirm-dialog")).toHaveCount(0);
-  const notSent = await page.evaluate(
-    () => (((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string }>)
-      .filter((m) => m.type === "cancel_wake_schedule").length,
-  );
+  const notSent = await page.evaluate(countSentOfType, "cancel_wake_schedule");
   expect(notSent).toBe(0);
 
   // Confirming sends cancel_wake_schedule with the row's ids...
@@ -187,11 +197,31 @@ test("timed out and user-stopped async commands get distinct badges", async ({ p
     makeMessage({ ID: "user-b1", SessionID: "ws-badges", Role: "user", Parts: [{ type: "text", Text: "long job" }] }),
     makeMessage({ ID: "assistant-b1", SessionID: "ws-badges", Role: "assistant", Parts: [
       { type: "tool_call", ID: "call-timeout", Name: "bash", Input: '{"command":"sleep 100"}', Finished: true },
-      { type: "tool_call", ID: "call-stop", Name: "run_command", Input: '{"program":"tail","args":["-f","x"]}', Finished: true },
+      {
+        type: "tool_call",
+        ID: "call-stop",
+        Name: "run_command",
+        Input: '{"program":"tail","args":["-f","x"]}',
+        Finished: true,
+      },
     ] }),
     makeMessage({ ID: "result-b1", SessionID: "ws-badges", Role: "tool", Parts: [
-      { type: "tool_result", ToolCallID: "call-timeout", Name: "bash", Content: "Async job started", IsError: false, Metadata: '{"async":true,"job_id":"call-timeout","status":"running"}' },
-      { type: "tool_result", ToolCallID: "call-stop", Name: "run_command", Content: "Async job started", IsError: false, Metadata: '{"async":true,"job_id":"call-stop","status":"running"}' },
+      {
+        type: "tool_result",
+        ToolCallID: "call-timeout",
+        Name: "bash",
+        Content: "Async job started",
+        IsError: false,
+        Metadata: '{"async":true,"job_id":"call-timeout","status":"running"}',
+      },
+      {
+        type: "tool_result",
+        ToolCallID: "call-stop",
+        Name: "run_command",
+        Content: "Async job started",
+        IsError: false,
+        Metadata: '{"async":true,"job_id":"call-stop","status":"running"}',
+      },
     ] }),
   ];
   await sendMockWSMessage(page, { type: "messages_list", payload: { SessionID: "ws-badges", Messages: messages } });

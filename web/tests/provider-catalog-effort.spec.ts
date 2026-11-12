@@ -1,9 +1,14 @@
 import { test, expect, type Page } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeConfig, makeSession } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeConfig } from "./helpers/make-config";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 const sessionID = "catalog-effort-session";
 
+/** Injects a session on the given provider, model and effort. */
 async function showSession(page: Page, provider: string, model: string, effort = "") {
   await sendMockWSMessage(page, {
     type: "sessions_list",
@@ -18,7 +23,7 @@ async function showSession(page: Page, provider: string, model: string, effort =
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) => route.fulfill({ status: 200, body: "OK" }));
+  await page.route("/auth/check", fulfillAuthOk);
   await page.goto("/");
 });
 

@@ -18,22 +18,53 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { makeMessage, makeSession } from "./helpers/fixtures";
-import { sendMockWSMessage, setupMockWS } from "./helpers/mock-ws";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 const sessionID = "outcome-badges";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) => route.fulfill({ status: 200, body: "OK" }));
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Injects the session and opens it by its row test id. */
 async function selectSession(page: import("@playwright/test").Page, id: string) {
   await page.goto("/");
   await sendMockWSMessage(page, { type: "sessions_list", payload: [makeSession({ ID: id, Title: id })] });
   const row = page.getByTestId(`session-${id}`);
   await expect(row).toBeVisible({ timeout: 5000 });
   await row.click();
+}
+
+/** A finished bash tool_call part for an async call. */
+function bashCallPart(c: { id: string }) {
+  return { type: "tool_call", ID: c.id, Name: "bash", Input: `{"command":"echo ${c.id}"}`, Finished: true };
+}
+
+/** The running async tool_result part for a bash call. */
+function bashResultPart(c: { id: string }) {
+  return {
+    type: "tool_result",
+    ToolCallID: c.id,
+    Name: "bash",
+    Content: "Async job started",
+    IsError: false,
+    Metadata: `{"async":true,"job_id":"${c.id}","status":"running"}`,
+  };
+}
+
+/** The background-job notice message for the i-th bash call. */
+function bashNoticeMessage(c: { notice: string; badge: string }, i: number) {
+  return makeMessage({
+    ID: `notice-c-${i}`, SessionID: sessionID, Role: "user" as const,
+    BackgroundJobNotice: c.badge !== "timed out",
+    NoticeKind: c.badge === "timed out" ? "timeout_terminated" : undefined,
+    Parts: [{ type: "text", Text: c.notice }],
+  });
 }
 
 // ── Command matrix (ActionRow badges) ────────────────────────────────────────
@@ -44,20 +75,28 @@ test("every terminal cause gets a distinct badge on an async command block", asy
   const calls: Array<{ id: string; notice: string; badge: string }> = [
     { id: "c-fin", notice: "Async job c-fin (bash) finished.\n\nok out", badge: "done" },
     { id: "c-fail", notice: "Async job c-fail (bash) failed.\n\nboom", badge: "error" },
-    { id: "c-to", notice: "Async job c-to (bash) timed out after 60s and was stopped. Partial output:\n\npartial", badge: "timed out" },
+    {
+      id: "c-to",
+      notice: "Async job c-to (bash) timed out after 60s and was stopped. Partial output:\n\npartial",
+      badge: "timed out",
+    },
     { id: "c-stop", notice: "Async job c-stop (bash) was stopped (batch_stop). Partial output before the stop:\n\npartial", badge: "stopped by user" },
-    { id: "c-can", notice: "Async job c-can (run_command) was cancelled (session stopped). Partial output:\n\npartial", badge: "cancelled" },
+    {
+      id: "c-can",
+      notice: "Async job c-can (run_command) was cancelled (session stopped). Partial output:\n\npartial",
+      badge: "cancelled",
+    },
   ];
 
   const messages = [
     makeMessage({ ID: "user-c", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "run jobs" }] }),
     makeMessage({
       ID: "assistant-c", SessionID: sessionID, Role: "assistant",
-      Parts: calls.map((c) => ({ type: "tool_call", ID: c.id, Name: "bash", Input: `{"command":"echo ${c.id}"}`, Finished: true })),
+      Parts: calls.map(bashCallPart),
     }),
     makeMessage({
       ID: "results-c", SessionID: sessionID, Role: "tool",
-      Parts: calls.map((c) => ({ type: "tool_result", ToolCallID: c.id, Name: "bash", Content: "Async job started", IsError: false, Metadata: `{"async":true,"job_id":"${c.id}","status":"running"}` })),
+      Parts: calls.map(bashResultPart),
     }),
   ];
   await sendMockWSMessage(page, { type: "messages_list", payload: { SessionID: sessionID, Messages: messages } });
@@ -68,12 +107,7 @@ test("every terminal cause gets a distinct badge on an async command block", asy
       SessionID: sessionID,
       Messages: [
         ...messages,
-        ...calls.map((c, i) => makeMessage({
-          ID: `notice-c-${i}`, SessionID: sessionID, Role: "user" as const,
-          BackgroundJobNotice: c.badge !== "timed out",
-          NoticeKind: c.badge === "timed out" ? "timeout_terminated" : undefined,
-          Parts: [{ type: "text", Text: c.notice }],
-        })),
+        ...calls.map(bashNoticeMessage),
       ],
     },
   });
@@ -88,14 +122,51 @@ test("every terminal cause gets a distinct badge on an async command block", asy
   }));
 });
 
+/** A finished agent tool_call part for an async delegation. */
+function agentCallPart(c: { id: string; prompt: string }) {
+  return { type: "tool_call", ID: c.id, Name: "agent", Input: `{"prompt":"${c.prompt}"}`, Finished: true };
+}
+
+/** The running async tool_result part for an agent call. */
+function agentResultPart(c: { id: string }) {
+  return {
+    type: "tool_result",
+    ToolCallID: c.id,
+    Name: "agent",
+    Content: "Async agent job started",
+    IsError: false,
+    Metadata: `{"async":true,"job_id":"${c.id}","status":"running"}`,
+  };
+}
+
+/** The background-job notice message for the i-th agent call. */
+function agentNoticeMessage(c: { notice: string; badge: string }, i: number) {
+  return makeMessage({
+    ID: `notice-a-${i}`, SessionID: sessionID, Role: "user" as const,
+    BackgroundJobNotice: c.badge !== "timed out",
+    NoticeKind: c.badge === "timed out" ? "timeout_terminated" : undefined,
+    Parts: [{ type: "text", Text: c.notice }],
+  });
+}
+
 // ── Delegation matrix (SubAgentBlock badges) ─────────────────────────────────
 
 test("every terminal cause gets a distinct badge on an async delegation block", async ({ page }) => {
   await selectSession(page, sessionID);
 
   const calls: Array<{ id: string; prompt: string; notice: string; badge: string }> = [
-    { id: "a-fin", prompt: "delegate finish", notice: "Async job a-fin (agent) finished.\n\nchild report", badge: "done" },
-    { id: "a-fail", prompt: "delegate fail", notice: "Async job a-fail (agent) failed.\n\nchild blew up", badge: "error" },
+    {
+      id: "a-fin",
+      prompt: "delegate finish",
+      notice: "Async job a-fin (agent) finished.\n\nchild report",
+      badge: "done",
+    },
+    {
+      id: "a-fail",
+      prompt: "delegate fail",
+      notice: "Async job a-fail (agent) failed.\n\nchild blew up",
+      badge: "error",
+    },
     { id: "a-to", prompt: "delegate timeout", notice: "Async job a-to (agent) timed out after 90s and was stopped. Partial output:\n\npartial child", badge: "timed out" },
     // stop_agent's parent delivery: a FAILED completion whose entire content
     // is subAgentOutcomeCancelledText — must read "stopped by user", not
@@ -108,11 +179,11 @@ test("every terminal cause gets a distinct badge on an async delegation block", 
     makeMessage({ ID: "user-a", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "delegate work" }] }),
     makeMessage({
       ID: "assistant-a", SessionID: sessionID, Role: "assistant",
-      Parts: calls.map((c) => ({ type: "tool_call", ID: c.id, Name: "agent", Input: `{"prompt":"${c.prompt}"}`, Finished: true })),
+      Parts: calls.map(agentCallPart),
     }),
     makeMessage({
       ID: "results-a", SessionID: sessionID, Role: "tool",
-      Parts: calls.map((c) => ({ type: "tool_result", ToolCallID: c.id, Name: "agent", Content: "Async agent job started", IsError: false, Metadata: `{"async":true,"job_id":"${c.id}","status":"running"}` })),
+      Parts: calls.map(agentResultPart),
     }),
   ];
   await sendMockWSMessage(page, { type: "messages_list", payload: { SessionID: sessionID, Messages: messages } });
@@ -123,12 +194,7 @@ test("every terminal cause gets a distinct badge on an async delegation block", 
       SessionID: sessionID,
       Messages: [
         ...messages,
-        ...calls.map((c, i) => makeMessage({
-          ID: `notice-a-${i}`, SessionID: sessionID, Role: "user" as const,
-          BackgroundJobNotice: c.badge !== "timed out",
-          NoticeKind: c.badge === "timed out" ? "timeout_terminated" : undefined,
-          Parts: [{ type: "text", Text: c.notice }],
-        })),
+        ...calls.map(agentNoticeMessage),
       ],
     },
   });

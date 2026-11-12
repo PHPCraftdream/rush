@@ -19,12 +19,13 @@
  */
 
 import { test, expect, Page } from "@playwright/test";
-import {
-  setupMockWS,
-  sendMockWSMessage,
-  waitForWSSend,
-} from "./helpers/mock-ws";
-import { makeSession, makeMessage, makeConfig } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { makeConfig } from "./helpers/make-config";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 // ── Model catalogue ───────────────────────────────────────────────────────────
 
@@ -46,8 +47,18 @@ const CLI_MODELS = [
 
 type CliModel = (typeof CLI_MODELS)[number];
 
+/** Maps a CLI model to its provider-config entry. */
+function toConfigModel(m: CliModel) {
+  return {
+    id: m.id,
+    name: m.name,
+    contextWindow: 200_000,
+  };
+}
+
 // ── Config factory ────────────────────────────────────────────────────────────
 
+/** Config with the CLI models selectable. */
 function makeCliConfig(models: readonly CliModel[] = CLI_MODELS) {
   return makeConfig({
     models: {
@@ -60,11 +71,7 @@ function makeCliConfig(models: readonly CliModel[] = CLI_MODELS) {
         // enabled: true makes models selectable; type: "cli" marks as CLI provider
         enabled: true,
         type: "cli",
-        models: models.map((m) => ({
-          id: m.id,
-          name: m.name,
-          contextWindow: 200_000,
-        })),
+        models: models.map(toConfigModel),
       },
     },
   });
@@ -105,16 +112,18 @@ async function selectFastModel(page: Page, modelName: string) {
   await page.locator('[data-test-id="model-dropdown"]').getByRole("button", { name: modelName, exact: true }).click();
 }
 
+/** Per-test setup: mock the /ws socket and answer the auth probe. */
+async function mockWsAndAuth({ page }: { page: Page }) {
+  await setupMockWS(page);
+  await page.route("/auth/check", fulfillAuthOk);
+}
+
 // ── Per-model: selection + response ──────────────────────────────────────────
 
-for (const model of CLI_MODELS) {
+/** Registers the end-to-end tests for one CLI model. */
+function describeCliModel(model: CliModel) {
   test.describe(`CLI model: ${model.name}`, () => {
-    test.beforeEach(async ({ page }) => {
-      await setupMockWS(page);
-      await page.route("/auth/check", (route) =>
-        route.fulfill({ status: 200, body: "OK" })
-      );
-    });
+    test.beforeEach(mockWsAndAuth);
 
     test(`${model.id}: appears in config and can be selected as large model`, async ({ page }) => {
       const sessionID = `sel-large-${model.id}`;
@@ -190,4 +199,8 @@ for (const model of CLI_MODELS) {
       await expect(page.getByText(responseText)).toBeVisible({ timeout: 3000 });
     });
   });
+}
+
+for (const model of CLI_MODELS) {
+  describeCliModel(model);
 }
