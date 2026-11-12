@@ -14,7 +14,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "pnpm run lint:base && pnpm run lint:carburetor",
     "lint:base": "oxlint --max-warnings=101",
-    "lint:carburetor": "oxlint --threads 1 -c .oxlintrc.carburetor.json --max-warnings=2058",
+    "lint:carburetor": "oxlint --threads 1 -c .oxlintrc.carburetor.json --max-warnings=1178",
     "preview": "rsbuild preview",
     "test": "node scripts/run-tests.mjs",
     "test:ui": "node scripts/run-tests.mjs --ui",
