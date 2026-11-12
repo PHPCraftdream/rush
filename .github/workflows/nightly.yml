@@ -9,12 +9,18 @@ on:
   #   - cron: "0 0 * * *" # every day at midnight
   workflow_dispatch: # allows manual triggering
 
+permissions:
+  contents: read
+
 jobs:
   check:
     # Fork: upstream-only — the nightly build needs GoReleaser Pro (GORELEASER_KEY).
     # Skipped on forks, still runs on charmbracelet/crush.
     if: github.repository == 'charmbracelet/crush'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # gh run list
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
     steps:
@@ -33,6 +39,10 @@ jobs:
   nightly:
     needs: check
     if: github.repository == 'charmbracelet/crush' && needs.check.outputs.should_run == 'true'
+    permissions:
+      contents: write
+      id-token: write
+      packages: write
     uses: charmbracelet/meta/.github/workflows/nightly.yml@main
     secrets:
       goreleaser_key: ${{ secrets.GORELEASER_KEY }}
