@@ -32,10 +32,22 @@ test("nested node controls carry its owning session and root; stop acceptance re
   await node.getByRole("button", { name: "Stop leaf" }).click();
   const sent = await waitForWSSend(page, "batch_stop");
   expect(sent.payload).toMatchObject({ sessionID: "child", rootID: "child-root", nodeID: "leaf" });
-  await sendMockWSMessage(page, { type: "batch_control_result", id: sent.id, payload: { sessionID: "child", rootID: "child-root", nodeID: "leaf", action: "batch_stop", result: "accepted", ok: true } });
+  await sendMockWSMessage(page, { type: "batch_control_result", id: sent.id, payload: { sessionID: "child", rootID: "child-root", nodeID: "leaf", action: "batch_stop", result: "applied", ok: true, answerCode: "accepted" } });
   const statusReq = await waitForWSSend(page, "batch_status");
   await sendMockWSMessage(page, { type: "session_batch_work", id: statusReq.id, payload: treePayload() });
   await expect(node.getByRole("status")).toContainText(/accepted/i);
+  await expect(node.getByTestId("batch-state")).toHaveText("running");
+});
+
+test("queued stop (no owner acknowledgement yet) stays pending, not accepted", async ({ page }) => {
+  await enterTree(page);
+  const node = page.locator('[data-batch-node="leaf"]');
+  await node.getByRole("button", { name: "Stop leaf" }).click();
+  const sent = await waitForWSSend(page, "batch_stop");
+  await sendMockWSMessage(page, { type: "batch_control_result", id: sent.id, payload: { sessionID: "child", rootID: "child-root", nodeID: "leaf", action: "batch_stop", result: "queued", ok: true } });
+  const statusReq = await waitForWSSend(page, "batch_status");
+  await sendMockWSMessage(page, { type: "session_batch_work", id: statusReq.id, payload: treePayload() });
+  await expect(node.getByRole("status")).toContainText("Stop pending owner acknowledgement");
   await expect(node.getByTestId("batch-state")).toHaveText("running");
 });
 
@@ -49,12 +61,12 @@ test("output/add refusals are visible and Add sends only submitted valid JSON", 
   const addNode = page.locator('[data-batch-node="add-node"]');
   const input = addNode.getByRole("textbox", { name: "Items to add under add-node" });
   await input.fill("not json");
-  await addNode.getByRole("button", { name: "Add" }).click();
+  await addNode.getByRole("button", { name: "Add", exact: true }).click();
   await expect(addNode.getByRole("status")).toContainText("JSON");
   const sentTypes = await page.evaluate(() => ((window as unknown as { __wsSent: { type: string }[] }).__wsSent).map((frame) => frame.type));
   expect(sentTypes).not.toContain("batch_add");
   await input.fill('[{"task":{"kind":"run_command","payload":{"tool":"run_command","input":{"command":"echo ok"}}}}]');
-  await addNode.getByRole("button", { name: "Add" }).click();
+  await addNode.getByRole("button", { name: "Add", exact: true }).click();
   sent = await waitForWSSend(page, "batch_add");
   expect(sent.payload).toMatchObject({ sessionID: "child", rootID: "child-root", nodeID: "add-node", items: [{ task: { kind: "run_command" } }] });
   await sendMockWSMessage(page, { type: "batch_control_result", id: sent.id, payload: { sessionID: "child", rootID: "child-root", nodeID: "add-node", action: "batch_add", result: "unsupported", ok: false } });

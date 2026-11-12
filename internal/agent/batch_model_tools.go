@@ -10,6 +10,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 const batchModelOutputLimit = 16 << 10
@@ -54,6 +55,10 @@ func modelInvocationAtCall(ctx context.Context, inv BatchInvocation, call fantas
 	inv.Policy.MessageID = inv.MessageID
 	inv.Policy.SupportsImages = tools.GetSupportsImagesFromContext(ctx)
 	inv.Policy.ModelName = tools.GetModelNameFromContext(ctx)
+	inv.Policy.RoleContract = parentRoleContractFrom(ctx)
+	if inv.Policy.RoleContract != nil {
+		inv.Policy.RoleContract = inv.Policy.RoleContract.Clone()
+	}
 	if opts := callOptionsFrom(ctx); opts != nil {
 		if opts.AgentDepthSet {
 			if inv.AgentDepthSet && opts.MaxAgentDepth > inv.AgentDepth {
@@ -263,7 +268,7 @@ func modelBatchSpecAt(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRe
 		if batchControlTarget(it.Tool) {
 			return jobbatch.Spec{}, fmt.Errorf("control-plane tool %q cannot be a batch leaf", it.Tool)
 		}
-		leaf, e := reg.resolve(it.Tool)
+		leaf, e := reg.resolveForContext(withRoleToolContract(context.Background(), inv.Policy.RoleContract), it.Tool)
 		if e != nil || leaf == nil {
 			return jobbatch.Spec{}, fmt.Errorf("tool %q unavailable in calling pinned toolset", it.Tool)
 		}
@@ -271,9 +276,26 @@ func modelBatchSpecAt(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRe
 		if e != nil {
 			return jobbatch.Spec{}, fmt.Errorf("tool %q input: %w", it.Tool, e)
 		}
+		var selectedRoleContract *session.RoleContract
 		if it.Tool == AgentToolName {
 			if err := validateAgentRoleInput(input); err != nil {
 				return jobbatch.Spec{}, err
+			}
+			var selected struct {
+				Role RequestedModelRole `json:"role"`
+			}
+			if err := json.Unmarshal(input, &selected); err != nil {
+				return jobbatch.Spec{}, err
+			}
+			if selected.Role != "" && !selected.Role.builtin() {
+				cfg, cfgErr := configForBatchInvocation(inv)
+				if cfgErr != nil {
+					return jobbatch.Spec{}, cfgErr
+				}
+				selectedRoleContract, e = ResolveRoleContract(cfg, string(selected.Role), inv.Policy.RoleContract)
+				if e != nil {
+					return jobbatch.Spec{}, e
+				}
 			}
 		}
 		// Normalize the leaf's own tool-input timeout intent once, at
@@ -290,7 +312,7 @@ func modelBatchSpecAt(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRe
 			// silently prefer one.
 			return jobbatch.Spec{}, errors.New("item timeout and the leaf tool input's timeout are ambiguous; provide at most one")
 		}
-		leafPayload := batchLeafPayload{Tool: it.Tool, ToolCallID: fmt.Sprintf("%s-item-%s%d", inv.CallID, path, index), SessionID: inv.SessionID, Input: input, RegistryID: inv.RegistryID, Policy: &inv.Policy, QuestionRoute: inv.QuestionRoute}
+		leafPayload := batchLeafPayload{Tool: it.Tool, ToolCallID: fmt.Sprintf("%s-item-%s%d", inv.CallID, path, index), SessionID: inv.SessionID, Input: input, RegistryID: inv.RegistryID, Policy: &inv.Policy, QuestionRoute: inv.QuestionRoute, SelectedRoleContract: cloneRoleContractForCall(selectedRoleContract)}
 		leafCap := inv.AgentDepth
 		if !inv.AgentDepthSet {
 			leafCap = DefaultAgentDepth

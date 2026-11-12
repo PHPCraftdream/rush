@@ -229,5 +229,5 @@ func (l *cliLoop) quotaTerminalState(state string) bool {
 }
 
 func (l *cliLoop) resumeRole() string {
-	return runResumeRole(string(l.overrides.ModelRole))
+	return runResumeRole(runRoleName(l.overrides))
 }

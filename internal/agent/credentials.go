@@ -25,6 +25,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // ProviderType mirrors catwalk.Type (charm.land/catwalk,
@@ -76,14 +77,14 @@ var (
 	}
 )
 
-// knownRole reports whether role is one of the four Role constants.
+// knownRole reports whether role is a built-in or syntactically valid custom slot.
 func knownRole(role Role) bool {
-	for _, known := range validRoles {
-		if role == known {
-			return true
-		}
+	switch config.SelectedModelType(role) {
+	case config.SelectedModelTypeSmart, config.SelectedModelTypeFast, config.SelectedModelTypeWorker, config.SelectedModelTypeReviewer:
+		return true
+	default:
+		return config.ValidateCustomRoleName(string(role)) == nil
 	}
-	return false
 }
 
 // knownProviderType reports whether t is one of the nine ProviderType
@@ -445,6 +446,25 @@ func applyInvocationEffort(ctx context.Context, smart, fast *ModelChoice) {
 func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID string, creds *CredentialSet) (*resolvedOverrides, error) {
 	smartChoice, smartCovered := creds.Models[RoleSmart]
 	fastChoice, fastCovered := creds.Models[RoleFast]
+	customRole := ""
+	customContract := (*session.RoleContract)(nil)
+	customCredentialCovered := false
+	if opts := callOptionsFrom(ctx); opts != nil && opts.RoleContract != nil && opts.RoleContract.Name != "" {
+		customRole = opts.RoleContract.Name
+		customContract = opts.RoleContract
+		if err := opts.RoleContract.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid selected role contract: %w", err)
+		}
+		if choice, covered := creds.Models[Role(customRole)]; covered {
+			smartChoice = choice
+			smartCovered = true
+			customCredentialCovered = true
+		} else if !creds.AllowConfiguredRoleFallback {
+			return nil, fmt.Errorf("credential set does not cover requested custom role %q", customRole)
+		} else {
+			smartCovered = true // operator contract snapshot is the explicit configured fallback
+		}
+	}
 	if smartOverride, fastOverride := modelOverridesFrom(ctx); smartOverride != nil || fastOverride != nil {
 		if smartOverride != nil {
 			sameModel := smartChoice.Provider == smartOverride.Provider && smartChoice.Model == smartOverride.Model
@@ -467,6 +487,9 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 	}
 	applyInvocationEffort(ctx, &smartChoice, &fastChoice)
 
+	if customRole != "" && !customCredentialCovered && !creds.AllowConfiguredRoleFallback {
+		return nil, fmt.Errorf("credential set does not cover requested custom role %q", customRole)
+	}
 	if !smartCovered {
 		return nil, fmt.Errorf("credential set does not cover the smart role (Models[RoleSmart]); smart is required even when AllowConfiguredRoleFallback is true")
 	}
@@ -475,7 +498,7 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 	}
 
 	var base *resolvedOverrides
-	if creds.AllowConfiguredRoleFallback && !fastCovered {
+	if creds.AllowConfiguredRoleFallback && (!fastCovered || (customRole != "" && !customCredentialCovered)) {
 		var err error
 		base, err = c.resolveSessionModels(ctx, sessionID)
 		if err != nil {
@@ -485,6 +508,9 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 
 	resolved := &resolvedOverrides{credentials: creds}
 	resolved.persistSmartModel, resolved.persistFastModel = sessionModelPersistenceFrom(ctx)
+	if customContract != nil {
+		resolved.smartSource = hbSourceSessionOverride
+	}
 	if base != nil {
 		resolved.smart = base.smart
 		resolved.fast = base.fast
@@ -501,7 +527,7 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 	// from a second, later independent read.
 	cfg, _ := c.cfg.Snapshot()
 
-	if smartCovered {
+	if smartCovered && (customRole == "" || customCredentialCovered) {
 		smart, providerCfg, err := c.buildCredentialModel(ctx, cfg, creds, smartChoice)
 		if err != nil {
 			return nil, err
@@ -519,6 +545,13 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 		// the session's own prompt downstream).
 		resolved.promptPrefix = ""
 		resolved.systemPrompt = ""
+	}
+	if customRole != "" && !customCredentialCovered && base != nil {
+		resolved.smart = base.smart
+		resolved.providerCfg = base.providerCfg
+		resolved.smartSource = base.smartSource
+		resolved.promptPrefix = base.promptPrefix
+		resolved.systemPrompt = base.systemPrompt
 	}
 	if fastCovered {
 		fast, _, err := c.buildCredentialModel(ctx, cfg, creds, fastChoice)
@@ -552,7 +585,25 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 		}
 	}
 
-	// F1: pin THIS call's coder toolset exactly like
+	if customRole != "" && !customCredentialCovered && creds.AllowConfiguredRoleFallback {
+		selected, _, modelErr := currentOrSnapshotRoleModel(cfg, customContract)
+		if modelErr != nil {
+			return nil, modelErr
+		}
+		model, _, modelErr := c.buildModelsFromCfg(ctx, cfg, selected, selected, false)
+		if modelErr != nil {
+			return nil, modelErr
+		}
+		providerCfg, ok := cfg.Providers.Get(selected.Provider)
+		if !ok {
+			return nil, fmt.Errorf("%w: provider %q for custom role %q", ErrAgentRoleUnconfigured, selected.Provider, customContract.Name)
+		}
+		resolved.smart = model
+		resolved.providerCfg = providerCfg
+		resolved.smartSource = hbSourceSessionOverride
+		resolved.promptPrefix = providerCfg.SystemPromptPrefix
+	}
+
 	// resolveSessionModels/applyModelOverrides do, built from THIS call's
 	// ctx so buildTools' per-call filters (CallOptions.DisableSubAgents,
 	// ModelRole) decide the slice. Deliberately unconditional — also when

@@ -99,24 +99,17 @@ func (c *coordinator) resolveSessionModels(ctx context.Context, sessionID string
 // All config reads use a single atomic Snapshot() call to prevent reading config fields
 // from different generations (task #341, P1-3).
 func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionID string, wantTools bool) (*resolvedOverrides, error) {
-	// Load session preferences only when policy permits them.
 	var sess session.Session
 	var err error
-	if WebModelPolicy(ctx) {
+	if WebModelPolicy(ctx) && callModelRole(ctx) != config.SelectedModelTypeReviewer {
 		sess, err = c.sessions.Get(ctx, sessionID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load session %q: %w", sessionID, err)
 		}
 	}
-
-	// Atomically capture config and generation in a single snapshot to prevent
-	// torn reads across reloads (task #341, P1-3).
 	cfg, gen := c.cfg.Snapshot()
-
-	// Start with the global config defaults.
 	smartCfg := cfg.Models[config.SelectedModelTypeSmart]
 	fastCfg := cfg.Models[config.SelectedModelTypeFast]
-
 	var smartOverride, fastOverride *ModelOverride
 	if sess.SmartModelID != "" {
 		smartOverride = &ModelOverride{Provider: sess.SmartModelProvider, Model: sess.SmartModelID, ReasoningEffort: sess.SmartModelReasoningEffort}
@@ -124,17 +117,23 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 	if sess.FastModelID != "" {
 		fastOverride = &ModelOverride{Provider: sess.FastModelProvider, Model: sess.FastModelID, ReasoningEffort: sess.FastModelReasoningEffort}
 	}
-
-	// D2 (docs/plans/2026-10-15-role-models-hot-reload.md §2.2): a
-	// role-derived value is not an explicit choice. When the call carries a
-	// non-smart ModelRole and the session has no explicit smart override,
-	// the smart slot resolves through the SHARED roleSlotOverride resolver
-	// (session pin tier first, then the role's config slot) — re-read on
-	// EVERY turn from this pinned snapshot, so a hot-reloaded role model
-	// reaches the next request. roleReasoningEffortFrom carries the explicit
-	// --effort of a non-smart role run onto the resolved slot (plan R6).
 	roleSource := ""
-	if smartOverride == nil {
+	customContract := (*session.RoleContract)(nil)
+	customRequested := false
+	if opts := callOptionsFrom(ctx); opts != nil && opts.RoleContract != nil && opts.RoleContract.Name != "" {
+		customContract = opts.RoleContract
+		customRequested = true
+		if err := customContract.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid custom role contract: %w", err)
+		}
+		selected, source, roleErr := roleContractPromptSource(cfg, customContract)
+		if roleErr != nil {
+			return nil, roleErr
+		}
+		smartCfg = selected
+		smartOverride = nil
+		roleSource = source
+	} else if smartOverride == nil {
 		role := callModelRole(ctx)
 		if role == config.SelectedModelTypeSmart || role == "" {
 			if effort := roleReasoningEffortFrom(ctx); effort != "" {
@@ -153,6 +152,17 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 	// attribution (design pt. 3); the labels ride the returned snapshot.
 
 	// Merge overrides into the config copies.
+	if opts := callOptionsFrom(ctx); opts != nil && opts.RoleContract != nil && opts.RoleContract.Name != "" && !customRequested {
+		return nil, fmt.Errorf("custom role selection is missing its contract snapshot")
+	}
+	if customRequested {
+		model := cloneSelectedModel(smartCfg)
+		selectedModel, _, buildErr := c.buildModelsFromCfg(ctx, cfg, model, model, false)
+		if buildErr != nil {
+			return nil, fmt.Errorf("failed to build custom role model: %w", buildErr)
+		}
+		return c.finishCustomRoleResolve(ctx, cfg, selectedModel, smartCfg, roleSource, wantTools)
+	}
 	if smartOverride != nil {
 		if smartCfg.Provider != smartOverride.Provider || smartCfg.Model != smartOverride.Model {
 			smartCfg.Think = false
@@ -232,10 +242,15 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 		smart: smartModel,
 		fast:  fastModel,
 	}
-	resolved.smartSource = hbOverrideSource(smartOverride != nil)
-	resolved.fastSource = hbOverrideSource(fastOverride != nil)
-	if roleSource != "" {
-		resolved.smartSource = roleSource
+	if customContract != nil {
+		resolved.smartSource = hbSourceSessionOverride
+		resolved.fastSource = hbSourceSlotLive
+	} else {
+		resolved.smartSource = hbOverrideSource(smartOverride != nil)
+		resolved.fastSource = hbOverrideSource(fastOverride != nil)
+		if roleSource != "" {
+			resolved.smartSource = roleSource
+		}
 	}
 	resolved.persistSmartModel, resolved.persistFastModel = sessionModelPersistenceFrom(ctx)
 
@@ -310,25 +325,10 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 	return resolved, nil
 }
 
-// resolveSubAgentModelOverride resolves sessionID's explicit worker-slot
-// override (if any) into a ready-to-pin Model, for runSubAgent's per-call
-// SmartModel pin (task #466). sessionID is the PARENT session dispatching
-// the sub-agent, not the freshly created child sub-agent session.
-//
-// Returns (nil, nil) whenever there is nothing session-specific to apply —
-// including when the session never set a worker override — so callers can
-// cheaply fall back to the coordinator-wide default agent's own model
-// (already built from the merged system/folder config in buildAgentModels)
-// instead of rebuilding one. This mirrors resolveSessionModels' smart/fast
-// cascade (session DB override -> merged system/folder config) but is
-// intentionally a SEPARATE, lighter path: worker-slot resolution is only
-// needed when actually dispatching a sub-agent, not on every top-level turn,
-// so it isn't folded into the hot resolveSessionModels call.
-//
-// reviewer has no equivalent SUB-AGENT DISPATCH hook: unlike worker, it is
-// never read when the "agent" tool spawns a sub-agent, because reviewer is
-// never a delegation target. A top-level `rush run --role reviewer`
-// follows the configured reviewer slot (internal/cmd/run_role_model.go).
+func (c *coordinator) finishCustomRoleResolve(ctx context.Context, cfg *config.Config, smartModel Model, selected config.SelectedModel, source string, wantTools bool) (*resolvedOverrides, error) {
+	return c.finishCustomRoleResolveSnapshot(ctx, cfg, smartModel, selected, source, wantTools)
+}
+
 func (c *coordinator) resolveSubAgentModelOverride(ctx context.Context, sessionID string) (*Model, error) {
 	sess, err := c.sessions.Get(ctx, sessionID)
 	if err != nil {
@@ -337,7 +337,6 @@ func (c *coordinator) resolveSubAgentModelOverride(ctx context.Context, sessionI
 	if sess.WorkerModelID == "" {
 		return nil, nil
 	}
-
 	cfg, _ := c.cfg.Snapshot()
 	workerCfg := cfg.Models[config.SelectedModelTypeWorker]
 	if workerCfg.Provider != sess.WorkerModelProvider || workerCfg.Model != sess.WorkerModelID {
@@ -349,11 +348,6 @@ func (c *coordinator) resolveSubAgentModelOverride(ctx context.Context, sessionI
 	if sess.WorkerModelReasoningEffort != "" {
 		workerCfg.ReasoningEffort = sess.WorkerModelReasoningEffort
 	}
-
-	// buildModelsFromCfg builds a smart+fast PAIR; pass workerCfg for both
-	// slots and keep only the first result — there is no single-model
-	// variant, and building the (identical, discarded) second model is
-	// cheap relative to the provider round-trip this whole path exists for.
 	model, _, err := c.buildModelsFromCfg(ctx, cfg, workerCfg, workerCfg, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build session worker model override: %w", err)
@@ -361,16 +355,6 @@ func (c *coordinator) resolveSubAgentModelOverride(ctx context.Context, sessionI
 	return &model, nil
 }
 
-// applyModelOverrides builds a resolvedOverrides snapshot from explicit override parameters.
-// This is used by RunWithOverrides which receives overrides directly from the caller
-// (rather than from the session DB).
-//
-// IMPORTANT: This method does NOT write to shared state. The old behavior of writing
-// to c.currentAgent.SetModels/SetSystemPromptPrefix/SetSystemPrompt has been removed
-// to prevent per-session model changes from affecting other concurrent sessions.
-//
-// The returned snapshot is what makes a TURN immune to the shared state moving
-// underneath it — no turn reads shared state after this point.
 func (c *coordinator) applyModelOverrides(ctx context.Context, sessionID string, smart, fast *ModelOverride) (*resolvedOverrides, error) {
 	// Atomically capture config and generation up front (task #341, P1-1) so
 	// largeCfg/smallCfg below, the buildModelsFromCfg call further down, and

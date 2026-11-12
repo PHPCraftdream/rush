@@ -404,7 +404,13 @@ func TestRunSubAgent_HyperRebuildFailureDoesNotNotifyReauthentication(t *testing
 
 	recorder := new(c6NotificationRecorder)
 	coord.notify = recorder
+	calls, retryRefreshes := 0, 0
 	coord.refreshOAuth2TokenFn = func(_ context.Context, _ config.ProviderConfig) error {
+		// Keep preflight valid; fail the rebuild only after the first 401.
+		if calls == 0 {
+			return nil
+		}
+		retryRefreshes++
 		c6ConfigureProvider(t, coord, "replacement-provider", "replacement-model", "replacement-key", nil)
 		coord.cfg.SetProviderRuntimeConfig(hyper.Name, config.ProviderConfig{
 			ID:         hyper.Name,
@@ -415,7 +421,6 @@ func TestRunSubAgent_HyperRebuildFailureDoesNotNotifyReauthentication(t *testing
 		})
 		return nil
 	}
-	calls := 0
 	agent := &mockSessionAgent{model: oldModel}
 	agent.runFunc = func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
 		calls++
@@ -434,6 +439,9 @@ func TestRunSubAgent_HyperRebuildFailureDoesNotNotifyReauthentication(t *testing
 
 	require.NoError(t, err)
 	require.True(t, response.IsError)
+	require.Contains(t, response.Content, `failed to rebuild sub-agent model: provider type not supported: "unsupported-test-provider"`)
+	require.NotContains(t, response.Content, "stale client")
 	require.Equal(t, 1, calls)
+	require.Equal(t, 1, retryRefreshes)
 	require.Empty(t, recorder.notifications)
 }

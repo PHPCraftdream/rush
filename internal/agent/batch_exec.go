@@ -11,6 +11,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/google/uuid"
 )
 
@@ -30,13 +31,16 @@ const (
 // resolution is keyed by the invocation's pinned registry identity, never by
 // session, and Policy carries the invocation's immutable executor context.
 type batchLeafPayload struct {
-	Tool            string                  `json:"tool"`
-	ToolCallID      string                  `json:"tool_call_id"`
-	SessionID       string                  `json:"session_id"`
-	Input           json.RawMessage         `json:"input"`
-	RegistryID      string                  `json:"registry_id,omitempty"`
-	Policy          *batchLeafPolicyContext `json:"policy,omitempty"`
-	CallCredentials bool                    `json:"call_credentials,omitempty"`
+	Tool       string                  `json:"tool"`
+	ToolCallID string                  `json:"tool_call_id"`
+	SessionID  string                  `json:"session_id"`
+	Input      json.RawMessage         `json:"input"`
+	RegistryID string                  `json:"registry_id,omitempty"`
+	Policy     *batchLeafPolicyContext `json:"policy,omitempty"`
+	// SelectedRoleContract is the trusted admission-time selection for this
+	// agent leaf, separate from the inherited parent ceiling in Policy.
+	SelectedRoleContract *session.RoleContract `json:"selected_role_contract,omitempty"`
+	CallCredentials      bool                  `json:"call_credentials,omitempty"`
 	// QuestionRoute records whether THIS incarnation was submitted through
 	// a surface with an established held-question answer route (served API
 	// intake or a parent-owned orchestrator delegation). It is stamped by
@@ -134,6 +138,51 @@ func (e *batchExecutor) Start(ctx context.Context, l jobbatch.Launch, report fun
 	var p batchLeafPayload
 	if err := json.Unmarshal(l.Task.Payload, &p); err != nil || p.Tool == "" || p.SessionID == "" {
 		return nil, &batchStartError{batchCodeBadPayload, errors.New("payload needs tool, session_id and input")}
+	}
+	if p.Tool == AgentToolName {
+		if err := validateAgentRoleInput(p.Input); err != nil {
+			return nil, &batchStartError{batchCodeBadPayload, err}
+		}
+		var requested struct {
+			Role RequestedModelRole `json:"role"`
+		}
+		if err := json.Unmarshal(p.Input, &requested); err != nil {
+			return nil, &batchStartError{batchCodeBadPayload, err}
+		}
+		if requested.Role != "" && !requested.Role.builtin() {
+			if p.SelectedRoleContract == nil || p.SelectedRoleContract.Name != string(requested.Role) {
+				return nil, &batchStartError{batchCodeBadPayload, fmt.Errorf("%w: selected custom role snapshot missing or mismatched", ErrAgentRoleMismatch)}
+			}
+		} else if p.SelectedRoleContract != nil {
+			return nil, &batchStartError{batchCodeBadPayload, fmt.Errorf("%w: custom snapshot supplied for built-in or omitted role", ErrAgentRoleMismatch)}
+		}
+	} else if p.SelectedRoleContract != nil {
+		return nil, &batchStartError{batchCodeBadPayload, fmt.Errorf("%w: custom role snapshot on non-agent leaf", ErrAgentRoleMismatch)}
+	}
+	if p.Policy != nil && p.Policy.RoleContract != nil {
+		if err := p.Policy.RoleContract.Validate(); err != nil {
+			return nil, &batchStartError{batchCodeBadPayload, fmt.Errorf("invalid inherited role contract: %w", err)}
+		}
+	}
+	if p.SelectedRoleContract != nil {
+		if err := p.SelectedRoleContract.Validate(); err != nil {
+			return nil, &batchStartError{batchCodeBadPayload, fmt.Errorf("invalid admitted role contract: %w", err)}
+		}
+		if p.Tool != AgentToolName || p.SelectedRoleContract.Name == "" || !roleContractInherits(p.SelectedRoleContract, func() *session.RoleContract {
+			if p.Policy == nil {
+				return nil
+			}
+			return p.Policy.RoleContract
+		}()) {
+			return nil, &batchStartError{batchCodeBadPayload, errors.New("admitted role contract does not match leaf or inherited ceiling")}
+		}
+	}
+	dispatchCtx := ctx
+	if p.Policy != nil && p.Policy.RoleContract != nil {
+		dispatchCtx = withRoleToolContract(dispatchCtx, p.Policy.RoleContract)
+	}
+	if !roleToolAllowed(dispatchCtx, p.Tool) {
+		return nil, &batchStartError{batchCodeNoLeaf, guardRoleContractError(p.Tool)}
 	}
 	// A required provider dependency is never accepted with only the
 	// legacy boolean/free-text marker; this avoids OS-disk promotion.

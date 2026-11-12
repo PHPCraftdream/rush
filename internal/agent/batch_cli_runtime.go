@@ -32,6 +32,9 @@ func (i *BatchInstall) SubmitCLIRef(ctx context.Context, owner string, spec jobb
 	if err := validateBatchOwnerPayloads(owner, spec); err != nil {
 		return nil, err
 	}
+	if err := validateBatchRolePayloads(spec); err != nil {
+		return nil, err
+	}
 	_, _, leaves, err := batchSpecNodes([]jobbatch.Spec{spec})
 	if err != nil {
 		return nil, fmt.Errorf("batch CLI admission: %w", err)
@@ -74,6 +77,20 @@ func validateBatchOwnerPayloads(owner string, spec jobbatch.Spec) error {
 		var payload batchLeafPayload
 		if err := json.Unmarshal(spec.Task.Payload, &payload); err != nil || payload.SessionID != owner {
 			return errors.New("batch CLI: task owner identity does not match submit owner")
+		}
+		if payload.Tool == AgentToolName {
+			var selected struct {
+				Role RequestedModelRole `json:"role"`
+			}
+			if err := json.Unmarshal(payload.Input, &selected); err != nil {
+				return err
+			}
+			if selected.Role != "" && !selected.Role.builtin() && payload.SelectedRoleContract == nil {
+				return fmt.Errorf("%w: role snapshot was not admitted", ErrAgentRoleUnconfigured)
+			}
+			if selected.Role.builtin() && payload.SelectedRoleContract != nil {
+				return fmt.Errorf("%w: custom snapshot does not match builtin role", ErrAgentRoleMismatch)
+			}
 		}
 		return nil
 	}
@@ -255,6 +272,9 @@ func (i *BatchInstall) AddCLI(ctx context.Context, root, parent jobbatch.ID, ite
 	}
 	for _, item := range items {
 		if err := validateBatchOwnerPayloads(owner, item); err != nil {
+			return err
+		}
+		if err := validateBatchRolePayloads(item); err != nil {
 			return err
 		}
 	}

@@ -10,27 +10,31 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/google/uuid"
 )
 
 // BatchCLITask is the untrusted external task form. Payloads, registry IDs,
 // sessions and tool-call identities are deliberately not accepted from JSON.
 type BatchCLITask struct {
-	Tool       string          `json:"tool"`
-	Input      json.RawMessage `json:"input"`
-	AgentDepth *int            `json:"agent_depth,omitempty"`
+	Tool                 string                `json:"tool"`
+	Input                json.RawMessage       `json:"input"`
+	AgentDepth           *int                  `json:"agent_depth,omitempty"`
+	SelectedRoleContract *session.RoleContract `json:"selected_role_contract,omitempty"`
 }
 
 type batchCLIBinding struct {
-	registry *policyLeafRegistry
-	id       string
-	session  string
-	message  string
-	images   bool
-	model    string
-	allow    *permission.RunAllowlistSpec
-	scope    *buildResourceScope
-	folder   *permission.FolderScopeSpec
+	registry     *policyLeafRegistry
+	id           string
+	session      string
+	message      string
+	images       bool
+	model        string
+	allow        *permission.RunAllowlistSpec
+	scope        *buildResourceScope
+	folder       *permission.FolderScopeSpec
+	roleContract *session.RoleContract
+	config       *config.Config
 }
 
 // BatchCLIBuilder binds trusted constructors to a concrete coordinator.
@@ -66,19 +70,26 @@ func (b *BatchCLIBuilder) bind(ctx context.Context, sessionID, messageID string)
 	if b == nil || b.coord == nil || b.ingress == nil || sessionID == "" || messageID == "" {
 		return batchCLIBinding{}, errors.New("batch CLI: missing installed runtime or owner identity")
 	}
-	cfg := b.coord.cfg.Config()
+	cfg, _ := b.coord.cfg.Snapshot()
 	coder, ok := cfg.Agents[config.AgentCoder]
 	if !ok {
 		return batchCLIBinding{}, errors.New("batch CLI: coder tool configuration unavailable")
 	}
 	// Give this deferred CLI construction its own release scope while
 	// preserving any call policy already carried by the caller context.
+	ctx = WithParentRoleConfigSnapshot(ctx, cfg)
 	owned := CallOptions{}
 	if existing := callOptionsFrom(ctx); existing != nil {
+		if existing.RoleContract != nil {
+			owned.RoleContract = existing.RoleContract.Clone()
+		}
 		if tools.IsCustomDiskProvider(existing.DiskProvider) || existing.DiskBindingID != "" || existing.diskBinding != nil {
 			return batchCLIBinding{}, errors.New("batch CLI does not support caller-supplied disk providers")
 		}
 		owned = *existing
+		if existing.RoleContract != nil {
+			owned.RoleContract = existing.RoleContract.Clone()
+		}
 	}
 	if !owned.AgentDepthSet {
 		owned.MaxAgentDepth = DefaultAgentDepth
@@ -122,26 +133,49 @@ func (b *BatchCLIBuilder) bind(ctx context.Context, sessionID, messageID string)
 	}
 	return batchCLIBinding{
 		registry: built.leaves, id: id, session: sessionID, message: messageID,
-		allow: allow, scope: scope, folder: folder,
+		allow: allow, scope: scope, folder: folder, roleContract: cloneRoleContractForCall(parentRoleContractFrom(ctx)), config: cfg,
 	}, nil
 }
 
 func (b *BatchCLIBuilder) translate(ctx context.Context, bind batchCLIBinding, spec jobbatch.Spec) (jobbatch.Spec, error) {
 	if spec.Task != nil {
-		var task BatchCLITask
-		if err := json.Unmarshal(spec.Task.Payload, &task); err != nil {
+		var external struct {
+			Tool                 string                `json:"tool"`
+			Input                json.RawMessage       `json:"input"`
+			AgentDepth           *int                  `json:"agent_depth,omitempty"`
+			SelectedRoleContract *session.RoleContract `json:"selected_role_contract,omitempty"`
+		}
+		if err := json.Unmarshal(spec.Task.Payload, &external); err != nil {
 			return jobbatch.Spec{}, fmt.Errorf("batch CLI task payload must be {tool,input}: %w", err)
 		}
+		task := BatchCLITask{Tool: external.Tool, Input: external.Input, AgentDepth: external.AgentDepth, SelectedRoleContract: external.SelectedRoleContract}
 		if task.Tool == "" || len(task.Input) == 0 || !json.Valid(task.Input) {
 			return jobbatch.Spec{}, errors.New("batch CLI task requires tool and valid input")
 		}
 		if batchControlTarget(task.Tool) || !batchWorkTarget(task.Tool) {
 			return jobbatch.Spec{}, fmt.Errorf("batch CLI: tool %q is unavailable or control-plane; use a supported work tool", task.Tool)
 		}
+		var selectedRoleContract *session.RoleContract
 		if task.Tool == AgentToolName {
 			if err := validateAgentRoleInput(task.Input); err != nil {
 				return jobbatch.Spec{}, err
 			}
+			var requested struct {
+				Role RequestedModelRole `json:"role"`
+			}
+			if err := json.Unmarshal(task.Input, &requested); err != nil {
+				return jobbatch.Spec{}, err
+			}
+			selectedRoleContract = cloneRoleContractForCall(task.SelectedRoleContract)
+			if requested.Role != "" && !requested.Role.builtin() {
+				if err := validateSelectedBatchRole(selectedRoleContract, string(requested.Role), bind.roleContract); err != nil {
+					return jobbatch.Spec{}, err
+				}
+			} else if selectedRoleContract != nil {
+				return jobbatch.Spec{}, fmt.Errorf("%w: custom snapshot does not match built-in or omitted role", ErrAgentRoleMismatch)
+			}
+		} else if task.SelectedRoleContract != nil {
+			return jobbatch.Spec{}, fmt.Errorf("%w: selected role snapshot on non-agent leaf", ErrAgentRoleMismatch)
 		}
 		leaf, err := bind.registry.resolve(task.Tool)
 		if err != nil {
@@ -162,9 +196,10 @@ func (b *BatchCLIBuilder) translate(ctx context.Context, bind batchCLIBinding, s
 		}
 		payload, err := json.Marshal(batchLeafPayload{
 			Tool: task.Tool, ToolCallID: uuid.NewString(), SessionID: bind.session, Input: task.Input, RegistryID: bind.id,
-			Policy:        &batchLeafPolicyContext{RegistryID: bind.id, MessageID: bind.message, SupportsImages: bind.images, ModelName: bind.model, FolderScope: bind.folder, RunAllowlist: bind.allow, RestrictedToolset: bind.id},
-			QuestionRoute: b.questionRoute,
-			AgentDepth:    &depth,
+			Policy:               &batchLeafPolicyContext{RegistryID: bind.id, MessageID: bind.message, SupportsImages: bind.images, ModelName: bind.model, FolderScope: bind.folder, RunAllowlist: bind.allow, RestrictedToolset: bind.id, RoleContract: cloneRoleContractForCall(bind.roleContract)},
+			SelectedRoleContract: selectedRoleContract,
+			QuestionRoute:        b.questionRoute,
+			AgentDepth:           &depth,
 		})
 		if err != nil {
 			return jobbatch.Spec{}, err
@@ -194,6 +229,12 @@ func (b *BatchCLIBuilder) translate(ctx context.Context, bind batchCLIBinding, s
 // TranslateSpec turns an external structural tree into the engine tree with
 // trusted session/message and pinned policy identity supplied by Rush.
 func (b *BatchCLIBuilder) TranslateSpec(ctx context.Context, sessionID, messageID string, spec jobbatch.Spec) (jobbatch.Spec, func(), error) {
+	var err error
+	spec, err = b.admitRoles(ctx, spec)
+	if err != nil {
+		return jobbatch.Spec{}, nil, err
+	}
+	ctx = WithAdmittedBatchRoleContracts(ctx)
 	bind, err := b.bind(ctx, sessionID, messageID)
 	if err != nil {
 		return jobbatch.Spec{}, nil, err
@@ -210,8 +251,30 @@ func (b *BatchCLIBuilder) TranslateSpec(ctx context.Context, sessionID, messageI
 	return translated, bind.scope.close, nil
 }
 
+func (b *BatchCLIBuilder) admitRoles(ctx context.Context, spec jobbatch.Spec) (jobbatch.Spec, error) {
+	if b == nil || b.coord == nil {
+		return jobbatch.Spec{}, errors.New("batch CLI: installed coordinator is required")
+	}
+	if batchRoleContractsWereAdmitted(ctx) {
+		if err := validateBatchRolePayloads(spec); err != nil {
+			return jobbatch.Spec{}, err
+		}
+		return spec, nil
+	}
+	cfg, _ := b.coord.cfg.Snapshot()
+	return admitBatchRoleContracts(cfg, parentRoleContractFrom(ctx), spec)
+}
+
 // TranslateItems applies an already-pinned identity to Add children.
 func (b *BatchCLIBuilder) TranslateItems(ctx context.Context, sessionID, messageID string, items []jobbatch.Spec) ([]jobbatch.Spec, func(), error) {
+	var err error
+	for i := range items {
+		items[i], err = b.admitRoles(ctx, items[i])
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	ctx = WithAdmittedBatchRoleContracts(ctx)
 	bind, err := b.bind(ctx, sessionID, messageID)
 	if err != nil {
 		return nil, nil, err

@@ -297,6 +297,17 @@ type SessionPermission struct {
 	Enabled   int64  `json:"enabled"`
 }
 
+type SessionRoleContract struct {
+	SessionID    string `json:"session_id"`
+	ContractJson string `json:"contract_json"`
+}
+
+type SessionRootRoleContract struct {
+	SessionID     string         `json:"session_id"`
+	LogicalCallID string         `json:"logical_call_id"`
+	ContractJson  sql.NullString `json:"contract_json"`
+}
+
 type SessionRunQueue struct {
 	ID              string         `json:"id"`
 	SessionID       string         `json:"session_id"`

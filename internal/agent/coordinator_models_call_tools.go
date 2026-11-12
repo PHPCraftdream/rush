@@ -60,7 +60,8 @@ func scopedCallToolsRequired(ctx context.Context) bool {
 // directly, ahead of calling WithCallOptions).
 func scopedCallOptionsRequireDistinctTools(opts *CallOptions) bool {
 	return opts != nil && (opts.FolderScope != nil || tools.HasDiskProvider(opts.DiskProvider) ||
-		opts.DisableSubAgents || opts.ModelRole != "" || (opts.AgentDepthSet && opts.MaxAgentDepth == 0))
+		opts.DisableSubAgents || opts.ModelRole != "" || (opts.AgentDepthSet && opts.MaxAgentDepth == 0) ||
+		opts.RoleContract != nil)
 }
 
 // pinCallToolsReadyGateSeam is a test-only hook: fires immediately after the
@@ -132,7 +133,7 @@ func (c *coordinator) pinCallTools(ctx context.Context, cfg *config.Config) ([]f
 	if pinCallToolsReadyGateSeam != nil {
 		pinCallToolsReadyGateSeam(buildGate)
 	}
-	if required && len(tools) == 0 {
+	if required && len(tools) == 0 && !roleToolsConstrained(ctx) {
 		_ = buildGate.Wait()
 		return fail(errors.New("per-call toolset is empty"))
 	}

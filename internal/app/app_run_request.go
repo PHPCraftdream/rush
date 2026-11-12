@@ -9,6 +9,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // RunMode picks the output format for RunNonInteractive.
@@ -40,14 +41,15 @@ type RunOverrides struct {
 	// ReasoningEffort applies to whichever slot is active for this run.
 	ReasoningEffort string
 	RoleSmart       bool
-	// ModelRole is the resolved --role slot for this invocation (smart,
-	// fast, worker, reviewer). "" (e.g. non-`rush run` paths) is treated
-	// as smart by the coordinator. Threaded through to
-	// AgentCoordinator.SetActiveModelRole so sub-agent spawns can decide
-	// whether to prefer the cheaper Worker slot instead of blindly
-	// inheriting the parent's Smart model. Fork patch (reviewer/worker
-	// roles).
+	// ModelRole is the built-in policy-driving slot for this invocation.
+	// Custom profile selection uses RequestedRole and never enters this field.
 	ModelRole config.SelectedModelType
+	// RequestedRole selects an exact custom role profile, case-sensitively.
+	RequestedRole string
+	// roleContract is the immutable contract snapshot shared only within this
+	// invocation's turns. A new Run resolves from current configuration.
+	roleContract *session.RoleContract
+
 	// Fork patch (orchestrator UX): DisableSubAgents drops the `agent`
 	// and `agentic_fetch` tools from the coder agent for this run so a
 	// `rush run --agents single` invocation cannot fan out. Mutation

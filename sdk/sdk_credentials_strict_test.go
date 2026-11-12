@@ -155,12 +155,24 @@ func runStrictTurn(t *testing.T, h *strictHarness, sessionID string, creds sdk.C
 	return res, err
 }
 
-func TestCredentialSetValidateRejectsUnknownRole(t *testing.T) {
+func TestCredentialSetValidateRejectsMalformedRole(t *testing.T) {
+	for _, role := range []sdk.Role{"bad/role", " smart", "Smart", ""} {
+		t.Run(string(role), func(t *testing.T) {
+			models := validStrictModels()
+			models[role] = sdk.ModelChoice{Provider: "tenant-provider", Model: "tenant-model"}
+			cs := offlineCreds(models)
+			require.ErrorContains(t, cs.Validate(), "unknown role")
+		})
+	}
+}
+
+func TestCredentialSetValidateAcceptsExactCustomRoleSlot(t *testing.T) {
 	models := validStrictModels()
-	models[sdk.Role("smrat")] = sdk.ModelChoice{Provider: "tenant-provider", Model: "tenant-model"}
+	choice := sdk.ModelChoice{Provider: "tenant-provider", Model: "tenant-model"}
+	models[sdk.Role("analyst")] = choice
 	cs := offlineCreds(models)
-	err := cs.Validate()
-	require.ErrorContains(t, err, "unknown role")
+	require.NoError(t, cs.Validate(), "credential syntax validation must allow custom role slots")
+	require.Equal(t, choice, cs.Models[sdk.Role("analyst")])
 }
 
 func TestCredentialSetValidateRejectsUnknownProviderType(t *testing.T) {
@@ -414,15 +426,15 @@ func TestRunWithCredentialsSnapshotsCallerStateBeforeDelegation(t *testing.T) {
 	})
 }
 
-func TestRunWithCredentialsTypoRoleFailsBeforeAnyTraffic(t *testing.T) {
+func TestRunWithCredentialsMalformedRoleFailsBeforeAnyTraffic(t *testing.T) {
 	h := newStrictHarness(t)
 	models := validStrictModels()
-	models[sdk.Role("smrat")] = sdk.ModelChoice{Provider: "tenant-provider", Model: "tenant-model"}
+	models[sdk.Role("bad/role")] = sdk.ModelChoice{Provider: "tenant-provider", Model: "tenant-model"}
 
-	_, err := runStrictTurn(t, h, "sdk-strict-typo", strictCreds(h, models, false))
+	_, err := runStrictTurn(t, h, "sdk-strict-invalid-role", strictCreds(h, models, false))
 	require.ErrorContains(t, err, "unknown role")
 	require.Equal(t, 0, h.operator.totalRequests(),
-		"a misspelled role must fail validation before any provider traffic")
+		"a malformed role must fail validation before any provider traffic")
 	require.Equal(t, 0, h.tenant.totalRequests())
 }
 

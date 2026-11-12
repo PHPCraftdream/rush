@@ -3,11 +3,13 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 type batchGenericFamily struct{}
@@ -21,6 +23,24 @@ func (batchGenericFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 	if batchControlTarget(p.Tool) {
 		return nil, &batchStartError{batchCodeNoLeaf, errors.New("control-plane target")}
 	}
+	if p.Policy != nil && p.Policy.RoleContract != nil {
+		if err := p.Policy.RoleContract.Validate(); err != nil {
+			return nil, &batchStartError{batchCodeBadPayload, err}
+		}
+		if !roleContractAllowsTool(p.Policy.RoleContract, p.Tool) {
+			return nil, &batchStartError{batchCodeNoLeaf, fmt.Errorf("role tool denied: %s", p.Tool)}
+		}
+	}
+	if p.SelectedRoleContract != nil {
+		if err := validateSelectedBatchRole(p.SelectedRoleContract, p.SelectedRoleContract.Name, func() *session.RoleContract {
+			if p.Policy == nil {
+				return nil
+			}
+			return p.Policy.RoleContract
+		}()); err != nil {
+			return nil, &batchStartError{batchCodeBadPayload, err}
+		}
+	}
 	leaf, err := env.resolveLeaf(p)
 	if err != nil {
 		return nil, err
@@ -29,19 +49,26 @@ func (batchGenericFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 		return nil, err
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
-	// R11F round-2 (P1-5c): the PINNED policy wins. The run context is
-	// rebuilt EXCLUSIVELY from the payload's immutable policy transport
-	// (batchLeafRunContext: message id, image support, model name, session
-	// id, folder scope, run allowlist, custom disk) — never from the Start
-	// context's session-keyed lookups.
 	if p.Policy == nil {
-		// No pinned transport on the payload (older records, tests): keep
-		// the Start context's leaf policy inputs, without retaining ctx.
 		runCtx = context.WithValue(runCtx, tools.MessageIDContextKey, tools.GetMessageFromContext(ctx))
 		runCtx = context.WithValue(runCtx, tools.SupportsImagesContextKey, tools.GetSupportsImagesFromContext(ctx))
 		runCtx = context.WithValue(runCtx, tools.ModelNameContextKey, tools.GetModelNameFromContext(ctx))
 	}
+	if p.Policy != nil && p.Policy.RoleContract != nil {
+		runCtx = withRoleToolContract(runCtx, p.Policy.RoleContract)
+	}
+	if p.SelectedRoleContract != nil {
+		runCtx = WithSelectedRoleContract(runCtx, p.SelectedRoleContract)
+	}
 	runCtx = withBatchManagedCall(batchLeafRunContext(runCtx, p))
+	// Restore trusted inherited and selected caps after any call-options
+	// rebuild performed while decorating the leaf execution context.
+	if p.Policy != nil && p.Policy.RoleContract != nil {
+		runCtx = WithCallRoleContract(runCtx, p.Policy.RoleContract)
+	}
+	if p.SelectedRoleContract != nil {
+		runCtx = WithSelectedRoleContract(runCtx, p.SelectedRoleContract)
+	}
 	// R12-H2 P1-4: batchLeafRunContext does NOT stamp the binding registry;
 	// carry the App-owned registry so leaf-side binding resolution /
 	// batchDiskRegistryFromContext resolve the SAME instance, never a

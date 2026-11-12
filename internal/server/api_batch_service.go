@@ -233,6 +233,13 @@ func (s *apiBatchService) submit(ctx context.Context, principal Principal, spec 
 	if err != nil {
 		return apiBatchSubmitResult{}, &batchInvalidError{err}
 	}
+	// Resolve every selected custom role against this App's pinned coordinator
+	// snapshot before service-session creation, reservations, or submission.
+	normalized, err = agent.AdmitBatchRoleContracts(ctx, s.app.AgentCoordinator, normalized)
+	if err != nil {
+		return apiBatchSubmitResult{}, &batchInvalidError{err}
+	}
+	ctx = agent.WithAdmittedBatchRoleContracts(ctx)
 	lock := s.tokenLock(principal.TokenID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -251,7 +258,7 @@ func (s *apiBatchService) submit(ctx context.Context, principal Principal, spec 
 	if err != nil {
 		return apiBatchSubmitResult{}, err
 	}
-	bodyHash := hashShort(body, 16)
+	bodyHash := hashShort(body+agent.BatchRoleSnapshotHash(normalized), 16)
 	if key != "" {
 		keyHash := hashShort(key, 16)
 		for _, root := range roots {

@@ -14,7 +14,7 @@ import (
 var storeV1Tables = []string{
 	"sessions", "messages", "files", "read_files", "session_permissions", "queue_tasks",
 	"pending_injects", "session_run_queue", "orphan_call_outbox", "async_hosts",
-	"session_agent_depth", "session_agent_model_role", "session_drivers", "session_notices", "wake_schedules", "batch_nodes",
+	"session_agent_depth", "session_agent_model_role", "session_role_contracts", "session_root_role_contracts", "session_drivers", "session_notices", "wake_schedules", "batch_nodes",
 	"batch_control_requests", "batch_runner_checkpoints", "batch_timeout_checkins",
 	"mcp_outputs", "mcp_output_chunks",
 }
@@ -184,23 +184,25 @@ func TestStoreV1FixtureStructure(t *testing.T) {
 		require.NoError(t, conn.QueryRowContext(t.Context(), `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name), table)
 	}
 	expectedColumns := map[string][]string{
-		"sessions":                 {"id", "parent_session_id", "title", "message_count", "prompt_tokens", "completion_tokens", "cost", "updated_at", "created_at", "summary_message_id", "todos", "smart_model_provider", "smart_model_id", "fast_model_provider", "fast_model_id", "system_prompt", "yolo_enabled", "smart_model_reasoning_effort", "fast_model_reasoning_effort", "cancel_requested", "ended_reason", "budget_max_cost", "budget_max_tokens", "budget_timeout_sec", "deleted_todos", "parent_cost_accounted", "worker_model_provider", "worker_model_id", "worker_model_reasoning_effort", "reviewer_model_provider", "reviewer_model_id", "reviewer_model_reasoning_effort", "origin", "cost_self", "cost_base", "cost_parent_id", "workspace_root", "git_branch"},
-		"messages":                 {"id", "session_id", "role", "parts", "model", "created_at", "updated_at", "finished_at", "provider", "is_summary_message", "pinned", "hidden", "reasoning_effort", "auto_resumed", "background_job_notice", "input_tokens", "output_tokens", "reasoning_tokens", "cache_creation_tokens", "cache_read_tokens", "total_tokens", "cost_usd", "usage_provider", "usage_model", "cache_support", "usage_estimated", "checkpoint_generation", "origin", "notice_kind"},
-		"files":                    {"id", "session_id", "path", "content", "version", "created_at", "updated_at"},
-		"read_files":               {"session_id", "path", "read_at"},
-		"session_permissions":      {"id", "session_id", "tool_name", "action", "path", "created_at", "enabled"},
-		"queue_tasks":              {"id", "session_id", "prompt", "role", "max_cost", "max_tokens", "timeout_sec", "status", "cost", "tokens", "exit_reason", "created_at", "started_at", "finished_at", "workspace_root"},
-		"pending_injects":          {"id", "session_id", "message_id", "content", "interrupt", "created_at"},
-		"session_run_queue":        {"id", "session_id", "call_data", "status", "leased_by", "leased_at", "lease_expires_at", "attempts", "last_error", "terminal_failure", "created_at", "updated_at"},
-		"orphan_call_outbox":       {"id", "session_id", "call_data", "status", "attempts", "max_attempts", "last_error", "created_at", "updated_at"},
-		"async_hosts":              {"id", "pid", "label", "started_at"},
-		"session_drivers":          {"session_id", "host_id", "pid", "claimed_at"},
-		"session_notices":          {"id", "owner", "kind", "text", "wake", "delivery", "notice_message_id", "reacted", "wake_attempts", "reacted_failed", "job_tool_call_id", "created_at", "updated_at"},
-		"wake_schedules":           {"id", "owner_session_id", "kind", "message", "next_run_at", "every_ms", "max_runs", "until_at", "state", "occurrence", "lease_owner", "lease_expires_at", "created_at", "updated_at"},
-		"batch_nodes":              {"node_id", "root_id", "owner_session_id", "host_id", "parent_id", "ordinal", "kind", "tool_call_id", "input_hash", "announced", "announce_message_id", "origin_cli", "mode", "on_fail", "notify", "max_parallel", "task_kind", "task_group", "task_payload", "timeout_ns", "child_session_id", "state", "cause", "token", "attempts", "control_state", "control_error", "control_pending", "outcome_state", "outcome_code", "outcome_summary", "response_envelope_ref", "response_envelope", "runner_id", "root_sequence", "projection_sequence", "notice_selected", "notice_kind", "notice_state", "notice_cause", "notice_sequence", "notice_ordinal", "notice_pending", "notice_active", "notice_completed", "notice_failed", "notice_cancelled", "notice_timed_out", "notice_interrupted", "notice_skipped", "delivery", "notice_message_id", "wake", "reacted", "wake_attempts", "reacted_failed", "created_at", "updated_at"},
-		"batch_control_requests":   {"request_id", "owner_session_id", "root_id", "node_id", "host_id", "runner_id", "operation", "status", "answer_code", "answer_sequence", "created_at", "answered_at"},
-		"batch_runner_checkpoints": {"host_id", "runner_id", "sequence", "event_type", "final", "created_at", "updated_at"},
-		"batch_timeout_checkins":   {"root_id", "node_id", "host_id", "token", "kind", "owner_session_id", "created_at"},
+		"sessions":                    {"id", "parent_session_id", "title", "message_count", "prompt_tokens", "completion_tokens", "cost", "updated_at", "created_at", "summary_message_id", "todos", "smart_model_provider", "smart_model_id", "fast_model_provider", "fast_model_id", "system_prompt", "yolo_enabled", "smart_model_reasoning_effort", "fast_model_reasoning_effort", "cancel_requested", "ended_reason", "budget_max_cost", "budget_max_tokens", "budget_timeout_sec", "deleted_todos", "parent_cost_accounted", "worker_model_provider", "worker_model_id", "worker_model_reasoning_effort", "reviewer_model_provider", "reviewer_model_id", "reviewer_model_reasoning_effort", "origin", "cost_self", "cost_base", "cost_parent_id", "workspace_root", "git_branch"},
+		"messages":                    {"id", "session_id", "role", "parts", "model", "created_at", "updated_at", "finished_at", "provider", "is_summary_message", "pinned", "hidden", "reasoning_effort", "auto_resumed", "background_job_notice", "input_tokens", "output_tokens", "reasoning_tokens", "cache_creation_tokens", "cache_read_tokens", "total_tokens", "cost_usd", "usage_provider", "usage_model", "cache_support", "usage_estimated", "checkpoint_generation", "origin", "notice_kind"},
+		"files":                       {"id", "session_id", "path", "content", "version", "created_at", "updated_at"},
+		"read_files":                  {"session_id", "path", "read_at"},
+		"session_permissions":         {"id", "session_id", "tool_name", "action", "path", "created_at", "enabled"},
+		"queue_tasks":                 {"id", "session_id", "prompt", "role", "max_cost", "max_tokens", "timeout_sec", "status", "cost", "tokens", "exit_reason", "created_at", "started_at", "finished_at", "workspace_root"},
+		"pending_injects":             {"id", "session_id", "message_id", "content", "interrupt", "created_at"},
+		"session_run_queue":           {"id", "session_id", "call_data", "status", "leased_by", "leased_at", "lease_expires_at", "attempts", "last_error", "terminal_failure", "created_at", "updated_at"},
+		"orphan_call_outbox":          {"id", "session_id", "call_data", "status", "attempts", "max_attempts", "last_error", "created_at", "updated_at"},
+		"async_hosts":                 {"id", "pid", "label", "started_at"},
+		"session_role_contracts":      {"session_id", "contract_json"},
+		"session_root_role_contracts": {"session_id", "logical_call_id", "contract_json"},
+		"session_drivers":             {"session_id", "host_id", "pid", "claimed_at"},
+		"session_notices":             {"id", "owner", "kind", "text", "wake", "delivery", "notice_message_id", "reacted", "wake_attempts", "reacted_failed", "job_tool_call_id", "created_at", "updated_at"},
+		"wake_schedules":              {"id", "owner_session_id", "kind", "message", "next_run_at", "every_ms", "max_runs", "until_at", "state", "occurrence", "lease_owner", "lease_expires_at", "created_at", "updated_at"},
+		"batch_nodes":                 {"node_id", "root_id", "owner_session_id", "host_id", "parent_id", "ordinal", "kind", "tool_call_id", "input_hash", "announced", "announce_message_id", "origin_cli", "mode", "on_fail", "notify", "max_parallel", "task_kind", "task_group", "task_payload", "timeout_ns", "child_session_id", "state", "cause", "token", "attempts", "control_state", "control_error", "control_pending", "outcome_state", "outcome_code", "outcome_summary", "response_envelope_ref", "response_envelope", "runner_id", "root_sequence", "projection_sequence", "notice_selected", "notice_kind", "notice_state", "notice_cause", "notice_sequence", "notice_ordinal", "notice_pending", "notice_active", "notice_completed", "notice_failed", "notice_cancelled", "notice_timed_out", "notice_interrupted", "notice_skipped", "delivery", "notice_message_id", "wake", "reacted", "wake_attempts", "reacted_failed", "created_at", "updated_at"},
+		"batch_control_requests":      {"request_id", "owner_session_id", "root_id", "node_id", "host_id", "runner_id", "operation", "status", "answer_code", "answer_sequence", "created_at", "answered_at"},
+		"batch_runner_checkpoints":    {"host_id", "runner_id", "sequence", "event_type", "final", "created_at", "updated_at"},
+		"batch_timeout_checkins":      {"root_id", "node_id", "host_id", "token", "kind", "owner_session_id", "created_at"},
 	}
 	for table, want := range expectedColumns {
 		require.ElementsMatch(t, want, tableColumns(t, conn, table), table)
@@ -259,7 +261,7 @@ func TestStoreV1FixtureMatchesEmbeddedSchemaMinusOmittedObjects(t *testing.T) {
 			t.Errorf("unexpected embedded sqlite_master object: %s", key)
 		}
 	}
-	for _, tableKey := range []string{"table:sessions", "table:messages", "table:files", "table:read_files", "table:session_permissions", "table:queue_tasks", "table:pending_injects", "table:session_run_queue", "table:orphan_call_outbox", "table:async_hosts", "table:session_agent_depth", "table:session_agent_model_role", "table:session_drivers", "table:session_notices", "table:wake_schedules", "table:batch_nodes", "table:batch_control_requests", "table:batch_runner_checkpoints", "table:batch_timeout_checkins"} {
+	for _, tableKey := range []string{"table:sessions", "table:messages", "table:files", "table:read_files", "table:session_permissions", "table:queue_tasks", "table:pending_injects", "table:session_run_queue", "table:orphan_call_outbox", "table:async_hosts", "table:session_agent_depth", "table:session_agent_model_role", "table:session_role_contracts", "table:session_root_role_contracts", "table:session_drivers", "table:session_notices", "table:wake_schedules", "table:batch_nodes", "table:batch_control_requests", "table:batch_runner_checkpoints", "table:batch_timeout_checkins"} {
 		require.Contains(t, fixtureObjects, tableKey)
 	}
 	require.Equal(t, embeddedObjects, fixtureObjects)

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -106,6 +107,9 @@ type batchIngressTool struct {
 // per-dispatch (holdConstruction), so an unused-after-publish toolset
 // still returns the manager to zero.
 func (t *batchIngressTool) ensurePinned() (string, error) {
+	if !roleContractsAllowName(roleContractsForTools([]fantasy.AgentTool{t.AgentTool}), t.Info().Name) {
+		return "", ErrRoleToolDenied
+	}
 	t.once.Do(func() {
 		id, err := t.bind.pin(t.registry)
 		if err != nil {
@@ -188,6 +192,16 @@ func (t *batchIngressTool) holdPinned(id string) (string, func(), error) {
 }
 
 func (t *batchIngressTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	// Install the payload's captured ceiling before ANY side effect (including
+	// pinning/attaching a batch root). The invocation-time cap and payload cap
+	// are both enforced; neither can replace the other.
+	ctx = withRoleToolContract(ctx, t.inv.Policy.RoleContract)
+	if err := guardRoleToolCall(ctx, t.Info().Name); err != nil {
+		return fantasy.NewTextErrorResponse(err.Error()), nil
+	}
+	if call.Name != "" && call.Name != t.Info().Name {
+		return fantasy.NewTextErrorResponse(fmt.Sprintf("%v: forged tool name %q does not match %q", ErrRoleToolDenied, call.Name, t.Info().Name)), nil
+	}
 	// pct: clear inherited delegation state before ordinary work invocations.
 	ctx = context.WithValue(ctx, pctDelegationHandoffKey{}, (*pctDelegationHandoff)(nil))
 	if t.bind == nil {
@@ -273,11 +287,16 @@ func (t errBatchIngressTool) Run(context.Context, fantasy.ToolCall) (fantasy.Too
 // scope fails closed (there is no "nil means process lifetime" fallback —
 // ordinary, non-provider builds need the same closure semantics).
 func newBatchWorkToolBuild(bind *batchCoordinatorBinding, list []fantasy.AgentTool, scope *buildResourceScope, deferred bool) (policyToolBuild, error) {
+	return newBatchWorkToolBuildForContext(context.Background(), bind, list, scope, deferred)
+}
+
+func newBatchWorkToolBuildForContext(ctx context.Context, bind *batchCoordinatorBinding, list []fantasy.AgentTool, scope *buildResourceScope, deferred bool) (policyToolBuild, error) {
 	if scope == nil {
 		return policyToolBuild{}, errors.New("batch tool build: no build-resource scope in the trusted call state")
 	}
-	built := newPolicyToolBuild(list)
-	fingerprint := batchToolsetFingerprint(list)
+	built := newPolicyToolBuildForContext(ctx, list)
+	fingerprint := batchToolsetFingerprint(built.tools)
+	roleContract := roleContractForToolBuild(ctx, built.tools)
 	if deferred {
 		// Shared default toolset build (no trusted call state): the registry
 		// identity is NOT published and NO Construction owner is taken here.
@@ -288,6 +307,9 @@ func newBatchWorkToolBuild(bind *batchCoordinatorBinding, list []fantasy.AgentTo
 		// process-lifetime fallback).
 		for i, tool := range built.tools {
 			name := tool.Info().Name
+			if !roleContractAllowsName(roleContract, name) {
+				continue
+			}
 			if name == tools.AskQuestionToolName {
 				built.tools[i] = batchAgentAskQuestionTool{AgentTool: tool}
 				continue
@@ -300,7 +322,7 @@ func newBatchWorkToolBuild(bind *batchCoordinatorBinding, list []fantasy.AgentTo
 				Delivery:         batchFamilyDelivery(name),
 				BackgroundEscape: batchEscapeNever,
 				WaiterRank:       0,
-				Policy:           batchLeafPolicyContext{RestrictedToolset: fingerprint},
+				Policy:           batchLeafPolicyContext{RestrictedToolset: fingerprint, RoleContract: cloneRoleContractForCall(roleContract)},
 			}
 			if name == tools.BashToolName {
 				if inlineWindowDisabledFor(bind) {
@@ -336,6 +358,9 @@ func newBatchWorkToolBuild(bind *batchCoordinatorBinding, list []fantasy.AgentTo
 	}
 	for i, tool := range built.tools {
 		name := tool.Info().Name
+		if !roleContractAllowsName(roleContract, name) {
+			continue
+		}
 		if name == tools.AskQuestionToolName {
 			built.tools[i] = batchAgentAskQuestionTool{AgentTool: tool}
 			continue
@@ -352,14 +377,12 @@ func newBatchWorkToolBuild(bind *batchCoordinatorBinding, list []fantasy.AgentTo
 			Policy: batchLeafPolicyContext{
 				RegistryID:        registryID,
 				RestrictedToolset: fingerprint,
+				RoleContract:      cloneRoleContractForCall(roleContract),
 			},
 		}
 		if name == tools.BashToolName {
 			// Auto-background keeps its window: escape switches DELIVERY of
 			// the existing root after the window, never its execution.
-			// Window disabled (SetInlineWindowForTest(false)): the pre-A14
-			// "started" flow -- the shell detaches from the start and the
-			// call returns the started text in-turn.
 			if inlineWindowDisabledFor(bind) {
 				inv.Delivery = batchDeliveryChoice{Mode: batchDeliveryDetached}
 			} else {
