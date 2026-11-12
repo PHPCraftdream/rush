@@ -1,6 +1,5 @@
 // Parses the awaiting-answer finish text shape produced by the Go agent.
 // Exported for reuse (e.g. tests).
-// Pure code move from the former components/Message.tsx.
 
 // ── ask_question rendering ────────────────────────────────────────────────
 //
@@ -32,19 +31,32 @@
 // scope for this pass (pure frontend polish on top of the existing stream).
 const AWAITING_ANSWER_TITLE = "Stopped: agent asked a question and is awaiting an answer";
 
+/** A question parsed out of an awaiting-answer finish. */
 interface ParsedQuestion {
   question: string;
   options: string[];
 }
 
-// parseAwaitingAnswer mirrors the exact string shape built by
-// awaitingAnswerStoppedFinishText + AwaitingAnswerGuidance in
-// internal/agent/question_stop.go:
-//
-//   Details = "<err.Error() line>\n\nQUESTION: <question>[\n\nSuggested options: a | b | c]\n\nThis is not a crash — …"
-//
-// Exported for reuse (e.g. tests); returns null for anything that doesn't
-// match, which the caller treats as "not a question, render normally".
+/**
+ * Trims one suggested option.
+ *
+ * @param option - the raw option text
+ */
+const trimOption = (option: string): string => option.trim();
+
+/**
+ * Mirrors the exact string shape built by awaitingAnswerStoppedFinishText +
+ * AwaitingAnswerGuidance in internal/agent/question_stop.go:
+ *
+ *   Details = "<err.Error() line>\n\nQUESTION: <question>[\n\nSuggested options: a | b | c]\n\nThis is not a crash — …"
+ *
+ * Exported for reuse (e.g. tests); returns null for anything that does not
+ * match, which the caller treats as "not a question, render normally".
+ *
+ * @param reason - the finish reason
+ * @param msg - the finish title
+ * @param details - the finish details text
+ */
 export function parseAwaitingAnswer(reason: string, msg: string, details: string): ParsedQuestion | null {
   if (reason !== "error" || msg !== AWAITING_ANSWER_TITLE) return null;
   const match = details.match(/QUESTION: ([\s\S]*?)\n\nThis is not a crash/);
@@ -54,7 +66,7 @@ export function parseAwaitingAnswer(reason: string, msg: string, details: string
   const optIdx = body.indexOf(optMarker);
   let options: string[] = [];
   if (optIdx !== -1) {
-    options = body.slice(optIdx + optMarker.length).split(" | ").map(s => s.trim()).filter(Boolean);
+    options = body.slice(optIdx + optMarker.length).split(" | ").map(trimOption).filter(Boolean);
     body = body.slice(0, optIdx);
   }
   const question = body.trim();

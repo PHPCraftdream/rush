@@ -1,11 +1,19 @@
 // Visible error/canceled finish block for failed turns.
-// Pure code move from the former components/Message.tsx.
 
 import { memo } from "react";
 
-// Fork patch: visible block for error / canceled finish parts (replaces the
-// previous "render nothing" behaviour that produced blank assistant bubbles).
-export const FinishErrorBlock = memo(function FinishErrorBlock({ reason, message, details }: { reason: string; message: string; details: string }) {
+/** Props of the finish error block. */
+interface IFinishErrorBlockProps {
+  reason: string;
+  message: string;
+  details: string;
+}
+
+/**
+ * Fork patch: visible block for error / canceled finish parts (replaces the
+ * previous "render nothing" behaviour that produced blank assistant bubbles).
+ */
+export const FinishErrorBlock = memo(function FinishErrorBlock({ reason, message, details }: IFinishErrorBlockProps) {
   const title = message || (reason === "canceled" ? "Canceled" : "Error");
   return (
     <div data-test-id="finish-error" className="tool-block my-2 border-red/40 bg-red/[6%]">
