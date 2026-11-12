@@ -11,6 +11,9 @@ importers:
       '@nanostores/react':
         specifier: ^0.8.1
         version: 0.8.4(nanostores@0.11.4)(react@19.2.4)
+      '@react-carburetor/core':
+        specifier: 0.1.0
+        version: 0.1.0(@types/react@19.2.14)(react@19.2.4)
       highlight.js:
         specifier: ^11.11.1
         version: 11.11.1
@@ -48,6 +51,9 @@ importers:
       '@playwright/test':
         specifier: ^1.58.2
         version: 1.58.2
+      '@react-carburetor/lint':
+        specifier: 0.1.0
+        version: 0.1.0
       '@rsbuild/core':
         specifier: ^1.4.6
         version: 1.7.3
@@ -428,6 +434,65 @@ packages:
   '@playwright/test@1.58.2':
     resolution: {integrity: sha512-akea+6bHYBBfA9uQqSYmlJXn61cTa+jbO87xVLCWbTqbWadRVmhxlXATaOjOgcBaWU4ePo0wB41KMFv3o35IXA==}
     engines: {node: '>=18'}
+    hasBin: true
+
+  '@react-carburetor/core@0.1.0':
+    resolution: {integrity: sha512-oSYM524TH18EqH8BWGGA536w6OPIueG3Y7I7b+t+o/IQLu9rJaBVs+ICoFrNxdW+yD7u+L/2xaG89hQvgLNJ5g==}
+    engines: {node: '>=24.0.0'}
+    peerDependencies:
+      '@types/react': ^18.0.0 || ^19.0.0
+      react: ^18.0.0 || ^19.0.0
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
+
+  '@react-carburetor/lint-darwin-arm64@0.1.0':
+    resolution: {integrity: sha512-Sy/IP6uwAQt9Q7Dc+tVlEuRycKOl7A6teFBeigiPsGfK7TQK4sVzLfcTwmxun1mHMAHSbZyouARwnh5OdmBnUw==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@react-carburetor/lint-darwin-x64@0.1.0':
+    resolution: {integrity: sha512-c/fpsvYBtlhOFyRXIzpxwwipep6Jwhjb0/l35nV9JRVk47sHk8wwDeKjJhcY1muaLAx/ugALcq3zN5leIn0cvw==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@react-carburetor/lint-linux-arm64-gnu@0.1.0':
+    resolution: {integrity: sha512-irLw6j1jgfQlFFrADmwkcx+upEDo0KDJlAjb8cLSAkkNDE1ifk483IvpbXUndD0bQ3F2hxKg5ZePkfbnsZ5euw==}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@react-carburetor/lint-linux-arm64-musl@0.1.0':
+    resolution: {integrity: sha512-suBMuI/NK3gy9L9kAPxe3SNdz2g+2pW4tTcX3AedE3Y99lfagFCaesZ7bBlEIpGL+a2UajxJy/Ds96sZDQd+Cw==}
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
+
+  '@react-carburetor/lint-linux-x64-gnu@0.1.0':
+    resolution: {integrity: sha512-jRmYO5w+ijRjBGdi9qMyUaN/79JLD0oHTgI4qyIJ4Eg/wTMc4RefbB6jHbG72+0Etpk0y0DDeiPTq4m2tiO7PA==}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@react-carburetor/lint-linux-x64-musl@0.1.0':
+    resolution: {integrity: sha512-o+cTCLBUejmB3z+0tSODjU7EO4QmZoj1JOkSsQzR0bGpy+CbbqxGTmVMq26BwGyFt+n7ggwH022fTc5J3LlWSg==}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
+
+  '@react-carburetor/lint-w32-arm64@0.1.0':
+    resolution: {integrity: sha512-qd+ws11gILEmtA0xYvc7YHtJDP76vSn+TsGq+kU5zWB47ga57scZS71PX4gZ0CuNvLRULMfwTLvcTpWNb4sNeQ==}
+    cpu: [arm64]
+    os: [win32]
+
+  '@react-carburetor/lint-w32-x64@0.1.0':
+    resolution: {integrity: sha512-hAfwDtpybJIjVQOugIhEoBnZ9sPc9txKc3yKpBFC4ogjUX4iKFJFRuP1MK6z+zvUuZJ1sR1oNv/v0ANwpFsTfQ==}
+    cpu: [x64]
+    os: [win32]
+
+  '@react-carburetor/lint@0.1.0':
+    resolution: {integrity: sha512-ssLOR+1He6a9IvfGV9pUkkEl7DAodEcELDw4c1uRstsrLbIoU8oK1PnSgd6AtgG6fz+2WT1+8q2R3uJJkKyOww==}
+    engines: {node: '>=24.0.0'}
     hasBin: true
 
   '@rsbuild/core@1.7.3':
@@ -1737,6 +1802,47 @@ snapshots:
   '@playwright/test@1.58.2':
     dependencies:
       playwright: 1.58.2
+
+  '@react-carburetor/core@0.1.0(@types/react@19.2.14)(react@19.2.4)':
+    dependencies:
+      react: 19.2.4
+    optionalDependencies:
+      '@types/react': 19.2.14
+
+  '@react-carburetor/lint-darwin-arm64@0.1.0':
+    optional: true
+
+  '@react-carburetor/lint-darwin-x64@0.1.0':
+    optional: true
+
+  '@react-carburetor/lint-linux-arm64-gnu@0.1.0':
+    optional: true
+
+  '@react-carburetor/lint-linux-arm64-musl@0.1.0':
+    optional: true
+
+  '@react-carburetor/lint-linux-x64-gnu@0.1.0':
+    optional: true
+
+  '@react-carburetor/lint-linux-x64-musl@0.1.0':
+    optional: true
+
+  '@react-carburetor/lint-w32-arm64@0.1.0':
+    optional: true
+
+  '@react-carburetor/lint-w32-x64@0.1.0':
+    optional: true
+
+  '@react-carburetor/lint@0.1.0':
+    optionalDependencies:
+      '@react-carburetor/lint-darwin-arm64': 0.1.0
+      '@react-carburetor/lint-darwin-x64': 0.1.0
+      '@react-carburetor/lint-linux-arm64-gnu': 0.1.0
+      '@react-carburetor/lint-linux-arm64-musl': 0.1.0
+      '@react-carburetor/lint-linux-x64-gnu': 0.1.0
+      '@react-carburetor/lint-linux-x64-musl': 0.1.0
+      '@react-carburetor/lint-w32-arm64': 0.1.0
+      '@react-carburetor/lint-w32-x64': 0.1.0
 
   '@rsbuild/core@1.7.3':
     dependencies:

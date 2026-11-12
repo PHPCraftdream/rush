@@ -233,7 +233,7 @@ type RenderItem =
 //   - assistant w/o tool_call     → flush + standalone <Message> (this is
 //                                    the model's final prose answer, or
 //                                    a pure-thinking turn)
-function buildRenderItems(messages: Msg[], attachedNoticeIDs: Set<string>): RenderItem[] {
+function buildRenderItems(messages: readonly Msg[], attachedNoticeIDs: Set<string>): RenderItem[] {
   const out: RenderItem[] = [];
   let burstParts: BurstPart[] = [];
   let burstFirstID = "";

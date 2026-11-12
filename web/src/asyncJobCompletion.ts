@@ -55,7 +55,7 @@ export function isAsyncCompletionNotice(message: Message): boolean {
   return asyncNoticePattern.test(text) || asyncStoppedPattern.test(text);
 }
 
-export function indexAsyncJobCompletions(messages: Message[]): AsyncJobCompletionIndex {
+export function indexAsyncJobCompletions(messages: readonly Message[]): AsyncJobCompletionIndex {
   const byToolCallID = new Map<string, AsyncJobCompletion>();
   const attachedNoticeIDs = new Set<string>();
   const asyncCalls = new Map<string, string>();

@@ -1,4 +1,4 @@
-/** Shared test data factories */
+// Shared test data factories
 
 export function makeSession(overrides: Record<string, unknown> = {}) {
   return {

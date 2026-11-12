@@ -1,6 +1,6 @@
 export interface IdleQueuePayload { content: string; attachments: unknown[] }
 
-export function drainSendableQueue<T extends { content: string; attachments?: unknown[]; failureState?: string }>(items: T[]): { sendable: T[]; retained: T[] } {
+export function drainSendableQueue<T extends { content: string; attachments?: unknown[]; failureState?: string }>(items: readonly T[]): { sendable: T[]; retained: T[] } {
   return { sendable: items.filter((item) => !item.failureState), retained: items.filter((item) => !!item.failureState) };
 }
 

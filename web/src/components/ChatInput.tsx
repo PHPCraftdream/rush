@@ -57,7 +57,7 @@ function formatBytes(n: number): string {
 }
 
 // Strip the local-only `size` field — the wire shape is fileName/mimeType/data.
-function toWireAttachments(atts: PendingAttachment[]): WireAttachment[] {
+function toWireAttachments(atts: readonly PendingAttachment[]): WireAttachment[] {
   return atts.map((a) => ({
     fileName: a.fileName,
     mimeType: a.mimeType,

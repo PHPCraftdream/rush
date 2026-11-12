@@ -25,7 +25,7 @@ function classifyPart(part: ContentPart): BlockKind {
   }
 }
 
-export function groupPartsIntoBlocks(parts: ContentPart[], breaks: Set<number>): VisualBlock[] {
+export function groupPartsIntoBlocks(parts: readonly ContentPart[], breaks: Set<number>): VisualBlock[] {
   const blocks: VisualBlock[] = [];
   let cur: VisualBlock | null = null;
 

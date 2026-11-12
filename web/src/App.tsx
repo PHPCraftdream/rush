@@ -1,12 +1,14 @@
-import { useEffect } from "react";
 import { useStore } from "@nanostores/react";
-import { $authed, $connected, $serverShuttingDown } from "./store";
+import { AntiHookComponent } from "@react-carburetor/core";
+import { $connected, $serverShuttingDown } from "./store";
+import { authCarburetor } from "./state/auth";
 import { useWS } from "./useWS";
 import { Sidebar } from "./components/Sidebar";
 import { Chat } from "./components/Chat";
 import { Login } from "./components/Login";
 import { PowerOff } from "lucide-react";
 
+/** Main shell shown after login: socket wiring, banners, sidebar and chat. */
 function AuthedApp() {
   useWS();
   const connected = useStore($connected);
@@ -27,7 +29,8 @@ function AuthedApp() {
           </div>
           <h2 className="text-lg font-semibold text-text">Server is shutting down</h2>
           <p className="text-sm text-text-subtle max-w-md text-center leading-relaxed">
-            The server process was stopped from this page. It is safe to close this tab — start the server again to continue working.
+            The server process was stopped from this page. It is safe to close this tab —
+            start the server again to continue working.
           </p>
         </div>
       )}
@@ -44,15 +47,32 @@ function AuthedApp() {
   );
 }
 
-export function App() {
-  const authed = useStore($authed);
+/**
+ * Marks the session authenticated when the check response is OK.
+ *
+ * @param r - the /auth/check response
+ */
+function applyAuthCheck(r: Response): void {
+  if (r.ok) authCarburetor.setAuthed(true);
+}
 
-  useEffect(() => {
-    fetch("/auth/check").then((r) => {
-      if (r.ok) $authed.set(true);
-    });
-  }, []);
+/** Asks the server whether the cookie session is already valid. */
+function checkAuth(): void {
+  fetch("/auth/check").then(applyAuthCheck);
+}
 
-  if (!authed) return <Login />;
-  return <AuthedApp />;
+/** Root component: login screen until the session is authenticated. */
+export class App extends AntiHookComponent {
+  /** Runs the one-time session check after the first commit. */
+  protected useEffects(): void {
+    super.useEffects();
+    this.useEffect(checkAuth, []);
+  }
+
+  /** Renders the login screen or the authenticated app. */
+  public render() {
+    const { authed } = this.useCarburetor(authCarburetor);
+    if (!authed) return <Login />;
+    return <AuthedApp />;
+  }
 }

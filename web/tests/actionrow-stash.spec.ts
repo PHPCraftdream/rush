@@ -29,7 +29,7 @@ test.beforeEach(async ({ page }) => {
 
 async function setupWithMessages(
   page: import("@playwright/test").Page,
-  messages: ReturnType<typeof makeMessage>[]
+  messages: readonly ReturnType<typeof makeMessage>[]
 ) {
   await page.goto("/");
   await sendMockWSMessage(page, {

@@ -7,7 +7,6 @@ import { drainSendableQueue } from "./queueOnIdle";
 
 // ── Connection state ─────────────────────────────────────────────────────────
 export const $connected = atom(false);
-export const $authed = atom(false);
 
 // True once the server confirmed our shutdown_server request (task #714).
 // Terminal for the page: App renders a full-screen "server is shutting
@@ -92,7 +91,7 @@ export interface SessionsLiveDelta {
  * wholesale replace — the convergent behavior the 5s poll depends on. Returns
  * the reconciled list so routing decisions downstream use it, not the raw
  * snapshot. */
-export function applySessionsSnapshot(sessions: Session[], live: SessionsLiveDelta): Session[] {
+export function applySessionsSnapshot(sessions: readonly Session[], live: SessionsLiveDelta): Session[] {
   let next = [...sessions];
   for (const id of live.deletedIDs) {
     next = next.filter((s) => s.ID !== id);
@@ -353,7 +352,7 @@ export function tombstoneMessage(sessionID: string, messageID: string, generatio
 // mergeMessageLists combines a still-latest-but-stale snapshot with the
 // live state that raced it. Pure: reads the tombstone set, writes
 // nothing.
-function mergeMessageLists(sessionID: string, existing: Message[], snapshot: Message[]): Message[] {
+function mergeMessageLists(sessionID: string, existing: readonly Message[], snapshot: Message[]): Message[] {
   const tomb = deletedMessageIDs.get(sessionID);
   const snap = tomb ? snapshot.filter((m) => !tomb.has(m.ID)) : snapshot;
   const existingByID = new Map(existing.map((m) => [m.ID, m]));
@@ -399,7 +398,7 @@ export function applySubAgentMessagesSnapshot(sessionID: string, msgs: Message[]
 
 const _msgPartTracker = new Map<string, { time: number; count: number }>();
 
-export function trackMessageParts(msgID: string, parts: { type: string }[]) {
+export function trackMessageParts(msgID: string, parts: readonly { type: string }[]) {
   const count = parts.length;
   const now = Date.now();
   const prev = _msgPartTracker.get(msgID);
@@ -606,7 +605,7 @@ export function clearSelection() {
 }
 
 // Select (only add, never remove) all IDs in the given array
-export function selectMessageIDs(ids: string[]) {
+export function selectMessageIDs(ids: readonly string[]) {
   const s = new Set($selectedMessageIDs.get());
   for (const id of ids) s.add(id);
   $selectedMessageIDs.set(s);

@@ -1,10 +1,10 @@
 import type { ContentPart, Message } from "./types";
 
-function partsOfKind<T extends ContentPart["type"]>(parts: ContentPart[], kind: T): Extract<ContentPart, { type: T }>[] {
+function partsOfKind<T extends ContentPart["type"]>(parts: readonly ContentPart[], kind: T): Extract<ContentPart, { type: T }>[] {
   return parts.filter((p): p is Extract<ContentPart, { type: T }> => p.type === kind);
 }
 
-function total(parts: ContentPart[], kind: "thinking" | "text"): string {
+function total(parts: readonly ContentPart[], kind: "thinking" | "text"): string {
   return parts.filter((p) => p.type === kind).map((p) => {
     if (p.type === "thinking") return p.Thinking;
     if (p.type === "text") return p.Text;
@@ -12,7 +12,7 @@ function total(parts: ContentPart[], kind: "thinking" | "text"): string {
   }).join("");
 }
 
-function terminal(parts: ContentPart[]): boolean {
+function terminal(parts: readonly ContentPart[]): boolean {
   return parts.some((p) => p.type === "finish" && !p.Partial);
 }
 

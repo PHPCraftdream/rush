@@ -19,12 +19,12 @@ export function applyBatchWorkSnapshot(payload: BatchWorkSnapshot) {
   $batchWorkBySession.set(next);
 }
 
-function mergeCompletions(previous: BatchWorkCompletion[], incoming: BatchWorkCompletion[]): BatchWorkCompletion[] {
+function mergeCompletions(previous: readonly BatchWorkCompletion[], incoming: readonly BatchWorkCompletion[]): BatchWorkCompletion[] {
   const byKey = new Map(previous.map((item) => [`${item.rootID}\u0000${item.nodeID}`, item]));
   for (const item of incoming) byKey.set(`${item.rootID}\u0000${item.nodeID}`, item);
   return [...byKey.values()];
 }
-function mergeRoots(previous: BatchWorkRoot[], incoming: BatchWorkRoot[]): BatchWorkRoot[] {
+function mergeRoots(previous: readonly BatchWorkRoot[], incoming: readonly BatchWorkRoot[]): BatchWorkRoot[] {
   const out: BatchWorkRoot[] = [];
   const seen = new Set<string>();
   const updates = new Map(incoming.map((root) => [root.rootID, root]));
@@ -43,7 +43,7 @@ function mergeRoots(previous: BatchWorkRoot[], incoming: BatchWorkRoot[]): Batch
 export interface BatchTreeNode { node: BatchWorkNode; children: BatchTreeNode[]; childBatches: BatchTreeRoot[] }
 export interface BatchTreeRoot { root: BatchWorkRoot; nodes: BatchTreeNode[] }
 
-export function buildBatchTree(roots: BatchWorkRoot[]): BatchTreeRoot[] {
+export function buildBatchTree(roots: readonly BatchWorkRoot[]): BatchTreeRoot[] {
   const sorted = [...roots].sort((a, b) => a.rootID.localeCompare(b.rootID));
   const rootsByOwner = new Map<string, BatchWorkRoot[]>();
   for (const root of sorted) rootsByOwner.set(root.ownerSessionID, [...(rootsByOwner.get(root.ownerSessionID) ?? []), root]);

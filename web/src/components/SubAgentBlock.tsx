@@ -19,7 +19,7 @@ import { useExpandToolCallSignal } from "./Message/useExpandToolCallSignal";
 const MD_REMARK = [remarkGfm, remarkBreaks];
 const MD_REHYPE = [rehypeHighlight];
 
-function extractTextFromParts(parts?: ContentPart[]): string {
+function extractTextFromParts(parts?: readonly ContentPart[]): string {
   if (!parts) return "";
   return parts
     .filter((p) => p.type === "text")

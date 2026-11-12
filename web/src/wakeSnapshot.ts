@@ -15,6 +15,9 @@ export function mergeWakeSnapshot<T>(current: Map<string, T[]>, payload: WakeSna
   return next;
 }
 
-export function pickPendingWake<T extends { id: string; state: string }>(items: T[], pending: T | null): T | null {
+export function pickPendingWake<T extends { id: string; state: string }>(
+  items: readonly T[],
+  pending: T | null,
+): T | null {
   return pending && items.some((item) => item.id === pending.id && item.state === "active") ? pending : null;
 }

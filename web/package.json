@@ -5,14 +5,16 @@
   "type": "module",
   "packageManager": "pnpm@10.28.2",
   "pnpm": {
-    "minimumReleaseAge": 43200,
+    "minimumReleaseAge": 4320,
     "minimumReleaseAgeExclude": []
   },
   "scripts": {
     "dev": "rsbuild dev",
     "build": "rsbuild build",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint --max-warnings=101",
+    "lint": "pnpm run lint:base && pnpm run lint:carburetor",
+    "lint:base": "oxlint --max-warnings=101",
+    "lint:carburetor": "oxlint -c .oxlintrc.carburetor.json --max-warnings=2098",
     "preview": "rsbuild preview",
     "test": "node scripts/run-tests.mjs",
     "test:ui": "node scripts/run-tests.mjs --ui",
@@ -20,6 +22,7 @@
   },
   "dependencies": {
     "@nanostores/react": "^0.8.1",
+    "@react-carburetor/core": "0.1.0",
     "highlight.js": "^11.11.1",
     "lucide-react": "^0.577.0",
     "nanostores": "^0.11.3",
@@ -34,6 +37,7 @@
   "devDependencies": {
     "@babel/core": "^7.29.0",
     "@playwright/test": "^1.58.2",
+    "@react-carburetor/lint": "0.1.0",
     "@rsbuild/core": "^1.4.6",
     "@rsbuild/plugin-babel": "^1.1.1",
     "@rsbuild/plugin-react": "^1.2.0",

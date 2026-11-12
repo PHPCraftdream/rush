@@ -5,11 +5,11 @@ import type { ContentPart } from "../../types";
 
 // ── Tiny utilities ────────────────────────────────────────────────────────────
 
-export function extractText(parts: ContentPart[]) {
+export function extractText(parts: readonly ContentPart[]) {
   return parts.filter(p => p.type === "text").map(p => (p as any).Text).join("\n");
 }
 
-export function extractThinking(parts: ContentPart[]) {
+export function extractThinking(parts: readonly ContentPart[]) {
   return parts.filter(p => p.type === "thinking").map(p => (p as any).Thinking).join("\n");
 }
 
@@ -20,6 +20,6 @@ export function extractThinking(parts: ContentPart[]) {
 // ticker mid-stream), is NOT terminally finished — it is still owned by an
 // in-flight agent turn, which will overwrite any edit made to it via its
 // next checkpoint or, unconditionally, its terminal write (task #590).
-export function isTerminallyFinished(parts: ContentPart[]) {
+export function isTerminallyFinished(parts: readonly ContentPart[]) {
   return parts.some(p => p.type === "finish" && !p.Partial);
 }

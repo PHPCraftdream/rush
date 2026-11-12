@@ -75,7 +75,7 @@ test("scrolling up mid-stream stays put instead of snapping back to bottom", asy
     }),
   }));
 
-  await page.evaluate((burstData: string[]) => {
+  await page.evaluate((burstData: readonly string[]) => {
     const container = document.querySelector('[data-test-id="chat-scroll-container"]') as HTMLElement;
     container.scrollTop = 0; // immediate; the resulting "scroll" event is queued, not synchronous
     container.dispatchEvent(new WheelEvent("wheel", { deltaY: -600, bubbles: true, cancelable: true }));

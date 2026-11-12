@@ -130,7 +130,7 @@ export interface MyPromptItem {
   text: string;
 }
 
-export function partsToText(parts: Array<{ type: string; Text?: string }>): string {
+export function partsToText(parts: ReadonlyArray<{ type: string; Text?: string }>): string {
   let out = "";
   for (const p of parts) {
     if (p.type === "text" && p.Text) out += p.Text;
@@ -151,7 +151,7 @@ export function isComposerTypedMessage(m: Message, isNotice: (m: Message) => boo
   return true;
 }
 
-export function buildMyPrompts(msgs: Message[], isNotice: (m: Message) => boolean): MyPromptItem[] {
+export function buildMyPrompts(msgs: readonly Message[], isNotice: (m: Message) => boolean): MyPromptItem[] {
   const out: MyPromptItem[] = [];
   for (const m of msgs) {
     if (!isComposerTypedMessage(m, isNotice)) continue;

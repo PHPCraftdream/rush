@@ -64,7 +64,7 @@ async function openParentWithTwoSubAgents(page: Page) {
   // Wait for both lazy load_messages requests before replying so the
   // replies cannot race the $subAgentSessions registration.
   await page.waitForFunction(
-    (ids: string[]) => {
+    (ids: readonly string[]) => {
       const sent = (((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string; payload?: { sessionID?: string } }>) ?? [];
       return ids.every((want) =>
         sent.some((m) => m.type === "load_messages" && m.payload?.sessionID === want),
