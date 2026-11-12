@@ -94,6 +94,9 @@ func RunTool(ctx context.Context, cfg *config.ConfigStore, name, toolName string
 		return ToolResult{}, err
 	}
 
+	if admitted, handled, err := admitToolText(ctx, result); handled {
+		return admitted, err
+	}
 	if len(result.Content) == 0 {
 		return ToolResult{Type: "text", Content: "", IsError: result.IsError}, nil
 	}
@@ -180,6 +183,9 @@ func (o *Owner) RunTool(ctx context.Context, cfg *config.ConfigStore, name, tool
 		return ToolResult{}, err
 	}
 
+	if admitted, handled, err := admitToolText(ctx, result); handled {
+		return admitted, err
+	}
 	if len(result.Content) == 0 {
 		return ToolResult{Type: "text", Content: "", IsError: result.IsError}, nil
 	}

@@ -355,13 +355,13 @@ func TestDetectCacheInvalidations_TTLThresholdComesFromProviderProfile(t *testin
 			"a 6-minute gap under a 10-minute provider TTL stays a genuine invalidation; a hardcoded 5-minute threshold would say otherwise")
 	})
 
-	t.Run("unknown TTL falls back to the documented default", func(t *testing.T) {
+	t.Run("unknown TTL must not invent an expiry threshold", func(t *testing.T) {
 		t.Parallel()
 		got := detectCacheInvalidationsWithLookup(setup(t), func(string) time.Duration {
 			return 0
 		})
 		require.Len(t, got, 1)
-		require.True(t, got[0].LikelyTTLExpiry,
-			"a 6-minute gap with an unknown provider TTL falls back to the 5-minute default")
+		require.False(t, got[0].LikelyTTLExpiry,
+			"a long gap with unknown TTL cannot establish expiry")
 	})
 }

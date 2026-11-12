@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"charm.land/fantasy"
 
@@ -29,7 +30,9 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	// even starts.
 	ts.bumpActivity()
 	ts.stall.setPhase("provider", ts.smartModel.ModelCfg.Model, "")
-	prepared.Messages = options.Messages
+	prepareStarted := time.Now()
+	// Cache markers belong to this step, not fantasy's retained input slice.
+	prepared.Messages = append([]fantasy.Message(nil), options.Messages...)
 	for i := range prepared.Messages {
 		prepared.Messages[i].ProviderOptions = nil
 	}
@@ -197,6 +200,12 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	if ts.promptPrefix != "" {
 		prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(ts.promptPrefix)}, prepared.Messages...)
 	}
+
+	if slog.Default().Enabled(callContext, slog.LevelDebug) {
+		ts.cacheDiagnostic = preparedCacheDiagnostic(prepared.Messages, prepared.Tools)
+	}
+	ts.cachePreparedAt = time.Now()
+	ts.cachePrepareDuration = ts.cachePreparedAt.Sub(prepareStarted)
 
 	ts.mu.Lock()
 	ts.stepMessages = cloneFantasyMessages(prepared.Messages)
@@ -666,6 +675,7 @@ func (ts *turnStream) applyStepUsage(stepResult fantasy.StepResult) (session.Ses
 	// recordMessageUsage, so InputTokens is exclusive-of-cache for
 	// every provider before either consumer sees it.
 	usage = normalizeProviderUsage(ts.smartModel.Model.Provider(), usage)
+	ts.logCacheStepUsage(usage, estimated, stepResult.ProviderMetadata)
 	ts.runTotalTokens = addStepUsageTokens(ts.runTotalTokens, usage)
 	if ts.recovery != nil {
 		ts.recovery.spent.Add(addStepUsageTokens(0, usage))

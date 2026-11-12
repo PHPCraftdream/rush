@@ -118,7 +118,7 @@ func cacheProfileFor(provider string) cacheProfile {
 // for provider — the same figure the keep-alive scheduler derives its
 // replay interval from (cacheKeepAliveIntervalFor). Zero means the
 // provider has no explicit TTL here (implicit-cache or unknown providers):
-// callers must apply their own conservative default, not read zero as
+// callers must keep expiry unknown, not invent a TTL or read zero as
 // "never expires".
 //
 // Exported deliberately for diagnostic readers outside this package
