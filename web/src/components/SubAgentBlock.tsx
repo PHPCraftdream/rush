@@ -1,311 +1,129 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
-import type { TReadonly } from "@react-carburetor/core";
-import { useCarburetorValue, useComputedValue } from "@react-carburetor/core/interop";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkBreaks from "remark-breaks";
-import rehypeHighlight from "rehype-highlight";
-import { Bot } from "lucide-react";
+import { AntiHookComponent } from "@react-carburetor/core";
 import { asyncJobStatuses } from "../state/asyncJobStatuses";
 import { messagesCarburetor } from "../state/messages";
-import type { IMessagesState } from "../state/MessagesCarburetor";
-import { sessionsCarburetor } from "../state/sessions";
-import { sendLoadMessages } from "../ws";
-import type { Message, ContentPart, FinishPart } from "../types";
-import { formatActionArgs } from "../toolFormat";
-import { SummaryMessage } from "./Message/SummaryMessage";
-import { FinishErrorBlock } from "./Message/FinishErrorBlock";
-import { TimeBadge } from "./Message/TimeBadge";
-import { EffortBadge } from "./Message/EffortBadge";
-import { isTerminallyFinished } from "./Message/textParts";
-import { useExpandToolCallSignal } from "./Message/useExpandToolCallSignal";
+import { SubAgentFrame } from "./Message/SubAgentFrame";
+import { findErrorFinish } from "./Message/findErrorFinish";
+import { selectSubAgentView } from "./Message/selectSubAgentView";
+import { summarizeSubTranscript } from "./Message/summarizeSubTranscript";
 
-/** Picks the sub-agent transcripts out of the messages state. */
-const selectSubAgentMessages = (state: TReadonly<IMessagesState>) => new Map(Object.entries(state.subAgentMessages));
-
-/** Picks the active transcript out of the messages state. */
-const selectMessages = (state: TReadonly<IMessagesState>) => state.messages;
-
-const MD_REMARK = [remarkGfm, remarkBreaks];
-const MD_REHYPE = [rehypeHighlight];
-
-function extractTextFromParts(parts?: readonly ContentPart[]): string {
-  if (!parts) return "";
-  return parts
-    .filter((p) => p.type === "text")
-    .map((p) => (p as { type: "text"; Text: string }).Text)
-    .join("\n");
-}
-
-const SubAgentMessage = memo(function SubAgentMessage({ message, completed }: { message: Message; completed: Set<string> }) {
-  const text = useMemo(() => extractTextFromParts(message.Parts), [message.Parts]);
-  const toolCalls = useMemo(
-    () => (message.Parts ?? []).filter((p) => p.type === "tool_call") as Array<{ type: "tool_call"; Name: string; Input: string; Finished: boolean; ID: string }>,
-    [message.Parts],
-  );
-
-  if (!text && toolCalls.length === 0) return null;
-
-  return (
-    <div className="py-1">
-      {toolCalls.map((tc, i) => {
-        // No per-tool-call timestamp exists in the sub-agent transcript;
-        // tool calls are grouped within one message, so the owning
-        // message's CreatedAt is the best available approximation.
-        const subject = formatActionArgs(tc.Name, tc.Input);
-        return (
-          <div key={i} className="flex items-center gap-1.5 text-xs text-text-subtle py-0.5">
-            <span className="text-mauve font-semibold">{tc.Name}</span>
-            <span className="text-text font-mono truncate flex-1 min-w-0">{subject}</span>
-            {!completed.has(tc.ID) && <span className="animate-pulse shrink-0">running...</span>}
-            <TimeBadge epochSec={message.CreatedAt} />
-          </div>
-        );
-      })}
-      {text && (
-        <div className="md text-sm text-text-muted">
-          <ReactMarkdown remarkPlugins={MD_REMARK} rehypePlugins={MD_REHYPE}>{text}</ReactMarkdown>
-        </div>
-      )}
-    </div>
-  );
-});
-
-export const SubAgentBlock = memo(function SubAgentBlock({
-  messageID,
-  toolCallID,
-  prompt,
-}: {
+/** Props of the sub-agent block. */
+interface ISubAgentBlockProps {
   messageID: string;
   toolCallID: string;
   prompt: string;
-}) {
-  // Backend keys the sub-agent session as `${messageID}$$${toolCallID}`
-  // (see internal/session/session.go CreateAgentToolSessionID), and the WS
-  // layer stores its messages under that exact composite ID
-  // (useWS.ts: registerSubAgentSession / upsertSubAgentMessage). We MUST look
-  // up by the same key — using toolCallID alone silently misses every event,
-  // which left the block permanently empty ("Starting agent..."). Fall back
-  // to the bare toolCallID only when messageID is unavailable (defensive;
-  // should not happen for a live sub-agent).
-  const subSessionID = messageID ? `${messageID}$$${toolCallID}` : toolCallID;
-  const allSubMessages = useCarburetorValue(messagesCarburetor, selectSubAgentMessages) as Map<string, Message[]>;
+}
+
+/**
+ * Truncates the delegation prompt to the header label.
+ *
+ * @param prompt - the delegation prompt
+ */
+function promptLabel(prompt: string): string {
+  if (!prompt) return "";
+  const maxLen = 80;
+  return prompt.length > maxLen ? prompt.slice(0, maxLen) + "..." : prompt;
+}
+
+/**
+ * Whether the delegation's tool_result metadata says the run was async.
+ *
+ * @param metadata - the tool_result metadata JSON, empty when absent
+ */
+function startedAsync(metadata: string): boolean {
+  if (!metadata) return false;
+  try {
+    return (JSON.parse(metadata) as { async?: boolean }).async === true;
+  } catch {
+    return false; // legacy metadata
+  }
+}
+
+/** Reads one delegation's state out of the stores and renders it through SubAgentFrame. */
+export class SubAgentBlock extends AntiHookComponent<ISubAgentBlockProps> {
   // The parent message (the one whose agent tool_call part rendered this
   // block) lives in the active transcript whenever this block is mounted.
-  // Look it up by ID: its SessionID is the owning session used to register
-  // the lazy load below, and its finish state is the hard-kill fallback
-  // for `done`.
-  const parentMessages = useCarburetorValue(messagesCarburetor, selectMessages) as Message[];
-  const asyncStatuses = useComputedValue(asyncJobStatuses);
-  const parent = useMemo(
-    () => parentMessages.find((m) => m.ID === messageID),
-    [parentMessages, messageID],
+  // Look it up by ID: its SessionID is the owning session used to register the
+  // lazy load, and its finish state is the hard-kill fallback for `done`.
+  private readonly view = this.connectSelection(
+    () => messagesCarburetor,
+    (data) => selectSubAgentView(data, this.subSessionID(), this.props.messageID, this.props.toolCallID),
   );
-  const messages = allSubMessages.get(subSessionID) ?? [];
 
-  // ToolCall.Finished on the sub-agent's own tool calls means "arguments
-  // fully typed", not "tool returned" (same backend semantics as the
-  // parent's flag above), so per-row running state must come from the
-  // sub-session's own tool_result parts — they live on role=tool messages
-  // inside this same transcript.
-  // Model/effort the sub-agent actually started with: the FIRST assistant
-  // message with a non-empty value (not the last, which may belong to a
-  // later handoff/compaction step) — mirrors the intent of `errorFinish`
-  // below, which instead wants the LAST assistant message for its own
-  // purpose (final finish reason). Folded into this same pass over
-  // `messages` (rather than a separate useMemo) to avoid adding a third
-  // exhaustive-deps warning on `messages` alongside the two pre-existing
-  // ones.
-  const { completedCallIDs, model, effort } = useMemo(() => {
-    const ids = new Set<string>();
-    let firstModel = "";
-    let firstEffort = "";
-    for (const m of messages) {
-      for (const p of m.Parts ?? []) {
-        if (p.type === "tool_result") ids.add(p.ToolCallID);
-      }
-      if (m.Role === "assistant") {
-        if (!firstModel && m.Model) firstModel = m.Model;
-        if (!firstEffort && m.ReasoningEffort) firstEffort = m.ReasoningEffort;
-      }
-    }
-    return { completedCallIDs: ids, model: firstModel, effort: firstEffort };
-  }, [messages]);
-
-  // "done" means this sub-agent's RUN is over — the `agent` tool returned.
-  //
-  // The parent tool_call part's Finished flag must NOT be used here: it
-  // means "the model finished typing the arguments", not "the tool
-  // returned". It is set twice while the provider stream is still being
-  // consumed, BEFORE any tool is dispatched (internal/agent/agent_turn.go):
-  // FinishToolCall inside OnToolInputEnd (~:1227), and Finished:true inline
-  // in OnToolCall's AddToolCall (~:1261) — fantasy fires every OnToolCall
-  // for a step before executing any tool. Both writes hit the DB before
-  // dispatch, so on the wire the flag is already true before the sub-agent
-  // session even exists (harness-verified: flag true at 0ms; the agent
-  // tool's Run() spans 0-1200ms). Basing `done` on it collapsed the block
-  // ~1s into every delegation and showed a green "done" badge for the
-  // whole run.
-  //
-  // - tool_result present (primary): the agent tool demonstrably returned.
-  //   The result arrives on its own role=tool message in the PARENT
-  //   transcript (agent_turn.go's OnToolResult creates it), so scan
-  //   $messages — already subscribed to for `parent` — for a tool_result
-  //   part whose ToolCallID matches this call.
-  // - parent terminally finished (fallback): a hard-killed run never gets
-  //   its tool_result, but startup recovery stamps a terminal error finish
-  //   on the parent's message (internal/app/app_recovery.go, "Process
-  //   restarted"). Partial checkpoint finishes on a live parent don't
-  //   count — isTerminallyFinished ignores them — so this stays false
-  //   mid-run.
-  //
-  // isRunning is !done. A busySessions lookup cannot be used here: a
-  // sub-agent session ID NEVER enters $busySessions — the only feeder
-  // (the agent_busy event) names client-chosen top-level sessions or the
-  // list_sessions correction loop, whose SQL (internal/db/sql/
-  // sessions.sql, ListSessions) filters `parent_session_id is NULL`, so
-  // sub-sessions are invisible to it.
-  const parentToolResult = useMemo(
-    () =>
-      parentMessages.flatMap((m) => m.Parts ?? []).find(
-        (p) => p.type === "tool_result" && p.ToolCallID === toolCallID,
-      ),
-    [parentMessages, toolCallID],
-  );
-  const toolResultArrived = !!parentToolResult;
-  let asyncStarted = false;
-  if (parentToolResult?.type === "tool_result" && parentToolResult.Metadata) {
-    try { asyncStarted = (JSON.parse(parentToolResult.Metadata) as { async?: boolean }).async === true; } catch { /* legacy metadata */ }
+  /**
+   * The sub-agent session key: `${messageID}$${toolCallID}`.
+   *
+   * Backend keys the sub-agent session that way (see
+   * internal/session/session.go CreateAgentToolSessionID), and the WS layer
+   * stores its messages under that exact composite ID (useWS.ts:
+   * registerSubAgentSession / upsertSubAgentMessage). We MUST look up by the
+   * same key — using toolCallID alone silently misses every event, which left
+   * the block permanently empty ("Starting agent..."). Fall back to the bare
+   * toolCallID only when messageID is unavailable (defensive; should not
+   * happen for a live sub-agent).
+   */
+  private subSessionID(): string {
+    const { messageID, toolCallID } = this.props;
+    return messageID ? `${messageID}$$${toolCallID}` : toolCallID;
   }
-  const parentDone = parent ? isTerminallyFinished(parent.Parts ?? []) : false;
-  const asyncStatus = asyncStatuses.get(toolCallID);
-  const parentError = !!parent?.Parts.some((p) => p.type === "finish" && !p.Partial && (p.Reason === "error" || p.Reason === "canceled"));
-  const done = asyncStarted ? !!asyncStatus || parentError : toolResultArrived || parentDone;
-  const isRunning = !done;
 
-  // A run that ended badly must not wear the green "done" badge: read
-  // the terminal finish of the sub-agent's last assistant message and
-  // apply the same rule as the main renderer's finish router
-  // (Message/Part.tsx): error or canceled renders an error block. When
-  // the tool call never returned (no tool_result for this call — a hard
-  // kill), attribute the parent's terminal error finish instead; recovery
-  // stamps "Process restarted" there and the sub-agent's own transcript
-  // may have no finish at all.
-  const errorFinish = useMemo(() => {
-    const lastAssistant = [...messages].reverse().find((m) => m.Role === "assistant");
-    if (lastAssistant) {
-      const f = (lastAssistant.Parts ?? []).find(
-        (p): p is FinishPart => p.type === "finish" && !p.Partial,
-      );
-      if (f && (f.Reason === "error" || f.Reason === "canceled")) return f;
-    }
-    if (!toolResultArrived && parent) {
-      const f = (parent.Parts ?? []).find(
-        (p): p is FinishPart => p.type === "finish" && !p.Partial,
-      );
-      if (f && (f.Reason === "error" || f.Reason === "canceled")) return f;
-    }
-    return undefined;
-  }, [messages, toolResultArrived, parent]);
+  /**
+   * Renders the delegation frame.
+   *
+   * "done" means this sub-agent's RUN is over — the `agent` tool returned.
+   *
+   * The parent tool_call part's Finished flag must NOT be used here: it means
+   * "the model finished typing the arguments", not "the tool returned". It is
+   * set twice while the provider stream is still being consumed, BEFORE any
+   * tool is dispatched (internal/agent/agent_turn.go): FinishToolCall inside
+   * OnToolInputEnd (~:1227), and Finished:true inline in OnToolCall's
+   * AddToolCall (~:1261) — fantasy fires every OnToolCall for a step before
+   * executing any tool. Both writes hit the DB before dispatch, so on the wire
+   * the flag is already true before the sub-agent session even exists
+   * (harness-verified: flag true at 0ms; the agent tool's Run() spans
+   * 0-1200ms). Basing `done` on it collapsed the block ~1s into every
+   * delegation and showed a green "done" badge for the whole run.
+   *
+   * - tool_result present (primary): the agent tool demonstrably returned. The
+   *   result arrives on its own role=tool message in the PARENT transcript
+   *   (agent_turn.go's OnToolResult creates it).
+   * - parent terminally finished (fallback): a hard-killed run never gets its
+   *   tool_result, but startup recovery stamps a terminal error finish on the
+   *   parent's message (internal/app/app_recovery.go, "Process restarted").
+   *   Partial checkpoint finishes on a live parent don't count, so this stays
+   *   false mid-run.
+   *
+   * isRunning is !done. A busySessions lookup cannot be used here: a sub-agent
+   * session ID NEVER enters $busySessions — the only feeder (the agent_busy
+   * event) names client-chosen top-level sessions or the list_sessions
+   * correction loop, whose SQL (internal/db/sql/sessions.sql, ListSessions)
+   * filters `parent_session_id is NULL`, so sub-sessions are invisible to it.
+   */
+  public render() {
+    const { toolCallID, prompt } = this.props;
+    const { subMessages, parent, toolResult } = this.view();
+    const asyncStatus = this.useComputed(asyncJobStatuses).get(toolCallID);
+    const { completedCallIDs, model, effort } = summarizeSubTranscript(subMessages);
 
-  const label = useMemo(() => {
-    if (!prompt) return "";
-    const maxLen = 80;
-    const text = prompt.length > maxLen ? prompt.slice(0, maxLen) + "..." : prompt;
-    return text;
-  }, [prompt]);
+    const toolResultArrived = !!toolResult;
+    const asyncStarted = toolResult ? startedAsync(toolResult.metadata) : false;
+    const parentDone = !!parent?.terminalFinish;
+    const parentError = parent?.hasTerminalError ?? false;
+    const done = asyncStarted ? !!asyncStatus || parentError : toolResultArrived || parentDone;
 
-  // Lazy-load sub-agent messages on first mount when nothing is in the
-  // store yet (the WS handler only auto-loads sub-sessions created during
-  // the live session — past runs surfaced after a reload start empty).
-  // Latch on the session ID rather than a bare boolean: a boolean latch
-  // cannot distinguish "already asked for THIS session" from "already
-  // asked for SOME session", so a reused instance handed a different
-  // subSessionID would never load. Latching on the value itself is
-  // correct independently of how callers key us.
-  const requested = useRef<string | null>(null);
-  useEffect(() => {
-    if (requested.current === subSessionID) return;
-    if (messages.length > 0) return;
-    requested.current = subSessionID;
-    // Register before asking: the messages_list router (useWS.ts) only
-    // routes replies for sessions present in $subAgentSessions. After a
-    // reload a historical sub-session is registered only if its
-    // session_created survived the hub's replay ring — otherwise the
-    // reply fell through to the main-chat branch and was silently
-    // dropped, leaving this block empty forever. The owning session is
-    // the parent message's own SessionID.
-    const owner = parent?.SessionID ?? sessionsCarburetor.getData().activeSessionID;
-    if (owner) messagesCarburetor.registerSubAgentSession(subSessionID, owner);
-    sendLoadMessages(subSessionID);
-  }, [subSessionID, messages.length, parent]);
-
-  // Open while the sub-agent is still working (mirrors prior `open={!done}`
-  // behaviour); the user's manual toggle wins once they touch the chevron.
-  const [override, setOverride] = useState<boolean | undefined>(undefined);
-  const open = override ?? !done;
-  const prevDone = useRef(done);
-  useEffect(() => {
-    if (done && !prevDone.current) setOverride(undefined);
-    prevDone.current = done;
-  }, [done]);
-  const toggle = () => setOverride(!open);
-  // Jump-to-tool-call anchor (task #1059): forces this block open when the
-  // live-work panel's Agents tab targets this delegation's tool call.
-  useExpandToolCallSignal(toolCallID, () => setOverride(true));
-
-  return (
-    <div className="sub-agent-block my-2" data-tool-call-id={toolCallID}>
-      <button
-        type="button"
-        onClick={toggle}
-        aria-expanded={open}
-        className="sub-agent-toggle w-full text-left bg-transparent border-0"
-      >
-        <Bot size={15} className={`shrink-0 ${isRunning ? "text-accent animate-pulse" : "text-text-subtle"}`} />
-        <span className="font-semibold text-sm">Agent</span>
-        {model && <span className="text-xs text-text-subtle font-mono shrink-0">{model}</span>}
-        <EffortBadge effort={effort} />
-        {isRunning && <span className="text-xs text-text-subtle animate-pulse">running...</span>}
-        {/* Stage 5b: the delegation's terminal cause must be distinguishable,
-            same rule as the command accordion's ActionRow — timed out /
-            stopped by the parent (stop_agent) / cancelled (session stop)
-            must not read as a plain child failure. A terminal error finish
-            on the child transcript still wins: it is the richer signal. */}
-        {done && (errorFinish || asyncStatus === "failed" ? (
-          <span className="text-xs text-red font-medium">error</span>
-        ) : asyncStatus === "timed_out" || asyncStatus === "stopped" || asyncStatus === "cancelled" ? (
-          <span data-test-id="sub-agent-status" className="text-xs text-text-subtle font-medium shrink-0">
-            {asyncStatus === "timed_out" ? "timed out" : asyncStatus === "stopped" ? "stopped by user" : "cancelled"}
-          </span>
-        ) : (
-          <span className="text-xs text-green font-medium">done</span>
-        ))}
-        <span className="text-xs text-text-muted truncate ml-1 max-w-[400px]">{label}</span>
-      </button>
-      {open && (
-        <div className="sub-agent-body">
-          {messages.length === 0 && isRunning && (
-            <div className="text-xs text-text-subtle animate-pulse py-2">Starting agent...</div>
-          )}
-          {/* Lifecycle parity with the main renderer (Message/Message.tsx):
-              hidden messages (silent compaction summaries) are dropped,
-              visible compaction summaries render via the same SummaryMessage
-              card — previously both rendered here as ordinary agent prose. */}
-          {messages
-            .filter((m) => m.Role === "assistant" && !m.Hidden)
-            .map((m) =>
-              m.IsSummaryMessage ? (
-                <SummaryMessage key={m.ID} message={m} />
-              ) : (
-                <SubAgentMessage key={m.ID} message={m} completed={completedCallIDs} />
-              ),
-            )}
-          {errorFinish && (
-            <FinishErrorBlock reason={errorFinish.Reason} message={errorFinish.Message} details={errorFinish.Details} />
-          )}
-        </div>
-      )}
-    </div>
-  );
-});
+    return (
+      <SubAgentFrame
+        toolCallID={toolCallID}
+        subSessionID={this.subSessionID()}
+        ownerSessionID={parent?.sessionID}
+        messages={subMessages}
+        completedCallIDs={completedCallIDs}
+        model={model}
+        effort={effort}
+        label={promptLabel(prompt)}
+        done={done}
+        asyncStatus={asyncStatus}
+        errorFinish={findErrorFinish(subMessages, toolResultArrived, parent)}
+      />
+    );
+  }
+}

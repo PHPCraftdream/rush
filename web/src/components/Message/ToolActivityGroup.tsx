@@ -1,20 +1,20 @@
 // Accordion group for a burst of tool/thinking parts between text stretches.
 // Exported as part of the Message module's public surface.
-// Pure code move from the former components/Message.tsx.
 
-import { useState, useRef, useEffect, useMemo, useCallback, memo } from "react";
+import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
-import { useCarburetorValue, useComputedValue } from "@react-carburetor/core/interop";
 import { ChevronDown, ChevronUp } from "lucide-react";
-import type { ContentPart } from "../../types";
+import { signalsCarburetor } from "../../state/signals";
+import type { ExpandToolCallRequest, ISignalsState } from "../../state/SignalsCarburetor";
 import { SubAgentBlock } from "../SubAgentBlock";
 import { ActionRow } from "./ActionRow";
 import type { ActionItem } from "./ActionRow";
 import { TimeBadge } from "./TimeBadge";
-import { useCollapseAllSignal } from "./useCollapseAllSignal";
-import { asyncJobCompletions } from "../../state/asyncJobCompletions";
-import { signalsCarburetor } from "../../state/signals";
-import type { ISignalsState } from "../../state/SignalsCarburetor";
+import { agentPrompt } from "./agentPrompt";
+import { groupToolActions } from "./groupToolActions";
+import type { IGroupSourceItem, IRawAgentPart } from "./groupToolActions";
+import { tallyActions } from "./tallyActions";
+import { watchCollapseAllSignal } from "./watchCollapseAllSignal";
 
 // ── Tool activity group ───────────────────────────────────────────────────────
 //
@@ -35,8 +35,9 @@ import type { ISignalsState } from "../../state/SignalsCarburetor";
 //   • Group open-state: open by default (user wanted to "see the process").
 //     Manual collapse via the chevron in the header — never auto-collapsed.
 
-interface ToolActivityGroupProps {
-  items: { part: ContentPart; idx: number; createdAt?: number; messageID?: string; partIndex: number; model?: string; effort?: string }[];
+/** Props of the tool activity group. */
+interface IToolActivityGroupProps {
+  items: IGroupSourceItem[];
   live: boolean;
   // True when this group is the most recent activity in the transcript
   // (i.e. nothing rendered after it). When false, the auto-rule collapses
@@ -47,32 +48,30 @@ interface ToolActivityGroupProps {
   effort?: string;
 }
 
-/** Picks the expand-tool-call request out of the signals state. */
-const selectExpandRequest = (state: TReadonly<ISignalsState>) => state.expandToolCallRequest;
-
-export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, isCurrent, startedAt, model, effort }: ToolActivityGroupProps) {
-  const jobCompletions = useComputedValue(asyncJobCompletions);
-  // Group open/close state machine.
-  //
-  // The default collapsed state follows `isCurrent`: the most recent group
-  // stays expanded, older groups fold automatically as soon as a newer
-  // renderitem (typically a user message or the next group) appears in the
-  // transcript. The user's own toggle wins via `collapsedOverride` and
-  // sticks until explicitly changed.
-  //
-  // `suppressAuto` is a one-shot latch for the inside-of-the-group auto-
-  // current rule: after a manual collapse, re-expanding the group leaves
-  // EVERY row closed (including the row that would normally auto-open
-  // because it's the last one). The latch is released the moment a NEW
-  // tool arrives within the same group — that's a live event the user
-  // wants to see — or when the group transitions back to isCurrent.
-  //
-  // When the body is unmounted (`collapsed === true`) every ActionRow's
-  // internal override state is reset (React unmount discards useState), so
-  // collapsing the group also drops any per-row pins the user had set —
-  // "сворачивание идёт с уничтожением контента" verbatim.
-  const [collapsedOverride, setCollapsedOverride] = useState<boolean | undefined>(undefined);
-  const [suppressAuto, setSuppressAuto] = useState(false);
+/**
+ * Group open/close state machine.
+ *
+ * The default collapsed state follows `isCurrent`: the most recent group stays
+ * expanded, older groups fold automatically as soon as a newer renderitem
+ * (typically a user message or the next group) appears in the transcript. The
+ * user's own toggle wins via `collapsedOverride` and sticks until explicitly
+ * changed.
+ *
+ * `suppressAuto` is a one-shot latch for the inside-of-the-group auto-current
+ * rule: after a manual collapse, re-expanding the group leaves EVERY row closed
+ * (including the row that would normally auto-open because it's the last one).
+ * The latch is released the moment a NEW tool arrives within the same group —
+ * that's a live event the user wants to see — or when the group transitions
+ * back to isCurrent.
+ *
+ * When the body is unmounted (`collapsed === true`) every ActionRow's internal
+ * override state is reset (React unmount discards component state), so
+ * collapsing the group also drops any per-row pins the user had set —
+ * "сворачивание идёт с уничтожением контента" verbatim.
+ */
+interface IToolActivityGroupState {
+  collapsedOverride: boolean | undefined;
+  suppressAuto: boolean;
   // Sticky-current latch. While the session is `live` (busy), buildRenderItems
   // can flicker isCurrent off for a frame whenever a streaming assistant
   // message is briefly tool-less (thinking-only). Letting that flicker
@@ -83,247 +82,268 @@ export const ToolActivityGroup = memo(function ToolActivityGroup({ items, live, 
   //   - isCurrent === false AND live === false → release latch (true → false).
   // Once the agent finishes (live = false) the natural !isCurrent auto-collapse
   // kicks in again and old groups fold.
-  const [stickyCurrent, setStickyCurrent] = useState(isCurrent);
-  useEffect(() => {
-    if (isCurrent) setStickyCurrent(true);
-    else if (!live) setStickyCurrent(false);
-  }, [isCurrent, live]);
-  const effectiveCurrent = stickyCurrent;
-  const autoCollapsed = !effectiveCurrent;
-  const collapsed = collapsedOverride ?? autoCollapsed;
-  useCollapseAllSignal(() => setCollapsedOverride(true));
+  stickyCurrent: boolean;
+}
 
-  // Jump-to-tool-call (task #1059): does this burst contain the tool call
-  // the LiveWorkPanel just asked to expand? Opening the group here only
-  // ensures its body (and every ActionRow/SubAgentBlock in it) actually
-  // MOUNTS -- each of those self-opens via its own useExpandToolCallSignal
-  // once it exists, since the whole body unmounts while collapsed. Computed
-  // from the raw `items` prop rather than the post-processed
-  // `actions`/`rawAgentParts` below so it's available up here -- folded
-  // into the grew/becameCurrent effect right below instead of a separate
-  // effect, so opening the group doesn't add a second synchronization point.
-  const expandReq = useCarburetorValue(signalsCarburetor, selectExpandRequest);
-  const containsRequestedID = useMemo(() => {
-    if (!expandReq) return false;
-    const id = expandReq.toolCallID;
-    for (const { part } of items) {
-      if (part.type === "tool_call" && part.ID === id) return true;
-      if (part.type === "tool_result" && part.ToolCallID === id) return true;
-    }
-    return false;
-  }, [expandReq, items]);
+/**
+ * Picks the expand-tool-call request out of the signals state.
+ *
+ * @param state - the signals state
+ */
+const selectExpandRequest = (state: TReadonly<ISignalsState>) => state.expandToolCallRequest;
 
-  const prevItemsLen = useRef(items.length);
-  const prevIsCurrent = useRef(isCurrent);
-  const prevExpandNonce = useRef(expandReq?.nonce);
-  useEffect(() => {
-    const grew = items.length > prevItemsLen.current;
-    const becameCurrent = isCurrent && !prevIsCurrent.current;
-    if (grew || becameCurrent) {
-      // Either a new tool arrived in this group, or this group just became
-      // the latest activity. Drop the user's collapse pin (live event takes
-      // precedence) and clear the suppress latch so the new last row auto-
-      // opens via its isCurrent prop in ActionRow.
-      setCollapsedOverride(undefined);
-      setSuppressAuto(false);
-    }
-    // A NEW jump request (nonce changed) targeting this group forces it
-    // open regardless of the auto-current rule -- unlike grew/becameCurrent
-    // above, `undefined` isn't enough here: an older, non-current group's
-    // autoCollapsed would still resolve to true.
-    if (containsRequestedID && expandReq?.nonce !== prevExpandNonce.current) {
-      setCollapsedOverride(false);
-      setSuppressAuto(false);
-    }
-    prevItemsLen.current = items.length;
-    prevIsCurrent.current = isCurrent;
-    prevExpandNonce.current = expandReq?.nonce;
-  }, [items.length, isCurrent, containsRequestedID, expandReq]);
+/**
+ * Flips the group's collapsed state, resolving the auto-rule when no pin exists.
+ *
+ * @param prev - the previous state
+ */
+const flipCollapsed = (prev: IToolActivityGroupState): Pick<IToolActivityGroupState, "collapsedOverride"> => ({
+  collapsedOverride: !(prev.collapsedOverride ?? !prev.stickyCurrent),
+});
+
+/**
+ * Renders one sub-agent part of the group.
+ *
+ * @param agent - the held-back agent part
+ * @param agent.part - the message part
+ * @param agent.messageID - the owning message
+ */
+const renderAgent = ({ part, messageID }: IRawAgentPart) => {
+  if (part.type !== "tool_call") return null;
+  return (
+    <SubAgentBlock
+      key={`a-${part.ID}`}
+      messageID={messageID ?? ""}
+      toolCallID={part.ID}
+      prompt={agentPrompt(part.Input)}
+    />
+  );
+};
+
+/** Accordion of paired tool call/result rows, with its own collapse state machine. */
+export class ToolActivityGroup extends AntiHookComponent<IToolActivityGroupProps, IToolActivityGroupState> {
+  public state: IToolActivityGroupState = {
+    collapsedOverride: undefined,
+    suppressAuto: false,
+    stickyCurrent: this.props.isCurrent,
+  };
+
+  private prevItemsLen = this.props.items.length;
+
+  private prevIsCurrent = this.props.isCurrent;
+
+  /** Declares the latch-sync, live-event, auto-collapse and signal effects. */
+  protected useEffects(): void {
+    super.useEffects();
+    const { items, isCurrent, live } = this.props;
+    this.useEffect(this.syncStickyCurrent, [isCurrent, live]);
+    this.useEffect(this.releaseOnLiveEvent, [items.length, isCurrent]);
+    this.useEffect(this.latchSuppress, [this.isCollapsed()]);
+    this.useEffect(this.watchSignals, []);
+  }
+
+  /** Whether the group body is currently folded: the user's pin, else the auto-rule. */
+  private isCollapsed(): boolean {
+    const { collapsedOverride, stickyCurrent } = this.state;
+    return collapsedOverride ?? !stickyCurrent;
+  }
+
+  /** Latches the group as current while live; releases the latch once the turn ends. */
+  @bind
+  protected syncStickyCurrent(): void {
+    const { isCurrent, live } = this.props;
+    if (isCurrent) this.setState({ stickyCurrent: true });
+    else if (!live) this.setState({ stickyCurrent: false });
+  }
+
+  /**
+   * Drops the collapse pin and the suppress latch on a live event.
+   *
+   * A new tool arrived in this group or this group just became the latest
+   * activity: a live event takes precedence, and the new last row auto-opens via its isCurrent
+   * prop in ActionRow.
+   */
+  @bind
+  protected releaseOnLiveEvent(): void {
+    const { items, isCurrent } = this.props;
+    const grew = items.length > this.prevItemsLen;
+    const becameCurrent = isCurrent && !this.prevIsCurrent;
+    if (grew || becameCurrent) this.setState({ collapsedOverride: undefined, suppressAuto: false });
+    this.prevItemsLen = items.length;
+    this.prevIsCurrent = isCurrent;
+  }
 
   // Any collapse (manual OR automatic via isCurrent → false) latches
   // suppressAuto. The body unmounts, which already discards each ActionRow's
   // override state; setting the latch ensures that on the next expand the
   // auto-current rule doesn't re-open the last row either — every row stays
   // closed until the user clicks one, or a fresh tool arrival clears the
-  // latch via the effect above.
-  useEffect(() => {
-    if (collapsed) setSuppressAuto(true);
-  }, [collapsed]);
-
-  const toggle = useCallback(() => {
-    setCollapsedOverride((prev) => {
-      const cur = prev ?? autoCollapsed;
-      return !cur;
-    });
-  }, [autoCollapsed]);
-
-  // Pair calls and results by ToolCallID. Order is the order calls appear.
-  // An "agent" tool_call is passed through unchanged — SubAgentBlock owns
-  // its own rendering and lives outside the row schema. Same for the matching
-  // tool_result if any.
-  const { actions, rawAgentParts } = useMemo(() => {
-    const actionsOut: ActionItem[] = [];
-    const rawAgentPartsOut: { part: ContentPart; idx: number; messageID?: string }[] = [];
-    const indexByCallID = new Map<string, number>();
-    for (const { part, idx, createdAt, messageID, partIndex, model: partModel, effort: partEffort } of items) {
-      if (part.type === "thinking") {
-        const text = (part as { type: "thinking"; Thinking: string }).Thinking ?? "";
-        // Per-row model/effort from the part's own source message (burst path);
-        // falls back to group-level props (single-message path via AssistantContent).
-        actionsOut.push({ kind: "thinking", text, idx, key: `think-${idx}`, createdAt, messageID, partIndex, model: partModel, effort: partEffort });
-      } else if (part.type === "tool_call") {
-        if (part.Name === "agent") { rawAgentPartsOut.push({ part, idx, messageID }); continue; }
-        const a: ActionItem = { kind: "tool", callPart: part, idx, key: `call-${part.ID}`, createdAt };
-        indexByCallID.set(part.ID, actionsOut.length);
-        actionsOut.push(a);
-      } else if (part.type === "tool_result") {
-        if (part.Name === "agent") { rawAgentPartsOut.push({ part, idx, messageID }); continue; }
-        const pos = indexByCallID.get(part.ToolCallID);
-        if (pos !== undefined) {
-          const slot = actionsOut[pos];
-          if (slot.kind === "tool") slot.resultPart = part;
-          // intentionally keep the earlier createdAt: that's when the action began
-        } else {
-          actionsOut.push({ kind: "tool", resultPart: part, idx, key: `res-${part.ToolCallID}-${idx}`, createdAt });
-        }
-      }
-    }
-    // Dedup consecutive tool actions with identical Name+Input (e.g. repeated
-    // job_output polling). Keep the LAST occurrence (freshest result) and
-    // annotate it with repeatCount so the UI can show "×N".
-    const deduped: ActionItem[] = [];
-    for (const a of actionsOut) {
-      const prev = deduped[deduped.length - 1];
-      if (
-        prev &&
-        a.kind === "tool" &&
-        prev.kind === "tool" &&
-        a.callPart &&
-        prev.callPart &&
-        a.callPart.Name === prev.callPart.Name &&
-        a.callPart.Input === prev.callPart.Input
-      ) {
-        // Replace prev with current (fresher result), bump count
-        a.repeatCount = (prev.repeatCount ?? 1) + 1;
-        a.createdAt = prev.createdAt;
-        deduped[deduped.length - 1] = a;
-      } else {
-        deduped.push(a);
-      }
-    }
-    return { actions: deduped, rawAgentParts: rawAgentPartsOut };
-  }, [items]);
-
-  const tally = useMemo(() => {
-    const counts = new Map<string, number>();
-    let thinkingCount = 0;
-    for (const a of actions) {
-      if (a.kind === "thinking") { thinkingCount++; continue; }
-      const n = a.callPart?.Name ?? a.resultPart?.Name ?? "tool";
-      counts.set(n, (counts.get(n) ?? 0) + 1);
-    }
-    const parts = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4)
-      .map(([k, v]) => `${v} ${k}`);
-    if (thinkingCount > 0) parts.push(`${thinkingCount} thinking`);
-    return parts.join(" · ");
-  }, [actions]);
-
-  // SubAgent parts always render in their own (existing) component, in their
-  // original order at the END of the group so they don't get swallowed by the
-  // collapse toggle. They're rare in practice — usually zero per group.
-  const renderAgents = () => rawAgentParts.map(({ part, messageID }) => {
-    if (part.type === "tool_call") {
-      let prompt = "";
-      try { prompt = (JSON.parse(part.Input) as { prompt?: string }).prompt ?? part.Input; } catch { prompt = part.Input; }
-      return <SubAgentBlock key={`a-${part.ID}`} messageID={messageID ?? ""} toolCallID={part.ID} prompt={prompt} />;
-    }
-    return null;
-  });
-
-  // Nothing to show — neither real actions nor sub-agent calls. Without this
-  // guard buildRenderItems-driven empty bursts would render a stray "0 actions"
-  // header with an empty body.
-  if (actions.length === 0 && rawAgentParts.length === 0) return null;
-
-  // Group contained ONLY agent tool_calls (e.g. fan-out steps). The accordion
-  // header is meaningless ("0 actions"), so render the sub-agent blocks
-  // inline without the group wrapper.
-  if (actions.length === 0) {
-    return <>{renderAgents()}</>;
+  // latch via releaseOnLiveEvent.
+  /** Latches suppressAuto whenever the group is collapsed. */
+  @bind
+  protected latchSuppress(): void {
+    if (this.isCollapsed()) this.setState({ suppressAuto: true });
   }
 
-  // Single action with no sub-agent — the "1 action" accordion header would
-  // just duplicate the row's own header. Render the row inline so the
-  // operator sees one thing, not two. (When sub-agents are present we keep
-  // the wrapper because renderAgents adds another item below.)
-  if (actions.length === 1 && rawAgentParts.length === 0) {
+  /** Subscribes to the global collapse-all and jump-to-tool-call signals; returns the disposer for both. */
+  @bind
+  protected watchSignals(): () => void {
+    const stopCollapse = watchCollapseAllSignal(this.collapseAll);
+    const stopExpand = signalsCarburetor.watch(selectExpandRequest, this.onExpandRequest);
+    return () => { stopCollapse(); stopExpand(); };
+  }
+
+  /** Folds the group body ("Collapse all"). */
+  @bind
+  protected collapseAll(): void {
+    this.setState({ collapsedOverride: true });
+  }
+
+  /**
+   * Forces the group open when a jump request targets a tool call it contains.
+   *
+   * Jump-to-tool-call (task #1059): the LiveWorkPanel asks to expand a
+   * tool call this burst contains; the group opens regardless of the
+   * auto-current rule -- unlike releaseOnLiveEvent, `undefined` isn't enough
+   * here: an older, non-current group's autoCollapsed would still resolve to
+   * true. Opening the group only ensures its body (and every ActionRow /
+   * SubAgentBlock in it) actually MOUNTS -- each of those self-opens via its
+   * own expand-signal subscription once it exists, since the whole body
+   * unmounts while collapsed.
+   *
+   * @param req - the new request, if any
+   */
+  @bind
+  protected onExpandRequest(req: TReadonly<ExpandToolCallRequest> | null): void {
+    if (!req || !this.containsToolCall(req.toolCallID)) return;
+    this.setState({ collapsedOverride: false, suppressAuto: false });
+  }
+
+  /**
+   * Whether the burst holds the tool call (or its result).
+   *
+   * @param id - the tool call id
+   */
+  private containsToolCall(id: string): boolean {
+    for (const { part } of this.props.items) {
+      if (part.type === "tool_call" && part.ID === id) return true;
+      if (part.type === "tool_result" && part.ToolCallID === id) return true;
+    }
+    return false;
+  }
+
+  /** Flips the group body. */
+  @bind
+  protected toggle(): void {
+    this.setState(flipCollapsed);
+  }
+
+  /**
+   * Renders one accordion row; the last row is the "current action".
+   *
+   * @param a - the row item
+   * @param i - the row index
+   * @param all - every row
+   */
+  @bind
+  protected renderRow(a: ActionItem, i: number, all: readonly ActionItem[]) {
+    const { model, effort } = this.props;
     return (
       <ActionRow
-        key={actions[0].key}
-        item={actions[0]}
-        isCurrent={effectiveCurrent}
-        suppressAutoCurrent={false}
-        jobCompletions={jobCompletions.byToolCallID}
+        key={a.key}
+        item={a}
+        isCurrent={i === all.length - 1}
+        suppressAutoCurrent={this.state.suppressAuto}
         // Per-row model/effort from the part's own source message (burst path);
         // falls back to group-level props (single-message path via AssistantContent).
-        model={actions[0].model || model}
-        effort={actions[0].effort || effort}
+        model={a.model || model}
+        effort={a.effort || effort}
       />
     );
   }
 
-  return (
-    <div data-test-id="tool-activity-group" className="tool-activity-group">
-      <button
-        type="button"
-        onClick={toggle}
-        data-test-id="tool-activity-toggle"
-        className="tool-activity-head"
-        aria-expanded={!collapsed}
-        title={collapsed ? "Expand actions" : "Collapse actions"}
-      >
-        <span className="text-mauve font-semibold text-sm shrink-0">
-          {actions.length} {actions.length === 1 ? "action" : "actions"}
-        </span>
-        {tally && <span className="text-text-subtle text-xs truncate flex-1 min-w-0">{tally}</span>}
-        {!tally && <span className="flex-1" />}
-        <TimeBadge epochSec={startedAt} />
-        {live && <span className="text-text-subtle text-xs animate-pulse shrink-0">live</span>}
-        <span className="text-text-subtle shrink-0">
-          {collapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
-        </span>
-      </button>
-      {!collapsed && (
-        <div className="tool-activity-body">
-          {actions.map((a, i) => (
-            <ActionRow
-              key={a.key}
-              item={a}
-              isCurrent={i === actions.length - 1}
-              suppressAutoCurrent={suppressAuto}
-              jobCompletions={jobCompletions.byToolCallID}
-              // Per-row model/effort from the part's own source message (burst path);
-              // falls back to group-level props (single-message path via AssistantContent).
-              model={a.model || model}
-              effort={a.effort || effort}
-            />
-          ))}
-          {renderAgents()}
-          {/* Sticky bottom collapse strip, same affordance as ThinkingPart:
-              long tool bursts are tedious to fold when the toggle is only
-              at the top. Reuses the .thinking-collapse-bottom style. */}
-          <button
-            type="button"
-            onClick={toggle}
-            data-test-id="tool-activity-collapse-bottom"
-            className="thinking-collapse-bottom"
-            title="Collapse actions"
-          >
-            <ChevronUp size={14} />
-            <span>Collapse actions</span>
-          </button>
-        </div>
-      )}
-    </div>
-  );
-});
+  /** Renders nothing, the inline row/agents, or the full accordion. */
+  public render() {
+    const { items, live, startedAt, model, effort } = this.props;
+    const collapsed = this.isCollapsed();
+    const { actions, rawAgentParts } = groupToolActions(items);
+    const tally = tallyActions(actions);
+
+    // Nothing to show — neither real actions nor sub-agent calls. Without this
+    // guard buildRenderItems-driven empty bursts would render a stray "0 actions"
+    // header with an empty body.
+    if (actions.length === 0 && rawAgentParts.length === 0) return null;
+
+    // Group contained ONLY agent tool_calls (e.g. fan-out steps). The accordion
+    // header is meaningless ("0 actions"), so render the sub-agent blocks
+    // inline without the group wrapper.
+    // SubAgent parts always render in their own (existing) component, in their
+    // original order at the END of the group so they don't get swallowed by the
+    // collapse toggle. They're rare in practice — usually zero per group.
+    if (actions.length === 0) {
+      return <>{rawAgentParts.map(renderAgent)}</>;
+    }
+
+    // Single action with no sub-agent — the "1 action" accordion header would
+    // just duplicate the row's own header. Render the row inline so the
+    // operator sees one thing, not two. (When sub-agents are present we keep
+    // the wrapper because renderAgents adds another item below.)
+    if (actions.length === 1 && rawAgentParts.length === 0) {
+      return (
+        <ActionRow
+          key={actions[0].key}
+          item={actions[0]}
+          isCurrent={this.state.stickyCurrent}
+          suppressAutoCurrent={false}
+          // Per-row model/effort from the part's own source message (burst path);
+          // falls back to group-level props (single-message path via AssistantContent).
+          model={actions[0].model || model}
+          effort={actions[0].effort || effort}
+        />
+      );
+    }
+
+    return (
+      <div data-test-id="tool-activity-group" className="tool-activity-group">
+        <button
+          type="button"
+          onClick={this.toggle}
+          data-test-id="tool-activity-toggle"
+          className="tool-activity-head"
+          aria-expanded={!collapsed}
+          title={collapsed ? "Expand actions" : "Collapse actions"}
+        >
+          <span className="text-mauve font-semibold text-sm shrink-0">
+            {actions.length} {actions.length === 1 ? "action" : "actions"}
+          </span>
+          {tally && <span className="text-text-subtle text-xs truncate flex-1 min-w-0">{tally}</span>}
+          {!tally && <span className="flex-1" />}
+          <TimeBadge epochSec={startedAt} />
+          {live && <span className="text-text-subtle text-xs animate-pulse shrink-0">live</span>}
+          <span className="text-text-subtle shrink-0">
+            {collapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+          </span>
+        </button>
+        {!collapsed && (
+          <div className="tool-activity-body">
+            {actions.map(this.renderRow)}
+            {rawAgentParts.map(renderAgent)}
+            {/* Sticky bottom collapse strip, same affordance as ThinkingPart:
+                long tool bursts are tedious to fold when the toggle is only
+                at the top. Reuses the .thinking-collapse-bottom style. */}
+            <button
+              type="button"
+              onClick={this.toggle}
+              data-test-id="tool-activity-collapse-bottom"
+              className="thinking-collapse-bottom"
+              title="Collapse actions"
+            >
+              <ChevronUp size={14} />
+              <span>Collapse actions</span>
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+}

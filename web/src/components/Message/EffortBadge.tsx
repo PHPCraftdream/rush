@@ -1,13 +1,19 @@
 // Reasoning-effort tier badge for model-selected levels.
-// Pure code move from the former components/Message.tsx.
 
 import { memo } from "react";
 import { effortLabel } from "../../effort";
 
-// Displays the effort recorded on a message; unknown effort names render as
-// their own uppercase value instead of an ambiguous question mark.
+/** Props of the effort badge. */
+interface IEffortBadgeProps {
+  effort: string | undefined;
+  extraClass?: string;
+}
 
-export const EffortBadge = memo(function EffortBadge({ effort, extraClass = "" }: { effort: string | undefined; extraClass?: string }) {
+/**
+ * Displays the effort recorded on a message; unknown effort names render as
+ * their own uppercase value instead of an ambiguous question mark.
+ */
+export const EffortBadge = memo(function EffortBadge({ effort, extraClass = "" }: IEffortBadgeProps) {
   if (!effort) return null;
   const letter = effortLabel(effort);
   return (
