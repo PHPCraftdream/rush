@@ -50,12 +50,12 @@ func responsesDeltaDecode(t *testing.T, raw []byte) map[string]any {
 	return value
 }
 
-func TestPublicResponsesBridgeExactOutputDeltaAndMissingParentNoReplay(t *testing.T) {
+func TestPublicResponsesBridgeExactOutputDeltaAndMissingParentRecoversWithFullFrame(t *testing.T) {
 	const first = `{"model":"gpt-5.4","store":false,"stream":true,"tools":[{"type":"function","name":"lookup","description":"long schema description to make the exact continuation strictly shorter than the full request"}],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"first"}]}]}`
 	const functionOutput = `{"type":"function_call","id":"fc-exact-1","call_id":"call-exact-1","name":"lookup","arguments":"{ \"n\" : 9007199254740993 }"}`
 	const reasoningOutput = `{"type":"reasoning","id":"rs-exact-1","summary":[{"type":"summary_text","text":"opaque"}],"encrypted_content":"opaque-encrypted-payload"}`
 	const second = `{"model":"gpt-5.4","store":false,"stream":true,"tools":[{"type":"function","name":"lookup","description":"long schema description to make the exact continuation strictly shorter than the full request"}],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"first"}]},{"type":"function_call","id":"fc-exact-1","call_id":"call-exact-1","name":"lookup","arguments":"{ \"n\" : 9007199254740993 }"},{"type":"reasoning","id":"rs-exact-1","summary":[{"type":"summary_text","text":"opaque"}],"encrypted_content":"opaque-encrypted-payload"},{"type":"function_call_output","call_id":"call-exact-1","output":"tool result"},{"type":"message","role":"user","content":[{"type":"input_text","text":"follow-up"}]}]}`
-	requests := make(chan []byte, 2)
+	requests := make(chan []byte, 3)
 	var count atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
@@ -70,7 +70,11 @@ func TestPublicResponsesBridgeExactOutputDeltaAndMissingParentNoReplay(t *testin
 				return
 			}
 			requests <- raw
-			if count.Add(1) == 1 {
+			switch count.Add(1) {
+			case 3:
+				_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"resp-exact-2","status":"completed","output":[]}}`))
+				continue
+			case 1:
 				for index, item := range []string{functionOutput, reasoningOutput} {
 					event := `{"type":"response.output_item.done","output_index":` + string(rune('0'+index)) + `,"item":` + item + `}`
 					if err = conn.WriteMessage(websocket.TextMessage, []byte(event)); err != nil {
@@ -113,20 +117,13 @@ func TestPublicResponsesBridgeExactOutputDeltaAndMissingParentNoReplay(t *testin
 		response, err := client.Do(req)
 		require.NoError(t, err)
 		_, readErr := io.Copy(io.Discard, response.Body)
-		if index == 0 {
-			require.NoError(t, readErr)
-			attempt.resolve(true)
-		} else {
-			require.Error(t, readErr)
-			var exchangeErr *nettransport.ResponsesWSError
-			require.ErrorAs(t, readErr, &exchangeErr)
-			require.True(t, exchangeErr.NoReplay())
-			attempt.resolve(false)
-		}
+		require.NoError(t, readErr, "request %d: a rejected parent must be recovered, not surfaced", index)
+		attempt.resolve(true)
 		_ = response.Body.Close()
 	}
 	wireFirst := responsesDeltaCapture(t, ctx, requests)
 	wireSecond := responsesDeltaCapture(t, ctx, requests)
+	wireRecovered := responsesDeltaCapture(t, ctx, requests)
 	fullFirst, err := nettransport.ResponsesWSFullFrame([]byte(first))
 	require.NoError(t, err)
 	fullSecond, err := nettransport.ResponsesWSFullFrame([]byte(second))
@@ -170,5 +167,6 @@ func TestPublicResponsesBridgeExactOutputDeltaAndMissingParentNoReplay(t *testin
 	require.Len(t, fullInputs, 5)
 	require.Len(t, deltaInputs, 2)
 	require.Zero(t, httpFallbacks.Load())
-	require.EqualValues(t, 2, count.Load())
+	require.Equal(t, fullSecond, wireRecovered, "the recovery is exactly the full frame, on a fresh connection")
+	require.EqualValues(t, 3, count.Load())
 }

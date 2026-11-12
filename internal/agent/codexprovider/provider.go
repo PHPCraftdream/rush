@@ -391,7 +391,10 @@ func sanitizeCallID(raw string) string {
 }
 
 func (m *languageModel) stream(ctx context.Context, payload []byte, userAgent string, yield func(fantasy.StreamPart) bool) {
-	if m.streamWebSocket(ctx, payload, userAgent, yield) {
+	obs := newTransportObservation(m.modelID)
+	defer func() { obs.log(ctx) }()
+	yield = obs.wrap(yield)
+	if m.streamWebSocket(ctx, payload, userAgent, yield, obs) {
 		return
 	}
 	response, err := m.acquireResponse(ctx, payload, userAgent)
