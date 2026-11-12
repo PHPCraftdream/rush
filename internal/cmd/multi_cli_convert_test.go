@@ -204,7 +204,7 @@ func TestRushClaudeSourcePreservesOriginalBodyVerbatim(t *testing.T) {
 		"## Never self-add `--allow-peak-hours`",
 		"## Resuming after `exit_reason: \"awaiting_answer\"`",
 		"## Orchestrator mode — and why a worker's question is NOT your problem",
-		"## Scoping permissions for a delegation — `--restrict-run`",
+		"## Scoping permissions for a delegation — `permissions.run`",
 		"## After the run finishes — you are responsible for verifying everything",
 		"--idle-timeout` (default `15m`",
 	} {

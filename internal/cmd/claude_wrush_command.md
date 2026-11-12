@@ -2,7 +2,7 @@
 description: Delegate this task to a rush sub-agent that must work only inside an isolated git worktree, never in the main checkout
 ---
 
-`/wrush <task>` is opt-in; do not auto-invoke on later turns. **Before doing anything else, read the `rush.md` file in this same directory in full** — it defines the playbook `/wrush` inherits unchanged: refusal criteria, rate-limit fallback, `--allow-peak-hours`, `awaiting_answer` resumption, smart/orchestrator behavior, launch flags, `--restrict-run`, monitoring, `sessions inject`, lock recovery, and zero-trust verification. Follow it except where this skill adds stricter worktree rules.
+`/wrush <task>` is opt-in; do not auto-invoke on later turns. **Before doing anything else, read the `rush.md` file in this same directory in full** — it defines the playbook `/wrush` inherits unchanged: refusal criteria, rate-limit fallback, `--allow-peak-hours`, `awaiting_answer` resumption, smart/orchestrator behavior, launch flags, monitoring, `sessions inject`, lock recovery, and zero-trust verification. Follow it except where this skill adds stricter worktree rules.
 
 ## Mandatory: dedicated git worktree for every invocation
 

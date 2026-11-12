@@ -266,13 +266,21 @@ unaffected and always starts every non-disabled server.
               run, ignoring enabled_in_cli. Use when this specific run
               genuinely needs an MCP server rush would otherwise skip.
 
-Restricted-run allowlist (scoped permissions):
-  --restrict-run           flip from auto-approve-everything to
-                           deny-by-default; only allowlist matches are
-                           approved. Also armed by setting
-                           permissions.run.restrict=true in rush.json.
-  --allow-bash '<pattern>' permit a bash command in restricted mode
-                           (repeatable). Forms:
+Restricted-run allowlist (scoped permissions, configured in rush.json):
+  permissions.run          flip from auto-approve-everything to
+                           deny-by-default: only allowlist matches are
+                           approved, everything else is denied cleanly.
+                           Arm it with permissions.run.restrict=true in
+                           rush.json. There are no CLI flags for this —
+                           per-run permission flags were removed, and
+                           further run-permission management is planned
+                           through roles, not the command line.
+  run.allow_tools          non-bash tools or tool:action entries the run
+                           may use, e.g. 'view' or 'edit:write'. NOTE:
+                           'bash' / 'bash:execute' are ignored here —
+                           command-level control of the bash tool is
+                           run.allow_bash only.
+  run.allow_bash           bash command patterns the run may use. Forms:
                              cmd args    word-boundary prefix
                                          (e.g. 'git diff' matches
                                          'git diff HEAD~1' but refuses
@@ -280,11 +288,6 @@ Restricted-run allowlist (scoped permissions):
                              exact:cmd   whole-string equality
                              glob:pat    filepath.Match glob
                              regex:pat   regexp on the command
-  --allow-tool '<name>'    permit a non-bash tool or tool:action in
-                           restricted mode (repeatable). e.g. 'view' or
-                           'edit:write'. NOTE: 'bash' / 'bash:execute'
-                           are ignored here — use --allow-bash for
-                           command-level control of the bash tool.
 
   Config equivalent (rush.json):
     "permissions": {
@@ -294,11 +297,10 @@ Restricted-run allowlist (scoped permissions):
         "allow_bash": ["git diff", "glob:ls *"]
       }
     }
-  CLI flags merge with config (union); --restrict-run forces restrict on.
   Precedence: permissions.allowed_tools is a global bypass that still
   wins over both lists (it is checked before the gate). Listing 'bash'
   there approves EVERY bash command; for command-level control, leave
-  allowed_tools empty for bash and use --allow-bash / run.allow_bash.
+  allowed_tools empty for bash and use run.allow_bash.
   Restricted mode never affects interactive TUI / web sessions.
 
 Protecting harness-owned files: when the orchestrator pipes "rush run""
@@ -440,12 +442,12 @@ rush run --role reviewer --session "pr-42-review" "review this diff"
 rush run --role smart --json --agents with-agents --aggregation concat \
           --session "flat-audit" < /tmp/p.txt > /tmp/audit.json
 
-# Scope an unattended CI run: only view + the listed bash commands are
-# approved; everything else is denied cleanly (no UI to hang on).
-rush run --restrict-run --role fast \
-          --allow-tool view \
-          --allow-bash 'git diff' --allow-bash 'glob:go *' \
-          --session "ci-123" "summarize the diff"
+# Scope an unattended CI run via rush.json (there are no CLI flags for
+# this): "permissions": { "run": { "restrict": true, "allow_tools":
+# ["view"], "allow_bash": ["git diff", "glob:go *"] } } — only view and
+# the listed bash commands are approved; the rest is denied cleanly
+# (no UI to hang on).
+rush run --role fast --session "ci-123" "summarize the diff"
 
 # Rarely needed: a run has no --timeout deadline by default (--idle-timeout ends
 # it after 15m of inactivity; a graceful 6h wall-clock cap ends a very long
@@ -493,12 +495,6 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			// Fork patch: batch 30 — runaway protection.
 			maxCostStr, _   = cmd.Flags().GetString("max-cost")
 			maxTokensStr, _ = cmd.Flags().GetString("max-tokens")
-			// Fork patch (run allowlist): opt into the restricted-run
-			// permission model and/or add one-off bash patterns for this
-			// invocation. Merged with permissions.run from config.
-			restrictRun, _ = cmd.Flags().GetBool("restrict-run")
-			allowBash, _   = cmd.Flags().GetStringSlice("allow-bash")
-			allowTool, _   = cmd.Flags().GetStringSlice("allow-tool")
 			// Fork patch (peak-hours bypass): --allow-peak-hours skips the
 			// per-provider peak_hours refusal for THIS invocation only.
 			//
@@ -762,9 +758,6 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			MaxTokens:                   maxTokens,                // Fork patch: batch 30
 			Timeout:                     timeoutDur,               // Fork patch: operator UX (budget display)
 			IdleTimeout:                 idleTimeoutDur,           // Fork patch: inactivity backstop
-			RestrictedRun:               restrictRun,              // Fork patch: run allowlist
-			AllowBash:                   allowBash,                // Fork patch: run allowlist
-			AllowTools:                  allowTool,                // Fork patch: run allowlist
 			AllowPeakHours:              allowPeakHours,           // Fork patch: peak-hours bypass
 			NoSupervision:               noSupervision,            // Fork patch: supervision opt-out
 			SupervisionInterval:         supervisionIntervalDur,   // Fork patch: supervision interval override
@@ -819,10 +812,6 @@ func init() {
 	// in root.go) unless mcp.<id>.enabled_in_cli=true; this is the one-off
 	// escape hatch for a run that needs a server rush would otherwise skip.
 	runCmd.Flags().Bool("all-mcp", false, `Force-start every configured, non-disabled MCP server for this run, ignoring each server's enabled_in_cli setting. Does not affect interactive TUI/web sessions, which always start every non-disabled server regardless of this flag.`)
-	// Fork patch (run allowlist): scope what an unattended run may do.
-	runCmd.Flags().Bool("restrict-run", false, `Opt into restricted permission mode for this run. When set (or when permissions.run.restrict is true in config), permission requests are auto-approved ONLY if they match the allowlist; everything else is denied cleanly. Default remains auto-approve-everything. Does not affect interactive TUI/web sessions.`)
-	runCmd.Flags().StringSlice("allow-bash", nil, `Bash command patterns to permit in restricted-run mode (repeatable, also comma-separated). Merged with permissions.run.allow_bash from config. Forms: 'cmd args' (word-boundary prefix, chaining-guarded) | 'exact:cmd' | 'glob:pat' | 'regex:pat'. Examples: --allow-bash 'git diff' --allow-bash 'glob:ls *' --allow-bash 'regex:^go (test|build)'`)
-	runCmd.Flags().StringSlice("allow-tool", nil, `Non-bash tools (or tool:action pairs) to permit in restricted-run mode (repeatable, also comma-separated). Merged with permissions.run.allow_tools from config. Entries for 'bash' / 'bash:execute' are ignored — use --allow-bash for command-level bash control. Examples: --allow-tool view --allow-tool edit:write`)
 	// Fork patch (peak-hours bypass): --allow-peak-hours skips the per-provider
 	// peak_hours refusal for THIS invocation only. There is intentionally NO
 	// config-level "always allow" equivalent — the whole point is a conscious

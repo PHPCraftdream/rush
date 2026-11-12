@@ -147,16 +147,17 @@ When a command reports an unrecognized or legacy settings lock, it names the set
 
 `rush run` has no interactive approval prompt. By default, non-interactive runs
 auto-approve permission requests; opt into enforceable deny-by-default gating
-with `--restrict-run` or `permissions.run.restrict: true`, then scope access with
-`--allow-tool` / `--allow-bash` or the config allowlists. CLI and config
-allowlists are unioned. The global `permissions.allowed_tools` list is checked
+with `permissions.run.restrict: true`, then scope access with the config
+allowlists (`run.allow_tools` / `run.allow_bash`). The global
+`permissions.allowed_tools` list is checked
 before this gate and can bypass it (listing `bash` approves every bash command).
 See [Restricting `rush run`](#restricting-rush-run) for details.
 
 This tool gate is not an OS sandbox or arbitrary filesystem boundary. `--cwd`
 selects the working directory; a worktree is an operational boundary, not a
 sandbox guarantee. Neither prevents access outside that location, and
-`--restrict-run` does not contain filesystem access by allowed commands. Use an
+restricted-run allowlisting does not contain filesystem access by allowed
+commands. Use an
 OS-level sandbox when containment is required.
 
 ## Running Rush in this fork
@@ -1261,18 +1262,11 @@ the tool name. To bypass the gate for bash wholesale, use the global
 `permissions.allowed_tools` (which is checked before the gate); otherwise
 leave `bash` out of `allowed_tools` and use `run.allow_bash`.
 
-The same options are available as CLI flags on `rush run`, which merge
-(union) with the config block. `--restrict-run` forces restrict on even
-when the config has it off:
-
-```sh
-rush run --role fast --restrict-run \
-  --allow-bash 'git diff' \
-  --allow-bash 'glob:ls *' \
-  --allow-tool view \
-  --allow-tool edit:write \
-  "fix the failing tests"
-```
+There are no CLI flags for this: the former `rush run` permission flags
+(`--restrict-run`, `--allow-bash`, `--allow-tool`) were removed, so the
+`permissions.run` block in `rush.json` is the only way to arm and scope
+restricted runs. Run-permission management is expected to continue
+through roles, not CLI flags.
 
 ### Disabling Built-In Tools
 

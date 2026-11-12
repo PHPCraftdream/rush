@@ -7,8 +7,8 @@ package app
 // the pump rebuilds it, never under a sibling run's policy and never
 // under an unrestricted fallback.
 //
-// Scenario: run 1 (owner, P1 = --allow-bash probe_cmd_one) is parked
-// mid-turn; run 2 (P2 = --allow-bash probe_cmd_two) legacy-queues behind
+// Scenario: run 1 (owner, P1 = AllowBash "probe_cmd_one") is parked
+// mid-turn; run 2 (P2 = AllowBash "probe_cmd_two") legacy-queues behind
 // it. The owner's turn then dies on a terminal provider error (HTTP 400
 // → classifyProviderError classTerminal, no retry), the loop exits, and
 // the finalizer durably enqueues the queued call — persisting P2's

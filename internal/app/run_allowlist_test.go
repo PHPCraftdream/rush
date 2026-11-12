@@ -57,7 +57,7 @@ func TestRunAllowlistSpecFromConfig_NilPreservesLegacy(t *testing.T) {
 				AllowTools: []string{"view"},
 			},
 		})
-		// Lists are still copied (so a CLI --restrict-run override can
+		// Lists are still copied (so a RunOverrides override can
 		// arm them without re-reading config), but Restrict stays off.
 		assert.False(t, spec.Restrict)
 		assert.Equal(t, []string{"view"}, spec.AllowTools)
@@ -124,12 +124,13 @@ func TestRunAllowlistSpecFromConfig_FullConfig(t *testing.T) {
 	}))
 }
 
-// TestRunOverridesMerge_ConfigPlusCLI is the unit-level test for the
-// merge that RunNonInteractive performs: CLI flags union with config,
-// and --restrict-run forces restrict on even when config has it off.
-// It replicates the exact merge code from RunNonInteractive so a
-// regression there is caught here without spinning up a full App.
-func TestRunOverridesMerge_ConfigPlusCLI(t *testing.T) {
+// TestRunOverridesMerge_ConfigPlusRunOverrides is the unit-level
+// test for the merge that RunNonInteractive performs: RunOverrides
+// (only SDK hosts set them now) union with config, and RestrictedRun
+// forces restrict on even when config has it off. It replicates the
+// exact merge code from RunNonInteractive so a regression there is
+// caught here without spinning up a full App.
+func TestRunOverridesMerge_ConfigPlusRunOverrides(t *testing.T) {
 	t.Parallel()
 
 	// "Config" spec: restrict OFF, allows only git diff via bash and
@@ -141,7 +142,7 @@ func TestRunOverridesMerge_ConfigPlusCLI(t *testing.T) {
 			AllowTools: []string{"view"},
 		},
 	}
-	// "CLI" override: --restrict-run + --allow-bash 'ls' + --allow-tool edit.
+	// Override as an SDK host would set it: RestrictedRun + AllowBash 'ls' + AllowTools 'edit'.
 	overrides := RunOverrides{
 		RestrictedRun: true,
 		AllowBash:     []string{"ls"},
@@ -156,7 +157,7 @@ func TestRunOverridesMerge_ConfigPlusCLI(t *testing.T) {
 	runSpec.AllowBash = append(runSpec.AllowBash, overrides.AllowBash...)
 	runSpec.AllowTools = append(runSpec.AllowTools, overrides.AllowTools...)
 
-	require.True(t, runSpec.Restrict, "CLI --restrict-run forces restrict on")
+	require.True(t, runSpec.Restrict, "overrides.RestrictedRun forces restrict on")
 	compiled, err := permission.BuildRunAllowlist(runSpec)
 	require.NoError(t, err)
 	require.True(t, compiled.IsRestricted())
@@ -168,7 +169,7 @@ func TestRunOverridesMerge_ConfigPlusCLI(t *testing.T) {
 	// CLI bash pattern survives.
 	assert.True(t, requestAllowed(t, compiled, permission.CreatePermissionRequest{
 		ToolName: "bash", Action: "execute", Params: p{Command: "ls -la"},
-	}), "CLI allow_bash pattern honoured after merge")
+	}), "override allow_bash pattern honoured after merge")
 	// Non-matching bash command denied.
 	assert.False(t, requestAllowed(t, compiled, permission.CreatePermissionRequest{
 		ToolName: "bash", Action: "execute", Params: p{Command: "rm -rf /"},
@@ -182,10 +183,10 @@ func TestRunOverridesMerge_ConfigPlusCLI(t *testing.T) {
 	}))
 }
 
-// TestRunOverridesMerge_CLIRestrictOffKeepsConfigBehaviour verifies
-// that when neither CLI nor config arms restrict, the merged gate stays
-// inert — i.e. legacy `rush run` auto-approve is preserved.
-func TestRunOverridesMerge_CLIRestrictOffKeepsConfigBehaviour(t *testing.T) {
+// TestRunOverridesMerge_OverridesRestrictOffKeepsConfigBehaviour verifies
+// that when neither the overrides nor the config arms restrict, the
+// merged gate stays inert — i.e. legacy auto-approve is preserved.
+func TestRunOverridesMerge_OverridesRestrictOffKeepsConfigBehaviour(t *testing.T) {
 	t.Parallel()
 	configPerms := &config.Permissions{
 		Run: &config.RunPermissions{Restrict: false},

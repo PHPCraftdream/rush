@@ -2,9 +2,9 @@ package permission
 
 // This file implements the restricted-run allowlist: the matcher that
 // decides whether a `rush run` permission request is auto-approved
-// when restricted mode is on. See config.RunPermissions for the
-// user-facing config and cmd/run.go for the --restrict-run / --allow-bash
-// CLI surface.
+// when restricted mode is on. See config.RunPermissions (permissions.run
+// in rush.json) for the user-facing config; the per-run override surface
+// is app.RunOverrides (SDK hosts only — the CLI flags were removed).
 //
 // Design notes:
 //
