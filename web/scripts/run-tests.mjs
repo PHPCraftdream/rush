@@ -20,19 +20,24 @@
 import net from "node:net";
 import { spawn } from "node:child_process";
 
-function findFreePort() {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.unref();
-    srv.on("error", reject);
-    // Port 0 = "assign me any free ephemeral port".
-    srv.listen(0, "127.0.0.1", () => {
-      const { port } = srv.address();
-      srv.close(() => resolve(port));
-    });
+/** Promise executor: binds an ephemeral loopback port and resolves with it. */
+function listenOnFreePort(resolve, reject) {
+  const srv = net.createServer();
+  srv.unref();
+  srv.on("error", reject);
+  // Port 0 = "assign me any free ephemeral port".
+  srv.listen(0, "127.0.0.1", () => {
+    const { port } = srv.address();
+    srv.close(() => resolve(port));
   });
 }
 
+/** Resolves with a free ephemeral loopback port. */
+function findFreePort() {
+  return new Promise(listenOnFreePort);
+}
+
+/** Resolves the port to use: an explicit E2E_PORT, else a discovered free one. */
 function play() {
   // The config honors an explicit E2E_PORT to allow `E2E_PORT=4321 npm run test`
   // (e.g. pointing at an already-running dev server). Only discover when unset.

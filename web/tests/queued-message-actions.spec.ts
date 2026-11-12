@@ -1,6 +1,9 @@
 import { test, expect, Page } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeSession } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 // Coverage for task #1057: per-queued-message "Send now" (inject_message,
 // merges into the running turn), "Interrupt & send" (interrupt_and_send,
@@ -25,11 +28,10 @@ import { makeSession } from "./helpers/fixtures";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Opens the app with the session injected and waits for an enabled composer. */
 async function openSession(page: Page, id: string, title: string) {
   await page.goto("/");
   await sendMockWSMessage(page, {
@@ -41,6 +43,7 @@ async function openSession(page: Page, id: string, title: string) {
   await expect(page.getByTestId("chat-input-textarea")).toBeEnabled({ timeout: 5000 });
 }
 
+/** Delivers an agent_busy frame for the session. */
 async function setBusy(page: Page, sessionID: string, busy: boolean) {
   await sendMockWSMessage(page, {
     type: "agent_busy",
@@ -48,24 +51,34 @@ async function setBusy(page: Page, sessionID: string, busy: boolean) {
   });
 }
 
-// Queues one message the way a busy composer does: fill + click the
-// "Queue" send button (agentBusy makes send() call enqueueMessage instead
-// of sending immediately -- see ChatInput.tsx's send()).
+/**
+ * Queues one message the way a busy composer does: fill + click the
+ * "Queue" send button (agentBusy makes send() call enqueueMessage instead
+ * of sending immediately -- see ChatInput.tsx's send()).
+ */
 async function queueMessage(page: Page, text: string) {
   await page.getByTestId("chat-input-textarea").fill(text);
   await page.getByTestId("chat-input-send-button").click();
   await expect(page.getByTestId("chat-input-textarea")).toHaveValue("");
 }
 
+/** The payload of a frame, or an empty object. */
 function payloadOf(msg: { payload?: unknown }): Record<string, unknown> {
   return (msg.payload ?? {}) as Record<string, unknown>;
 }
 
+/** Browser-side: the sent frames of the given type. */
+function pickSentFrames(t: string) {
+  const sent = (((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{
+    type: string;
+    payload?: unknown;
+  }>) ?? [];
+  return sent.filter((m) => m.type === t);
+}
+
+/** All frames of the given type the page has sent so far. */
 async function framesOfType(page: Page, type: string) {
-  return page.evaluate((t: string) => {
-    const sent = (((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string; payload?: unknown }>) ?? [];
-    return sent.filter((m) => m.type === t);
-  }, type);
+  return page.evaluate(pickSentFrames, type);
 }
 
 // ── Visibility: buttons only show while the session is busy ────────────────
@@ -91,7 +104,8 @@ test("send-now / interrupt-and-send buttons only show while the session is busy"
 // (they only make sense against a running turn), but it must NOT be
 // stranded: a plain "Send" (send_message) takes over so it isn't stuck
 // until some unrelated future turn happens to flush it (task #1057 review).
-test("a message restored after the session already went idle gets a plain Send instead of being stranded", async ({ page }) => {
+test("a message restored after the session already went " +
+  "idle gets a plain Send instead of being stranded", async ({ page }) => {
   await openSession(page, "vis-2", "Race Visibility Session");
   await setBusy(page, "vis-2", true);
   await queueMessage(page, "a");
@@ -126,7 +140,8 @@ test("a message restored after the session already went idle gets a plain Send i
 
 // ── Send now: inject_message, atomic removal, no double-send on flush ──────
 
-test("send now sends via inject_message, removes only that item, and it never goes out again on flush", async ({ page }) => {
+test("send now sends via inject_message, removes only " +
+  "that item, and it never goes out again on flush", async ({ page }) => {
   await openSession(page, "now-1", "Send Now Session");
   await setBusy(page, "now-1", true);
   await queueMessage(page, "first message");
@@ -238,6 +253,13 @@ test("a failed send-now restores the message to its original queue position with
   expect(payloadOf(retried[1]).content).toBe("two");
 });
 
+/** Browser-side: closes the mock /ws socket via its real onclose path. */
+function closeMockSocket() {
+  const mock = ((window as unknown) as Record<string, unknown>)["__mockWS"] as { close: () => void } | null;
+  if (!mock) throw new Error("mock WS not created yet");
+  mock.close();
+}
+
 // ── An already-dead socket fails immediately and restores the message ──────
 
 test("send now with an already-dead socket fails fast and restores the message", async ({ page }) => {
@@ -245,11 +267,7 @@ test("send now with an already-dead socket fails fast and restores the message",
   await setBusy(page, "dead-1", true);
   await queueMessage(page, "only message");
 
-  await page.evaluate(() => {
-    const mock = ((window as unknown) as Record<string, unknown>)["__mockWS"] as { close: () => void } | null;
-    if (!mock) throw new Error("mock WS not created yet");
-    mock.close();
-  });
+  await page.evaluate(closeMockSocket);
 
   await page.getByTestId("queued-message-send-now").click();
 
@@ -271,7 +289,7 @@ test("send now with an already-dead socket fails fast and restores the message",
 
 test("interrupt & send timeout restores the message as ambiguous, not a definite failure", async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) => route.fulfill({ status: 200, body: "OK" }));
+  await page.route("/auth/check", fulfillAuthOk);
   // Installed before navigation so the mock socket's own connect timer still
   // fires on schedule; time only jumps when fastForward is called below.
   await page.clock.install();
@@ -297,7 +315,7 @@ test("interrupt & send timeout restores the message as ambiguous, not a definite
 
 test("send now timeout restores the message as ambiguous, not a definite failure", async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) => route.fulfill({ status: 200, body: "OK" }));
+  await page.route("/auth/check", fulfillAuthOk);
   await page.clock.install();
   await openSession(page, "timeout-2", "Inject Timeout Session");
   await setBusy(page, "timeout-2", true);

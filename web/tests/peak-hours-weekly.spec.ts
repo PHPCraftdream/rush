@@ -22,14 +22,16 @@
 //      the peakHoursProblems hint (ProvidersModal's canSubmit consumes
 //      peakHoursProblems().length).
 import { test, expect, Page } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeConfig, makeSession } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeConfig } from "./helpers/make-config";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
 /** Config with one built-in provider; overrides merge into its entry. */
@@ -49,15 +51,11 @@ function anthropicConfig(overrides: Record<string, unknown> = {}) {
 }
 
 /**
- * Loads the page with an active session (the header buttons render only
- * once $activeSessionID is set) and the given config, then opens the
- * providers modal and the built-in anthropic peak-hours-only editor.
- */
-/**
  * Loads the page with an active session and the given config, then opens
- * only the providers modal — without entering any row editor (editing a
- * built-in row unmounts it via the early return in ProviderRow, which
- * would take the row-level status/badge with it).
+ * only the providers modal — without entering any row editor.
+ *
+ * Editing a built-in row unmounts it via the early return in ProviderRow,
+ * which would take the row-level status/badge with it.
  */
 async function openProvidersModal(page: Page, overrides: Record<string, unknown> = {}) {
   await page.goto("/");
@@ -71,6 +69,11 @@ async function openProvidersModal(page: Page, overrides: Record<string, unknown>
   await expect(page.getByTestId("providers-modal")).toBeVisible({ timeout: 3000 });
 }
 
+/**
+ * Loads the page with an active session (the header buttons render only
+ * once $activeSessionID is set) and the given config, then opens the
+ * providers modal and the built-in anthropic peak-hours-only editor.
+ */
 async function openBuiltinPeakEditor(
   page: Page,
   overrides: Record<string, unknown> = {}
@@ -88,11 +91,15 @@ async function openBuiltinPeakEditor(
   await expect(page.getByTestId("builtin-provider-editor")).toBeVisible({ timeout: 3000 });
 }
 
+/** Browser-side: the sent frames of the given type. */
+function pickSentFrames(t: string) {
+  const sent = (((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string }>) ?? [];
+  return sent.filter((m) => m.type === t);
+}
+
+/** All frames of the given type the page has sent so far. */
 async function framesOfType(page: Page, type: string) {
-  return page.evaluate((t: string) => {
-    const sent = (((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string }>) ?? [];
-    return sent.filter((m) => m.type === t);
-  }, type);
+  return page.evaluate(pickSentFrames, type);
 }
 
 // ── 1. Weekly editor roundtrip sends a policy payload ────────────────────────

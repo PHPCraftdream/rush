@@ -11,43 +11,52 @@
  */
 
 import { test, expect, Page } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage } from "./helpers/mock-ws";
-import { makeSession, makeMessage } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 // Epoch SECONDS — TimeBadge multiplies by 1000. makeMessage's ms-scale
 // default would render a nonsense time, so pass real epoch-second values.
 const USER_TS = 1700000000;
 const ASSISTANT_TS = 1700000065;
 
-// Same local-time formatting as TimeBadge. The test process and the browser
-// share the machine's timezone, so the expected strings can be computed here.
+/** Left-pads a number to two digits. */
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+/**
+ * Same local-time formatting as TimeBadge. The test process and the browser
+ * share the machine's timezone, so the expected strings can be computed here.
+ */
 function expectedBadgeText(epochSec: number): string {
   const d = new Date(epochSec * 1000);
   return [d.getHours(), d.getMinutes(), d.getSeconds()]
-    .map((n) => String(n).padStart(2, "0"))
+    .map(pad2)
     .join(":");
 }
 
+/** The badge tooltip TimeBadge renders for an epoch-second timestamp. */
 function expectedBadgeTitle(epochSec: number): string {
   const d = new Date(epochSec * 1000);
-  const pad = (n: number) => String(n).padStart(2, "0");
   const tz = -d.getTimezoneOffset();
   const tzAbs = Math.abs(tz);
   const tzSign = tz >= 0 ? "+" : "-";
   return (
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
-    ` ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` +
-    ` UTC${tzSign}${pad(Math.floor(tzAbs / 60))}:${pad(tzAbs % 60)}`
+    `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}` +
+    ` ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}` +
+    ` UTC${tzSign}${pad2(Math.floor(tzAbs / 60))}:${pad2(tzAbs % 60)}`
   );
 }
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Opens a session carrying the timestamped messages. */
 async function openSessionWithMessages(page: Page) {
   await page.goto("/");
   await sendMockWSMessage(page, {
@@ -111,6 +120,7 @@ test("assistant message shows its timestamp badge without hovering", async ({ pa
   await expect(badge).toHaveAttribute("title", expectedBadgeTitle(ASSISTANT_TS));
 });
 
+/** Asserts the action row keeps its spacing around the timestamp badge. */
 async function expectActionSpacing(page: Page, id: string) {
   const row = page.locator(`#msg-${id}`);
   await row.hover();

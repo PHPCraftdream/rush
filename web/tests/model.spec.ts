@@ -1,12 +1,14 @@
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeSession, makeConfig } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeConfig } from "./helpers/make-config";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
 // ── Model display ──────────────────────────────────────────────────────────
@@ -77,7 +79,9 @@ test("clicking model button opens dropdown", async ({ page }) => {
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
   await expect(page.getByText("DD Session").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("DD Session").first().click();
-  await expect(page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" })).toBeVisible({ timeout: 3000 });
+  await expect(
+    page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" }),
+  ).toBeVisible({ timeout: 3000 });
 
   await page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" }).click();
   await expect(page.getByPlaceholder("Search models…")).toBeVisible({ timeout: 2000 });
@@ -92,7 +96,9 @@ test("model dropdown shows all available models", async ({ page }) => {
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
   await expect(page.getByText("All Models").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("All Models").first().click();
-  await expect(page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" })).toBeVisible({ timeout: 3000 });
+  await expect(
+    page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" }),
+  ).toBeVisible({ timeout: 3000 });
 
   await page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" }).click();
   // Both models should appear in dropdown
@@ -110,7 +116,9 @@ test("model dropdown closes on outside click", async ({ page }) => {
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
   await expect(page.getByText("Close Test").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Close Test").first().click();
-  await expect(page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" })).toBeVisible({ timeout: 3000 });
+  await expect(
+    page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" }),
+  ).toBeVisible({ timeout: 3000 });
 
   await page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" }).click();
   await expect(page.getByPlaceholder("Search models…")).toBeVisible({ timeout: 2000 });
@@ -148,7 +156,9 @@ test("search filters models by name", async ({ page }) => {
   });
   await expect(page.getByText("Search Session").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Search Session").first().click();
-  await expect(page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" })).toBeVisible({ timeout: 3000 });
+  await expect(
+    page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" }),
+  ).toBeVisible({ timeout: 3000 });
   await page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" }).click();
 
   await page.getByPlaceholder("Search models…").fill("haiku");
@@ -166,7 +176,9 @@ test("search shows no results message when nothing matches", async ({ page }) =>
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
   await expect(page.getByText("No Results").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("No Results").first().click();
-  await expect(page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" })).toBeVisible({ timeout: 3000 });
+  await expect(
+    page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" }),
+  ).toBeVisible({ timeout: 3000 });
   await page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" }).click();
 
   await page.getByPlaceholder("Search models…").fill("xyznonexistent");
@@ -184,7 +196,9 @@ test("selecting a model from dropdown updates header display", async ({ page }) 
   await sendMockWSMessage(page, { type: "config", payload: makeConfig() });
   await expect(page.getByText("Pick Session").first()).toBeVisible({ timeout: 3000 });
   await page.getByText("Pick Session").first().click();
-  await expect(page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" })).toBeVisible({ timeout: 3000 });
+  await expect(
+    page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" }),
+  ).toBeVisible({ timeout: 3000 });
 
   // Open dropdown and select "fast" model
   await page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" }).click();
@@ -213,7 +227,9 @@ test("each session has independent model selection", async ({ page }) => {
   // Select Session One and pick "fast" model
   await expect(page.getByText("Session One")).toBeVisible({ timeout: 3000 });
   await page.getByText("Session One").click();
-  await expect(page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" })).toBeVisible({ timeout: 3000 });
+  await expect(
+    page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" }),
+  ).toBeVisible({ timeout: 3000 });
   await page.locator("button[title='Smart (strong) model']").filter({ hasText: "claude-opus-4" }).click();
   await page.getByTestId("model-dropdown").getByText("claude-haiku-4").click();
   await expect(

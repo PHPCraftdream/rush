@@ -27,8 +27,11 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage } from "./helpers/mock-ws";
-import { makeSession, makeMessage } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 const SESSION_ID = "composer-sess";
 const RECALL_BTN = 'button[title="Click to put this prompt back in the input"]';
@@ -124,11 +127,10 @@ const EXPECTED_TYPED = ["first web prompt", "injected: also check the retry path
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Opens a session whose transcript is the given messages. */
 async function openSessionWith(page: import("@playwright/test").Page, messages: ReturnType<typeof makeMessage>[]) {
   await page.goto("/");
   await sendMockWSMessage(page, {
@@ -142,7 +144,14 @@ async function openSessionWith(page: import("@playwright/test").Page, messages: 
     payload: { SessionID: SESSION_ID, Messages: messages, Watermark: 0 },
   });
   // Wait for the transcript to land.
-  await expect(page.getByText("first web prompt").or(page.getByText("cli run prompt")).first()).toBeVisible({ timeout: 3000 });
+  await expect(
+    page.getByText("first web prompt").or(page.getByText("cli run prompt")).first(),
+  ).toBeVisible({ timeout: 3000 });
+}
+
+/** Trims surrounding whitespace. */
+function trimText(t: string) {
+  return t.trim();
 }
 
 test("history dropdown lists only human-typed web prompts, newest first", async ({ page }) => {
@@ -150,7 +159,7 @@ test("history dropdown lists only human-typed web prompts, newest first", async 
 
   await page.getByTestId("chat-input-history-button").click();
   const recallTexts = await page.locator(RECALL_BTN).allInnerTexts();
-  expect(recallTexts.map((t) => t.trim())).toEqual([...EXPECTED_TYPED].reverse());
+  expect(recallTexts.map(trimText)).toEqual([...EXPECTED_TYPED].reverse());
 });
 
 test("ArrowUp cycles only human-typed web prompts in order, skipping every notice kind", async ({ page }) => {
@@ -185,7 +194,14 @@ test("ArrowUp cycles only human-typed web prompts in order, skipping every notic
 
 test("empty history when no human-typed web prompts exist", async ({ page }) => {
   await openSessionWith(page, [
-    makeMessage({ ID: "u-cli-only", SessionID: SESSION_ID, Role: "user", Origin: "cli", HumanTyped: false, Parts: [{ type: "text", Text: "cli run prompt" }] }),
+    makeMessage({
+      ID: "u-cli-only",
+      SessionID: SESSION_ID,
+      Role: "user",
+      Origin: "cli",
+      HumanTyped: false,
+      Parts: [{ type: "text", Text: "cli run prompt" }],
+    }),
     makeMessage({
       ID: "u-notice-only", SessionID: SESSION_ID, Role: "user", Origin: "web",
       BackgroundJobNotice: true, HumanTyped: false,

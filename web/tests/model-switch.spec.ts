@@ -10,26 +10,36 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeSession, makeConfig } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeConfig } from "./helpers/make-config";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
+
+/** Browser-side: the payloads of the sent frames of the given type. */
+function pickSentPayloads(type: string) {
+  const sent = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{
+    type: string;
+    payload: unknown;
+  }>;
+  const payloads: unknown[] = [];
+  for (const m of sent) {
+    if (m.type === type) payloads.push(m.payload);
+  }
+  return payloads;
+}
 
 // ── Helper ───────────────────────────────────────────────────────────────────
 
+/** The payloads of all send_message frames the page sent. */
 async function getSentMessages(page: import("@playwright/test").Page) {
-  return page.evaluate(() => {
-    const sent = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{
-      type: string;
-      payload: unknown;
-    }>;
-    return sent.filter((m) => m.type === "send_message").map((m) => m.payload);
-  });
+  return page.evaluate(pickSentPayloads, "send_message");
 }
 
 // ── set_session_models command ────────────────────────────────────────────────
@@ -101,6 +111,16 @@ test("selecting small model sends set_session_models with correct small provider
   expect(p.fastModel).toEqual({ provider: "openai", model: "gpt-4o-mini" });
 });
 
+/** Browser-side: the latest sent frame of the given type once two or more exist, else null. */
+function latestOfTypeOnceTwo(type: string) {
+  const sent = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{
+    type: string;
+    payload: Record<string, unknown>;
+  }>;
+  const cmds = sent.filter((m) => m.type === type);
+  return cmds.length >= 2 ? cmds[cmds.length - 1] : null;
+}
+
 test("set_session_models includes both models", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, {
@@ -134,17 +154,7 @@ test("set_session_models includes both models", async ({ page }) => {
   await page.locator("button[title='Fast (cheap) model']").click();
   await page.getByTestId("model-dropdown").getByText("gpt-4o-mini").click();
 
-  const secondCmd = await page.waitForFunction(
-    () => {
-      const sent = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{
-        type: string;
-        payload: Record<string, unknown>;
-      }>;
-      const cmds = sent.filter((m) => m.type === "set_session_models");
-      return cmds.length >= 2 ? cmds[cmds.length - 1] : null;
-    },
-    { timeout: 5_000 }
-  );
+  const secondCmd = await page.waitForFunction(latestOfTypeOnceTwo, "set_session_models", { timeout: 5_000 });
   const last = await secondCmd.jsonValue() as { payload: { fastModel: { provider: string; model: string } } };
   expect(last.payload.fastModel).toEqual({ provider: "openai", model: "gpt-4o-mini" });
 });
@@ -199,7 +209,8 @@ test("send_message never contains model overrides even on default model", async 
 
 // ── sendWithFastModel fallback (task #570, F6) ────────────────────────────────
 
-test("send-with-fast-model button sends the config FAST model when the session has no explicit fast override", async ({ page }) => {
+test("send-with-fast-model button sends the config FAST " +
+  "model when the session has no explicit fast override", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "sessions_list",
@@ -232,7 +243,11 @@ test("send-with-fast-model button sends the config FAST model when the session h
   await page.locator("button[title='Send with lightweight model']").click();
 
   const sent = await waitForWSSend(page, "send_message");
-  const payload = sent.payload as { sessionID: string; content: string; smartModel?: { provider: string; model: string } };
+  const payload = sent.payload as {
+    sessionID: string;
+    content: string;
+    smartModel?: { provider: string; model: string };
+  };
   expect(payload.sessionID).toBe("sw-fast-fallback");
   expect(payload.content).toBe("hello fast");
   // F6 regression: sendWithFastModel's fallback used to read
@@ -322,6 +337,14 @@ test("switching model in session A does not affect session B", async ({ page }) 
   ).toBeVisible({ timeout: 2000 });
 });
 
+/** Browser-side: true once at least two frames of the given type were sent. */
+function hasTwoSentOfType(type: string) {
+  const sent = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{
+    type: string;
+  }>;
+  return sent.filter((m) => m.type === type).length >= 2;
+}
+
 // ── Model override persists across sends in same session ─────────────────────
 
 test("model override persists for subsequent messages via DB", async ({ page }) => {
@@ -370,12 +393,7 @@ test("model override persists for subsequent messages via DB", async ({ page }) 
 
   await page.getByTestId("chat-input-textarea").fill("msg two");
   await page.getByTestId("chat-input-send-button").click();
-  await page.waitForFunction(() => {
-    const sent = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{
-      type: string;
-    }>;
-    return sent.filter((m) => m.type === "send_message").length >= 2;
-  }, { timeout: 5000 });
+  await page.waitForFunction(hasTwoSentOfType, "send_message", { timeout: 5000 });
 
   const msgs = await getSentMessages(page) as Array<Record<string, unknown>>;
   for (const msg of msgs) {

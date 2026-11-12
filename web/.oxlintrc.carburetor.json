@@ -1,0 +1,21 @@
+// React Carburetor lint: every rule of @react-carburetor/core/lint runs here
+// (recommended + no-hooks + house-style presets, plus no-module-level-store).
+// Kept separate from .oxlintrc.json so the existing `--max-warnings=101`
+// ratchet there is untouched; `categories.correctness: off` stops this run
+// from re-reporting oxlint's own rules.
+//
+// Severities are the presets' defaults; package.json runs it with
+// --max-warnings=0, so warn-level findings fail the build too.
+{
+  "extends": [
+    "./node_modules/@react-carburetor/core/dist/lint/recommended.oxlintrc.json",
+    "./node_modules/@react-carburetor/core/dist/lint/no-hooks.oxlintrc.json",
+    "./node_modules/@react-carburetor/core/dist/lint/house-style.oxlintrc.json"
+  ],
+  "categories": { "correctness": "off" },
+  "rules": {
+    // Off in the preset (SSR hazard). Enabled: client-only app, so each
+    // module-level store carries a justified inline suppression instead.
+    "carburetor/no-module-level-store": "error"
+  }
+}

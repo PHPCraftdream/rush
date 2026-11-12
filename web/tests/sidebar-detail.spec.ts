@@ -17,14 +17,16 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend, clearWSSent } from "./helpers/mock-ws";
-import { makeSession } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { clearWSSent } from "./helpers/clear-ws-sent";
+import { makeSession } from "./helpers/make-session";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
 // ── Double-click rename ─────────────────────────────────────────────────
@@ -193,6 +195,12 @@ test("sidebar hides token count when zero", async ({ page }) => {
   await expect(page.getByTestId("session-tokens-sb-notok")).not.toBeVisible({ timeout: 1000 });
 });
 
+/** Browser-side: the sent frames of the given type. */
+function pickSentFrames(type: string) {
+  const sent = ((window as unknown as Record<string, unknown>)["__wsSent"] as Array<{ type: string }> | null) ?? [];
+  return sent.filter((m) => m.type === type);
+}
+
 // ── Rename commit semantics (F-3 regression) ──────────────────────────────
 // The edit input used to save on blur. Mousedown on the Cancel button blurs
 // the still-mounted input before the button's click handler runs, so the
@@ -201,11 +209,9 @@ test("sidebar hides token count when zero", async ({ page }) => {
 // (Save button / Enter) and cancel is explicit only (Cancel button / Esc).
 // These tests pin the wire behavior of all three exit paths.
 
+/** The rename_session frames the page has sent. */
 async function renameFramesSent(page: import("@playwright/test").Page) {
-  return page.evaluate(() => {
-    const sent = ((window as unknown as Record<string, unknown>)["__wsSent"] as Array<{ type: string }> | null) ?? [];
-    return sent.filter((m) => m.type === "rename_session");
-  });
+  return page.evaluate(pickSentFrames, "rename_session");
 }
 
 test("Cancel click does not send rename_session", async ({ page }) => {

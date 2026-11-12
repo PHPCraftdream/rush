@@ -10,14 +10,15 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage } from "./helpers/mock-ws";
-import { makeSession, makeMessage } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
 const threeMessages = [
@@ -33,6 +34,12 @@ const threeMessages = [
   makeMessage({ ID: "cm-3", Role: "user", Parts: [{ type: "text", Text: "Third message" }] }),
 ];
 
+/** Re-tags a message into the ctxmenu-sess session. */
+function inCtxMenuSession(m: object) {
+  return { ...m, SessionID: "ctxmenu-sess" };
+}
+
+/** Opens a session carrying the three context-menu messages. */
 async function setupWithMessages(page: import("@playwright/test").Page) {
   await page.goto("/");
   await sendMockWSMessage(page, {
@@ -43,7 +50,7 @@ async function setupWithMessages(page: import("@playwright/test").Page) {
   await page.getByText("CtxMenu Session").first().click();
   await sendMockWSMessage(page, {
     type: "messages_list",
-    payload: threeMessages.map((m) => ({ ...m, SessionID: "ctxmenu-sess" })),
+    payload: threeMessages.map(inCtxMenuSession),
   });
   await expect(page.getByText("Second message")).toBeVisible({ timeout: 2000 });
 }

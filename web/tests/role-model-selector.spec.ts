@@ -7,14 +7,16 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeSession, makeConfig } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeConfig } from "./helpers/make-config";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
 const CONFIG_WITH_MODELS = makeConfig({
@@ -162,6 +164,16 @@ test("resetting a reviewer override sends an explicit empty reviewer model", asy
   expect(p.reviewerModel).toEqual({ provider: "", model: "" });
 });
 
+/** Browser-side: the latest sent frame of the given type once two or more exist, else null. */
+function latestOfTypeOnceTwo(type: string) {
+  const sent = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{
+    type: string;
+    payload: Record<string, unknown>;
+  }>;
+  const cmds = sent.filter((m) => m.type === type);
+  return cmds.length >= 2 ? cmds[cmds.length - 1] : null;
+}
+
 // ── Smart/fast keep working unchanged ────────────────────────────────────────
 
 test("smart and fast selectors still work with the role-models panel collapsed", async ({ page }) => {
@@ -184,17 +196,7 @@ test("smart and fast selectors still work with the role-models panel collapsed",
 
   await page.getByTestId("model-selector-fast").click();
   await page.getByTestId("model-dropdown").getByText("claude-opus-4").click();
-  const fastCmd = await page.waitForFunction(
-    () => {
-      const sent = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{
-        type: string;
-        payload: Record<string, unknown>;
-      }>;
-      const cmds = sent.filter((m) => m.type === "set_session_models");
-      return cmds.length >= 2 ? cmds[cmds.length - 1] : null;
-    },
-    { timeout: 5000 }
-  );
+  const fastCmd = await page.waitForFunction(latestOfTypeOnceTwo, "set_session_models", { timeout: 5000 });
   const last = (await fastCmd.jsonValue()) as { payload: { fastModel: unknown } };
   expect(last.payload.fastModel).toEqual({ provider: "anthropic", model: "claude-opus-4" });
 });

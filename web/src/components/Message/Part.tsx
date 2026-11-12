@@ -1,5 +1,4 @@
 // Routes a single message content part to its renderer.
-// Pure code move from the former components/Message.tsx.
 
 import { memo } from "react";
 import type { ContentPart } from "../../types";
@@ -11,19 +10,42 @@ import { TextBlock } from "./TextBlock";
 import { ThinkingPart } from "./ThinkingPart";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { ToolResultBlock } from "./ToolResultBlock";
+import { agentPrompt } from "./agentPrompt";
 import { parseAwaitingAnswer } from "./parseAwaitingAnswer";
 
-// ── Part router ───────────────────────────────────────────────────────────────
+/** Props of the part router. */
+interface IPartProps {
+  part: ContentPart;
+  index: number;
+  isUser: boolean;
+  messageID: string;
+  thinkingDone: boolean;
+  partialWorkDone: boolean;
+  model?: string;
+  effort?: string;
+  sessionID?: string;
+}
 
-export const Part = memo(function Part({ part, index, isUser, messageID, thinkingDone, partialWorkDone, model, effort, sessionID }: { part: ContentPart; index: number; isUser: boolean; messageID: string; thinkingDone: boolean; partialWorkDone: boolean; model?: string; effort?: string; sessionID?: string }) {
+/** Part router: picks the renderer for one message part. */
+export const Part = memo(function Part({
+  part, index, isUser, messageID, thinkingDone, partialWorkDone, model, effort, sessionID,
+}: IPartProps) {
   switch (part.type) {
     case "text":     return <TextBlock text={part.Text} isUser={isUser} />;
-    case "thinking": return <ThinkingPart thinking={part.Thinking} messageID={messageID} partIndex={index} done={thinkingDone} model={model} effort={effort} />;
+    case "thinking":
+      return (
+        <ThinkingPart
+          thinking={part.Thinking}
+          messageID={messageID}
+          partIndex={index}
+          done={thinkingDone}
+          model={model}
+          effort={effort}
+        />
+      );
     case "tool_call": {
       if (part.Name === "agent") {
-        let prompt = "";
-        try { prompt = JSON.parse(part.Input).prompt ?? part.Input; } catch { prompt = part.Input; }
-        return <SubAgentBlock messageID={messageID} toolCallID={part.ID} prompt={prompt} />;
+        return <SubAgentBlock messageID={messageID} toolCallID={part.ID} prompt={agentPrompt(part.Input)} />;
       }
       // No `running` here: this router renders one part in isolation and
       // the result lives on a separate role=tool message, so there is no
@@ -34,7 +56,14 @@ export const Part = memo(function Part({ part, index, isUser, messageID, thinkin
     }
     case "tool_result": {
       if (part.Name === "agent") return null;
-      return <ToolResultBlock name={part.Name} content={part.Content} isError={part.IsError} metadata={part.Metadata} />;
+      return (
+        <ToolResultBlock
+          name={part.Name}
+          content={part.Content}
+          isError={part.IsError}
+          metadata={part.Metadata}
+        />
+      );
     }
     // Fork patch: render explicit error/empty finish parts so a failed turn is
     // never silently rendered as a blank block. See CHANGELOG.fork.md.

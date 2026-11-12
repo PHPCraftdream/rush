@@ -13,16 +13,18 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage } from "./helpers/mock-ws";
-import { makeSession, makeMessage } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Opens the session and delivers the single message. */
 async function setupWithMessage(
   page: import("@playwright/test").Page,
   msg: ReturnType<typeof makeMessage>
@@ -157,7 +159,13 @@ test("tool call input is formatted as key: value pairs", async ({ page }) => {
     // '"path"' / '"content"' (quoted JSON keys), which this format never
     // produces even for tools that predate the change.
     Parts: [
-      { type: "tool_call", ID: "tc-3", Name: "write_file", Input: '{"path":"/tmp/test.txt","content":"hello"}', Finished: true },
+      {
+        type: "tool_call",
+        ID: "tc-3",
+        Name: "write_file",
+        Input: '{"path":"/tmp/test.txt","content":"hello"}',
+        Finished: true,
+      },
     ],
   }));
 

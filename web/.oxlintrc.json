@@ -1,5 +1,5 @@
 // Oxlint config. `max-lines` is an error (hard rule); everything else is a
-// warning held by a ratchet: package.json `lint` runs with --max-warnings=101,
+// warning held by a ratchet: package.json `lint:base` runs with --max-warnings=101,
 // the measured baseline. Warnings may only go down — lower the number as
 // findings are fixed, never raise it.
 {

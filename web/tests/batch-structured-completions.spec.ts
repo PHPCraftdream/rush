@@ -18,16 +18,20 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { makeMessage, makeSession } from "./helpers/fixtures";
-import { sendMockWSMessage, setupMockWS } from "./helpers/mock-ws";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 const sessionID = "batch-struct";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) => route.fulfill({ status: 200, body: "OK" }));
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Injects the session and opens it by its row test id. */
 async function selectSession(page: import("@playwright/test").Page, id: string) {
   await page.goto("/");
   await sendMockWSMessage(page, { type: "sessions_list", payload: [makeSession({ ID: id, Title: id })] });

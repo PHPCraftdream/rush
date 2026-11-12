@@ -1,126 +1,158 @@
-import { useState } from "react";
+import { AntiHookComponent, bind } from "@react-carburetor/core";
+import type { ChangeEvent, FormEvent } from "react";
 import { KeyRound, Loader2, Terminal, Sun, Moon } from "lucide-react";
-import { $authed, setTheme } from "../store";
+import { setTheme } from "../store";
+import { authCarburetor } from "../state/auth";
 
-export function Login() {
-  const [token, setToken] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [isDark, setIsDark] = useState(() =>
-    document.documentElement.classList.contains("dark")
-  );
+/** Local form state of the login screen. */
+interface ILoginState {
+  token: string;
+  error: string;
+  loading: boolean;
+  isDark: boolean;
+}
 
-  function toggleTheme() {
-    const next = isDark ? "light" : "dark";
+/** Login screen: exchanges the terminal token for a cookie session. */
+export class Login extends AntiHookComponent<{}, ILoginState> {
+  public state: ILoginState = {
+    token: "",
+    error: "",
+    loading: false,
+    isDark: document.documentElement.classList.contains("dark"),
+  };
+
+  /** Flips the light/dark theme and mirrors it in local state. */
+  @bind
+  protected toggleTheme(): void {
+    const next = this.state.isDark ? "light" : "dark";
     setTheme(next);
-    setIsDark(!isDark);
+    this.setState({ isDark: !this.state.isDark });
   }
 
-  async function submit(e: React.FormEvent) {
+  /**
+   * Stores the typed token and clears any previous error.
+   *
+   * @param e - the input change event
+   */
+  @bind
+  protected onTokenChange(e: ChangeEvent<HTMLInputElement>): void {
+    this.setState({ token: e.target.value, error: "" });
+  }
+
+  /**
+   * Posts the token; on success marks the session authenticated.
+   *
+   * @param e - the form submit event
+   */
+  @bind
+  protected async submit(e: FormEvent): Promise<void> {
     e.preventDefault();
-    setLoading(true);
-    setError("");
+    this.setState({ loading: true, error: "" });
     try {
       const res = await fetch("/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: token.trim() }),
+        body: JSON.stringify({ token: this.state.token.trim() }),
       });
       if (res.ok) {
-        $authed.set(true);
+        authCarburetor.setAuthed(true);
       } else {
-        setError("Invalid token. Check your terminal and try again.");
+        this.setState({ error: "Invalid token. Check your terminal and try again." });
       }
     } catch {
-      setError("Connection error. Is the server running?");
+      this.setState({ error: "Connection error. Is the server running?" });
     } finally {
-      setLoading(false);
+      this.setState({ loading: false });
     }
   }
 
-  return (
-    <div className="fixed inset-0 flex items-center justify-center bg-base-subtle">
-      {/* theme toggle — top right */}
-      <button
-        onClick={toggleTheme}
-        title={isDark ? "Switch to light theme" : "Switch to dark theme"}
-        className="absolute top-4 right-4 flex items-center justify-center w-8 h-8 rounded-lg border transition-colors bg-canvas border-surface text-text-subtle hover:border-accent/50 hover:text-text z-10"
-      >
-        {isDark ? <Sun size={14} /> : <Moon size={14} />}
-      </button>
+  /** Renders the login card. */
+  public render() {
+    const { token, error, loading, isDark } = this.state;
+    return (
+      <div className="fixed inset-0 flex items-center justify-center bg-base-subtle">
+        {/* theme toggle — top right */}
+        <button
+          onClick={this.toggleTheme}
+          title={isDark ? "Switch to light theme" : "Switch to dark theme"}
+          className="absolute top-4 right-4 flex items-center justify-center w-8 h-8 rounded-lg border transition-colors bg-canvas border-surface text-text-subtle hover:border-accent/50 hover:text-text z-10"
+        >
+          {isDark ? <Sun size={14} /> : <Moon size={14} />}
+        </button>
 
-      <div className="relative w-full max-w-sm mx-4">
-        {/* card */}
-        <div className="bg-canvas border border-surface rounded-2xl shadow-xl overflow-hidden">
-          {/* header strip */}
-          <div className="bg-accent-fill px-8 pt-8 pb-7">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-9 h-9 rounded-xl bg-white/15 flex items-center justify-center">
-                <Terminal size={18} className="text-white/90" />
-              </div>
-              <span className="text-white/60 text-sm font-medium tracking-wide uppercase">
-                Rush~
-              </span>
-            </div>
-            <h1 className="text-2xl font-bold text-white/90 leading-tight">
-              Welcome back
-            </h1>
-            <p className="text-white/55 text-sm mt-1">
-              Paste the token from your terminal to continue.
-            </p>
-          </div>
-
-          {/* form body */}
-          <div className="px-8 py-7">
-            <form onSubmit={submit} className="flex flex-col gap-4">
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-semibold text-text-muted uppercase tracking-wider">
-                  Access token
-                </label>
-                <div className="relative">
-                  <KeyRound
-                    size={15}
-                    className="absolute left-3.5 top-1/2 -translate-y-1/2 text-text-subtle pointer-events-none"
-                  />
-                  <input
-                    type="password"
-                    placeholder="••••••••••••••••"
-                    value={token}
-                    onChange={(e) => { setToken(e.target.value); setError(""); }}
-                    autoFocus
-                    autoComplete="off"
-                    className="w-full bg-base-subtle border border-surface rounded-xl pl-9 pr-4 py-2.5 text-sm text-text placeholder:text-text-subtle outline-none focus:border-accent focus:ring-2 focus:ring-accent/10 transition-all"
-                  />
+        <div className="relative w-full max-w-sm mx-4">
+          {/* card */}
+          <div className="bg-canvas border border-surface rounded-2xl shadow-xl overflow-hidden">
+            {/* header strip */}
+            <div className="bg-accent-fill px-8 pt-8 pb-7">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-9 h-9 rounded-xl bg-white/15 flex items-center justify-center">
+                  <Terminal size={18} className="text-white/90" />
                 </div>
-                {error && (
-                  <p className="text-red text-xs mt-0.5 flex items-center gap-1">
-                    <span className="font-bold">⚠</span> {error}
-                  </p>
-                )}
+                <span className="text-white/60 text-sm font-medium tracking-wide uppercase">
+                  Rush~
+                </span>
               </div>
+              <h1 className="text-2xl font-bold text-white/90 leading-tight">
+                Welcome back
+              </h1>
+              <p className="text-white/55 text-sm mt-1">
+                Paste the token from your terminal to continue.
+              </p>
+            </div>
 
-              <button
-                type="submit"
-                disabled={loading || !token.trim()}
-                className="flex items-center justify-center gap-2 w-full bg-accent-fill hover:opacity-90 active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none text-white/90 font-semibold text-sm rounded-xl py-2.5 transition-all shadow-md"
-              >
-                {loading ? (
-                  <>
-                    <Loader2 size={15} className="animate-spin" />
-                    Verifying…
-                  </>
-                ) : (
-                  "Connect"
-                )}
-              </button>
-            </form>
+            {/* form body */}
+            <div className="px-8 py-7">
+              <form onSubmit={this.submit} className="flex flex-col gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-text-muted uppercase tracking-wider">
+                    Access token
+                  </label>
+                  <div className="relative">
+                    <KeyRound
+                      size={15}
+                      className="absolute left-3.5 top-1/2 -translate-y-1/2 text-text-subtle pointer-events-none"
+                    />
+                    <input
+                      type="password"
+                      placeholder="••••••••••••••••"
+                      value={token}
+                      onChange={this.onTokenChange}
+                      autoFocus
+                      autoComplete="off"
+                      className="w-full bg-base-subtle border border-surface rounded-xl pl-9 pr-4 py-2.5 text-sm text-text placeholder:text-text-subtle outline-none focus:border-accent focus:ring-2 focus:ring-accent/10 transition-all"
+                    />
+                  </div>
+                  {error && (
+                    <p className="text-red text-xs mt-0.5 flex items-center gap-1">
+                      <span className="font-bold">⚠</span> {error}
+                    </p>
+                  )}
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loading || !token.trim()}
+                  className="flex items-center justify-center gap-2 w-full bg-accent-fill hover:opacity-90 active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none text-white/90 font-semibold text-sm rounded-xl py-2.5 transition-all shadow-md"
+                >
+                  {loading ? (
+                    <>
+                      <Loader2 size={15} className="animate-spin" />
+                      Verifying…
+                    </>
+                  ) : (
+                    "Connect"
+                  )}
+                </button>
+              </form>
+            </div>
           </div>
-        </div>
 
-        <p className="text-center text-xs text-text-subtle mt-4">
-          Token is shown once at server startup.
-        </p>
+          <p className="text-center text-xs text-text-subtle mt-4">
+            Token is shown once at server startup.
+          </p>
+        </div>
       </div>
-    </div>
-  );
+    );
+  }
 }
