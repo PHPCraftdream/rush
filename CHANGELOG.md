@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Added `rush sessions status <id> [--json]`: one read-only, machine-readable snapshot of a session — process liveness (from a real OS probe), phase, seconds since real activity across the sub-agent tree, live children, and whether its batch work is terminal — combining what `why`, `locks`, `last` and `watch` each show partially. The snapshot never claims more than its evidence proves: anything it cannot establish is the literal value `"unknown"`, and a recorded `ended_reason` is reported as `exit_reason` without ever being treated as proof that a process exited. Documented in `docs/sessions-status.md`.
+
 - Breaking: the `rush run` permission flags `--restrict-run`, `--allow-bash` and `--allow-tool` are removed, and passing any of them is now an unknown-flag error. Scope an unattended run through the `permissions.run` block in rush.json (`restrict` / `allow_tools` / `allow_bash`) as before; behavior without the flags is unchanged. Further run-permission management is expected to arrive through roles, not CLI flags.
 
 - A model without a price (not in the catalog and no cost override) now logs a one-time warning at its first billable step: its usage is counted as free, so no budget applies to it. Flat-rate models and steps with a provider-reported cost are not affected. Nothing is blocked.
