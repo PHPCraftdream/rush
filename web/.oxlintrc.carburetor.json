@@ -4,11 +4,8 @@
 // ratchet there is untouched; `categories.correctness: off` stops this run
 // from re-reporting oxlint's own rules.
 //
-// Severities: the presets' defaults apply, except rules that already have
-// findings in not-yet-migrated code, which are lowered error -> warn so the
-// `lint:carburetor` --max-warnings ratchet (package.json) can hold the count.
-// No rule is switched off. Warnings may only go down; once the migration is
-// finished, delete the "warn" overrides and drop --max-warnings.
+// Severities are the presets' defaults; package.json runs it with
+// --max-warnings=0, so warn-level findings fail the build too.
 {
   "extends": [
     "./node_modules/@react-carburetor/core/dist/lint/recommended.oxlintrc.json",
@@ -19,12 +16,6 @@
   "rules": {
     // Off in the preset (SSR hazard). Enabled: client-only app, so each
     // module-level store carries a justified inline suppression instead.
-    "carburetor/no-module-level-store": "error",
-    // Ratchet downgrades (error -> warn) for rules with existing findings.
-    "carburetor/no-react-hooks-in-components": "warn",
-    "carburetor/require-tsdoc": "warn",
-    "carburetor/max-line-length": "warn",
-    "carburetor/one-export-per-file": "warn",
-    "carburetor/no-blank-line-after-tsdoc": "warn"
+    "carburetor/no-module-level-store": "error"
   }
 }
