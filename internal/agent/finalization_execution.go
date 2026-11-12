@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // finalizationExecution belongs to one logical call, not its inherited children.
@@ -16,6 +17,9 @@ type finalizationExecution struct {
 	// scope is the durable record candidates are persisted against; without
 	// it a candidate cannot be persisted and the step fails closed.
 	scope finalizationPublicationScope
+	// scopeFacts is the durable scope-facts reader TrySeal consults; without it
+	// the seal refuses (fail-closed) until a later slice installs the reader.
+	scopeFacts session.AgentFinalizationScopeReader
 }
 
 type finalizationExecutionContextKey struct{}
