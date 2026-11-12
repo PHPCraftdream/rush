@@ -51,7 +51,11 @@ func (c *coordinator) resolveRequestedDelegationModel(ctx context.Context, cfg *
 		if contract.Name == "" || contract.Name != string(role) {
 			return delegationRoleModel{}, ErrAgentRoleMismatch
 		}
-		return c.resolveRoleContractModel(ctx, cfg, parentID, contract)
+		if !role.builtin() {
+			return c.resolveRoleContractModel(ctx, cfg, parentID, contract)
+		}
+		// A built-in role's contract only snapshots the inherited tool ceiling;
+		// its model resolves through the built-in slot path below.
 	}
 	if !role.valid() {
 		return delegationRoleModel{}, ErrAgentRoleInvalid
