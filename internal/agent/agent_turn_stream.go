@@ -189,6 +189,10 @@ type turnStream struct {
 	// See the struct doc's third bullet: asymmetric locking preserved as-is.
 	stepMessages []fantasy.Message
 	stepTools    []fantasy.AgentTool
+	// Sequential PrepareStep/OnStepFinish state; never read by tickers.
+	cacheDiagnostic      cachePreparedDiagnostic
+	cachePreparedAt      time.Time
+	cachePrepareDuration time.Duration
 	// toolReceipts is the per-step receipt sink installed by
 	// prepareStepWithToolReceipts and consumed by call ID in onToolResult;
 	// toolResultErr latches the first fused-persistence failure so the NEXT

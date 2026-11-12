@@ -11,6 +11,26 @@ import { test } from "node:test";
 import type { Message } from "./types.ts";
 import { mergePreserveContent } from "./mergeMessage.ts";
 
+/**
+ * The type of a message part.
+ *
+ * @param part - the part
+ */
+const partType = (part: Message["Parts"][number]): string => part.type;
+
+/**
+ * Whether a part is the abandoned tool call.
+ *
+ * @param part - the part
+ */
+const isAbandonedCall = (part: Message["Parts"][number]): boolean =>
+  part.type === "tool_call" && part.ID === "abandoned";
+
+/**
+ * Builds an assistant message with the given parts.
+ *
+ * @param parts - message parts
+ */
 function makeMessage(parts: Message["Parts"]): Message {
   return {
     ID: "m1",
@@ -45,7 +65,7 @@ test("nonterminal merge preserves incoming part order and retained content posit
   ]);
 
   const merged = mergePreserveContent(existing, incoming);
-  assert.deepEqual(merged.Parts.map((part) => part.type), ["tool_call", "thinking", "tool_result", "text"]);
+  assert.deepEqual(merged.Parts.map(partType), ["tool_call", "thinking", "tool_result", "text"]);
   assert.deepEqual(merged.Parts, [
     incoming.Parts[0],
     existing.Parts[0],
@@ -93,5 +113,5 @@ test("nonterminal rebuild drops abandoned advancing parts and preserves an absen
 
   const merged = mergePreserveContent(existing, incoming);
   assert.deepEqual(merged.Parts, [incoming.Parts[0], existing.Parts[1], existing.Parts[2]]);
-  assert.equal(merged.Parts.some((part) => part.type === "tool_call" && part.ID === "abandoned"), false);
+  assert.equal(merged.Parts.some(isAbandonedCall), false);
 });

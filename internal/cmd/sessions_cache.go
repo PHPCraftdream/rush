@@ -34,6 +34,11 @@ DISJOINT classes, so the prompt size is their sum:
 
   HIT     read / (input + read + write)
 
+These are provider token counters, not request-byte savings. Z.ai caching is
+provider-managed: cached_tokens does not mean the client omitted prompt bytes.
+Warm-to-cold transitions do not establish a cause; prefix/schema changes may
+invalidate reuse, and expiry is only a possibility when a profile TTL is known.
+
 Grouping is by the model that ACTUALLY PRODUCED each message, so a session
 that switched models mid-conversation is split correctly across them. This is
 what "rush sessions cost" cannot do: it groups by the session's current model
@@ -225,13 +230,8 @@ func sessionsCacheCmdRun(cmd *cobra.Command, args []string) error {
 type cacheInvalidation struct {
 	MessageID           string
 	CacheCreationTokens int64
-	// LikelyTTLExpiry is true when the elapsed wall-clock time between the
-	// warm and cold turns is at or above the provider's own cache TTL (see
-	// likelyTTLExpiryThresholdFor) — the EXACT same warm->cold signature a
-	// normal idle period produces once the cache's TTL lapses, with nothing
-	// wrong at all. false means the gap was short enough that TTL expiry is
-	// an unlikely explanation, making this a genuine invalidation candidate
-	// worth investigating.
+	// LikelyTTLExpiry is a timing heuristic using a known profile TTL, not
+	// a measured cause. False also covers providers with unknown TTL.
 	LikelyTTLExpiry bool
 }
 
@@ -240,26 +240,9 @@ type cacheInvalidation struct {
 // meaningfully warm.
 const warmCacheFloor = 2048
 
-// likelyTTLExpiryFallback bounds the "cache idle-expired" classification
-// for providers whose TTL internal/agent's cache profiles do not carry
-// (implicit caches and unknown providers report no explicit TTL): the
-// explicit-cache default those profiles are anchored on — Anthropic-style
-// ephemeral caches, 5 minutes.
-const likelyTTLExpiryFallback = 5 * time.Minute
-
-// likelyTTLExpiryThresholdFor returns the idle gap at or above which a
-// warm->cold transition on provider is classified as likely TTL expiry
-// rather than a genuine invalidation. The TTL comes from the injected
-// lookup — agent.PromptCacheTTL in production, the same per-provider figure
-// the agent's keep-alive scheduler derives its replay interval from — so
-// this diagnostic can never silently drift from the policy it reports on.
-// A provider with no profile TTL (zero) falls back to the explicit-cache
-// default above.
+// Zero means unknown; an implicit cache must not inherit another provider's TTL.
 func likelyTTLExpiryThresholdFor(ttlFor func(string) time.Duration, provider string) time.Duration {
-	if ttl := ttlFor(provider); ttl > 0 {
-		return ttl
-	}
-	return likelyTTLExpiryFallback
+	return max(ttlFor(provider), 0)
 }
 
 // detectCacheInvalidations walks a session's messages in order and flags
@@ -312,10 +295,11 @@ func detectCacheInvalidationsWithLookup(msgs []message.Message, ttlFor func(stri
 			u.CacheReadTokens == 0 && u.CacheCreationTokens > 0 &&
 			prev.Provider == u.Provider && prev.Model == u.Model {
 			gap := time.Duration(m.CreatedAt-prevCreatedAt) * time.Second
+			ttl := likelyTTLExpiryThresholdFor(ttlFor, u.Provider)
 			out = append(out, cacheInvalidation{
 				MessageID:           m.ID,
 				CacheCreationTokens: u.CacheCreationTokens,
-				LikelyTTLExpiry:     gap >= likelyTTLExpiryThresholdFor(ttlFor, u.Provider),
+				LikelyTTLExpiry:     ttl > 0 && gap >= ttl,
 			})
 		}
 		prev = u
@@ -406,18 +390,14 @@ func renderCacheText(sessionID string, report message.UsageReport, invalidations
 		fmt.Printf("counts were derived from message lengths and are approximate).\n")
 	}
 
-	// A warm cache going cold mid-session usually means something upstream of
-	// that turn changed the prompt prefix (e.g. a volatile message inserted)
-	// — unless the gap is long enough that the provider's own TTL simply
-	// expired on schedule, which is not a bug. Both are surfaced, labeled
-	// differently, since silently dropping either would hide real signal.
+	// Usage counters identify a transition, not its cause.
 	for _, inv := range invalidations {
 		if inv.LikelyTTLExpiry {
-			fmt.Printf("\ncache idle-expired: message %s re-wrote %s tokens after a long gap (likely just TTL expiry, not a prefix change).\n",
+			fmt.Printf("\ncache warm-to-cold: message %s re-wrote %s tokens; gap exceeds the known profile TTL (expiry is possible, not proven).\n",
 				short(inv.MessageID), formatInt64(inv.CacheCreationTokens))
 			continue
 		}
-		fmt.Printf("\nCACHE INVALIDATION: message %s lost the cache and re-wrote %s tokens.\n",
+		fmt.Printf("\ncache warm-to-cold: message %s re-wrote %s tokens; cause unknown (prefix/schema changes may invalidate reuse).\n",
 			short(inv.MessageID), formatInt64(inv.CacheCreationTokens))
 	}
 

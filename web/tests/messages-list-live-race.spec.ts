@@ -21,15 +21,21 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend, clearWSSent } from "./helpers/mock-ws";
-import { makeSession, makeMessage } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { clearWSSent } from "./helpers/clear-ws-sent";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) => route.fulfill({ status: 200, body: "OK" }));
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
-test("a message_created push landing between load_messages send and its reply is not erased by the reply", async ({ page }) => {
+test("a message_created push landing between load_messages " +
+  "send and its reply is not erased by the reply", async ({ page }) => {
   // Freeze the page's timers so the real 1.5s/5s polling intervals
   // (useWS.ts's messagesInterval/listInterval) never fire during this test.
   // Without this, they keep running on real wall-clock time and can slip in a
@@ -202,9 +208,19 @@ test("a message_deleted push is not undone by a snapshot reply whose read predat
     payload: {
       SessionID: sessionID,
       Messages: [
-        makeMessage({ ID: "del-1", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "DEL-KEEP-ONE" }] }),
+        makeMessage({
+          ID: "del-1",
+          SessionID: sessionID,
+          Role: "user",
+          Parts: [{ type: "text", Text: "DEL-KEEP-ONE" }],
+        }),
         makeMessage({ ID: "del-2", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "DEL-VICTIM" }] }),
-        makeMessage({ ID: "del-3", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "DEL-KEEP-THREE" }] }),
+        makeMessage({
+          ID: "del-3",
+          SessionID: sessionID,
+          Role: "user",
+          Parts: [{ type: "text", Text: "DEL-KEEP-THREE" }],
+        }),
       ],
     },
   });
@@ -239,9 +255,19 @@ test("a message_deleted push is not undone by a snapshot reply whose read predat
     payload: {
       SessionID: sessionID,
       Messages: [
-        makeMessage({ ID: "del-1", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "DEL-KEEP-ONE" }] }),
+        makeMessage({
+          ID: "del-1",
+          SessionID: sessionID,
+          Role: "user",
+          Parts: [{ type: "text", Text: "DEL-KEEP-ONE" }],
+        }),
         makeMessage({ ID: "del-2", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "DEL-VICTIM" }] }),
-        makeMessage({ ID: "del-3", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "DEL-KEEP-THREE" }] }),
+        makeMessage({
+          ID: "del-3",
+          SessionID: sessionID,
+          Role: "user",
+          Parts: [{ type: "text", Text: "DEL-KEEP-THREE" }],
+        }),
       ],
     },
   });
@@ -253,7 +279,8 @@ test("a message_deleted push is not undone by a snapshot reply whose read predat
   await expect(page.getByText("DEL-KEEP-THREE")).toBeVisible();
 });
 
-test("CONTROL: an epoch-clean reply (no live events since the request) still wholesale-replaces the list", async ({ page }) => {
+test("CONTROL: an epoch-clean reply (no live events since " +
+  "the request) still wholesale-replaces the list", async ({ page }) => {
   await page.clock.install();
   await page.goto("/");
 
@@ -277,8 +304,18 @@ test("CONTROL: an epoch-clean reply (no live events since the request) still who
     payload: {
       SessionID: sessionID,
       Messages: [
-        makeMessage({ ID: "ctrl-1", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "CTRL-KEEP-ONE" }] }),
-        makeMessage({ ID: "ctrl-2", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "CTRL-KEEP-TWO" }] }),
+        makeMessage({
+          ID: "ctrl-1",
+          SessionID: sessionID,
+          Role: "user",
+          Parts: [{ type: "text", Text: "CTRL-KEEP-ONE" }],
+        }),
+        makeMessage({
+          ID: "ctrl-2",
+          SessionID: sessionID,
+          Role: "user",
+          Parts: [{ type: "text", Text: "CTRL-KEEP-TWO" }],
+        }),
         makeMessage({ ID: "ctrl-3", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "CTRL-SHOULD-VANISH" }] }),
       ],
     },
@@ -306,8 +343,18 @@ test("CONTROL: an epoch-clean reply (no live events since the request) still who
     payload: {
       SessionID: sessionID,
       Messages: [
-        makeMessage({ ID: "ctrl-1", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "CTRL-KEEP-ONE" }] }),
-        makeMessage({ ID: "ctrl-2", SessionID: sessionID, Role: "user", Parts: [{ type: "text", Text: "CTRL-KEEP-TWO" }] }),
+        makeMessage({
+          ID: "ctrl-1",
+          SessionID: sessionID,
+          Role: "user",
+          Parts: [{ type: "text", Text: "CTRL-KEEP-ONE" }],
+        }),
+        makeMessage({
+          ID: "ctrl-2",
+          SessionID: sessionID,
+          Role: "user",
+          Parts: [{ type: "text", Text: "CTRL-KEEP-TWO" }],
+        }),
       ],
     },
   });
@@ -320,7 +367,8 @@ test("CONTROL: an epoch-clean reply (no live events since the request) still who
   await expect(page.getByText("CTRL-KEEP-TWO")).toBeVisible();
 });
 
-test("sub-agent transcript: a live message_created push is not erased by the sub-session's delayed messages_list reply", async ({ page }) => {
+test("sub-agent transcript: a live message_created push is not " +
+  "erased by the sub-session's delayed messages_list reply", async ({ page }) => {
   await page.clock.install();
   await page.goto("/");
 

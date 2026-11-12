@@ -1,14 +1,16 @@
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeConfig } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeConfig } from "./helpers/make-config";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Opens the header More menu. */
 async function openMoreMenu(page: import("@playwright/test").Page) {
   await page.getByTestId("header-more-button").click();
   await expect(page.getByTestId("header-logs-button")).toBeVisible({ timeout: 2000 });
@@ -222,28 +224,57 @@ test("Attach files button is visible when session active", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "sessions_list",
-    payload: [{ ID: "s1", Title: "Test", MessageCount: 0, PromptTokens: 0, CompletionTokens: 0, Cost: 0, Todos: [], CreatedAt: 1700000000000, UpdatedAt: 1700000000000, ParentSessionID: "" }],
+    payload: [
+      {
+        ID: "s1",
+        Title: "Test",
+        MessageCount: 0,
+        PromptTokens: 0,
+        CompletionTokens: 0,
+        Cost: 0,
+        Todos: [],
+        CreatedAt: 1700000000000,
+        UpdatedAt: 1700000000000,
+        ParentSessionID: "",
+      },
+    ],
   });
   await page.getByText("Test").first().click();
   await expect(page.getByTitle("Attach files")).toBeVisible({ timeout: 2000 });
 });
 
+/** Browser-side: drops a text file onto the composer drop area. */
+function dropTextFileOnInput() {
+  const dropArea = document.querySelector("div[class*='rounded-2xl'][class*='bg-base-overlay']");
+  if (!dropArea) return;
+  const file = new File(["hello"], "test.txt", { type: "text/plain" });
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  const ev = new DragEvent("drop", { dataTransfer: dt, bubbles: true });
+  dropArea.dispatchEvent(ev);
+}
+
 test("File drop shows attachment badge", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "sessions_list",
-    payload: [{ ID: "s1", Title: "Attach Session", MessageCount: 0, PromptTokens: 0, CompletionTokens: 0, Cost: 0, Todos: [], CreatedAt: 1700000000000, UpdatedAt: 1700000000000, ParentSessionID: "" }],
+    payload: [
+      {
+        ID: "s1",
+        Title: "Attach Session",
+        MessageCount: 0,
+        PromptTokens: 0,
+        CompletionTokens: 0,
+        Cost: 0,
+        Todos: [],
+        CreatedAt: 1700000000000,
+        UpdatedAt: 1700000000000,
+        ParentSessionID: "",
+      },
+    ],
   });
   await page.getByText("Attach Session").first().click();
   // Simulate a file drop on the input area
-  await page.evaluate(() => {
-    const dropArea = document.querySelector("div[class*='rounded-2xl'][class*='bg-base-overlay']");
-    if (!dropArea) return;
-    const file = new File(["hello"], "test.txt", { type: "text/plain" });
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    const ev = new DragEvent("drop", { dataTransfer: dt, bubbles: true });
-    dropArea.dispatchEvent(ev);
-  });
+  await page.evaluate(dropTextFileOnInput);
   await expect(page.getByText("test.txt")).toBeVisible({ timeout: 3000 });
 });

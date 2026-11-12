@@ -121,6 +121,21 @@ type File struct {
 	UpdatedAt int64  `json:"updated_at"`
 }
 
+type McpOutput struct {
+	ID         string `json:"id"`
+	SessionID  string `json:"session_id"`
+	ToolName   string `json:"tool_name"`
+	ToolCallID string `json:"tool_call_id"`
+	IsError    int64  `json:"is_error"`
+	TotalBytes int64  `json:"total_bytes"`
+}
+
+type McpOutputChunk struct {
+	OutputID   string `json:"output_id"`
+	ChunkIndex int64  `json:"chunk_index"`
+	Data       []byte `json:"data"`
+}
+
 type Message struct {
 	ID                   string          `json:"id"`
 	SessionID            string          `json:"session_id"`

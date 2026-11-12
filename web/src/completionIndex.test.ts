@@ -1,4 +1,4 @@
-// Unit tests for the R12-C completion index (web/src/completionIndex.ts),
+// Unit tests for the R12-C completion index (web/src/completion/),
 // run with `node --test` (Node >= 23 strips erasable TypeScript natively).
 //
 // Revert-checks:
@@ -15,14 +15,18 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { indexAsyncJobCompletions, isAsyncCompletionNotice } from "./asyncJobCompletion.ts";
-import {
-  buildMyPrompts,
-  mergeCompletionIndex,
-  structuredStatus,
-} from "./completionIndex.ts";
+import { indexAsyncJobCompletions } from "./asyncJob/indexAsyncJobCompletions.ts";
+import { isAsyncCompletionNotice } from "./asyncJob/isAsyncCompletionNotice.ts";
+import { buildMyPrompts } from "./completion/buildMyPrompts.ts";
+import { mergeCompletionIndex } from "./completion/mergeCompletionIndex.ts";
+import { structuredStatus } from "./completion/structuredStatus.ts";
 import type { BatchWorkCompletion, Message } from "./types.ts";
 
+/**
+ * Builds a user message with the given overrides.
+ *
+ * @param overrides - fields to override; ID and Parts are required
+ */
 function makeMessage(overrides: Partial<Message> & { ID: string; Parts: Message["Parts"] }): Message {
   return {
     SessionID: "s1",
@@ -42,6 +46,13 @@ function makeMessage(overrides: Partial<Message> & { ID: string; Parts: Message[
 }
 
 // toolCall + result metadata pair tying job_id "root-1" to tool call "tc1".
+/**
+ * Id of a prompt item.
+ *
+ * @param p - the prompt item
+ */
+const promptID = (p: { id: string }): string => p.id;
+
 const historicalMessages: Message[] = [
   makeMessage({ ID: "m-user", Parts: [{ type: "text", Text: "go" }] }),
   makeMessage({
@@ -70,6 +81,11 @@ const historicalMessages: Message[] = [
   }),
 ];
 
+/**
+ * Builds a structured completion of root-1.
+ *
+ * @param partial - fields to override
+ */
 function completion(partial: Partial<BatchWorkCompletion>): BatchWorkCompletion {
   return { rootID: "root-1", nodeID: "root-1", outcomeCode: "ok", outcomeRef: "", ...partial };
 }
@@ -81,7 +97,13 @@ test("structured outcome supersedes prose for the joined tool call", () => {
     // Wire-carried identity with NO prose metadata: the join must not need
     // the prose indexer's job_id map for this root (kills a revert of the
     // comp.toolCallID ?? fallback in mergeCompletionIndex).
-    completion({ rootID: "root-9", nodeID: "root-9", toolCallID: "tc9", state: "completed", outcomeSummary: "wire-only" }),
+    completion({
+      rootID: "root-9",
+      nodeID: "root-9",
+      toolCallID: "tc9",
+      state: "completed",
+      outcomeSummary: "wire-only",
+    }),
   ]);
   const rec = merged.byToolCallID.get("tc1");
   assert.ok(rec, "structured completion joined onto tool call tc1");
@@ -147,8 +169,5 @@ test("buildMyPrompts keeps HumanTyped rows and drops completion notices", () => 
     HumanTyped: true,
   };
   const prompts = buildMyPrompts([typed, notice], isAsyncCompletionNotice);
-  assert.deepEqual(
-    prompts.map((p) => p.id),
-    ["m-typed"],
-  );
+  assert.deepEqual(prompts.map(promptID), ["m-typed"]);
 });

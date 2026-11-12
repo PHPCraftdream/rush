@@ -12,33 +12,52 @@
  */
 
 import { test, expect, Page } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage } from "./helpers/mock-ws";
-import { makeSession, makeMessage } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 const PARENT_ID = "parent-meta";
 const PARENT_MSG_ID = "pmsg-meta";
 const AGENT_CALL = "call-meta";
 const SUB_ID = `${PARENT_MSG_ID}$$${AGENT_CALL}`;
 
-// Same local-time formatting as TimeBadge; the test process and the browser
-// share the machine's timezone, so the expected string can be computed here.
+/** Left-pads a number to two digits. */
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+/**
+ * Same local-time formatting as TimeBadge; the test process and the browser
+ * share the machine's timezone, so the expected string can be computed here.
+ */
 function expectedBadgeText(epochSec: number): string {
   const d = new Date(epochSec * 1000);
   return [d.getHours(), d.getMinutes(), d.getSeconds()]
-    .map((n) => String(n).padStart(2, "0"))
+    .map(pad2)
     .join(":");
 }
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
-// Open the parent session, mount one agent tool_call's SubAgentBlock, wait
-// for its lazy load_messages, then deliver the given transcript. Returns the
-// block locator scoped by the delegation prompt shown in its header.
+/** Browser-side: true once a load_messages frame was sent for the session. */
+function hasLoadMessagesFor(want: string) {
+  const sent = (((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{
+    type: string;
+    payload?: { sessionID?: string };
+  }>) ?? [];
+  return sent.some((m) => m.type === "load_messages" && m.payload?.sessionID === want);
+}
+
+/**
+ * Open the parent session, mount one agent tool_call's SubAgentBlock, wait
+ * for its lazy load_messages, then deliver the given transcript. Returns the
+ * block locator scoped by the delegation prompt shown in its header.
+ */
 async function openSubAgentBlock(
   page: Page,
   prompt: string,
@@ -79,10 +98,7 @@ async function openSubAgentBlock(
   // transcript on mount; reply only once that request is visible so the
   // answer cannot race the $subAgentSessions registration.
   await page.waitForFunction(
-    (want: string) => {
-      const sent = (((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string; payload?: { sessionID?: string } }>) ?? [];
-      return sent.some((m) => m.type === "load_messages" && m.payload?.sessionID === want);
-    },
+    hasLoadMessagesFor,
     SUB_ID,
     { timeout: 5000 },
   );
@@ -137,7 +153,13 @@ test("sub-agent tool row shows the bash command preview and a timestamp", async 
       SessionID: SUB_ID,
       Role: "assistant",
       Parts: [
-        { type: "tool_call", ID: "sub-tc-bash", Name: "bash", Input: JSON.stringify({ command: "go test ./..." }), Finished: true },
+        {
+          type: "tool_call",
+          ID: "sub-tc-bash",
+          Name: "bash",
+          Input: JSON.stringify({ command: "go test ./..." }),
+          Finished: true,
+        },
       ],
       CreatedAt: ROW_TS,
     }),

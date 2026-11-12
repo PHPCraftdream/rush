@@ -193,7 +193,13 @@ export interface ProviderInfo {
   name?: string;
   enabled?: boolean;
   type?: string;
-  models?: { id: string; name: string; contextWindow?: number; reasoningLevels?: string[]; defaultReasoningEffort?: string }[];
+  models?: {
+    id: string;
+    name: string;
+    contextWindow?: number;
+    reasoningLevels?: string[];
+    defaultReasoningEffort?: string;
+  }[];
   baseUrl?: string;
   isCustom?: boolean;
   apiKeySet?: boolean;
@@ -208,7 +214,10 @@ export interface ProviderInfo {
   // "mon-fri" or "fri-mon" (start inclusive HH:MM; end exclusive HH:MM or
   // "24:00"; start != end). null/absent means no restriction. Mirrors server
   // PeakHoursWirePayload (lowerCamelCase keys).
-  peakHours?: (ProviderPeakHoursPolicy & { start?: string; end?: string }) | { start: string; end: string; message?: string } | null;
+  peakHours?:
+    | (ProviderPeakHoursPolicy & { start?: string; end?: string })
+    | { start: string; end: string; message?: string }
+    | null;
 }
 
 // One weekly peak-hours window within ProviderPeakHoursPolicy. days uses the
@@ -216,20 +225,40 @@ export interface ProviderInfo {
 // day), "mon-fri" (contiguous run, wrap allowed e.g. "fri-mon"), or a comma
 // list in mon..sun order ("mon,wed,fri"). start is inclusive HH:MM; end is
 // exclusive HH:MM or "24:00"; start != end.
-export interface PeakHoursWindowSpec { days?: string; start: string; end: string; }
+export interface PeakHoursWindowSpec {
+  days?: string;
+  start: string;
+  end: string;
+}
 
 // ProviderPeakHoursPolicy mirrors the server's weekly peak-hours policy wire
 // object. timezone is optional ("", "local", "UTC", IANA name or ±HH:MM
 // offset); windows is the weekly window list; message is an optional operator
 // note appended to the exit guidance when a run refuses/halts; pausedUntil is
 // an RFC3339 timestamp set by the server's pause command.
-export interface ProviderPeakHoursPolicy { timezone?: string; windows?: PeakHoursWindowSpec[]; message?: string; pausedUntil?: string; }
+export interface ProviderPeakHoursPolicy {
+  timezone?: string;
+  windows?: PeakHoursWindowSpec[];
+  message?: string;
+  pausedUntil?: string;
+}
 
 // ProviderPeakHoursStatus mirrors one row of the get_peak_hours_status
 // reply — the backend's authoritative evaluation of a provider's peak-hours
 // policy. All times are RFC3339. The browser must never decide peak/blocked
 // state from its own clock; it only formats these strings.
-export interface ProviderPeakHoursStatus { providerId: string; checkedAt: string; inPeak: boolean; paused?: boolean; pausedUntil?: string; blocked: boolean; reopensAt?: string; nextTransition?: string; timezone?: string; message?: string; }
+export interface ProviderPeakHoursStatus {
+  providerId: string;
+  checkedAt: string;
+  inPeak: boolean;
+  paused?: boolean;
+  pausedUntil?: string;
+  blocked: boolean;
+  reopensAt?: string;
+  nextTransition?: string;
+  timezone?: string;
+  message?: string;
+}
 
 export interface ConfigPayload {
   models?: Record<string, { Provider: string; Model: string }>;

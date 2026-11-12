@@ -1,33 +1,57 @@
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) => route.fulfill({ status: 200, body: "OK" }));
+  await page.route("/auth/check", fulfillAuthOk);
 });
+
+/** Browser-side: wraps the mock constructor to count every new /ws dial. */
+function installDialCounter() {
+  const w = window as unknown as Record<string, unknown>;
+  const Orig = w.WebSocket as new (url: string, protocols?: string | string[]) => WebSocket;
+  w.__wsDials = 0;
+  /** Wrapper constructor counting every new /ws dial. */
+  function CountingWebSocket(this: unknown, url: string, protocols?: string | string[]) {
+    const urlStr = String(url);
+    if (urlStr.includes("/ws") && !urlStr.includes("rsbuild")) {
+      w.__wsDials = (w.__wsDials as number) + 1;
+    }
+    return new Orig(url, protocols);
+  }
+  CountingWebSocket.CONNECTING = 0;
+  CountingWebSocket.OPEN = 1;
+  CountingWebSocket.CLOSING = 2;
+  CountingWebSocket.CLOSED = 3;
+  CountingWebSocket.prototype = Orig.prototype;
+  w.WebSocket = CountingWebSocket;
+}
+
+/** Browser-side: zeroes the /ws dial counter. */
+function resetDialCounter() {
+  (window as unknown as Record<string, unknown>)["__wsDials"] = 0;
+}
+
+/** Browser-side: closes the mock /ws socket via its real onclose path. */
+function closeMockSocket() {
+  const mock = ((window as unknown) as Record<string, unknown>)["__mockWS"] as { close: () => void } | null;
+  if (!mock) throw new Error("mock WS not created yet");
+  mock.close();
+}
+
+/** Browser-side: the number of /ws dials counted so far. */
+function readDialCount() {
+  return (window as unknown as Record<string, unknown>)["__wsDials"] as number;
+}
 
 test("confirm sends shutdown_server, acks into terminal state, and never reconnects", async ({ page }) => {
   await page.goto("/");
 
   // Count every NEW /ws dial from here on: wrap the selective mock constructor.
-  await page.evaluate(() => {
-    const w = window as unknown as Record<string, unknown>;
-    const Orig = w.WebSocket as new (url: string, protocols?: string | string[]) => WebSocket;
-    w.__wsDials = 0;
-    function CountingWebSocket(this: unknown, url: string, protocols?: string | string[]) {
-      const urlStr = String(url);
-      if (urlStr.includes("/ws") && !urlStr.includes("rsbuild")) {
-        w.__wsDials = (w.__wsDials as number) + 1;
-      }
-      return new Orig(url, protocols);
-    }
-    CountingWebSocket.CONNECTING = 0;
-    CountingWebSocket.OPEN = 1;
-    CountingWebSocket.CLOSING = 2;
-    CountingWebSocket.CLOSED = 3;
-    CountingWebSocket.prototype = Orig.prototype;
-    w.WebSocket = CountingWebSocket;
-  });
+  await page.evaluate(installDialCounter);
   // NOTE: this counter also catches React StrictMode's double-mount initial
   // connects; it is re-zeroed below, right before the socket is killed, so
   // only post-shutdown dials are counted.
@@ -54,18 +78,12 @@ test("confirm sends shutdown_server, acks into terminal state, and never reconne
 
   // Re-zero the dial counter here: everything counted so far includes the
   // initial StrictMode double-mount connects, which are not reconnects.
-  await page.evaluate(() => {
-    (window as unknown as Record<string, unknown>)["__wsDials"] = 0;
-  });
+  await page.evaluate(resetDialCounter);
 
   // Now the server-side process would die: kill the mock socket exactly like
   // the real close, and prove the client does NOT auto-reconnect and does NOT
   // show the transient banner.
-  await page.evaluate(() => {
-    const mock = ((window as unknown) as Record<string, unknown>)["__mockWS"] as { close: () => void } | null;
-    if (!mock) throw new Error("mock WS not created yet");
-    mock.close();
-  });
+  await page.evaluate(closeMockSocket);
 
   await expect(page.getByTestId("server-shutting-down")).toBeVisible();
   await expect(page.getByText("Reconnecting…", { exact: true })).toBeHidden();
@@ -73,7 +91,7 @@ test("confirm sends shutdown_server, acks into terminal state, and never reconne
   // Normal reconnect delay is ~1s (doubling). If suppression were broken a
   // new dial would appear within ~1-2s; wait past that window and assert zero.
   await page.waitForTimeout(3000);
-  const dials = await page.evaluate(() => (window as unknown as Record<string, unknown>)["__wsDials"] as number);
+  const dials = await page.evaluate(readDialCount);
   expect(dials).toBe(0);
 });
 
@@ -101,6 +119,16 @@ test("error reply keeps the dialog open with an inline error and no terminal sta
   await expect(page.getByText("Shut down server")).toBeVisible();
 });
 
+/** Browser-side: every frame the page has sent. */
+function readSentFrames() {
+  return (((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string }>) ?? [];
+}
+
+/** True for a shutdown_server frame. */
+function isShutdownServerFrame(m: { type: string }) {
+  return m.type === "shutdown_server";
+}
+
 test("cancel sends nothing", async ({ page }) => {
   await page.goto("/");
 
@@ -117,6 +145,6 @@ test("cancel sends nothing", async ({ page }) => {
   await expect(page.getByText("Shut down server")).toBeHidden();
 
   // Assert NO shutdown_server frame was ever sent
-  const sent = await page.evaluate(() => (((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string }>) ?? []);
-  expect(sent.filter((m) => m.type === "shutdown_server")).toHaveLength(0);
+  const sent = await page.evaluate(readSentFrames);
+  expect(sent.filter(isShutdownServerFrame)).toHaveLength(0);
 });

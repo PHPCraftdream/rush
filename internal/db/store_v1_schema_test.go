@@ -16,6 +16,7 @@ var storeV1Tables = []string{
 	"pending_injects", "session_run_queue", "orphan_call_outbox", "async_hosts",
 	"session_agent_depth", "session_agent_model_role", "session_agent_finalizations", "session_agent_finalization_tickets", "session_role_contracts", "session_root_role_contracts", "session_agent_finalization_continuations", "session_drivers", "session_notices", "wake_schedules", "batch_nodes",
 	"batch_control_requests", "batch_runner_checkpoints", "batch_timeout_checkins",
+	"mcp_outputs", "mcp_output_chunks",
 }
 
 func openFixture(t *testing.T, fixture bool) *sql.DB {
