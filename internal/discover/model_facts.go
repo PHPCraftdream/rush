@@ -23,6 +23,7 @@ const (
 	// (Astra, Sol, Luna: 1,050,000 context, 922,000 max input, 128,000 max
 	// output -- developers.openai.com/api/docs/models/gpt-6-*).
 	codexGPT6ContextWindow int64 = 1_050_000
+	codexGPT6MaxInput      int64 = 922_000
 	codexDefaultMaxTokens  int64 = 128_000
 	// glm53ContextWindow is the documented window of the GLM-5.3 family
 	// (glm-5.3, glm-5.3-flash, glm-5.3-flashx).
@@ -92,6 +93,9 @@ type modelFactRule struct {
 	kind             factKind
 	contextWindow    int64
 	defaultMaxTokens int64
+	// maxInputTokens is the vendor-documented hard input limit; 0 when the
+	// source documents none. The agent never budgets input above it.
+	maxInputTokens int64
 	// ensurePresent, when set, is appended to the provider's model list by
 	// ApplyModelFacts if no entry with its ID exists.
 	ensurePresent *catwalk.Model
@@ -124,6 +128,7 @@ var modelFactRules = [...]modelFactRule{
 		kind:             factFloor,
 		contextWindow:    codexGPT6ContextWindow,
 		defaultMaxTokens: codexDefaultMaxTokens,
+		maxInputTokens:   codexGPT6MaxInput,
 		source:           "developers.openai.com/api/docs/models/gpt-6-*",
 	},
 	{
@@ -267,4 +272,18 @@ func LookupModelFacts(provider, id string) (int64, int64) {
 		return rule.contextWindow, rule.defaultMaxTokens
 	}
 	return 0, 0
+}
+
+// LookupModelMaxInput returns the vendor-documented maximum input tokens for
+// provider/model, or 0 when the table documents none (window minus output
+// reserve is then the only bound).
+func LookupModelMaxInput(provider, id string) int64 {
+	for i := range modelFactRules {
+		rule := &modelFactRules[i]
+		if rule.provider != provider || !rule.match.matches(id) {
+			continue
+		}
+		return rule.maxInputTokens
+	}
+	return 0
 }

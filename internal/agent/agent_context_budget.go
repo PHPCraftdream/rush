@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"charm.land/fantasy"
+
+	"github.com/PHPCraftdream/rush/internal/discover"
 )
 
 func effectiveMaxOutputTokens(model Model, callOverride int64) int64 {
@@ -18,6 +20,27 @@ func effectiveMaxOutputTokens(model Model, callOverride int64) int64 {
 	return model.CatwalkCfg.DefaultMaxTokens
 }
 
+// modelInputBudget is the input-token budget the context gate works against:
+// window minus output reserve (the whole window when no reserve is known),
+// never above the vendor-documented maximum input of the model.
+func modelInputBudget(model Model, callOverride int64) int64 {
+	cw := int64(model.CatwalkCfg.ContextWindow)
+	reserve := effectiveMaxOutputTokens(model, callOverride)
+	budget := contextInputBudget(cw, reserve)
+	if reserve <= 0 {
+		// Legacy gate for models without a known output reserve.
+		budget = cw
+	}
+	id := model.CatwalkCfg.ID
+	if id == "" {
+		id = model.ModelCfg.Model
+	}
+	if limit := discover.LookupModelMaxInput(model.ModelCfg.Provider, id); limit > 0 && budget > limit {
+		budget = limit
+	}
+	return budget
+}
+
 func contextInputBudget(contextWindow, outputReserve int64) int64 {
 	if contextWindow <= 0 || outputReserve <= 0 || outputReserve >= contextWindow {
 		return 0
@@ -25,15 +48,38 @@ func contextInputBudget(contextWindow, outputReserve int64) int64 {
 	return contextWindow - outputReserve
 }
 
+// contextAutoSummarizeThreshold is the remaining-input headroom at or below
+// which the context gate fires. Large windows keep at least
+// largeContextWindowBuffer but scale with the budget (1/largeContextHeadroomDivisor),
+// so one tool-heavy step cannot jump past a fixed 20k margin on a ~1M window.
 func contextAutoSummarizeThreshold(contextWindow, inputBudget int64) int64 {
 	if contextWindow <= 0 || inputBudget <= 0 {
 		return 0
 	}
 	threshold := int64(float64(inputBudget) * smallContextWindowRatio)
 	if contextWindow > largeContextWindowThreshold {
-		threshold = min(inputBudget, largeContextWindowBuffer)
+		threshold = max(largeContextWindowBuffer, inputBudget/largeContextHeadroomDivisor)
 	}
 	return min(inputBudget, threshold)
+}
+
+// unreportedTailTokens conservatively estimates the tokens of messages after
+// the last assistant message (tool results, injected or new user input). The
+// previous step's usage report cannot include them, so the context gate adds
+// them. It uses a stricter chars-per-token ratio than trimMessagesToWindow.
+func unreportedTailTokens(msgs []fantasy.Message) int64 {
+	start := 0
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == fantasy.MessageRoleAssistant {
+			start = i + 1
+			break
+		}
+	}
+	var chars int64
+	for _, msg := range msgs[start:] {
+		chars += int64(estimateMsgChars(msg))
+	}
+	return (chars + unreportedCharsPerToken - 1) / unreportedCharsPerToken
 }
 
 // preparedInputTokenCount retains its token-named signature for runtime callers;
