@@ -3,12 +3,14 @@ package codexprovider
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"reflect"
 	"strings"
 
+	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/oauth"
 )
@@ -37,6 +39,17 @@ func (m *languageModel) acquireResponse(ctx context.Context, payload []byte, use
 			return nil, err
 		}
 		original := providerError(response, payload, body)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if response.StatusCode == http.StatusBadRequest {
+			var providerErr *fantasy.ProviderError
+			var responseObject map[string]json.RawMessage
+			parsedWithoutOutput := json.Unmarshal(body, &responseObject) == nil && !codexEventHasOutput(responseObject)
+			if parsedWithoutOutput && errors.As(original, &providerErr) && providerErr.IsContextTooLarge() {
+				return nil, &safeContextRejection{ProviderError: providerErr}
+			}
+		}
 		if response.StatusCode != http.StatusUnauthorized || attempt != 0 {
 			return nil, original
 		}

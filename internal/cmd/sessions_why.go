@@ -16,52 +16,44 @@ import (
 var sessionsWhyCmd = &cobra.Command{
 	Use:   "why <id>",
 	Short: "Explain why a session has the status it has",
-	Long: `Print a one-shot diagnostic explaining a session's current status
-(running / crashed / done / at rest) and the evidence behind it, using
-only data rush itself owns: the session/message DB (including the async job
-ledger) and the lock files -- session locks in .rush/locks, and the host locks
-in .rush/hosts that are probed (read-only) to tell whether the process
-running a job is alive.
+	Long: `Print a one-shot diagnostic from the current batch-node read, the
+session lock, and the shared session-activity classifier. It reads the
+session's recorded ended_reason, session lock files (in the default layout,
+.rush/locks), and batch roots with read-only probes of per-process host
+locks under .rush/hosts by default. A host lock is evidence about a batch
+worker process, not the owner's session lock. This command does not use the
+legacy async-job ledger and does not read external logs or orchestrator
+redirect output.
 
-This is the command to reach for when "sessions list" shows a session as\n"crashed" and you want to know whether it genuinely died mid-turn or
-actually finished cleanly and left a stale lock behind. It does NOT read
-external log files or orchestrator redirect output.
+The shared activity view is also used by "sessions list", "watch" and
+the web surfaces. Live work (a live run driver, an own running job, a live
+delegation, an open one-shot wake schedule, or unreadable live-work
+evidence) keeps a session active. A held batch root takes precedence in
+this command as "batch live"; an incomplete batch read is "batch unknown",
+not proof that no work exists.
 
-The five possible verdicts:
+Status guidance:
+  done       — no crash or live-work fact takes precedence, and an
+               ended_reason is recorded. A finish such as end_turn only
+               finishes an assistant turn; it is not by itself a session-end
+               or task-completion signal.
+  crashed    — a dead session-lock PID or driver marker naming a
+               dead host is recorded, and neither live work nor incomplete
+               batch evidence takes precedence.
+  running    — the session lock is held or the session-activity view finds
+               live work between turns (for example, its driver, own job, or
+               open wake schedule).
+  delegating (sessions list) — a live batch delegation is active; this
+               command reports its held root as "batch live". The worker's
+               per-process host lock is distinct from the owner's session lock.
+  batch unknown — the batch read was incomplete; live batch work is unknown.
+  at rest    — no live work or incomplete batch evidence is found, no crash
+               fact takes precedence, and no ended_reason is recorded.
 
-  done     — last assistant message finished with end_turn, no delegation
-             is live and no background job of its own is running.
-  crashed  — lock file exists, holder is dead (PID dead AND heartbeat
-             stale), and no assistant message with a clean finish.
-             Likely died mid-turn.
-  running  — lock file exists, holder PID is alive OR the heartbeat is
-             still fresh (PID alone is not trusted — on Windows it reads
-             as unreadable for the entire lifetime of a live session). Also
-             reported when the session has no live session lock (or a stale one with
-             a clean finish) but still owns a RUNNING background job
-             (bash/run_command) on a host that is not provably dead: the
-             session is waiting on its own job, so it is NOT done. Also
-             reported when a live rush run loop drives the session between
-             turns (its durable driver marker names a host that is not
-             provably dead, e.g. a paced retry after a failed reaction turn):
-             the loop will still react, so it is NOT at rest.
-  delegating — this session's own session lock is gone (or stale) but a
-             delegation is still live: a held batch root names a
-             DESCENDANT session (the process running it, which
-             holds a per-process host lock) is alive or cannot be probed.
-             Delegated sub-agent work is still in progress, so the session
-             is NOT done even though its own turn yielded.
-  at rest  — no session lock file. Not running, not crashed, no live
-             delegation, no running background job of its own and no live
-             rush run driver.
-
-The verdict is the one session-activity classifier shared with\n"sessions list", "watch" and the web surfaces: live work (a live driver, a
-running own job, a live delegation, an open once schedule) outranks a dead
-recorded PID — the PID becomes an annotation, not the Kind. "crashed" stays
-for a dead PID (or a dead-host marker/row) with NO live work: release wipes
-the recorded PID, so a recorded PID means the holder never reached release,
-even when the last finish was end_turn (that finish is a previous turn's).
-The only end signal is the run's ended_reason.`,
+A stale/dead recorded PID is only an annotation when live work exists; it
+does not override that work. The last assistant finish_reason is shown as
+context, but only ended_reason records that the run ended. Treat these as
+a snapshot of available evidence; they do not read external logs.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # Why does sessions list show this one as crashed?

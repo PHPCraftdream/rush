@@ -24,44 +24,33 @@ import (
 var sessionsLocksCmd = &cobra.Command{
 	Use:   "locks [session-id]",
 	Short: "List active session lock files",
-	Long: `Scan the .rush/locks directory for session lock files and report
-their status: session id, PID, when the lock was acquired, and whether
-it appears stale (process not running or lock older than 10 minutes).
+	Long: `List session lock files in the configured data directory (normally
+.rush/locks) and show the recorded PID, pulse, pulse age, elapsed mtime age
+and any saved timeout budget. The initial pulse is based on lock-file mtime:
+it reads alive through 10s, ping through 15s, stopping through 20s, then
+offline. Fresher message or sub-agent activity can update the displayed
+pulse age, and shared activity can relabel a live between-turn wait. Mtime
+age is not run duration and by itself does not prove that a process died.
 
-Lock files are typically acquired when a session is running and released
-when the run completes. Stale locks can accumulate if processes crash
-without cleanup.
+A session lock is held only during a turn. A live "rush run" may release
+it while waiting between turns on a job, delegation or retry; shared
+session-activity and batch/host evidence can label that row "between turns"
+instead of offline. A released lock's age is distinct from a live run
+driver's status, and a worker's per-process host lock is distinct from the
+session lock. Use "rush sessions why <id>" to inspect the combined session
+and batch evidence.
 
-The lock is held only during a turn: a "rush run" waiting between turns (on
-a background job, a delegation or a retry) leaves a released lock file that
-ages to "offline" by mtime. When the session's durable driver marker says a
-live loop drives it, the row reads "between turns (rush run PID n)" instead
-(not stale, never pruned). "offline" alone is therefore not proof that the
-holder died: "rush sessions why <id>" gives the verdict.
+By default this command is READ-ONLY and never removes lock files.
+--stale-only filters entries that remain offline after available live-
+activity checks; it is not simply an age or PID test. --prune opts in to
+removal only for an entry older than 60s when a real OS-level lock probe
+proves there is no current holder and the activity classifier does not
+report live session work. The probe is more reliable than mtime alone, but
+prune is still an explicit removal operation.
 
-By default this command is READ-ONLY: it lists locks and
-never removes anything — an empty lock file with no held OS lock is
-harmless (the next acquirer reopens and overwrites it; see
-internal/session/lock.go's Release), so auto-deleting stable per-session
-lock files is unnecessary and only ever reintroduces TOCTOU "unlink a path
-a live holder may be reusing" bugs.
-
-Pass --prune to opt in to removing a lock once it has been proven (via a
-real OS-level lock probe, not just its mtime age) that no live process
-actually holds it. Entries that merely LOOK stale by mtime (older than 60s)
-but that a real OS-level lock probe proves are still held are never deleted
-— only a lock file with no live OS-level holder is removed under --prune.
-See lockHolderProvablyDead's doc comment for the full discipline and its
-two documented, narrow residual windows (a post-probe TOCTOU on removal,
-and brief probe-induced contention with a concurrent "rush run" starting
-on the exact same session id). --prune is opt-in precisely because those
-narrow windows are accepted for an explicit operator request, not for a
-default that runs silently on every invocation.
-
-Pass a session id (full id or hash prefix) to list only that session's lock:
-the watchdog probe "rush sessions locks <id>". Use --stale-only to filter to
-suspicious locks. Use --json for NDJSON output suitable for metrics
-collection or automation.`,
+Pass a session id (full id or hash prefix) to list only that session's
+lock. Use --json for NDJSON output suitable for metrics collection or
+automation.`,
 	Args: cobra.MaximumNArgs(1),
 	Example: `
 # Show all locks

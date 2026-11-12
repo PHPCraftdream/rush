@@ -296,6 +296,18 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// applyModelOverrides could land BETWEEN the reads, so a single turn ran
 	// with a mismatched model/prompt pair — and the next turn silently
 	// inherited another session's model.
+	if call.recoveryContinuation && call.recovery != nil {
+		pinnedModel := call.recovery.targetModel
+		call.SmartModel = &pinnedModel
+		pinnedSystem := call.recovery.targetSystem
+		call.SystemPrompt = &pinnedSystem
+		call.SystemPromptOverride = ""
+		pinnedPrefix := call.recovery.targetPrefix
+		call.SystemPromptPrefix = &pinnedPrefix
+		agentTools = append([]fantasy.AgentTool{}, call.recovery.targetTools...)
+		call.Tools = agentTools
+		call.Attachments = append([]message.Attachment(nil), call.recovery.targetAttachments...)
+	}
 	cfg := a.resolveTurnConfig(call)
 	smartModel := cfg.smartModel
 	systemPrompt := cfg.systemPrompt
@@ -303,13 +315,15 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 
 	slog.Info("SessionAgent.Run: starting", "sessionID", call.SessionID, "model", smartModel.ModelCfg.Model, "promptLen", len(systemPrompt))
 
-	systemPrompt = withMCPInstructions(systemPrompt, a.config, maps.All(mcp.GetStates()))
-
+	if !call.recoveryContinuation {
+		systemPrompt = withMCPInstructions(systemPrompt, a.config, maps.All(mcp.GetStates()))
+	}
 	// Add Anthropic caching to the last tool. Via a per-turn wrapper, NOT
 	// SetProviderOptions on the shared tool object: a.tools' ELEMENTS are one
 	// set of pointers shared by every concurrent turn on this agent, and two
 	// turns marking "their" last tool wrote the same field (a real -race
 	// finding). See withProviderOptionsOnLast.
+	recoveryTools := append([]fantasy.AgentTool{}, agentTools...)
 	agentTools = withProviderOptionsOnLast(agentTools, a.getCacheControlOptions())
 	fatalTools := &fatalToolCollector{}
 	agentTools = withFatalToolErrors(agentTools, fatalTools)
@@ -345,7 +359,23 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		return nil, SessionAgentCall{}, false, fmt.Errorf("failed to get session: %w", err)
 	}
 
-	// Recovery BEFORE the pull below (DUR-5/DUR-6, doc sec.3.5/3.7): an
+	if state := call.recovery; state != nil {
+		if call.recoverySpentTokens > state.spent.Load() {
+			state.spent.Store(call.recoverySpentTokens)
+		}
+	} else if a.coord != nil && a.coord.cfg != nil {
+		call.recovery = a.snapshotCodexRecovery(call, currentSession)
+		call.recovery.targetPrompt = call.Prompt
+		call.recovery.targetAttachments = cloneRecoveryAttachments(call.Attachments)
+		call.recovery.targetTools = recoveryTools
+		call.recovery.targetModel = smartModel
+		call.recovery.targetPrefix = promptPrefix
+		call.recovery.targetSystem = systemPrompt
+		call.recovery.targetMaxOutput = call.MaxOutputTokens
+		call.SystemPrompt = &systemPrompt
+	}
+	// Recovery IDs are tracked independently; do not wrap the caller callback.
+	// Recovery is pinned before the notice pull below (DUR-5/DUR-6, doc sec.3.5/3.7): an
 	// interruption discovered right now is already delivery='pending' and
 	// gets pulled into history in THIS turn, not a later one. Recovery never
 	// writes history or wakes anyone itself. Batch-only: this is R9's sweep
@@ -488,7 +518,13 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// Its reaction is purely to the notice(s) the turn-start pull already
 	// spliced into msgs/history above.
 	userMessageCreated := call.ExistingMessageID != ""
+	if call.ExistingMessageID != "" && call.recovery != nil {
+		call.recovery.markUser(call.ExistingMessageID)
+	}
 	skipUserMessage := call.IsDrain && call.Prompt == "" && call.ExistingMessageID == ""
+	if call.recoveryContinuation {
+		skipUserMessage = true
+	}
 	if call.ExistingMessageID == "" && !skipUserMessage {
 		createdMsg, err := a.createUserMessage(preambleCtx, call)
 		if err != nil {
@@ -501,6 +537,9 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			return nil, SessionAgentCall{}, false, err
 		}
 		userMessageCreated = true
+		if call.recovery != nil {
+			call.recovery.markUser(createdMsg.ID)
+		}
 		if call.OnUserMessageCreated != nil {
 			call.OnUserMessageCreated(createdMsg.ID)
 		}
@@ -721,6 +760,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		promptPrefix:     promptPrefix,
 		historyIDs:       historyIDs,
 		currentSession:   currentSession,
+		recovery:         call.recovery,
 		bumpActivity:     bumpActivity,
 		toolStarted:      toolStarted,
 		toolFinished:     toolFinished,
