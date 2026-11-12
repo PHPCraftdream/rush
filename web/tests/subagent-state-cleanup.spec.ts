@@ -1,6 +1,9 @@
 import { test, expect, Page } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage } from "./helpers/mock-ws";
-import { makeSession, makeMessage } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 // Regression coverage for task #727 (review 2026-08-25 P3): removeSession
 // used to clear only the session row and its ws request/queue bookkeeping —
@@ -13,9 +16,7 @@ import { makeSession, makeMessage } from "./helpers/fixtures";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
 const PARENT_ID = "parent-cleanup";
@@ -23,11 +24,25 @@ const PARENT_MSG_ID = "pmsg-cleanup";
 const SUB_1 = `${PARENT_MSG_ID}$$call-cleanup-1`;
 const SUB_2 = `${PARENT_MSG_ID}$$call-cleanup-2`;
 
-// Open the parent session and render one assistant message carrying two
-// agent tool_calls — each mounts a SubAgentBlock keyed by
-// `${messageID}$$${toolCallID}` (see SubAgentBlock.tsx / Part.tsx), and
-// each block's lazy-load registers its composite sub session ID and asks
-// for its transcript.
+/** Browser-side: true once a load_messages frame was sent for every session ID. */
+function hasLoadMessagesForAll(ids: readonly string[]) {
+  const sent = (((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{
+    type: string;
+    payload?: { sessionID?: string };
+  }>) ?? [];
+  return ids.every((want) =>
+    sent.some((m) => m.type === "load_messages" && m.payload?.sessionID === want),
+  );
+}
+
+/**
+ * Open the parent session and render one assistant message carrying two
+ * agent tool_calls — each mounts a SubAgentBlock keyed by
+ * `${messageID}$$${toolCallID}` (see SubAgentBlock.tsx / Part.tsx), and
+ *
+ * each block's lazy-load registers its composite sub session ID and asks
+ * for its transcript.
+ */
 async function openParentWithTwoSubAgents(page: Page) {
   await page.goto("/");
   await sendMockWSMessage(page, {
@@ -53,8 +68,20 @@ async function openParentWithTwoSubAgents(page: Page) {
           SessionID: PARENT_ID,
           Role: "assistant",
           Parts: [
-            { type: "tool_call", Name: "agent", ID: "call-cleanup-1", Input: "{\"prompt\":\"sub one\"}", Finished: true },
-            { type: "tool_call", Name: "agent", ID: "call-cleanup-2", Input: "{\"prompt\":\"sub two\"}", Finished: true },
+            {
+              type: "tool_call",
+              Name: "agent",
+              ID: "call-cleanup-1",
+              Input: "{\"prompt\":\"sub one\"}",
+              Finished: true,
+            },
+            {
+              type: "tool_call",
+              Name: "agent",
+              ID: "call-cleanup-2",
+              Input: "{\"prompt\":\"sub two\"}",
+              Finished: true,
+            },
           ],
         }),
       ],
@@ -64,12 +91,7 @@ async function openParentWithTwoSubAgents(page: Page) {
   // Wait for both lazy load_messages requests before replying so the
   // replies cannot race the $subAgentSessions registration.
   await page.waitForFunction(
-    (ids: string[]) => {
-      const sent = (((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string; payload?: { sessionID?: string } }>) ?? [];
-      return ids.every((want) =>
-        sent.some((m) => m.type === "load_messages" && m.payload?.sessionID === want),
-      );
-    },
+    hasLoadMessagesForAll,
     [SUB_1, SUB_2],
     { timeout: 5000 },
   );
@@ -127,26 +149,32 @@ test("deleting a sub-agent session clears its transcript and spares siblings", a
   await expect(page.getByText("please run the sub agent")).toBeVisible();
 });
 
+/** Browser-side: closes the mock /ws socket via its real onclose path. */
+function closeMockSocket() {
+  const mock = ((window as unknown) as Record<string, unknown>)["__mockWS"] as { close: () => void } | null;
+  if (!mock) throw new Error("mock WS not created yet");
+  mock.close();
+}
+
+/** Browser-side: dispatches a serialized server frame to the mock's onmessage. */
+function dispatchThroughMock(data: string) {
+  const mock = ((window as unknown) as Record<string, unknown>)["__mockWS"] as
+    | { onmessage: ((ev: MessageEvent) => void) | null }
+    | null;
+  if (!mock || !mock.onmessage) throw new Error("dead mock has no onmessage");
+  mock.onmessage(new MessageEvent("message", { data }));
+}
+
 test("parent deleted while offline reaps its sub-agent branch on the reconnect list", async ({ page }) => {
   await openParentWithTwoSubAgents(page);
 
   // Go offline (kill the mock socket), then deliver a fresh sessions_list
   // through the dead socket: the tab missed the cascade of
   // session_deleted pushes that ran on the server while it was away.
-  await page.evaluate(() => {
-    const mock = ((window as unknown) as Record<string, unknown>)["__mockWS"] as { close: () => void } | null;
-    if (!mock) throw new Error("mock WS not created yet");
-    mock.close();
-  });
+  await page.evaluate(closeMockSocket);
   await expect(page.getByTestId("chat-input-offline-indicator")).toBeVisible({ timeout: 5000 });
 
-  await page.evaluate((data: string) => {
-    const mock = ((window as unknown) as Record<string, unknown>)["__mockWS"] as
-      | { onmessage: ((ev: MessageEvent) => void) | null }
-      | null;
-    if (!mock || !mock.onmessage) throw new Error("dead mock has no onmessage");
-    mock.onmessage(new MessageEvent("message", { data }));
-  }, JSON.stringify({ type: "sessions_list", payload: [] }));
+  await page.evaluate(dispatchThroughMock, JSON.stringify({ type: "sessions_list", payload: [] }));
 
   // An empty top-level list routes through the create_session early
   // return before any active-session switching, so the parent stays

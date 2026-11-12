@@ -1,11 +1,18 @@
 // Plain-text (user) or markdown-rendered (assistant) text part.
-// Pure code move from the former components/Message.tsx.
 
 import { memo } from "react";
 import ReactMarkdown from "react-markdown";
-import { MD_REMARK, MD_REHYPE } from "./mdPlugins";
+import { MD_REMARK } from "./mdRemarkPlugins";
+import { MD_REHYPE } from "./mdRehypePlugins";
 
-export const TextBlock = memo(function TextBlock({ text, isUser }: { text: string; isUser: boolean }) {
+/** Props of the text block. */
+interface ITextBlockProps {
+  text: string;
+  isUser: boolean;
+}
+
+/** User text renders verbatim; assistant text renders as markdown. */
+export const TextBlock = memo(function TextBlock({ text, isUser }: ITextBlockProps) {
   if (isUser) return <span className="whitespace-pre-wrap">{text}</span>;
   return (
     <div className="md">

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/oauth"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 type WebSocketTransport string
@@ -114,38 +116,55 @@ type WebSocketOptions struct {
 	endpoint string
 }
 
-func (m *languageModel) streamWebSocket(ctx context.Context, payload []byte, userAgent string, yield func(fantasy.StreamPart) bool) bool {
+// streamWebSocket reports whether the WebSocket path handled the call. A server
+// rejection of a chained frame's unknown parent, seen before any output, is
+// retried once: the rejected connection is retired, so the next exchange opens
+// a fresh connection whose first frame is necessarily a full one.
+func (m *languageModel) streamWebSocket(ctx context.Context, payload []byte, userAgent string, yield func(fantasy.StreamPart) bool, obs *transportObservation) bool {
+	handled, retryFull := m.streamWebSocketOnce(ctx, payload, userAgent, yield, obs, true)
+	if !retryFull {
+		return handled
+	}
+	obs.recovered++
+	handled, _ = m.streamWebSocketOnce(ctx, payload, userAgent, yield, obs, false)
+	return handled
+}
+
+func (m *languageModel) streamWebSocketOnce(ctx context.Context, payload []byte, userAgent string, yield func(fantasy.StreamPart) bool, obs *transportObservation, allowRecovery bool) (handled, retryFull bool) {
 	options := m.provider.websocket
 	if options == nil || ctx.Value(cliprovider.TitleGenerationContextKey) == true {
-		return false
+		return false, false
 	}
 	if options.Manager.Closed() {
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: errors.New("openai-codex websocket owner closed")})
-		return true
+		return true, false
 	}
 	conversation, _ := ctx.Value(cliprovider.SessionIDContextKey).(string)
 	policy, err := options.Current()
 	if err != nil {
 		options.Manager.InvalidateConversation(conversation)
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: err})
-		return true
+		return true, false
 	}
 	if policy.Transport == WebSocketTransportHTTP {
 		options.Manager.InvalidateConversation(conversation)
-		return false
+		obs.useHTTP(fallbackPolicyHTTP)
+		return false, false
 	}
 	if conversation == "" {
-		return false
+		obs.useHTTP(fallbackNoConversation)
+		return false, false
 	}
 	frame, err := options.EncodeFrame(payload)
 	if err != nil {
-		return false
+		obs.useHTTP(fallbackFrameEncode)
+		return false, false
 	}
 	used, ok := m.provider.source.Current()
 	if !ok || strings.TrimSpace(used.AccessToken) == "" {
 		options.Manager.InvalidateConversation(conversation)
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: errors.New("openai-codex OAuth credentials unavailable")})
-		return true
+		return true, false
 	}
 	acceptance, _ := ctx.Value(websocketObjectAcceptanceKey{}).(*websocketObjectAcceptance)
 	lease := WebSocketLease(nil)
@@ -155,10 +174,11 @@ func (m *languageModel) streamWebSocket(ctx context.Context, payload []byte, use
 			if err != nil {
 				options.Manager.InvalidateConversation(conversation)
 				yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: err})
-				return true
+				return true, false
 			}
 			if policy.Transport == WebSocketTransportHTTP {
-				return false
+				obs.useHTTP(fallbackPolicyHTTP)
+				return false, false
 			}
 		}
 		lease, err = options.Manager.Acquire(ctx, m.webSocketConnectionOptions(options, policy, used, conversation, userAgent))
@@ -166,22 +186,25 @@ func (m *languageModel) streamWebSocket(ctx context.Context, payload []byte, use
 			break
 		}
 		if !options.Manager.UnauthorizedHandshake(err) {
-			return false
+			obs.useHTTP(fallbackAcquire)
+			slog.Debug("responses transport: websocket unavailable, using http", "provider", Name, "reason", fallbackAcquire, "error", err.Error())
+			return false, false
 		}
 		if attempt != 0 || m.provider.source.Refresh(ctx, used) != nil {
 			yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: errors.New("openai-codex websocket authentication rejected")})
-			return true
+			return true, false
 		}
 		current, exists := m.provider.source.Current()
 		if !exists || strings.TrimSpace(current.AccessToken) == "" || reflect.DeepEqual(current, used) {
 			options.Manager.InvalidateConversation(conversation)
 			yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: errors.New("openai-codex websocket credentials unavailable after refresh")})
-			return true
+			return true, false
 		}
 		used = current
 	}
 	if lease == nil {
-		return false
+		obs.useHTTP(fallbackAcquire)
+		return false, false
 	}
 	held := false
 	defer func() {
@@ -194,20 +217,25 @@ func (m *languageModel) streamWebSocket(ctx context.Context, payload []byte, use
 	latestPolicy, policyErr := options.Current()
 	if !exists || !reflect.DeepEqual(current, used) || policyErr != nil || !reflect.DeepEqual(policy, latestPolicy) {
 		_ = conn.Close()
-		return false
+		obs.useHTTP(fallbackStaleCredentials)
+		return false, false
 	}
 	if err = conn.BeginExchange(); err != nil {
 		_ = conn.Close()
-		return false
+		obs.useHTTP(fallbackBeginExchange)
+		return false, false
 	}
 	if err = conn.SendRaw(ctx, frame); err != nil {
 		var send WebSocketExchangeError
 		if errors.As(err, &send) && send.RetrySafe() {
-			return false
+			obs.useHTTP(fallbackSendNotSent)
+			return false, false
 		}
+		obs.useWebSocket(conn)
 		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: err})
-		return true
+		return true, false
 	}
+	obs.useWebSocket(conn)
 	state := newStreamState()
 	allAccepted, finishAccepted := true, false
 	acceptPart := func(part fantasy.StreamPart) bool {
@@ -227,15 +255,22 @@ func (m *languageModel) streamWebSocket(ctx context.Context, payload []byte, use
 				receiveErr = conn.Abort(ctxErr)
 			}
 			acceptPart(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: receiveErr})
-			return true
+			return true, false
 		}
 		if err = state.consume(raw, acceptPart); err != nil {
 			if errors.Is(err, errStreamStopped) {
 				_ = conn.Abort(err)
-				return true
+				return true, false
+			}
+			if allowRecovery && !state.acceptedOutput && webSocketChained(conn) && codexChainRejected(raw) {
+				// Nothing was generated or delivered: retire the connection
+				// (clearing its chain state) and let the caller resend in full.
+				slog.Debug("responses websocket chain rejected before output, retrying with a full frame", "provider", Name, "session_hash", session.HashID(conversation))
+				_ = conn.Close()
+				return false, true
 			}
 			acceptPart(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: webSocketStreamFailure(conn, err, state.acceptedOutput)})
-			return true
+			return true, false
 		}
 		if state.completed {
 			// Incomplete responses cannot establish a reusable parent connection.
@@ -248,28 +283,28 @@ func (m *languageModel) streamWebSocket(ctx context.Context, payload []byte, use
 			_ = json.Unmarshal(raw, &event)
 			if event.Type == "response.completed" && event.Response.Status != "completed" {
 				acceptPart(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: conn.Abort(errors.New("invalid Codex terminal response"))})
-				return true
+				return true, false
 			}
 			if event.Type == "response.incomplete" && event.Response.Status != "incomplete" {
 				acceptPart(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: conn.Abort(errors.New("invalid Codex terminal response"))})
-				return true
+				return true, false
 			}
 			if event.Type != "response.completed" && event.Type != "response.incomplete" {
 				acceptPart(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: conn.Abort(errors.New("invalid Codex terminal response"))})
-				return true
+				return true, false
 			}
 			state.finish(acceptPart)
 			if event.Type == "response.incomplete" && event.Response.Status == "incomplete" {
 				_ = conn.Close()
-				return true
+				return true, false
 			}
 			if !allAccepted || !finishAccepted || ctx.Err() != nil {
 				_ = conn.Close()
-				return true
+				return true, false
 			}
 			if event.Type != "response.completed" || event.Response.Status != "completed" {
 				_ = conn.Close()
-				return true
+				return true, false
 			}
 			if acceptance != nil {
 				acceptance.hold(func(accepted bool) {
@@ -286,7 +321,7 @@ func (m *languageModel) streamWebSocket(ctx context.Context, payload []byte, use
 			} else if err = conn.MarkCompleted(); err != nil {
 				acceptPart(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: conn.Abort(err)})
 			}
-			return true
+			return true, false
 		}
 	}
 }

@@ -13,16 +13,24 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeSession, makeConfig } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeConfig } from "./helpers/make-config";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 const TODO_PENDING    = { content: "Write tests", status: "pending" };
 const TODO_IN_PROG    = { content: "Fix bug", status: "in_progress" };
 const TODO_DONE       = { content: "Deploy", status: "completed" };
 
-async function setup(page: import("@playwright/test").Page, todos: unknown[] = [TODO_PENDING, TODO_IN_PROG, TODO_DONE]) {
+/** Opens a session carrying the given todos. */
+async function setup(
+  page: import("@playwright/test").Page,
+  todos: unknown[] = [TODO_PENDING, TODO_IN_PROG, TODO_DONE],
+) {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) => route.fulfill({ status: 200, body: "OK" }));
+  await page.route("/auth/check", fulfillAuthOk);
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "sessions_list",
@@ -119,6 +127,12 @@ test("save button (✓) commits edit and sends update_todos", async ({ page }) =
   expect(p.todos[0].content).toBe("Saved content");
 });
 
+/** Browser-side: the sent frames of the given type. */
+function sentFramesOfType(type: string) {
+  return ((window as unknown) as Record<string, unknown[]>)["__wsSent"]
+    .filter((m: unknown) => (m as { type: string }).type === type);
+}
+
 test("Escape cancels edit without sending update_todos", async ({ page }) => {
   await setup(page, [{ content: "Keep this", status: "pending" }]);
 
@@ -130,9 +144,7 @@ test("Escape cancels edit without sending update_todos", async ({ page }) => {
   // Content should revert
   await expect(page.getByTestId("todo-content").first()).toHaveText("Keep this", { timeout: 2000 });
   // No update_todos should have been sent
-  const sent = await page.evaluate(() =>
-    ((window as unknown) as Record<string, unknown[]>)["__wsSent"]
-      .filter((m: unknown) => (m as { type: string }).type === "update_todos")
+  const sent = await page.evaluate(sentFramesOfType, "update_todos"
   );
   expect(sent).toHaveLength(0);
 });
@@ -225,9 +237,7 @@ test("Escape in add-task input cancels without sending update_todos", async ({ p
   await page.getByPlaceholder("New task…").press("Escape");
 
   await expect(page.getByPlaceholder("New task…")).not.toBeVisible({ timeout: 2000 });
-  const sent = await page.evaluate(() =>
-    ((window as unknown) as Record<string, unknown[]>)["__wsSent"]
-      .filter((m: unknown) => (m as { type: string }).type === "update_todos")
+  const sent = await page.evaluate(sentFramesOfType, "update_todos"
   );
   expect(sent).toHaveLength(0);
 });

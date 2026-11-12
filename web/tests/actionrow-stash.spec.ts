@@ -15,21 +15,28 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage } from "./helpers/mock-ws";
-import { makeSession, makeMessage } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 const F = { type: "finish", Reason: "end_turn", Message: "", Details: "" };
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Re-tags a message into the stash-sess session. */
+function inStashSession(m: object) {
+  return { ...m, SessionID: "stash-sess" };
+}
+
+/** Opens the session and delivers the given messages. */
 async function setupWithMessages(
   page: import("@playwright/test").Page,
-  messages: ReturnType<typeof makeMessage>[]
+  messages: readonly ReturnType<typeof makeMessage>[]
 ) {
   await page.goto("/");
   await sendMockWSMessage(page, {
@@ -41,7 +48,7 @@ async function setupWithMessages(
   // Pin SessionID to "stash-sess" for all messages (see comment in thinking-parts.spec.ts)
   await sendMockWSMessage(page, {
     type: "messages_list",
-    payload: messages.map((m) => ({ ...m, SessionID: "stash-sess" })),
+    payload: messages.map(inStashSession),
   });
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 
 	"charm.land/fantasy"
@@ -43,7 +44,11 @@ var whitelistDockerTools = []string{
 // time (permission requests, mcp.RunTool's getOrRenewClient) and stays live
 // for the same reason. owner is this config's MCP lifecycle owner (task
 // #923); nil keeps the legacy process-current-owner resolution.
-func GetMCPTools(permissions permission.Service, cfg *config.ConfigStore, wd string, owner *mcp.Owner) []*Tool {
+func GetMCPTools(permissions permission.Service, cfg *config.ConfigStore, wd string, owner *mcp.Owner, output ...*MCPOutputAccess) []*Tool {
+	var access *MCPOutputAccess
+	if len(output) > 0 {
+		access = output[0]
+	}
 	var result []*Tool
 	for mcpName, tools := range mcp.Tools() {
 		if !mcp.IsConfigured(cfg, mcpName) {
@@ -57,6 +62,7 @@ func GetMCPTools(permissions permission.Service, cfg *config.ConfigStore, wd str
 				workingDir:  wd,
 				cfg:         cfg,
 				owner:       owner,
+				output:      access,
 			})
 		}
 	}
@@ -87,6 +93,7 @@ type Tool struct {
 	// process-current-owner resolution (nil-safe methods).
 	owner           *mcp.Owner
 	providerOptions fantasy.ProviderOptions
+	output          *MCPOutputAccess
 }
 
 func (m *Tool) SetProviderOptions(opts fantasy.ProviderOptions) {
@@ -172,9 +179,26 @@ func (m *Tool) Run(ctx context.Context, params fantasy.ToolCall) (fantasy.ToolRe
 		}
 	}
 
+	if m.output != nil && m.output.Store != nil {
+		ctx = mcp.WithTextAdmission(ctx, func(ctx context.Context, render func(io.Writer) error, isError bool) (string, error) {
+			return m.output.admit(ctx, m.mcpName, m.Name(), params.ID, render, isError)
+		})
+	}
 	result, err := m.owner.RunTool(ctx, m.cfg, m.mcpName, m.tool.Name, params.Input)
 	if err != nil {
-		response := fantasy.NewTextErrorResponse(err.Error())
+		text := err.Error()
+		if m.output != nil && m.output.Store != nil {
+			admitted, retainErr := m.output.admit(ctx, m.mcpName, m.Name(), params.ID, func(w io.Writer) error {
+				_, writeErr := io.WriteString(w, text)
+				return writeErr
+			}, true)
+			if retainErr != nil {
+				text = retainErr.Error()
+			} else {
+				text = admitted
+			}
+		}
+		response := fantasy.NewTextErrorResponse(text)
 		if IsBatchManagedCall(ctx) && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 			return response, err
 		}

@@ -2,12 +2,10 @@
 // `node --test` (Node >= 23 strips erasable TypeScript natively).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  ATTACHMENT_OVERHEAD_ALLOWANCE_BYTES,
-  estimateAttachmentPayloadBytes,
-  isAttachmentPayloadWithinLimit,
-  MAX_ATTACHMENT_PAYLOAD_BYTES,
-} from "./attachmentLimit.ts";
+import { ATTACHMENT_OVERHEAD_ALLOWANCE_BYTES } from "./attachmentLimit/ATTACHMENT_OVERHEAD_ALLOWANCE_BYTES.ts";
+import { estimateAttachmentPayloadBytes } from "./attachmentLimit/estimateAttachmentPayloadBytes.ts";
+import { isAttachmentPayloadWithinLimit } from "./attachmentLimit/isAttachmentPayloadWithinLimit.ts";
+import { MAX_ATTACHMENT_PAYLOAD_BYTES } from "./attachmentLimit/MAX_ATTACHMENT_PAYLOAD_BYTES.ts";
 
 // Revert-checks:
 // - Separate files each round up to their own base64 quantum.

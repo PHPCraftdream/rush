@@ -41,16 +41,26 @@
  */
 
 import { test, expect, type Page } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend } from "./helpers/mock-ws";
-import { makeSession, makeMessage } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) => route.fulfill({ status: 200, body: "OK" }));
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Browser-side: the current location hash. */
+function readLocationHash() {
+  return window.location.hash;
+}
+
+/** The current location hash. */
 async function currentHash(page: Page): Promise<string> {
-  return page.evaluate(() => window.location.hash);
+  return page.evaluate(readLocationHash);
 }
 
 test("BUG: active session switched away mid-delete survives the delete_session reply", async ({ page }) => {
@@ -115,6 +125,11 @@ test("BUG: active session switched away mid-delete survives the delete_session r
   await expect(page.getByText("fresh transcript intact")).toBeVisible();
 });
 
+/** Browser-side: re-activates the doomed session through a hash change. */
+function navigateHashToRaceOntoX() {
+  window.location.hash = "#/race-onto-x";
+}
+
 test("BUG: active session switched ONTO the deleted session mid-delete is cleared by the reply", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, {
@@ -137,9 +152,7 @@ test("BUG: active session switched ONTO the deleted session mid-delete is cleare
 
   // Mid-flight: browser history navigation re-activates the doomed session
   // via hashchange (the overlay blocks clicks, not hash changes).
-  await page.evaluate(() => {
-    window.location.hash = "#/race-onto-x";
-  });
+  await page.evaluate(navigateHashToRaceOntoX);
   const load = await waitForWSSend(page, "load_messages");
   expect((load.payload as { sessionID: string }).sessionID).toBe("race-onto-x");
 
@@ -152,7 +165,8 @@ test("BUG: active session switched ONTO the deleted session mid-delete is cleare
   expect(await currentHash(page)).toBe("");
 });
 
-test("BUG: delete_other_sessions reconciles rows and active session against current state, not request-time state", async ({ page }) => {
+test("BUG: delete_other_sessions reconciles rows and active " +
+  "session against current state, not request-time state", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "sessions_list",

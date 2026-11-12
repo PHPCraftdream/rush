@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { roleToolsMode, roleToolsPayload, customRoleAt } from "./customRoleTypes.ts";
+import { customRoleAt } from "./customRole/customRoleAt.ts";
+import { roleToolsMode } from "./customRole/roleToolsMode.ts";
+import { roleToolsPayload } from "./customRole/roleToolsPayload.ts";
 
 test("custom role lookup distinguishes missing prototype names from own definitions", () => {
   const role = { provider: "p", model: "m" };

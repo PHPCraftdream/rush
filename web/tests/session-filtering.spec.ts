@@ -14,16 +14,18 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage } from "./helpers/mock-ws";
-import { makeSession, makeMessage } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { makeSession } from "./helpers/make-session";
+import { makeMessage } from "./helpers/make-message";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) =>
-    route.fulfill({ status: 200, body: "OK" })
-  );
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
+/** Opens the app with three sessions injected. */
 async function setupMultiSession(page: import("@playwright/test").Page) {
   await page.goto("/");
   await sendMockWSMessage(page, {
@@ -37,12 +39,14 @@ async function setupMultiSession(page: import("@playwright/test").Page) {
   await expect(page.getByText("Alpha Session").first()).toBeVisible({ timeout: 3000 });
 }
 
+/** Switches to the session with the given title. */
 async function switchToSession(page: import("@playwright/test").Page, sessionTitle: string) {
   await page.getByText(sessionTitle).first().click();
   // Wait a bit for session to switch and input to be ready
   await page.waitForTimeout(500);
 }
 
+/** Builds an assistant message for the session. */
 function makeMessageForSession(sessionID: string, content: string, overrides: Record<string, unknown> = {}) {
   return makeMessage({
     SessionID: sessionID,
@@ -229,7 +233,12 @@ test("message_deleted for different session is ignored", async ({ page }) => {
   // Create message in Alpha
   await sendMockWSMessage(page, {
     type: "message_created",
-    payload: makeMessage({ ID: "msg-del-alpha", SessionID: "sess-alpha", Role: "assistant", Parts: [{ type: "text", Text: "Alpha stays" }] }),
+    payload: makeMessage({
+      ID: "msg-del-alpha",
+      SessionID: "sess-alpha",
+      Role: "assistant",
+      Parts: [{ type: "text", Text: "Alpha stays" }],
+    }),
   });
   await expect(page.getByText("Alpha stays")).toBeVisible({ timeout: 2000 });
 
@@ -286,6 +295,12 @@ test("session_updated event updates session in sidebar", async ({ page }) => {
   await expect(page.getByText("Alpha Session (Updated)").first()).toBeVisible({ timeout: 2000 });
 });
 
+/** Browser-side: how many frames of the given type the page has received. */
+function countReceivedOfType(type: string) {
+  const received = (window as unknown as Record<string, unknown>).__wsReceived as Array<{ type: string }>;
+  return received.filter((e) => e.type === type).length;
+}
+
 test("agent_busy event updates session busy state correctly", async ({ page }) => {
   await setupMultiSession(page);
   await switchToSession(page, "Alpha Session");
@@ -297,10 +312,7 @@ test("agent_busy event updates session busy state correctly", async ({ page }) =
   });
 
   // Should show busy indicator (implementation specific - just check event was received)
-  const events = await page.evaluate(() => {
-    const received = (window as unknown as Record<string, unknown>).__wsReceived as Array<{ type: string }>;
-    return received.filter((e) => e.type === "agent_busy").length;
-  });
+  const events = await page.evaluate(countReceivedOfType, "agent_busy");
   expect(events).toBeGreaterThan(0);
 });
 
@@ -315,10 +327,7 @@ test("summarize_queued event applies to correct session", async ({ page }) => {
   });
 
   // Just verify event was received (actual UI behavior depends on implementation)
-  const events = await page.evaluate(() => {
-    const received = (window as unknown as Record<string, unknown>).__wsReceived as Array<{ type: string }>;
-    return received.filter((e) => e.type === "summarize_queued").length;
-  });
+  const events = await page.evaluate(countReceivedOfType, "summarize_queued");
   expect(events).toBeGreaterThan(0);
 });
 

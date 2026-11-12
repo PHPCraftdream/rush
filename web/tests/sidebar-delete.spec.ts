@@ -36,12 +36,16 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS, sendMockWSMessage, waitForWSSend, clearWSSent } from "./helpers/mock-ws";
-import { makeSession } from "./helpers/fixtures";
+import { setupMockWS } from "./helpers/mock-ws";
+import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
+import { waitForWSSend } from "./helpers/wait-for-ws-send";
+import { clearWSSent } from "./helpers/clear-ws-sent";
+import { makeSession } from "./helpers/make-session";
+import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
-  await page.route("/auth/check", (route) => route.fulfill({ status: 200, body: "OK" }));
+  await page.route("/auth/check", fulfillAuthOk);
 });
 
 test("CONTROL: successful delete_session removes the row and stays removed", async ({ page }) => {
@@ -110,7 +114,8 @@ test("a rejected delete_session leaves the row in place with a visible inline er
   await expect(page.getByText("Delete session")).toBeVisible();
 });
 
-test("delete_other_sessions only removes rows the server confirms deleted, reflecting a partial failure", async ({ page }) => {
+test("delete_other_sessions only removes rows the server " +
+  "confirms deleted, reflecting a partial failure", async ({ page }) => {
   await page.goto("/");
   await sendMockWSMessage(page, {
     type: "sessions_list",
@@ -174,6 +179,12 @@ test("delete_other_sessions full success removes every non-kept row and closes t
   await expect(page.getByText("Delete all other sessions")).not.toBeVisible({ timeout: 2000 });
 });
 
+/** Browser-side: the sent frames of the given type. */
+function pickSentFrames(type: string) {
+  const arr = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string }> | null;
+  return (arr ?? []).filter((m) => m.type === type);
+}
+
 // ── Edge case (ported from round 27's own follow-up check): deleting the
 // operator's only session and having that delete rejected must not cascade
 // into a spurious create_session. ────────────────────────────────────────
@@ -203,9 +214,6 @@ test("a rejected delete of the operator's only session does not spuriously creat
   await expect(page.getByTestId("session-sd-only")).toBeVisible({ timeout: 2000 });
 
   await page.waitForTimeout(500);
-  const sent = await page.evaluate(() => {
-    const arr = ((window as unknown) as Record<string, unknown>)["__wsSent"] as Array<{ type: string }> | null;
-    return (arr ?? []).filter((m) => m.type === "create_session");
-  });
+  const sent = await page.evaluate(pickSentFrames, "create_session");
   expect(sent, "a rejected delete of the only session must not trigger a spurious create_session").toEqual([]);
 });

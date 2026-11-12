@@ -1,14 +1,18 @@
 // Timestamp badge shown next to event headers, with its local-time formatters.
-// Pure code move from the former components/Message.tsx.
 
 import { memo } from "react";
 
-// formatEventTime returns "HH:MM:SS" in the operator's local timezone
-// (Intl picks the system TZ automatically). The value is shown next to
-// every event header — message, tool group, tool row, thinking row — so
-// the operator can correlate the chat against logs / external runs.
-// Epoch seconds; we keep 1s precision intentionally (matches the int64
-// column in SQLite).
+/**
+ * Returns "HH:MM:SS" in the operator's local timezone.
+ *
+ * Intl picks the system TZ
+ * automatically. The value is shown next to every event header — message, tool
+ * group, tool row, thinking row — so the operator can correlate the chat against
+ * logs / external runs. Epoch seconds; we keep 1s precision intentionally
+ * (matches the int64 column in SQLite).
+ *
+ * @param epochSec - unix seconds, absent or non-positive for "unknown"
+ */
 function formatEventTime(epochSec: number | undefined): string {
   if (!epochSec || epochSec <= 0) return "";
   const d = new Date(epochSec * 1000);
@@ -19,7 +23,11 @@ function formatEventTime(epochSec: number | undefined): string {
   return `${hh}:${mm}:${ss}`;
 }
 
-// formatEventDateTime — for tooltips: full local "YYYY-MM-DD HH:MM:SS".
+/**
+ * Formats a tooltip timestamp: full local "YYYY-MM-DD HH:MM:SS UTC±HH:MM".
+ *
+ * @param epochSec - unix seconds, absent or non-positive for "unknown"
+ */
 function formatEventDateTime(epochSec: number | undefined): string {
   if (!epochSec || epochSec <= 0) return "";
   const d = new Date(epochSec * 1000);
@@ -37,7 +45,13 @@ function formatEventDateTime(epochSec: number | undefined): string {
   return `${yyyy}-${mo}-${dd} ${hh}:${mm}:${ss} UTC${tzSign}${tzH}:${tzM}`;
 }
 
-export const TimeBadge = memo(function TimeBadge({ epochSec }: { epochSec: number | undefined }) {
+/** Props of the timestamp badge. */
+interface ITimeBadgeProps {
+  epochSec: number | undefined;
+}
+
+/** Event timestamp (HH:MM:SS) with the full date in its tooltip; renders nothing without a time. */
+export const TimeBadge = memo(function TimeBadge({ epochSec }: ITimeBadgeProps) {
   const text = formatEventTime(epochSec);
   if (!text) return null;
   return (
