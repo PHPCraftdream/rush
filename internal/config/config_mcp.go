@@ -272,7 +272,8 @@ type Options struct {
 	// stop a prompt-injected or malicious model from exfiltrating cloud
 	// instance-metadata (169.254.169.254 et al.) through final_text.
 	// Enable only in trusted local-dev/self-hosted setups.
-	AllowPrivateNetworkFetch bool `json:"allow_private_network_fetch,omitempty" jsonschema:"description=Allow download/fetch/web tools to reach loopback/private/link-local network addresses. Off by default as an SSRF defense-in-depth measure; enable only for trusted local-dev/self-hosted use.,default=false"`
+	AllowPrivateNetworkFetch bool               `json:"allow_private_network_fetch,omitempty" jsonschema:"description=Allow download/fetch/web tools to reach loopback/private/link-local network addresses. Off by default as an SSRF defense-in-depth measure; enable only for trusted local-dev/self-hosted use.,default=false"`
+	ResponsesTransport       ResponsesTransport `json:"responses_transport,omitempty" jsonschema:"description=Transport for direct Codex and public OpenAI Responses,enum=auto,enum=http,default=auto"`
 	// Network configures outbound network behavior (proxy and custom
 	// DNS/DoH resolution) applied to all provider HTTP connections.
 	// Each provider may override any field individually via its own
