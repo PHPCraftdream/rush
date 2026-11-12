@@ -195,6 +195,7 @@ func setupTestSessionWithDB(t *testing.T, title string) (*session.Session, sessi
 		CREATE INDEX idx_session_run_queue_leased ON session_run_queue(status, lease_expires_at);
 	`)
 	require.NoError(t, err)
+	require.NoError(t, dbtest.ApplyFinalizationFencingSchema(context.Background(), sqlDB))
 
 	// Create service
 	dbq := db.New(sqlDB)

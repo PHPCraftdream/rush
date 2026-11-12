@@ -8,6 +8,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/db/dbtest"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
@@ -189,6 +190,8 @@ func newTestDB(t *testing.T) (*sql.DB, *db.Queries) {
 		);
 	`)
 	require.NoError(t, err)
+
+	require.NoError(t, dbtest.ApplyFinalizationFencingSchema(context.Background(), sqlDB))
 
 	return sqlDB, db.New(sqlDB)
 }

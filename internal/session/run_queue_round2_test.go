@@ -562,6 +562,7 @@ func setupTestSession(t *testing.T, title string) (*session.Session, session.Ser
 		CREATE INDEX idx_orphan_call_outbox_session_id ON orphan_call_outbox(session_id);
 	`)
 	require.NoError(t, err)
+	require.NoError(t, dbtest.ApplyFinalizationFencingSchema(context.Background(), sqlDB))
 
 	// Create queries and service
 	queries := db.New(sqlDB)
