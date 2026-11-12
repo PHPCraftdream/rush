@@ -19,19 +19,126 @@ import (
 // main run queue (P0-3 fix). This provides a minimal durability guarantee:
 // even when the main run queue is unavailable, we have a durable record that
 // can be recovered later. Returns error if even the outbox write fails.
-func (s *service) WriteToOrphanOutbox(ctx context.Context, id, sessionID string, callData []byte) error {
+func (s *service) WriteToOrphanOutbox(ctx context.Context, id, sessionID string, callData []byte) (retErr error) {
 	if id == "" {
 		id = uuid.NewString()
 	}
+	payload, err := s.prepareFinalizationIngress(ctx, sessionID, callData)
+	if err != nil {
+		return err
+	}
+	if !payload.bound {
+		return s.writeUnboundOrphanOutbox(ctx, id, sessionID, callData)
+	}
+	if handled, err := s.existingBoundOutboxWrite(ctx, id, sessionID, payload); handled || err != nil {
+		return err
+	}
+	release, admission, err := admitFinalizationMutation(ctx, s.db, sessionID)
+	if release != nil {
+		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
+	}
+	if err != nil {
+		return err
+	}
+	ancestryHash, err := finalizationIngressAncestryHash(payload, admission)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := validateFreshFinalizationIngressTx(ctx, tx, sessionID, id, payload, ancestryHash, admission); err != nil {
+		return err
+	}
+	if _, _, exists, err := finalizationQueueRowTx(ctx, tx, id); err != nil {
+		return err
+	} else if exists {
+		return ErrAgentFinalizationChanged
+	}
+	if exists, err := finalizationOutboxExistsTx(ctx, tx, id); err != nil {
+		return err
+	} else if exists {
+		return ErrAgentFinalizationChanged
+	}
 	now := time.Now().Unix()
-	_, err := s.q.WriteToOrphanOutbox(ctx, db.WriteToOrphanOutboxParams{
+	_, err = s.q.WithTx(tx).WriteToOrphanOutbox(ctx, db.WriteToOrphanOutboxParams{
+		ID: id, SessionID: sessionID, CallData: string(callData), CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		return err
+	}
+	if err := validateFreshFinalizationIngressTx(ctx, tx, sessionID, id, payload, ancestryHash, admission); err != nil {
+		return err
+	}
+	if err := persistFinalizationIngressTx(ctx, tx, id, sessionID, payload, ancestryHash); err != nil {
+		return err
+	}
+	if _, err := validateFinalizationIngressTx(ctx, tx, sessionID, id, string(callData), payload); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// writeUnboundOrphanOutbox keeps the historical plain insert (a duplicate id
+// is still the writer's own error); the only addition is the fence refusing
+// an owner whose ancestry gained a finalization scope.
+func (s *service) writeUnboundOrphanOutbox(ctx context.Context, id, sessionID string, callData []byte) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().Unix()
+	_, err = s.q.WithTx(tx).WriteToOrphanOutbox(ctx, db.WriteToOrphanOutboxParams{
 		ID:        id,
 		SessionID: sessionID,
 		CallData:  string(callData),
 		CreatedAt: now,
 		UpdatedAt: now,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	if err := validateBatchFinalizationTx(ctx, tx, []string{sessionID}, nil); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// existingBoundOutboxWrite makes a retry of a bound outbox write idempotent
+// only for the exact recorded provenance; anything else is a lost fence.
+func (s *service) existingBoundOutboxWrite(ctx context.Context, id, owner string, payload finalizationIngressPayload) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	entry, err := s.q.WithTx(tx).GetOrphanOutboxEntry(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return true, err
+	}
+	if entry.SessionID != owner || entry.Status != "pending" {
+		return true, ErrAgentFinalizationChanged
+	}
+	if _, _, queueExists, err := finalizationQueueRowTx(ctx, tx, id); err != nil {
+		return true, err
+	} else if queueExists {
+		return true, ErrAgentFinalizationChanged
+	}
+	if exists, err := finalizationContinuationExistsTx(ctx, tx, id); err != nil {
+		return true, err
+	} else if !exists {
+		return true, ErrAgentFinalizationChanged
+	}
+	if _, err := validateFinalizationIngressTx(ctx, tx, owner, id, entry.CallData, payload); err != nil {
+		return true, err
+	}
+	return true, tx.Commit()
 }
 
 // ListPendingOrphanOutboxEntries returns all pending outbox entries for
@@ -86,6 +193,20 @@ func (s *service) DrainOrphanOutboxEntry(ctx context.Context, id string) (bool, 
 		return false, nil
 	}
 
+	payload, err := s.prepareStoredFinalizationIngress(entry.SessionID, []byte(entry.CallData))
+	if err != nil {
+		return false, err
+	}
+	if payload.bound {
+		if _, err := validateFinalizationIngressTx(ctx, tx, entry.SessionID, entry.ID, entry.CallData, payload); err != nil {
+			return false, err
+		}
+	} else if exists, err := finalizationContinuationExistsTx(ctx, tx, entry.ID); err != nil {
+		return false, err
+	} else if exists {
+		return false, ErrAgentFinalizationChanged
+	}
+
 	now := time.Now().Unix()
 
 	// Insert into session_run_queue (idempotent via ON CONFLICT DO NOTHING)
@@ -100,6 +221,18 @@ func (s *service) DrainOrphanOutboxEntry(ctx context.Context, id string) (bool, 
 		// sql.ErrNoRows means it was already inserted (idempotent success)
 		// Any other error is a real failure
 		return false, fmt.Errorf("enqueueing to main queue: %w", err)
+	}
+
+	// The moved row must be exactly the recorded one: a bound row keeps its
+	// provenance, an unbound row only refuses a newly bound owner scope.
+	if payload.bound {
+		if ok, err := verifyQueueCollisionTx(ctx, tx, entry.ID, entry.SessionID, payload); err != nil {
+			return false, err
+		} else if !ok {
+			return false, ErrAgentFinalizationChanged
+		}
+	} else if err := validateBatchFinalizationTx(ctx, tx, []string{entry.SessionID}, nil); err != nil {
+		return false, err
 	}
 
 	// Delete from orphan_call_outbox (only if still pending)

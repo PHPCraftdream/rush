@@ -310,7 +310,8 @@ const (
 // attempt already committed the row is a no-op, not an error. sqlc's :one
 // query reports that as sql.ErrNoRows (zero rows returned on conflict) —
 // treated here as success, since the durable row this call wanted to exist
-// already does.
+// already does. Finalization-bound rows must retry with the exact recorded
+// payload, and a key already owned by another session is refused.
 func (s *service) EnqueueRunQueueEntry(ctx context.Context, idempotencyKey, sessionID string, callData []byte) error {
 	if idempotencyKey == "" {
 		idempotencyKey = uuid.NewString()

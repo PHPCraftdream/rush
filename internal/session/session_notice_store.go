@@ -150,6 +150,9 @@ func (s *SessionNoticeStore) PullSessionNotices(ctx context.Context, messages me
 	for _, row := range rows {
 		pulled, ok, err := s.pullOneSessionNotice(ctx, messages, owner, ownHostID, row, build)
 		if err != nil {
+			if errors.Is(err, ErrAgentFinalizationChanged) {
+				return nil, err
+			}
 			slog.Warn("session notice store: pull session notice failed; row stays pending",
 				"session_id", owner, "notice_id", row.ID, "err", err)
 			continue
@@ -161,7 +164,38 @@ func (s *SessionNoticeStore) PullSessionNotices(ctx context.Context, messages me
 	return out, nil
 }
 
-func (s *SessionNoticeStore) pullOneSessionNotice(ctx context.Context, messages message.Service, owner, ownHostID string, row db.SessionNotice, build func(SessionNoticeRow) message.CreateMessageParams) (PulledNotice, bool, error) {
+func (s *SessionNoticeStore) pullOneSessionNotice(ctx context.Context, messages message.Service, owner, ownHostID string, row db.SessionNotice, build func(SessionNoticeRow) message.CreateMessageParams) (pulled PulledNotice, ok bool, retErr error) {
+	scoped := finalizationScoped(ctx)
+	var admission *batchFinalizationAdmission
+	if scoped {
+		// Voids and rows another leader took are not productive deliveries:
+		// only a real delivery is admitted (and mints a revision).
+		current, err := s.q.GetSessionNotice(ctx, row.ID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return PulledNotice{}, false, nil
+		}
+		if err != nil {
+			return PulledNotice{}, false, err
+		}
+		if current.Owner != owner || current.Delivery != "pending" {
+			return PulledNotice{}, false, nil
+		}
+		void, err := s.sessionNoticeVoidCondition(ctx, s.q, owner, ownHostID, current)
+		if err != nil {
+			return PulledNotice{}, false, err
+		}
+		if !void {
+			var release func() error
+			release, admission, err = admitFinalizationMutation(ctx, s.sqlDB, owner)
+			if release != nil {
+				defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
+			}
+			if err != nil {
+				return PulledNotice{}, false, err
+			}
+		}
+	}
+
 	tx, err := s.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
 		return PulledNotice{}, false, err
@@ -202,6 +236,13 @@ func (s *SessionNoticeStore) pullOneSessionNotice(ctx context.Context, messages 
 		return PulledNotice{}, false, nil
 	}
 
+	if scoped && admission == nil {
+		// The row was a void when sampled but is a delivery now: unadmitted.
+		return PulledNotice{}, false, ErrAgentFinalizationChanged
+	}
+	if err := validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
+		return PulledNotice{}, false, err
+	}
 	params := build(SessionNoticeRow{ID: pulledRow.ID, Kind: pulledRow.Kind, Text: pulledRow.Text})
 	msg, err := messages.CreateTx(ctx, tx, owner, params)
 	if err != nil {
@@ -210,6 +251,9 @@ func (s *SessionNoticeStore) pullOneSessionNotice(ctx context.Context, messages 
 	if _, err := q.SetSessionNoticeMessageID(ctx, db.SetSessionNoticeMessageIDParams{
 		NoticeMessageID: sql.NullString{String: msg.ID, Valid: true}, UpdatedAt: time.Now().Unix(), ID: pulledRow.ID,
 	}); err != nil {
+		return PulledNotice{}, false, err
+	}
+	if err := validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
 		return PulledNotice{}, false, err
 	}
 	if err := tx.Commit(); err != nil {
