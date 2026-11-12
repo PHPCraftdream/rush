@@ -102,15 +102,16 @@ func TestBatchQuestionPublishRejectsUnprovenScopes(t *testing.T) {
 		t.Run(outcome, func(t *testing.T) {
 			env := finalizationAncestorEnv(t)
 			ctx, authorities := finalizationIngressQuestionOwners(t, env)
-			if outcome == "missing" {
+			switch outcome {
+			case "missing":
 				ctx = env.ctx
-			} else if outcome == "stale" {
+			case "stale":
 				_, err := env.conn.ExecContext(ctx, `UPDATE session_agent_finalizations SET phase='failed' WHERE session_id='child'`)
 				require.NoError(t, err)
-			} else if outcome == "cancelled" {
+			case "cancelled":
 				_, err := env.conn.ExecContext(ctx, `UPDATE sessions SET cancel_requested=1 WHERE id='child'`)
 				require.NoError(t, err)
-			} else if outcome == "sealed" {
+			case "sealed":
 				require.NoError(t, sealFinalizationForTest(ctx, env.conn, NewAgentFinalizationStore(env.conn), authorities[1].identity, 0))
 			}
 			marker := fmt.Sprintf("[batch-question node=child-root.1 token=1 sequence=1 depth=1 child=grandchild-%s]\n", outcome)
