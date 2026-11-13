@@ -29,6 +29,14 @@ func tokenCLIExitCode(err error) (int, bool) {
 }
 
 func tokensExitCode(args []string, err error) (int, bool) {
+	// Typed exit codes: any error carrying an explicit process exit
+	// code is honored for every subcommand, not just tokens/api/serve.
+	// Today only reviewFailError (rush run --fail-on-review) implements
+	// this; keep the interface anonymous and local to this check.
+	var coder interface{ ExitCode() int }
+	if err != nil && errors.As(err, &coder) {
+		return coder.ExitCode(), true
+	}
 	if code, ok := apiExitCode(err); ok && isAPIInvocation(args) {
 		return code, true
 	}

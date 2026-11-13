@@ -10,6 +10,20 @@ blocks:
       `rush run --role smart` reads the repo, plans, delegates, reviews, and reports. Tell it **what and why** (goal, observable acceptance, evidence, hard scope/constraints), not how. Honor caller hard constraints and policy, including CI-only verification when requested. Launch in repo/worktree and await completion. Do not prescribe implementation plans, file:line edits, sequence, tools/roles/workers, or a verification checklist; do not forbid its internal delegation. Nested executors are expected: don't stop or ask; wait.
       Only `--role`, `--session`, and `--json`; don't tune models/effort/`--agents`. Don't coach mid-run: `sessions inject` is only for genuinely new facts or changed operator requirements. A follow-up passes reviewer findings, CI output, or new requirements verbatim into the same `--session`.
 
+      Map the need to the existing flag/command instead of improvising:
+
+      | Need | Use |
+      | --- | --- |
+      | isolated worktree for this run | `rush run --worktree <slug>` (+ `--base`, `--branch`; lifecycle: `rush worktree list` / `rush worktree remove <slug>`) |
+      | read a finished background run's output without codepage problems | `rush result <session-id>` (also `--review`, `--field final_text`, `--json`) |
+      | pass a previous run's review findings into the next run | `rush run --findings-from <session-id>` |
+      | completion notification must distinguish "model reported done" from "reviewer rejected" | `rush run --fail-on-review` — exit code 3 exactly on verdict `fail` |
+      | current state of a delegated run | `rush sessions status <id> --json` (`why`/`locks`/`watch` are snapshots; none proves the process exited — only the launched process's completion does) |
+      | long run fighting a timeout | existing flags only: `--timeout`, `--timeout-extends-on-progress`, `--stall-timeout`, `--idle-timeout`, `--timeout-hard-cap` (see Time limits in `rush run --help`); never invent or raise values unprompted |
+      | verdict-shaped answer as data | `--format json-schema:<file>` (with `--json`) |
+      | shell hook after the run | `--on-finish "cmd"` (env: RUSH_SESSION_ID, RUSH_EXIT_REASON, RUSH_COST_USD, RUSH_TOKENS, RUSH_DURATION_SEC) |
+      | restrict what the run may execute | `permissions.run` in rush.json plus roles only — the per-run permission CLI flags were removed |
+
   - common: |-
       ## Fallback when `rush` hits rate limits
   - claude: |-

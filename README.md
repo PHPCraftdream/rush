@@ -251,6 +251,10 @@ jq -r '.error' "$out"         # error.message if non-success
   watchdog allows even with progress. Without this watchdog cap, progress can
   keep that watchdog from firing; the whole run is still bounded by `--timeout`
   or the default cap below.
+- **`--on-finish "cmd"`** — runs a shell command after the agent finishes.
+  Environment variables set for it: `RUSH_SESSION_ID`, `RUSH_EXIT_REASON`,
+  `RUSH_COST_USD`, `RUSH_TOKENS`, `RUSH_DURATION_SEC`. Hook errors are
+  printed to stderr but do not affect the exit code.
 - **`--allow-peak-hours`** — bypasses a provider's configured
   `peak_hours` refusal window for this single invocation only. No
   persistent config-level equivalent exists; the override is conscious
@@ -284,10 +288,99 @@ jq -r '.error' "$out"         # error.message if non-success
   Ctrl-C, caller cancellation and parent deadlines still report `canceled`. An
   inner provider/reviewer deadline while the run context is live is not a run
   timeout.
+- **`--worktree <slug>`** (+ `--base`/`--branch`) — run inside an
+  isolated git worktree under `<main>/worktrees/<slug>` instead of the
+  current checkout. Creation is idempotent (an existing matching
+  worktree is reused), the run's output is mirrored into
+  `<main>/.rush/stdin/<session>.{out,err}` so results survive
+  `rush worktree remove`, and `rush worktree list|remove` manage the
+  worktrees. Incompatible with `--cwd` and `--data-dir`. See
+  [Worktree delegation](#worktree-delegation-worktree) below and
+  [docs/worktree-run.md](docs/worktree-run.md).
+
+#### <a id="worktree-delegation-worktree"></a>Worktree delegation (`--worktree`)
+
+One command instead of the manual chain. Before, an orchestrator had
+to run `git worktree add -b <slug> worktrees/<slug> <base>`, `cd` into
+it, invoke `rush run ... < prompt > main/.rush/stdin/<s>.out 2> .err`
+by hand, and afterwards do a manual `git worktree remove` plus branch
+cleanup — which on Windows routinely leaves locked directories behind.
+`--worktree` does all of it atomically and cleans up honestly:
+
+```bash
+rush run --role smart --worktree "task-a" --json "refactor the parser" \
+  > /tmp/out.json 2>/tmp/out.err
+jq -r '.exit_reason' /tmp/out.json
+rush worktree list
+rush worktree remove "task-a"
+```
+
+The redirection above is optional: stdout (the `--json` envelope, or
+the terse final answer) and everything on stderr are ALSO mirrored
+into `<main>/.rush/stdin/task-a.{out,err}` (each capped at the last
+8 MiB), so results survive `rush worktree remove`.
+
+- **Slug rules & containment** — the slug must match
+  `[a-z0-9][a-z0-9._-]*`: no uppercase, no leading punctuation, no
+  separators, no `..`; Windows reserved device names (`con`, `prn`,
+  `aux`, `nul`, `com1-9`, `lpt1-9`) are rejected. A worktree can
+  therefore only ever be created under `<main>/worktrees/`. The main
+  checkout is resolved via git, so this works when rush itself runs
+  inside a linked worktree.
+- **Creation & reuse** — branch `<branch|slug>` is created from
+  `--base` (default: the main checkout's HEAD); if the branch already
+  exists locally it is checked out instead of created (then `--base`
+  is ignored with a note). Idempotent: a registered worktree whose
+  branch matches is reused (`reusing worktree <path> (branch <b>)` on
+  stderr). A path occupied by anything else, a detached worktree, or a
+  branch mismatch (which names both branches and suggests `--branch`)
+  are clean errors.
+- **Session** — if `--session` is not given, the session id is the
+  slug. Inside a linked worktree rush already resolves the data
+  directory to the main checkout's shared `<main>/.rush` (production
+  binaries; dev builds isolate to `<wt>/.rush/dev`), so sessions live
+  with the project.
+- **Ignore warning** — if `worktrees/` is not git-ignored (`git
+  check-ignore`), a warning is printed to stderr; rush never edits
+  `.gitignore` itself.
+- **Flag conflicts** — `--worktree` is incompatible with `--cwd` and
+  `--data-dir` (clean errors); `--base`/`--branch` without `--worktree`
+  is an error. All other run flags (`--json`, `--role`, `--session`,
+  `--timeout`, ...) work unchanged.
+- **`rush worktree list`** — SLUG / BRANCH / SESSION / PATH table for
+  every registered worktree directly under `<main>/worktrees`; SESSION
+  shows the id of a session whose lock is held right now or `-`.
+- **`rush worktree remove <slug> [--keep-branch] [--force]`** —
+  refuses while a live run holds a session lock for this worktree (the
+  slug-named session in `<main>/.rush`, or any lock in
+  `<wt>/.rush/locks`); **this refusal holds even with `--force`** —
+  stop the run first (`rush sessions kill <id>`). Refuses a dirty
+  worktree (uncommitted or untracked changes) without `--force`.
+  Branch policy: default deletes with `git branch -d` (merged only —
+  an unmerged branch is kept with a stderr notice and the command
+  still succeeds, exit 0); `--force` deletes with `-D` (unmerged
+  commits discarded); `--keep-branch` skips deletion; detached
+  worktrees have no branch to delete. On Windows removal retries
+  while AV/indexers hold the directory and, if a process still holds
+  it, honestly reports what remains on disk instead of claiming
+  success. Works from any checkout of the repo.
 
 #### Session liveness, batch state, and completion
 
 For safe retry, require physical process exit and no live or unknown batch scope; inspect current roots/nodes rather than relying on session-only `why`/`watch` or `end_turn`. Resume in the original checkout with the original role and session. `rush sessions compact` has two meanings: without a session argument it runs SQLite `VACUUM`; with a session ID it summarizes that session's model history.
+
+`rush sessions status <id> [--json]` answers all of this in one read-only, machine-readable snapshot: process liveness (a real OS probe, not a recorded fact), phase, seconds since real activity (sub-agent tree included), live children, and whether the session's batch work is terminal. It combines what `why`, `locks`, `last` and `watch` each show partially. Its honesty rule: anything the evidence cannot establish is the literal value `"unknown"` instead of a guess, and a recorded `ended_reason` is never treated as proof that a process exited. Field reference and guarantees: [sessions status](docs/sessions-status.md).
+
+For a diagnosis rather than a verdict, the snapshot commands are available
+individually: `rush sessions why <id>` prints a combined session/batch
+evidence snapshot (session lock, batch root, host locks under `.rush/hosts`,
+live-work classification such as `batch live` / `batch unknown` / `crashed`);
+`rush sessions locks` lists the lock files; `rush sessions watch <id>` shows a
+live activity view. None of `why`, `locks`, `watch` or `show` proves that a
+process physically exited — `why` saying `crashed` or `locks` saying
+`offline` is evidence, never process-exit proof; only the launched process's
+completion establishes that. `sessions status` above is the one-shot
+machine-readable snapshot combining them.
 
 Model-context compaction summarizes existing session history, distinct from SQLite maintenance. In an ordinary direct Codex run/resume, only an exact structured `context_length_exceeded` certified before any output may trigger one silent-prefix summary and continuation in the same session; partial, opaque, uncertified output, transport errors, and NoReplay-fenced failures are never replayed. See [session operations](docs/session-operations.md) for recovery limits and [session compaction](docs/sessions-compact.md) for the explicit command.
 
@@ -413,6 +506,60 @@ Resuming in that case queues a new run behind the held ask. See
   > it took effect, or you'll see the old behavior and wrongly
   > conclude the flag doesn't work.
 
+#### Reading a run's result: rush result
+
+`rush run --json` writes a JSON result envelope. `rush result
+<session-id|path>` prints it back as readable text without fighting Windows
+codepages, and `rush run --findings-from <session-id|path>` feeds a previous
+run's review findings into the next run without manual copy-paste. Full
+details: [docs/result-command.md](docs/result-command.md).
+
+The argument is a session id — looked up as
+`<main-checkout>/.rush/stdin/<id>.out` via `git rev-parse --git-common-dir`,
+so id lookup also works from inside a linked git worktree (it resolves the
+file `rush run --worktree` writes) — or a direct path to an envelope file (a
+path that exists always wins). Four modes:
+
+```
+rush result s1-review                    # human-readable text
+rush result s1-review --review           # verdict + review only
+rush result s1-review --field final_text # raw final_text for scripting
+rush result s1-review --json | jq .exit_reason
+rush result /abs/path/envelope.out       # explicit file
+```
+
+`--json` writes the stored bytes exactly (no re-marshalling); `--field`
+prints string values raw (no quotes) and other types as JSON. Output is
+always raw UTF-8 bytes on stdout regardless of the Windows console code page
+(Go performs no ANSI/OEM transcoding on `os.Stdout`). Exit codes: 0 = envelope
+read, non-zero = not found or not valid JSON.
+
+`rush run --findings-from <session-id|path>` appends a `## Findings from
+previous review` block (verdict, review text, warnings) read from another
+run's envelope after the prompt; a missing or invalid envelope fails the run
+before it starts. Typical loop:
+
+```sh
+rush run --role smart --session t1 --json "review the diff"   # (with --worktree, the envelope lands in <main>/.rush/stdin/t1.out)
+rush result t1 --review                                       # read the verdict
+rush run --role smart --session t2 --findings-from t1 "fix every finding"
+```
+
+`rush run --fail-on-review` gives a `review_verdict: "fail"` a dedicated
+exit code instead of the default exit 0 (which makes background completion
+notifications look successful): exit 3 when the run succeeded and the verdict
+is exactly `"fail"`; `pass`/`pass_with_notes`, other verdicts and runs with
+no reviewer pass stay 0, a failed run keeps its own exit code, and the stdout
+envelope is byte-identical either way. Without the flag nothing changes.
+`rush run` exit codes:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | success (including review-fail without the flag, and `pass`/`pass_with_notes` with `--fail-on-review`) |
+| 1 | generic run error |
+| 3 | review verdict `"fail"` with `--fail-on-review` (public contract for wrapper scripts; `rush ping` uses its own separate code 3 for "degraded") |
+| 124 | timeout hard backstop force-kill |
+
 ### 3. Parallel processes against one `.rush/`
 
 For a run assigned to a particular session, include its required role flag, for example:
@@ -421,7 +568,7 @@ For a run assigned to a particular session, include its required role flag, for 
 rush run --role smart --session X "..."
 ```
 
-Locks, SQLite and additive accounting protect Rush-owned state, but do not isolate concurrent workspace-file edits; use separate worktrees or another isolation boundary for overlapping changes.
+Locks, SQLite and additive accounting protect Rush-owned state, but do not isolate concurrent workspace-file edits; for overlapping changes use [`rush run --worktree`](#worktree-delegation-worktree) or another isolation boundary.
 
 - Per-session OS flock (`internal/session/lock.go`) — two processes
   cannot share a session id.
