@@ -2,7 +2,7 @@ import { createRef } from "react";
 import type { ReactNode, WheelEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
-import type { Message as Msg } from "../../types";
+import type { Message as Msg } from "../../domain/types";
 import { clearSelection } from "./clearSelection";
 
 /** Props of the scrolling transcript container. */

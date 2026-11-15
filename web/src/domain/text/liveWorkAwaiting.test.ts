@@ -1,4 +1,4 @@
-// Unit tests for awaitingAnswerInfo (web/src/liveWorkAwaiting.ts), run with
+// Unit tests for awaitingAnswerInfo (web/src/domain/text/liveWorkAwaiting.ts), run with
 // `node --test` (Node >= 23 strips erasable TypeScript natively).
 import assert from "node:assert/strict";
 import { test } from "node:test";

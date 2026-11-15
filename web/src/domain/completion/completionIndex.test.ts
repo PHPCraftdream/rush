@@ -1,4 +1,4 @@
-// Unit tests for the R12-C completion index (web/src/completion/),
+// Unit tests for the R12-C completion index (web/src/domain/completion/),
 // run with `node --test` (Node >= 23 strips erasable TypeScript natively).
 //
 // Revert-checks:
@@ -15,12 +15,12 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { indexAsyncJobCompletions } from "./asyncJob/indexAsyncJobCompletions.ts";
-import { isAsyncCompletionNotice } from "./asyncJob/isAsyncCompletionNotice.ts";
-import { buildMyPrompts } from "./completion/buildMyPrompts.ts";
-import { mergeCompletionIndex } from "./completion/mergeCompletionIndex.ts";
-import { structuredStatus } from "./completion/structuredStatus.ts";
-import type { BatchWorkCompletion, Message } from "./types.ts";
+import { indexAsyncJobCompletions } from "../asyncJob/indexAsyncJobCompletions.ts";
+import { isAsyncCompletionNotice } from "../asyncJob/isAsyncCompletionNotice.ts";
+import { buildMyPrompts } from "./buildMyPrompts.ts";
+import { mergeCompletionIndex } from "./mergeCompletionIndex.ts";
+import { structuredStatus } from "./structuredStatus.ts";
+import type { BatchWorkCompletion, Message } from "../types.ts";
 
 /**
  * Builds a user message with the given overrides.

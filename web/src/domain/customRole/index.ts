@@ -1,7 +1,7 @@
 // Custom-role wire types plus the role helpers (one export per file in ./customRole).
-export { customRoleAt } from "./customRole/customRoleAt";
-export { roleToolsMode } from "./customRole/roleToolsMode";
-export { roleToolsPayload } from "./customRole/roleToolsPayload";
+export { customRoleAt } from "./customRoleAt";
+export { roleToolsMode } from "./roleToolsMode";
+export { roleToolsPayload } from "./roleToolsPayload";
 
 export interface CustomRole {
   provider: string;

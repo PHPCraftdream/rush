@@ -1,7 +1,7 @@
 // The awaiting-answer badge data (#1158) for the live-work Agents tab:
 // one delegation item's question, display-ready. Kept in a plain module so
 // the node --test unit suite can cover it without a DOM.
-import type { LiveWorkItem } from "./types";
+import type { LiveWorkItem } from "../types";
 
 export interface AwaitingAnswerInfo {
   question: string;

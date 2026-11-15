@@ -1,4 +1,4 @@
-import type { PeakHoursWindowSpec, ProviderPeakHoursPolicy } from "../../types";
+import type { PeakHoursWindowSpec, ProviderPeakHoursPolicy } from "../../domain/types";
 
 /** Either wire shape of a provider's peak hours: the policy, or the pre-#56 `{ start, end }` one. */
 interface ILegacyPeak {

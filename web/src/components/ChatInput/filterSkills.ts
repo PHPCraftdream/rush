@@ -1,4 +1,4 @@
-import type { SkillInfo } from "../../types";
+import type { SkillInfo } from "../../domain/types";
 
 /**
  * Narrows the skills to those whose name or description contains the slash query.

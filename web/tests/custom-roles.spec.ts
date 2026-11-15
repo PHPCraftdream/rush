@@ -5,7 +5,7 @@ import { waitForWSSend } from "./helpers/wait-for-ws-send";
 import { makeSession } from "./helpers/make-session";
 import { makeConfig } from "./helpers/make-config";
 import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
-import type { CustomRole, CustomRolesState } from "../src/customRoleTypes";
+import type { CustomRole, CustomRolesState } from "../src/domain/customRole";
 
 const reader: CustomRole = { provider: "role-provider", model: "model-a", reasoning_effort: "high", tools: ["view"] };
 

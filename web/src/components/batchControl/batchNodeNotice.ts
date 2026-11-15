@@ -1,4 +1,4 @@
-import type { BatchWorkNode } from "../../types";
+import type { BatchWorkNode } from "../../domain/types";
 import { isStopConfirmed } from "./isStopConfirmed.ts";
 
 /**

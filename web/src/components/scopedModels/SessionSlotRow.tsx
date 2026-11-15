@@ -1,7 +1,7 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { Undo2 } from "lucide-react";
 import { clearSessionModelSlot } from "../../store";
-import type { Session } from "../../types";
+import type { Session } from "../../domain/types";
 import type { ModelItem } from "../modelList/modelListTypes";
 import { EffortPicker } from "./EffortPicker";
 import { ModelPicker } from "./ModelPicker";

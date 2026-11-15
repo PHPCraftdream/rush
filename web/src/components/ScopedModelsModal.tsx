@@ -5,7 +5,7 @@ import { configCarburetor } from "../state/config";
 import { ws } from "../ws";
 import { buildModelList } from "./modelList/buildModelList";
 import type { ModelItem } from "./modelList/modelListTypes";
-import type { Session, WSMessage } from "../types";
+import type { Session, WSMessage } from "../domain/types";
 import { CustomRolesEditor } from "./CustomRolesEditor";
 import { ScopedSlotsBlock } from "./scopedModels/ScopedSlotsBlock";
 import { SessionSlotsBlock } from "./scopedModels/SessionSlotsBlock";

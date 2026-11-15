@@ -4,7 +4,7 @@ import type { TReadonly } from "@react-carburetor/core";
 import { addContextPath, removeContextPath, addSkillsPath, removeSkillsPath, setActiveSession } from "../store";
 import { wsRequest } from "../ws";
 import { X, Plus, Trash2, RefreshCw, FolderOpen, Loader2 } from "lucide-react";
-import type { SkillInfo, SkillsSnapshot } from "../types";
+import type { SkillInfo, SkillsSnapshot } from "../domain/types";
 import { configCarburetor } from "../state/config";
 import type { IConfigState } from "../state/ConfigCarburetor";
 

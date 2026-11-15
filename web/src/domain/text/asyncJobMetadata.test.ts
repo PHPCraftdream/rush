@@ -1,4 +1,4 @@
-// Unit tests for isPendingJob (web/src/asyncJobMetadata.ts), run with
+// Unit tests for isPendingJob (web/src/domain/text/asyncJobMetadata.ts), run with
 // `node --test` (Node >= 23 strips erasable TypeScript natively, no extra
 // test runner in this package).
 import assert from "node:assert/strict";

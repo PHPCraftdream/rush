@@ -1,7 +1,7 @@
 // Reasoning-effort tier badge for model-selected levels.
 
 import { memo } from "react";
-import { effortLabel } from "../../effort";
+import { effortLabel } from "../../domain/effort/effortLabel";
 
 /** Props of the effort badge. */
 interface IEffortBadgeProps {

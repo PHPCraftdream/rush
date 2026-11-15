@@ -1,7 +1,7 @@
 // Token usage + cache efficiency badge for assistant messages.
 
 import { memo } from "react";
-import type { MessageUsage } from "../../types";
+import type { MessageUsage } from "../../domain/types";
 
 /**
  * Renders a token count compactly (12345 -> "12.3k").

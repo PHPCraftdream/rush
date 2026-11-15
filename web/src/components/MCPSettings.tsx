@@ -5,7 +5,7 @@ import { mcpCarburetor } from "../state/mcp";
 import type { IMcpState } from "../state/McpCarburetor";
 import { ws, wsRequest } from "../ws";
 import { X, Plus } from "lucide-react";
-import type { MCPServerInfo } from "../types";
+import type { MCPServerInfo } from "../domain/types";
 import { MCPForm } from "./mcp/MCPForm";
 import { ServerRow } from "./mcp/ServerRow";
 import { mcpServerPayload } from "./mcp/mcpServerPayload";

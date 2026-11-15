@@ -1,4 +1,4 @@
-import type { WakeScheduleItem } from "../types";
+import type { WakeScheduleItem } from "../domain/types";
 
 const EMPTY_SCHEDULES: WakeScheduleItem[] = [];
 

@@ -1,5 +1,5 @@
 import { Carburetor } from "@react-carburetor/core";
-import type { WakeScheduleItem } from "../types";
+import type { WakeScheduleItem } from "../domain/types";
 
 /** Wake schedules of each session, delivered as full session_wake_schedules snapshots. */
 export interface IWakeSchedulesState {

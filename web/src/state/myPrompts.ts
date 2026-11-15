@@ -1,7 +1,7 @@
 import { computed } from "@react-carburetor/core";
-import { isAsyncCompletionNotice } from "../asyncJob/isAsyncCompletionNotice";
-import { buildMyPrompts } from "../completion/buildMyPrompts";
-import type { Message } from "../types";
+import { isAsyncCompletionNotice } from "../domain/asyncJob/isAsyncCompletionNotice";
+import { buildMyPrompts } from "../domain/completion/buildMyPrompts";
+import type { Message } from "../domain/types";
 import { messagesCarburetor } from "./messages";
 
 /**

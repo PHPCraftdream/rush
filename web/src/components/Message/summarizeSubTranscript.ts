@@ -1,7 +1,7 @@
 // Folds a sub-agent transcript into the facts the block header needs.
 
 import type { TReadonly } from "@react-carburetor/core";
-import type { Message } from "../../types";
+import type { Message } from "../../domain/types";
 
 /** Facts read off a sub-agent transcript. */
 export interface ISubTranscriptSummary {

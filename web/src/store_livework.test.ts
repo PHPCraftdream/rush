@@ -4,7 +4,7 @@ import { isStaleWakeSnapshot } from "./wakeSnapshot/isStaleWakeSnapshot.ts";
 import { pickPendingWake } from "./wakeSnapshot/pickPendingWake.ts";
 import { WakeSchedulesCarburetor } from "./state/WakeSchedulesCarburetor.ts";
 import { LiveWorkCarburetor } from "./state/LiveWorkCarburetor.ts";
-import type { WakeScheduleItem } from "./types.ts";
+import type { WakeScheduleItem } from "./domain/types.ts";
 
 /**
  * Builds an active wake schedule.
@@ -87,7 +87,7 @@ test("setSchedules replaces one session without touching the others", () => {
 
 test("live-work snapshots replace per session and an incomplete push never erases live work", () => {
   const store = new LiveWorkCarburetor({ bySession: {} });
-  const item = { id: "c1" } as unknown as import("./types.ts").LiveWorkItem;
+  const item = { id: "c1" } as unknown as import("./domain/types.ts").LiveWorkItem;
   store.applySnapshot({ sessionID: "s1", commands: [item], agents: [] } as never);
   assert.equal(store.getData().bySession["s1"]?.commands.length, 1);
   store.applySnapshot({ sessionID: "s1", complete: false, commands: [], agents: [] } as never);

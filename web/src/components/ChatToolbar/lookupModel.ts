@@ -1,5 +1,5 @@
 import type { TReadonly } from "@react-carburetor/core";
-import type { ConfigPayload } from "../../types";
+import type { ConfigPayload } from "../../domain/types";
 
 /** Name and context window of one configured model. */
 export interface IModelInfo {

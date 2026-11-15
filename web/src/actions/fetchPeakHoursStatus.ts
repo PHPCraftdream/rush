@@ -1,5 +1,5 @@
 import { wsRequest } from "../net/wsRequest";
-import type { ProviderPeakHoursStatus } from "../types";
+import type { ProviderPeakHoursStatus } from "../domain/types";
 
 /**
  * Asks the backend for its authoritative peak-hours evaluation (get_peak_hours_status).

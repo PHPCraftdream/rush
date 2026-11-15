@@ -9,7 +9,7 @@ import {
   Pencil,
   Wrench,
 } from "lucide-react";
-import type { MCPServerInfo } from "../../types";
+import type { MCPServerInfo } from "../../domain/types";
 import { ws, wsRequest } from "../../ws";
 import { MCPForm } from "./MCPForm";
 import { StatusBadge } from "./StatusBadge";

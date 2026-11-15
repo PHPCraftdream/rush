@@ -1,5 +1,5 @@
 import { Carburetor } from "@react-carburetor/core";
-import type { Session } from "../types";
+import type { Session } from "../domain/types";
 
 /** Sessions known to this tab and the one the chat is showing. */
 export interface ISessionsState {

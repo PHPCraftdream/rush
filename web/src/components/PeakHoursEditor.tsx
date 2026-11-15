@@ -1,7 +1,7 @@
 import type { ChangeEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { Plus, Trash2 } from "lucide-react";
-import type { PeakHoursWindowSpec, ProviderPeakHoursPolicy } from "../types";
+import type { PeakHoursWindowSpec, ProviderPeakHoursPolicy } from "../domain/types";
 import { DAYS } from "./peakHours/DAYS";
 import { MAX_WINDOWS } from "./peakHours/MAX_WINDOWS";
 import { canonicalDays } from "./peakHours/canonicalDays";

@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Message } from "./types.ts";
+import type { Message } from "../types.ts";
 import { mergePreserveContent } from "./mergeMessage.ts";
 
 /**

@@ -9,9 +9,9 @@ export type { ModelRole } from "./state/ConfigCarburetor";
 export type { QueuedMessage, WireAttachment, FlushedQueue } from "./state/QueueCarburetor";
 export type { SessionLiveWork } from "./state/LiveWorkCarburetor";
 export type { ExpandToolCallRequest } from "./state/SignalsCarburetor";
-export type { MyPromptItem } from "./completionIndex";
+export type { MyPromptItem } from "./domain/completion/completionTypes";
 export type { ConfigScope } from "./actions/ConfigScope";
-export { mergePreserveContent } from "./mergeMessage";
+export { mergePreserveContent } from "./domain/text/mergeMessage";
 
 export { trackModelUsage } from "./actions/trackModelUsage";
 export { removeRecentModel } from "./actions/removeRecentModel";

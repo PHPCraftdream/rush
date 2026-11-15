@@ -1,5 +1,5 @@
 import { Carburetor } from "@react-carburetor/core";
-import type { SkillInfo } from "../types";
+import type { SkillInfo } from "../domain/types";
 
 /** The skills the server offers and the one the composer used last. */
 export interface ISkillsState {

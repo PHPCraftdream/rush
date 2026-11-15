@@ -3,7 +3,7 @@ import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
 import { X, AlertCircle, Loader2 } from "lucide-react";
 import { pauseProviderPeakHours, resumeProviderPeakHours, type ConfigScope } from "../../store";
-import type { ProviderInfo, ProviderPeakHoursPolicy } from "../../types";
+import type { ProviderInfo, ProviderPeakHoursPolicy } from "../../domain/types";
 import { wsRequest } from "../../ws";
 import { PeakHoursEditor } from "../PeakHoursEditor";
 import { legacyToPolicy } from "../peakHours/legacyToPolicy";

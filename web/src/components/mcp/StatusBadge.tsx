@@ -1,6 +1,6 @@
 import type { TReadonly } from "@react-carburetor/core";
 import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
-import type { MCPServerInfo } from "../../types";
+import type { MCPServerInfo } from "../../domain/types";
 
 /**
  * A server's status pill.

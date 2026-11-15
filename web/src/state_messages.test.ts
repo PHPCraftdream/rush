@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { MessagesCarburetor } from "./state/MessagesCarburetor.ts";
-import type { Message } from "./types.ts";
+import type { Message } from "./domain/types.ts";
 
 /**
  * Builds a message.

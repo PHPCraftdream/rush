@@ -1,4 +1,4 @@
-import type { WSMessage } from "../types";
+import type { WSMessage } from "../domain/types";
 import { connectionCarburetor } from "../state/connection";
 
 type Handler = (msg: WSMessage) => void;

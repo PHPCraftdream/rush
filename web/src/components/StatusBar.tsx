@@ -1,6 +1,6 @@
 import { AntiHookComponent } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
-import type { MCPServerInfo } from "../types";
+import type { MCPServerInfo } from "../domain/types";
 import { connectionCarburetor } from "../state/connection";
 import { mcpCarburetor } from "../state/mcp";
 

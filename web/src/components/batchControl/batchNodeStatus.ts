@@ -1,4 +1,4 @@
-import type { BatchWorkNode } from "../../types";
+import type { BatchWorkNode } from "../../domain/types";
 
 /**
  * The status label of a batch node.

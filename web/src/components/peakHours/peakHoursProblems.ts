@@ -1,4 +1,4 @@
-import type { ProviderPeakHoursPolicy } from "../../types";
+import type { ProviderPeakHoursPolicy } from "../../domain/types";
 import { END_RE } from "./END_RE.ts";
 import { HH_MM_RE } from "./HH_MM_RE.ts";
 import { MAX_WINDOWS } from "./MAX_WINDOWS.ts";

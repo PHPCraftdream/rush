@@ -1,5 +1,5 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
-import type { Session } from "../../types";
+import type { Session } from "../../domain/types";
 import type { ModelItem } from "../modelList/modelListTypes";
 import { SLOTS } from "./SLOTS";
 import { SessionSlotRow } from "./SessionSlotRow";
