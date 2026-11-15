@@ -10,12 +10,12 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS } from "./helpers/mock-ws";
-import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
-import { waitForWSSend } from "./helpers/wait-for-ws-send";
-import { makeSession } from "./helpers/make-session";
-import { makeConfig } from "./helpers/make-config";
-import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
+import { setupMockWS } from "./helpers";
+import { sendMockWSMessage } from "./helpers";
+import { waitForWSSend } from "./helpers";
+import { makeSession } from "./helpers";
+import { makeConfig } from "./helpers";
+import { fulfillAuthOk } from "./helpers";
 
 test.beforeEach(async ({ page }) => {
   await setupMockWS(page);
