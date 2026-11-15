@@ -3,8 +3,8 @@ import type { ChangeEvent, KeyboardEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
 import { Pencil, PlusCircle, Send, Trash2, Zap } from "lucide-react";
-import { interruptAndSendQueuedMessage, sendQueuedMessageDirect, sendQueuedMessageNow } from "../../store";
-import type { QueuedMessage } from "../../store";
+import { interruptAndSendQueuedMessage, sendQueuedMessageDirect, sendQueuedMessageNow } from "../../actions";
+import type { QueuedMessage } from "../../actions";
 import { queueCarburetor } from "../../state/transcript/queue";
 
 /** Props of one queued-message row. */

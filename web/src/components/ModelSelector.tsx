@@ -9,7 +9,7 @@ import {
   setSessionRoleEffort,
   clearSessionModelSlot,
   type ModelRole,
-} from "../store";
+} from "../actions";
 import type { Session } from "../domain/types";
 import { configCarburetor } from "../state/config/config";
 import { effortLabel } from "../domain/effort/effortLabel";

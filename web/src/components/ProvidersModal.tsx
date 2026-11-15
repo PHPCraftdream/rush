@@ -1,7 +1,7 @@
 import type { MouseEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
-import { removeCustomProvider, type ConfigScope } from "../store";
+import { removeCustomProvider, type ConfigScope } from "../actions";
 import { X, Plus } from "lucide-react";
 import type { ProviderInfo } from "../domain/types";
 import { wsRequest } from "../backend";

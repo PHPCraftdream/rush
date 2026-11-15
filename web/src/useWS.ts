@@ -15,8 +15,8 @@ import {
   tombstoneMessage,
   trackModelUsage,
   applyTheme,
-} from "./store";
-import type { ModelRole } from "./store";
+} from "./actions";
+import type { ModelRole } from "./actions";
 import type {
   WSMessage,
   Session,

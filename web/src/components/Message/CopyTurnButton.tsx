@@ -3,7 +3,7 @@
 
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { Check, Copy } from "lucide-react";
-import { collectTurnContent } from "../../store";
+import { collectTurnContent } from "../../actions";
 
 /** Props of the copy-turn button. */
 interface ICopyTurnButtonProps {

@@ -1,5 +1,5 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
-import { fetchPeakHoursStatus } from "../store";
+import { fetchPeakHoursStatus } from "../actions";
 import type { ProviderPeakHoursStatus } from "../domain/types";
 
 // ── Backend-authoritative peak-hours status badge (task #56) ─────────────────

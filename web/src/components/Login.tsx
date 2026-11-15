@@ -1,7 +1,7 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { ChangeEvent, FormEvent } from "react";
 import { KeyRound, Loader2, Terminal, Sun, Moon } from "lucide-react";
-import { setTheme } from "../store";
+import { setTheme } from "../actions";
 import { authCarburetor } from "../state/link/auth";
 
 /** Local form state of the login screen. */

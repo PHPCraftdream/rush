@@ -2,7 +2,7 @@ import { createRef } from "react";
 import type { MouseEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { CornerLeftUp } from "lucide-react";
-import type { MyPromptItem } from "../../store";
+import type { MyPromptItem } from "../../actions";
 import { myPrompts } from "../../state/runtime/myPrompts";
 
 /** Props of one history row. */

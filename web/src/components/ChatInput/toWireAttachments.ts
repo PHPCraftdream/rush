@@ -1,4 +1,4 @@
-import type { WireAttachment } from "../../store";
+import type { WireAttachment } from "../../actions";
 import type { PendingAttachment } from "./PendingAttachment";
 
 /**
