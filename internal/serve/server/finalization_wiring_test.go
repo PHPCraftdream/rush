@@ -145,11 +145,15 @@ func TestAPIEventsFeederNilGateFeedsTerminalMessageImmediately(t *testing.T) {
 	require.Nil(t, finalizationTerminalGateFor(a),
 		"the flag-off fixture app must resolve to the inert nil gate")
 	log := NewAPIEventLog(nil)
+	// The feeder subscribes from its own goroutine: take the baseline BEFORE
+	// starting it, or a fast subscription is already counted and the wait
+	// below targets one subscriber that never comes.
+	messages := a.Messages.(apiEventsSubscriberCounter)
+	before := messages.GetSubscriberCount()
 	feeder := startAPIEventFeeder(a, log, nil)
 	t.Cleanup(func() { _ = feeder.Stop(context.Background()) })
 
-	messages := a.Messages.(apiEventsSubscriberCounter)
-	finalizationWaitForSubscriberCount(t, "message feed", messages.GetSubscriberCount, messages.GetSubscriberCount()+1)
+	finalizationWaitForSubscriberCount(t, "message feed", messages.GetSubscriberCount, before+1)
 
 	ctx := t.Context()
 	sess, err := a.Sessions.Create(ctx, "feeder inert")
@@ -176,11 +180,15 @@ func TestAPIEventsFeederGatesTerminalMessageUntilSeal(t *testing.T) {
 
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	log := NewAPIEventLog(nil)
+	// The feeder subscribes from its own goroutine: take the baseline BEFORE
+	// starting it, or a fast subscription is already counted and the wait
+	// below targets one subscriber that never comes.
+	messages := a.Messages.(apiEventsSubscriberCounter)
+	before := messages.GetSubscriberCount()
 	feeder := startAPIEventFeeder(a, log, nil)
 	t.Cleanup(func() { _ = feeder.Stop(context.Background()) })
 
-	messages := a.Messages.(apiEventsSubscriberCounter)
-	finalizationWaitForSubscriberCount(t, "gated message feed", messages.GetSubscriberCount, messages.GetSubscriberCount()+1)
+	finalizationWaitForSubscriberCount(t, "gated message feed", messages.GetSubscriberCount, before+1)
 
 	ctx := t.Context()
 	sess, err := a.Sessions.Create(ctx, "feeder gated")
@@ -236,9 +244,11 @@ func TestSubscribeAndBroadcastGatesTerminalMessageUntilSeal(t *testing.T) {
 	client.send = make(chan []byte, 100)
 	hub.register <- client
 
-	subscribeAndBroadcast(ctx, a, hub)
+	// The forwarders subscribe from their own goroutines: baseline first.
 	messages := a.Messages.(apiEventsSubscriberCounter)
-	finalizationWaitForSubscriberCount(t, "gated ws message feed", messages.GetSubscriberCount, messages.GetSubscriberCount()+1)
+	before := messages.GetSubscriberCount()
+	subscribeAndBroadcast(ctx, a, hub)
+	finalizationWaitForSubscriberCount(t, "gated ws message feed", messages.GetSubscriberCount, before+1)
 
 	// Non-terminal assistant message broadcasts immediately.
 	partial, err := a.Messages.Create(ctx, sess.ID, message.CreateMessageParams{
