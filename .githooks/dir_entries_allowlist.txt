@@ -16,7 +16,9 @@ internal/agent/cliprovider 23
 internal/agent/tools 80
 internal/agent/tools/mcp 19
 internal/apiclient 13
-internal/app 61
+# internal/app 61 -> 62: +1 for the new subdirectory internal/app/itest (cross-module scenario tests, sprint 0 wave 1).
+# The count falls with the package split (stage D2).
+internal/app 62
 internal/cahgen 9
 internal/cmd 165
 internal/config 120
