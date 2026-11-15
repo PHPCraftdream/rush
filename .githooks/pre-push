@@ -264,6 +264,25 @@ bash .githooks/check_file_size.sh || fail "file-size ratchet violated -- see out
 step "file-size guard self-test (throwaway repos + allowlist <-> .golangci.yml bijection)"
 bash .githooks/check_file_size_selftest.sh || fail "file-size guard self-test failed"
 
+# The operator's Sprint 0 structural rules (docs/plans/
+# 2026-11-15-sprint0-plan.md): at most 7 elements per code directory,
+# and package names unique across the repository. Both ship under
+# RATCHET allowlists like the file-size one -- a listed entry may keep
+# its debt but fails the moment it grows, and must leave the list once
+# it is fixed. The dir-entries rule does not count test files by
+# default (opt in with DIR_ENTRIES_COUNT_TESTS=1 or --count-tests).
+step "no code directory over 7 entries (ratcheted allowlist)"
+bash .githooks/check_dir_entries.sh || fail "directory-entries ratchet violated -- see output above"
+
+step "package names are unique across the repository (ratcheted allowlist)"
+bash .githooks/check_pkg_names.sh || fail "duplicate package names found -- see output above"
+
+step "dir-entries guard self-test (throwaway repos)"
+bash .githooks/check_dir_entries_selftest.sh || fail "dir-entries guard self-test failed"
+
+step "package-name guard self-test (throwaway repos)"
+bash .githooks/check_pkg_names_selftest.sh || fail "package-name guard self-test failed"
+
 # The web UI's typecheck. rsbuild (pnpm build) does NOT check types, so
 # without this nothing in the project does — which is how five errors,
 # including a required prop that silently changed how tool groups render,

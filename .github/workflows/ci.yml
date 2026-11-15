@@ -184,6 +184,18 @@ jobs:
       - name: self-test file-size guard
         if: runner.os == 'Linux'
         run: bash .githooks/check_file_size_selftest.sh
+      - name: no code directory over 7 entries (ratchet allowlist)
+        if: runner.os == 'Linux'
+        run: bash .githooks/check_dir_entries.sh
+      - name: self-test dir-entries guard
+        if: runner.os == 'Linux'
+        run: bash .githooks/check_dir_entries_selftest.sh
+      - name: package names are unique across the repository (ratchet allowlist)
+        if: runner.os == 'Linux'
+        run: bash .githooks/check_pkg_names.sh
+      - name: self-test package-name guard
+        if: runner.os == 'Linux'
+        run: bash .githooks/check_pkg_names_selftest.sh
       - name: go mod tidy produces no diff
         if: runner.os == 'Linux' && needs.plan.outputs.heavy_allowed == 'true'
         run: go mod tidy -diff

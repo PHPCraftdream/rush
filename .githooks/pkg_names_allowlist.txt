@@ -1,0 +1,10 @@
+# pkg-names ratchet -- see .githooks/check_pkg_names.sh.
+#
+# One line per known collision of the "package names are unique"
+# rule, seeded 2026-11-15 with the exact current counts of declaring
+# directories. A listed name may stay duplicated but the guard fails
+# the moment it GROWS, and fails with a "remove it from" message once
+# it is back to a single declaring directory. Entries may only be
+# removed.
+hyper 2
+lab 2
