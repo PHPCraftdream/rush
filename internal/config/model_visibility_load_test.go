@@ -31,8 +31,8 @@ func TestLoadKeepsExplicitlySelectedHiddenGLMModel(t *testing.T) {
 
 	require.True(t, !discover.ModelVisible("zai", "glm-5"),
 		"precondition: the selected model is hidden from the lists")
-	require.NoError(t, cfg.configureProviders(context.Background(), testStore(cfg), envMap, resolver, known))
-	require.NoError(t, configureSelectedModels(testStore(cfg), cfg, known, false),
+	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, known, testStore(cfg).removeConfigFieldBestEffort, nil))
+	require.NoError(t, ConfigureSelectedModels(cfg, known),
 		"an explicitly pinned hidden model must not break config loading")
 
 	smart := cfg.Models[SelectedModelTypeSmart]
@@ -67,8 +67,8 @@ func TestLoadKeepsExplicitlySelectedHiddenCodexModel(t *testing.T) {
 	resolver := NewShellVariableResolver(env.NewFromMap(nil))
 	require.True(t, !discover.ModelVisible("openai-codex", "gpt-5.6-luna"),
 		"precondition: the selected model is hidden from the lists")
-	require.NoError(t, cfg.configureProviders(ctx, testStore(cfg), env.NewFromMap(nil), resolver, nil))
-	require.NoError(t, configureSelectedModels(testStore(cfg), cfg, nil, false),
+	require.NoError(t, configureProviders(ctx, cfg, env.NewFromMap(nil), resolver, nil, testStore(cfg).removeConfigFieldBestEffort, nil))
+	require.NoError(t, ConfigureSelectedModels(cfg, nil),
 		"an explicitly pinned hidden Codex model must not break config loading")
 
 	smart := cfg.Models[SelectedModelTypeSmart]
@@ -93,8 +93,8 @@ func TestLoadResolvesReviewerGLM53Flash(t *testing.T) {
 
 	require.True(t, discover.ModelVisible("zai", "glm-5.3-flash"),
 		"glm-5.3-flash sits at the visibility boundary and stays visible")
-	require.NoError(t, cfg.configureProviders(context.Background(), testStore(cfg), envMap, resolver, known))
-	require.NoError(t, configureSelectedModels(testStore(cfg), cfg, known, false),
+	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, known, testStore(cfg).removeConfigFieldBestEffort, nil))
+	require.NoError(t, ConfigureSelectedModels(cfg, known),
 		"a reviewer slot on glm-5.3-flash must not break config loading")
 
 	reviewer := cfg.Models[SelectedModelTypeReviewer]

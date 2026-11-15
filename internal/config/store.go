@@ -287,6 +287,125 @@ func (s *ConfigStore) publishLocked(next *storeSnapshot) {
 	s.snap.Store(next)
 }
 
+// InitialSnapshot carries everything the initial load publishes as the
+// store's first real generation, plus the exact candidate inputs publish
+// must re-verify before swapping it in. publishInitialSnapshot derives the
+// staleness state (trackedConfigPaths, snapshots) from those inputs under
+// diskWriteMu and fixes resolverRevision and generation at 1 — the same
+// snapshot composition the pre-seam publish closure in load.go built.
+type InitialSnapshot struct {
+	Config              *Config
+	Resolver            VariableResolver
+	MCPRevisions        map[string]uint64
+	MCPInputs           map[string][32]byte
+	ResolverFingerprint [32]byte
+	ResolverDynamic     bool
+	KnownProviders      []catwalk.Provider
+	LoadedPaths         []string
+	WorkspacePath       string
+	// configPaths and externalPaths are the candidate input path sets
+	// (lookupConfigCandidates / mcpJSONCandidatePaths results) captured by
+	// the caller; publish re-verifies them against initialLoadFingerprints.
+	ConfigPaths   []string
+	ExternalPaths []string
+}
+
+// NewStore constructs a ConfigStore with its construction-time identity —
+// the fields that never change after Load (workingDir, globalDataPath,
+// dataDirSource, sharedDataDir, cliModels) — and publishes seed as the
+// placeholder snapshot that makes scope-aware helpers usable before the
+// real generation exists. Only the placeholder-relevant fields of seed are
+// published (config, mcpRevisions, workspacePath, loadedPaths,
+// resolverRevision 1). Load is the only production caller, and the store is
+// not visible to any other goroutine until loadOnce returns, so the
+// placeholder publish needs no synchronization.
+func NewStore(workingDir, globalDataPath string, dataDirSource DataDirSource, sharedDataDir bool, cliModels func() []catalog.LocalCLIModel, seed *InitialSnapshot) *ConfigStore {
+	s := &ConfigStore{
+		workingDir:     workingDir,
+		globalDataPath: globalDataPath,
+		dataDirSource:  dataDirSource,
+		sharedDataDir:  sharedDataDir,
+		cliModels:      cliModels,
+	}
+	if seed != nil {
+		s.snap.Store(&storeSnapshot{
+			config:           seed.Config,
+			mcpRevisions:     seed.MCPRevisions,
+			resolverRevision: 1,
+			workspacePath:    seed.WorkspacePath,
+			loadedPaths:      seed.LoadedPaths,
+		})
+	}
+	return s
+}
+
+// Hold reloadMu AND publishMu during the initial load (same acquisition
+// order as buildAndPublishReload: reloadMu -> publishMu), so that
+// auto-reload triggered by config-modifying operations inside
+// configureProviders (e.g. RemoveConfigField) is skipped instead of
+// recursing.
+//
+// autoReload's redundant-reload dedup is reloadMu.TryLock(), not
+// publishMu (see reloadMu's field doc) — holding only publishMu here,
+// as this function did before, no longer makes a re-entrant autoReload
+// call a safe no-op: it would find reloadMu free, succeed the TryLock,
+// and hang forever trying to re-acquire publishMu on this same
+// goroutine (sync.Mutex is not reentrant). This was a real,
+// 100%-reproducible deadlock on any Load() call where a model role has
+// no configured selection yet (confirmed via
+// TestModelsBump_NonAtomModel_ReportsCleanly hanging past both a 600s
+// and an isolated 30s test timeout with an identical stuck stack).
+//
+// Acquiring reloadMu here is safe with no other goroutine to race
+// against: the *ConfigStore value doesn't exist (and so cannot be
+// referenced by anything else) until NewStore constructed it inside
+// loadOnce and loadOnce returns it, so nothing outside this call can
+// possibly be reloading THIS store concurrently while both locks are
+// held.
+func (s *ConfigStore) InitialLoad(fingerprints map[string]reloadFileFingerprint, build func(publish func(*InitialSnapshot) error) error) error {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	s.initializing.Store(true)
+	defer s.initializing.Store(false)
+	s.initialLoadFingerprints = fingerprints
+	defer func() { s.initialLoadFingerprints = nil }()
+	return build(s.publishInitialSnapshot)
+}
+
+// publishInitialSnapshot re-verifies the candidate inputs under diskWriteMu
+// (rejecting with errReloadDiskChanged when any input changed), rebuilds the
+// exact-byte staleness snapshot from Load's fingerprint map, and publishes
+// the fully-prepared first generation with resolverRevision and generation
+// fixed at 1.
+func (s *ConfigStore) publishInitialSnapshot(initial *InitialSnapshot) error {
+	s.diskWriteMu.Lock()
+	defer s.diskWriteMu.Unlock()
+	if candidateInputsChanged(s.workingDir, initial.ConfigPaths, initial.ExternalPaths, s.initialLoadFingerprints) {
+		return errReloadDiskChanged
+	}
+	stalenessPaths := configAndMCPStalenessPaths(lookupConfigCandidates(s.workingDir), s.workingDir)
+	stalenessPaths = append(stalenessPaths, initial.WorkspacePath, s.globalDataPath)
+	trackedPaths, snapshots := reloadStalenessState(stalenessPaths, s.initialLoadFingerprints)
+	s.snap.Store(&storeSnapshot{
+		config:              initial.Config,
+		resolver:            initial.Resolver,
+		mcpRevisions:        initial.MCPRevisions,
+		mcpInputs:           initial.MCPInputs,
+		resolverRevision:    1,
+		resolverFingerprint: initial.ResolverFingerprint,
+		resolverDynamic:     initial.ResolverDynamic,
+		knownProviders:      initial.KnownProviders,
+		loadedPaths:         initial.LoadedPaths,
+		trackedConfigPaths:  trackedPaths,
+		snapshots:           snapshots,
+		workspacePath:       initial.WorkspacePath,
+		generation:          1,
+	})
+	return nil
+}
+
 // Config returns the pure-data config struct (read-only after load).
 func (s *ConfigStore) Config() *Config {
 	return s.loadSnapshot().config

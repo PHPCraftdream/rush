@@ -109,7 +109,7 @@ func TestProviderProxyNoneSurvivesConfigureProviders(t *testing.T) {
 	cfg.Options.Network = &NetworkConfig{Proxy: "http://global-proxy.example:8080"}
 
 	environ := env.NewFromMap(map[string]string{"OPENAI_API_KEY": "test-key"})
-	require.NoError(t, cfg.configureProviders(context.Background(), testStore(cfg), environ, NewShellVariableResolver(environ), known))
+	require.NoError(t, configureProviders(context.Background(), cfg, environ, NewShellVariableResolver(environ), known, testStore(cfg).removeConfigFieldBestEffort, nil))
 
 	for _, id := range []string{"openai", "custom"} {
 		pc, ok := cfg.Providers.Get(id)

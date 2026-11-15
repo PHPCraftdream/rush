@@ -41,10 +41,10 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		cfg.setDefaults("/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
-		smart, fast, err := cfg.defaultModelSelection(knownProviders)
+		smart, fast, err := defaultModelSelection(cfg, knownProviders)
 		require.NoError(t, err)
 		require.Equal(t, "smart-model", smart.Model)
 		require.Equal(t, "openai", smart.Provider)
@@ -77,10 +77,10 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		cfg.setDefaults("/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
-		_, _, err = cfg.defaultModelSelection(knownProviders)
+		_, _, err = defaultModelSelection(cfg, knownProviders)
 		require.Error(t, err)
 	})
 	t.Run("should not error if default model is missing but provider has any models", func(t *testing.T) {
@@ -110,9 +110,9 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		cfg.setDefaults("/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
-		_, _, err = cfg.defaultModelSelection(knownProviders)
+		_, _, err = defaultModelSelection(cfg, knownProviders)
 		require.NoError(t, err)
 	})
 
@@ -153,9 +153,9 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		cfg.setDefaults("/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
-		smart, fast, err := cfg.defaultModelSelection(knownProviders)
+		smart, fast, err := defaultModelSelection(cfg, knownProviders)
 		require.NoError(t, err)
 		require.Equal(t, "model", smart.Model)
 		require.Equal(t, "custom", smart.Provider)
@@ -197,9 +197,9 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		cfg.setDefaults("/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
-		_, _, err = cfg.defaultModelSelection(knownProviders)
+		_, _, err = defaultModelSelection(cfg, knownProviders)
 		require.Error(t, err)
 	})
 	t.Run("should use the default provider first", func(t *testing.T) {
@@ -239,9 +239,9 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		cfg.setDefaults("/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
-		smart, fast, err := cfg.defaultModelSelection(knownProviders)
+		smart, fast, err := defaultModelSelection(cfg, knownProviders)
 		require.NoError(t, err)
 		require.Equal(t, "smart-model", smart.Model)
 		require.Equal(t, "openai", smart.Provider)
@@ -280,10 +280,10 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 		store := newTestConfigStore(testStoreOpts{config: cfg, globalDataPath: globalPath})
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), store, env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, store.removeConfigFieldBestEffort, store.cliModels)
 		require.NoError(t, err)
 
-		err = configureSelectedModels(store, cfg, knownProviders, false)
+		err = ConfigureSelectedModels(cfg, knownProviders)
 		require.NoError(t, err)
 
 		// In-memory falls back to default.
@@ -330,10 +330,10 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 		cfg.setDefaults("/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
-		err = configureSelectedModels(testStore(cfg), cfg, knownProviders, true)
+		err = ConfigureSelectedModels(cfg, knownProviders)
 		require.NoError(t, err)
 		smart := cfg.Models[SelectedModelTypeSmart]
 		fast := cfg.Models[SelectedModelTypeFast]
@@ -392,10 +392,10 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 		cfg.setDefaults("/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
-		err = configureSelectedModels(testStore(cfg), cfg, knownProviders, true)
+		err = ConfigureSelectedModels(cfg, knownProviders)
 		require.NoError(t, err)
 		smart := cfg.Models[SelectedModelTypeSmart]
 		fast := cfg.Models[SelectedModelTypeFast]
@@ -437,10 +437,10 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 		cfg.setDefaults("/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
-		err = configureSelectedModels(testStore(cfg), cfg, knownProviders, true)
+		err = ConfigureSelectedModels(cfg, knownProviders)
 		require.NoError(t, err)
 		smart := cfg.Models[SelectedModelTypeSmart]
 		require.Equal(t, "smart-model", smart.Model)
@@ -506,10 +506,10 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 		cfg.setDefaults("/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
-		err = configureSelectedModels(testStore(cfg), cfg, knownProviders, true)
+		err = ConfigureSelectedModels(cfg, knownProviders)
 		require.NoError(t, err)
 		smart := cfg.Models[SelectedModelTypeSmart]
 		fast := cfg.Models[SelectedModelTypeFast]

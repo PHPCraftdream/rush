@@ -54,7 +54,7 @@ func configureOne(t *testing.T, cfg *Config, known []catwalk.Provider, vars map[
 	t.Helper()
 	cfg.setDefaults(t.TempDir(), "")
 	environ := env.NewFromMap(vars)
-	require.NoError(t, cfg.configureProviders(context.Background(), testStore(cfg), environ, NewShellVariableResolver(environ), known))
+	require.NoError(t, configureProviders(context.Background(), cfg, environ, NewShellVariableResolver(environ), known, testStore(cfg).removeConfigFieldBestEffort, nil))
 }
 
 func TestCustomProviderAutoDiscoveryUsesTheProviderClient(t *testing.T) {
