@@ -13,13 +13,12 @@
 #
 # Counts taken from docs/plans/2026-11-15-sprint0-plan.md stage A1b
 # (gate V7).
-internal/agent/agent.go 966
 internal/agent/agent_run.go 918
 internal/agent/agent_turn_step.go 932
 internal/agent/batch_cutover_await_test.go 989
 internal/agent/batch_install_adapters.go 958
 internal/agent/coordinator_interrupt.go 958
-internal/agent/coordinator_providers.go 957
+internal/agent/coordinator_providers.go 939
 internal/agent/coordinator_run.go 998
 internal/agent/coordinator_test.go 901
 internal/agent/coordinator_tool_pinning_test.go 995
