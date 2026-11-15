@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 func TestServeAPIRealListenerIntegration(t *testing.T) {

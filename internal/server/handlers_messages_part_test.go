@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // createTestMessageWithAllParts creates a test message with all part types.

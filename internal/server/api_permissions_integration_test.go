@@ -16,8 +16,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 type apiPermissionLogBuffer struct {

@@ -11,7 +11,7 @@ import (
 	"log/slog"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // updateMessageAndVerify wraps a.Messages.Update for the four message-part

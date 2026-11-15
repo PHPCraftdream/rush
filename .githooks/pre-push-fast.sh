@@ -98,8 +98,8 @@ while IFS= read -r pkg; do
 done <<< "$packages"
 
 # Keep this SQL ASCII check identical to full mode.
-step "internal/db/sql is ASCII-only (sqlc miscounts spans around multi-byte comments)"
-if offenders="$(grep -lP "[^[:ascii:]]" internal/db/sql/*.sql 2>/dev/null)" && [ -n "$offenders" ]; then
+step "internal/store/db/sql is ASCII-only (sqlc miscounts spans around multi-byte comments)"
+if offenders="$(grep -lP "[^[:ascii:]]" internal/store/db/sql/*.sql 2>/dev/null)" && [ -n "$offenders" ]; then
 	printf '[31mnon-ASCII bytes in:[0m
 %s
 ' "$offenders"

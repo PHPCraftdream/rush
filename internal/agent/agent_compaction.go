@@ -18,8 +18,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/heartbeat"
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // summaryCommitMaxDuration bounds the silent compaction's COMMIT phase — the

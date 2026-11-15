@@ -15,15 +15,15 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/filetracker"
 	"github.com/PHPCraftdream/rush/internal/heartbeat"
-	"github.com/PHPCraftdream/rush/internal/history"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/filetracker"
+	"github.com/PHPCraftdream/rush/internal/store/history"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // coordinatorAdapterImpl wraps agent.Coordinator to satisfy session.Coordinator,

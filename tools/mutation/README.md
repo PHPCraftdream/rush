@@ -67,7 +67,7 @@ PR #12 becomes merge-ready for main; retain proof artifacts outside main.
   m11 uses the vacuous-list record: the strengthened snapshot test seeds a void
   unreacted woken row, so test/purpose/expected assertion come from there.
   Every needle was re-verified against the regenerated
-  `internal/db/batch_history.sql.go` at base 75136c49: all occur exactly once,
+  `internal/store/db/batch_history.sql.go` at base 75136c49: all occur exactly once,
   but the regeneration DID change content, so the R10c refresh is real:
   the blob's SHA-256 moved
   `302393160fc38933781577f8332d21a16392c02fe62e2944bd6338bade486683` ->

@@ -14,8 +14,8 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
 

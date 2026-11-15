@@ -14,7 +14,7 @@ import (
 	"charm.land/log/v2"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/spf13/cobra"
 )
 

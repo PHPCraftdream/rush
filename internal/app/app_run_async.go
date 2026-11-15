@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // The `rush run` loop follows the coordinator's launch decision (docs/reviews/

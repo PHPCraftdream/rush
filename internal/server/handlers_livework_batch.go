@@ -17,8 +17,8 @@ import (
 	"sort"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 // batchAgentTaskKinds maps a batch task_kind to the flat panel's Agents list

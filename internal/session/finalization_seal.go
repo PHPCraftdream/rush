@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // AgentFinalizationSealReason is the typed cause of a TrySeal refusal. The

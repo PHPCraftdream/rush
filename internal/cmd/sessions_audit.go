@@ -23,8 +23,8 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/projects"
+	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/spf13/cobra"
 )
 

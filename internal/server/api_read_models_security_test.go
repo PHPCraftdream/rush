@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 func escapedJSONValue(t *testing.T, value string) string {

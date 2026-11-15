@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 func (s *service) enqueueFinalizationAware(ctx context.Context, rowID, owner string, raw []byte) (retErr error) {

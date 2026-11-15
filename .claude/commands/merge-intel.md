@@ -180,7 +180,7 @@ the upstream-only code.
 Then key-package tests:
 
 ```
-go test -count=1 -timeout=180s ./internal/agent/ ./internal/message/ \
+go test -count=1 -timeout=180s ./internal/agent/ ./internal/store/message/ \
     ./internal/permission/ ./internal/cmd/
 ```
 

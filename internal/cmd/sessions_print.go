@@ -10,7 +10,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // formatAgo returns a human-friendly "X ago" string for the given duration.

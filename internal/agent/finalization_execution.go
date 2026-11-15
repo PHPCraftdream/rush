@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // finalizationExecution belongs to one logical call, not its inherited children.

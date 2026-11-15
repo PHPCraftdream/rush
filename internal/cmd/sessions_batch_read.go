@@ -19,9 +19,9 @@ import (
 	"text/tabwriter"
 
 	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // batchRootFact is one root incarnation's read-side summary: identity, the

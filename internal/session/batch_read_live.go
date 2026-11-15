@@ -8,7 +8,7 @@ import (
 	"sort"
 	"sync/atomic"
 
-	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 const (

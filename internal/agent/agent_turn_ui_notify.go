@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // turnUINotifier decouples the token arrival rate from the UI render rate

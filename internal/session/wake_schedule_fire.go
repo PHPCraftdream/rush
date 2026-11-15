@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 func wakeNullMaxRuns(n int) sql.NullInt64 {

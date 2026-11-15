@@ -11,8 +11,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 // LoopWakeCanceler is the optional interface the CLI loop asserts its

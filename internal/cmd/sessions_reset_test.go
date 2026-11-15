@@ -27,10 +27,10 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/db"
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )

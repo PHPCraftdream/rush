@@ -35,8 +35,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // BatchRerunVoidedNode is one root incarnation the reconciliation voided, as

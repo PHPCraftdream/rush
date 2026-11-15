@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 func (a *sessionAgent) Cancel(sessionID string) {

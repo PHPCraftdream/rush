@@ -19,8 +19,8 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/db"
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // Тестовый барьер после scope read, перед ожиданием hint; production оставляет nil.

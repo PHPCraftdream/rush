@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 	"modernc.org/sqlite"
 )

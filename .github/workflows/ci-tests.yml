@@ -142,8 +142,8 @@ jobs:
                                   "internal/agent/hyper/", "internal/agent/notify/",
                                   "internal/agent/prompt/", "internal/agent/tools/"]),
               ("db-msg-queue-pubsub-history",
-                                 ["internal/db/", "internal/message/", "internal/queue/",
-                                  "internal/kit/sync/pubsub/", "internal/history/"]),
+                                 ["internal/store/db/", "internal/store/message/", "internal/queue/",
+                                  "internal/kit/sync/pubsub/", "internal/store/history/"]),
               ("oauth-deploy-update-version",
                                  ["internal/oauth/", "internal/deploy/", "internal/update/",
                                   "internal/kit/diag/version/"]),
@@ -198,7 +198,7 @@ jobs:
         run: |
           f="$GROUP_DIR/g-agent-subpkgs.txt"; [ -s "$f" ] || exit 0
           go test -short -failfast -p 2 $(cat "$f")
-      - name: "test: internal/db, internal/message, internal/queue, internal/kit/sync/pubsub, internal/history"
+      - name: "test: internal/store/db, internal/store/message, internal/queue, internal/kit/sync/pubsub, internal/store/history"
         shell: bash
         run: |
           f="$GROUP_DIR/g-db-msg-queue-pubsub-history.txt"; [ -s "$f" ] || exit 0
@@ -512,8 +512,8 @@ jobs:
                                   "internal/agent/hyper/", "internal/agent/notify/",
                                   "internal/agent/prompt/", "internal/agent/tools/"]),
               ("db-msg-queue-pubsub-history",
-                                 ["internal/db/", "internal/message/", "internal/queue/",
-                                  "internal/kit/sync/pubsub/", "internal/history/"]),
+                                 ["internal/store/db/", "internal/store/message/", "internal/queue/",
+                                  "internal/kit/sync/pubsub/", "internal/store/history/"]),
               ("oauth-deploy-update-version",
                                  ["internal/oauth/", "internal/deploy/", "internal/update/",
                                   "internal/kit/diag/version/"]),

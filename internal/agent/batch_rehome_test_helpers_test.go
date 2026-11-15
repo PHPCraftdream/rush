@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // writeParkedChildTurn records a finished assistant turn on a child session,

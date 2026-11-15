@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/queue"
+	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 

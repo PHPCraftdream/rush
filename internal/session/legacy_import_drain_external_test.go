@@ -21,10 +21,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/db/dbtest"
-	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/db/dbtest"
+	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"

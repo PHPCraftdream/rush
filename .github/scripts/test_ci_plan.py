@@ -43,17 +43,17 @@ class GoListTests(unittest.TestCase):
     def test_parse_and_normalize(self):
         g = golist.parse_stream(
             stream(
-                _p(MODULE, imports=[MODULE + "/internal/db"]),
-                _p(MODULE + "/internal/db"),
-                _p("unused", for_test=MODULE + "/internal/db"),
+                _p(MODULE, imports=[MODULE + "/internal/store/db"]),
+                _p(MODULE + "/internal/store/db"),
+                _p("unused", for_test=MODULE + "/internal/store/db"),
             ),
             "linux",
         )
         self.assertEqual(g.module, MODULE)
-        self.assertIn(MODULE + "/internal/db", g.packages)
+        self.assertIn(MODULE + "/internal/store/db", g.packages)
         # Synthetic variant normalized onto its owner; reverse edge built.
         self.assertEqual(
-            g.reverse[MODULE + "/internal/db"], {MODULE}
+            g.reverse[MODULE + "/internal/store/db"], {MODULE}
         )
 
     def test_first_object_foreign_module_still_maps_main(self):
@@ -121,17 +121,17 @@ class PolicyTests(unittest.TestCase):
         self.assertFalse(pol.glob_match("docs/example.txt", "internal/skills/**/*"))
 
     def test_prefix(self):
-        self.assertTrue(pol.under_prefix("internal/db/x.sql", ["internal/db/"]))
+        self.assertTrue(pol.under_prefix("internal/store/db/x.sql", ["internal/store/db/"]))
         self.assertTrue(pol.under_prefix("internal/kit/sync/csync/a.go", ["internal/kit/sync/csync/"]))
-        self.assertFalse(pol.under_prefix("internal/dbx/a.go", ["internal/db/"]))
-        self.assertFalse(pol.under_prefix("outside/internal/db/x.sql", ["internal/db/"]))
+        self.assertFalse(pol.under_prefix("internal/dbx/a.go", ["internal/store/db/"]))
+        self.assertFalse(pol.under_prefix("outside/internal/store/db/x.sql", ["internal/store/db/"]))
 
 
 class SelectionTests(unittest.TestCase):
     def setUp(self):
         self.pol = pol.Policy(
             native_required_prefixes=["internal/kit/sys/shell/"],
-            core_prefixes=["internal/db/"],
+            core_prefixes=["internal/store/db/"],
             race_roots=["internal/agent"],
             fanout_max_packages=25,
             fanout_max_ratio=0.40,
@@ -139,8 +139,8 @@ class SelectionTests(unittest.TestCase):
         objs = [
             _p(MODULE),
             _p(MODULE + "/internal/agent"),
-            _p(MODULE + "/internal/db"),
-            _p(MODULE + "/internal/ui", imports=[MODULE + "/internal/db"]),
+            _p(MODULE + "/internal/store/db"),
+            _p(MODULE + "/internal/ui", imports=[MODULE + "/internal/store/db"]),
         ]
         self.graphs = {
             os_name: golist.parse_stream(stream(*objs), os_name)
@@ -183,7 +183,7 @@ class SelectionTests(unittest.TestCase):
             merge_base = "b"
             base_tree_files = []
             changes = [
-                type("C", (), {"status": "M", "path": "internal/db/db.go", "old_path": None})()
+                type("C", (), {"status": "M", "path": "internal/store/db/db.go", "old_path": None})()
             ]
         p = selector.plan(".", R(), self.graphs, self.pol)
         names = [e.package for e in p.selected["linux"]]
@@ -222,7 +222,7 @@ class SelectionTests(unittest.TestCase):
 
     def test_sql_mapping_selects_db(self):
         self.pol.non_go_mappings = [
-            pol.NonGoMapping(["internal/db/sql/*.sql"], ["internal/db"])
+            pol.NonGoMapping(["internal/store/db/sql/*.sql"], ["internal/store/db"])
         ]
         class R:
             base = "b"
@@ -230,7 +230,7 @@ class SelectionTests(unittest.TestCase):
             merge_base = "b"
             base_tree_files = []
             changes = [
-                type("C", (), {"status": "M", "path": "internal/db/sql/stats.sql", "old_path": None})()
+                type("C", (), {"status": "M", "path": "internal/store/db/sql/stats.sql", "old_path": None})()
             ]
         p = selector.plan(".", R(), self.graphs, self.pol)
         names = [e.package for e in p.selected["linux"]]
@@ -243,11 +243,11 @@ class SelectionTests(unittest.TestCase):
             head = "h"
             merge_base = "b"
             base_tree_files = [
-                "internal/db/dead.go",
+                "internal/store/db/dead.go",
                 "internal/agent/a.go",
             ]
             changes = [
-                type("C", (), {"status": "D", "path": "internal/db/dead.go", "old_path": None})()
+                type("C", (), {"status": "D", "path": "internal/store/db/dead.go", "old_path": None})()
             ]
         p = selector.plan(".", R(), self.graphs, self.pol)
         names = [e.package for e in p.selected["linux"]]
@@ -272,8 +272,8 @@ class SelectionTests(unittest.TestCase):
             _p(MODULE),
             _p(MODULE + "/internal/agent"),
             _p(MODULE + "/internal/app", imports=[MODULE + "/internal/agent"]),
-            _p(MODULE + "/internal/db"),
-            _p(MODULE + "/internal/ui", imports=[MODULE + "/internal/db"]),
+            _p(MODULE + "/internal/store/db"),
+            _p(MODULE + "/internal/ui", imports=[MODULE + "/internal/store/db"]),
         ]
         graphs = {
             os_name: golist.parse_stream(stream(*objs), os_name)

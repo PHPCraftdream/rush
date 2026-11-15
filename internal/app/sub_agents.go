@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // Fork-only file (orchestrator UX): the sub-agent fan-out aggregation

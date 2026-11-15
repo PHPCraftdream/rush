@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/db/storepath"
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
+	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"

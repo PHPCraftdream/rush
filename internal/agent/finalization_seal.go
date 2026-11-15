@@ -3,8 +3,8 @@ package agent
 import (
 	"context"
 
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // sealFinalizationCandidate is gate.trySeal's durable publication: it presents

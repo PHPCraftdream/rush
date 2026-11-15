@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // ErrAgentFinalizationCandidateStale marks a candidate writer whose revision or

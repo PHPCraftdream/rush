@@ -3,8 +3,8 @@ package server
 import (
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // APISession is a safe public projection of a stored session. Workspace roots,

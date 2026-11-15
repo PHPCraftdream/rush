@@ -5,8 +5,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // IsHardQuotaLimit identifies a provider's hard usage wall, not a retryable 429.

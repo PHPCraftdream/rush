@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/db/storepath"
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )

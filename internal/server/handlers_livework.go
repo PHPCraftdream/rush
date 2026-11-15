@@ -12,7 +12,7 @@ import (
 	"unicode/utf8"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // titleMaxLen bounds the abbreviated command/prompt shown in the panel

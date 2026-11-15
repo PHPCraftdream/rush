@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 // BatchHostProbe is a three-way, dead-only authority. Host UUIDs never revive.

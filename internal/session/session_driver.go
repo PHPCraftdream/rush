@@ -18,7 +18,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 // ErrDriverMarkerUnavailable means the durable marker cannot be kept on this

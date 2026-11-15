@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 // BatchLiveSource is the read-only sqlc boundary. Each call reads one consistent

@@ -10,7 +10,7 @@ import type { ContentPart } from "../../types";
 const isTerminalFinish = (part: ContentPart): boolean => part.type === "finish" && !part.Partial;
 
 /**
- * Mirrors message.Message.IsFinished() server-side (internal/message/content.go).
+ * Mirrors message.Message.IsFinished() server-side (internal/store/message/content.go).
  *
  * True only when Parts contains a Finish part whose Partial flag is false/absent.
  * A message with no Finish part at all, or only a Partial one (written by the

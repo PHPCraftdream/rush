@@ -10,8 +10,8 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // pullPendingNotices pulls every pending notice row for sessionID into

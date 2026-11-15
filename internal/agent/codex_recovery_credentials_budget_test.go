@@ -18,9 +18,9 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/oauth"
 	"github.com/PHPCraftdream/rush/internal/skills"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
 

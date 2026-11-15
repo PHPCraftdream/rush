@@ -16,7 +16,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/PHPCraftdream/rush/internal/db/dbtest"
+	"github.com/PHPCraftdream/rush/internal/store/db/dbtest"
 	"github.com/stretchr/testify/require"
 )
 

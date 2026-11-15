@@ -27,3 +27,7 @@
 | internal/testguard | internal/kit/dev/testguard | 2026-11-15 |
 | internal/tools/cahsync | internal/kit/dev/cahsync | 2026-11-15 |
 | internal/version | internal/kit/diag/version | 2026-11-15 |
+| internal/db | internal/store/db | 2026-11-15 |
+| internal/filetracker | internal/store/filetracker | 2026-11-15 |
+| internal/history | internal/store/history | 2026-11-15 |
+| internal/message | internal/store/message | 2026-11-15 |

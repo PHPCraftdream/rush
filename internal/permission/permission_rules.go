@@ -3,7 +3,7 @@ package permission
 import (
 	"context"
 
-	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 func (s *permissionService) ListSessionPermissions(ctx context.Context, sessionID string) ([]db.SessionPermission, error) {

@@ -85,14 +85,14 @@ PATH_RULES = [
     (r"(^|/)agent_options\.go$", "ledger_consumers"),
     (r"(^|/)agent_turn[^/]*\.go$", "ledger_consumers"),
     # sql_sqlc: port (split hosts first)
-    (r"^internal/db/sql/async_jobs", "sql_sqlc"),
-    (r"^internal/db/async_jobs\.sql\.go$", "sql_sqlc"),
+    (r"^internal/store/db/sql/async_jobs", "sql_sqlc"),
+    (r"^internal/store/db/async_jobs\.sql\.go$", "sql_sqlc"),
     (r"(^|/)models\.go$", "sql_sqlc"),
     (r"(^|/)querier\.go$", "sql_sqlc"),
     # generated sqlc host files (db.go and friends) classify by PATH before
     # any content rule can see identifiers like `asyncJobDebtOwnersStmt`
-    (r"^internal/db/db\.go$", "sql_sqlc"),
-    (r"^internal/db/[^/]*\.sql\.go$", "sql_sqlc"),
+    (r"^internal/store/db/db\.go$", "sql_sqlc"),
+    (r"^internal/store/db/[^/]*\.sql\.go$", "sql_sqlc"),
     # session_old_store: delete
     (r"^internal/session/async_job_[^/]*\.go$", "session_old_store"),
     # retained_infrastructure: retain
@@ -140,8 +140,8 @@ PATH_RULES = [
     (r"(^|/)batch_runtime_flag[^/]*\.go$", "switch"),
     (r"(^|/)batch_cli\.go$", "switch"),
     # migration_and_testdata: retain
-    (r"^internal/db/migrate_[^/]*\.go$", "migration_and_testdata"),
-    (r"^internal/db/testdata/", "migration_and_testdata"),
+    (r"^internal/store/db/migrate_[^/]*\.go$", "migration_and_testdata"),
+    (r"^internal/store/db/testdata/", "migration_and_testdata"),
     (r"(^|/)migrations/", "migration_and_testdata"),
     # historical_docs: historical
     (r"^docs/plans/", "historical_docs"),
@@ -151,7 +151,7 @@ PATH_RULES = [
     (r"^docs/", "historical_docs"),
     # filelock_probe: retain
     (r"^internal/kit/fs/filelock/host_probe", "filelock_probe"),
-    (r"^internal/db/migrate_live_hosts", "filelock_probe"),
+    (r"^internal/store/db/migrate_live_hosts", "filelock_probe"),
 ]
 
 # Line-content rules: (path_regex, content_regex, category). Applied to a
@@ -163,7 +163,7 @@ PATH_RULES = [
 # constrained content rule becomes `unknown` (error-level), which is
 # better than a wrong disposition.
 CONTENT_RULES = [
-    (r"^internal/db/", r"async_jobs", "sql_sqlc"),
+    (r"^internal/store/db/", r"async_jobs", "sql_sqlc"),
     (r"^internal/agent/", r"(job_kill|job_output)", "old_model_tools"),
     (r"^internal/agent/", r"(work_ledger|workLedger|WorkLedger)", "ledger_terminal_authority"),
     (r"^internal/agent/", r"(stallDetach|stallDetacher|stall-)", "stall_jobs"),

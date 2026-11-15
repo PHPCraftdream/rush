@@ -1,6 +1,6 @@
 package agent
 
-import "github.com/PHPCraftdream/rush/internal/message"
+import "github.com/PHPCraftdream/rush/internal/store/message"
 
 // deferUserMessagesPastToolRound reorders history so a user message persisted
 // between an assistant tool_use message and the tool message carrying its

@@ -31,7 +31,7 @@ groups = [
 ]
 [shards.D]
 groups = [
-  { name = "test: d", type = "go", packages = ["internal/db"] },
+  { name = "test: d", type = "go", packages = ["internal/store/db"] },
   { name = "test: everything else (computed catch-all)", type = "go", catch_all = true, packages = [] },
 ]
 """
@@ -193,7 +193,7 @@ class AssignShardsTests(unittest.TestCase):
             "example.com/m/internal/commands",
             "example.com/m/internal/agent",
             "example.com/m/internal/agent/tools",
-            "example.com/m/internal/db",
+            "example.com/m/internal/store/db",
             "example.com/m/internal/other",
         ]
         p = run_cli(BASE_TOML, pkgs)
@@ -285,7 +285,7 @@ class AssignShardsTests(unittest.TestCase):
             "example.com/m/internal/app",
             "example.com/m/internal/commands",
             "example.com/m/internal/cmd",
-            "example.com/m/internal/db",
+            "example.com/m/internal/store/db",
             "example.com/m/internal/agent",
             "example.com/m/internal/zzz",
             "example.com/m",

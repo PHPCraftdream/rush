@@ -4,7 +4,7 @@
   "mutations": [
     {
       "id": "m01_reconcile_drops_done",
-      "file": "internal/db/batch_history.sql.go",
+      "file": "internal/store/db/batch_history.sql.go",
       "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
       "needle": "AND delivery IN ('done', 'pending')\n  AND notice_message_id IN (/*SLICE:message_ids*/?)",
       "replacement": "AND delivery = 'pending'\n  AND notice_message_id IN (/*SLICE:message_ids*/?)",
@@ -15,7 +15,7 @@
     },
     {
       "id": "m02_reconcile_drops_pending",
-      "file": "internal/db/batch_history.sql.go",
+      "file": "internal/store/db/batch_history.sql.go",
       "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
       "needle": "AND delivery IN ('done', 'pending')\n  AND notice_message_id IN (/*SLICE:message_ids*/?)",
       "replacement": "AND delivery = 'done'\n  AND notice_message_id IN (/*SLICE:message_ids*/?)",
@@ -26,7 +26,7 @@
     },
     {
       "id": "m03_reconcile_missing",
-      "file": "internal/db/batch_history.sql.go",
+      "file": "internal/store/db/batch_history.sql.go",
       "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
       "needle": "WHERE owner_session_id = ?2 AND notice_selected = 1\n  AND delivery IN ('done', 'pending')",
       "replacement": "WHERE owner_session_id = ?2 AND notice_selected = 1\n  AND delivery IN ('done', 'pending') AND 1 = 0",
@@ -37,7 +37,7 @@
     },
     {
       "id": "m04_reconcile_keeps_counters",
-      "file": "internal/db/batch_history.sql.go",
+      "file": "internal/store/db/batch_history.sql.go",
       "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
       "needle": "UPDATE batch_nodes SET delivery = 'pending', notice_message_id = NULL,\n    wake_attempts = 0, reacted_failed = 0, updated_at = ?1\nWHERE owner_session_id = ?2 AND notice_selected = 1\n  AND delivery IN ('done', 'pending')",
       "replacement": "UPDATE batch_nodes SET delivery = 'pending', notice_message_id = NULL,\n    wake_attempts = wake_attempts, reacted_failed = reacted_failed, updated_at = ?1\nWHERE owner_session_id = ?2 AND notice_selected = 1\n  AND delivery IN ('done', 'pending')",
@@ -70,7 +70,7 @@
     },
     {
       "id": "m07_dispose_guard_missing",
-      "file": "internal/db/batch_history.sql.go",
+      "file": "internal/store/db/batch_history.sql.go",
       "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
       "needle": "  AND delivery IN ('pending', 'done') AND wake = 1 AND reacted = 0\n`",
       "replacement": "  AND wake = 1\n`",
@@ -81,7 +81,7 @@
     },
     {
       "id": "m08_dispose_wake_not_zeroed",
-      "file": "internal/db/batch_history.sql.go",
+      "file": "internal/store/db/batch_history.sql.go",
       "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
       "needle": "UPDATE session_notices SET delivery = 'void', wake = 0, updated_at = ?1",
       "replacement": "UPDATE session_notices SET delivery = 'void', updated_at = ?1",
@@ -103,7 +103,7 @@
     },
     {
       "id": "m10_roots_drops_terminal",
-      "file": "internal/db/batch_history.sql.go",
+      "file": "internal/store/db/batch_history.sql.go",
       "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
       "needle": "WHERE owner_session_id = ?1 AND node_id = root_id\nORDER BY created_at, root_id",
       "replacement": "WHERE owner_session_id = ?1 AND node_id = root_id\n  AND state IN ('pending', 'starting', 'running', 'cancelling')\nORDER BY created_at, root_id",
@@ -125,7 +125,7 @@
     },
     {
       "id": "m12_dispose_second_call_voids_again",
-      "file": "internal/db/batch_history.sql.go",
+      "file": "internal/store/db/batch_history.sql.go",
       "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
       "needle": "  AND delivery IN ('pending', 'done') AND wake = 1 AND reacted = 0\n`",
       "replacement": "  AND reacted = 0\n`",
@@ -136,7 +136,7 @@
     },
     {
       "id": "m13_live_rerun_unreachable",
-      "file": "internal/db/batch_history.sql.go",
+      "file": "internal/store/db/batch_history.sql.go",
       "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
       "needle": "  AND state IN ('pending', 'starting', 'running', 'cancelling')\n  AND announce_message_id IN (/*SLICE:message_ids*/?)",
       "replacement": "  AND state IN ('pending', 'starting', 'running', 'cancelling') AND 1=0\n  AND announce_message_id IN (/*SLICE:message_ids*/?)",
@@ -147,7 +147,7 @@
     },
     {
       "id": "m14_repend_keeps_dead_ref",
-      "file": "internal/db/batch_history.sql.go",
+      "file": "internal/store/db/batch_history.sql.go",
       "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
       "needle": "UPDATE batch_nodes SET delivery = 'pending', notice_message_id = NULL,\n    wake_attempts = 0, reacted_failed = 0, updated_at = ?1\nWHERE owner_session_id = ?2 AND notice_selected = 1 AND delivery = 'done'",
       "replacement": "UPDATE batch_nodes SET delivery = 'pending',\n    wake_attempts = 0, reacted_failed = 0, updated_at = ?1\nWHERE owner_session_id = ?2 AND notice_selected = 1 AND delivery = 'done'",
@@ -191,7 +191,7 @@
     },
     {
       "id": "m19_rerun_legacy_lookup_unguarded",
-      "file": "internal/db/batch_history.sql.go",
+      "file": "internal/store/db/batch_history.sql.go",
       "file_sha256": "a62789f5efce9716773ffed61da634185f23fb760dba69821cdb7036fa0a4ae6",
       "needle": "  AND notice_selected = 1 AND delivery != 'void' AND announce_message_id IS NULL",
       "replacement": "  AND notice_selected = 1 AND delivery != 'void'",
@@ -202,7 +202,7 @@
     },
     {
       "id": "m20_reserve_reuses_terminal_root",
-      "file": "internal/db/batch_nodes.sql.go",
+      "file": "internal/store/db/batch_nodes.sql.go",
       "file_sha256": "0a9e19cdd7ba0e2a428d38153cc973f2068478d05b5778ca67d4d02a2d83b542",
       "needle": "  AND node_id = root_id AND state IN ('pending', 'starting', 'running', 'cancelling')",
       "replacement": "  AND node_id = root_id",

@@ -95,7 +95,7 @@ export class SubAgentBlock extends AntiHookComponent<ISubAgentBlockProps> {
    * isRunning is !done. A busySessions lookup cannot be used here: a sub-agent
    * session ID NEVER enters $busySessions — the only feeder (the agent_busy
    * event) names client-chosen top-level sessions or the list_sessions
-   * correction loop, whose SQL (internal/db/sql/sessions.sql, ListSessions)
+   * correction loop, whose SQL (internal/store/db/sql/sessions.sql, ListSessions)
    * filters `parent_session_id is NULL`, so sub-sessions are invisible to it.
    */
   public render() {

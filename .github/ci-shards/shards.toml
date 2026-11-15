@@ -50,7 +50,7 @@ groups = [
 [shards.D]
 groups = [
   { name = "test: internal/permission, internal/config, internal/kit/sync/csync", type = "go", packages = ["internal/permission", "internal/config", "internal/kit/sync/csync"] },
-  { name = "test: internal/db, internal/message, internal/queue, internal/kit/sync/pubsub, internal/history", type = "go", packages = ["internal/db", "internal/message", "internal/queue", "internal/kit/sync/pubsub", "internal/history"] },
+  { name = "test: internal/store/db, internal/store/message, internal/queue, internal/kit/sync/pubsub, internal/store/history", type = "go", packages = ["internal/store/db", "internal/store/message", "internal/queue", "internal/kit/sync/pubsub", "internal/store/history"] },
   { name = "test: internal/oauth, internal/deploy, internal/update, internal/kit/diag/version", type = "go", packages = ["internal/oauth", "internal/deploy", "internal/update", "internal/kit/diag/version"] },
   # Dynamic remainder, computed by assign_shards.py. Must stay LAST.
   { name = "test: everything else (computed catch-all)", type = "go", catch_all = true, packages = [] },
@@ -69,7 +69,7 @@ groups = [
 "test: internal/kit/sys/shell" = "C/test: internal/kit/sys/shell"
 "test: internal/jobbatch, cmd/batchlab" = "C/test: internal/jobbatch, cmd/batchlab"
 "test: internal/permission, internal/config, internal/kit/sync/csync" = "D/test: internal/permission, internal/config, internal/kit/sync/csync"
-"test: internal/db, internal/message, internal/queue, internal/kit/sync/pubsub, internal/history" = "D/test: internal/db, internal/message, internal/queue, internal/kit/sync/pubsub, internal/history"
+"test: internal/store/db, internal/store/message, internal/queue, internal/kit/sync/pubsub, internal/store/history" = "D/test: internal/store/db, internal/store/message, internal/queue, internal/kit/sync/pubsub, internal/store/history"
 "test: internal/oauth, internal/deploy, internal/update, internal/kit/diag/version" = "D/test: internal/oauth, internal/deploy, internal/update, internal/kit/diag/version"
 "test: everything else (computed catch-all)" = "D/test: everything else (computed catch-all)"
 "go mod tidy produces no diff" = "A/go mod tidy produces no diff"

@@ -14,7 +14,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db/storepath"
+	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 )
 
 // Columns an audited schema must have. Anything else is reported as an

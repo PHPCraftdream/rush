@@ -16,8 +16,8 @@ import (
 	"io"
 	"sort"
 
-	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 // auditBatchRuleBatchStatus is the rule status when the flag is on and the

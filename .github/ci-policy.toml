@@ -12,11 +12,11 @@ native_required_prefixes = [
   "internal/kit/fs/filelock/",
   "internal/app/",
   "internal/session/",
-  "internal/db/",
+  "internal/store/db/",
   "internal/config/",
   "internal/cmd/",
   "internal/server/",
-  "internal/filetracker/",
+  "internal/store/filetracker/",
   "internal/agent/cliprovider/",
   "internal/agent/tools/",
   "internal/agent/notify/",
@@ -36,8 +36,8 @@ selector_full_patterns = [
 # under these prefixes force full Ubuntu.
 core_prefixes = [
   "internal/config/",
-  "internal/db/",
-  "internal/message/",
+  "internal/store/db/",
+  "internal/store/message/",
   "internal/session/",
   "internal/kit/sync/pubsub/",
   "internal/kit/sync/csync/",
@@ -64,8 +64,8 @@ fanout_max_ratio = 0.40
 # Explicit non-Go input mappings: changed file (glob) -> owning package(s).
 # `*` matches any path segment(s) within one level; `**` crosses levels.
 [[non_go_mappings]]
-patterns = ["internal/db/sql/*.sql", "internal/db/migrations/*", "sqlc.yaml"]
-owners = ["internal/db"]
+patterns = ["internal/store/db/sql/*.sql", "internal/store/db/migrations/*", "sqlc.yaml"]
+owners = ["internal/store/db"]
 
 [[non_go_mappings]]
 patterns = ["internal/agent/templates/*"]

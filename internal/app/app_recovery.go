@@ -9,8 +9,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // recoverSessionListSeam is a test-only hook fired once per candidate

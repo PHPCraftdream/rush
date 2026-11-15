@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 type BatchCLIIdentity struct{ Owner, Root, Host, Runner, State string }

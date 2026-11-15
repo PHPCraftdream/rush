@@ -5,7 +5,7 @@ import (
 	"log/slog"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // providerCacheSupport classifies whether a provider actually reports prompt

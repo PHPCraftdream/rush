@@ -11,7 +11,7 @@ spec=importlib.util.spec_from_file_location("ci_gate_decide",FILE); gate=importl
 SHA="a"*40
 MODULE=gate.MODULE
 GOOD={"plan":"success","checks":"success"}
-FULL_PACKAGES=[MODULE+"/internal/agent",MODULE+"/internal/hooks",MODULE+"/internal/db"]
+FULL_PACKAGES=[MODULE+"/internal/agent",MODULE+"/internal/hooks",MODULE+"/internal/store/db"]
 
 class DecideTests(unittest.TestCase):
     def args(self,**kw):
@@ -102,7 +102,7 @@ class JobPlanTests(unittest.TestCase):
         self.assertFalse(gate.MACOS_LANE_ENABLED)
     def test_prepare_cli_skips_macos_when_lane_off(self):
         for plan_mode,native in (("tier1",True),("tier1",False)):
-            plan={"schema_version":1,"mode":plan_mode,"per_os":{"linux":[],"darwin":[{"package":MODULE+"/internal/db"}],"windows":[]},"race_packages":[],"not_run":[],"native_required":{"required":native},"head":SHA,"base":SHA}
+            plan={"schema_version":1,"mode":plan_mode,"per_os":{"linux":[],"darwin":[{"package":MODULE+"/internal/store/db"}],"windows":[]},"race_packages":[],"not_run":[],"native_required":{"required":native},"head":SHA,"base":SHA}
             with tempfile.TemporaryDirectory() as td:
                 pp=pathlib.Path(td)/"p.json"; out=pathlib.Path(td)/"out.json"; pp.write_text(json.dumps(plan)); args=type("A",(),{"plan":str(pp),"graph_dir":td,"force_full":False,"policy":str(pathlib.Path(td)/"policy"),"base":SHA,"head":SHA,"output":str(out)})()
                 with patch.object(gate.subprocess,"run",return_value=type("R",(),{"stdout":""})()),patch.dict("os.environ",{},clear=True),patch.object(gate,"MACOS_LANE_ENABLED",False): gate.prepare_cli(args)

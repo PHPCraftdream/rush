@@ -12,8 +12,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 var batchRerunReconcile = func(ctx context.Context, writer *sql.DB, messages message.Service, p session.RerunTruncateParams) (session.BatchRerunTruncation, error) {

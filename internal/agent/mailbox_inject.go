@@ -5,7 +5,7 @@
 package agent
 
 import (
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // inject implements design §5: appends msg to the pending-inject list,

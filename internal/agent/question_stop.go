@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // awaitingAnswerStoppedTitle is the finish title of a question-tool stop;

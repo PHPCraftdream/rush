@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
 )
