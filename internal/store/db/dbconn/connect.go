@@ -1,4 +1,4 @@
-package db
+package dbconn
 
 import (
 	"context"
@@ -15,6 +15,52 @@ import (
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 )
 
+// openOptions carries the per-open settings threaded from Connect and
+// ConnectRead into connect.
+type openOptions struct {
+	// closeAssist runs while the path lock is held, before the pooled
+	// handles close (see closeEntry). The db facade registers its
+	// prepared-statement cache drop here via WithCloseAssist; a nil
+	// assist skips the drop, which is the correct no-op for direct
+	// dbconn callers that register no statements.
+	closeAssist func(*sql.DB) error
+
+	// migrationOpts carries the caller's migrater.MigrateOption values.
+	// They are applied by NewMigrateOptions inside connect, at the same
+	// point where they were applied before the pool moved out of
+	// package db.
+	migrationOpts []migrater.MigrateOption
+}
+
+// Option customizes one pool open. The db facade passes WithCloseAssist on
+// every open; a direct dbconn.Connect caller that pools a database with
+// cached prepared statements must pass its own drop callback via
+// WithCloseAssist, or those statements stay registered after the entry
+// closes (design docs/plans/2026-11-15-sprint0-split-db.md section 3.2).
+type Option func(*openOptions)
+
+// WithCloseAssist sets the callback run before a pooled entry's handles
+// close.
+func WithCloseAssist(f func(*sql.DB) error) Option {
+	return func(o *openOptions) { o.closeAssist = f }
+}
+
+// WithMigrateOptions forwards migrater migration options to the open.
+func WithMigrateOptions(opts ...migrater.MigrateOption) Option {
+	return func(o *openOptions) { o.migrationOpts = append(o.migrationOpts, opts...) }
+}
+
+// applyOptions folds the open options into one openOptions value.
+func applyOptions(opts []Option) openOptions {
+	var o openOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
+	return o
+}
+
 // connEntry holds a shared database connection pair and its reference
 // count. db is the single-connection writer (SetMaxOpenConns(1) — see the
 // comment in Connect for why). readDB is a separate, read-only pool that
@@ -30,6 +76,10 @@ type connEntry struct {
 	refCount int
 	pathLock *pathLock
 	absPath  string
+	// closeAssist runs before the pooled handles close (see closeEntry);
+	// connect sets it from the open options. Nil for direct dbconn opens
+	// that registered no assist.
+	closeAssist func(*sql.DB) error
 }
 
 // pathLock serializes database lifecycle operations for one path. refs holds
@@ -183,11 +233,11 @@ func endPoolReset() {
 // call [ConnectRead] with the same dataDir — it shares this entry's
 // refCount, so one [ReleaseConn] is needed for each returned handle.
 //
-// Migration policy can be narrowed per call with [WithMayMigrate] (a dev
-// build pointed at a shared data directory passes false); the default is to
-// migrate.
-func Connect(ctx context.Context, dataDir string, migrationOpts ...migrater.MigrateOption) (*sql.DB, error) {
-	entry, err := connect(ctx, dataDir, migrationOpts...)
+// Migration policy can be narrowed per call with [migrater.WithMayMigrate] (a
+// dev build pointed at a shared data directory passes false); the default is
+// to migrate.
+func Connect(ctx context.Context, dataDir string, opts ...Option) (*sql.DB, error) {
+	entry, err := connect(ctx, dataDir, applyOptions(opts))
 	if err != nil {
 		return nil, err
 	}
@@ -206,8 +256,8 @@ func Connect(ctx context.Context, dataDir string, migrationOpts ...migrater.Migr
 // and ConnectRead for the same dataDir must call [ReleaseConn] with the
 // returned handles the same number of times it called either one (once per
 // Connect/ConnectRead pair, not once per function).
-func ConnectRead(ctx context.Context, dataDir string, migrationOpts ...migrater.MigrateOption) (*sql.DB, error) {
-	entry, err := connect(ctx, dataDir, migrationOpts...)
+func ConnectRead(ctx context.Context, dataDir string, opts ...Option) (*sql.DB, error) {
+	entry, err := connect(ctx, dataDir, applyOptions(opts))
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +270,7 @@ func ConnectRead(ctx context.Context, dataDir string, migrationOpts ...migrater.
 // want BOTH a writer and a reader handle for the same dataDir must call
 // [ReleaseConn] twice (once per Connect/ConnectRead call they made), matching
 // the existing "one Connect, one Release" contract extended to ConnectRead.
-func connect(ctx context.Context, dataDir string, migrationOpts ...migrater.MigrateOption) (*connEntry, error) {
+func connect(ctx context.Context, dataDir string, o openOptions) (*connEntry, error) {
 	if dataDir == "" {
 		return nil, fmt.Errorf("data.dir is not set")
 	}
@@ -276,7 +326,7 @@ func connect(ctx context.Context, dataDir string, migrationOpts ...migrater.Migr
 	if err != nil {
 		return nil, fmt.Errorf("failed to locate embedded migrations: %w", err)
 	}
-	migrateOpts := migrater.NewMigrateOptions(migrationOpts, dbPath)
+	migrateOpts := migrater.NewMigrateOptions(o.migrationOpts, dbPath)
 	migrateOpts.MigrationLockPath = filepath.Join(dataDir, "migrate.lock")
 	if !migrateOpts.MayMigrate {
 		if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
@@ -359,7 +409,7 @@ func connect(ctx context.Context, dataDir string, migrationOpts ...migrater.Migr
 	// This reference is acquired before publishing the entry so a concurrent
 	// Release cannot remove the registry entry between those two operations.
 	retainPathLock(pathMu)
-	entry := &connEntry{db: conn, readDB: readConn, refCount: 1, pathLock: pathMu, absPath: absPath}
+	entry := &connEntry{db: conn, readDB: readConn, refCount: 1, pathLock: pathMu, absPath: absPath, closeAssist: o.closeAssist}
 	poolMu.Lock()
 	pool[absPath] = entry
 	poolMu.Unlock()
@@ -536,10 +586,15 @@ func ReleaseAll(dataDir string) error {
 // principle any future caller that intentionally shares one *sql.DB between
 // both roles) by only closing the reader when it is a distinct handle.
 func closeEntry(entry *connEntry) error {
-	// Drop the batch prepared-statement cache (pda_batch_prepare.go) before
-	// the pool handles die; its close errors are merged without masking the
-	// DB close errors.
-	dropErr := pdaDropBatchStmts(entry.db)
+	// Drop the batch prepared-statement cache before the pool handles die;
+	// its close errors are merged without masking the DB close errors. The
+	// db facade registers the drop (pdaDropBatchStmts) via WithCloseAssist;
+	// a nil assist is the no-op branch for direct dbconn opens that own no
+	// registered statements.
+	var dropErr error
+	if entry.closeAssist != nil {
+		dropErr = entry.closeAssist(entry.db)
+	}
 	var readErr error
 	if entry.readDB != nil && entry.readDB != entry.db {
 		readErr = entry.readDB.Close()
@@ -593,25 +648,4 @@ func ResetPool() {
 		pooled.entry.pathLock.mu.Unlock()
 		releasePathLock(pooled.path, pooled.entry.pathLock)
 	}
-}
-
-// Facade aliases for the migration options (design
-// docs/plans/2026-11-15-sprint0-split-db.md section 3.3): thin re-exports
-// of migrater's option types while the pool entry points still live
-// here. The DB-C lane moves this block into facade.go.
-
-type MigrateOption = migrater.MigrateOption
-
-type PreMigrationCheck = migrater.PreMigrationCheck
-
-// BusyTimeout re-exports migrater's statement timeout constant for
-// existing consumers while the pool entry points still live here.
-const BusyTimeout = migrater.BusyTimeout
-
-func WithMayMigrate(v bool) MigrateOption { return migrater.WithMayMigrate(v) }
-
-func WithMigrationLockPath(p string) MigrateOption { return migrater.WithMigrationLockPath(p) }
-
-func WithPreMigrationChecks(checks ...PreMigrationCheck) MigrateOption {
-	return migrater.WithPreMigrationChecks(checks...)
 }

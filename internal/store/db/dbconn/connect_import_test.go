@@ -1,4 +1,4 @@
-package db
+package dbconn
 
 import (
 	"context"
@@ -75,7 +75,7 @@ func TestConnectImport_MayMigrateFalseRefuses(t *testing.T) {
 	dataDir := t.TempDir()
 	buildLegacySource(t, dataDir)
 
-	_, err := Connect(t.Context(), dataDir, WithMayMigrate(false))
+	_, err := Connect(t.Context(), dataDir, WithMigrateOptions(migrater.WithMayMigrate(false)))
 	require.Error(t, err)
 	var notAllowed *migrater.SchemaMigrationNotAllowedError
 	require.ErrorAs(t, err, &notAllowed)
@@ -93,7 +93,7 @@ func TestConnectImport_MayMigrateFalseThenAllowed(t *testing.T) {
 	dataDir := t.TempDir()
 	buildLegacySource(t, dataDir)
 
-	_, err := Connect(t.Context(), dataDir, WithMayMigrate(false))
+	_, err := Connect(t.Context(), dataDir, WithMigrateOptions(migrater.WithMayMigrate(false)))
 	require.Error(t, err)
 	var notAllowed *migrater.SchemaMigrationNotAllowedError
 	require.ErrorAs(t, err, &notAllowed)
@@ -119,7 +119,7 @@ func TestConnectImport_MayMigrateFalseAllowsAlreadyMigratedDestination(t *testin
 	require.NoError(t, migrater.Migrate(t.Context(), seed))
 	require.NoError(t, seed.Close())
 
-	conn, err := Connect(t.Context(), dataDir, WithMayMigrate(false))
+	conn, err := Connect(t.Context(), dataDir, WithMigrateOptions(migrater.WithMayMigrate(false)))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ReleaseConn(conn) })
 	require.NoError(t, conn.PingContext(t.Context()))
