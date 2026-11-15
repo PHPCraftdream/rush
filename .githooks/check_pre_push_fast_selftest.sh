@@ -16,7 +16,7 @@ for file in pkg/a/a.go pkg/a/again_test.go pkg/b/b.go pkg/a/unchanged.go; do
 done
 cp "$fast" "$fixture/.githooks/pre-push-fast.sh"
 cp "$here/pre-push-budgets.sh" "$fixture/.githooks/"
-for helper in check_stale_model_slots.sh check_db_release_pairing.sh check_file_size.sh check_file_size_selftest.sh check_db_release_pairing_selftest.sh check_list_test_packages.sh check_run_test_segment_retry_flags.sh; do
+for helper in check_stale_model_slots.sh check_db_release_pairing.sh check_file_size.sh check_dir_entries.sh check_pkg_names.sh check_file_size_selftest.sh check_dir_entries_selftest.sh check_pkg_names_selftest.sh check_db_release_pairing_selftest.sh check_list_test_packages.sh check_run_test_segment_retry_flags.sh; do
  printf '#!/usr/bin/env bash\nprintf "helper %%s\\n" "${BASH_SOURCE[0]##*/}" >> "$TRACE"\n' > "$fixture/.githooks/$helper"
 done
 cat > "$fixture/bin/git" <<'EOF'
@@ -151,6 +151,10 @@ check grep -Fxq 'no Go packages changed' "$fixture/out"
 for config in .githooks/pre-push-fast.sh .golangci.yml; do
  run_fast config "$config"
  check has 'helper check_file_size_selftest.sh'
+ check has 'helper check_dir_entries.sh'
+ check has 'helper check_pkg_names.sh'
+ check has 'helper check_dir_entries_selftest.sh'
+ check has 'helper check_pkg_names_selftest.sh'
  check has 'helper check_db_release_pairing_selftest.sh'
  check has 'helper check_list_test_packages.sh'
  check has 'helper check_run_test_segment_retry_flags.sh'

@@ -68,7 +68,7 @@ func init() {
 // psHeartbeatDir resolves the global heartbeat directory: RUSH_HEARTBEAT_DIR
 // wins, else the heartbeat/ folder next to the global settings file.
 func psHeartbeatDir() string {
-	return heartbeat.DefaultDir()
+	return heartbeatDefaultDir()
 }
 
 func psRunE(cmd *cobra.Command, _ []string) error {

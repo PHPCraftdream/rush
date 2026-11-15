@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/agent/hyper"
+	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/oauth"
 )
 
@@ -37,7 +37,7 @@ type TokenResponse struct {
 
 // InitiateDeviceAuth calls the /device/auth endpoint to start the device flow.
 func InitiateDeviceAuth(ctx context.Context) (*DeviceAuthResponse, error) {
-	url := hyper.BaseURL() + "/device/auth"
+	url := catalog.HyperBaseURL() + "/device/auth"
 
 	req, err := http.NewRequestWithContext(
 		ctx, http.MethodPost, url,
@@ -115,7 +115,7 @@ func PollForToken(ctx context.Context, deviceCode string, expiresIn int) (string
 
 func pollOnce(ctx context.Context, deviceCode string) (TokenResponse, error) {
 	var result TokenResponse
-	url := fmt.Sprintf("%s/device/auth/%s", hyper.BaseURL(), deviceCode)
+	url := fmt.Sprintf("%s/device/auth/%s", catalog.HyperBaseURL(), deviceCode)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return result, fmt.Errorf("create request: %w", err)
@@ -168,7 +168,7 @@ func ExchangeTokenWithClient(ctx context.Context, client *http.Client, refreshTo
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	url := hyper.BaseURL() + "/token/exchange"
+	url := catalog.HyperBaseURL() + "/token/exchange"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
@@ -225,7 +225,7 @@ func IntrospectToken(ctx context.Context, accessToken string) (*IntrospectTokenR
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	url := hyper.BaseURL() + "/token/introspect"
+	url := catalog.HyperBaseURL() + "/token/introspect"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)

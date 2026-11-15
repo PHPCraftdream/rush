@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/env"
 	"github.com/stretchr/testify/require"
 )
@@ -33,10 +32,6 @@ func TestConfigureProviders_ZeroDumpDoesNotShadowCatalog(t *testing.T) {
 	origDocs := discoverZAIEffortDocs
 	discoverZAIEffortDocs = func(context.Context) ([]catwalk.Model, error) { return nil, nil }
 	t.Cleanup(func() { discoverZAIEffortDocs = origDocs })
-	origAvailable := cliprovider.AvailableFunc
-	cliprovider.AvailableFunc = func() []cliprovider.CLISpec { return nil }
-	t.Cleanup(func() { cliprovider.AvailableFunc = origAvailable })
-
 	catalog := zaiKnownProvider()
 	catalog.Models = []catwalk.Model{
 		{ID: "glm-4.7", ContextWindow: 204_800, DefaultMaxTokens: 98_000},

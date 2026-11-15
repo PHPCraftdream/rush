@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/env"
 )
 
@@ -41,13 +42,38 @@ func runLoadAfterProviderConfigTestHook(workingDir string) {
 // once" shape so the store never has a window where a reader could observe
 // a half-configured config (e.g. providers set but SetupAgents not yet
 // run).
-func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
+// loadOptions carries the optional construction-time inputs of Load.
+type loadOptions struct {
+	cliModels func() []catalog.LocalCLIModel
+}
+
+// LoadOption customizes Load. Options are applied once, before any disk
+// or network work starts.
+type LoadOption func(*loadOptions)
+
+// WithCLIModels supplies the locally-available CLI model descriptors used
+// to synthesize the built-in local-cli provider during configureProviders.
+// Composition roots pass the agent-side detection function here (today
+// cliprovider.AvailableCLIModels); passing nil, or not passing the option
+// at all, behaves exactly like a machine with no CLI installed. The value
+// is stored on the returned ConfigStore and reused by every later reload.
+func WithCLIModels(fn func() []catalog.LocalCLIModel) LoadOption {
+	return func(o *loadOptions) { o.cliModels = fn }
+}
+
+func Load(workingDir, dataDir string, debug bool, opts ...LoadOption) (*ConfigStore, error) {
+	var options loadOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&options)
+		}
+	}
 	var lastErr error
 	// ONE shared migration deadline for every slot and every load attempt.
 	ktavCtx, ktavCancel := context.WithTimeout(context.Background(), ktavMigrationBudget)
 	defer ktavCancel()
 	for attempt := 0; attempt < reloadMaxAttempts; attempt++ {
-		store, err := loadOnce(ktavCtx, workingDir, dataDir, debug)
+		store, err := loadOnce(ktavCtx, workingDir, dataDir, debug, options.cliModels)
 		if !errors.Is(err, errReloadDiskChanged) && !errors.Is(err, errStableReadUnstable) {
 			if err == nil {
 				store.recoverOAuthJournalsAtLoad()
@@ -59,7 +85,7 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	return nil, fmt.Errorf("%w after %d attempts: %v", ErrConfigReloadUnstable, reloadMaxAttempts, lastErr)
 }
 
-func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool) (*ConfigStore, error) {
+func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, cliModels func() []catalog.LocalCLIModel) (*ConfigStore, error) {
 	if err := checkAuthoritativeBackupOnly(workingDir); err != nil {
 		return nil, err
 	}
@@ -132,6 +158,7 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool) (
 		globalDataPath: globalDataPath,
 		dataDirSource:  dataDirSource,
 		sharedDataDir:  sharedDataDir,
+		cliModels:      cliModels,
 	}
 	// Load workspace config last so it has highest priority.
 	if !pathAlreadyLoaded(loadedPaths, workspacePath) && workingDir != "" {

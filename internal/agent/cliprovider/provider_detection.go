@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
@@ -65,6 +66,23 @@ func resolveLaunchBinary(name string) (string, error) {
 
 // Available reports which CLI model specs are usable on this machine.
 func Available() []CLISpec { return AvailableFunc() }
+
+// AvailableCLIModels projects the locally-available CLI specs onto the
+// execution-free [catalog.LocalCLIModel] descriptor config synthesizes the
+// local-cli provider from. It follows [AvailableFunc], so stubbing that var
+// in tests also controls this projection.
+func AvailableCLIModels() []catalog.LocalCLIModel {
+	specs := Available()
+	models := make([]catalog.LocalCLIModel, 0, len(specs))
+	for _, spec := range specs {
+		models = append(models, catalog.LocalCLIModel{
+			ID:            spec.ModelID,
+			Name:          spec.ModelName,
+			ContextWindow: spec.ContextWindow,
+		})
+	}
+	return models
+}
 
 // detectAvailableCache memoizes detectAvailable's PATH scan, keyed on the
 // PATH (and, on Windows, PATHEXT) value the scan was performed against.

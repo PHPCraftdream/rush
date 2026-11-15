@@ -211,7 +211,7 @@ func TestRunCustomRoleCLIChildDispatch(t *testing.T) {
 			fixture := `{"options":{"disable_default_providers":true},"models":{"smart":{"provider":"local-cli","model":"` + smartModelID + `"}},"roles":{"` + runRoleChildRoleName + `":{"provider":"local-cli","model":"` + customModelID + `","reasoning_effort":"high","tools":["view"]}}}`
 			require.NoError(t, os.WriteFile(filepath.Join(dataDir, "rush.json"), []byte(fixture), 0o600))
 			if tc.delete {
-				store, initErr := config.Init(cwd, dataDir, false)
+				store, initErr := config.Init(cwd, dataDir, false, config.WithCLIModels(cliprovider.AvailableCLIModels))
 				require.NoError(t, initErr)
 				role := store.Config().Roles[runRoleChildRoleName]
 				require.NoError(t, store.SetCustomRole(config.ScopeWorkspace, runRoleChildRoleName, config.CustomRoleUpdate{Model: role.SelectedModel, Tools: role.Tools}))

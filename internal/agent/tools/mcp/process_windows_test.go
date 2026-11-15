@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/platform"
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 	"github.com/PHPCraftdream/rush/internal/testguard"
 	"github.com/stretchr/testify/require"
 )
@@ -160,7 +160,7 @@ func TestConfigureStdioProcess_CancelTreeKillsOrphanedGrandchild_Windows(t *test
 		return true
 	}, 5*time.Second, 50*time.Millisecond, "helper processes did not report alive")
 
-	require.True(t, session.IsProcessAlive(grandchildPID), "grandchild must be alive before cancel")
+	require.True(t, procinfo.IsProcessAlive(grandchildPID), "grandchild must be alive before cancel")
 
 	start := time.Now()
 	cancel()
@@ -185,7 +185,7 @@ func TestConfigureStdioProcess_CancelTreeKillsOrphanedGrandchild_Windows(t *test
 		"Wait must return promptly once the process tree is killed")
 
 	require.Eventually(t, func() bool {
-		return !session.IsProcessAlive(grandchildPID)
+		return !procinfo.IsProcessAlive(grandchildPID)
 	}, 5*time.Second, 100*time.Millisecond,
 		"grandchild must be tree-killed when the stdio child's context is cancelled, not left orphaned")
 }

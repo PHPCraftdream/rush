@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/testguard"
 )
 
@@ -56,8 +55,6 @@ func TestMain(m *testing.M) {
 	// from whatever binaries (claude/gemini/npx) happen to be on the runner's
 	// PATH. These tests assert exact provider sets and must be deterministic
 	// across environments (clean CI vs a dev box with the CLIs installed).
-	cliprovider.AvailableFunc = func() []cliprovider.CLISpec { return nil }
-
 	code := m.Run()
 	cleanup()
 	os.Exit(code)

@@ -80,7 +80,7 @@ func wedgeRunShell(t *testing.T) func() {
 	// flake: TestRunnerAbandonHardKillSeam's own seamPids channel received
 	// a stray nil-pids value that raced its real invocation. None of the
 	// tests using this helper register a process pid, so the real
-	// session.KillProcess loop abandonSeam's default branch would run is
+	// procinfo.KillProcess loop abandonSeam's default branch would run is
 	// always a no-op for them; tracking completion here changes nothing
 	// observable, it only makes it awaitable.
 	hardKillDone := make(chan struct{}, 128)
@@ -240,7 +240,7 @@ func TestRunnerAbandonedDoesNotBlockCaller(t *testing.T) {
 
 // TestRunnerAbandonHardKillSeam proves the abandon path attempts a hard
 // kill of exactly the processes the wedged worker registered, without
-// blocking the caller: the seam replaces session.KillProcess, so no real
+// blocking the caller: the seam replaces procinfo.KillProcess, so no real
 // pid is ever signalled.
 func TestRunnerAbandonHardKillSeam(t *testing.T) {
 	release := make(chan struct{})

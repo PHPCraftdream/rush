@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	hyperp "github.com/PHPCraftdream/rush/internal/agent/hyper"
+	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/oauth"
 	"github.com/stretchr/testify/require"
@@ -304,8 +304,8 @@ func TestRefreshOAuthToken_SurvivesReloadDuringNetworkCall(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(configPath, content, 0o600))
 	providers := csync.NewMap[string, ProviderConfig]()
-	providers.Set(hyperp.Name, ProviderConfig{
-		ID:         hyperp.Name,
+	providers.Set(catalog.HyperName, ProviderConfig{
+		ID:         catalog.HyperName,
 		Name:       "Hyper",
 		APIKey:     oldToken.AccessToken,
 		OAuthToken: oldToken,
@@ -347,7 +347,7 @@ func TestRefreshOAuthToken_SurvivesReloadDuringNetworkCall(t *testing.T) {
 
 	refreshErrCh := make(chan error, 1)
 	go func() {
-		refreshErrCh <- store.RefreshOAuthToken(context.Background(), ScopeGlobal, hyperp.Name)
+		refreshErrCh <- store.RefreshOAuthToken(context.Background(), ScopeGlobal, catalog.HyperName)
 	}()
 
 	select {
@@ -365,8 +365,8 @@ func TestRefreshOAuthToken_SurvivesReloadDuringNetworkCall(t *testing.T) {
 	// mapBeforeReload before this point (guaranteed by the handshake
 	// above), but the current generation now points at a different map.
 	newProviders := csync.NewMap[string, ProviderConfig]()
-	newProviders.Set(hyperp.Name, ProviderConfig{
-		ID:         hyperp.Name,
+	newProviders.Set(catalog.HyperName, ProviderConfig{
+		ID:         catalog.HyperName,
 		Name:       "Hyper",
 		APIKey:     oldToken.AccessToken,
 		OAuthToken: oldToken,
@@ -395,7 +395,7 @@ func TestRefreshOAuthToken_SurvivesReloadDuringNetworkCall(t *testing.T) {
 	// The refreshed token must be visible in the CURRENTLY published
 	// snapshot, not lost in the pre-reload map RefreshOAuthToken captured
 	// at its start.
-	finalPC, ok := store.Config().Providers.Get(hyperp.Name)
+	finalPC, ok := store.Config().Providers.Get(catalog.HyperName)
 	require.True(t, ok)
 	require.Equal(t, "new-access-token", finalPC.APIKey,
 		"refreshed token must be visible in the current generation, not dropped into an orphaned map")
@@ -405,7 +405,7 @@ func TestRefreshOAuthToken_SurvivesReloadDuringNetworkCall(t *testing.T) {
 	// mapBeforeReload (the orphaned pre-reload map) must NOT have received
 	// the refreshed token — that's the exact failure mode of the bug: a
 	// write into a map no reader can reach anymore.
-	orphanedPC, ok := mapBeforeReload.Get(hyperp.Name)
+	orphanedPC, ok := mapBeforeReload.Get(catalog.HyperName)
 	require.True(t, ok)
 	require.Equal(t, "old-access-token", orphanedPC.APIKey,
 		"the orphaned pre-reload map must be untouched by RefreshOAuthToken's write")
@@ -424,7 +424,7 @@ func TestRefreshOAuthToken_DiskReplacementWinsConcurrentRefresh(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(configPath, content, 0o600))
 	providers := csync.NewMap[string, ProviderConfig]()
-	providers.Set(hyperp.Name, ProviderConfig{ID: hyperp.Name, APIKey: oldToken.AccessToken, OAuthToken: oldToken})
+	providers.Set(catalog.HyperName, ProviderConfig{ID: catalog.HyperName, APIKey: oldToken.AccessToken, OAuthToken: oldToken})
 	store := newTestConfigStore(testStoreOpts{config: &Config{Providers: providers}, globalDataPath: configPath})
 
 	reachedNetwork := make(chan struct{})
@@ -437,7 +437,7 @@ func TestRefreshOAuthToken_DiskReplacementWinsConcurrentRefresh(t *testing.T) {
 	}
 	t.Cleanup(func() { hyperExchangeTokenFn = original })
 	errCh := make(chan error, 1)
-	go func() { errCh <- store.RefreshOAuthToken(context.Background(), ScopeGlobal, hyperp.Name) }()
+	go func() { errCh <- store.RefreshOAuthToken(context.Background(), ScopeGlobal, catalog.HyperName) }()
 	select {
 	case <-reachedNetwork:
 	case <-time.After(10 * time.Second):
@@ -455,7 +455,7 @@ func TestRefreshOAuthToken_DiskReplacementWinsConcurrentRefresh(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("refresh did not return")
 	}
-	diskToken, err := store.loadTokenFromDisk(ScopeGlobal, hyperp.Name)
+	diskToken, err := store.loadTokenFromDisk(ScopeGlobal, catalog.HyperName)
 	require.NoError(t, err)
 	require.Equal(t, replacement.AccessToken, diskToken.AccessToken)
 	require.Equal(t, replacement.RefreshToken, diskToken.RefreshToken)
@@ -467,13 +467,13 @@ func TestRefreshOAuthToken_CommittedDurabilityErrorSynchronizesMemory(t *testing
 	oldToken := &oauth.Token{AccessToken: "old-access", RefreshToken: "refresh-old", ExpiresIn: 3600, ExpiresAt: time.Now().Add(-time.Hour).Unix()}
 	content, err := json.Marshal(map[string]any{
 		"providers": map[string]any{
-			hyperp.Name: map[string]any{"api_key": oldToken.AccessToken, "oauth": oldToken},
+			catalog.HyperName: map[string]any{"api_key": oldToken.AccessToken, "oauth": oldToken},
 		},
 	})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(configPath, content, 0o600))
 	providers := csync.NewMap[string, ProviderConfig]()
-	providers.Set(hyperp.Name, ProviderConfig{ID: hyperp.Name, APIKey: oldToken.AccessToken, OAuthToken: oldToken})
+	providers.Set(catalog.HyperName, ProviderConfig{ID: catalog.HyperName, APIKey: oldToken.AccessToken, OAuthToken: oldToken})
 	store := newTestConfigStore(testStoreOpts{config: &Config{Providers: providers}, globalDataPath: configPath})
 
 	refreshed := &oauth.Token{AccessToken: "new-access", RefreshToken: "refresh-new", ExpiresIn: 3600, ExpiresAt: time.Now().Add(time.Hour).Unix()}
@@ -494,17 +494,17 @@ func TestRefreshOAuthToken_CommittedDurabilityErrorSynchronizesMemory(t *testing
 		configTestHooks.Unlock()
 	})
 
-	err = store.RefreshOAuthToken(context.Background(), ScopeGlobal, hyperp.Name)
+	err = store.RefreshOAuthToken(context.Background(), ScopeGlobal, catalog.HyperName)
 	var outcome *CommitOutcome
 	require.ErrorAs(t, err, &outcome)
 	require.True(t, outcome.Committed)
 	require.ErrorIs(t, err, durabilityErr)
 
-	current, ok := store.Config().Providers.Get(hyperp.Name)
+	current, ok := store.Config().Providers.Get(catalog.HyperName)
 	require.True(t, ok)
 	require.Equal(t, refreshed.AccessToken, current.APIKey)
 	require.Equal(t, refreshed.RefreshToken, current.OAuthToken.RefreshToken)
-	diskToken, err := store.loadTokenFromDisk(ScopeGlobal, hyperp.Name)
+	diskToken, err := store.loadTokenFromDisk(ScopeGlobal, catalog.HyperName)
 	require.NoError(t, err)
 	require.Equal(t, refreshed.AccessToken, diskToken.AccessToken)
 }
@@ -551,15 +551,15 @@ func TestRefreshOAuthTokenWithClient_RefreshesTokenFromHandedInGeneration(t *tes
 	}
 	content, err := json.Marshal(map[string]any{
 		"providers": map[string]any{
-			hyperp.Name: map[string]any{"api_key": genAToken.AccessToken, "oauth": genAToken},
+			catalog.HyperName: map[string]any{"api_key": genAToken.AccessToken, "oauth": genAToken},
 		},
 	})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(configPath, content, 0o600))
 
 	providers := csync.NewMap[string, ProviderConfig]()
-	providers.Set(hyperp.Name, ProviderConfig{
-		ID:         hyperp.Name,
+	providers.Set(catalog.HyperName, ProviderConfig{
+		ID:         catalog.HyperName,
 		Name:       "Hyper",
 		APIKey:     genAToken.AccessToken,
 		OAuthToken: genAToken,
@@ -572,7 +572,7 @@ func TestRefreshOAuthTokenWithClient_RefreshesTokenFromHandedInGeneration(t *tes
 	// Caller role: capture the provider entry and build the client from
 	// ONE generation-A read, exactly as the coordinator's
 	// refreshOAuth2Token does before calling the store.
-	genAProvider, ok := store.Config().Providers.Get(hyperp.Name)
+	genAProvider, ok := store.Config().Providers.Get(catalog.HyperName)
 	require.True(t, ok)
 	clientFromGenA := &http.Client{}
 
@@ -593,9 +593,9 @@ func TestRefreshOAuthTokenWithClient_RefreshesTokenFromHandedInGeneration(t *tes
 	genBProvider.APIKey = genBToken.AccessToken
 	genBProvider.OAuthToken = genBToken
 	genBProvider.Network = &NetworkConfig{Proxy: "socks5://127.0.0.1:1080"}
-	store.SetProviderRuntimeConfig(hyperp.Name, genBProvider)
+	store.SetProviderRuntimeConfig(catalog.HyperName, genBProvider)
 
-	freshProvider, ok := store.Config().Providers.Get(hyperp.Name)
+	freshProvider, ok := store.Config().Providers.Get(catalog.HyperName)
 	require.True(t, ok)
 	require.Equal(t, "refresh-gen-b", freshProvider.OAuthToken.RefreshToken,
 		"sanity check: generation B must be live, so the old internal re-read would see it")
@@ -661,15 +661,15 @@ func TestRefreshOAuthTokenWithClient_DiskReplacementDuringWindowNeverPairsCrossG
 	}
 	content, err := json.Marshal(map[string]any{
 		"providers": map[string]any{
-			hyperp.Name: map[string]any{"api_key": genAToken.AccessToken, "oauth": genAToken},
+			catalog.HyperName: map[string]any{"api_key": genAToken.AccessToken, "oauth": genAToken},
 		},
 	})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(configPath, content, 0o600))
 
 	providers := csync.NewMap[string, ProviderConfig]()
-	providers.Set(hyperp.Name, ProviderConfig{
-		ID:         hyperp.Name,
+	providers.Set(catalog.HyperName, ProviderConfig{
+		ID:         catalog.HyperName,
 		Name:       "Hyper",
 		APIKey:     genAToken.AccessToken,
 		OAuthToken: genAToken,
@@ -679,7 +679,7 @@ func TestRefreshOAuthTokenWithClient_DiskReplacementDuringWindowNeverPairsCrossG
 		globalDataPath: configPath,
 	})
 
-	genAProvider, ok := store.Config().Providers.Get(hyperp.Name)
+	genAProvider, ok := store.Config().Providers.Get(catalog.HyperName)
 	require.True(t, ok)
 	clientFromGenA := &http.Client{}
 
@@ -693,7 +693,7 @@ func TestRefreshOAuthTokenWithClient_DiskReplacementDuringWindowNeverPairsCrossG
 	genBProvider.APIKey = genBToken.AccessToken
 	genBProvider.OAuthToken = genBToken
 	genBProvider.Network = &NetworkConfig{Proxy: "socks5://127.0.0.1:1080"}
-	store.SetProviderRuntimeConfig(hyperp.Name, genBProvider)
+	store.SetProviderRuntimeConfig(catalog.HyperName, genBProvider)
 	require.NoError(t, store.SetConfigFields(ScopeGlobal, map[string]any{
 		"providers.hyper.api_key": genBToken.AccessToken,
 		"providers.hyper.oauth":   genBToken,
@@ -722,7 +722,7 @@ func TestRefreshOAuthTokenWithClient_DiskReplacementDuringWindowNeverPairsCrossG
 			"sent over the generation-A client is the F6 round-12 defect")
 	require.NoError(t, err)
 
-	current, ok := store.Config().Providers.Get(hyperp.Name)
+	current, ok := store.Config().Providers.Get(catalog.HyperName)
 	require.True(t, ok)
 	require.Equal(t, "gen-b-access", current.APIKey,
 		"the disk token, already live in memory, must win without any exchange")

@@ -30,7 +30,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/db"
 	rushlog "github.com/PHPCraftdream/rush/internal/log"
 	"github.com/PHPCraftdream/rush/internal/message"
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -145,7 +145,7 @@ func TestSessionsReset_ForceDoesNotKillStalePID(t *testing.T) {
 	lockPath := filepath.Join(lockDir, "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
 	require.NoError(t, os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644))
 
-	require.True(t, session.IsProcessAlive(os.Getpid()))
+	require.True(t, procinfo.IsProcessAlive(os.Getpid()))
 
 	// SessionsResetCmd.RunE creates its own full App. Release the seed App's
 	// process-wide MCP owner before invoking the command.
@@ -158,7 +158,7 @@ func TestSessionsReset_ForceDoesNotKillStalePID(t *testing.T) {
 	})
 	t.Logf("reset --force stderr:\n%s", stderr)
 
-	require.True(t, session.IsProcessAlive(os.Getpid()),
+	require.True(t, procinfo.IsProcessAlive(os.Getpid()),
 		"reset --force must never kill the calling test process via a stale lock-file PID")
 
 	// reset --force now HOLDS the OS lock through the DB reset and releases
@@ -251,7 +251,7 @@ func TestSessionsReset_ForceHonorsConfiguredDataDir(t *testing.T) {
 	lockPath := filepath.Join(lockDir, "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
 	require.NoError(t, os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644))
 
-	require.True(t, session.IsProcessAlive(os.Getpid()))
+	require.True(t, procinfo.IsProcessAlive(os.Getpid()))
 
 	// SessionsResetCmd.RunE creates its own full App. Release the seed App's
 	// process-wide MCP owner before invoking the command.
@@ -271,7 +271,7 @@ func TestSessionsReset_ForceHonorsConfiguredDataDir(t *testing.T) {
 
 	// Stale-PID safety must still hold at the configured location: our own
 	// live test process must never be killed.
-	require.True(t, session.IsProcessAlive(os.Getpid()),
+	require.True(t, procinfo.IsProcessAlive(os.Getpid()),
 		"reset --force must never kill the calling test process via a stale lock-file PID")
 
 	// reset --force holds+releases the lock; it does NOT remove the file.
@@ -303,7 +303,7 @@ func TestSessionsReset_ForceStillKillsLiveHolder(t *testing.T) {
 	holder := spawnKillTestLockHolder(t, dataDir, sess.ID, true)
 	defer holder.stop(t)
 
-	require.True(t, session.IsProcessAlive(holder.pid))
+	require.True(t, procinfo.IsProcessAlive(holder.pid))
 
 	// SessionsResetCmd.RunE creates its own full App. Keep the real child lock
 	// holder alive, but release the seed App's MCP owner before invoking it.
@@ -317,10 +317,10 @@ func TestSessionsReset_ForceStillKillsLiveHolder(t *testing.T) {
 	t.Logf("reset --force stderr:\n%s", stderr)
 
 	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && session.IsProcessAlive(holder.pid) {
+	for time.Now().Before(deadline) && procinfo.IsProcessAlive(holder.pid) {
 		time.Sleep(50 * time.Millisecond)
 	}
-	require.False(t, session.IsProcessAlive(holder.pid), "a genuinely live holder must still be killed by reset --force")
+	require.False(t, procinfo.IsProcessAlive(holder.pid), "a genuinely live holder must still be killed by reset --force")
 }
 
 // TestSessionsReset_ForceClearsUnfinishedAssistantMessages is the regression

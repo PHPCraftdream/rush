@@ -488,11 +488,16 @@ func executeTopLevelRun(t *testing.T, cwd, dataDir, role string, traces ...*runC
 		rootCmd.SetOut(previousOut)
 		rootCmd.SetErr(previousErr)
 		rootCmd.SetContext(previousContext)
+		resetRunCmdContext()
 		rootCmd.SetArgs(nil)
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	rootCmd.SetContext(ctx)
+	// Cobra gives a subcommand the root context only while its own context is
+	// nil, so the previous execution's (canceled) context would otherwise
+	// stay on runCmd and fail the next top-level run at its database connect.
+	resetRunCmdContext()
 
 	restore := journalSnapshotRestore(t, runCmd.Flags(), rootCmd.PersistentFlags())
 	t.Cleanup(restore)
@@ -546,4 +551,10 @@ func countRunCLISessions(t *testing.T, dataDir string) int {
 	var count int
 	require.NoError(t, conn.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM sessions`).Scan(&count))
 	return count
+}
+
+// resetRunCmdContext clears the context Cobra cached on runCmd during an
+// earlier Execute, so the next Execute inherits the root command's context.
+func resetRunCmdContext() {
+	runCmd.SetContext(nil) //nolint:staticcheck // nil is the pristine state Cobra checks before inheriting the parent context.
 }

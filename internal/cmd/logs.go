@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"charm.land/log/v2"
+	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/term"
@@ -60,7 +61,7 @@ var logsCmd = &cobra.Command{
 			log.SetColorProfile(colorprofile.NoTTY)
 		}
 
-		cfg, err := config.Load(cwd, dataDir, false)
+		cfg, err := config.Load(cwd, dataDir, false, config.WithCLIModels(cliprovider.AvailableCLIModels))
 		if err != nil {
 			return fmt.Errorf("failed to load configuration: %v", err)
 		}

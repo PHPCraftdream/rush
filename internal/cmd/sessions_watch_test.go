@@ -13,6 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -409,7 +410,7 @@ func TestIsSessionFinished_AgedLockWithLivePIDIsAlive(t *testing.T) {
 
 	holder := spawnKillTestLockHolder(t, dataDir, sess.ID, false)
 	defer holder.stop(t)
-	require.True(t, session.IsProcessAlive(holder.pid), "helper process must still be alive for this test to be meaningful")
+	require.True(t, procinfo.IsProcessAlive(holder.pid), "helper process must still be alive for this test to be meaningful")
 
 	lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
 	staleTime := time.Now().Add(-(session.MaxPidFallbackAge + 5*time.Second))

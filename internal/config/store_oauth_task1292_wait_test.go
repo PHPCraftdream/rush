@@ -9,13 +9,13 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	hyperp "github.com/PHPCraftdream/rush/internal/agent/hyper"
+	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/oauth"
 	"github.com/stretchr/testify/require"
 )
 
 func TestTask1292Legacy_SlotWaitCancellationAndBudget(t *testing.T) {
-	for _, id := range []string{hyperp.Name, string(catwalk.InferenceProviderCopilot)} {
+	for _, id := range []string{catalog.HyperName, string(catwalk.InferenceProviderCopilot)} {
 		for _, bounded := range []bool{false, true} {
 			name := id + "/cancel-waiter"
 			if bounded {

@@ -1,4 +1,4 @@
-package session_test
+package itest
 
 // Regression coverage for task #592/P0-1 of the second 2026-08-19
 // release-readiness follow-up review: DrainSessionNow used a single

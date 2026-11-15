@@ -17,6 +17,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy/providers/openaicompat"
+	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/db"
@@ -67,7 +68,7 @@ func main() {
 	ps := &http.Server{Addr: "127.0.0.1:60987", Handler: provider}
 	go func() { _ = ps.ListenAndServe() }()
 	defer ps.Shutdown(context.Background())
-	store, err := config.Init(temp, data, false)
+	store, err := config.Init(temp, data, false, config.WithCLIModels(cliprovider.AvailableCLIModels))
 	must(err)
 	store.Config().Providers.Set("openaicompat", config.ProviderConfig{ID: "openaicompat", Type: openaicompat.Name, BaseURL: provider.URL, APIKey: "fixture", Models: []catwalk.Model{{ID: "probe", Name: "probe", ContextWindow: 200000, DefaultMaxTokens: 1024}}})
 	store.SetSelectedModelRuntime(config.SelectedModelTypeSmart, config.SelectedModel{Provider: "openaicompat", Model: "probe"})

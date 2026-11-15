@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/heartbeat"
 	"github.com/stretchr/testify/require"
 )
@@ -32,9 +33,10 @@ const tempTreeEntryCap = 200
 func describeTempTree(dir string) string {
 	var b strings.Builder
 	now := time.Now()
+	_, globalDirActive := config.GlobalDir()
 	fmt.Fprintf(&b, "=== temp dir %s just before removal (%s) ===\n", dir, now.Format(time.RFC3339Nano))
 	fmt.Fprintf(&b, "heartbeat.DefaultDir()=%q RUSH_HEARTBEAT_DIR=%q RUSH_GLOBAL_DIR=%q\n",
-		heartbeat.DefaultDir(), os.Getenv("RUSH_HEARTBEAT_DIR"), os.Getenv("RUSH_GLOBAL_DIR"))
+		heartbeat.DefaultDir(config.GlobalWorkspaceDir, globalDirActive), os.Getenv("RUSH_HEARTBEAT_DIR"), os.Getenv("RUSH_GLOBAL_DIR"))
 	n := 0
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {

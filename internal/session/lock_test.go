@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -474,7 +475,7 @@ func TestInspectSessionLock_StaleMtimeButLivePIDIsStillLive(t *testing.T) {
 	require.NoError(t, os.Chtimes(path, staleTime, staleTime),
 		"back-dating mtime to simulate a heartbeat lagging behind one long tool call on an otherwise-healthy session")
 
-	require.True(t, IsProcessAlive(holder.pid), "helper process must still be alive for this test to be meaningful")
+	require.True(t, procinfo.IsProcessAlive(holder.pid), "helper process must still be alive for this test to be meaningful")
 
 	st := InspectSessionLock(dir, "inspect-stale-live", externalOwnerLiveThresholdForTest)
 	assert.True(t, st.Exists)
@@ -508,7 +509,7 @@ func TestInspectSessionLock_StaleMtimeBeyondMaxPidFallbackAgeIsNotLive(t *testin
 	require.NoError(t, os.Chtimes(path, staleTime, staleTime),
 		"back-dating mtime past maxPidFallbackAge to simulate a lock left behind long enough ago that its recorded PID can no longer be trusted, even though it currently resolves to a live process")
 
-	require.True(t, IsProcessAlive(holder.pid), "helper process must still be alive for this test to be meaningful — proves the bound, not merely a dead PID")
+	require.True(t, procinfo.IsProcessAlive(holder.pid), "helper process must still be alive for this test to be meaningful — proves the bound, not merely a dead PID")
 
 	st := InspectSessionLock(dir, "inspect-stale-beyond-bound", externalOwnerLiveThresholdForTest)
 	assert.True(t, st.Exists)
@@ -683,7 +684,7 @@ func TestCrossProcess_StaleMtimeButAliveHolderStaysBusy(t *testing.T) {
 
 	// Sanity: the holder process is still alive and still holds the OS
 	// lock at this point (we haven't stopped it).
-	require.True(t, IsProcessAlive(holder.pid), "helper process must still be alive for this test to be meaningful")
+	require.True(t, procinfo.IsProcessAlive(holder.pid), "helper process must still be alive for this test to be meaningful")
 
 	_, err := TryAcquireSessionLock(dir, "cross-b")
 	var busyErr *SessionLockBusyError
@@ -809,7 +810,7 @@ func TestCrossProcess_ReadLockPIDWorksWhileHolderIsAlive(t *testing.T) {
 	holder := spawnLockHolder(t, dir, "kill-target", 0 /* hold until stopped */)
 	defer holder.stop(t)
 	require.True(t, holder.locked, "helper process failed to acquire lock: %s", holder.failed)
-	require.True(t, IsProcessAlive(holder.pid), "helper process must be alive for this test to be meaningful")
+	require.True(t, procinfo.IsProcessAlive(holder.pid), "helper process must be alive for this test to be meaningful")
 
 	path := lockPathFor(dir, "kill-target")
 	got := ReadLockPID(path)

@@ -29,7 +29,7 @@ package cmd
 //
 // Determinism note: on Unix, a killed direct child of THIS process stays
 // a zombie (still answering kill(pid,0), so still "alive" to
-// session.IsProcessAlive) until we explicitly reap it. The first two
+// procinfo.IsProcessAlive) until we explicitly reap it. The first two
 // tests exploit that deliberately: forceKillHolder keeps polling inside
 // its wait budget while the holder is an unreaped zombie, which gives
 // the test a fully controlled window to let a NEW owner acquire the
@@ -50,6 +50,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -133,7 +134,7 @@ func spawnSweepTestNewOwner(t *testing.T, dataDir, sessionID string) *killTestLo
 // spawnSweepGroupLeader starts a live process-group leader (the stand-in
 // for a CLI-provider child tree a real holder would have registered) and
 // reaps it in the background so that, once something killpg's it,
-// session.IsProcessAlive observes the exit instead of stalling on a
+// procinfo.IsProcessAlive observes the exit instead of stalling on a
 // zombie.
 func spawnSweepGroupLeader(t *testing.T) *exec.Cmd {
 	t.Helper()
@@ -302,7 +303,7 @@ func TestProbeThenKillHolder_CapturesVictimGenerationWhileHolderAlive(t *testing
 	// is to occupy that zombie window with a second process stealing the
 	// lock generation. See spawnKillTestLockHolder's doc comment.
 	holder := spawnKillTestLockHolder(t, dataDir, sessionID, false)
-	require.True(t, session.IsProcessAlive(holder.pid))
+	require.True(t, procinfo.IsProcessAlive(holder.pid))
 
 	lockPath := session.SessionLockPath(dataDir, sessionID)
 	oldGeneration := session.ReadLockGeneration(lockPath)
@@ -387,7 +388,7 @@ func TestAcquireSessionLockForReset_SweepsOnlyAfterReacquire(t *testing.T) {
 	// acquireSessionLockForReset's own re-acquire is attempted (see
 	// spawnKillTestLockHolder's doc comment).
 	holder := spawnKillTestLockHolder(t, dataDir, sessionID, false)
-	require.True(t, session.IsProcessAlive(holder.pid))
+	require.True(t, procinfo.IsProcessAlive(holder.pid))
 
 	lockPath := session.SessionLockPath(dataDir, sessionID)
 	oldGeneration := session.ReadLockGeneration(lockPath)
@@ -440,7 +441,7 @@ func TestAcquireSessionLockForReset_SweepsOnlyAfterReacquire(t *testing.T) {
 	require.True(t, res.kr.ConfirmedDead, "the OLD holder itself must still be confirmed dead")
 	require.NotContains(t, res.kr.Report, "swept",
 		"no sweep may run when the re-acquire failed — a new owner holds the session")
-	require.True(t, session.IsProcessAlive(leader.Process.Pid),
+	require.True(t, procinfo.IsProcessAlive(leader.Process.Pid),
 		"the victim's registered child group must NOT be signalled by a reset whose re-acquire failed; "+
 			"a dead leader here means the sweep ran before (or without) the re-acquire")
 	require.FileExists(t, sweepTestRegistryPath(dataDir, sessionID),
@@ -478,7 +479,7 @@ func TestSweepChildGroupsUnderOwnLock_BusyLockRefusesAndRetains(t *testing.T) {
 	// rather than introducing a third, untested combination. See
 	// spawnKillTestLockHolder's doc comment for the two cases that DO care.
 	holder := spawnKillTestLockHolder(t, dataDir, sessionID, false)
-	require.True(t, session.IsProcessAlive(holder.pid))
+	require.True(t, procinfo.IsProcessAlive(holder.pid))
 
 	lockPath := session.SessionLockPath(dataDir, sessionID)
 	generation := session.ReadLockGeneration(lockPath)
@@ -497,7 +498,7 @@ func TestSweepChildGroupsUnderOwnLock_BusyLockRefusesAndRetains(t *testing.T) {
 		"a busy session lock must be reported, not silently retried or ignored")
 	require.NotContains(t, report, "swept",
 		"nothing may be swept while another process holds the session lock")
-	require.True(t, session.IsProcessAlive(leader.Process.Pid),
+	require.True(t, procinfo.IsProcessAlive(leader.Process.Pid),
 		"the registered child group must not be signalled while its owner's lock is held by someone else")
 	require.FileExists(t, sweepTestRegistryPath(dataDir, sessionID),
 		"the registry entry must be left in place, untouched")
@@ -527,7 +528,7 @@ func TestSweepChildGroupsUnderOwnLock_BusyLockRefusesAndRetains(t *testing.T) {
 	require.Contains(t, sb2.String(), "swept 1 registered",
 		"after the lock is free the same sweep must act on the retained entry")
 	require.Eventually(t, func() bool {
-		return !session.IsProcessAlive(leader.Process.Pid)
+		return !procinfo.IsProcessAlive(leader.Process.Pid)
 	}, 5*time.Second, 10*time.Millisecond, "the retained entry's process group must die once swept")
 }
 
@@ -575,7 +576,7 @@ func TestProbeThenKillHolder_OrphanedGenerationCapturedBeforeProbeAcquire(t *tes
 	// nothing will ever clear or overwrite it until a NEW acquirer does.
 	crashKill(t, holder)
 	require.Eventually(t, func() bool {
-		return !session.IsProcessAlive(holder.pid)
+		return !procinfo.IsProcessAlive(holder.pid)
 	}, 5*time.Second, 10*time.Millisecond, "the crashed holder must actually be gone before the probe runs")
 
 	// Give the OS a moment to fully release the flock after the SIGKILL;
@@ -599,7 +600,7 @@ func TestProbeThenKillHolder_OrphanedGenerationCapturedBeforeProbeAcquire(t *tes
 	require.NotEmpty(t, crashedGeneration)
 	crashKill(t, holder2)
 	require.Eventually(t, func() bool {
-		return !session.IsProcessAlive(holder2.pid)
+		return !procinfo.IsProcessAlive(holder2.pid)
 	}, 5*time.Second, 10*time.Millisecond)
 
 	kr := probeThenKillHolder(dataDir, sessionID, holder2.pid, 5*time.Second)
@@ -648,7 +649,7 @@ func TestSessionsKillCmdRun_SweepsOrphanedGroupAfterCrash(t *testing.T) {
 
 	crashKill(t, holder)
 	require.Eventually(t, func() bool {
-		return !session.IsProcessAlive(holder.pid)
+		return !procinfo.IsProcessAlive(holder.pid)
 	}, 5*time.Second, 10*time.Millisecond, "the crashed holder must actually be gone")
 
 	ensureRootFlagStandIns(sessionsKillCmd, dataDir)
@@ -669,7 +670,7 @@ func TestSessionsKillCmdRun_SweepsOrphanedGroupAfterCrash(t *testing.T) {
 	require.Contains(t, stderr, "swept 1 registered",
 		"a process group registered under a holder that crashed before 'sessions kill' ran must still be reached and killed")
 	require.Eventually(t, func() bool {
-		return !session.IsProcessAlive(leader.Process.Pid)
+		return !procinfo.IsProcessAlive(leader.Process.Pid)
 	}, 5*time.Second, 10*time.Millisecond,
 		"the registered process group must actually be dead once the sweep reports it killed")
 
@@ -718,7 +719,7 @@ func TestAcquireSessionLockForReset_SweepsOrphanedGroupAfterCrash(t *testing.T) 
 
 	crashKill(t, holder)
 	require.Eventually(t, func() bool {
-		return !session.IsProcessAlive(holder.pid)
+		return !procinfo.IsProcessAlive(holder.pid)
 	}, 5*time.Second, 10*time.Millisecond, "the crashed holder must actually be gone")
 
 	lk, kr, err := acquireSessionLockForReset(dataDir, sessionID, holder.pid, 2*time.Second)
@@ -732,7 +733,7 @@ func TestAcquireSessionLockForReset_SweepsOrphanedGroupAfterCrash(t *testing.T) 
 	require.Contains(t, kr.Report, "swept 1 registered",
 		"a process group registered under a holder that crashed before 'sessions reset --force' ran must still be reached and killed")
 	require.Eventually(t, func() bool {
-		return !session.IsProcessAlive(leader.Process.Pid)
+		return !procinfo.IsProcessAlive(leader.Process.Pid)
 	}, 5*time.Second, 10*time.Millisecond,
 		"the registered process group must actually be dead once the sweep reports it killed")
 

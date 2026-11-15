@@ -40,6 +40,12 @@
 # exclusions mirror this allowlist. The allowlist is the single source
 # of truth for both layers.
 #
+# Sibling guards in this directory enforce the other Sprint 0 rules:
+# "at most 7 elements per code directory"
+# (.githooks/check_dir_entries.sh) and "package names are unique"
+# (.githooks/check_pkg_names.sh) -- see
+# docs/plans/2026-11-15-sprint0-plan.md.
+#
 # Implementation: ONE awk process reads the filename list on stdin and
 # every source file itself (getline), so there is no per-file process
 # spawn (a shell loop over 1200+ files costs minutes on Windows -- see
@@ -52,6 +58,10 @@
 set -uo pipefail
 
 MAX_LINES=1000
+# Warning band, non-failing: hand-written files between the warn line
+# and the hard limit are listed (largest first) but never change the
+# exit status -- debt-in-progress gets visibility without blocking.
+WARN_LINES=900
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 	printf 'check_file_size.sh: not inside a git work tree; refusing to guess\n' >&2
@@ -75,13 +85,14 @@ fi
 # (git ls-files, caught via pipefail). Every non-zero is fatal: this
 # guard must fail closed.
 report="$(git -c core.quotepath=off ls-files -- '*.go' '*.ts' '*.tsx' \
-	| awk -v max_lines="$MAX_LINES" -v allowlist="$allowlist" '
+	| awk -v max_lines="$MAX_LINES" -v warn_lines="$WARN_LINES" -v allowlist="$allowlist" '
 	BEGIN {
 		fatal = 0
 		checked = 0
 		generated = 0
 		kept = 0
 		violations = 0
+		wn = 0
 		while ((getline line < allowlist) > 0) {
 			sub(/\r$/, "", line)
 			if (line == "" || line ~ /^#/) {
@@ -134,6 +145,11 @@ report="$(git -c core.quotepath=off ls-files -- '*.go' '*.ts' '*.tsx' \
 			generated++
 			next
 		}
+		if (lines > warn_lines) {
+			wn++
+			wlines[wn] = lines
+			wfile[wn] = file
+		}
 		if (lines > max_lines) {
 			if (file in allowed) {
 				if (lines > allowed[file]) {
@@ -167,9 +183,32 @@ report="$(git -c core.quotepath=off ls-files -- '*.go' '*.ts' '*.tsx' \
 		}
 		if (violations > 0) {
 			printf "\033[31mfile-size guard: %d violation(s) (%d file(s) checked, %d generated skipped, %d allowlisted, max %d)\033[0m\n", violations, checked, generated, kept, max_lines
-			exit 1
+			exit_status = 1
+		} else {
+			printf "\033[32mfile-size guard: %d file(s) checked, %d generated skipped, %d allowlisted over %d lines, max %d\033[0m\n", checked, generated, kept, max_lines, max_lines
+			exit_status = 0
 		}
-		printf "\033[32mfile-size guard: %d file(s) checked, %d generated skipped, %d allowlisted over %d lines, max %d\033[0m\n", checked, generated, kept, max_lines, max_lines
+		printf "\033[33m%d hand-written file(s) over %d lines (warning, limit %d)\033[0m\n", wn, warn_lines, max_lines
+		# Top 5 by count descending, ties by path ascending: 5-iteration
+		# max extraction, marking used entries (no POSIX-awk sort).
+		for (r = 1; r <= 5 && r <= wn; r++) {
+			best = 0
+			for (i = 1; i <= wn; i++) {
+				if (i in used) {
+					continue
+				}
+				if (best == 0 || wlines[i] > wlines[best] || \
+					(wlines[i] == wlines[best] && wfile[i] < wfile[best])) {
+					best = i
+				}
+			}
+			if (best == 0) {
+				break
+			}
+			used[best] = 1
+			printf "  %4d %s\n", wlines[best], wfile[best]
+		}
+		exit exit_status
 	}')"
 status=$?
 

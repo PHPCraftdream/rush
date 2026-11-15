@@ -7,8 +7,13 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 	"golang.org/x/sys/windows"
 )
+
+func init() {
+	procinfo.RegisterTrackedJobTerminator(terminateTrackedJob)
+}
 
 // trackedJob pairs a kill-on-close Job Object handle with the creation
 // time of the process the job was created for. The creation time is the

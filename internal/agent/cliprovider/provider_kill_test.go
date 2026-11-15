@@ -21,7 +21,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/platform"
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 )
 
 // ── Bug 1 regression: bounded wait() must not hang when a grandchild holds stderr ──
@@ -185,7 +185,7 @@ func TestStreamWaitBoundedOnGrandchildHoldsStderr(t *testing.T) {
 	// Wait for tmpDir to actually become removable before returning.
 	//
 	// `taskkill` (above, for the grandchild) and Stream()'s own ctx-cancel
-	// path (which tree-kills the direct bash child via session.KillProcess,
+	// path (which tree-kills the direct bash child via procinfo.KillProcess,
 	// also taskkill-backed on Windows — see kill_windows.go) both only
 	// REQUEST termination; neither waits for Windows to finish tearing the
 	// process down and releasing its handles. Either process — bash itself
@@ -279,7 +279,7 @@ func TestStreamPTYWaitBoundedOnCtxCancel(t *testing.T) {
 	}
 }
 
-// ── Bug 2 sanity: kill() routes through session.KillProcess (tree-kill) ──
+// ── Bug 2 sanity: kill() routes through procinfo.KillProcess (tree-kill) ──
 //
 // We can't portably prove full tree-kill of a real multi-generation process
 // tree in a unit test (OS-flaky in CI), so this is a regression guard that
@@ -376,7 +376,7 @@ func TestStreamKillUsesTreeKillStillTerminatesChild(t *testing.T) {
 	// loaded CI Windows runner (AV scanning, concurrent -race binaries) the
 	// gap between taskkill returning and the OS actually dropping the pid
 	// from the process table can exceed a couple seconds even though
-	// session.KillProcess itself (called synchronously before the stream
+	// procinfo.KillProcess itself (called synchronously before the stream
 	// closes, see provider_stream.go) has already returned by the time this
 	// loop starts. Observed once in CI (run 32864883788, windows-latest)
 	// with the old 3s budget; never reproduced locally (15/15) where there
@@ -404,13 +404,13 @@ func TestStreamKillUsesTreeKillStillTerminatesChild(t *testing.T) {
 	// external-binary spawns route through a transient intermediary helper
 	// process, so the OS-recorded ParentProcessId points at that helper
 	// (already gone by the time we can inspect it), never at bash.exe.
-	// taskkill /F /T /PID <bash-pid> (session.KillProcess's implementation)
+	// taskkill /F /T /PID <bash-pid> (procinfo.KillProcess's implementation)
 	// walks the PPID chain from bash.exe and therefore can never discover
 	// or kill sleep.exe — this isn't a timing race, confirmed by 10/10
 	// deterministic failures even with a 10s post-kill wait budget, always
 	// converging only once sleep.exe's own 60s runs out. This same MSYS2
 	// process-model gap is a plausible latent issue in the real
-	// session.KillProcess production path too (out of scope for this test
+	// procinfo.KillProcess production path too (out of scope for this test
 	// fix; flagged separately) whenever a CLI provider's child spawns a
 	// real subprocess of its own on Windows.
 	//
@@ -440,5 +440,5 @@ func TestStreamKillUsesTreeKillStillTerminatesChild(t *testing.T) {
 // processAlive reports whether a process with the given pid is still running.
 // Best-effort, portable.
 func processAlive(pid int) bool {
-	return session.IsProcessAlive(pid)
+	return procinfo.IsProcessAlive(pid)
 }

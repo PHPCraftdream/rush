@@ -104,23 +104,31 @@ func TestAliasBackedSpecsDoNotClaimAVersion(t *testing.T) {
 // ── Codex registry alignment (task #477) ─────────────────────────────────────
 
 // TestCodexSpecs_ContextWindowMatchesRegistry pins the number against codex's
-// OWN embedded model registry (codex-cli 0.147.0), which reports 272_000 for
-// every model it serves.
+// OWN model registry (codex-cli 0.163.0 models cache): 500_000 for the 6.1
+// models, 272_000 for every other model it serves.
 //
-// The specs previously claimed 400_000. ContextWindow feeds the
+// The specs once claimed 400_000. ContextWindow feeds the
 // auto-summarization threshold, so a 48% overstatement let conversations run
 // well past the real limit before compaction triggered — the same class of
 // silent failure as the PromptTokens understatement fixed alongside it.
 func TestCodexSpecs_ContextWindowMatchesRegistry(t *testing.T) {
+	registry := map[string]int64{ // ModelID -> registry context_window
+		"cli-codex-gpt-6-1-sol":   500_000,
+		"cli-codex-gpt-6-1-terra": 500_000,
+	}
 	seen := 0
 	for _, spec := range All {
 		if spec.Binary != "codex" {
 			continue
 		}
 		seen++
-		if spec.ContextWindow != 272_000 {
-			t.Errorf("%s declares ContextWindow %d, registry says 272000",
-				spec.ModelID, spec.ContextWindow)
+		want, ok := registry[spec.ModelID]
+		if !ok {
+			want = 272_000
+		}
+		if spec.ContextWindow != want {
+			t.Errorf("%s declares ContextWindow %d, registry says %d",
+				spec.ModelID, spec.ContextWindow, want)
 		}
 	}
 	if seen == 0 {

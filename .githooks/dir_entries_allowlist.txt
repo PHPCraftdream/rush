@@ -1,0 +1,54 @@
+# dir-entries ratchet -- see .githooks/check_dir_entries.sh.
+#
+# One line per known violation of the "at most 7 elements per code
+# directory" rule, seeded 2026-11-15 with the exact current counts. A
+# listed directory may stay over the limit but the guard fails the
+# moment it GROWS, and fails with a "remove it from" message once it
+# is at or under 7. Test files do not count by default.
+#
+# When you split a directory: delete its line here. An element count
+# may never go up.
+internal 52
+internal/agent 261
+internal/agent/agentguard 8
+internal/agent/codexprovider 9
+internal/agent/cliprovider 23
+internal/agent/tools 80
+internal/agent/tools/mcp 19
+internal/apiclient 13
+# internal/app 61 -> 62: +1 for the new subdirectory internal/app/itest (cross-module scenario tests, sprint 0 wave 1).
+# The count falls with the package split (stage D2).
+internal/app 62
+internal/cahgen 9
+internal/cmd 165
+# internal/config 120 -> 121: +1 for the new leaf subdirectory internal/config/catalog (provider reference data, sprint 0 wave 1).
+# The count falls with the package split (stage D2).
+internal/config 121
+internal/db 16
+internal/discover 13
+internal/fsext 13
+internal/heartbeat 10
+internal/jobbatch 21
+internal/jobbatch/lab 24
+internal/message 12
+internal/nettransport 12
+internal/proto 11
+internal/server 83
+internal/session 133
+internal/shell 24
+internal/tasktree 10
+web/src 35
+web/src/actions 52
+web/src/components 33
+web/src/components/Chat 14
+web/src/components/ChatInput 18
+web/src/components/ChatToolbar 21
+web/src/components/Message 48
+web/src/components/batchControl 8
+web/src/components/peakHours 12
+web/src/components/providers 9
+web/src/components/scopedModels 11
+web/src/liveWork 13
+web/src/net 8
+web/src/state 37
+web/tests/helpers 9

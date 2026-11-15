@@ -398,7 +398,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 				// nil-Process read produced, without the race.
 				// killChildProcess keeps the per-platform dispatch (unix:
 				// group kill via killChildProcessPid; Windows:
-				// session.KillProcess — the closure is never installed on
+				// procinfo.KillProcess — the closure is never installed on
 				// Windows anyway). The stream's own ctx watchers
 				// (iterStarted/killDone → legacyKill) still group-kill once
 				// Start returns.

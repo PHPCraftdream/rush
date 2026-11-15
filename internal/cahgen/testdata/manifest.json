@@ -1,5 +1,5 @@
 {
-  "version": "0.16.1",
+  "version": "0.17.0",
   "claude": [
     {
       "name": "fl",
@@ -442,7 +442,7 @@
       "model": "gpt-6.1-sol",
       "effort": "low",
       "display": "Sol 6.1 - low",
-      "contextWindow": 272000,
+      "contextWindow": 500000,
       "maxContextWindow": 872000
     },
     {
@@ -450,7 +450,7 @@
       "model": "gpt-6.1-sol",
       "effort": "medium",
       "display": "Sol 6.1 - medium",
-      "contextWindow": 272000,
+      "contextWindow": 500000,
       "maxContextWindow": 872000
     },
     {
@@ -458,7 +458,7 @@
       "model": "gpt-6.1-sol",
       "effort": "high",
       "display": "Sol 6.1 - high",
-      "contextWindow": 272000,
+      "contextWindow": 500000,
       "maxContextWindow": 872000
     },
     {
@@ -466,7 +466,7 @@
       "model": "gpt-6.1-sol",
       "effort": "xhigh",
       "display": "Sol 6.1 - Extra High",
-      "contextWindow": 272000,
+      "contextWindow": 500000,
       "maxContextWindow": 872000
     },
     {
@@ -474,7 +474,7 @@
       "model": "gpt-6.1-sol",
       "effort": "max",
       "display": "Sol 6.1 - max",
-      "contextWindow": 272000,
+      "contextWindow": 500000,
       "maxContextWindow": 872000
     },
     {
@@ -482,7 +482,7 @@
       "model": "gpt-6.1-sol",
       "effort": "ultra",
       "display": "Sol 6.1 - ultra",
-      "contextWindow": 272000,
+      "contextWindow": 500000,
       "maxContextWindow": 872000
     },
     {
@@ -623,49 +623,97 @@
     },
     {
       "name": "lt",
-      "model": "gpt-5.6-terra",
+      "model": "gpt-6.1-terra",
       "effort": "low",
-      "display": "Terra - low",
-      "contextWindow": 272000,
+      "display": "Terra 6.1 - low",
+      "contextWindow": 500000,
       "maxContextWindow": 872000
     },
     {
       "name": "mt",
-      "model": "gpt-5.6-terra",
+      "model": "gpt-6.1-terra",
       "effort": "medium",
-      "display": "Terra - medium",
-      "contextWindow": 272000,
+      "display": "Terra 6.1 - medium",
+      "contextWindow": 500000,
       "maxContextWindow": 872000
     },
     {
       "name": "ht",
-      "model": "gpt-5.6-terra",
+      "model": "gpt-6.1-terra",
       "effort": "high",
-      "display": "Terra - high",
-      "contextWindow": 272000,
+      "display": "Terra 6.1 - high",
+      "contextWindow": 500000,
       "maxContextWindow": 872000
     },
     {
       "name": "xt",
-      "model": "gpt-5.6-terra",
+      "model": "gpt-6.1-terra",
       "effort": "xhigh",
-      "display": "Terra - Extra High",
-      "contextWindow": 272000,
+      "display": "Terra 6.1 - Extra High",
+      "contextWindow": 500000,
       "maxContextWindow": 872000
     },
     {
       "name": "xxt",
-      "model": "gpt-5.6-terra",
+      "model": "gpt-6.1-terra",
       "effort": "max",
-      "display": "Terra - max",
-      "contextWindow": 272000,
+      "display": "Terra 6.1 - max",
+      "contextWindow": 500000,
       "maxContextWindow": 872000
     },
     {
       "name": "ut",
+      "model": "gpt-6.1-terra",
+      "effort": "ultra",
+      "display": "Terra 6.1 - ultra",
+      "contextWindow": 500000,
+      "maxContextWindow": 872000
+    },
+    {
+      "name": "lt1",
+      "model": "gpt-5.6-terra",
+      "effort": "low",
+      "display": "Terra 5.6 - low",
+      "contextWindow": 272000,
+      "maxContextWindow": 872000
+    },
+    {
+      "name": "mt1",
+      "model": "gpt-5.6-terra",
+      "effort": "medium",
+      "display": "Terra 5.6 - medium",
+      "contextWindow": 272000,
+      "maxContextWindow": 872000
+    },
+    {
+      "name": "ht1",
+      "model": "gpt-5.6-terra",
+      "effort": "high",
+      "display": "Terra 5.6 - high",
+      "contextWindow": 272000,
+      "maxContextWindow": 872000
+    },
+    {
+      "name": "xt1",
+      "model": "gpt-5.6-terra",
+      "effort": "xhigh",
+      "display": "Terra 5.6 - Extra High",
+      "contextWindow": 272000,
+      "maxContextWindow": 872000
+    },
+    {
+      "name": "xxt1",
+      "model": "gpt-5.6-terra",
+      "effort": "max",
+      "display": "Terra 5.6 - max",
+      "contextWindow": 272000,
+      "maxContextWindow": 872000
+    },
+    {
+      "name": "ut1",
       "model": "gpt-5.6-terra",
       "effort": "ultra",
-      "display": "Terra - ultra",
+      "display": "Terra 5.6 - ultra",
       "contextWindow": 272000,
       "maxContextWindow": 872000
     },
@@ -806,6 +854,14 @@
       "ultra"
     ],
     "gpt-6.1-sol": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra"
+    ],
+    "gpt-6.1-terra": [
       "low",
       "medium",
       "high",

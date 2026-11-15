@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/env"
 	"github.com/stretchr/testify/assert"
@@ -106,17 +106,11 @@ func TestConfig_configureProvidersWithOverride(t *testing.T) {
 // feature: a peak_hours window set on local-cli never took effect because it
 // was wiped back to nil on the very next config load.
 func TestConfig_configureProviders_PreservesLocalCLICustomFields(t *testing.T) {
-	origAvailable := cliprovider.AvailableFunc
-	cliprovider.AvailableFunc = func() []cliprovider.CLISpec {
-		return []cliprovider.CLISpec{{ModelID: "cli-claude-sonnet", ModelName: "Claude Sonnet"}}
-	}
-	t.Cleanup(func() { cliprovider.AvailableFunc = origAvailable })
-
 	cfg := &Config{
 		Providers: csync.NewMap[string, ProviderConfig](),
 	}
 	peakHours := &ProviderPeakHours{Legacy: &PeakHoursWindow{Start: "09:00", End: "18:00"}}
-	cfg.Providers.Set(cliprovider.ProviderID, ProviderConfig{
+	cfg.Providers.Set(catalog.LocalCLIProviderID, ProviderConfig{
 		Name:      "My Local CLI",
 		PeakHours: peakHours,
 		Disable:   true,
@@ -125,10 +119,14 @@ func TestConfig_configureProviders_PreservesLocalCLICustomFields(t *testing.T) {
 
 	e := env.NewFromMap(map[string]string{})
 	resolver := NewShellVariableResolver(e)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), e, resolver, []catwalk.Provider{})
+	store := testStore(cfg)
+	store.cliModels = func() []catalog.LocalCLIModel {
+		return []catalog.LocalCLIModel{{ID: "cli-claude-sonnet", Name: "Claude Sonnet"}}
+	}
+	err := cfg.configureProviders(context.Background(), store, e, resolver, []catwalk.Provider{})
 	require.NoError(t, err)
 
-	pc, ok := cfg.Providers.Get(cliprovider.ProviderID)
+	pc, ok := cfg.Providers.Get(catalog.LocalCLIProviderID)
 	require.True(t, ok)
 	require.Equal(t, "My Local CLI", pc.Name, "custom display name must survive re-synthesis")
 	require.True(t, pc.Disable, "disable flag must survive re-synthesis")
@@ -136,8 +134,8 @@ func TestConfig_configureProviders_PreservesLocalCLICustomFields(t *testing.T) {
 	require.Equal(t, "09:00", pc.PeakHours.Legacy.Start)
 	require.Equal(t, "18:00", pc.PeakHours.Legacy.End)
 	// The auto-derived fields still refresh to the newly detected specs.
-	require.Equal(t, cliprovider.ProviderID, pc.ID)
-	require.EqualValues(t, cliprovider.ProviderType, pc.Type)
+	require.Equal(t, catalog.LocalCLIProviderID, pc.ID)
+	require.EqualValues(t, catalog.LocalCLIProviderType, pc.Type)
 	require.Len(t, pc.Models, 1)
 	require.Equal(t, "cli-claude-sonnet", pc.Models[0].ID)
 }
@@ -622,4 +620,46 @@ func TestConfig_configureProviders_PreservesProviderNetwork(t *testing.T) {
 		require.NotNil(t, pc.Network, "provider-level network override must not be dropped in favor of the global one")
 		require.Equal(t, providerNetwork, pc.Network, "effective network must be the provider-level config, not the global one")
 	})
+}
+
+// TestConfigureProviders_CLIModelsMetadataAndOrdering pins what the seam
+// produces: one catwalk.Model per seam descriptor in the same order, the
+// hardcoded 32768 default max tokens, the local-cli provider ID/type, and
+// user-owned metadata on an existing local-cli entry (display name)
+// surviving the fresh synthesis, whose Models list fully replaces any
+// user-authored model list.
+func TestConfigureProviders_CLIModelsMetadataAndOrdering(t *testing.T) {
+	cfg := &Config{
+		Providers: csync.NewMap[string, ProviderConfig](),
+	}
+	cfg.Providers.Set(catalog.LocalCLIProviderID, ProviderConfig{
+		Name:   "My Local CLI",
+		Models: []catwalk.Model{{ID: "cli-user-model", Name: "User Model", ContextWindow: 999}},
+	})
+	cfg.setDefaults("/tmp", "")
+
+	store := testStore(cfg)
+	store.cliModels = func() []catalog.LocalCLIModel {
+		return []catalog.LocalCLIModel{
+			{ID: "cli-a", Name: "A", ContextWindow: 1000},
+			{ID: "cli-b", Name: "B", ContextWindow: 2000},
+		}
+	}
+
+	e := env.NewFromMap(map[string]string{})
+	resolver := NewShellVariableResolver(e)
+	err := cfg.configureProviders(context.Background(), store, e, resolver, []catwalk.Provider{})
+	require.NoError(t, err)
+
+	pc, ok := cfg.Providers.Get(catalog.LocalCLIProviderID)
+	require.True(t, ok)
+	require.Equal(t, "My Local CLI", pc.Name)
+	require.EqualValues(t, catalog.LocalCLIProviderType, pc.Type)
+	require.Len(t, pc.Models, 2)
+	require.Equal(t, "cli-a", pc.Models[0].ID)
+	require.Equal(t, "A", pc.Models[0].Name)
+	require.EqualValues(t, 1000, pc.Models[0].ContextWindow)
+	require.EqualValues(t, 32768, pc.Models[0].DefaultMaxTokens)
+	require.Equal(t, "cli-b", pc.Models[1].ID)
+	require.EqualValues(t, 2000, pc.Models[1].ContextWindow)
 }

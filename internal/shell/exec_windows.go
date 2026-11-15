@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/platform"
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 	"mvdan.cc/sh/v3/interp"
 )
 
@@ -98,12 +98,12 @@ func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 				// keeps its inherited copy of the handle open, so
 				// cmd.Wait() then hangs indefinitely instead of returning
 				// once the direct child is gone. Tree-kill via taskkill /T
-				// instead, matching session.KillProcess's approach to the
+				// instead, matching procinfo.KillProcess's approach to the
 				// exact same class of problem in `rush sessions kill` —
 				// it kills the direct process AND everything Windows
 				// recorded as its descendant.
 				if pid > 0 {
-					_ = session.KillProcess(pid)
+					_ = procinfo.KillProcess(pid)
 				}
 			})
 			err = cmd.Wait()
@@ -123,7 +123,7 @@ func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 	}
 }
 
-func killRetainedProcess(pid int) error { return session.KillProcess(pid) }
+func killRetainedProcess(pid int) error { return procinfo.KillProcess(pid) }
 
 func retainedCommandResult(ctx context.Context, stderr io.Writer, err error) error {
 	return windowsCommandResult(ctx, stderr, err, ctx.Err() != nil)

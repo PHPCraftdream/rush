@@ -7,12 +7,13 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // trackChildTree registers the freshly started CLI child's whole tree
 // for teardown: session.TrackProcessTree assigns it a kill-on-close Job
-// Object that session.KillProcess terminates, reaching grandchildren
+// Object that procinfo.KillProcess terminates, reaching grandchildren
 // the PPID walk behind taskkill /T cannot see (MSYS2/Git-Bash
 // intermediary parents). Returns the pid for the matching
 // UntrackProcessTree call.
@@ -47,5 +48,5 @@ func killChildProcess(proc *os.Process) error {
 	if proc == nil || proc.Pid <= 0 {
 		return os.ErrProcessDone
 	}
-	return session.KillProcess(proc.Pid)
+	return procinfo.KillProcess(proc.Pid)
 }

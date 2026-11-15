@@ -595,7 +595,7 @@ func renderAtomsBlockToStdout() {
 }
 
 func loadConfigForList(cwd string) (*config.Config, error) {
-	store, err := config.Init(cwd, "", false)
+	store, err := config.Init(cwd, "", false, config.WithCLIModels(cliprovider.AvailableCLIModels))
 	if err != nil {
 		return nil, err
 	}

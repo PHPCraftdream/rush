@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -563,11 +564,11 @@ func forceKillHolder(dataDir, sessionID string, pid int, wait time.Duration) kil
 			"(empty/garbage lock file and no sidecar); nothing can be killed and nothing is confirmed dead\n")
 		return killResult{State: holderUnidentified, ConfirmedDead: false, Report: sb.String()}
 	}
-	if !session.IsProcessAlive(pid) {
+	if !procinfo.IsProcessAlive(pid) {
 		fmt.Fprintf(&sb, "PID %d already gone\n", pid)
 		return killResult{State: holderAlreadyDead, KilledPID: pid, ConfirmedDead: true, Report: sb.String()}
 	}
-	if err := session.KillProcess(pid); err != nil {
+	if err := procinfo.KillProcess(pid); err != nil {
 		// KillProcess itself errored. The PID may yet exit asynchronously
 		// (kill is async on Windows), so still poll the wait budget — but if
 		// it is alive at the end, ConfirmedDead stays false.
@@ -578,12 +579,12 @@ func forceKillHolder(dataDir, sessionID string, pid int, wait time.Duration) kil
 	// Poll until dead or wait elapses (taskkill/SIGKILL is async).
 	deadline := time.Now().Add(wait)
 	for time.Now().Before(deadline) {
-		if !session.IsProcessAlive(pid) {
+		if !procinfo.IsProcessAlive(pid) {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if session.IsProcessAlive(pid) {
+	if procinfo.IsProcessAlive(pid) {
 		fmt.Fprintf(&sb, "warning: PID %d still alive after %s wait\n", pid, wait)
 		return killResult{State: holderStillAlive, KilledPID: pid, ConfirmedDead: false, Report: sb.String()}
 	}

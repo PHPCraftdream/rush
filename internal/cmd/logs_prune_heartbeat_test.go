@@ -30,7 +30,7 @@ import (
 
 // pruneIsolateEnv points the two global config paths at throwaway dirs and
 // the heartbeat dir at <data>/heartbeat explicitly: a test binary writes
-// snapshots only into RUSH_HEARTBEAT_DIR (heartbeat.DefaultDir), and logs
+// snapshots only into RUSH_HEARTBEAT_DIR (heartbeatDefaultDir), and logs
 // prune reaches it through that same dir func. The dir func is pre-installed
 // because the heartbeat flusher needs it before the first `logs prune` run.
 func pruneIsolateEnv(t *testing.T) (dataDir, hbDir string) {
@@ -40,7 +40,7 @@ func pruneIsolateEnv(t *testing.T) (dataDir, hbDir string) {
 	t.Setenv("RUSH_GLOBAL_CONFIG", t.TempDir())
 	hbDir = filepath.Join(dataDir, "heartbeat")
 	t.Setenv("RUSH_HEARTBEAT_DIR", hbDir)
-	heartbeat.SetDirFunc(heartbeat.DefaultDir)
+	heartbeat.SetDirFunc(heartbeatDefaultDir)
 	t.Cleanup(func() { heartbeat.SetDirFunc(nil) })
 	t.Cleanup(heartbeat.ResetForTest)
 	require.NoError(t, os.MkdirAll(hbDir, 0o755))

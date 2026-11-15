@@ -651,5 +651,6 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 // heartbeatDir places snapshots next to the global settings file. A test
 // binary without an isolated global dir never writes the real registry.
 func heartbeatDir() string {
-	return heartbeat.DefaultDir()
+	_, globalDirActive := config.GlobalDir()
+	return heartbeat.DefaultDir(config.GlobalWorkspaceDir, globalDirActive)
 }

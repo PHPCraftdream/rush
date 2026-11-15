@@ -96,7 +96,7 @@ func newAttachmentsTestApp(t *testing.T, workingDir, dataDir string) *appPkg.App
 	t.Helper()
 	isolateAllGlobalConfigPaths(t)
 
-	store, err := config.Init(workingDir, dataDir, false)
+	store, err := config.Init(workingDir, dataDir, false, config.WithCLIModels(cliprovider.AvailableCLIModels))
 	require.NoError(t, err)
 	resolvedDataDir := store.Config().Options.DataDirectory
 	require.NotEmpty(t, resolvedDataDir)
