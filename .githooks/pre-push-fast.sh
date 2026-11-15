@@ -116,6 +116,12 @@ step "no code directory over 7 entries (ratcheted allowlist)"
 bash "$HOOK_DIR/check_dir_entries.sh" || fail "directory-entries ratchet violated -- see output above"
 step "package names are unique across the repository (ratcheted allowlist)"
 bash "$HOOK_DIR/check_pkg_names.sh" || fail "duplicate package names found -- see output above"
+step "no code directory over 21 files including tests (ratcheted allowlist)"
+bash "$HOOK_DIR/check_dir_files.sh" || fail "directory-files ratchet violated -- see output above"
+step "no hand-written source file over 900 lines (blocking ratchet)"
+bash "$HOOK_DIR/check_file_size_900.sh" || fail "file-size-900 ratchet violated -- see output above"
+step "internal layer direction kit < store < session < config < agent < app < serve (ratcheted exceptions)"
+bash "$HOOK_DIR/check_layers.sh" || fail "layer violations found -- see output above"
 
 step "go.mod/go.sum are tidy (go mod tidy -diff)"
 go mod tidy -diff || fail "go.mod/go.sum not tidy -- run 'go mod tidy' and commit"
@@ -156,7 +162,7 @@ run_capped "$RUSH_PROCESS_MEMORY" "$RUSH_PROCESS_TIMEOUT" go test -short -count=
 	|| fail "platform spawn guards failed"
 
 if [ "$hook_checks" -eq 1 ]; then
-	for selftest in check_file_size_selftest.sh check_dir_entries_selftest.sh check_pkg_names_selftest.sh check_db_release_pairing_selftest.sh check_list_test_packages.sh check_run_test_segment_retry_flags.sh; do
+	for selftest in check_file_size_selftest.sh check_dir_entries_selftest.sh check_pkg_names_selftest.sh check_dir_files_selftest.sh check_file_size_900_selftest.sh check_layers_selftest.sh check_db_release_pairing_selftest.sh check_list_test_packages.sh check_run_test_segment_retry_flags.sh; do
 		step "$selftest"
 		bash "$HOOK_DIR/$selftest" || fail "$selftest failed"
 	done
