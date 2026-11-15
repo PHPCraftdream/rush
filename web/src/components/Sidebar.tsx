@@ -8,7 +8,7 @@ import { configCarburetor } from "../state/config/config";
 import { sessionsCarburetor } from "../state/sessions/sessions";
 import type { ISessionsState } from "../state/sessions/SessionsCarburetor";
 import { MessageSquare, Plus, Folder, Trash2 } from "lucide-react";
-import { ConfirmDialog } from "./ConfirmDialog";
+import { ConfirmDialog } from "../ui/shared/ConfirmDialog";
 import { SessionRow } from "./sidebar/SessionRow";
 
 /**

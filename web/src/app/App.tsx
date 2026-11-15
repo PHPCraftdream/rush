@@ -3,8 +3,8 @@ import { authCarburetor } from "../state/link/auth";
 import { connectionCarburetor } from "../state/link/connection";
 import { WsConnector } from "./WsConnector";
 import { Sidebar } from "../components/Sidebar";
-import { Chat } from "../components/Chat";
-import { Login } from "../components/Login";
+import { Chat } from "../ui/chat/Chat";
+import { Login } from "../ui/Login";
 import { PowerOff } from "lucide-react";
 
 /** Main shell shown after login: socket wiring, banners, sidebar and chat. */
