@@ -1,5 +1,5 @@
 import type { TReadonly } from "@react-carburetor/core";
-import { ws, requestTracker, sendLoadMessages, sendListSessions } from "./backend";
+import { ws, requestTracker, sendLoadMessages, sendListSessions } from "../backend";
 import {
   applyWakeSchedulesSnapshot,
   flushQueuedMessagesOnIdle,
@@ -15,8 +15,8 @@ import {
   tombstoneMessage,
   trackModelUsage,
   applyTheme,
-} from "./actions";
-import type { ModelRole } from "./actions";
+} from "../actions";
+import type { ModelRole } from "../actions";
 import type {
   WSMessage,
   Session,
@@ -29,24 +29,24 @@ import type {
   SessionLiveWorkPayload,
   SessionWakeSchedulesPayload,
   BatchWorkSnapshot,
-} from "./domain/types";
-import { keepAliveRuntime } from "./backend/keepAlive/keepAliveRuntime";
-import { reloadReconnectTranscript } from "./backend/ws/reconnectTranscript";
-import { sitterLoop } from "./backend/sitter/sitterLoop";
-import type { IUpdateInfo } from "./state/status/NoticesCarburetor";
-import type { ISessionsState } from "./state/sessions/SessionsCarburetor";
-import { batchWorkCarburetor } from "./state/runtime/batchWork";
-import { busyCarburetor } from "./state/status/busy";
-import { configCarburetor } from "./state/config/config";
-import { connectionCarburetor } from "./state/link/connection";
-import { liveWorkCarburetor } from "./state/live/liveWork";
-import { mcpCarburetor } from "./state/config/mcp";
-import { messagesCarburetor } from "./state/transcript/messages";
-import { noticesCarburetor } from "./state/status/notices";
-import { queueCarburetor } from "./state/transcript/queue";
-import { sessionsCarburetor } from "./state/sessions/sessions";
-import { skillsCarburetor } from "./state/config/skills";
-import { wakeCancelCarburetor } from "./state/live/wakeCancel";
+} from "../domain/types";
+import { keepAliveRuntime } from "../backend/keepAlive/keepAliveRuntime";
+import { reloadReconnectTranscript } from "../backend/ws/reconnectTranscript";
+import { sitterLoop } from "../backend/sitter/sitterLoop";
+import type { IUpdateInfo } from "../state/status/NoticesCarburetor";
+import type { ISessionsState } from "../state/sessions/SessionsCarburetor";
+import { batchWorkCarburetor } from "../state/runtime/batchWork";
+import { busyCarburetor } from "../state/status/busy";
+import { configCarburetor } from "../state/config/config";
+import { connectionCarburetor } from "../state/link/connection";
+import { liveWorkCarburetor } from "../state/live/liveWork";
+import { mcpCarburetor } from "../state/config/mcp";
+import { messagesCarburetor } from "../state/transcript/messages";
+import { noticesCarburetor } from "../state/status/notices";
+import { queueCarburetor } from "../state/transcript/queue";
+import { sessionsCarburetor } from "../state/sessions/sessions";
+import { skillsCarburetor } from "../state/config/skills";
+import { wakeCancelCarburetor } from "../state/live/wakeCancel";
 
 /** Sessions list refresh period while the tab is visible. */
 const SESSIONS_POLL_MS = 5000;

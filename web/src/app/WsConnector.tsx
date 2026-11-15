@@ -1,5 +1,5 @@
 import { AntiHookComponent } from "@react-carburetor/core";
-import { connectWS } from "../useWS";
+import { connectWS } from "./useWS";
 
 /** Renders nothing; owns the socket for as long as it is mounted. */
 export class WsConnector extends AntiHookComponent {

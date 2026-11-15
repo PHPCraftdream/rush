@@ -20,7 +20,7 @@ export default defineConfig({
     pluginReact(),
   ],
   source: {
-    entry: { index: "./src/main.tsx" },
+    entry: { index: "./src/app/main.tsx" },
     define: {
       __GIT_COMMIT__: JSON.stringify(GIT_COMMIT),
       __GIT_COUNT__:  JSON.stringify(GIT_COUNT),
