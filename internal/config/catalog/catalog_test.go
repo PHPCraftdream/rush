@@ -27,7 +27,7 @@ func TestHyperEmbeddedFromBytes(t *testing.T) {
 	valid := []byte(`{"id":"hyper","name":"Charm Hyper","models":[{"id":"m1","name":"M1"}]}`)
 
 	p := hyperEmbeddedFromBytes(valid, "")
-	require.Equal(t, "hyper", p.ID)
+	require.Equal(t, catwalk.InferenceProvider("hyper"), p.ID)
 	require.Empty(t, p.APIEndpoint)
 
 	p = hyperEmbeddedFromBytes(valid, "http://example:9000")
@@ -39,6 +39,6 @@ func TestHyperEmbeddedFromBytes(t *testing.T) {
 
 func TestEmbeddedProviderJSONCatalog(t *testing.T) {
 	p := HyperEmbedded()
-	require.Equal(t, "hyper", p.ID)
+	require.Equal(t, catwalk.InferenceProvider("hyper"), p.ID)
 	require.Greater(t, len(p.Models), 0)
 }
