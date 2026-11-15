@@ -36,9 +36,9 @@ var _ FinalizationPhysicalHoldsFacts = finalizationPhysicalHoldsFacts{}
 //     about liveness and deadlock the owner's own driver, which holds its
 //     own marker.
 //
-//   - Tracked process trees (internal/session/track_windows.go
-//     TrackProcessTree, track_unix.go): in-process maps of handles/process
-//     groups guarded by a mutex (trackedJobs / trackedGroups).
+//   - Tracked process trees (internal/kit/sys/proctrack
+//     TrackProcessTree): in-process maps of handles/process groups guarded
+//     by a mutex inside proctrack.
 //
 //   - Batch root leases (internal/agent/batch_root_lease.go
 //     newBatchRootLeaseStore via internal/agent/batch_install_adapters.go):

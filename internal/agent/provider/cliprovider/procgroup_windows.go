@@ -7,13 +7,12 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/proctrack"
 )
 
 // trackChildTree registers the freshly started CLI child's whole tree
-// for teardown: session.TrackProcessTree assigns it a kill-on-close Job
-// Object that procinfo.KillProcess terminates, reaching grandchildren
+// for teardown: proctrack.TrackProcessTree assigns it a kill-on-close Job
+// Object that proctrack.KillProcess terminates, reaching grandchildren
 // the PPID walk behind taskkill /T cannot see (MSYS2/Git-Bash
 // intermediary parents). Returns the pid for the matching
 // UntrackProcessTree call.
@@ -33,7 +32,7 @@ func trackChildTree(proc *os.Process, _, _ string) int {
 	if proc == nil {
 		return 0
 	}
-	if err := session.TrackProcessTree(proc.Pid); err != nil {
+	if err := proctrack.TrackProcessTree(proc.Pid); err != nil {
 		slog.Warn("cliprovider: could not track child process tree; falling back to taskkill teardown", "pid", proc.Pid, "err", err)
 	}
 	return proc.Pid
@@ -48,5 +47,5 @@ func killChildProcess(proc *os.Process) error {
 	if proc == nil || proc.Pid <= 0 {
 		return os.ErrProcessDone
 	}
-	return procinfo.KillProcess(proc.Pid)
+	return proctrack.KillProcess(proc.Pid)
 }

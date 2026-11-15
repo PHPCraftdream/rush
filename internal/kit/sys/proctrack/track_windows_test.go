@@ -1,6 +1,6 @@
 //go:build windows
 
-package session
+package proctrack
 
 import (
 	"context"
@@ -94,7 +94,7 @@ func TestKillProcess_StaleTrackedEntryStillKillsReusedPid(t *testing.T) {
 	pid := spawnLiveVictim(t)
 	plantStaleTrackedEntry(t, pid)
 
-	require.NoError(t, procinfo.KillProcess(pid), "KillProcess on a live reused pid")
+	require.NoError(t, KillProcess(pid), "KillProcess on a live reused pid")
 	require.False(t, trackedEntryExists(pid), "entry must be consumed by the kill")
 	// Kill is asynchronous; poll briefly like the callers do.
 	for i := 0; i < 50 && procinfo.IsProcessAlive(pid); i++ {
@@ -112,7 +112,7 @@ func TestKillProcess_TrackedLiveEntryKillsTree(t *testing.T) {
 	require.NoError(t, TrackProcessTree(pid), "TrackProcessTree")
 	require.True(t, trackedEntryExists(pid), "entry registered")
 
-	require.NoError(t, procinfo.KillProcess(pid), "KillProcess on tracked live pid")
+	require.NoError(t, KillProcess(pid), "KillProcess on tracked live pid")
 	for i := 0; i < 50 && procinfo.IsProcessAlive(pid); i++ {
 		time.Sleep(100 * time.Millisecond)
 	}

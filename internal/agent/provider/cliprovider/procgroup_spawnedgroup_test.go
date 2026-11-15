@@ -14,28 +14,28 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/proctrack"
 	"github.com/stretchr/testify/require"
 )
 
 // TestRegisterSpawnedGroup_SweepsReapedLeaderGroup is the F1 regression
 // test (2026-10-18 review, finding 1): a group this code spawned with
 // Setpgid whose LEADER exits and is reaped while a grandchild lives must
-// still be recorded by session.RegisterSpawnedGroup and swept by
-// session.KillAllTrackedTrees. The old code path (session.TrackProcessTree)
+// still be recorded by proctrack.RegisterSpawnedGroup and swept by
+// proctrack.KillAllTrackedTrees. The old code path (proctrack.TrackProcessTree)
 // refuses a pid whose Getpgid fails -- a reaped leader -- and recorded
 // nothing, so the last-resort in-process sweep could not reach the tree.
 //
 // Production mutations this catches:
 //
 //   - reverting procgroup_unix.go's trackChildTree back to calling
-//     session.TrackProcessTree: the reaped leader is refused, nothing is
+//     proctrack.TrackProcessTree: the reaped leader is refused, nothing is
 //     recorded, KillAllTrackedTrees returns 0, and the grandchild survives
 //     -- the assertions below fail. P2-2a (2026-10-19): the positive half
 //     now drives the PRODUCTION entry trackChildTree directly (with empty
 //     dataDir/sessionID, skipping the durable registration via
 //     procgroup_unix.go's dataDir != "" && sessionID != "" guard) instead
-//     of calling session.RegisterSpawnedGroup -- the old shape bypassed the
+//     of calling proctrack.RegisterSpawnedGroup -- the old shape bypassed the
 //     production call site entirely and could not catch that revert.
 //   - removing TrackProcessTree's non-leader rejection: the negative half
 //     (grandpid refusal) would register the grandchild's pid and sweep a
@@ -112,12 +112,12 @@ func TestRegisterSpawnedGroup_SweepsReapedLeaderGroup(t *testing.T) {
 	// without risking a kill(-pid) against rush's own group. If the
 	// rejection were gone, the sweep below would signal a non-leader pid's
 	// group and the count assertion would fail.
-	require.NoError(t, session.TrackProcessTree(grandpid))
-	require.Zero(t, session.KillAllTrackedTrees(),
+	require.NoError(t, proctrack.TrackProcessTree(grandpid))
+	require.Zero(t, proctrack.KillAllTrackedTrees(),
 		"TrackProcessTree must still refuse a non-leader pid: sweeping it would kill(-pid) an unrelated group")
 
 	// POSITIVE half: drive the PRODUCTION entry point trackChildTree, not
-	// session.RegisterSpawnedGroup. Empty dataDir/sessionID skip the durable
+	// proctrack.RegisterSpawnedGroup. Empty dataDir/sessionID skip the durable
 	// registration (procgroup_unix.go guards on dataDir != "" &&
 	// sessionID != "") while still exercising the in-memory spawn-identity
 	// registration path the production call performs first. Calling
@@ -126,7 +126,7 @@ func TestRegisterSpawnedGroup_SweepsReapedLeaderGroup(t *testing.T) {
 	// unnoticed.
 	childPid := trackChildTree(cmd.Process, "", "")
 	require.Equal(t, cmd.Process.Pid, childPid)
-	n := session.KillAllTrackedTrees()
+	n := proctrack.KillAllTrackedTrees()
 	require.Equal(t, 1, n,
 		"KillAllTrackedTrees must sweep exactly the registered spawned group -- the pre-F1 TrackProcessTree path recorded nothing for a reaped leader")
 

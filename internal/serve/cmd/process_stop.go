@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/proctrack"
 )
 
 const processStopBudget = 250 * time.Millisecond
@@ -34,7 +34,7 @@ func InstallProcessStop() func() {
 	if !processStopInstalled.CompareAndSwap(false, true) {
 		return func() {}
 	}
-	stop := newProcessStop(session.StopTrackedProcessTrees, os.Exit, func(f func()) func() {
+	stop := newProcessStop(proctrack.StopTrackedProcessTrees, os.Exit, func(f func()) func() {
 		timer := time.AfterFunc(processStopBudget, f)
 		return func() { timer.Stop() }
 	})

@@ -11,13 +11,13 @@
 // deliberately spawned as the leader of its OWN, DIFFERENT process group
 // (procgroup_unix.go's configureChildProcessGroup / go-pty's Setsid),
 // precisely so a stray signal to rush's terminal/group does not also kill
-// it (see track_unix.go's doc comment and commit 59908cbe). That same
+// it (see the track_unix.go doc comment in internal/kit/sys/proctrack and commit 59908cbe). That same
 // design choice means killing the rush PID alone -- all "sessions kill"
 // can reach through the lock file -- does NOT touch the CLI child's group.
 //
-// KillAllTrackedTrees (in track_unix.go) solves this for the IN-PROCESS
-// crash-net path because that code runs inside the same rush process that
-// holds the in-memory trackedGroups map. "sessions kill" runs in a separate
+// proctrack.KillAllTrackedTrees (internal/kit/sys/proctrack/track_unix.go)
+// solves this for the IN-PROCESS crash-net path because that code runs
+// inside the same rush process that holds proctrack's in-memory group map. "sessions kill" runs in a separate
 // process and has no access to that map, so the fix needs a durable,
 // cross-process record.
 //
@@ -188,7 +188,7 @@ type childGroupEntry struct {
 // holding sessionID's lock is responsible for tearing down the process
 // group led by pgid if it is killed from outside without running its own
 // cleanup. Call only for a confirmed process-group leader (pgid == its own
-// pgid) -- see TrackProcessTree's identical constraint, which this is meant
+// pgid) -- see proctrack.TrackProcessTree's identical constraint, which this is meant
 // to be called alongside.
 //
 // generation MUST be the value session.ReadLockGeneration(lockPath) reports
@@ -280,7 +280,7 @@ func captureGroupWitnesses(pgid int) []childGroupWitness {
 }
 
 // UnregisterChildGroup removes pgid from sessionID's durable registry,
-// mirroring UntrackProcessTree's in-memory forget. Safe to call for a pgid
+// mirroring proctrack.UntrackProcessTree's in-memory forget. Safe to call for a pgid
 // that was never registered. When the registry file becomes empty it is
 // removed entirely so a long-lived rush process that starts and stops many
 // CLI streams does not accumulate stale, empty sidecar files.
