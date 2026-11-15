@@ -183,7 +183,7 @@ jobs:
         run: |
           f="$GROUP_DIR/g-perm-config-csync.txt"; [ -s "$f" ] || exit 0
           go test -short -failfast -p 2 -timeout 20m $(cat "$f")
-      - name: "test: internal/serve/cmd, internal/agent/prompt/commands"
+      - name: "test: internal/serve/cmd"
         shell: bash
         run: |
           f="$GROUP_DIR/g-cmd-commands.txt"; [ -s "$f" ] || exit 0
@@ -198,12 +198,12 @@ jobs:
         run: |
           f="$GROUP_DIR/g-agent-subpkgs.txt"; [ -s "$f" ] || exit 0
           go test -short -failfast -p 2 $(cat "$f")
-      - name: "test: internal/store/db, internal/store/message, internal/serve/cmd/queue, internal/kit/sync/pubsub, internal/store/history"
+      - name: "test: internal/store/db, internal/store/message, internal/kit/sync/pubsub, internal/store/history"
         shell: bash
         run: |
           f="$GROUP_DIR/g-db-msg-queue-pubsub-history.txt"; [ -s "$f" ] || exit 0
           go test -short -failfast -p 2 $(cat "$f")
-      - name: "test: internal/config/oauth, internal/serve/ops/deploy, internal/serve/ops/update, internal/kit/diag/version"
+      - name: "test: internal/serve/ops/deploy, internal/serve/ops/update, internal/kit/diag/version"
         shell: bash
         run: |
           f="$GROUP_DIR/g-oauth-deploy-update-version.txt"; [ -s "$f" ] || exit 0

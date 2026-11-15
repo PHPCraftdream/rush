@@ -21,7 +21,7 @@ groups = [
 
 [shards.B]
 groups = [
-  { name = "test: internal/serve/cmd, internal/agent/prompt/commands", type = "go", packages = ["internal/serve/cmd", "internal/agent/prompt/commands"] },
+  { name = "test: internal/serve/cmd", type = "go", packages = ["internal/serve/cmd"] },
 ]
 
 [shards.C]
@@ -39,7 +39,7 @@ groups = [
     "internal/agent/tools",
   ] },
   { name = "test: internal/kit/sys/shell", type = "go", packages = ["internal/kit/sys/shell"] },
-  { name = "test: internal/session/jobbatch, cmd/batchlab", type = "go", packages = ["internal/session/jobbatch", "cmd/batchlab"] },
+  { name = "test: cmd/batchlab", type = "go", packages = ["cmd/batchlab"] },
   { name = "test: internal/serve/server, internal/session", type = "go", packages = ["internal/serve/server", "internal/session"] },
 ]
 
@@ -50,8 +50,8 @@ groups = [
 [shards.D]
 groups = [
   { name = "test: internal/agent/safety/permission, internal/config, internal/kit/sync/csync", type = "go", packages = ["internal/agent/safety/permission", "internal/config", "internal/kit/sync/csync"] },
-  { name = "test: internal/store/db, internal/store/message, internal/serve/cmd/queue, internal/kit/sync/pubsub, internal/store/history", type = "go", packages = ["internal/store/db", "internal/store/message", "internal/serve/cmd/queue", "internal/kit/sync/pubsub", "internal/store/history"] },
-  { name = "test: internal/config/oauth, internal/serve/ops/deploy, internal/serve/ops/update, internal/kit/diag/version", type = "go", packages = ["internal/config/oauth", "internal/serve/ops/deploy", "internal/serve/ops/update", "internal/kit/diag/version"] },
+  { name = "test: internal/store/db, internal/store/message, internal/kit/sync/pubsub, internal/store/history", type = "go", packages = ["internal/store/db", "internal/store/message", "internal/kit/sync/pubsub", "internal/store/history"] },
+  { name = "test: internal/serve/ops/deploy, internal/serve/ops/update, internal/kit/diag/version", type = "go", packages = ["internal/serve/ops/deploy", "internal/serve/ops/update", "internal/kit/diag/version"] },
   # Dynamic remainder, computed by assign_shards.py. Must stay LAST.
   { name = "test: everything else (computed catch-all)", type = "go", catch_all = true, packages = [] },
 ]
@@ -64,13 +64,13 @@ groups = [
 "test: internal/app" = "A/test: internal/app"
 "test: internal/serve/server, internal/session" = "C/test: internal/serve/server, internal/session"
 "test: sdk" = "A/test: sdk"
-"test: internal/serve/cmd, internal/agent/prompt/commands" = "B/test: internal/serve/cmd, internal/agent/prompt/commands"
+"test: internal/serve/cmd" = "B/test: internal/serve/cmd"
 "test: internal/agent subpackages" = "C/test: internal/agent subpackages"
 "test: internal/kit/sys/shell" = "C/test: internal/kit/sys/shell"
-"test: internal/session/jobbatch, cmd/batchlab" = "C/test: internal/session/jobbatch, cmd/batchlab"
+"test: cmd/batchlab" = "C/test: cmd/batchlab"
 "test: internal/agent/safety/permission, internal/config, internal/kit/sync/csync" = "D/test: internal/agent/safety/permission, internal/config, internal/kit/sync/csync"
-"test: internal/store/db, internal/store/message, internal/serve/cmd/queue, internal/kit/sync/pubsub, internal/store/history" = "D/test: internal/store/db, internal/store/message, internal/serve/cmd/queue, internal/kit/sync/pubsub, internal/store/history"
-"test: internal/config/oauth, internal/serve/ops/deploy, internal/serve/ops/update, internal/kit/diag/version" = "D/test: internal/config/oauth, internal/serve/ops/deploy, internal/serve/ops/update, internal/kit/diag/version"
+"test: internal/store/db, internal/store/message, internal/kit/sync/pubsub, internal/store/history" = "D/test: internal/store/db, internal/store/message, internal/kit/sync/pubsub, internal/store/history"
+"test: internal/serve/ops/deploy, internal/serve/ops/update, internal/kit/diag/version" = "D/test: internal/serve/ops/deploy, internal/serve/ops/update, internal/kit/diag/version"
 "test: everything else (computed catch-all)" = "D/test: everything else (computed catch-all)"
 "go mod tidy produces no diff" = "A/go mod tidy produces no diff"
 "test: npm wrapper cache logic" = "A/test: npm wrapper cache logic"
