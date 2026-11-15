@@ -1,4 +1,4 @@
-package db
+package migrater
 
 import (
 	"context"
@@ -38,12 +38,12 @@ WHERE sql IS NOT NULL AND (
 func TestFinalizationFencingSchemaMatchesMigrations(t *testing.T) {
 	ctx := context.Background()
 
-	prod, err := openDB(t.TempDir() + "/prod.db")
+	prod, err := OpenDB(t.TempDir() + "/prod.db")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = prod.Close() })
 	require.NoError(t, Migrate(ctx, prod))
 
-	fixture, err := openDB(t.TempDir() + "/fixture.db")
+	fixture, err := OpenDB(t.TempDir() + "/fixture.db")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = fixture.Close() })
 	_, err = fixture.ExecContext(ctx, `CREATE TABLE sessions (id TEXT PRIMARY KEY)`)

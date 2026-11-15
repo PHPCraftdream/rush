@@ -1,4 +1,4 @@
-package db
+package migrater
 
 import (
 	"bufio"
@@ -39,7 +39,7 @@ const (
 // (same pattern as internal/session's batchStoreTestMigrationFS).
 func r12aEmbeddedFS(t *testing.T) fstest.MapFS {
 	t.Helper()
-	embedded, err := migrationFS()
+	embedded, err := ActiveFS()
 	require.NoError(t, err)
 	entries, err := fs.ReadDir(embedded, ".")
 	require.NoError(t, err)
@@ -378,7 +378,7 @@ func TestR12AMayMigrateFalseRefuses(t *testing.T) {
 	dbPath, conn := r12aNewEmbeddedDB(t)
 
 	err := migrate(ctx, conn, dbPath, r12aSyntheticFS(t),
-		newMigrateOptions([]MigrateOption{WithMayMigrate(false)}, dbPath))
+		NewMigrateOptions([]MigrateOption{WithMayMigrate(false)}, dbPath))
 	require.Error(t, err)
 	var notAllowed *SchemaMigrationNotAllowedError
 	require.True(t, errors.As(err, &notAllowed))
@@ -402,7 +402,7 @@ func TestR12AUnknownOnlyPolicyUnchanged(t *testing.T) {
 
 	embeddedFS := r12aEmbeddedFS(t)
 	require.NoError(t, migrate(ctx, conn, "unused.db", embeddedFS,
-		newMigrateOptions(nil, "unused.db")))
+		NewMigrateOptions(nil, "unused.db")))
 	assert.Equal(t, before, dbVersionSet(t, conn), "nothing may be applied on unknown-only")
 }
 
@@ -427,7 +427,7 @@ func TestR12AGateHookIntegration(t *testing.T) {
 	t.Run("benign applies", func(t *testing.T) {
 		dataDir, conn := newHookedDB(t)
 		err := migrate(ctx, conn, dataDir, r12aSyntheticFS(t),
-			newMigrateOptions([]MigrateOption{
+			NewMigrateOptions([]MigrateOption{
 				WithPreMigrationChecks(func(ctx context.Context, conn *sql.DB, dbPath string) error {
 					return CheckLiveHosts(ctx, conn, dataDir, nil)
 				}),
@@ -443,7 +443,7 @@ func TestR12AGateHookIntegration(t *testing.T) {
 
 		before := dbVersionSet(t, conn)
 		err := migrate(ctx, conn, dataDir, r12aSyntheticFS(t),
-			newMigrateOptions([]MigrateOption{
+			NewMigrateOptions([]MigrateOption{
 				WithPreMigrationChecks(func(ctx context.Context, conn *sql.DB, dbPath string) error {
 					return CheckLiveHosts(ctx, conn, dataDir, nil)
 				}),

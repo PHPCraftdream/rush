@@ -1,4 +1,4 @@
-package db
+package migrater
 
 import (
 	"crypto/sha256"
@@ -102,9 +102,9 @@ func createLegacyFixture(t *testing.T, dataDir string) (string, *sql.DB) {
 func TestLegacyImportPolicyExhaustive(t *testing.T) {
 	t.Parallel()
 	conn := openTestDB(t, filepath.Join(t.TempDir(), "legacy.db"))
-	fsys, err := legacyMigrationFS()
+	fsys, err := LegacyFS()
 	require.NoError(t, err)
-	require.NoError(t, migrateLocked(t.Context(), conn, "", fsys, MigrateOptions{MayMigrate: true}))
+	require.NoError(t, ApplyLocked(t.Context(), conn, "", fsys, MigrateOptions{MayMigrate: true}))
 	rows, err := conn.QueryContext(t.Context(), `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
 	require.NoError(t, err)
 	defer rows.Close()
@@ -145,7 +145,7 @@ func TestLegacyImportCopiesDurableAndDropsRuntimeState(t *testing.T) {
 	require.NoError(t, err)
 	_, err = io.Copy(dstFile, srcFile)
 	require.NoError(t, errors.Join(srcFile.Close(), dstFile.Close(), err))
-	probe, err := openReadDB(mainOnly)
+	probe, err := OpenReadDB(mainOnly)
 	require.NoError(t, err)
 	require.Equal(t, 0, len(queryAllRows(t, probe, `SELECT id FROM messages WHERE id='wal-committed'`)), "wal-committed must live in the -wal, not the main file")
 	require.NoError(t, probe.Close())
@@ -442,7 +442,7 @@ func TestLegacyImportNormalisationLiterals(t *testing.T) {
 // the migrations a binary with the given head had applied.
 func legacyImportLegacyFSUpTo(t *testing.T, version int64) fstest.MapFS {
 	t.Helper()
-	fsys, err := legacyMigrationFS()
+	fsys, err := LegacyFS()
 	require.NoError(t, err)
 	entries, err := fs.ReadDir(fsys, ".")
 	require.NoError(t, err)
@@ -473,7 +473,7 @@ func TestLegacyImportMigratesOldSnapshotToLegacyHead(t *testing.T) {
 	// 20260816000002 is the last version before the smart/fast model-slot
 	// rename: sessions still has large_model_*/small_model_*, and neither
 	// async_hosts nor the run-cost columns exist yet.
-	require.NoError(t, migrateLocked(t.Context(), conn, "", legacyImportLegacyFSUpTo(t, 20260816000002), MigrateOptions{MayMigrate: true}))
+	require.NoError(t, ApplyLocked(t.Context(), conn, "", legacyImportLegacyFSUpTo(t, 20260816000002), MigrateOptions{MayMigrate: true}))
 	for _, stmt := range []string{
 		`INSERT INTO sessions (id,title,updated_at,created_at) VALUES ('old','old',1700000000,1700000000)`,
 		`INSERT INTO sessions (id,title,parent_session_id,updated_at,created_at) VALUES ('m$$tc','child','old',1700000000,1700000000)`,
@@ -616,7 +616,7 @@ func TestLegacyImportSweepsDebrisFromCrashedRun(t *testing.T) {
 // store-v1 migration.
 func TestLegacyImportFrozenChainPinned(t *testing.T) {
 	t.Parallel()
-	legacyFS, err := legacyMigrationFS()
+	legacyFS, err := LegacyFS()
 	require.NoError(t, err)
 	entries, err := fs.ReadDir(legacyFS, ".")
 	require.NoError(t, err)

@@ -1,9 +1,10 @@
-package db
+package migrater
 
 import (
 	"context"
 	"database/sql"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,10 +20,16 @@ var storeV1Tables = []string{
 	"mcp_outputs", "mcp_output_chunks",
 }
 
+// storeV1FixtureMigrations returns the frozen store_v1 fixture migration
+// set, shipped under testdata/store_v1.
+func storeV1FixtureMigrations() fs.FS {
+	return os.DirFS("testdata/store_v1")
+}
+
 func openFixture(t *testing.T, fixture bool) *sql.DB {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "store.db")
-	conn, err := openDB(path)
+	conn, err := OpenDB(path)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 	conn.SetMaxOpenConns(1)
@@ -30,11 +37,11 @@ func openFixture(t *testing.T, fixture bool) *sql.DB {
 	if fixture {
 		migrations = storeV1FixtureMigrations()
 	} else {
-		migrations, err = migrationFS()
+		migrations, err = ActiveFS()
 		require.NoError(t, err)
 	}
 	require.NoError(t, conn.PingContext(context.Background()))
-	require.NoError(t, migrateLocked(context.Background(), conn, path, migrations, MigrateOptions{MayMigrate: true}))
+	require.NoError(t, ApplyLocked(context.Background(), conn, path, migrations, MigrateOptions{MayMigrate: true}))
 	return conn
 }
 

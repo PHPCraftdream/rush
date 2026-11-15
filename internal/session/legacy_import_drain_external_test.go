@@ -24,6 +24,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/dbtest"
+	"github.com/PHPCraftdream/rush/internal/store/db/migrater"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/require"
@@ -45,7 +46,7 @@ func TestLegacyImportNormalizedProcessingOutboxIsDrainedEndToEnd(t *testing.T) {
 
 	// 1. Build a legacy store at the legacy path using the frozen importer-owned chain.
 	legacyConn := openSQLite(t, storepath.DataDirPath(dataDir, storepath.LegacyFilename))
-	legacyMigrations, err := fs.Sub(os.DirFS(filepath.Join("..", "store", "db")), "legacymigrations")
+	legacyMigrations, err := fs.Sub(os.DirFS(filepath.Join("..", "store", "db", "migrater")), "legacymigrations")
 	require.NoError(t, err)
 	legacyProvider, err := goose.NewProvider(goose.DialectSQLite3, legacyConn, legacyMigrations, goose.WithLogger(goose.NopLogger()))
 	require.NoError(t, err)
@@ -67,11 +68,11 @@ func TestLegacyImportNormalizedProcessingOutboxIsDrainedEndToEnd(t *testing.T) {
 	// fixture source is os.DirFS("testdata/store_v1")
 	// (store_v1_queries_isolation_test.go:137-139) -- the same read-only
 	// directory, addressed relative to THIS package's test CWD.
-	result, err := db.ImportLegacyStore(ctx, dataDir, db.LegacyImportOptions{
-		Schema: os.DirFS(filepath.Join("..", "store", "db", "testdata", "store_v1")),
+	result, err := migrater.ImportLegacyStore(ctx, dataDir, migrater.LegacyImportOptions{
+		Schema: os.DirFS(filepath.Join("..", "store", "db", "migrater", "testdata", "store_v1")),
 	})
 	require.NoError(t, err)
-	require.Equal(t, db.LegacyImportImported, result.Status)
+	require.Equal(t, migrater.LegacyImportImported, result.Status)
 
 	// 3. The import normalized 'processing' back to 'pending', payload
 	// verbatim (the exact rows the package-db test pins at

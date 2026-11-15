@@ -3,37 +3,17 @@ package db
 import (
 	"context"
 	"database/sql"
-	"embed"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
 	"sync"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/store/db/migrater"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 )
-
-// BusyTimeout is how long a statement waits on a locked database before
-// SQLITE_BUSY. Callers bounding a write with their own deadline must allow
-// at least this long, or a legitimate lock wait reads as a failure.
-const BusyTimeout = 30 * time.Second
-
-var pragmas = map[string]string{
-	"foreign_keys":  "ON",
-	"journal_mode":  "WAL",
-	"page_size":     "4096",
-	"temp_store":    "MEMORY",
-	"cache_size":    "-8000",
-	"synchronous":   "NORMAL",
-	"secure_delete": "ON",
-	"busy_timeout":  strconv.FormatInt(BusyTimeout.Milliseconds(), 10),
-}
-
-//go:embed migrations/*.sql
-var FS embed.FS
 
 // connEntry holds a shared database connection pair and its reference
 // count. db is the single-connection writer (SetMaxOpenConns(1) — see the
@@ -206,7 +186,7 @@ func endPoolReset() {
 // Migration policy can be narrowed per call with [WithMayMigrate] (a dev
 // build pointed at a shared data directory passes false); the default is to
 // migrate.
-func Connect(ctx context.Context, dataDir string, migrationOpts ...MigrateOption) (*sql.DB, error) {
+func Connect(ctx context.Context, dataDir string, migrationOpts ...migrater.MigrateOption) (*sql.DB, error) {
 	entry, err := connect(ctx, dataDir, migrationOpts...)
 	if err != nil {
 		return nil, err
@@ -226,7 +206,7 @@ func Connect(ctx context.Context, dataDir string, migrationOpts ...MigrateOption
 // and ConnectRead for the same dataDir must call [ReleaseConn] with the
 // returned handles the same number of times it called either one (once per
 // Connect/ConnectRead pair, not once per function).
-func ConnectRead(ctx context.Context, dataDir string, migrationOpts ...MigrateOption) (*sql.DB, error) {
+func ConnectRead(ctx context.Context, dataDir string, migrationOpts ...migrater.MigrateOption) (*sql.DB, error) {
 	entry, err := connect(ctx, dataDir, migrationOpts...)
 	if err != nil {
 		return nil, err
@@ -240,7 +220,7 @@ func ConnectRead(ctx context.Context, dataDir string, migrationOpts ...MigrateOp
 // want BOTH a writer and a reader handle for the same dataDir must call
 // [ReleaseConn] twice (once per Connect/ConnectRead call they made), matching
 // the existing "one Connect, one Release" contract extended to ConnectRead.
-func connect(ctx context.Context, dataDir string, migrationOpts ...MigrateOption) (*connEntry, error) {
+func connect(ctx context.Context, dataDir string, migrationOpts ...migrater.MigrateOption) (*connEntry, error) {
 	if dataDir == "" {
 		return nil, fmt.Errorf("data.dir is not set")
 	}
@@ -292,28 +272,28 @@ func connect(ctx context.Context, dataDir string, migrationOpts ...MigrateOption
 	// re-acquire it here) and is a self-contained no-op when the destination
 	// already exists or no legacy source exists; with MayMigrate false the
 	// permission gate also suppresses the import.
-	migrateFS, err := migrationFS()
+	migrateFS, err := migrater.ActiveFS()
 	if err != nil {
 		return nil, fmt.Errorf("failed to locate embedded migrations: %w", err)
 	}
-	migrateOpts := newMigrateOptions(migrationOpts, dbPath)
+	migrateOpts := migrater.NewMigrateOptions(migrationOpts, dbPath)
 	migrateOpts.MigrationLockPath = filepath.Join(dataDir, "migrate.lock")
 	if !migrateOpts.MayMigrate {
 		if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
-			pending, err := embeddedVersions(migrateFS)
+			pending, err := migrater.PendingVersions()
 			if err != nil {
 				return nil, fmt.Errorf("failed to apply migrations: %w", err)
 			}
-			return nil, fmt.Errorf("failed to apply migrations: %w", &SchemaMigrationNotAllowedError{Pending: pending})
+			return nil, fmt.Errorf("failed to apply migrations: %w", &migrater.SchemaMigrationNotAllowedError{Pending: pending})
 		}
 	}
 	if migrateOpts.MayMigrate {
-		if _, err := ImportLegacyStore(ctx, dataDir, LegacyImportOptions{Schema: migrateFS}); err != nil {
+		if _, err := migrater.ImportLegacyStore(ctx, dataDir, migrater.LegacyImportOptions{Schema: migrateFS}); err != nil {
 			return nil, fmt.Errorf("legacy import: %w", err)
 		}
 	}
 
-	conn, err := openDB(dbPath)
+	conn, err := migrater.OpenDB(dbPath)
 	if err != nil {
 		return nil, err
 	}
@@ -337,7 +317,7 @@ func connect(ctx context.Context, dataDir string, migrationOpts ...MigrateOption
 	// twice ("duplicate column name"). The lock is taken even when no
 	// migration is needed, because the version read that produces that
 	// decision is part of the sequence being protected.
-	if err := migrateLocked(ctx, conn, dbPath, migrateFS, migrateOpts); err != nil {
+	if err := migrater.ApplyLocked(ctx, conn, dbPath, migrateFS, migrateOpts); err != nil {
 		conn.Close()
 		slog.Error("Failed to apply migrations", "error", err)
 		return nil, fmt.Errorf("failed to apply migrations: %w", err)
@@ -357,7 +337,7 @@ func connect(ctx context.Context, dataDir string, migrationOpts ...MigrateOption
 	// the writer connection (readDB = conn), which is exactly today's
 	// behavior. A degraded-to-serialized read path is strictly better
 	// than refusing to start.
-	openReader := openReadDB
+	openReader := migrater.OpenReadDB
 	if onReadDBOpen != nil {
 		openReader = onReadDBOpen
 	}
@@ -615,21 +595,23 @@ func ResetPool() {
 	}
 }
 
-// Migrate applies the embedded schema migrations to conn.
-//
-// It is the un-pooled, un-locked entry point for callers that hand us a
-// connection they already own and serialize (the SDK's in-memory database).
-// Paths that own a data directory go through Connect, which wraps the whole
-// read-versions/decide/apply sequence in a cross-process lock.
-//
-// Goose's legacy package-level API stores the selected dialect in a mutable
-// global. That API is not safe when independent clients initialize databases
-// concurrently. A Provider owns its dialect, filesystem, and migration
-// operations, so each database gets an isolated migration boundary.
-func Migrate(ctx context.Context, conn *sql.DB) error {
-	fsys, err := migrationFS()
-	if err != nil {
-		return err
-	}
-	return migrate(ctx, conn, "", fsys, MigrateOptions{MayMigrate: true})
+// Facade aliases for the migration options (design
+// docs/plans/2026-11-15-sprint0-split-db.md section 3.3): thin re-exports
+// of migrater's option types while the pool entry points still live
+// here. The DB-C lane moves this block into facade.go.
+
+type MigrateOption = migrater.MigrateOption
+
+type PreMigrationCheck = migrater.PreMigrationCheck
+
+// BusyTimeout re-exports migrater's statement timeout constant for
+// existing consumers while the pool entry points still live here.
+const BusyTimeout = migrater.BusyTimeout
+
+func WithMayMigrate(v bool) MigrateOption { return migrater.WithMayMigrate(v) }
+
+func WithMigrationLockPath(p string) MigrateOption { return migrater.WithMigrationLockPath(p) }
+
+func WithPreMigrationChecks(checks ...PreMigrationCheck) MigrateOption {
+	return migrater.WithPreMigrationChecks(checks...)
 }

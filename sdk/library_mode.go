@@ -17,6 +17,7 @@ import (
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/db/migrater"
 	"github.com/google/uuid"
 )
 
@@ -557,7 +558,7 @@ func openMemoryDB(ctx context.Context) (closeConns []*sql.DB, conn *sql.DB, err 
 		}
 	}
 
-	if err := db.Migrate(ctx, main); err != nil {
+	if err := migrater.Migrate(ctx, main); err != nil {
 		main.Close()
 		keeper.Close()
 		return nil, nil, fmt.Errorf("sdk: failed to run migrations on in-memory database: %w", err)

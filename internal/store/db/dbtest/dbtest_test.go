@@ -36,6 +36,24 @@ func TestOpenAppliesProductionPragmas(t *testing.T) {
 	}
 }
 
+// Pins the fixture DSN's foreign_keys pragma: OpenFK callers (cascade
+// fixtures) depend on it being on by default.
+func TestOpenFKEnablesForeignKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fk.db")
+	db, err := OpenFK(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var v int
+	if err := db.QueryRowContext(context.Background(), "PRAGMA foreign_keys").Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	if v != 1 {
+		t.Errorf("foreign_keys = %d, want 1 (ON)", v)
+	}
+}
+
 func TestOpenHandlesPathsWithURISpecials(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "a#b%c.db")
 	db, err := Open(path)

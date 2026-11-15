@@ -64,8 +64,8 @@ fanout_max_ratio = 0.40
 # Explicit non-Go input mappings: changed file (glob) -> owning package(s).
 # `*` matches any path segment(s) within one level; `**` crosses levels.
 [[non_go_mappings]]
-patterns = ["internal/store/db/sql/*.sql", "internal/store/db/migrations/*", "sqlc.yaml"]
-owners = ["internal/store/db"]
+patterns = ["internal/store/db/sql/*.sql", "internal/store/db/migrater/migrations/*", "sqlc.yaml"]
+owners = ["internal/store/db", "internal/store/db/migrater"]
 
 [[non_go_mappings]]
 patterns = ["internal/agent/templates/*"]

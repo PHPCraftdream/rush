@@ -1,4 +1,4 @@
-package db
+package migrater
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 )
 
 func TestMigrate_AppliesEmbeddedMigrations(t *testing.T) {
-	conn, err := openDB(t.TempDir() + "/migrate.db")
+	conn, err := OpenDB(t.TempDir() + "/migrate.db")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 

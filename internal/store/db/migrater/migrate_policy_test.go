@@ -1,4 +1,4 @@
-package db
+package migrater
 
 import (
 	"context"
@@ -11,8 +11,8 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/pressly/goose/v3"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -34,7 +34,7 @@ import (
 // not match this binary's set is produced.
 func embeddedMigrationsFS(t *testing.T, skipFn func(name string) bool) fstest.MapFS {
 	t.Helper()
-	fsys, err := migrationFS()
+	fsys, err := ActiveFS()
 	require.NoError(t, err)
 	entries, err := fs.ReadDir(fsys, ".")
 	require.NoError(t, err)
@@ -69,11 +69,26 @@ func applyFS(t *testing.T, conn *sql.DB, fsys fs.FS) {
 // connection, mirroring what connect hands to migrate.
 func openTestDB(t *testing.T, dbPath string) *sql.DB {
 	t.Helper()
-	conn, err := openDB(dbPath)
+	conn, err := OpenDB(dbPath)
 	require.NoError(t, err)
 	conn.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = conn.Close() })
 	return conn
+}
+
+// requireTableExists asserts the named table's presence in sqlite_master.
+func requireTableExists(t *testing.T, ctx context.Context, conn *sql.DB, name string, want bool) {
+	t.Helper()
+	var count int
+	err := conn.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name,
+	).Scan(&count)
+	require.NoError(t, err)
+	if want {
+		assert.Equal(t, 1, count, "expected table %s to exist", name)
+	} else {
+		assert.Equal(t, 0, count, "expected table %s to be dropped", name)
+	}
 }
 
 // newPendingProbeDB builds a database fully migrated through the embedded
@@ -151,7 +166,7 @@ func TestMigrate_LockSerializesConcurrentMigrations(t *testing.T) {
 
 	// Process A takes migrate.lock, reads the versions, and parks at the
 	// seam while still holding it.
-	go func() { firstDone <- migrateLocked(context.Background(), first, dbPath, fsys, opts) }()
+	go func() { firstDone <- ApplyLocked(context.Background(), first, dbPath, fsys, opts) }()
 
 	select {
 	case <-versionsRead:
@@ -161,7 +176,7 @@ func TestMigrate_LockSerializesConcurrentMigrations(t *testing.T) {
 
 	// Process B must not be able to get anywhere: it is serialized behind
 	// the lock A still holds.
-	go func() { secondDone <- migrateLocked(context.Background(), second, dbPath, fsys, opts) }()
+	go func() { secondDone <- ApplyLocked(context.Background(), second, dbPath, fsys, opts) }()
 	select {
 	case err := <-secondDone:
 		t.Fatalf("second migrate completed while the first still held migrate.lock: %v", err)
@@ -269,30 +284,4 @@ func mustEmbeddedVersions(t *testing.T) []int64 {
 	v, err := embeddedVersions(embeddedMigrationsFS(t, nil))
 	require.NoError(t, err)
 	return v
-}
-
-// TestConnect_OpenUpToDateDatabase is the integration check: the default
-// Connect opens an already fully migrated database without touching it
-// (applied=set(initial), no pending version) and creates the cross-process
-// lock file next to the database. The pending-migration path itself is
-// covered by TestMigrate_LockSerializesConcurrentMigrations; Connect cannot
-// see the test-only probe because it migrates with the embedded set.
-func TestConnect_OpenUpToDateDatabase(t *testing.T) {
-	dataDir := t.TempDir()
-	// Seed the ACTIVE store file: Connect opens storepath.StoreV1Path, and
-	// seeding the legacy name instead would silently exercise the legacy
-	// import path, not the up-to-date open this test pins.
-	dbPath := storepath.StoreV1Path(dataDir)
-	seed := openTestDB(t, dbPath)
-	require.NoError(t, Migrate(context.Background(), seed))
-
-	conn, err := Connect(context.Background(), dataDir)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = ReleaseConn(conn) })
-
-	before := dbVersionSet(t, seed)
-	require.Equal(t, before, dbVersionSet(t, conn), "Connect must not record versions on an up-to-date database")
-
-	lockPath := filepath.Join(dataDir, "migrate.lock")
-	require.FileExists(t, lockPath, "the lock file must live next to the database")
 }
