@@ -14,6 +14,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -218,14 +219,14 @@ func apiGetRunHandler(registry *APIRunRegistry) http.HandlerFunc {
 			}
 			deadline := time.NewTimer(time.Duration(seconds) * time.Second)
 			defer deadline.Stop()
-			for !terminalAPIRunState(run.State) && run.State != APIRunAwaitingAnswer {
+			for !wire.TerminalAPIRunState(run.State) && run.State != APIRunAwaitingAnswer {
 				snapshot, notify, exists := registry.SnapshotAndWait(run.ID)
 				if !exists {
 					apiNotFound(w, r, "run")
 					return
 				}
 				run = snapshot
-				if terminalAPIRunState(run.State) || run.State == APIRunAwaitingAnswer {
+				if wire.TerminalAPIRunState(run.State) || run.State == APIRunAwaitingAnswer {
 					break
 				}
 				select {

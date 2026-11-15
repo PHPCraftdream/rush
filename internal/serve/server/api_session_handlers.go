@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -123,7 +124,7 @@ func apiCreateSessionHandler(store APIWriteStore) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Location", apiBasePath+"/sessions/"+item.ID)
-		WriteAPIResponse(w, r, http.StatusCreated, apiSessionFromModel(item))
+		WriteAPIResponse(w, r, http.StatusCreated, wire.APISessionFromModel(item))
 	}
 }
 
@@ -149,7 +150,7 @@ func apiForkSessionHandler(store APIWriteStore) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Location", apiBasePath+"/sessions/"+item.ID)
-		WriteAPIResponse(w, r, http.StatusCreated, apiSessionFromModel(item))
+		WriteAPIResponse(w, r, http.StatusCreated, wire.APISessionFromModel(item))
 	}
 }
 

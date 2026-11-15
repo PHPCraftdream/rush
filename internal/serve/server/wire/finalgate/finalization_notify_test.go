@@ -1,4 +1,4 @@
-package server
+package finalgate
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -273,21 +274,21 @@ func TestFinalizationAPIEventTerminalClassifiesOnlyTerminalRunStates(t *testing.
 		"queued": false, "running": false, "awaiting_answer": false,
 	}
 	for state, want := range states {
-		event := APIEvent{
+		event := wire.APIEvent{
 			Type: "run",
 			Data: json.RawMessage(`{"state":"` + state + `"}`),
 		}
 		require.Equal(t, want, finalizationAPIEventTerminal(event), "state %q", state)
 	}
-	require.False(t, finalizationAPIEventTerminal(APIEvent{
+	require.False(t, finalizationAPIEventTerminal(wire.APIEvent{
 		Type: "run",
 		Data: json.RawMessage(`{not json`),
 	}))
-	require.False(t, finalizationAPIEventTerminal(APIEvent{
+	require.False(t, finalizationAPIEventTerminal(wire.APIEvent{
 		Type: "message",
 		Data: json.RawMessage(`{"state":"succeeded"}`),
 	}))
-	require.False(t, finalizationAPIEventTerminal(APIEvent{
+	require.False(t, finalizationAPIEventTerminal(wire.APIEvent{
 		Type: "session",
 		Data: json.RawMessage(`{"state":"succeeded"}`),
 	}))
@@ -298,34 +299,34 @@ func TestFinalizationGatedAPIEventStreamHoldsTerminalRunUntilSealed(t *testing.T
 	gate := newFinalizationNotifyGateStub()
 	gate.activate("s")
 	ctx := t.Context()
-	in := make(chan APIEvent, 4)
+	in := make(chan wire.APIEvent, 4)
 	out := FinalizationGatedAPIEventStream(ctx, gate, "s", in)
-	held := APIEvent{Type: "run", Data: json.RawMessage(`{"state":"succeeded"}`)}
-	passing := APIEvent{Type: "message", Data: json.RawMessage(`{"id":"m1"}`)}
+	held := wire.APIEvent{Type: "run", Data: json.RawMessage(`{"state":"succeeded"}`)}
+	passing := wire.APIEvent{Type: "message", Data: json.RawMessage(`{"id":"m1"}`)}
 	in <- held
 	in <- passing
 	// A second stream for a different owner is unaffected by s's hold.
-	in2 := make(chan APIEvent, 1)
+	in2 := make(chan wire.APIEvent, 1)
 	out2 := FinalizationGatedAPIEventStream(ctx, gate, "other", in2)
-	other := APIEvent{Type: "run", Data: json.RawMessage(`{"state":"failed"}`)}
-	finalizationPublishAll(t, in2, []APIEvent{other})
+	other := wire.APIEvent{Type: "run", Data: json.RawMessage(`{"state":"failed"}`)}
+	finalizationPublishAll(t, in2, []wire.APIEvent{other})
 	require.Equal(t, other, <-out2)
 	// The non-terminal message entry passes while the run result is held.
 	require.Equal(t, passing, <-out)
 	gate.seal("s")
 	// The pump closes out only after its input closes and the hold releases.
 	close(in)
-	require.Equal(t, []APIEvent{held}, finalizationCollect(out))
+	require.Equal(t, []wire.APIEvent{held}, finalizationCollect(out))
 	require.Empty(t, finalizationCollect(out2))
 }
 
 func TestFinalizationGatedAPIEventStreamEmptyOwnerReturnsInputUnchanged(t *testing.T) {
 	t.Parallel()
-	in := make(chan APIEvent, 1)
+	in := make(chan wire.APIEvent, 1)
 	out := FinalizationGatedAPIEventStream(
 		t.Context(), newFinalizationNotifyGateStub(), "", in)
-	event := APIEvent{Type: "run", Data: json.RawMessage(`{"state":"succeeded"}`)}
+	event := wire.APIEvent{Type: "run", Data: json.RawMessage(`{"state":"succeeded"}`)}
 	in <- event
 	close(in)
-	require.Equal(t, []APIEvent{event}, finalizationCollect(out))
+	require.Equal(t, []wire.APIEvent{event}, finalizationCollect(out))
 }

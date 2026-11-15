@@ -1,4 +1,4 @@
-package server
+package wire
 
 import "encoding/json"
 

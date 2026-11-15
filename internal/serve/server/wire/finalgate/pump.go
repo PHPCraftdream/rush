@@ -1,11 +1,13 @@
-package server
+package finalgate
 
 import (
 	"context"
 	"encoding/json"
 	"sync"
 
+	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -174,7 +176,7 @@ func FinalizationGatedSessionStream(
 
 // FinalizationGatedAPIEventStream decorates ONE session's APIEventLog
 // subscription: terminal run results (the HTTP API's completion events, type
-// "run", state succeeded|failed|cancelled — matching terminalAPIRunState) of
+// "run", state succeeded|failed|cancelled — matching wire.TerminalAPIRunState) of
 // ownerSessionID are held until sealed. Message and session entries of the
 // API log carry no finish or ended marker (the API projection strips them),
 // so they are never held here; the feeder-level stream wrappers cover them
@@ -183,16 +185,16 @@ func FinalizationGatedAPIEventStream(
 	ctx context.Context,
 	gate session.FinalizationTerminalGate,
 	ownerSessionID string,
-	in <-chan APIEvent,
-) <-chan APIEvent {
+	in <-chan wire.APIEvent,
+) <-chan wire.APIEvent {
 	if ownerSessionID == "" {
 		return in
 	}
 	return FinalizationGatedStream(ctx, gate, in,
-		func(APIEvent) string {
+		func(wire.APIEvent) string {
 			return ownerSessionID
 		},
-		func(ev APIEvent) bool {
+		func(ev wire.APIEvent) bool {
 			return finalizationAPIEventTerminal(ev)
 		})
 }
@@ -205,7 +207,7 @@ type finalizationAPIRunEvent struct {
 
 // finalizationAPIEventTerminal classifies one API event stream entry as a
 // terminal run result; unreadable payloads are never treated as terminal.
-func finalizationAPIEventTerminal(event APIEvent) bool {
+func finalizationAPIEventTerminal(event wire.APIEvent) bool {
 	// The literal matches the feeder's "run" publish (api_events_feeder.go:29).
 	if event.Type != "run" {
 		return false
@@ -214,5 +216,18 @@ func finalizationAPIEventTerminal(event APIEvent) bool {
 	if err := json.Unmarshal(event.Data, &payload); err != nil {
 		return false
 	}
-	return terminalAPIRunState(APIRunState(payload.State))
+	return wire.TerminalAPIRunState(wire.APIRunState(payload.State))
+}
+
+// GateFor resolves the terminal gate for the server's pubsub and SSE wiring
+// points. It replaces the former package variable: flag-on tests substitute a
+// deterministic stub gate through the explicit gate parameters of the wiring
+// points instead of overriding a variable. A nil App or a disabled flag
+// yields nil: every consumer treats nil as "no gate" and stays byte-for-byte
+// inert.
+func GateFor(a *appPkg.App) session.FinalizationTerminalGate {
+	if a == nil {
+		return nil
+	}
+	return a.FinalizationTerminalGate()
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/gorilla/websocket"
 )
 
@@ -75,7 +76,7 @@ func TestServeWSHelloFrame(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("verify fixture token: ok=%v err=%v", ok, err)
 	}
-	var payload helloPayload
+	var payload wire.HelloPayload
 	if err := json.Unmarshal(message.Payload, &payload); err != nil {
 		t.Fatal(err)
 	}

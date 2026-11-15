@@ -12,13 +12,19 @@ import (
 
 func TestScopeTableExhaustive(t *testing.T) {
 	isolateAPIGlobals(t)
-	path := filepath.Join(".", "protocol.go")
-	f, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
-	if err != nil {
-		t.Fatal(err)
+	// The protocol constants moved to the wire leaf package: the former
+	// protocol.go is now wire/protocol.go plus the live-work section in
+	// wire/snapshots.go.
+	var decls []ast.Decl
+	for _, name := range []string{"protocol.go", "snapshots.go"} {
+		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(".", "wire", name), nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decls = append(decls, f.Decls...)
 	}
 	known := map[string]bool{}
-	for _, decl := range f.Decls {
+	for _, decl := range decls {
 		g, ok := decl.(*ast.GenDecl)
 		if !ok || g.Tok != token.CONST {
 			continue

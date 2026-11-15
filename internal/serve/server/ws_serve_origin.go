@@ -1,23 +1,11 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
 	"strings"
 )
-
-type helloPayload struct {
-	Protocol string   `json:"protocol"`
-	TokenID  string   `json:"token_id"`
-	Scopes   []string `json:"scopes"`
-}
-
-func mustJSON(v any) json.RawMessage {
-	b, _ := json.Marshal(v)
-	return b
-}
 
 func serveOriginAllowed(origin string, allowed []string) bool {
 	if origin == "" {

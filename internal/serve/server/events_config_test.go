@@ -17,6 +17,7 @@ import (
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire/finalgate"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -72,7 +73,7 @@ func TestSubscribeAndBroadcastForwardsModelsChangedAsEventConfig(t *testing.T) {
 	go func() { hub.Run(ctx); close(hubDone) }()
 	client := &Client{send: make(chan []byte, 100)}
 	hub.register <- client
-	forwarders := subscribeAndBroadcast(ctx, application, hub)
+	forwarders := subscribeAndBroadcast(ctx, application, hub, finalgate.GateFor(application))
 	t.Cleanup(func() {
 		cancel()
 		forwarders.Wait()
