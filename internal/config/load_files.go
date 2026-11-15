@@ -91,43 +91,6 @@ func lookupConfigCandidateGroups(cwd string) configCandidateGroups {
 	return candidates
 }
 
-// canonicalConfigPath resolves the starting directory before both the git
-// boundary probe and the upward walk. A symlinked working directory can point
-// into a nested repository; walking its lexical parents would otherwise let
-// the search escape that repository and adopt an unrelated parent config.
-func canonicalConfigPath(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return filepath.Clean(path)
-	}
-	abs = filepath.Clean(abs)
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return filepath.Clean(resolved)
-	} else if !os.IsNotExist(err) {
-		return abs
-	}
-
-	// EvalSymlinks cannot resolve an absent leaf, but its existing parent may
-	// still be a symlink or junction. Resolve that parent so an absent
-	// candidate and the same candidate reached through an alias share the
-	// identity used by reload fingerprints.
-	var missing []string
-	for current := abs; ; current = filepath.Dir(current) {
-		missing = append(missing, filepath.Base(current))
-		parent := filepath.Dir(current)
-		resolved, resolveErr := filepath.EvalSymlinks(parent)
-		if resolveErr == nil {
-			for i := len(missing) - 1; i >= 0; i-- {
-				resolved = filepath.Join(resolved, missing[i])
-			}
-			return filepath.Clean(resolved)
-		}
-		if parent == current || !os.IsNotExist(resolveErr) {
-			return abs
-		}
-	}
-}
-
 func configOwnersMatch(expected, actual int) bool {
 	return expected == -1 || actual == expected
 }
