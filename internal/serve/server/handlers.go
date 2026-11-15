@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/PHPCraftdream/rush/internal/serve/server/apiauth"
+
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 )
 
@@ -36,7 +38,7 @@ func handleIncoming(ctx context.Context, s *Server, c *Client, raw []byte) {
 	}
 
 	if c.auth != nil {
-		if status := resolvePinnedCommand(c.auth.principal.PinnedSession, msg.Type, msg.Payload); status != 0 {
+		if status := apiauth.ResolvePinnedCommand(c.auth.principal.PinnedSession, msg.Type, msg.Payload); status != 0 {
 			if status == http.StatusNotFound {
 				c.reply(msg.ID, EventError, nil, "not found")
 			} else {
@@ -44,7 +46,7 @@ func handleIncoming(ctx context.Context, s *Server, c *Client, raw []byte) {
 			}
 			return
 		}
-		if c.auth.principal.BatchOnly && resolveBatchOnlyCommand(msg.Type) != 0 {
+		if c.auth.principal.BatchOnly && apiauth.ResolveBatchOnlyCommand(msg.Type) != 0 {
 			c.reply(msg.ID, EventError, nil, "forbidden: batch-only")
 			return
 		}

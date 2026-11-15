@@ -5,15 +5,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/PHPCraftdream/rush/internal/serve/server/apiauth"
 )
 
 func TestSessionResolutionTableExhaustive(t *testing.T) {
 	for command := range commandScopes {
-		if _, ok := sessionResolutionTable[command]; !ok {
+		if _, _, ok := SessionResolutionFor(command); !ok {
 			t.Errorf("command %q has no session resolution", command)
 		}
 	}
-	for command := range sessionResolutionTable {
+	for _, command := range apiauth.SessionResolutionCommands() {
 		if _, ok := commandScopes[command]; !ok {
 			t.Errorf("resolution for unknown command %q", command)
 		}
@@ -22,7 +24,7 @@ func TestSessionResolutionTableExhaustive(t *testing.T) {
 
 func TestRESTSessionResolutionTableExhaustive(t *testing.T) {
 	for _, route := range APIRoutes() {
-		if !routeClassIsKnown(route) {
+		if !RouteClassIsKnown(route.OperationID) {
 			t.Errorf("route %s %s (%s) has no resolution", route.Method, route.Pattern, route.OperationID)
 		}
 	}
@@ -46,7 +48,7 @@ func TestResolvePinnedCommandVisibilityBeforeClass(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := resolvePinnedCommand("pinned", tc.cmd, json.RawMessage(tc.body)); got != tc.want {
+			if got := ResolvePinnedCommand("pinned", tc.cmd, json.RawMessage(tc.body)); got != tc.want {
 				t.Fatalf("status=%d want %d", got, tc.want)
 			}
 		})
@@ -56,7 +58,7 @@ func TestResolvePinnedCommandVisibilityBeforeClass(t *testing.T) {
 func TestPinnedRESTListSessionsIsFilteredNotDenied(t *testing.T) {
 	route := APIRoute{OperationID: "listSessions"}
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/sessions", nil)
-	if got := resolvePinnedRoute("pinned-session", route, r); got != 0 {
+	if got := ResolvePinnedRoute("pinned-session", route.OperationID, r.PathValue("id")); got != 0 {
 		t.Fatalf("status=%d want 0 (the handler filters)", got)
 	}
 }
@@ -82,14 +84,14 @@ func TestResolvePinnedRouteVisibilityBeforeClass(t *testing.T) {
 		route := APIRoute{OperationID: tc.operation}
 		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 		r.SetPathValue("id", tc.id)
-		if got := resolvePinnedRoute("pinned", route, r); got != tc.want {
+		if got := ResolvePinnedRoute("pinned", route.OperationID, r.PathValue("id")); got != tc.want {
 			t.Errorf("%s/%s: got %d want %d", tc.operation, tc.id, got, tc.want)
 		}
 	}
 }
 
 func TestSessionResolutionCommandSetMatchesScopeCommandSet(t *testing.T) {
-	commands := sessionResolutionCommands()
+	commands := apiauth.SessionResolutionCommands()
 	if len(commands) != len(commandScopes) {
 		t.Fatalf("resolution commands=%d scopes=%d", len(commands), len(commandScopes))
 	}

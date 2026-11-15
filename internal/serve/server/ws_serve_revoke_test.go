@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/serve/server/apiauth"
 	"github.com/gorilla/websocket"
 )
 
@@ -26,10 +27,10 @@ func TestServeRevocationClosesWithPolicyViolation(t *testing.T) {
 	verifier := &fakeVerifier{token: config.APIToken{ID: "12345678"}, ok: true}
 	ticker := &manualTicker{ch: make(chan time.Time, 1)}
 	tickerCreated := make(chan struct{})
-	principal := Principal{TokenID: "12345678", verifier: verifier, tickerFactory: func(time.Duration) Ticker {
+	principal := NewVerifiablePrincipal("12345678", verifier, func(time.Duration) apiauth.Ticker {
 		close(tickerCreated)
 		return ticker
-	}}
+	})
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -67,19 +68,16 @@ func ptrTime(t time.Time) *time.Time { return &t }
 
 func TestServeAPIRevocationClosesConnectionAndReleasesSlot(t *testing.T) {
 	isolateAPIGlobals(t)
-	previousTicker, previousReleased := serveAuthTickerFactory, serveAuthSlotReleased
-	defer func() { serveAuthTickerFactory, serveAuthSlotReleased = previousTicker, previousReleased }()
 	ticker := &manualTicker{ch: make(chan time.Time, 1)}
 	tickerCreated := make(chan struct{}, 1)
-	serveAuthTickerFactory = func(time.Duration) Ticker {
+	tickerFactory := func(time.Duration) apiauth.Ticker {
 		tickerCreated <- struct{}{}
 		return ticker
 	}
 	released := make(chan struct{}, 1)
-	serveAuthSlotReleased = released
 	store := config.GlobalAPITokenStore()
 	policy := ListenerPolicy{Address: "127.0.0.1:0", Surfaces: []ListenerSurface{SurfaceREST, SurfaceWS}, Limits: ListenerLimits{MaxConnsPerToken: 1, RPS: 1000, Burst: 1000}}
-	api, err := NewServeAPI(policy, nil, store, nil)
+	api, err := newServeAPI(policy, nil, store, nil, tickerFactory, released)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,12 +135,9 @@ func TestServeAPIRevocationClosesConnectionAndReleasesSlot(t *testing.T) {
 
 func TestServeAPIExpiredTokenClosesConnectionAndReleasesSlot(t *testing.T) {
 	isolateAPIGlobals(t)
-	previousTicker, previousReleased := serveAuthTickerFactory, serveAuthSlotReleased
-	defer func() { serveAuthTickerFactory, serveAuthSlotReleased = previousTicker, previousReleased }()
 	ticker := &manualTicker{ch: make(chan time.Time, 1)}
-	serveAuthTickerFactory = func(time.Duration) Ticker { return ticker }
+	tickerFactory := func(time.Duration) apiauth.Ticker { return ticker }
 	released := make(chan struct{}, 1)
-	serveAuthSlotReleased = released
 	store := config.GlobalAPITokenStore()
 	future := time.Now().Add(time.Minute)
 	token, _, err := store.CreateAPIToken("expiring integration", []string{"read"}, "ask", &future)
@@ -150,7 +145,7 @@ func TestServeAPIExpiredTokenClosesConnectionAndReleasesSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy := ListenerPolicy{Address: "127.0.0.1:0", Surfaces: []ListenerSurface{SurfaceREST, SurfaceWS}, Limits: ListenerLimits{MaxConnsPerToken: 1, RPS: 1000, Burst: 1000}}
-	api, err := NewServeAPI(policy, nil, store, nil)
+	api, err := newServeAPI(policy, nil, store, nil, tickerFactory, released)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +184,7 @@ func TestServeAPIExpiredTokenClosesConnectionAndReleasesSlot(t *testing.T) {
 
 func TestServeAPIShutdownReleasesSlot(t *testing.T) {
 	released := make(chan struct{}, 1)
-	endpoint, token, _, server := newServeWSFixture(t, 1, func() { serveAuthSlotReleased = released })
+	endpoint, token, _, server := newServeWSFixture(t, 1, released)
 	conn, response, err := dialServeWS(t, endpoint, token) //nolint:bodyclose // gorilla upgrade responses carry no body
 	if err != nil {
 		t.Fatalf("dial: %v (%v)", err, response)
@@ -211,3 +206,19 @@ func TestServeAPIShutdownReleasesSlot(t *testing.T) {
 		t.Fatal("connection remained open after shutdown")
 	}
 }
+
+// fakeVerifier local copy (S2, lane L2): definition moved to apiauth
+// (apiauth_chain_test.go:14-25 at HEAD); server revocation fixtures still use
+// it. Verbatim copy; servertest (lanes L6/L7) will absorb it.
+type fakeVerifier struct {
+	token     config.APIToken
+	verifyErr error
+	ok        bool
+	touches   int
+}
+
+func (f *fakeVerifier) VerifyAPIToken(string, time.Time) (config.APIToken, bool, error) {
+	return f.token, f.ok, f.verifyErr
+}
+func (f *fakeVerifier) Touch(string)                                 { f.touches++ }
+func (f *fakeVerifier) ShowAPIToken(string) (config.APIToken, error) { return f.token, nil }

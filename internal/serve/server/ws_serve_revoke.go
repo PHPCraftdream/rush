@@ -11,7 +11,7 @@ const authRecheckInterval = 15 * time.Second
 
 func watchServeRevocation(ctx context.Context, conn *websocket.Conn, principal Principal, interval time.Duration, factory func(time.Duration) Ticker) {
 	if factory == nil {
-		factory = func(d time.Duration) Ticker { return realTicker{t: time.NewTicker(d)} }
+		factory = RealTicker
 	}
 	ticker := factory(interval)
 	defer ticker.Stop()
@@ -30,8 +30,8 @@ func watchServeRevocation(ctx context.Context, conn *websocket.Conn, principal P
 }
 
 func startServeRevocationWatch(ctx context.Context, conn *websocket.Conn, principal Principal) {
-	if principal.tickerFactory != nil {
-		go watchServeRevocation(ctx, conn, principal, authRecheckInterval, principal.tickerFactory)
+	if principal.TickerFactory() != nil {
+		go watchServeRevocation(ctx, conn, principal, authRecheckInterval, principal.TickerFactory())
 		return
 	}
 	go watchServeRevocation(ctx, conn, principal, authRecheckInterval, nil)

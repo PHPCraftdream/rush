@@ -12,6 +12,7 @@ import (
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/serve/server/apiauth"
 )
 
 type apiEventsResumeTicker struct{ ch chan time.Time }
@@ -48,8 +49,7 @@ func TestServeAPIEventsProductionResumeDeliversBetweenRechecks(t *testing.T) {
 	tickerMu := sync.Mutex{}
 	tickerReady := make(chan struct{}, apiSSEStreamsPerToken)
 	tickers := make([]apiEventsResumeTicker, 0, apiSSEStreamsPerToken)
-	previousTicker := serveAuthTickerFactory
-	serveAuthTickerFactory = func(time.Duration) Ticker {
+	tickerFactory := func(time.Duration) apiauth.Ticker {
 		ticker := apiEventsResumeTicker{ch: make(chan time.Time, 1)}
 		tickerMu.Lock()
 		tickers = append(tickers, ticker)
@@ -60,7 +60,6 @@ func TestServeAPIEventsProductionResumeDeliversBetweenRechecks(t *testing.T) {
 		}
 		return ticker
 	}
-	t.Cleanup(func() { serveAuthTickerFactory = previousTicker })
 	previousRoutes := serveAPIRoutes
 	var productionLog *APIEventLog
 	serveAPIRoutes = func(app *appPkg.App, broker *APIPermissionBroker, autoApprove bool) ([]APIRoute, *APIEventLog, *APIRunRegistry) {
@@ -81,7 +80,7 @@ func TestServeAPIEventsProductionResumeDeliversBetweenRechecks(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy := ListenerPolicy{Address: "127.0.0.1:0", Surfaces: []ListenerSurface{SurfaceREST}}
-	api, err := NewServeAPI(policy, app, store, nil)
+	api, err := newServeAPI(policy, app, store, nil, tickerFactory, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

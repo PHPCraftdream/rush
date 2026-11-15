@@ -14,16 +14,13 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func newServeWSFixture(t *testing.T, max int, beforeBuild ...func()) (string, string, *ServeAPI, *Server) {
-	return newServeWSFixtureWithOrigins(t, max, nil, beforeBuild...)
+func newServeWSFixture(t *testing.T, max int, slotReleased chan<- struct{}, beforeBuild ...func()) (string, string, *ServeAPI, *Server) {
+	return newServeWSFixtureWithOrigins(t, max, nil, slotReleased, beforeBuild...)
 }
 
-func newServeWSFixtureWithOrigins(t *testing.T, max int, origins []string, beforeBuild ...func()) (string, string, *ServeAPI, *Server) {
+func newServeWSFixtureWithOrigins(t *testing.T, max int, origins []string, slotReleased chan<- struct{}, beforeBuild ...func()) (string, string, *ServeAPI, *Server) {
 	t.Helper()
 	isolateAPIGlobals(t)
-	previousReleased := serveAuthSlotReleased
-	serveAuthSlotReleased = nil
-	t.Cleanup(func() { serveAuthSlotReleased = previousReleased })
 	store := config.GlobalAPITokenStore()
 	token, _, err := store.CreateAPIToken("ws integration", []string{"read"}, "ask", nil)
 	if err != nil {
@@ -33,7 +30,7 @@ func newServeWSFixtureWithOrigins(t *testing.T, max int, origins []string, befor
 	for _, before := range beforeBuild {
 		before()
 	}
-	api, err := NewServeAPI(policy, nil, store, nil)
+	api, err := newServeAPI(policy, nil, store, nil, nil, slotReleased)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +54,7 @@ func dialServeWS(t *testing.T, endpoint, token string) (*websocket.Conn, *http.R
 }
 
 func TestServeWSHelloFrame(t *testing.T) {
-	endpoint, token, _, _ := newServeWSFixture(t, 2)
+	endpoint, token, _, _ := newServeWSFixture(t, 2, nil)
 	conn, response, err := dialServeWS(t, endpoint, token) //nolint:bodyclose // gorilla upgrade responses carry no body
 	if err != nil {
 		t.Fatalf("dial failed: %v, response=%v", err, response)
@@ -93,7 +90,7 @@ func TestServeWSHelloFrame(t *testing.T) {
 }
 
 func TestServeWSConnectionSlotsLifetime(t *testing.T) {
-	endpoint, token, _, _ := newServeWSFixture(t, 2)
+	endpoint, token, _, _ := newServeWSFixture(t, 2, nil)
 	first, response, err := dialServeWS(t, endpoint, token) //nolint:bodyclose // gorilla upgrade responses carry no body
 	if err != nil {
 		t.Fatalf("first dial: %v (%v)", err, response)
@@ -116,7 +113,7 @@ func TestServeWSConnectionSlotsLifetime(t *testing.T) {
 
 func TestServeWSAbruptDisconnectReleasesSlot(t *testing.T) {
 	released := make(chan struct{}, 1)
-	endpoint, token, _, _ := newServeWSFixture(t, 1, func() { serveAuthSlotReleased = released })
+	endpoint, token, _, _ := newServeWSFixture(t, 1, released)
 	conn, response, err := dialServeWS(t, endpoint, token) //nolint:bodyclose // gorilla upgrade responses carry no body
 	if err != nil {
 		t.Fatalf("dial: %v (%v)", err, response)
@@ -138,7 +135,7 @@ func TestServeWSAbruptDisconnectReleasesSlot(t *testing.T) {
 }
 
 func TestServeWSConnectionSlotsSharedWithREST(t *testing.T) {
-	endpoint, token, _, _ := newServeWSFixture(t, 2)
+	endpoint, token, _, _ := newServeWSFixture(t, 2, nil)
 	first, response, err := dialServeWS(t, endpoint, token) //nolint:bodyclose // gorilla upgrade responses carry no body
 	if err != nil {
 		t.Fatalf("first dial: %v (%v)", err, response)
@@ -164,4 +161,15 @@ func TestServeWSConnectionSlotsSharedWithREST(t *testing.T) {
 	if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") == "" {
 		t.Fatalf("REST response while WS slots full = %d headers=%v, want 429 with Retry-After", resp.StatusCode, resp.Header)
 	}
+}
+
+// isolateAPIGlobals local copy (S2, lane L2): definition moved to apiauth
+// (apiauth_chain_test.go:29-36 at HEAD); the server-package serve fixtures
+// still isolate the global config. Verbatim copy; servertest (L6/L7) absorbs it.
+func isolateAPIGlobals(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("RUSH_GLOBAL_DATA", dir)
+	t.Setenv("RUSH_GLOBAL_CONFIG", dir)
+	t.Setenv("RUSH_GLOBAL_DIR", dir)
 }

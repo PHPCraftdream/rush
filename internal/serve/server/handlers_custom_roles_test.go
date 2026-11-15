@@ -114,10 +114,10 @@ func TestCustomRoleCommandsRequireModelConfigAuthorityAndRejectPinnedSessions(t 
 		require.NoError(t, AuthorizeCommand(Principal{Scopes: []string{"config"}}, command, CommandPolicy{}))
 	}
 	for _, command := range []string{CmdGetCustomRoles, CmdSetCustomRole, CmdRemoveCustomRole} {
-		rule, exists := sessionResolutionTable[command]
+		field, class, exists := SessionResolutionFor(command)
 		require.True(t, exists)
-		require.Equal(t, "deny", rule.class)
-		require.Empty(t, rule.field)
+		require.Equal(t, "deny", class)
+		require.Empty(t, field)
 	}
 }
 

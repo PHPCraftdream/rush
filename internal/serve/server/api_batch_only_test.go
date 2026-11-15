@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/serve/server/apiauth"
 	"github.com/stretchr/testify/require"
 )
 
@@ -75,7 +76,7 @@ func TestBatchOnlyTokenCannotUseConversationRoutes(t *testing.T) {
 }
 
 func TestBatchRouteListenerConfinesEveryToken(t *testing.T) {
-	f := newBatchFixtureWith(t, batchTextProvider("ok"), func(p *ListenerPolicy) { p.Route = routeBatch })
+	f := newBatchFixtureWith(t, batchTextProvider("ok"), func(p *ListenerPolicy) { p.Route = RouteBatch })
 	unbound := f.token(t, "unbound", []string{"read", "run"}, "ask", config.APITokenBinding{})
 	// Creating the conversation is itself a refused route on this listener, so
 	// the session comes from the App directly.
@@ -121,7 +122,7 @@ func TestBatchOnlyRouteClassificationIsExplicit(t *testing.T) {
 	var seen []string
 	for _, route := range APIRoutes() {
 		seen = append(seen, route.OperationID)
-		status := resolveBatchOnlyRoute(route)
+		status := ResolveBatchOnlyRoute(route.OperationID)
 		switch {
 		case allowed[route.OperationID]:
 			require.Zero(t, status, route.OperationID)
@@ -138,7 +139,7 @@ func TestBatchOnlyRouteClassificationIsExplicit(t *testing.T) {
 	for id := range denied {
 		require.Contains(t, seen, id)
 	}
-	require.Equal(t, http.StatusForbidden, resolveBatchOnlyRoute(APIRoute{OperationID: "somethingNew"}), "an unknown route fails closed")
+	require.Equal(t, http.StatusForbidden, ResolveBatchOnlyRoute("somethingNew"), "an unknown route fails closed")
 }
 
 func TestBatchOnlyCommandClassificationIsExplicit(t *testing.T) {
@@ -146,15 +147,15 @@ func TestBatchOnlyCommandClassificationIsExplicit(t *testing.T) {
 		CmdListSessions: true, CmdLoadMessages: true, CmdGetSessionLiveWork: true, CmdGetSessionWakeSchedules: true,
 		CmdGetSessionBatchWork: true, CmdBatchStatus: true, CmdBatchOutput: true, CmdCancelAgent: true,
 	}
-	for _, command := range sessionResolutionCommands() {
-		status := resolveBatchOnlyCommand(command)
+	for _, command := range apiauth.SessionResolutionCommands() {
+		status := ResolveBatchOnlyCommand(command)
 		if allowed[command] {
 			require.Zero(t, status, command)
 		} else {
 			require.Equal(t, http.StatusForbidden, status, command)
 		}
 	}
-	require.Equal(t, http.StatusForbidden, resolveBatchOnlyCommand("not_a_command"), "an unknown command fails closed")
+	require.Equal(t, http.StatusForbidden, ResolveBatchOnlyCommand("not_a_command"), "an unknown command fails closed")
 }
 
 func TestListenerPolicyRouteValidation(t *testing.T) {

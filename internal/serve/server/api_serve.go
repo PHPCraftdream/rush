@@ -11,6 +11,7 @@ import (
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/serve/server/apiauth"
 )
 
 const usageFlushInterval = time.Minute
@@ -47,6 +48,13 @@ type serveUsageFlusher struct {
 // NewServeAPI builds the production authenticator and REST mount for a serve listener.
 // Call Stop before shutting down the App; listeners sharing a store share one flusher.
 func NewServeAPI(policy ListenerPolicy, app *appPkg.App, store *config.APITokenStore, bootstrapTokenIDs []string) (*ServeAPI, error) {
+	return newServeAPI(policy, app, store, bootstrapTokenIDs, nil, nil)
+}
+
+// newServeAPI is NewServeAPI with explicit test seams for the Chain ticker
+// factory and slot-release channel (S2: the package-var fallbacks were
+// deleted; production passes nil, nil).
+func newServeAPI(policy ListenerPolicy, app *appPkg.App, store *config.APITokenStore, bootstrapTokenIDs []string, tickerFactory func(time.Duration) apiauth.Ticker, slotReleased chan<- struct{}) (*ServeAPI, error) {
 	if store == nil {
 		return nil, errors.New("token verifier required")
 	}
@@ -54,7 +62,9 @@ func NewServeAPI(policy ListenerPolicy, app *appPkg.App, store *config.APITokenS
 	auth := Chain(ChainConfig{
 		AuthConfig: AuthConfig{Verifier: store, AllowedTokenIDs: append([]string(nil), policy.TokenIDs...), Pins: cloneListenerPins(policy.Pins), PinsDeclared: policy.PinsDeclared, Route: policy.Route, Workspace: policy.Workspace, BootstrapTokenIDs: append([]string(nil), bootstrapTokenIDs...)},
 		RPS:        policy.Limits.RPS, Burst: policy.Limits.Burst, MaxConnsPerToken: policy.Limits.MaxConnsPerToken, MaxBody: policy.Limits.MaxBody,
-		Logger: logger,
+		Logger:        logger,
+		TickerFactory: tickerFactory,
+		SlotReleased:  slotReleased,
 	})
 	var broker *APIPermissionBroker
 	if app != nil && app.Permissions != nil {
@@ -73,7 +83,7 @@ func NewServeAPI(policy ListenerPolicy, app *appPkg.App, store *config.APITokenS
 	if burst == 0 {
 		burst = 40
 	}
-	healthLimit := newRateLimiter(rps, burst, serveAPINow)
+	healthLimit := NewRateLimiter(rps, burst, serveAPINow)
 	health := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if retry := healthLimit.Allow("ip:"+sourceIP(r.RemoteAddr), serveAPINow()); retry > 0 {
 			retryResponse(w, retry)
@@ -83,7 +93,7 @@ func NewServeAPI(policy ListenerPolicy, app *appPkg.App, store *config.APITokenS
 	})
 	mux := http.NewServeMux()
 	mux.Handle("/api/v1/health", health)
-	mux.Handle("/api/v1/", auth(mtlsFingerprintAuth(protected)))
+	mux.Handle("/api/v1/", auth(apiauth.FingerprintAuth(protected)))
 	rest := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/v1/") {
 			idResponse := &apiTrackingWriter{ResponseWriter: w}

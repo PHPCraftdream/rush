@@ -2,14 +2,13 @@ package server
 
 import (
 	"context"
-	"time"
 )
 
 func apiSSERevocation(ctx context.Context, principal Principal) <-chan struct{} {
 	revoked := make(chan struct{})
-	factory := principal.tickerFactory
+	factory := principal.TickerFactory()
 	if factory == nil {
-		factory = func(d time.Duration) Ticker { return realTicker{t: time.NewTicker(d)} }
+		factory = RealTicker
 	}
 	go func() {
 		ticker := factory(authRecheckInterval)

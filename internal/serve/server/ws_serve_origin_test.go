@@ -27,7 +27,7 @@ func TestServeOriginAllowed(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := serveOriginAllowed(tc.origin, tc.allowed); got != tc.want {
+			if got := OriginsAllowed(tc.origin, tc.allowed); got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
 		})
@@ -35,7 +35,7 @@ func TestServeOriginAllowed(t *testing.T) {
 }
 
 func TestValidateAllowedOriginsRejectsWildcard(t *testing.T) {
-	if err := validateAllowedOrigins([]string{"*"}); err == nil {
+	if err := ValidateAllowedOrigins([]string{"*"}); err == nil {
 		t.Fatal("wildcard accepted")
 	}
 }
