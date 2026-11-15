@@ -4,7 +4,6 @@
 package config
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -34,15 +33,6 @@ func lookupConfigs(cwd string) []string {
 		}
 	}
 	return result
-}
-
-// lookupConfigCandidates returns every fixed and bounded project path that
-// lookupConfigs can inspect, including paths that do not exist yet. Stale
-// tracking must retain these negative lookups so creating a previously
-// absent config file is observable by the watcher.
-func lookupConfigCandidates(cwd string) []string {
-	candidates := lookupConfigCandidateGroups(cwd)
-	return append(candidates.global, candidates.project...)
 }
 
 type configCandidateGroups struct {
@@ -101,34 +91,6 @@ func lookupConfigCandidateGroups(cwd string) configCandidateGroups {
 	return candidates
 }
 
-// configOwnerForWorkingDir returns the explicit owner policy used when a
-// discovered file is opened. Discovery's path check is only a filter; this
-// second check closes the stat/open race.
-func configOwnerForWorkingDir(workingDir string) (int, bool, error) {
-	if workingDir == "" {
-		return 0, false, nil
-	}
-	owner, err := fsext.Owner(canonicalConfigPath(workingDir))
-	if err != nil {
-		return 0, false, err
-	}
-	return owner, true, nil
-}
-
-func configOwnerPolicyForPath(path, workingDir string) (int, bool, error) {
-	if path == "" {
-		return 0, false, nil
-	}
-	canonical := normalizeReloadPath(path)
-	if systemConfigSlot() != "" && matchesLogicalSlot(canonical, systemConfigSlot()) {
-		return systemConfigOwner(), true, nil
-	}
-	if matchesLogicalSlot(canonical, GlobalConfig()) || matchesLogicalSlot(canonical, GlobalConfigData()) {
-		return homeConfigOwner(), true, nil
-	}
-	return configOwnerForWorkingDir(workingDir)
-}
-
 // canonicalConfigPath resolves the starting directory before both the git
 // boundary probe and the upward walk. A symlinked working directory can point
 // into a nested repository; walking its lexical parents would otherwise let
@@ -170,81 +132,6 @@ func configOwnersMatch(expected, actual int) bool {
 	return expected == -1 || actual == expected
 }
 
-// eligibleWorkspaceConfig returns the workspace config only when the
-// working directory has a trustworthy owner and the config has that same
-// owner. A workspace config is project-scoped even when data_directory points
-// outside the checkout, so it uses the checkout policy rather than the home
-// or system policy.
-func eligibleWorkspaceConfig(path, workingDir string) string {
-	if workingDir == "" {
-		return ""
-	}
-	owner, err := fsext.Owner(canonicalConfigPath(workingDir))
-	if err != nil {
-		return ""
-	}
-	return eligibleConfigCandidate(path, owner)
-}
-
-// eligibleConfigCandidate retains absent candidates for negative staleness
-// tracking, while rejecting existing foreign-owned files and directories.
-func eligibleConfigCandidate(path string, owner int) string {
-	if path == "" {
-		return ""
-	}
-	isKtav := isKtavConfigPath(path)
-	info, err := os.Stat(path)
-	if os.IsNotExist(err) {
-		return path
-	}
-	if err != nil || info.IsDir() {
-		if isKtav {
-			return path
-		}
-		return ""
-	}
-	candidateOwner, err := fsext.Owner(path)
-	if err != nil {
-		if isKtav {
-			return path
-		}
-		return ""
-	}
-	if !configOwnersMatch(owner, candidateOwner) {
-		return ""
-	}
-	return path
-}
-
-// pathAlreadyLoaded reports whether path (typically the computed workspace
-// config path) is already present in loadedPaths (the paths loadFromConfigPaths
-// already merged into cfg).
-//
-// Load and buildAndPublishReload both merge the workspace config
-// (<DataDirectory>/rush.json) as a SEPARATE step after loadFromConfigPaths,
-// under the assumption that it's a distinct file loadFromConfigPaths didn't
-// already see. That assumption breaks when DataDirectory is configured (or,
-// as in several tests, passed directly) such that the workspace path
-// resolves to a path lookupConfigs already discovered and loaded — the file
-// then gets read and merged a SECOND time via mustMarshalConfig(cfg)+wsData.
-// jsons.Merge appends JSON arrays instead of overriding them (see
-// internal/merge/ordered.go in github.com/qjebbs/go-jsons), so re-merging
-// the same provider's "models" array against itself duplicates it, while
-// scalar fields like models.smart.model are simply overwritten by the
-// second read — the two reads of the same file are not even guaranteed to
-// observe the same content if a concurrent writer lands between them,
-// producing a config whose Models selection and whose Providers model list
-// disagree (task #458). Skipping the second read/merge whenever the
-// workspace path was already loaded closes this both structurally (no more
-// double-processing of one file's content) and for the concurrent-write
-// case (no second, possibly-different read of the same path).
-func pathAlreadyLoaded(loadedPaths []string, path string) bool {
-	clean := normalizeReloadPath(path)
-	return slices.ContainsFunc(loadedPaths, func(p string) bool {
-		return normalizeReloadPath(p) == clean
-	})
-}
-
 func loadFromConfigPaths(configPaths []string) (*Config, []string, error) {
 	cfg, loaded, _, err := loadFromConfigPathsStable(configPaths)
 	return cfg, loaded, err
@@ -263,107 +150,8 @@ func loadConfigCandidateStable(configPaths []string) (*Config, []string, map[str
 	return loadConfigCandidateStableForWorkingDir(configPaths, "")
 }
 
-func loadConfigCandidateStableForWorkingDir(configPaths []string, workingDir string) (*Config, []string, map[string]reloadFileFingerprint, []stableConfigDocument, error) {
-	documents, err := readStableConfigDocumentsWithOwner(configPaths, func(path string) (int, bool, error) {
-		return configOwnerPolicyForPath(path, workingDir)
-	})
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-	for _, document := range documents {
-		if document.present && len(document.data) > 0 && !json.Valid(document.data) {
-			return nil, nil, nil, nil, fmt.Errorf("invalid JSON in config file %s", document.path)
-		}
-		if document.present {
-			if err := validateMCPDisabledOverlays(document.data); err != nil {
-				return nil, nil, nil, nil, fmt.Errorf("invalid MCP configuration in config file %s: %w", document.path, err)
-			}
-		}
-	}
-	configs, loaded, fingerprints := configDocumentBytes(documents)
-	addDocumentAliasFingerprints(fingerprints, documents)
-
-	cfg, err := loadFromBytes(configs)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-	return cfg, loaded, fingerprints, documents, nil
-}
-
-// stableConfigDocument is the exact byte document used to build a candidate.
-// Keeping the bytes and fingerprint together prevents a second read from
-// supplying overlay metadata that belongs to a different generation.
-type stableConfigDocument struct {
-	path        string
-	data        []byte
-	fingerprint reloadFileFingerprint
-	present     bool
-	aliases     []stableConfigAlias
-}
-
-type stableConfigAlias struct {
-	path        string
-	fingerprint reloadFileFingerprint
-}
-
 func readStableConfigDocuments(paths []string) ([]stableConfigDocument, error) {
 	return readStableConfigDocumentsWithOwner(paths, nil)
-}
-
-func readStableConfigDocumentsWithOwner(paths []string, owner func(string) (int, bool, error)) ([]stableConfigDocument, error) {
-	documents := make([]stableConfigDocument, 0, len(paths))
-	seenPresent := make(map[configFileIdentity]int, len(paths))
-	seenAbsent := make(map[[sha256.Size]byte]int, len(paths))
-	for _, path := range paths {
-		discoveryPath := normalizeDiscoveryPath(path)
-		if discoveryPath == "" {
-			continue
-		}
-		expectedOwner, enforceOwner := 0, false
-		var ownerErr error
-		if owner != nil {
-			expectedOwner, enforceOwner, ownerErr = owner(discoveryPath)
-			if ownerErr != nil {
-				return nil, ownerErr
-			}
-		}
-		data, fingerprint, readErr := readStableConfigFileOwned(discoveryPath, expectedOwner, enforceOwner)
-		if readErr != nil && !os.IsNotExist(readErr) {
-			return nil, fmt.Errorf("failed to open config file %s: %w", discoveryPath, readErr)
-		}
-		decoded := data
-		if readErr == nil {
-			var decodeErr error
-			decoded, decodeErr = decodeConfigDocument(discoveryPath, data)
-			if decodeErr != nil {
-				return nil, decodeErr
-			}
-		}
-		alias := stableConfigAlias{path: discoveryPath, fingerprint: fingerprint}
-		if readErr != nil {
-			if fingerprint.discovery != ([sha256.Size]byte{}) {
-				if index, ok := seenAbsent[fingerprint.discovery]; ok {
-					documents[index].aliases = append(documents[index].aliases, alias)
-					continue
-				}
-				seenAbsent[fingerprint.discovery] = len(documents)
-			}
-			documents = append(documents, stableConfigDocument{path: discoveryPath, aliases: []stableConfigAlias{alias}})
-			continue
-		}
-		if fingerprint.identity.valid {
-			if index, ok := seenPresent[fingerprint.identity]; ok {
-				documents[index].aliases = append(documents[index].aliases, alias)
-				continue
-			}
-			seenPresent[fingerprint.identity] = len(documents)
-		}
-		documents = append(documents, stableConfigDocument{
-			path: discoveryPath, data: decoded, fingerprint: fingerprint, present: fingerprint.exists,
-			aliases: []stableConfigAlias{alias},
-		})
-	}
-	return documents, nil
 }
 
 func configDocumentBytes(documents []stableConfigDocument) ([][]byte, []string, map[string]reloadFileFingerprint) {

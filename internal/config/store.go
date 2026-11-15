@@ -705,16 +705,6 @@ func (s *ConfigStore) RemoveMCPIfCurrent(name string, expected MCPConfig, revisi
 	return cloneMCPConfig(current), true
 }
 
-func initialMCPRevisions(cfg *Config) map[string]uint64 {
-	result := make(map[string]uint64)
-	if cfg != nil {
-		for name := range cfg.MCP {
-			result[name] = 1
-		}
-	}
-	return result
-}
-
 func cloneMCPConfig(m MCPConfig) MCPConfig {
 	m.Env = maps.Clone(m.Env)
 	m.Args = slices.Clone(m.Args)

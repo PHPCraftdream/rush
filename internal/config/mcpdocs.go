@@ -1,11 +1,16 @@
+// MCP document loading (.mcp.json and rush.json mcpServers) and the per-entry
+// revision bookkeeping derived from those documents.
 package config
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 
 	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
@@ -315,4 +320,56 @@ func mcpEntryFromJSON(data []byte, name string) (map[string]json.RawMessage, boo
 		return nil, false
 	}
 	return entry, true
+}
+
+// mcpRevisionDiff advances only names whose effective definition or exact
+// source input changed. A missing revision is deliberately treated as zero so
+// an in-memory staged entry receives a real admission token.
+func mcpRevisionDiff(current map[string]uint64, previous, next *Config, previousInputs, nextInputs map[string][sha256.Size]byte, force ...string) map[string]uint64 {
+	result := maps.Clone(current)
+	if result == nil {
+		result = make(map[string]uint64)
+	}
+	names := make(map[string]struct{})
+	for name := range mcpNames(previous) {
+		names[name] = struct{}{}
+	}
+	for name := range mcpNames(next) {
+		names[name] = struct{}{}
+	}
+	for name := range previousInputs {
+		names[name] = struct{}{}
+	}
+	for name := range nextInputs {
+		names[name] = struct{}{}
+	}
+	for _, name := range force {
+		if name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	forced := make(map[string]struct{}, len(force))
+	for _, name := range force {
+		forced[name] = struct{}{}
+	}
+	for name := range names {
+		previousConfig, previousExists := mcpConfig(previous, name)
+		nextConfig, nextExists := mcpConfig(next, name)
+		previousInput, previousHasInput := previousInputs[name]
+		nextInput, nextHasInput := nextInputs[name]
+		if _, ok := forced[name]; ok || previousExists != nextExists ||
+			previousExists && !reflect.DeepEqual(previousConfig, nextConfig) ||
+			previousHasInput != nextHasInput ||
+			previousHasInput && nextHasInput && previousInput != nextInput {
+			result[name]++
+		}
+	}
+	return result
+}
+
+func mcpNames(cfg *Config) map[string]MCPConfig {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.MCP
 }
