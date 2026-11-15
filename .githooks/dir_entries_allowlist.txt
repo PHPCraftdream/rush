@@ -25,7 +25,9 @@ internal/serve/cmd 167
 # internal/config 120 -> 123: +1 internal/config/catalog (provider reference data, sprint 0 wave 1);
 # +2 internal/config/discover and internal/config/oauth moved in (stage C).
 # The count falls with the package split (stage D2).
-internal/config 123
+# 123 -> 124: +1 internal/config/models_integrity.go, split off the store methods by the
+# 0b-3.1 seam lane (design split-config section 5.4: a deliberate, temporary rise; only down from here).
+internal/config 124
 internal/config/discover 13
 internal/session/heartbeat 10
 internal/session/jobbatch 21
