@@ -2,8 +2,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { flush } from "@react-carburetor/core/testing";
-import { SessionsCarburetor } from "../SessionsCarburetor.ts";
-import type { ISessionsState } from "../SessionsCarburetor.ts";
+import { SessionsCarburetor } from "./SessionsCarburetor.ts";
+import type { ISessionsState } from "./SessionsCarburetor.ts";
 import type { Session } from "../../domain/types.ts";
 
 /**

@@ -2,8 +2,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { flush } from "@react-carburetor/core/testing";
-import { McpCarburetor } from "../McpCarburetor.ts";
-import type { IMcpState } from "../McpCarburetor.ts";
+import { McpCarburetor } from "./McpCarburetor.ts";
+import type { IMcpState } from "./McpCarburetor.ts";
 import type { MCPServerInfo, MCPState } from "../../domain/types.ts";
 
 const nameOf = (server: { name: string }): string => server.name;
