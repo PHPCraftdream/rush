@@ -21,7 +21,9 @@ internal/apiclient 13
 internal/app 62
 internal/cahgen 9
 internal/cmd 165
-internal/config 120
+# internal/config 120 -> 121: +1 for the new leaf subdirectory internal/config/catalog (provider reference data, sprint 0 wave 1).
+# The count falls with the package split (stage D2).
+internal/config 121
 internal/db 16
 internal/discover 13
 internal/fsext 13
