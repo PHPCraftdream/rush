@@ -196,6 +196,24 @@ jobs:
       - name: self-test package-name guard
         if: runner.os == 'Linux'
         run: bash .githooks/check_pkg_names_selftest.sh
+      - name: no code directory over 21 files including tests (ratchet allowlist)
+        if: runner.os == 'Linux'
+        run: bash .githooks/check_dir_files.sh
+      - name: self-test dir-files guard
+        if: runner.os == 'Linux'
+        run: bash .githooks/check_dir_files_selftest.sh
+      - name: no hand-written source file over 900 lines (blocking ratchet)
+        if: runner.os == 'Linux'
+        run: bash .githooks/check_file_size_900.sh
+      - name: self-test file-size-900 guard
+        if: runner.os == 'Linux'
+        run: bash .githooks/check_file_size_900_selftest.sh
+      - name: internal layer direction (ratchet exceptions)
+        if: runner.os == 'Linux' && needs.plan.outputs.heavy_allowed == 'true'
+        run: bash .githooks/check_layers.sh
+      - name: self-test layer guard
+        if: runner.os == 'Linux' && needs.plan.outputs.heavy_allowed == 'true'
+        run: bash .githooks/check_layers_selftest.sh
       - name: go mod tidy produces no diff
         if: runner.os == 'Linux' && needs.plan.outputs.heavy_allowed == 'true'
         run: go mod tidy -diff

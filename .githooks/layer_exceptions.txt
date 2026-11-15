@@ -1,0 +1,7 @@
+# layer_exceptions.txt: production ratchet list for
+# .githooks/check_layers.sh, format "<package-import-path> <count>",
+# one per line, blank lines and # comments allowed.
+#
+# Seeded empty on 2026-11-15: stage A2 measurement found ZERO
+# production layer violations, so the list starts clean. Every future
+# entry needs a one-line reason directly above it.

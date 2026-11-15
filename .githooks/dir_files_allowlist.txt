@@ -1,0 +1,38 @@
+# dir-files ratchet -- see .githooks/check_dir_files.sh.
+#
+# One line per known violation of the "at most 21 code files per
+# directory including tests" rule, seeded 2026-11-15 with the exact
+# current counts. A listed directory may stay over the limit but the
+# guard fails the moment it GROWS, and fails with a "remove it from"
+# message once it is at or under 21. Unlike dir_entries_allowlist.txt,
+# test files always count here; per-directory test-file counts fall
+# when the D1/D2 package splits move tests with their code
+# (docs/plans/2026-11-15-sprint0-plan.md, stage A1b).
+#
+# When you split a directory: delete its line here. A count may never
+# go up.
+internal/agent 824
+internal/agent/provider/cliprovider 59
+internal/agent/provider/codexprovider 23
+internal/agent/provider/nettransport 27
+internal/agent/tools 163
+internal/agent/tools/mcp 63
+internal/app 287
+internal/config 303
+internal/config/discover 27
+internal/kit/sys/shell 56
+internal/serve/client/apiclient 23
+internal/serve/cmd 390
+internal/serve/server 295
+internal/session 297
+internal/session/jobbatch 57
+internal/session/jobbatch/lab 45
+internal/store/db 33
+internal/store/message 31
+sdk 45
+web/src 38
+web/src/actions 52
+web/src/components 23
+web/src/components/Message 48
+web/src/state 37
+web/tests 64
