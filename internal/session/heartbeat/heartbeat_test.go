@@ -286,9 +286,15 @@ func TestRevisitAfterEvictNotSilentlyZero(t *testing.T) {
 	for i := 0; i < maxModels; i++ {
 		AddUsage(withCtx(Context{Purpose: PurposeTurn}), "p", fmt.Sprintf("m%d", i), Usage{Input: int64(i + 1)})
 	}
-	getModel(registryRow(), "p", "revisited") // triggers fold
+	// getModel mutates the row's model map, so like every production caller it
+	// runs under registry.Lock: the background flush worker, started by an
+	// earlier test through ensureWorker and alive for the rest of the package
+	// run, clones that map under the same lock (a data race under -race
+	// otherwise).
+	row := registryRow()
 	registry.Lock()
 	defer registry.Unlock()
+	getModel(row, "p", "revisited") // triggers fold
 	r := registry.rows["_none"]
 	other := r.Models[otherKey]
 	if other == nil || other.Input != 136 { // sum 1..16

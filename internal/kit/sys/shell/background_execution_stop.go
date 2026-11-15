@@ -69,7 +69,10 @@ func (s *retainedStops) discardOutput() {
 // runRetainedProcess fences Start with registration. Stop cannot acknowledge an
 // empty snapshot while a started process is not yet registered. Cancellation
 // before startup rejects the spawn. The context callback is always joined.
-func runRetainedProcess(ctx context.Context, cmd *exec.Cmd, s *retainedStops, kill func() error, register func(int)) error {
+// afterStart, when non-nil, runs right after Start succeeds (before
+// registration) and returns an optional release function joined after the
+// wait; the Windows retained path uses it to manage the per-command job.
+func runRetainedProcess(ctx context.Context, cmd *exec.Cmd, s *retainedStops, kill func() error, register func(int), afterStart func(*exec.Cmd) func()) error {
 	s.mu.Lock()
 	if s.cancelled || ctx.Err() != nil {
 		s.mu.Unlock()
@@ -79,6 +82,13 @@ func runRetainedProcess(ctx context.Context, cmd *exec.Cmd, s *retainedStops, ki
 	if err != nil {
 		s.mu.Unlock()
 		return err
+	}
+	var release func()
+	if afterStart != nil {
+		release = afterStart(cmd)
+	}
+	if release != nil {
+		defer release()
 	}
 	p := &retainedProcess{kill: kill}
 	s.entries[p] = struct{}{}
@@ -111,11 +121,12 @@ func waitRetainedRegistered(ctx context.Context, cmd *exec.Cmd, s *retainedStops
 // retainedLaunchRoute adapts the retained launch path to shexec's
 // ProcessGroupExecHandler hook: the retained stop types stay in this
 // package, so the moved exec handlers call back through this route
-// instead of referencing them directly.
-func retainedLaunchRoute(ctx context.Context, cmd *exec.Cmd, kill func() error, register func(int)) (bool, error) {
+// instead of referencing them directly. afterStart is threaded through
+// unchanged; callers that have no post-start work pass nil.
+func retainedLaunchRoute(ctx context.Context, cmd *exec.Cmd, kill func() error, register func(int), afterStart func(*exec.Cmd) func()) (bool, error) {
 	stops, ok := ctx.Value(retainedStopKey{}).(*retainedStops)
 	if !ok {
 		return false, nil
 	}
-	return true, runRetainedProcess(ctx, cmd, stops, kill, register)
+	return true, runRetainedProcess(ctx, cmd, stops, kill, register, afterStart)
 }

@@ -97,5 +97,5 @@ func TestRetainedStopBeforeStartupRejectsSpawn(t *testing.T) {
 	require.NoError(t, s.stop())
 	require.True(t, s.cancelled)
 	// A latched invocation cancellation is checked before touching cmd.
-	require.ErrorIs(t, runRetainedProcess(t.Context(), nil, s, nil, nil), context.Canceled)
+	require.ErrorIs(t, runRetainedProcess(t.Context(), nil, s, nil, nil, nil), context.Canceled)
 }
