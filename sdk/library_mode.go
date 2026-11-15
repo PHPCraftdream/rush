@@ -12,10 +12,10 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/app/projects"
 	"github.com/PHPCraftdream/rush/internal/config"
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
-	"github.com/PHPCraftdream/rush/internal/projects"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/google/uuid"
 )

@@ -47,3 +47,4 @@
 | internal/nettransport | internal/agent/provider/nettransport | 2026-11-15 |
 | internal/permission | internal/agent/safety/permission | 2026-11-15 |
 | internal/skills | internal/agent/prompt/skills | 2026-11-15 |
+| internal/projects | internal/app/projects | 2026-11-15 |

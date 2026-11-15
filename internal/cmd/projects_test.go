@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/projects"
+	"github.com/PHPCraftdream/rush/internal/app/projects"
 	"github.com/stretchr/testify/require"
 )
 
