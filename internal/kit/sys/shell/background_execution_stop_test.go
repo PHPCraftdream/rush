@@ -83,7 +83,7 @@ func TestRetainedPhysicalStopRealProcess(t *testing.T) {
 		waited <- runRetainedProcess(ctx, cmd, stops, func() error {
 			defer close(killed)
 			return cmd.Process.Kill()
-		}, func(int) { close(registered) })
+		}, func(int) { close(registered) }, nil)
 	}()
 	<-registered
 	cancel()
