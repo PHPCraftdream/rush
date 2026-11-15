@@ -1,4 +1,4 @@
-package shell
+package shpolicy
 
 import (
 	"runtime"
@@ -7,6 +7,9 @@ import (
 
 	"mvdan.cc/sh/v3/syntax"
 )
+
+// BlockFunc is a function that determines if a command should be blocked.
+type BlockFunc func(args []string) bool
 
 // BannedCommands returns the canonical list shown in shell tool descriptions.
 // The returned slice is independent and may be modified by the caller.
