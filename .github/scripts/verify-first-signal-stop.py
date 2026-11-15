@@ -6,7 +6,7 @@ import subprocess
 race = os.environ.get('RACE', '').split()
 base = ['go', 'test'] + race + ['-json', '-p', '1', '-parallel', '1', '-count=1', '-timeout=10m']
 commands = {
-    'cmd': base + ['-run', '^Test(ProcessStop|InstallConsoleProcessStop)', './internal/cmd'],
+    'cmd': base + ['-run', '^Test(ProcessStop|InstallConsoleProcessStop)', './internal/serve/cmd'],
     'session': base + ['-run', '^TestProcessStop', './internal/session'],
     'main': base + ['-run', '^TestProcessStop', '.'],
 }
@@ -35,16 +35,16 @@ for name, command in commands.items():
     print(name, 'passing test events:', passes)
 
 mutants = [
-    ('skip-tree-stop', 'internal/cmd/process_stop.go', '\n\t\t\tstopTrees()\n', '\n\t\t\t_ = stopTrees\n', 'cmd', 'first request did not exit once'),
-    ('skip-first-exit', 'internal/cmd/process_stop.go', '\n\t\t\texit(code)\n', '\n\t\t\t_ = code\n', 'cmd', 'first request did not exit once'),
-    ('skip-deadline', 'internal/cmd/process_stop.go', 'stopDeadline := armDeadline(func() { exit(code) })', 'stopDeadline := func() {}', 'cmd', 'exit deadline was not armed before teardown'),
-    ('audit-exit', 'internal/cmd/process_stop.go', 'newProcessStop(session.StopTrackedProcessTrees, os.Exit,', 'newProcessStop(session.StopTrackedProcessTrees, exitWithAudit,', 'cmd', 'first signal did not close process tree/output'),
+    ('skip-tree-stop', 'internal/serve/cmd/process_stop.go', '\n\t\t\tstopTrees()\n', '\n\t\t\t_ = stopTrees\n', 'cmd', 'first request did not exit once'),
+    ('skip-first-exit', 'internal/serve/cmd/process_stop.go', '\n\t\t\texit(code)\n', '\n\t\t\t_ = code\n', 'cmd', 'first request did not exit once'),
+    ('skip-deadline', 'internal/serve/cmd/process_stop.go', 'stopDeadline := armDeadline(func() { exit(code) })', 'stopDeadline := func() {}', 'cmd', 'exit deadline was not armed before teardown'),
+    ('audit-exit', 'internal/serve/cmd/process_stop.go', 'newProcessStop(session.StopTrackedProcessTrees, os.Exit,', 'newProcessStop(session.StopTrackedProcessTrees, exitWithAudit,', 'cmd', 'first signal did not close process tree/output'),
     ('skip-spawn-gate', 'internal/session/track_stop.go', 'if processTreesStopping.Load() {', 'if false {', 'session', 'start admitted after process stop'),
     ('skip-startup-handler', 'main.go', 'stopSignals := cmd.InstallProcessStop()', 'stopSignals := func() {}', 'main', 'process-stop handler must be installed before startup disk work'),
 ]
 if os.name == 'nt':
     mutants += [
-        ('swallow-console', 'internal/cmd/console_ctrl_windows.go', 'return 130, true', 'return 0, false', 'cmd', 'handled=false'),
+        ('swallow-console', 'internal/serve/cmd/console_ctrl_windows.go', 'return 130, true', 'return 0, false', 'cmd', 'handled=false'),
         ('skip-late-registration-kill', 'internal/session/track_windows.go', 'if processTreesStopping.Load() {', 'if false {', 'session', 'late registration escaped the process-stop sweep'),
     ]
 else:

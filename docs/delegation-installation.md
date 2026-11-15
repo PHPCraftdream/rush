@@ -16,7 +16,7 @@ All init commands are global by default. `--local` or `--cwd <project>` selects 
 | Grok Build CLI | `grok-init` | `.grok/skills/{rush,rush-fallback}/SKILL.md` | `<cwd>/.grok/skills/{rush,rush-fallback}/SKILL.md` |
 | Qwen Code CLI | `qwen-init` | `.qwen/commands/{rush,rush-fallback}.md` | `<cwd>/.qwen/commands/{rush,rush-fallback}.md` |
 
-The shared `/rush` and `/rush-fallback` source is `internal/cmd/claude_slash_command.yaml` and `internal/cmd/claude_crush_fallback_command.yaml`; `/wrush` and `/wcrush` use `internal/cmd/claude_wrush_command.md` and `internal/cmd/claude_wcrush_command.md`. `internal/cmd/multi_cli_convert.go` assembles target-specific output; each integration's `*-init` specifies which of those four it installs (Claude/Codex/OpenCode/OMP install all four; Gemini/Grok/Qwen install the first two). External per-model commands, agents, or other artifacts are **not** managed by these Rush installers.
+The shared `/rush` and `/rush-fallback` source is `internal/serve/cmd/claude_slash_command.yaml` and `internal/serve/cmd/claude_crush_fallback_command.yaml`; `/wrush` and `/wcrush` use `internal/serve/cmd/claude_wrush_command.md` and `internal/serve/cmd/claude_wcrush_command.md`. `internal/serve/cmd/multi_cli_convert.go` assembles target-specific output; each integration's `*-init` specifies which of those four it installs (Claude/Codex/OpenCode/OMP install all four; Gemini/Grok/Qwen install the first two). External per-model commands, agents, or other artifacts are **not** managed by these Rush installers.
 
 ## Ownership and safe refresh boundaries
 
@@ -30,7 +30,7 @@ For a controlled update, deliver the binary first, then invoke only the relevant
 
 ## Source references
 
-- `internal/cmd/claude_init.go`: Claude defaults to `~/.claude/commands/`; local init writes four command files and performs the legacy local `CLAUDE.md` cleanup.
-- `internal/cmd/codex_init.go`, `opencode_init.go`, `omp_init.go`, `gemini_init.go`, `grok_init.go`, `qwen_init.go`: remaining path mappings and installed command sets.
-- `internal/cmd/multi_cli_convert.go`: source parsing, target conversion, and sentinel-aware file writes; `writeSentinelledFile` overwrites only when the sentinel substring is found and otherwise warns and skips.
-- `internal/cmd/cli_refresh.go`: five-tool refresh mapping and the two-file-only Claude helper.
+- `internal/serve/cmd/claude_init.go`: Claude defaults to `~/.claude/commands/`; local init writes four command files and performs the legacy local `CLAUDE.md` cleanup.
+- `internal/serve/cmd/codex_init.go`, `opencode_init.go`, `omp_init.go`, `gemini_init.go`, `grok_init.go`, `qwen_init.go`: remaining path mappings and installed command sets.
+- `internal/serve/cmd/multi_cli_convert.go`: source parsing, target conversion, and sentinel-aware file writes; `writeSentinelledFile` overwrites only when the sentinel substring is found and otherwise warns and skips.
+- `internal/serve/cmd/cli_refresh.go`: five-tool refresh mapping and the two-file-only Claude helper.

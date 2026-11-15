@@ -51,14 +51,14 @@ The authority is derived from the transport, and from nothing else:
 - ONLY the standard UI listener (the `uiAuth` server) grants it. On that
   listener every connection passes `Auth.Middleware` — verifying the session
   cookie or Bearer token — before the WebSocket upgrade is accepted.
-- `Server.handleWS` (`internal/server/server.go`) marks only such connections
+- `Server.handleWS` (`internal/serve/server/server.go`) marks only such connections
   with `Client.trustedSettingsWrite`; the accessor
   `Client.settingsWriteAuthority()` returns `SettingsAuthorityGuarded` for
   every other client: policy serve / API listeners, synthetic clients, CLI and
   agent-facing writes, and unauthenticated connections.
 - No JSON field, HTTP header, loopback source address, missing Principal, or
   the WebSocket transport itself can produce the trusted authority. The
-  config-writing WS handlers (`internal/server/handlers_config.go`,
+  config-writing WS handlers (`internal/serve/server/handlers_config.go`,
   `handlers_models.go`, `handlers_providers.go`, `handlers_mcp.go`) simply
   thread `c.settingsWriteAuthority()` into the store calls, so a guarded
   client gets today's behavior with zero policy changes.
@@ -93,7 +93,7 @@ unchanged.
 It is either `""` (ordinary writes) or the fixed token `"ui"` (trusted-UI
 writes, via `settingsAuditSource` in `internal/config/settings_authority.go`).
 It never carries secrets, credentials, or user identifiers. The CLI audit sink
-(registered with `config.SetSettingsAuditSink` in `internal/cmd/root.go`,
+(registered with `config.SetSettingsAuditSink` in `internal/serve/cmd/root.go`,
 function `setSettingsAudit`) records the `source` label alongside `scope` and
 `outcome`.
 
@@ -117,13 +117,13 @@ function `setSettingsAudit`) records the `source` label alongside `scope` and
   itself: zero value is guarded, only trusted-UI lifts the settings-lock
   veto, reserved keys and recent-models rules apply to every authority, and
   the audit source mapping (`""` / `"ui"`).
-- `internal/server/handlers_config_lock_trusted_test.go` — pins that the
+- `internal/serve/server/handlers_config_lock_trusted_test.go` — pins that the
   UI-authenticated listener path actually carries the trusted authority into
   config writes under an active lock, and that non-UI transports do not.
 - `internal/agent/tools/mcp/trusted_ui_test.go` — pins the TrustedUI Owner
   variants: lifecycle invariants hold and only the durable persistence call
   carries the trusted authority.
-- `internal/server/handlers_config_lock_test.go` (pre-existing) — pins the
+- `internal/serve/server/handlers_config_lock_test.go` (pre-existing) — pins the
   guarded path: writes under lock are refused exactly as before.
 - `internal/config/settings_lock_exemptions_test.go` (pre-existing) — pins
   the `recent_models.*` and OAuth refresh exemptions that stay.

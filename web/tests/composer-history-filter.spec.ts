@@ -5,7 +5,7 @@
  * the session's message rows ($myPrompts in web/src/store.ts). They must
  * contain ONLY prompts a human typed in the web composer. Eligibility is
  * gated by ONE shared predicate, isComposerTypedMessage, built on a SINGLE
- * server-computed field: Message.HumanTyped (internal/server/wire.go's
+ * server-computed field: Message.HumanTyped (internal/serve/server/wire.go's
  * isHumanTyped) — computed from structured fields ONLY (role, Hidden,
  * IsSummaryMessage, NoticeKind, AutoResumed, BackgroundJobNotice, Origin),
  * never from message text.

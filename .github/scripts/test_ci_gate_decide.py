@@ -235,12 +235,12 @@ class AdapterTests(unittest.TestCase):
                 else: self.assertEqual(result["reason"],f"required jobs not successful: {failed_job} (failure)")
 
     def test_missing_empty_string_outputs_pass_and_nonempty_contracts_still_fail(self):
-        package = MODULE + "/internal/server"
+        package = MODULE + "/internal/serve/server"
 
         def run_case(omitted=(), actual_changes=None, empty_key=None):
             with tempfile.TemporaryDirectory() as td:
                 plan, outputs, args, env = self.setup_contract(td)
-                package = MODULE + "/internal/server"
+                package = MODULE + "/internal/serve/server"
                 outputs.update(ubuntu_needed=True, macos_needed=True, windows_needed=True,
                                linux_packages=package, darwin_packages=package,
                                windows_packages=package, race_packages="", native_required=True)

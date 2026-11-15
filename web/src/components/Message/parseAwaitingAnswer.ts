@@ -27,7 +27,7 @@
 // part just falls back to the plain FinishErrorBlock rendering (safe
 // degradation, not a crash). The correct long-term fix is a dedicated
 // structural field (e.g. Finish.Kind == "awaiting_answer") threaded through
-// internal/server → the WS payload → FinishPart in types.ts; that's out of
+// internal/serve/server → the WS payload → FinishPart in types.ts; that's out of
 // scope for this pass (pure frontend polish on top of the existing stream).
 const AWAITING_ANSWER_TITLE = "Stopped: agent asked a question and is awaiting an answer";
 

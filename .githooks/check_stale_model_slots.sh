@@ -55,7 +55,7 @@
 #      adjacency is the signal, not co-occurrence anywhere on the line.
 #      A same-line "any vocabulary word near large/small" rule was tried
 #      and rejected during review: smart/fast/worker/reviewer are common
-#      enough words (39 files in internal/cmd alone) that "the smart
+#      enough words (39 files in internal/serve/cmd alone) that "the smart
 #      approach... buffer large enough" or "a fast retry... small
 #      backoff" trip it while never mentioning a slot at all. Requiring
 #      direct adjacency (no words between) keeps the real cases matched
@@ -121,7 +121,7 @@
 #   - docs/checkpoints/**, docs/reviews/**, docs/plans/**  -- dated session
 #     snapshots and planning docs describing past states of the repo, not
 #     current behavior.
-#   - internal/cmd/models_set.go                           -- the hidden
+#   - internal/serve/cmd/models_set.go                           -- the hidden
 #     `rush models set` redirect stub; its one "large"/"small" mention is
 #     a Go comment explaining why DisableFlagParsing exists (a legacy
 #     caller may still pass --large/--small), not a live claim that those
@@ -203,7 +203,7 @@ matches="$(git grep -n -E "$PATTERN" -- \
 	':!:node_modules/**' ':!:**/node_modules/**' \
 	':!:CHANGELOG.md' ':!:CHANGELOG.fork.md' \
 	':!:docs/checkpoints/**' ':!:docs/reviews/**' ':!:docs/plans/**' \
-	':!:internal/cmd/models_set.go' \
+	':!:internal/serve/cmd/models_set.go' \
 	':!:internal/config/load_files_unknown_slots_test.go' \
 	2>/dev/null)"
 

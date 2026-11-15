@@ -129,9 +129,9 @@ PATH_RULES = [
     (r"(^|/)async_scenarios[^/]*\.go$", "app_lifecycle"),
     (r"(^|/)app_run[^/]*test[^/]*\.go$", "app_lifecycle"),
     # cli_sessions: port
-    (r"^internal/cmd/sessions_[^/]*\.go$", "cli_sessions"),
+    (r"^internal/serve/cmd/sessions_[^/]*\.go$", "cli_sessions"),
     # server_rerun: port
-    (r"^internal/server/handlers_[^/]*\.go$", "server_rerun"),
+    (r"^internal/serve/server/handlers_[^/]*\.go$", "server_rerun"),
     # web_completions: port
     (r"^web/src/", "web_completions"),
     # sdk_overrides: retain

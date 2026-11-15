@@ -43,10 +43,10 @@
 #     the contractually preferred pairing; it exists precisely for
 #     tests whose cleanup cannot know the live refCount (App.Shutdown's
 #     forced-shutdown path deliberately skips Release -- see its doc
-#     comment). internal/server/handlers_test.go is a legitimate user.
+#     comment). internal/serve/server/handlers_test.go is a legitimate user.
 #   - db.ResetPool() deliberately does NOT count: it tears down every
 #     pooled entry process-wide, which this repo's own comments
-#     (internal/cmd/providers_cmd_test.go and friends) treat as the
+#     (internal/serve/cmd/providers_cmd_test.go and friends) treat as the
 #     wrong cleanup under t.Parallel(). A file pairing Connect with
 #     ResetPool-only cleanup will be flagged on purpose; switch it to
 #     db.Release/db.ReleaseAll.

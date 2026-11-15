@@ -134,18 +134,18 @@ jobs:
           outdir, pkgs = sys.argv[1], sys.argv[2].split()
           groups = [
               ("app",            ["internal/app/"]),
-              ("server-session", ["internal/server/", "internal/session/"]),
+              ("server-session", ["internal/serve/server/", "internal/session/"]),
               ("perm-config-csync", ["internal/agent/safety/permission/", "internal/config/", "internal/kit/sync/csync/"]),
-              ("cmd-commands",   ["internal/cmd/", "internal/agent/prompt/commands/"]),
+              ("cmd-commands",   ["internal/serve/cmd/", "internal/agent/prompt/commands/"]),
               ("sdk",            ["sdk/"]),
               ("agent-subpkgs",  ["internal/agent/safety/agentguard/", "internal/agent/provider/cliprovider/",
                                   "internal/agent/provider/hyper/", "internal/agent/safety/notify/",
                                   "internal/agent/prompt/", "internal/agent/tools/"]),
               ("db-msg-queue-pubsub-history",
-                                 ["internal/store/db/", "internal/store/message/", "internal/queue/",
+                                 ["internal/store/db/", "internal/store/message/", "internal/serve/cmd/queue/",
                                   "internal/kit/sync/pubsub/", "internal/store/history/"]),
               ("oauth-deploy-update-version",
-                                 ["internal/config/oauth/", "internal/deploy/", "internal/update/",
+                                 ["internal/config/oauth/", "internal/serve/ops/deploy/", "internal/serve/ops/update/",
                                   "internal/kit/diag/version/"]),
           ]
           left = []
@@ -173,7 +173,7 @@ jobs:
         run: |
           f="$GROUP_DIR/g-app.txt"; [ -s "$f" ] || exit 0
           go test -short -failfast -p 2 -timeout 20m $(cat "$f")
-      - name: "test: internal/server, internal/session"
+      - name: "test: internal/serve/server, internal/session"
         shell: bash
         run: |
           f="$GROUP_DIR/g-server-session.txt"; [ -s "$f" ] || exit 0
@@ -183,7 +183,7 @@ jobs:
         run: |
           f="$GROUP_DIR/g-perm-config-csync.txt"; [ -s "$f" ] || exit 0
           go test -short -failfast -p 2 -timeout 20m $(cat "$f")
-      - name: "test: internal/cmd, internal/agent/prompt/commands"
+      - name: "test: internal/serve/cmd, internal/agent/prompt/commands"
         shell: bash
         run: |
           f="$GROUP_DIR/g-cmd-commands.txt"; [ -s "$f" ] || exit 0
@@ -198,12 +198,12 @@ jobs:
         run: |
           f="$GROUP_DIR/g-agent-subpkgs.txt"; [ -s "$f" ] || exit 0
           go test -short -failfast -p 2 $(cat "$f")
-      - name: "test: internal/store/db, internal/store/message, internal/queue, internal/kit/sync/pubsub, internal/store/history"
+      - name: "test: internal/store/db, internal/store/message, internal/serve/cmd/queue, internal/kit/sync/pubsub, internal/store/history"
         shell: bash
         run: |
           f="$GROUP_DIR/g-db-msg-queue-pubsub-history.txt"; [ -s "$f" ] || exit 0
           go test -short -failfast -p 2 $(cat "$f")
-      - name: "test: internal/config/oauth, internal/deploy, internal/update, internal/kit/diag/version"
+      - name: "test: internal/config/oauth, internal/serve/ops/deploy, internal/serve/ops/update, internal/kit/diag/version"
         shell: bash
         run: |
           f="$GROUP_DIR/g-oauth-deploy-update-version.txt"; [ -s "$f" ] || exit 0
@@ -214,13 +214,13 @@ jobs:
           f="$GROUP_DIR/g-catchall.txt"; [ -s "$f" ] || exit 0
           go test -short -failfast -p 2 $(cat "$f")
       # the former build workflow runs this Linux-only suite without -short (real fork/exec).
-      # It only makes sense when internal/session or internal/cmd actually
+      # It only makes sense when internal/session or internal/serve/cmd actually
       # changed-and-selected, which in the selector always forces mode=full
       # (core_prefixes); gate on mode as a cheap, correct approximation.
       - name: process-group and lock-fence suites (Linux, no -short)
         if: inputs.mode == 'full'
         run: |
-          go test -failfast -run 'ChildGroup|Registry|WriteChildGroupFile|VerifyGroupStillPlausible|Sweep|ProbeThenKillHolder|AcquireSessionLockForReset|ForceKillHolder|ForceStillKillsLiveHolder' ./internal/session/ ./internal/cmd/
+          go test -failfast -run 'ChildGroup|Registry|WriteChildGroupFile|VerifyGroupStillPlausible|Sweep|ProbeThenKillHolder|AcquireSessionLockForReset|ForceKillHolder|ForceStillKillsLiveHolder' ./internal/session/ ./internal/serve/cmd/
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
@@ -504,18 +504,18 @@ jobs:
           outdir, pkgs = sys.argv[1], sys.argv[2].split()
           groups = [
               ("app",            ["internal/app/"]),
-              ("server-session", ["internal/server/", "internal/session/"]),
+              ("server-session", ["internal/serve/server/", "internal/session/"]),
               ("perm-config-csync", ["internal/agent/safety/permission/", "internal/config/", "internal/kit/sync/csync/"]),
-              ("cmd-commands",   ["internal/cmd/", "internal/agent/prompt/commands/"]),
+              ("cmd-commands",   ["internal/serve/cmd/", "internal/agent/prompt/commands/"]),
               ("sdk",            ["sdk/"]),
               ("agent-subpkgs",  ["internal/agent/safety/agentguard/", "internal/agent/provider/cliprovider/",
                                   "internal/agent/provider/hyper/", "internal/agent/safety/notify/",
                                   "internal/agent/prompt/", "internal/agent/tools/"]),
               ("db-msg-queue-pubsub-history",
-                                 ["internal/store/db/", "internal/store/message/", "internal/queue/",
+                                 ["internal/store/db/", "internal/store/message/", "internal/serve/cmd/queue/",
                                   "internal/kit/sync/pubsub/", "internal/store/history/"]),
               ("oauth-deploy-update-version",
-                                 ["internal/config/oauth/", "internal/deploy/", "internal/update/",
+                                 ["internal/config/oauth/", "internal/serve/ops/deploy/", "internal/serve/ops/update/",
                                   "internal/kit/diag/version/"]),
           ]
           left = []

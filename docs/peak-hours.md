@@ -267,8 +267,8 @@ policy); `ollama` has one overnight window belonging to its start day
 | Legacy single-window form | `internal/config/peak_hours.go` |
 | Layered merge / override rules | `internal/config/peak_hours_merge.go` |
 | Timezone resolution | `internal/config/peak_hours_tz.go` |
-| CLI command family | `internal/cmd/providers_peak_hours.go` |
+| CLI command family | `internal/serve/cmd/providers_peak_hours.go` |
 | Refusal paths, `PeakHoursError`, `--allow-peak-hours` | `internal/agent/agent_turn_peakhours.go` |
-| WS handlers and wire payloads | `internal/server/handlers_peak_hours.go`, `internal/server/protocol_peak_hours.go`, `internal/server/scope_table.go` |
+| WS handlers and wire payloads | `internal/serve/server/handlers_peak_hours.go`, `internal/serve/server/protocol_peak_hours.go`, `internal/serve/server/scope_table.go` |
 | Shared editor / status components | `web/src/components/PeakHoursEditor.tsx`, `web/src/components/PeakHoursStatus.tsx` |
 | E2E specs (CI-only) | `web/tests/peak-hours-weekly.spec.ts`, `web/tests/providers.spec.ts` |

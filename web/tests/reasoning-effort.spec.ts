@@ -74,7 +74,7 @@ function realWireEffortMaxMessage(): Record<string, any> {
     overlayPath,
     JSON.stringify({
       Replace: {
-        [`${REPO_ROOT.replace(/\\/g, "/")}/internal/server/zz_effort_wire_probe_test.go`]: probePath,
+        [`${REPO_ROOT.replace(/\\/g, "/")}/internal/serve/server/zz_effort_wire_probe_test.go`]: probePath,
       },
     }),
   );
@@ -82,14 +82,14 @@ function realWireEffortMaxMessage(): Record<string, any> {
   try {
     out = execFileSync(
       "go",
-      ["test", `-overlay=${overlayPath}`, "./internal/server/", "-run", "TestZZEffortWireProbe", "-v", "-count=1"],
+      ["test", `-overlay=${overlayPath}`, "./internal/serve/server/", "-run", "TestZZEffortWireProbe", "-v", "-count=1"],
       { cwd: REPO_ROOT, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 150_000 },
     );
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string; message?: string };
     throw new Error(
       `go wire probe failed — cannot generate the real message_created payload. ` +
-        `Is the Go toolchain available and does internal/server compile?\n${e.stdout ?? ""}\n${e.stderr ?? ""}`,
+        `Is the Go toolchain available and does internal/serve/server compile?\n${e.stdout ?? ""}\n${e.stderr ?? ""}`,
       { cause: err },
     );
   }
@@ -285,7 +285,7 @@ async function effortPersistsAcrossReload({ page }: { page: Page }) {
 
 /** Test body: the effort badge renders from the real server wire payload. */
 async function effortBadgeFromRealWirePayload({ page }: { page: Page }) {
-  // The Go wire probe compiles internal/server, which takes 20s+ on a warm
+  // The Go wire probe compiles internal/serve/server, which takes 20s+ on a warm
   // cache and far longer cold. A numeric 3rd argument to test() is ignored by
   // Playwright, so the budget must be set here or the 30s default applies.
   test.setTimeout(180_000);

@@ -151,7 +151,7 @@ go-test text, verified verbatim in the per-record mutated logs):
 | R11B m16_drop_projection_sequence_fence | Expected error with "batch store: projection identity or sequence conflict" in chain but got nil. | `projection_sequence not inflated` | Messages line at batch_commit_test.go:506 (expected 2 / actual 4611686018427387904) |
 
 R15a mut1 EXECUTION_ERROR fix (no hash change — needle unchanged, still occurs
-exactly once in `internal/server/handlers_batch.go` at HEAD acaf1865):
+exactly once in `internal/serve/server/handlers_batch.go` at HEAD acaf1865):
 replacement is now
 
 ```go

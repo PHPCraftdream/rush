@@ -57,8 +57,8 @@ Walk the list once and resolve every conflict that is covered by
 **CHANGELOG.fork.md Section 2**. Typically:
 
 - `internal/ui/*` (DU) → `git rm`. We don't ship the TUI.
-- `internal/backend/`, `internal/client/`, `internal/cmd/server.go`,
-  `internal/server/proto.go`, `internal/workspace/` (DU) → `git rm`.
+- `internal/backend/`, `internal/client/`, `internal/serve/cmd/server.go`,
+  `internal/serve/server/proto.go`, `internal/workspace/` (DU) → `git rm`.
 - `go.mod` / `go.sum` (UU) → `git checkout --theirs go.mod go.sum && go mod tidy`.
 
 After this pass, check what's left:
@@ -181,7 +181,7 @@ Then key-package tests:
 
 ```
 go test -count=1 -timeout=180s ./internal/agent/ ./internal/store/message/ \
-    ./internal/agent/safety/permission/ ./internal/cmd/
+    ./internal/agent/safety/permission/ ./internal/serve/cmd/
 ```
 
 If a test fails, **first run it against `backup/before-merge-<timestamp>`**:

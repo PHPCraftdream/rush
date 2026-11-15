@@ -48,3 +48,11 @@
 | internal/permission | internal/agent/safety/permission | 2026-11-15 |
 | internal/skills | internal/agent/prompt/skills | 2026-11-15 |
 | internal/projects | internal/app/projects | 2026-11-15 |
+| internal/apiclient | internal/serve/client/apiclient | 2026-11-15 |
+| internal/cmd | internal/serve/cmd | 2026-11-15 |
+| internal/deploy | internal/serve/ops/deploy | 2026-11-15 |
+| internal/proto | internal/serve/client/proto | 2026-11-15 |
+| internal/queue | internal/serve/cmd/queue | 2026-11-15 |
+| internal/server | internal/serve/server | 2026-11-15 |
+| internal/ui/notification | internal/serve/cmd/notification | 2026-11-15 |
+| internal/update | internal/serve/ops/update | 2026-11-15 |

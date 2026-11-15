@@ -254,11 +254,11 @@ test("send-with-fast-model button sends the config FAST " +
   // stale-slot-ok: naming the dead key is the whole point of this test
   // `config?.models?.small`, a key the server never sends (the wire uses
   // `SelectedModelType` values "smart"/"fast" — see
-  // internal/server/handlers_config.go's buildConfigWire). With the stale
+  // internal/serve/server/handlers_config.go's buildConfigWire). With the stale
   // key, `fastModel` stayed undefined and the message went out with NO
   // override at all, silently running on the SMART model instead of FAST.
   // The override rides on the `smartModel` wire field by protocol design
-  // (internal/server/protocol.go's SendMessagePayload) — sendWithFastModel
+  // (internal/serve/server/protocol.go's SendMessagePayload) — sendWithFastModel
   // puts the resolved fast model there so the agent actually uses it for
   // this turn.
   expect(payload.smartModel).toEqual({ provider: "anthropic", model: "claude-haiku-4" });

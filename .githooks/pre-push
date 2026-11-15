@@ -23,7 +23,7 @@
 # This session root-caused three genuine Windows-only test races (see git
 # log for internal/agent/provider/cliprovider/provider_test.go,
 # internal/agent/tools/mcp/process_windows_test.go, and
-# internal/cmd/models_use_test.go) — each fixed AT THE SPECIFIC TEST, not by
+# internal/serve/cmd/models_use_test.go) — each fixed AT THE SPECIFIC TEST, not by
 # slowing the whole suite down. (An earlier version of this hook also capped
 # -p/-parallel globally as extra defense-in-depth against those races; once
 # the races themselves were fixed, that cap was removed as unnecessary
@@ -424,7 +424,7 @@ windows)
 *)
 	step "process-group and lock-fence suites (no -short)"
 	run_capped "$RUSH_PROCESS_MEMORY" "$RUSH_PROCESS_TIMEOUT" go test -p 2 -failfast -run 'ChildGroup|Registry|WriteChildGroupFile|VerifyGroupStillPlausible|Sweep|ProbeThenKillHolder|AcquireSessionLockForReset|ForceKillHolder|ForceStillKillsLiveHolder' \
-		./internal/session/ ./internal/cmd/ || fail "process-group/lock-fence suites failed"
+		./internal/session/ ./internal/serve/cmd/ || fail "process-group/lock-fence suites failed"
 	;;
 esac
 

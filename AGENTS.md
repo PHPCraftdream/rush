@@ -10,7 +10,7 @@ The module path is `github.com/PHPCraftdream/rush`.
 ## Architecture
 
 ```
-main.go                            CLI entry point (cobra via internal/cmd)
+main.go                            CLI entry point (cobra via internal/serve/cmd)
 internal/
   app/app.go                       Top-level wiring: DB, config, agents, LSP, MCP, events
   cmd/                             CLI commands (root, run, login, models, stats, sessions)

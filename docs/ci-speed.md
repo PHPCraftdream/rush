@@ -26,10 +26,10 @@ Total 2,470 s (41 min). Four packages are 78% of it:
 |---|---|---|
 | `internal/app` | 878 s | 36% |
 | `internal/config` | 395 s | 16% |
-| `internal/cmd` | 355 s | 14% |
+| `internal/serve/cmd` | 355 s | 14% |
 | `internal/agent` | 291 s | 12% |
 | `internal/session` | 126 s | 5% |
-| `internal/server` | 101 s | 4% |
+| `internal/serve/server` | 101 s | 4% |
 | `internal/agent/tools/mcp` | 97 s | 4% |
 
 Within them the time is concentrated in a few clusters of tests with nearly identical durations:

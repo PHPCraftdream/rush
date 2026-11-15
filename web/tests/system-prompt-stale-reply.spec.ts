@@ -19,7 +19,7 @@
  * sessionID may populate the editor; error replies, timeouts and
  * disconnects surface explicitly instead of hanging on "Loading…".
  *
- * Server wire contract (internal/server/handlers_sessions.go,
+ * Server wire contract (internal/serve/server/handlers_sessions.go,
  * handleGetSystemPrompt): success replies `system_prompt` with the
  * request's id and payload {sessionID, content}; failure replies `error`
  * with the request's id.

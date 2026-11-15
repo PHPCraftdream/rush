@@ -32,7 +32,7 @@ stated otherwise. Every claim here is verified against the code in
 - API payloads and the remote Catwalk/Hyper protocol bodies — JSON in both
   directions (`ktav_cache.go` header comment).
 - `crush.json` — the legacy Crush configuration. It is only an input for the
-  `rush migrate` command (`internal/cmd/migrate.go`), which renames it to
+  `rush migrate` command (`internal/serve/cmd/migrate.go`), which renames it to
   `rush.json`; it is never read by the Ktav path and never becomes a `.ktav`
   file directly.
 
