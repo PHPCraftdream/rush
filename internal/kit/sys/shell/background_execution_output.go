@@ -45,13 +45,10 @@ func (o *retainedOutput) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (e *BackgroundExecution) ReadOutput(ctx context.Context, cursor uint64) (ExecutionOutput, error) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	if e.disposed {
-		return ExecutionOutput{}, ErrExecutionDisposed
-	}
-	o := e.physical.output
+// readOutput returns the bounded snapshot of the merged stream at cursor,
+// waiting for growth or completion. isDone and doneCh carry the owning
+// shell's completion signal so this method stays free of the manager types.
+func (o *retainedOutput) readOutput(ctx context.Context, cursor uint64, isDone func() bool, doneCh <-chan struct{}) (ExecutionOutput, error) {
 	for {
 		o.mu.Lock()
 		oldest := o.next - uint64(len(o.data))
@@ -65,7 +62,7 @@ func (e *BackgroundExecution) ReadOutput(ctx context.Context, cursor uint64) (Ex
 		chunk := ExecutionOutput{Oldest: oldest, Next: o.next, Truncated: cursor < oldest}
 		chunk.Data = append([]byte(nil), o.data[start-oldest:]...)
 		changed := o.changed
-		done := e.shell.IsDone()
+		done := isDone()
 		chunk.EOF = done
 		o.mu.Unlock()
 		if len(chunk.Data) > 0 || done {
@@ -73,7 +70,7 @@ func (e *BackgroundExecution) ReadOutput(ctx context.Context, cursor uint64) (Ex
 		}
 		select {
 		case <-changed:
-		case <-e.shell.done:
+		case <-doneCh:
 		case <-ctx.Done():
 			return ExecutionOutput{}, ctx.Err()
 		}

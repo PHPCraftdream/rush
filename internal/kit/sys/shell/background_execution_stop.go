@@ -54,6 +54,18 @@ func (s *retainedStops) stop() error {
 	return errors.Join(errs...)
 }
 
+// discardOutput drops the retained merged output buffer. The nil checks live
+// here so BackgroundExecution never reaches the output field directly, which
+// keeps this file movable to its own package.
+func (s *retainedStops) discardOutput() {
+	if s == nil || s.output == nil {
+		return
+	}
+	s.output.mu.Lock()
+	s.output.data = nil
+	s.output.mu.Unlock()
+}
+
 // runRetainedProcess fences Start with registration. Stop cannot acknowledge an
 // empty snapshot while a started process is not yet registered. Cancellation
 // before startup rejects the spawn. The context callback is always joined.
