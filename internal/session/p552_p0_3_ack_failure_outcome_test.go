@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -45,7 +46,7 @@ func (s *ackFailingService) AckRunQueueEntry(ctx context.Context, id, leasedBy s
 // DrainComplete/nil, exactly the false success the review found.
 func TestDrainSessionNow_AckFailureIsNotReportedAsSuccess(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "drain-ack-failure")
 	failing := &ackFailingService{Service: svc, ackErr: errors.New("disk on fire")}
 	coord := &countingCoordinatorForDrain{}
@@ -79,7 +80,7 @@ func TestDrainSessionNow_AckFailureIsNotReportedAsSuccess(t *testing.T) {
 // immediately and re-run a turn whose side effects already landed.
 func TestDrainSessionNow_AckFailureLeavesTheRowRecoverable(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "drain-ack-failure-row")
 	failing := &ackFailingService{Service: svc, ackErr: errors.New("disk on fire")}
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{

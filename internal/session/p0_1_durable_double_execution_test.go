@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -116,7 +117,7 @@ func (c *durableCallExecutionCounter) Run(ctx context.Context, callData session.
 // of merely deferring their single execution).
 func TestReleaseGate_P0_1_DurableCallExecutesExactlyOnce(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	runDurableExactlyOnceScenario(t, "test-session-p0-1-no-dup", func(svc session.Service, _ *fakePumpClock) session.Service { return svc })
 }
 
@@ -151,7 +152,7 @@ func (s *holdUntilClockMovesAfterNack) NackRunQueueEntryNoAttemptPenalty(ctx con
 // advancing.
 func TestReleaseGate_P0_1_ExactlyOnceSurvivesAdvanceInsideNackWindow(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	runDurableExactlyOnceScenario(t, "test-session-p0-1-nack-window", func(svc session.Service, clk *fakePumpClock) session.Service {
 		return &holdUntilClockMovesAfterNack{Service: svc, clk: clk}
 	})
@@ -223,7 +224,7 @@ func runDurableExactlyOnceScenario(t *testing.T, sessionName string, wrap func(s
 	}
 
 	// The pump's startup tick performs busy attempt 1 immediately.
-	awaitPump(t, func() bool { return counter.callCount.Load() >= 1 },
+	sessiontest.AwaitPump(t, func() bool { return counter.callCount.Load() >= 1 },
 		"pump startup tick must lease and dispatch the entry")
 
 	// Attempts 2..5: the coordinator returned ErrCallQueuedNotExecuted, the
@@ -231,7 +232,7 @@ func runDurableExactlyOnceScenario(t *testing.T, sessionName string, wrap func(s
 	// and the row is pending again. Proving that BEFORE any time advances
 	// means CleanupExpiredLeases can never reap a live lease on the way.
 	for i := int64(2); i <= busyCycles; i++ {
-		awaitPump(t, rowPending,
+		sessiontest.AwaitPump(t, rowPending,
 			"pump must retry after the busy backoff (no-attempt-penalty nack)")
 		// Crosses the busyBackoffUntil deadline (now + leaseTTL) and
 		// delivers one coalesced tick, repeating if that tick was skipped.
@@ -243,7 +244,7 @@ func runDurableExactlyOnceScenario(t *testing.T, sessionName string, wrap func(s
 	// Attempt 6: the coordinator succeeds, runs to completion, and the pump
 	// nacks the row back to pending on the busy path one last time before
 	// the next attempt executes it for real.
-	awaitPump(t, rowPending, "row must be pending again after the last busy attempt")
+	sessiontest.AwaitPump(t, rowPending, "row must be pending again after the last busy attempt")
 	advanceUntil(t, clk, svc, idempotencyKey, leaseTTL+20*time.Millisecond+time.Millisecond,
 		func() bool { return counter.callCount.Load() > busyCycles },
 		"the final (successful) attempt must execute the durable call")
@@ -252,7 +253,7 @@ func runDurableExactlyOnceScenario(t *testing.T, sessionName string, wrap func(s
 	// fake) and lease expiry cannot fire, and the DB lease stamps ride the
 	// fake clock so real time cannot reap either. This is a hang guard, not
 	// a timing window.
-	awaitPump(t, func() bool {
+	sessiontest.AwaitPump(t, func() bool {
 		gone, err := runQueueGoneEverywhere(ctx, probe)
 		return err == nil && gone
 	}, "durable row should be acked and deleted after successful execution")
@@ -277,7 +278,7 @@ func runDurableExactlyOnceScenario(t *testing.T, sessionName string, wrap func(s
 // live lease would reap it mid-execution and charge an attempt.
 func advanceUntil(t *testing.T, clk *fakePumpClock, svc session.Service, entryID string, step time.Duration, cond func() bool, msg string) {
 	t.Helper()
-	awaitPump(t, func() bool {
+	sessiontest.AwaitPump(t, func() bool {
 		if cond() {
 			return true
 		}

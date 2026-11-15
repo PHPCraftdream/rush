@@ -14,6 +14,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -47,7 +48,7 @@ import (
 // fails with result=DrainNoWork, err=nil.
 func TestDrainSessionNow_ColdCall_OrphanedLeasedRow_IsVisible(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "p624-cold-orphaned-lease")
 	coord := &countingCoordinatorForDrain{}
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
@@ -119,7 +120,7 @@ func TestDrainSessionNow_ColdCall_OrphanedLeasedRow_IsVisible(t *testing.T) {
 // one mechanism.
 func TestDrainSessionNow_ColdCall_ForeignLiveOwner_ReportsOutstanding(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "p624-cold-foreign-live-owner")
 	coord := &countingCoordinatorForDrain{}
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
@@ -161,7 +162,7 @@ func TestDrainSessionNow_ColdCall_ForeignLiveOwner_ReportsOutstanding(t *testing
 // every empty-queue drain into a false failure.
 func TestDrainSessionNow_ColdCall_EmptyQueue_StillNoWork(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "p624-cold-empty-queue")
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       svc,
@@ -226,7 +227,7 @@ func (c *cancellingTerminalCoordinator) Run(ctx context.Context, callData sessio
 // context.Canceled (the ErrorIs(termErr) assertion below).
 func TestDrainSessionNow_CtxDeathAfterRowFailure_ReportsRowFailureNotCtxErr(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "p624-ctx-death-after-row-failure")
 	termErr := &agent.ErrCallAlreadyAttempted{Err: errors.New("p624: row A already attempted")}
 
@@ -266,7 +267,7 @@ func TestDrainSessionNow_CtxDeathAfterRowFailure_ReportsRowFailureNotCtxErr(t *t
 // not disturb.
 func TestDrainSessionNow_OnlyUnattributed_StillReportsIt(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "p624-only-unattributed")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -36,7 +37,7 @@ import (
 // fails on the 5s guard below — the coordinator never observes the cancel.
 func TestDrainSessionNow_CallerCancellationStopsExecution(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "drain-now-ctx-cancel")
 	coord := &ctxObservingCoordinatorForDrain{
 		started: make(chan struct{}, 1),
