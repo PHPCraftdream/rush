@@ -933,7 +933,7 @@ type Querier interface {
 	//   * Scoped to status = 'pending', so an already-quarantined row cannot be
 	//     re-counted and this can never resurrect a terminal row.
 	//
-	// KEEP EVERY FILE UNDER internal/db/sql/ PURE ASCII. sqlc v1.30.0 miscounts
+	// KEEP EVERY FILE UNDER internal/store/db/sql/ PURE ASCII. sqlc v1.30.0 miscounts
 	// query spans when a comment contains a multi-byte character: it appears to
 	// measure offsets in bytes and positions in runes, so each non-ASCII
 	// character shifts the generated SQL's end by the difference. Adding a
