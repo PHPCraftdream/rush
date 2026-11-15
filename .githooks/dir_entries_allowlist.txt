@@ -29,7 +29,7 @@ internal/serve/cmd 167
 # +2 internal/config/discover and internal/config/oauth moved in (stage C).
 # The count falls with the package split (stage D2).
 internal/config 123
-internal/store/db 16
+internal/store/db 9
 internal/config/discover 13
 internal/kit/fs/fsext 13
 internal/session/heartbeat 10

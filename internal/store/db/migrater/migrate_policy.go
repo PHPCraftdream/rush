@@ -1,8 +1,9 @@
-package db
+package migrater
 
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -10,10 +11,30 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/pressly/goose/v3"
 )
+
+// BusyTimeout is how long a statement waits on a locked database before
+// SQLITE_BUSY. Callers bounding a write with their own deadline must allow
+// at least this long, or a legitimate lock wait reads as a failure.
+const BusyTimeout = 30 * time.Second
+
+var pragmas = map[string]string{
+	"foreign_keys":  "ON",
+	"journal_mode":  "WAL",
+	"page_size":     "4096",
+	"temp_store":    "MEMORY",
+	"cache_size":    "-8000",
+	"synchronous":   "NORMAL",
+	"secure_delete": "ON",
+	"busy_timeout":  strconv.FormatInt(BusyTimeout.Milliseconds(), 10),
+}
+
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
 
 // SchemaDivergedError reports a database that this binary cannot open safely
 // in either direction: it carries applied versions that no longer exist in
@@ -107,7 +128,7 @@ func WithMigrationLockPath(p string) MigrateOption {
 	return func(o *MigrateOptions) { o.MigrationLockPath = p }
 }
 
-func newMigrateOptions(opts []MigrateOption, dbPath string) MigrateOptions {
+func NewMigrateOptions(opts []MigrateOption, dbPath string) MigrateOptions {
 	o := MigrateOptions{MayMigrate: true, dbPath: dbPath}
 	for _, opt := range opts {
 		opt(&o)
@@ -120,10 +141,10 @@ func newMigrateOptions(opts []MigrateOption, dbPath string) MigrateOptions {
 // migrate.lock (if any) is still held. Test seam only; nil outside tests.
 var onVersionsRead func(dbPath string)
 
-// migrationFS returns the embedded schema migrations rooted at their own
+// ActiveFS returns the embedded schema migrations rooted at their own
 // directory, so callers see the bare migration filenames.
-func migrationFS() (fs.FS, error) {
-	return fs.Sub(FS, "migrations")
+func ActiveFS() (fs.FS, error) {
+	return fs.Sub(migrationsFS, "migrations")
 }
 
 // migrate reads the applied and embedded migration versions, decides what to
@@ -200,13 +221,13 @@ func migrate(ctx context.Context, conn *sql.DB, dbPath string, fsys fs.FS, opts 
 	}
 }
 
-// migrateLocked runs migrate while holding the cross-process OS lock named by
+// ApplyLocked runs migrate while holding the cross-process OS lock named by
 // opts.MigrationLockPath, so the whole "read versions, decide, apply" sequence
 // is atomic with respect to other processes. The lock is taken even when no
 // migration turns out to be needed, because the version read that produces
 // that decision is part of the sequence. An empty lock path means the caller
 // already serializes access, and no lock is taken.
-func migrateLocked(ctx context.Context, conn *sql.DB, dbPath string, fsys fs.FS, opts MigrateOptions) error {
+func ApplyLocked(ctx context.Context, conn *sql.DB, dbPath string, fsys fs.FS, opts MigrateOptions) error {
 	if opts.MigrationLockPath == "" {
 		return migrate(ctx, conn, dbPath, fsys, opts)
 	}
@@ -216,6 +237,25 @@ func migrateLocked(ctx context.Context, conn *sql.DB, dbPath string, fsys fs.FS,
 	}
 	defer func() { _ = lock.Release() }()
 	return migrate(ctx, conn, dbPath, fsys, opts)
+}
+
+// Migrate applies the embedded schema migrations to conn.
+//
+// It is the un-pooled, un-locked entry point for callers that hand us a
+// connection they already own and serialize (the SDK's in-memory database).
+// Paths that own a data directory go through Connect, which wraps the whole
+// read-versions/decide/apply sequence in a cross-process lock.
+//
+// Goose's legacy package-level API stores the selected dialect in a mutable
+// global. That API is not safe when independent clients initialize databases
+// concurrently. A Provider owns its dialect, filesystem, and migration
+// operations, so each database gets an isolated migration boundary.
+func Migrate(ctx context.Context, conn *sql.DB) error {
+	fsys, err := ActiveFS()
+	if err != nil {
+		return err
+	}
+	return migrate(ctx, conn, "", fsys, MigrateOptions{MayMigrate: true})
 }
 
 // providerOptions returns the goose provider options shared by every provider
@@ -314,6 +354,17 @@ func embeddedVersions(fsys fs.FS) ([]int64, error) {
 	}
 	sort.Slice(versions, func(i, j int) bool { return versions[i] < versions[j] })
 	return versions, nil
+}
+
+// PendingVersions returns the versions of the embedded active-chain
+// migrations, read from ActiveFS. Callers outside the package use this
+// instead of the private embeddedVersions.
+func PendingVersions() ([]int64, error) {
+	fsys, err := ActiveFS()
+	if err != nil {
+		return nil, err
+	}
+	return embeddedVersions(fsys)
 }
 
 // subtractVersions returns from minus minus, sorted ascending.

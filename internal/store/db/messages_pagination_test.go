@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/store/db/dbtest"
+	"github.com/PHPCraftdream/rush/internal/store/db/migrater"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,10 +20,10 @@ const pagFixedCreatedAt = int64(1700000000)
 func setupPaginationDB(t *testing.T) (context.Context, *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
-	conn, err := openDB(t.TempDir() + "/pag.db")
+	conn, err := dbtest.OpenFK(t.TempDir() + "/pag.db")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
-	require.NoError(t, Migrate(ctx, conn))
+	require.NoError(t, migrater.Migrate(ctx, conn))
 	return ctx, conn
 }
 

@@ -29,7 +29,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/db/migrater"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -53,7 +53,7 @@ func openEphemeralWireTestDB(t *testing.T, ctx context.Context) *sql.DB {
 	require.NoError(t, err)
 	conn.SetMaxOpenConns(1)
 	require.NoError(t, conn.PingContext(ctx))
-	require.NoError(t, db.Migrate(ctx, conn))
+	require.NoError(t, migrater.Migrate(ctx, conn))
 	t.Cleanup(func() { _ = conn.Close() })
 	return conn
 }
