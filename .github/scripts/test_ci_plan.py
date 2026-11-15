@@ -74,7 +74,7 @@ class GoListTests(unittest.TestCase):
     def test_embed_files_normalize_package_relative_and_root_paths(self):
         g = golist.parse_stream(
             stream(
-                _p(MODULE + "/internal/agent/prompt/skills", embeds=["templates/prompt.md", "internal/agent/prompt/skills/assets/icon.svg", "./nested/./diagram.svg"]),
+                _p(MODULE + "/internal/agent/prompt/skills", embeds=["templates/prompt.md", "internal/skills/assets/icon.svg", "./nested/./diagram.svg"]),
                 _p(MODULE, embeds=["web/index.html"]),
             ),
             "linux",

@@ -82,7 +82,15 @@ function realWireEffortMaxMessage(): Record<string, any> {
   try {
     out = execFileSync(
       "go",
-      ["test", `-overlay=${overlayPath}`, "./internal/serve/server/", "-run", "TestZZEffortWireProbe", "-v", "-count=1"],
+      [
+        "test",
+        `-overlay=${overlayPath}`,
+        "./internal/serve/server/",
+        "-run",
+        "TestZZEffortWireProbe",
+        "-v",
+        "-count=1",
+      ],
       { cwd: REPO_ROOT, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 150_000 },
     );
   } catch (err) {

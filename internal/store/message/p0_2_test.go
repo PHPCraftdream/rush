@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 
-	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 // Guard imports for go vet.

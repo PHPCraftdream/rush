@@ -14,8 +14,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
+	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 )
 
 type LegacyImportStatus uint8

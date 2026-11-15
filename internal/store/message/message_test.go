@@ -12,9 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 
-	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/kit/dev/testguard"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 func TestMain(m *testing.M) { testguard.Main(m) }
