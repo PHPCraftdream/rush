@@ -1,4 +1,4 @@
-package session_test
+package itest
 
 // Regression coverage for task #588/P0-2 of the 2026-08-19 release-readiness
 // follow-up review: classifyBackgroundOutcome's busy/queued/foreign-lock

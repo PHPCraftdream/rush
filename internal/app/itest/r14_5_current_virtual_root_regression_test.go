@@ -1,4 +1,4 @@
-package permission_test
+package itest
 
 // R14-5 addition, paired with r5_6_virtual_root_regression_test.go (the
 // generic driveless-namespace property test): the same "." entry
