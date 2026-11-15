@@ -115,7 +115,7 @@ func IsolateProcess(cmd *exec.Cmd) {
 // bounded by whatever OUTER mechanism eventually cancels that context
 // (turn cancellation, the stream watchdog, batch_stop for a backgrounded
 // tool run), not by anything in this file.
-func ProcessGroupExecHandler(killTimeout time.Duration, registerProcess func(int), retainedLaunch func(ctx context.Context, cmd *exec.Cmd, kill func() error, register func(int), afterStart func(*exec.Cmd) func()) (bool, error)) interp.ExecHandlerFunc {
+func ProcessGroupExecHandler(killTimeout time.Duration, registerProcess func(int), retainedLaunch func(ctx context.Context, cmd *exec.Cmd, kill func() error, register func(int)) (bool, error)) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
 		hc := interp.HandlerCtx(ctx)
 		path, err := interp.LookPathDir(hc.Dir, hc.Env, args[0])
@@ -136,9 +136,7 @@ func ProcessGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 		IsolateProcess(&cmd)
 
 		if retainedLaunch != nil {
-			// afterStart is a Windows-only hook (per-command job object);
-			// Unix process-group isolation needs no post-start work.
-			if handled, err := retainedLaunch(ctx, &cmd, func() error { return KillRetainedProcess(cmd.Process.Pid) }, registerProcess, nil); handled {
+			if handled, err := retainedLaunch(ctx, &cmd, func() error { return KillRetainedProcess(cmd.Process.Pid) }, registerProcess); handled {
 				return RetainedCommandResult(ctx, hc.Stderr, err)
 			}
 		}

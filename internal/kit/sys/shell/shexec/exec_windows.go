@@ -43,7 +43,7 @@ func IsolateProcess(cmd *exec.Cmd) { platform.HideConsoleWindow(cmd) }
 // doc comment for why HideWindow alone was never sufficient, despite
 // this comment previously claiming it "sets the Windows CREATE_NO_WINDOW
 // creation flag" — it does not.
-func ProcessGroupExecHandler(killTimeout time.Duration, registerProcess func(int), retainedLaunch func(ctx context.Context, cmd *exec.Cmd, kill func() error, register func(int), afterStart func(*exec.Cmd) func()) (bool, error)) interp.ExecHandlerFunc {
+func ProcessGroupExecHandler(killTimeout time.Duration, registerProcess func(int), retainedLaunch func(ctx context.Context, cmd *exec.Cmd, kill func() error, register func(int)) (bool, error)) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
 		hc := interp.HandlerCtx(ctx)
 		path, err := interp.LookPathDir(hc.Dir, hc.Env, args[0])
@@ -62,46 +62,13 @@ func ProcessGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 		}
 		platform.HideConsoleWindow(&cmd)
 
-		// The afterStart callback, used only on the retained launch route,
-		// is called with the same command immediately after Start succeeds
-		// and returns a release function invoked once the retained Wait
-		// has returned. The Windows implementation uses it to create and
-		// assign the per-command Job Object (see job_windows.go) and to
-		// close its handle after the wait.
 		if retainedLaunch != nil {
-			var job commandJob
-			if handled, err := retainedLaunch(ctx, &cmd,
-				// Terminate the job first: TerminateJobObject reaches
-				// orphaned descendants whose parents already exited, which
-				// taskkill /T cannot (its tree walk needs live parents).
-				// KillRetainedProcess stays as the fallback for the case
-				// where the job could not be created or assigned.
-				func() error {
-					job.terminate()
-					return KillRetainedProcess(cmd.Process.Pid)
-				}, registerProcess,
-				func(c *exec.Cmd) func() {
-					// Ignore the error: on failure the kill closure falls
-					// back to KillRetainedProcess, matching today's behavior.
-					_ = assignProcessJob(c, &job)
-					return job.close
-				}); handled {
+			if handled, err := retainedLaunch(ctx, &cmd, func() error { return KillRetainedProcess(cmd.Process.Pid) }, registerProcess); handled {
 				return RetainedCommandResult(ctx, hc.Stderr, err)
 			}
 		}
-		// The small window between Start and AssignProcessToJobObject is
-		// accepted: children created inside it escape the job and remain
-		// reachable only via the taskkill /T fallback. CREATE_SUSPENDED was
-		// considered and deliberately NOT used because it would change
-		// observable behavior (pipe/exit-status timing and potential
-		// deadlocks on resume), which is not proven behavior-preserving
-		// here.
 		err = cmd.Start()
 		if err == nil {
-			var job commandJob
-			// A failed job never fails the command; teardown then relies
-			// on the taskkill /T fallback below, exactly as before.
-			_ = assignProcessJob(&cmd, &job)
 			if registerProcess != nil && cmd.Process != nil {
 				registerProcess(cmd.Process.Pid)
 			}
@@ -137,11 +104,6 @@ func ProcessGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 				// exact same class of problem in `rush sessions kill` —
 				// it kills the direct process AND everything Windows
 				// recorded as its descendant.
-				// TerminateJobObject first: unlike taskkill /T it reaches
-				// orphaned descendants whose parents already exited. The
-				// direct-child kill below stays as the fallback for when
-				// the job could not be created or assigned.
-				job.terminate()
 				if pid > 0 {
 					_ = procinfo.KillProcess(pid)
 				}
@@ -154,9 +116,6 @@ func ProcessGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 				<-cancelStarted
 				<-cancelDone
 			}
-			// Close only after the kill callback is fully joined, so the
-			// terminate inside it always sees a live handle.
-			job.close()
 			waitMu.Lock()
 			canceled := cancellationWon
 			waitMu.Unlock()
