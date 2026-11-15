@@ -138,8 +138,10 @@ func batchNoticeStore(p batchCLIParams) *session.SessionNoticeStore {
 // (batchHostStores, batchNoticeStores, batchMaintenanceLoops). Its pointer
 // identity replaces the *App key; it carries no state because the registry
 // code reads dataDir and the DB pools from the App at the same lazy moments
-// as before.
-type batchOwner struct{}
+// as before. The blank byte is load-bearing: a zero-size struct makes every
+// &batchOwner{} the same address (runtime.zerobase), so all Apps would share
+// one registry key and a later App would adopt an earlier App's HostStore.
+type batchOwner struct{ _ byte }
 
 // batchOwnerHandle returns this App's registry key, creating it on first
 // use. Safe for concurrent callers and for bare App literals; a nil App
