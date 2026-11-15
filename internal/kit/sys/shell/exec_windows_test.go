@@ -297,21 +297,68 @@ func markerProcesses(marker, exeFilter string) []markerProcessInfo {
 	return out
 }
 
-// killByPID terminates one process by its Windows PID.
+// killByPID terminates one process by its Windows PID and waits (up to 5s)
+// for it to actually exit so its cwd/handles are released.
 func killByPID(pid uint32) {
-	if h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, pid); err == nil {
-		_ = windows.TerminateProcess(h, 1)
-		windows.CloseHandle(h)
+	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.SYNCHRONIZE, false, pid)
+	if err != nil {
+		return
 	}
+	defer windows.CloseHandle(h)
+	_ = windows.TerminateProcess(h, 1)
+	_, _ = windows.WaitForSingleObject(h, 5000)
+}
+
+// childPIDs returns the direct children of pid from a process snapshot.
+func childPIDs(pid uint32) []uint32 {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil
+	}
+	defer windows.CloseHandle(snap)
+	var out []uint32
+	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
+	for ok := windows.Process32First(snap, &entry) == nil; ok; ok = windows.Process32Next(snap, &entry) == nil {
+		if entry.ParentProcessID == pid && entry.ProcessID != pid {
+			out = append(out, entry.ProcessID)
+		}
+	}
+	return out
+}
+
+// killTreeByPID kills pid's descendants (by PID) and then pid itself, waiting
+// for each to exit.
+func killTreeByPID(pid uint32) {
+	for _, c := range childPIDs(pid) {
+		killTreeByPID(c)
+	}
+	killByPID(pid)
 }
 
 // killMarkerProcesses terminates every process whose command line contains
-// marker, by PID, and returns how many were killed.
+// marker, by PID, and returns how many were killed. It re-sweeps until a
+// sweep finds nothing (up to 10s) because a re-exec chain keeps creating a
+// successor faster than a single sweep can kill it.
 func killMarkerProcesses(marker string) int {
 	killed := 0
-	for _, p := range markerProcesses(marker, "") {
-		killByPID(p.pid)
-		killed++
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		procs := markerProcesses(marker, "")
+		if len(procs) == 0 {
+			break
+		}
+		for _, p := range procs {
+			killByPID(p.pid)
+			killed++
+		}
+	}
+	// Verify the final state is empty before returning.
+	verify := time.Now().Add(5 * time.Second)
+	for len(markerProcesses(marker, "")) > 0 && time.Now().Before(verify) {
+		for _, p := range markerProcesses(marker, "") {
+			killByPID(p.pid)
+		}
+		time.Sleep(markerPollInterval)
 	}
 	return killed
 }
@@ -391,29 +438,48 @@ func writeHotfixScript(t *testing.T, dir, name, body string) string {
 }
 
 // TestRunBoundsSelfRecursivePathShim reproduces the incident: a PATH shim
-// named git whose last line re-executes itself forever through PATH.
-// REVERT CHECK: remove AssignProcessToJobObject in shexec → the chain is
-// unbounded (the process cap never applies) and the peak assertion loses
-// its enforcement; set maxProcessesPerCommand = math.MaxInt32 → same.
+// named git whose last line re-executes itself forever through PATH, started
+// as an orphan chain that holds the output pipe. The live process count
+// stays tiny (MSYS exec replaces the old process), so the ACTIVE_PROCESS
+// limit alone does not bound it; what bounds it is TerminateJobObject on
+// cancellation. REVERT CHECK (run for real): making assignProcessJob return
+// ErrJobUnavailable -> Run never returns after the deadline and this test
+// fails after 13s ("orphaned chain survived cancellation").
 func TestRunBoundsSelfRecursivePathShim(t *testing.T) {
 	installSafetyJob(t)
 	dir := t.TempDir()
-	marker := filepath.ToSlash(dir)
+	// MSYS rewrites the temp dir in command lines (D:\...\Temp\X becomes
+	// /tmp/X), so the unique per-test directory NAME is the marker.
+	marker := filepath.Base(filepath.Dir(dir))
 	startMarkerWatchdog(t, marker)
-	writeHotfixScript(t, dir, "git", "exec git \"$@\"\n")
+	// The shebang is load-bearing: MSYS only treats an extensionless
+	// script as executable (and so finds it through PATH on `exec git`)
+	// when it starts with #!. Without it bash silently skips the shim and
+	// runs the real git, and no recursion happens.
+	writeHotfixScript(t, dir, "git", "#!/bin/bash\nexec git \"$@\"\n")
 
 	restore := shexec.SetMaxProcessesPerCommand(24)
 	defer restore()
 
 	env := hotfixEnv(t, dir)
-	// The marker is appended as an argument so every link of the re-exec
-	// chain carries it in its command line and the poller can count it.
-	cmd := "bash git rev-parse --is-inside-work-tree " + marker
+	// A real bash looks git up through PATH and finds the shim; every
+	// re-exec link then runs as `bash <tmpdir>/git ...` and carries the
+	// unique marker in its command line. MSYS exec creates the new process
+	// and the old one dies, so the LIVE count stays tiny while the chain
+	// churns through ever new PIDs: the poller counts distinct PIDs seen.
+	//
+	// The chain is started in the background so its root's parent exits at
+	// once: the chain is then an ORPHAN that still holds the output pipe,
+	// reachable by TerminateJobObject only (taskkill /T needs live parents).
+	cmd := "bash -c 'git rev-parse --is-inside-work-tree &'"
 
-	var peakMu sync.Mutex
+	var mu sync.Mutex
 	peak := 0
+	seen := map[uint32]bool{}
 	pollStop := make(chan struct{})
+	pollDone := make(chan struct{})
 	go func() {
+		defer close(pollDone)
 		ticker := time.NewTicker(markerPollInterval)
 		defer ticker.Stop()
 		for {
@@ -421,33 +487,56 @@ func TestRunBoundsSelfRecursivePathShim(t *testing.T) {
 			case <-pollStop:
 				return
 			case <-ticker.C:
-				peakMu.Lock()
-				if n := len(markerProcesses(marker, "bash.exe")); n > peak {
-					peak = n
+				procs := markerProcesses(marker, "bash.exe")
+				mu.Lock()
+				if len(procs) > peak {
+					peak = len(procs)
 				}
-				peakMu.Unlock()
+				for _, p := range procs {
+					seen[p.pid] = true
+				}
+				mu.Unlock()
 			}
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	start := time.Now()
-	err := Run(ctx, RunOptions{Command: cmd, Cwd: dir, Env: env, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
-	elapsed := time.Since(start)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	began := time.Now()
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- Run(ctx, RunOptions{Command: cmd, Cwd: dir, Env: env, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	}()
+	var err error
+	select {
+	case err = <-runDone:
+	case <-time.After(13 * time.Second):
+		// Without the job the orphaned chain holds the output pipe and Run
+		// never returns; fail fast (cleanup sweeps the chain by PID).
+		cancel()
+		close(pollStop)
+		<-pollDone
+		t.Fatalf("Run did not return within 13s (8s deadline + 5s): orphaned chain survived cancellation")
+	}
+	elapsed := time.Since(began)
 	cancel()
 	close(pollStop)
+	<-pollDone
 
+	mu.Lock()
+	gotPeak, gotSeen := peak, len(seen)
+	mu.Unlock()
+	t.Logf("recursion: peak live=%d distinct pids seen=%d elapsed=%v run err=%v", gotPeak, gotSeen, elapsed, err)
+	if gotSeen < 5 {
+		t.Fatalf("recursion never ran: only %d distinct marker processes seen", gotSeen)
+	}
 	if err == nil {
 		t.Fatalf("Run returned nil error for a context-canceled runaway chain")
 	}
-	if elapsed > 20*time.Second {
-		t.Fatalf("Run returned after %v, past the 15s deadline plus 5s slack", elapsed)
+	if elapsed > 13*time.Second {
+		t.Fatalf("Run returned after %v, past the 8s deadline plus 5s slack", elapsed)
 	}
-	peakMu.Lock()
-	got := peak
-	peakMu.Unlock()
-	if got > 24+peakSlack {
-		t.Fatalf("peak live marker processes %d exceeded lowered limit 24 + slack %d", got, peakSlack)
+	if gotPeak > 24+peakSlack {
+		t.Fatalf("peak live marker processes %d exceeded lowered limit 24 + slack %d", gotPeak, peakSlack)
 	}
 	waitMarkerGone(t, marker)
 }
@@ -462,7 +551,7 @@ func TestRunCancelKillsOrphanedDescendants(t *testing.T) {
 	marker := filepath.ToSlash(dir)
 	startMarkerWatchdog(t, marker)
 	writeHotfixScript(t, dir, "sleeper.sh", "sleep 600\n")
-	writeHotfixScript(t, dir, "orphan.sh", "bash \""+marker+"/sleeper.sh\" < /dev/null > /dev/null 2>&1 &\n")
+	writeHotfixScript(t, dir, "orphan.sh", "bash \""+marker+"/sleeper.sh\" < /dev/null &\n")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -531,7 +620,7 @@ func TestRunLeavesDeliberateDaemonAfterNormalExit(t *testing.T) {
 		t.Fatalf("daemon pid %d not alive after Run: %v", daemon.pid, herr)
 	}
 	// Cleanup kills the daemon by PID only, never by image name.
-	t.Cleanup(func() { killByPID(daemon.pid) })
+	t.Cleanup(func() { killTreeByPID(daemon.pid) })
 }
 
 // TestRetainedStopKillsOrphanedDescendants covers the same T2 scenario
@@ -547,7 +636,7 @@ func TestRetainedStopKillsOrphanedDescendants(t *testing.T) {
 	marker := filepath.ToSlash(dir)
 	startMarkerWatchdog(t, marker)
 	writeHotfixScript(t, dir, "sleeper.sh", "sleep 600\n")
-	writeHotfixScript(t, dir, "orphan.sh", "bash \""+marker+"/sleeper.sh\" < /dev/null > /dev/null 2>&1 &\n")
+	writeHotfixScript(t, dir, "orphan.sh", "bash \""+marker+"/sleeper.sh\" < /dev/null &\n")
 
 	m := NewBackgroundShellManager()
 	t.Cleanup(func() { m.KillAll(context.Background()) })
