@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

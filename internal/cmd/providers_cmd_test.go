@@ -15,7 +15,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db"
-	rushlog "github.com/PHPCraftdream/rush/internal/log"
+	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"

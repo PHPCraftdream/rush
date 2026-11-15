@@ -11,7 +11,7 @@ import (
 	"fmt"
 
 	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/pubsub"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 )
 
 // IncrementCost adds delta to the session's OWN cost (cost_self) atomically.

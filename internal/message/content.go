@@ -14,7 +14,7 @@ import (
 	"charm.land/fantasy/providers/google"
 	"charm.land/fantasy/providers/openai"
 	"charm.land/fantasy/providers/openaicompat"
-	"github.com/PHPCraftdream/rush/internal/stringext"
+	"github.com/PHPCraftdream/rush/internal/kit/text/stringext"
 )
 
 type MessageRole string

@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/pubsub"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 )
 
 // addTransaction outlives the initializer phase of an AddServer call. The

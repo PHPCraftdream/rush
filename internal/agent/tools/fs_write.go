@@ -16,10 +16,10 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/diff"
-	"github.com/PHPCraftdream/rush/internal/filepathext"
 	"github.com/PHPCraftdream/rush/internal/filetracker"
 	"github.com/PHPCraftdream/rush/internal/history"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filepathext"
+	"github.com/PHPCraftdream/rush/internal/kit/text/diff"
 	"github.com/PHPCraftdream/rush/internal/permission"
 )
 

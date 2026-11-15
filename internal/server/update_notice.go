@@ -10,8 +10,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/kit/diag/version"
 	"github.com/PHPCraftdream/rush/internal/update"
-	"github.com/PHPCraftdream/rush/internal/version"
 )
 
 // updateCheckTimeout bounds the startup check. It is best-effort

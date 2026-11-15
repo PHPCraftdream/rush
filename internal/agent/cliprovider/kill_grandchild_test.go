@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 )
 
 // grandchildSleepDuration is deliberately non-round and grep-unique:

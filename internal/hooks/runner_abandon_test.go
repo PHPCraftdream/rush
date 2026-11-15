@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 	"github.com/stretchr/testify/require"
 )
 

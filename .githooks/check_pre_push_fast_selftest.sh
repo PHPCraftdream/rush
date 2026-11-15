@@ -50,7 +50,7 @@ case "$1" in
  mod) [ "$*" = 'mod tidy -diff' ] ;;
  build) [ "$*" = 'build -p 1 ./...' ] ;;
  vet) [ "$*" = 'vet -p 1 fixture/a fixture/b' ] ;;
- test) [ "$*" = 'test -short -count=1 -p 1 -parallel 1 -run ^(TestNoUnhardenedProcessSpawns|TestSpawnGuardExemptionsAreCurrent)$ ./internal/platform/' ] ;;
+ test) [ "$*" = 'test -short -count=1 -p 1 -parallel 1 -run ^(TestNoUnhardenedProcessSpawns|TestSpawnGuardExemptionsAreCurrent)$ ./internal/kit/sys/platform/' ] ;;
  *) exit 96 ;;
 esac
 EOF
@@ -100,7 +100,7 @@ run_fast() {
  else
   printf 'refs/heads/topic TIP refs/heads/topic REMOTE\n' | bash "$fixture/.githooks/pre-push-fast.sh" upstream url > "$fixture/out" 2>&1
  fi
- check has 'go test -short -count=1 -p 1 -parallel 1 -run ^(TestNoUnhardenedProcessSpawns|TestSpawnGuardExemptionsAreCurrent)$ ./internal/platform/'
+ check has 'go test -short -count=1 -p 1 -parallel 1 -run ^(TestNoUnhardenedProcessSpawns|TestSpawnGuardExemptionsAreCurrent)$ ./internal/kit/sys/platform/'
  check has 'go mod tidy -diff'
  check has 'go build -p 1 ./...'
  if [ "$CASE" = range ] || [ "$CASE" = union ]; then

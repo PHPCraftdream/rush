@@ -69,7 +69,7 @@ internal/
   instructions.
 - **Persistence**: SQLite + sqlc. All queries live in `internal/db/sql/`,
   generated code in `internal/db/`. Migrations in `internal/db/migrations/`.
-- **Pub/sub**: `internal/pubsub` for decoupled communication between agent,
+- **Pub/sub**: `internal/kit/sync/pubsub` for decoupled communication between agent,
   UI, and services.
 - **Hooks**: User-defined shell commands in `rush.json` that fire before
   tool execution. The engine (`internal/hooks/`) is independent of fantasy

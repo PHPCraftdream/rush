@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/filelock"
-	"github.com/PHPCraftdream/rush/internal/fsext"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 	"github.com/google/uuid"
 )
 

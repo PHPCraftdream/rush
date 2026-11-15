@@ -17,7 +17,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 )
 
 // resolveEnvelopePath turns a reference (session id or file path) into

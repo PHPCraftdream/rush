@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 )
 
 const executeHelperEnv = "RUSH_TEST_EXECUTE_HELPER"

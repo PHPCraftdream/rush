@@ -14,7 +14,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/hyper"
 	"github.com/PHPCraftdream/rush/internal/agent/notify"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/pubsub"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 )
 
 // refreshTokenIfExpired proactively refreshes the OAuth token if it has expired.

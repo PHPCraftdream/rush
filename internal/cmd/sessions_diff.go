@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/message"
-	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/spf13/cobra"
 )
 

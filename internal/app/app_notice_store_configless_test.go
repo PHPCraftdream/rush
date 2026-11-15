@@ -7,8 +7,8 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/csync"
-	"github.com/PHPCraftdream/rush/internal/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 )
 
 type noticeConfiglessDiag struct {

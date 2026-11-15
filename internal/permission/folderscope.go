@@ -44,7 +44,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/filepathext"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filepathext"
 )
 
 // FileOp is one filesystem operation a folder scope can grant.

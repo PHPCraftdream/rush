@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/procinfo"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 )
 
 // requireStartTokens skips where procinfo has no process start token (BSD/macOS).

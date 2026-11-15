@@ -18,9 +18,9 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 	"github.com/PHPCraftdream/rush/internal/permission"
-	"github.com/PHPCraftdream/rush/internal/platform"
-	"github.com/PHPCraftdream/rush/internal/procinfo"
 	"github.com/stretchr/testify/require"
 )
 

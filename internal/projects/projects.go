@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/filelock"
-	"github.com/PHPCraftdream/rush/internal/fsext"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 )
 
 const projectsFileName = "projects.json"

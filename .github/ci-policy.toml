@@ -4,12 +4,12 @@
 # Design section 3: any changed file under these prefixes requires native
 # (macOS/Windows) lanes, independent of the fan-out / full-fallback decision.
 native_required_prefixes = [
-  "internal/shell/",
-  "internal/platform/",
-  "internal/procinfo/",
+  "internal/kit/sys/shell/",
+  "internal/kit/sys/platform/",
+  "internal/kit/sys/procinfo/",
   "internal/heartbeat/",
-  "internal/audit/",
-  "internal/filelock/",
+  "internal/kit/diag/audit/",
+  "internal/kit/fs/filelock/",
   "internal/app/",
   "internal/session/",
   "internal/db/",
@@ -39,8 +39,8 @@ core_prefixes = [
   "internal/db/",
   "internal/message/",
   "internal/session/",
-  "internal/pubsub/",
-  "internal/csync/",
+  "internal/kit/sync/pubsub/",
+  "internal/kit/sync/csync/",
 ]
 
 # Race selection = selected closure intersecting these roots (prefix match,
@@ -51,8 +51,8 @@ race_roots = [
   "internal/session",
   "internal/jobbatch",
   "internal/jobbatch/lab",
-  "internal/tasktree",
-  "internal/csync",
+  "internal/kit/tasktree",
+  "internal/kit/sync/csync",
   "cmd/batchlab",
   "cmd/tasklab",
 ]

@@ -3,7 +3,7 @@ package config
 import (
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/ktavcodec"
+	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"

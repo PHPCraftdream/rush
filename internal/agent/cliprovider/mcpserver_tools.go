@@ -17,10 +17,10 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/agent/agentguard"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 	"github.com/PHPCraftdream/rush/internal/permission"
-	"github.com/PHPCraftdream/rush/internal/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/PHPCraftdream/rush/internal/shell"
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"

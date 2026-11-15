@@ -9,9 +9,9 @@ import (
 	"slices"
 	"strconv"
 
-	"github.com/PHPCraftdream/rush/internal/csync"
-	"github.com/PHPCraftdream/rush/internal/filepathext"
-	"github.com/PHPCraftdream/rush/internal/fsext"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filepathext"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 )
 
 func (c *Config) setDefaults(workingDir, dataDir string) {

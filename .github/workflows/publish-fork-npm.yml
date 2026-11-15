@@ -93,7 +93,7 @@ jobs:
           # green release into a red one for no functional reason.
 
       - name: Refresh model shortcodes
-        run: go run ./internal/tools/cahsync -mode refresh -strict
+        run: go run ./internal/kit/dev/cahsync -mode refresh -strict
 
       - name: Build the embedded web UI
         working-directory: web

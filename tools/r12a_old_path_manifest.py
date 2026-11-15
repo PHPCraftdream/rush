@@ -150,7 +150,7 @@ PATH_RULES = [
     # any other tracked prose under docs/ that path rules above missed
     (r"^docs/", "historical_docs"),
     # filelock_probe: retain
-    (r"^internal/filelock/host_probe", "filelock_probe"),
+    (r"^internal/kit/fs/filelock/host_probe", "filelock_probe"),
     (r"^internal/db/migrate_live_hosts", "filelock_probe"),
 ]
 

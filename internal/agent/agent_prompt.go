@@ -20,9 +20,9 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
 
+	"github.com/PHPCraftdream/rush/internal/kit/text/stringext"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/PHPCraftdream/rush/internal/stringext"
 )
 
 func (a *sessionAgent) getCacheControlOptions() fantasy.ProviderOptions {

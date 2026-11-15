@@ -25,8 +25,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/PHPCraftdream/rush/internal/audit"
-	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/diag/audit"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )

@@ -12,8 +12,8 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/platform"
-	"github.com/PHPCraftdream/rush/internal/version"
+	"github.com/PHPCraftdream/rush/internal/kit/diag/version"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 )
 
 const serveProcessHelperEnv = "RUSH_TEST_SERVE_PROCESS_HELPER"

@@ -4,7 +4,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 )
 
 var safeNoArgCommands = map[string]struct{}{

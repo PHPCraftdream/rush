@@ -29,7 +29,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/PHPCraftdream/rush/internal/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 )
 
 // RunAllowlistSpec is the user-facing, pre-compilation form of a

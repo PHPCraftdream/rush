@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/cahgen"
+	"github.com/PHPCraftdream/rush/internal/kit/dev/cahgen"
 )
 
 func run(dir, name string, args ...string) {

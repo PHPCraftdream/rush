@@ -12,8 +12,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/PHPCraftdream/rush/internal/audit"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/kit/diag/audit"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )

@@ -11,7 +11,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/home"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
 )
 
 func (s *ConfigStore) mutateMCP(operation string, scope Scope, oldName, newName string, value MCPConfig, disabled *bool) (MCPMutationResult, error) {

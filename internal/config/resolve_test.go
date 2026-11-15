@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/env"
-	"github.com/PHPCraftdream/rush/internal/procinfo"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 	"github.com/stretchr/testify/require"
 )
 

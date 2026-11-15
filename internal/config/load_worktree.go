@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 )
 
 // worktreeRootCache memoizes worktreeRoot's per-directory result. Every

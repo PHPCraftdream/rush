@@ -15,9 +15,9 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/hyper"
 	"github.com/PHPCraftdream/rush/internal/agent/notify"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/home"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/permission"
-	"github.com/PHPCraftdream/rush/internal/pubsub"
 	sessionpkg "github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/skills"
 )

@@ -3,7 +3,7 @@ package server
 import (
 	"net/http"
 
-	"github.com/PHPCraftdream/rush/internal/version"
+	"github.com/PHPCraftdream/rush/internal/kit/diag/version"
 )
 
 func apiHealthHandler(w http.ResponseWriter, r *http.Request) {

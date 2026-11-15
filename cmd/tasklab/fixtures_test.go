@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/tasktree"
-	"github.com/PHPCraftdream/rush/internal/tasktree/lab"
+	"github.com/PHPCraftdream/rush/internal/kit/tasktree"
+	"github.com/PHPCraftdream/rush/internal/kit/tasktree/lab"
 )
 
 func cliFixturePath(t *testing.T, name string) string {

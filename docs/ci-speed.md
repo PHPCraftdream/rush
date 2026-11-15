@@ -48,7 +48,7 @@ likely cause is the provider retry backoff that the test's failing stub triggers
 ## Rebuild blast radius (from the action graph)
 
 Touching a package rebuilds every importer and relinks every test binary that depends on it.
-Upper bound, cold-equivalent cost: `internal/platform` 166 s (70 packages, 31 test binaries),
+Upper bound, cold-equivalent cost: `internal/kit/sys/platform` 166 s (70 packages, 31 test binaries),
 `internal/db` 164 s, `internal/session` 157 s (51 packages, 22 binaries), `internal/config`
 137 s (41 packages, 18 binaries). The Go build cache cuts the cascade whenever a change leaves
 the dependency's export data identical, so the real cost of a typical edit is far lower.

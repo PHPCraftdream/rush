@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/testguard"
+	"github.com/PHPCraftdream/rush/internal/kit/dev/testguard"
 )
 
 // Tests here reach config.Init/app.New; without this they read, migrate and

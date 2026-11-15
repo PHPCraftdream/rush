@@ -19,7 +19,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 )
 
 // DeniedError is returned by Check when a command is blocked. It is

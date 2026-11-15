@@ -15,7 +15,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/home"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
 )
 
 // GlobalSkillsDirs returns the default directories for Agent Skills.

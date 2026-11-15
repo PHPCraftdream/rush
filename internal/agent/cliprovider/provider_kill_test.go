@@ -20,8 +20,8 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/platform"
-	"github.com/PHPCraftdream/rush/internal/procinfo"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 )
 
 // ── Bug 1 regression: bounded wait() must not hang when a grandchild holds stderr ──

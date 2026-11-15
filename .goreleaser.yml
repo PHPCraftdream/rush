@@ -28,7 +28,7 @@ snapshot:
 
 before:
   hooks:
-    - go run ./internal/tools/cahsync -mode refresh -strict
+    - go run ./internal/kit/dev/cahsync -mode refresh -strict
     - sh -c 'cd web && npm ci && npm run build'
     - go mod tidy
     - rm -rf completions
@@ -74,7 +74,7 @@ builds:
     ldflags:
       # Fork patch: also stamp commit + build time so `rush --version`
       # proves which source tree a released binary came from
-      # (VersionLine's provenance suffix, internal/version/version.go).
+      # (VersionLine's provenance suffix, internal/kit/diag/version/version.go).
       # -trimpath below strips the VCS metadata the toolchain would
       # otherwise embed, so both are injected explicitly rather than
       # relying on debug.ReadBuildInfo. Kept as ONE list item (not split

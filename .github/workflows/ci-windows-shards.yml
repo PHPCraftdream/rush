@@ -249,7 +249,7 @@ jobs:
           echo "${{ matrix.shard }}|test: internal/agent subpackages|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
 
-      - name: "test: internal/shell"
+      - name: "test: internal/kit/sys/shell"
         if: matrix.shard == 'C'
         shell: bash
         run: |
@@ -259,7 +259,7 @@ jobs:
           t0=$(date +%s)
           go test -short -failfast -p 2 -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-internal-shell.json"
           rc=$?
-          echo "${{ matrix.shard }}|test: internal/shell|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+          echo "${{ matrix.shard }}|test: internal/kit/sys/shell|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
 
       - name: "test: internal/jobbatch, cmd/batchlab"
@@ -275,7 +275,7 @@ jobs:
           echo "${{ matrix.shard }}|test: internal/jobbatch, cmd/batchlab|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
 
-      - name: "test: internal/permission, internal/config, internal/csync"
+      - name: "test: internal/permission, internal/config, internal/kit/sync/csync"
         if: matrix.shard == 'D'
         shell: bash
         run: |
@@ -285,10 +285,10 @@ jobs:
           t0=$(date +%s)
           go test -short -failfast -p 2 -timeout 20m -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-internal-permission-internal-config-internal-csync.json"
           rc=$?
-          echo "${{ matrix.shard }}|test: internal/permission, internal/config, internal/csync|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+          echo "${{ matrix.shard }}|test: internal/permission, internal/config, internal/kit/sync/csync|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
 
-      - name: "test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history"
+      - name: "test: internal/db, internal/message, internal/queue, internal/kit/sync/pubsub, internal/history"
         if: matrix.shard == 'D'
         shell: bash
         run: |
@@ -298,10 +298,10 @@ jobs:
           t0=$(date +%s)
           go test -short -failfast -p 2 -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-internal-db-internal-message-internal-queue-internal-pubsub-internal-history.json"
           rc=$?
-          echo "${{ matrix.shard }}|test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+          echo "${{ matrix.shard }}|test: internal/db, internal/message, internal/queue, internal/kit/sync/pubsub, internal/history|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
 
-      - name: "test: internal/oauth, internal/deploy, internal/update, internal/version"
+      - name: "test: internal/oauth, internal/deploy, internal/update, internal/kit/diag/version"
         if: matrix.shard == 'D'
         shell: bash
         run: |
@@ -311,7 +311,7 @@ jobs:
           t0=$(date +%s)
           go test -short -failfast -p 2 -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-internal-oauth-internal-deploy-internal-update-internal-version.json"
           rc=$?
-          echo "${{ matrix.shard }}|test: internal/oauth, internal/deploy, internal/update, internal/version|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+          echo "${{ matrix.shard }}|test: internal/oauth, internal/deploy, internal/update, internal/kit/diag/version|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
 
       - name: "test: everything else (computed catch-all)"

@@ -11,8 +11,8 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/history"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/permission"
-	"github.com/PHPCraftdream/rush/internal/pubsub"
 	"github.com/stretchr/testify/require"
 )
 

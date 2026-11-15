@@ -35,9 +35,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/PHPCraftdream/rush/internal/audit"
 	"github.com/PHPCraftdream/rush/internal/config"
-	rushlog "github.com/PHPCraftdream/rush/internal/log"
+	"github.com/PHPCraftdream/rush/internal/kit/diag/audit"
+	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/require"

@@ -10,7 +10,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy/providers/openai"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/testguard"
+	"github.com/PHPCraftdream/rush/internal/kit/dev/testguard"
 	"github.com/stretchr/testify/require"
 )
 

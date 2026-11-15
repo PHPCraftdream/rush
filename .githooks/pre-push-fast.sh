@@ -152,7 +152,7 @@ fi
 # Unconditional: shell/config-only pushes must not drop spawn protection.
 step "platform spawn guards (always)"
 run_capped "$RUSH_PROCESS_MEMORY" "$RUSH_PROCESS_TIMEOUT" go test -short -count=1 -p 1 -parallel 1 \
-	-run '^(TestNoUnhardenedProcessSpawns|TestSpawnGuardExemptionsAreCurrent)$' ./internal/platform/ \
+	-run '^(TestNoUnhardenedProcessSpawns|TestSpawnGuardExemptionsAreCurrent)$' ./internal/kit/sys/platform/ \
 	|| fail "platform spawn guards failed"
 
 if [ "$hook_checks" -eq 1 ]; then

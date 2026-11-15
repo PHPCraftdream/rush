@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/csync"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 )
 
 func TestStreamTitleDoesNotResumeOrClobberCLIIdentity(t *testing.T) {

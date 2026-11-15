@@ -6,7 +6,7 @@ import (
 	"math"
 	"regexp"
 
-	"github.com/PHPCraftdream/rush/internal/ktavcodec"
+	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 	"github.com/google/jsonschema-go/jsonschema"
 )
 

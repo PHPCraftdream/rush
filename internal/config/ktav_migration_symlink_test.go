@@ -17,7 +17,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/ktavcodec"
+	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 	"github.com/stretchr/testify/require"
 )
 

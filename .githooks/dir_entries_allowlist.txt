@@ -8,7 +8,7 @@
 #
 # When you split a directory: delete its line here. An element count
 # may never go up.
-internal 52
+internal 28
 internal/agent 261
 internal/agent/agentguard 8
 internal/agent/codexprovider 9
@@ -19,14 +19,14 @@ internal/apiclient 13
 # internal/app 61 -> 62: +1 for the new subdirectory internal/app/itest (cross-module scenario tests, sprint 0 wave 1).
 # The count falls with the package split (stage D2).
 internal/app 62
-internal/cahgen 9
+internal/kit/dev/cahgen 9
 internal/cmd 165
 # internal/config 120 -> 121: +1 for the new leaf subdirectory internal/config/catalog (provider reference data, sprint 0 wave 1).
 # The count falls with the package split (stage D2).
 internal/config 121
 internal/db 16
 internal/discover 13
-internal/fsext 13
+internal/kit/fs/fsext 13
 internal/heartbeat 10
 internal/jobbatch 21
 internal/jobbatch/lab 24
@@ -35,8 +35,8 @@ internal/nettransport 12
 internal/proto 11
 internal/server 83
 internal/session 133
-internal/shell 24
-internal/tasktree 10
+internal/kit/sys/shell 24
+internal/kit/tasktree 10
 web/src 35
 web/src/actions 52
 web/src/components 33

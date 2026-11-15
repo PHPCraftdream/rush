@@ -17,8 +17,8 @@ import (
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/discover"
+	"github.com/PHPCraftdream/rush/internal/kit/diag/version"
 	"github.com/PHPCraftdream/rush/internal/skills"
-	"github.com/PHPCraftdream/rush/internal/version"
 )
 
 // providerScopeWire reports the scope the provider's effective (merged)

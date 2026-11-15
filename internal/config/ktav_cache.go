@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/PHPCraftdream/rush/internal/ktavcodec"
+	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 )
 
 // readCacheDocument reads the active generation of a Rush-owned cache slot

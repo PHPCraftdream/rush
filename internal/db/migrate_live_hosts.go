@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/filelock"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 )
 
 // hostLockPath mirrors session.HostLockPath (<dataDir>/hosts/<id>.lock). It

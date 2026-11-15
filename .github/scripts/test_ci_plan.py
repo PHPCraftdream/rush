@@ -61,15 +61,15 @@ class GoListTests(unittest.TestCase):
         g = golist.parse_stream(
             stream(
                 _dep(foreign, foreign),
-                _p(MODULE, imports=[MODULE + "/internal/shell"]),
-                _p(MODULE + "/internal/shell"),
+                _p(MODULE, imports=[MODULE + "/internal/kit/sys/shell"]),
+                _p(MODULE + "/internal/kit/sys/shell"),
             ),
             "linux",
         )
         self.assertEqual(g.module, MODULE)
-        self.assertIn(MODULE + "/internal/shell", g.packages)
-        self.assertIn(MODULE + "/internal/shell", g.reverse)
-        self.assertEqual(g.reverse[MODULE + "/internal/shell"], {MODULE})
+        self.assertIn(MODULE + "/internal/kit/sys/shell", g.packages)
+        self.assertIn(MODULE + "/internal/kit/sys/shell", g.reverse)
+        self.assertEqual(g.reverse[MODULE + "/internal/kit/sys/shell"], {MODULE})
 
     def test_embed_files_normalize_package_relative_and_root_paths(self):
         g = golist.parse_stream(
@@ -109,7 +109,7 @@ class PolicyTests(unittest.TestCase):
         )
 
     def test_load(self):
-        self.assertIn("internal/csync/", self.pol.core_prefixes)
+        self.assertIn("internal/kit/sync/csync/", self.pol.core_prefixes)
         self.assertIn("internal/agent/notify/", self.pol.native_required_prefixes)
         self.assertIn("cmd/tasklab", self.pol.race_roots)
 
@@ -122,7 +122,7 @@ class PolicyTests(unittest.TestCase):
 
     def test_prefix(self):
         self.assertTrue(pol.under_prefix("internal/db/x.sql", ["internal/db/"]))
-        self.assertTrue(pol.under_prefix("internal/csync/a.go", ["internal/csync/"]))
+        self.assertTrue(pol.under_prefix("internal/kit/sync/csync/a.go", ["internal/kit/sync/csync/"]))
         self.assertFalse(pol.under_prefix("internal/dbx/a.go", ["internal/db/"]))
         self.assertFalse(pol.under_prefix("outside/internal/db/x.sql", ["internal/db/"]))
 
@@ -130,7 +130,7 @@ class PolicyTests(unittest.TestCase):
 class SelectionTests(unittest.TestCase):
     def setUp(self):
         self.pol = pol.Policy(
-            native_required_prefixes=["internal/shell/"],
+            native_required_prefixes=["internal/kit/sys/shell/"],
             core_prefixes=["internal/db/"],
             race_roots=["internal/agent"],
             fanout_max_packages=25,
@@ -201,7 +201,7 @@ class SelectionTests(unittest.TestCase):
             merge_base = "b"
             base_tree_files = []
             changes = [
-                type("C", (), {"status": "M", "path": "internal/shell/shell_windows.go", "old_path": None})()
+                type("C", (), {"status": "M", "path": "internal/kit/sys/shell/shell_windows.go", "old_path": None})()
             ]
         p = selector.plan(".", R(), self.graphs, self.pol)
         self.assertTrue(p.native_required["required"])

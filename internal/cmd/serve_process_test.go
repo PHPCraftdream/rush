@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 )
 
 func runServeExecuteProcess(t *testing.T, base string, args ...string) (int, string, string) {

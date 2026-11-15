@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/fsext"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 )
 
 const (

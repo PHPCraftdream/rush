@@ -237,7 +237,7 @@ jobs:
         continue-on-error: true
         if: runner.os == 'Linux' && needs.plan.outputs.heavy_allowed == 'true'
         run: |
-          go run ./internal/tools/cahsync -check -strict || {
+          go run ./internal/kit/dev/cahsync -check -strict || {
             echo "::warning::Model shortcode catalog lag or refresh failure"
             exit 1
           }

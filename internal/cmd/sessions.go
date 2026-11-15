@@ -6,7 +6,7 @@ package cmd
 // files in this package.
 
 import (
-	"github.com/PHPCraftdream/rush/internal/ansiext"
+	"github.com/PHPCraftdream/rush/internal/kit/text/ansiext"
 	"github.com/spf13/cobra"
 )
 

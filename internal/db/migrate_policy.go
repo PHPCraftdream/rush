@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/filelock"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/pressly/goose/v3"
 )
 

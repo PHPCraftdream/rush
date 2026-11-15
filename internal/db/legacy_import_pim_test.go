@@ -10,8 +10,8 @@ import (
 	"testing/fstest"
 
 	"github.com/PHPCraftdream/rush/internal/db/storepath"
-	"github.com/PHPCraftdream/rush/internal/filelock"
-	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/stretchr/testify/require"
 )
 

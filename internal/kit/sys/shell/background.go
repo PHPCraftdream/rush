@@ -1,0 +1,839 @@
+package shell
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"slices"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
+)
+
+const (
+	// MaxBackgroundJobs is the DEFAULT maximum number of concurrent
+	// background jobs. Override it per process with
+	// RUSH_MAX_BACKGROUND_JOBS.
+	//
+	// 50 is reachable in real use, and reaching it is expensive: an
+	// orchestrator fanning work out to sub-agents while a 17-minute gate ran
+	// hit the cap, the session died on "maximum number of background jobs
+	// (50) reached", and the operator's next brief told the model to stop
+	// delegating altogether. The cap cost a whole workflow.
+	//
+	// The default stays at 50 anyway, and the reason is measured rather than
+	// cautious: raising it to 500 (and then 200) made the test suite itself
+	// unstable on a developer machine — internal/shell went from 5s to 149s
+	// and timing-sensitive siblings like
+	// TestBashTool_CtxCancelWaitsForConfirmedProcessKill began failing,
+	// because the jobs a higher cap admits are real processes competing for
+	// the same machine. A default that destabilises the suite would
+	// destabilise a busy agent host the same way.
+	//
+	// So the limit is now the operator's to raise, deliberately, on a
+	// machine they know can take it — and the warning below tells them when
+	// they are approaching it instead of letting the run die at the wall.
+	// Each live job can hold 2*maxStreamBufferBytes (6 MiB) resident, so the
+	// memory ceiling scales linearly: ~300 MiB at 50, ~3 GiB at 500.
+	MaxBackgroundJobs = 50
+
+	// warnBackgroundJobsThreshold is the fraction of MaxBackgroundJobs at
+	// which Start begins warning, so a run heading for the wall says so
+	// while its jobs can still be reaped.
+	warnBackgroundJobsThreshold = 0.8
+	// CompletedJobRetentionMinutes is how long to keep completed jobs before auto-cleanup (8 hours)
+	CompletedJobRetentionMinutes = 8 * 60
+
+	// BufferRetentionMinutes is how long a completed job keeps its buffered
+	// stdout/stderr bytes resident before Cleanup releases them (frees the
+	// memory but keeps the job record itself — status/exit code/Command/etc.
+	// — around until CompletedJobRetentionMinutes). This is intentionally
+	// much shorter than CompletedJobRetentionMinutes: the buffered bytes are
+	// the expensive part (up to 2*maxStreamBufferBytes per job) and are only
+	// realistically useful for a short window right after completion, while
+	// job metadata is cheap to keep for the full retention window so status
+	// queries (batch_status on a long-finished job) still resolve, just
+	// without the original bytes.
+	BufferRetentionMinutes = 15
+
+	// detachedCallbackReleaseGrace bounds how long a completion callback may
+	// retain a detached shell's output. Attached jobs remain governed solely by
+	// BufferRetentionMinutes.
+	detachedCallbackReleaseGrace = time.Second
+
+	// maxStreamBufferBytes bounds how much of a single stdout/stderr stream a
+	// background job keeps resident in memory. A chatty/never-ending command
+	// (`yes`, a noisy `watch`, a verbose build that never stops) would
+	// otherwise grow its buffer without limit for as long as the job runs —
+	// with up to MaxBackgroundJobs (50) such jobs live at once, that's an
+	// unbounded multiplier on process memory. 3 MiB per stream (6 MiB per job
+	// including both stdout+stderr, ~300 MiB worst case across 50 jobs) is
+	// generous enough to hold many thousands of lines of real command output
+	// (bash and the batch output cache still only ever surface the last MaxOutputLength=30000
+	// characters to the model via TruncateOutput) while capping the pathological
+	// case at a small, predictable ceiling.
+	maxStreamBufferBytes = 3 * 1024 * 1024
+
+	// truncationMarkerBudget is reserved out of maxStreamBufferBytes for the
+	// "[N bytes truncated]" marker text itself, so the buffer's resident size
+	// never exceeds maxStreamBufferBytes even after the marker is spliced in.
+	truncationMarkerBudget = 128
+)
+
+// No separate count-based cap is enforced on COMPLETED jobs, by design. A job
+// that has finished is cheap once its buffered stdout/stderr is released
+// (BufferRetentionMinutes, ~15 min after completion): only lightweight
+// metadata (ID, Command, timestamps, atomic fields — a few hundred bytes) stays
+// resident until CompletedJobRetentionMinutes purges it via Cleanup, which the
+// bash tool invokes at the start of every run. The time-based retention
+// already bounds how long completed jobs linger, and even thousands of them
+// amount to only a few MiB of metadata; a separate count-based eviction would
+// add a tuning knob and a "which completed job to drop first" policy for
+// negligible gain. The concurrency limit (MaxBackgroundJobs) is enforced on
+// ACTIVE jobs only via BackgroundShellManager.activeJobs.
+
+// boundedBuffer is a thread-safe, size-bounded byte sink used for a single
+// background job's stdout or stderr stream.
+//
+// Unlike bytes.Buffer (the previous implementation, via syncBuffer), it never
+// grows without bound: once the resident content would exceed maxBytes, the
+// MIDDLE of the stream is dropped and replaced with a "[N bytes truncated]"
+// marker, keeping the HEAD (first bytes ever written — usually identifies the
+// command and any early errors) and the TAIL (most recent bytes — the current
+// state) both intact. This is the standard head+tail log-truncation pattern:
+// simply dropping the tail (keep-first-N-bytes) would make a long-running job
+// look permanently frozen at its earliest output, and simply dropping the
+// head (keep-last-N-bytes, like a ring buffer) would lose the context of what
+// command was even running or how it failed at the start.
+//
+// A monotonic writtenBytes counter tracks the *total* number of bytes ever
+// written, independent of how much is actually resident after truncation.
+// This lets callers (WaitForChange) detect "new output has arrived" purely by
+// comparing counters, without copying/allocating a snapshot of the buffered
+// content on every poll.
+type boundedBuffer struct {
+	mu  sync.RWMutex
+	buf bytes.Buffer
+
+	maxBytes int
+
+	// head holds the first headCap bytes ever written; once populated it is
+	// immutable for the lifetime of the buffer.
+	head    bytes.Buffer
+	headCap int
+
+	// writtenBytes is the total number of bytes ever passed to Write, whether
+	// or not they are still resident in buf/head. It only ever increases.
+	writtenBytes atomic.Int64
+
+	// lastWriteNS is the nanosecond Unix timestamp of the last non-empty
+	// Write (0 = never written). Survives release().
+	lastWriteNS atomic.Int64
+
+	// truncated is set once bytes have been dropped from the middle, so
+	// String() knows to splice in the marker.
+	truncated atomic.Bool
+	// droppedBytes is how many bytes have been removed from the middle
+	// (excludes head, excludes what's still resident in buf).
+	droppedBytes atomic.Int64
+}
+
+func newBoundedBuffer(maxBytes int) *boundedBuffer {
+	if maxBytes <= 0 {
+		maxBytes = maxStreamBufferBytes
+	}
+	return &boundedBuffer{
+		maxBytes: maxBytes,
+		// Keep a fixed head allotment of a quarter of the budget (bounded to
+		// a sane floor/ceiling) — enough to preserve early context without
+		// starving the tail, which is what most callers actually care about
+		// while a job is still running.
+		headCap: max(min(maxBytes/4, 256*1024), 1),
+	}
+}
+
+// Write appends p to the buffer, enforcing the size bound. It always reports
+// having written len(p) bytes (matching bytes.Buffer/io.Writer semantics) —
+// bytes beyond the cap are counted in writtenBytes and then dropped from the
+// middle of the resident content, never silently discarded from the caller's
+// point of view.
+func (b *boundedBuffer) Write(p []byte) (n int, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	n = len(p)
+	b.writtenBytes.Add(int64(n))
+	// Record the last-output time only for real output; empty writes don't count.
+	if n > 0 {
+		b.lastWriteNS.Store(time.Now().UnixNano())
+	}
+
+	// Fill head first, from the very first bytes ever written.
+	if b.head.Len() < b.headCap {
+		room := b.headCap - b.head.Len()
+		take := min(room, len(p))
+		b.head.Write(p[:take])
+		p = p[take:]
+	}
+
+	if len(p) == 0 {
+		return n, nil
+	}
+
+	b.buf.Write(p)
+	b.enforceLimitLocked()
+	return n, nil
+}
+
+// WriteString is the string equivalent of Write.
+func (b *boundedBuffer) WriteString(s string) (n int, err error) {
+	return b.Write([]byte(s))
+}
+
+// enforceLimitLocked drops bytes from the front of b.buf (the middle of the
+// overall stream, since head is stored separately) once the resident head +
+// tail content would exceed maxBytes. Caller must hold b.mu.
+func (b *boundedBuffer) enforceLimitLocked() {
+	tailBudget := b.maxBytes - b.head.Len() - truncationMarkerBudget
+	if tailBudget < 0 {
+		tailBudget = 0
+	}
+	if b.buf.Len() <= tailBudget {
+		return
+	}
+	excess := b.buf.Len() - tailBudget
+	b.buf.Next(excess) // drop `excess` bytes from the front (middle of stream)
+	b.droppedBytes.Add(int64(excess))
+	b.truncated.Store(true)
+}
+
+// String returns a bounded snapshot of the buffered content: if nothing has
+// ever been truncated, it's simply everything written so far (head==empty in
+// that case since all bytes fit in buf); otherwise it's head + a
+// "[N bytes truncated]" marker + tail, which never exceeds maxBytes.
+func (b *boundedBuffer) String() string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	if !b.truncated.Load() {
+		if b.head.Len() == 0 {
+			return b.buf.String()
+		}
+		return b.head.String() + b.buf.String()
+	}
+
+	dropped := b.droppedBytes.Load()
+	marker := fmt.Sprintf("\n... [%d bytes truncated] ...\n", dropped)
+	return b.head.String() + marker + b.buf.String()
+}
+
+// lastWriteAt reports when the buffer last received non-empty output.
+func (b *boundedBuffer) lastWriteAt() (time.Time, bool) {
+	ns := b.lastWriteNS.Load()
+	if ns == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(0, ns), true
+}
+
+// Len reports the total number of bytes ever written to the buffer,
+// including ones already dropped by truncation. This is the value
+// WaitForChange compares against, so growth is always observable even after
+// the buffer itself has started discarding old data.
+func (b *boundedBuffer) Len() int {
+	return int(b.writtenBytes.Load())
+}
+
+// release drops the buffered content (head/tail bytes) while preserving the
+// monotonic writtenBytes counter and truncation bookkeeping. Used once a
+// completed job's output has been delivered to subscribers, so long-lived
+// jobs don't hold their full (bounded, but still up to a few MiB) buffer
+// resident for the entire CompletedJobRetentionMinutes retention window.
+func (b *boundedBuffer) release() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	// Reassign zero-valued buffers instead of calling Reset().
+	// bytes.Buffer.Reset() keeps the underlying capacity (documented stdlib
+	// behaviour), so the old multi-MiB backing arrays would stay resident in
+	// the heap until the boundedBuffer itself is collected. A fresh zero-value
+	// Buffer has no backing array, letting GC reclaim the old one immediately.
+	b.buf = bytes.Buffer{}
+	b.head = bytes.Buffer{}
+	// Keep writtenBytes/truncated/droppedBytes as-is: String() below will
+	// still report a non-empty, honest placeholder rather than silently
+	// looking like the command produced no output.
+}
+
+// released reports whether release() has been called (buffer content
+// discarded) despite the stream having produced output at some point.
+func (b *boundedBuffer) releasedWithContent() bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.head.Len() == 0 && b.buf.Len() == 0 && b.writtenBytes.Load() > 0
+}
+
+// BackgroundShell represents a shell running in the background.
+type BackgroundShell struct {
+	ID          string
+	Command     string
+	Description string
+	// SessionID identifies the session that created this job. A manager is
+	// owned by one App/client; the session check prevents one session within
+	// that client from inspecting or terminating another session's job.
+	SessionID   string
+	Shell       *Shell
+	WorkingDir  string
+	StartTime   time.Time
+	ctx         context.Context
+	cancel      context.CancelFunc
+	stdout      *boundedBuffer
+	stderr      *boundedBuffer
+	done        chan struct{}
+	exitErr     error
+	completedAt atomic.Int64 // Unix timestamp when job completed (0 if still running)
+	bufReleased atomic.Bool  // true once the stdout/stderr buffers have been released post-completion
+	releaseOnce sync.Once
+	onDoneCount atomic.Int64            // callbacks registered but not yet delivered
+	mgr         *BackgroundShellManager // set by start; nil for a hand-built shell (no completion hold)
+	detachedAt  atomic.Int64            // Unix timestamp of the first detach from the manager (0 while attached)
+
+	// retentionMu serializes attached retention, detached callback release,
+	// callback registration/completion, and the detached transition.
+	retained             bool
+	retentionMu          sync.Mutex
+	retentionTimer       *time.Timer
+	detachedReleaseTimer *time.Timer
+	detached             bool
+}
+
+// LastOutputAt reports the most recent non-empty output time across the
+// job's stdout and stderr streams. False when neither stream ever wrote.
+func (bs *BackgroundShell) LastOutputAt() (time.Time, bool) {
+	var last time.Time
+	for _, buf := range []*boundedBuffer{bs.stdout, bs.stderr} {
+		if buf == nil {
+			continue
+		}
+		if ts, ok := buf.lastWriteAt(); ok && (last.IsZero() || ts.After(last)) {
+			last = ts
+		}
+	}
+	if last.IsZero() {
+		return time.Time{}, false
+	}
+	return last, true
+}
+
+// BackgroundShellManager manages background shell instances.
+type BackgroundShellManager struct {
+	shells *csync.Map[string, *BackgroundShell]
+
+	// activeJobs counts the number of currently-running (not yet completed)
+	// background jobs. It is the value the MaxBackgroundJobs limit is checked
+	// against: unlike shells.Len() — which also counts completed jobs held for
+	// up to CompletedJobRetentionMinutes so their results stay queryable — this
+	// counter is decremented the moment a job's goroutine finishes, so a job
+	// completing immediately frees its concurrency slot. Incremented under
+	// startMu in Start (atomically with the limit check and the shells.Set
+	// insert); decremented lock-free from the job's completion goroutine.
+	activeJobs atomic.Int64
+
+	// startMu serializes the "check MaxBackgroundJobs then insert" sequence
+	// in Start so two concurrent Start calls can't both observe room under
+	// the limit and both insert, overshooting MaxBackgroundJobs. shells
+	// itself is a csync.Map (safe for concurrent Get/Set/Len individually),
+	// but the check-then-increment-and-insert across two calls is a classic
+	// non-atomic check-then-act race without this extra lock serializing the
+	// sequence.
+	startMu sync.Mutex
+
+	// holds is the completion-hold set (background_completion.go), guarded by
+	// holdMu; independent of shells, so a removed job keeps its hold.
+	holdMu sync.Mutex
+	holds  map[*BackgroundShell]struct{}
+
+	// maxJobs is this manager's concurrency cap, defaulting to
+	// MaxBackgroundJobs. It exists as a field rather than a bare use of the
+	// constant so a test can exercise limit BEHAVIOUR without paying the
+	// production limit's cost: filling the queue means one live process per
+	// slot, which is slower than the property being demonstrated and, on
+	// Windows, leaves survivors that block TempDir cleanup. It also keeps
+	// those tests honest when an operator has raised the cap via
+	// RUSH_MAX_BACKGROUND_JOBS. Per-manager, so lowering it in one test
+	// cannot be observed by a parallel sibling.
+	maxJobs int
+
+	// bufferRetention is per manager so tests can shorten the completion
+	// window without racing jobs owned by parallel managers.
+	bufferRetention time.Duration
+
+	// closed prevents a Start racing with App shutdown from creating a job
+	// after shutdown has detached the manager's registry snapshot.
+	closed bool
+	// idCounter is scoped to this manager/client. IDs are intentionally not a
+	// process-wide registry or authority boundary.
+	idCounter atomic.Uint64
+}
+
+var (
+	backgroundManager     *BackgroundShellManager
+	backgroundManagerOnce sync.Once
+)
+
+// newBackgroundShellManager creates a new BackgroundShellManager instance.
+func newBackgroundShellManager() *BackgroundShellManager {
+	return &BackgroundShellManager{
+		shells:          csync.NewMap[string, *BackgroundShell](),
+		maxJobs:         maxJobsFromEnv(),
+		bufferRetention: time.Duration(BufferRetentionMinutes) * time.Minute,
+	}
+}
+
+// NewBackgroundShellManager creates a background shell manager owned by one
+// App/client. Managers must be injected into the tools and App that use them;
+// they do not share jobs with other managers.
+func NewBackgroundShellManager() *BackgroundShellManager {
+	return newBackgroundShellManager()
+}
+
+// GetBackgroundShellManager returns the legacy process-local manager.
+//
+// Deprecated: App/client code must use NewBackgroundShellManager and inject
+// it into its tools. This compatibility accessor is retained for older
+// internal callers only and is not used by App construction.
+func GetBackgroundShellManager() *BackgroundShellManager {
+	backgroundManagerOnce.Do(func() {
+		backgroundManager = newBackgroundShellManager()
+	})
+	return backgroundManager
+}
+
+// Start creates and starts a new background shell with the given command.
+func (m *BackgroundShellManager) Start(ctx context.Context, workingDir string, blockFuncs []BlockFunc, command string, description string) (*BackgroundShell, error) {
+	return m.start(ctx, "", workingDir, blockFuncs, command, description)
+}
+
+// StartOwned creates a background shell owned by sessionID.
+func (m *BackgroundShellManager) StartOwned(ctx context.Context, sessionID, workingDir string, blockFuncs []BlockFunc, command string, description string) (*BackgroundShell, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("session ID is required for background shell ownership")
+	}
+	return m.start(ctx, sessionID, workingDir, blockFuncs, command, description)
+}
+
+func (m *BackgroundShellManager) start(ctx context.Context, sessionID, workingDir string, blockFuncs []BlockFunc, command string, description string) (*BackgroundShell, error) {
+	return m.startWithRetention(ctx, sessionID, workingDir, blockFuncs, command, description, false)
+}
+
+func (m *BackgroundShellManager) startWithRetention(ctx context.Context, sessionID, workingDir string, blockFuncs []BlockFunc, command string, description string, retained bool) (*BackgroundShell, error) {
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+	if m.closed {
+		return nil, fmt.Errorf("background shell manager is closed")
+	}
+
+	// Check job limit against ACTIVE jobs only (not shells.Len(), which also
+	// includes completed jobs retained for up to CompletedJobRetentionMinutes
+	// so their results stay queryable — counting those would permanently block
+	// new jobs once the retention window fills up even if everything has
+	// finished). Holding startMu across the check-and-insert below (and the
+	// activeJobs increment) makes this atomic with respect to other concurrent
+	// Start calls, so the limit can't be overshot by a check-then-act race.
+	limit := m.maxJobs
+	if limit <= 0 {
+		limit = MaxBackgroundJobs
+	}
+	active := m.activeJobs.Load()
+	if active >= int64(limit) {
+		return nil, fmt.Errorf("maximum number of background jobs (%d) reached. Nothing is queued: all %d are running now. Each running job reports its result as a session message and wakes you when it finishes. Free slots: batch_stop the jobs you no longer need, timers first; otherwise end your turn now with a short status and NO tool call. Do not poll with sleep/echo and do not call ask_question about this limit", limit, active)
+	}
+	// Warn on the approach, not only at the wall. Hitting the cap kills the
+	// run with one line and no warning; this gives the operator the count
+	// while there is still room to act.
+	if float64(active+1) >= warnBackgroundJobsThreshold*float64(limit) {
+		slog.Warn("background jobs approaching the limit",
+			"active", active+1,
+			"limit", limit,
+			"command", command)
+	}
+
+	id := fmt.Sprintf("%03X", m.idCounter.Add(1))
+
+	shell := NewShell(&Options{
+		WorkingDir: workingDir,
+		BlockFuncs: blockFuncs,
+	})
+
+	shellCtx, cancel := context.WithCancel(ctx)
+	if retained {
+		if stops, ok := ctx.Value(retainedStopKey{}).(*retainedStops); ok {
+			stops.cancel = cancel
+		}
+	}
+
+	bgShell := &BackgroundShell{
+		ID:          id,
+		Command:     command,
+		Description: description,
+		SessionID:   sessionID,
+		WorkingDir:  workingDir,
+		StartTime:   time.Now(),
+		Shell:       shell,
+		mgr:         m,
+		ctx:         shellCtx,
+		cancel:      cancel,
+		stdout:      newBoundedBuffer(maxStreamBufferBytes),
+		stderr:      newBoundedBuffer(maxStreamBufferBytes),
+		retained:    retained,
+		done:        make(chan struct{}),
+	}
+
+	m.shells.Set(id, bgShell)
+	// Reserve the concurrency slot now (under startMu, atomically with the
+	// limit check above). Released when the goroutine finishes, right after
+	// completedAt is set — that single point covers normal completion, Kill,
+	// and KillAll, since all three reach "done" via this goroutine returning.
+	m.activeJobs.Add(1)
+
+	go func() {
+		completionSignaled := false
+		defer func() {
+			// Preserve the terminal notification even if the shell executor
+			// panics before the ordinary completion path reaches close(done).
+			if !completionSignaled {
+				close(bgShell.done)
+			}
+		}()
+
+		var stdout, stderr io.Writer = bgShell.stdout, bgShell.stderr
+		if retained {
+			if stops, ok := shellCtx.Value(retainedStopKey{}).(*retainedStops); ok {
+				stdout = retainedWriter{bgShell.stdout, stops.output}
+				stderr = retainedWriter{bgShell.stderr, stops.output}
+			}
+		}
+		err := shell.ExecStream(shellCtx, command, stdout, stderr)
+
+		bgShell.exitErr = err
+		bgShell.completedAt.Store(time.Now().Unix())
+		m.activeJobs.Add(-1)
+		// Schedule buffer release on a timer so the (up to 6 MiB) buffered
+		// stdout/stderr is freed after bufferRetention even if no further
+		// bash task ever calls Cleanup. releaseBuffers is idempotent, so a
+		// later Cleanup or duplicate fire is a no-op.
+		//
+		// time.AfterFunc runs its callback on its own goroutine with no
+		// panic isolation of its own; releaseBuffers has no known panic
+		// surface. The cost of an unnecessary recover()
+		// here is negligible next to a silent process crash if that ever
+		// changes.
+		bgShell.armBufferReleaseTimer(m.bufferRetention)
+		// Arm retention before publishing completion. A detached job with no
+		// pending callback releases its buffers synchronously; closing done only
+		// after that keeps Wait's terminal-state contract complete.
+		close(bgShell.done)
+		completionSignaled = true
+	}()
+
+	return bgShell, nil
+}
+
+// Get retrieves a background shell by ID.
+func (m *BackgroundShellManager) Get(id string) (*BackgroundShell, bool) {
+	return m.shells.Get(id)
+}
+
+// GetOwned retrieves a job only when it belongs to sessionID. A foreign job
+// is deliberately indistinguishable from a missing job to avoid leaking its
+// existence through the tool API.
+func (m *BackgroundShellManager) GetOwned(sessionID, id string) (*BackgroundShell, bool) {
+	if sessionID == "" {
+		return nil, false
+	}
+	shell, ok := m.shells.Get(id)
+	if !ok || shell.SessionID != sessionID {
+		return nil, false
+	}
+	return shell, true
+}
+
+// ActiveJobs returns the number of currently-running background jobs (started
+// but not yet completed). This is the value the MaxBackgroundJobs concurrency
+// limit is enforced against; completed jobs retained for result querying are
+// not counted.
+func (m *BackgroundShellManager) ActiveJobs() int {
+	return int(m.activeJobs.Load())
+}
+
+// Remove removes a background shell from the manager without terminating it.
+// This is useful when a shell has already completed and you just want to clean up tracking.
+func (m *BackgroundShellManager) Remove(id string) error {
+	shell, ok := m.shells.Take(id)
+	if !ok {
+		return fmt.Errorf("background shell not found: %s", id)
+	}
+	shell.detachFromManager()
+	return nil
+}
+
+// RemoveOwned removes a completed or otherwise already-detached job only
+// when it belongs to sessionID.
+func (m *BackgroundShellManager) RemoveOwned(sessionID, id string) error {
+	shell, ok := m.GetOwned(sessionID, id)
+	if !ok {
+		return fmt.Errorf("background shell not found: %s", id)
+	}
+	if _, ok := m.shells.Take(shell.ID); !ok {
+		return fmt.Errorf("background shell not found: %s", id)
+	}
+	shell.detachFromManager()
+	return nil
+}
+
+// Kill terminates a background shell by ID. The provided context bounds how
+// long Kill waits for the shell to actually exit after cancelling it; this
+// mirrors KillAll's bounding and prevents an unresponsive child process tree
+// (e.g. a stuck node.exe on Windows that ignores context cancellation) from
+// blocking the caller indefinitely. If ctx expires before the shell exits,
+// Kill returns ctx.Err() — the shell has still been removed from the manager
+// and its cancel func called, but the underlying OS process may live on as an
+// orphan (see CLAUDE.md residual-risk note).
+//
+// A detach is stamped (detachedAt), so the completion hold of a shell that never
+// exits after this stops counting completionHoldMax later (R8B-2).
+func (m *BackgroundShellManager) Kill(ctx context.Context, id string) error {
+	shell, ok := m.shells.Take(id)
+	if !ok {
+		return fmt.Errorf("background shell not found: %s", id)
+	}
+
+	shell.cancel()
+	shell.detachFromManager()
+	select {
+	case <-shell.done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return nil
+}
+
+// KillOwned terminates a job only when it belongs to sessionID.
+func (m *BackgroundShellManager) KillOwned(ctx context.Context, sessionID, id string) error {
+	shell, ok := m.GetOwned(sessionID, id)
+	if !ok {
+		return fmt.Errorf("background shell not found: %s", id)
+	}
+	if _, ok := m.shells.Take(shell.ID); !ok {
+		return fmt.Errorf("background shell not found: %s", id)
+	}
+
+	shell.cancel()
+	shell.detachFromManager()
+	select {
+	case <-shell.done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return nil
+}
+
+// BackgroundShellInfo contains information about a background shell.
+type BackgroundShellInfo struct {
+	ID          string
+	Command     string
+	Description string
+}
+
+// List returns all background shell IDs.
+func (m *BackgroundShellManager) List() []string {
+	ids := make([]string, 0, m.shells.Len())
+	for id := range m.shells.Seq2() {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// ListOwned returns only the job IDs owned by sessionID.
+func (m *BackgroundShellManager) ListOwned(sessionID string) []string {
+	if sessionID == "" {
+		return nil
+	}
+	ids := make([]string, 0)
+	for id, shell := range m.shells.Seq2() {
+		if shell.SessionID == sessionID {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// ActiveOwned counts the jobs owned by sessionID that are STILL RUNNING,
+// i.e. started but not yet completed. It is the per-owner counterpart of
+// ActiveJobs, and it exists so a caller can ask "does this session still own
+// live background work?" without walking ListOwned and re-reading each job's
+// completedAt itself.
+//
+// A completedAt of 0 means the job's goroutine has not finished yet (see the
+// completion path in start, where completedAt is set right before close(done)),
+// so those are exactly the jobs that must still be waited on. Jobs already
+// completed but retained for result querying do NOT count — they are terminal
+// by definition and hold no concurrency slot.
+func (m *BackgroundShellManager) ActiveOwned(sessionID string) int {
+	if sessionID == "" {
+		return 0
+	}
+	active := 0
+	for _, shell := range m.shells.Seq2() {
+		if shell.SessionID != sessionID {
+			continue
+		}
+		if shell.completedAt.Load() <= 0 {
+			active++
+		}
+	}
+	return active
+}
+
+// Cleanup removes completed jobs that have been finished for more than the
+// retention period, and — for completed jobs past the shorter
+// BufferRetentionMinutes but not yet past full retention — releases their
+// buffered stdout/stderr bytes to shrink memory use while keeping the job
+// record (status, exit code, Command, etc.) queryable for the full window.
+func (m *BackgroundShellManager) Cleanup() int {
+	return m.cleanup("")
+}
+
+// CleanupOwned releases and removes only jobs owned by sessionID.
+func (m *BackgroundShellManager) CleanupOwned(sessionID string) int {
+	if sessionID == "" {
+		return 0
+	}
+	return m.cleanup(sessionID)
+}
+
+func (m *BackgroundShellManager) cleanup(sessionID string) int {
+	now := time.Now().Unix()
+	retentionSeconds := int64(CompletedJobRetentionMinutes * 60)
+	bufferRetentionSeconds := int64(BufferRetentionMinutes * 60)
+
+	var toRemove []string
+	for shell := range m.shells.Seq() {
+		if sessionID != "" && shell.SessionID != sessionID {
+			continue
+		}
+		completedAt := shell.completedAt.Load()
+		if completedAt <= 0 {
+			continue
+		}
+		age := now - completedAt
+		if age > retentionSeconds {
+			toRemove = append(toRemove, shell.ID)
+			continue
+		}
+		if age > bufferRetentionSeconds && !shell.bufReleased.Load() {
+			shell.releaseBuffers()
+		}
+	}
+
+	for _, id := range toRemove {
+		m.Remove(id)
+	}
+
+	return len(toRemove)
+}
+
+// KillAll terminates all background shells. The provided context bounds how
+// long the function waits for each shell to exit.
+func (m *BackgroundShellManager) KillAll(ctx context.Context) {
+	m.startMu.Lock()
+	shells := slices.Collect(m.shells.Seq())
+	m.shells.Reset(map[string]*BackgroundShell{})
+	m.startMu.Unlock()
+	m.cancelShells(ctx, shells)
+}
+
+// Close permanently closes this manager and stops all jobs owned by its
+// App/client. It is safe for concurrent Start and Close calls: a Start that
+// wins the lock is included in the shutdown snapshot, and later Starts are
+// rejected before they can create a process.
+func (m *BackgroundShellManager) Close(ctx context.Context) {
+	m.startMu.Lock()
+	if m.closed {
+		m.startMu.Unlock()
+		return
+	}
+	m.closed = true
+	shells := slices.Collect(m.shells.Seq())
+	m.shells.Reset(map[string]*BackgroundShell{})
+	m.startMu.Unlock()
+	m.cancelShells(ctx, shells)
+}
+
+func (m *BackgroundShellManager) cancelShells(ctx context.Context, shells []*BackgroundShell) {
+	var wg sync.WaitGroup
+	for _, shell := range shells {
+		wg.Go(func() {
+			shell.detachFromManager()
+			shell.cancel()
+			select {
+			case <-shell.done:
+			case <-ctx.Done():
+			}
+		})
+	}
+	wg.Wait()
+}
+
+// limit's cost in real processes. A value <= 0 restores the default.
+func (m *BackgroundShellManager) SetMaxJobs(n int) {
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+	if n <= 0 {
+		n = MaxBackgroundJobs
+	}
+	m.maxJobs = n
+}
+
+// MaxJobs reports this manager's current concurrency cap.
+func (m *BackgroundShellManager) MaxJobs() int {
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+	if m.maxJobs <= 0 {
+		return MaxBackgroundJobs
+	}
+	return m.maxJobs
+}
+
+// maxJobsFromEnv resolves the concurrency cap for a new manager:
+// RUSH_MAX_BACKGROUND_JOBS when it parses to a positive integer, otherwise
+// MaxBackgroundJobs.
+//
+// An env var rather than a bigger default because the cost of a higher cap
+// is machine-specific and real: the jobs it admits are processes, and
+// raising the default was measured to destabilise this repository's own test
+// suite. An operator raising it on a host they know can take it is making an
+// informed choice; a default doing it for everyone is not.
+//
+// A malformed or non-positive value falls back to the default rather than
+// failing: this is a convenience knob, and a typo in it should not stop
+// rush from starting. It is logged so the typo is visible.
+func maxJobsFromEnv() int {
+	raw := os.Getenv("RUSH_MAX_BACKGROUND_JOBS")
+	if raw == "" {
+		return MaxBackgroundJobs
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		slog.Warn("ignoring RUSH_MAX_BACKGROUND_JOBS: not a positive integer",
+			"value", raw, "using", MaxBackgroundJobs)
+		return MaxBackgroundJobs
+	}
+	slog.Info("background job limit overridden", "limit", n, "default", MaxBackgroundJobs)
+	return n
+}

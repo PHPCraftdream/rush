@@ -41,10 +41,10 @@ class PublishWorkflowTests(unittest.TestCase):
         build = self.workflow[build_start:build_end]
         self.assertRegex(build, r'BUILD_COMMIT="\$\(git rev-parse HEAD\)"')
         self.assertIn('BUILD_COMMIT="${BUILD_COMMIT:0:8}"', build)
-        self.assertRegex(build, r'-X github\.com/PHPCraftdream/rush/internal/version\.Commit=\$\{BUILD_COMMIT\}')
-        self.assertRegex(build, r'-X github\.com/PHPCraftdream/rush/internal/version\.BuildID=\$\{BUILD_COMMIT\}')
+        self.assertRegex(build, r'-X github\.com/PHPCraftdream/rush/internal/kit/diag/version\.Commit=\$\{BUILD_COMMIT\}')
+        self.assertRegex(build, r'-X github\.com/PHPCraftdream/rush/internal/kit/diag/version\.BuildID=\$\{BUILD_COMMIT\}')
         self.assertEqual(
-            re.findall(r'-X github\.com/PHPCraftdream/rush/internal/version\.(?:Commit|BuildID)=\$\{([^}]+)\}', build),
+            re.findall(r'-X github\.com/PHPCraftdream/rush/internal/kit/diag/version\.(?:Commit|BuildID)=\$\{([^}]+)\}', build),
             ["BUILD_COMMIT", "BUILD_COMMIT"],
         )
 

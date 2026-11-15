@@ -16,8 +16,8 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/filelock"
-	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

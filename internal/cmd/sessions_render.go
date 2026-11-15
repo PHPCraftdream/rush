@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/ansiext"
+	"github.com/PHPCraftdream/rush/internal/kit/text/ansiext"
 )
 
 // toolPreviewMaxLen caps the displayed length of a tool-call argument

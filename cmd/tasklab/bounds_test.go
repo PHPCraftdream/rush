@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/tasktree/lab"
+	"github.com/PHPCraftdream/rush/internal/kit/tasktree/lab"
 )
 
 type cliTestSpaces struct{}

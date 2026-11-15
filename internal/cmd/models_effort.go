@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 )
 
 // defaultEffortLevels is the fallback used when the regex below fails to

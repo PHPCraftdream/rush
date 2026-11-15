@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"regexp"
 
-	"github.com/PHPCraftdream/rush/internal/log"
+	"github.com/PHPCraftdream/rush/internal/kit/diag/log"
 )
 
 var assistantRolePattern = regexp.MustCompile(`"role"\s*:\s*"assistant"`)

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/fsext"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 	"github.com/stretchr/testify/require"
 )
 

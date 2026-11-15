@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 )
 
 const denyExecEnv = "RUSH_DENY_EXEC"

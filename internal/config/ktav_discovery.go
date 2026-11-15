@@ -15,8 +15,8 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/PHPCraftdream/rush/internal/fsext"
-	"github.com/PHPCraftdream/rush/internal/ktavcodec"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
+	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 )
 
 const (

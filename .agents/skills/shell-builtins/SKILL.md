@@ -1,17 +1,17 @@
 ---
 name: shell-builtins
-description: Use when creating a new shell builtin command for Rush (internal/shell/), editing an existing one, or when the user needs to understand how commands are intercepted in Rush's embedded shell.
+description: Use when creating a new shell builtin command for Rush (internal/kit/sys/shell/), editing an existing one, or when the user needs to understand how commands are intercepted in Rush's embedded shell.
 ---
 
 # Shell Builtins
 
-Rush's shell (`internal/shell/`) uses `mvdan.cc/sh/v3` for POSIX shell
+Rush's shell (`internal/kit/sys/shell/`) uses `mvdan.cc/sh/v3` for POSIX shell
 emulation. Commands can be intercepted before they reach the OS by adding
 **builtins** — functions handled in-process.
 
 ## How Builtins Work
 
-Builtins live in `builtinHandler()` in `internal/shell/run.go`. This is an
+Builtins live in `builtinHandler()` in `internal/kit/sys/shell/run.go`. This is an
 `interp.ExecHandlerFunc` middleware registered in `standardHandlers()`
 **before** the block handler, so builtins run even for commands that would
 otherwise be blocked. The same handler chain is shared by the stateful
@@ -32,7 +32,7 @@ inline or delegates to a helper function.
        return handleMyCommand(ctx, args, hc.Stdin, hc.Stdout, hc.Stderr)
    ```
 3. **Implement the handler** in its own file (e.g.,
-   `internal/shell/mycommand.go`). The function signature must accept a
+   `internal/kit/sys/shell/mycommand.go`). The function signature must accept a
    `context.Context` as the first parameter, plus args, stdin, stdout, and
    stderr:
    ```go

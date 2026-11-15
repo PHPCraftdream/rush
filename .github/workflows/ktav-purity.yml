@@ -97,20 +97,20 @@ jobs:
             exit 1
           fi
       # The pure backend must actually be in the codec's closure —
-      # checked against ./internal/ktavcodec because the codec is not
+      # checked against ./internal/kit/text/ktavcodec because the codec is not
       # yet wired into the product root package (lane K1 does that).
       # The grep sits in an if/! condition, which POSIX exempts from
       # errexit, so its exit status only reaches the branch decision
       # and cannot kill the step; tr -d '\r' strips CR that
       # `go list` can emit on Windows.
-      - name: pure backend present in internal/ktavcodec closure
+      - name: pure backend present in internal/kit/text/ktavcodec closure
         env:
           GOOS: ${{ matrix.goos }}
         shell: bash
         run: |
           set -uo pipefail
-          if ! go list -deps ./internal/ktavcodec | tr -d '\r' \
+          if ! go list -deps ./internal/kit/text/ktavcodec | tr -d '\r' \
             | grep -Fx 'github.com/ktav-lang/golang/pure'; then
-            echo "::error::github.com/ktav-lang/golang/pure is NOT in the internal/ktavcodec dependency closure"
+            echo "::error::github.com/ktav-lang/golang/pure is NOT in the internal/kit/text/ktavcodec dependency closure"
             exit 1
           fi

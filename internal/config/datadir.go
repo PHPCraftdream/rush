@@ -19,9 +19,9 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/db/storepath"
-	"github.com/PHPCraftdream/rush/internal/filepathext"
-	"github.com/PHPCraftdream/rush/internal/fsext"
-	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filepathext"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 )
 
 // DataDirSource records WHY a process resolved a given data directory

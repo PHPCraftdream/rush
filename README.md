@@ -771,7 +771,7 @@ files only, without refreshing the catalog. Artifact entrypoints
 before compilation. Local refresh failures warn and keep committed outputs;
 `CI=true` implies strict failure, and release pipelines explicitly refresh
 with `-mode refresh -strict` (not check-only).
-Manual refresh: `go run ./internal/tools/cahsync`; `-strict` makes failures
+Manual refresh: `go run ./internal/kit/dev/cahsync`; `-strict` makes failures
 fatal, `-check -strict` detects drift without writing, and `-offline` skips
 network and output I/O. Refresh never downgrades below the committed cah version. Successful refresh logs the source version and
 changed paths. CI drift checking is a separate nonblocking warning job;
@@ -2082,7 +2082,7 @@ metrics include solely usage metadata; prompts and responses are NEVER
 collected.
 
 Details on exactly what’s collected are in the source code
-([here](https://github.com/PHPCraftdream/rush/tree/main/internal/event)
+([here](https://github.com/PHPCraftdream/rush/tree/main/internal/kit/sync/event)
 and [here](https://github.com/PHPCraftdream/rush/blob/main/internal/config/config.go)).
 
 You can opt out of metrics collection at any time by setting the environment

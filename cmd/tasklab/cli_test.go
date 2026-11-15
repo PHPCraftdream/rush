@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/tasktree"
-	"github.com/PHPCraftdream/rush/internal/tasktree/lab"
-	"github.com/PHPCraftdream/rush/internal/tasktree/protocol"
+	"github.com/PHPCraftdream/rush/internal/kit/tasktree"
+	"github.com/PHPCraftdream/rush/internal/kit/tasktree/lab"
+	"github.com/PHPCraftdream/rush/internal/kit/tasktree/protocol"
 )
 
 func cliTestPtr[T any](value T) *T { return &value }

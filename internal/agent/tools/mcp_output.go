@@ -11,8 +11,8 @@ import (
 	"unicode/utf8"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/kit/text/stringext"
 	"github.com/PHPCraftdream/rush/internal/permission"
-	"github.com/PHPCraftdream/rush/internal/stringext"
 )
 
 const mcpOutputScheme = "rush-mcp-output"

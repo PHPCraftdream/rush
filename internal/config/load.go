@@ -11,7 +11,7 @@ import (
 	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
-	"github.com/PHPCraftdream/rush/internal/env"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
 
 const defaultCatwalkURL = "https://catwalk.charm.land"

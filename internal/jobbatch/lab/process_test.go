@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/jobbatch"
-	"github.com/PHPCraftdream/rush/internal/platform"
-	"github.com/PHPCraftdream/rush/internal/testguard"
+	"github.com/PHPCraftdream/rush/internal/kit/dev/testguard"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 )
 
 var processTestBuild struct {

@@ -14,7 +14,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/PHPCraftdream/rush/internal/ktavcodec"
+	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 )
 
 const ktavSymlinkDeferredReason = "ktav migration: legacy config is a symbolic link whose target is not a regular file or is unreadable"

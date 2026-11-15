@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/procinfo"
-	"github.com/PHPCraftdream/rush/internal/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 )
 
 // abandonGrace is how long runOne waits after ctx cancellation for the

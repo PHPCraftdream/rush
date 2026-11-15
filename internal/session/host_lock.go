@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/filelock"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/google/uuid"
 )
 

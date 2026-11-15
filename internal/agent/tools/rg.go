@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/log"
-	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/diag/log"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 )
 
 var getRg = sync.OnceValue(func() string {

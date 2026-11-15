@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
 	gopty "github.com/aymanbagabas/go-pty"
 )

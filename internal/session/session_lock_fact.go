@@ -15,7 +15,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/procinfo"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 )
 
 // SessionLockStem is the lock-FILE stem of a real session id: ids sanitise

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 )
 
 // worktreeRemoveAttempts is how many times removeGitWorktree retries a

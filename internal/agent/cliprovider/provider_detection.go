@@ -12,7 +12,7 @@ import (
 	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
-	"github.com/PHPCraftdream/rush/internal/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 )
 
 // Available returns the subset of All whose Binary is found in PATH.

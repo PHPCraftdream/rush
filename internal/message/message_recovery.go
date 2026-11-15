@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/pubsub"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 )
 
 // InterruptedAssistantCandidate is one row of

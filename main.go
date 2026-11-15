@@ -14,8 +14,8 @@ import (
 	"os"
 
 	"github.com/PHPCraftdream/rush/internal/cmd"
-	_ "github.com/PHPCraftdream/rush/internal/dns"
-	"github.com/PHPCraftdream/rush/internal/platform"
+	_ "github.com/PHPCraftdream/rush/internal/kit/sys/dns"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	_ "github.com/joho/godotenv/autoload"
 )
 

@@ -13,8 +13,8 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/pubsub"
-	"github.com/PHPCraftdream/rush/internal/testguard"
+	"github.com/PHPCraftdream/rush/internal/kit/dev/testguard"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 )
 
 func TestMain(m *testing.M) { testguard.Main(m) }

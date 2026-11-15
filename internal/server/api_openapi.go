@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/PHPCraftdream/rush/internal/version"
+	"github.com/PHPCraftdream/rush/internal/kit/diag/version"
 )
 
 func BuildOpenAPIDocument(routes []APIRoute) map[string]any {

@@ -3,7 +3,7 @@ package agentguard
 import (
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 )
 
 func policyArgvCandidates(args []string, depth int) [][]string {

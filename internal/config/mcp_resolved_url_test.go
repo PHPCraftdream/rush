@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/env"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 	"github.com/stretchr/testify/require"
 )
 

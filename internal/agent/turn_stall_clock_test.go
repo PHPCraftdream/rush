@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/log"
+	"github.com/PHPCraftdream/rush/internal/kit/diag/log"
 )
 
 // Each test names the production line it must catch (revert-check doc):

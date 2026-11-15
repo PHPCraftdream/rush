@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/home"
-	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

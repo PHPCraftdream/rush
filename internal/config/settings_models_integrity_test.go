@@ -28,7 +28,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/ktavcodec"
+	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 	"github.com/PHPCraftdream/rush/internal/oauth"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"

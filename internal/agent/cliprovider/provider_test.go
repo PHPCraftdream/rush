@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/testguard"
+	"github.com/PHPCraftdream/rush/internal/kit/dev/testguard"
 )
 
 // fastExitHelperEnv turns this test binary into the fast-exiting child process
