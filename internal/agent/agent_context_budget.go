@@ -7,7 +7,7 @@ import (
 
 	"charm.land/fantasy"
 
-	"github.com/PHPCraftdream/rush/internal/discover"
+	"github.com/PHPCraftdream/rush/internal/config/discover"
 )
 
 func effectiveMaxOutputTokens(model Model, callOverride int64) int64 {

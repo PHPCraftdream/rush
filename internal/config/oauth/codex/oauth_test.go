@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/oauth"
 )
 
 func TestLoginBrowserPKCEStateAndExactCallback(t *testing.T) {

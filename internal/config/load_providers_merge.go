@@ -4,7 +4,7 @@ package config
 
 import (
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/discover"
+	"github.com/PHPCraftdream/rush/internal/config/discover"
 )
 
 // forgetDumpedUserSet clears the user-set flags of config rows whose values

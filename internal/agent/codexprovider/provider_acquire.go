@@ -12,7 +12,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
-	"github.com/PHPCraftdream/rush/internal/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/oauth"
 )
 
 func (m *languageModel) acquireResponse(ctx context.Context, payload []byte, userAgent string) (*http.Response, error) {

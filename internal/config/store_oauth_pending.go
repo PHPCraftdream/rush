@@ -4,8 +4,8 @@ import (
 	"reflect"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/config/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
-	"github.com/PHPCraftdream/rush/internal/oauth"
 )
 
 type pendingOAuthRotation struct {

@@ -301,7 +301,7 @@ jobs:
           echo "${{ matrix.shard }}|test: internal/store/db, internal/store/message, internal/queue, internal/kit/sync/pubsub, internal/store/history|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
 
-      - name: "test: internal/oauth, internal/deploy, internal/update, internal/kit/diag/version"
+      - name: "test: internal/config/oauth, internal/deploy, internal/update, internal/kit/diag/version"
         if: matrix.shard == 'D'
         shell: bash
         run: |
@@ -311,7 +311,7 @@ jobs:
           t0=$(date +%s)
           go test -short -failfast -p 2 -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-internal-oauth-internal-deploy-internal-update-internal-version.json"
           rc=$?
-          echo "${{ matrix.shard }}|test: internal/oauth, internal/deploy, internal/update, internal/kit/diag/version|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+          echo "${{ matrix.shard }}|test: internal/config/oauth, internal/deploy, internal/update, internal/kit/diag/version|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
 
       - name: "test: everything else (computed catch-all)"

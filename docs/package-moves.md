@@ -33,3 +33,5 @@
 | internal/message | internal/store/message | 2026-11-15 |
 | internal/heartbeat | internal/session/heartbeat | 2026-11-15 |
 | internal/jobbatch | internal/session/jobbatch | 2026-11-15 |
+| internal/discover | internal/config/discover | 2026-11-15 |
+| internal/oauth | internal/config/oauth | 2026-11-15 |

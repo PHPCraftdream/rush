@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
-	"github.com/PHPCraftdream/rush/internal/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/oauth"
 )
 
 // DeviceAuthResponse contains the response from the device authorization endpoint.

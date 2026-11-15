@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
-	"github.com/PHPCraftdream/rush/internal/oauth"
 )
 
 // These package-private budgets are test seams. Override only in serial tests

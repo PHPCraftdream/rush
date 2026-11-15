@@ -16,7 +16,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/discover"
+	"github.com/PHPCraftdream/rush/internal/config/discover"
 	"github.com/PHPCraftdream/rush/internal/kit/diag/version"
 	"github.com/PHPCraftdream/rush/internal/skills"
 )
