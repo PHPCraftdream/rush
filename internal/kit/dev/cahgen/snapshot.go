@@ -8,7 +8,7 @@ import (
 )
 
 // SnapshotPath is the live acquired manifest; refresh rewrites it with the generated files.
-const SnapshotPath = "internal/cahgen/testdata/manifest.json"
+const SnapshotPath = "internal/kit/dev/cahgen/testdata/manifest.json"
 
 // RenderSnapshot is the canonical snapshot encoding: 2-space JSON plus trailing newline.
 func RenderSnapshot(m Manifest) ([]byte, error) {

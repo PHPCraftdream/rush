@@ -173,7 +173,7 @@ func (f *batchFixture) diagnostics() string {
 	b.WriteString("--- timeline (HTTP exchanges and provider requests) ---\n")
 	b.WriteString(f.trace.String())
 	b.WriteString("\n--- ")
-	b.WriteString(goroutinesMatching(16000, "apiBatchService", "internal/agent.(*BatchCLI", "internal/jobbatch", "RunQueuePump"))
+	b.WriteString(goroutinesMatching(16000, "apiBatchService", "internal/agent.(*BatchCLI", "internal/session/jobbatch", "RunQueuePump"))
 	b.WriteString("\n")
 	return b.String()
 }

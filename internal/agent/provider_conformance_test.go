@@ -385,7 +385,7 @@ func TestProviderCancellationConformance(t *testing.T) {
 		// We don't re-implement those tests here to avoid duplication. Instead,
 		// we document the contract and reference the existing tests.
 		t.Log("CLI provider hard-abort contract: context cancellation leads to process tree termination")
-		t.Log("Verified by existing tests in internal/agent/cliprovider/provider_test.go:")
+		t.Log("Verified by existing tests in internal/agent/provider/cliprovider/provider_test.go:")
 		t.Log("  - TestStreamKillUsesTreeKillStillTerminatesChild")
 		t.Log("  - TestStreamWaitBoundedOnGrandchildHoldsStderr")
 	})

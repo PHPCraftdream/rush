@@ -119,7 +119,7 @@ func describeAdmissionApp(application *App, store *config.ConfigStore, ownerID s
 	_ = pprof.Lookup("goroutine").WriteTo(&buf, 2)
 	var keep []string
 	for _, g := range strings.Split(buf.String(), "\n\n") {
-		if strings.Contains(g, "internal/agent.(*BatchCLI") || strings.Contains(g, "internal/jobbatch") || strings.Contains(g, "buildPolicyTools") {
+		if strings.Contains(g, "internal/agent.(*BatchCLI") || strings.Contains(g, "internal/session/jobbatch") || strings.Contains(g, "buildPolicyTools") {
 			keep = append(keep, g)
 		}
 	}

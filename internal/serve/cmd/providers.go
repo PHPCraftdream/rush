@@ -412,7 +412,7 @@ rush providers add zai --name "Z.AI" --type openai-compat --peak-hours 09:00-18:
 		provType := catwalk.Type(typeStr)
 
 		if provType == "cli" {
-			return fmt.Errorf("adding new CLI providers requires editing internal/agent/cliprovider/provider.go directly")
+			return fmt.Errorf("adding new CLI providers requires editing internal/agent/provider/cliprovider/provider.go directly")
 		}
 
 		// Validate provider type

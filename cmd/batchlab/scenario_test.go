@@ -14,7 +14,7 @@ import (
 
 func TestMainEveryScenarioFixture(t *testing.T) {
 	// L3/F/V/R/C/W mutation: a CLI that ignores declared exits or bypasses ingress fails a fixture.
-	paths, err := filepath.Glob("../../internal/jobbatch/lab/testdata/scenarios/*")
+	paths, err := filepath.Glob("../../internal/session/jobbatch/lab/testdata/scenarios/*")
 	if err != nil || len(paths) == 0 {
 		t.Fatal("fixtures", err)
 	}

@@ -58,7 +58,7 @@ func main() {
 	// `go run deploy.go` binary is structurally the same as what actually
 	// ships. version.Version is deliberately left uninjected: the binary
 	// should still report itself as a local dev build (commit hash +
-	// fork base version, see internal/version/version.go), not spoof a
+	// fork base version, see internal/kit/diag/version/version.go), not spoof a
 	// numbered release.
 	//
 	// Also stamp the commit hash and a readable build time so
@@ -70,7 +70,7 @@ func main() {
 	// would otherwise embed, so the hash is injected explicitly instead of
 	// relying on debug.ReadBuildInfo. Best-effort: a build outside a git
 	// checkout still succeeds, just without the commit component.
-	const versionPkg = "github.com/PHPCraftdream/rush/internal/version"
+	const versionPkg = "github.com/PHPCraftdream/rush/internal/kit/diag/version"
 	ldflags := fmt.Sprintf(
 		"-s -w -X=%s.BuildID=%s -X=%s.BuildTime=%s",
 		versionPkg, buildTime,

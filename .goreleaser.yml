@@ -81,7 +81,7 @@ builds:
       # across several) since goreleaser passes each ldflags entry as its
       # own separate `-ldflags` flag to `go build`, and repeated
       # `-ldflags` flags don't accumulate — only the last one would apply.
-      - -s -w -X github.com/PHPCraftdream/rush/internal/version.Version={{.Version}} -X github.com/PHPCraftdream/rush/internal/version.Commit={{.ShortCommit}} -X github.com/PHPCraftdream/rush/internal/version.BuildTime={{.Date}}
+      - -s -w -X github.com/PHPCraftdream/rush/internal/kit/diag/version.Version={{.Version}} -X github.com/PHPCraftdream/rush/internal/kit/diag/version.Commit={{.ShortCommit}} -X github.com/PHPCraftdream/rush/internal/kit/diag/version.BuildTime={{.Date}}
     flags:
       - -trimpath
 
@@ -127,7 +127,7 @@ aur_sources:
       export CGO_CXXFLAGS="${CXXFLAGS}"
       export CGO_LDFLAGS="${LDFLAGS}"
       export GOFLAGS="-buildmode=pie -trimpath -mod=readonly -modcacherw"
-      go build -ldflags="-w -s -buildid='' -linkmode=external -X github.com/PHPCraftdream/rush/internal/version.Version=v${pkgver}" .
+      go build -ldflags="-w -s -buildid='' -linkmode=external -X github.com/PHPCraftdream/rush/internal/kit/diag/version.Version=v${pkgver}" .
       ./rush completion bash >./completions/rush.bash
       ./rush completion zsh >./completions/rush.zsh
       ./rush completion fish >./completions/rush.fish

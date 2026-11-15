@@ -75,8 +75,8 @@ func TestPipelineRefreshOrder(t *testing.T) {
 		if strings.HasPrefix(step.Uses, "actions/setup-node@") {
 			nodeSetup = i
 		}
-		if strings.Contains(step.Run, "go run ./internal/tools/cahsync") {
-			require.Equal(t, "go run ./internal/tools/cahsync -mode refresh -strict", strings.TrimSpace(step.Run))
+		if strings.Contains(step.Run, "go run ./internal/kit/dev/cahsync") {
+			require.Equal(t, "go run ./internal/kit/dev/cahsync -mode refresh -strict", strings.TrimSpace(step.Run))
 			require.Greater(t, i, goSetup)
 			require.Greater(t, i, nodeSetup)
 			require.NotEqual(t, -1, goSetup)
@@ -94,7 +94,7 @@ func TestPipelineRefreshOrder(t *testing.T) {
 	require.Equal(t, 1, builds)
 	g := readPipeline(t, ".goreleaser.yml")
 	require.NotEmpty(t, g.Before.Hooks)
-	require.Equal(t, "go run ./internal/tools/cahsync -mode refresh -strict", g.Before.Hooks[0])
+	require.Equal(t, "go run ./internal/kit/dev/cahsync -mode refresh -strict", g.Before.Hooks[0])
 	completion, man := false, false
 	for i, hook := range g.Before.Hooks {
 		if strings.Contains(hook, "go run . ") {
@@ -118,14 +118,14 @@ func TestPipelineDriftIsIsolated(t *testing.T) {
 		for _, step := range job.Steps {
 			goSetup = goSetup || strings.HasPrefix(step.Uses, "actions/setup-go@")
 			nodeSetup = nodeSetup || strings.HasPrefix(step.Uses, "actions/setup-node@")
-			if !strings.Contains(step.Run, "go run ./internal/tools/cahsync") {
+			if !strings.Contains(step.Run, "go run ./internal/kit/dev/cahsync") {
 				continue
 			}
 			checks++
 			require.True(t, step.Continue, "the drift check must not fail the job")
 			require.False(t, job.Continue)
 			require.True(t, goSetup && nodeSetup)
-			require.Contains(t, step.Run, "go run ./internal/tools/cahsync -check -strict || {")
+			require.Contains(t, step.Run, "go run ./internal/kit/dev/cahsync -check -strict || {")
 			require.Contains(t, step.Run, "::warning::")
 			require.Contains(t, step.Run, "exit 1")
 			require.NotContains(t, step.Run, "go test ")
@@ -178,7 +178,7 @@ func TestBuildLaunchPolicyAndEnvironment(t *testing.T) {
 			err := refreshBuild(context.Background(), "root", &log, &log, func(string) string { return ci }, func(cmd *exec.Cmd) error {
 				require.Nil(t, cmd.Env)
 				require.Equal(t, "root", cmd.Dir)
-				require.Equal(t, []string{"go", "run", "./internal/tools/cahsync", "-mode", "refresh"}, cmd.Args)
+				require.Equal(t, []string{"go", "run", "./internal/kit/dev/cahsync", "-mode", "refresh"}, cmd.Args)
 				return errors.New("compile/start failure")
 			})
 			if ci == "true" {

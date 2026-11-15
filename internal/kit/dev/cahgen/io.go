@@ -380,8 +380,8 @@ func (OSWriter) Rename(a, b string) error { return os.Rename(a, b) }
 func (OSWriter) Remove(p string) error    { return os.Remove(p) }
 
 const (
-	CmdPath   = "internal/cmd/models_cah_gen.go"
-	SpecsPath = "internal/agent/cliprovider/models_cah_gen.go"
+	CmdPath   = "internal/serve/cmd/models_cah_gen.go"
+	SpecsPath = "internal/agent/provider/cliprovider/models_cah_gen.go"
 )
 
 type Options struct {

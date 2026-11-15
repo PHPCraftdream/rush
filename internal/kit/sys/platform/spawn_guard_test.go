@@ -21,10 +21,10 @@ import (
 //
 // Paths are slash-separated and relative to the repository root.
 var spawnGuardExemptions = map[string]string{
-	"internal/platform/command.go":                  "the sanctioned constructor itself — it IS the wrapper every other call site must use",
-	"internal/platform/hide_window_windows_test.go": "tests HideConsoleWindow directly on an exec.Cmd before any spawn",
-	"internal/shell/exec_unix.go":                   "mirrors interp.DefaultExecHandler with an exec.Cmd literal (needs Path, not LookPath semantics); sets SysProcAttr explicitly via isolateProcess",
-	"internal/shell/exec_windows.go":                "mirrors interp.DefaultExecHandler with an exec.Cmd literal (needs Path, not LookPath semantics); hardens it by calling HideConsoleWindow on the literal",
+	"internal/kit/sys/platform/command.go":                  "the sanctioned constructor itself — it IS the wrapper every other call site must use",
+	"internal/kit/sys/platform/hide_window_windows_test.go": "tests HideConsoleWindow directly on an exec.Cmd before any spawn",
+	"internal/kit/sys/shell/exec_unix.go":                   "mirrors interp.DefaultExecHandler with an exec.Cmd literal (needs Path, not LookPath semantics); sets SysProcAttr explicitly via isolateProcess",
+	"internal/kit/sys/shell/exec_windows.go":                "mirrors interp.DefaultExecHandler with an exec.Cmd literal (needs Path, not LookPath semantics); hardens it by calling HideConsoleWindow on the literal",
 }
 
 // TestNoUnhardenedProcessSpawns fails when any file under
@@ -148,5 +148,5 @@ func repoRoot(t *testing.T) string {
 	_, thisFile, _, ok := runtime.Caller(0)
 	require.True(t, ok, "cannot determine test file location")
 	// <root>/internal/kit/sys/platform/spawn_guard_test.go -> <root>
-	return filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(thisFile))))
+	return filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))))
 }

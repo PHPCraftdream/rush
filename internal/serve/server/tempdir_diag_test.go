@@ -62,7 +62,7 @@ func describeTempTree(dir string) string {
 	if n > tempTreeEntryCap {
 		fmt.Fprintf(&b, "  ...(more than %d entries)\n", tempTreeEntryCap)
 	}
-	b.WriteString(goroutinesMatching(8000, "internal/heartbeat"))
+	b.WriteString(goroutinesMatching(8000, "internal/session/heartbeat"))
 	b.WriteString("\n")
 	return b.String()
 }

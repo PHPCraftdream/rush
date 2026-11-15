@@ -16,7 +16,7 @@ func RefreshBuild(ctx context.Context, root string, stdout, stderr io.Writer) er
 }
 
 func refreshBuild(ctx context.Context, root string, stdout, stderr io.Writer, env func(string) string, launch func(*exec.Cmd) error) error {
-	cmd := platform.Command(ctx, "go", "run", "./internal/tools/cahsync", "-mode", "refresh")
+	cmd := platform.Command(ctx, "go", "run", "./internal/kit/dev/cahsync", "-mode", "refresh")
 	cmd.Dir, cmd.Stdout, cmd.Stderr = root, stdout, stderr
 	if err := launch(cmd); err != nil {
 		_, err = failure(env("CI") == "true", fmt.Errorf("generator launch: %w", err), func(s string) { fmt.Fprintln(stderr, s) })

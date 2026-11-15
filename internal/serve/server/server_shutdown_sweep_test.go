@@ -22,7 +22,7 @@ func shutdownStacks() string {
 	_ = pprof.Lookup("goroutine").WriteTo(&buf, 2)
 	var keep []string
 	for _, g := range strings.Split(buf.String(), "\n\n") {
-		if strings.Contains(g, "net/http.(*Server)") || strings.Contains(g, "internal/server.(*Server)") || strings.Contains(g, "net/http.(*conn)") {
+		if strings.Contains(g, "net/http.(*Server)") || strings.Contains(g, "internal/serve/server.(*Server)") || strings.Contains(g, "net/http.(*conn)") {
 			keep = append(keep, g)
 		}
 	}
