@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )

@@ -9,7 +9,6 @@
 # When you split a directory: delete its line here. An element count
 # may never go up.
 internal/agent 258
-internal/agent/safety/agentguard 8
 internal/agent/provider/cliprovider 23
 # internal/agent/tools 80 -> 81: +1 for internal/agent/tools/hooks moved in (stage C).
 # The count falls with the package split (stage D2).

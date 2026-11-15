@@ -27,7 +27,8 @@ internal/session 297
 internal/session/jobbatch 57
 internal/session/jobbatch/lab 45
 internal/store/message 26
-sdk 45
+# 45 -> 46: +1 sdk/client.go, the Client implementation cut out of sdk.go (D2m lane E-sdk); deliberate, only down from here.
+sdk 46
 web/src/actions 52
 web/src/components 23
 web/src/components/Message 48
