@@ -1,5 +1,5 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
-import type { ConfigScope } from "../../store";
+import type { ConfigScope } from "../../actions";
 
 /** Props of one scope button. */
 interface IScopeButtonProps {

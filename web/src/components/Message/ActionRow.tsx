@@ -6,7 +6,7 @@ import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { BrainCircuit, Pencil, Trash2, ChevronDown, ChevronUp } from "lucide-react";
 import type { ContentPart } from "../../domain/types";
 import type { AsyncJobCompletion } from "../../domain/asyncJob/asyncJobTypes";
-import { updateMessagePart, deleteMessagePart } from "../../store";
+import { updateMessagePart, deleteMessagePart } from "../../actions";
 import { formatActionArgs } from "../../domain/text/toolFormat";
 import { asyncJobCompletions } from "../../state/runtime/asyncJobCompletions";
 import { ConfirmDialog } from "../ConfirmDialog";

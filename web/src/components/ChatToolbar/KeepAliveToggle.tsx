@@ -1,6 +1,6 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { Headphones } from "lucide-react";
-import { setKeepAliveEnabled } from "../../store";
+import { setKeepAliveEnabled } from "../../actions";
 import { configCarburetor } from "../../state/config/config";
 
 /**

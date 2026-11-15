@@ -6,7 +6,7 @@
 
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { WakeScheduleItem } from "../domain/types";
-import { sendCancelWakeSchedule, pickPendingWakeSchedule } from "../store";
+import { sendCancelWakeSchedule, pickPendingWakeSchedule } from "../actions";
 import { wakeCancelCarburetor } from "../state/live/wakeCancel";
 import { ConfirmDialog } from "./ConfirmDialog";
 

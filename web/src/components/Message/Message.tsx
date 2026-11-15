@@ -4,7 +4,7 @@ import type { MouseEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { Check, Star } from "lucide-react";
 import type { Message as Msg, ContentPart } from "../../domain/types";
-import { updateMessageContent } from "../../store";
+import { updateMessageContent } from "../../actions";
 import { busyCarburetor } from "../../state/status/busy";
 import { selectionCarburetor } from "../../state/transcript/selection";
 import { ForkSessionModal } from "../ForkSessionModal";

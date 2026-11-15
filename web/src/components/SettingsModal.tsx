@@ -1,7 +1,7 @@
 import type { ChangeEvent, KeyboardEvent, MouseEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
-import { addContextPath, removeContextPath, addSkillsPath, removeSkillsPath, setActiveSession } from "../store";
+import { addContextPath, removeContextPath, addSkillsPath, removeSkillsPath, setActiveSession } from "../actions";
 import { wsRequest } from "../backend";
 import { X, Plus, Trash2, RefreshCw, FolderOpen, Loader2 } from "lucide-react";
 import type { SkillInfo, SkillsSnapshot } from "../domain/types";

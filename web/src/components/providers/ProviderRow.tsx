@@ -1,7 +1,7 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
 import { Trash2, Pencil, CheckCircle2, ChevronDown, ChevronRight } from "lucide-react";
-import type { ConfigScope } from "../../store";
+import type { ConfigScope } from "../../actions";
 import type { ProviderInfo } from "../../domain/types";
 import { wsRequest } from "../../backend";
 import { PeakHoursStatus } from "../PeakHoursStatus";

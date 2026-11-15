@@ -1,6 +1,6 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
-import type { QueuedMessage } from "../../store";
+import type { QueuedMessage } from "../../actions";
 import { QueuedMessageItem } from "./QueuedMessageItem";
 
 /** Props of the queue section. */

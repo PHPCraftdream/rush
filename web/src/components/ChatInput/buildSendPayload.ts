@@ -1,4 +1,4 @@
-import type { WireAttachment } from "../../store";
+import type { WireAttachment } from "../../actions";
 
 /**
  * Builds the frame payload of a send; attachments ride along only when there are any.

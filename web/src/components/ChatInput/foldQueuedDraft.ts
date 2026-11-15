@@ -1,4 +1,4 @@
-import type { QueuedMessage, WireAttachment } from "../../store";
+import type { QueuedMessage, WireAttachment } from "../../actions";
 import type { PendingAttachment } from "./PendingAttachment";
 import { toWireAttachments } from "./toWireAttachments";
 

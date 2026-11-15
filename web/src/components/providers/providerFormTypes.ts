@@ -1,4 +1,4 @@
-import type { ConfigScope } from "../../store";
+import type { ConfigScope } from "../../actions";
 import type { ProviderPeakHoursPolicy } from "../../domain/types";
 import type { ModelDraft } from "./ModelDraft";
 

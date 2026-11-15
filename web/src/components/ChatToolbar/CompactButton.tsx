@@ -1,6 +1,6 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { Minimize2, X } from "lucide-react";
-import { cancelQueuedSummarize, summarizeSession } from "../../store";
+import { cancelQueuedSummarize, summarizeSession } from "../../actions";
 
 /** Props of the Compact button. */
 interface ICompactButtonProps {

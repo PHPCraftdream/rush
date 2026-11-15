@@ -1,7 +1,7 @@
 import type { KeyboardEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
-import { setActiveSession, removeSession } from "../store";
+import { setActiveSession, removeSession } from "../actions";
 import { ws, wsRequest, sendLoadMessages } from "../backend";
 import type { Session } from "../domain/types";
 import { configCarburetor } from "../state/config/config";

@@ -1,6 +1,6 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
-import { deleteMessage, deleteMessages, rerunFromMessage } from "../../store";
+import { deleteMessage, deleteMessages, rerunFromMessage } from "../../actions";
 import type { Todo } from "../../domain/types";
 import { asyncJobCompletions } from "../../state/runtime/asyncJobCompletions";
 import { busyCarburetor } from "../../state/status/busy";

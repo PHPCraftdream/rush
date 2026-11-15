@@ -2,7 +2,7 @@ import type { ChangeEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
 import { X, AlertCircle, Loader2 } from "lucide-react";
-import { pauseProviderPeakHours, resumeProviderPeakHours, type ConfigScope } from "../../store";
+import { pauseProviderPeakHours, resumeProviderPeakHours, type ConfigScope } from "../../actions";
 import type { ProviderInfo, ProviderPeakHoursPolicy } from "../../domain/types";
 import { wsRequest } from "../../backend";
 import { PeakHoursEditor } from "../PeakHoursEditor";

@@ -3,7 +3,7 @@
 import type { MouseEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { BrainCircuit, Pencil, Trash2, ChevronDown, ChevronUp } from "lucide-react";
-import { updateMessageThinking, deleteMessagePart } from "../../store";
+import { updateMessageThinking, deleteMessagePart } from "../../actions";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { CopyButton } from "./CopyButton";
 import { EditForm } from "./EditForm";

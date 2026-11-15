@@ -5,7 +5,7 @@ import type { TReadonly } from "@react-carburetor/core";
 import { BookMarked, Pencil } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { Message as Msg } from "../../domain/types";
-import { updateMessageContent } from "../../store";
+import { updateMessageContent } from "../../actions";
 import { DurationBadge } from "./DurationBadge";
 import { EditForm } from "./EditForm";
 import { EffortBadge } from "./EffortBadge";
