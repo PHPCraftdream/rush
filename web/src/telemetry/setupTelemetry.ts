@@ -1,4 +1,5 @@
 import { ws } from "../net/client";
+import { registerCarburetorFailureHandler } from "./carburetorFailures";
 
 /** A client-side error as the backend logs it. */
 interface ErrorPayload {
@@ -74,6 +75,8 @@ const onDisconnected = (): void => {
  * Errors raised before the WS is open are buffered and flushed on connect.
  */
 export function setupTelemetry(): void {
+  // Isolated Carburetor engine failures also go to the backend.
+  registerCarburetorFailureHandler(sendError);
   ws.on("_connected", onConnected);
   ws.on("_disconnected", onDisconnected);
   window.addEventListener("error", onWindowError);
