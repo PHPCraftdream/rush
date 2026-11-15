@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 )
 
 const (
@@ -963,7 +965,7 @@ func logStaleDiagnostics(path string) {
 		return
 	}
 	pid := readLockHolderPID(path)
-	pidAlive := pid > 0 && isProcessAlive(pid)
+	pidAlive := pid > 0 && procinfo.IsProcessAlive(pid)
 	if age > lockStaleDuration || (pid > 0 && !pidAlive) {
 		slog.Debug("session lock: existing lock file looks stale by heartbeat/PID, will attempt real OS lock to confirm",
 			"path", path,

@@ -30,7 +30,7 @@ import (
 const grandchildSleepDuration = "37.91"
 
 // TestStreamKillTerminatesGrandchild is the regression test for the
-// production defect where session.KillProcess reached only the DIRECT
+// production defect where procinfo.KillProcess reached only the DIRECT
 // CLI child: on Unix the pipe-branch child was not a process-group
 // leader and KillProcess signalled a single pid; on Windows taskkill
 // /T cannot see a grandchild whose OS-recorded parent is an

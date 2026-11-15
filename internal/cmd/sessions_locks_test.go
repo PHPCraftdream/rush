@@ -16,6 +16,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -148,7 +149,7 @@ func TestLockHolderProvablyDead_StaleMtimeButLiveHolder_NotDeleted(t *testing.T)
 	holder := spawnKillTestLockHolder(t, dataDir, "live-holder-stale-mtime", false)
 	defer holder.stop(t)
 
-	require.True(t, session.IsProcessAlive(holder.pid))
+	require.True(t, procinfo.IsProcessAlive(holder.pid))
 
 	// Backdate the lock file's mtime well past the 60s auto-delete
 	// threshold, simulating exactly the scenario task #222 introduced: a
@@ -165,7 +166,7 @@ func TestLockHolderProvablyDead_StaleMtimeButLiveHolder_NotDeleted(t *testing.T)
 	// The lock file must still be exactly as it was — this function must
 	// never itself delete anything; it only reports true/false.
 	require.FileExists(t, lockPath)
-	assert.True(t, session.IsProcessAlive(holder.pid), "probe must never disturb a live holder")
+	assert.True(t, procinfo.IsProcessAlive(holder.pid), "probe must never disturb a live holder")
 }
 
 // TestLockHolderProvablyDead_NoRealHolder_ReportsDead is the companion

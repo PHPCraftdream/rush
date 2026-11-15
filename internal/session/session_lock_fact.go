@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 )
 
 // SessionLockStem is the lock-FILE stem of a real session id: ids sanitise
@@ -45,7 +47,7 @@ func InspectSessionLockFact(dataDir, sessionID string) LockFact {
 	if pid <= 0 {
 		return LockFact{Kind: LockReleased}
 	}
-	if IsProcessAlive(pid) {
+	if procinfo.IsProcessAlive(pid) {
 		return LockFact{Kind: LockHeld, PID: pid}
 	}
 	return LockFact{Kind: LockDead, PID: pid}

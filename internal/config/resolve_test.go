@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/env"
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 	"github.com/stretchr/testify/require"
 )
 
@@ -290,7 +290,7 @@ func TestShellVariableResolver_CommandSubstitutionCancellationReapsChild(t *test
 	resultReceived = true
 	require.ErrorIs(t, result.err, context.Canceled)
 	<-readDone
-	require.False(t, session.IsProcessAlive(pid))
+	require.False(t, procinfo.IsProcessAlive(pid))
 }
 
 func TestShellVariableResolver_LoneDollarIsError(t *testing.T) {

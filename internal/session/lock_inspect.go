@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 )
 
 func sanitiseSessionID(id string) string {
@@ -103,7 +105,7 @@ type LockState struct {
 	// typically pass. That leaves a real window where a perfectly healthy
 	// session blocked on one long tool call looks stale by mtime alone.
 	// When mtime looks stale, InspectSessionLock falls back to a real PID
-	// liveness probe (session.IsProcessAlive) before concluding the
+	// liveness probe (procinfo.IsProcessAlive) before concluding the
 	// holder is dead — same principle sessions_watch.go's
 	// combinedLockLiveness already established for the `sessions watch`
 	// consumer. That PID-liveness fallback is itself bounded by
@@ -136,7 +138,7 @@ type LockState struct {
 // (heartbeat is activity-gated, the stream watchdog's tick that supplies
 // that activity can be slower than liveThreshold). When mtime already
 // looks stale, this falls back to probing whether the recorded PID is
-// still a live OS process (session.IsProcessAlive) before reporting
+// still a live OS process (procinfo.IsProcessAlive) before reporting
 // Live: false — mirroring the same "don't trust mtime alone" fallback
 // sessions_watch.go's combinedLockLiveness already uses. The PID probe is
 // only attempted once mtime is already stale, so the common case (mtime
@@ -181,7 +183,7 @@ func InspectSessionLock(dataDir, sessionID string, liveThreshold time.Duration) 
 		// for an unrelated process can't keep reporting Live: true forever
 		// once the lock is old enough that no genuinely healthy holder
 		// could still be running.
-		live = IsProcessAlive(pid)
+		live = procinfo.IsProcessAlive(pid)
 	}
 	return LockState{
 		Exists: true,

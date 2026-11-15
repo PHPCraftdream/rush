@@ -15,6 +15,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -151,7 +152,7 @@ func TestProbeThenKillHolder_StalePIDNotKilled(t *testing.T) {
 	assert.NotContains(t, kr.Report, "killed PID")
 	assert.True(t, kr.ConfirmedDead, "no live OS lock -> holder confirmed dead (nothing to kill)")
 	assert.Equal(t, holderAlreadyDead, kr.State)
-	assert.True(t, session.IsProcessAlive(os.Getpid()), "probe must never kill the calling test process")
+	assert.True(t, procinfo.IsProcessAlive(os.Getpid()), "probe must never kill the calling test process")
 }
 
 // TestProbeThenKillHolder_LiveHolderStillKilled is the "didn't break the
@@ -170,13 +171,13 @@ func TestProbeThenKillHolder_LiveHolderStillKilled(t *testing.T) {
 	holder := spawnKillTestLockHolder(t, dataDir, "live-holder-id", true)
 	defer holder.stop(t)
 
-	require.True(t, session.IsProcessAlive(holder.pid))
+	require.True(t, procinfo.IsProcessAlive(holder.pid))
 
 	kr := probeThenKillHolder(dataDir, "live-holder-id", holder.pid, 5*time.Second)
 	t.Logf("report: %s", kr.Report)
 	assert.True(t, strings.Contains(kr.Report, "killed PID") || strings.Contains(kr.Report, "already gone"))
 	assert.True(t, kr.ConfirmedDead, "a genuinely live holder that was killed must be confirmed dead")
-	assert.False(t, session.IsProcessAlive(holder.pid), "a genuinely live holder must still be killed")
+	assert.False(t, procinfo.IsProcessAlive(holder.pid), "a genuinely live holder must still be killed")
 }
 
 // Old-vs-new behavior (pre-fix unconditional kill vs. the probe gate that
@@ -208,13 +209,13 @@ func TestForceKillHolder_LiveProcess(t *testing.T) {
 	// so without this concurrent reap the poll never observes the exit.
 	go func() { _, _ = cmd.Process.Wait() }()
 
-	require.True(t, session.IsProcessAlive(pid))
+	require.True(t, procinfo.IsProcessAlive(pid))
 	kr := forceKillHolder("", "", pid, 5*time.Second)
 	t.Logf("report: %s", kr.Report)
 	assert.True(t, strings.Contains(kr.Report, "killed PID") || strings.Contains(kr.Report, "already gone"))
 	assert.Contains(t, kr.Report, "exited")
 	assert.True(t, kr.ConfirmedDead, "a killed live PID must be reported confirmed dead")
-	assert.False(t, session.IsProcessAlive(pid), "PID should be dead after forceKillHolder")
+	assert.False(t, procinfo.IsProcessAlive(pid), "PID should be dead after forceKillHolder")
 }
 
 // ---------------------------------------------------------------------
@@ -296,7 +297,7 @@ type killTestLockHolder struct {
 //     these tests measure whether forceKillHolder's SIGKILL-then-poll
 //     actually observes the victim's death within its wait budget. On
 //     Unix, a SIGKILL'd child that nobody has Wait()-ed is a zombie, and
-//     session.IsProcessAlive (kill(pid, 0)) reports a zombie as "alive"
+//     procinfo.IsProcessAlive (kill(pid, 0)) reports a zombie as "alive"
 //     forever — so without a concurrent reaper these tests' own poll loop
 //     can never see the exit, independent of whether forceKillHolder's
 //     logic is correct. See TestForceKillHolder_LiveProcess's identical

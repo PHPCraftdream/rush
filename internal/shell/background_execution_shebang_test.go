@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,7 +39,7 @@ func retainedShebangReady(t *testing.T) (*BackgroundExecution, int) {
 	var pid int
 	t.Cleanup(func() {
 		if pid > 0 {
-			_ = session.KillProcess(pid)
+			_ = procinfo.KillProcess(pid)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -93,7 +93,7 @@ func TestRetainedShebangCancellationRegistersAndCompletes(t *testing.T) {
 	// SIGKILL to the process group is posted by the ack, but the grandchild's
 	// exit (and its reaping by init) is asynchronous: bound the wait instead of
 	// sampling a zombie that is about to disappear.
-	require.Eventually(t, func() bool { return !session.IsProcessAlive(pid) },
+	require.Eventually(t, func() bool { return !procinfo.IsProcessAlive(pid) },
 		10*time.Second, 10*time.Millisecond, "SHEBANG_CHILD_SURVIVED_ACK")
 }
 
@@ -117,7 +117,7 @@ func TestRetainedShebangPhysicalKillError(t *testing.T) {
 		t.Error("SHEBANG_ERROR_SYNTHESIZED_DONE")
 	default:
 	}
-	require.True(t, session.IsProcessAlive(pid), "failed physical kill must leave helper alive")
+	require.True(t, procinfo.IsProcessAlive(pid), "failed physical kill must leave helper alive")
 }
 
 func TestRetainedShebangNonzeroExit(t *testing.T) {

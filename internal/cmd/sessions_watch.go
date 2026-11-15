@@ -430,7 +430,7 @@ const liveLockMaxAge = 20 * time.Second
 //     heartbeat's touch is now gated on recorded activity rather than an
 //     unconditional timer.
 //   - pidAlive: the PID recorded in the lock file is still a live OS
-//     process (session.IsProcessAlive). Immune to the activity-gating
+//     process (procinfo.IsProcessAlive). Immune to the activity-gating
 //     blind spot above, but doesn't by itself prove THIS session is what
 //     the PID is doing (a crashed holder whose PID got reused would give a
 //     false positive) — which is why mtimeFresh remains the primary,
