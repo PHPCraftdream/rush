@@ -14,8 +14,8 @@ import (
 	"charm.land/fantasy/providers/openrouter"
 	"charm.land/fantasy/providers/vercel"
 
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
-	"github.com/PHPCraftdream/rush/internal/agent/codexprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 )
 
 // cacheProfile is one provider's prompt-cache behavior. The zero value is the

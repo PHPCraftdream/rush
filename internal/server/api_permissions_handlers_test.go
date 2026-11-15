@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	"github.com/PHPCraftdream/rush/internal/permission"
 )
 
 func permissionHandlerRequest(t *testing.T, handler http.Handler, method, path, body string, principal Principal) *httptest.ResponseRecorder {

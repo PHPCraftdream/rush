@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/nettransport"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 )

@@ -35,3 +35,15 @@
 | internal/jobbatch | internal/session/jobbatch | 2026-11-15 |
 | internal/discover | internal/config/discover | 2026-11-15 |
 | internal/oauth | internal/config/oauth | 2026-11-15 |
+| internal/agent/agentguard | internal/agent/safety/agentguard | 2026-11-15 |
+| internal/agent/cliprovider | internal/agent/provider/cliprovider | 2026-11-15 |
+| internal/agent/codexprovider | internal/agent/provider/codexprovider | 2026-11-15 |
+| internal/agent/hyper | internal/agent/provider/hyper | 2026-11-15 |
+| internal/agent/limitwords | internal/agent/safety/limitwords | 2026-11-15 |
+| internal/agent/notify | internal/agent/safety/notify | 2026-11-15 |
+| internal/agentresult | internal/agent/agentresult | 2026-11-15 |
+| internal/commands | internal/agent/prompt/commands | 2026-11-15 |
+| internal/hooks | internal/agent/tools/hooks | 2026-11-15 |
+| internal/nettransport | internal/agent/provider/nettransport | 2026-11-15 |
+| internal/permission | internal/agent/safety/permission | 2026-11-15 |
+| internal/skills | internal/agent/prompt/skills | 2026-11-15 |

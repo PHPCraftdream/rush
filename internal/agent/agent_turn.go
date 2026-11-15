@@ -14,8 +14,8 @@ import (
 
 	"charm.land/fantasy"
 
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
-	"github.com/PHPCraftdream/rush/internal/agent/notify"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"

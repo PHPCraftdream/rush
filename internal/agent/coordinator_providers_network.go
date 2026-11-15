@@ -7,9 +7,9 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/diag/log"
-	"github.com/PHPCraftdream/rush/internal/nettransport"
 )
 
 // resolveProviderHTTPClient builds the *http.Client this provider's

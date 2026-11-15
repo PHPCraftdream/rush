@@ -10,7 +10,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent/codexprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/oauth"
 	"github.com/PHPCraftdream/rush/internal/store/message"

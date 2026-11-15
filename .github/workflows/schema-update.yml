@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - "internal/config/**"
-      - "internal/agent/hyper/**"
+      - "internal/agent/provider/hyper/**"
   workflow_dispatch:
 
 permissions:
@@ -25,7 +25,7 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go run . schema > ./schema.json
-      - run: go generate ./internal/agent/hyper/...
+      - run: go generate ./internal/agent/provider/hyper/...
       - uses: stefanzweifel/git-auto-commit-action@d0b01107b5db882071f96de5dd4b54961ea93f4c # v5
         with:
           commit_message: "chore: auto-update files"

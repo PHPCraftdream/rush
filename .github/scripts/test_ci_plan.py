@@ -74,14 +74,14 @@ class GoListTests(unittest.TestCase):
     def test_embed_files_normalize_package_relative_and_root_paths(self):
         g = golist.parse_stream(
             stream(
-                _p(MODULE + "/internal/skills", embeds=["templates/prompt.md", "internal/skills/assets/icon.svg", "./nested/./diagram.svg"]),
+                _p(MODULE + "/internal/agent/prompt/skills", embeds=["templates/prompt.md", "internal/agent/prompt/skills/assets/icon.svg", "./nested/./diagram.svg"]),
                 _p(MODULE, embeds=["web/index.html"]),
             ),
             "linux",
         )
         self.assertEqual(
-            g.packages[MODULE + "/internal/skills"].embeds,
-            {"internal/skills/templates/prompt.md", "internal/skills/internal/skills/assets/icon.svg", "internal/skills/nested/diagram.svg"},
+            g.packages[MODULE + "/internal/agent/prompt/skills"].embeds,
+            {"internal/agent/prompt/skills/templates/prompt.md", "internal/agent/prompt/skills/internal/skills/assets/icon.svg", "internal/agent/prompt/skills/nested/diagram.svg"},
         )
         self.assertEqual(g.packages[MODULE].embeds, {"web/index.html"})
 
@@ -110,15 +110,15 @@ class PolicyTests(unittest.TestCase):
 
     def test_load(self):
         self.assertIn("internal/kit/sync/csync/", self.pol.core_prefixes)
-        self.assertIn("internal/agent/notify/", self.pol.native_required_prefixes)
+        self.assertIn("internal/agent/safety/notify/", self.pol.native_required_prefixes)
         self.assertIn("cmd/tasklab", self.pol.race_roots)
 
     def test_glob_match_keeps_single_star_within_path_segment(self):
         self.assertTrue(pol.glob_match("internal/agent/templates/a.md", "internal/agent/templates/*.md"))
         self.assertFalse(pol.glob_match("internal/agent/templates/nested/a.md", "internal/agent/templates/*.md"))
-        self.assertTrue(pol.glob_match("internal/skills/nested/a.md", "internal/skills/**/*.md"))
-        self.assertTrue(pol.glob_match("internal/skills/a.md", "internal/skills/**/*.md"))
-        self.assertFalse(pol.glob_match("docs/example.txt", "internal/skills/**/*"))
+        self.assertTrue(pol.glob_match("internal/agent/prompt/skills/nested/a.md", "internal/agent/prompt/skills/**/*.md"))
+        self.assertTrue(pol.glob_match("internal/agent/prompt/skills/a.md", "internal/agent/prompt/skills/**/*.md"))
+        self.assertFalse(pol.glob_match("docs/example.txt", "internal/agent/prompt/skills/**/*"))
 
     def test_prefix(self):
         self.assertTrue(pol.under_prefix("internal/store/db/x.sql", ["internal/store/db/"]))

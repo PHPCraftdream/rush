@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 )

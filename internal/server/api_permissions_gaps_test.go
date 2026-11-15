@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	"github.com/PHPCraftdream/rush/internal/permission"
 )
 
 func sendPermissionEvent(service *apiPermissionTestService, req permission.PermissionRequest) {

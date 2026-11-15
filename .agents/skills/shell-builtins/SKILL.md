@@ -48,7 +48,7 @@ inline or delegates to a helper function.
    iteration and return it verbatim when non-nil. Hook timeouts rely on
    this: an unbounded builtin that never polls ctx cannot be interrupted
    by a hook's `timeout_sec`, and the hook runner will have to abandon
-   the goroutine (see `internal/hooks/runner.go`). Returning `ctx.Err()`
+   the goroutine (see `internal/agent/tools/hooks/runner.go`). Returning `ctx.Err()`
    (not `interp.ExitStatus(n)`) lets callers distinguish "command exited
    non-zero" from "we ran out of time".
    ```go

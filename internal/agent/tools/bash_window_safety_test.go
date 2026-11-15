@@ -7,7 +7,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/agent/agentguard"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/agentguard"
 	"github.com/stretchr/testify/require"
 )
 

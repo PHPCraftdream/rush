@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 )
 
 // R11F (M3): CLI bridge wiring on the flag-on path. The bridge binds to the

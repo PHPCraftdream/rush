@@ -15,11 +15,11 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filepathext"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
-	"github.com/PHPCraftdream/rush/internal/skills"
 )
 
 // OrchestratorRuleMarker is the literal heading of rule 7, the block

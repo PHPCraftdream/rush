@@ -6,7 +6,7 @@ import (
 	"unicode"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent/limitwords"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/limitwords"
 )
 
 // exitDiagnostics retains only bounded, sanitized non-JSON diagnostic lines.

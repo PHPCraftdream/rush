@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/PHPCraftdream/rush/internal/skills"
+	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
 	"github.com/spf13/cobra"
 )
 

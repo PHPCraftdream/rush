@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/permission"
 )
 
 const FSListToolName = "fs_list"

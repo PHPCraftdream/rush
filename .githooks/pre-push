@@ -21,7 +21,7 @@
 # pinned version (downloaded once into the module cache, then reused).
 #
 # This session root-caused three genuine Windows-only test races (see git
-# log for internal/agent/cliprovider/provider_test.go,
+# log for internal/agent/provider/cliprovider/provider_test.go,
 # internal/agent/tools/mcp/process_windows_test.go, and
 # internal/cmd/models_use_test.go) — each fixed AT THE SPECIFIC TEST, not by
 # slowing the whole suite down. (An earlier version of this hook also capped

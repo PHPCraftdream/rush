@@ -13,10 +13,10 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filepathext"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
-	"github.com/PHPCraftdream/rush/internal/permission"
 )
 
 type LSParams struct {

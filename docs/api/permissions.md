@@ -8,7 +8,7 @@ API token permission mode controls tool calls made during API-originated runs. T
 | `readonly` | Does not prompt. Allows only the fixed read-only tool list and read-like actions; other tool/action combinations are denied. |
 | `auto` | Automatically allows tool calls for the run. Token creation requires `admin` scope for this mode; the run backend also permits it for a non-admin token only when the listener sets `allow_auto_approve`. Use with care. |
 
-The readonly allowlist currently consists of `fs_find`, `fs_grep`, `fs_list`, `fs_read`, `git_read`, `glob`, `grep`, `ls`, `rush_info`, `rush_logs`, `sourcegraph`, and `view`. The action must be empty, `read`, or `list`; other actions are not treated as read-only. The allowlist is implemented in `internal/permission/session_policy.go` and may not coincide with tools called “read-only” in other contexts.
+The readonly allowlist currently consists of `fs_find`, `fs_grep`, `fs_list`, `fs_read`, `git_read`, `glob`, `grep`, `ls`, `rush_info`, `rush_logs`, `sourcegraph`, and `view`. The action must be empty, `read`, or `list`; other actions are not treated as read-only. The allowlist is implemented in `internal/agent/safety/permission/session_policy.go` and may not coincide with tools called “read-only” in other contexts.
 
 ## Permission broker and REST endpoints
 

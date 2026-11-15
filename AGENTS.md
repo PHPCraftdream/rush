@@ -72,7 +72,7 @@ internal/
 - **Pub/sub**: `internal/kit/sync/pubsub` for decoupled communication between agent,
   UI, and services.
 - **Hooks**: User-defined shell commands in `rush.json` that fire before
-  tool execution. The engine (`internal/hooks/`) is independent of fantasy
+  tool execution. The engine (`internal/agent/tools/hooks/`) is independent of fantasy
   and agent — it takes inputs, runs commands, returns decisions. The
   `hookedTool` decorator in `internal/agent/hooked_tool.go` wraps tools at
   the coordinator level. Hooks run before permission checks. See

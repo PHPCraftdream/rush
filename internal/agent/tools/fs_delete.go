@@ -15,8 +15,8 @@ import (
 	"path/filepath"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filepathext"
-	"github.com/PHPCraftdream/rush/internal/permission"
 )
 
 //go:embed fs_delete.md

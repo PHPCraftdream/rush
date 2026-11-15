@@ -13,12 +13,12 @@ import (
 	"slices"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/discover"
 	"github.com/PHPCraftdream/rush/internal/kit/diag/version"
-	"github.com/PHPCraftdream/rush/internal/skills"
 )
 
 // providerScopeWire reports the scope the provider's effective (merged)

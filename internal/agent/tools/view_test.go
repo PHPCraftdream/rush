@@ -16,9 +16,9 @@ import (
 	"unicode/utf8"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	"github.com/PHPCraftdream/rush/internal/permission"
-	"github.com/PHPCraftdream/rush/internal/skills"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/filetracker"
 	"github.com/stretchr/testify/require"

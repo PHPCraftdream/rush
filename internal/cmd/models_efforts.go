@@ -20,7 +20,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/spf13/cobra"
 
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/config"
 )
 

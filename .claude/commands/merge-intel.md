@@ -181,7 +181,7 @@ Then key-package tests:
 
 ```
 go test -count=1 -timeout=180s ./internal/agent/ ./internal/store/message/ \
-    ./internal/permission/ ./internal/cmd/
+    ./internal/agent/safety/permission/ ./internal/cmd/
 ```
 
 If a test fails, **first run it against `backup/before-merge-<timestamp>`**:

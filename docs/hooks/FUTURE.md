@@ -227,7 +227,7 @@ Reuses the universal rules:
 
 ### Implementation sketch
 
-- New event constant `EventUserPromptSubmit` in `internal/hooks/hooks.go`.
+- New event constant `EventUserPromptSubmit` in `internal/agent/tools/hooks/hooks.go`.
 - `Runner.Run` already takes an event name; no interface change.
 - A new call site in `sessionAgent.Run` (or the coordinator's Run path) that
   fires hooks after creating the user message but before the first LLM call. If

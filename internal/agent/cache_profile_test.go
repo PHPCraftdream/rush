@@ -12,7 +12,7 @@ import (
 	"charm.land/fantasy/providers/vercel"
 	"github.com/stretchr/testify/require"
 
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 )
 
 func TestCacheProfileFor(t *testing.T) {

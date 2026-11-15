@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"charm.land/log/v2"
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/term"

@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/agent/codexprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/stretchr/testify/require"
 )
 

@@ -11,7 +11,7 @@ import (
 	"charm.land/fantasy/providers/vercel"
 	"github.com/stretchr/testify/require"
 
-	"github.com/PHPCraftdream/rush/internal/agent/codexprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 )
 
 func TestNormalizeProviderUsage_SubtractsCacheReadForInclusiveProviders(t *testing.T) {

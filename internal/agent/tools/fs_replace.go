@@ -19,10 +19,10 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filepathext"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 	"github.com/PHPCraftdream/rush/internal/kit/text/diff"
-	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/store/filetracker"
 	"github.com/PHPCraftdream/rush/internal/store/history"
 )

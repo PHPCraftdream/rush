@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	hyperp "github.com/PHPCraftdream/rush/internal/agent/hyper"
+	hyperp "github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"

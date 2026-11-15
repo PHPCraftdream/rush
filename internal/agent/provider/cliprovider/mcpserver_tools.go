@@ -16,10 +16,10 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/agent/agentguard"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/agentguard"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
-	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/google/uuid"

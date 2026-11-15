@@ -7,7 +7,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/kit/dev/testguard"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 )

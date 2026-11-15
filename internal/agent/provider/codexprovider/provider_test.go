@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/config/oauth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

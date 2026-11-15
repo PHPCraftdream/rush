@@ -7,12 +7,12 @@ import subprocess
 
 BASE = ["go", "test"] + (["-race"] if os.environ.get("PROBE_RACE") == "1" else [])
 BASE += ["-json", "-p", "1", "-parallel", "1", "-count=1", "-timeout=5m"]
-ROOT = Path("internal/agentresult")
+ROOT = Path("internal/agent/agentresult")
 
 
 def run(name, pattern=".", expected=None):
     result = subprocess.run(
-        BASE + [f"-run={pattern}", "./internal/agentresult"],
+        BASE + [f"-run={pattern}", "./internal/agent/agentresult"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

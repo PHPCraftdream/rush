@@ -135,11 +135,11 @@ jobs:
           groups = [
               ("app",            ["internal/app/"]),
               ("server-session", ["internal/server/", "internal/session/"]),
-              ("perm-config-csync", ["internal/permission/", "internal/config/", "internal/kit/sync/csync/"]),
-              ("cmd-commands",   ["internal/cmd/", "internal/commands/"]),
+              ("perm-config-csync", ["internal/agent/safety/permission/", "internal/config/", "internal/kit/sync/csync/"]),
+              ("cmd-commands",   ["internal/cmd/", "internal/agent/prompt/commands/"]),
               ("sdk",            ["sdk/"]),
-              ("agent-subpkgs",  ["internal/agent/agentguard/", "internal/agent/cliprovider/",
-                                  "internal/agent/hyper/", "internal/agent/notify/",
+              ("agent-subpkgs",  ["internal/agent/safety/agentguard/", "internal/agent/provider/cliprovider/",
+                                  "internal/agent/provider/hyper/", "internal/agent/safety/notify/",
                                   "internal/agent/prompt/", "internal/agent/tools/"]),
               ("db-msg-queue-pubsub-history",
                                  ["internal/store/db/", "internal/store/message/", "internal/queue/",
@@ -178,12 +178,12 @@ jobs:
         run: |
           f="$GROUP_DIR/g-server-session.txt"; [ -s "$f" ] || exit 0
           go test -short -failfast -p 2 -timeout 20m $(cat "$f")
-      - name: "test: internal/permission, internal/config, internal/kit/sync/csync"
+      - name: "test: internal/agent/safety/permission, internal/config, internal/kit/sync/csync"
         shell: bash
         run: |
           f="$GROUP_DIR/g-perm-config-csync.txt"; [ -s "$f" ] || exit 0
           go test -short -failfast -p 2 -timeout 20m $(cat "$f")
-      - name: "test: internal/cmd, internal/commands"
+      - name: "test: internal/cmd, internal/agent/prompt/commands"
         shell: bash
         run: |
           f="$GROUP_DIR/g-cmd-commands.txt"; [ -s "$f" ] || exit 0
@@ -387,7 +387,7 @@ jobs:
           import os, sys
           outdir, pkgs = sys.argv[1], sys.argv[2].split()
           groups = [
-              ("hooks-session", ["internal/hooks", "internal/session"]),
+              ("hooks-session", ["internal/agent/tools/hooks", "internal/session"]),
               ("tasktree-csync", ["internal/kit/tasktree/", "cmd/tasklab", "internal/kit/sync/csync"]),
               ("jobbatch-batchlab", ["internal/session/jobbatch", "cmd/batchlab"]),
           ]
@@ -408,7 +408,7 @@ jobs:
                   f.write("\n".join(left) + "\n")
           PY
       # the former build workflow test-race's exact flags: -race -short -failfast -timeout 15m.
-      - name: go test -race -short -failfast (internal/hooks, internal/session)
+      - name: go test -race -short -failfast (internal/agent/tools/hooks, internal/session)
         shell: bash
         run: |
           f="$GROUP_DIR/r-hooks-session.txt"; [ -s "$f" ] || exit 0
@@ -505,11 +505,11 @@ jobs:
           groups = [
               ("app",            ["internal/app/"]),
               ("server-session", ["internal/server/", "internal/session/"]),
-              ("perm-config-csync", ["internal/permission/", "internal/config/", "internal/kit/sync/csync/"]),
-              ("cmd-commands",   ["internal/cmd/", "internal/commands/"]),
+              ("perm-config-csync", ["internal/agent/safety/permission/", "internal/config/", "internal/kit/sync/csync/"]),
+              ("cmd-commands",   ["internal/cmd/", "internal/agent/prompt/commands/"]),
               ("sdk",            ["sdk/"]),
-              ("agent-subpkgs",  ["internal/agent/agentguard/", "internal/agent/cliprovider/",
-                                  "internal/agent/hyper/", "internal/agent/notify/",
+              ("agent-subpkgs",  ["internal/agent/safety/agentguard/", "internal/agent/provider/cliprovider/",
+                                  "internal/agent/provider/hyper/", "internal/agent/safety/notify/",
                                   "internal/agent/prompt/", "internal/agent/tools/"]),
               ("db-msg-queue-pubsub-history",
                                  ["internal/store/db/", "internal/store/message/", "internal/queue/",

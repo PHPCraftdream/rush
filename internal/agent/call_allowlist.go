@@ -15,7 +15,7 @@ package agent
 import (
 	"context"
 
-	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 )
 
 // runAllowlistContextKey is the unexported context key carrying

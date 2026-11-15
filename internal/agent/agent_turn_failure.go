@@ -11,7 +11,7 @@ import (
 
 	"charm.land/fantasy"
 
-	"github.com/PHPCraftdream/rush/internal/agent/hyper"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/kit/text/stringext"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )

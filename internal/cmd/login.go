@@ -13,7 +13,7 @@ import (
 	"os"
 
 	"charm.land/lipgloss/v2"
-	hyperp "github.com/PHPCraftdream/rush/internal/agent/hyper"
+	hyperp "github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/oauth"
 	codexauth "github.com/PHPCraftdream/rush/internal/config/oauth/codex"

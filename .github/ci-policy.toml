@@ -17,9 +17,9 @@ native_required_prefixes = [
   "internal/cmd/",
   "internal/server/",
   "internal/store/filetracker/",
-  "internal/agent/cliprovider/",
+  "internal/agent/provider/cliprovider/",
   "internal/agent/tools/",
-  "internal/agent/notify/",
+  "internal/agent/safety/notify/",
   "internal/session/jobbatch/",
   "cmd/batchlab/",
   "sdk/",
@@ -47,7 +47,7 @@ core_prefixes = [
 # descendants included). All verified to exist in the repo.
 race_roots = [
   "internal/agent",
-  "internal/hooks",
+  "internal/agent/tools/hooks",
   "internal/session",
   "internal/session/jobbatch",
   "internal/session/jobbatch/lab",
@@ -76,8 +76,8 @@ patterns = ["internal/agent/tools/*.md", "internal/agent/tools/*.md.tpl"]
 owners = ["internal/agent/tools"]
 
 [[non_go_mappings]]
-patterns = ["internal/skills/**/*.md", "internal/skills/**/*"]
-owners = ["internal/skills", "internal/agent"]
+patterns = ["internal/agent/prompt/skills/**/*.md", "internal/agent/prompt/skills/**/*"]
+owners = ["internal/agent/prompt/skills", "internal/agent"]
 
 # Guard list: changes here always run planning + guards — guard changes force
 # full mode, and the guards themselves run in phase 2.

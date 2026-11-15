@@ -21,7 +21,7 @@ groups = [
 
 [shards.B]
 groups = [
-  { name = "test: internal/cmd, internal/commands", type = "go", packages = ["internal/cmd", "internal/commands"] },
+  { name = "test: internal/cmd, internal/agent/prompt/commands", type = "go", packages = ["internal/cmd", "internal/agent/prompt/commands"] },
 ]
 
 [shards.C]
@@ -29,12 +29,12 @@ groups = [
   # Prefixes only — tools/mcp and mcp/internal/contextlock are covered by
   # the internal/agent/tools prefix. "internal/agent" itself is NOT here.
   { name = "test: internal/agent subpackages", type = "go", packages = [
-    "internal/agent/agentguard",
-    "internal/agent/cliprovider",
-    "internal/agent/codexprovider",
-    "internal/agent/hyper",
-    "internal/agent/limitwords",
-    "internal/agent/notify",
+    "internal/agent/safety/agentguard",
+    "internal/agent/provider/cliprovider",
+    "internal/agent/provider/codexprovider",
+    "internal/agent/provider/hyper",
+    "internal/agent/safety/limitwords",
+    "internal/agent/safety/notify",
     "internal/agent/prompt",
     "internal/agent/tools",
   ] },
@@ -49,7 +49,7 @@ groups = [
 # covered by SOMETHING).
 [shards.D]
 groups = [
-  { name = "test: internal/permission, internal/config, internal/kit/sync/csync", type = "go", packages = ["internal/permission", "internal/config", "internal/kit/sync/csync"] },
+  { name = "test: internal/agent/safety/permission, internal/config, internal/kit/sync/csync", type = "go", packages = ["internal/agent/safety/permission", "internal/config", "internal/kit/sync/csync"] },
   { name = "test: internal/store/db, internal/store/message, internal/queue, internal/kit/sync/pubsub, internal/store/history", type = "go", packages = ["internal/store/db", "internal/store/message", "internal/queue", "internal/kit/sync/pubsub", "internal/store/history"] },
   { name = "test: internal/config/oauth, internal/deploy, internal/update, internal/kit/diag/version", type = "go", packages = ["internal/config/oauth", "internal/deploy", "internal/update", "internal/kit/diag/version"] },
   # Dynamic remainder, computed by assign_shards.py. Must stay LAST.
@@ -64,11 +64,11 @@ groups = [
 "test: internal/app" = "A/test: internal/app"
 "test: internal/server, internal/session" = "C/test: internal/server, internal/session"
 "test: sdk" = "A/test: sdk"
-"test: internal/cmd, internal/commands" = "B/test: internal/cmd, internal/commands"
+"test: internal/cmd, internal/agent/prompt/commands" = "B/test: internal/cmd, internal/agent/prompt/commands"
 "test: internal/agent subpackages" = "C/test: internal/agent subpackages"
 "test: internal/kit/sys/shell" = "C/test: internal/kit/sys/shell"
 "test: internal/session/jobbatch, cmd/batchlab" = "C/test: internal/session/jobbatch, cmd/batchlab"
-"test: internal/permission, internal/config, internal/kit/sync/csync" = "D/test: internal/permission, internal/config, internal/kit/sync/csync"
+"test: internal/agent/safety/permission, internal/config, internal/kit/sync/csync" = "D/test: internal/agent/safety/permission, internal/config, internal/kit/sync/csync"
 "test: internal/store/db, internal/store/message, internal/queue, internal/kit/sync/pubsub, internal/store/history" = "D/test: internal/store/db, internal/store/message, internal/queue, internal/kit/sync/pubsub, internal/store/history"
 "test: internal/config/oauth, internal/deploy, internal/update, internal/kit/diag/version" = "D/test: internal/config/oauth, internal/deploy, internal/update, internal/kit/diag/version"
 "test: everything else (computed catch-all)" = "D/test: everything else (computed catch-all)"
