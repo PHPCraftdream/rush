@@ -22,7 +22,6 @@ internal/agent/coordinator_providers.go 939
 internal/agent/coordinator_run.go 998
 internal/agent/coordinator_test.go 901
 internal/agent/coordinator_tool_pinning_test.go 995
-internal/agent/prompt/prompt.go 902
 internal/agent/tools/mcp/addreplace.go 906
 internal/agent/tools/mcp/lease.go 902
 internal/agent/tools/mcp/mutation.go 967
