@@ -1,4 +1,4 @@
-package shell
+package shpolicy
 
 import (
 	"context"
@@ -9,12 +9,17 @@ import (
 	"mvdan.cc/sh/v3/interp"
 )
 
-// panicGuardHandler returns middleware that converts a panic escaping any
+// execMiddleware wraps a base [interp.ExecHandlerFunc], composing like HTTP
+// middleware. It mirrors the facade's alias of the same name; a structural
+// alias keeps this package independent of the shell family.
+type execMiddleware = func(next interp.ExecHandlerFunc) interp.ExecHandlerFunc
+
+// PanicGuardHandler returns middleware that converts a panic escaping any
 // downstream exec handler into one failed command instead of a process-killing
 // panic. It must be the outermost layer of the chain: exec handlers run inside
 // pipeline stage goroutines, so a panic there cannot be recovered by the
 // caller of [Run] or [Shell.execCommon] and would take the whole process down.
-func panicGuardHandler() execMiddleware {
+func PanicGuardHandler() execMiddleware {
 	return func(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 		return func(ctx context.Context, args []string) (err error) {
 			name := "<unknown>"

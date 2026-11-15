@@ -21,6 +21,8 @@ import (
 
 	"mvdan.cc/sh/v3/interp"
 	"mvdan.cc/sh/v3/syntax"
+
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shpolicy"
 )
 
 // ShellType represents the type of shell to use
@@ -68,8 +70,22 @@ type noopLogger struct{}
 
 func (noopLogger) InfoPersist(msg string, keysAndValues ...any) {}
 
-// BlockFunc is a function that determines if a command should be blocked
-type BlockFunc func(args []string) bool
+// BlockFunc is a function that determines if a command should be blocked.
+// The type lives in shpolicy; this alias keeps every importer unchanged.
+type BlockFunc = shpolicy.BlockFunc
+
+// The command-policy surface moved to shpolicy; these aliases keep the
+// external consumers (agentguard, agent/tools, cliprovider) unchanged.
+var (
+	BannedCommands                 = shpolicy.BannedCommands
+	CanonicalBlockFuncs            = shpolicy.CanonicalBlockFuncs
+	CommandsBlocker                = shpolicy.CommandsBlocker
+	CommandBlocked                 = shpolicy.CommandBlocked
+	CommandCandidatesForPlatform   = shpolicy.CommandCandidatesForPlatform
+	SkipLauncherPrefixes           = shpolicy.SkipLauncherPrefixes
+	DecodePowerShellEncodedCommand = shpolicy.DecodePowerShellEncodedCommand
+	IsNoOpCommand                  = shpolicy.IsNoOpCommand
+)
 
 // Shell provides cross-platform shell execution with optional state persistence
 type Shell struct {

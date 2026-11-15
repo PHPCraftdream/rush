@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shpolicy"
 	"github.com/stretchr/testify/require"
 )
 
@@ -197,7 +198,7 @@ func TestBackgroundShell_WithBlockFuncs(t *testing.T) {
 	manager := newBackgroundShellManager()
 
 	blockFuncs := []BlockFunc{
-		CommandsBlocker([]string{"curl", "wget"}),
+		shpolicy.CommandsBlocker([]string{"curl", "wget"}),
 	}
 
 	bgShell, err := manager.Start(ctx, workingDir, blockFuncs, "curl example.com", "")

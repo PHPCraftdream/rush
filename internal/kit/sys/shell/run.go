@@ -12,6 +12,7 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shexec"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shpolicy"
 )
 
 // RunOptions configures a single stateless shell execution via [Run].
@@ -197,7 +198,7 @@ var testInnermostHandler interp.ExecHandlerFunc
 //     coreutils themselves.
 func standardHandlers(blockFuncs []BlockFunc) []execMiddleware {
 	handlers := []execMiddleware{
-		panicGuardHandler(),
+		shpolicy.PanicGuardHandler(),
 		ciOnlyPolicyHandler(),
 		builtinHandler(),
 		scriptDispatchHandler(blockFuncs),
