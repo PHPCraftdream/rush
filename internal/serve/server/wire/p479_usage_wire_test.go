@@ -1,4 +1,4 @@
-package server
+package wire
 
 import (
 	"encoding/json"
@@ -27,7 +27,7 @@ func TestUsageWire_NullRatioWhenProviderDoesNotReportCaching(t *testing.T) {
 		},
 	}
 
-	raw, err := json.Marshal(toMessageWire(m))
+	raw, err := json.Marshal(ToMessageWire(m))
 	require.NoError(t, err)
 
 	var decoded map[string]any
@@ -57,7 +57,7 @@ func TestUsageWire_RealRatioSurvivesSerialization(t *testing.T) {
 		},
 	}
 
-	wire := toMessageWire(m)
+	wire := ToMessageWire(m)
 	require.NotNil(t, wire.Usage)
 	require.NotNil(t, wire.Usage.CacheHitRatio)
 	// 17298 cached of a 23511-token prompt.
@@ -72,7 +72,7 @@ func TestUsageWire_RealRatioSurvivesSerialization(t *testing.T) {
 func TestUsageWire_AbsentWhenNeverRecorded(t *testing.T) {
 	m := message.Message{ID: "m3", Role: message.Assistant, Usage: nil}
 
-	wire := toMessageWire(m)
+	wire := ToMessageWire(m)
 	require.Nil(t, wire.Usage)
 
 	raw, err := json.Marshal(wire)
@@ -97,7 +97,7 @@ func TestUsageWire_MeasuredZeroIsNotAbsent(t *testing.T) {
 		},
 	}
 
-	wire := toMessageWire(m)
+	wire := ToMessageWire(m)
 	require.NotNil(t, wire.Usage)
 	require.NotNil(t, wire.Usage.CacheHitRatio, "a measured zero IS answerable")
 	require.Zero(t, *wire.Usage.CacheHitRatio)

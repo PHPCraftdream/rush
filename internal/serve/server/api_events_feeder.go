@@ -6,6 +6,9 @@ import (
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire/finalgate"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 type apiEventFeeder struct {
@@ -13,7 +16,7 @@ type apiEventFeeder struct {
 	done   chan struct{}
 }
 
-func startAPIEventFeeder(app *appPkg.App, log *APIEventLog, registry *APIRunRegistry) *apiEventFeeder {
+func startAPIEventFeeder(app *appPkg.App, log *APIEventLog, registry *APIRunRegistry, gates ...session.FinalizationTerminalGate) *apiEventFeeder {
 	ctx, cancel := context.WithCancel(context.Background())
 	feeder := &apiEventFeeder{cancel: cancel, done: make(chan struct{})}
 	if registry != nil {
@@ -37,15 +40,20 @@ func startAPIEventFeeder(app *appPkg.App, log *APIEventLog, registry *APIRunRegi
 		}
 		// Fork patch (finalization): nil gate (flag off) leaves both feeds
 		// byte-for-byte unchanged; a held terminal event waits for the seal.
-		gate := finalizationTerminalGateFor(app)
+		var gate session.FinalizationTerminalGate
+		if len(gates) > 0 {
+			gate = gates[0]
+		} else {
+			gate = finalgate.GateFor(app)
+		}
 		var wg sync.WaitGroup
 		if app.Messages != nil {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for event := range FinalizationGatedMessageStream(ctx, gate, app.Messages.Subscribe(ctx)) {
+				for event := range finalgate.FinalizationGatedMessageStream(ctx, gate, app.Messages.Subscribe(ctx)) {
 					if event.Type == pubsub.CreatedEvent || event.Type == pubsub.UpdatedEvent {
-						log.Publish(event.Payload.SessionID, "message", apiMessageFromModel(event.Payload))
+						log.Publish(event.Payload.SessionID, "message", wire.APIMessageFromModel(event.Payload))
 					}
 				}
 			}()
@@ -54,10 +62,10 @@ func startAPIEventFeeder(app *appPkg.App, log *APIEventLog, registry *APIRunRegi
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for event := range FinalizationGatedSessionStream(ctx, gate, app.Sessions.Subscribe(ctx)) {
+				for event := range finalgate.FinalizationGatedSessionStream(ctx, gate, app.Sessions.Subscribe(ctx)) {
 					switch event.Type {
 					case pubsub.CreatedEvent, pubsub.UpdatedEvent:
-						log.Publish(event.Payload.ID, "session", apiSessionFromModel(event.Payload))
+						log.Publish(event.Payload.ID, "session", wire.APISessionFromModel(event.Payload))
 					case pubsub.DeletedEvent:
 						log.DeleteSession(event.Payload.ID)
 					}

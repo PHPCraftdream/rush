@@ -11,6 +11,8 @@ import (
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire/finalgate"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -45,7 +47,7 @@ func (f eventForwarders) Wait()       { f.join() }
 func (f eventForwarders) SyncConfig() { f.syncConfig() }
 
 // subscribeAndBroadcast subscribes to app event sources and forwards them to the hub.
-func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) eventForwarders {
+func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub, gate session.FinalizationTerminalGate) eventForwarders {
 	var forwarders sync.WaitGroup
 	forwarders.Add(4)
 	// Live-work snapshots: the forwarders below only MARK sessions dirty;
@@ -56,12 +58,11 @@ func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) eventForw
 	// Fork patch (finalization): nil gate (flag off) leaves both forwarders
 	// unchanged; a held terminal event waits for the seal. WS and web
 	// clients inherit the holds through the hub.
-	gate := finalizationTerminalGateFor(a)
 
 	// Sessions
 	go func() {
 		defer forwarders.Done()
-		ch := FinalizationGatedSessionStream(ctx, gate, a.Sessions.Subscribe(ctx))
+		ch := finalgate.FinalizationGatedSessionStream(ctx, gate, a.Sessions.Subscribe(ctx))
 		for {
 			select {
 			case ev, ok := <-ch:
@@ -89,7 +90,7 @@ func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) eventForw
 	// Messages ΓÇö batch streaming updates to avoid flooding the client.
 	go func() {
 		defer forwarders.Done()
-		ch := FinalizationGatedMessageStream(ctx, gate, a.Messages.Subscribe(ctx))
+		ch := finalgate.FinalizationGatedMessageStream(ctx, gate, a.Messages.Subscribe(ctx))
 		ticker := time.NewTicker(batchInterval)
 		defer ticker.Stop()
 
@@ -98,7 +99,7 @@ func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) eventForw
 
 		flush := func() {
 			for _, msg := range pending {
-				h.Broadcast(EventMessageUpdated, toMessageWire(msg))
+				h.Broadcast(EventMessageUpdated, wire.ToMessageWire(msg))
 			}
 			clear(pending)
 		}
@@ -115,7 +116,7 @@ func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) eventForw
 				}
 				switch ev.Type {
 				case pubsub.CreatedEvent:
-					h.Broadcast(EventMessageCreated, toMessageWire(ev.Payload))
+					h.Broadcast(EventMessageCreated, wire.ToMessageWire(ev.Payload))
 					if shouldPushLiveWork(ev.Payload) {
 						liveWork.mark(ev.Payload.SessionID)
 					}

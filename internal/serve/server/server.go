@@ -17,6 +17,8 @@ import (
 	"time"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire/finalgate"
 	"github.com/gorilla/websocket"
 )
 
@@ -291,7 +293,7 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady fun
 		s.hub.Run(runCtx)
 	}()
 	if s.app != nil {
-		forwarders := subscribeAndBroadcast(runCtx, s.app, s.hub)
+		forwarders := subscribeAndBroadcast(runCtx, s.app, s.hub, finalgate.GateFor(s.app))
 		joined.Add(1)
 		go func() {
 			defer joined.Done()
@@ -525,7 +527,7 @@ func (s *Server) handleWS(ctx context.Context, w http.ResponseWriter, r *http.Re
 
 	if !s.uiAuth {
 		if principal, ok := PrincipalFrom(r.Context()); ok {
-			if err := conn.WriteJSON(WSMessage{Type: EventHello, Payload: mustJSON(helloPayload{Protocol: "rush.v1", TokenID: principal.TokenID, Scopes: principal.Scopes})}); err != nil {
+			if err := conn.WriteJSON(WSMessage{Type: EventHello, Payload: wire.MustJSONRaw(wire.HelloPayload{Protocol: "rush.v1", TokenID: principal.TokenID, Scopes: principal.Scopes})}); err != nil {
 				_ = conn.Close()
 				return
 			}

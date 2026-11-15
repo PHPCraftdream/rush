@@ -4,7 +4,7 @@ package server
 //
 // The web composer's ArrowUp recall list is derived client-side from the
 // session's message rows ($myPrompts in web/src/store.ts), which are served
-// through toMessageWire (load_messages reply, message_created/message_updated
+// through wire.ToMessageWire (load_messages reply, message_created/message_updated
 // broadcasts). Before this fix the derivation only excluded hidden/summary/
 // non-user rows, so EVERY user-role row surfaced in recall — including:
 //
@@ -33,6 +33,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -45,7 +46,7 @@ var asyncNoticePattern = regexp.MustCompile(`^Async job (\S+) \([^)]*\) (finishe
 // list exactly as the browser derives it: visible user messages with text,
 // newest first, that were typed in the web composer, excluding notices
 // (HumanTyped=false, or legacy-pattern for pre-flag rows) and autonomous
-// idle-resume turns. HumanTyped is served on the wire (toMessageWire /
+// idle-resume turns. HumanTyped is served on the wire (wire.ToMessageWire /
 // isHumanTyped in wire.go) -- this function mirrors $myPrompts in
 // web/src/store.ts, which filters on that SAME field plus the SAME legacy
 // fallback (asyncJobCompletion.ts's isAsyncCompletionNotice).
@@ -53,7 +54,7 @@ func webComposerHistoryWire(msgs []message.Message) []string {
 	var out []string
 	for i := len(msgs) - 1; i >= 0; i-- {
 		m := msgs[i]
-		if !toMessageWire(m).HumanTyped {
+		if !wire.ToMessageWire(m).HumanTyped {
 			continue
 		}
 		if asyncNoticePattern.MatchString(m.FullText()) {
@@ -87,7 +88,7 @@ func userText(text string) message.CreateMessageParams {
 }
 
 // TestMessageWire_OriginReachesTheBrowser pins the serving half of the fix:
-// the authorship stamp recorded on the row must survive toMessageWire, or the
+// the authorship stamp recorded on the row must survive wire.ToMessageWire, or the
 // client filter has nothing to filter on.
 func TestMessageWire_OriginReachesTheBrowser(t *testing.T) {
 	t.Parallel()
@@ -104,7 +105,7 @@ func TestMessageWire_OriginReachesTheBrowser(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			wire := toMessageWire(message.Message{
+			wire := wire.ToMessageWire(message.Message{
 				ID:     "m1",
 				Role:   message.User,
 				Origin: tc.origin,
@@ -173,7 +174,7 @@ func TestWebComposerHistory_ServesOnlyWebTypedPrompts(t *testing.T) {
 	// Serve the session exactly as handleLoadMessages does.
 	msgs, _, err := a.Messages.ListWithWatermark(ctx, sess.ID)
 	require.NoError(t, err)
-	rows := toMessagesWire(msgs)
+	rows := wire.ToMessagesWire(msgs)
 
 	// The serving surface must distinguish the channels...
 	origins := make(map[string]string, len(rows))
@@ -289,7 +290,7 @@ func TestWebComposerHistory_ExcludesReportedPollution(t *testing.T) {
 	// Serve through the exact wire conversion handleLoadMessages uses.
 	msgs, _, err := a.Messages.ListWithWatermark(ctx, sess.ID)
 	require.NoError(t, err)
-	rows := toMessagesWire(msgs)
+	rows := wire.ToMessagesWire(msgs)
 	require.Len(t, rows, 2, "both rows belong in the transcript, served to the browser")
 
 	// Revert-check: if either the Origin wire field or the client-side
@@ -363,7 +364,7 @@ func TestIsHumanTyped(t *testing.T) {
 			t.Parallel()
 			m := base()
 			tc.mod(&m)
-			require.Equal(t, tc.want, isHumanTyped(m))
+			require.Equal(t, tc.want, wire.ToMessageWire(m).HumanTyped)
 		})
 	}
 }
@@ -375,7 +376,7 @@ func TestIsHumanTyped(t *testing.T) {
 const noticeKindSupervisionForTest = "supervision"
 
 // TestMessageWire_NoticeKindReachesTheBrowser pins the serving half of
-// #1056: NoticeKind must survive toMessageWire, matching Origin's existing
+// #1056: NoticeKind must survive wire.ToMessageWire, matching Origin's existing
 // contract (TestMessageWire_OriginReachesTheBrowser above), because
 // isHumanTyped's web-side TypeScript mirror (should NoticeKind ever be
 // needed client-side beyond HumanTyped) has nothing to filter on otherwise.
@@ -385,7 +386,7 @@ func TestMessageWire_NoticeKindReachesTheBrowser(t *testing.T) {
 	for _, kind := range []string{"", "timeout_terminated", "job_stopped", "timeout_wake_only", "wake_failed", "supervision"} {
 		t.Run("kind="+kind, func(t *testing.T) {
 			t.Parallel()
-			wire := toMessageWire(message.Message{
+			wire := wire.ToMessageWire(message.Message{
 				ID:         "m1",
 				Role:       message.User,
 				NoticeKind: kind,
