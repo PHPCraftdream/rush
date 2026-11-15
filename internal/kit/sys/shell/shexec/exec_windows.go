@@ -1,6 +1,6 @@
 //go:build windows
 
-package shell
+package shexec
 
 import (
 	"context"
@@ -12,18 +12,19 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
+	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/interp"
 )
 
 // defaultKillTimeout matches mvdan's DefaultExecHandler default.
-const defaultKillTimeout = 2 * time.Second
+const DefaultKillTimeout = 2 * time.Second
 
 // isolateProcess on Windows just hides the console window (session
 // isolation via Setsid is a Unix-only concept; Windows process-group
 // handling is left to our own exec handler below, which already creates
 // child processes adequately detached for our purposes). Used by the
 // shebang-script fallback path in dispatch.go.
-func isolateProcess(cmd *exec.Cmd) { platform.HideConsoleWindow(cmd) }
+func IsolateProcess(cmd *exec.Cmd) { platform.HideConsoleWindow(cmd) }
 
 // processGroupExecHandler returns a Windows exec handler that behaves like
 // interp.DefaultExecHandler but additionally hardens process creation —
@@ -42,7 +43,7 @@ func isolateProcess(cmd *exec.Cmd) { platform.HideConsoleWindow(cmd) }
 // doc comment for why HideWindow alone was never sufficient, despite
 // this comment previously claiming it "sets the Windows CREATE_NO_WINDOW
 // creation flag" — it does not.
-func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int)) interp.ExecHandlerFunc {
+func ProcessGroupExecHandler(killTimeout time.Duration, registerProcess func(int), retainedLaunch func(ctx context.Context, cmd *exec.Cmd, kill func() error, register func(int)) (bool, error)) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
 		hc := interp.HandlerCtx(ctx)
 		path, err := interp.LookPathDir(hc.Dir, hc.Env, args[0])
@@ -53,7 +54,7 @@ func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 		cmd := exec.Cmd{
 			Path:   path,
 			Args:   args,
-			Env:    execEnvList(hc.Env),
+			Env:    ExecEnvList(hc.Env),
 			Dir:    hc.Dir,
 			Stdin:  hc.Stdin,
 			Stdout: hc.Stdout,
@@ -61,9 +62,10 @@ func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 		}
 		platform.HideConsoleWindow(&cmd)
 
-		if stops, ok := ctx.Value(retainedStopKey{}).(*retainedStops); ok {
-			err = runRetainedProcess(ctx, &cmd, stops, func() error { return killRetainedProcess(cmd.Process.Pid) }, registerProcess)
-			return retainedCommandResult(ctx, hc.Stderr, err)
+		if retainedLaunch != nil {
+			if handled, err := retainedLaunch(ctx, &cmd, func() error { return KillRetainedProcess(cmd.Process.Pid) }, registerProcess); handled {
+				return RetainedCommandResult(ctx, hc.Stderr, err)
+			}
 		}
 		err = cmd.Start()
 		if err == nil {
@@ -123,9 +125,23 @@ func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 	}
 }
 
-func killRetainedProcess(pid int) error { return procinfo.KillProcess(pid) }
+func KillRetainedProcess(pid int) error { return procinfo.KillProcess(pid) }
 
-func retainedCommandResult(ctx context.Context, stderr io.Writer, err error) error {
+// ExecEnvList converts an expand.Environ to the []string form that
+// os/exec.Cmd.Env expects. Only exported string variables are included,
+// matching what a real shell would pass to a child process.
+func ExecEnvList(env expand.Environ) []string {
+	var out []string
+	env.Each(func(name string, vr expand.Variable) bool {
+		if vr.Exported && vr.Kind == expand.String {
+			out = append(out, name+"="+vr.Str)
+		}
+		return true
+	})
+	return out
+}
+
+func RetainedCommandResult(ctx context.Context, stderr io.Writer, err error) error {
 	return windowsCommandResult(ctx, stderr, err, ctx.Err() != nil)
 }
 

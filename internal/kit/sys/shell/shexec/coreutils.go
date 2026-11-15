@@ -1,4 +1,4 @@
-package shell
+package shexec
 
 import (
 	"os"
@@ -6,14 +6,14 @@ import (
 	"strconv"
 )
 
-var useGoCoreUtils bool
+var UseGoCoreUtils bool
 
 func init() {
 	// If RUSH_CORE_UTILS is set to either true or false, respect that.
 	// By default, enable on Windows only.
 	if v, err := strconv.ParseBool(os.Getenv("RUSH_CORE_UTILS")); err == nil {
-		useGoCoreUtils = v
+		UseGoCoreUtils = v
 	} else {
-		useGoCoreUtils = runtime.GOOS == "windows"
+		UseGoCoreUtils = runtime.GOOS == "windows"
 	}
 }

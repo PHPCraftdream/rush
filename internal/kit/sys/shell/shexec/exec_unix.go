@@ -1,6 +1,6 @@
 //go:build !windows
 
-package shell
+package shexec
 
 import (
 	"context"
@@ -10,12 +10,13 @@ import (
 	"syscall"
 	"time"
 
+	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/interp"
 )
 
 // defaultKillTimeout matches mvdan's DefaultExecHandler default. Extracted
 // so the coupling to upstream is explicit rather than a buried literal.
-const defaultKillTimeout = 2 * time.Second
+const DefaultKillTimeout = 2 * time.Second
 
 // isolateProcess sets SysProcAttr so the child runs in its own session,
 // fully detached from Rush's controlling terminal and process group.
@@ -28,7 +29,7 @@ const defaultKillTimeout = 2 * time.Second
 // processGroupExecHandler — a cancelled `rush run` step must take its whole
 // subtree (build → compiler → spawned helpers) down with it instead of
 // leaking orphaned grandchildren.
-func isolateProcess(cmd *exec.Cmd) {
+func IsolateProcess(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
@@ -114,7 +115,7 @@ func isolateProcess(cmd *exec.Cmd) {
 // bounded by whatever OUTER mechanism eventually cancels that context
 // (turn cancellation, the stream watchdog, batch_stop for a backgrounded
 // tool run), not by anything in this file.
-func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int)) interp.ExecHandlerFunc {
+func ProcessGroupExecHandler(killTimeout time.Duration, registerProcess func(int), retainedLaunch func(ctx context.Context, cmd *exec.Cmd, kill func() error, register func(int)) (bool, error)) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
 		hc := interp.HandlerCtx(ctx)
 		path, err := interp.LookPathDir(hc.Dir, hc.Env, args[0])
@@ -126,17 +127,18 @@ func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 		cmd := exec.Cmd{
 			Path:   path,
 			Args:   args,
-			Env:    execEnvList(hc.Env),
+			Env:    ExecEnvList(hc.Env),
 			Dir:    hc.Dir,
 			Stdin:  hc.Stdin,
 			Stdout: hc.Stdout,
 			Stderr: hc.Stderr,
 		}
-		isolateProcess(&cmd)
+		IsolateProcess(&cmd)
 
-		if stops, ok := ctx.Value(retainedStopKey{}).(*retainedStops); ok {
-			err = runRetainedProcess(ctx, &cmd, stops, func() error { return killRetainedProcess(cmd.Process.Pid) }, registerProcess)
-			return retainedCommandResult(ctx, hc.Stderr, err)
+		if retainedLaunch != nil {
+			if handled, err := retainedLaunch(ctx, &cmd, func() error { return KillRetainedProcess(cmd.Process.Pid) }, registerProcess); handled {
+				return RetainedCommandResult(ctx, hc.Stderr, err)
+			}
 		}
 		err = cmd.Start()
 		if err == nil {
@@ -163,7 +165,7 @@ func processGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 	}
 }
 
-func killRetainedProcess(pid int) error {
+func KillRetainedProcess(pid int) error {
 	err := syscall.Kill(-pid, syscall.SIGKILL)
 	// ESRCH: the group is gone. EPERM: macOS refuses to signal a group whose
 	// members have all exited but are not reaped yet (the group is ours).
@@ -173,7 +175,21 @@ func killRetainedProcess(pid int) error {
 	return err
 }
 
-func retainedCommandResult(ctx context.Context, stderr io.Writer, err error) error {
+// ExecEnvList converts an expand.Environ to the []string form that
+// os/exec.Cmd.Env expects. Only exported string variables are included,
+// matching what a real shell would pass to a child process.
+func ExecEnvList(env expand.Environ) []string {
+	var out []string
+	env.Each(func(name string, vr expand.Variable) bool {
+		if vr.Exported && vr.Kind == expand.String {
+			out = append(out, name+"="+vr.Str)
+		}
+		return true
+	})
+	return out
+}
+
+func RetainedCommandResult(ctx context.Context, stderr io.Writer, err error) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
