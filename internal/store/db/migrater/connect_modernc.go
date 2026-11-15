@@ -1,6 +1,6 @@
 //go:build (darwin && (amd64 || arm64)) || (freebsd && (amd64 || arm64)) || (linux && (386 || amd64 || arm || arm64 || loong64 || ppc64le || riscv64 || s390x)) || (windows && (386 || amd64 || arm64))
 
-package db
+package migrater
 
 import (
 	"database/sql"
@@ -10,7 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func openDB(dbPath string) (*sql.DB, error) {
+func OpenDB(dbPath string) (*sql.DB, error) {
 	// Set pragmas for better performance via _pragma query params.
 	// Format: _pragma=name(value)
 	params := url.Values{}
@@ -30,8 +30,7 @@ func openDB(dbPath string) (*sql.DB, error) {
 	return db, nil
 }
 
-// openReadDB opens a read-only connection pool against the same on-disk
-// file as openDB. mode=ro asks SQLite to refuse writes outright (fails
+// OpenReadDB opens a read-only connection pool as OpenDB. mode=ro asks SQLite to refuse writes outright (fails
 // fast with SQLITE_READONLY rather than silently taking the writer's
 // place); _txlock=deferred is the read-only-appropriate counterpart to the
 // writer's _txlock=immediate — a reader has no reserved lock to acquire up
@@ -39,7 +38,7 @@ func openDB(dbPath string) (*sql.DB, error) {
 // database/sql default MaxOpenConns (0 = unlimited): WAL mode is designed
 // for exactly this — many concurrent readers against one snapshot without
 // blocking the single writer connection or each other.
-func openReadDB(dbPath string) (*sql.DB, error) {
+func OpenReadDB(dbPath string) (*sql.DB, error) {
 	params := url.Values{}
 	for name, value := range pragmas {
 		if name == "journal_mode" {

@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/store/db/dbtest"
+	"github.com/PHPCraftdream/rush/internal/store/db/migrater"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,10 +17,10 @@ const candFixedCreatedAt = int64(1700000000)
 func setupCandidateDB(t *testing.T) (context.Context, *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
-	conn, err := openDB(t.TempDir() + "/cand.db")
+	conn, err := dbtest.OpenFK(t.TempDir() + "/cand.db")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
-	require.NoError(t, Migrate(ctx, conn))
+	require.NoError(t, migrater.Migrate(ctx, conn))
 	return ctx, conn
 }
 

@@ -20,7 +20,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/db/dbconn"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/spf13/cobra"
 )
@@ -186,7 +186,7 @@ func sessionsCompactCmdRun(cmd *cobra.Command, args []string) error {
 	dbPath := storepath.ActivePath(dataDir)
 	conn := a.DB()
 
-	before, err := db.Stats(ctx, conn)
+	before, err := dbconn.Stats(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("read database stats: %w", err)
 	}
@@ -240,16 +240,16 @@ func sessionsCompactCmdRun(cmd *cobra.Command, args []string) error {
 	// never bypassed — not in a real run, not with --force. In a dry run
 	// the checkpoint's only effect is truncating the -wal sidecar; the
 	// main database file is not modified.
-	busyErr := db.CheckpointTruncate(ctx, conn)
+	busyErr := dbconn.CheckpointTruncate(ctx, conn)
 
 	live := before.LiveBytes()
 	need := compactReserveBytes(live, before.WALBytes)
-	freeData, totalData, dfErr := db.DiskFreeBytes(dataDir)
+	freeData, totalData, dfErr := dbconn.DiskFreeBytes(dataDir)
 	if dfErr == nil {
 		// The VACUUM's temp store lives in the temp directory (temp_store
 		// is switched to FILE for the run), so that volume needs room too.
 		var freeTemp, totalTemp uint64
-		freeTemp, totalTemp, dfErr = db.DiskFreeBytes(os.TempDir())
+		freeTemp, totalTemp, dfErr = dbconn.DiskFreeBytes(os.TempDir())
 		if freeTemp < freeData {
 			freeData = freeTemp
 		}
@@ -310,7 +310,7 @@ func sessionsCompactCmdRun(cmd *cobra.Command, args []string) error {
 	defer migrateLock.Release()
 
 	start := time.Now()
-	after, err := db.Compact(ctx, conn)
+	after, err := dbconn.Compact(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("compact failed (the database is left unchanged): %w", err)
 	}
@@ -455,7 +455,7 @@ var (
 )
 
 func compactHint(ctx context.Context, conn *sql.DB) {
-	stats, err := db.Stats(ctx, conn)
+	stats, err := dbconn.Stats(ctx, conn)
 	if err != nil {
 		return
 	}

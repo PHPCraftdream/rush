@@ -1,0 +1,9 @@
+# layer_test_exceptions.txt: test ratchet list for
+# .githooks/check_layers.sh, format "<repo-relative test file path>
+# <count>", one per line, blank lines and # comments allowed. <count>
+# is the number of DISTINCT higher-group imports in that file; the
+# file fails the moment it grows past the recorded count, and the
+# entry must be removed once the file stops importing upward.
+#
+internal/agent/supervision_notice_binding_app_test.go 1
+internal/config/task1314_oauth_disk_sync_test.go 1

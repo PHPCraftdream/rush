@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/store/db/dbtest"
+	"github.com/PHPCraftdream/rush/internal/store/db/migrater"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,10 +18,10 @@ import (
 func setupStoreV1DB(t *testing.T) (context.Context, *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
-	conn, err := openDB(t.TempDir() + "/store_v1.db")
+	conn, err := dbtest.OpenFK(t.TempDir() + "/store_v1.db")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
-	require.NoError(t, Migrate(ctx, conn))
+	require.NoError(t, migrater.Migrate(ctx, conn))
 	_, err = conn.ExecContext(ctx,
 		`INSERT INTO sessions (id, title, updated_at, created_at) VALUES (?, ?, ?, ?)`,
 		"sess-1", "sess-1", int64(1700000000), int64(1700000000),

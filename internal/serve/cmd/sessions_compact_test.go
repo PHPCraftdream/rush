@@ -24,6 +24,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/db/dbconn"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/stretchr/testify/require"
 )
@@ -105,7 +106,7 @@ func bloatCompactDBConn(t *testing.T, conn *sql.DB, wantBytes int) {
 	}
 	_, err = conn.ExecContext(ctx, "DROP TABLE compact_cmd_bloat")
 	require.NoError(t, err)
-	require.NoError(t, db.CheckpointTruncate(ctx, conn))
+	require.NoError(t, dbconn.CheckpointTruncate(ctx, conn))
 }
 
 // dbFileSizeAndMtime snapshots the main database file for the

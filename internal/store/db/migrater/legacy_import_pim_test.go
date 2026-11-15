@@ -1,4 +1,4 @@
-package db
+package migrater
 
 import (
 	"context"
@@ -29,7 +29,7 @@ func pimExistingDestination(t *testing.T) {
 			path := storepath.StoreV1Path(dataDir)
 			if valid {
 				dest := openTestDB(t, path)
-				require.NoError(t, migrateLocked(t.Context(), dest, path, storeV1FixtureMigrations(), MigrateOptions{MayMigrate: true}))
+				require.NoError(t, ApplyLocked(t.Context(), dest, path, storeV1FixtureMigrations(), MigrateOptions{MayMigrate: true}))
 				require.NoError(t, dest.Close())
 			} else {
 				require.NoError(t, os.WriteFile(path, []byte("invalid destination"), 0o600))

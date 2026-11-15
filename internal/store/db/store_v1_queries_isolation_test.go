@@ -9,13 +9,15 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/store/db/dbtest"
+	"github.com/PHPCraftdream/rush/internal/store/db/migrater"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/stretchr/testify/require"
 )
 
 func TestStoreV1QueriesOnFixture(t *testing.T) {
 	ctx := context.Background()
-	conn := openFixture(t, true)
+	conn := openFixture(t)
 	q := New(conn)
 	session, err := q.CreateSession(ctx, CreateSessionParams{ID: "s1", Title: "query fixture", Cost: 0, WorkspaceRoot: "/workspace", GitBranch: "main"})
 	require.NoError(t, err)
@@ -135,13 +137,29 @@ func requireStoreFileUnchanged(t *testing.T, want storeFileSnapshot) {
 }
 
 func storeV1FixtureMigrations() fs.FS {
-	return os.DirFS("testdata/store_v1")
+	return os.DirFS(filepath.Join("migrater", "testdata", "store_v1"))
+}
+
+// openFixture opens a fresh store file with the fixture pragmas and
+// migrates it through the store_v1 fixture migration set under
+// migrater/testdata.
+func openFixture(t *testing.T) *sql.DB {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "store.db")
+	conn, err := dbtest.OpenFK(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	conn.SetMaxOpenConns(1)
+	fixture := storeV1FixtureMigrations()
+	require.NoError(t, conn.PingContext(context.Background()))
+	require.NoError(t, migrater.ApplyLocked(context.Background(), conn, path, fixture, migrater.MigrateOptions{MayMigrate: true}))
+	return conn
 }
 
 func TestStoreV1CreationLeavesLegacyDatabaseAndSidecarsUntouched(t *testing.T) {
 	dataDir := t.TempDir()
 	legacyPath := storepath.DataDirPath(dataDir, storepath.LegacyFilename)
-	legacy, err := openDB(legacyPath)
+	legacy, err := dbtest.OpenFK(legacyPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, legacy.Close()) })
 	_, err = legacy.ExecContext(t.Context(), `CREATE TABLE legacy_marker (value TEXT)`)
@@ -164,11 +182,11 @@ func TestStoreV1CreationLeavesLegacyDatabaseAndSidecarsUntouched(t *testing.T) {
 	oldFiles := []storeFileSnapshot{snapshotStoreFile(t, legacyPath), snapshotStoreFile(t, legacyPath+"-wal"), snapshotStoreFile(t, legacyPath+"-shm")}
 
 	newPath := storepath.StoreV1Path(dataDir)
-	newDB, err := openDB(newPath)
+	newDB, err := dbtest.OpenFK(newPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, newDB.Close()) })
 	fixture := storeV1FixtureMigrations()
-	require.NoError(t, migrateLocked(context.Background(), newDB, newPath, fixture, MigrateOptions{MayMigrate: true, MigrationLockPath: filepath.Join(dataDir, storepath.StoreV1MigrateLockFilename)}))
+	require.NoError(t, migrater.ApplyLocked(context.Background(), newDB, newPath, fixture, migrater.MigrateOptions{MayMigrate: true, MigrationLockPath: filepath.Join(dataDir, storepath.StoreV1MigrateLockFilename)}))
 	var hosts int
 	require.NoError(t, newDB.QueryRowContext(t.Context(), `SELECT count(*) FROM async_hosts`).Scan(&hosts))
 	require.Zero(t, hosts)

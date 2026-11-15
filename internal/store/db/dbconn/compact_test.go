@@ -1,4 +1,4 @@
-package db
+package dbconn
 
 // Coverage for Compact/Stats/CheckpointTruncate (task #1161): a bloated
 // temporary database compacts down to its live bytes with a zero freelist,
@@ -12,6 +12,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/stretchr/testify/require"
 )
@@ -23,9 +24,9 @@ func compactTestDB(t *testing.T) (*sql.DB, string) {
 	t.Helper()
 	dataDir := t.TempDir()
 	ctx := context.Background()
-	conn, err := Connect(ctx, dataDir)
+	conn, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, ReleaseAll(dataDir)) })
+	t.Cleanup(func() { require.NoError(t, db.ReleaseAll(dataDir)) })
 	return conn, dataDir
 }
 

@@ -1,4 +1,4 @@
-package db
+package dbconn
 
 // Explicit database compaction (SQLite VACUUM) for `rush sessions compact`
 // (task #1161). Nothing in this file runs automatically: the only caller is

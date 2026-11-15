@@ -16,6 +16,17 @@
 - `ci-gate` validates live PR labels/head/base, top-level results, exact current-attempt receipts, and required reusable-workflow results; it fails closed on missing/API-failed receipts or absent required work. For a main-bound PR without `full-ci`, the exact gate failure is `Full validation not requested for this revision.`
 - `cancel-full-on-unlabel` performs cancellation only; it cannot authorize the gate.
 
+## Sprint 0 structural guards
+
+All of these run in pre-push (fast and full) and in the `checks` job; the layer guard additionally requires the Go toolchain, so its CI steps are gated on heavy authorization.
+
+- `check_dir_entries.sh`: at most 7 elements per code directory, tests excluded by default; ratchet `.githooks/dir_entries_allowlist.txt`.
+- `check_dir_files.sh`: at most 21 hand-written code files per directory INCLUDING tests; generated files skipped by marker, testdata/node_modules/dist invisible; ratchet `.githooks/dir_files_allowlist.txt`.
+- `check_file_size.sh`: no hand-written file over 1000 lines; ratchet mirrored with `.golangci.yml`.
+- `check_file_size_900.sh`: blocking ratchet freezing the 901-1000 band — files over 900 lines must be in `.githooks/file_size_900_allowlist.txt` and may only shrink.
+- `check_pkg_names.sh`: unique package names across the repository; ratchet allowlist.
+- `check_layers.sh`: import direction kit < store < session < config < agent < app < serve via `go list`; production exceptions in `.githooks/layer_exceptions.txt`, per-test-file ratchet in `.githooks/layer_test_exceptions.txt`; internal/app/itest and paths outside internal/ exempt; a stale exception fails the guard.
+
 ## Windows shard coverage
 
 `.github/workflows/ci-windows-shards.yml` and `.github/ci-shards/shards.toml` define full Windows package groups. Coverage checks compare workflow group names with the manifest and live assignment. Exact-once package assignment is checked separately during planning and summary.

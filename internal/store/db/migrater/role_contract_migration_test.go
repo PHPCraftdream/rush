@@ -1,4 +1,4 @@
-package db
+package migrater
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 )
 
 func TestSessionRoleContractMigrationPreservesLegacyRoleRows(t *testing.T) {
-	conn, err := openDB(filepath.Join(t.TempDir(), "role-contract-migration.db"))
+	conn, err := OpenDB(filepath.Join(t.TempDir(), "role-contract-migration.db"))
 	require.NoError(t, err)
 	defer conn.Close()
 	_, err = conn.ExecContext(context.Background(), `

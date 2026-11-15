@@ -283,6 +283,45 @@ bash .githooks/check_dir_entries_selftest.sh || fail "dir-entries guard self-tes
 step "package-name guard self-test (throwaway repos)"
 bash .githooks/check_pkg_names_selftest.sh || fail "package-name guard self-test failed"
 
+# The Sprint 0 A1b second ratchet (docs/plans/2026-11-15-sprint0-plan.md):
+# every code directory counts ALL hand-written code files including tests
+# (.go/.ts/.tsx; generated files skipped by the marker, testdata/
+# node_modules/dist invisible) and must stay at or under 21. Over-limit
+# directories live in .githooks/dir_files_allowlist.txt with their
+# recorded count -- a listed entry may only fall, and must leave the list
+# at or under 21.
+step "no code directory over 21 files including tests (ratcheted allowlist)"
+bash .githooks/check_dir_files.sh || fail "directory-files ratchet violated -- see output above"
+
+# The blocking 900-line ratchet (gate V7): a hand-written file above 900
+# lines must be listed in .githooks/file_size_900_allowlist.txt with its
+# exact count; a listed file may only shrink, and once it is at or under
+# 900 its entry must be removed. The 1000-line rule above keeps working
+# unchanged -- this freezes the 901-1000 band so existing debt cannot grow.
+step "no hand-written source file over 900 lines (blocking ratchet)"
+bash .githooks/check_file_size_900.sh || fail "file-size-900 ratchet violated -- see output above"
+
+# The Sprint 0 A2 layer linter: a package under internal/<group>/ must not
+# import a strictly higher group (kit < store < session < config < agent
+# < app < serve). The import graph is computed from `go list -json`
+# (Imports for production, TestImports/XTestImports for tests, attributed
+# per file). internal/app/itest and everything outside internal/ are
+# exempt as importers. Production exceptions live in
+# .githooks/layer_exceptions.txt, per-test-file exceptions in
+# .githooks/layer_test_exceptions.txt; both lists must hold only live
+# debt -- a stale entry FAILS the guard.
+step "internal layer direction kit < store < session < config < agent < app < serve (ratcheted exceptions)"
+bash .githooks/check_layers.sh || fail "layer violations found -- see output above"
+
+step "dir-files guard self-test (throwaway repos)"
+bash .githooks/check_dir_files_selftest.sh || fail "dir-files guard self-test failed"
+
+step "file-size-900 guard self-test (throwaway repos)"
+bash .githooks/check_file_size_900_selftest.sh || fail "file-size-900 guard self-test failed"
+
+step "layer guard self-test (throwaway Go modules + the real repository)"
+bash .githooks/check_layers_selftest.sh || fail "layer guard self-test failed"
+
 # The web UI's typecheck. rsbuild (pnpm build) does NOT check types, so
 # without this nothing in the project does — which is how five errors,
 # including a required prop that silently changed how tool groups render,
