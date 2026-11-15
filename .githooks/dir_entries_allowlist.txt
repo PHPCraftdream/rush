@@ -33,7 +33,7 @@ internal/session/jobbatch/lab 24
 internal/serve/server 83
 internal/session 132
 internal/kit/sys/shell 24
-web/src 35
+web/src 21
 web/src/actions 52
 web/src/components 33
 web/src/components/Chat 14
