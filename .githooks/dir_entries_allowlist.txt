@@ -8,7 +8,7 @@
 #
 # When you split a directory: delete its line here. An element count
 # may never go up.
-internal 25
+internal 23
 internal/agent 261
 internal/agent/agentguard 8
 internal/agent/codexprovider 9
@@ -27,14 +27,14 @@ internal/config 121
 internal/store/db 16
 internal/discover 13
 internal/kit/fs/fsext 13
-internal/heartbeat 10
-internal/jobbatch 21
-internal/jobbatch/lab 24
+internal/session/heartbeat 10
+internal/session/jobbatch 21
+internal/session/jobbatch/lab 24
 internal/store/message 12
 internal/nettransport 12
 internal/proto 11
 internal/server 83
-internal/session 133
+internal/session 132
 internal/kit/sys/shell 24
 internal/kit/tasktree 10
 web/src 35

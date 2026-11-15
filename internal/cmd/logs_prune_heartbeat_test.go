@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/heartbeat"
+	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

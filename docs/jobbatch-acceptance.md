@@ -38,7 +38,7 @@ claim autonomous completion or Rush integration readiness.
 
 ## Evidence and commands
 
-Test declarations were located with `rg '^func Test' internal/jobbatch -g
+Test declarations were located with `rg '^func Test' internal/session/jobbatch -g
 '*_test.go'` and the equivalent search in `cmd/batchlab`. Relevant assertions,
 fixtures, interpreter, command parser and the entire 731-line acceptance test
 were reread. Names below are exact declarations, not proposed tests.
@@ -51,7 +51,7 @@ No machine-specific paths are required in scenarios or documentation.
 **T: directly observed targeted verbose run.**
 
 ```sh
-bash <repo-root>/.rush/audit/heavy.sh capm 2g go test -race -p 1 -parallel 1 -count=1 -timeout 900s -run 'Test(Core(E[1-9]|ReSeeded|WeSeeded|AddLast|Final|Notice)|Runtime|Acceptance|Journal|Scenario(ProcessL[125]|L5Withheld|WCLifecycle|PhysicalStop|ReadEntry|StrictValidation|ReferencesAndAsync|Conversion|InterpreterRetains)|Controlled(AttemptPhases|PhysicalStop|Dispose|ReadGate|OutputWaits)|Replay|OracleClosed|MainEvery)' -v ./internal/jobbatch/... ./cmd/batchlab/
+bash <repo-root>/.rush/audit/heavy.sh capm 2g go test -race -p 1 -parallel 1 -count=1 -timeout 900s -run 'Test(Core(E[1-9]|ReSeeded|WeSeeded|AddLast|Final|Notice)|Runtime|Acceptance|Journal|Scenario(ProcessL[125]|L5Withheld|WCLifecycle|PhysicalStop|ReadEntry|StrictValidation|ReferencesAndAsync|Conversion|InterpreterRetains)|Controlled(AttemptPhases|PhysicalStop|Dispose|ReadGate|OutputWaits)|Replay|OracleClosed|MainEvery)' -v ./internal/session/jobbatch/... ./cmd/batchlab/
 ```
 
 First T passed: rc=0, wrapper wall=31s, peak=383MB, lab=12.720s,
@@ -67,8 +67,8 @@ This second run was output compaction, not a failure/flake retry. Every named
 mapped test selected by T appeared as RUN and PASS in the compact result.
 
 ```text
-ok github.com/PHPCraftdream/rush/internal/jobbatch 3.708s
-ok github.com/PHPCraftdream/rush/internal/jobbatch/lab 11.980s
+ok github.com/PHPCraftdream/rush/internal/session/jobbatch 3.708s
+ok github.com/PHPCraftdream/rush/internal/session/jobbatch/lab 11.980s
 ok github.com/PHPCraftdream/rush/cmd/batchlab 2.788s
 heavy.sh: class=test rc=0 wall=29s peak=384MB cpu=4s
 49 classified: map[closed:37 closed-gap:1 exit3-closed:5 invalid:6]
@@ -78,7 +78,7 @@ intentional F-c gap: retained suffix only; no invariant/history reconstruction
 **A: directly observed focused acceptance baseline, after five restorations.**
 
 ```sh
-bash <repo-root>/.rush/audit/heavy.sh capm 2g go test -race -p 1 -parallel 1 -count=1 -timeout 900s -run 'TestAcceptance' ./internal/jobbatch/... ./cmd/batchlab/
+bash <repo-root>/.rush/audit/heavy.sh capm 2g go test -race -p 1 -parallel 1 -count=1 -timeout 900s -run 'TestAcceptance' ./internal/session/jobbatch/... ./cmd/batchlab/
 ```
 
 rc=0, wall=14s; core=1.129s and cmd=1.050s had no matching tests;
@@ -98,7 +98,7 @@ These are reported observations, not commands rerun by this worker:
 | Scoped golangci-lint, `HEAVY_TIMEOUT_SEC=1800` | `0 issues.`, rc=0, wall=33s, peak=383MB; exact orchestrator command below. |
 
 ```sh
-HEAVY_TIMEOUT_SEC=1800 bash <repo-root>/.rush/audit/heavy.sh capm 2g golangci-lint run ./internal/jobbatch/... ./cmd/batchlab/...
+HEAVY_TIMEOUT_SEC=1800 bash <repo-root>/.rush/audit/heavy.sh capm 2g golangci-lint run ./internal/session/jobbatch/... ./cmd/batchlab/...
 ```
 
 Reported output tail:
@@ -124,7 +124,7 @@ cannot establish Unix process-group behavior.
 
 Every non-AW row below references T (direct named RUN/PASS). O is supplementary
 whole-suite evidence. Scenario stems mean existing `.json` files in
-`internal/jobbatch/lab/testdata/scenarios/` and are executed by
+`internal/session/jobbatch/lab/testdata/scenarios/` and are executed by
 `TestAcceptanceFixtureJournalReplaySweep` and `TestMainEveryScenarioFixture`.
 The latter calls command `Main` in process; it does not execute `main` externally.
 The expected/actual column states what assertions observed, not inferred logs.
@@ -248,16 +248,16 @@ as a kill; all five failed a named acceptance assertion. No flaky retries.
 Each command used this portable template, with the table's exact regex:
 
 ```sh
-bash <repo-root>/.rush/audit/heavy.sh capm 2g go test -race -p 1 -parallel 1 -count=1 -timeout 900s -run '<regex>' ./internal/jobbatch/... ./cmd/batchlab/
+bash <repo-root>/.rush/audit/heavy.sh capm 2g go test -race -p 1 -parallel 1 -count=1 -timeout 900s -run '<regex>' ./internal/session/jobbatch/... ./cmd/batchlab/
 ```
 
 | Mutant / file | Exact once replacement | Regex / assertion tail | Observed test result |
 |---|---|---|---|
-| M1 `internal/jobbatch/lab/scenario.go` | `sp = jobbatch.OneItem(*sp.Task)` -> `sp = jobbatch.Spec{Task: sp.Task}` | `TestAcceptanceE1SameIdentityIngress`; `ingress run failed` | rc1, wall12s; compiled. |
-| M2 `internal/jobbatch/lab/journal.go` | `c.writer.Encode(r)` -> expression below | `TestAcceptanceResultAndProcessPrivacyJournal`; `journal leaked private field key "summary"` | rc1, wall11s; compiled. |
-| M3 `internal/jobbatch/runner_observe.go` | `Record{Sequence: t.Sequence, Type: RecordClosed}` -> `Record{Sequence: 1, Type: RecordClosed}` | `TestAcceptanceResultAndProcessPrivacyJournal`; `nonmonotonic sequence` | rc1, wall30s, peak359MB; compiled. |
-| M4 `internal/jobbatch/notice.go` | `len(n.parent.children) == 1 && t.settled[n.parent.view.ID]` -> same expression with `== 0` | `TestAcceptanceDeterministicConstructionStreams/r3-one`; `batch and sole child both selected` | rc1, wall16s; compiled. |
-| M5 `internal/jobbatch/lab/replay.go` | `if !journalRootsEqual(journalSortedRoots(roots), footer.Roots) {` -> `if false && !journalRootsEqual(journalSortedRoots(roots), footer.Roots) {` | `TestAcceptanceReplayRejectsAlteredRootFooter`; `forged root counts accepted: replay exit=0 want=2` | rc1, wall14s; compiled. |
+| M1 `internal/session/jobbatch/lab/scenario.go` | `sp = jobbatch.OneItem(*sp.Task)` -> `sp = jobbatch.Spec{Task: sp.Task}` | `TestAcceptanceE1SameIdentityIngress`; `ingress run failed` | rc1, wall12s; compiled. |
+| M2 `internal/session/jobbatch/lab/journal.go` | `c.writer.Encode(r)` -> expression below | `TestAcceptanceResultAndProcessPrivacyJournal`; `journal leaked private field key "summary"` | rc1, wall11s; compiled. |
+| M3 `internal/session/jobbatch/runner_observe.go` | `Record{Sequence: t.Sequence, Type: RecordClosed}` -> `Record{Sequence: 1, Type: RecordClosed}` | `TestAcceptanceResultAndProcessPrivacyJournal`; `nonmonotonic sequence` | rc1, wall30s, peak359MB; compiled. |
+| M4 `internal/session/jobbatch/notice.go` | `len(n.parent.children) == 1 && t.settled[n.parent.view.ID]` -> same expression with `== 0` | `TestAcceptanceDeterministicConstructionStreams/r3-one`; `batch and sole child both selected` | rc1, wall16s; compiled. |
+| M5 `internal/session/jobbatch/lab/replay.go` | `if !journalRootsEqual(journalSortedRoots(roots), footer.Roots) {` -> `if false && !journalRootsEqual(journalSortedRoots(roots), footer.Roots) {` | `TestAcceptanceReplayRejectsAlteredRootFooter`; `forged root counts accepted: replay exit=0 want=2` | rc1, wall14s; compiled. |
 
 M2 replacement reads actual Runner-inspected Summary, rather than fabricating a
 secret independently of the exercise:

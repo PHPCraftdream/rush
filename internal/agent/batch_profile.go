@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
 // Batch group names. The set is closed; "" is the explicit default group.

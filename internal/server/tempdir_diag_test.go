@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/heartbeat"
+	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	"github.com/stretchr/testify/require"
 )
 

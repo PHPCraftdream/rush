@@ -7,8 +7,8 @@ import (
 	"time"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
 // BatchControlResult is the common response envelope for WebSocket controls.

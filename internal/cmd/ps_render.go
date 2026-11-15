@@ -10,7 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/heartbeat"
+	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 )
 
 const (

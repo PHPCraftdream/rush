@@ -389,7 +389,7 @@ jobs:
           groups = [
               ("hooks-session", ["internal/hooks", "internal/session"]),
               ("tasktree-csync", ["internal/kit/tasktree/", "cmd/tasklab", "internal/kit/sync/csync"]),
-              ("jobbatch-batchlab", ["internal/jobbatch", "cmd/batchlab"]),
+              ("jobbatch-batchlab", ["internal/session/jobbatch", "cmd/batchlab"]),
           ]
           left = []
           for p in pkgs:
@@ -418,7 +418,7 @@ jobs:
         run: |
           f="$GROUP_DIR/r-tasktree-csync.txt"; [ -s "$f" ] || exit 0
           go test -race -short -failfast -timeout 15m $(cat "$f")
-      - name: go test -race -short -failfast (internal/jobbatch, cmd/batchlab)
+      - name: go test -race -short -failfast (internal/session/jobbatch, cmd/batchlab)
         shell: bash
         run: |
           f="$GROUP_DIR/r-jobbatch-batchlab.txt"; [ -s "$f" ] || exit 0

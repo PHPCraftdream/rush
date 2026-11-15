@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/heartbeat"
+	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 )
 
 // psSlotNames is the fixed display and JSON order of the four model slots.

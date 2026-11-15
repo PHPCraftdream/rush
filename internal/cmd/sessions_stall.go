@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/heartbeat"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 

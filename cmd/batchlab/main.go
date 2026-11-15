@@ -7,7 +7,7 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/PHPCraftdream/rush/internal/jobbatch/lab"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch/lab"
 )
 
 const help = `Usage:

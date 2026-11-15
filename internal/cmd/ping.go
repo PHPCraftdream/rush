@@ -24,7 +24,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/hyper"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/heartbeat"
+	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	openaisdk "github.com/charmbracelet/openai-go/option"
 	"github.com/spf13/cobra"
 )

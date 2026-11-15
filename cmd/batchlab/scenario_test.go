@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/jobbatch/lab"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch/lab"
 )
 
 func TestMainEveryScenarioFixture(t *testing.T) {

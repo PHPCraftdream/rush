@@ -3,7 +3,7 @@ package app
 import (
 	"database/sql"
 
-	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"modernc.org/sqlite"
 )
 

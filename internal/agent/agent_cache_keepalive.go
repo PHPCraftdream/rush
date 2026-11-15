@@ -14,7 +14,7 @@ import (
 
 	"charm.land/fantasy"
 
-	"github.com/PHPCraftdream/rush/internal/heartbeat"
+	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 )
 
 // cacheKeepAliveDefaultInterval is the fallback used when a keep-alive-

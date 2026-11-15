@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
 // batchCancelControlTimeout bounds the Stop submission. Detached from the

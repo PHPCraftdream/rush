@@ -39,7 +39,7 @@ groups = [
     "internal/agent/tools",
   ] },
   { name = "test: internal/kit/sys/shell", type = "go", packages = ["internal/kit/sys/shell"] },
-  { name = "test: internal/jobbatch, cmd/batchlab", type = "go", packages = ["internal/jobbatch", "cmd/batchlab"] },
+  { name = "test: internal/session/jobbatch, cmd/batchlab", type = "go", packages = ["internal/session/jobbatch", "cmd/batchlab"] },
   { name = "test: internal/server, internal/session", type = "go", packages = ["internal/server", "internal/session"] },
 ]
 
@@ -67,7 +67,7 @@ groups = [
 "test: internal/cmd, internal/commands" = "B/test: internal/cmd, internal/commands"
 "test: internal/agent subpackages" = "C/test: internal/agent subpackages"
 "test: internal/kit/sys/shell" = "C/test: internal/kit/sys/shell"
-"test: internal/jobbatch, cmd/batchlab" = "C/test: internal/jobbatch, cmd/batchlab"
+"test: internal/session/jobbatch, cmd/batchlab" = "C/test: internal/session/jobbatch, cmd/batchlab"
 "test: internal/permission, internal/config, internal/kit/sync/csync" = "D/test: internal/permission, internal/config, internal/kit/sync/csync"
 "test: internal/store/db, internal/store/message, internal/queue, internal/kit/sync/pubsub, internal/store/history" = "D/test: internal/store/db, internal/store/message, internal/queue, internal/kit/sync/pubsub, internal/store/history"
 "test: internal/oauth, internal/deploy, internal/update, internal/kit/diag/version" = "D/test: internal/oauth, internal/deploy, internal/update, internal/kit/diag/version"

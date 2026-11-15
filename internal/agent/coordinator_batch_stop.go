@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
 // stopBatchOwners durably fences local batch roots before issuing best-effort

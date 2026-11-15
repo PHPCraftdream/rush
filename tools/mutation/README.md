@@ -203,9 +203,9 @@ tests); only R11B's choices remain source-derived.
 | R11B m17 | `jobbatch: commit failed: error` | The root-less new UUID fails the Add inside `batchProjectRoot`; primary NoError precedes the root-count assertion. |
 | R15a mut5 | `nodes must be ordered by ordinal, not arrival or NodeID` | Strengthened fixture orders ordinals differently from NodeID; vacuous-list record supplies the assertion. |
 
-R11B's error substring is anchored in `internal/jobbatch/errors.go:20`
+R11B's error substring is anchored in `internal/session/jobbatch/errors.go:20`
 (`ErrCommitFailed = errors.New("jobbatch: commit failed")`) and
-`internal/jobbatch/runner_commit.go:88,110,298`: a hook error retains reason
+`internal/session/jobbatch/runner_commit.go:88,110,298`: a hook error retains reason
 `error`, and `signalFault` formats `%w: %s`. m02 assigns empty root and skips
 UUID generation; it does not generate a replacement UUID. m17 changes root_id,
 not the deterministic child node_id. `batchStoreTestDB` uses `db.Connect` with

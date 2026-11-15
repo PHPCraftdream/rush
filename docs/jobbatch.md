@@ -62,17 +62,17 @@ The standalone engine, laboratory and `batchlab` remain as documented below; thi
 
 | Location | Responsibility |
 |---|---|
-| `internal/jobbatch/` | Pure Engine, tree policies, admission, notices, Runner and public contracts. |
-| `internal/jobbatch/testdata/` | Design section-0 location for deterministic core/runtime inputs; this directory is not present in the inspected worktree. |
-| `internal/jobbatch/lab/` | Scenario loader/interpreter, controlled and process executors, journal/replay. Imports the engine; never a second scheduler. |
-| `internal/jobbatch/lab/testdata/scenarios/` | 49 declared scenario fixtures, including invalid-loader inputs. |
-| `internal/jobbatch/lab/testdata/process/helper/` | Portable process handshake helper used by tests. |
+| `internal/session/jobbatch/` | Pure Engine, tree policies, admission, notices, Runner and public contracts. |
+| `internal/session/jobbatch/testdata/` | Design section-0 location for deterministic core/runtime inputs; this directory is not present in the inspected worktree. |
+| `internal/session/jobbatch/lab/` | Scenario loader/interpreter, controlled and process executors, journal/replay. Imports the engine; never a second scheduler. |
+| `internal/session/jobbatch/lab/testdata/scenarios/` | 49 declared scenario fixtures, including invalid-loader inputs. |
+| `internal/session/jobbatch/lab/testdata/process/helper/` | Portable process handshake helper used by tests. |
 | `cmd/batchlab/` | Command parsing and in-process `Main`; `main` wires interrupt cancellation and exits with its result. |
-| `internal/jobbatch/lab/acceptance_test.go` | Integration-owner cross-slice acceptance, not an A1 slice helper file. |
+| `internal/session/jobbatch/lab/acceptance_test.go` | Integration-owner cross-slice acceptance, not an A1 slice helper file. |
 
 Contract changes belong to the integration owner. The frozen declarations are
-`internal/jobbatch/{types,events,executor,runtime_types,errors}.go` and
-`internal/jobbatch/lab/schema.go`. See design sections 2, 5 and 7.2 before
+`internal/session/jobbatch/{types,events,executor,runtime_types,errors}.go` and
+`internal/session/jobbatch/lab/schema.go`. See design sections 2, 5 and 7.2 before
 changing them. Slice ownership and prefixes remain Core `coreTest*`, Runtime
 `runtimeTest*`, Process `processTest*`, Laboratory `labTest*`; acceptance uses
 `acceptanceTest*`. Do not independently redesign the API or add Rush dependencies.
@@ -146,9 +146,9 @@ the shortened F-e harness tests an actual unfinished capture separately.
 
 ## Scenario vocabulary and fences
 
-Scenario authors should read `internal/jobbatch/lab/schema.go` and copy the
-fenced examples `internal/jobbatch/lab/testdata/scenarios/r3-one.json` (single
-item) or `internal/jobbatch/lab/testdata/scenarios/v-b.json` (Add and outcomes),
+Scenario authors should read `internal/session/jobbatch/lab/schema.go` and copy the
+fenced examples `internal/session/jobbatch/lab/testdata/scenarios/r3-one.json` (single
+item) or `internal/session/jobbatch/lab/testdata/scenarios/v-b.json` (Add and outcomes),
 retaining their acceptance awaits and final Close before adapting the script.
 
 The version-1 schema rejects unknown/irrelevant fields and explicit nulls where
@@ -211,7 +211,7 @@ The Rush integration captures terminal output before a leaf reports completion a
 
 Each entry expires at `finished_at + 10m` (the exact boundary is expired). It retains the newest 1 MiB of task output. `oldest_cursor` is the absolute byte offset of that suffix and `next_cursor` is the absolute end offset, so callers continue by passing the returned cursor. Pages are capped at 16 KiB; `truncated` reports that earlier bytes are unavailable. The App cache is capped at 32 MiB and evicts the entry with the oldest finish time under pressure. A 1,024-entry metadata bound also limits empty outputs. Expiry is lazy on cache access; there is no expiry goroutine. Cursor semantics are per family: generic, agent and shell clamp over-end cursors to the retained end, while argv restarts from offset 0 when a cursor exceeds MaxInt64 or the retained end.
 
-`batch_output` first uses live Runner output and falls back only when the Runner reports `ErrReleased`; successful live output is never replaced by cache data. It returns `output_expired` when no cached entry remains and `output_truncated` when the requested data starts before the retained suffix. Capture is best-effort, so pressure eviction or process exit can end availability before ten minutes. `internal/jobbatch` remains independent of this Rush-owned policy.
+`batch_output` first uses live Runner output and falls back only when the Runner reports `ErrReleased`; successful live output is never replaced by cache data. It returns `output_expired` when no cached entry remains and `output_truncated` when the requested data starts before the retained suffix. Capture is best-effort, so pressure eviction or process exit can end availability before ten minutes. `internal/session/jobbatch` remains independent of this Rush-owned policy.
 
 ### Web batch view and controls
 

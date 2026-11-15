@@ -262,7 +262,7 @@ jobs:
           echo "${{ matrix.shard }}|test: internal/kit/sys/shell|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
 
-      - name: "test: internal/jobbatch, cmd/batchlab"
+      - name: "test: internal/session/jobbatch, cmd/batchlab"
         if: matrix.shard == 'C'
         shell: bash
         run: |
@@ -272,7 +272,7 @@ jobs:
           t0=$(date +%s)
           go test -short -failfast -p 2 -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-internal-jobbatch-cmd-batchlab.json"
           rc=$?
-          echo "${{ matrix.shard }}|test: internal/jobbatch, cmd/batchlab|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
+          echo "${{ matrix.shard }}|test: internal/session/jobbatch, cmd/batchlab|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc
 
       - name: "test: internal/permission, internal/config, internal/kit/sync/csync"

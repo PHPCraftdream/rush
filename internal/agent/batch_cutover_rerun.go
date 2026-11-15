@@ -17,8 +17,8 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
 // BatchRerunStopper is the rerun stop surface (the only one; the legacy

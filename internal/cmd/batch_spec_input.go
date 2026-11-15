@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/spf13/cobra"
 )
 
