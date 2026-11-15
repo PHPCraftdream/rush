@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/PHPCraftdream/rush/internal/config/domains/peak"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 	"github.com/qjebbs/go-jsons"
 )
@@ -159,13 +160,13 @@ func loadFromBytes(configs [][]byte) (*Config, error) {
 	// Peak-hours scopes are resolved outside the generic merge: the
 	// weekly policy form must override between scopes entirely, and an
 	// incomplete legacy fragment over a policy is a hard error.
-	stripped, peakOverlays, err := stripPeakHoursOverlays(configs)
+	stripped, peakOverlays, err := peak.StripPeakHoursOverlays(configs)
 	if err != nil {
 		return nil, err
 	}
 	resolvedPeakHours := make(map[string]json.RawMessage, len(peakOverlays))
 	for id, providerOverlays := range peakOverlays {
-		winner, err := resolvePeakHoursOverlays(id, providerOverlays)
+		winner, err := peak.ResolvePeakHoursOverlays(id, providerOverlays)
 		if err != nil {
 			return nil, err
 		}
@@ -175,7 +176,7 @@ func loadFromBytes(configs [][]byte) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err = applyPeakHoursOverlays(data, resolvedPeakHours)
+	data, err = peak.ApplyPeakHoursOverlays(data, resolvedPeakHours)
 	if err != nil {
 		return nil, err
 	}

@@ -1,4 +1,4 @@
-package config
+package peak
 
 import (
 	"encoding/json"

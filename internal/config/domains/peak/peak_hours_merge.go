@@ -1,4 +1,4 @@
-package config
+package peak
 
 import (
 	"bytes"
@@ -14,12 +14,12 @@ type peakHoursOverlay struct {
 	payload json.RawMessage // nil = key absent; "null" = explicit off
 }
 
-// stripPeakHoursOverlays removes every providers.<id>.peak_hours key
+// StripPeakHoursOverlays removes every providers.<id>.peak_hours key
 // from each document and returns the per-provider overlay lists plus
 // the stripped documents. It errors when a peak_hours value is not an
 // object or null. Provider entries that become empty objects stay in
 // place so the merge still sees them.
-func stripPeakHoursOverlays(configs [][]byte) ([][]byte, map[string][]peakHoursOverlay, error) {
+func StripPeakHoursOverlays(configs [][]byte) ([][]byte, map[string][]peakHoursOverlay, error) {
 	overlays := make(map[string][]peakHoursOverlay)
 	stripped := make([][]byte, len(configs))
 	for i, data := range configs {
@@ -82,13 +82,13 @@ func stripPeakHoursOverlays(configs [][]byte) ([][]byte, map[string][]peakHoursO
 	return stripped, overlays, nil
 }
 
-// resolvePeakHoursOverlays folds one provider's overlays in document
+// ResolvePeakHoursOverlays folds one provider's overlays in document
 // order (doc 0 = lowest priority) and returns the winning raw JSON or
 // nil (absent/inherit). Legacy fragments field-merge into legacy
 // state; the weekly policy form replaces state entirely; explicit
 // null turns the feature off; an incomplete legacy fragment over a
 // policy is a hard error rather than a guess.
-func resolvePeakHoursOverlays(provider string, overlays []peakHoursOverlay) (json.RawMessage, error) {
+func ResolvePeakHoursOverlays(provider string, overlays []peakHoursOverlay) (json.RawMessage, error) {
 	var state json.RawMessage // nil = absent, "null" = explicit off, else object
 	for _, overlay := range overlays {
 		if overlay.payload == nil {
@@ -251,10 +251,10 @@ func mergePeakHoursMessage(current, later json.RawMessage) (json.RawMessage, err
 	return json.Marshal(base)
 }
 
-// applyPeakHoursOverlays injects each provider's resolved peak_hours
+// ApplyPeakHoursOverlays injects each provider's resolved peak_hours
 // back into the merged document bytes. nil results (absent) are
 // skipped; explicit null is injected as JSON null.
-func applyPeakHoursOverlays(data []byte, resolved map[string]json.RawMessage) ([]byte, error) {
+func ApplyPeakHoursOverlays(data []byte, resolved map[string]json.RawMessage) ([]byte, error) {
 	if len(resolved) == 0 {
 		return data, nil
 	}

@@ -2,7 +2,7 @@
 // guarantee for the policy leg, the legacy-to-weekly conversion (whole
 // week window, message carry, wrap semantics), and the Evaluate-backed
 // check that an overnight legacy window keeps its wrap behaviour.
-package config
+package peak
 
 import (
 	"testing"
