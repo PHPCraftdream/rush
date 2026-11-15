@@ -1,5 +1,5 @@
 import { Carburetor } from "@react-carburetor/core";
-import type { LiveWorkItem, SessionLiveWorkPayload } from "../domain/types";
+import type { LiveWorkItem, SessionLiveWorkPayload } from "../../domain/types";
 
 /** One session's live commands and agents. */
 export interface SessionLiveWork {

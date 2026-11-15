@@ -2,8 +2,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { flush } from "@react-carburetor/core/testing";
-import { NoticesCarburetor } from "./state/NoticesCarburetor.ts";
-import type { INoticesState } from "./state/NoticesCarburetor.ts";
+import { NoticesCarburetor } from "../NoticesCarburetor.ts";
+import type { INoticesState } from "../NoticesCarburetor.ts";
 
 const fresh = (): NoticesCarburetor => new NoticesCarburetor({ updateAvailable: null, agentError: null });
 const selectAgentError = (state: INoticesState): string | null => state.agentError;

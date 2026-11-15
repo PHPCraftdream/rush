@@ -1,7 +1,7 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { Moon, Sun } from "lucide-react";
 import { setTheme } from "../../store";
-import { configCarburetor } from "../../state/config";
+import { configCarburetor } from "../../state/config/config";
 
 /** Light/dark switch of the toolbar. */
 export class ThemeToggle extends AntiHookComponent {

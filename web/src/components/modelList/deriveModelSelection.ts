@@ -1,5 +1,5 @@
 import type { TReadonly } from "@react-carburetor/core";
-import type { ModelRole } from "../../state/ConfigCarburetor";
+import type { ModelRole } from "../../state/config/ConfigCarburetor";
 import type { ConfigPayload, Session } from "../../domain/types";
 import { effortLevelsFor } from "../../domain/effort/effortLevelsFor";
 import { defaultEffortFor } from "../../domain/effort/defaultEffortFor";

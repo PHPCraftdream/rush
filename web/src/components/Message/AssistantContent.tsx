@@ -3,8 +3,8 @@
 
 import { AntiHookComponent } from "@react-carburetor/core";
 import type { Message as Msg, ContentPart, FinishPart } from "../../domain/types";
-import { busyCarburetor } from "../../state/busy";
-import { messagesCarburetor } from "../../state/messages";
+import { busyCarburetor } from "../../state/status/busy";
+import { messagesCarburetor } from "../../state/transcript/messages";
 import { AssistantBlock } from "./AssistantBlock";
 import { EditForm } from "./EditForm";
 import { FinishErrorBlock } from "./FinishErrorBlock";

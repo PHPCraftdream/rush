@@ -1,6 +1,6 @@
 import { ws } from "../net/client";
-import type { ModelRole } from "../state/ConfigCarburetor";
-import { configCarburetor } from "../state/config";
+import type { ModelRole } from "../state/config/ConfigCarburetor";
+import { configCarburetor } from "../state/config/config";
 
 /**
  * Drops a model from its role recent list and persists the removal to the server.

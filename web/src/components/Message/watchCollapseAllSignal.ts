@@ -1,8 +1,8 @@
 // Subscribes to the global "Collapse all" counter outside React.
 
 import type { TReadonly } from "@react-carburetor/core";
-import { signalsCarburetor } from "../../state/signals";
-import type { ISignalsState } from "../../state/SignalsCarburetor";
+import { signalsCarburetor } from "../../state/status/signals";
+import type { ISignalsState } from "../../state/status/SignalsCarburetor";
 
 /**
  * Picks the collapse-all counter out of the signals state.

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { flush } from "@react-carburetor/core/testing";
-import { AuthCarburetor } from "./state/AuthCarburetor.ts";
+import { AuthCarburetor } from "../AuthCarburetor.ts";
 
 const selectAuthed = (state: { authed: boolean }): boolean => state.authed;
 

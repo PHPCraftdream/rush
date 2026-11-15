@@ -1,4 +1,4 @@
-import type { ModelRole } from "../state/ConfigCarburetor";
+import type { ModelRole } from "../state/config/ConfigCarburetor";
 import type { ConfigPayload } from "../domain/types";
 
 /**

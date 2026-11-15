@@ -1,7 +1,7 @@
 import { AntiHookComponent } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
 import type { ContentPart, Message as Msg } from "../../domain/types";
-import { messagesCarburetor } from "../../state/messages";
+import { messagesCarburetor } from "../../state/transcript/messages";
 import { ToolActivityGroup } from "../Message";
 import type { BurstPart } from "./buildRenderItems";
 

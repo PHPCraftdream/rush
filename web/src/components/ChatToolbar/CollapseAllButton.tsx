@@ -1,6 +1,6 @@
 import { AntiHookComponent } from "@react-carburetor/core";
 import { ChevronsDownUp } from "lucide-react";
-import { signalsCarburetor } from "../../state/signals";
+import { signalsCarburetor } from "../../state/status/signals";
 
 /** Closes every collapsible spoiler in the transcript. */
 const collapseAllSpoilers = (): void => {

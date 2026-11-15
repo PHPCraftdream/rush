@@ -1,6 +1,6 @@
 import { AntiHookComponent } from "@react-carburetor/core";
 import { X } from "lucide-react";
-import { noticesCarburetor } from "../../state/notices";
+import { noticesCarburetor } from "../../state/status/notices";
 
 /** Props of the agent error banner. */
 interface IAgentErrorBannerProps {

@@ -1,7 +1,7 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { Headphones } from "lucide-react";
 import { setKeepAliveEnabled } from "../../store";
-import { configCarburetor } from "../../state/config";
+import { configCarburetor } from "../../state/config/config";
 
 /**
  * Default ON when the server omits the field (older backend) or sends

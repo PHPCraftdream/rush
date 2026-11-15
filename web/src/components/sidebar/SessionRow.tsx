@@ -4,8 +4,8 @@ import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
 import { Pencil, X, Check } from "lucide-react";
 import type { Session } from "../../domain/types";
-import { busyCarburetor } from "../../state/busy";
-import { sessionsCarburetor } from "../../state/sessions";
+import { busyCarburetor } from "../../state/status/busy";
+import { sessionsCarburetor } from "../../state/sessions/sessions";
 import { formatTokens } from "./formatTokens";
 
 /** Props of one session row. */

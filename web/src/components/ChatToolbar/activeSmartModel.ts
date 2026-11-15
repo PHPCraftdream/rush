@@ -1,8 +1,8 @@
 import { computed, shallowEqual } from "@react-carburetor/core";
 import { getDefaultModelKey } from "../../store";
 import type { ConfigPayload } from "../../domain/types";
-import { configCarburetor } from "../../state/config";
-import { sessionsCarburetor } from "../../state/sessions";
+import { configCarburetor } from "../../state/config/config";
+import { sessionsCarburetor } from "../../state/sessions/sessions";
 import { findSession } from "../Chat/findSession";
 import { lookupModel } from "./lookupModel";
 

@@ -1,13 +1,13 @@
 // Native-Node tests for the small data stores: busy, selection, config, skills, signals, sitter.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BusyCarburetor } from "./state/BusyCarburetor.ts";
-import { ConfigCarburetor } from "./state/ConfigCarburetor.ts";
-import { SelectionCarburetor } from "./state/SelectionCarburetor.ts";
-import { SignalsCarburetor } from "./state/SignalsCarburetor.ts";
-import { SitterCarburetor } from "./state/SitterCarburetor.ts";
-import { SkillsCarburetor } from "./state/SkillsCarburetor.ts";
-import type { SkillInfo } from "./domain/types.ts";
+import { BusyCarburetor } from "./status/BusyCarburetor.ts";
+import { ConfigCarburetor } from "./config/ConfigCarburetor.ts";
+import { SelectionCarburetor } from "./transcript/SelectionCarburetor.ts";
+import { SignalsCarburetor } from "./status/SignalsCarburetor.ts";
+import { SitterCarburetor } from "./runtime/SitterCarburetor.ts";
+import { SkillsCarburetor } from "./config/SkillsCarburetor.ts";
+import type { SkillInfo } from "../domain/types.ts";
 
 /** In-memory localStorage stand-in. */
 class MemoryStorage {

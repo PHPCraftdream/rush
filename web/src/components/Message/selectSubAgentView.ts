@@ -1,7 +1,7 @@
 // Projects the messages state down to what one SubAgentBlock needs.
 
 import type { TReadonly } from "@react-carburetor/core";
-import type { IMessagesState } from "../../state/MessagesCarburetor";
+import type { IMessagesState } from "../../state/transcript/MessagesCarburetor";
 import type { Message, FinishPart } from "../../domain/types";
 
 /** The parent message (the one whose agent tool_call rendered the block), reduced to its finish state. */

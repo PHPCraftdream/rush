@@ -1,4 +1,4 @@
-import { messagesCarburetor } from "../state/messages";
+import { messagesCarburetor } from "../state/transcript/messages";
 
 /**
  * Gathers the agent response to one user prompt: thinking + text of every assistant message of the turn.

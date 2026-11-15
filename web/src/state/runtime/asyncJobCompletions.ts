@@ -1,10 +1,10 @@
 import { computed } from "@react-carburetor/core";
-import { indexAsyncJobCompletions } from "../domain/asyncJob/indexAsyncJobCompletions";
-import { mergeCompletionIndex } from "../domain/completion/mergeCompletionIndex";
-import type { Message } from "../domain/types";
+import { indexAsyncJobCompletions } from "../../domain/asyncJob/indexAsyncJobCompletions";
+import { mergeCompletionIndex } from "../../domain/completion/mergeCompletionIndex";
+import type { Message } from "../../domain/types";
 import { batchWorkCarburetor } from "./batchWork";
-import { messagesCarburetor } from "./messages";
-import { sessionsCarburetor } from "./sessions";
+import { messagesCarburetor } from "../transcript/messages";
+import { sessionsCarburetor } from "../sessions/sessions";
 
 /**
  * Completion index of the active session (R12-C): structured batch completions merged over the prose fallback.

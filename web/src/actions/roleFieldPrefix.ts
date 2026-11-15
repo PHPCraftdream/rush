@@ -1,4 +1,4 @@
-import type { ModelRole } from "../state/ConfigCarburetor";
+import type { ModelRole } from "../state/config/ConfigCarburetor";
 
 /**
  * Maps a ModelRole to its Session field prefix (Smart/Fast/Worker/Reviewer).

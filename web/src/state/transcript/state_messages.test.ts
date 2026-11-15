@@ -1,8 +1,8 @@
 // Native-Node tests for the messages store: upsert/merge, snapshots racing live pushes, sub-agent state.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MessagesCarburetor } from "./state/MessagesCarburetor.ts";
-import type { Message } from "./domain/types.ts";
+import { MessagesCarburetor } from "../MessagesCarburetor.ts";
+import type { Message } from "../../domain/types.ts";
 
 /**
  * Builds a message.

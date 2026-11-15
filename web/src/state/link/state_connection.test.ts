@@ -2,8 +2,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { flush } from "@react-carburetor/core/testing";
-import { ConnectionCarburetor } from "./state/ConnectionCarburetor.ts";
-import type { IConnectionState } from "./state/ConnectionCarburetor.ts";
+import { ConnectionCarburetor } from "../ConnectionCarburetor.ts";
+import type { IConnectionState } from "../ConnectionCarburetor.ts";
 
 const selectConnected = (state: IConnectionState): boolean => state.connected;
 const selectShuttingDown = (state: IConnectionState): boolean => state.serverShuttingDown;

@@ -1,6 +1,6 @@
 import { Carburetor } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
-import type { Message } from "../domain/types";
+import type { Message } from "../../domain/types";
 
 /** Merges a pushed assistant row over the live one without letting streamed content regress. */
 export type TMergeAssistant = (existing: Message, incoming: Message) => Message;

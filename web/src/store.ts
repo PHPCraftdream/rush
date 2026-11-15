@@ -5,10 +5,10 @@
 // which live one export per file in ./actions, ./liveWork and friends.
 import "./actions/restoreCachedTheme";
 
-export type { ModelRole } from "./state/ConfigCarburetor";
-export type { QueuedMessage, WireAttachment, FlushedQueue } from "./state/QueueCarburetor";
-export type { SessionLiveWork } from "./state/LiveWorkCarburetor";
-export type { ExpandToolCallRequest } from "./state/SignalsCarburetor";
+export type { ModelRole } from "./state/config/ConfigCarburetor";
+export type { QueuedMessage, WireAttachment, FlushedQueue } from "./state/transcript/QueueCarburetor";
+export type { SessionLiveWork } from "./state/live/LiveWorkCarburetor";
+export type { ExpandToolCallRequest } from "./state/status/SignalsCarburetor";
 export type { MyPromptItem } from "./domain/completion/completionTypes";
 export type { ConfigScope } from "./actions/ConfigScope";
 export { mergePreserveContent } from "./domain/text/mergeMessage";
