@@ -15,12 +15,10 @@ internal/agent/provider/cliprovider 23
 # The count falls with the package split (stage D2).
 internal/agent/tools 81
 internal/agent/tools/mcp 19
-internal/serve/client/apiclient 13
 # internal/app 61 -> 63: +1 internal/app/itest (cross-module scenario tests, sprint 0 wave 1);
 # +1 internal/app/projects moved in (stage C).
 # The count falls with the package split (stage D2).
 internal/app 63
-internal/kit/dev/cahgen 9
 # internal/serve/cmd 165 -> 167: +2 for internal/serve/cmd/queue and internal/serve/cmd/notification
 # moved in (stage C). The count falls with the package split (stage D2).
 internal/serve/cmd 167
@@ -32,7 +30,6 @@ internal/config/discover 13
 internal/session/heartbeat 10
 internal/session/jobbatch 21
 internal/session/jobbatch/lab 24
-internal/agent/provider/nettransport 12
 internal/serve/server 83
 internal/session 132
 internal/kit/sys/shell 24

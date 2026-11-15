@@ -13,14 +13,13 @@
 # go up.
 internal/agent 824
 internal/agent/provider/cliprovider 59
-internal/agent/provider/nettransport 27
+internal/agent/provider/nettransport 22
 internal/agent/tools 163
 internal/agent/tools/mcp 63
 internal/app 287
 internal/config 303
 internal/config/discover 27
 internal/kit/sys/shell 56
-internal/serve/client/apiclient 23
 internal/serve/cmd 390
 internal/serve/server 295
 internal/session 297
