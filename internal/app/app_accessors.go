@@ -89,6 +89,12 @@ func (app *App) SetDataDirForTest(dir string) {
 // self-heal, the lazily built batch-fault writer), so each read must
 // happen at the same moment the old method-body read did.
 func (app *App) runEnv() RunEnv {
+	// A bare &App{} literal has no DB func: env.DB stays nil so every
+	// `env.DB == nil` check keeps the old `app.DB == nil` meaning.
+	var db func() *sql.DB
+	if app.DB != nil {
+		db = func() *sql.DB { return app.DB() }
+	}
 	return RunEnv{
 		WorkspaceRoot:         app.workspaceRoot,
 		Config:                app.config,
@@ -98,7 +104,7 @@ func (app *App) runEnv() RunEnv {
 		Perms:                 func() permission.Service { return app.Permissions },
 		Pump:                  func() *session.RunQueuePump { return app.RunQueuePump },
 		WakeStore:             func() *session.WakeScheduleStore { return app.wakeScheduleStore },
-		DB:                    func() *sql.DB { return app.DB() },
+		DB:                    db,
 		DataDir:               func() string { return app.dataDir },
 		MCPOwner:              func() *mcp.Owner { return app.mcpOwner },
 		ProcessHome:           app.ProcessHome,
