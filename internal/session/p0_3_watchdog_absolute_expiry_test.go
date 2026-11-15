@@ -51,6 +51,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 )
@@ -144,7 +145,7 @@ func (s *delayedRenewalService) RenewRunQueueLease(ctx context.Context, id, pump
 //     the real DB expiry (16s).
 func TestP0_3_WatchdogUsesAbsoluteDBExpiryNotPostCallTime(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc, sqlDB := setupTestSessionWithDB(t, "test-session-p0-3-absolute-expiry")
 	ctx := t.Context()
 

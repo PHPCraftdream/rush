@@ -1,10 +1,8 @@
 package itest
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"runtime/pprof"
 	"sort"
 	"strings"
 	"sync"
@@ -13,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 )
 
 // fakePumpEpoch lies in the PAST, so every real-clock reading is later than
@@ -120,7 +119,7 @@ type fakeClockService struct {
 // timeout the probe counters and the rows of every leased entry are printed.
 func newFakeClockService(t *testing.T, svc session.Service, clk *fakePumpClock) *fakeClockService {
 	s := &fakeClockService{Service: svc, clk: clk}
-	registerPumpDiag(t, s.describe)
+	sessiontest.RegisterPumpDiag(t, s.describe)
 	return s
 }
 
@@ -186,173 +185,6 @@ func (s *fakeClockService) CleanupExpiredLeases(ctx context.Context, beforeTime 
 	return err
 }
 
-// pumpDiags holds, per test, the state describers that awaitPump prints when
-// its condition never becomes true.
-var pumpDiags sync.Map // *testing.T -> *pumpDiagSet
-
-type pumpDiagSet struct {
-	mu  sync.Mutex
-	fns []func() string
-}
-
-// registerPumpDiag adds a state describer printed on an awaitPump timeout of t.
-func registerPumpDiag(t *testing.T, fn func() string) {
-	v, _ := pumpDiags.LoadOrStore(t, &pumpDiagSet{})
-	set := v.(*pumpDiagSet)
-	set.mu.Lock()
-	set.fns = append(set.fns, fn)
-	set.mu.Unlock()
-	t.Cleanup(func() { pumpDiags.Delete(t) })
-}
-
-// registerPumpCalls adds a coordinator's call counter to the failure report.
-func registerPumpCalls(t *testing.T, name string, calls *atomic.Int64) {
-	registerPumpDiag(t, func() string { return fmt.Sprintf("coordinator %s: calls=%d\n", name, calls.Load()) })
-}
-
-// pumpDiagnostics renders the registered describers plus the stacks of the
-// pump's goroutines, capped so a CI log stays readable.
-func pumpDiagnostics(t *testing.T) string {
-	var b strings.Builder
-	if v, ok := pumpDiags.Load(t); ok {
-		set := v.(*pumpDiagSet)
-		set.mu.Lock()
-		fns := append([]func() string(nil), set.fns...)
-		set.mu.Unlock()
-		for _, fn := range fns {
-			b.WriteString(fn())
-		}
-	}
-	var buf bytes.Buffer
-	_ = pprof.Lookup("goroutine").WriteTo(&buf, 2)
-	var stacks []string
-	for _, g := range strings.Split(buf.String(), "\n\n") {
-		if strings.Contains(g, "RunQueuePump") {
-			stacks = append(stacks, g)
-		}
-	}
-	fmt.Fprintf(&b, "pump goroutines: %d\n", len(stacks))
-	dump := strings.Join(stacks, "\n\n")
-	if len(dump) > 12000 {
-		dump = dump[:12000] + "\n...(truncated)"
-	}
-	b.WriteString(dump)
-	return b.String()
-}
-
-// awaitPump waits for a pump-side event that must eventually happen. It is a
-// hang guard, not a timing window: fake time does not move while it waits.
-// When the condition never holds it prints the pump's observable state (fake
-// clock, probe counters, queue rows, pump goroutine stacks), so a flake that
-// shows up once on a CI runner carries its own evidence.
-func awaitPump(t *testing.T, cond func() bool, msg string) {
-	t.Helper()
-	if report, ok := awaitPumpFor(t, 15*time.Second, cond, msg); !ok {
-		t.Fatal(report)
-	}
-}
-
-// awaitPumpFor polls cond until timeout; on failure it returns the report
-// awaitPump prints.
-func awaitPumpFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) (string, bool) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for !cond() {
-		if time.Now().After(deadline) {
-			return fmt.Sprintf("awaitPump timed out after %s: %s\n--- pump state at timeout ---\n%s", timeout, msg, pumpDiagnostics(t)), false
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	return "", true
-}
-
-// testTimeline is a per-test event log with elapsed times. It is never printed
-// on a passing run: reportPumpOnFailure emits it, with the pump state, only
-// when the test has failed, so a one-off CI flake leaves its own evidence.
-type testTimeline struct {
-	start    time.Time
-	mu       sync.Mutex
-	events   []string
-	last     map[string]string
-	reported bool
-}
-
-func newTestTimeline() *testTimeline { return &testTimeline{start: time.Now()} }
-
-func (tl *testTimeline) addf(format string, args ...any) {
-	tl.mu.Lock()
-	defer tl.mu.Unlock()
-	tl.events = append(tl.events, fmt.Sprintf("+%-10s %s", time.Since(tl.start).Round(time.Millisecond), fmt.Sprintf(format, args...)))
-}
-
-// stepf runs fn and records how long it took, so a disk or scheduler stall
-// shows up as one slow step rather than as an unexplained timeout.
-func (tl *testTimeline) stepf(fn func(), format string, args ...any) {
-	began := time.Now()
-	tl.addf("%s started", fmt.Sprintf(format, args...))
-	defer func() { tl.addf("%s took %s", fmt.Sprintf(format, args...), time.Since(began).Round(time.Millisecond)) }()
-	fn()
-}
-
-func (tl *testTimeline) String() string {
-	tl.mu.Lock()
-	defer tl.mu.Unlock()
-	var latest []string
-	for key, value := range tl.last {
-		latest = append(latest, key+": "+value)
-	}
-	sort.Strings(latest)
-	return "timeline:\n" + strings.Join(tl.events, "\n") + "\nlast observations:\n" + strings.Join(latest, "\n") + "\n"
-}
-
-func (tl *testTimeline) observef(key, format string, args ...any) {
-	tl.mu.Lock()
-	defer tl.mu.Unlock()
-	if tl.last == nil {
-		tl.last = make(map[string]string)
-	}
-	tl.last[key] = fmt.Sprintf("+%s %s", time.Since(tl.start).Round(time.Millisecond), fmt.Sprintf(format, args...))
-}
-
-func (tl *testTimeline) report(t interface {
-	Failed() bool
-	Log(...any)
-}, render func() string,
-) {
-	if !t.Failed() {
-		return
-	}
-	tl.mu.Lock()
-	if tl.reported {
-		tl.mu.Unlock()
-		return
-	}
-	tl.reported = true
-	tl.mu.Unlock()
-	t.Log(render())
-}
-
-func reportPumpSetupOnFailure(t *testing.T, tl *testTimeline) {
-	t.Cleanup(func() {
-		tl.report(t, func() string { return "--- pump setup/cleanup failure report ---\n" + tl.String() })
-	})
-}
-
-// pumpFailureReport renders what reportPumpOnFailure prints.
-func pumpFailureReport(t *testing.T) string {
-	return "--- pump failure report (printed only because the test failed) ---\n" + pumpDiagnostics(t)
-}
-
-// reportPumpOnFailure registers the failure report. Register it after the
-// pump's Stop cleanup: cleanups run last-in-first-out, so the report is taken
-// while the pump is still running.
-func reportPumpOnFailure(t *testing.T, tl *testTimeline) {
-	registerPumpDiag(t, tl.String)
-	t.Cleanup(func() {
-		tl.report(t, func() string { return pumpFailureReport(t) })
-	})
-}
-
 func pumpQueueSnapshot(svc session.Service, id string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -368,8 +200,8 @@ func pumpQueueSnapshot(svc session.Service, id string) string {
 		e.Status, e.Attempts, e.LeasedBy, e.LeasedAt, e.LeaseExpiresAt, e.TerminalFailure)
 }
 
-func registerPumpQueueReport(t *testing.T, tl *testTimeline, svc session.Service, id string) func(context.Context) (*session.RunQueueEntry, error) {
-	registerPumpDiag(t, func() string { return pumpQueueSnapshot(svc, id) })
+func registerPumpQueueReport(t *testing.T, tl *sessiontest.TestTimeline, svc session.Service, id string) func(context.Context) (*session.RunQueueEntry, error) {
+	sessiontest.RegisterPumpDiag(t, func() string { return pumpQueueSnapshot(svc, id) })
 	return func(ctx context.Context) (*session.RunQueueEntry, error) {
 		began := time.Now()
 		e, err := svc.GetRunQueueEntry(ctx, id)
@@ -378,24 +210,10 @@ func registerPumpQueueReport(t *testing.T, tl *testTimeline, svc session.Service
 			state = fmt.Sprintf("status=%s attempts=%d leaseExpiresAt=%d", e.Status, e.Attempts, e.LeaseExpiresAt)
 		}
 		if err != nil {
-			tl.observef("queue read error", "err=%v ctx=%v elapsed=%s", err, ctx.Err(), time.Since(began))
+			tl.Observef("queue read error", "err=%v ctx=%v elapsed=%s", err, ctx.Err(), time.Since(began))
 		}
-		tl.observef("queue read", "%s err=%v ctx=%v elapsed=%s", state, err, ctx.Err(), time.Since(began))
+		tl.Observef("queue read", "%s err=%v ctx=%v elapsed=%s", state, err, ctx.Err(), time.Since(began))
 		return e, err
-	}
-}
-
-func notifyLiveIdentity(ch chan<- string, id string) {
-	select {
-	case ch <- id:
-	default:
-	}
-}
-
-func notifyAdmissionRefusal(ch chan<- struct{}) {
-	select {
-	case ch <- struct{}{}:
-	default:
 	}
 }
 

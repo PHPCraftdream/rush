@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -93,7 +94,7 @@ func awaitPendingRunQueueRow(t *testing.T, svc session.Service, id string) *sess
 //  4. Restore the branch and PASS.
 func TestWS1_Pump_ForeignWorkspace_NackWithoutAttemptPenalty(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-foreign-workspace")
 	ctx := context.Background()
 
@@ -211,7 +212,7 @@ func (c *blockingForeignCoordinator) Run(ctx context.Context, callData session.S
 //  4. Restore the no-penalty write and PASS.
 func TestWS1_Pump_ForeignWorkspace_NoPenaltyIsTheWrite(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-foreign-workspace-write")
 	ctx := context.Background()
 
