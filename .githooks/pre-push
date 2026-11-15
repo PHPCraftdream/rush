@@ -236,7 +236,7 @@ step "no stale large/small model-slot spelling (renamed to smart/fast)"
 bash .githooks/check_stale_model_slots.sh || fail "stale large/small model-slot text found -- see output above"
 
 # db.Connect/db.ConnectRead pairing guard for test files.
-# internal/store/db/connect.go's Connect/ConnectRead hand out handles from a
+# internal/store/db/dbconn/connect.go's Connect/ConnectRead hand out handles from a
 # ref-counted pool whose entries are only torn down by db.Release; a
 # test that "cleans up" with conn.Close() on the raw *sql.DB bypasses
 # the refCount and leaks the pool entry plus its database/sql
