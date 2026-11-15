@@ -10,7 +10,6 @@
 # may never go up.
 internal/agent 258
 internal/agent/safety/agentguard 8
-internal/agent/provider/codexprovider 9
 internal/agent/provider/cliprovider 23
 # internal/agent/tools 80 -> 81: +1 for internal/agent/tools/hooks moved in (stage C).
 # The count falls with the package split (stage D2).
@@ -30,17 +29,13 @@ internal/serve/cmd 167
 # The count falls with the package split (stage D2).
 internal/config 123
 internal/config/discover 13
-internal/kit/fs/fsext 13
 internal/session/heartbeat 10
 internal/session/jobbatch 21
 internal/session/jobbatch/lab 24
-internal/store/message 12
 internal/agent/provider/nettransport 12
-internal/serve/client/proto 11
 internal/serve/server 83
 internal/session 132
 internal/kit/sys/shell 24
-internal/kit/tasktree 10
 web/src 35
 web/src/actions 52
 web/src/components 33

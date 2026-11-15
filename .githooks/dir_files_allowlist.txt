@@ -13,7 +13,6 @@
 # go up.
 internal/agent 824
 internal/agent/provider/cliprovider 59
-internal/agent/provider/codexprovider 23
 internal/agent/provider/nettransport 27
 internal/agent/tools 163
 internal/agent/tools/mcp 63
@@ -27,7 +26,7 @@ internal/serve/server 295
 internal/session 297
 internal/session/jobbatch 57
 internal/session/jobbatch/lab 45
-internal/store/message 31
+internal/store/message 26
 sdk 45
 web/src 38
 web/src/actions 52
