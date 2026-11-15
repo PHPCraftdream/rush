@@ -24,16 +24,16 @@ except where noted.
 | 1 | 09300544 (process-group SIGKILL EPERM) | darwin, internal/agent | tier1 | 22/22/22 | included | darwin+windows | HIT (native via `_unix` suffix + native prefixes) | HIT | — | — |
 | 2 | 85fa076f (windows rush.db in use, coordinator join) | windows, internal/agent | tier1 | 22/22/22 | included | none active | MISS | HIT | internal/agent not under native prefixes, no GOOS suffix → native_required=false → windows lane never ran | race_roots rule |
 | 3 | 1b94fad9 (awaitSync select race) | darwin, internal/agent | tier1 | 22/22/22 | included | none active | MISS | HIT | same as 2 | race_roots rule |
-| 4a | 8bbcc3d6 (shebang zombie wait) | darwin, internal/shell | tier1 | 1/1/1 | included | darwin+windows | HIT (internal/shell/ native prefix) | HIT | — | — |
-| 4b | 09300544 (group-kill, internal/shell tests) | linux, internal/shell | tier1 | 22/22/22 | included | linux | HIT | HIT | — | — |
+| 4a | 8bbcc3d6 (shebang zombie wait) | darwin, internal/kit/sys/shell | tier1 | 1/1/1 | included | darwin+windows | HIT (internal/kit/sys/shell/ native prefix) | HIT | — | — |
+| 4b | 09300544 (group-kill, internal/kit/sys/shell tests) | linux, internal/kit/sys/shell | tier1 | 22/22/22 | included | linux | HIT | HIT | — | — |
 | 5 | aeac9807 (stall clock sampler race) | linux, internal/agent | tier1 | 22/22/22 | included | linux | HIT | HIT | — | — |
 | 6 | c3d91f79 (busy-DB retry ordering) | linux, internal/agent | tier1 | 1/1/1 | included | linux | HIT | HIT | — | — |
 | 7 | 952e9456 (heartbeat usage accounting) | windows, internal/agent | tier1 | 1/1/1 | included | none active | MISS | HIT | same as 2 | race_roots rule |
-| 8 | 2704df6a (unjoined release callbacks) | darwin internal/server + windows internal/app (symptoms of an internal/agent change in OTHER packages on OTHER OSes) | tier1 | 22/22/22 | both included | none active | MISS | HIT | agent change selected internal/app+internal/server on darwin/windows but native_required=false so those lanes never ran | race_roots rule (agent is a race root → native lanes activate; reverse closure already carried app/server onto those lanes) |
+| 8 | 2704df6a (unjoined release callbacks) | darwin internal/serve/server + windows internal/app (symptoms of an internal/agent change in OTHER packages on OTHER OSes) | tier1 | 22/22/22 | both included | none active | MISS | HIT | agent change selected internal/app+internal/serve/server on darwin/windows but native_required=false so those lanes never ran | race_roots rule (agent is a race root → native lanes activate; reverse closure already carried app/server onto those lanes) |
 | 9 | f3c3e21a (sdk close-admission vs shutdown, jb/flake-sdk-close) | darwin, sdk | tier1 | 1/1/1 | included | darwin+windows | HIT (sdk/ native prefix) | HIT | — | — |
 | 10a | f7d1bf27 merge #14 (jb/r11b) | windows, internal/session | full | 70/27/27 | included | all | HIT (internal/session core+native) | HIT | — | — |
 | 10b | 04e226b6 merge #17 (jb/r10c) | windows, internal/session | full | 70/27/27 | included | all | HIT | HIT | — | — |
-| 11 | 41b55a06 (sqlc regenerate after R10c) | linux, internal/db (stale generated code) | full | 70/26/26 | included | all | HIT (internal/db core prefix → full; sqlc.yaml + internal/db/sql/*.sql + migrations map to internal/db; the drift guard lives in build.yml + pre-push and full mode carries it) | HIT | — | — |
+| 11 | 41b55a06 (sqlc regenerate after R10c) | linux, internal/store/db (stale generated code) | full | 70/26/26 | included | all | HIT (internal/store/db core prefix → full; sqlc.yaml + internal/store/db/sql/*.sql + migrations map to internal/store/db; the drift guard lives in build.yml + pre-push and full mode carries it) | HIT | — | — |
 | 12 | 4988d832 (awaitSync move, 1004-line violation) | linux, internal/agent | tier1 | 22/22/22 | included | linux | HIT for the package, but the file-size ratchet guard was NOT in the always-run set (`.githooks/` missing from always_run, and always_run was never consulted by the selector) | HIT (guard carried) | — | always_run wiring + `.githooks/` added |
 
 ## Fixes applied (principled, no commit ids hardcoded)
@@ -42,7 +42,7 @@ except where noted.
    `race_roots` sets `native_required` — these are concurrency-sensitive
    packages whose flakes appear only under native scheduling (cases 2,3,7,8).
    Reverse-dependency closure already places native-required consumers
-   (internal/app, internal/server) on those lanes; the rule activates the lanes.
+   (internal/app, internal/serve/server) on those lanes; the rule activates the lanes.
 2. policy: `always_run` now includes `.githooks/` (file-size ratchet
    `check_file_size.sh` + allowlist, `check_file_size_selftest.sh`, pre-push
    which mirrors CI incl. the sqlc ASCII/drift guard) (case 12, and guard-side

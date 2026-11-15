@@ -507,7 +507,7 @@ the exhausted entry, due to a `status='leased'` vs `status='pending'` mismatch i
   lease-race/duplicate-dispatch guard, `ErrCallQueuedNotExecuted` handling)
 - `internal/session/lock.go` — bounded synchronous wait for metadata cleanup on `Release()`
 - `internal/app/app.go` — `RunQueuePump` construction/start moved to after `InitCoderAgent`
-- `internal/db/sql/run_queue.sql` — `CleanupExpiredLeases` attempt accounting
+- `internal/store/db/sql/run_queue.sql` — `CleanupExpiredLeases` attempt accounting
 - `internal/app/p348_p0_1_pump_coordinator_wiring_test.go`,
   `internal/app/p348_p0_1_ordering_race_test.go`,
   `internal/session/p348_p0_2_lock_busy_no_attempt_penalty_test.go`,
