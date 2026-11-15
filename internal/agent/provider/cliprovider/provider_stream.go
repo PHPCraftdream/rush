@@ -16,6 +16,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/proctrack"
 	"github.com/PHPCraftdream/rush/internal/session"
 	gopty "github.com/aymanbagabas/go-pty"
 )
@@ -409,7 +410,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 					return os.ErrProcessDone
 				}
 			}
-			if startErr := session.StartProcessUnlessStopping(ptycmd.Start); startErr == nil {
+			if startErr := proctrack.StartProcessUnlessStopping(ptycmd.Start); startErr == nil {
 				ptyProc.Store(ptycmd.Process)
 				// Track the child's tree for teardown. On Windows this
 				// assigns a KILL_ON_JOB_CLOSE Job Object that
@@ -605,7 +606,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 			if pipeErr != nil {
 				return nil, fmt.Errorf("stderr pipe: %w", pipeErr)
 			}
-			if startErr := session.StartProcessUnlessStopping(cmd.Start); startErr != nil {
+			if startErr := proctrack.StartProcessUnlessStopping(cmd.Start); startErr != nil {
 				return nil, fmt.Errorf("start %s: %w", m.spec.Binary, startErr)
 			}
 			pr, pw := io.Pipe()
@@ -618,7 +619,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 			if pipeErr != nil {
 				return nil, fmt.Errorf("stdout pipe: %w", pipeErr)
 			}
-			if startErr := session.StartProcessUnlessStopping(cmd.Start); startErr != nil {
+			if startErr := proctrack.StartProcessUnlessStopping(cmd.Start); startErr != nil {
 				return nil, fmt.Errorf("start %s: %w", m.spec.Binary, startErr)
 			}
 			reader = pipe
@@ -660,7 +661,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 	var visibleOnce sync.Once
 	visibleCleanup := func() {
 		visibleOnce.Do(func() {
-			session.UntrackProcessTree(childPid)
+			proctrack.UntrackProcessTree(childPid)
 			session.UnregisterChildGroup(m.dataDir, sessionID, childPid)
 			if geminiMCPName != "" {
 				deregisterGeminiMCP(geminiMCPName, mcpSrv.addr)

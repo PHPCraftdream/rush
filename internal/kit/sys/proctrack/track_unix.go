@@ -1,6 +1,6 @@
 //go:build !windows
 
-package session
+package proctrack
 
 import (
 	"sync"
@@ -133,4 +133,13 @@ func KillAllTrackedTrees() int {
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
 	}
 	return len(pids)
+}
+
+// TrackedProcessCount returns how many process groups are currently
+// tracked. The lock is held for one map-length read; no I/O and no signal
+// is sent.
+func TrackedProcessCount() int {
+	trackedGroupsMu.Lock()
+	defer trackedGroupsMu.Unlock()
+	return len(trackedGroups)
 }

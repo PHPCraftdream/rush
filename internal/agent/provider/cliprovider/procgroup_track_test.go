@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/proctrack"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -73,7 +74,7 @@ func TestTrackChildTree_RegistersGroupWithReapedLeaderAndLivingGrandchild(t *tes
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
 		}
-		session.UntrackProcessTree(cmd.Process.Pid)
+		proctrack.UntrackProcessTree(cmd.Process.Pid)
 		session.UnregisterChildGroup(dataDir, sessionID, cmd.Process.Pid)
 		_ = writer.Close()
 		_ = reader.Close()

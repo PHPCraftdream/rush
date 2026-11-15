@@ -8,12 +8,12 @@ import (
 	"os/exec"
 	"syscall"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/proctrack"
 )
 
 func configureStopParent(*exec.Cmd)       {}
 func configureStopLeaf(command *exec.Cmd) { command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} }
-func trackStopLeaf(pid int) error         { return session.RegisterSpawnedGroup(pid) }
+func trackStopLeaf(pid int) error         { return proctrack.RegisterSpawnedGroup(pid) }
 func triggerOwnStopConsole() error        { return nil }
 
 func processStopScenarios() []processStopScenario {

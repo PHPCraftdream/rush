@@ -1,6 +1,6 @@
 //go:build windows
 
-package session
+package proctrack
 
 import (
 	"fmt"
@@ -10,10 +10,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 	"golang.org/x/sys/windows"
 )
-
-func init() {
-	procinfo.RegisterTrackedJobTerminator(terminateTrackedJob)
-}
 
 // trackedJob pairs a kill-on-close Job Object handle with the creation
 // time of the process the job was created for. The creation time is the
@@ -222,4 +218,21 @@ func KillAllTrackedTrees() int {
 		windows.CloseHandle(h)
 	}
 	return len(jobs)
+}
+
+// TrackedProcessCount returns how many Job Objects are currently tracked.
+// The lock is held for one map-length read; no I/O and no job handle is
+// touched.
+func TrackedProcessCount() int {
+	trackedJobsMu.Lock()
+	defer trackedJobsMu.Unlock()
+	return len(trackedJobs)
+}
+
+// KillProcess forcibly terminates the process tree rooted at pid, running
+// the tracked-job pass (terminateTrackedJob) inside procinfo's kill
+// sequence. Callers that registered pid with TrackProcessTree must kill
+// through this function, not procinfo.KillProcess, which has no registry.
+func KillProcess(pid int) error {
+	return procinfo.KillProcessWithPass(pid, terminateTrackedJob)
 }
