@@ -92,7 +92,7 @@ func TestRunTimeoutInnerDeadlineWithLiveContext(t *testing.T) {
 		loopText(w, "first", "answer", 1, 1)
 	})
 	var out bytes.Buffer
-	l := &cliLoop{app: h.app, ctx: t.Context(), output: &out, mode: RunModeJSON, sessionID: h.sessionID, final: &RunResult{SessionID: h.sessionID}}
+	l := &cliLoop{env: h.app.runEnv(), host: h.app.loopHost(), ctx: t.Context(), output: &out, mode: RunModeJSON, sessionID: h.sessionID, final: &RunResult{SessionID: h.sessionID}}
 	res, err := l.exitWait(context.DeadlineExceeded)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	var timeoutErr *RunTimeoutError

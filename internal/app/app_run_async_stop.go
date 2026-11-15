@@ -22,7 +22,7 @@ import (
 // --on-finish, and the caller's Shutdown cancels the run's jobs as Ctrl-C does.
 func (l *cliLoop) stopError() error {
 	if l.overrides.MaxCost > 0 || l.overrides.MaxTokens > 0 {
-		if sess, err := l.app.Sessions.Get(l.ctx, l.sessionID); err == nil {
+		if sess, err := l.env.Sessions().Get(l.ctx, l.sessionID); err == nil {
 			if capErr := l.capExceeded(sess); capErr != nil {
 				return capErr
 			}
@@ -37,7 +37,7 @@ func (l *cliLoop) stopError() error {
 
 // cancelError is the run's end by `sessions cancel` (nil when none is pending).
 func (l *cliLoop) cancelError() error {
-	if canceled, err := l.app.Sessions.IsCancelRequested(l.ctx, l.sessionID); err == nil && canceled {
+	if canceled, err := l.env.Sessions().IsCancelRequested(l.ctx, l.sessionID); err == nil && canceled {
 		return l.cancelRequestedError()
 	}
 	return nil
@@ -56,7 +56,7 @@ func (l *cliLoop) capError() error {
 	if l.overrides.MaxCost <= 0 && l.overrides.MaxTokens <= 0 {
 		return nil
 	}
-	sess, err := l.app.Sessions.Get(l.ctx, l.sessionID)
+	sess, err := l.env.Sessions().Get(l.ctx, l.sessionID)
 	if err != nil {
 		return nil
 	}
@@ -65,7 +65,7 @@ func (l *cliLoop) capError() error {
 
 func (l *cliLoop) capExceeded(sess session.Session) error {
 	if l.overrides.MaxCost > 0 {
-		if budget, err := l.app.Sessions.SubtreeBudget(l.ctx, l.sessionID); err == nil && budget > l.overrides.MaxCost {
+		if budget, err := l.env.Sessions().SubtreeBudget(l.ctx, l.sessionID); err == nil && budget > l.overrides.MaxCost {
 			return &runIncompleteError{reason: "error", detail: fmt.Sprintf(
 				"session %s aborted: cost $%.4f exceeds max $%.4f", l.sessionID, budget, l.overrides.MaxCost)}
 		}
@@ -106,10 +106,10 @@ func (l *cliLoop) clearHonouredCancel(final *RunResult, err error) {
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(l.ctx), cleanupTimeout)
 	defer cancel()
-	if pending, readErr := l.app.Sessions.IsCancelRequested(ctx, l.sessionID); readErr != nil || !pending {
+	if pending, readErr := l.env.Sessions().IsCancelRequested(ctx, l.sessionID); readErr != nil || !pending {
 		return
 	}
-	if clearErr := l.app.Sessions.ClearCancelRequest(ctx, l.sessionID); clearErr != nil {
+	if clearErr := l.env.Sessions().ClearCancelRequest(ctx, l.sessionID); clearErr != nil {
 		slog.Warn("Failed to clear the honoured cancel request at loop exit", "session_id", l.sessionID, "err", clearErr)
 	}
 }

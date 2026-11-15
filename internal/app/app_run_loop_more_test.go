@@ -38,9 +38,10 @@ func nextStepLoop(src agent.ReactionDebtSource) *cliLoop {
 }
 
 func nextStepLoopCancel(src agent.ReactionDebtSource, canceled bool) *cliLoop {
+	probe := &App{Sessions: cancelFlagSessions{canceled: canceled}}
 	return &cliLoop{
 		ctx: context.Background(), source: src, sessionID: "sess-1",
-		app: &App{Sessions: cancelFlagSessions{canceled: canceled}},
+		env: probe.runEnv(), host: probe.loopHost(),
 	}
 }
 

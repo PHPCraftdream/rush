@@ -86,7 +86,7 @@ var recoverSessionPreWriteSeam func()
 // children and leaves them alone.
 //
 // The sweep is non-fatal on error and silent when there is nothing to recover.
-func (app *App) recoverInterruptedTurns(ctx context.Context) {
+func recoverInterruptedTurns(ctx context.Context, p recoverParams) {
 	// Bound the whole sweep so a slow disk (network mount, AV scan,
 	// fsync stall) cannot block app startup. 10s is generous for a
 	// candidate-proportional scan against SQLite; if it trips we'd rather
@@ -101,8 +101,8 @@ func (app *App) recoverInterruptedTurns(ctx context.Context) {
 	// 5 minutes for stale orphans. See bug-analyzer audit, #7
 	// "Recovery vs new turn race".
 	orphanAgeThreshold := 30 * time.Second
-	if app.recoveryOrphanAge != nil {
-		orphanAgeThreshold = *app.recoveryOrphanAge
+	if p.OrphanAge != nil {
+		orphanAgeThreshold = *p.OrphanAge
 	}
 	staleBefore := start.Add(-orphanAgeThreshold).Unix()
 	// Data directory for the cross-process liveness probe below. Empty
@@ -110,14 +110,14 @@ func (app *App) recoverInterruptedTurns(ctx context.Context) {
 	// heuristic alone rather than skipping recovery entirely.
 	var dataDir string
 	switch {
-	case app.recoveryDataDir != nil:
-		dataDir = *app.recoveryDataDir
-	case app.config != nil:
-		if cfg := app.Config(); cfg != nil && cfg.Options != nil {
+	case p.DataDirOverride != nil:
+		dataDir = *p.DataDirOverride
+	case p.Config != nil:
+		if cfg := p.Config.Config(); cfg != nil && cfg.Options != nil {
 			dataDir = cfg.Options.DataDirectory
 		}
 	}
-	candidates, err := app.Messages.ListCandidateInterruptedAssistantSessions(ctx)
+	candidates, err := p.Messages.ListCandidateInterruptedAssistantSessions(ctx)
 	if err != nil {
 		slog.Warn("startup recovery: failed to list recovery candidates", "err", err)
 		return
@@ -141,7 +141,7 @@ func (app *App) recoverInterruptedTurns(ctx context.Context) {
 		if ctx.Err() != nil {
 			break
 		}
-		outcome := app.recoverSessionInterruptedTurn(ctx, cand, staleBefore, dataDir)
+		outcome := recoverSessionInterruptedTurn(ctx, p, cand, staleBefore, dataDir)
 		switch outcome {
 		case recoveryOutcomeRecovered:
 			recovered++
@@ -160,7 +160,7 @@ func (app *App) recoverInterruptedTurns(ctx context.Context) {
 			break
 		}
 		childrenScanned++
-		outcome := app.recoverSessionInterruptedTurn(ctx, cand, staleBefore, dataDir)
+		outcome := recoverSessionInterruptedTurn(ctx, p, cand, staleBefore, dataDir)
 		switch outcome {
 		case recoveryOutcomeRecovered:
 			recoveredChildren++
@@ -214,11 +214,11 @@ const (
 // message and, as of the discovery query's read, an unfinished assistant
 // message — so this only needs to fetch that ONE message (not the session's
 // full history) to re-check and act on it.
-func (app *App) recoverSessionInterruptedTurn(ctx context.Context, cand message.InterruptedAssistantCandidate, staleBefore int64, dataDir string) recoveryOutcome {
+func recoverSessionInterruptedTurn(ctx context.Context, p recoverParams, cand message.InterruptedAssistantCandidate, staleBefore int64, dataDir string) recoveryOutcome {
 	if recoverSessionListSeam != nil {
 		recoverSessionListSeam()
 	}
-	lastAssistant, err := app.Messages.Get(ctx, cand.MessageID)
+	lastAssistant, err := p.Messages.Get(ctx, cand.MessageID)
 	if err != nil {
 		slog.Debug("startup recovery: skipping candidate, get failed",
 			"session_id", cand.SessionID, "message_id", cand.MessageID, "err", err)
@@ -300,7 +300,7 @@ func (app *App) recoverSessionInterruptedTurn(ctx context.Context, cand message.
 	// atomically. applied=false means the candidate went stale in that
 	// window: skip, do not retry-stamp (see the query's own comment in
 	// internal/db/sql/messages.sql for the full rationale).
-	applied, err := app.Messages.StampInterruptedAssistantIfStillLast(ctx, cand.SessionID, lastAssistant)
+	applied, err := p.Messages.StampInterruptedAssistantIfStillLast(ctx, cand.SessionID, lastAssistant)
 	if err != nil {
 		slog.Warn(
 			"startup recovery: failed to mark orphan assistant",
@@ -325,8 +325,8 @@ func (app *App) recoverSessionInterruptedTurn(ctx context.Context, cand message.
 // has a Partial finish (mid-stream checkpoint) and is unfinished. Used by
 // RunNonInteractive to surface recovered text in the envelope.
 // Returns nil if no orphan found. Fork patch: batch 8.
-func (app *App) findOrphanPartial(ctx context.Context, sessionID string) *RecoveredPartial {
-	msgs, err := app.Messages.List(ctx, sessionID)
+func findOrphanPartial(env RunEnv, ctx context.Context, sessionID string) *RecoveredPartial {
+	msgs, err := env.Messages().List(ctx, sessionID)
 	if err != nil {
 		return nil
 	}

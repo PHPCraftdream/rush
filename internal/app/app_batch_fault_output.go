@@ -61,10 +61,8 @@ func batchFaultRunResult(sessionID string, fault error) *RunResult {
 	return &RunResult{SessionID: sessionID, ExitReason: "batch_fault", Error: text, ToolCalls: []ToolCallStat{}, FinalText: "", Usage: UsageInfo{}}
 }
 
-func (app *App) handleBatchFaultOutput(fault error) {
-	app.batchFaultOutputMu.Lock()
-	write := app.batchFaultOutput
-	app.batchFaultOutputMu.Unlock()
+func handleBatchFaultOutput(p batchCLIParams, fault error) {
+	write := p.env.GetBatchFaultOutput()
 	if write != nil {
 		write(fault)
 	}

@@ -376,7 +376,7 @@ func TestCLILoop_QueuedIterationUsageIsFoldedIntoTheRun(t *testing.T) {
 	})
 	ctx := loopCtx(t)
 	l := &cliLoop{
-		app: h.app, source: &scriptedScopeSource{script: []scopeAnswer{{}}}, ctx: ctx,
+		env: h.app.runEnv(), host: h.app.loopHost(), source: &scriptedScopeSource{script: []scopeAnswer{{}}}, ctx: ctx,
 		output: io.Discard, mode: RunModeJSON, started: time.Now(),
 		sessionID: h.sessionID, lastBuffered: &bytes.Buffer{},
 		final: &RunResult{SessionID: h.sessionID, ExitReason: "stop", FinalText: r3FirstAnswer},

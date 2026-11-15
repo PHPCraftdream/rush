@@ -123,7 +123,7 @@ func reviewerToolCalls(msgs []message.Message) int {
 // review text itself, the verdict parsed out of it, and — for every verdict
 // that is not a plain verified "pass" — one warning and one stderr line. It
 // touches neither the run's exit code nor final_text (A10).
-func (app *App) attachReview(ctx context.Context, final *RunResult, sessionID, reviewText string, stderr io.Writer) {
+func attachReview(env RunEnv, ctx context.Context, final *RunResult, sessionID, reviewText string, stderr io.Writer) {
 	if final == nil {
 		return
 	}
@@ -145,7 +145,7 @@ func (app *App) attachReview(ctx context.Context, final *RunResult, sessionID, r
 		// failure mode this design exists for (#1165): it read the
 		// orchestrator's claims and retold them. Downgrade it to
 		// "unverified" rather than repeating the review turn.
-		calls, known := app.reviewerToolCallCount(ctx, sessionID)
+		calls, known := reviewerToolCallCount(env, ctx, sessionID)
 		switch {
 		case known && calls == 0:
 			verified = "unverified"
@@ -162,11 +162,11 @@ func (app *App) attachReview(ctx context.Context, final *RunResult, sessionID, r
 // App has no message store at all — because an unreadable transcript is not
 // a reason to fail a run that already succeeded: the caller keeps the
 // reviewer's claimed verdict.
-func (app *App) reviewerToolCallCount(ctx context.Context, sessionID string) (calls int, known bool) {
-	if app.Messages == nil {
+func reviewerToolCallCount(env RunEnv, ctx context.Context, sessionID string) (calls int, known bool) {
+	if env.Messages() == nil {
 		return 0, false
 	}
-	msgs, err := app.Messages.List(ctx, sessionID)
+	msgs, err := env.Messages().List(ctx, sessionID)
 	if err != nil {
 		slog.Warn("run: failed to read the session transcript to verify the reviewer verdict", "session", sessionID, "err", err)
 		return 0, false

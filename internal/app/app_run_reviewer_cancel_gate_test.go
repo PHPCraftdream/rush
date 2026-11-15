@@ -91,7 +91,7 @@ func TestExecuteRunReviewerPassGateRefusesCanceledParent(t *testing.T) {
 func TestResetForReviewerPassClearsCachedTerminalTriple(t *testing.T) {
 	h := newReviewerPassApp(t, true)
 	sess := createModelOverrideSession(t, h.app, "reset-triple")
-	loop := &executeRunLoop{app: h.app, sess: sess}
+	loop := &executeRunLoop{env: h.app.runEnv(), host: h.app.loopHost(), sess: sess}
 
 	probeCtx, probeCancel := context.WithCancel(context.Background())
 	loop.cachedTerminal = &terminalReconciliation{}

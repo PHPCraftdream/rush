@@ -213,7 +213,7 @@ func TestCLILoopExitFunnels_OneEnvelopeAndEndedReasonEach(t *testing.T) {
 			defer cancel()
 			var out bytes.Buffer
 			l := &cliLoop{
-				app: h.app, ctx: ctx, output: &out, mode: RunModeJSON,
+				env: h.app.runEnv(), host: h.app.loopHost(), ctx: ctx, output: &out, mode: RunModeJSON,
 				sessionID: h.sessionID, lastBuffered: &bytes.Buffer{},
 				final: &RunResult{SessionID: h.sessionID},
 			}
@@ -243,7 +243,7 @@ func TestCLILoopExitPrecheck_UsesIncompleteReason(t *testing.T) {
 	})
 	var out bytes.Buffer
 	l := &cliLoop{
-		app: h.app, ctx: t.Context(), output: &out, mode: RunModeJSON,
+		env: h.app.runEnv(), host: h.app.loopHost(), ctx: t.Context(), output: &out, mode: RunModeJSON,
 		sessionID: h.sessionID, lastBuffered: &bytes.Buffer{},
 		final: &RunResult{SessionID: h.sessionID},
 	}

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
@@ -236,6 +237,12 @@ type App struct {
 	// so they can seed a real session lock and drive the live-holder
 	// branch without standing up a full config.
 	recoveryDataDir *string
+
+	// batchOwner is the identity handle keying the package-level batch
+	// registries (batchHostStores, batchNoticeStores,
+	// batchMaintenanceLoops). Created lazily by batchOwnerHandle so bare
+	// &App{} literals keep working.
+	batchOwner atomic.Pointer[batchOwner]
 }
 
 // Option configures New's behavior. See SkipAgentSetup.
