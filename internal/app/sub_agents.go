@@ -47,8 +47,8 @@ const maxSubAgentTextChars = 64 * 1024
 // Failures to list messages for a single sub-session are logged at
 // WARN and the entry is skipped — partial output is better than
 // dropping the whole field on one bad row.
-func (app *App) collectSubAgentOutputs(ctx context.Context, parentSessionID string) []SubAgentOutput {
-	subs, err := app.Sessions.ListSubSessions(ctx, parentSessionID)
+func collectSubAgentOutputs(env RunEnv, ctx context.Context, parentSessionID string) []SubAgentOutput {
+	subs, err := env.Sessions().ListSubSessions(ctx, parentSessionID)
 	if err != nil {
 		slog.Warn("collectSubAgentOutputs: list sub-sessions failed",
 			"parent", parentSessionID, "err", err)
@@ -56,7 +56,7 @@ func (app *App) collectSubAgentOutputs(ctx context.Context, parentSessionID stri
 	}
 	out := make([]SubAgentOutput, 0, len(subs))
 	for _, sub := range subs {
-		msgs, mErr := app.Messages.List(ctx, sub.ID)
+		msgs, mErr := env.Messages().List(ctx, sub.ID)
 		if mErr != nil {
 			slog.Warn("collectSubAgentOutputs: list messages failed",
 				"sub_session", sub.ID, "err", mErr)
@@ -100,13 +100,13 @@ func lastAssistantText(msgs []message.Message) string {
 // returns only (count, totalChars) and skips the per-row text copy
 // + truncation work. Used by the always-on reduction-loss warning,
 // which only needs to compare a ratio.
-func (app *App) subAgentSummaryStats(ctx context.Context, parentSessionID string) (count int, totalChars int) {
-	subs, err := app.Sessions.ListSubSessions(ctx, parentSessionID)
+func subAgentSummaryStats(env RunEnv, ctx context.Context, parentSessionID string) (count int, totalChars int) {
+	subs, err := env.Sessions().ListSubSessions(ctx, parentSessionID)
 	if err != nil {
 		return 0, 0
 	}
 	for _, sub := range subs {
-		msgs, mErr := app.Messages.List(ctx, sub.ID)
+		msgs, mErr := env.Messages().List(ctx, sub.ID)
 		if mErr != nil {
 			continue
 		}

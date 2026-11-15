@@ -130,8 +130,8 @@ func (l *cliLoop) quotaPhase() cliStepResult {
 	}
 	slices.Sort(childIDs)
 	questions := make(map[string]session.ChildQuestion)
-	writer := l.app.batchCutoverWriter()
-	facts := agent.NewBatchCutoverNodeFacts(session.NewBatchStoreWithReader(writer, l.app.batchCutoverReader(writer)), nil, writer)
+	writer := l.host.batchCutoverWriter()
+	facts := agent.NewBatchCutoverNodeFacts(session.NewBatchStoreWithReader(writer, l.host.batchCutoverReader(writer)), nil, writer)
 	owners := make(map[string]bool)
 	for _, row := range rows {
 		if row.OwnerSessionID != "" {
@@ -146,7 +146,7 @@ func (l *cliLoop) quotaPhase() cliStepResult {
 		}
 		for _, heldRow := range held {
 			var noticeText string
-			err := l.app.batchCutoverWriter().QueryRowContext(l.ctx, `SELECT text FROM session_notices WHERE id = ?1 AND owner = ?2 AND kind = ?3 AND delivery IN ('pending','done') AND wake = 1 AND reacted = 0`, heldRow.ID, owner, session.NoticeKindChildQuestion).Scan(&noticeText)
+			err := l.host.batchCutoverWriter().QueryRowContext(l.ctx, `SELECT text FROM session_notices WHERE id = ?1 AND owner = ?2 AND kind = ?3 AND delivery IN ('pending','done') AND wake = 1 AND reacted = 0`, heldRow.ID, owner, session.NoticeKindChildQuestion).Scan(&noticeText)
 			if err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
 					continue
@@ -166,7 +166,7 @@ func (l *cliLoop) quotaPhase() cliStepResult {
 			l.final.PendingChildQuestions = append(l.final.PendingChildQuestions, PendingChildQuestion{SessionID: child, Title: question.Question, Details: question.Question})
 		}
 	}
-	l.tot.subAgentOutputs = l.app.collectSubAgentOutputs(l.ctx, l.sessionID)
+	l.tot.subAgentOutputs = l.host.collectSubAgentOutputs(l.ctx, l.sessionID)
 	text := "Hard provider quota exhausted: " + l.quota.cause.Error()
 	if l.final.QuotaResetAt != "" {
 		text += "\nLimit resets: " + l.final.QuotaResetAt
@@ -215,7 +215,7 @@ func (l *cliLoop) snapshotQuotaTerminal() {
 // quotaJobsInTree reads the finished-work rows of the session's tree: the
 // batch root/node walk (batchFinishedWork in app_batch_cutover_facts.go).
 func (l *cliLoop) quotaJobsInTree(ctx context.Context) ([]quotaWorkRow, bool, error) {
-	return l.app.batchFinishedWork(ctx, l.sessionID)
+	return l.host.batchFinishedWork(ctx, l.sessionID)
 }
 
 // quotaTerminalState is the terminal predicate: the terminal node state set

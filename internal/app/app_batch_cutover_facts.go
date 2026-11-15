@@ -27,25 +27,25 @@ type batchWorkFacts struct {
 
 // batchCutoverWriter is the pool the batch debt store opens its read-only
 // transactions on (same pool choice as BatchCLIStore). Nil without a DB.
-func (app *App) batchCutoverWriter() *sql.DB {
-	if app == nil || app.DB == nil {
+func batchCutoverWriter(p batchCLIParams) *sql.DB {
+	if p.env.DB == nil {
 		return nil
 	}
-	writer := app.DB()
+	writer := p.env.DB()
 	if writer == nil {
 		return nil
 	}
-	if len(app.dbConns) > 0 && app.dbConns[0] != nil {
-		writer = app.dbConns[0]
+	if conns := p.dbConns(); len(conns) > 0 && conns[0] != nil {
+		writer = conns[0]
 	}
 	return writer
 }
 
 // batchCutoverReader returns the read pool the batch live reader runs on
 // (nil falls back to the writer, like BatchCLIStore).
-func (app *App) batchCutoverReader(writer *sql.DB) *sql.DB {
-	if app.readDB != nil {
-		return app.readDB
+func batchCutoverReader(p batchCLIParams, writer *sql.DB) *sql.DB {
+	if read := p.readDB(); read != nil {
+		return read
 	}
 	return writer
 }
@@ -53,8 +53,8 @@ func (app *App) batchCutoverReader(writer *sql.DB) *sql.DB {
 // batchCutoverDebtOwners answers the pending-inclusive reaction-debt fact
 // from batch node/outbox predicates only. A nil pool answers "no debt"
 // (the configless-App rule), never an error.
-func (app *App) batchCutoverDebtOwners(ctx context.Context, ids []string) (map[string]bool, error) {
-	writer := app.batchCutoverWriter()
+func batchCutoverDebtOwners(p batchCLIParams, ctx context.Context, ids []string) (map[string]bool, error) {
+	writer := batchCutoverWriter(p)
 	if writer == nil {
 		return map[string]bool{}, nil
 	}
@@ -68,13 +68,13 @@ func (app *App) batchCutoverDebtOwners(ctx context.Context, ids []string) (map[s
 // commits), so there is no dead-host-running-rows fact under the batch
 // authority; a failed or Unknown-host read stays incomplete and surfaces
 // as an Unreadable entry, never as "nothing running".
-func (app *App) batchCutoverLiveWork(ctx context.Context, ids []string) map[string]batchWorkFacts {
+func batchCutoverLiveWork(p batchCLIParams, ctx context.Context, ids []string) map[string]batchWorkFacts {
 	out := make(map[string]batchWorkFacts, len(ids))
-	writer := app.batchCutoverWriter()
+	writer := batchCutoverWriter(p)
 	if writer == nil {
 		return out
 	}
-	reader := session.NewBatchLiveReader(db.New(app.batchCutoverReader(writer)), app.dataDir)
+	reader := session.NewBatchLiveReader(db.New(batchCutoverReader(p, writer)), p.env.DataDir())
 	// TxStarter: every live read runs in ONE read-only tx on the writer.
 	reader.TxStarter = writer
 	for id, r := range reader.BatchLiveForSessions(ctx, ids) {
@@ -107,15 +107,15 @@ func (app *App) batchCutoverLiveWork(ctx context.Context, ids []string) map[stri
 // registered as this process's own is Alive by definition (the shared
 // probe refuses to answer it with ErrProbeOwnHost); foreign hosts keep
 // the conservative probe verdict.
-func (app *App) batchCutoverHostLiveness() func(string) session.HostLockStatus {
+func batchCutoverHostLiveness(p batchCLIParams) func(string) session.HostLockStatus {
 	return func(hostID string) session.HostLockStatus {
-		if hostID == "" || app.dataDir == "" {
+		if hostID == "" || p.env.DataDir() == "" {
 			return session.HostStatusUnknown
 		}
 		if session.IsOwnHostID(hostID) {
 			return session.HostStatusAlive
 		}
-		st, err := session.ProbeHostShared(app.dataDir, hostID)
+		st, err := session.ProbeHostShared(p.env.DataDir(), hostID)
 		if err != nil {
 			return session.HostStatusUnknown
 		}
@@ -149,8 +149,8 @@ type quotaWorkRow struct {
 // exported identity; a multi-task root exports each task by its node id.
 // The root/node Key keeps incarnations distinct for the quota terminal
 // latch. Errors report incomplete, never a partial silent answer.
-func (app *App) batchFinishedWork(ctx context.Context, sessionID string) ([]quotaWorkRow, bool, error) {
-	conn := app.activityConn()
+func batchFinishedWork(p batchCLIParams, ctx context.Context, sessionID string) ([]quotaWorkRow, bool, error) {
+	conn := p.activityConn()
 	if conn == nil {
 		return nil, false, nil
 	}

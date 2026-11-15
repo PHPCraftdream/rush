@@ -106,7 +106,7 @@ func TestBatchMaintenance_StartupPassRecoversOnceWakeZero(t *testing.T) {
 
 	a.startBatchMaintenance()
 	t.Cleanup(a.stopBatchMaintenance)
-	_, ok := batchMaintenanceLoops.Load(a)
+	_, ok := batchMaintenanceLoops.Load(a.batchOwnerHandle())
 	require.True(t, ok, "flag on: the maintenance loop must be armed")
 
 	state, outcome := batchMaintenanceRootState(t, conn, root)
@@ -141,7 +141,7 @@ func TestBatchMaintenance_PeriodicPassAdvancesCursorAndConverges(t *testing.T) {
 	t.Cleanup(a.stopBatchMaintenance)
 	require.Equal(t, 1, batchMaintenanceInterruptedTotal(t, conn, roots), "the startup pass is pass #1: exactly one root recovered")
 
-	v, ok := batchMaintenanceLoops.Load(a)
+	v, ok := batchMaintenanceLoops.Load(a.batchOwnerHandle())
 	require.True(t, ok)
 	loop := v.(*batchMaintenanceLoop)
 	loop.mu.Lock()
@@ -198,17 +198,17 @@ func TestBatchMaintenance_StopJoinsAndIsIdempotent(t *testing.T) {
 	a, _, _ := newBatchMaintenanceApp(t)
 
 	a.startBatchMaintenance()
-	_, ok := batchMaintenanceLoops.Load(a)
+	_, ok := batchMaintenanceLoops.Load(a.batchOwnerHandle())
 	require.True(t, ok)
 
 	a.stopBatchMaintenance()
-	_, ok = batchMaintenanceLoops.Load(a)
+	_, ok = batchMaintenanceLoops.Load(a.batchOwnerHandle())
 	require.False(t, ok, "a stop that forgets LoadAndDelete leaves the loop armed past shutdown")
 
 	a.stopBatchMaintenance() // idempotent: must not panic
 
 	a.startBatchMaintenance()
-	_, ok = batchMaintenanceLoops.Load(a)
+	_, ok = batchMaintenanceLoops.Load(a.batchOwnerHandle())
 	require.True(t, ok, "a restart must arm a fresh loop")
 	a.stopBatchMaintenance()
 }
@@ -235,11 +235,11 @@ func TestBatchMaintenance_InstallArmsAndShutdownDisarms(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, a.installBatchRuntime(ctx), "the production install entry must succeed on the bare fixture App")
-	_, ok := batchMaintenanceLoops.Load(a)
+	_, ok := batchMaintenanceLoops.Load(a.batchOwnerHandle())
 	require.True(t, ok, "installBatchRuntime must arm the maintenance loop (app_batch_install.go:146)")
 
 	res := a.ShutdownWithResult()
 	require.False(t, res.Forced, "graceful shutdown of an idle installed App must not be forced")
-	_, ok = batchMaintenanceLoops.Load(a)
+	_, ok = batchMaintenanceLoops.Load(a.batchOwnerHandle())
 	require.False(t, ok, "releaseResources must disarm the maintenance loop before the drain gate releases the writer (app_lifecycle.go stopBatchMaintenance call site)")
 }

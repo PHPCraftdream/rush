@@ -28,12 +28,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// turnRunFunc is the shape of the per-turn runner the phase loop hands to
-// its turn goroutine: the coordinator Run/RunWithOverrides/
-// RunWithCredentials dispatch for the primary turn, or the reviewer pass's
-// fixed RunWithOverrides call.
-type turnRunFunc func(ctx context.Context, sessionID, prompt string) (*fantasy.AgentResult, error)
-
 // executeRunLoop carries the state ExecuteRun's event loop reads, split
 // into per-invocation fields (identical across both phases) and
 // per-phase tracking fields (reset by resetForReviewerPass). The struct
@@ -42,7 +36,8 @@ type turnRunFunc func(ctx context.Context, sessionID, prompt string) (*fantasy.A
 // turn's finish() result becoming ExecuteRun's own return value.
 type executeRunLoop struct {
 	// Immutable for the whole invocation (both phases).
-	app            *App
+	env            RunEnv
+	host           LoopHost
 	sess           session.Session
 	ctx            context.Context
 	mode           RunMode
@@ -140,7 +135,7 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 	// mean only the review turn's own messages read as new.
 	s.baselineIDs = make(map[string]struct{})
 	s.baselineKnown = true
-	if existing, listErr := s.app.Messages.List(s.ctx, s.sess.ID); listErr != nil {
+	if existing, listErr := s.env.Messages().List(s.ctx, s.sess.ID); listErr != nil {
 		s.baselineKnown = false
 		slog.Warn("run: failed to snapshot pre-run messages; terminal reconciliation will use live events", "session", s.sess.ID, "err", listErr)
 	} else {
@@ -149,7 +144,7 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 		}
 	}
 	if s.messageEvents == nil {
-		s.messageEvents = s.app.Messages.Subscribe(s.ctx)
+		s.messageEvents = s.env.Messages().Subscribe(s.ctx)
 	}
 	// The old inline code created these maps before the select loop ran;
 	// they must exist before the turn goroutine is launched.
@@ -205,7 +200,7 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 			// Runs in its OWN goroutine (see drainDone's doc above for why
 			// synchronous-in-place doesn't work) — this select loop keeps
 			// servicing messageEvents (and ctx.Done()) the whole time.
-			if isCanceled && s.app.RunQueuePump != nil {
+			if isCanceled && s.env.Pump() != nil {
 				originalOwner := s.eventOwner
 				recorder := agent.NewCallResultRecorder()
 				assistantIDs := make(map[string]struct{})
@@ -233,7 +228,7 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 						assistantIDsMu.Unlock()
 					})
 					drainCtx = session.WithDrainAssistantIdentityLive(drainCtx, captureAssistantID)
-					result, drainErr := s.app.RunQueuePump.DrainSessionNow(drainCtx, s.sess.ID)
+					result, drainErr := s.env.Pump().DrainSessionNow(drainCtx, s.sess.ID)
 					assistantIDsMu.Lock()
 					confirmedIDs := cloneAssistantIDSet(assistantIDs)
 					confirmedTerminalID := terminalAssistantID
@@ -272,7 +267,7 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 			}
 		case <-s.ctx.Done():
 			probeCtx, probeCancel := context.WithTimeout(context.WithoutCancel(s.ctx), cleanupTimeout)
-			reconciled, reconcileErr := s.app.reconcileTerminalMessage(probeCtx, s.sess.ID, s.baselineIDs, s.baselineKnown, s.runStart, s.callResultRec.Resolve(), s.callResultRec.IDs())
+			reconciled, reconcileErr := s.host.reconcileTerminalMessage(probeCtx, s.sess.ID, s.baselineIDs, s.baselineKnown, s.runStart, s.callResultRec.Resolve(), s.callResultRec.IDs())
 			if reconcileErr == nil {
 				s.cachedTerminal = &reconciled
 				s.cachedTerminalCtx = probeCtx
@@ -292,7 +287,7 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 				if result.queued {
 					return s.finish(&runQueuedError{sessionID: s.sess.ID})
 				}
-				if result.err != nil && (errors.Is(result.err, context.Canceled) || errors.Is(result.err, agent.ErrRequestCancelled)) && s.app.RunQueuePump != nil {
+				if result.err != nil && (errors.Is(result.err, context.Canceled) || errors.Is(result.err, agent.ErrRequestCancelled)) && s.env.Pump() != nil {
 					originalOwner := s.eventOwner
 					recorder := agent.NewCallResultRecorder()
 					assistantIDs := make(map[string]struct{})
@@ -320,7 +315,7 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 							assistantIDsMu.Unlock()
 						})
 						drainCtx = session.WithDrainAssistantIdentityLive(drainCtx, captureAssistantID)
-						queuedResult, drainErr := s.app.RunQueuePump.DrainSessionNow(drainCtx, s.sess.ID)
+						queuedResult, drainErr := s.env.Pump().DrainSessionNow(drainCtx, s.sess.ID)
 						assistantIDsMu.Lock()
 						confirmedIDs := cloneAssistantIDSet(assistantIDs)
 						confirmedTerminalID := terminalAssistantID
@@ -537,7 +532,7 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 		if s.cachedTerminal != nil {
 			reconciled = *s.cachedTerminal
 		} else {
-			reconciled, reconcileErr = s.app.reconcileTerminalMessage(finalCtx, s.sess.ID, s.baselineIDs, s.baselineKnown, s.runStart, s.callResultRec.Resolve(), s.callResultRec.IDs())
+			reconciled, reconcileErr = s.host.reconcileTerminalMessage(finalCtx, s.sess.ID, s.baselineIDs, s.baselineKnown, s.runStart, s.callResultRec.Resolve(), s.callResultRec.IDs())
 		}
 		if reconcileErr != nil {
 			if isPeakHoursStop(runErr) {
@@ -616,7 +611,7 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 	if s.mode == RunModeJSON || s.captureResult {
 		// Re-fetch the session row so the usage delta reflects
 		// the writes the agent made during the run.
-		freshSess, usageErr := s.app.Sessions.Get(finalCtx, s.sess.ID)
+		freshSess, usageErr := s.env.Sessions().Get(finalCtx, s.sess.ID)
 		deltaTokens := int64(0)
 		deltaCost := float64(0)
 		if usageErr != nil {
@@ -627,7 +622,7 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 			// delegation children), matching costBefore's SubtreeSpent read.
 			// A failed before- or after-read reports ZERO instead of the
 			// whole history.
-			spentNow, spentErr := s.app.Sessions.SubtreeSpent(finalCtx, s.sess.ID)
+			spentNow, spentErr := s.env.Sessions().SubtreeSpent(finalCtx, s.sess.ID)
 			if spentErr != nil {
 				slog.Warn("run: failed to read session budget for the JSON envelope; reporting zero delta", "session", s.sess.ID, "err", spentErr)
 			} else if s.costBeforeKnown {
@@ -691,7 +686,7 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 		var reductionWarning string
 		subAgentCalls := s.toolCallCounts["agent"] + s.toolCallCounts["agentic_fetch"]
 		if subAgentCalls > 0 {
-			count, totalChars := s.app.subAgentSummaryStats(finalCtx, s.sess.ID)
+			count, totalChars := s.host.subAgentSummaryStats(finalCtx, s.sess.ID)
 			if count >= 2 && totalChars > 0 {
 				parentChars := len(finalTextOut)
 				ratio := float64(parentChars) / float64(totalChars)
@@ -704,7 +699,7 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 			}
 		}
 		if s.overrides.AggregationMode == "attach" {
-			subOutputs = s.app.collectSubAgentOutputs(finalCtx, s.sess.ID)
+			subOutputs = s.host.collectSubAgentOutputs(finalCtx, s.sess.ID)
 		}
 		summary := buildRunResult(
 			s.sess.ID, finalTextOut, assistantNotes, s.finalReason, runErr, isCanceled,
@@ -722,13 +717,13 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 		// Per-message token/cache accounting for the session (task
 		// #480). Best-effort: an orchestrator losing statistics must
 		// never turn a successful run into a failed one.
-		if report, uErr := s.app.Messages.UsageBySession(finalCtx, s.sess.ID); uErr != nil {
+		if report, uErr := s.env.Messages().UsageBySession(finalCtx, s.sess.ID); uErr != nil {
 			slog.Warn("run: failed to read per-message usage for the JSON envelope", "session", s.sess.ID, "err", uErr)
 		} else {
 			summary.Usage.Session = buildSessionUsageInfo(report)
 		}
 		// Fork patch: batch 8 — surface orphan partial text.
-		if partial := s.app.findOrphanPartial(finalCtx, s.sess.ID); partial != nil {
+		if partial := s.host.findOrphanPartial(finalCtx, s.sess.ID); partial != nil {
 			summary.RecoveredPartial = partial
 			summary.Warnings = append(summary.Warnings, fmt.Sprintf(
 				"recovered %d chars of partial assistant text from session %s — model run was interrupted",
@@ -850,7 +845,7 @@ func (s *executeRunLoop) resetForReviewerPass(ctx context.Context) {
 	s.reconciliationDiagnostic = ""
 	s.baselineIDs = make(map[string]struct{})
 	s.baselineKnown = true
-	if existing, listErr := s.app.Messages.List(ctx, s.sess.ID); listErr != nil {
+	if existing, listErr := s.env.Messages().List(ctx, s.sess.ID); listErr != nil {
 		s.baselineKnown = false
 		slog.Warn("reviewer pass: failed to snapshot pre-review messages; terminal reconciliation will use live events", "session", s.sess.ID, "err", listErr)
 	} else {
@@ -896,8 +891,8 @@ func (s *executeRunLoop) resetForReviewerPass(ctx context.Context) {
 //     instead of queueing it behind the other owner for later execution,
 //     and ExecuteRun fails fast with an error wrapping
 //     agent.ErrSessionBusy rather than returning ErrRunQueued.
-func (app *App) buildReviewerPassTurn(ctx context.Context, primary *agent.CallOptions) (turnRunFunc, context.Context) {
-	reviewerCfg := app.config.Config().Models[config.SelectedModelTypeReviewer]
+func buildReviewerPassTurn(env RunEnv, ctx context.Context, primary *agent.CallOptions) (turnRunFunc, context.Context) {
+	reviewerCfg := env.Config.Config().Models[config.SelectedModelTypeReviewer]
 	reviewerOverride := &agent.ModelOverride{
 		Provider:        reviewerCfg.Provider,
 		Model:           reviewerCfg.Model,
@@ -920,7 +915,7 @@ func (app *App) buildReviewerPassTurn(ctx context.Context, primary *agent.CallOp
 		// reviewer that reads forever hold the process open indefinitely.
 		reviewCtx, cancel := context.WithTimeout(ctx, reviewerPassTimeout)
 		defer cancel()
-		return app.AgentCoordinator.RunWithOverrides(reviewCtx, sessionID, prompt, reviewerOverride, nil)
+		return env.Coord().RunWithOverrides(reviewCtx, sessionID, prompt, reviewerOverride, nil)
 	}
 	return reviewRunFn, reviewCtx
 }

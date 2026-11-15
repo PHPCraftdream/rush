@@ -198,7 +198,7 @@ func TestQuotaFinishedWork_BatchNodes(t *testing.T) {
 	insertBatchNode(t, h.app, testBatchRoot(child, "root-child", "call-child", "completed", 1))
 	insertBatchNode(t, h.app, testBatchTask(child, "root-child", "root-child-t1", "completed", sql.NullString{}))
 
-	l := &cliLoop{app: h.app, ctx: ctx, sessionID: parent}
+	l := &cliLoop{env: h.app.runEnv(), host: h.app.loopHost(), ctx: ctx, sessionID: parent}
 	rows, incomplete, err := l.quotaJobsInTree(ctx)
 	require.NoError(t, err)
 	require.False(t, incomplete)

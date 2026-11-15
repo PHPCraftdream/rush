@@ -39,8 +39,8 @@ var batchInstallWiringHook func(agent.BatchInstallDeps)
 // arms its fault watcher. It fails closed: any missing resource surfaces as
 // a New error — the process never silently continues with a half-installed
 // runtime. Caller must have ensured agent setup and a non-empty data dir.
-func (app *App) installBatchRuntime(ctx context.Context) error {
-	if app.batchRuntime != nil {
+func installBatchRuntime(p batchInstallParams, ctx context.Context) error {
+	if p.cli.batchRuntime() != nil {
 		// First wins: one install, one authority per App. A second call
 		// (only possible from tests/re-entry) never swaps the Runner.
 		return nil
@@ -49,7 +49,7 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	// so the install registers the host up front (HostID() is empty until
 	// the lazy ensureHost registration). The identity is the job-independent
 	// HostStore's.
-	host, err := app.batchHostEnsure(ctx)
+	host, err := p.hostEnsure(ctx)
 	if err != nil {
 		return err
 	}
@@ -68,37 +68,37 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	// W1c: the flag-on registry must exist before the batch install so the
 	// commit-hook identity carries the same lookup the finalization wiring
 	// registers authorities into. Flag off: nil, byte-identical install.
-	if registry := app.finalizationAuthorityRegistry(); registry != nil {
+	if registry := p.finalizationAuth(); registry != nil {
 		deps.FinalizationAuthorityFor = registry.Lookup
 	}
 	if batchInstallDepsHook != nil {
 		batchInstallDepsHook(&deps)
 	}
-	factory, err := newBatchRuntimeFactory(app, deps)
+	factory, err := newBatchRuntimeFactory(p, deps)
 	if err != nil {
 		return err
 	}
-	app.batchTimeoutWake = newBatchTimeoutWakeDispatcher()
+	p.cli.setBatchTimeoutWake(newBatchTimeoutWakeDispatcher())
 	// Ordinary completions ride the same bounded dispatcher: the commit
 	// hook enqueues the touched root (nonblocking, off the Runner commit
 	// stack); the dispatcher resolves the owner from the durable row and
 	// hands it to the coordinator's existing wake gates. The dispatcher
 	// is NOT a delivery authority — the durable selected notice stays
 	// the only fact; the wake only schedules the reaction turn.
-	app.batchTimeoutWake.rootOwner = pwBatchCompletionRootOwner(app)
-	app.batchTimeoutWake.skipOwner = apiServiceOwner(app)
-	factory.wake = app.batchTimeoutWake.Wake
-	factory.deps.CompletionWake = app.batchTimeoutWake.WakeCompletion
-	factory.deps.QuestionWake = app.batchTimeoutWake.Wake
+	p.cli.batchTimeoutWake().rootOwner = pwBatchCompletionRootOwner(p.cli)
+	p.cli.batchTimeoutWake().skipOwner = apiServiceOwner(p.cli)
+	factory.wake = p.cli.batchTimeoutWake().Wake
+	factory.deps.CompletionWake = p.cli.batchTimeoutWake().WakeCompletion
+	factory.deps.QuestionWake = p.cli.batchTimeoutWake().Wake
 	if batchInstallWiringHook != nil {
 		batchInstallWiringHook(factory.deps)
 	}
 	if factory.deps.Profile == nil {
 		profile, perr := agent.NewBatchProfileDefault()
 		if perr != nil {
-			if app.batchTimeoutWake != nil {
-				app.batchTimeoutWake.Stop()
-				app.batchTimeoutWake = nil
+			if wake := p.cli.batchTimeoutWake(); wake != nil {
+				wake.Stop()
+				p.cli.setBatchTimeoutWake(nil)
 			}
 			return perr
 		}
@@ -109,53 +109,54 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	}
 	rt, install, err := factory.build(ctx)
 	if err != nil {
-		if app.batchTimeoutWake != nil {
-			app.batchTimeoutWake.Stop()
-			app.batchTimeoutWake = nil
+		if wake := p.cli.batchTimeoutWake(); wake != nil {
+			wake.Stop()
+			p.cli.setBatchTimeoutWake(nil)
 		}
 		return err
 	}
 	// R11F (M3): the exported one-authority ingress seam over the installed
 	// runtime; InitCoderAgent binds it to the coordinator.
-	app.batchWorkIngress, err = agent.NewBatchWorkIngressWithDiskBindings(install.Runtime, factory.deps.Registries, install.DiskBindings)
+	ingress, err := agent.NewBatchWorkIngressWithDiskBindings(install.Runtime, factory.deps.Registries, install.DiskBindings)
 	if err != nil {
-		if app.batchTimeoutWake != nil {
-			app.batchTimeoutWake.Stop()
-			app.batchTimeoutWake = nil
+		if wake := p.cli.batchTimeoutWake(); wake != nil {
+			wake.Stop()
+			p.cli.setBatchTimeoutWake(nil)
 		}
 		return err
 	}
+	p.setBatchWorkIngress(ingress)
 	// R12-H2 P1-2/P1-4: bind the ingress into the runtime so batchLeafEnv
 	// carries it — without this, provider-bound delegation fails closed.
-	agent.BindRuntimeIngress(install.Runtime, app.batchWorkIngress)
-	app.batchModelControl = agent.NewBatchModelControl(install.RunnerHandle, install.Delivery, factory.deps.Store, factory.live, app.Sessions, factory.deps.Host, factory.deps.RunnerID, factory.deps.Profile, factory.deps.Resolver, install.RootLeases)
-	app.batchLiveReader = factory.live
+	agent.BindRuntimeIngress(install.Runtime, p.cli.batchWorkIngress())
+	p.setBatchModelControl(agent.NewBatchModelControl(install.RunnerHandle, install.Delivery, factory.deps.Store, factory.live, p.sessions(), factory.deps.Host, factory.deps.RunnerID, factory.deps.Profile, factory.deps.Resolver, install.RootLeases))
+	p.setBatchLiveReader(factory.live)
 	// Wire the R11E release seams onto the gate BEFORE the watcher starts:
 	// RetainHostIdentity mirrors the forced path's CloseKeepLock,
 	// ReleaseHostIdentity the graceful Close, and ReleaseWriter the
 	// generation-safe per-reference DB release of releaseResources.
 	// Host release goes through the HostStore -- CloseKeepLock pins the OS
 	// lock, Close deletes via DeleteAsyncHostIfNoNodes, never async_jobs.
-	rt.cfg.BeforeExit = app.handleBatchFaultOutput
-	rt.cfg.RetainHostIdentity = app.batchHostReleaseKeepLock
+	rt.cfg.BeforeExit = p.handleFaultOutput
+	rt.cfg.RetainHostIdentity = p.hostReleaseKeepLock
 	rt.cfg.ReleaseHostIdentity = func(ctx context.Context) error {
 		// R12-H2 §1.3: residual construction scopes close AFTER the
 		// disposal drain and BEFORE host/writer release (the gate's
 		// release order is host, then writer). Forced shutdown and the
 		// fault fence never reach this seam, so the manager's remaining
 		// owners are retained until process exit.
-		app.drainResidualConstructions()
-		return app.batchHostRelease(ctx)
+		p.drainResidual()
+		return p.hostRelease(ctx)
 	}
 	rt.cfg.ReleaseWriter = func(ctx context.Context) error {
-		return app.releaseBatchWriter()
+		return p.releaseWriter()
 	}
 	if batchRuntimeConfigHook != nil {
 		batchRuntimeConfigHook(&rt.cfg)
 	}
-	rt.cfg.TimeoutCheckin = batchTimeoutWakeRuntime{checkin: rt.cfg.TimeoutCheckin, dispatch: app.batchTimeoutWake}
-	app.batchRuntime = rt
-	app.batchInstall = install
+	rt.cfg.TimeoutCheckin = batchTimeoutWakeRuntime{checkin: rt.cfg.TimeoutCheckin, dispatch: p.cli.batchTimeoutWake()}
+	p.setBatchRuntime(rt)
+	p.setBatchInstall(install)
 	// Start arms the fault watcher (idempotent; SetRunner already ran inside
 	// build — Start and SetRunner are order-independent).
 	rt.Start()
@@ -166,17 +167,17 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 	// the sink nil and inject_agent keeps its legacy behaviour
 	// byte-identically.
 	if runner := install.Runner; runner != nil {
-		sink, serr := agent.NewBatchHeldAnswerSink(app.batchCutoverWriter(), runner)
+		sink, serr := agent.NewBatchHeldAnswerSink(batchCutoverWriter(p.cli), runner)
 		if serr != nil {
 			slog.Warn("app: batch held-answer sink unavailable; inject_agent keeps the legacy path", "err", serr)
 		} else {
-			app.batchHeldAnswerSink = sink
+			p.setBatchHeldAnswerSink(sink)
 		}
 	}
 	// H4 W2: arm the App-owned dead-host maintenance (startup pass + 60s
 	// periodic pass) alongside the fault watcher. Covers CLI, server and
 	// SDK hosts; stopped and joined by releaseResources.
-	app.startBatchMaintenance()
+	startBatchMaintenance(p.cli)
 	slog.Info("app: batch runtime installed", "host", host)
 	return nil
 }
@@ -185,30 +186,30 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 // graceful path only: construction records whose only remaining owners are
 // their Construction pins are dropped (R12-H2 §1.3) — the forced path never
 // calls this, retaining the manager and its owners until process exit.
-func (app *App) drainResidualConstructions() {
-	if app.batchInstall != nil {
-		app.batchInstall.DrainDiskBindings()
+func drainResidualConstructions(p batchCLIParams) {
+	if p.batchInstall() != nil {
+		p.batchInstall().DrainDiskBindings()
 	}
 }
 
 // releaseBatchWriter releases this App's pooled DB references exactly like
 // the graceful branch of releaseResources' DB block (per Connect/ConnectRead
 // call, or the legacy dbReleasesNeeded count for hand-assembled Apps).
-func (app *App) releaseBatchWriter() error {
+func releaseBatchWriter(p batchCLIParams) error {
 	var firstErr error
 	record := func(err error) {
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
-	if len(app.dbConns) > 0 {
-		for _, conn := range app.dbConns {
+	if conns := p.dbConns(); len(conns) > 0 {
+		for _, conn := range conns {
 			record(db.ReleaseConn(conn))
 		}
 		return firstErr
 	}
-	for i := 0; i < app.dbReleasesNeeded; i++ {
-		record(db.Release(app.dataDir))
+	for i := 0; i < p.dbReleasesNeeded(); i++ {
+		record(db.Release(p.env.DataDir()))
 	}
 	return firstErr
 }
@@ -224,7 +225,7 @@ func (app *App) releaseBatchWriter() error {
 //     release exactly like the forced path.
 //   - Forced (stillBusy=true): the watcher is disarmed, the host lock is
 //     kept (CloseKeepLock) and the DB is never touched.
-func (app *App) releaseBatchRuntimeGate(ctx context.Context, stillBusy bool, record func(error)) bool {
+func releaseBatchRuntimeGate(p batchInstallParams, ctx context.Context, stillBusy bool, record func(error)) bool {
 	// Disarm the held-question inject bridge first: once the drain begins no
 	// answer may be routed into a draining Runner (the sink lookup is gone,
 	// so a racing inject_agent takes the legacy path instead).
@@ -232,25 +233,25 @@ func (app *App) releaseBatchRuntimeGate(ctx context.Context, stillBusy bool, rec
 	// fail deterministically (jobbatch.ErrReleased-shaped) instead of
 	// delivering into the draining Runner or silently degrading to the
 	// mailbox with a half-delivered answer.
-	if app.batchHeldAnswerSink != nil {
-		app.batchHeldAnswerSink.Close()
+	if sink := p.getBatchHeldAnswerSink(); sink != nil {
+		sink.Close()
 	}
-	agent.SetCoordinatorBatchHeldAnswerSink(app.AgentCoordinator, nil)
-	app.batchHeldAnswerSink = nil
-	rt := app.batchRuntime
+	agent.SetCoordinatorBatchHeldAnswerSink(p.coord(), nil)
+	p.setBatchHeldAnswerSink(nil)
+	rt := p.cli.batchRuntime()
 	if rt == nil {
-		if app.batchTimeoutWake != nil {
-			app.batchTimeoutWake.Stop()
-			app.batchTimeoutWake = nil
+		if wake := p.cli.batchTimeoutWake(); wake != nil {
+			wake.Stop()
+			p.cli.setBatchTimeoutWake(nil)
 		}
 		// Defensive: an App without an installed runtime must never take
 		// this path; retain the host identity if it somehow does.
-		app.batchHostReleaseKeepLock()
+		p.hostReleaseKeepLock()
 		return stillBusy
 	}
 	if stillBusy {
 		rt.Stop()
-		app.batchHostReleaseKeepLock()
+		p.hostReleaseKeepLock()
 		return true
 	}
 	rt.Stop()

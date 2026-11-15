@@ -101,7 +101,7 @@ func TestRunLoop_CancelWhilePacedEndsCanceled(t *testing.T) {
 	var out, stderr syncBuffer
 	overrides := RunOverrides{Origin: message.OriginCLI}
 	l := &cliLoop{
-		app: h.app, source: src, ctx: r7RunCtx(t), output: &out, mode: RunModeJSON, hideSpinner: true,
+		env: h.app.runEnv(), host: h.app.loopHost(), source: src, ctx: r7RunCtx(t), output: &out, mode: RunModeJSON, hideSpinner: true,
 		overrides: overrides, turnOverrides: overrides, prompt: "do it",
 		continueSessionID: h.sessionID, started: time.Now(), sessionID: h.sessionID,
 		lastBuffered: &bytes.Buffer{}, stderr: &stderr,

@@ -42,7 +42,7 @@ func TestPersistEndedReason_NoEnvelopeDerivesTheReasonFromTheError(t *testing.T)
 				cancel()
 			}
 			defer cancel()
-			l := &cliLoop{app: h.app, ctx: ctx, sessionID: h.sessionID, firstSubmitted: tc.submitted}
+			l := &cliLoop{env: h.app.runEnv(), host: h.app.loopHost(), ctx: ctx, sessionID: h.sessionID, firstSubmitted: tc.submitted}
 
 			l.persistEndedReason(nil, tc.err)
 
@@ -84,7 +84,8 @@ func (c *countingSessions) SubtreeBudget(context.Context, string) (float64, erro
 func TestStopError_OneReadPerWake(t *testing.T) {
 	t.Run("caps set", func(t *testing.T) {
 		svc := &countingSessions{sess: session.Session{OwnCost: 0.1}}
-		l := &cliLoop{app: &App{Sessions: svc}, ctx: t.Context(), sessionID: "s", overrides: RunOverrides{MaxCost: 5}}
+		probe := &App{Sessions: svc}
+		l := &cliLoop{env: probe.runEnv(), host: probe.loopHost(), ctx: t.Context(), sessionID: "s", overrides: RunOverrides{MaxCost: 5}}
 
 		require.NoError(t, l.stopError())
 
@@ -94,7 +95,8 @@ func TestStopError_OneReadPerWake(t *testing.T) {
 	})
 	t.Run("caps set, cancel requested", func(t *testing.T) {
 		svc := &countingSessions{sess: session.Session{CancelRequested: true}}
-		l := &cliLoop{app: &App{Sessions: svc}, ctx: t.Context(), sessionID: "s", overrides: RunOverrides{MaxTokens: 5}}
+		probe := &App{Sessions: svc}
+		l := &cliLoop{env: probe.runEnv(), host: probe.loopHost(), ctx: t.Context(), sessionID: "s", overrides: RunOverrides{MaxTokens: 5}}
 
 		var inc *runIncompleteError
 		require.ErrorAs(t, l.stopError(), &inc)
@@ -105,7 +107,8 @@ func TestStopError_OneReadPerWake(t *testing.T) {
 	})
 	t.Run("no caps", func(t *testing.T) {
 		svc := &countingSessions{sess: session.Session{}}
-		l := &cliLoop{app: &App{Sessions: svc}, ctx: t.Context(), sessionID: "s"}
+		probe := &App{Sessions: svc}
+		l := &cliLoop{env: probe.runEnv(), host: probe.loopHost(), ctx: t.Context(), sessionID: "s"}
 
 		require.NoError(t, l.stopError())
 

@@ -140,7 +140,7 @@ func TestBatchFinishedWork_ReusedCallIDIncarnationsDistinct(t *testing.T) {
 	// Pre-latch ONLY the old incarnation, as a previous pass would have;
 	// the export predicate (quotaTerminalState && Announced &&
 	// !terminal[Key]) still yields the NEW incarnation's key.
-	l := &cliLoop{app: h.app, ctx: ctx, sessionID: owner}
+	l := &cliLoop{env: h.app.runEnv(), host: h.app.loopHost(), ctx: ctx, sessionID: owner}
 	l.quota = &cliQuotaStop{cause: nil, terminal: map[string]bool{"root-fw-old/root-fw-old-t1": true}}
 	export := func() []string {
 		var finished []string
