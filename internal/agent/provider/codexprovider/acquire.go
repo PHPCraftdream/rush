@@ -11,9 +11,21 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
+	"charm.land/fantasy/providers/openai"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/session"
 )
+
+func promptCacheKey(ctx context.Context, call fantasy.Call) (string, bool) {
+	if options, ok := call.ProviderOptions[openai.Name].(*openai.ResponsesProviderOptions); ok && options != nil && options.PromptCacheKey != nil {
+		return *options.PromptCacheKey, true
+	}
+	if id, ok := ctx.Value(cliprovider.SessionIDContextKey).(string); ok && id != "" {
+		return session.HashID(id), true
+	}
+	return "", false
+}
 
 func (m *languageModel) acquireResponse(ctx context.Context, payload []byte, userAgent string) (*http.Response, error) {
 	used, ok := m.provider.source.Current()
