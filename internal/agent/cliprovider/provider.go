@@ -15,6 +15,7 @@ import (
 
 	"charm.land/fantasy"
 	"charm.land/fantasy/object"
+	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -57,10 +58,10 @@ type nonInteractiveContextKey struct{}
 var NonInteractiveContextKey = nonInteractiveContextKey{}
 
 // ProviderType is the catwalk.Type value used for CLI providers.
-const ProviderType = "cli"
+const ProviderType = catalog.LocalCLIProviderType
 
 // ProviderID is the catwalk.InferenceProvider ID for the built-in CLI provider.
-const ProviderID = "local-cli"
+const ProviderID = catalog.LocalCLIProviderID
 
 // maxPromptArgLen is the maximum prompt length (in bytes) that will be passed
 // as a CLI argument when the target binary is executed directly (a native

@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"charm.land/catwalk/pkg/catwalk"
-	hyperp "github.com/PHPCraftdream/rush/internal/agent/hyper"
+	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/oauth"
 )
 
@@ -39,7 +39,7 @@ func oauthProviderDescriptors() []oauthProviderDescriptor {
 			},
 		},
 		{
-			id: hyperp.Name,
+			id: catalog.HyperName,
 			exchange: func(ctx context.Context, client *http.Client, refresh string) (*oauth.Token, error) {
 				return hyperExchangeTokenFn(ctx, client, refresh)
 			},

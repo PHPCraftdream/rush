@@ -27,6 +27,7 @@ import (
 
 	"charm.land/fang/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/audit"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -544,7 +545,7 @@ func initCommandConfig(cmd *cobra.Command) (*config.ConfigStore, string, bool, e
 	}
 	dataDir, _ := cmd.Flags().GetString("data-dir")
 	debug, _ := cmd.Flags().GetBool("debug")
-	store, err := config.Init(cwd, dataDir, debug)
+	store, err := config.Init(cwd, dataDir, debug, config.WithCLIModels(cliprovider.AvailableCLIModels))
 	if err != nil {
 		return nil, "", false, err
 	}

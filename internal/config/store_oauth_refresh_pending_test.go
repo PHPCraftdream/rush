@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/PHPCraftdream/rush/internal/oauth"
@@ -30,10 +29,6 @@ func newCodexRefreshReloadFixture(t *testing.T) codexRefreshFixture {
 	require.NoError(t, os.MkdirAll(dataDir, 0o700))
 	resetProviderState()
 	t.Cleanup(resetProviderState)
-	available := cliprovider.AvailableFunc
-	cliprovider.AvailableFunc = func() []cliprovider.CLISpec { return nil }
-	t.Cleanup(func() { cliprovider.AvailableFunc = available })
-
 	root := t.TempDir()
 	old := &oauth.Token{AccessToken: "old-access", RefreshToken: "old-refresh", ExpiresIn: 3600, ExpiresAt: time.Now().Add(-time.Hour).Unix(), AccountID: "test-account"}
 	next := &oauth.Token{AccessToken: "new-access", RefreshToken: "new-refresh", ExpiresIn: 3600, ExpiresAt: time.Now().Add(time.Hour).Unix(), AccountID: old.AccountID}

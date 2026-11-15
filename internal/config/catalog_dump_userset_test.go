@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/discover"
 	"github.com/PHPCraftdream/rush/internal/env"
 	"github.com/PHPCraftdream/rush/internal/oauth"
@@ -34,10 +33,6 @@ func codexLiveRow() catwalk.Model {
 func setupCodexCatalogDumpTest(t *testing.T) catwalk.Model {
 	t.Helper()
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-
-	origAvailable := cliprovider.AvailableFunc
-	cliprovider.AvailableFunc = func() []cliprovider.CLISpec { return nil }
-	t.Cleanup(func() { cliprovider.AvailableFunc = origAvailable })
 
 	live := codexLiveRow()
 	seedModelCatalog(t, "openai-codex", discover.CodexBaseURL, "chatgpt-account", []catwalk.Model{live})
@@ -150,10 +145,6 @@ func TestConfigureProviders_UserValueDifferentFromCatalogWins(t *testing.T) {
 func TestConfigureProviders_CustomProviderValueStaysUserSet(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
-	origAvailable := cliprovider.AvailableFunc
-	cliprovider.AvailableFunc = func() []cliprovider.CLISpec { return nil }
-	t.Cleanup(func() { cliprovider.AvailableFunc = origAvailable })
-
 	customModels := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	}))
@@ -232,10 +223,6 @@ func TestForgetDumpedUserSet(t *testing.T) {
 // knownProviders leaves the dumped window user-set at the catalog's raw value.
 func TestConfigureProviders_KnownProviderCatalogDumpDoesNotCountAsUserSet(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-
-	origAvailable := cliprovider.AvailableFunc
-	cliprovider.AvailableFunc = func() []cliprovider.CLISpec { return nil }
-	t.Cleanup(func() { cliprovider.AvailableFunc = origAvailable })
 
 	const modelID = "glm-5.3-flash"
 	rawWindow := int64(200_000)

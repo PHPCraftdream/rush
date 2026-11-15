@@ -16,8 +16,7 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
-	"github.com/PHPCraftdream/rush/internal/agent/hyper"
+	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/discover"
 	"github.com/PHPCraftdream/rush/internal/env"
 )
@@ -417,34 +416,36 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 
 	// Add locally available CLI models (claude, gemini, etc.) as a built-in provider.
 	// This runs after catwalk providers so CLI models appear alongside API models.
-	if specs := cliprovider.Available(); len(specs) > 0 {
-		models := make([]catwalk.Model, 0, len(specs))
-		for _, spec := range specs {
-			models = append(models, catwalk.Model{
-				ID:               spec.ModelID,
-				Name:             spec.ModelName,
-				ContextWindow:    spec.ContextWindow,
-				DefaultMaxTokens: 32768,
-			})
+	if store.cliModels != nil {
+		if specs := store.cliModels(); len(specs) > 0 {
+			models := make([]catwalk.Model, 0, len(specs))
+			for _, spec := range specs {
+				models = append(models, catwalk.Model{
+					ID:               spec.ID,
+					Name:             spec.Name,
+					ContextWindow:    spec.ContextWindow,
+					DefaultMaxTokens: 32768,
+				})
+			}
+			// Start from whatever is already in c.Providers for this ID (loaded
+			// from rush.json on this same pass) rather than a bare literal, so
+			// user-set fields — peak_hours, disable, a custom display name,
+			// system_prompt_prefix, etc. — survive being re-synthesized here on
+			// every config load/reload. Only ID/Type/Models are ever
+			// auto-derived; everything else is user-owned and must round-trip.
+			// This block used to always overwrite with a fresh literal, which
+			// silently discarded peak_hours (and any other custom field) for
+			// this provider on every single load.
+			provider, existed := c.Providers.Get(catalog.LocalCLIProviderID)
+			if !existed {
+				provider = ProviderConfig{Name: "Local CLI"}
+			}
+			provider.ID = catalog.LocalCLIProviderID
+			provider.Type = catalog.LocalCLIProviderType
+			provider.Models = models
+			c.Providers.Set(catalog.LocalCLIProviderID, provider)
+			knownProviderNames[catalog.LocalCLIProviderID] = true // skip custom-provider validation
 		}
-		// Start from whatever is already in c.Providers for this ID (loaded
-		// from rush.json on this same pass) rather than a bare literal, so
-		// user-set fields — peak_hours, disable, a custom display name,
-		// system_prompt_prefix, etc. — survive being re-synthesized here on
-		// every config load/reload. Only ID/Type/Models are ever
-		// auto-derived; everything else is user-owned and must round-trip.
-		// This block used to always overwrite with a fresh literal, which
-		// silently discarded peak_hours (and any other custom field) for
-		// this provider on every single load.
-		provider, existed := c.Providers.Get(cliprovider.ProviderID)
-		if !existed {
-			provider = ProviderConfig{Name: "Local CLI"}
-		}
-		provider.ID = cliprovider.ProviderID
-		provider.Type = cliprovider.ProviderType
-		provider.Models = models
-		c.Providers.Set(cliprovider.ProviderID, provider)
-		knownProviderNames[cliprovider.ProviderID] = true // skip custom-provider validation
 	}
 
 	// Discover models concurrently for custom providers that need it.
@@ -533,7 +534,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			}
 		}
 		if !slices.Contains(catwalk.KnownProviderTypes(), providerConfig.Type) &&
-			providerConfig.Type != hyper.Name &&
+			providerConfig.Type != catalog.HyperName &&
 			!discover.IsKnownCustomProvider(string(providerConfig.Type)) {
 			slog.Warn("Skipping custom provider due to unsupported provider type", "provider", id)
 			c.Providers.Del(id)
