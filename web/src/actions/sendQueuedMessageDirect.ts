@@ -1,4 +1,4 @@
-import { ws } from "../net/client";
+import { ws } from "../backend/ws/client";
 import { queueCarburetor } from "../state/transcript/queue";
 import { queuedMessagePayload } from "./queuedMessagePayload";
 

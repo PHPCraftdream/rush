@@ -4,7 +4,7 @@ import type { TReadonly } from "@react-carburetor/core";
 import { X, AlertCircle, Loader2 } from "lucide-react";
 import { pauseProviderPeakHours, resumeProviderPeakHours, type ConfigScope } from "../../store";
 import type { ProviderInfo, ProviderPeakHoursPolicy } from "../../domain/types";
-import { wsRequest } from "../../ws";
+import { wsRequest } from "../../backend";
 import { PeakHoursEditor } from "../PeakHoursEditor";
 import { legacyToPolicy } from "../peakHours/legacyToPolicy";
 import { peakHoursProblems } from "../peakHours/peakHoursProblems";

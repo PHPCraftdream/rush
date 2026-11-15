@@ -1,4 +1,4 @@
-import { wsRequest } from "../net/wsRequest";
+import { wsRequest } from "../backend/ws/requests/wsRequest";
 import { queueCarburetor } from "../state/transcript/queue";
 import { describeSendFailure } from "./describeSendFailure";
 import { queuedMessagePayload } from "./queuedMessagePayload";

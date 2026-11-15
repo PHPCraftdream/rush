@@ -1,5 +1,5 @@
-import type { WSMessage } from "../domain/types";
-import { ws } from "./client";
+import type { WSMessage } from "../../../domain/types";
+import { ws } from "../client";
 import { WSRequestError } from "./WSRequestError";
 
 /** Options of a correlated request. */

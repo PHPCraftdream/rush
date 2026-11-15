@@ -1,4 +1,4 @@
-import { flushQueueOnIdle } from "../queueOnIdle/flushQueueOnIdle";
+import { flushQueueOnIdle } from "../backend/queue/flushQueueOnIdle";
 import { queueCarburetor } from "../state/transcript/queue";
 import type { WireAttachment } from "../state/transcript/QueueCarburetor";
 

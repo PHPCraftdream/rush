@@ -1,4 +1,4 @@
-import { ws } from "../net/client";
+import { ws } from "../backend/ws/client";
 import { wakeSchedulesCarburetor } from "../state/live/wakeSchedules";
 import { WAKE_SCHEDULES_CANCEL_PREFIX } from "./WAKE_SCHEDULES_CANCEL_PREFIX";
 

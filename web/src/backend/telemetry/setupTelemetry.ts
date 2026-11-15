@@ -1,4 +1,4 @@
-import { ws } from "../net/client";
+import { ws } from "../ws/client";
 
 /** A client-side error as the backend logs it. */
 interface ErrorPayload {

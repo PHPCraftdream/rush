@@ -1,4 +1,4 @@
-import { ws } from "../../ws";
+import { ws } from "../../backend";
 import type { Slot } from "./scopedModelsTypes";
 
 // setSessionModelSlot writes ONE session model slot (smart/fast/worker/

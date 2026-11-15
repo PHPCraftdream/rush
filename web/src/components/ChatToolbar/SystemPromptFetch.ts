@@ -1,6 +1,6 @@
 import { bind } from "@react-carburetor/core";
 import type { WSMessage } from "../../domain/types";
-import { ws } from "../../ws";
+import { ws } from "../../backend";
 
 /** Where a system-prompt fetch reports its outcome. */
 export interface ISystemPromptSink {

@@ -1,4 +1,4 @@
-import { WSRequestError } from "../net/WSRequestError";
+import { WSRequestError } from "../backend/ws/requests/WSRequestError";
 
 /**
  * Classifies a send failure: ambiguous errors may already have gone out, everything else was rejected.

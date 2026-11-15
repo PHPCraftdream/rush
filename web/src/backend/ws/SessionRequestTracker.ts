@@ -1,4 +1,4 @@
-import type { Session } from "../domain/types";
+import type { Session } from "../../domain/types";
 
 /** A live session push recorded while a sessions_list request is in flight. */
 interface ISessionsLiveRecord {

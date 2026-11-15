@@ -1,10 +1,10 @@
 // Native-Node regression tests for the production queue seams.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { drainSendableQueue } from "./queueOnIdle/drainSendableQueue.ts";
-import { flushQueueOnIdle } from "./queueOnIdle/flushQueueOnIdle.ts";
-import { sendQueuedItem } from "./queueOnIdle/sendQueuedItem.ts";
-import { QueueCarburetor } from "./state/transcript/QueueCarburetor.ts";
+import { drainSendableQueue } from "./drainSendableQueue.ts";
+import { flushQueueOnIdle } from "./flushQueueOnIdle.ts";
+import { sendQueuedItem } from "./sendQueuedItem.ts";
+import { QueueCarburetor } from "../../state/transcript/QueueCarburetor.ts";
 
 /** One queued item as these tests model it. */
 interface ITestItem {

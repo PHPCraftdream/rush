@@ -4,7 +4,7 @@ import type { TReadonly } from "@react-carburetor/core";
 import { removeCustomProvider, type ConfigScope } from "../store";
 import { X, Plus } from "lucide-react";
 import type { ProviderInfo } from "../domain/types";
-import { wsRequest } from "../ws";
+import { wsRequest } from "../backend";
 import { configCarburetor } from "../state/config/config";
 import type { IConfigState } from "../state/config/ConfigCarburetor";
 import { ProviderForm } from "./providers/ProviderForm";

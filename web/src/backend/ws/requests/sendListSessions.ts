@@ -1,5 +1,5 @@
-import { ws } from "./client";
-import { requestTracker } from "./requestTracker";
+import { ws } from "../client";
+import { requestTracker } from "../requestTracker";
 
 /**
  * Sends list_sessions tagged with a fresh correlation id (mirrors sendLoadMessages).

@@ -3,7 +3,7 @@
 import type { ChangeEvent, FormEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { HelpCircle, X } from "lucide-react";
-import { ws } from "../../ws";
+import { ws } from "../../backend";
 
 /** Props of one suggested-option chip. */
 interface IOptionChipProps {

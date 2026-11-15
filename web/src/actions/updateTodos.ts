@@ -1,6 +1,6 @@
-import { ws } from "../net/client";
+import { ws } from "../backend/ws/client";
 import { sessionsCarburetor } from "../state/sessions/sessions";
-import { logClientEvent } from "../telemetry/logClientEvent";
+import { logClientEvent } from "../backend/telemetry/logClientEvent";
 import type { Todo } from "../domain/types";
 
 /**

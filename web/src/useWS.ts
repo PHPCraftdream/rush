@@ -1,5 +1,5 @@
 import type { TReadonly } from "@react-carburetor/core";
-import { ws, requestTracker, sendLoadMessages, sendListSessions } from "./ws";
+import { ws, requestTracker, sendLoadMessages, sendListSessions } from "./backend";
 import {
   applyWakeSchedulesSnapshot,
   flushQueuedMessagesOnIdle,
@@ -30,9 +30,9 @@ import type {
   SessionWakeSchedulesPayload,
   BatchWorkSnapshot,
 } from "./domain/types";
-import { keepAliveRuntime } from "./keepAlive/keepAliveRuntime";
-import { reloadReconnectTranscript } from "./reconnectTranscript";
-import { sitterLoop } from "./sitter/sitterLoop";
+import { keepAliveRuntime } from "./backend/keepAlive/keepAliveRuntime";
+import { reloadReconnectTranscript } from "./backend/ws/reconnectTranscript";
+import { sitterLoop } from "./backend/sitter/sitterLoop";
 import type { IUpdateInfo } from "./state/status/NoticesCarburetor";
 import type { ISessionsState } from "./state/sessions/SessionsCarburetor";
 import { batchWorkCarburetor } from "./state/runtime/batchWork";

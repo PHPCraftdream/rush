@@ -2,7 +2,7 @@
 // Run with `node --test` (Node >= 23 strips erasable TypeScript natively).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { KeepAlive } from "./keepAlive/KeepAlive.ts";
+import { KeepAlive } from "./KeepAlive.ts";
 
 /**
  * Installs a fake document recording visibilitychange listeners.

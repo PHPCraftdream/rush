@@ -1,5 +1,5 @@
-import { wsRequest } from "../net/wsRequest";
-import { sendQueuedItem } from "../queueOnIdle/sendQueuedItem";
+import { wsRequest } from "../backend/ws/requests/wsRequest";
+import { sendQueuedItem } from "../backend/queue/sendQueuedItem";
 import { queueCarburetor } from "../state/transcript/queue";
 import type { QueuedMessage } from "../state/transcript/QueueCarburetor";
 import { describeSendFailure } from "./describeSendFailure";

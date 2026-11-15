@@ -1,5 +1,5 @@
-import { ws } from "../net/client";
-import { configCarburetor } from "../state/config/config";
+import { ws } from "../ws/client";
+import { configCarburetor } from "../../state/config/config";
 
 /**
  * Sends a user event to the backend when debug mode is on.

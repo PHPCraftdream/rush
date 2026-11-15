@@ -1,4 +1,4 @@
-import { WSRequestError } from "../net/WSRequestError";
+import { WSRequestError } from "../backend/ws/requests/WSRequestError";
 
 /**
  * Turns a wsRequest rejection into a short, UI-ready message.

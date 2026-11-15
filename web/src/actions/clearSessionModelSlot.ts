@@ -1,4 +1,4 @@
-import { ws } from "../net/client";
+import { ws } from "../backend/ws/client";
 import { sessionsCarburetor } from "../state/sessions/sessions";
 
 const CLEARED_FIELDS: Record<string, string> = {

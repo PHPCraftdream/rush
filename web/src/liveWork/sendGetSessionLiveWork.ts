@@ -1,4 +1,4 @@
-import { ws } from "../net/client";
+import { ws } from "../backend/ws/client";
 import { LIVE_WORK_REQUEST_PREFIX } from "./LIVE_WORK_REQUEST_PREFIX";
 
 /**

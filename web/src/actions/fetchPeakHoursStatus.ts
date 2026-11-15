@@ -1,4 +1,4 @@
-import { wsRequest } from "../net/wsRequest";
+import { wsRequest } from "../backend/ws/requests/wsRequest";
 import type { ProviderPeakHoursStatus } from "../domain/types";
 
 /**

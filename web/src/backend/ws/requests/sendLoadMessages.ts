@@ -1,5 +1,5 @@
-import { ws } from "./client";
-import { requestTracker } from "./requestTracker";
+import { ws } from "../client";
+import { requestTracker } from "../requestTracker";
 
 /**
  * Sends load_messages for a session, tagged with a fresh correlation id.
