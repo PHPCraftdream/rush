@@ -650,7 +650,7 @@ func TestNpmPlatformBinaryPath(t *testing.T) {
 // This was filed as a P1 in the 2026-08-25 release review.
 func TestNpmPlatformBinaryPathMatchesNpmManifest(t *testing.T) {
 	// Read the npm package manifest
-	manifestPath := filepath.Join("..", "..", "..", "npm", "rush", "package.json")
+	manifestPath := filepath.Join("..", "..", "..", "..", "npm", "rush", "package.json")
 	raw, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatalf("failed to read %s: %v", manifestPath, err)
