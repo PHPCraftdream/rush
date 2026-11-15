@@ -1,6 +1,6 @@
-import { messagesCarburetor } from "../state/messages";
-import { noticesCarburetor } from "../state/notices";
-import { sessionsCarburetor } from "../state/sessions";
+import { messagesCarburetor } from "../state/transcript/messages";
+import { noticesCarburetor } from "../state/status/notices";
+import { sessionsCarburetor } from "../state/sessions/sessions";
 
 /**
  * Makes a session active: clears the transcript and agent error, and syncs the URL hash.

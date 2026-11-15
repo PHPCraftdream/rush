@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shexec"
 )
 
 // TestXargsBuiltin_MaxArgs exercises the Go coreutils xargs handler end to
@@ -21,12 +23,12 @@ func TestXargsBuiltin_MaxArgs(t *testing.T) {
 	if _, err := exec.LookPath("echo"); err != nil {
 		t.Skip("host echo binary required as the xargs COMMAND")
 	}
-	if coreUtilsExecHandler == nil {
+	if shexec.CoreUtilsExecHandler == nil {
 		t.Skip("Go coreutils handler unavailable on this platform")
 	}
-	orig := useGoCoreUtils
-	useGoCoreUtils = true
-	t.Cleanup(func() { useGoCoreUtils = orig })
+	orig := shexec.UseGoCoreUtils
+	shexec.UseGoCoreUtils = true
+	t.Cleanup(func() { shexec.UseGoCoreUtils = orig })
 
 	t.Run("n1", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer

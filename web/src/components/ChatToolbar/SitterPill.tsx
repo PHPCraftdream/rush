@@ -1,7 +1,7 @@
 import { AntiHookComponent } from "@react-carburetor/core";
 import { Eye, X } from "lucide-react";
 import { sitterLoop } from "../../sitter/sitterLoop";
-import { sitterCarburetor } from "../../state/sitter";
+import { sitterCarburetor } from "../../state/runtime/sitter";
 
 /** Disarms the sitter loop. */
 const stopSitter = (): void => {

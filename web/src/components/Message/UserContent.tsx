@@ -1,7 +1,7 @@
 // User-message content area (bubble or edit form).
 
 import { AntiHookComponent, bind } from "@react-carburetor/core";
-import type { Message as Msg, ContentPart } from "../../types";
+import type { Message as Msg, ContentPart } from "../../domain/types";
 import { EditForm } from "./EditForm";
 import { Part } from "./Part";
 import { extractText } from "./extractText";

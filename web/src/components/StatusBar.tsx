@@ -1,8 +1,8 @@
 import { AntiHookComponent } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
-import type { MCPServerInfo } from "../types";
-import { connectionCarburetor } from "../state/connection";
-import { mcpCarburetor } from "../state/mcp";
+import type { MCPServerInfo } from "../domain/types";
+import { connectionCarburetor } from "../state/link/connection";
+import { mcpCarburetor } from "../state/config/mcp";
 
 /** Props of the status strip. */
 interface IStatusBarProps {

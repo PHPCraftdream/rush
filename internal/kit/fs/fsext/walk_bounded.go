@@ -6,10 +6,190 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
+	"github.com/bmatcuk/doublestar/v4"
 )
+
+// GlobGitignoreAwareFSBounded is the ctx- and budget-bounded counterpart of
+// GlobGitignoreAwareFS. The returned note is "" unless the walk hit a budget.
+func GlobGitignoreAwareFSBounded(ctx context.Context, fsys fs.FS, start, displayRoot, pattern string, limit int) ([]string, bool, string, error) {
+	pattern = filepath.ToSlash(pattern)
+	base, rest := globPatternBase(pattern)
+	// Display paths stay relative to the original start, matching
+	// GlobGitignoreAwareFS.
+	startSlash := filepath.ToSlash(start)
+	walkStart := startSlash
+	if base != "" && base != "." {
+		if walkStart == "." {
+			walkStart = base
+		} else {
+			walkStart += "/" + base
+		}
+	}
+	// Existence pre-check: a literal base that does not exist must short-
+	// circuit before any walk, so the caller renders "No files found".
+	if _, err := fs.Stat(fsys, walkStart); err != nil {
+		return nil, false, "", nil
+	}
+	walker := newFastGlobWalkerFSAt(fsys, startSlash)
+	if base != "" && base != "." {
+		ancestors := strings.Split(base, "/")
+		current := startSlash
+		for i, segment := range ancestors {
+			if current == "." {
+				current = segment
+			} else {
+				current += "/" + segment
+			}
+			info, err := fs.Stat(fsys, current)
+			if err != nil {
+				return nil, false, "", nil
+			}
+			if info.IsDir() && walker.ShouldSkipDir(current) {
+				return nil, false, "", nil
+			}
+			if rest == "" && i == len(ancestors)-1 && !info.IsDir() {
+				break
+			}
+		}
+	}
+	var maxDepth int
+	if rest == "" {
+		// The walk starts at the base itself, so depth 1 suffices.
+		maxDepth = 1
+	} else {
+		maxDepth = globMaxDepth(base, rest)
+	}
+	var visited int
+	opts := BoundedWalkOptions{MaxDepth: maxDepth, Visited: &visited}
+	found := csync.NewSlice[FileInfo]()
+	skipAll := false
+	reason, err := WalkDirBounded(ctx, fsys, walkStart, opts, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		isDir := d.IsDir()
+		if isDir {
+			if walker.ShouldSkipDir(p) {
+				return fs.SkipDir
+			}
+		} else if walker.ShouldSkip(p) {
+			return nil
+		}
+		relPath := p
+		if walkStart != "." {
+			relPath, _ = filepath.Rel(walkStart, p)
+		}
+		relPath = filepath.ToSlash(relPath)
+		var matched bool
+		var matchErr error
+		if base != "" && base != "." && rest == "" {
+			// A fully literal pattern can only match the base path itself.
+			matched = p == walkStart
+		} else {
+			// With a literal base the walk is rooted inside it, so the
+			// matching pattern must be the base-relative remainder.
+			matchAgainst := pattern
+			if base != "" && base != "." {
+				matchAgainst = rest
+			}
+			matched, matchErr = doublestar.Match(matchAgainst, relPath)
+		}
+		if matchErr != nil || !matched {
+			return nil
+		}
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			return nil
+		}
+		displayPath := p
+		if startSlash != "." {
+			displayPath, _ = filepath.Rel(startSlash, p)
+		}
+		found.Append(FileInfo{Path: filepath.Join(displayRoot, filepath.FromSlash(displayPath)), ModTime: info.ModTime()})
+		if limit > 0 && found.Len() >= limit*2 {
+			skipAll = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, false, "", err
+	}
+	note := ""
+	if reason == WalkStoppedEntries || reason == WalkStoppedTime {
+		note = PartialNote(visited, BoundedWalkTimeout, walkStart)
+	}
+	matches := slices.SortedFunc(found.Seq(), func(a, b FileInfo) int { return b.ModTime.Compare(a.ModTime) })
+	matches, truncated := truncate(matches, limit)
+	results := make([]string, len(matches))
+	for i, match := range matches {
+		results[i] = match.Path
+	}
+	return results, truncated || skipAll, note, nil
+}
+
+// ListDirectoryFSBounded is the ctx- and budget-bounded counterpart of
+// ListDirectoryFS. The returned note is "" unless the walk hit a budget.
+func ListDirectoryFSBounded(ctx context.Context, fsys fs.FS, start, displayRoot string, ignorePatterns []string, depth, limit int) ([]string, bool, string, error) {
+	start = filepath.ToSlash(start)
+	// Existence pre-check: a missing start short-circuits to "No files
+	// found" instead of a walk error.
+	if _, err := fs.Stat(fsys, start); err != nil {
+		return nil, false, "", nil
+	}
+	// The walker counts the start dir itself as depth 1; MaxDepth matches the
+	// legacy listing boundary, which skips descendants at relative depth depth.
+	maxDepth := depth
+	var visited int
+	opts := BoundedWalkOptions{MaxDepth: maxDepth, Visited: &visited}
+	found := csync.NewSlice[string]()
+	dl := newDirectoryListerFSAt(fsys, start)
+	skipAll := false
+	reason, err := WalkDirBounded(ctx, fsys, start, opts, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		isDir := d.IsDir()
+		if dl.shouldIgnore(path, ignorePatterns, isDir) {
+			if isDir {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if filepath.ToSlash(path) != filepath.ToSlash(start) {
+			displayPath := path
+			if start != "." {
+				displayPath, _ = filepath.Rel(start, path)
+			}
+			displayPath = filepath.Join(displayRoot, filepath.FromSlash(displayPath))
+			if isDir {
+				displayPath += string(filepath.Separator)
+			}
+			found.Append(displayPath)
+		}
+		if limit > 0 && found.Len() >= limit {
+			skipAll = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, false, "", err
+	}
+	note := ""
+	if reason == WalkStoppedEntries || reason == WalkStoppedTime {
+		note = PartialNote(visited, BoundedWalkTimeout, start)
+	}
+	matches, truncated := truncate(slices.Collect(found.Seq()), limit)
+	return matches, truncated || skipAll, note, nil
+}
 
 // Package-level defaults so tests can shrink them.
 var (

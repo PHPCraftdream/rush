@@ -21,15 +21,6 @@ import (
 // provider for endpoint reasons; callers surface it unchanged.
 var errReloadProviderEndpointDropped = errors.New("live custom provider would be dropped because base_url is missing or empty")
 
-// noteEndpointDroppedProvider records that configureProviders dropped the
-// custom provider id because its base_url was missing or empty.
-func (c *Config) noteEndpointDroppedProvider(id string) {
-	if c.endpointDroppedProviders == nil {
-		c.endpointDroppedProviders = make(map[string]struct{})
-	}
-	c.endpointDroppedProviders[id] = struct{}{}
-}
-
 // liveCustomProviderIDs returns the enabled custom (non-known) provider
 // ids present in cfg, using the same predicate as configureProviders'
 // knownProviderNames set. These are the providers a live snapshot relies
@@ -58,12 +49,12 @@ func liveCustomProviderIDs(cfg *Config, knownProviders []catwalk.Provider) map[s
 // A provider that was never live — absent from prev, or present but
 // disabled — is not a regression and still reloads with a warning.
 func rejectLiveProviderEndpointDrops(prev *Config, candidate *Config, knownProviders []catwalk.Provider) error {
-	if candidate == nil || len(candidate.endpointDroppedProviders) == 0 {
+	if candidate == nil || len(candidate.EndpointDroppedProviders()) == 0 {
 		return nil
 	}
 	live := liveCustomProviderIDs(prev, knownProviders)
 	var dropped []string
-	for id := range candidate.endpointDroppedProviders {
+	for id := range candidate.EndpointDroppedProviders() {
 		if _, ok := live[id]; ok {
 			dropped = append(dropped, id)
 		}

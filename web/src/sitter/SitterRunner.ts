@@ -1,9 +1,9 @@
 import { ws } from "../net/client";
-import type { Todo } from "../types";
-import { busyCarburetor } from "../state/busy";
-import { sessionsCarburetor } from "../state/sessions";
-import { SitterCarburetor } from "../state/SitterCarburetor";
-import { sitterCarburetor } from "../state/sitter";
+import type { Todo } from "../domain/types";
+import { busyCarburetor } from "../state/status/busy";
+import { sessionsCarburetor } from "../state/sessions/sessions";
+import { SitterCarburetor } from "../state/runtime/SitterCarburetor";
+import { sitterCarburetor } from "../state/runtime/sitter";
 
 /**
  * Whether a todo still needs work.

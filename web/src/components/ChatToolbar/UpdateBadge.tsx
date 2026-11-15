@@ -1,6 +1,6 @@
 import { AntiHookComponent } from "@react-carburetor/core";
 import { ArrowUpCircle } from "lucide-react";
-import { noticesCarburetor } from "../../state/notices";
+import { noticesCarburetor } from "../../state/status/notices";
 
 /**
  * Link to the releases page, shown only when the server says a newer release exists — it

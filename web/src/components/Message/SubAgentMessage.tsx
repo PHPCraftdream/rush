@@ -3,8 +3,8 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
 import ReactMarkdown from "react-markdown";
-import type { Message, ContentPart } from "../../types";
-import { formatActionArgs } from "../../toolFormat";
+import type { Message, ContentPart } from "../../domain/types";
+import { formatActionArgs } from "../../domain/text/toolFormat";
 import { TimeBadge } from "./TimeBadge";
 import { MD_REMARK } from "./mdRemarkPlugins";
 import { MD_REHYPE } from "./mdRehypePlugins";

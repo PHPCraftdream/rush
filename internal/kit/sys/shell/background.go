@@ -837,3 +837,15 @@ func maxJobsFromEnv() int {
 	slog.Info("background job limit overridden", "limit", n, "default", MaxBackgroundJobs)
 	return n
 }
+
+// ReadOutput returns a bounded snapshot of the retained merged stream at the
+// cursor, waiting for growth or completion. Output state lives in
+// retainedOutput; this method guards only the handle's disposed flag.
+func (e *BackgroundExecution) ReadOutput(ctx context.Context, cursor uint64) (ExecutionOutput, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.disposed {
+		return ExecutionOutput{}, ErrExecutionDisposed
+	}
+	return e.physical.output.readOutput(ctx, cursor, e.shell.IsDone, e.shell.done)
+}

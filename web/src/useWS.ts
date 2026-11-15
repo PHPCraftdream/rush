@@ -29,24 +29,24 @@ import type {
   SessionLiveWorkPayload,
   SessionWakeSchedulesPayload,
   BatchWorkSnapshot,
-} from "./types";
+} from "./domain/types";
 import { keepAliveRuntime } from "./keepAlive/keepAliveRuntime";
 import { reloadReconnectTranscript } from "./reconnectTranscript";
 import { sitterLoop } from "./sitter/sitterLoop";
-import type { IUpdateInfo } from "./state/NoticesCarburetor";
-import type { ISessionsState } from "./state/SessionsCarburetor";
-import { batchWorkCarburetor } from "./state/batchWork";
-import { busyCarburetor } from "./state/busy";
-import { configCarburetor } from "./state/config";
-import { connectionCarburetor } from "./state/connection";
-import { liveWorkCarburetor } from "./state/liveWork";
-import { mcpCarburetor } from "./state/mcp";
-import { messagesCarburetor } from "./state/messages";
-import { noticesCarburetor } from "./state/notices";
-import { queueCarburetor } from "./state/queue";
-import { sessionsCarburetor } from "./state/sessions";
-import { skillsCarburetor } from "./state/skills";
-import { wakeCancelCarburetor } from "./state/wakeCancel";
+import type { IUpdateInfo } from "./state/status/NoticesCarburetor";
+import type { ISessionsState } from "./state/sessions/SessionsCarburetor";
+import { batchWorkCarburetor } from "./state/runtime/batchWork";
+import { busyCarburetor } from "./state/status/busy";
+import { configCarburetor } from "./state/config/config";
+import { connectionCarburetor } from "./state/link/connection";
+import { liveWorkCarburetor } from "./state/live/liveWork";
+import { mcpCarburetor } from "./state/config/mcp";
+import { messagesCarburetor } from "./state/transcript/messages";
+import { noticesCarburetor } from "./state/status/notices";
+import { queueCarburetor } from "./state/transcript/queue";
+import { sessionsCarburetor } from "./state/sessions/sessions";
+import { skillsCarburetor } from "./state/config/skills";
+import { wakeCancelCarburetor } from "./state/live/wakeCancel";
 
 /** Sessions list refresh period while the tab is visible. */
 const SESSIONS_POLL_MS = 5000;

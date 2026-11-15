@@ -1,6 +1,6 @@
 // Text extraction helper shared by the message content components.
 
-import type { ContentPart } from "../../types";
+import type { ContentPart } from "../../domain/types";
 
 /**
  * Whether a message part is a text part.

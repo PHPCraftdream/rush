@@ -23,11 +23,11 @@ import (
 
 var discoverZAIEffortDocs = discover.DiscoverZAIEffortDocs
 
-func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, baseEnv env.Env, resolver VariableResolver, knownProviders []catwalk.Provider) error {
+func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.Env, resolver VariableResolver, knownProviders []catwalk.Provider, dropField func(Scope, string), cliModels func() []catalog.LocalCLIModel, discoveryScope map[string]bool) error {
 	// Reset the endpoint-drop record from any previous run (see
 	// endpointDroppedProviders): this call's drops must not be confused with
 	// an earlier run's.
-	c.endpointDroppedProviders = nil
+	cfg.ResetEndpointDroppedProviders()
 	knownProviderNames := make(map[string]bool)
 
 	// Overlay RUSH_X -> X explicitly for both env.Get lookups below and
@@ -51,14 +51,14 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 	// With default providers disabled, omit catalog entries. An explicitly
 	// authenticated ChatGPT Codex provider remains registered; other user
 	// providers continue through custom-provider validation.
-	if c.Options.DisableDefaultProviders {
+	if cfg.Options.DisableDefaultProviders {
 		knownProviders = nil
-		if provider, ok := c.Providers.Get("openai-codex"); ok && provider.OAuthToken != nil {
+		if provider, ok := cfg.Providers.Get("openai-codex"); ok && provider.OAuthToken != nil {
 			knownProviders = append(knownProviders, codexProvider())
 		}
 	}
 	knownProviders = mergeSupplementalCatalogModels(knownProviders)
-	knownProviders = mergeConfirmedCatalogModels(knownProviders, c, resolver)
+	knownProviders = mergeConfirmedCatalogModels(knownProviders, cfg, resolver)
 
 	// Model metadata the user configured explicitly (ContextWindow > 0 /
 	// DefaultMaxTokens > 0 in rush.json). The facts overlay never touches
@@ -68,7 +68,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 	// catalog's raw number for the same model -- that is the dump itself
 	// (forgetDumpedUserSet below and in the Codex branch).
 	userSet := make(map[string]map[string]discover.UserModelFacts)
-	for id, pc := range c.Providers.Seq2() {
+	for id, pc := range cfg.Providers.Seq2() {
 		for _, model := range pc.Models {
 			if model.ContextWindow == 0 && model.DefaultMaxTokens == 0 {
 				continue
@@ -86,14 +86,14 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 	}
 	// The catalog every known provider ships with is available right here.
 	for _, p := range knownProviders {
-		if pc, ok := c.Providers.Get(string(p.ID)); ok {
+		if pc, ok := cfg.Providers.Get(string(p.ID)); ok {
 			forgetDumpedUserSet(userSet, string(p.ID), pc.Models, p.Models)
 		}
 	}
 
 	for _, p := range knownProviders {
 		knownProviderNames[string(p.ID)] = true
-		config, configExists := c.Providers.Get(string(p.ID))
+		config, configExists := cfg.Providers.Get(string(p.ID))
 		// if the user configured a known provider we need to allow it to override a couple of parameters
 		if configExists {
 			if config.BaseURL != "" {
@@ -207,8 +207,8 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			// in-memory state stays consistent via Providers.Del below, and any
 			// racing reload — or a future successful call to this same cleanup —
 			// re-reads/retries the removal from disk.
-			store.removeConfigFieldBestEffort(ScopeGlobal, "providers.anthropic")
-			c.Providers.Del(string(p.ID))
+			dropField(ScopeGlobal, "providers.anthropic")
+			cfg.Providers.Del(string(p.ID))
 			continue
 		case p.ID == catwalk.InferenceProviderCopilot && config.OAuthToken != nil:
 			prepared.SetupGitHubCopilot()
@@ -222,14 +222,14 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			if config.OAuthToken == nil {
 				if configExists {
 					slog.Warn("Skipping OpenAI Codex provider because no OAuth login is configured")
-					c.Providers.Del(string(p.ID))
+					cfg.Providers.Del(string(p.ID))
 				}
 				continue
 			}
 			prepared.BaseURL = discover.CodexBaseURL
-			if !prepared.Disable {
+			if !prepared.Disable && discoveryEnabled(discoveryScope, prepared.ID) {
 				discoverCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				providerClient, err := c.ProviderHTTPClient(prepared)
+				providerClient, err := cfg.ProviderHTTPClient(prepared)
 				var models []catwalk.Model
 				if err == nil {
 					models, err = cachedProviderModels(discoverCtx, prepared.ID, prepared.BaseURL,
@@ -249,7 +249,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 					prepared.LiveEfforts = liveEffortsFromModels(models)
 				}
 			}
-			c.Providers.Set(string(p.ID), prepared)
+			cfg.Providers.Set(string(p.ID), prepared)
 			continue
 
 		case catwalk.InferenceProviderVertexAI:
@@ -260,7 +260,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			if project == "" || location == "" {
 				if configExists {
 					slog.Warn("Skipping Vertex AI provider due to missing credentials")
-					c.Providers.Del(string(p.ID))
+					cfg.Providers.Del(string(p.ID))
 				}
 				continue
 			}
@@ -271,7 +271,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			if err != nil || endpoint == "" {
 				if configExists {
 					slog.Warn("Skipping Azure provider due to missing API endpoint", "provider", p.ID, "error", err)
-					c.Providers.Del(string(p.ID))
+					cfg.Providers.Del(string(p.ID))
 				}
 				continue
 			}
@@ -281,7 +281,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			if p.APIKey == "" && !hasAWSCredentials(env) {
 				if configExists {
 					slog.Warn("Skipping Bedrock provider due to missing AWS credentials")
-					c.Providers.Del(string(p.ID))
+					cfg.Providers.Del(string(p.ID))
 				}
 				continue
 			}
@@ -294,7 +294,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 				if v == "" || err != nil {
 					if configExists {
 						slog.Warn("Skipping Hyper provider due to missing API key", "provider", p.ID)
-						c.Providers.Del(string(p.ID))
+						cfg.Providers.Del(string(p.ID))
 					}
 					continue
 				}
@@ -319,7 +319,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 				// with the wrong/rotated key.
 				if configExists {
 					slog.Warn("Skipping Z.AI provider due to API key resolution error", "provider", p.ID, "error", err)
-					c.Providers.Del(string(p.ID))
+					cfg.Providers.Del(string(p.ID))
 				}
 				continue
 			case v == "":
@@ -331,7 +331,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 				} else {
 					if configExists {
 						slog.Warn("Skipping Z.AI provider due to missing API key", "provider", p.ID)
-						c.Providers.Del(string(p.ID))
+						cfg.Providers.Del(string(p.ID))
 					}
 					continue
 				}
@@ -345,18 +345,19 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			if v == "" || err != nil {
 				if configExists {
 					slog.Warn("Skipping provider due to missing API key", "provider", p.ID)
-					c.Providers.Del(string(p.ID))
+					cfg.Providers.Del(string(p.ID))
 				}
 				continue
 			}
 		}
 		if (p.ID == catwalk.InferenceProvider("stepfun") || p.ID == catwalk.InferenceProviderZAI) &&
-			!prepared.Disable && (config.AutoDiscoverModels == nil || *config.AutoDiscoverModels) {
+			!prepared.Disable && (config.AutoDiscoverModels == nil || *config.AutoDiscoverModels) &&
+			discoveryEnabled(discoveryScope, prepared.ID) {
 			key, keyErr := resolver.ResolveValue(prepared.APIKey)
 			endpoint, endpointErr := resolver.ResolveValue(prepared.BaseURL)
 			if keyErr == nil && endpointErr == nil && key != "" && endpoint != "" {
 				discoverCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				providerClient, discoverErr := c.ProviderHTTPClient(prepared)
+				providerClient, discoverErr := cfg.ProviderHTTPClient(prepared)
 				var live []catwalk.Model
 				if discoverErr == nil {
 					live, discoverErr = cachedProviderModels(discoverCtx, prepared.ID, endpoint, key,
@@ -381,7 +382,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 				}
 			}
 		}
-		if p.ID == catwalk.InferenceProviderZAI && !prepared.Disable && prepared.BaseURL != "" {
+		if p.ID == catwalk.InferenceProviderZAI && !prepared.Disable && prepared.BaseURL != "" && discoveryEnabled(discoveryScope, string(p.ID)) {
 			documentCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			documented, docsErr := cachedProviderModels(documentCtx, "zai-docs",
 				discover.ZAIEffortDocsURL, "public", discoverZAIEffortDocs)
@@ -411,13 +412,13 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 				}
 			}
 		}
-		c.Providers.Set(string(p.ID), prepared)
+		cfg.Providers.Set(string(p.ID), prepared)
 	}
 
 	// Add locally available CLI models (claude, gemini, etc.) as a built-in provider.
 	// This runs after catwalk providers so CLI models appear alongside API models.
-	if store.cliModels != nil {
-		if specs := store.cliModels(); len(specs) > 0 {
+	if cliModels != nil {
+		if specs := cliModels(); len(specs) > 0 {
 			models := make([]catwalk.Model, 0, len(specs))
 			for _, spec := range specs {
 				models = append(models, catwalk.Model{
@@ -436,14 +437,14 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			// This block used to always overwrite with a fresh literal, which
 			// silently discarded peak_hours (and any other custom field) for
 			// this provider on every single load.
-			provider, existed := c.Providers.Get(catalog.LocalCLIProviderID)
+			provider, existed := cfg.Providers.Get(catalog.LocalCLIProviderID)
 			if !existed {
 				provider = ProviderConfig{Name: "Local CLI"}
 			}
 			provider.ID = catalog.LocalCLIProviderID
 			provider.Type = catalog.LocalCLIProviderType
 			provider.Models = models
-			c.Providers.Set(catalog.LocalCLIProviderID, provider)
+			cfg.Providers.Set(catalog.LocalCLIProviderID, provider)
 			knownProviderNames[catalog.LocalCLIProviderID] = true // skip custom-provider validation
 		}
 	}
@@ -461,7 +462,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 	var discoverWg sync.WaitGroup
 
 	discoverCtx, discoverCancel := context.WithTimeout(ctx, 3*time.Second)
-	for id, pc := range c.Providers.Seq2() {
+	for id, pc := range cfg.Providers.Seq2() {
 		if knownProviderNames[id] {
 			continue
 		}
@@ -474,7 +475,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			continue
 		}
 		providerID := cmp.Or(pc.ID, id)
-		providerClient, clientErr := c.ProviderHTTPClient(pc)
+		providerClient, clientErr := cfg.ProviderHTTPClient(pc)
 		if clientErr != nil {
 			discoverMu.Lock()
 			discoveryResults[id] = discoveryResult{err: fmt.Errorf("provider %s: network settings: %w", providerID, clientErr)}
@@ -506,7 +507,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 	discoverCancel()
 
 	// validate the custom providers
-	for id, providerConfig := range c.Providers.Seq2() {
+	for id, providerConfig := range cfg.Providers.Seq2() {
 		if knownProviderNames[id] {
 			continue
 		}
@@ -537,13 +538,13 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			providerConfig.Type != catalog.HyperName &&
 			!discover.IsKnownCustomProvider(string(providerConfig.Type)) {
 			slog.Warn("Skipping custom provider due to unsupported provider type", "provider", id)
-			c.Providers.Del(id)
+			cfg.Providers.Del(id)
 			continue
 		}
 
 		if providerConfig.Disable {
 			slog.Debug("Skipping custom provider due to disable flag", "provider", id)
-			c.Providers.Del(id)
+			cfg.Providers.Del(id)
 			continue
 		}
 		// A ChatGPT Codex account authenticated by an OAuth token is a built-in
@@ -554,7 +555,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 		// without the misleading warnings.
 		if id == "openai-codex" && providerConfig.OAuthToken != nil {
 			slog.Debug("Skipping OAuth-authenticated Codex provider in custom-provider validation", "provider", id)
-			c.Providers.Del(id)
+			cfg.Providers.Del(id)
 			continue
 		}
 		if providerConfig.APIKey == "" {
@@ -562,8 +563,8 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 		}
 		if providerConfig.BaseURL == "" {
 			slog.Warn("Skipping custom provider due to missing API endpoint", "provider", id)
-			c.noteEndpointDroppedProvider(id)
-			c.Providers.Del(id)
+			cfg.NoteEndpointDroppedProvider(id)
+			cfg.Providers.Del(id)
 			continue
 		}
 
@@ -573,7 +574,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 				slog.Warn("Model discovery failed", "provider", id, "error", result.err)
 				if len(providerConfig.Models) == 0 {
 					slog.Warn("Skipping provider with no models after failed discovery", "provider", id)
-					c.Providers.Del(id)
+					cfg.Providers.Del(id)
 					continue
 				}
 			} else if len(result.models) > 0 {
@@ -584,7 +585,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 
 		if len(providerConfig.Models) == 0 {
 			slog.Warn("Skipping custom provider because the provider has no models", "provider", id)
-			c.Providers.Del(id)
+			cfg.Providers.Del(id)
 			continue
 		}
 		apiKey, err := resolver.ResolveValue(providerConfig.APIKey)
@@ -594,8 +595,8 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 		baseURL, err := resolver.ResolveValue(providerConfig.BaseURL)
 		if baseURL == "" || err != nil {
 			slog.Warn("Skipping custom provider due to missing API endpoint", "provider", id, "error", err)
-			c.noteEndpointDroppedProvider(id)
-			c.Providers.Del(id)
+			cfg.NoteEndpointDroppedProvider(id)
+			cfg.Providers.Del(id)
 			continue
 		}
 
@@ -613,10 +614,10 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 			providerConfig.ExtraHeaders[k] = resolved
 		}
 
-		c.Providers.Set(id, providerConfig)
+		cfg.Providers.Set(id, providerConfig)
 	}
 
-	if c.Providers.Len() == 0 && c.Options.DisableDefaultProviders {
+	if cfg.Providers.Len() == 0 && cfg.Options.DisableDefaultProviders {
 		return fmt.Errorf("default providers are disabled and there are no custom providers are configured")
 	}
 
@@ -626,16 +627,16 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 	// local-cli- and custom-provider branches above -- so it has the final
 	// word on ContextWindow/DefaultMaxTokens. Nothing after this pass may
 	// change those two fields.
-	for id, pc := range c.Providers.Seq2() {
+	for id, pc := range cfg.Providers.Seq2() {
 		pc.Models = discover.ApplyModelFacts(id, pc.Models, userSet[id])
-		c.Providers.Set(id, pc)
+		cfg.Providers.Set(id, pc)
 	}
 
 	// Validate peak_hours for every configured provider (known, custom,
 	// and CLI) in either form: the legacy single window's HH:MM strings
 	// or the weekly policy's timezone, windows, and pause stamp. A
 	// malformed value is a hard config-load error, not a silent skip.
-	for id, pc := range c.Providers.Seq2() {
+	for id, pc := range cfg.Providers.Seq2() {
 		if pc.PeakHours == nil {
 			continue
 		}
@@ -647,8 +648,8 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, bas
 	return nil
 }
 
-func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (smartModel SelectedModel, fastModel SelectedModel, err error) {
-	if len(knownProviders) == 0 && c.Providers.Len() == 0 {
+func defaultModelSelection(cfg *Config, knownProviders []catwalk.Provider) (smartModel SelectedModel, fastModel SelectedModel, err error) {
+	if len(knownProviders) == 0 && cfg.Providers.Len() == 0 {
 		err = fmt.Errorf("no providers configured, please configure at least one provider")
 		return smartModel, fastModel, err
 	}
@@ -656,14 +657,14 @@ func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (smart
 	// Use the first provider enabled based on the known providers order
 	// if no provider found that is known use the first provider configured
 	for _, p := range knownProviders {
-		providerConfig, ok := c.Providers.Get(string(p.ID))
+		providerConfig, ok := cfg.Providers.Get(string(p.ID))
 		if !ok || providerConfig.Disable {
 			continue
 		}
 		if len(providerConfig.Models) == 0 && p.ID == catwalk.InferenceProvider("openai-codex") && providerConfig.OAuthToken != nil {
 			continue
 		}
-		defaultSmartModel := c.GetModel(string(p.ID), p.DefaultLargeModelID)
+		defaultSmartModel := cfg.GetModel(string(p.ID), p.DefaultLargeModelID)
 		if defaultSmartModel == nil {
 			if p.ID != catwalk.InferenceProvider("openai-codex") {
 				slog.Warn("Default smart model not found for provider, falling back to first available",
@@ -681,7 +682,7 @@ func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (smart
 			ReasoningEffort: defaultSmartModel.DefaultReasoningEffort,
 		}
 
-		defaultFastModel := c.GetModel(string(p.ID), p.DefaultSmallModelID)
+		defaultFastModel := cfg.GetModel(string(p.ID), p.DefaultSmallModelID)
 		if defaultFastModel == nil {
 			if p.ID != catwalk.InferenceProvider("openai-codex") {
 				slog.Warn("Default fast model not found for provider, falling back to first available",
@@ -701,7 +702,7 @@ func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (smart
 		return smartModel, fastModel, err
 	}
 
-	enabledProviders := c.EnabledProviders()
+	enabledProviders := cfg.EnabledProviders()
 	slices.SortFunc(enabledProviders, func(a, b ProviderConfig) int {
 		return strings.Compare(a.ID, b.ID)
 	})
@@ -729,13 +730,13 @@ func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (smart
 		err = fmt.Errorf("provider %s has no models configured", providerConfig.ID)
 		return smartModel, fastModel, err
 	}
-	defaultSmartModel := c.GetModel(providerConfig.ID, providerConfig.Models[0].ID)
+	defaultSmartModel := cfg.GetModel(providerConfig.ID, providerConfig.Models[0].ID)
 	smartModel = SelectedModel{
 		Provider:  providerConfig.ID,
 		Model:     defaultSmartModel.ID,
 		MaxTokens: defaultSmartModel.DefaultMaxTokens,
 	}
-	defaultFastModel := c.GetModel(providerConfig.ID, providerConfig.Models[0].ID)
+	defaultFastModel := cfg.GetModel(providerConfig.ID, providerConfig.Models[0].ID)
 	fastModel = SelectedModel{
 		Provider:  providerConfig.ID,
 		Model:     defaultFastModel.ID,
@@ -790,20 +791,17 @@ func unverifiedPassthroughModel(c *Config, sel SelectedModel) *catwalk.Model {
 	return &catwalk.Model{ID: sel.Model, Name: sel.Model}
 }
 
-// configureSelectedModels computes the effective smart/fast model
+// ConfigureSelectedModels computes the effective smart/fast model
 // selection for cfg and writes the result back into cfg.Models. An
 // unresolvable selection falls back to the default in memory only.
-// store and persist are kept for signature stability; neither causes
-// a disk write anymore.
-func configureSelectedModels(store *ConfigStore, cfg *Config, knownProviders []catwalk.Provider, persist bool) error {
-	c := cfg
-	defaultSmart, defaultFast, err := c.defaultModelSelection(knownProviders)
+func ConfigureSelectedModels(cfg *Config, knownProviders []catwalk.Provider) error {
+	defaultSmart, defaultFast, err := defaultModelSelection(cfg, knownProviders)
 	if err != nil {
 		return fmt.Errorf("failed to select default models: %w", err)
 	}
 	smart, fast := defaultSmart, defaultFast
 
-	smartModelSelected, smartModelConfigured := c.Models[SelectedModelTypeSmart]
+	smartModelSelected, smartModelConfigured := cfg.Models[SelectedModelTypeSmart]
 	if smartModelConfigured {
 		if smartModelSelected.Model != "" {
 			smart.Model = smartModelSelected.Model
@@ -811,9 +809,9 @@ func configureSelectedModels(store *ConfigStore, cfg *Config, knownProviders []c
 		if smartModelSelected.Provider != "" {
 			smart.Provider = smartModelSelected.Provider
 		}
-		model := c.GetModel(smart.Provider, smart.Model)
+		model := cfg.GetModel(smart.Provider, smart.Model)
 		if model == nil && smartModelSelected.Provider != "" && smartModelSelected.Model != "" {
-			model = unverifiedPassthroughModel(c, smart)
+			model = unverifiedPassthroughModel(cfg, smart)
 		}
 		if model == nil {
 			smart = defaultSmart
@@ -847,7 +845,7 @@ func configureSelectedModels(store *ConfigStore, cfg *Config, knownProviders []c
 			}
 		}
 	}
-	fastModelSelected, fastModelConfigured := c.Models[SelectedModelTypeFast]
+	fastModelSelected, fastModelConfigured := cfg.Models[SelectedModelTypeFast]
 	if fastModelConfigured {
 		if fastModelSelected.Model != "" {
 			fast.Model = fastModelSelected.Model
@@ -856,9 +854,9 @@ func configureSelectedModels(store *ConfigStore, cfg *Config, knownProviders []c
 			fast.Provider = fastModelSelected.Provider
 		}
 
-		model := c.GetModel(fast.Provider, fast.Model)
+		model := cfg.GetModel(fast.Provider, fast.Model)
 		if model == nil && fastModelSelected.Provider != "" && fastModelSelected.Model != "" {
-			model = unverifiedPassthroughModel(c, fast)
+			model = unverifiedPassthroughModel(cfg, fast)
 		}
 		if model == nil {
 			fast = defaultFast
@@ -911,7 +909,7 @@ func configureSelectedModels(store *ConfigStore, cfg *Config, knownProviders []c
 		}
 	}
 
-	c.Models[SelectedModelTypeSmart] = smart
-	c.Models[SelectedModelTypeFast] = fast
+	cfg.Models[SelectedModelTypeSmart] = smart
+	cfg.Models[SelectedModelTypeFast] = fast
 	return nil
 }

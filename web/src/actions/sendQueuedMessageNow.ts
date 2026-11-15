@@ -1,7 +1,7 @@
 import { wsRequest } from "../net/wsRequest";
 import { sendQueuedItem } from "../queueOnIdle/sendQueuedItem";
-import { queueCarburetor } from "../state/queue";
-import type { QueuedMessage } from "../state/QueueCarburetor";
+import { queueCarburetor } from "../state/transcript/queue";
+import type { QueuedMessage } from "../state/transcript/QueueCarburetor";
 import { describeSendFailure } from "./describeSendFailure";
 import { queuedMessagePayload } from "./queuedMessagePayload";
 import { sendFailureState } from "./sendFailureState";

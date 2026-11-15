@@ -1,4 +1,4 @@
-import type { ProviderPeakHoursPolicy } from "../../types";
+import type { ProviderPeakHoursPolicy } from "../../domain/types";
 
 /** A fresh policy: one every-day 09:00-18:00 window and no message. */
 export function defaultPolicy(): ProviderPeakHoursPolicy {

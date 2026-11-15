@@ -1,6 +1,6 @@
 // Pairs a burst of tool/thinking parts into accordion rows.
 
-import type { ContentPart } from "../../types";
+import type { ContentPart } from "../../domain/types";
 import type { ActionItem } from "./ActionRow";
 
 /** One burst item: a part plus where it came from. */

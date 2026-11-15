@@ -1,6 +1,6 @@
 import { AntiHookComponent } from "@react-carburetor/core";
-import { authCarburetor } from "./state/auth";
-import { connectionCarburetor } from "./state/connection";
+import { authCarburetor } from "./state/link/auth";
+import { connectionCarburetor } from "./state/link/connection";
 import { WsConnector } from "./components/WsConnector";
 import { Sidebar } from "./components/Sidebar";
 import { Chat } from "./components/Chat";

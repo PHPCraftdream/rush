@@ -1,0 +1,135 @@
+// Model-integrity primitives: canonicalization of the models and roles
+// JSON, the cache_rev signature, and the per-document integrity check.
+// Pure functions over bytes; they move to the model package in D2-1
+// (docs/plans/2026-11-15-sprint0-split-config.md §2.3).
+package config
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+)
+
+const cacheRevKey = "cache_rev"
+
+// Constant mixed into the cache revision hash; the name is deliberately generic.
+const hashSalt = "7c1f4e9a2b8d6350af02c4e8b19d5736"
+
+var ErrModelsEditedDirectly = errors.New("models cannot be changed by editing the settings file directly; they can only be changed with the rush models commands (ask the user if that is refused)")
+
+// settingsKeyFirstComponent extracts the first sjson path component.
+func settingsKeyFirstComponent(key string) string {
+	first := strings.TrimPrefix(key, ":")
+	var component strings.Builder
+	for i := 0; i < len(first); i++ {
+		switch first[i] {
+		case '.':
+			return component.String()
+		case '\\':
+			i++
+			if i < len(first) {
+				component.WriteByte(first[i])
+			}
+		default:
+			component.WriteByte(first[i])
+		}
+	}
+	return component.String()
+}
+
+// canonicalModelsJSON canonicalizes a models value for hashing. Absent, null,
+// or empty values are treated as not present.
+func canonicalModelsJSON(raw string) (canonical string, present bool, err error) {
+	value := gjson.Parse(raw)
+	if !value.Exists() || value.Type == gjson.Null {
+		return "", false, nil
+	}
+	if value.IsObject() && len(value.Map()) == 0 {
+		return "", false, nil
+	}
+	var decoded any
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&decoded); err != nil {
+		return "", false, err
+	}
+	encoded, err := json.Marshal(decoded)
+	if err != nil {
+		return "", false, err
+	}
+	return string(encoded), true, nil
+}
+
+// modelsIntegritySignature hashes the canonicalized models value.
+func modelsIntegritySignature(canonical string) string {
+	digest := sha256.Sum256([]byte("v1|" + hashSalt + "|" + canonical))
+	return hex.EncodeToString(digest[:])
+}
+
+// applyModelsIntegrity signs built-in models and custom role definitions.
+func applyModelsIntegrity(doc string) (string, error) {
+	canonical, present, err := canonicalModelsAndRolesJSON([]byte(doc))
+	if err != nil {
+		return "", fmt.Errorf("failed to canonicalize model settings: %w", err)
+	}
+	if present {
+		return sjson.Set(doc, cacheRevKey, modelsIntegritySignature(canonical))
+	}
+	return sjson.Delete(doc, cacheRevKey)
+}
+
+// touchesModelsKey includes custom roles in the model-integrity boundary.
+func touchesModelsKey(keys []string) bool {
+	for _, key := range keys {
+		if component := settingsKeyFirstComponent(key); component == "models" || strings.EqualFold(component, "roles") {
+			return true
+		}
+	}
+	return false
+}
+
+// modelsIntegrityOf checks one config document's JSON-shaped bytes against the
+// models-integrity rule: a models block must carry a valid cache_rev
+// signature. A models block with no cache_rev at all is a legacy file,
+// accepted only when no settings lock exists. data unreadable (nil or
+// garbage) fails closed. Reload reuses this on the candidate's stable
+// bytes, so a hand-edited models block never reaches a running process.
+//
+// data is the decoded JSON for .ktav documents (decodeConfigDocument ->
+// ktavcodec.DecodeKtav + ToJSON), so no extra number normalization is
+// needed before canonicalModelsJSON: the codec re-tokenizes every float
+// through strconv.FormatFloat('g', -1, 64) and integers through
+// strconv.FormatInt, and ToJSON emits those normalized lexemes, so a
+// cache_rev computed over Ktav-normalized values at migration time
+// verifies here unchanged.
+func modelsIntegrityOf(data []byte, lockExists bool) error {
+	canonical, present, err := canonicalModelsAndRolesJSON(data)
+	if err != nil {
+		return ErrModelsEditedDirectly
+	}
+	if !present {
+		return nil
+	}
+	rev := gjson.GetBytes(data, cacheRevKey)
+	if !rev.Exists() {
+		// Genuinely absent: legacy file. Accepted only when unlocked.
+		if lockExists {
+			return ErrModelsEditedDirectly
+		}
+		return nil
+	}
+	// Present but not a valid signature string: a mismatch, locked or not.
+	if rev.Type != gjson.String || rev.String() == "" {
+		return ErrModelsEditedDirectly
+	}
+	if rev.String() != modelsIntegritySignature(canonical) {
+		return ErrModelsEditedDirectly
+	}
+	return nil
+}

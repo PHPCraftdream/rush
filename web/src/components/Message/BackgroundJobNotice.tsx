@@ -2,7 +2,7 @@
 
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import ReactMarkdown from "react-markdown";
-import type { Message as Msg } from "../../types";
+import type { Message as Msg } from "../../domain/types";
 import { MD_REMARK } from "./mdRemarkPlugins";
 import { MD_REHYPE } from "./mdRehypePlugins";
 import { watchCollapseAllSignal } from "./watchCollapseAllSignal";

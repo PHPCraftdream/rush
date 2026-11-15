@@ -1,5 +1,5 @@
-import { wakeSchedulesCarburetor } from "../state/wakeSchedules";
-import type { SessionWakeSchedulesPayload } from "../types";
+import { wakeSchedulesCarburetor } from "../state/live/wakeSchedules";
+import type { SessionWakeSchedulesPayload } from "../domain/types";
 import { isStaleWakeSchedulesSnapshot } from "./isStaleWakeSchedulesSnapshot";
 
 /**

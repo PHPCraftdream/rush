@@ -126,7 +126,7 @@ func TestConfiguredCustomProviderLoadsFreshConfirmedRosterWithoutRequests(t *tes
 	cfg.Providers.Set("custom", ProviderConfig{ID: "custom", Type: "openai-compat", BaseURL: "https://example.invalid", APIKey: "secret", Models: []catwalk.Model{{ID: "configured"}}})
 	providers := []catwalk.Provider{{ID: "custom", Type: "openai-compat", APIEndpoint: "https://example.invalid", APIKey: "secret", Models: []catwalk.Model{{ID: "catalog"}}}}
 	e := env.NewFromMap(map[string]string{})
-	require.NoError(t, cfg.configureProviders(context.Background(), testStore(cfg), e, NewShellVariableResolver(e), providers))
+	require.NoError(t, configureProviders(context.Background(), cfg, e, NewShellVariableResolver(e), providers, testStore(cfg).removeConfigFieldBestEffort, nil))
 	loaded, ok := cfg.Providers.Get("custom")
 	require.True(t, ok)
 	_, known := findCatalogModel(loaded.Models, "verified-model")
@@ -190,7 +190,7 @@ func TestKnownProviderWithEmptyConfiguredTypeMergesConfirmedModels(t *testing.T)
 	cfg.Providers.Set("anthropic", ProviderConfig{ID: "anthropic", APIKey: "secret"})
 	providers := []catwalk.Provider{{ID: "anthropic", Type: "anthropic", APIEndpoint: "https://api.anthropic.com", APIKey: "secret", Models: []catwalk.Model{{ID: "embedded"}}}}
 	e := env.NewFromMap(map[string]string{})
-	require.NoError(t, cfg.configureProviders(context.Background(), testStore(cfg), e, NewShellVariableResolver(e), providers))
+	require.NoError(t, configureProviders(context.Background(), cfg, e, NewShellVariableResolver(e), providers, testStore(cfg).removeConfigFieldBestEffort, nil))
 	loaded, ok := cfg.Providers.Get("anthropic")
 	require.True(t, ok)
 	require.Contains(t, modelIDs(loaded.Models), "future-model")
@@ -268,7 +268,7 @@ func TestConfiguredCustomProviderDoesNotInheritRosterOfAnotherKeyOrEndpoint(t *t
 			cfg.Providers.Set("custom", ProviderConfig{ID: "custom", Type: "openai-compat", BaseURL: tc.endpoint, APIKey: tc.key, Models: []catwalk.Model{{ID: "configured"}}})
 			providers := []catwalk.Provider{{ID: "custom", Type: "openai-compat", APIEndpoint: tc.endpoint, APIKey: tc.key, Models: []catwalk.Model{{ID: "catalog"}}}}
 			e := env.NewFromMap(map[string]string{})
-			require.NoError(t, cfg.configureProviders(context.Background(), testStore(cfg), e, NewShellVariableResolver(e), providers))
+			require.NoError(t, configureProviders(context.Background(), cfg, e, NewShellVariableResolver(e), providers, testStore(cfg).removeConfigFieldBestEffort, nil))
 			loaded, ok := cfg.Providers.Get("custom")
 			require.True(t, ok)
 			_, known := findCatalogModel(loaded.Models, "verified-model")

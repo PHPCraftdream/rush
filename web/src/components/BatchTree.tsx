@@ -3,7 +3,7 @@ import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
 import type { BatchTreeNode, BatchTreeRoot } from "../batchWork";
 import { buildBatchTree } from "../batchWork";
-import { batchWorkCarburetor } from "../state/batchWork";
+import { batchWorkCarburetor } from "../state/runtime/batchWork";
 import {
   batchNodeNotice,
   batchNodeStatus,
@@ -13,7 +13,7 @@ import {
   type BatchControlResult,
   type BatchControlTarget,
 } from "./batchControls";
-import type { BatchWorkRoot, BatchWorkSnapshot } from "../types";
+import type { BatchWorkRoot, BatchWorkSnapshot } from "../domain/types";
 
 /** Items textarea seed of a fresh node. */
 const DEFAULT_ITEMS =

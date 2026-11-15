@@ -1,5 +1,5 @@
 import type { TReadonly } from "@react-carburetor/core";
-import type { Session } from "../../types";
+import type { Session } from "../../domain/types";
 
 /**
  * Looks a session up by id; the loop keeps the read subscription to ids and the one hit.

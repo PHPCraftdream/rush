@@ -1,7 +1,7 @@
 import { ws } from "../net/client";
-import { sessionsCarburetor } from "../state/sessions";
+import { sessionsCarburetor } from "../state/sessions/sessions";
 import { logClientEvent } from "../telemetry/logClientEvent";
-import type { Todo } from "../types";
+import type { Todo } from "../domain/types";
 
 /**
  * The telemetry view of a todo: content and status only.

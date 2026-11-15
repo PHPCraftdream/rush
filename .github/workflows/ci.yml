@@ -371,7 +371,7 @@ jobs:
         run: pnpm lint
       - name: web unit tests (node --test)
         working-directory: web
-        run: node --test src/*.test.ts
+        run: node --test $(git ls-files "src/*.test.ts" "src/*/*.test.ts" "src/*/*/*.test.ts" "src/*/*/*/*.test.ts")
       - name: production build (rsbuild build)
         working-directory: web
         run: pnpm build

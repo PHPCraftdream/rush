@@ -1,4 +1,4 @@
-import type { BatchWorkNode } from "../../types";
+import type { BatchWorkNode } from "../../domain/types";
 
 /** Node states that confirm a stop took effect. */
 const TERMINAL_STATES = ["cancelled", "completed", "failed", "timed_out", "interrupted", "skipped"];

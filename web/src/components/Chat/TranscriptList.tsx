@@ -1,5 +1,5 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
-import type { Message as Msg } from "../../types";
+import type { Message as Msg } from "../../domain/types";
 import { IntermediateAssistantMessage, Message } from "../Message";
 import type { RenderItem } from "./buildRenderItems";
 import { ToolRun } from "./ToolRun";

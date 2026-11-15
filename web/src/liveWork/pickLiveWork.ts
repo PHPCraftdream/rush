@@ -1,4 +1,4 @@
-import type { SessionLiveWork } from "../state/LiveWorkCarburetor";
+import type { SessionLiveWork } from "../state/live/LiveWorkCarburetor";
 
 const EMPTY_LIVE_WORK: SessionLiveWork = { commands: [], agents: [] };
 

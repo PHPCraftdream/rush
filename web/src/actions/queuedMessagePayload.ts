@@ -1,4 +1,4 @@
-import type { QueuedMessage } from "../state/QueueCarburetor";
+import type { QueuedMessage } from "../state/transcript/QueueCarburetor";
 
 /**
  * Builds the wire payload of one queued message.

@@ -1,5 +1,5 @@
-import { busyCarburetor } from "../state/busy";
-import { queueCarburetor } from "../state/queue";
+import { busyCarburetor } from "../state/status/busy";
+import { queueCarburetor } from "../state/transcript/queue";
 
 /**
  * Drops the queued messages and busy flag for a session that no longer exists (task #726).

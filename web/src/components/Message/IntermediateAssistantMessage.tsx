@@ -3,7 +3,7 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { GitFork, Pencil, Trash2 } from "lucide-react";
 import { updateMessagePart, deleteMessagePart } from "../../store";
-import { sessionsCarburetor } from "../../state/sessions";
+import { sessionsCarburetor } from "../../state/sessions/sessions";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { ForkSessionModal } from "../ForkSessionModal";
 import { CopyButton } from "./CopyButton";

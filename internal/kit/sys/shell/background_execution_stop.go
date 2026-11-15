@@ -54,6 +54,18 @@ func (s *retainedStops) stop() error {
 	return errors.Join(errs...)
 }
 
+// discardOutput drops the retained merged output buffer. The nil checks live
+// here so BackgroundExecution never reaches the output field directly, which
+// keeps this file movable to its own package.
+func (s *retainedStops) discardOutput() {
+	if s == nil || s.output == nil {
+		return
+	}
+	s.output.mu.Lock()
+	s.output.data = nil
+	s.output.mu.Unlock()
+}
+
 // runRetainedProcess fences Start with registration. Stop cannot acknowledge an
 // empty snapshot while a started process is not yet registered. Cancellation
 // before startup rejects the spawn. The context callback is always joined.
@@ -94,4 +106,16 @@ func waitRetainedRegistered(ctx context.Context, cmd *exec.Cmd, s *retainedStops
 	delete(s.entries, p)
 	s.mu.Unlock()
 	return err
+}
+
+// retainedLaunchRoute adapts the retained launch path to shexec's
+// ProcessGroupExecHandler hook: the retained stop types stay in this
+// package, so the moved exec handlers call back through this route
+// instead of referencing them directly.
+func retainedLaunchRoute(ctx context.Context, cmd *exec.Cmd, kill func() error, register func(int)) (bool, error) {
+	stops, ok := ctx.Value(retainedStopKey{}).(*retainedStops)
+	if !ok {
+		return false, nil
+	}
+	return true, runRetainedProcess(ctx, cmd, stops, kill, register)
 }

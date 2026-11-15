@@ -356,11 +356,38 @@ type Config struct {
 
 	// endpointDroppedProviders records the custom-provider ids that the most
 	// recent configureProviders run dropped because their base_url was
-	// missing or resolved to empty (see noteEndpointDroppedProvider in
-	// store_reload_providers.go). ReloadFromDisk reads it to reject a
+	// missing or resolved to empty (see NoteEndpointDroppedProvider below).
+	// ReloadFromDisk reads it to reject a
 	// candidate that would silently drop a live provider; the initial Load
 	// keeps its historical warn-and-skip behaviour and ignores it.
 	endpointDroppedProviders map[string]struct{}
+}
+
+// NoteEndpointDroppedProvider records that provider configuration dropped
+// the custom provider id because its base_url was missing or resolved to
+// empty. The record lives on the candidate Config and is read by the
+// reload path to reject snapshots that would silently drop a live custom
+// provider.
+func (c *Config) NoteEndpointDroppedProvider(id string) {
+	if c.endpointDroppedProviders == nil {
+		c.endpointDroppedProviders = make(map[string]struct{})
+	}
+	c.endpointDroppedProviders[id] = struct{}{}
+}
+
+// EndpointDroppedProviders returns the custom provider ids this Config's
+// provider configuration dropped for endpoint reasons. It hands back the
+// record's live map, not a copy: readers only take its length or iterate
+// it, and the only writer is NoteEndpointDroppedProvider on the same
+// not-yet-published candidate Config.
+func (c *Config) EndpointDroppedProviders() map[string]struct{} {
+	return c.endpointDroppedProviders
+}
+
+// ResetEndpointDroppedProviders clears the endpoint-drop record so one
+// configureProviders run's drops are never confused with an earlier run's.
+func (c *Config) ResetEndpointDroppedProviders() {
+	c.endpointDroppedProviders = nil
 }
 
 func (c *Config) EnabledProviders() []ProviderConfig {

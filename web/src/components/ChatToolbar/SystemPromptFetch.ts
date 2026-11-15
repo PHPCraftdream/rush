@@ -1,5 +1,5 @@
 import { bind } from "@react-carburetor/core";
-import type { WSMessage } from "../../types";
+import type { WSMessage } from "../../domain/types";
 import { ws } from "../../ws";
 
 /** Where a system-prompt fetch reports its outcome. */

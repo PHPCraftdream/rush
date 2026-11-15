@@ -1,0 +1,490 @@
+// ─── Shared types mirroring Go structs ────────────────────────────────────────
+
+export type { CustomRole, CustomRolesState, CustomRoleScope, SetCustomRoleRequest } from "./customRole/index";
+
+export type TodoStatus = "pending" | "in_progress" | "completed";
+
+export interface Todo {
+  content: string;
+  status: TodoStatus;
+  active_form?: string;
+}
+
+export interface Session {
+  ID: string;
+  ParentSessionID: string;
+  Title: string;
+  MessageCount: number;
+  PromptTokens: number;
+  CompletionTokens: number;
+  SummaryMessageID: string;
+  Cost: number;
+  Todos: Todo[];
+  CreatedAt: number;
+  UpdatedAt: number;
+  CWD: string;
+
+  SmartModelProvider: string;
+  SmartModelID: string;
+  SmartModelReasoningEffort: string; // "low", "medium", "high", or "max"
+  FastModelProvider: string;
+  FastModelID: string;
+  FastModelReasoningEffort: string; // "low", "medium", "high", or "max"
+
+  // Optional sub-agent model slots (task #466). Empty means "inherit the
+  // folder/system default" — same convention as smart/fast above.
+  WorkerModelProvider: string;
+  WorkerModelID: string;
+  WorkerModelReasoningEffort: string;
+  ReviewerModelProvider: string;
+  ReviewerModelID: string;
+  ReviewerModelReasoningEffort: string;
+
+  SystemPrompt: string;
+  YoloEnabled: boolean;
+
+  // Set by the server when another live rush process holds the session
+  // lock (heartbeat fresher than ~20s). When true, the UI flips the
+  // session into a read-only "follow" mode: input disabled, controls
+  // hidden, banner shown, polling drives live updates instead of pubsub.
+  OwnedExternal?: boolean;
+  OwnedByPID?: number;
+  // True when the session has a running delegation row (async_jobs, a
+  // sub-agent or agentic_fetch) below it, at any depth, on a host that is
+  // not provably dead: the session is delegating, not done, even with no
+  // session lock held.
+  HasLiveDescendantWork?: boolean;
+  // Descendant session IDs those running delegation rows name (deduplicated).
+  LiveDescendantIDs?: string[];
+  // True when the session is not finished although it holds no lock: it owns
+  // a running background job (bash/run_command) on a host that is not
+  // provably dead, or a live `rush run` loop drives it between turns. Does
+  // not imply that a job exists.
+  HasLiveOwnWork?: boolean;
+}
+
+export type MessageRole = "user" | "assistant" | "tool" | "system";
+
+export interface TextContent {
+  type: "text";
+  Text: string;
+}
+
+export interface ReasoningContent {
+  type: "thinking";
+  Thinking: string;
+}
+
+export interface ToolCall {
+  type: "tool_call";
+  ID: string;
+  Name: string;
+  Input: string;
+  Finished: boolean;
+}
+
+export interface ToolResult {
+  type: "tool_result";
+  ToolCallID: string;
+  Name: string;
+  Content: string;
+  IsError: boolean;
+  Metadata?: string;
+}
+
+export interface FinishPart {
+  type: "finish";
+  Reason: string;
+  Message: string;
+  Details: string;
+  // True when this Finish was written by the server's auto-checkpoint
+  // ticker mid-stream, not a real step-end (mirrors message.Finish.Partial
+  // / PartWire.Partial). A message whose only Finish part has Partial=true
+  // is still owned by an in-flight agent turn: editing it is refused
+  // server-side (task #590) because the turn's next checkpoint or terminal
+  // write will silently overwrite the edit.
+  Partial?: boolean;
+}
+
+export type ContentPart =
+  | TextContent
+  | ReasoningContent
+  | ToolCall
+  | ToolResult
+  | FinishPart;
+
+export interface Message {
+  ID: string;
+  SessionID: string;
+  Role: MessageRole;
+  Parts: ContentPart[];
+  Model: string;
+  Provider: string;
+  ReasoningEffort: string; // "low", "medium", "high", or "max" - for Claude models
+  CreatedAt: number;
+  UpdatedAt: number;
+  IsSummaryMessage: boolean;
+  Pinned: boolean;
+  Hidden: boolean;
+  AutoResumed: boolean;
+  BackgroundJobNotice: boolean;
+  // Entry channel the message arrived through ("cli" / "web" / "sdk").
+  // Mirrors internal/serve/server/wire.go's MessageWire.Origin (message.Origin:
+  // CLI `rush run` prompts, `rush sessions inject`, SDK runs). Absent from
+  // rows written before the origin column existed and from older servers —
+  // both mean "unspecified", which is NOT composer-typed input, so the
+  // composer recall history ($myPrompts in web/src/actions/index.ts) requires
+  // exactly "web".
+  Origin?: string;
+  // Mirrors message.Message.NoticeKind / MessageWire.NoticeKind: "" (or
+  // absent, from an older server) for an ordinary message, otherwise the
+  // kind of system notice (e.g. "supervision", "timeout_wake_only").
+  NoticeKind?: string;
+  // HumanTyped is computed server-side (internal/serve/server/wire.go's
+  // isHumanTyped) from structured fields ONLY -- never message text. True
+  // only when a human typed this directly into the web composer. This is
+  // the SOLE field the composer recall history and history dropdown
+  // ($myPrompts below) filter on; absent from an older server means false
+  // (unspecified is not composer-typed input either).
+  HumanTyped?: boolean;
+  // Per-message token accounting. Absent on messages written before
+  // per-message tracking existed, and on non-assistant messages.
+  Usage?: MessageUsage;
+  // DeleteGeneration is the delete watermark (task #737; replaces the old
+  // RowID field — internal/serve/server/wire.go's MessageWire.DeleteGeneration
+  // doc comment has the full mechanism). Only ever populated on a
+  // message_deleted push's payload; absent/0 everywhere else (created/
+  // updated pushes and messages_list snapshot rows never carry it).
+  DeleteGeneration?: number;
+}
+
+// MessageUsage mirrors internal/serve/server/wire.go's UsageWire.
+//
+// Tokens are split into three DISJOINT classes, so PromptTokens is their sum:
+// InputTokens (fresh, full price), CacheReadTokens (served from the provider's
+// prompt cache, much cheaper) and CacheCreationTokens (written into it).
+export interface MessageUsage {
+  InputTokens: number;
+  OutputTokens: number;
+  ReasoningTokens?: number;
+  CacheCreationTokens: number;
+  CacheReadTokens: number;
+  PromptTokens: number;
+  TotalTokens: number;
+  CostUSD: number;
+  Provider?: string;
+  Model?: string;
+  CacheSupport?: string;
+  // null when the provider does not report caching. Render "n/a" — a
+  // fabricated 0% is indistinguishable from a genuine cache miss.
+  CacheHitRatio: number | null;
+  // True when the provider sent no usage and the numbers were derived from
+  // message lengths. Approximate; must not be presented as measured.
+  Estimated?: boolean;
+}
+
+export interface ModelInfo {
+  id: string;
+  name: string;
+  provider: string;
+}
+
+export interface ProviderInfo {
+  name?: string;
+  enabled?: boolean;
+  type?: string;
+  models?: {
+    id: string;
+    name: string;
+    contextWindow?: number;
+    reasoningLevels?: string[];
+    defaultReasoningEffort?: string;
+  }[];
+  baseUrl?: string;
+  isCustom?: boolean;
+  apiKeySet?: boolean;
+  // Effective config scope: "local" when a workspace override shadows the
+  // global entry, "global" otherwise. Mirrors server ProviderWire.Scope;
+  // absent (older server) means global.
+  scope?: "global" | "local";
+  // Peak-hours restriction, backend-authoritative. One wire object in either
+  // shape (task #56): the legacy daily window { start, end, message? } or the
+  // weekly policy { timezone?, windows, message?, pausedUntil? } where each
+  // window is { days?, start, end } with days "", "mon", "mon,wed,fri",
+  // "mon-fri" or "fri-mon" (start inclusive HH:MM; end exclusive HH:MM or
+  // "24:00"; start != end). null/absent means no restriction. Mirrors server
+  // PeakHoursWirePayload (lowerCamelCase keys).
+  peakHours?:
+    | (ProviderPeakHoursPolicy & { start?: string; end?: string })
+    | { start: string; end: string; message?: string }
+    | null;
+}
+
+// One weekly peak-hours window within ProviderPeakHoursPolicy. days uses the
+// canonical spec produced by PeakHoursEditor's canonicalDays(): "" (every
+// day), "mon-fri" (contiguous run, wrap allowed e.g. "fri-mon"), or a comma
+// list in mon..sun order ("mon,wed,fri"). start is inclusive HH:MM; end is
+// exclusive HH:MM or "24:00"; start != end.
+export interface PeakHoursWindowSpec {
+  days?: string;
+  start: string;
+  end: string;
+}
+
+// ProviderPeakHoursPolicy mirrors the server's weekly peak-hours policy wire
+// object. timezone is optional ("", "local", "UTC", IANA name or ±HH:MM
+// offset); windows is the weekly window list; message is an optional operator
+// note appended to the exit guidance when a run refuses/halts; pausedUntil is
+// an RFC3339 timestamp set by the server's pause command.
+export interface ProviderPeakHoursPolicy {
+  timezone?: string;
+  windows?: PeakHoursWindowSpec[];
+  message?: string;
+  pausedUntil?: string;
+}
+
+// ProviderPeakHoursStatus mirrors one row of the get_peak_hours_status
+// reply — the backend's authoritative evaluation of a provider's peak-hours
+// policy. All times are RFC3339. The browser must never decide peak/blocked
+// state from its own clock; it only formats these strings.
+export interface ProviderPeakHoursStatus {
+  providerId: string;
+  checkedAt: string;
+  inPeak: boolean;
+  paused?: boolean;
+  pausedUntil?: string;
+  blocked: boolean;
+  reopensAt?: string;
+  nextTransition?: string;
+  timezone?: string;
+  message?: string;
+}
+
+export interface ConfigPayload {
+  models?: Record<string, { Provider: string; Model: string }>;
+  providers?: Record<string, ProviderInfo>;
+  yolo?: boolean;
+  debug?: boolean;
+  debugLsp?: boolean;
+  theme?: string;
+  recentSmartModels?: Array<{ Provider: string; Model: string }>;
+  recentFastModels?: Array<{ Provider: string; Model: string }>;
+  recentWorkerModels?: Array<{ Provider: string; Model: string }>;
+  recentReviewerModels?: Array<{ Provider: string; Model: string }>;
+  contextPaths?: string[];
+  skillsPaths?: string[];
+  initializeAs?: string;
+  version?: string;
+  cwd?: string;
+  // Server-resolved keep-alive preference: backend defaults nil → true and
+  // always sends an explicit bool, so this is non-nullable in practice
+  // (kept optional only to survive transitional reloads against an older
+  // server build).
+  keepAliveEnabled?: boolean;
+}
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  path: string;
+  source?: string;
+  instructions?: string;
+}
+
+export interface SkillsSnapshot {
+  skills: SkillInfo[];
+  paths: string[];
+}
+
+export interface MCPServerInfo {
+  name: string;
+  status: string;
+  disabled: boolean;
+  toolCount: number;
+  tools?: string[];
+  serverType?: string;
+  command?: string;
+  args?: string[];
+  url?: string;
+  env?: Record<string, string>;
+  headers?: Record<string, string>;
+  source?: string;
+}
+
+export interface MCPState {
+  servers: MCPServerInfo[];
+}
+
+// ─── Live work panel (task #1059) ───────────────────────────────────────────
+//
+// One async command (bash/run_command) or sub-agent delegation
+// (agent/agentic_fetch), sourced from internal/serve/server/protocol.go's
+// LiveWorkItemWire (task #1058's snapshot emitter).
+export interface LiveWorkItem {
+  toolCallID: string;
+  toolName: string;
+  title: string;
+  // Set only for a sub-agent delegation -- the child session's own ID.
+  childSessionID?: string;
+  startedAt: number; // unix ms
+  // Kept for transcript indexing only; live batch UI uses BatchWorkNode.
+  status?: string;
+  // Terminal cause, when provided by the server.
+  reason?: string;
+  // Terminal finish time, unix ms; 0/absent while running.
+  finishedAt?: number;
+  // Last activity timestamp for retained transcript-index metadata.
+  lastActivityAt?: number;
+  // A running delegation whose child paused on a question (#1158); set only
+  // together with awaitingQuestion (the display-capped question text).
+  awaitingAnswer?: boolean;
+  awaitingQuestion?: string;
+}
+
+// SessionLiveWorkPayload mirrors the server's SessionLiveWorkPayload: the
+// `session_live_work` push and the `get_session_live_work` reply both carry
+// this shape, always as a FULL snapshot -- never a delta.
+export interface SessionLiveWorkPayload {
+  sessionID: string;
+  commands: LiveWorkItem[];
+  agents: LiveWorkItem[];
+  // R12-C, additive, mirrors the server's *bool omitempty field: set ONLY
+  // on the batch-runtime ON path (true = full read, false = partial read).
+  // Absent = flag-off server, whose wire bytes carry no `complete` at all.
+  complete?: boolean;
+}
+
+// ─── Batch work (R15a, unconditional since the H4 cutover) ──────────────────
+//
+// Structured batch-node wire, including per-node controls, questions, and notices.
+
+export interface BatchWorkCounts {
+  pending: number;
+  starting: number;
+  running: number;
+  cancelling: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  timed_out: number;
+  interrupted: number;
+  skipped: number;
+  active: number;
+}
+
+export interface BatchWorkDelivery {
+  selected: number;
+  pending: number;
+  delivered: number;
+}
+
+export interface BatchWorkNode {
+  nodeID: string;
+  parentID: string;
+  kind: string;
+  taskKind: string;
+  toolCallID: string;
+  state: string;
+  cause: string;
+  ordinal: number;
+  depth: number;
+  childSessionID: string;
+  host: string;
+  outcomeCode: string;
+  outcomeSummary: string;
+  outcomeRef: string;
+  heldQuestion?: string;
+  noticeSelected: boolean;
+  noticeState?: string;
+}
+
+export interface BatchWorkRoot {
+  rootID: string;
+  ownerSessionID: string;
+  toolCallID: string;
+  kind: string;
+  taskKind: string;
+  state: string;
+  cause: string;
+  startedAt: number;
+  host: string;
+  complete: boolean;
+  counts: BatchWorkCounts;
+  delivery: BatchWorkDelivery;
+  nodes: BatchWorkNode[];
+}
+
+export interface BatchWorkCompletion {
+  rootID: string;
+  nodeID: string;
+  outcomeCode: string;
+  outcomeRef: string;
+  // R12-C, root completions only (BatchCompletionWire's omitempty pair):
+  // the terminal root's state and result summary, read from the structured
+  // batch_nodes history projection. Absent on node completions inside live
+  // roots.
+  state?: string;
+  outcomeSummary?: string;
+  // R12-C, root completions only (the Go field is omitempty): the terminal
+  // root's own tool call identity, used to join when no legacy prose
+  // metadata exists for the root. Absent on node completions.
+  toolCallID?: string;
+}
+
+export interface BatchWorkSnapshot {
+  v: number;
+  sessionID: string;
+  complete: boolean;
+  roots: BatchWorkRoot[];
+  completions: BatchWorkCompletion[];
+}
+
+// ─── Wake schedules panel (stage 5b) ────────────────────────────────────────
+//
+// One wake_schedules row, sourced from internal/serve/server/protocol.go's
+// WakeScheduleWire (handlers_wake_schedules.go's snapshot emitter).
+export interface WakeScheduleItem {
+  id: string;
+  // "once" | "loop"
+  kind: string;
+  // Truncated to the server's title budget (~120 runes).
+  message: string;
+  nextRunAt: number; // unix ms, the SCHEDULED time
+  everyMs: number; // loop only; 0 for once
+  maxRuns: number; // loop only; 0 = unbounded
+  untilAt: number; // unix ms; 0 = unset (loop only)
+  // "active" | "done" | "cancelled"
+  state: string;
+  occurrence: number; // completed occurrences so far
+  createdAt: number; // unix ms
+}
+
+// SessionWakeSchedulesPayload mirrors the server's SessionWakeSchedulesPayload:
+// the `session_wake_schedules` push and the `get_session_wake_schedules` /
+// `cancel_wake_schedule` replies all carry this shape, always as a FULL
+// snapshot -- never a delta.
+export interface SessionWakeSchedulesPayload {
+  sessionID: string;
+  schedules: WakeScheduleItem[];
+}
+
+export interface AgentBusyPayload {
+  SessionID: string;
+  Busy: boolean;
+}
+
+export interface SummarizeQueuedPayload {
+  SessionID: string;
+  Queued: boolean;
+}
+
+
+
+// ─── WebSocket protocol ────────────────────────────────────────────────────────
+
+export interface WSMessage<T = unknown> {
+  id?: string;
+  type: string;
+  payload?: T;
+  error?: string;
+}

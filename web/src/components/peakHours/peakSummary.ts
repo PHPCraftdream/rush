@@ -1,4 +1,4 @@
-import type { ProviderPeakHoursPolicy } from "../../types";
+import type { ProviderPeakHoursPolicy } from "../../domain/types";
 
 /**
  * A window as "start–end".

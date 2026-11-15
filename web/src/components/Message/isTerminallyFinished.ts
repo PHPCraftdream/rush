@@ -1,6 +1,6 @@
 // Mirror of the server's terminal-finish check.
 
-import type { ContentPart } from "../../types";
+import type { ContentPart } from "../../domain/types";
 
 /**
  * Whether a part is a finish part that is not partial.

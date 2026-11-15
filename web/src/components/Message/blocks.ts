@@ -1,6 +1,6 @@
 // Groups message parts into visual blocks for the zebra-stripe layout.
 
-import type { ContentPart } from "../../types";
+import type { ContentPart } from "../../domain/types";
 
 export type BlockKind = "thinking" | "text" | "tool" | "other";
 

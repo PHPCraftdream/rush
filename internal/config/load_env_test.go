@@ -43,7 +43,7 @@ func TestConfig_configureProviders_HyperAPIKeyFromEnv(t *testing.T) {
 		"HYPER_API_KEY": "env-api-key",
 	})
 	resolver := NewShellVariableResolver(env)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 	require.Equal(t, 1, cfg.Providers.Len())
 
@@ -90,7 +90,7 @@ func TestConfig_configureProviders_HyperAPIKeyFromConfigOverrides(t *testing.T) 
 		"HYPER_API_KEY": "env-api-key",
 	})
 	resolver := NewShellVariableResolver(env)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 	require.Equal(t, 1, cfg.Providers.Len())
 
@@ -133,7 +133,7 @@ func TestConfig_configureProviders_ProviderHeaderResolveError(t *testing.T) {
 	})
 	resolver := NewShellVariableResolver(testEnv)
 
-	err := cfg.configureProviders(context.Background(), testStore(cfg), testEnv, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, testEnv, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.Error(t, err, "failing $(cmd) in a header must fail the provider load")
 	require.Contains(t, err.Error(), "X-Broken", "error must name the offending header")
 }
@@ -165,7 +165,7 @@ func TestConfig_configureProviders_CatwalkDefaultWithUnsetVarLoads(t *testing.T)
 	})
 	resolver := NewShellVariableResolver(testEnv)
 
-	err := cfg.configureProviders(context.Background(), testStore(cfg), testEnv, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, testEnv, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err, "optional env-gated header must not fail the load")
 
 	pc, ok := cfg.Providers.Get("openai")
@@ -201,7 +201,7 @@ func TestConfig_configureProviders_LiteralEmptyHeaderDropped(t *testing.T) {
 	})
 	resolver := NewShellVariableResolver(testEnv)
 
-	err := cfg.configureProviders(context.Background(), testStore(cfg), testEnv, resolver, []catwalk.Provider{})
+	err := configureProviders(context.Background(), cfg, testEnv, resolver, []catwalk.Provider{}, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 
 	pc, ok := cfg.Providers.Get("my-llm")
@@ -238,7 +238,7 @@ func TestConfig_configureProviders_EchoEmptyHeaderDropped(t *testing.T) {
 	})
 	resolver := NewShellVariableResolver(testEnv)
 
-	err := cfg.configureProviders(context.Background(), testStore(cfg), testEnv, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, testEnv, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 
 	pc, ok := cfg.Providers.Get("openai")
@@ -286,7 +286,7 @@ func TestConfig_configureProviders_UnsetAPIKeySkipsProvider(t *testing.T) {
 	})
 	resolver := NewShellVariableResolver(testEnv)
 
-	err := cfg.configureProviders(context.Background(), testStore(cfg), testEnv, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, testEnv, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err, "skip path must not surface as a load error")
 
 	require.Equal(t, 0, cfg.Providers.Len(), "provider with unset API key must be skipped")
@@ -324,7 +324,7 @@ func TestConfig_configureProviders_FailingAPIKeyCmdSkipsProvider(t *testing.T) {
 	})
 	resolver := NewShellVariableResolver(testEnv)
 
-	err := cfg.configureProviders(context.Background(), testStore(cfg), testEnv, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, testEnv, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err, "failing $(cmd) in API key must skip provider, not fail load")
 
 	require.Equal(t, 0, cfg.Providers.Len(), "provider with failing $(cmd) API key must be skipped")
@@ -361,7 +361,7 @@ func TestConfig_configureProviders_UnsetAzureEndpointSkipsProvider(t *testing.T)
 	})
 	resolver := NewShellVariableResolver(testEnv)
 
-	err := cfg.configureProviders(context.Background(), testStore(cfg), testEnv, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, testEnv, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 
 	require.Equal(t, 0, cfg.Providers.Len(), "azure provider with unset endpoint must be skipped")

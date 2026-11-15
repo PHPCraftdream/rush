@@ -29,7 +29,7 @@ func captureProviderLoadLog(t *testing.T, provider ProviderConfig) string {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // no network: discovery is skipped, only validation runs
 	resolver := NewShellVariableResolver(env.NewFromMap(nil))
-	require.NoError(t, cfg.configureProviders(ctx, testStore(cfg), env.NewFromMap(nil), resolver, nil))
+	require.NoError(t, configureProviders(ctx, cfg, env.NewFromMap(nil), resolver, nil, testStore(cfg).removeConfigFieldBestEffort, nil))
 	return buf.String()
 }
 

@@ -1,7 +1,7 @@
 import { ws } from "../net/client";
-import { configCarburetor } from "../state/config";
-import type { WireAttachment } from "../state/QueueCarburetor";
-import { sessionsCarburetor } from "../state/sessions";
+import { configCarburetor } from "../state/config/config";
+import type { WireAttachment } from "../state/transcript/QueueCarburetor";
+import { sessionsCarburetor } from "../state/sessions/sessions";
 
 /**
  * Sends a message through the session (or the configured) fast model.

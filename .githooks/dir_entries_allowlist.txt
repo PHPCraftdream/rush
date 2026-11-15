@@ -9,39 +9,32 @@
 # When you split a directory: delete its line here. An element count
 # may never go up.
 internal/agent 258
-internal/agent/safety/agentguard 8
-internal/agent/provider/codexprovider 9
 internal/agent/provider/cliprovider 23
 # internal/agent/tools 80 -> 81: +1 for internal/agent/tools/hooks moved in (stage C).
 # The count falls with the package split (stage D2).
 internal/agent/tools 81
 internal/agent/tools/mcp 19
-internal/serve/client/apiclient 13
 # internal/app 61 -> 63: +1 internal/app/itest (cross-module scenario tests, sprint 0 wave 1);
 # +1 internal/app/projects moved in (stage C).
 # The count falls with the package split (stage D2).
 internal/app 63
-internal/kit/dev/cahgen 9
 # internal/serve/cmd 165 -> 167: +2 for internal/serve/cmd/queue and internal/serve/cmd/notification
 # moved in (stage C). The count falls with the package split (stage D2).
 internal/serve/cmd 167
 # internal/config 120 -> 123: +1 internal/config/catalog (provider reference data, sprint 0 wave 1);
 # +2 internal/config/discover and internal/config/oauth moved in (stage C).
 # The count falls with the package split (stage D2).
-internal/config 123
+# 123 -> 124: +1 internal/config/models_integrity.go, split off the store methods by the
+# 0b-3.1 seam lane (design split-config section 5.4: a deliberate, temporary rise; only down from here).
+internal/config 124
 internal/config/discover 13
-internal/kit/fs/fsext 13
 internal/session/heartbeat 10
 internal/session/jobbatch 21
 internal/session/jobbatch/lab 24
-internal/store/message 12
-internal/agent/provider/nettransport 12
-internal/serve/client/proto 11
 internal/serve/server 83
 internal/session 132
-internal/kit/sys/shell 24
-internal/kit/tasktree 10
-web/src 35
+internal/kit/sys/shell 20
+web/src 21
 web/src/actions 52
 web/src/components 33
 web/src/components/Chat 14
@@ -54,5 +47,4 @@ web/src/components/providers 9
 web/src/components/scopedModels 11
 web/src/liveWork 13
 web/src/net 8
-web/src/state 37
 web/tests/helpers 9

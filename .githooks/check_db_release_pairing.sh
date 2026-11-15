@@ -4,7 +4,7 @@
 # in the same file -- the bug class behind the chronic ubuntu-latest
 # CI kill documented in docs/lessons/2026-08-30-ci-goroutine-leak.md.
 #
-# Background: internal/store/db/connect.go's Connect/ConnectRead return
+# Background: internal/store/db/dbconn/connect.go's Connect/ConnectRead return
 # handles from a process-wide REF-COUNTED pool (pool
 # map[string]*connEntry, keyed by absolute database path). Every call
 # increments the entry's refCount; only db.Release(dataDir) decrements
@@ -163,7 +163,7 @@ while IFS= read -r file; do
 done <<<"$conn_files"
 
 if [ -n "$violations" ]; then
-	printf '\033[31munpaired db.Connect/db.ConnectRead found (ref-counted pool contract, see internal/store/db/connect.go):\033[0m\n'
+	printf '\033[31munpaired db.Connect/db.ConnectRead found (ref-counted pool contract, see internal/store/db/dbconn/connect.go):\033[0m\n'
 	printf '%s' "$violations"
 	printf '\033[33mdb.Connect/db.ConnectRead increment a process-wide refCount that only db.Release(dataDir) decrements. Cleaning up with conn.Close() on the returned *sql.DB bypasses that bookkeeping and leaks the pool entry AND its database/sql connectionOpener goroutine for the life of the test binary -- this is the leak that killed ubuntu CI runners (docs/lessons/2026-08-30-ci-goroutine-leak.md). Pair every call with db.Release(dataDir) in the same file; db.ReleaseAll(dataDir) also counts, for forced-teardown cases. If a file is a genuine, documented exception, extend the allow-list in .githooks/check_db_release_pairing.sh -- do not just delete the call.\033[0m\n'
 	exit 1

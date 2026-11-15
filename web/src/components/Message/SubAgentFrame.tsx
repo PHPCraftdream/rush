@@ -3,11 +3,11 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
 import { Bot } from "lucide-react";
-import { messagesCarburetor } from "../../state/messages";
-import { sessionsCarburetor } from "../../state/sessions";
+import { messagesCarburetor } from "../../state/transcript/messages";
+import { sessionsCarburetor } from "../../state/sessions/sessions";
 import { sendLoadMessages } from "../../ws";
-import type { AsyncJobStatus } from "../../asyncJobCompletion";
-import type { Message, FinishPart } from "../../types";
+import type { AsyncJobStatus } from "../../domain/asyncJob/asyncJobTypes";
+import type { Message, FinishPart } from "../../domain/types";
 import { EffortBadge } from "./EffortBadge";
 import { FinishErrorBlock } from "./FinishErrorBlock";
 import { SubAgentMessage } from "./SubAgentMessage";

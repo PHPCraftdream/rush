@@ -2,8 +2,8 @@
 
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
-import type { Message as Msg } from "../../types";
-import { busyCarburetor } from "../../state/busy";
+import type { Message as Msg } from "../../domain/types";
+import { busyCarburetor } from "../../state/status/busy";
 import { isTerminallyFinished } from "./isTerminallyFinished";
 
 /** Props of the duration badge. */

@@ -1,6 +1,6 @@
 import { AntiHookComponent } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
-import type { Session } from "../../types";
+import type { Session } from "../../domain/types";
 import { LogsModal } from "../LogsModal";
 import { MCPSettings } from "../MCPSettings";
 import { ProvidersModal } from "../ProvidersModal";

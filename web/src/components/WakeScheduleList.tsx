@@ -5,9 +5,9 @@
 // snapshot reply is what actually removes the row.
 
 import { AntiHookComponent, bind } from "@react-carburetor/core";
-import type { WakeScheduleItem } from "../types";
+import type { WakeScheduleItem } from "../domain/types";
 import { sendCancelWakeSchedule, pickPendingWakeSchedule } from "../store";
-import { wakeCancelCarburetor } from "../state/wakeCancel";
+import { wakeCancelCarburetor } from "../state/live/wakeCancel";
 import { ConfirmDialog } from "./ConfirmDialog";
 
 /**

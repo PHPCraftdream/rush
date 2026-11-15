@@ -143,11 +143,7 @@ func (e *BackgroundExecution) Dispose(ctx context.Context) error {
 		return ErrExecutionNotDone
 	}
 	e.disposed = true
-	if e.physical != nil && e.physical.output != nil {
-		e.physical.output.mu.Lock()
-		e.physical.output.data = nil
-		e.physical.output.mu.Unlock()
-	}
+	e.physical.discardOutput()
 	e.shell.retentionMu.Lock()
 	e.shell.retained = false
 	retentionTimer := e.shell.retentionTimer

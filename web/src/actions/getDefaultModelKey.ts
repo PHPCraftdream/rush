@@ -1,5 +1,5 @@
-import type { ModelRole } from "../state/ConfigCarburetor";
-import type { ConfigPayload } from "../types";
+import type { ModelRole } from "../state/config/ConfigCarburetor";
+import type { ConfigPayload } from "../domain/types";
 
 /**
  * The provider:::model key of the configured default for a role, or "" when none.

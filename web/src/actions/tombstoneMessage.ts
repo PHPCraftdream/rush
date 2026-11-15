@@ -1,5 +1,5 @@
 import { requestTracker } from "../net/requestTracker";
-import { messagesCarburetor } from "../state/messages";
+import { messagesCarburetor } from "../state/transcript/messages";
 
 /**
  * Records that a message was deleted by a live push, so later merged snapshots keep it filtered out.

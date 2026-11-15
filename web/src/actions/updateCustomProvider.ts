@@ -1,5 +1,5 @@
 import { ws } from "../net/client";
-import type { ProviderPeakHoursPolicy } from "../types";
+import type { ProviderPeakHoursPolicy } from "../domain/types";
 import type { ConfigScope } from "./ConfigScope";
 
 /**

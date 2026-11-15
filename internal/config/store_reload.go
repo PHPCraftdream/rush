@@ -560,7 +560,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	// reloadMu (serialising it against other reload attempts) but NOT
 	// publishMu — a hung shell substitution here no longer blocks
 	// SetSkipPermissionRequests/SetProviderRuntimeConfig/other readers.
-	if err := cfg.configureProviders(ctx, s, baseEnv, candidateResolver, providers); err != nil {
+	if err := configureProvidersWithScope(ctx, cfg, baseEnv, candidateResolver, providers, s.removeConfigFieldBestEffort, s.cliModels, s.discoveryProviders); err != nil {
 		return fmt.Errorf("failed to configure providers during reload: %w", err)
 	}
 
@@ -578,8 +578,8 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	if !cfg.IsConfigured() {
 		slog.Warn("No providers configured after reload")
 	} else {
-		// persist=false; this reload runs without publishMu held.
-		if err := configureSelectedModels(s, cfg, providers, false); err != nil {
+		// ConfigureSelectedModels no longer takes store/persist; this reload runs without publishMu held.
+		if err := ConfigureSelectedModels(cfg, providers); err != nil {
 			return fmt.Errorf("failed to configure selected models during reload: %w", err)
 		}
 		cfg.SetupAgents()

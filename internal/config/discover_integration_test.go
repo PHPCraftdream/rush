@@ -55,7 +55,7 @@ func TestConfigureProviders_AutoDiscovers(t *testing.T) {
 
 	e := env.NewFromMap(map[string]string{})
 	resolver := NewShellVariableResolver(e)
-	require.NoError(t, cfg.configureProviders(context.Background(), testStore(cfg), e, resolver, []catwalk.Provider{}))
+	require.NoError(t, configureProviders(context.Background(), cfg, e, resolver, []catwalk.Provider{}, testStore(cfg).removeConfigFieldBestEffort, nil))
 
 	pc, ok := cfg.Providers.Get("custom")
 	require.True(t, ok, "provider should survive after discovery")
@@ -87,7 +87,7 @@ func TestConfigureProviders_DiscoveryOptOut(t *testing.T) {
 
 	e := env.NewFromMap(map[string]string{})
 	resolver := NewShellVariableResolver(e)
-	require.NoError(t, cfg.configureProviders(context.Background(), testStore(cfg), e, resolver, []catwalk.Provider{}))
+	require.NoError(t, configureProviders(context.Background(), cfg, e, resolver, []catwalk.Provider{}, testStore(cfg).removeConfigFieldBestEffort, nil))
 
 	_, ok := cfg.Providers.Get("custom")
 	require.False(t, ok, "opted-out provider with no models should be removed")
@@ -115,7 +115,7 @@ func TestConfigureProviders_DiscoveryMergesWithExisting(t *testing.T) {
 
 	e := env.NewFromMap(map[string]string{})
 	resolver := NewShellVariableResolver(e)
-	require.NoError(t, cfg.configureProviders(context.Background(), testStore(cfg), e, resolver, []catwalk.Provider{}))
+	require.NoError(t, configureProviders(context.Background(), cfg, e, resolver, []catwalk.Provider{}, testStore(cfg).removeConfigFieldBestEffort, nil))
 
 	pc, ok := cfg.Providers.Get("custom")
 	require.True(t, ok)

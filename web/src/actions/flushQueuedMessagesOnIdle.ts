@@ -1,6 +1,6 @@
 import { flushQueueOnIdle } from "../queueOnIdle/flushQueueOnIdle";
-import { queueCarburetor } from "../state/queue";
-import type { WireAttachment } from "../state/QueueCarburetor";
+import { queueCarburetor } from "../state/transcript/queue";
+import type { WireAttachment } from "../state/transcript/QueueCarburetor";
 
 /**
  * Drains the session queue.

@@ -1,8 +1,8 @@
 // Subscribes to the global "jump to this tool call" request (task #1059) outside React.
 
 import type { TReadonly } from "@react-carburetor/core";
-import { signalsCarburetor } from "../../state/signals";
-import type { ExpandToolCallRequest, ISignalsState } from "../../state/SignalsCarburetor";
+import { signalsCarburetor } from "../../state/status/signals";
+import type { ExpandToolCallRequest, ISignalsState } from "../../state/status/SignalsCarburetor";
 
 /**
  * Picks the expand-tool-call request out of the signals state.

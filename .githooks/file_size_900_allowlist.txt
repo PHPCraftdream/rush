@@ -24,8 +24,6 @@ internal/agent/coordinator_run.go 998
 internal/agent/coordinator_test.go 901
 internal/agent/coordinator_tool_pinning_test.go 995
 internal/agent/prompt/prompt.go 902
-internal/agent/provider/codexprovider/provider.go 979
-internal/agent/safety/permission/permission.go 981
 internal/agent/tools/mcp/addreplace.go 906
 internal/agent/tools/mcp/lease.go 902
 internal/agent/tools/mcp/mutation.go 967
@@ -49,5 +47,3 @@ internal/serve/server/hub.go 992
 internal/session/childgroup_registry_unix.go 976
 internal/session/lock.go 976
 internal/session/lock_test.go 985
-internal/store/message/message.go 976
-sdk/sdk.go 1000

@@ -12,7 +12,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/stretchr/testify/require"
 )
@@ -24,9 +23,9 @@ func compactTestDB(t *testing.T) (*sql.DB, string) {
 	t.Helper()
 	dataDir := t.TempDir()
 	ctx := context.Background()
-	conn, err := db.Connect(ctx, dataDir)
+	conn, err := Connect(ctx, dataDir)
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.ReleaseAll(dataDir)) })
+	t.Cleanup(func() { require.NoError(t, ReleaseAll(dataDir)) })
 	return conn, dataDir
 }
 

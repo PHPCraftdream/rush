@@ -10,9 +10,9 @@ import {
   clearSessionModelSlot,
   type ModelRole,
 } from "../store";
-import type { Session } from "../types";
-import { configCarburetor } from "../state/config";
-import { effortLabel } from "../effort";
+import type { Session } from "../domain/types";
+import { configCarburetor } from "../state/config/config";
+import { effortLabel } from "../domain/effort/effortLabel";
 import { deriveModelSelection, type IModelSelection } from "./modelList/deriveModelSelection";
 import type { ModelItem, ProviderGroup } from "./modelList/modelListTypes";
 import { resolveRecentModels } from "./modelList/resolveRecentModels";

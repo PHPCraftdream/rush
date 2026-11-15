@@ -1,4 +1,4 @@
-import type { WSMessage } from "../types";
+import type { WSMessage } from "../domain/types";
 import { ws } from "./client";
 import { WSRequestError } from "./WSRequestError";
 
