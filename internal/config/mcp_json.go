@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/PHPCraftdream/rush/internal/home"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
 )
 
 // mcpJSONFile represents the .mcp.json file format (Claude Code compatible).

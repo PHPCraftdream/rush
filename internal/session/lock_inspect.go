@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/procinfo"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 )
 
 func sanitiseSessionID(id string) string {

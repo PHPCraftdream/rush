@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // persistedFinalizationCandidate is a committed candidate and the step identity

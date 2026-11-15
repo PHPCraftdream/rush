@@ -20,7 +20,7 @@ export default defineConfig({
     screenshot: 'only-on-failure',
   },
   webServer: {
-    command: 'go run ./internal/server/r15bfixture',
+    command: 'go run ./internal/serve/server/r15bfixture',
     cwd: repo,
     /* /auth/check always answers (200 or 401): a connection-level ready signal */
     url: 'http://127.0.0.1:60985/auth/check',

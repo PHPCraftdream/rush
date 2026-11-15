@@ -3,10 +3,10 @@ package app
 import (
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -18,7 +18,7 @@ import (
 	"charm.land/fantasy/providers/anthropic"
 	"github.com/stretchr/testify/require"
 
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // keepAliveCountingModel is a mockModel (p623_hold_ctx_test.go) that counts

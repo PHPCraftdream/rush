@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
 const (

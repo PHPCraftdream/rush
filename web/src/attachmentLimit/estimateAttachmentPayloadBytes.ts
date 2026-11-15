@@ -28,7 +28,7 @@ const addAttachmentBytes = (total: number, attachment: AttachmentSizeInput): num
 /**
  * Estimates a complete JSON WebSocket frame.
  *
- * The server's read limit is 20 MiB (internal/server/hub.go:maxMessageSize);
+ * The server's read limit is 20 MiB (internal/serve/server/hub.go:maxMessageSize);
  * keep a 1 MiB margin and reserve 64 KiB of that budget for JSON metadata and
  * framing. WebSocket sends JSON, so JSON escapes (notably control characters)
  * are accounted for rather than only the UTF-8 bytes of the original text.

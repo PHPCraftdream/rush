@@ -7,9 +7,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
-	"github.com/PHPCraftdream/rush/internal/heartbeat"
-	"github.com/PHPCraftdream/rush/internal/testguard"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/kit/dev/testguard"
+	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 )
 
 // The scenarios here reach config and the session store; without isolation

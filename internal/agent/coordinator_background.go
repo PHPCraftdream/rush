@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 )
 
 // filterNonEmpty returns the subset of inputs that are non-empty after

@@ -10,7 +10,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
 // Invoke is the ONE ingress API (decomposition row C): validate the

@@ -11,7 +11,7 @@ import (
 	"charm.land/fantasy/providers/anthropic"
 	"github.com/stretchr/testify/require"
 
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 func TestStreamCapturesRedactedMetadataAtStartOrEnd(t *testing.T) {

@@ -26,11 +26,11 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/filetracker"
-	"github.com/PHPCraftdream/rush/internal/history"
-	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/filetracker"
+	"github.com/PHPCraftdream/rush/internal/store/history"
 	"github.com/stretchr/testify/require"
 )
 

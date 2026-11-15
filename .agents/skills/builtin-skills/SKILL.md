@@ -2,20 +2,20 @@
 name: builtin-skills
 description:
   Use when creating a new builtin skill for Rush, editing an existing builtin
-  skill (internal/skills/builtin/), or when the user needs to understand how the
+  skill (internal/agent/prompt/skills/builtin/), or when the user needs to understand how the
   embedded skill system works.
 ---
 
 # Builtin Skills
 
-Rush embeds skills directly into the binary via `internal/skills/builtin/`.
+Rush embeds skills directly into the binary via `internal/agent/prompt/skills/builtin/`.
 These are always available without user configuration.
 
 ## How It Works
 
-- Each skill lives in `internal/skills/builtin/<skill-name>/SKILL.md`.
+- Each skill lives in `internal/agent/prompt/skills/builtin/<skill-name>/SKILL.md`.
 - The tree is embedded at compile time via `//go:embed builtin/*` in
-  `internal/skills/embed.go`.
+  `internal/agent/prompt/skills/embed.go`.
 - `DiscoverBuiltin()` walks the embedded FS, parses each `SKILL.md`, and sets
   paths with the `rush://skills/` prefix (e.g., `rush://skills/jq/SKILL.md`).
 - The View tool resolves `rush://` paths from the embedded FS, not disk.
@@ -24,14 +24,14 @@ These are always available without user configuration.
 
 ## Adding a New Builtin Skill
 
-1. Create `internal/skills/builtin/<skill-name>/SKILL.md` with YAML frontmatter
+1. Create `internal/agent/prompt/skills/builtin/<skill-name>/SKILL.md` with YAML frontmatter
    (`name`, `description`) and markdown instructions. The directory name must
    match the `name` field.
 2. No extra wiring needed — `//go:embed builtin/*` picks up new directories
    automatically.
 3. Add a test assertion in `TestDiscoverBuiltin` in
-   `internal/skills/skills_test.go` to verify discovery.
-4. Build and test: `go build . && go test ./internal/skills/...`
+   `internal/agent/prompt/skills/skills_test.go` to verify discovery.
+4. Build and test: `go build . && go test ./internal/agent/prompt/skills/...`
 
 ## Existing Builtin Skills
 

@@ -13,12 +13,12 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent/agentguard"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/agentguard"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/fsext"
-	"github.com/PHPCraftdream/rush/internal/permission"
-	"github.com/PHPCraftdream/rush/internal/shell"
-	"github.com/PHPCraftdream/rush/internal/stringext"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/text/stringext"
 )
 
 type BashParams struct {

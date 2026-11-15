@@ -11,7 +11,7 @@ spec=importlib.util.spec_from_file_location("ci_gate_decide",FILE); gate=importl
 SHA="a"*40
 MODULE=gate.MODULE
 GOOD={"plan":"success","checks":"success"}
-FULL_PACKAGES=[MODULE+"/internal/agent",MODULE+"/internal/hooks",MODULE+"/internal/db"]
+FULL_PACKAGES=[MODULE+"/internal/agent",MODULE+"/internal/agent/tools/hooks",MODULE+"/internal/store/db"]
 
 class DecideTests(unittest.TestCase):
     def args(self,**kw):
@@ -102,7 +102,7 @@ class JobPlanTests(unittest.TestCase):
         self.assertFalse(gate.MACOS_LANE_ENABLED)
     def test_prepare_cli_skips_macos_when_lane_off(self):
         for plan_mode,native in (("tier1",True),("tier1",False)):
-            plan={"schema_version":1,"mode":plan_mode,"per_os":{"linux":[],"darwin":[{"package":MODULE+"/internal/db"}],"windows":[]},"race_packages":[],"not_run":[],"native_required":{"required":native},"head":SHA,"base":SHA}
+            plan={"schema_version":1,"mode":plan_mode,"per_os":{"linux":[],"darwin":[{"package":MODULE+"/internal/store/db"}],"windows":[]},"race_packages":[],"not_run":[],"native_required":{"required":native},"head":SHA,"base":SHA}
             with tempfile.TemporaryDirectory() as td:
                 pp=pathlib.Path(td)/"p.json"; out=pathlib.Path(td)/"out.json"; pp.write_text(json.dumps(plan)); args=type("A",(),{"plan":str(pp),"graph_dir":td,"force_full":False,"policy":str(pathlib.Path(td)/"policy"),"base":SHA,"head":SHA,"output":str(out)})()
                 with patch.object(gate.subprocess,"run",return_value=type("R",(),{"stdout":""})()),patch.dict("os.environ",{},clear=True),patch.object(gate,"MACOS_LANE_ENABLED",False): gate.prepare_cli(args)
@@ -206,20 +206,20 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(result["verdict"],"pass"); self.assertEqual(api.call_count,0)
     def test_missing_full_windows_assignment_fails_after_mocked_api(self):
         with tempfile.TemporaryDirectory() as td:
-            plan,outputs,args,env=self.setup_contract(td,"main"); env["GITHUB_BASE_REF"]="main"; env["PR_BASE_REF"]="main"; env["GITHUB_EVENT_ACTION"]="unlabeled"; env["GITHUB_EVENT_LABEL"]="full-ci"; outputs.update(mode="full",ubuntu_needed=True,macos_needed=True,windows_needed=True,agent_selected=True,race_needed=True,web_changed=True,security_full=True,security_actions=True,security_deps=True,linux_packages=" ".join(FULL_PACKAGES),darwin_packages=" ".join(FULL_PACKAGES),windows_packages=" ".join(FULL_PACKAGES),race_packages=MODULE+"/internal/hooks",native_required=True); plan.update(mode="full",per_os={o:[{"package":p} for p in FULL_PACKAGES] for o in ("linux","darwin","windows")},race_packages=[MODULE+"/internal/hooks"]); plan["expected_outputs"]=outputs; pathlib.Path(args.plan).write_text(json.dumps(plan)); env["PLAN_OUTPUTS_JSON"]=json.dumps(outputs); env["NEEDS_JSON"]=json.dumps({"plan":"success","checks":"success","tests":"success","web":"success","security":"success"}); env["VALIDATED_HEAD"]=SHA; env["VALIDATED_BASE"]=SHA
+            plan,outputs,args,env=self.setup_contract(td,"main"); env["GITHUB_BASE_REF"]="main"; env["PR_BASE_REF"]="main"; env["GITHUB_EVENT_ACTION"]="unlabeled"; env["GITHUB_EVENT_LABEL"]="full-ci"; outputs.update(mode="full",ubuntu_needed=True,macos_needed=True,windows_needed=True,agent_selected=True,race_needed=True,web_changed=True,security_full=True,security_actions=True,security_deps=True,linux_packages=" ".join(FULL_PACKAGES),darwin_packages=" ".join(FULL_PACKAGES),windows_packages=" ".join(FULL_PACKAGES),race_packages=MODULE+"/internal/agent/tools/hooks",native_required=True); plan.update(mode="full",per_os={o:[{"package":p} for p in FULL_PACKAGES] for o in ("linux","darwin","windows")},race_packages=[MODULE+"/internal/agent/tools/hooks"]); plan["expected_outputs"]=outputs; pathlib.Path(args.plan).write_text(json.dumps(plan)); env["PLAN_OUTPUTS_JSON"]=json.dumps(outputs); env["NEEDS_JSON"]=json.dumps({"plan":"success","checks":"success","tests":"success","web":"success","security":"success"}); env["VALIDATED_HEAD"]=SHA; env["VALIDATED_BASE"]=SHA
             with patch.dict("os.environ",env,clear=True),patch.object(gate,"run_json",side_effect=[self.pr(),self.jobs_api()]):
                 result=gate.gate_cli(args)
             self.assertEqual(result["verdict"],"fail"); self.assertIn("missing assignment",result["reason"])
     def test_unlabeled_main_full_assignment_pass_end_to_end(self):
         with tempfile.TemporaryDirectory() as td:
-            plan,outputs,args,env=self.setup_contract(td,"main"); env["GITHUB_BASE_REF"]="main"; env["PR_BASE_REF"]="main"; env["GITHUB_EVENT_ACTION"]="unlabeled"; env["GITHUB_EVENT_LABEL"]="full-ci"; outputs.update(mode="full",ubuntu_needed=True,macos_needed=True,windows_needed=True,agent_selected=True,race_needed=True,web_changed=True,security_full=True,security_actions=True,security_deps=True,linux_packages=" ".join(FULL_PACKAGES),darwin_packages=" ".join(FULL_PACKAGES),windows_packages=" ".join(FULL_PACKAGES),race_packages=MODULE+"/internal/hooks",native_required=True); plan.update(mode="full",per_os={o:[{"package":p} for p in FULL_PACKAGES] for o in ("linux","darwin","windows")},race_packages=[MODULE+"/internal/hooks"]); plan["expected_outputs"]=outputs
+            plan,outputs,args,env=self.setup_contract(td,"main"); env["GITHUB_BASE_REF"]="main"; env["PR_BASE_REF"]="main"; env["GITHUB_EVENT_ACTION"]="unlabeled"; env["GITHUB_EVENT_LABEL"]="full-ci"; outputs.update(mode="full",ubuntu_needed=True,macos_needed=True,windows_needed=True,agent_selected=True,race_needed=True,web_changed=True,security_full=True,security_actions=True,security_deps=True,linux_packages=" ".join(FULL_PACKAGES),darwin_packages=" ".join(FULL_PACKAGES),windows_packages=" ".join(FULL_PACKAGES),race_packages=MODULE+"/internal/agent/tools/hooks",native_required=True); plan.update(mode="full",per_os={o:[{"package":p} for p in FULL_PACKAGES] for o in ("linux","darwin","windows")},race_packages=[MODULE+"/internal/agent/tools/hooks"]); plan["expected_outputs"]=outputs
             needed,_=gate.expected_jobs(plan,outputs); api_jobs=[{"name":n,"conclusion":"success","run_attempt":2} for n in needed]; assignment=pathlib.Path(td)/"assignment.json"; assignment.write_text(json.dumps(self.assignment())); args.assignment=str(assignment); pathlib.Path(args.plan).write_text(json.dumps(plan)); env["PLAN_OUTPUTS_JSON"]=json.dumps(outputs); env["NEEDS_JSON"]=json.dumps({"plan":"success","checks":"success","tests":"success","web":"success","security":"success"})
             with patch.dict("os.environ",env,clear=True),patch.object(gate,"run_json",side_effect=[self.pr(labels=(),ref="main"),[{"jobs":api_jobs}]]): result=gate.gate_cli(args)
             self.assertEqual(result["verdict"],"pass",result["reason"]); self.assertEqual(result["reason"],"Full validation passed.")
     def test_unlabeled_main_full_receipt_missing_or_failed_fails(self):
         for failure in ("missing", "failed"):
             with self.subTest(failure=failure),tempfile.TemporaryDirectory() as td:
-                plan,outputs,args,env=self.setup_contract(td,"main"); env["GITHUB_BASE_REF"]="main"; env["PR_BASE_REF"]="main"; env["GITHUB_EVENT_ACTION"]="unlabeled"; env["GITHUB_EVENT_LABEL"]="full-ci"; outputs.update(mode="full",ubuntu_needed=True,macos_needed=True,windows_needed=True,agent_selected=True,race_needed=True,web_changed=True,security_full=True,security_actions=True,security_deps=True,linux_packages=" ".join(FULL_PACKAGES),darwin_packages=" ".join(FULL_PACKAGES),windows_packages=" ".join(FULL_PACKAGES),race_packages=MODULE+"/internal/hooks",native_required=True); plan.update(mode="full",per_os={o:[{"package":p} for p in FULL_PACKAGES] for o in ("linux","darwin","windows")},race_packages=[MODULE+"/internal/hooks"]); plan["expected_outputs"]=outputs
+                plan,outputs,args,env=self.setup_contract(td,"main"); env["GITHUB_BASE_REF"]="main"; env["PR_BASE_REF"]="main"; env["GITHUB_EVENT_ACTION"]="unlabeled"; env["GITHUB_EVENT_LABEL"]="full-ci"; outputs.update(mode="full",ubuntu_needed=True,macos_needed=True,windows_needed=True,agent_selected=True,race_needed=True,web_changed=True,security_full=True,security_actions=True,security_deps=True,linux_packages=" ".join(FULL_PACKAGES),darwin_packages=" ".join(FULL_PACKAGES),windows_packages=" ".join(FULL_PACKAGES),race_packages=MODULE+"/internal/agent/tools/hooks",native_required=True); plan.update(mode="full",per_os={o:[{"package":p} for p in FULL_PACKAGES] for o in ("linux","darwin","windows")},race_packages=[MODULE+"/internal/agent/tools/hooks"]); plan["expected_outputs"]=outputs
                 needed,_=gate.expected_jobs(plan,outputs); api_jobs=[{"name":n,"conclusion":"success","run_attempt":2} for n in needed]
                 if failure == "missing":
                     missing_job=needed[-1]
@@ -235,12 +235,12 @@ class AdapterTests(unittest.TestCase):
                 else: self.assertEqual(result["reason"],f"required jobs not successful: {failed_job} (failure)")
 
     def test_missing_empty_string_outputs_pass_and_nonempty_contracts_still_fail(self):
-        package = MODULE + "/internal/server"
+        package = MODULE + "/internal/serve/server"
 
         def run_case(omitted=(), actual_changes=None, empty_key=None):
             with tempfile.TemporaryDirectory() as td:
                 plan, outputs, args, env = self.setup_contract(td)
-                package = MODULE + "/internal/server"
+                package = MODULE + "/internal/serve/server"
                 outputs.update(ubuntu_needed=True, macos_needed=True, windows_needed=True,
                                linux_packages=package, darwin_packages=package,
                                windows_packages=package, race_packages="", native_required=True)

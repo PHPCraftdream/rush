@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/PHPCraftdream/rush/internal/fsext"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 )
 
 // osDisk is the stateless, real-filesystem DiskProvider: the exact

@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/filelock"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 )
 
 const (

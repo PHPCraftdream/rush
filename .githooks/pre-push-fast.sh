@@ -98,8 +98,8 @@ while IFS= read -r pkg; do
 done <<< "$packages"
 
 # Keep this SQL ASCII check identical to full mode.
-step "internal/db/sql is ASCII-only (sqlc miscounts spans around multi-byte comments)"
-if offenders="$(grep -lP "[^[:ascii:]]" internal/db/sql/*.sql 2>/dev/null)" && [ -n "$offenders" ]; then
+step "internal/store/db/sql is ASCII-only (sqlc miscounts spans around multi-byte comments)"
+if offenders="$(grep -lP "[^[:ascii:]]" internal/store/db/sql/*.sql 2>/dev/null)" && [ -n "$offenders" ]; then
 	printf '[31mnon-ASCII bytes in:[0m
 %s
 ' "$offenders"
@@ -152,7 +152,7 @@ fi
 # Unconditional: shell/config-only pushes must not drop spawn protection.
 step "platform spawn guards (always)"
 run_capped "$RUSH_PROCESS_MEMORY" "$RUSH_PROCESS_TIMEOUT" go test -short -count=1 -p 1 -parallel 1 \
-	-run '^(TestNoUnhardenedProcessSpawns|TestSpawnGuardExemptionsAreCurrent)$' ./internal/platform/ \
+	-run '^(TestNoUnhardenedProcessSpawns|TestSpawnGuardExemptionsAreCurrent)$' ./internal/kit/sys/platform/ \
 	|| fail "platform spawn guards failed"
 
 if [ "$hook_checks" -eq 1 ]; then

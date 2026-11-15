@@ -6,8 +6,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 var ErrBatchToolResultIdentity = errors.New("batch tool result: invalid delivery identity")

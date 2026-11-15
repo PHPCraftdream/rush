@@ -12,8 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/tasktree"
-	"github.com/PHPCraftdream/rush/internal/tasktree/lab"
+	"github.com/PHPCraftdream/rush/internal/kit/tasktree"
+	"github.com/PHPCraftdream/rush/internal/kit/tasktree/lab"
 )
 
 const cliSyntax = `tasklab run [--load checkpoint] [--snapshot checkpoint] scenario

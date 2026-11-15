@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // refreshSubAgentCompletion re-reads childSessionID's newest finished

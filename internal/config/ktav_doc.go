@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/PHPCraftdream/rush/internal/ktavcodec"
+	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 )
 
 // settingsDocumentFormat distinguishes the disk representations a settings

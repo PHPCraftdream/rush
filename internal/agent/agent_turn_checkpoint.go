@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // turnCheckpointWriter is runTurn's mid-stream persistence mechanism (Fork

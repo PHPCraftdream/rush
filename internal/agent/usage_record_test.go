@@ -13,9 +13,9 @@ import (
 	"charm.land/fantasy/providers/vercel"
 	"github.com/stretchr/testify/require"
 
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
-	"github.com/PHPCraftdream/rush/internal/agent/codexprovider"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // TestProviderCacheSupport_KnownReportersStayNativeOnZeroCounters pins the

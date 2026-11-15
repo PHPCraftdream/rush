@@ -7,13 +7,13 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/tasktree"
-	"github.com/PHPCraftdream/rush/internal/tasktree/lab"
+	"github.com/PHPCraftdream/rush/internal/kit/tasktree"
+	"github.com/PHPCraftdream/rush/internal/kit/tasktree/lab"
 )
 
 func cliFixturePath(t *testing.T, name string) string {
 	t.Helper()
-	path, err := filepath.Abs(filepath.Join("..", "..", "internal", "tasktree", "lab", "testdata", name+".json"))
+	path, err := filepath.Abs(filepath.Join("..", "..", "internal", "kit", "tasktree", "lab", "testdata", name+".json"))
 	if err != nil {
 		t.Fatal(err)
 	}

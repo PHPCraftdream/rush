@@ -12,8 +12,8 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
-	"github.com/PHPCraftdream/rush/internal/csync"
-	"github.com/PHPCraftdream/rush/internal/env"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

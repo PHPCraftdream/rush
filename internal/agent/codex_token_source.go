@@ -8,9 +8,9 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent/codexprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/oauth"
 )
 
 const codexTokenProviderID = "openai-codex"

@@ -12,8 +12,8 @@ import (
 	"os"
 	"sync"
 
-	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 // batchHostStores memoizes each App's HostStore. The App struct

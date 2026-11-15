@@ -27,11 +27,11 @@ groups = [
 ]
 [shards.B]
 groups = [
-  { name = "test: b", type = "go", packages = ["internal/cmd", "internal/commands"] },
+  { name = "test: b", type = "go", packages = ["internal/serve/cmd", "internal/agent/prompt/commands"] },
 ]
 [shards.D]
 groups = [
-  { name = "test: d", type = "go", packages = ["internal/db"] },
+  { name = "test: d", type = "go", packages = ["internal/store/db"] },
   { name = "test: everything else (computed catch-all)", type = "go", catch_all = true, packages = [] },
 ]
 """
@@ -189,11 +189,11 @@ class AssignShardsTests(unittest.TestCase):
         pkgs = [
             "example.com/m",
             "example.com/m/internal/app",
-            "example.com/m/internal/cmd/thing",
-            "example.com/m/internal/commands",
+            "example.com/m/internal/serve/cmd/thing",
+            "example.com/m/internal/agent/prompt/commands",
             "example.com/m/internal/agent",
             "example.com/m/internal/agent/tools",
-            "example.com/m/internal/db",
+            "example.com/m/internal/store/db",
             "example.com/m/internal/other",
         ]
         p = run_cli(BASE_TOML, pkgs)
@@ -230,7 +230,7 @@ class AssignShardsTests(unittest.TestCase):
         # Overlapping (non-identical) prefixes: internal/app matches both
         # "internal" (B) and "internal/app" (A) -> per-package error.
         toml = BASE_TOML.replace(
-            'packages = ["internal/cmd", "internal/commands"]',
+            'packages = ["internal/serve/cmd", "internal/agent/prompt/commands"]',
             'packages = ["internal"]',
         )
         p = run_cli(toml, ["example.com/m/internal/app"])
@@ -239,8 +239,8 @@ class AssignShardsTests(unittest.TestCase):
 
     def test_duplicate_prefix_exits_nonzero(self):
         toml = BASE_TOML.replace(
-            'packages = ["internal/cmd", "internal/commands"]',
-            'packages = ["internal/cmd", "internal/app"]',  # dup with A
+            'packages = ["internal/serve/cmd", "internal/agent/prompt/commands"]',
+            'packages = ["internal/serve/cmd", "internal/app"]',  # dup with A
         )
         p = run_cli(toml, ["example.com/m/internal/app"])
         self.assertNotEqual(p.returncode, 0)
@@ -255,7 +255,7 @@ class AssignShardsTests(unittest.TestCase):
         self.assertEqual(all_shard, ["example.com/m/internal/agent/tools"])
         # A bare "internal/agent" prefix in any shard group is rejected.
         bad = BASE_TOML.replace(
-            'packages = ["internal/cmd", "internal/commands"]',
+            'packages = ["internal/serve/cmd", "internal/agent/prompt/commands"]',
             'packages = ["internal/agent"]',
         )
         p = run_cli(bad, ["example.com/m/internal/agent"])
@@ -272,20 +272,20 @@ class AssignShardsTests(unittest.TestCase):
         )
 
     def test_removed_package_warns_but_succeeds(self):
-        p = run_cli(BASE_TOML, ["example.com/m/internal/cmd"])
+        p = run_cli(BASE_TOML, ["example.com/m/internal/serve/cmd"])
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("internal/commands", p.stderr)  # stale-prefix warning
+        self.assertIn("internal/agent/prompt/commands", p.stderr)  # stale-prefix warning
         out = json.loads(p.stdout)
         b = out["shards"]["B"]["groups"][0]
-        self.assertEqual(b["packages"], ["example.com/m/internal/cmd"])
+        self.assertEqual(b["packages"], ["example.com/m/internal/serve/cmd"])
         self.assertEqual(b["name"], "test: b")  # group kept (not empty-dropped silently)
 
     def test_ordering_stability_byte_identical(self):
         pkgs = [
             "example.com/m/internal/app",
-            "example.com/m/internal/commands",
-            "example.com/m/internal/cmd",
-            "example.com/m/internal/db",
+            "example.com/m/internal/agent/prompt/commands",
+            "example.com/m/internal/serve/cmd",
+            "example.com/m/internal/store/db",
             "example.com/m/internal/agent",
             "example.com/m/internal/zzz",
             "example.com/m",

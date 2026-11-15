@@ -6,8 +6,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // ErrBatchAnnouncementLost means another ack/inline consumer won or the

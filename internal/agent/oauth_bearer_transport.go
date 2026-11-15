@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/agent/codexprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 )
 
 const oauthBearerDrainLimit = 4 << 10

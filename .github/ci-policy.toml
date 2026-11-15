@@ -4,23 +4,23 @@
 # Design section 3: any changed file under these prefixes requires native
 # (macOS/Windows) lanes, independent of the fan-out / full-fallback decision.
 native_required_prefixes = [
-  "internal/shell/",
-  "internal/platform/",
-  "internal/procinfo/",
-  "internal/heartbeat/",
-  "internal/audit/",
-  "internal/filelock/",
+  "internal/kit/sys/shell/",
+  "internal/kit/sys/platform/",
+  "internal/kit/sys/procinfo/",
+  "internal/session/heartbeat/",
+  "internal/kit/diag/audit/",
+  "internal/kit/fs/filelock/",
   "internal/app/",
   "internal/session/",
-  "internal/db/",
+  "internal/store/db/",
   "internal/config/",
-  "internal/cmd/",
-  "internal/server/",
-  "internal/filetracker/",
-  "internal/agent/cliprovider/",
+  "internal/serve/cmd/",
+  "internal/serve/server/",
+  "internal/store/filetracker/",
+  "internal/agent/provider/cliprovider/",
   "internal/agent/tools/",
-  "internal/agent/notify/",
-  "internal/jobbatch/",
+  "internal/agent/safety/notify/",
+  "internal/session/jobbatch/",
   "cmd/batchlab/",
   "sdk/",
   "npm/",
@@ -36,23 +36,23 @@ selector_full_patterns = [
 # under these prefixes force full Ubuntu.
 core_prefixes = [
   "internal/config/",
-  "internal/db/",
-  "internal/message/",
+  "internal/store/db/",
+  "internal/store/message/",
   "internal/session/",
-  "internal/pubsub/",
-  "internal/csync/",
+  "internal/kit/sync/pubsub/",
+  "internal/kit/sync/csync/",
 ]
 
 # Race selection = selected closure intersecting these roots (prefix match,
 # descendants included). All verified to exist in the repo.
 race_roots = [
   "internal/agent",
-  "internal/hooks",
+  "internal/agent/tools/hooks",
   "internal/session",
-  "internal/jobbatch",
-  "internal/jobbatch/lab",
-  "internal/tasktree",
-  "internal/csync",
+  "internal/session/jobbatch",
+  "internal/session/jobbatch/lab",
+  "internal/kit/tasktree",
+  "internal/kit/sync/csync",
   "cmd/batchlab",
   "cmd/tasklab",
 ]
@@ -64,8 +64,8 @@ fanout_max_ratio = 0.40
 # Explicit non-Go input mappings: changed file (glob) -> owning package(s).
 # `*` matches any path segment(s) within one level; `**` crosses levels.
 [[non_go_mappings]]
-patterns = ["internal/db/sql/*.sql", "internal/db/migrations/*", "sqlc.yaml"]
-owners = ["internal/db"]
+patterns = ["internal/store/db/sql/*.sql", "internal/store/db/migrations/*", "sqlc.yaml"]
+owners = ["internal/store/db"]
 
 [[non_go_mappings]]
 patterns = ["internal/agent/templates/*"]
@@ -76,8 +76,8 @@ patterns = ["internal/agent/tools/*.md", "internal/agent/tools/*.md.tpl"]
 owners = ["internal/agent/tools"]
 
 [[non_go_mappings]]
-patterns = ["internal/skills/**/*.md", "internal/skills/**/*"]
-owners = ["internal/skills", "internal/agent"]
+patterns = ["internal/agent/prompt/skills/**/*.md", "internal/agent/prompt/skills/**/*"]
+owners = ["internal/agent/prompt/skills", "internal/agent"]
 
 # Guard list: changes here always run planning + guards — guard changes force
 # full mode, and the guards themselves run in phase 2.

@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/history"
-	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
+	"github.com/PHPCraftdream/rush/internal/store/history"
 	"github.com/stretchr/testify/require"
 )
 

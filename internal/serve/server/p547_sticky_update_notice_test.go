@@ -1,0 +1,744 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"runtime"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/PHPCraftdream/rush/internal/serve/ops/update"
+	"github.com/stretchr/testify/require"
+)
+
+// drainClient collects every event type a client received, up to a short
+// quiet period.
+func drainClient(t *testing.T, c *Client) []string {
+	t.Helper()
+	var types []string
+	for {
+		select {
+		case raw, ok := <-c.send:
+			if !ok {
+				return types
+			}
+			var env WSMessage
+			require.NoError(t, json.Unmarshal(raw, &env))
+			types = append(types, env.Type)
+		case <-time.After(200 * time.Millisecond):
+			return types
+		}
+	}
+}
+
+// drainClientPayloads is drainClient but also captures the raw payload for
+// each occurrence of wantType, in receive order. Used where a test needs to
+// tell WHICH generation of a repeated event type a client ended up with, not
+// just whether/how many times the type appeared.
+func drainClientPayloads(t *testing.T, c *Client, wantType string) (types []string, payloads []json.RawMessage) {
+	t.Helper()
+	for {
+		select {
+		case raw, ok := <-c.send:
+			if !ok {
+				return types, payloads
+			}
+			var env WSMessage
+			require.NoError(t, json.Unmarshal(raw, &env))
+			types = append(types, env.Type)
+			if env.Type == wantType {
+				payloads = append(payloads, env.Payload)
+			}
+		case <-time.After(200 * time.Millisecond):
+			return types, payloads
+		}
+	}
+}
+
+// hubDrainFailAfter is the purely-defensive upper bound on waitHubDrained.
+// It exists ONLY to turn "Hub.Run never drained at all" (a real regression:
+// Run not started, or stopped) into a fast, clearly-labelled test failure
+// instead of an infinitely spinning test that hangs CI. It is a var, not a
+// const, solely so the bound's own regression test can shrink it — 60s is
+// far beyond any legitimate drain (the drain itself completes in
+// microseconds once Run is scheduled; #632's original flake was a 5s
+// WALL-CLOCK bound racing transient machine stalls, which is why this
+// bound is deliberately an order of magnitude larger and is a floor on
+// failure, not a ceiling on success).
+// Stored as int64 nanoseconds for atomic access.
+var hubDrainFailAfter = int64((60 * time.Second).Nanoseconds())
+
+// waitHubDrained blocks until the hub has finished processing everything
+// producers have queued so far, on both the ordinary broadcast channel and
+// the sticky one. Sticky envelopes travel on their own channel
+// (h.stickyBroadcast, see BroadcastSticky doc), so a test that only waited
+// on h.broadcast could register a client before the hub had processed a
+// preceding BroadcastSticky call, making the test ordering assumptions
+// unreliable. The wait is condition-based, not wall-clock-based: it returns
+// as soon as both channels are empty, so transient process-wide stalls that
+// outlast any small timer (#632: eight parallel tests failed together on a
+// 5s require.Eventually bound) cannot make it fail while the drain still
+// completes. The deadline below is an order-of-magnitude-larger safety net
+// that fires only if the drain GENUINELY never happens.
+func waitHubDrained(t testing.TB, h *Hub) {
+	t.Helper()
+	deadline := time.Now().Add(time.Duration(atomic.LoadInt64(&hubDrainFailAfter)))
+	for len(h.broadcast) != 0 || len(h.stickyBroadcast) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("hub drain never completed within %s: len(broadcast)=%d len(stickyBroadcast)=%d — Hub.Run is not draining (never started, or stopped). This is a real drain regression, NOT the old #632 wall-clock flake: the wait is condition-based and cannot fire merely because the process stalled.",
+				time.Duration(atomic.LoadInt64(&hubDrainFailAfter)), len(h.broadcast), len(h.stickyBroadcast))
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestHub_StickyEventSurvivesReplayBufferEviction covers task #547.
+//
+// The update-available notice is sent once, at server start, and then the
+// replay ring evicts it: it is a bounded 2000-event buffer and a single
+// streaming turn pushes thousands of deltas. An operator who starts the
+// server, lets an agent run, and only then opens the browser would never see
+// the badge -- which is the ordinary way people use a UI.
+//
+// This uses newClient(), the SAME constructor production code uses (see
+// server.go's handleWS), so the client's send channel has the real
+// production capacity (sendBufSize == 512), not a hand-sized channel that
+// can never fill. That distinction is the whole bug: with a channel sized to
+// outlast the replay (as the original version of this test used,
+// maxBufferSize+200 == 2200), the sticky send at the end of the register
+// case always finds room and the test passes whether or not sticky is
+// prioritized over replay. With the real 512-slot channel, maxBufferSize+50
+// (2050) noise events alone are enough to fill it before the sticky send
+// gets a turn -- reproducing exactly the drop the reviewer's probe found.
+//
+// Revert-check: send sticky AFTER the replay in Run's register case (the
+// original ordering) and this fails -- the late client's 512-slot channel is
+// already full of noise by the time the sticky send is attempted, so it
+// hits the default drop and the client never receives the update notice.
+func TestHub_StickyEventSurvivesReplayBufferEviction(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := newHub()
+	go h.Run(ctx)
+
+	// Sent at "server start", before any client connects.
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.1.0"})
+
+	// Now overrun the replay ring the way one streaming turn does. The
+	// notice cannot possibly still be in the buffer afterwards.
+	for i := 0; i < maxBufferSize+50; i++ {
+		h.Broadcast("noise", map[string]int{"i": i})
+	}
+
+	// Let the hub drain both channels before anyone registers.
+	waitHubDrained(t, h)
+
+	// newClient is the production constructor: real sendBufSize (512), the
+	// same channel every real WebSocket connection gets in handleWS.
+	late := newClient(nil, nil)
+	h.register <- late
+
+	types := drainClient(t, late)
+	require.Contains(t, types, EventUpdateAvailable,
+		"a client connecting after one turn's worth of traffic never received the update notice -- the replay ring had already evicted it, or the sticky send lost the race for the client's bounded channel")
+}
+
+// TestHub_StickyEventDeliveredEvenWhenStillInReplayRing checks the other
+// side of the ordering trade-off: when the sticky event is recent enough
+// that an ordinary (non-sticky) copy of it would still be present in the
+// replay ring, a newly registered client must receive the sticky type
+// exactly once, not zero times (dropped) and not twice.
+//
+// Revert-check: make BroadcastSticky send on h.broadcast again (so the ring
+// also stores sticky envelopes, as before this fix) instead of
+// h.stickyBroadcast, and this fails -- the client receives
+// EventUpdateAvailable twice: once from the sticky replay in the register
+// case, once again from the ring replay.
+func TestHub_StickyEventDeliveredEvenWhenStillInReplayRing(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := newHub()
+	go h.Run(ctx)
+
+	// Sent recently -- with no other traffic, an ordinary broadcast of this
+	// would still be the newest (and only) entry in the replay ring.
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.1.0"})
+	waitHubDrained(t, h)
+
+	late := newClient(nil, nil)
+	h.register <- late
+
+	types := drainClient(t, late)
+	count := 0
+	for _, ty := range types {
+		if ty == EventUpdateAvailable {
+			count++
+		}
+	}
+	require.Equal(t, 1, count, "a sticky event must be delivered exactly once, not duplicated via the replay ring")
+}
+
+// TestHub_StickyEventReplaySurvivesSupersededRingCopy is the regression test
+// for the stale-wins bug found in review of the first version of this fix.
+//
+// Sequence:
+//  1. BroadcastSticky(v1) -- an earlier fix stored this in the replay ring
+//     too, alongside updating h.sticky["update_available"] = v1.
+//  2. BroadcastSticky(v2) -- likewise stored v2 in the ring, and
+//     h.sticky["update_available"] is now v2.
+//  3. A client connects while BOTH v1 and v2 are still within the ring's
+//     window (nothing has evicted them).
+//
+// The earlier fix sent the sticky map's newest entry (v2) first, then
+// replayed the ring skipping only byte-identical entries. v1's envelope is
+// NOT byte-identical to v2's (different payload), so replay was not
+// skipping it: the client received v2 (sticky) then v1 (replay), leaving v1
+// -- the SUPERSEDED value -- as the last update_available the client saw.
+// The UI renders on receipt, so the stale copy would have won.
+//
+// This test asserts on the PAYLOAD of the last received copy, not just the
+// count, because a count-only assertion (exactly one, or "contains") would
+// have passed even with v1 surviving as long as only one generation reached
+// the client -- it would not have caught which generation.
+//
+// Revert-check: make BroadcastSticky send on h.broadcast again (so v1 and v2
+// both enter the replay ring) and this fails -- the last update_available
+// payload the client receives is Latest 1.1.0 (v1), not 1.2.0 (v2).
+func TestHub_StickyEventReplaySurvivesSupersededRingCopy(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := newHub()
+	go h.Run(ctx)
+
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.1.0"}) // v1
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.2.0"}) // v2
+	waitHubDrained(t, h)
+
+	late := newClient(nil, nil)
+	h.register <- late
+
+	_, payloads := drainClientPayloads(t, late, EventUpdateAvailable)
+	require.Len(t, payloads, 1, "the client must receive exactly one update_available event, not one per generation")
+
+	var wire UpdateAvailableWire
+	require.NoError(t, json.Unmarshal(payloads[len(payloads)-1], &wire))
+	require.Equal(t, "1.2.0", wire.Latest,
+		"the last update_available payload the client received must be the newest generation (v2), not a superseded copy replayed from the ring afterwards")
+}
+
+// TestHub_StickyEventKeepsOnlyTheLatestPerType pins the "one entry per event
+// type" rule. Without it a sticky event sent repeatedly would accumulate and
+// every new client would be handed a pile of stale copies.
+func TestHub_StickyEventKeepsOnlyTheLatestPerType(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := newHub()
+	go h.Run(ctx)
+
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.1.0"})
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.2.0"})
+	waitHubDrained(t, h)
+
+	envs := h.stickyEvents()
+	require.Len(t, envs, 1, "one entry per event type, not one per send")
+
+	var env WSMessage
+	require.NoError(t, json.Unmarshal(envs[0], &env))
+	var wire UpdateAvailableWire
+	require.NoError(t, json.Unmarshal(env.Payload, &wire))
+	require.Equal(t, "1.2.0", wire.Latest, "the retained entry must be the latest send, not the first")
+}
+
+// broadcastBlocking is Broadcast minus the drop-on-full admission: it sends
+// the marshalled envelope on h.broadcast with a BLOCKING send, so the event
+// is guaranteed to reach Hub.Run's broadcast case (Run drains the channel,
+// so the send always completes). Tests that assert on what the replay ring
+// retained must use this, not Broadcast: Broadcast's select/default drops
+// frames once the 1024-slot channel fills, and under parallel-test load Run
+// can fall behind enough that the producer overruns it. #621: the loop below
+// needs >= maxBufferSize noise events to actually reach the ring for
+// "ordinary" to be evicted; Broadcast's admission dropped 52 of them on a
+// loaded machine, leaving "ordinary" alive in the ring and failing the test
+// on exactly the frames it was asserting about.
+func broadcastBlocking(t *testing.T, h *Hub, msgType string, payload any) {
+	t.Helper()
+	raw, err := json.Marshal(payload)
+	require.NoError(t, err)
+	env, err := json.Marshal(WSMessage{Type: msgType, Payload: raw})
+	require.NoError(t, err)
+	h.broadcast <- env
+}
+
+// TestHub_NonStickyEventIsNotReplayedToLateClients is the control: ordinary
+// broadcasts must NOT become sticky, or every new client would be handed
+// arbitrary stale per-turn traffic. Uses newClient() (real production
+// capacity) for consistency with the other tests in this file, though the
+// assertion here doesn't depend on the buffer being large or small.
+//
+// The broadcasts below go through broadcastBlocking, not Broadcast, so that
+// every one of the maxBufferSize+50 noise events provably reaches the ring:
+// the assertion is about ring eviction, not about the (lossy, by design)
+// broadcast admission path.
+func TestHub_NonStickyEventIsNotReplayedToLateClients(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := newHub()
+	go h.Run(ctx)
+
+	broadcastBlocking(t, h, "ordinary", map[string]string{"k": "v"})
+	for i := 0; i < maxBufferSize+50; i++ {
+		broadcastBlocking(t, h, "noise", map[string]int{"i": i})
+	}
+	waitHubDrained(t, h)
+
+	require.Empty(t, h.stickyEvents(), "a plain Broadcast must never be retained as sticky")
+
+	late := newClient(nil, nil)
+	h.register <- late
+	types := drainClient(t, late)
+	require.NotContains(t, types, "ordinary",
+		"an evicted ordinary event must stay evicted -- stickiness is opt-in")
+}
+
+// TestHub_StickyBroadcastChannel_SuppressesSupersededQueuedEnvelope covers
+// task #591/P2-2: BroadcastSticky replaces h.sticky[type] and THEN pushes the
+// marshalled envelope onto h.stickyBroadcast, a buffered (64-slot) channel
+// Run drains asynchronously.
+//
+// Reproducing the review's exact sequence requires the SAME condition
+// BroadcastSticky's own "sticky broadcast channel full, dropping" warning
+// covers: h.stickyBroadcast is bounded and the send is non-blocking
+// (select/default), so when it is momentarily full, a newer generation's
+// OWN queue entry can be dropped while an older generation's entry, queued
+// earlier when there was room, survives. h.sticky[type] (the map) is still
+// correctly updated to the newer generation regardless -- BroadcastSticky
+// writes it before ever touching the channel -- so a client registering at
+// that point legitimately receives the newer generation via the register
+// case's replay. But the OLDER generation is still sitting in the channel,
+// undrained, and once Run starts (or catches up), it drains that stale
+// entry and fans it out to the very client that already has the newer
+// value -- leaving the older generation "last received" for that client,
+// which is exactly the "latest per type" promise BroadcastSticky documents
+// being violated.
+//
+// This test constructs that state directly (fill the channel to its 64-slot
+// capacity with genuine BroadcastSticky sends for OTHER event types so the
+// LAST slot is taken by a real v1 send for EventUpdateAvailable, then issue
+// v2 for EventUpdateAvailable and confirm its own channel send was dropped
+// exactly like production's drop path) rather than trying to win a
+// goroutine-scheduling race, so it is deterministic. It still exercises the
+// real BroadcastSticky/Run code path end to end -- no direct field
+// manipulation of stickyMu-guarded state.
+//
+// This test uses newClient(), the production constructor with its real
+// 512-slot send buffer (see that constructor's own doc and the other tests
+// in this file for why an oversized hand-built channel would hide the bug);
+// the channel under test here is h.stickyBroadcast (64 slots), not
+// c.send, but newClient() is still used for the client itself for
+// consistency with the rest of this file's production-shaped setup.
+func TestHub_StickyBroadcastChannel_SuppressesSupersededQueuedEnvelope(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := newHub()
+
+	// Deliberately do NOT start h.Run yet: every BroadcastSticky call below
+	// only touches stickyMu-guarded state and does a non-blocking channel
+	// send, so filling h.stickyBroadcast (cap 64) to capacity does not
+	// require Run to be draining it concurrently, and NOT starting Run keeps
+	// the whole setup single-threaded and deterministic.
+	//
+	// Fill 63 of the 64 slots with a distinct event type so they do not
+	// interact with EventUpdateAvailable's own single entry per type.
+	for i := 0; i < 63; i++ {
+		h.BroadcastSticky("filler", map[string]int{"i": i})
+	}
+	require.Equal(t, 63, len(h.stickyBroadcast))
+
+	// Slot 64 (the last free one): a genuine v1 for EventUpdateAvailable.
+	// h.sticky[EventUpdateAvailable] now holds v1's envelope, and v1's
+	// envelope occupies the last free channel slot.
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.1.0"}) // v1
+	require.Equal(t, 64, len(h.stickyBroadcast), "channel must now be completely full")
+
+	// v2: h.sticky[EventUpdateAvailable] is updated to v2 (this always
+	// happens, unconditionally, before BroadcastSticky ever touches the
+	// channel), but the channel itself is full, so v2's own send hits the
+	// documented default: drop path and never enters the queue. v1's
+	// earlier entry is now a superseded, stale, but still-queued survivor.
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.2.0"}) // v2
+	require.Equal(t, 64, len(h.stickyBroadcast), "v2's own channel send must have been dropped (channel stayed full), leaving v1 as the only queued entry for this type")
+
+	// Register now, while the map already holds v2 but the channel still
+	// only holds the stale v1: the register-case replay correctly hands the
+	// client v2 immediately.
+	client := newClient(nil, nil)
+	h.register <- client
+
+	// Only now start Run, which first processes the registration (delivering
+	// v2 via replay) and then drains the 63 filler + 1 stale v1 entries.
+	go h.Run(ctx)
+	waitHubDrained(t, h)
+
+	_, payloads := drainClientPayloads(t, client, EventUpdateAvailable)
+	require.NotEmpty(t, payloads, "client must receive at least one update_available event")
+
+	var wire UpdateAvailableWire
+	require.NoError(t, json.Unmarshal(payloads[len(payloads)-1], &wire))
+	require.Equal(t, "1.2.0", wire.Latest,
+		"the last update_available payload the client received must be the newest generation (v2, from the register replay); the stale v1 still sitting in h.stickyBroadcast's queue when the client registered must be suppressed on drain, not fanned out afterwards as a stale 'last' value")
+}
+
+// TestHub_StickyOverflowStillReachesAlreadyConnectedClient covers the P2-1
+// defect from the fourth review of task #591. The pre-coalescing design had
+// h.stickyBroadcast carry marshalled envelopes directly, so when the channel
+// was full the NEWEST send's entry was dropped while an older generation's
+// entry, queued earlier when there was room, survived. That design also had the
+// envelope fan-out happen directly from the channel: each queued entry was
+// sent to all clients as it was drained. Under those conditions, an
+// already-connected client -- one present in h.clients before the overflow --
+// would receive NEITHER generation: v1 was correctly suppressed as superseded
+// (the map had v2), but v2's own envelope was never queued at all (the channel
+// was full), so the client never saw anything.
+//
+// The coalescing design makes this harmless: h.stickyBroadcast now carries
+// only wakeup tokens, and Run's stickyBroadcast case reads the CURRENT envelope
+// from h.sticky[type] (the map) for each pending type at drain time. When v2's
+// wakeup token is dropped on a full channel, the TYPE is still marked pending
+// (h.stickyPending[type] is set), so when Run eventually drains the channel it
+// still fans out the v2 envelope from the map. The drop is only the token; the
+// envelope survives in the map.
+//
+// This test constructs that state directly: a client is inserted into h.clients
+// before Run starts, then 63 filler broadcasts + v1 fill the 64-slot channel to
+// capacity, then v2's wakeup token is dropped on the full channel. Only then
+// does Run start, drain the channel, and fan out. It asserts the already-
+// connected client receives v2 (the newest generation) via the map read.
+//
+// Revert-check: remove the fan-out loop in Run's stickyBroadcast case (the
+// one that reads h.sticky[pendingType] and broadcasts it to all clients) and
+// this fails on the NotEmpty assertion -- the client receives nothing because
+// v1 was suppressed as superseded (map has v2) but v2's own token was dropped,
+// so the channel drain delivers no envelope at all.
+func TestHub_StickyOverflowStillReachesAlreadyConnectedClient(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := newHub()
+
+	// The client under test is ALREADY connected before any sticky send:
+	// it is present in h.clients when Run's drain fans out. Inserting it
+	// directly before `go h.Run` is race-free (happens-before via the go
+	// statement) and is the only deterministic way to have a client in the
+	// fan-out set while the stickyBroadcast channel is filled to capacity
+	// -- with Run already running it drains the 64-slot channel faster
+	// than any producer can fill it. h.clients is Run-goroutine state,
+	// not stickyMu state, and this test does not manipulate anything
+	// stickyMu-guarded.
+	client := newClient(nil, nil)
+	h.clients[client] = struct{}{}
+
+	// Fill 63 of the 64 token slots with a distinct filler type.
+	for i := 0; i < 63; i++ {
+		h.BroadcastSticky("filler", map[string]int{"i": i})
+	}
+	require.Equal(t, 63, len(h.stickyBroadcast))
+
+	// v1 takes the last free slot; the channel is now full.
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.1.0"})
+	require.Equal(t, 64, len(h.stickyBroadcast))
+
+	// v2: h.sticky[EventUpdateAvailable] is updated to 1.2.0 and the type
+	// is marked pending, but the channel is full so v2's own wakeup token
+	// is dropped -- exactly the overflow condition the coalescing design
+	// must survive.
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.2.0"})
+	require.Equal(t, 64, len(h.stickyBroadcast), "v2's wakeup token must have been dropped (channel full)")
+
+	go h.Run(ctx)
+	waitHubDrained(t, h)
+
+	_, payloads := drainClientPayloads(t, client, EventUpdateAvailable)
+	require.NotEmpty(t, payloads,
+		"an already-connected client must receive the sticky event even though the newest send's wakeup token was dropped on a full channel")
+	var wire UpdateAvailableWire
+	require.NoError(t, json.Unmarshal(payloads[len(payloads)-1], &wire))
+	require.Equal(t, "1.2.0", wire.Latest,
+		"the last update_available payload the already-connected client received must be the newest generation (1.2.0), read from h.sticky at drain time")
+}
+
+// TestHub_StickyOverflowNoQueuedTokenForType pins the critical difference
+// between the coalescing sticky-broadcast scheme and the deleted seq/envelope-in-channel
+// design: an already-connected client gets the newest version even when NO token of
+// this type ever entered the channel — the old design could not do this in principle
+// (a dropped send was a dropped envelope).
+//
+// Unlike TestHub_StickyOverflowStillReachesAlreadyConnectedClient (where v1's token
+// entered the channel and already marked the type pending, so the test passes even
+// under weaker schemes), here the 64 slots are ALL filler and the single
+// EventUpdateAvailable send's token is the one dropped — there is no earlier token
+// of this type in the queue. The coalescing scheme survives because the type is
+// marked pending BEFORE the token send, so the drop is only the token; the envelope
+// survives in h.sticky and is still read at drain time.
+//
+// Revert-check: move the stickyPending marking so it happens ONLY when the wakeup
+// token send succeeds (i.e. inside the `case h.stickyBroadcast <- struct{}{}:` arm,
+// after the send) and this fails — the type is never marked pending, the drain's
+// pending set is empty, and the client receives nothing.
+func TestHub_StickyOverflowNoQueuedTokenForType(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := newHub()
+	client := newClient(nil, nil)
+	h.clients[client] = struct{}{}
+
+	for i := 0; i < 64; i++ {
+		h.BroadcastSticky("filler", map[string]int{"i": i})
+	}
+	require.Equal(t, 64, len(h.stickyBroadcast))
+
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.2.0"})
+
+	go h.Run(ctx)
+	waitHubDrained(t, h)
+
+	_, payloads := drainClientPayloads(t, client, EventUpdateAvailable)
+	require.NotEmpty(t, payloads,
+		"an already-connected client must receive the sticky event even when the type's FIRST wakeup token is dropped on a full channel and no earlier token of this type is queued")
+	var wire UpdateAvailableWire
+	require.NoError(t, json.Unmarshal(payloads[len(payloads)-1], &wire))
+	require.Equal(t, "1.2.0", wire.Latest)
+}
+
+// TestHub_StickyExtraTokenWithEmptyPendingDeliversNothing pins that Run's drain
+// uses the swapped pending SNAPSHOT (fresh-map swap), not a direct read of the
+// live pending map or of h.sticky itself. Multiple queued tokens coalesce harmlessly:
+// later tokens find an empty pending set and no-op. Only types that were pending
+// at the moment of the swap are fanned out, not all of h.sticky.
+//
+// Revert-check: make the drain fan out every type in h.sticky instead of the
+// swapped pending set (or clear the pending map before copying it), and this fails
+// — the client receives update_available (and every other sticky type) again on each
+// spurious token. The test sends extra tokens directly to h.stickyBroadcast, which
+// is safe because the channel is buffered and Run is draining concurrently.
+func TestHub_StickyExtraTokenWithEmptyPendingDeliversNothing(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := newHub()
+	client := newClient(nil, nil)
+	h.clients[client] = struct{}{}
+
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.1.0"})
+	go h.Run(ctx)
+	waitHubDrained(t, h)
+
+	_, payloads := drainClientPayloads(t, client, EventUpdateAvailable)
+	require.Len(t, payloads, 1)
+
+	// Extra tokens with nothing pending must be no-ops.
+	h.stickyBroadcast <- struct{}{}
+	h.stickyBroadcast <- struct{}{}
+	waitHubDrained(t, h)
+
+	types2, payloads2 := drainClientPayloads(t, client, EventUpdateAvailable)
+	require.Empty(t, types2, "a drain with an empty pending set must fan out nothing")
+	require.Empty(t, payloads2)
+}
+
+// fakeUpdateClient is a minimal update.Client stub so this test can drive
+// broadcastUpdateNoticeWithClientVersion without any real network call,
+// and deterministically report a fixed "latest" tag.
+type fakeUpdateClient struct{ latestTag string }
+
+// Latest implements update.Client.
+func (c fakeUpdateClient) Latest(_ context.Context) (*update.Release, error) {
+	return &update.Release{TagName: c.latestTag, HTMLURL: "https://example.invalid/release"}, nil
+}
+
+// TestBroadcastUpdateNotice_DeliversThroughTheProductionEntryPoint closes the
+// gap the other tests in this file leave open: every test above calls
+// h.BroadcastSticky directly, so none of them actually exercises
+// broadcastUpdateNotice / broadcastUpdateNoticeWithClientVersion in
+// internal/server/update_notice.go -- the code that decides whether the
+// update notice is sent sticky AT ALL (update_notice.go's h.BroadcastSticky
+// call). A prior version of this file carried a comment claiming a
+// revert-check against exactly that line, but no test here ever called
+// through it, so the claim did not hold: switching update_notice.go's
+// h.BroadcastSticky back to h.Broadcast left every test in this file green.
+//
+// This test drives the real broadcastUpdateNoticeWithClientVersion (the
+// injectable core broadcastUpdateNotice itself is a thin wrapper around),
+// with a fake update.Client so it needs no network access and no dependency
+// on this fork's actual current version string, then asserts a late client
+// still receives the notice -- the same replay-ring-eviction shape the
+// other tests in this file cover for a hand-constructed BroadcastSticky
+// call.
+//
+// Revert-check: change update_notice.go's h.BroadcastSticky(EventUpdateAvailable, ...)
+// call back to h.Broadcast(EventUpdateAvailable, ...) and this test fails --
+// the late client's replay-ring-overrun means the ordinary broadcast is long
+// gone by the time it registers, so EventUpdateAvailable never arrives.
+// Verified by literally doing that revert and running this test; see the
+// task notes for the captured failure output.
+func TestBroadcastUpdateNotice_DeliversThroughTheProductionEntryPoint(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := newHub()
+	go h.Run(ctx)
+
+	// "1.0.0" -> "1.1.0": both stable (no "-" prerelease marker), current !=
+	// latest, and neither is a devel/pseudo-version -- so IsDevelopment() is
+	// false and Available() is true, the same shape every other test in this
+	// file drives directly via BroadcastSticky's UpdateAvailableWire.
+	client := fakeUpdateClient{latestTag: "v1.1.0"}
+	broadcastUpdateNoticeWithClientVersion(ctx, h, client, "1.0.0")
+
+	// Overrun the replay ring exactly as the other sticky-survival tests in
+	// this file do, so a plain (non-sticky) broadcast of this same event
+	// could not possibly still be sitting in the ring by the time the late
+	// client registers.
+	for i := 0; i < maxBufferSize+50; i++ {
+		h.Broadcast("noise", map[string]int{"i": i})
+	}
+	waitHubDrained(t, h)
+
+	late := newClient(nil, nil)
+	h.register <- late
+
+	_, payloads := drainClientPayloads(t, late, EventUpdateAvailable)
+	require.Len(t, payloads, 1,
+		"a client connecting after one turn's worth of traffic must receive exactly one update_available event via the real broadcastUpdateNotice entry point, not zero (dropped) and not more than one")
+
+	var wire UpdateAvailableWire
+	require.NoError(t, json.Unmarshal(payloads[0], &wire))
+	require.Equal(t, "1.0.0", wire.Current)
+	require.Equal(t, "1.1.0", wire.Latest)
+}
+
+// TestWaitHubDrained_ReturnsOnlyWhenDrained pins that waitHubDrained is
+// condition-driven: it does not return while the drain condition is false,
+// even under transient process stalls that would fire a wall-clock timer.
+// This uses a 250ms delay (instead of the old test's 5.5s) because the 60s
+// defensive bound is now large enough that this test no longer needs to
+// demonstrate outlasting a specific timer to prove it's not wall-clock-based.
+//
+// NOT t.Parallel: shrinks hubDrainFailAfter locally; must not race with
+// other parallel tests that call waitHubDrained.
+//
+// Revert-check: remove the deadline check inside waitHubDrained's loop and
+// this test hangs if the drain never completes (the old test had the same
+// issue, but the 60s bound makes the hang much longer than before).
+func TestWaitHubDrained_ReturnsOnlyWhenDrained(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h := newHub()
+	// Queue real work before Run exists, so the drain condition is false.
+	h.BroadcastSticky(EventUpdateAvailable, UpdateAvailableWire{Current: "1.0.0", Latest: "1.1.0"})
+	broadcastBlocking(t, h, "noise", map[string]int{"i": 1})
+	require.NotZero(t, len(h.broadcast)+len(h.stickyBroadcast))
+
+	// Start draining only after a delay. The condition is false for that
+	// entire window.
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		go h.Run(ctx)
+	}()
+
+	start := time.Now()
+	waitHubDrained(t, h)
+	elapsed := time.Since(start)
+	require.GreaterOrEqual(t, elapsed, 250*time.Millisecond,
+		"waitHubDrained must have waited for the delayed drain, not returned early")
+	require.Less(t, elapsed, 60*time.Second,
+		"waitHubDrained must complete quickly once Run drains; the 60s bound should never fire in this test")
+}
+
+// TestWaitHubDrained_FailsFastWhenRunNeverDrains pins the defensive bound
+// added with #632's follow-up: if Hub.Run never drains (here: never
+// started), waitHubDrained must FAIL at the bound with the
+// "drain regression" message instead of spinning forever and hanging CI.
+// The bound is shrunk via hubDrainFailAfter so this test runs in
+// milliseconds; the production default is 60s.
+//
+// NOT t.Parallel: shrinks hubDrainFailAfter locally; must not race with
+// other parallel tests that call waitHubDrained.
+//
+// Revert-check: delete the deadline check inside waitHubDrained's loop and
+// this test fails after its 10s wait — which is exactly the oversight it
+// exists to catch.
+func TestWaitHubDrained_FailsFastWhenRunNeverDrains(t *testing.T) {
+	h := newHub()
+	// Queue real work but never start h.Run: the drain condition stays
+	// false forever.
+	broadcastBlocking(t, h, "noise", map[string]int{"i": 1})
+	require.NotZero(t, len(h.broadcast))
+
+	// Shrink the bound using atomic operations to avoid data races.
+	old := atomic.LoadInt64(&hubDrainFailAfter)
+	atomic.StoreInt64(&hubDrainFailAfter, (50 * time.Millisecond).Nanoseconds())
+	defer atomic.StoreInt64(&hubDrainFailAfter, old)
+
+	// Create a separate test to capture the failure without affecting
+	// this test's status.
+	// Wait for the goroutine to actually exit (the deferred close runs on
+	// Goexit too) instead of a fixed sleep: under load the 50ms bound can be
+	// observed well after any short fixed window.
+	captureT := &captureT{T: t}
+	exited := make(chan struct{})
+	returned := make(chan struct{})
+	go func() {
+		defer close(exited)
+		waitHubDrained(captureT, h)
+		close(returned)
+	}()
+
+	select {
+	case <-exited:
+	case <-time.After(10 * time.Second):
+		t.Fatal("waitHubDrained neither failed nor returned within 10s — the defensive deadline check is missing")
+	}
+	select {
+	case <-returned:
+		t.Fatal("waitHubDrained returned normally instead of calling t.Fatalf — the defensive deadline check is missing")
+	default:
+	}
+	require.True(t, captureT.failed.Load(), "waitHubDrained must have called t.Fatalf")
+	msg, _ := captureT.msg.Load().(string)
+	require.Contains(t, msg, "hub drain never completed")
+	require.Contains(t, msg, "drain regression")
+}
+
+// captureT is a minimal testing.TB implementation that records Fatalf calls
+// without actually failing the test. Used by TestWaitHubDrained_FailsFastWhenRunNeverDrains.
+type captureT struct {
+	*testing.T
+	failed atomic.Bool
+	msg    atomic.Value // stores string
+}
+
+func (c *captureT) Fatalf(format string, args ...interface{}) {
+	c.failed.Store(true)
+	c.msg.Store(fmt.Sprintf(format, args...))
+	runtime.Goexit()
+}

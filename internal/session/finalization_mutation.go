@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
 // admitFinalizationMutation uses only capabilities carried by the producer.

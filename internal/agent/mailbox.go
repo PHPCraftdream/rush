@@ -5,7 +5,7 @@ import (
 	"sync"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // mailbox is the per-session owner/mailbox state machine described in

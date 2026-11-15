@@ -40,7 +40,7 @@ func TestReleaseGate_6_ProviderCancellationHardAbort(t *testing.T) {
 	t.Parallel()
 	t.Log("This criterion is covered by TestProviderCancellationConformance")
 	t.Log("That test comprehensively verifies all HTTP provider categories respect 5s cancellation bound")
-	t.Log("It also documents CLI provider (cliprovider) coverage via existing tests in internal/agent/cliprovider/")
+	t.Log("It also documents CLI provider (cliprovider) coverage via existing tests in internal/agent/provider/cliprovider/")
 	t.Log("Run that test separately with: go test -run TestProviderCancellationConformance -v")
 
 	// For release gate automation, we document the coverage rather than re-implement.

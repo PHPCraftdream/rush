@@ -26,8 +26,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 // SessionActivity pairs one session's facts with their verdict.

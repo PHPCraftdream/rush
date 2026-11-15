@@ -5,8 +5,8 @@ how it is selected, the failure and fallback contract, the diagnostics that
 make a WebSocket turn comparable with an HTTP turn, the delta-chain rules,
 and a live-smoke checklist for a human to run.
 
-Code: `internal/nettransport/responses_ws*.go` (connections, manager, delta
-chaining), `internal/agent/codexprovider/provider_websocket*.go` (direct
+Code: `internal/agent/provider/nettransport/responses_ws*.go` (connections, manager, delta
+chaining), `internal/agent/provider/codexprovider/provider_websocket*.go` (direct
 Codex), `internal/agent/public_responses_websocket.go` (public OpenAI),
 `internal/agent/coordinator_responses_ws.go` (wiring and policy).
 

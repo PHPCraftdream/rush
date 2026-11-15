@@ -67,7 +67,7 @@ PR #12 becomes merge-ready for main; retain proof artifacts outside main.
   m11 uses the vacuous-list record: the strengthened snapshot test seeds a void
   unreacted woken row, so test/purpose/expected assertion come from there.
   Every needle was re-verified against the regenerated
-  `internal/db/batch_history.sql.go` at base 75136c49: all occur exactly once,
+  `internal/store/db/batch_history.sql.go` at base 75136c49: all occur exactly once,
   but the regeneration DID change content, so the R10c refresh is real:
   the blob's SHA-256 moved
   `302393160fc38933781577f8332d21a16392c02fe62e2944bd6338bade486683` ->
@@ -151,7 +151,7 @@ go-test text, verified verbatim in the per-record mutated logs):
 | R11B m16_drop_projection_sequence_fence | Expected error with "batch store: projection identity or sequence conflict" in chain but got nil. | `projection_sequence not inflated` | Messages line at batch_commit_test.go:506 (expected 2 / actual 4611686018427387904) |
 
 R15a mut1 EXECUTION_ERROR fix (no hash change — needle unchanged, still occurs
-exactly once in `internal/server/handlers_batch.go` at HEAD acaf1865):
+exactly once in `internal/serve/server/handlers_batch.go` at HEAD acaf1865):
 replacement is now
 
 ```go
@@ -203,9 +203,9 @@ tests); only R11B's choices remain source-derived.
 | R11B m17 | `jobbatch: commit failed: error` | The root-less new UUID fails the Add inside `batchProjectRoot`; primary NoError precedes the root-count assertion. |
 | R15a mut5 | `nodes must be ordered by ordinal, not arrival or NodeID` | Strengthened fixture orders ordinals differently from NodeID; vacuous-list record supplies the assertion. |
 
-R11B's error substring is anchored in `internal/jobbatch/errors.go:20`
+R11B's error substring is anchored in `internal/session/jobbatch/errors.go:20`
 (`ErrCommitFailed = errors.New("jobbatch: commit failed")`) and
-`internal/jobbatch/runner_commit.go:88,110,298`: a hook error retains reason
+`internal/session/jobbatch/runner_commit.go:88,110,298`: a hook error retains reason
 `error`, and `signalFault` formats `%w: %s`. m02 assigns empty root and skips
 UUID generation; it does not generate a replacement UUID. m17 changes root_id,
 not the deterministic child node_id. `batchStoreTestDB` uses `db.Connect` with

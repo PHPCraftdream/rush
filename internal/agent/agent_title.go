@@ -17,8 +17,8 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
-	"github.com/PHPCraftdream/rush/internal/heartbeat"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 )
 
 // titleGenerationMaxDurationDefault bounds how long the background

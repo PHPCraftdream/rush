@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/filelock"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 )
 
 var errConfigCommitVerification = errors.New("config destination could not be verified immediately before commit")

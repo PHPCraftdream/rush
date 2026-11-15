@@ -18,7 +18,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // reviewVerdictPattern matches the verdict line the reviewer prompt demands

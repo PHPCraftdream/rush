@@ -1,4 +1,4 @@
-// ── Wire types (mirror internal/server/protocol.go) ─────────────────────────
+// ── Wire types (mirror internal/serve/server/protocol.go) ─────────────────────────
 
 /** One explicit model choice of a scope. */
 export interface ModelOverrideWire {

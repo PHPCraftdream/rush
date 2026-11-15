@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/heartbeat"
+	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 )
 
 // NewHeartbeatProvider wraps p so calls through any LanguageModel it hands

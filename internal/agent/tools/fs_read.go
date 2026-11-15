@@ -10,8 +10,8 @@ import (
 	"unicode/utf8"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/filetracker"
-	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
+	"github.com/PHPCraftdream/rush/internal/store/filetracker"
 )
 
 const FSReadToolName = "fs_read"

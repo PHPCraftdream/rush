@@ -20,7 +20,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            package: ./internal/server
+            package: ./internal/serve/server
             tests: '^TestHandleRerunMessage_PanicBeforeHandoff(ReleasesReservation|RecreatesPrompt)$'
             race: '-race'
           - os: windows-latest

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // nodeBatchCutoverFacts is constructed by the installer over one BatchStore,

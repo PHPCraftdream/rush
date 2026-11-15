@@ -129,7 +129,7 @@ export interface Message {
   AutoResumed: boolean;
   BackgroundJobNotice: boolean;
   // Entry channel the message arrived through ("cli" / "web" / "sdk").
-  // Mirrors internal/server/wire.go's MessageWire.Origin (message.Origin:
+  // Mirrors internal/serve/server/wire.go's MessageWire.Origin (message.Origin:
   // CLI `rush run` prompts, `rush sessions inject`, SDK runs). Absent from
   // rows written before the origin column existed and from older servers —
   // both mean "unspecified", which is NOT composer-typed input, so the
@@ -140,7 +140,7 @@ export interface Message {
   // absent, from an older server) for an ordinary message, otherwise the
   // kind of system notice (e.g. "supervision", "timeout_wake_only").
   NoticeKind?: string;
-  // HumanTyped is computed server-side (internal/server/wire.go's
+  // HumanTyped is computed server-side (internal/serve/server/wire.go's
   // isHumanTyped) from structured fields ONLY -- never message text. True
   // only when a human typed this directly into the web composer. This is
   // the SOLE field the composer recall history and history dropdown
@@ -151,14 +151,14 @@ export interface Message {
   // per-message tracking existed, and on non-assistant messages.
   Usage?: MessageUsage;
   // DeleteGeneration is the delete watermark (task #737; replaces the old
-  // RowID field — internal/server/wire.go's MessageWire.DeleteGeneration
+  // RowID field — internal/serve/server/wire.go's MessageWire.DeleteGeneration
   // doc comment has the full mechanism). Only ever populated on a
   // message_deleted push's payload; absent/0 everywhere else (created/
   // updated pushes and messages_list snapshot rows never carry it).
   DeleteGeneration?: number;
 }
 
-// MessageUsage mirrors internal/server/wire.go's UsageWire.
+// MessageUsage mirrors internal/serve/server/wire.go's UsageWire.
 //
 // Tokens are split into three DISJOINT classes, so PromptTokens is their sum:
 // InputTokens (fresh, full price), CacheReadTokens (served from the provider's
@@ -318,7 +318,7 @@ export interface MCPState {
 // ─── Live work panel (task #1059) ───────────────────────────────────────────
 //
 // One async command (bash/run_command) or sub-agent delegation
-// (agent/agentic_fetch), sourced from internal/server/protocol.go's
+// (agent/agentic_fetch), sourced from internal/serve/server/protocol.go's
 // LiveWorkItemWire (task #1058's snapshot emitter).
 export interface LiveWorkItem {
   toolCallID: string;
@@ -441,7 +441,7 @@ export interface BatchWorkSnapshot {
 
 // ─── Wake schedules panel (stage 5b) ────────────────────────────────────────
 //
-// One wake_schedules row, sourced from internal/server/protocol.go's
+// One wake_schedules row, sourced from internal/serve/server/protocol.go's
 // WakeScheduleWire (handlers_wake_schedules.go's snapshot emitter).
 export interface WakeScheduleItem {
   id: string;

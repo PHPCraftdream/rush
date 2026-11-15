@@ -19,8 +19,8 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/csync"
-	rushlog "github.com/PHPCraftdream/rush/internal/log"
+	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

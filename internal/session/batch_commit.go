@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 // ErrBatchValueOverflow rejects uint64 Token/Sequence values at or above 2^63:

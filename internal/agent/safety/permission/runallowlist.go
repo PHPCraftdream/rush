@@ -1,0 +1,383 @@
+package permission
+
+// This file implements the restricted-run allowlist: the matcher that
+// decides whether a `rush run` permission request is auto-approved
+// when restricted mode is on. See config.RunPermissions (permissions.run
+// in rush.json) for the user-facing config; the per-run override surface
+// is app.RunOverrides (SDK hosts only — the CLI flags were removed).
+//
+// Design notes:
+//
+//  1. No ad-hoc shell splitting. Command patterns are matched against
+//     the whole command string with well-defined semantics (exact,
+//     word-boundary prefix, cross-platform glob, or regexp). The
+//     chaining guard parses the command with the same shell grammar the
+//     bash tool executes (shell.IsCompoundCommand) so a prefix/exact/glob
+//     pattern can never authorise a compound command.
+//
+//  2. The matcher is total: it never panics and never blocks. A pattern
+//     that fails to compile (bad regex, bad glob) is reported once via
+//     BuildRunAllowlist and then ignored at match time, so a single bad
+//     pattern can't lock out an entire run.
+//
+//  3. Deny is the safe direction: an unrecognised params shape, an empty
+//     command, or an unmatched request all fall through to "not allowed".
+
+import (
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+)
+
+// RunAllowlistSpec is the user-facing, pre-compilation form of a
+// restricted-run allowlist. It mirrors config.RunPermissions and the
+// `rush run` CLI flags; BuildRunAllowlist compiles it into a queryable
+// RunAllowlist.
+type RunAllowlistSpec struct {
+	// Restrict enables the restricted permission model. When false the
+	// allowlist is inert and `rush run` keeps auto-approving everything.
+	Restrict bool
+	// AllowTools lists "tool" and "tool:action" keys that bypass the
+	// run gate for non-bash tools. Same syntax as permissions.allowed_tools.
+	// NOTE: entries for "bash" / "bash:execute" are deliberately ignored
+	// by the gate — bash is governed solely by AllowBash so an operator
+	// can't accidentally authorise arbitrary shell commands by listing
+	// the tool name. See allowsRequest.
+	AllowTools []string
+	// AllowBash lists bash command patterns. See RunAllowlistSpec doc
+	// comment above and config.RunPermissions for the syntax.
+	AllowBash []string
+}
+
+// bashPatternKind identifies how a compiled bash pattern matches.
+type bashPatternKind int
+
+const (
+	bashPatternExact  bashPatternKind = iota // "exact:cmd" — whole-string match.
+	bashPatternPrefix                        // "cmd args" — word-boundary prefix.
+	bashPatternGlob                          // "glob:pat" — cross-platform glob (see globToRegexp).
+	bashPatternRegex                         // "regex:pat" — regexp.MatchString.
+)
+
+// compiledBashPattern is a single parsed bash pattern. raw is retained
+// for diagnostics; the matcher uses only the compiled fields.
+type compiledBashPattern struct {
+	raw   string
+	kind  bashPatternKind
+	value string         // exact / prefix / glob body
+	re    *regexp.Regexp // regex body (compiled)
+}
+
+// RunAllowlist is the compiled, concurrency-safe, ready-to-query form
+// of a restricted-run allowlist. The zero value is an inert (empty)
+// allowlist; IsRestricted reports whether the gate is armed.
+type RunAllowlist struct {
+	restrict     bool
+	allowTools   map[string]struct{} // "tool" and "tool:action" keys
+	bashPatterns []compiledBashPattern
+}
+
+// IsRestricted reports whether restricted mode is armed. When false the
+// matcher never denies — callers keep the legacy auto-approve behaviour.
+func (a RunAllowlist) IsRestricted() bool { return a.restrict }
+
+// allowsRequest reports whether opts is permitted by this allowlist.
+// The caller MUST first check IsRestricted; calling this on a
+// non-restricted allowlist is undefined for performance but safe.
+//
+// Semantics (conservative by design):
+//
+//   - Any tool whose params implement runAllowlistCommandProvider
+//     (bash, run_command) is governed ONLY by AllowBash command
+//     patterns, applied to the command string the params provide.
+//     AllowTools entries for such tools do NOT bypass command
+//     scrutiny — listing them there is a silent no-op for the run
+//     gate. This keeps the two surfaces non-overlapping: AllowTools
+//     scopes which plain tools may run; AllowBash scopes which
+//     commands the command-executing tools may run. (The global
+//     permissions.allowed_tools fast-path still wins over both because
+//     it is checked earlier in Request — that is the documented
+//     operator escape hatch for a full bypass, not this gate's
+//     concern.)
+//   - Every other tool (params without a command string) is approved
+//     iff it (or its tool:action) is in the AllowTools table.
+//   - Empty/unreadable commands are denied.
+func (a RunAllowlist) allowsRequest(opts CreatePermissionRequest) bool {
+	// Command-carrying tools get command-level scrutiny ONLY, routed via
+	// the RunAllowlistCommand interface rather than by tool name: a
+	// tool-name match must never authorise an arbitrary command. We
+	// deliberately do not consult the AllowTools table here, even if the
+	// tool (or tool:action) is listed. Operators who want to approve a
+	// command-executing tool wholesale must use permissions.allowed_tools
+	// (the pre-gate fast-path), not run.allow_tools.
+	if provider, ok := opts.Params.(runAllowlistCommandProvider); ok {
+		cmd := provider.RunAllowlistCommand()
+		if cmd == "" {
+			// Request with no inspectable command — deny. We refuse
+			// to auto-approve an unknown command in restricted mode.
+			return false
+		}
+		return bashCommandAllowed(a.bashPatterns, cmd)
+	}
+	return a.toolAllowed(opts.ToolName, opts.Action)
+}
+
+// toolAllowed reports whether the tool (or tool:action) is in the
+// AllowTools table. It is consulted ONLY for tools whose params don't
+// carry a command string; the command-provider branch of allowsRequest
+// ignores it entirely (see the doc comment there). An empty table denies
+// every plain tool.
+func (a RunAllowlist) toolAllowed(toolName, action string) bool {
+	if len(a.allowTools) == 0 {
+		return false
+	}
+	if _, ok := a.allowTools[toolName]; ok {
+		return true
+	}
+	if action != "" {
+		if _, ok := a.allowTools[toolName+":"+action]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// BuildRunAllowlist compiles spec into a queryable RunAllowlist. A
+// pattern that fails to compile (bad regex / bad glob) is returned as
+// an error AND dropped from the result, so the caller can log it while
+// still arming the allowlist with the remaining valid patterns.
+func BuildRunAllowlist(spec RunAllowlistSpec) (RunAllowlist, error) {
+	out := RunAllowlist{
+		restrict:   spec.Restrict,
+		allowTools: make(map[string]struct{}, len(spec.AllowTools)),
+	}
+	for _, t := range spec.AllowTools {
+		t = strings.TrimSpace(t)
+		if t != "" {
+			out.allowTools[t] = struct{}{}
+		}
+	}
+
+	var firstErr error
+	for _, raw := range spec.AllowBash {
+		compiled, err := compileBashPattern(raw)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		out.bashPatterns = append(out.bashPatterns, compiled)
+	}
+	return out, firstErr
+}
+
+// MergeRunAllowlistSpecs unions two specs into one. Used to combine the
+// config-derived allowlist with the per-invocation CLI overrides. The
+// result restricts if either side restricts; tool and bash lists are
+// concatenated (dedup is applied at compile time for tools and is not
+// needed for bash patterns — duplicates just match twice).
+func MergeRunAllowlistSpecs(a, b RunAllowlistSpec) RunAllowlistSpec {
+	merged := RunAllowlistSpec{
+		Restrict:   a.Restrict || b.Restrict,
+		AllowTools: append([]string{}, a.AllowTools...),
+		AllowBash:  append([]string{}, a.AllowBash...),
+	}
+	merged.AllowTools = append(merged.AllowTools, b.AllowTools...)
+	merged.AllowBash = append(merged.AllowBash, b.AllowBash...)
+	return merged
+}
+
+// compileBashPattern parses a single AllowBash entry. Recognised forms:
+//
+//	"regex:pat"  → regexp
+//	"glob:pat"   → cross-platform glob (compiled to an anchored regexp)
+//	"exact:cmd"  → whole-string equality after TrimSpace
+//	anything else → word-boundary prefix (the common case, e.g. "git diff")
+//
+// The prefix, exact, and glob forms are syntax-guarded at match time, not at
+// compile time — the pattern itself is always valid even if it would never
+// match a compound or nonliteral command. Only regex is exempt.
+func compileBashPattern(raw string) (compiledBashPattern, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return compiledBashPattern{}, errEmptyBashPattern
+	}
+
+	switch {
+	case strings.HasPrefix(raw, "regex:"):
+		body := strings.TrimPrefix(raw, "regex:")
+		if body == "" {
+			return compiledBashPattern{}, errEmptyPatternBody(raw)
+		}
+		re, err := regexp.Compile(body)
+		if err != nil {
+			return compiledBashPattern{}, errBadPattern(raw, err)
+		}
+		return compiledBashPattern{raw: raw, kind: bashPatternRegex, re: re}, nil
+
+	case strings.HasPrefix(raw, "glob:"):
+		body := strings.TrimPrefix(raw, "glob:")
+		if body == "" {
+			return compiledBashPattern{}, errEmptyPatternBody(raw)
+		}
+		// Compile the glob to an anchored regexp so matching is
+		// cross-platform (see globToRegexp — filepath.Match's `*` was
+		// separator-aware, which made a glob behave differently on
+		// Windows vs Linux).
+		re, err := globToRegexp(body)
+		if err != nil {
+			return compiledBashPattern{}, errBadPattern(raw, err)
+		}
+		return compiledBashPattern{raw: raw, kind: bashPatternGlob, value: body, re: re}, nil
+
+	case strings.HasPrefix(raw, "exact:"):
+		body := strings.TrimSpace(strings.TrimPrefix(raw, "exact:"))
+		if body == "" {
+			return compiledBashPattern{}, errEmptyPatternBody(raw)
+		}
+		return compiledBashPattern{raw: raw, kind: bashPatternExact, value: body}, nil
+
+	default:
+		// Prefix form: the body is the raw entry verbatim (already
+		// trimmed). An empty body was rejected above.
+		return compiledBashPattern{raw: raw, kind: bashPatternPrefix, value: raw}, nil
+	}
+}
+
+// globToRegexp translates a shell-style glob (only `*` and `?` are
+// special) into an anchored regexp matching the WHOLE command string.
+// Unlike filepath.Match, `*` matches any run of characters INCLUDING
+// `/`, so a glob behaves identically on every OS — filepath.Match's
+// separator-aware `*` made "glob:ls *" match "ls /etc" on Windows but
+// not on Linux, an OS-dependent authorization decision. Every other
+// regex metacharacter is escaped and matched literally.
+func globToRegexp(glob string) (*regexp.Regexp, error) {
+	var b strings.Builder
+	b.WriteByte('^')
+	for _, r := range glob {
+		switch r {
+		case '*':
+			b.WriteString(".*")
+		case '?':
+			b.WriteByte('.')
+		default:
+			b.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	b.WriteByte('$')
+	return regexp.Compile(b.String())
+}
+
+// bashCommandAllowed reports whether cmd satisfies any of the compiled
+// patterns. An empty pattern list denies everything (restricted mode is
+// deny-by-default).
+func bashCommandAllowed(patterns []compiledBashPattern, cmd string) bool {
+	command := strings.TrimSpace(cmd)
+	if command == "" {
+		return false
+	}
+	compound := shell.IsCompoundCommand(command)
+	_, simple := shell.ParseSimpleCommand(command)
+	for _, p := range patterns {
+		switch p.kind {
+		case bashPatternPrefix:
+			if compound || !simple {
+				continue
+			}
+			if prefixWordBoundary(p.value, command) {
+				return true
+			}
+		case bashPatternExact:
+			if compound || !simple {
+				continue
+			}
+			if p.value == command {
+				return true
+			}
+		case bashPatternGlob:
+			// A glob is a convenience form, so — like prefix/exact — it
+			// must not authorise a compound command (`glob:ls *` cannot
+			// approve "ls && rm -rf /"). Operators who genuinely need to
+			// match a compound command must use an explicit regex.
+			if compound || !simple {
+				continue
+			}
+			if p.re != nil && p.re.MatchString(command) {
+				return true
+			}
+		case bashPatternRegex:
+			if p.re != nil && p.re.MatchString(command) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// prefixWordBoundary reports whether command begins with pattern such
+// that the byte immediately after the pattern is a word boundary: end
+// of string or ASCII whitespace. This prevents "git" from matching
+// "gittools" while still matching "git diff HEAD".
+//
+// Matching is case-sensitive for predictability — user-provided
+// patterns are matched verbatim, which is the least surprising choice
+// across macOS (case-insensitive HFS+) and Linux (case-sensitive ext4).
+func prefixWordBoundary(pattern, command string) bool {
+	if pattern == "" {
+		return false
+	}
+	if !strings.HasPrefix(command, pattern) {
+		return false
+	}
+	if len(command) == len(pattern) {
+		return true
+	}
+	next := command[len(pattern)]
+	return next == ' ' || next == '\t' || next == '\n'
+}
+
+type runAllowlistCommandProvider interface {
+	RunAllowlistCommand() string
+}
+
+// runAllowlistGate wraps a RunAllowlist with the mutex it shares with
+// the permission service. The service embeds this so SetRunAllowlist
+// (writer) and the Request path (reader) stay race-free.
+type runAllowlistGate struct {
+	mu       sync.RWMutex
+	compiled RunAllowlist
+}
+
+func (g *runAllowlistGate) load() RunAllowlist {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.compiled
+}
+
+func (g *runAllowlistGate) store(a RunAllowlist) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.compiled = a
+}
+
+// Pattern-matching error sentinels. Kept unexported and wrapped via
+// errBadPattern / errEmptyPatternBody so callers get the offending
+// pattern in the message.
+
+var errEmptyBashPattern = patternError("empty bash allow pattern")
+
+type patternError string
+
+func (e patternError) Error() string { return string(e) }
+
+func errEmptyPatternBody(raw string) error {
+	return patternError("empty pattern body in " + strconv.Quote(raw))
+}
+
+func errBadPattern(raw string, cause error) error {
+	return patternError("invalid pattern " + strconv.Quote(raw) + ": " + cause.Error())
+}

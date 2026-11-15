@@ -1,6 +1,6 @@
 # CI architecture and cutover
 
-`.github/workflows/ci.yml` is the active tiered CI entry point for pull requests targeting `main`, pushes to `main` or the retained shadow branches, and manual dispatch. This branch contains merged `81b3bf63` changes, including `internal/ktavcodec` and the `tools` license checker; there is no blocked merge. No Git writes or workflow runs are part of this documentation update.
+`.github/workflows/ci.yml` is the active tiered CI entry point for pull requests targeting `main`, pushes to `main` or the retained shadow branches, and manual dispatch. This branch contains merged `81b3bf63` changes, including `internal/kit/text/ktavcodec` and the `tools` license checker; there is no blocked merge. No Git writes or workflow runs are part of this documentation update.
 
 ## Active lanes
 

@@ -21,7 +21,7 @@ groups = [
 
 [shards.B]
 groups = [
-  { name = "test: internal/cmd, internal/commands", type = "go", packages = ["internal/cmd", "internal/commands"] },
+  { name = "test: internal/serve/cmd", type = "go", packages = ["internal/serve/cmd"] },
 ]
 
 [shards.C]
@@ -29,18 +29,18 @@ groups = [
   # Prefixes only — tools/mcp and mcp/internal/contextlock are covered by
   # the internal/agent/tools prefix. "internal/agent" itself is NOT here.
   { name = "test: internal/agent subpackages", type = "go", packages = [
-    "internal/agent/agentguard",
-    "internal/agent/cliprovider",
-    "internal/agent/codexprovider",
-    "internal/agent/hyper",
-    "internal/agent/limitwords",
-    "internal/agent/notify",
+    "internal/agent/safety/agentguard",
+    "internal/agent/provider/cliprovider",
+    "internal/agent/provider/codexprovider",
+    "internal/agent/provider/hyper",
+    "internal/agent/safety/limitwords",
+    "internal/agent/safety/notify",
     "internal/agent/prompt",
     "internal/agent/tools",
   ] },
-  { name = "test: internal/shell", type = "go", packages = ["internal/shell"] },
-  { name = "test: internal/jobbatch, cmd/batchlab", type = "go", packages = ["internal/jobbatch", "cmd/batchlab"] },
-  { name = "test: internal/server, internal/session", type = "go", packages = ["internal/server", "internal/session"] },
+  { name = "test: internal/kit/sys/shell", type = "go", packages = ["internal/kit/sys/shell"] },
+  { name = "test: cmd/batchlab", type = "go", packages = ["cmd/batchlab"] },
+  { name = "test: internal/serve/server, internal/session", type = "go", packages = ["internal/serve/server", "internal/session"] },
 ]
 
 # Shard D keeps the former build workflow's named-step diagnosis for the groups that were
@@ -49,9 +49,9 @@ groups = [
 # covered by SOMETHING).
 [shards.D]
 groups = [
-  { name = "test: internal/permission, internal/config, internal/csync", type = "go", packages = ["internal/permission", "internal/config", "internal/csync"] },
-  { name = "test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history", type = "go", packages = ["internal/db", "internal/message", "internal/queue", "internal/pubsub", "internal/history"] },
-  { name = "test: internal/oauth, internal/deploy, internal/update, internal/version", type = "go", packages = ["internal/oauth", "internal/deploy", "internal/update", "internal/version"] },
+  { name = "test: internal/agent/safety/permission, internal/config, internal/kit/sync/csync", type = "go", packages = ["internal/agent/safety/permission", "internal/config", "internal/kit/sync/csync"] },
+  { name = "test: internal/store/db, internal/store/message, internal/kit/sync/pubsub, internal/store/history", type = "go", packages = ["internal/store/db", "internal/store/message", "internal/kit/sync/pubsub", "internal/store/history"] },
+  { name = "test: internal/serve/ops/deploy, internal/serve/ops/update, internal/kit/diag/version", type = "go", packages = ["internal/serve/ops/deploy", "internal/serve/ops/update", "internal/kit/diag/version"] },
   # Dynamic remainder, computed by assign_shards.py. Must stay LAST.
   { name = "test: everything else (computed catch-all)", type = "go", catch_all = true, packages = [] },
 ]
@@ -62,15 +62,15 @@ groups = [
 # and in shards-summary so workflow group changes cannot silently go uncovered.
 [windows_leg]
 "test: internal/app" = "A/test: internal/app"
-"test: internal/server, internal/session" = "C/test: internal/server, internal/session"
+"test: internal/serve/server, internal/session" = "C/test: internal/serve/server, internal/session"
 "test: sdk" = "A/test: sdk"
-"test: internal/cmd, internal/commands" = "B/test: internal/cmd, internal/commands"
+"test: internal/serve/cmd" = "B/test: internal/serve/cmd"
 "test: internal/agent subpackages" = "C/test: internal/agent subpackages"
-"test: internal/shell" = "C/test: internal/shell"
-"test: internal/jobbatch, cmd/batchlab" = "C/test: internal/jobbatch, cmd/batchlab"
-"test: internal/permission, internal/config, internal/csync" = "D/test: internal/permission, internal/config, internal/csync"
-"test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history" = "D/test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history"
-"test: internal/oauth, internal/deploy, internal/update, internal/version" = "D/test: internal/oauth, internal/deploy, internal/update, internal/version"
+"test: internal/kit/sys/shell" = "C/test: internal/kit/sys/shell"
+"test: cmd/batchlab" = "C/test: cmd/batchlab"
+"test: internal/agent/safety/permission, internal/config, internal/kit/sync/csync" = "D/test: internal/agent/safety/permission, internal/config, internal/kit/sync/csync"
+"test: internal/store/db, internal/store/message, internal/kit/sync/pubsub, internal/store/history" = "D/test: internal/store/db, internal/store/message, internal/kit/sync/pubsub, internal/store/history"
+"test: internal/serve/ops/deploy, internal/serve/ops/update, internal/kit/diag/version" = "D/test: internal/serve/ops/deploy, internal/serve/ops/update, internal/kit/diag/version"
 "test: everything else (computed catch-all)" = "D/test: everything else (computed catch-all)"
 "go mod tidy produces no diff" = "A/go mod tidy produces no diff"
 "test: npm wrapper cache logic" = "A/test: npm wrapper cache logic"

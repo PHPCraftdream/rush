@@ -14,8 +14,8 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent/codexprovider"
-	"github.com/PHPCraftdream/rush/internal/oauth"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
+	"github.com/PHPCraftdream/rush/internal/config/oauth"
 	"github.com/stretchr/testify/require"
 )
 

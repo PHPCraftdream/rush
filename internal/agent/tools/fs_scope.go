@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/filepathext"
-	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filepathext"
 )
 
 // resolveScopedPath resolves a raw (absolute or workingDir-relative) path

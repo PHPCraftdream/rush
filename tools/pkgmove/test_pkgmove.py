@@ -318,6 +318,79 @@ class PkgmoveTest(unittest.TestCase):
         self.assertEqual(moves.reverse("core/agent"), "internal/agent")
         self.assertEqual(moves.reverse("core"), None)
 
+    # 10: a block whose FIRST import is unaliased must not be written twice
+    # (the single-import regex used to match the "(" as an alias and emit a
+    # second span over the same range; stale offsets then corrupted the line,
+    # e.g. ".../internal/core/util" + "util").
+    def test_block_first_import_not_double_written(self):
+        f = self.root / "cmd/blockimp.go"
+        f.write_text(
+            "package main\n\n"
+            "import (\n"
+            '\t"example.com/repo/internal/util"\n'
+            '\t"fmt"\n'
+            ")\n\n"
+            "func main() { _ = util.Name(); _ = fmt.Sprint(1) }\n",
+            encoding="utf-8", newline="\n")
+        subprocess.run(["git", "add", "-A"], cwd=str(self.root), check=True,
+                       capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "blockimp"], cwd=str(self.root),
+                       check=True, capture_output=True)
+        self.write_mapping({"internal/util": "internal/core/util"})
+        r = self.cli(self.full(["apply", "--date", "2026-11-15"]))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = f.read_text(encoding="utf-8")
+        self.assertIn('\t"example.com/repo/internal/core/util"\n', out)
+        self.assertNotIn("core/util/util", out)
+        self.assertEqual(out.count("example.com/repo/internal/core/util"), 1)
+
+    # 11: scan_import_specs must report each import of a block exactly once.
+    def test_scan_import_specs_counts_each_once(self):
+        src = (
+            "package main\n\n"
+            "import (\n"
+            '\t"example.com/repo/internal/util"\n'
+            '\t"fmt"\n'
+            ")\n\n"
+            'import "example.com/repo/internal/agent"\n'
+        )
+        paths = [p for _a, p in rewrite.scan_import_specs(src)]
+        self.assertEqual(len(paths), 3, paths)
+        self.assertEqual(sorted(paths), sorted([
+            "example.com/repo/internal/util",
+            "fmt",
+            "example.com/repo/internal/agent",
+        ]))
+
+    # 12: verify must fail when any tracked Go file keeps a module-internal
+    # import that still names an old mapped path or points nowhere.
+    def test_verify_checks_repo_wide_imports(self):
+        self.write_mapping({"internal/util": "internal/core/util"})
+        out = (self.root / "pkgmove_manifest.json").as_posix()
+        self.assertEqual(
+            self.cli(self.full(["manifest", "--out", out, "--date", "2026-11-15"])).returncode, 0)
+        self.assertEqual(
+            self.cli(self.full(["apply", "--manifest", out, "--date", "2026-11-15"])).returncode, 0)
+        r = self.cli(self.full(["verify", "--manifest", out]))
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("verify OK", r.stdout)
+        app = self.root / "cmd/app.go"
+        good = app.read_text(encoding="utf-8")
+        app.write_text(
+            good.replace('"example.com/repo/internal/core/util"',
+                         '"example.com/repo/internal/core/utilx"'),
+            encoding="utf-8", newline="\n")
+        r = self.cli(self.full(["verify", "--manifest", out]))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("does not exist", r.stdout)
+        app.write_text(
+            good.replace('"example.com/repo/internal/core/util"',
+                         '"example.com/repo/internal/util"'),
+            encoding="utf-8", newline="\n")
+        r = self.cli(self.full(["verify", "--manifest", out]))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("old path", r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

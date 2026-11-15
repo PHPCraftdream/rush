@@ -8,7 +8,7 @@ import (
 	"reflect"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/pubsub"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 )
 
 // DisableSingle disables and closes a single MCP client by name.

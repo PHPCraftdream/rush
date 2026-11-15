@@ -1,0 +1,612 @@
+package cmd
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"regexp"
+	"sort"
+	"strings"
+	"text/tabwriter"
+
+	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/config/discover"
+)
+
+type atom struct {
+	Provider     string
+	Model        string
+	DisplayName  string
+	Group        string
+	GroupNote    string
+	Vision       bool
+	EffortSource *cliEffortSource
+
+	// ReasoningLevels is a static, non-CLI-shelled declaration of which
+	// effort levels are meaningful for this atom. It is deliberately a
+	// separate mechanism from EffortSource: EffortSource.Levels() shells out
+	// to a local binary (`claude --help`) to detect what THAT binary
+	// supports, which makes no sense for a remote HTTP provider like Z.AI.
+	// ReasoningLevels is nil for every Claude/local-cli atom (they use
+	// EffortSource instead) and non-nil for Z.AI atoms — see
+	// zaiReasoningLevels below. An atom should set at most one of
+	// EffortSource / ReasoningLevels; Levels() below prefers EffortSource.
+	ReasoningLevels []string
+}
+
+// Levels returns the effort levels this atom actually supports, from
+// whichever of EffortSource (CLI-detected) or ReasoningLevels (static)
+// is populated. Returns nil if the atom supports no effort levels at all.
+func (a atom) Levels() []string {
+	if a.EffortSource != nil {
+		return a.EffortSource.Levels()
+	}
+	return a.ReasoningLevels
+}
+
+// zaiReasoningLevels is GLM-5.2's effort-levels array. Z.AI's API docs
+// (docs.z.ai/api-reference/llm/chat-completion) document a 7-value
+// reasoning_effort enum for GLM-5.2, but this fork's coordinator_providers.go
+// (the `case string(catwalk.InferenceProviderZAI):` branch of
+// getProviderOptions) only ever sends one of THREE wire values for any
+// pre-5.3 Z.AI model: thinking disabled, reasoning_effort="high", or
+// reasoning_effort="max".
+// This array is deliberately restricted to those three real, distinct
+// outcomes ("off", "high", "max") rather than the wider vendor-documented
+// vocabulary — a level this fork can't actually produce on the wire isn't a
+// meaningful thing to let a user select.
+//
+// No atom currently uses this array (GLM-5.2 was dropped as an atom on
+// 2026-08-18 — raw `zai/glm-5.2` still works). It remains as the doc/fallback
+// shape for that and any other older, not-yet-promoted raw Z.AI model.
+// GLM-5.3 and GLM-5.3-Flash moved to zai53ReasoningLevels below, which has a
+// different, incompatible third state ("low" instead of "off" — see that
+// var's comment for why).
+//
+// SYNC WARNING: kept in sync with coordinator.go's switch and with
+// providerEffortDocs in models_efforts.go — all three must describe the
+// same three wire states. If you change coordinator.go's mapping, update
+// both of the other two.
+var zaiReasoningLevels = []string{"off", "high", "max"}
+
+// zai53ReasoningLevels is GLM-5.3 and GLM-5.3-Flash's real effort-levels
+// array. VERIFIED 2026-08-26 against docs.z.ai/guides/llm/glm-5.3 and
+// docs.z.ai/api-reference/llm/chat-completion: starting with GLM-5.3, Z.AI
+// removed the ability to disable reasoning at all —
+//
+//	"GLM-5.3 always operates with reasoning enabled... Disabling reasoning
+//	is no longer supported. If your application currently uses
+//	thinking.type: 'disabled', please change it to 'enabled'."
+//
+// — and the restriction is identical for GLM-5.3-Flash per the same
+// api-reference page ("GLM-5.3 GLM-5.3-FLASH can only be enabled"). Both
+// models instead expose exactly three reasoning_effort values: "low"
+// (Lightweight Reasoning), "high" (Enhanced Reasoning), "max" (Deep
+// Reasoning, the documented default). This is a real UI-visible fact, not
+// just a docs footnote — Z.AI's own coding-tool model selector for
+// GLM-5.3-Flash literally offers Low/High/Max as the reasoning-effort
+// choices, no off/on toggle at all.
+//
+// This replaces an earlier incorrect guess: GLM-5.3-Flash used to carry
+// zaiBooleanThinkingLevels (off/on) on the unverified assumption it followed
+// the "flash" convention of other GLM atoms; that guess was wrong for this
+// specific model family.
+//
+// SYNC WARNING: kept in sync with coordinator_providers.go's Z.AI switch
+// (the GLM-5.3-tier branch) and providerEffortDocs in models_efforts.go —
+// all three must describe the same three wire states for these two models.
+var zai53ReasoningLevels = discover.GLM53ReasoningLevels
+
+// zaiBooleanThinkingLevels is the levels array for every Z.AI (GLM) atom
+// OTHER than the 5.3-tier ones (GLM-5.3, GLM-5.3-Flash — see
+// zai53ReasoningLevels) and the older, no-longer-an-atom GLM-5.2 (see
+// zaiReasoningLevels). Per Z.AI's docs, these models only expose the boolean
+// `thinking: {"type": "enabled"|"disabled"}` toggle — there is no graduated
+// `reasoning_effort` support documented for them at all. "off"/"on" here
+// stand in for that boolean, not for genuine effort gradations; validating
+// against this array mainly serves to reject a graduated level (e.g. "max")
+// that would silently do nothing useful on these models per the docs, while
+// still allowing users to explicitly toggle thinking on/off.
+//
+// coordinator.go's current code still forwards reasoning_effort=high/max to
+// these models too (see the SYNC WARNING above on zaiReasoningLevels) — that
+// runtime behavior is unchanged by this task; this array only affects what
+// `rush models efforts`/parseAtom/validateEffortForModel consider a valid,
+// documented-as-meaningful level for THESE models specifically.
+var zaiBooleanThinkingLevels = []string{"off", "on"}
+
+var atomRegistry = map[string]atom{
+	"opus":   {Provider: "local-cli", Model: "cli-claude-opus-5-5", DisplayName: "Claude Opus 5.5", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
+	"opus46": {Provider: "local-cli", Model: "cli-claude-opus-4-6", DisplayName: "Claude Opus 4.6", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
+	"opus47": {Provider: "local-cli", Model: "cli-claude-opus-4-7", DisplayName: "Claude Opus 4.7", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
+	"opus48": {Provider: "local-cli", Model: "cli-claude-opus-4-8", DisplayName: "Claude Opus 4.8", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
+	// `sonnet`/`haiku`/`fable` pin the top generation, like `opus`: the CLI's
+	// moving aliases lag behind (measured 2026-08-16: `sonnet` -> sonnet-5).
+	"sonnet": {Provider: "local-cli", Model: "cli-claude-sonnet-5-5", DisplayName: "Claude Sonnet 5.5", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
+	"haiku":  {Provider: "local-cli", Model: "cli-claude-haiku-5-5", DisplayName: "Claude Haiku 5.5", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
+	"fable":  {Provider: "local-cli", Model: "cli-claude-fable-5-1", DisplayName: "Claude Fable 5.1", Group: "anthropic", EffortSource: claudeEffortSource},
+	// Pinned Claude 5 entries. `opus5`/`sonnet5` use the CLI's `[1m]`
+	// context-window form (verified 1M vs 200k for the bare id); no alias
+	// reaches Opus 5 at all. The CLI `opus` alias still resolves to 4.8, so
+	// the `opus` atom pins the top generation (5.5) instead of using it.
+	"opus5":   {Provider: "local-cli", Model: "cli-claude-opus-5-1m", DisplayName: "Claude Opus 5 (1M)", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
+	"sonnet5": {Provider: "local-cli", Model: "cli-claude-sonnet-5-1m", DisplayName: "Claude Sonnet 5 (1M)", Group: "anthropic", GroupNote: "via local `claude` CLI", EffortSource: claudeEffortSource},
+	"fable5":  {Provider: "local-cli", Model: "cli-claude-fable-5", DisplayName: "Claude Fable 5", Group: "anthropic", EffortSource: claudeEffortSource},
+	// Model context windows are supplied by runtime provider metadata; atoms no
+	// longer carry copied context-label literals. Runtime values take precedence
+	// and documented facts provide a fallback for unknown/zero catalog values.
+	// GLM-5, GLM-5.1 and GLM-5.2 were dropped as atoms on 2026-08-18 at the
+	// operator's request — glm5_3 is the only GLM-5 generation kept, plus
+	// glm5_turbo. The raw `zai/glm-5.2` syntax still works for anyone who
+	// needs a removed one; only the short code is gone.
+	//
+	// glm5_3 gets zai53ReasoningLevels (low/high/max, no off — see that var's
+	// comment); glm5_turbo below gets zaiBooleanThinkingLevels (off/on
+	// toggle) instead. glm5_3/glm5_3_flash are the only current Z.AI atoms
+	// where the API itself rejects disabling reasoning.
+	//
+	// Atom context follows a positive runtime catalog value first, with the
+	// documented model fact used only as fallback. ReasoningLevels (low/high/max,
+	// no off) IS independently verified — see zai53ReasoningLevels' comment.
+	"glm5_3":     {Provider: "zai", Model: "glm-5.3", DisplayName: "GLM 5.3", Group: "zai", ReasoningLevels: zai53ReasoningLevels},
+	"glm5_turbo": {Provider: "zai", Model: "glm-5-turbo", DisplayName: "GLM 5 turbo", Group: "zai", ReasoningLevels: zaiBooleanThinkingLevels},
+	// VERIFIED (2026-08-26): `rush ping --model zai/glm-5.3-flash` succeeded
+	// (32 in / 97 out tokens, ~5.3s latency) — the model id is real and
+	// reachable. Its documented context facts are the fallback when runtime
+	// catalog metadata is unknown; text/JSON use the same context formatter.
+	// ("text parameters consistent with GLM-5.3, 1M-token context window")
+	// and cross-checked against Z.ai's own launch announcement, OpenRouter,
+	// and vLLM's model recipe — all agree on 1,048,576 tokens (1M); the one
+	// outlier (Artificial Analysis, 400k) is inconsistent with every
+	// first-party and inference-provider source and is treated as their
+	// error, not ours. Z.ai's announcement also describes it as "natively
+	// multimodal" (320B-A18B MoE, MIT license) — hence Vision: true.
+	// ReasoningLevels: VERIFIED 2026-08-26 (corrected from an earlier
+	// unverified "flash follows the boolean-toggle convention" guess) — per
+	// docs.z.ai/guides/llm/glm-5.3-flash and the api-reference page, GLM-5.3
+	// and GLM-5.3-Flash share the identical low/high/max restriction, no
+	// off. See zai53ReasoningLevels' comment for the exact quotes.
+	"glm5_3_flash": {Provider: "zai", Model: "glm-5.3-flash", DisplayName: "GLM 5.3 flash", Group: "zai", Vision: true, ReasoningLevels: zai53ReasoningLevels},
+	// GLM-4.7-FlashX is deliberately NOT an atom. Its model id
+	// ("glm-4.7-flashx") is real — verified by pinging it directly: it
+	// returned "Insufficient balance or no resource package" (an
+	// account-provisioning error z.ai returns for a real but unprovisioned
+	// model), not "Unknown Model, please check the model code." (the
+	// distinct error confirmed for a genuinely invalid id). But since this
+	// account can't actually call it, there's no point offering a short
+	// code for it. Use glm4_7_flash instead.
+	//
+	// GLM-4.5.x (glm-4.5, glm-4.5-air, glm-4.5v) and older are intentionally
+	// not carried as atoms — 4.6 is the oldest generation kept.
+	"glm4_7":       {Provider: "zai", Model: "glm-4.7", DisplayName: "GLM 4.7", Group: "zai", ReasoningLevels: zaiBooleanThinkingLevels},
+	"glm4_7_flash": {Provider: "zai", Model: "glm-4.7-flash", DisplayName: "GLM 4.7 flash", Group: "zai", ReasoningLevels: zaiBooleanThinkingLevels},
+	"glm4_6":       {Provider: "zai", Model: "glm-4.6", DisplayName: "GLM 4.6", Group: "zai", ReasoningLevels: zaiBooleanThinkingLevels},
+	"glm4_6v":      {Provider: "zai", Model: "glm-4.6v", DisplayName: "GLM 4.6v", Group: "zai", Vision: true, ReasoningLevels: zaiBooleanThinkingLevels},
+}
+
+var atomGroupOrder = []string{"anthropic", "zai"}
+
+// atomDisplayOrder pins the row order inside each group's output. Longest-first
+// is still required for the parser (sortedAtomKeysForParse), but a fixed
+// display order keeps the human-readable list predictable (Opus first, then
+// Sonnet, then Haiku; newest GLM first, then descending versions).
+var atomDisplayOrder = map[string][]string{
+	"anthropic": {"opus", "opus48", "opus47", "opus46", "fable", "sonnet", "haiku"},
+	"zai": {
+		"glm5_3", "glm5_3_flash", "glm5_turbo",
+		"glm4_7", "glm4_7_flash",
+		"glm4_6", "glm4_6v",
+	},
+}
+
+// sortedAtomKeys returns atom keys sorted longest-first for use by the parser
+// (so "glm4_7_flash" wins over "glm4_7" as a prefix). NOT used for display order.
+func sortedAtomKeys() []string {
+	keys := make([]string, 0, len(atomRegistry))
+	for k := range atomRegistry {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if len(keys[i]) != len(keys[j]) {
+			return len(keys[i]) > len(keys[j])
+		}
+		return keys[i] < keys[j]
+	})
+	return keys
+}
+
+// atomsByGroup returns the display order for a group (atomDisplayOrder),
+// falling back to longest-first sort for any keys missing from the explicit
+// list (defensive — keeps newly-added atoms visible without crash).
+func atomsByGroup(group string) []string {
+	want := atomDisplayOrder[group]
+	seen := map[string]bool{}
+	var out []string
+	for _, k := range want {
+		if _, ok := atomRegistry[k]; ok && atomRegistry[k].Group == group {
+			out = append(out, k)
+			seen[k] = true
+		}
+	}
+	// Catch-all for any atoms not yet listed in atomDisplayOrder.
+	for _, k := range sortedAtomKeys() {
+		if atomRegistry[k].Group == group && !seen[k] {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+func enabledAtomKeys(cfg *config.Config) []string {
+	enabled := map[string]bool{}
+	for _, p := range cfg.EnabledProviders() {
+		enabled[p.ID] = true
+	}
+	var keys []string
+	for _, k := range sortedAtomKeys() {
+		a := atomRegistry[k]
+		if enabled[a.Provider] {
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
+func enabledGroupAtomKeys(cfg *config.Config, group string) []string {
+	enabled := map[string]bool{}
+	for _, p := range cfg.EnabledProviders() {
+		enabled[p.ID] = true
+	}
+	var keys []string
+	for _, k := range atomsByGroup(group) {
+		a := atomRegistry[k]
+		if enabled[a.Provider] {
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
+func formatAtomLine(w io.Writer, key string, a atom, ctx string) {
+	if a.EffortSource != nil {
+		levels := a.EffortSource.Levels()
+		names := make([]string, len(levels))
+		for i, l := range levels {
+			names[i] = key + "-" + l
+		}
+		var suffix string
+		if a.Vision {
+			suffix = ", vision"
+		}
+		fmt.Fprintf(w, "    %s\t%s\t(%s ctx%s)\n", strings.Join(names, ", "), a.DisplayName, ctx, suffix)
+	} else {
+		var suffix string
+		if a.Vision {
+			suffix = ", vision"
+		}
+		fmt.Fprintf(w, "    %s\t%s\t(%s ctx%s)\n", key, a.DisplayName, ctx, suffix)
+	}
+}
+
+func renderAtomsBlock(cfg *config.Config) string {
+	var b strings.Builder
+	b.WriteString("ATOMS (combine as `rush models use <smart> <fast>`):\n\n")
+	for _, group := range atomGroupOrder {
+		keys := enabledGroupAtomKeys(cfg, group)
+		if len(keys) == 0 {
+			continue
+		}
+		label := titleCase(group)
+		b.WriteString("  " + label + ":\n")
+		note := ""
+		for _, k := range keys {
+			a := atomRegistry[k]
+			if a.GroupNote != "" {
+				note = a.GroupNote
+				break
+			}
+		}
+		if note != "" {
+			b.WriteString("    " + note + "\n")
+		}
+		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+		for _, k := range keys {
+			formatAtomLine(tw, k, atomRegistry[k], atomCtx(cfg, atomRegistry[k]))
+		}
+		tw.Flush()
+		b.WriteString("\n")
+	}
+	b.WriteString(renderShortCodesBlock())
+	b.WriteString("EXAMPLES:\n")
+	b.WriteString("  rush models use o3x h1l       # Opus 4.7 xhigh + Haiku 4.5 low\n")
+	b.WriteString("  rush models use s2h h1l       # Sonnet 4.6 high + Haiku 4.5 low\n")
+	b.WriteString("  rush models use opus-high sonnet-low\n")
+	b.WriteString("  rush models use glm5_3 glm5_turbo\n")
+	b.WriteString("  rush models use ox glm5_turbo    # mixed\n")
+	return b.String()
+}
+
+func renderAtomsBlockFallback() string {
+	var b strings.Builder
+	b.WriteString("ATOMS (combine as `rush models use <smart> <fast>`):\n\n")
+	for _, group := range atomGroupOrder {
+		keys := atomsByGroup(group)
+		if len(keys) == 0 {
+			continue
+		}
+		label := titleCase(group)
+		b.WriteString("  " + label + ":\n")
+		note := ""
+		for _, k := range keys {
+			a := atomRegistry[k]
+			if a.GroupNote != "" {
+				note = a.GroupNote
+				break
+			}
+		}
+		if note != "" {
+			b.WriteString("    " + note + "\n")
+		}
+		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+		for _, k := range keys {
+			formatAtomLine(tw, k, atomRegistry[k], atomCtx(nil, atomRegistry[k]))
+		}
+		tw.Flush()
+		b.WriteString("\n")
+	}
+	b.WriteString(renderShortCodesBlock())
+	b.WriteString("EXAMPLES:\n")
+	b.WriteString("  rush models use o3x h1l\n")
+	b.WriteString("  rush models use s2h h1l\n")
+	b.WriteString("  rush models use glm5_3 glm5_turbo\n")
+	return b.String()
+}
+
+func titleCase(s string) string {
+	if s == "" {
+		return s
+	}
+	r := []rune(s)
+	r[0] = []rune(strings.ToUpper(string(r[0])))[0]
+	return string(r)
+}
+
+// renderShortCodesBlock returns a formatted table of the short-code aliases.
+func renderShortCodesBlock() string {
+	var b strings.Builder
+	b.WriteString("SHORT CODES (generated model+effort, e.g. `rush models use o3x h1l`):\n\n")
+	b.WriteString("  Claude: family-slot-effort (ox top, o1x previous); Codex: effort-family-slot (hs top, hs1 previous).\n")
+	b.WriteString("  Top codes (no digit) follow the newest cah catalog entry.\n")
+	for _, note := range cahNotes {
+		b.WriteString("  " + note + "\n")
+	}
+	b.WriteString("\n")
+	b.WriteString("  Code     Model               CTX   Effort\n")
+	b.WriteString("  -------  ------------------  ----  ------\n")
+	keys := make([]string, 0, len(cahNameMap))
+	for code := range cahNameMap {
+		keys = append(keys, code)
+	}
+	sort.Strings(keys)
+	tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+	for _, code := range keys {
+		r := cahNameMap[code]
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", code, r.Model, humanCtx(r.Context), r.Effort)
+	}
+	tw.Flush()
+	fmt.Fprintf(&b, "\n  generated from cc-arch-hands %s\n", cahVersion)
+	b.WriteString("\n")
+	return b.String()
+}
+
+// parseShortCode resolves a short code via the generated cah table only.
+// Returns ok=false for anything not in cahNameMap.
+func parseShortCode(name string) (config.SelectedModel, bool) {
+	if r, ok := cahNameMap[name]; ok {
+		return config.SelectedModel{Provider: r.Provider, Model: r.Slug, ReasoningEffort: r.Effort}, true
+	}
+	return config.SelectedModel{}, false
+}
+
+// parseAtom takes a string like "o3x", "opus-high", "glm5_turbo", or, as
+// fallback, "openai/gpt-5@high" / "zai/glm-5.3". Returns a SelectedModel
+// ready for UpdatePreferredModel.
+var apparentCAHCode = regexp.MustCompile(`^(?:[oshf][0-9]*[lmhx]+|(?:xx|[lmhxu])[slta][0-9]*)$`)
+
+// removedLegacyCode matches the removed hand-written version codes (o48x, s45h, ...).
+var removedLegacyCode = regexp.MustCompile(`^[osh]4[5-8](?:[lmhx]|xx)$`)
+
+func parseAtom(name string) (config.SelectedModel, error) {
+	// Try short-code notation first (o3x, h1l, oh, sl, …).
+	if sm, ok := parseShortCode(name); ok {
+		return sm, nil
+	}
+	if removedLegacyCode.MatchString(name) {
+		return config.SelectedModel{}, fmt.Errorf("%q is not a short code (legacy version codes were removed; codes now come from cc-arch-hands — see `rush models list`)", name)
+	}
+	if apparentCAHCode.MatchString(name) {
+		return config.SelectedModel{}, fmt.Errorf("%q is an invalid short code - see `rush models list`", name)
+	}
+	if strings.Contains(name, "/") {
+		modelPart, effort := splitModelEffort(name)
+		return config.SelectedModel{Provider: "", Model: modelPart, ReasoningEffort: effort}, fmt.Errorf("raw provider/model not yet resolved: %s", name)
+	}
+
+	var matchedKey string
+	for _, k := range sortedAtomKeys() {
+		if strings.HasPrefix(name, k) {
+			matchedKey = k
+			break
+		}
+	}
+	if matchedKey == "" {
+		return config.SelectedModel{}, fmt.Errorf("%q is not a recognized atom — see `rush models list`", name)
+	}
+
+	a := atomRegistry[matchedKey]
+	rem := name[len(matchedKey):]
+
+	// EffortSource-backed atoms (Claude/local-cli) REQUIRE an explicit level
+	// suffix — there is no meaningful "unset" effort for those, the CLI
+	// always sends one. Z.AI/other ReasoningLevels-backed atoms make the
+	// suffix OPTIONAL: omitting it means "let the provider default apply"
+	// (see the coordinator's unset-defaults-to-high behavior for Z.AI).
+	if a.EffortSource != nil && rem == "" {
+		return config.SelectedModel{}, fmt.Errorf("%s requires explicit level (e.g. %s-low, %s-high) — see `rush models list`", matchedKey, matchedKey, matchedKey)
+	}
+
+	if rem == "" {
+		return config.SelectedModel{
+			Provider: a.Provider,
+			Model:    a.Model,
+		}, nil
+	}
+
+	if !strings.HasPrefix(rem, "-") {
+		return config.SelectedModel{}, fmt.Errorf("%q is not a recognized atom — see `rush models list`", name)
+	}
+	level := rem[1:]
+
+	levels := a.Levels()
+	if levels == nil {
+		return config.SelectedModel{}, fmt.Errorf("%s does not support effort levels (provider %s) — unexpected suffix %q", matchedKey, a.Provider, rem)
+	}
+
+	valid := false
+	for _, l := range levels {
+		if l == level {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return config.SelectedModel{}, fmt.Errorf("%q is not a valid level for %s (valid: %s)", level, matchedKey, strings.Join(levels, "|"))
+	}
+	return config.SelectedModel{
+		Provider:        a.Provider,
+		Model:           a.Model,
+		ReasoningEffort: level,
+	}, nil
+}
+
+// parseAtomOrRaw tries the atom registry first, then falls back to raw
+// provider/model resolution via the app's ResolveModel. known is false only
+// for the raw-form, unverified-passthrough case (see findModels' doc
+// comment in internal/app/provider.go) — atoms are always known (curated,
+// hand-verified), so every other path returns true.
+func parseAtomOrRaw(name string, resolveFunc func(string) (string, string, bool, error)) (config.SelectedModel, bool, error) {
+	if strings.Contains(name, "/") {
+		modelPart, effort := splitModelEffort(name)
+		provider, modelID, known, err := resolveFunc(modelPart)
+		if err != nil {
+			return config.SelectedModel{}, false, err
+		}
+		if err := validateEffortForModel(provider, modelID, effort); err != nil {
+			return config.SelectedModel{}, false, err
+		}
+		return config.SelectedModel{
+			Provider:        provider,
+			Model:           modelID,
+			ReasoningEffort: effort,
+		}, known, nil
+	}
+
+	sm, err := parseAtom(name)
+	if err == nil {
+		return sm, true, nil
+	}
+
+	if !strings.Contains(err.Error(), "not a recognized atom") {
+		return config.SelectedModel{}, false, err
+	}
+
+	modelPart, effort := splitModelEffort(name)
+	provider, modelID, known, rerr := resolveFunc(modelPart)
+	if rerr != nil {
+		return config.SelectedModel{}, false, fmt.Errorf("%q is not a known atom or provider/model — see `rush models list`", name)
+	}
+	if err := validateEffortForModel(provider, modelID, effort); err != nil {
+		return config.SelectedModel{}, false, err
+	}
+	return config.SelectedModel{
+		Provider:        provider,
+		Model:           modelID,
+		ReasoningEffort: effort,
+	}, known, nil
+}
+
+// validateEffortForModel checks a raw "@effort" suffix (from
+// splitModelEffort) against the target (provider, model)'s real levels
+// array, when one exists in the atom registry. This closes the exact gap
+// `rush models efforts`'s help text warns about: previously, splitModelEffort
+// was a blind string split with NO validation anywhere, so a typo like
+// "zai/glm-5.3@hihg" was silently accepted and either ignored or mismapped
+// by the wire-level provider code. If (provider, model) isn't a known atom
+// at all (e.g. a raw openai/gpt-5), there is no levels array to validate
+// against, so any effort string is still accepted — that's an existing,
+// intentional escape hatch for models outside the atom registry.
+func validateEffortForModel(provider, model, effort string) error {
+	if effort == "" {
+		return nil
+	}
+	if provider == "local-cli" {
+		for _, spec := range cliprovider.All {
+			if spec.ModelID != model || len(spec.EffortLevels) == 0 {
+				continue
+			}
+			for _, level := range spec.EffortLevels {
+				if effort == level {
+					return nil
+				}
+			}
+			return fmt.Errorf("%q is not a valid effort level for %s/%s (valid: %s)", effort, provider, model, strings.Join(spec.EffortLevels, "|"))
+		}
+	}
+	key := lookupAtomForModel(config.SelectedModel{Provider: provider, Model: model})
+	if key == "" {
+		return nil
+	}
+	levels := atomRegistry[key].Levels()
+	if levels == nil {
+		return nil
+	}
+	for _, l := range levels {
+		if l == effort {
+			return nil
+		}
+	}
+	return fmt.Errorf("%q is not a valid effort level for %s/%s (valid: %s) — see `rush models efforts %s`", effort, provider, model, strings.Join(levels, "|"), key)
+}
+
+func renderAtomsBlockToStdout() {
+	// Best-effort: try to load config for filtering, fall back to full list.
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprint(os.Stdout, renderAtomsBlockFallback())
+		return
+	}
+	cfg, err := loadConfigForList(cwd)
+	if err != nil || cfg == nil {
+		fmt.Fprint(os.Stdout, renderAtomsBlockFallback())
+		return
+	}
+	fmt.Fprint(os.Stdout, renderAtomsBlock(cfg))
+}
+
+func loadConfigForList(cwd string) (*config.Config, error) {
+	store, err := config.Init(cwd, "", false, config.WithCLIModels(cliprovider.AvailableCLIModels))
+	if err != nil {
+		return nil, err
+	}
+	return store.Config(), nil
+}
+
+func lookupAtomForModel(sm config.SelectedModel) string {
+	for k, a := range atomRegistry {
+		if a.Provider == sm.Provider && a.Model == sm.Model {
+			return k
+		}
+	}
+	return ""
+}

@@ -56,14 +56,14 @@ continue to use their concise redacted text. Successful commits stay quiet.
 
 ## Regression map and intended revert checks
 
-- `internal/jobbatch/commit_fault_test.go`: manual-clock publication barrier
+- `internal/session/jobbatch/commit_fault_test.go`: manual-clock publication barrier
   proves cancellation does not depend on committer rescheduling; late nil
   and error results cannot replace the first metadata or cause. Removing
   claim-time cancellation must fail the publication-barrier assertion;
   adopting late progress or causes must fail the immutability assertions.
   Returned cause identity and panic redaction are
   checked separately.
-- `internal/jobbatch/runner_commit_faultgate_test.go`: an immediate watchdog
+- `internal/session/jobbatch/runner_commit_faultgate_test.go`: an immediate watchdog
   never enters the hook and records `waiting_hook`. Existing arbitration
   tests retain the success-before-timeout and stale-callback oracles.
 - `internal/session/batch_commit_timeout_diagnostics_test.go`: a real held

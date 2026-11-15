@@ -5,7 +5,7 @@ package tools
 import (
 	"os/exec"
 
-	"github.com/PHPCraftdream/rush/internal/procinfo"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 )
 
 // configureRunCommandProcess makes ctx cancellation (job_kill and the

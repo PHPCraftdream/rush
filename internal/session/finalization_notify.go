@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // ErrFinalizationBatchResultReadMissing is returned when a gated batch-result

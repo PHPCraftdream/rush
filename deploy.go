@@ -60,7 +60,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/deploy"
+	"github.com/PHPCraftdream/rush/internal/serve/ops/deploy"
 )
 
 // ts returns the current local time as an "HH:MM:SS" prefix so every line

@@ -28,9 +28,9 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/csync"
-	"github.com/PHPCraftdream/rush/internal/oauth"
-	"github.com/PHPCraftdream/rush/internal/oauth/copilot"
+	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/oauth/copilot"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 )
 
 const (

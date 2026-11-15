@@ -11,7 +11,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 // BatchHistorySnapshot is the read-only state of one root incarnation:

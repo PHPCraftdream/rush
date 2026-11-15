@@ -8,7 +8,7 @@
 package session
 
 import (
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // Session-notice kind vocabulary (doc sec.2/3.4): shared between the

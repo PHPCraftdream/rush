@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/hooks"
-	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
+	"github.com/PHPCraftdream/rush/internal/agent/tools/hooks"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 

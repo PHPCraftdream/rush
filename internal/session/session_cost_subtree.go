@@ -8,7 +8,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/PHPCraftdream/rush/internal/pubsub"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 )
 
 // SubtreeBudget — see Service.SubtreeBudget. Budget = spent - base, clamped

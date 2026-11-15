@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/fsext"
-	"github.com/PHPCraftdream/rush/internal/ktavcodec"
-	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 	"github.com/stretchr/testify/require"
 )
 

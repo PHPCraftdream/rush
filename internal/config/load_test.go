@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/testguard"
+	"github.com/PHPCraftdream/rush/internal/kit/dev/testguard"
 )
 
 func TestGlobalPathResolutionRequiresTestguard(t *testing.T) {

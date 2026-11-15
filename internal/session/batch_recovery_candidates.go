@@ -29,7 +29,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 const (

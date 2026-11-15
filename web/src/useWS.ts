@@ -163,7 +163,7 @@ const onHashChange = (): void => {
  * Keeps busy flags only for sessions that still have queued work (task #726).
  *
  * The server appends an authoritative agent_busy frame for every session to
- * each sessions_list reply (handleListSessions in internal/server/handlers_sessions.go),
+ * each sessions_list reply (handleListSessions in internal/serve/server/handlers_sessions.go),
  * so the list refresh re-marks sessions that are truly still running. But a
  * disconnect can swallow the final agent_busy=false of a turn that ended while
  * offline; blindly clearing left such a session queued messages with no trigger

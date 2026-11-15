@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 // finalizationSettleDebtPendingSQL is MarkSessionNoticesReactedForOwner

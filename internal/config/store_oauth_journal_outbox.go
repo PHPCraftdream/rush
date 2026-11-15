@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/csync"
-	"github.com/PHPCraftdream/rush/internal/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 )
 
 type oauthOutboxKey struct {

@@ -16,7 +16,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
 // stopGateExecutor wraps an Executor; every Start's Execution is wrapped so

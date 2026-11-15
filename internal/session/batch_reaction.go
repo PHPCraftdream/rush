@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // BatchDebtNodeRef fences a delivery, not a provider-reusable tool call.

@@ -6,7 +6,7 @@ import { sessionsCarburetor } from "../state/sessions";
  *
  * The sub-agent registration and transcript keyed by the id itself, plus those
  * of every sub-agent session parented by it: the server cascades sub-session
- * deletion with the parent (internal/server/handlers_sessions.go
+ * deletion with the parent (internal/serve/server/handlers_sessions.go
  * handleDeleteSession), so a removed parent strands its whole branch. Also the
  * per-session delete tombstones and whichever message-block breaks can still be
  * attributed. Called from removeSession (live deletion) and the sessions_list

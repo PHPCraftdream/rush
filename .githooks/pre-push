@@ -21,9 +21,9 @@
 # pinned version (downloaded once into the module cache, then reused).
 #
 # This session root-caused three genuine Windows-only test races (see git
-# log for internal/agent/cliprovider/provider_test.go,
+# log for internal/agent/provider/cliprovider/provider_test.go,
 # internal/agent/tools/mcp/process_windows_test.go, and
-# internal/cmd/models_use_test.go) — each fixed AT THE SPECIFIC TEST, not by
+# internal/serve/cmd/models_use_test.go) — each fixed AT THE SPECIFIC TEST, not by
 # slowing the whole suite down. (An earlier version of this hook also capped
 # -p/-parallel globally as extra defense-in-depth against those races; once
 # the races themselves were fixed, that cap was removed as unnecessary
@@ -173,7 +173,7 @@ if [ -n "$gcl" ]; then
 		GOOS="$goos" "$gcl" run || fail "lint failed for GOOS=$goos (CI lints all three)"
 	done
 
-	# One GOARCH pass, and it is not paranoia: internal/db picks its SQLite
+	# One GOARCH pass, and it is not paranoia: internal/store/db picks its SQLite
 	# driver on a GOOS×GOARCH tag pair (connect_modernc.go lists the
 	# supported pairs, connect_ncruces.go is the negation). Every host and
 	# every CI runner lands on the modernc side, so the ncruces file is
@@ -181,7 +181,7 @@ if [ -n "$gcl" ]; then
 	# windows. linux/mips64 is outside the modernc list, so this pass is
 	# the only thing that ever looks at it.
 	step "golangci-lint run — GOOS=linux GOARCH=mips64 (the SQLite driver nothing else covers)"
-	GOOS=linux GOARCH=mips64 "$gcl" run ./internal/db/... \
+	GOOS=linux GOARCH=mips64 "$gcl" run ./internal/store/db/... \
 		|| fail "lint failed for the ncruces SQLite driver branch"
 else
 	cross_goos_skipped="yes"
@@ -214,8 +214,8 @@ fi
 # uses em-dashes freely, so the only thing keeping it from recurring is this
 # check. Bytes > 0x7F only -- deliberately cruder than a Unicode-aware test,
 # because the failure is about bytes.
-step "internal/db/sql is ASCII-only (sqlc miscounts spans around multi-byte comments)"
-if offenders="$(grep -lP "[^[:ascii:]]" internal/db/sql/*.sql 2>/dev/null)" && [ -n "$offenders" ]; then
+step "internal/store/db/sql is ASCII-only (sqlc miscounts spans around multi-byte comments)"
+if offenders="$(grep -lP "[^[:ascii:]]" internal/store/db/sql/*.sql 2>/dev/null)" && [ -n "$offenders" ]; then
 	printf '[31mnon-ASCII bytes in:[0m
 %s
 ' "$offenders"
@@ -236,7 +236,7 @@ step "no stale large/small model-slot spelling (renamed to smart/fast)"
 bash .githooks/check_stale_model_slots.sh || fail "stale large/small model-slot text found -- see output above"
 
 # db.Connect/db.ConnectRead pairing guard for test files.
-# internal/db/connect.go's Connect/ConnectRead hand out handles from a
+# internal/store/db/connect.go's Connect/ConnectRead hand out handles from a
 # ref-counted pool whose entries are only torn down by db.Release; a
 # test that "cleans up" with conn.Close() on the raw *sql.DB bypasses
 # the refCount and leaks the pool entry plus its database/sql
@@ -424,7 +424,7 @@ windows)
 *)
 	step "process-group and lock-fence suites (no -short)"
 	run_capped "$RUSH_PROCESS_MEMORY" "$RUSH_PROCESS_TIMEOUT" go test -p 2 -failfast -run 'ChildGroup|Registry|WriteChildGroupFile|VerifyGroupStillPlausible|Sweep|ProbeThenKillHolder|AcquireSessionLockForReset|ForceKillHolder|ForceStillKillsLiveHolder' \
-		./internal/session/ ./internal/cmd/ || fail "process-group/lock-fence suites failed"
+		./internal/session/ ./internal/serve/cmd/ || fail "process-group/lock-fence suites failed"
 	;;
 esac
 

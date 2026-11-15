@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/discover"
+	"github.com/PHPCraftdream/rush/internal/config/discover"
 )
 
 const modelCatalogTTL = 7 * 24 * time.Hour

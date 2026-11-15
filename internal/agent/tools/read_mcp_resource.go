@@ -9,10 +9,10 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/filepathext"
-	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filepathext"
 )
 
 type ReadMCPResourceParams struct {

@@ -8,7 +8,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/discover"
+	"github.com/PHPCraftdream/rush/internal/config/discover"
 	"github.com/stretchr/testify/require"
 )
 

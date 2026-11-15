@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/heartbeat"
-	"github.com/PHPCraftdream/rush/internal/testguard"
+	"github.com/PHPCraftdream/rush/internal/kit/dev/testguard"
+	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 )
 
 // Tests here reach config.Init/app.New; without this they read, migrate and

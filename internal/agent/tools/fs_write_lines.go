@@ -20,12 +20,12 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/diff"
-	"github.com/PHPCraftdream/rush/internal/filepathext"
-	"github.com/PHPCraftdream/rush/internal/filetracker"
-	"github.com/PHPCraftdream/rush/internal/fsext"
-	"github.com/PHPCraftdream/rush/internal/history"
-	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filepathext"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
+	"github.com/PHPCraftdream/rush/internal/kit/text/diff"
+	"github.com/PHPCraftdream/rush/internal/store/filetracker"
+	"github.com/PHPCraftdream/rush/internal/store/history"
 )
 
 //go:embed fs_write_lines.md

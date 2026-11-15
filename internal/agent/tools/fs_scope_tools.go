@@ -3,7 +3,7 @@ package tools
 import (
 	"slices"
 
-	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 )
 
 // FolderScopeToolOperations is the single operation-to-tool mapping used by

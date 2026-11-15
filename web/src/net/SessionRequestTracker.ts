@@ -24,7 +24,7 @@ interface ISessionsLiveRecord {
  *    non-FIFO worker pool and reads off a separate read-only pool, so a read
  *    snapshot can be pinned before a delete commits). Every message_deleted
  *    push and messages_list reply carries a monotonic delete-GENERATION
- *    counter (see internal/message/content.go's Message.DeleteGeneration); a
+ *    counter (see internal/store/message/content.go's Message.DeleteGeneration); a
  *    snapshot whose watermark is LOWER than the recorded mark is provably older
  *    than that delete. Strictly additive: servers without the field fall back
  *    to the epoch heuristic, since the mark then never advances past 0.

@@ -93,7 +93,7 @@ jobs:
           # green release into a red one for no functional reason.
 
       - name: Refresh model shortcodes
-        run: go run ./internal/tools/cahsync -mode refresh -strict
+        run: go run ./internal/kit/dev/cahsync -mode refresh -strict
 
       - name: Build the embedded web UI
         working-directory: web
@@ -116,7 +116,7 @@ jobs:
           BUILD_COMMIT="$(git rev-parse HEAD)"
           BUILD_COMMIT="${BUILD_COMMIT:0:8}"
           BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          LDFLAGS="-s -w -X github.com/PHPCraftdream/rush/internal/version.Version=${GO_VERSION_STRING} -X github.com/PHPCraftdream/rush/internal/version.Commit=${BUILD_COMMIT} -X github.com/PHPCraftdream/rush/internal/version.BuildID=${BUILD_COMMIT} -X github.com/PHPCraftdream/rush/internal/version.BuildTime=${BUILD_TIME}"
+          LDFLAGS="-s -w -X github.com/PHPCraftdream/rush/internal/kit/diag/version.Version=${GO_VERSION_STRING} -X github.com/PHPCraftdream/rush/internal/kit/diag/version.Commit=${BUILD_COMMIT} -X github.com/PHPCraftdream/rush/internal/kit/diag/version.BuildID=${BUILD_COMMIT} -X github.com/PHPCraftdream/rush/internal/kit/diag/version.BuildTime=${BUILD_TIME}"
           # target triples: <node_os> <node_arch> <GOOS> <GOARCH> <bin>
           TARGETS="
           linux x64   linux   amd64 rush

@@ -15,7 +15,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/log"
+	"github.com/PHPCraftdream/rush/internal/kit/diag/log"
 	"github.com/stretchr/testify/require"
 )
 

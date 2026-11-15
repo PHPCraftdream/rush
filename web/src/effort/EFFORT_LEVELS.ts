@@ -7,7 +7,7 @@
  * `gemini --effort high` and `qwen --effort high` fail with "Unknown argument:
  * effort", `codex exec --effort high` with "unexpected argument '--effort'".
  * The backend drops an effort a CLI cannot accept
- * (internal/agent/cliprovider/effort.go), but the UI must not offer it in the
+ * (internal/agent/provider/cliprovider/effort.go), but the UI must not offer it in the
  * first place; a value written at SYSTEM scope in the Default-models modal is
  * inherited by every future session in every workspace.
  */

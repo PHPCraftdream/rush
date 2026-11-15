@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
 // ownerForRoot returns the owning session recorded for one root by the

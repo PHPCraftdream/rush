@@ -1,0 +1,898 @@
+// Package agentguard refuses bash invocations that would launch another AI
+// coding agent from inside a rush sub-agent's tool surface. This closes
+// the silent-recursion path where:
+//
+//	parent agent → rush run → sub-agent → bash → claude/codex/gemini → …
+//
+// — every link adds latency, multiplies token spend, and routinely
+// times out before the deepest agent ever returns a useful answer.
+// Architecturally a sub-agent should EXECUTE work, not re-delegate it.
+// If the operator genuinely needs nested agents they invoke them directly
+// in their own shell, where there is a human to confirm and watch costs.
+//
+// Fork patch: batch 16 — added after we burned an evening watching three
+// nested rush invocations bake each other while doing zero real work.
+package agentguard
+
+import (
+	"fmt"
+	"runtime"
+	"strings"
+
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+)
+
+// DeniedError is returned by Check when a command is blocked. It is
+// distinguished by type so callers can render a tool-failure result
+// instead of treating it as an internal error.
+type DeniedError struct {
+	Tool    string // the matched agent name as the user typed it
+	Reason  string // human-readable explanation
+	Snippet string // the offending token / sub-command for forensic context
+}
+
+func (e *DeniedError) Error() string {
+	if e.Snippet != "" {
+		return fmt.Sprintf("agentguard: refused invocation of %q — %s (in: %s)", e.Tool, e.Reason, e.Snippet)
+	}
+	return fmt.Sprintf("agentguard: refused invocation of %q — %s", e.Tool, e.Reason)
+}
+
+// deniedAgents is the canonical denylist of AI-agent CLI binaries.
+// Match is case-insensitive and considers .exe/.cmd/.bat/.ps1 suffixes.
+// Names that overlap with common shell utilities (e.g. "continue" is also
+// a shell keyword) — we accept the false-positive risk because the typical
+// agent script does not use bare "continue" as a standalone command.
+var deniedAgents = map[string]string{
+	// Tier 1 — proprietary heavyweight
+	"claude":       "Anthropic Claude Code",
+	"codex":        "OpenAI Codex CLI",
+	"gemini":       "Google Gemini CLI",
+	"qwen":         "Alibaba Qwen Code",
+	"qwen-code":    "Alibaba Qwen Code",
+	"cody":         "Sourcegraph Cody CLI",
+	"windsurf":     "Codeium Windsurf CLI",
+	"windsurf-cli": "Codeium Windsurf CLI",
+
+	// Tier 2 — open-source coding agents
+	"opencode":     "opencode-ai",
+	"aider":        "aider chat",
+	"cline":        "Cline (Claude Dev)",
+	"cursor-agent": "Cursor Agent CLI",
+	"continue":     "Continue.dev CLI",
+	"amp":          "Sourcegraph Amp",
+	"amp-code":     "Sourcegraph Amp",
+	"goose":        "Block Goose",
+	"mentat":       "Mentat agent",
+	"forge":        "Forge agent",
+	"tabby":        "Tabby agent",
+
+	// Tier 3 — us. Blocks any recursive rush/crush invocation regardless of flags.
+	"rush":  "this very binary — recursive invocation is never the right answer",
+	"crush": "legacy pre-rename binary name for this very binary",
+}
+
+// deniedNpmPackages lists packages a sub-agent might launch through npx /
+// pnpm dlx / yarn dlx / bunx without the agent binary being on PATH.
+var deniedNpmPackages = map[string]string{
+	"@anthropic-ai/claude-code": "Anthropic Claude Code (via npx)",
+	"@openai/codex":             "OpenAI Codex CLI (via npx)",
+	"@google/gemini-cli":        "Google Gemini CLI (via npx)",
+	"@opencode-ai/opencode":     "opencode (via npx)",
+	"@continue/cli":             "Continue.dev (via npx)",
+	"@sourcegraph/amp":          "Sourcegraph Amp (via npx)",
+	"@sourcegraph/cody":         "Sourcegraph Cody (via npx)",
+	"@cursor-agent/cli":         "Cursor Agent (via npx)",
+	"@windsurf/cli":             "Windsurf (via npx)",
+	"@qwen-ai/qwen-cli":         "Qwen (via npx)",
+}
+
+// deniedPypiPackages: pipx / uvx wrappers.
+var deniedPypiPackages = map[string]string{
+	"aider-chat": "aider (via pipx/uvx)",
+	"aider-cli":  "aider (via pipx/uvx)",
+	"mentat-cli": "mentat (via pipx/uvx)",
+}
+
+// runners we look INTO — these wrap another command we must re-check.
+var packageRunners = map[string]bool{
+	"npx":  true,
+	"pnpm": true, // pnpm dlx X
+	"yarn": true, // yarn dlx X
+	"bunx": true,
+	"bun":  true, // bun x X
+	"pipx": true, // pipx run X
+	"uvx":  true,
+	"uv":   true, // uv tool run X
+}
+
+var shellRunners = map[string]bool{
+	"bash":           true,
+	"sh":             true,
+	"dash":           true,
+	"zsh":            true,
+	"ksh":            true,
+	"fish":           true,
+	"cmd":            true,
+	"cmd.exe":        true,
+	"powershell":     true,
+	"powershell.exe": true,
+	"pwsh":           true,
+	"pwsh.exe":       true,
+	"nu":             true, // nushell
+}
+
+// commandWrappers are commands that take ANOTHER command as their first
+// non-flag argument and execute it. We strip them and re-check what they
+// were going to launch. Without this `start claude` / `Start-Process claude`
+// / `iex 'claude'` would bypass the denylist.
+var commandWrappers = map[string]bool{
+	"start":             true, // cmd: start <cmd> [args]
+	"start-process":     true, // PowerShell cmdlet
+	"start-job":         true, // PowerShell — runs in background but still launches the agent
+	"saps":              true, // PowerShell built-in alias for Start-Process
+	"sajb":              true, // PowerShell built-in alias for Start-Job
+	"invoke-expression": true, // PowerShell: invoke-expression "<string>"
+	"iex":               true, // PowerShell alias for invoke-expression
+	"invoke-command":    true, // PowerShell remote/local exec
+	"icm":               true, // PowerShell alias for invoke-command
+}
+
+// Check inspects a shell command string and returns *DeniedError if it
+// would launch a denied agent. nil means the command is allowed.
+//
+// It splits on ;, &&, ||, | first (so a denied agent buried in a pipeline
+// is still caught), and for each segment walks the tokens. Shell wrappers
+// (bash -c "X") and package runners (npx X) are recursed into one level.
+func Check(command string) error {
+	if command == "" {
+		return nil
+	}
+	for _, segment := range splitChained(command) {
+		if err := checkSegment(segment); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CheckArgs applies the agent recursion policy to already-expanded argv. It
+// is the lossless counterpart to Check for direct-launch tools such as
+// run_command and for runtime shell interception.
+func CheckArgs(args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	return checkArgvCandidates(args, strings.Join(args, " "))
+}
+
+// CommandBlockFunc adapts the agent policy to Rush's runtime shell boundary.
+// Callers use it alongside the canonical hard-deny block funcs so dynamic
+// command heads are checked after expansion and before process creation.
+func CommandBlockFunc() shell.BlockFunc {
+	return func(args []string) bool {
+		return CheckArgs(args) != nil
+	}
+}
+
+func checkArgvCandidates(args []string, snippet string) error {
+	for _, candidate := range shell.CommandCandidatesForPlatform(args, true) {
+		if len(candidate) == 0 || strings.HasPrefix(candidate[0], "\x00") {
+			continue
+		}
+		if err := checkArgvCandidate(candidate, snippet); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkArgvCandidate(args []string, snippet string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	head := canonicalName(args[0])
+	if head == "&" {
+		return checkArgvCandidates(args[1:], snippet)
+	}
+	if reason, ok := deniedAgents[head]; ok {
+		return &DeniedError{
+			Tool:    head,
+			Reason:  "AI agent CLI invocation is blocked by rush's architecture (would recurse / multiply cost). Tool: " + reason,
+			Snippet: snippet,
+		}
+	}
+	if packageRunners[head] {
+		pkg := extractPackageRunnerTarget(head, args[1:])
+		canon := canonicalName(pkg)
+		if reason, ok := deniedNpmPackages[canon]; ok {
+			return &DeniedError{Tool: pkg, Reason: reason + " — blocked", Snippet: snippet}
+		}
+		if reason, ok := deniedPypiPackages[canon]; ok {
+			return &DeniedError{Tool: pkg, Reason: reason + " — blocked", Snippet: snippet}
+		}
+		if reason, ok := deniedAgents[canon]; ok {
+			return &DeniedError{Tool: pkg, Reason: reason + " (via package runner) — blocked", Snippet: snippet}
+		}
+	}
+	if commandWrappers[head] {
+		if inner := extractWrapperInner(args[1:]); inner != "" {
+			return Check(inner)
+		}
+	}
+	return nil
+}
+
+// CheckAll runs every pre-execution command-string guard this package
+// defines, in a fixed order, and returns the first refusal. Today that is
+// Check (AI-agent recursion denylist — all platforms) followed, on
+// Windows, by CheckWindowSafety (start / Start-Process / Start-Job
+// window-poppers — see WindowOpenerError for why the outer process's
+// HideWindow attribute cannot suppress the windows these verbs create).
+//
+// It exists so a tool surface cannot wire only a subset of the guards:
+// both Bash surfaces (internal/agent/tools/bash.go's built-in tool and
+// internal/agent/cliprovider/mcpserver_tools.go's MCP tool) call exactly
+// this one function, and any future tool surface should too — this is
+// the one place that decides the two checks always run together.
+func CheckAll(command string) error {
+	return checkAll(command, runtime.GOOS == "windows")
+}
+
+// checkAll is CheckAll's testable core: isWindows stands in for
+// runtime.GOOS so the gating itself can be exercised on any host.
+func checkAll(command string, isWindows bool) error {
+	if err := Check(command); err != nil {
+		return err
+	}
+	if isWindows {
+		// Explicit nil check, NOT `return CheckWindowSafety(command)`: that
+		// would return a typed-nil *WindowOpenerError inside a non-nil
+		// error interface, making every allowed command look refused.
+		if winErr := CheckWindowSafety(command); winErr != nil {
+			return winErr
+		}
+	}
+	return nil
+}
+
+// splitStringResult holds the result of resolving a command head,
+// including any split-string payloads that need recursive checking.
+type splitStringResult struct {
+	headCanon    string   // canonicalized command name
+	rest         []string // remaining arguments after wrappers
+	splitStrings []string // collected -S/--split-string payloads
+}
+
+// resolveCommandHead strips wrapper utilities and env assignments from a
+// tokenized command, returning the canonicalized head, remaining arguments,
+// and any split-string payloads collected along the way.
+//
+// This is a shared helper used by both checkSegment and
+// checkSegmentWindowSafety to ensure consistent wrapper handling.
+func resolveCommandHead(tokens []string) splitStringResult {
+	if len(tokens) == 0 {
+		return splitStringResult{}
+	}
+
+	// Skip leading env-var assignments (VAR=value VAR2=value cmd ...).
+	i := 0
+	for i < len(tokens) && strings.Contains(tokens[i], "=") && !strings.HasPrefix(tokens[i], "-") {
+		// Heuristic: must look like an identifier=value, not --flag=value
+		if isEnvAssignment(tokens[i]) {
+			i++
+		} else {
+			break
+		}
+	}
+	if i >= len(tokens) {
+		return splitStringResult{}
+	}
+	head := tokens[i]
+	rest := tokens[i+1:]
+	splitStrings := []string{}
+
+	// Strip leading command-wrapper utilities (best effort — enough to
+	// reach the wrapped command in ordinary invocations, not a full
+	// argument parser for each utility). "env", "nice", and "timeout" were
+	// found missing here by a full-project @rush --role reviewer audit:
+	// "env claude ...", "nice claude ...", "timeout 30 claude ..." all
+	// bypassed this guard entirely (head stayed "env"/"nice"/"timeout",
+	// never matching deniedAgents below) — the exact recursion class this
+	// package exists to close.
+stripLoop:
+	for {
+		switch head {
+		case "exec", "command", "time", "nohup":
+			// No flags of their own to skip.
+		case "env":
+			rest, splitStrings = stripEnvWrapperArgsWithSplitStrings(rest)
+		case "nice":
+			rest = stripLeadingFlags(rest, niceValueFlags)
+		case "timeout":
+			rest = stripLeadingFlags(rest, timeoutValueFlags)
+			if len(rest) > 0 {
+				// timeout's own required positional: DURATION.
+				rest = rest[1:]
+			}
+		default:
+			break stripLoop
+		}
+		if len(rest) == 0 {
+			break stripLoop
+		}
+		head = rest[0]
+		rest = rest[1:]
+	}
+	// PowerShell call operator: `& <command>` — strip the `&` so the actual
+	// command lands in `head`.
+	for head == "&" && len(rest) > 0 {
+		head = rest[0]
+		rest = rest[1:]
+	}
+
+	// Strip path + extension.
+	headCanon := canonicalName(head)
+
+	return splitStringResult{
+		headCanon:    headCanon,
+		rest:         rest,
+		splitStrings: splitStrings,
+	}
+}
+
+func checkSegment(segment string) error {
+	tokens := tokenize(segment)
+	if len(tokens) == 0 {
+		return nil
+	}
+	if err := checkArgvCandidates(tokens, segment); err != nil {
+		return err
+	}
+	res := resolveCommandHead(tokens)
+
+	// Recursively check any split-string payloads collected during wrapper stripping.
+	for _, ss := range res.splitStrings {
+		if err := Check(ss); err != nil {
+			return err
+		}
+	}
+
+	if res.headCanon == "" {
+		return nil
+	}
+	headCanon := res.headCanon
+	rest := res.rest
+
+	// Direct denied agent?
+	if reason, ok := deniedAgents[headCanon]; ok {
+		return &DeniedError{
+			Tool:    headCanon,
+			Reason:  "AI agent CLI invocation is blocked by rush's architecture (would recurse / multiply cost). Tool: " + reason,
+			Snippet: segment,
+		}
+	}
+
+	// Shell runners are already recursively inspected by the shared shell
+	// candidate iterator above. The fallback retains support for PowerShell
+	// call operators and command wrappers represented inside the payload.
+	if shellRunners[headCanon] {
+		if inner := extractShellInner(headCanon, rest); inner != "" {
+			if err := Check(inner); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	// Command wrapper (start / Start-Process / iex / Invoke-Expression …):
+	// first non-flag arg is the actual command we'd otherwise launch.
+	// Strip leading PS-style argv (`&`, quoted launcher) and recurse.
+	if commandWrappers[strings.ToLower(headCanon)] {
+		if inner := extractWrapperInner(rest); inner != "" {
+			if err := Check(inner); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	// Package runner: npx <pkg> [args...], pnpm dlx <pkg>, yarn dlx <pkg>,
+	// bun x <pkg>, pipx run <pkg>, uv tool run <pkg>.
+	if packageRunners[headCanon] {
+		if pkg := extractPackageRunnerTarget(headCanon, rest); pkg != "" {
+			canon := strings.ToLower(pkg)
+			if reason, ok := deniedNpmPackages[canon]; ok {
+				return &DeniedError{Tool: pkg, Reason: reason + " — blocked", Snippet: segment}
+			}
+			if reason, ok := deniedPypiPackages[canon]; ok {
+				return &DeniedError{Tool: pkg, Reason: reason + " — blocked", Snippet: segment}
+			}
+			// Also catch "npx claude" where someone aliased a package to
+			// a denied binary name.
+			if reason, ok := deniedAgents[canon]; ok {
+				return &DeniedError{Tool: pkg, Reason: reason + " (via package runner) — blocked", Snippet: segment}
+			}
+		}
+		return nil
+	}
+
+	return nil
+}
+
+// windowOpenerVerbs is the subset of commandWrappers that explicitly asks
+// Windows for a brand-new, visible console/GUI window — as opposed to
+// merely evaluating a string in the current shell (invoke-expression,
+// invoke-command). `start`/`Start-Process`/`Start-Job` all map to
+// CreateProcess with their OWN creation flags, chosen by cmd.exe/
+// PowerShell itself, not by whatever spawned the outer shell — so a
+// SysProcAttr.HideWindow set on the outer process (see platform.Command)
+// has no effect on the window these verbs create. See
+// WindowOpenerError's doc comment for the full mechanism.
+var windowOpenerVerbs = map[string]bool{
+	"start":         true, // cmd: start <cmd> [args] — always opens a new window
+	"start-process": true, // PowerShell cmdlet — same effect, -WindowStyle Hidden not assumed
+	"start-job":     true, // PowerShell — background job, but the job's own window still opens
+	"saps":          true, // PowerShell built-in alias for Start-Process
+	"sajb":          true, // PowerShell built-in alias for Start-Job
+}
+
+// WindowOpenerError is returned by CheckWindowSafety when a command would
+// explicitly request a new console/GUI window via start / Start-Process /
+// Start-Job, even nested inside a recognised shell wrapper (cmd /c,
+// powershell -Command, an -EncodedCommand payload, …).
+type WindowOpenerError struct {
+	Verb    string // the matched verb, as canonicalized ("start", "start-process", "start-job", "saps", "sajb")
+	Snippet string // the offending segment, for forensic context
+}
+
+func (e *WindowOpenerError) Error() string {
+	return fmt.Sprintf(
+		"agentguard: refused %q — this command explicitly opens a new, visible window "+
+			"(unrelated to whether the command that runs it is hidden) (in: %s)",
+		e.Verb, e.Snippet,
+	)
+}
+
+// CheckWindowSafety inspects a shell command string for start /
+// Start-Process / Start-Job — the one class of invocation that pops a
+// real, visible window on Windows no matter how the process that RUNS
+// this command string was itself launched. platform.Command hides the
+// window of the process rush directly spawns (e.g. the outer cmd.exe
+// running this command), but `start` inside that command asks Windows to
+// create a SEPARATE process with its own, independently-chosen creation
+// flags — a request the outer process's hidden-window attribute cannot
+// suppress. Nil means the command was not seen to do this (not a
+// guarantee: like Check, this is a best-effort textual scan, not a shell
+// parser, and only recurses one level into shell/PowerShell wrappers).
+//
+// Reuses the same segment-splitting and shell-wrapper-unwrapping helpers
+// as Check so a `start` buried behind `bash -c`, `powershell -Command`, or
+// a base64 -EncodedCommand payload is still caught.
+func CheckWindowSafety(command string) *WindowOpenerError {
+	if command == "" {
+		return nil
+	}
+	for _, segment := range splitChained(command) {
+		if err := checkSegmentWindowSafety(segment); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkSegmentWindowSafety(segment string) *WindowOpenerError {
+	tokens := tokenize(segment)
+	if len(tokens) == 0 {
+		return nil
+	}
+	for _, candidate := range shell.CommandCandidatesForPlatform(tokens, true) {
+		if len(candidate) == 0 || strings.HasPrefix(candidate[0], "\x00") {
+			continue
+		}
+		head := canonicalName(candidate[0])
+		if head == "&" {
+			for _, nested := range candidate[1:] {
+				if windowOpenerVerbs[canonicalName(nested)] {
+					return &WindowOpenerError{Verb: canonicalName(nested), Snippet: segment}
+				}
+			}
+			continue
+		}
+		if windowOpenerVerbs[head] {
+			return &WindowOpenerError{Verb: head, Snippet: segment}
+		}
+	}
+
+	res := resolveCommandHead(tokens)
+
+	// Recursively check any split-string payloads collected during wrapper stripping.
+	for _, ss := range res.splitStrings {
+		if err := CheckWindowSafety(ss); err != nil {
+			return err
+		}
+	}
+
+	if res.headCanon == "" {
+		return nil
+	}
+	headCanon := res.headCanon
+	rest := res.rest
+
+	if windowOpenerVerbs[headCanon] {
+		return &WindowOpenerError{Verb: headCanon, Snippet: segment}
+	}
+
+	if shellRunners[headCanon] {
+		if inner := extractShellInner(headCanon, rest); inner != "" {
+			return CheckWindowSafety(inner)
+		}
+		return nil
+	}
+
+	// Command wrapper (iex / Invoke-Expression / Invoke-Command / icm …):
+	// first non-flag arg is the actual command that would run. Without this,
+	// `iex 'saps notepad'` bypassed the window-safety guard entirely — the
+	// window-opener verb is real, it's just one wrapper layer deeper than
+	// this function used to look. Mirrors the commandWrappers recursion
+	// checkSegment already does for the agent-denylist path.
+	if commandWrappers[headCanon] {
+		if inner := extractWrapperInner(rest); inner != "" {
+			return CheckWindowSafety(inner)
+		}
+	}
+
+	return nil
+}
+
+// canonicalName strips directory prefix and a known executable suffix,
+// then lower-cases. "/usr/bin/Claude.EXE" → "claude".
+func canonicalName(name string) string {
+	// Strip the directory using BOTH path separators regardless of host OS.
+	// The command string we inspect can carry a Windows path
+	// (D:\bin\claude.exe) even when rush runs on Linux/macOS, where
+	// filepath.Base only understands "/". Without this, agentguard could be
+	// bypassed on non-Windows hosts by spelling the binary with backslashes.
+	base := name
+	if i := strings.LastIndexAny(base, `/\`); i >= 0 {
+		base = base[i+1:]
+	}
+	low := strings.ToLower(base)
+	for _, suf := range []string{".exe", ".cmd", ".bat", ".ps1", ".sh", ".py"} {
+		if strings.HasSuffix(low, suf) {
+			low = strings.TrimSuffix(low, suf)
+			break
+		}
+	}
+	return low
+}
+
+func isEnvAssignment(tok string) bool {
+	eq := strings.IndexByte(tok, '=')
+	if eq <= 0 {
+		return false
+	}
+	name := tok[:eq]
+	// POSIX: env var names cannot start with a digit.
+	if name[0] >= '0' && name[0] <= '9' {
+		return false
+	}
+	for _, r := range name {
+		if r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// niceValueFlags and timeoutValueFlags list nice/timeout flags that consume
+// a separate following argument (as opposed to boolean flags), so
+// stripLeadingFlags knows to skip two tokens, not one, for these.
+var (
+	niceValueFlags = map[string]bool{
+		"-n": true, "--adjustment": true,
+	}
+	timeoutValueFlags = map[string]bool{
+		"-k": true, "--kill-after": true,
+		"-s": true, "--signal": true,
+	}
+)
+
+// stripLeadingFlags consumes leading flag tokens (and one value each, for
+// flags in valueFlags) until the first non-flag token, returning the
+// remaining tokens starting there. Best-effort — does not claim to handle
+// every flag form (e.g. --flag=value) for every utility, only common
+// invocation shapes.
+func stripLeadingFlags(tokens []string, valueFlags map[string]bool) []string {
+	i := 0
+	for i < len(tokens) && strings.HasPrefix(tokens[i], "-") {
+		if valueFlags[tokens[i]] {
+			i += 2
+		} else {
+			i++
+		}
+	}
+	if i > len(tokens) {
+		i = len(tokens)
+	}
+	return tokens[i:]
+}
+
+// stripEnvWrapperArgsWithSplitStrings consumes env's own leading VAR=value
+// assignments and common flags (-i, -0, -u NAME, -C dir, -S string, --),
+// returning the remaining tokens starting at the wrapped command and any
+// -S/--split-string payloads collected along the way (P2-2: these payloads
+// are re-split and executed by env itself, so callers must recursively
+// re-check them — see resolveCommandHead's callers). Best-effort — matches
+// the same "good enough to reach the real command" bar as the rest of this
+// file's wrapper handling, not a full GNU env argument parser.
+func stripEnvWrapperArgsWithSplitStrings(tokens []string) ([]string, []string) {
+	i := 0
+	splitStrings := []string{}
+	for i < len(tokens) {
+		t := tokens[i]
+		if t == "--" {
+			i++
+			break
+		}
+		if isEnvAssignment(t) {
+			i++
+			continue
+		}
+		if strings.HasPrefix(t, "-") {
+			switch t {
+			case "-u", "--unset", "-C", "--chdir":
+				i += 2
+			case "-S", "--split-string":
+				if i+1 < len(tokens) {
+					splitStrings = append(splitStrings, tokens[i+1])
+				}
+				i += 2
+			default:
+				// Check for --split-string=VALUE form.
+				if strings.HasPrefix(t, "--split-string=") {
+					value := strings.TrimPrefix(t, "--split-string=")
+					splitStrings = append(splitStrings, value)
+					i++
+				} else {
+					i++
+				}
+			}
+			continue
+		}
+		break
+	}
+	if i > len(tokens) {
+		i = len(tokens)
+	}
+	return tokens[i:], splitStrings
+}
+
+// splitChained breaks the command on top-level &&, ||, ;, |. Naive — does
+// not understand subshells or quoted operators. For our denial purposes
+// false-positive splits inside quotes are harmless (we just check more
+// segments than strictly necessary).
+func splitChained(s string) []string {
+	out := []string{}
+	cur := strings.Builder{}
+	inSingle := false
+	inDouble := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch c {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+			cur.WriteByte(c)
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+			cur.WriteByte(c)
+		case ';', '\n':
+			if !inSingle && !inDouble {
+				out = append(out, cur.String())
+				cur.Reset()
+				continue
+			}
+			cur.WriteByte(c)
+		case '|':
+			if !inSingle && !inDouble {
+				out = append(out, cur.String())
+				cur.Reset()
+				// skip second '|' in ||
+				if i+1 < len(s) && s[i+1] == '|' {
+					i++
+				}
+				continue
+			}
+			cur.WriteByte(c)
+		case '&':
+			if !inSingle && !inDouble && i+1 < len(s) && s[i+1] == '&' {
+				out = append(out, cur.String())
+				cur.Reset()
+				i++
+				continue
+			}
+			cur.WriteByte(c)
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
+}
+
+// tokenize is a very small quote-aware splitter. Handles ' ' and " "
+// quoting; everything else is whitespace.
+func tokenize(s string) []string {
+	var out []string
+	var cur strings.Builder
+	inSingle := false
+	inDouble := false
+	flush := func() {
+		if cur.Len() > 0 {
+			out = append(out, cur.String())
+			cur.Reset()
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '\'' && !inDouble:
+			inSingle = !inSingle
+		case c == '"' && !inSingle:
+			inDouble = !inDouble
+		case (c == ' ' || c == '\t' || c == '\n' || c == '\r') && !inSingle && !inDouble:
+			flush()
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	flush()
+	return out
+}
+
+// extractShellInner is a compatibility fallback for shell payloads that use
+// PowerShell's call operator or another wrapper syntax. Standard shell forms
+// are handled by shell.CommandCandidatesForPlatform before this fallback.
+func extractShellInner(shellName string, rest []string) string {
+	for i, token := range rest {
+		switch shellName {
+		case "cmd", "cmd.exe":
+			if (strings.EqualFold(token, "/c") || strings.EqualFold(token, "/k")) && i+1 < len(rest) {
+				return strings.Join(rest[i+1:], " ")
+			}
+		case "powershell", "powershell.exe", "pwsh", "pwsh.exe":
+			if strings.EqualFold(token, "-encodedcommand") || strings.EqualFold(token, "-enc") || strings.EqualFold(token, "-e") {
+				if i+1 < len(rest) {
+					if decoded, ok := shell.DecodePowerShellEncodedCommand(rest[i+1]); ok {
+						return decoded
+					}
+				}
+				continue
+			}
+			if (strings.EqualFold(token, "-c") || strings.EqualFold(token, "-command")) && i+1 < len(rest) {
+				return strings.Join(rest[i+1:], " ")
+			}
+		default:
+			if token == "-c" && i+1 < len(rest) {
+				return rest[i+1]
+			}
+		}
+	}
+	return ""
+}
+
+// extractWrapperInner pulls out the actual command from a wrapper-style
+// invocation (`start <cmd>`, `Start-Process <cmd>`, `iex "<cmd>"` …).
+// Skips leading PowerShell-isms — quoted strings, the `&` invocation
+// operator, and -Verb/-WindowStyle/-FilePath flag spellings.
+//
+// Also handles PowerShell script blocks: `-ScriptBlock { ... }` (paired with
+// Invoke-Command/icm/Start-Job) and a bare `{ ... }` passed positionally
+// (`iex { ... }`). Without this, `-ScriptBlock` fell into the generic
+// flag-skip branch below and the function returned the NEXT token — the
+// bare `{` (or `{Start-Process` glued by the tokenizer) — inspecting
+// literal brace punctuation instead of the payload inside it, so the real
+// command slipped through unchecked. See extractScriptBlockInner for how
+// the (possibly multi-token, possibly glued) `{ ... }` span is reassembled.
+func extractWrapperInner(rest []string) string {
+	for i, t := range rest {
+		if t == "" {
+			continue
+		}
+		// PowerShell flags often paired with Start-Process: -FilePath <cmd>,
+		// -ArgumentList "..."; the actual exe sits behind -FilePath.
+		if strings.EqualFold(t, "-filepath") && i+1 < len(rest) {
+			return rest[i+1]
+		}
+		// -ScriptBlock { ... } (Invoke-Command/icm/Start-Job): the actual
+		// payload is the braced block that follows.
+		if strings.EqualFold(t, "-scriptblock") && i+1 < len(rest) {
+			if inner, ok := extractScriptBlockInner(rest[i+1:]); ok {
+				return inner
+			}
+			return rest[i+1]
+		}
+		// Skip POSIX-style (-x) AND cmd-style (/x) flags. `start /b claude`,
+		// `start /min claude`, etc.
+		if strings.HasPrefix(t, "-") || strings.HasPrefix(t, "/") || t == "--" {
+			continue
+		}
+		// PowerShell call operator: & "<command>" or & 'command'
+		if t == "&" {
+			continue
+		}
+		// Bare script block passed positionally: `iex { ... }`, `icm { ... }`.
+		if strings.HasPrefix(t, "{") {
+			if inner, ok := extractScriptBlockInner(rest[i:]); ok {
+				return inner
+			}
+		}
+		return strings.Trim(t, `"'`)
+	}
+	return ""
+}
+
+// extractScriptBlockInner reassembles the contents of a `{ ... }`
+// PowerShell script block out of the tokens that follow its opening brace
+// (tokens[0] is expected to start with "{", e.g. "{" itself or "{saps"
+// glued by tokenize's whitespace-only splitting). It joins tokens with a
+// space until it finds the token that closes the block (exactly "}" or one
+// ending in "}", e.g. "notepad}"), strips the outer braces, and returns the
+// raw content for the caller to Check/CheckWindowSafety recursively — which
+// already splits on ';' (splitChained), so a multi-statement block like
+// `{ Write-Host "hi"; Start-Process notepad }` gets every statement
+// inspected, not just the first. ok is false if no closing '}' is found
+// (malformed/truncated input) — callers fall back to their existing
+// single-token behavior in that case.
+func extractScriptBlockInner(tokens []string) (string, bool) {
+	if len(tokens) == 0 || !strings.HasPrefix(tokens[0], "{") {
+		return "", false
+	}
+	for end := 0; end < len(tokens); end++ {
+		if strings.HasSuffix(tokens[end], "}") {
+			joined := strings.Join(tokens[:end+1], " ")
+			joined = strings.TrimPrefix(joined, "{")
+			joined = strings.TrimSuffix(joined, "}")
+			return strings.TrimSpace(joined), true
+		}
+	}
+	return "", false
+}
+
+// extractPackageRunnerTarget returns the FIRST positional arg that is the
+// package name. Skips runner-specific flags (-y, --yes, --) and the "dlx"
+// / "x" / "tool run" sub-commands of pnpm / yarn / bun / uv.
+func extractPackageRunnerTarget(runner string, rest []string) string {
+	skip := map[string]bool{}
+	switch runner {
+	case "pnpm", "yarn":
+		skip["dlx"] = true
+	case "bun":
+		skip["x"] = true
+	case "uv":
+		skip["tool"] = true
+		skip["run"] = true
+	case "pipx":
+		skip["run"] = true
+	}
+	for _, t := range rest {
+		if t == "" {
+			continue
+		}
+		if strings.HasPrefix(t, "-") || t == "--" {
+			continue
+		}
+		if skip[t] {
+			continue
+		}
+		return t
+	}
+	return ""
+}

@@ -12,8 +12,8 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	rushlog "github.com/PHPCraftdream/rush/internal/log"
-	"github.com/PHPCraftdream/rush/internal/message"
+	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // logProviderWarnings emits each fantasy CallWarning from a step at WARN

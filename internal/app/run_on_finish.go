@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 )
 
 // Fork patch: batch 24 (run --on-finish hook), review-fix (30s timeout to prevent hangs).

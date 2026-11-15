@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/procinfo"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 )
 
 // configureStdioProcess makes context cancellation tree-kill a stdio MCP

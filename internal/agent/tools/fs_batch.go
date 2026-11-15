@@ -50,8 +50,8 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/fsext"
-	"github.com/PHPCraftdream/rush/internal/permission"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 )
 
 // Per-item outcome statuses, shared by every fs_* tool.

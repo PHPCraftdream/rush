@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/log"
+	"github.com/PHPCraftdream/rush/internal/kit/diag/log"
 )
 
 // This file is the Phase 1 infrastructure of the turn-stall detector: an

@@ -12,7 +12,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/filelock"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 )
 
 type mcpLockedFiles struct {

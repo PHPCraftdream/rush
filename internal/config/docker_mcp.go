@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"golang.org/x/sync/singleflight"
 )
 

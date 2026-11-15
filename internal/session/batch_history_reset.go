@@ -15,8 +15,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // sessionMessageIDsTx lists the owner's message ids inside the caller's

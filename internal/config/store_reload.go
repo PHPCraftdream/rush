@@ -20,8 +20,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/env"
-	"github.com/PHPCraftdream/rush/internal/home"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
 
 const reloadMaxAttempts = 4

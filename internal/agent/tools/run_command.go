@@ -14,10 +14,10 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent/agentguard"
-	"github.com/PHPCraftdream/rush/internal/permission"
-	"github.com/PHPCraftdream/rush/internal/platform"
-	"github.com/PHPCraftdream/rush/internal/shell"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/agentguard"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 	"mvdan.cc/sh/v3/syntax"
 )
 

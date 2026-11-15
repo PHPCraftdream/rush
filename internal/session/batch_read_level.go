@@ -3,7 +3,7 @@ package session
 import (
 	"context"
 
-	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 // BatchLevelResult contains the addressed node, ordinal-sorted direct children,

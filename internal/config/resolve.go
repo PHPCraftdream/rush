@@ -8,8 +8,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/env"
-	"github.com/PHPCraftdream/rush/internal/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 )
 
 // resolverInputFingerprint records the semantic input to the shell resolver.

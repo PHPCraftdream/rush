@@ -32,7 +32,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/ktavcodec"
+	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 	"github.com/PHPCraftdream/rush/sdk"
 	"github.com/stretchr/testify/require"
 )

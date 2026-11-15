@@ -13,9 +13,9 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // guardBatchLedger records the batch roots guardBatchTool seeded for W, so

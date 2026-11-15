@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent/limitwords"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/limitwords"
 	"google.golang.org/genai"
 )
 

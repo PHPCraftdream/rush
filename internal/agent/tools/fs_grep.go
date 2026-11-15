@@ -41,10 +41,10 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/fsext"
-	"github.com/PHPCraftdream/rush/internal/permission"
-	"github.com/PHPCraftdream/rush/internal/stringext"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
+	"github.com/PHPCraftdream/rush/internal/kit/text/stringext"
 )
 
 const FSGrepToolName = "fs_grep"

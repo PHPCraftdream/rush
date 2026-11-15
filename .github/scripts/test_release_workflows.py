@@ -40,8 +40,8 @@ class ReleaseWorkflowRegressionTests(unittest.TestCase):
         self.assertIn('PUBLISH_TAG="prerelease"', publish)
 
     def test_release_output_uses_injected_version_for_guard(self):
-        version = (ROOT / "internal/version/version.go").read_text()
-        test = (ROOT / "internal/version/version_test.go").read_text()
+        version = (ROOT / "internal/kit/diag/version/version.go").read_text()
+        test = (ROOT / "internal/kit/diag/version/version_test.go").read_text()
         workflow = (ROOT / ".github/workflows/publish-fork-npm.yml").read_text()
         self.assertIn('return "release " + releaseVersion', version)
         self.assertIn('injectedReleaseVersion("v0.2.0-alpha.1")', test)

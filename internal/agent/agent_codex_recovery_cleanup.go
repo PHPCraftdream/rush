@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 func cleanupUncommittedSummary(messages message.Service, ctx context.Context, id string, cause error) error {

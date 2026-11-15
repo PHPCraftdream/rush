@@ -13,8 +13,8 @@ import (
 
 	"charm.land/fantasy"
 	md "github.com/JohannesKaufmann/html-to-markdown"
-	"github.com/PHPCraftdream/rush/internal/permission"
-	"github.com/PHPCraftdream/rush/internal/stringext"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
+	"github.com/PHPCraftdream/rush/internal/kit/text/stringext"
 	"github.com/PuerkitoBio/goquery"
 )
 

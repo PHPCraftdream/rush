@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/pubsub"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 )
 
 // ErrOwnerBusy reports that another application currently owns the process

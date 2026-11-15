@@ -10,7 +10,7 @@ The module path is `github.com/PHPCraftdream/rush`.
 ## Architecture
 
 ```
-main.go                            CLI entry point (cobra via internal/cmd)
+main.go                            CLI entry point (cobra via internal/serve/cmd)
 internal/
   app/app.go                       Top-level wiring: DB, config, agents, LSP, MCP, events
   cmd/                             CLI commands (root, run, login, models, stats, sessions)
@@ -55,7 +55,7 @@ internal/
 - **`charm.land/lipgloss/v2`**: Terminal styling.
 - **`charm.land/glamour/v2`**: Markdown rendering in the terminal.
 - **`charm.land/catwalk`**: Snapshot/golden-file testing for TUI components.
-- **`sqlc`**: Generates Go code from SQL queries in `internal/db/sql/`.
+- **`sqlc`**: Generates Go code from SQL queries in `internal/store/db/sql/`.
 
 ### Key Patterns
 
@@ -67,12 +67,12 @@ internal/
 - **Context files**: Rush reads AGENTS.md, RUSH.md, CLAUDE.md, GEMINI.md
   (and `.local` variants) from the working directory for project-specific
   instructions.
-- **Persistence**: SQLite + sqlc. All queries live in `internal/db/sql/`,
-  generated code in `internal/db/`. Migrations in `internal/db/migrations/`.
-- **Pub/sub**: `internal/pubsub` for decoupled communication between agent,
+- **Persistence**: SQLite + sqlc. All queries live in `internal/store/db/sql/`,
+  generated code in `internal/store/db/`. Migrations in `internal/store/db/migrations/`.
+- **Pub/sub**: `internal/kit/sync/pubsub` for decoupled communication between agent,
   UI, and services.
 - **Hooks**: User-defined shell commands in `rush.json` that fire before
-  tool execution. The engine (`internal/hooks/`) is independent of fantasy
+  tool execution. The engine (`internal/agent/tools/hooks/`) is independent of fantasy
   and agent — it takes inputs, runs commands, returns decisions. The
   `hookedTool` decorator in `internal/agent/hooked_tool.go` wraps tools at
   the coordinator level. Hooks run before permission checks. See

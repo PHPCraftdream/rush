@@ -6,8 +6,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db"
-	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // BatchInlineAnnouncement is an elected one-item completion, never stop intent.

@@ -161,10 +161,10 @@ jobs:
           path: ${{ steps.go-cache.outputs.gocache }}
           key: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-ci-checks-${{ github.sha }}
           restore-keys: go-build-${{ runner.os }}-${{ steps.go-cache.outputs.goversion }}-${{ runner.arch }}-ci-checks-
-      - name: internal/db/sql is ASCII-only (sqlc miscounts spans around multi-byte comments)
+      - name: internal/store/db/sql is ASCII-only (sqlc miscounts spans around multi-byte comments)
         if: runner.os == 'Linux'
         run: |
-          if offenders="$(grep -lP "[^[:ascii:]]" internal/db/sql/*.sql 2>/dev/null)" && [ -n "$offenders" ]; then
+          if offenders="$(grep -lP "[^[:ascii:]]" internal/store/db/sql/*.sql 2>/dev/null)" && [ -n "$offenders" ]; then
             printf '\033[31mnon-ASCII bytes in:\033[0m\n%s\n' "$offenders"
             echo "::error::a non-ASCII character in a .sql file silently corrupts sqlc codegen -- replace it with an ASCII equivalent"
             exit 1
@@ -202,13 +202,13 @@ jobs:
       - name: install sqlc (pinned, matches sqlc.yaml / the ASCII guard's target version)
         if: runner.os == 'Linux' && needs.plan.outputs.heavy_allowed == 'true'
         run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0
-      - name: sqlc generate produces no diff (committed internal/db/*.sql.go matches internal/db/sql/*.sql)
+      - name: sqlc generate produces no diff (committed internal/store/db/*.sql.go matches internal/store/db/sql/*.sql)
         if: runner.os == 'Linux' && needs.plan.outputs.heavy_allowed == 'true'
         run: |
           set -uo pipefail
           "$(go env GOPATH)/bin/sqlc" generate
-          git diff --exit-code -- internal/db/ || {
-            echo "::error::internal/db/*.sql.go is stale relative to internal/db/sql/*.sql -- run 'sqlc generate' and commit the result"
+          git diff --exit-code -- internal/store/db/ || {
+            echo "::error::internal/store/db/*.sql.go is stale relative to internal/store/db/sql/*.sql -- run 'sqlc generate' and commit the result"
             exit 1
           }
       - name: go build ./...
@@ -237,7 +237,7 @@ jobs:
         continue-on-error: true
         if: runner.os == 'Linux' && needs.plan.outputs.heavy_allowed == 'true'
         run: |
-          go run ./internal/tools/cahsync -check -strict || {
+          go run ./internal/kit/dev/cahsync -check -strict || {
             echo "::warning::Model shortcode catalog lag or refresh failure"
             exit 1
           }
@@ -246,7 +246,7 @@ jobs:
         # The linter is installed for the host; only its run targets mips64.
         run: |
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
-          GOOS=linux GOARCH=mips64 "$(go env GOPATH)/bin/golangci-lint" run --config=.golangci.yml --timeout=10m ./internal/db/...
+          GOOS=linux GOARCH=mips64 "$(go env GOPATH)/bin/golangci-lint" run --config=.golangci.yml --timeout=10m ./internal/store/db/...
       - name: save Go module cache
         if: needs.plan.outputs.heavy_allowed == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.go-mod-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

@@ -147,7 +147,7 @@
     },
     {
       "id": "m15_drop_notice_selected_guard",
-      "file": "internal/db/batch_nodes.sql.go",
+      "file": "internal/store/db/batch_nodes.sql.go",
       "file_sha256": "0a9e19cdd7ba0e2a428d38153cc973f2068478d05b5778ca67d4d02a2d83b542",
       "needle": "AND notice_selected = 0",
       "replacement": "AND 1 = 1",

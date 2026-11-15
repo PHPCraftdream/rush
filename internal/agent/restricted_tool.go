@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/permission"
 )
 
 // Native batch controls classify like the legacy names they replace;

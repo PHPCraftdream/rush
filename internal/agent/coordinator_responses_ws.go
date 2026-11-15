@@ -10,9 +10,9 @@ import (
 	"net/http"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent/codexprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/nettransport"
 )
 
 func responsesWSReplayForbidden(err error) bool {

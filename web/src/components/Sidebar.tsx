@@ -26,7 +26,7 @@ const selectSessions = (state: TReadonly<ISessionsState>) => state.sessions;
 const isTopLevel = (s: TReadonly<Session>): boolean => !s.ParentSessionID;
 
 // Wire shape of a delete_other_sessions reply payload (task #684). Mirrors
-// internal/server/protocol.go's DeleteOtherSessionsResult: only DeletedIDs
+// internal/serve/server/protocol.go's DeleteOtherSessionsResult: only DeletedIDs
 // were actually removed server-side; FailedIDs stayed put after a
 // per-session delete failure inside the handler's loop.
 interface DeleteOtherSessionsResult {

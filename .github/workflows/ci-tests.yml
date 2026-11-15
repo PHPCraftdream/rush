@@ -134,19 +134,19 @@ jobs:
           outdir, pkgs = sys.argv[1], sys.argv[2].split()
           groups = [
               ("app",            ["internal/app/"]),
-              ("server-session", ["internal/server/", "internal/session/"]),
-              ("perm-config-csync", ["internal/permission/", "internal/config/", "internal/csync/"]),
-              ("cmd-commands",   ["internal/cmd/", "internal/commands/"]),
+              ("server-session", ["internal/serve/server/", "internal/session/"]),
+              ("perm-config-csync", ["internal/agent/safety/permission/", "internal/config/", "internal/kit/sync/csync/"]),
+              ("cmd-commands",   ["internal/serve/cmd/", "internal/agent/prompt/commands/"]),
               ("sdk",            ["sdk/"]),
-              ("agent-subpkgs",  ["internal/agent/agentguard/", "internal/agent/cliprovider/",
-                                  "internal/agent/hyper/", "internal/agent/notify/",
+              ("agent-subpkgs",  ["internal/agent/safety/agentguard/", "internal/agent/provider/cliprovider/",
+                                  "internal/agent/provider/hyper/", "internal/agent/safety/notify/",
                                   "internal/agent/prompt/", "internal/agent/tools/"]),
               ("db-msg-queue-pubsub-history",
-                                 ["internal/db/", "internal/message/", "internal/queue/",
-                                  "internal/pubsub/", "internal/history/"]),
+                                 ["internal/store/db/", "internal/store/message/", "internal/serve/cmd/queue/",
+                                  "internal/kit/sync/pubsub/", "internal/store/history/"]),
               ("oauth-deploy-update-version",
-                                 ["internal/oauth/", "internal/deploy/", "internal/update/",
-                                  "internal/version/"]),
+                                 ["internal/config/oauth/", "internal/serve/ops/deploy/", "internal/serve/ops/update/",
+                                  "internal/kit/diag/version/"]),
           ]
           left = []
           for p in pkgs:
@@ -173,17 +173,17 @@ jobs:
         run: |
           f="$GROUP_DIR/g-app.txt"; [ -s "$f" ] || exit 0
           go test -short -failfast -p 2 -timeout 20m $(cat "$f")
-      - name: "test: internal/server, internal/session"
+      - name: "test: internal/serve/server, internal/session"
         shell: bash
         run: |
           f="$GROUP_DIR/g-server-session.txt"; [ -s "$f" ] || exit 0
           go test -short -failfast -p 2 -timeout 20m $(cat "$f")
-      - name: "test: internal/permission, internal/config, internal/csync"
+      - name: "test: internal/agent/safety/permission, internal/config, internal/kit/sync/csync"
         shell: bash
         run: |
           f="$GROUP_DIR/g-perm-config-csync.txt"; [ -s "$f" ] || exit 0
           go test -short -failfast -p 2 -timeout 20m $(cat "$f")
-      - name: "test: internal/cmd, internal/commands"
+      - name: "test: internal/serve/cmd"
         shell: bash
         run: |
           f="$GROUP_DIR/g-cmd-commands.txt"; [ -s "$f" ] || exit 0
@@ -198,12 +198,12 @@ jobs:
         run: |
           f="$GROUP_DIR/g-agent-subpkgs.txt"; [ -s "$f" ] || exit 0
           go test -short -failfast -p 2 $(cat "$f")
-      - name: "test: internal/db, internal/message, internal/queue, internal/pubsub, internal/history"
+      - name: "test: internal/store/db, internal/store/message, internal/kit/sync/pubsub, internal/store/history"
         shell: bash
         run: |
           f="$GROUP_DIR/g-db-msg-queue-pubsub-history.txt"; [ -s "$f" ] || exit 0
           go test -short -failfast -p 2 $(cat "$f")
-      - name: "test: internal/oauth, internal/deploy, internal/update, internal/version"
+      - name: "test: internal/serve/ops/deploy, internal/serve/ops/update, internal/kit/diag/version"
         shell: bash
         run: |
           f="$GROUP_DIR/g-oauth-deploy-update-version.txt"; [ -s "$f" ] || exit 0
@@ -214,13 +214,13 @@ jobs:
           f="$GROUP_DIR/g-catchall.txt"; [ -s "$f" ] || exit 0
           go test -short -failfast -p 2 $(cat "$f")
       # the former build workflow runs this Linux-only suite without -short (real fork/exec).
-      # It only makes sense when internal/session or internal/cmd actually
+      # It only makes sense when internal/session or internal/serve/cmd actually
       # changed-and-selected, which in the selector always forces mode=full
       # (core_prefixes); gate on mode as a cheap, correct approximation.
       - name: process-group and lock-fence suites (Linux, no -short)
         if: inputs.mode == 'full'
         run: |
-          go test -failfast -run 'ChildGroup|Registry|WriteChildGroupFile|VerifyGroupStillPlausible|Sweep|ProbeThenKillHolder|AcquireSessionLockForReset|ForceKillHolder|ForceStillKillsLiveHolder' ./internal/session/ ./internal/cmd/
+          go test -failfast -run 'ChildGroup|Registry|WriteChildGroupFile|VerifyGroupStillPlausible|Sweep|ProbeThenKillHolder|AcquireSessionLockForReset|ForceKillHolder|ForceStillKillsLiveHolder' ./internal/session/ ./internal/serve/cmd/
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
@@ -387,9 +387,9 @@ jobs:
           import os, sys
           outdir, pkgs = sys.argv[1], sys.argv[2].split()
           groups = [
-              ("hooks-session", ["internal/hooks", "internal/session"]),
-              ("tasktree-csync", ["internal/tasktree/", "cmd/tasklab", "internal/csync"]),
-              ("jobbatch-batchlab", ["internal/jobbatch", "cmd/batchlab"]),
+              ("hooks-session", ["internal/agent/tools/hooks", "internal/session"]),
+              ("tasktree-csync", ["internal/kit/tasktree/", "cmd/tasklab", "internal/kit/sync/csync"]),
+              ("jobbatch-batchlab", ["internal/session/jobbatch", "cmd/batchlab"]),
           ]
           left = []
           for p in pkgs:
@@ -408,17 +408,17 @@ jobs:
                   f.write("\n".join(left) + "\n")
           PY
       # the former build workflow test-race's exact flags: -race -short -failfast -timeout 15m.
-      - name: go test -race -short -failfast (internal/hooks, internal/session)
+      - name: go test -race -short -failfast (internal/agent/tools/hooks, internal/session)
         shell: bash
         run: |
           f="$GROUP_DIR/r-hooks-session.txt"; [ -s "$f" ] || exit 0
           go test -race -short -failfast -timeout 15m $(cat "$f")
-      - name: go test -race -short -failfast (internal/tasktree, cmd/tasklab, internal/csync)
+      - name: go test -race -short -failfast (internal/kit/tasktree, cmd/tasklab, internal/kit/sync/csync)
         shell: bash
         run: |
           f="$GROUP_DIR/r-tasktree-csync.txt"; [ -s "$f" ] || exit 0
           go test -race -short -failfast -timeout 15m $(cat "$f")
-      - name: go test -race -short -failfast (internal/jobbatch, cmd/batchlab)
+      - name: go test -race -short -failfast (internal/session/jobbatch, cmd/batchlab)
         shell: bash
         run: |
           f="$GROUP_DIR/r-jobbatch-batchlab.txt"; [ -s "$f" ] || exit 0
@@ -504,19 +504,19 @@ jobs:
           outdir, pkgs = sys.argv[1], sys.argv[2].split()
           groups = [
               ("app",            ["internal/app/"]),
-              ("server-session", ["internal/server/", "internal/session/"]),
-              ("perm-config-csync", ["internal/permission/", "internal/config/", "internal/csync/"]),
-              ("cmd-commands",   ["internal/cmd/", "internal/commands/"]),
+              ("server-session", ["internal/serve/server/", "internal/session/"]),
+              ("perm-config-csync", ["internal/agent/safety/permission/", "internal/config/", "internal/kit/sync/csync/"]),
+              ("cmd-commands",   ["internal/serve/cmd/", "internal/agent/prompt/commands/"]),
               ("sdk",            ["sdk/"]),
-              ("agent-subpkgs",  ["internal/agent/agentguard/", "internal/agent/cliprovider/",
-                                  "internal/agent/hyper/", "internal/agent/notify/",
+              ("agent-subpkgs",  ["internal/agent/safety/agentguard/", "internal/agent/provider/cliprovider/",
+                                  "internal/agent/provider/hyper/", "internal/agent/safety/notify/",
                                   "internal/agent/prompt/", "internal/agent/tools/"]),
               ("db-msg-queue-pubsub-history",
-                                 ["internal/db/", "internal/message/", "internal/queue/",
-                                  "internal/pubsub/", "internal/history/"]),
+                                 ["internal/store/db/", "internal/store/message/", "internal/serve/cmd/queue/",
+                                  "internal/kit/sync/pubsub/", "internal/store/history/"]),
               ("oauth-deploy-update-version",
-                                 ["internal/oauth/", "internal/deploy/", "internal/update/",
-                                  "internal/version/"]),
+                                 ["internal/config/oauth/", "internal/serve/ops/deploy/", "internal/serve/ops/update/",
+                                  "internal/kit/diag/version/"]),
           ]
           left = []
           for p in pkgs:

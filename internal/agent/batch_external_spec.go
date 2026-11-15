@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
 // BatchExternalSpec is the external structural batch schema shared by

@@ -1,0 +1,470 @@
+package server
+
+// Session-lifecycle handlers: create, fork, delete, rename and list; the
+// external-ownership lock annotation those replies carry; per-session
+// system prompt get/set; and todo updates (todos live on the session row).
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"os"
+
+	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/message"
+)
+
+// appWorkspaceRoot is this process's canonical checkout root (WS-1, #1142 step
+// C), recomputed from the app's config store because the server package cannot
+// read the unexported App.workspaceRoot. app.New derives that field from the
+// same store.WorkingDir() via config.WorkspaceRoot (cached), so this returns
+// the identical value. A nil app or store (only ever a test literal) reads as a
+// home process ("" — see appOwnsSession).
+func appWorkspaceRoot(a *appPkg.App) string {
+	if a == nil || a.Store() == nil {
+		return ""
+	}
+	return config.WorkspaceRoot(a.Store().WorkingDir())
+}
+
+// appOwnsSession reports whether THIS process may drive sess: the same
+// predicate app.owns runs on the run path (session.Owns), fed the process's
+// workspace here so a destructive web action (rerun, delete-other) never
+// touches another checkout's session in a shared data directory. A session is
+// owned when its workspace_root equals this process's root, or when it is a
+// legacy unbound row (”) and this process is a home process -- the explicit
+// App.ProcessHome() flag (config.WorkspaceHome(); false only for a linked worktree on the shared data directory, SD-D #1143),
+// never a derivation from the root: a git checkout has a non-empty root and
+// still owns its legacy rows today.
+func appOwnsSession(a *appPkg.App, sess session.Session) bool {
+	return session.Owns(sess.WorkspaceRoot, appWorkspaceRoot(a), a.ProcessHome())
+}
+
+// foreignSessionRefusal builds the WS-1 refusal error for a session this
+// process does not own. It mirrors agent.ForeignWorkspaceError (which the
+// server package does not import): it wraps session.ErrForeignWorkspace so the
+// condition stays classifiable in logs, names the owning root and the branch
+// that checkout was on, says so when that checkout has since been removed, and
+// offers `rush sessions fork <id>` as the one sanctioned way to continue the
+// history here.
+func foreignSessionRefusal(sess session.Session) error {
+	msg := fmt.Sprintf(
+		"session %s belongs to %s (branch %s); run it there or \"rush sessions fork %s\" here",
+		sess.ID, sess.WorkspaceRoot, sess.GitBranch, sess.ID,
+	)
+	if sess.WorkspaceRoot != "" {
+		if _, err := os.Stat(sess.WorkspaceRoot); err != nil {
+			msg += " (workspace no longer exists)"
+		}
+	}
+	return fmt.Errorf("%s: %w", msg, session.ErrForeignWorkspace)
+}
+
+func handleCreateSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
+	var p CreateSessionPayload
+	if len(msg.Payload) > 0 && string(msg.Payload) != "null" {
+		if err := json.Unmarshal(msg.Payload, &p); err != nil {
+			c.reply(msg.ID, EventError, nil, "invalid payload")
+			return
+		}
+	}
+	title := p.Title
+	if title == "" {
+		title = "New Session"
+	}
+	var sess session.Session
+	var err error
+	if oc, ok := a.Sessions.(session.OriginCreator); ok {
+		sess, err = oc.CreateWithOrigin(ctx, title, message.OriginWeb)
+	} else {
+		// Test fakes without the OriginCreator seam keep the legacy path.
+		sess, err = a.Sessions.Create(ctx, title)
+	}
+	if err != nil {
+		c.reply(msg.ID, EventError, nil, err.Error())
+		return
+	}
+	// Web sessions never prompt for permissions — arm auto-approve at birth.
+	autoApproveWebSession(a, sess.ID)
+
+	// Deliberately do NOT seed the new session's smart/fast model columns
+	// from config here. A session is created with no override
+	// (SmartModelID/FastModelID == "") so it INHERITS the system/folder
+	// default and keeps following it if that default changes later —
+	// resolveSessionModels (internal/agent/coordinator.go) already falls
+	// back to cfg.Models on every call when the session has no override, and
+	// BuildSystemPromptForSession below goes through that same resolution.
+	// Writing the resolved default into the row at creation time used to
+	// freeze it permanently: any later change to the folder/system default
+	// would silently stop applying to that session, defeating the system ->
+	// folder -> session cascade for every session that never explicitly
+	// picked a model (task #461).
+
+	// Generate and save the system prompt for the new session.
+	if a.AgentCoordinator != nil {
+		if sp, err := a.AgentCoordinator.BuildSystemPromptForSession(ctx, sess.ID); err == nil && sp != "" {
+			if err := a.AgentCoordinator.UpdateSessionSystemPrompt(ctx, sess.ID, sp); err == nil {
+				if updated, err := a.Sessions.Get(ctx, sess.ID); err == nil {
+					sess = updated
+				}
+			}
+		}
+	}
+
+	// Broadcast to all clients so every tab sees the new session.
+	c.hub.Broadcast(EventSessionCreated, sess)
+}
+
+func handleForkSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
+	var p ForkSessionPayload
+	if err := json.Unmarshal(msg.Payload, &p); err != nil {
+		c.reply(msg.ID, EventError, nil, "invalid payload")
+		return
+	}
+	if p.SessionID == "" {
+		c.reply(msg.ID, EventError, nil, "sessionID required")
+		return
+	}
+
+	// ForkSession performs the clone atomically in one DB transaction: the
+	// new session row plus every copied message commit together or not at
+	// all, so a midway failure surfaces as an explicit error rather than a
+	// half-built fork the client mistakes for a complete one.
+	fork, err := a.Sessions.ForkSession(ctx, p.SessionID, p.Title)
+	if err != nil {
+		c.reply(msg.ID, EventError, nil, err.Error())
+		return
+	}
+	// Web sessions never prompt for permissions — arm auto-approve at birth.
+	autoApproveWebSession(a, fork.ID)
+
+	// Broadcast so all tabs see the fork and switch to it
+	c.hub.Broadcast(EventSessionCreated, fork)
+}
+
+func handleDeleteSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
+	var p DeleteSessionPayload
+	if err := json.Unmarshal(msg.Payload, &p); err != nil {
+		c.reply(msg.ID, EventError, nil, "invalid payload")
+		return
+	}
+	if c.auth != nil {
+		sess, err := a.Sessions.Get(ctx, p.SessionID)
+		if err != nil || !appOwnsSession(a, sess) {
+			c.reply(msg.ID, EventError, nil, "session not found")
+			return
+		}
+	}
+	if err := a.Sessions.Delete(ctx, p.SessionID); err != nil {
+		c.reply(msg.ID, EventError, nil, err.Error())
+		return
+	}
+	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+}
+
+// handleDeleteOtherSessions deletes every top-level session this process OWNS
+// except the one identified by KeepID (WS-1, #1142 step C). Owned means this
+// workspace's own sessions, plus legacy ” rows when this is a home process; a
+// row bound to another checkout — visible here only because the data directory
+// is shared — is skipped, never deleted. Sub-sessions are not deleted directly
+// — they are cleaned up by a.Sessions.Delete when their parent is removed,
+// mirroring handleDeleteSession. Each deletion publishes a DeletedEvent that
+// the events.go pubsub bridge broadcasts as session_deleted, so every connected
+// client updates.
+//
+// The reply always carries deletedIDs/failedIDs (task #684) rather than a
+// bare "ok": a per-session failure inside the loop used to be only
+// slog.Warn'd, with the reply staying an unqualified EventResponse{"status":
+// "ok"} regardless of how many deletes actually failed — the client had no
+// way to learn which session survived and (before its own #684 fix) removed
+// every non-kept row from the sidebar unconditionally on that lossy "ok".
+// Callers should only drop rows whose ID appears in deletedIDs. A no-op ack
+// (empty deletedIDs/failedIDs) is returned when KeepID is empty or there is
+// nothing else to delete.
+func handleDeleteOtherSessions(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
+	var p DeleteOtherSessionsPayload
+	if err := json.Unmarshal(msg.Payload, &p); err != nil {
+		c.reply(msg.ID, EventError, nil, "invalid payload")
+		return
+	}
+	if p.KeepID == "" {
+		c.reply(msg.ID, EventResponse, DeleteOtherSessionsResult{DeletedIDs: []string{}, FailedIDs: []string{}}, "")
+		return
+	}
+	sessions, err := a.Sessions.List(ctx)
+	if err != nil {
+		c.reply(msg.ID, EventError, nil, err.Error())
+		return
+	}
+	deletedIDs := []string{}
+	failedIDs := []string{}
+	for _, s := range sessions {
+		// Skip the kept session and any sub-session (those go when their
+		// parent is deleted, matching handleDeleteSession's behaviour).
+		if s.ID == p.KeepID || s.ParentSessionID != "" {
+			continue
+		}
+		// WS-1 (#1142 step C, §1 "web: delete other sessions"): delete only
+		// this workspace's own rows (its own sessions, plus legacy '' rows when
+		// this is a home process). A row bound to ANOTHER checkout — visible in
+		// a shared data directory — is left untouched: one worktree's "delete
+		// others" must never wipe another's history. Skipped silently from the
+		// client's perspective (logged here); the client only drops the IDs it
+		// gets back in deletedIDs.
+		if !appOwnsSession(a, s) {
+			slog.Info("delete_other_sessions: skipping a foreign-workspace session",
+				"id", s.ID, "owner", s.WorkspaceRoot)
+			continue
+		}
+		if err := a.Sessions.Delete(ctx, s.ID); err != nil {
+			slog.Warn("delete_other_sessions: failed to delete session", "id", s.ID, "err", err)
+			failedIDs = append(failedIDs, s.ID)
+			continue
+		}
+		deletedIDs = append(deletedIDs, s.ID)
+	}
+	c.reply(msg.ID, EventResponse, DeleteOtherSessionsResult{DeletedIDs: deletedIDs, FailedIDs: failedIDs}, "")
+}
+
+// externalOwnershipDataDir resolves the configured data directory (also
+// used by attachmentsDataDir in handlers_agent.go for its nil-config
+// fallback chain).
+func externalOwnershipDataDir(a *appPkg.App) string {
+	cfg := a.Config()
+	if cfg == nil || cfg.Options == nil {
+		return ""
+	}
+	return cfg.Options.DataDirectory
+}
+
+// annotateSessionActivity fills every liveness/ownership wire annotation of
+// the session list from ONE App.SessionActivityBatch call per poll (R-ACT
+// step 3, ASYNC-10): the flags come from the FACTS, not from a second
+// liveness decision -- HasLiveOwnWork = Facts.Driver != nil ||
+// Facts.OwnRunningJobs > 0, HasLiveDescendantWork = Facts.LiveDelegations > 0
+// (decision 12 in the reader's doc), LiveDescendantIDs from the facts' own
+// distinct child list. OwnedExternal/OwnedByPID read the SAME batch's lock
+// fact: a lock HELD by a live PID that is not this process. Previously the
+// ownership half ran its own per-session InspectSessionLock (mtime + PID
+// fallback) and the work half its own LiveWorkForRoots + LiveSessionDrivers
+// reads -- two parallel liveness models that could disagree with `sessions
+// list`/`why`; now every reader answers from the one classifier's facts.
+//
+// The lock fact has no mtime fast path: "held" is a recorded, provably live
+// PID (InspectSessionLockFact), which is strictly the decision the
+// ownership flag needs (it always required a readable, non-self PID).
+//
+// Cost is the batch reader's fixed query set per poll (one per fact kind,
+// independent of the session count), paid only on the sessions_list reply
+// and its periodic re-poll, never on the per-event broadcast path.
+func annotateSessionActivity(ctx context.Context, a *appPkg.App, sessions []session.Session) {
+	if len(sessions) == 0 {
+		return
+	}
+	ids := make([]string, len(sessions))
+	for i := range sessions {
+		ids[i] = sessions[i].ID
+	}
+	batch, err := a.SessionActivityBatch(ctx, ids)
+	if err != nil {
+		slog.Warn("sessions_list: could not read the session activity facts", "err", err)
+		return
+	}
+	self := os.Getpid()
+	for i := range sessions {
+		act, ok := batch.ByID[sessions[i].ID]
+		if !ok {
+			continue
+		}
+		f := act.Facts
+		sessions[i].HasLiveOwnWork = f.Driver != nil || f.OwnRunningJobs > 0
+		sessions[i].HasLiveDescendantWork = f.LiveDelegations > 0
+		sessions[i].LiveDescendantIDs = f.LiveDescendantSessionIDs
+		if f.Lock.Kind == session.LockHeld && f.Lock.PID != 0 && f.Lock.PID != self {
+			sessions[i].OwnedExternal = true
+			sessions[i].OwnedByPID = f.Lock.PID
+		}
+	}
+}
+
+// AnnotateSessionExternalOwnership is the single-session variant used by the
+// session pubsub bridge in events.go and by every handler that broadcasts a
+// fresh Session payload over WS. Exported so events.go can reach it without
+// duplicating the ownership rule. It reads only the lock fact -- the same
+// single lock reader the classifier uses (session.InspectSessionLockFact) --
+// because it runs on every broadcast session event, where the classifier's
+// DB fact queries are not paid. Rule: HELD by a live PID that is not ours.
+func AnnotateSessionExternalOwnership(a *appPkg.App, s *session.Session) {
+	if s == nil {
+		return
+	}
+	s.OwnedExternal = false
+	s.OwnedByPID = 0
+	dataDir := externalOwnershipDataDir(a)
+	if dataDir == "" {
+		return
+	}
+	lock := session.InspectSessionLockFact(dataDir, s.ID)
+	if lock.Kind != session.LockHeld || lock.PID == 0 || lock.PID == os.Getpid() {
+		return
+	}
+	s.OwnedExternal = true
+	s.OwnedByPID = lock.PID
+}
+
+// annotateLiveWork's former responsibilities (live work, driver markers,
+// descendant ids) and annotateExternalOwnership's (external lock holder)
+// both live in annotateSessionActivity now; the two functions and the
+// parallel liveness models behind them are gone.
+
+func handleListSessions(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
+	sessions, err := a.Sessions.List(ctx)
+	if err != nil {
+		c.reply(msg.ID, EventError, nil, err.Error())
+		return
+	}
+	if sessions == nil {
+		sessions = []session.Session{}
+	}
+	sessions = filterSessionsForPinnedClient(sessions, c)
+	annotateSessionActivity(ctx, a, sessions)
+	c.reply(msg.ID, EventSessionsList, sessions, "")
+
+	// Correct any stale agent_busy and summarize_queued state in the replay
+	// buffer by sending the server's authoritative state for every session
+	// to this client only (not broadcast — other clients already have accurate
+	// live state).
+	if a.AgentCoordinator != nil {
+		for _, s := range sessions {
+			busy := a.AgentCoordinator.IsSessionBusy(s.ID)
+			queued := a.AgentCoordinator.SummarizeQueued(s.ID)
+			c.reply("", EventAgentBusy, AgentBusyPayload{SessionID: s.ID, Busy: busy}, "")
+			c.reply("", EventSummarizeQueued, SummarizeQueuedPayload{SessionID: s.ID, Queued: queued}, "")
+		}
+	}
+}
+
+func handleRenameSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
+	var p RenameSessionPayload
+	if err := json.Unmarshal(msg.Payload, &p); err != nil {
+		c.reply(msg.ID, EventError, nil, "invalid payload")
+		return
+	}
+	if err := a.Sessions.Rename(ctx, p.SessionID, p.Title); err != nil {
+		c.reply(msg.ID, EventError, nil, err.Error())
+		return
+	}
+	sess, err := a.Sessions.Get(ctx, p.SessionID)
+	if err != nil {
+		c.reply(msg.ID, EventError, nil, err.Error())
+		return
+	}
+	// Rename publishes an UpdatedEvent of its own now (see
+	// session_update.go), which the events.go bridge already forwards as
+	// session_updated — but this handler's broadcast is what carries the
+	// ownership annotation, so it stays. The two are idempotent for the
+	// client (upsertSession replaces by ID).
+	AnnotateSessionExternalOwnership(a, &sess)
+	c.hub.Broadcast(EventSessionUpdated, sess)
+}
+
+func handleGetSystemPrompt(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
+	var p GetSystemPromptPayload
+	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.SessionID == "" {
+		c.reply(msg.ID, EventError, nil, "invalid payload: sessionID required")
+		return
+	}
+	sess, err := a.Sessions.Get(ctx, p.SessionID)
+	if err != nil {
+		c.reply(msg.ID, EventError, nil, err.Error())
+		return
+	}
+	c.reply(msg.ID, EventSystemPrompt, map[string]string{"sessionID": p.SessionID, "content": sess.SystemPrompt}, "")
+}
+
+func handleSetSystemPrompt(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
+	var p SetSystemPromptPayload
+	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.SessionID == "" {
+		c.reply(msg.ID, EventError, nil, "invalid payload")
+		return
+	}
+	if a.AgentCoordinator == nil {
+		c.reply(msg.ID, EventError, nil, "agent not configured")
+		return
+	}
+	if err := a.AgentCoordinator.UpdateSessionSystemPrompt(ctx, p.SessionID, p.Content); err != nil {
+		c.reply(msg.ID, EventError, nil, err.Error())
+		return
+	}
+	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+}
+
+// ── Todos ─────────────────────────────────────────────────────────────────────
+
+func handleUpdateTodos(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
+	var p UpdateTodosPayload
+	if err := json.Unmarshal(msg.Payload, &p); err != nil {
+		c.reply(msg.ID, EventError, nil, "invalid payload")
+		return
+	}
+	sess, err := a.Sessions.Get(ctx, p.SessionID)
+	if err != nil {
+		c.reply(msg.ID, EventError, nil, "session not found")
+		return
+	}
+	todos := make([]session.Todo, len(p.Todos))
+	for i, t := range p.Todos {
+		todos[i] = session.Todo{
+			Content:    t.Content,
+			Status:     session.TodoStatus(t.Status),
+			ActiveForm: t.ActiveForm,
+		}
+	}
+	prev := sess.Todos
+	sess.Todos = todos
+	slog.Info(
+		"ws: user updated todos",
+		"session", p.SessionID,
+		"prev_count", len(prev),
+		"new_count", len(todos),
+	)
+
+	// Tombstone management: track which todos the operator explicitly removed.
+	newByContent := make(map[string]struct{}, len(todos))
+	for _, t := range todos {
+		newByContent[t.Content] = struct{}{}
+	}
+
+	tombstones := append([]string(nil), sess.DeletedTodos...)
+	tombstoneSet := make(map[string]struct{}, len(tombstones))
+	for _, tc := range tombstones {
+		tombstoneSet[tc] = struct{}{}
+	}
+
+	// Previous todos absent from the new list → add to tombstones.
+	for _, t := range prev {
+		if _, stillThere := newByContent[t.Content]; !stillThere {
+			if _, already := tombstoneSet[t.Content]; !already {
+				tombstones = append(tombstones, t.Content)
+				tombstoneSet[t.Content] = struct{}{}
+			}
+		}
+	}
+	// Operator re-added a previously tombstoned todo → lift the tombstone.
+	filtered := tombstones[:0]
+	for _, content := range tombstones {
+		if _, returned := newByContent[content]; !returned {
+			filtered = append(filtered, content)
+		}
+	}
+	sess.DeletedTodos = filtered
+
+	if err := a.Sessions.SetTodos(ctx, sess.ID, todos, filtered); err != nil {
+		c.reply(msg.ID, EventError, nil, "failed to save todos")
+		return
+	}
+	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+}

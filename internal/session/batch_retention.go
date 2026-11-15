@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/db"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 // BatchSettleCLIWakeDebt settles wake debt after the CLI has delivered the
