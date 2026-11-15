@@ -18,6 +18,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/oauth"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -528,7 +529,7 @@ func TestCoordinatorRunResponsesReplayFailureComposition(t *testing.T) {
 			// The pinned SDK serializer has no Responses output item IDs on its replayed function call,
 			// so this real history is full-frame fallback—not a fabricated delta-compatible transcript.
 			require.Contains(t, string(second.frame), `"type":"function_call_output"`)
-			require.Greater(t, ProviderMaxRetries, 0, "Fantasy's provider retry budget must remain enabled")
+			require.Greater(t, agentcall.ProviderMaxRetries, 0, "Fantasy's provider retry budget must remain enabled")
 			require.Equal(t, int32(1), toolCalls.Load(), "real Fantasy must execute the tool call once before the failing continuation request")
 			require.Equal(t, int32(2), modelStreams.Load(), "only two bounded inference streams are expected")
 			require.Equal(t, int32(1), trace.ownerRuns.Load(), "one coordinator owner run, without coordinator retry")

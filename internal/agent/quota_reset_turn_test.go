@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,9 +18,9 @@ import (
 // not parallel, so the package var is not shared with a running turn.
 func withoutProviderRetries(t *testing.T) {
 	t.Helper()
-	prev := ProviderMaxRetries
-	ProviderMaxRetries = 0
-	t.Cleanup(func() { ProviderMaxRetries = prev })
+	prev := agentcall.ProviderMaxRetries
+	agentcall.ProviderMaxRetries = 0
+	t.Cleanup(func() { agentcall.ProviderMaxRetries = prev })
 }
 
 // quotaLimitModel is a fantasy.LanguageModel whose Stream call fails with a

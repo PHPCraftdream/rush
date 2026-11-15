@@ -13,6 +13,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -31,7 +32,7 @@ func quotaRetryWait() time.Duration {
 	retry := fantasy.DefaultRetryOptions()
 	retryWait := time.Duration(0)
 	delay := retry.InitialDelayIn
-	for range agent.ProviderMaxRetries {
+	for range agentcall.ProviderMaxRetries {
 		retryWait += delay
 		delay = time.Duration(float64(delay) * retry.BackoffFactor)
 	}
@@ -116,7 +117,7 @@ func testCLIQuotaLiveChildAndBash(t *testing.T, question bool) {
 	require.Error(t, err)
 	require.Equal(t, "provider_limit", res.ExitReason)
 	// 2 setup + initial attempt + 2 pinned retries.
-	require.EqualValues(t, int32(2+agent.ProviderMaxRetries+1), rootRequests.Load())
+	require.EqualValues(t, int32(2+agentcall.ProviderMaxRetries+1), rootRequests.Load())
 	require.EqualValues(t, 1, childRequests.Load())
 	require.True(t, workerModel.Load())
 	require.Contains(t, out.String(), "quota-bash-output")

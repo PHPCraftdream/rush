@@ -12,6 +12,7 @@ import (
 	"charm.land/fantasy/providers/anthropic"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
@@ -156,7 +157,7 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 		zero := 0
 		retryCount = &zero
 	} else {
-		retryCount = &ProviderMaxRetries
+		retryCount = &agentcall.ProviderMaxRetries
 	}
 	streamCtx := ctx
 	if recovery {
