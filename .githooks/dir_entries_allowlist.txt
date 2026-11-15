@@ -39,9 +39,4 @@ internal/session/jobbatch/lab 24
 internal/serve/server 62
 internal/session 125
 internal/kit/sys/shell 17
-web/src/components 22
-web/src/components/batchControl 8
-web/src/components/peakHours 12
-web/src/components/providers 9
-web/src/components/scopedModels 11
 web/tests/helpers 9

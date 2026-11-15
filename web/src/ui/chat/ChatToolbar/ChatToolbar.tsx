@@ -4,7 +4,7 @@ import { busyCarburetor } from "../../../state/status/busy";
 import { sessionsCarburetor } from "../../../state/sessions/sessions";
 import type { ISessionsState } from "../../../state/sessions/SessionsCarburetor";
 import { findSession } from "../../shared/findSession";
-import { StatusBar } from "../../../components/StatusBar";
+import { StatusBar } from "../../livework/StatusBar";
 import { BusyDots } from "./pills/BusyDots";
 import { CollapseAllButton } from "./controls/CollapseAllButton";
 import { CompactButton } from "./controls/CompactButton";

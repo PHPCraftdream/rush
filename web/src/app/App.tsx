@@ -2,7 +2,7 @@ import { AntiHookComponent } from "@react-carburetor/core";
 import { authCarburetor } from "../state/link/auth";
 import { connectionCarburetor } from "../state/link/connection";
 import { WsConnector } from "./WsConnector";
-import { Sidebar } from "../components/Sidebar";
+import { Sidebar } from "../ui/sidebar/Sidebar";
 import { Chat } from "../ui/chat/Chat";
 import { Login } from "../ui/Login";
 import { PowerOff } from "lucide-react";

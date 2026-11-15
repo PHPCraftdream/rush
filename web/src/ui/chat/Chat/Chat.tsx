@@ -15,7 +15,7 @@ import type { ISessionsState } from "../../../state/sessions/SessionsCarburetor"
 import { ChatInput } from "../ChatInput";
 import { ChatToolbar } from "../ChatToolbar";
 import { ConfirmDialog } from "../../shared/ConfirmDialog";
-import { LiveWorkPanel } from "../../../components/LiveWorkPanel";
+import { LiveWorkPanel } from "../../livework/LiveWorkPanel";
 import { AgentErrorBanner } from "./transcript/AgentErrorBanner";
 import { BusyIndicator } from "./transcript/BusyIndicator";
 import { ChatScroller } from "./transcript/ChatScroller";

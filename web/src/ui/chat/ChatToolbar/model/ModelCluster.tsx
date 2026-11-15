@@ -2,7 +2,7 @@ import { AntiHookComponent } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
 import { ChevronDown } from "lucide-react";
 import type { Session } from "../../../../domain/types";
-import { ModelSelector } from "../../../../components/ModelSelector";
+import { ModelSelector } from "../../../models/ModelSelector";
 
 /** Props of the model selector cluster. */
 interface IModelClusterProps {
