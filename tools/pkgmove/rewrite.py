@@ -9,7 +9,7 @@ except ImportError:
     import gitops
 
 _IMPORT_BLOCK_RE = re.compile(r"\bimport\s*\(([^)]*)\)", re.S)
-_IMPORT_SINGLE_RE = re.compile(r'\bimport\s+(?:([A-Za-z_][A-Za-z0-9_]*|_|.)\s+)?"((?:[^"\\\n]|\\.)*)"')
+_IMPORT_SINGLE_RE = re.compile(r'\bimport\s+(?:([A-Za-z_][A-Za-z0-9_]*|\.)\s+)?"((?:[^"\\\n]|\\.)*)"')
 _QUOTED_RE = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
 
 
@@ -63,6 +63,18 @@ def rewrite_go_source(text, module, moves):
         if new is not None:
             spans.append((sm.start(2), sm.end(2), new))
             changed.append((p, new))
+    # Drop duplicate and contained spans: the block regex and the single regex
+    # can match the same quoted path, and overlapping edits cannot be applied
+    # safely because each replacement shifts offsets for the spans before it.
+    kept = []
+    for s, e, rep in spans:
+        if any(s2 == s and e2 == e for s2, e2, _ in kept):
+            continue
+        if any(s2 <= s and e <= e2 and (s2, e2) != (s, e) for s2, e2, _ in kept):
+            continue
+        kept.append((s, e, rep))
+    spans = kept
+    changed = list(dict.fromkeys(changed))
     new_text = text
     for s, e, rep in sorted(spans, key=lambda t: t[0], reverse=True):
         new_text = new_text[:s] + rep + new_text[e:]

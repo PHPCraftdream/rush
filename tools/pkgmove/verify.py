@@ -85,6 +85,27 @@ def read_manifest(path):
         return json.load(f)
 
 
+def check_repo_imports(repo, moves, module):
+    """Return problems for imports in tracked Go files that still break."""
+    problems = []
+    for f in repo.read_go_files():
+        if "testdata" in f.split("/"):
+            continue
+        try:
+            text = (repo.root / f).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for _, p in rewrite.scan_import_specs(text):
+            if not p.startswith(module + "/"):
+                continue
+            tail = p[len(module) + 1:]
+            if moves.resolve(tail) is not None:
+                problems.append("%s: import still names an old path: %s" % (f, p))
+            elif not (repo.root / tail).is_dir():
+                problems.append("%s: import path does not exist: %s" % (f, p))
+    return problems
+
+
 def verify(repo, manifest, module):
     problems = []
     moves = mapping_mod.Moves(manifest["mapping"])
@@ -138,4 +159,5 @@ def verify(repo, manifest, module):
             problems.append(
                 "unexpected moved package %s (old %s) not in manifest" % (d, old)
             )
+    problems.extend(check_repo_imports(repo, moves, module))
     return problems
