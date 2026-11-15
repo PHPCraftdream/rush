@@ -5,7 +5,7 @@ package tools
 import (
 	"os/exec"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 )
 
 // configureRunCommandProcess makes ctx cancellation (job_kill and the
@@ -19,6 +19,6 @@ func configureRunCommandProcess(cmd *exec.Cmd) {
 		if cmd.Process == nil {
 			return nil
 		}
-		return session.KillProcess(cmd.Process.Pid)
+		return procinfo.KillProcess(cmd.Process.Pid)
 	}
 }

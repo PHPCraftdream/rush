@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 	"github.com/PHPCraftdream/rush/internal/shell"
 )
 
@@ -332,7 +332,7 @@ func hardKillAbandoned(wt *workerTracker, hook config.HookConfig) {
 			return
 		}
 		for _, pid := range pids {
-			if err := session.KillProcess(pid); err != nil {
+			if err := procinfo.KillProcess(pid); err != nil {
 				slog.Warn(
 					"Hard kill of abandoned hook process failed",
 					"pid", pid,

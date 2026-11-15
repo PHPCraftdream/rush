@@ -971,6 +971,6 @@ func anyWitnessStillHolds(pgid int, witnesses []childGroupWitness) bool {
 }
 
 // isErrno (used above to classify the SIGKILL syscall's own error) is
-// defined once in kill_unix.go -- same package, same //go:build !windows
+// defined in errno_unix.go -- same package, same //go:build !windows
 // constraint as this file, so it is reused directly rather than
 // duplicated.

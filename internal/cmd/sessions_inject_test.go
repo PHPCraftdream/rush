@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/message"
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -146,7 +147,7 @@ func TestSessionLockFact_LivePIDIsHeld(t *testing.T) {
 	require.NoError(t, os.Chtimes(lockPath, staleTime, staleTime),
 		"back-dating mtime: the enum must not depend on it")
 
-	require.True(t, session.IsProcessAlive(holder.pid), "helper process must still be alive for this test to be meaningful")
+	require.True(t, procinfo.IsProcessAlive(holder.pid), "helper process must still be alive for this test to be meaningful")
 
 	require.Equal(t, session.LockHeld, session.InspectSessionLockFact(dataDir, "inject-stale-live").Kind,
 		"an alive recorded PID is held, whatever the mtime")

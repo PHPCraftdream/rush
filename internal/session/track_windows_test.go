@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 )
@@ -23,7 +24,7 @@ func spawnLiveVictim(t *testing.T) int {
 		t.Skipf("cannot spawn victim process: %v", err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() })
-	require.True(t, isProcessAlive(cmd.Process.Pid), "victim must be alive after Start")
+	require.True(t, procinfo.IsProcessAlive(cmd.Process.Pid), "victim must be alive after Start")
 	return cmd.Process.Pid
 }
 
@@ -70,7 +71,7 @@ func TestTerminateTrackedJob_ReusedPidEntryReturnsFalse(t *testing.T) {
 
 	got := terminateTrackedJob(pid)
 	require.False(t, got, "stale entry must not report termination success — the live pid-holder is a different process")
-	require.True(t, isProcessAlive(pid), "the reused-pid process must be untouched by the stale job path")
+	require.True(t, procinfo.IsProcessAlive(pid), "the reused-pid process must be untouched by the stale job path")
 	require.False(t, trackedEntryExists(pid), "stale entry must still be consumed (removed and closed)")
 }
 
@@ -93,13 +94,13 @@ func TestKillProcess_StaleTrackedEntryStillKillsReusedPid(t *testing.T) {
 	pid := spawnLiveVictim(t)
 	plantStaleTrackedEntry(t, pid)
 
-	require.NoError(t, KillProcess(pid), "KillProcess on a live reused pid")
+	require.NoError(t, procinfo.KillProcess(pid), "KillProcess on a live reused pid")
 	require.False(t, trackedEntryExists(pid), "entry must be consumed by the kill")
 	// Kill is asynchronous; poll briefly like the callers do.
-	for i := 0; i < 50 && isProcessAlive(pid); i++ {
+	for i := 0; i < 50 && procinfo.IsProcessAlive(pid); i++ {
 		time.Sleep(100 * time.Millisecond)
 	}
-	require.False(t, isProcessAlive(pid), "KillProcess returned nil but the reused-pid process survived — the stale job faked success and disabled the fallback")
+	require.False(t, procinfo.IsProcessAlive(pid), "KillProcess returned nil but the reused-pid process survived — the stale job faked success and disabled the fallback")
 }
 
 // TestKillProcess_TrackedLiveEntryKillsTree guards the normal path
@@ -111,10 +112,10 @@ func TestKillProcess_TrackedLiveEntryKillsTree(t *testing.T) {
 	require.NoError(t, TrackProcessTree(pid), "TrackProcessTree")
 	require.True(t, trackedEntryExists(pid), "entry registered")
 
-	require.NoError(t, KillProcess(pid), "KillProcess on tracked live pid")
-	for i := 0; i < 50 && isProcessAlive(pid); i++ {
+	require.NoError(t, procinfo.KillProcess(pid), "KillProcess on tracked live pid")
+	for i := 0; i < 50 && procinfo.IsProcessAlive(pid); i++ {
 		time.Sleep(100 * time.Millisecond)
 	}
-	require.False(t, isProcessAlive(pid), "tracked live pid must be dead after KillProcess")
+	require.False(t, procinfo.IsProcessAlive(pid), "tracked live pid must be dead after KillProcess")
 	require.False(t, trackedEntryExists(pid), "entry must be consumed by the kill")
 }

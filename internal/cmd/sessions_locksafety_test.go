@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/platform"
+	"github.com/PHPCraftdream/rush/internal/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -137,7 +138,7 @@ func TestSessionsReap_LiveOSLockStaleRecordedPID_NotRemoved(t *testing.T) {
 	// or the other.
 	holder := spawnKillTestLockHolder(t, dataDir, sessionID, false)
 	defer holder.stop(t)
-	require.True(t, session.IsProcessAlive(holder.pid))
+	require.True(t, procinfo.IsProcessAlive(holder.pid))
 
 	lockPath := filepath.Join(dataDir, "locks", "session-"+sessionID+".lock")
 	require.FileExists(t, lockPath)
@@ -166,7 +167,7 @@ func TestSessionsReap_LiveOSLockStaleRecordedPID_NotRemoved(t *testing.T) {
 		"a lock whose OS lock is held must be skipped, even when its recorded PID looks dead")
 	require.NotContains(t, stderr, "orphan lock",
 		"reap must never decide to remove a lock whose OS lock is currently held")
-	require.True(t, session.IsProcessAlive(holder.pid), "reap must never disturb a live holder")
+	require.True(t, procinfo.IsProcessAlive(holder.pid), "reap must never disturb a live holder")
 }
 
 // TestProbeThenKillHolder_UnknownProbeError_FailsClosed enforces place 5: when
@@ -211,12 +212,12 @@ func TestProbeThenKillHolder_UnknownProbeError_FailsClosed(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	require.True(t, session.IsProcessAlive(child.Process.Pid), "precondition: child must start alive")
+	require.True(t, procinfo.IsProcessAlive(child.Process.Pid), "precondition: child must start alive")
 
 	kr := probeThenKillHolder(dataDir, "unknown-probe-id", child.Process.Pid, 2*time.Second)
 	t.Logf("report: %s", kr.Report)
 
-	require.True(t, session.IsProcessAlive(child.Process.Pid),
+	require.True(t, procinfo.IsProcessAlive(child.Process.Pid),
 		"an unidentified probe failure must NOT kill the recorded PID (PID-reuse danger)")
 	require.False(t, kr.ConfirmedDead, "unknown probe error -> state unknown, must NOT be reported confirmed dead")
 	require.Equal(t, holderProbeError, kr.State, "unknown probe error -> state must be probe-error")
@@ -241,7 +242,7 @@ func TestSessionsReset_ForceLeavesLockFileInPlace(t *testing.T) {
 	lockPath := filepath.Join(lockDir, "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
 	require.NoError(t, os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644))
 
-	require.True(t, session.IsProcessAlive(os.Getpid()))
+	require.True(t, procinfo.IsProcessAlive(os.Getpid()))
 	// SessionsResetCmd.RunE creates its own full App. Release the seed App's
 	// process-wide MCP owner before invoking the command.
 	a.Shutdown()
@@ -254,7 +255,7 @@ func TestSessionsReset_ForceLeavesLockFileInPlace(t *testing.T) {
 
 	require.FileExists(t, lockPath,
 		"reset --force must leave the lock file in place (held+released), not unlink it")
-	require.True(t, session.IsProcessAlive(os.Getpid()),
+	require.True(t, procinfo.IsProcessAlive(os.Getpid()),
 		"reset --force must never kill the calling test process via a stale lock-file PID")
 }
 
