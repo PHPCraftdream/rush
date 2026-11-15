@@ -1,4 +1,4 @@
-package session_test
+package itest
 
 // Regression coverage for task #624 (F-5 and F-7 of the 2026-08-20 ninth
 // review of 3b2664da), on DrainSessionNow's visibility and error-priority

@@ -1,4 +1,4 @@
-package session_test
+package itest
 
 // Regression coverage for task #575 of the 2026-08-19 release-readiness
 // review: DrainSessionNow, on losing the admission race to a same-pump
