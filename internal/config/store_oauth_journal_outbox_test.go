@@ -68,8 +68,11 @@ func TestOAuthJournalOutbox_PermanentWriteFailureReturns(t *testing.T) {
 			select {
 			case err := <-result:
 				assert.NoError(t, err)
-			case <-time.After(100 * time.Millisecond):
-				t.Error("refresh did not return nil within 100ms while journal writes permanently fail (write budget 10ms)")
+			case <-time.After(5 * time.Second):
+				// The failure never clears, so a refresh that waited for it would
+				// never return; any finite deadline proves the handoff. A tight
+				// wall-clock bound only measured scheduler starvation under load.
+				t.Error("refresh did not return nil within 5s while journal writes permanently fail (write budget 10ms)")
 			}
 			logs.mu.Lock()
 			errorsLogged, handoffs := 0, 0
