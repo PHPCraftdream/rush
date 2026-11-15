@@ -1,7 +1,10 @@
 import type { TReadonly } from "@react-carburetor/core";
 import type { ModelRole } from "../../state/ConfigCarburetor";
-import type { ConfigPayload, Session } from "../../types";
-import { effortLevelsFor, defaultEffortFor, supportsEffort, clampEffort } from "../../effort";
+import type { ConfigPayload, Session } from "../../domain/types";
+import { effortLevelsFor } from "../../domain/effort/effortLevelsFor";
+import { defaultEffortFor } from "../../domain/effort/defaultEffortFor";
+import { supportsEffort } from "../../domain/effort/supportsEffort";
+import { clampEffort } from "../../domain/effort/clampEffort";
 import { defaultModelKey } from "./defaultModelKey";
 import { buildProviderGroups } from "./buildProviderGroups";
 import type { ModelItem, ProviderGroup } from "./modelListTypes";

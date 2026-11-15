@@ -13,7 +13,7 @@ import {
   type BatchControlResult,
   type BatchControlTarget,
 } from "./batchControls";
-import type { BatchWorkRoot, BatchWorkSnapshot } from "../types";
+import type { BatchWorkRoot, BatchWorkSnapshot } from "../domain/types";
 
 /** Items textarea seed of a fresh node. */
 const DEFAULT_ITEMS =

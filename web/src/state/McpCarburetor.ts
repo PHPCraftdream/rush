@@ -1,5 +1,5 @@
 import { Carburetor } from "@react-carburetor/core";
-import type { MCPState } from "../types";
+import type { MCPState } from "../domain/types";
 
 /** MCP server health as last reported by the backend; null before the first report. */
 export interface IMcpState {

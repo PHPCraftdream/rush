@@ -1,4 +1,4 @@
-import type { CustomRole } from "../customRoleTypes";
+import type { CustomRole } from "./index";
 
 /**
  * Looks a role up by own key, so prototype names ("constructor", "__proto__") are never roles.

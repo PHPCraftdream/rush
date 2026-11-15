@@ -1,7 +1,7 @@
 // One zebra-stripe block of an assistant message: a tool activity group or a run of parts.
 
 import { AntiHookComponent, bind } from "@react-carburetor/core";
-import type { Message as Msg, ContentPart } from "../../types";
+import type { Message as Msg, ContentPart } from "../../domain/types";
 import { Part } from "./Part";
 import { ToolActivityGroup } from "./ToolActivityGroup";
 import type { VisualBlock } from "./blocks";

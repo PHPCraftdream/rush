@@ -1,4 +1,4 @@
-import type { RoleToolsMode, SetCustomRoleRequest } from "../customRoleTypes";
+import type { RoleToolsMode, SetCustomRoleRequest } from "./index";
 
 /**
  * Whether a value is a non-empty string.

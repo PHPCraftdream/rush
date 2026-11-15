@@ -1,5 +1,5 @@
 import type { TReadonly } from "@react-carburetor/core";
-import type { MCPServerInfo } from "../../types";
+import type { MCPServerInfo } from "../../domain/types";
 
 /**
  * The editable JSON of an existing server.

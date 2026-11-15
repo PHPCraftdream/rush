@@ -1,6 +1,6 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
-import type { Todo, WakeScheduleItem } from "../types";
+import type { Todo, WakeScheduleItem } from "../domain/types";
 import { batchWorkCarburetor } from "../state/batchWork";
 import { wakeSchedulesCarburetor } from "../state/wakeSchedules";
 import { TodoList } from "./TodoList";

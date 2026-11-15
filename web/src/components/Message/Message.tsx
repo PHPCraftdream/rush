@@ -3,7 +3,7 @@
 import type { MouseEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { Check, Star } from "lucide-react";
-import type { Message as Msg, ContentPart } from "../../types";
+import type { Message as Msg, ContentPart } from "../../domain/types";
 import { updateMessageContent } from "../../store";
 import { busyCarburetor } from "../../state/busy";
 import { selectionCarburetor } from "../../state/selection";
@@ -18,7 +18,7 @@ import { UserContent } from "./UserContent";
 import { UserHoverActions } from "./UserHoverActions";
 import { extractText } from "./extractText";
 import { isTerminallyFinished } from "./isTerminallyFinished";
-import { isAsyncCompletionNotice } from "../../asyncJobCompletion";
+import { isAsyncCompletionNotice } from "../../domain/asyncJob/isAsyncCompletionNotice";
 
 // ── Message ───────────────────────────────────────────────────────────────────
 

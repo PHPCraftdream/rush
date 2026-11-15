@@ -1,5 +1,5 @@
 import { Carburetor } from "@react-carburetor/core";
-import type { ConfigPayload } from "../types";
+import type { ConfigPayload } from "../domain/types";
 
 /**
  * The four session model slots (task #1061 generalized ModelSelector from

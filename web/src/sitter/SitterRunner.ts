@@ -1,5 +1,5 @@
 import { ws } from "../net/client";
-import type { Todo } from "../types";
+import type { Todo } from "../domain/types";
 import { busyCarburetor } from "../state/busy";
 import { sessionsCarburetor } from "../state/sessions";
 import { SitterCarburetor } from "../state/SitterCarburetor";

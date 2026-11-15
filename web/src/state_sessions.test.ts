@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { flush } from "@react-carburetor/core/testing";
 import { SessionsCarburetor } from "./state/SessionsCarburetor.ts";
 import type { ISessionsState } from "./state/SessionsCarburetor.ts";
-import type { Session } from "./types.ts";
+import type { Session } from "./domain/types.ts";
 
 /**
  * Builds a minimal session row.

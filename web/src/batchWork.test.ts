@@ -5,7 +5,7 @@ import type { BatchTreeNode, BatchTreeRoot } from "./batch/buildBatchTree.ts";
 import { pickBatchWork } from "./batch/pickBatchWork.ts";
 import { BatchWorkCarburetor } from "./state/BatchWorkCarburetor.ts";
 import type { BatchWorkState } from "./state/BatchWorkCarburetor.ts";
-import type { BatchWorkNode, BatchWorkRoot, BatchWorkSnapshot } from "./types.ts";
+import type { BatchWorkNode, BatchWorkRoot, BatchWorkSnapshot } from "./domain/types.ts";
 
 /**
  * Builds a batch node.

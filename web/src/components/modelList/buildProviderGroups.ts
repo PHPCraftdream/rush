@@ -1,5 +1,5 @@
 import type { TReadonly } from "@react-carburetor/core";
-import type { ConfigPayload } from "../../types";
+import type { ConfigPayload } from "../../domain/types";
 import type { ModelItem, ProviderGroup } from "./modelListTypes";
 
 /**

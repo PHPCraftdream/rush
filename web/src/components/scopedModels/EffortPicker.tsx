@@ -1,6 +1,8 @@
 import type { ChangeEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
-import { effortLevelsFor, clampEffort, defaultEffortFor } from "../../effort";
+import { effortLevelsFor } from "../../domain/effort/effortLevelsFor";
+import { clampEffort } from "../../domain/effort/clampEffort";
+import { defaultEffortFor } from "../../domain/effort/defaultEffortFor";
 import type { ModelItem } from "../modelList/modelListTypes";
 
 /**

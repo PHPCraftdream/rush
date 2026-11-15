@@ -7,7 +7,7 @@ import { SelectionCarburetor } from "./state/SelectionCarburetor.ts";
 import { SignalsCarburetor } from "./state/SignalsCarburetor.ts";
 import { SitterCarburetor } from "./state/SitterCarburetor.ts";
 import { SkillsCarburetor } from "./state/SkillsCarburetor.ts";
-import type { SkillInfo } from "./types.ts";
+import type { SkillInfo } from "./domain/types.ts";
 
 /** In-memory localStorage stand-in. */
 class MemoryStorage {

@@ -3,7 +3,7 @@ import type { ChangeEvent, KeyboardEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
 import { X, Plus, AlertCircle, Loader2 } from "lucide-react";
-import type { MCPServerInfo } from "../../types";
+import type { MCPServerInfo } from "../../domain/types";
 import { PLACEHOLDER_JSON } from "./PLACEHOLDER_JSON";
 import { buildInitialJson } from "./buildInitialJson";
 

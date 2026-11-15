@@ -1,5 +1,5 @@
 import type { ConfigScope } from "../../store";
-import type { ProviderPeakHoursPolicy } from "../../types";
+import type { ProviderPeakHoursPolicy } from "../../domain/types";
 import type { ModelDraft } from "./ModelDraft";
 
 /** Values a provider form starts from when editing an existing provider. */

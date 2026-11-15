@@ -1,7 +1,7 @@
 // Finds the terminal bad finish of a sub-agent run.
 
 import type { TReadonly } from "@react-carburetor/core";
-import type { Message, FinishPart } from "../../types";
+import type { Message, FinishPart } from "../../domain/types";
 import type { ISubAgentParent } from "./selectSubAgentView";
 
 /**

@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { flush } from "@react-carburetor/core/testing";
 import { McpCarburetor } from "./state/McpCarburetor.ts";
 import type { IMcpState } from "./state/McpCarburetor.ts";
-import type { MCPServerInfo, MCPState } from "./types.ts";
+import type { MCPServerInfo, MCPState } from "./domain/types.ts";
 
 const nameOf = (server: { name: string }): string => server.name;
 const toServer = (name: string): MCPServerInfo => ({ name, status: "connected", disabled: false, toolCount: 1 });

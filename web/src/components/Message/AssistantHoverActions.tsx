@@ -2,7 +2,7 @@
 
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { Star, GitFork, Pencil, Trash2 } from "lucide-react";
-import type { Message as Msg } from "../../types";
+import type { Message as Msg } from "../../domain/types";
 import { togglePinMessage } from "../../store";
 import { CopyButton } from "./CopyButton";
 import { CopyTurnButton } from "./CopyTurnButton";

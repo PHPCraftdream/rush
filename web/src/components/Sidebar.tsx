@@ -3,7 +3,7 @@ import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
 import { setActiveSession, removeSession } from "../store";
 import { ws, wsRequest, sendLoadMessages } from "../ws";
-import type { Session } from "../types";
+import type { Session } from "../domain/types";
 import { configCarburetor } from "../state/config";
 import { sessionsCarburetor } from "../state/sessions";
 import type { ISessionsState } from "../state/SessionsCarburetor";

@@ -1,4 +1,4 @@
-import type { CustomRole, RoleToolsMode } from "../customRoleTypes";
+import type { CustomRole, RoleToolsMode } from "./index";
 
 /**
  * How a role treats tools: inherit the defaults, none, or its own patterns.

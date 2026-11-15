@@ -3,7 +3,7 @@ import type { ChangeEvent, KeyboardEvent, MouseEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
 import { Pencil, X, Check } from "lucide-react";
-import type { Session } from "../../types";
+import type { Session } from "../../domain/types";
 import { busyCarburetor } from "../../state/busy";
 import { sessionsCarburetor } from "../../state/sessions";
 import { formatTokens } from "./formatTokens";

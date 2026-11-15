@@ -1,7 +1,7 @@
 import { computed } from "@react-carburetor/core";
-import { indexAsyncJobCompletions } from "../asyncJob/indexAsyncJobCompletions";
-import { mergeCompletionIndex } from "../completion/mergeCompletionIndex";
-import type { Message } from "../types";
+import { indexAsyncJobCompletions } from "../domain/asyncJob/indexAsyncJobCompletions";
+import { mergeCompletionIndex } from "../domain/completion/mergeCompletionIndex";
+import type { Message } from "../domain/types";
 import { batchWorkCarburetor } from "./batchWork";
 import { messagesCarburetor } from "./messages";
 import { sessionsCarburetor } from "./sessions";

@@ -6,9 +6,9 @@ import type {
   CustomRolesState,
   SetCustomRoleRequest,
   WSMessage,
-} from "../types";
-import { customRoleAt, roleToolsMode, roleToolsPayload, type RoleToolsMode } from "../customRoleTypes";
-import { effortLevelsFor } from "../effort";
+} from "../domain/types";
+import { customRoleAt, roleToolsMode, roleToolsPayload, type RoleToolsMode } from "../domain/customRole";
+import { effortLevelsFor } from "../domain/effort/effortLevelsFor";
 import { ws, wsRequest, WSRequestError } from "../ws";
 import type { ModelItem } from "./ModelSelector";
 

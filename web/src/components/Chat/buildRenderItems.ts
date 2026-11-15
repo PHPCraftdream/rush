@@ -1,5 +1,5 @@
 import type { TReadonly } from "@react-carburetor/core";
-import type { Message as Msg, ContentPart } from "../../types";
+import type { Message as Msg, ContentPart } from "../../domain/types";
 
 /** The slice of a part the grouper inspects before narrowing it. */
 interface PartLike {

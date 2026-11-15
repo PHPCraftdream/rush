@@ -1,7 +1,7 @@
 import { createRef } from "react";
 import type { ChangeEvent, KeyboardEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
-import type { Todo, TodoStatus } from "../types";
+import type { Todo, TodoStatus } from "../domain/types";
 import { updateTodos } from "../store";
 
 // ── Status symbol ─────────────────────────────────────────────────────────────

@@ -6,7 +6,7 @@ import { batchNodeNotice } from "./batchControl/batchNodeNotice.ts";
 import { batchNodeStatus } from "./batchControl/batchNodeStatus.ts";
 import { batchResultMessage } from "./batchControl/batchResultMessage.ts";
 import { isStopConfirmed } from "./batchControl/isStopConfirmed.ts";
-import type { BatchWorkNode } from "../types.ts";
+import type { BatchWorkNode } from "../../domain/types.ts";
 
 const pending = {
   nodeID: "n",

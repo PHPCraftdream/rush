@@ -1,7 +1,7 @@
 // Routes a single message content part to its renderer.
 
 import { memo } from "react";
-import type { ContentPart } from "../../types";
+import type { ContentPart } from "../../domain/types";
 import { SubAgentBlock } from "../SubAgentBlock";
 import { AskQuestionBlock } from "./AskQuestionBlock";
 import { FinishErrorBlock } from "./FinishErrorBlock";

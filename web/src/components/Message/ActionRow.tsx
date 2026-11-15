@@ -4,10 +4,10 @@
 import type { MouseEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { BrainCircuit, Pencil, Trash2, ChevronDown, ChevronUp } from "lucide-react";
-import type { ContentPart } from "../../types";
-import type { AsyncJobCompletion } from "../../asyncJobCompletion";
+import type { ContentPart } from "../../domain/types";
+import type { AsyncJobCompletion } from "../../domain/asyncJob/asyncJobTypes";
 import { updateMessagePart, deleteMessagePart } from "../../store";
-import { formatActionArgs } from "../../toolFormat";
+import { formatActionArgs } from "../../domain/text/toolFormat";
 import { asyncJobCompletions } from "../../state/asyncJobCompletions";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { CopyButton } from "./CopyButton";
@@ -17,7 +17,7 @@ import { TimeBadge } from "./TimeBadge";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { ToolResultBlock } from "./ToolResultBlock";
 import { watchExpandToolCallSignal } from "./watchExpandToolCallSignal";
-import { isPendingJob } from "../../asyncJobMetadata";
+import { isPendingJob } from "../../domain/text/asyncJobMetadata";
 
 /** A tool call row: the call and/or its paired result. */
 export interface ToolActionItem {

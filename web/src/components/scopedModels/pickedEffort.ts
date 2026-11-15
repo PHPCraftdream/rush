@@ -1,4 +1,5 @@
-import { clampEffort, defaultEffortFor } from "../../effort";
+import { clampEffort } from "../../domain/effort/clampEffort";
+import { defaultEffortFor } from "../../domain/effort/defaultEffortFor";
 import type { ModelItem } from "../modelList/modelListTypes";
 
 /**

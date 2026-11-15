@@ -1,7 +1,7 @@
 import { createRef } from "react";
 import type { MouseEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
-import type { SkillInfo } from "../../types";
+import type { SkillInfo } from "../../domain/types";
 import { sourceBadgeClass } from "./sourceBadgeClass";
 
 /** Props of one slash-menu row. */

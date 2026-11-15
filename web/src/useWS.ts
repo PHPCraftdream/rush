@@ -29,7 +29,7 @@ import type {
   SessionLiveWorkPayload,
   SessionWakeSchedulesPayload,
   BatchWorkSnapshot,
-} from "./types";
+} from "./domain/types";
 import { keepAliveRuntime } from "./keepAlive/keepAliveRuntime";
 import { reloadReconnectTranscript } from "./reconnectTranscript";
 import { sitterLoop } from "./sitter/sitterLoop";

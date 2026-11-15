@@ -2,7 +2,7 @@
 // empty-response handling.
 
 import { AntiHookComponent } from "@react-carburetor/core";
-import type { Message as Msg, ContentPart, FinishPart } from "../../types";
+import type { Message as Msg, ContentPart, FinishPart } from "../../domain/types";
 import { busyCarburetor } from "../../state/busy";
 import { messagesCarburetor } from "../../state/messages";
 import { AssistantBlock } from "./AssistantBlock";

@@ -1,4 +1,4 @@
-import type { ContentPart, Message } from "./types";
+import type { ContentPart, Message } from "../types";
 
 /**
  * The parts of one kind, narrowed to that kind.

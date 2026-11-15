@@ -1,6 +1,6 @@
 // ─── Shared types mirroring Go structs ────────────────────────────────────────
 
-export type { CustomRole, CustomRolesState, CustomRoleScope, SetCustomRoleRequest } from "./customRoleTypes";
+export type { CustomRole, CustomRolesState, CustomRoleScope, SetCustomRoleRequest } from "./customRole/index";
 
 export type TodoStatus = "pending" | "in_progress" | "completed";
 
@@ -133,7 +133,7 @@ export interface Message {
   // CLI `rush run` prompts, `rush sessions inject`, SDK runs). Absent from
   // rows written before the origin column existed and from older servers —
   // both mean "unspecified", which is NOT composer-typed input, so the
-  // composer recall history ($myPrompts in web/src/store.ts) requires
+  // composer recall history ($myPrompts in web/src/actions/index.ts) requires
   // exactly "web".
   Origin?: string;
   // Mirrors message.Message.NoticeKind / MessageWire.NoticeKind: "" (or

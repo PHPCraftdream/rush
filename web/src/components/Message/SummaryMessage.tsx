@@ -4,7 +4,7 @@ import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
 import { BookMarked, Pencil } from "lucide-react";
 import ReactMarkdown from "react-markdown";
-import type { Message as Msg } from "../../types";
+import type { Message as Msg } from "../../domain/types";
 import { updateMessageContent } from "../../store";
 import { DurationBadge } from "./DurationBadge";
 import { EditForm } from "./EditForm";
