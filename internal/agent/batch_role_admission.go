@@ -27,37 +27,6 @@ func batchRoleContractsWereAdmitted(ctx context.Context) bool {
 	return admitted
 }
 
-// AdmitBatchRoleContracts resolves every explicitly selected custom role in a
-// structural batch before the caller can reserve capacity or construct tools.
-// The returned payloads contain immutable role snapshots used by later queue
-// execution; config is read only from the coordinator's pinned snapshot.
-func AdmitBatchRoleContracts(ctx context.Context, c Coordinator, spec jobbatch.Spec) (jobbatch.Spec, error) {
-	if err := validateBatchSpecShapeForRoleAdmission(spec); err != nil {
-		return jobbatch.Spec{}, err
-	}
-	if batchRoleContractsWereAdmitted(ctx) {
-		if err := validateBatchRolePayloads(spec); err != nil {
-			return jobbatch.Spec{}, err
-		}
-		return spec, nil
-	}
-	if cfg, ok := parentRoleConfigFrom(ctx); ok {
-		admitted, err := admitBatchRoleContracts(cfg, parentRoleContractFrom(ctx), spec)
-		if err != nil {
-			return jobbatch.Spec{}, err
-		}
-		return admitted, nil
-	}
-	if cc, ok := c.(*coordinator); ok && cc.cfg != nil {
-		cfg, _ := cc.cfg.Snapshot()
-		return admitBatchRoleContracts(cfg, parentRoleContractFrom(ctx), spec)
-	}
-	if batchSpecHasCustomRole(spec) {
-		return jobbatch.Spec{}, fmt.Errorf("%w: custom role configuration unavailable", ErrAgentRoleUnconfigured)
-	}
-	return spec, nil
-}
-
 func configForBatchInvocation(inv BatchInvocation) (*config.Config, error) {
 	if inv.roleConfig != nil {
 		return inv.roleConfig, nil

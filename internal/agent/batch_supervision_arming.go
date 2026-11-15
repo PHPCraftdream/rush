@@ -22,27 +22,3 @@ func (b *batchDeliveryImpl) psvArmSupervision(ctx context.Context, owner string)
 	}
 	b.deps.ArmSupervision(ctx, owner)
 }
-
-// PsvBatchSupervisionArmingLate builds the production batch delivery
-// arming func for an app-level wiring site whose coordinator is assigned
-// AFTER the batch install is built (get is re-read on every call). The
-// returned func calls the late-bound coordinator's noteWorkStarted, which
-// already: exempts delegated children
-// (subAgentDrivers), resolves config + per-call CallOptions
-// (--no-supervision / --supervision-interval) from the PASSED ctx, is
-// idempotent for an already-armed session, and resumes a paused session
-// with fresh backoff (legacy new-work resume semantics). A not-yet-bound
-// or non-concrete coordinator is a silent no-op, matching
-// PscCoordinatorChildReactionFactsLate's late-binding discipline.
-func PsvBatchSupervisionArmingLate(get func() Coordinator) func(context.Context, string) {
-	return func(ctx context.Context, owner string) {
-		if get == nil || owner == "" {
-			return
-		}
-		cc, ok := get().(*coordinator)
-		if !ok || cc == nil {
-			return
-		}
-		cc.noteWorkStarted(ctx, owner)
-	}
-}

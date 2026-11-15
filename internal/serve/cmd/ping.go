@@ -20,6 +20,7 @@ import (
 	"charm.land/fantasy/providers/vercel"
 	rushagent "github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/app"
@@ -304,7 +305,7 @@ func runPing(cmd *cobra.Command, a *app.App, modelType config.SelectedModelType,
 
 	// Stream the response
 	streamCall := fantasy.AgentStreamCall{
-		MaxRetries: &rushagent.ProviderMaxRetries,
+		MaxRetries: &agentcall.ProviderMaxRetries,
 		Prompt:     userPrompt,
 	}
 

@@ -9,7 +9,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -233,22 +232,4 @@ func (c *coordinator) guardTurnDiskFence(ctx context.Context, sessionID string, 
 // clearly).
 func requirementFromCall(call SessionAgentCall) *session.SessionExecutionRequirement {
 	return diskRequirementForCall(call)
-}
-
-// SetCoordinatorExecutionRequirementStore wires the durable
-// session-execution-fence store onto a coordinator (internal/app
-// composition root), mirroring the SetBatchDriverClaimer setter pattern.
-func SetCoordinatorExecutionRequirementStore(c Coordinator, store session.SessionExecutionRequirementStore) error {
-	if c == nil {
-		return errors.New("execution requirement store: nil coordinator")
-	}
-	if store == nil {
-		return errors.New("execution requirement store: nil store")
-	}
-	co, ok := c.(*coordinator)
-	if !ok {
-		return errors.New("execution requirement store: unsupported coordinator type")
-	}
-	co.execReqs = store
-	return nil
 }

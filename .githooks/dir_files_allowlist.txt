@@ -11,7 +11,7 @@
 #
 # When you split a directory: delete its line here. A count may never
 # go up.
-internal/agent 817
+internal/agent 816
 internal/agent/provider/cliprovider 59
 internal/agent/provider/nettransport 22
 internal/agent/tools 163
