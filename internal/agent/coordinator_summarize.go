@@ -9,25 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
 )
-
-// SummarizeSnapshot holds an immutable snapshot of all configuration needed
-// for a single manual/queued summarize operation. It is computed ONCE from the
-// target session's persisted models (or from shared state for sessions without
-// overrides) and passed through the entire summarize path, ensuring the provider
-// options, model, and prompt prefix never diverge due to concurrent SetModels
-// calls (task #341, P1-1).
-//
-// This mirrors the resolvedOverrides pattern used for normal turns, but
-// specialized for summarize which doesn't need fastModel or systemPrompt.
-type SummarizeSnapshot struct {
-	model           Model
-	providerOptions fantasy.ProviderOptions
-	promptPrefix    string
-	providerCfg     config.ProviderConfig
-}
 
 func (c *coordinator) GetSystemPrompt() string {
 	return c.currentAgent.SystemPrompt()
@@ -101,10 +84,10 @@ func (c *coordinator) Summarize(ctx context.Context, sessionID string, snapshot 
 		}
 	}
 
-	providerCfg := snapshot.providerCfg
+	providerCfg := snapshot.ProviderCfg
 	if providerCfg.ID == "" {
 		var err error
-		providerCfg, err = c.currentProviderConfig(snapshot.model.ModelCfg.Provider)
+		providerCfg, err = c.currentProviderConfig(snapshot.Model.ModelCfg.Provider)
 		if err != nil {
 			return err
 		}
@@ -115,19 +98,19 @@ func (c *coordinator) Summarize(ctx context.Context, sessionID string, snapshot 
 
 	currentSnapshot := snapshot
 	rebuildSnapshot := func() error {
-		cfg, freshProviderCfg, err := c.rebuildInputs(currentSnapshot.model.ModelCfg.Provider)
+		cfg, freshProviderCfg, err := c.rebuildInputs(currentSnapshot.Model.ModelCfg.Provider)
 		if err != nil {
 			return err
 		}
-		freshModel, err := c.rebuildPinnedModel(ctx, cfg, currentSnapshot.model, freshProviderCfg, false)
+		freshModel, err := c.rebuildPinnedModel(ctx, cfg, currentSnapshot.Model, freshProviderCfg, false)
 		if err != nil {
 			return fmt.Errorf("failed to rebuild summarize model: %w", err)
 		}
 		currentSnapshot = &SummarizeSnapshot{
-			model:           freshModel,
-			providerOptions: getProviderOptions(sessionID, freshModel, freshProviderCfg),
-			promptPrefix:    currentSnapshot.promptPrefix,
-			providerCfg:     freshProviderCfg,
+			Model:           freshModel,
+			ProviderOptions: getProviderOptions(sessionID, freshModel, freshProviderCfg),
+			PromptPrefix:    currentSnapshot.PromptPrefix,
+			ProviderCfg:     freshProviderCfg,
 		}
 		providerCfg = freshProviderCfg
 		return nil
@@ -177,10 +160,10 @@ func (c *coordinator) buildSummarizeSnapshot(ctx context.Context, sessionID stri
 	}
 
 	return &SummarizeSnapshot{
-		model:           resolved.smart,
-		providerOptions: opts,
-		promptPrefix:    promptPrefix,
-		providerCfg:     providerCfg,
+		Model:           resolved.smart,
+		ProviderOptions: opts,
+		PromptPrefix:    promptPrefix,
+		ProviderCfg:     providerCfg,
 	}, nil
 }
 

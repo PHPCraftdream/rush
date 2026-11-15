@@ -101,7 +101,7 @@ func task74AssertInstalledStatus(t *testing.T, ctx context.Context, built policy
 func TestTask74FinishToolAssemblyInstallsAllowedBuiltinControls(t *testing.T) {
 	installer := task74AssemblyInstaller("")
 	coord, ctx, scope, _, _ := task74AssemblyFixture(t, installer, "task74-builtin", nil)
-	defer scope.close()
+	defer scope.Close()
 
 	allowed := []string{"batch_run", "batch_add", "batch_status", "batch_output", "batch_stop"}
 	built, err := coord.finishToolAssembly(ctx, task74AssemblyInput(), nil, false, allowed)
@@ -118,7 +118,7 @@ func TestTask74FinishToolAssemblyAppliesRoleAndInheritedControlCeilings(t *testi
 	contract := task74RoleContract("analyst", &roleTools, [][]string{{"view", "batch_status"}})
 	installer := task74AssemblyInstaller("")
 	coord, ctx, scope, _, _ := task74AssemblyFixture(t, installer, "task74-role-cap", contract)
-	defer scope.close()
+	defer scope.Close()
 
 	// The base build grants every native control; the role's own and inherited
 	// caps intersect that floor down to batch_status only.
@@ -137,7 +137,7 @@ func TestTask74FinishToolAssemblyAppliesRoleAndInheritedControlCeilings(t *testi
 func TestTask74FinishToolAssemblyCannotWidenBaseAllowedControls(t *testing.T) {
 	installer := task74AssemblyInstaller("")
 	coord, ctx, scope, _, _ := task74AssemblyFixture(t, installer, "task74-base-allowed-floor", nil)
-	defer scope.close()
+	defer scope.Close()
 
 	built, err := coord.finishToolAssembly(ctx, task74AssemblyInput(), nil, false, []string{"batch_status"})
 	require.NoError(t, err)
@@ -154,7 +154,7 @@ func TestTask74FinishToolAssemblyEmptyRoleInstallsNoTools(t *testing.T) {
 	contract := task74RoleContract("closed", &emptyTools, nil)
 	installer := task74AssemblyInstaller("")
 	coord, ctx, scope, _, _ := task74AssemblyFixture(t, installer, "task74-empty-role", contract)
-	defer scope.close()
+	defer scope.Close()
 
 	built, err := coord.finishToolAssembly(ctx, task74AssemblyInput(), nil, false,
 		[]string{"batch_run", "batch_add", "batch_status", "batch_output", "batch_stop"})
@@ -173,5 +173,5 @@ func TestTask74FinishToolAssemblyRejectsMissingEffectiveControlAndCleansUp(t *te
 	_, resolveErr := ingress.Registry("reg-1")
 	require.Error(t, resolveErr, "failBuildScope must drop the pinned identity")
 	require.Zero(t, caps.ownerCount(), "the failed assembly must close its construction scope")
-	scope.close()
+	scope.Close()
 }

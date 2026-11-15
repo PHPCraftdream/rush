@@ -34,7 +34,7 @@ func TestCachePrefix_FinalAdmittedBatchToolsCanonical(t *testing.T) {
 		agentCfg.AllowedTools = allowed
 		opts := &CallOptions{DisableSubAgents: true}
 		scope := EnsureCallBuildScope(opts)
-		defer scope.close()
+		defer scope.Close()
 		ctx := WithCallOptions(batchCallCtx("cache-final-admitted"), opts)
 		got, err := coord.buildTools(ctx, cfg, agentCfg, false)
 		require.NoError(t, err)

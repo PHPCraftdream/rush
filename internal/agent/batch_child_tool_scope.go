@@ -49,7 +49,7 @@ func (s *pctChildToolScope) pctRelease() {
 	}
 	s.mu.Unlock()
 	if closeScope {
-		s.scope.close()
+		s.scope.Close()
 	}
 }
 
@@ -68,8 +68,8 @@ func pctChildToolBuildContext(ctx context.Context) (context.Context, *pctChildTo
 	}
 	scope := pctNewChildToolScope()
 	opts := *callOptionsFrom(ctx)
-	opts.buildScope = scope.scope
-	parent.register(scope.pctProvisionalRelease())
+	opts.BuildScope = scope.scope
+	parent.Register(scope.pctProvisionalRelease())
 	ctx = WithCallOptions(ctx, &opts)
 	return ctx, scope
 }

@@ -283,7 +283,7 @@ func TestRunSessionAgentCall_ReadyGateFailureReleasesTransferredOwner(t *testing
 	require.NoError(t, err)
 	opts, release, err := bindExistingCallDiskBinding(caps, bindingID, "call-1", nil)
 	require.NoError(t, err)
-	opts.buildScope.register(release) // mirrors RebuildSessionAgentCall's transfer (coordinator_run_queue_call.go:286)
+	opts.BuildScope.Register(release) // mirrors RebuildSessionAgentCall's transfer (coordinator_run_queue_call.go:286)
 
 	coord.readyWg.Go(func() error { return errors.New("gate failed") })
 	require.Eventually(t, func() bool { return coord.readyWg.Wait() != nil },
@@ -300,13 +300,13 @@ func TestRunSessionAgentCall_ReadyGateFailureReleasesTransferredOwner(t *testing
 // TestDrainCallFor_BuildCallFailureReleasesConstructionOwner (gh#10b,
 // post-construction-pin failure): the first resolveSessionModels builds the
 // per-call toolset under the batch binding, pinning a Construction owner
-// into caps2 AND registering its release on capOpts.buildScope; the
+// into caps2 AND registering its release on capOpts.BuildScope; the
 // post-refresh second resolve then fails on sessions.Get — the ONE failure
 // path where nothing but drainCallFor's abandon defer closes the call scope
 // (pinCallTools' fail() is not reached: the second resolve dies on Get
 // before building again).
 //
-// WHY IT FAILS ON OLD CODE: deleting capOpts.buildScope.close() from the
+// WHY IT FAILS ON OLD CODE: deleting capOpts.BuildScope.Close() from the
 // abandon defer (agent_drain.go:112-114) leaves the Construction owner
 // pinned — ownersConstr == 1 and the caps2 assertions fail; deleting
 // prep.release() fails the fence-caps assertion.

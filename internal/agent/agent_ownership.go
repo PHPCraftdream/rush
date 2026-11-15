@@ -418,7 +418,7 @@ func (a *sessionAgent) restartOrphaned(calls []SessionAgentCall) error {
 // failure. For marshal failures, the call is truly lost — there is no
 // recovery path possible.
 //
-// A call carrying onQueueResolved (coordinator.runAwaitingAdmission, #1036)
+// A call carrying OnQueueResolved (coordinator.runAwaitingAdmission, #1036)
 // has a live in-process waiter blocked on that hook — durably enqueuing it
 // would serialize it via ToSessionAgentCallData, which has no field for the
 // hook (json:"-"), silently stranding the waiter forever (no implicit
@@ -429,7 +429,7 @@ func (a *sessionAgent) restartOrphaned(calls []SessionAgentCall) error {
 func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error {
 	calls = splitCallsWithoutWaiters(calls, "the sub-agent session's previous turn ended with an error before this queued turn could run; resume it again")
 	// Package L round 2: a retained queued call is NOT a waiter (its
-	// onQueueResolved is nil), so splitCallsWithoutWaiters above correctly
+	// OnQueueResolved is nil), so splitCallsWithoutWaiters above correctly
 	// KEPT it for durable re-enqueue -- the pump rebuilds a fresh call with
 	// its own build scope, so the in-process retention must be released at
 	// the handoff, exactly once. This is the waiters-classification-preserving
@@ -509,7 +509,7 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 				return
 			}
 
-			if call.batchQuestion != nil {
+			if call.BatchQuestion != nil {
 				slog.Error("agent: refusing to durably enqueue a call carrying batch question capability",
 					"session_id", call.SessionID, "logical_call_id", call.LogicalCallID)
 				callErrs[i] = fmt.Errorf("%w (session=%s)", ErrBatchQuestionCapabilityNotDurable, call.SessionID)

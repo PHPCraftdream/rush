@@ -36,14 +36,14 @@ func TestFinalizationBindScopeHookCarriesTrustedAuthoritiesIntoDriver(t *testing
 		MaxCost:   2, MaxTokens: 100, Credentials: credentials, CallOptions: options,
 		RequestedModelRole: RequestedModelRole("reviewer"),
 	}
-	generation := registry.register(original.SessionID, subAgentDriver{agent: binder, call: original, finalizationAuthorities: session.CaptureAgentFinalizationContext(parentCtx)})
+	generation := registry.register(original.SessionID, subAgentDriver{agent: binder, call: original, FinalizationAuthorities: session.CaptureAgentFinalizationContext(parentCtx)})
 	pre, ok := registry.get(original.SessionID)
 	require.True(t, ok)
 	require.Empty(t, pre.call.LogicalCallID, "the driver starts without a logical identity")
 	incoming := original
 	incoming.LogicalCallID = fixture.child.LogicalCallID
-	incoming.driverGeneration = generation
-	incoming.finalizationAuthorities = fixture.capability
+	incoming.DriverGeneration = generation
+	incoming.FinalizationAuthorities = fixture.capability
 	incoming.MaxCost, incoming.MaxTokens, incoming.RequestedModelRole = 200, 9999, RequestedModelRole("smart")
 	hook := NewFinalizationBindScopeHook(binder)
 	require.NoError(t, hook(fixture.ctx, incoming))
@@ -52,7 +52,7 @@ func TestFinalizationBindScopeHookCarriesTrustedAuthoritiesIntoDriver(t *testing
 	require.True(t, ok)
 	require.Equal(t, generation, stored.generation)
 	require.Equal(t, incoming.LogicalCallID, stored.call.LogicalCallID)
-	require.Equal(t, fixture.capability.Requirement(), stored.finalizationAuthorities.Requirement())
+	require.Equal(t, fixture.capability.Requirement(), stored.FinalizationAuthorities.Requirement())
 	require.Same(t, credentials, stored.call.Credentials, "identity transport keeps the frozen credentials")
 	require.Same(t, options, stored.call.CallOptions)
 	require.Equal(t, original.MaxCost, stored.call.MaxCost)
@@ -74,9 +74,9 @@ func TestFinalizationBindScopeHookRefusesForeignIdentity(t *testing.T) {
 	fixture := newFinalizationDriverFixture(t)
 	registry := newSubAgentDriverRegistry()
 	binder := &sessionAgent{coord: &coordinator{subAgentDrivers: registry}}
-	call := SessionAgentCall{SessionID: fixture.child.SessionID, LogicalCallID: fixture.child.LogicalCallID, finalizationAuthorities: fixture.capability}
-	generation := registry.register(call.SessionID, subAgentDriver{agent: binder, call: call, finalizationAuthorities: fixture.capability})
-	call.driverGeneration = generation
+	call := SessionAgentCall{SessionID: fixture.child.SessionID, LogicalCallID: fixture.child.LogicalCallID, FinalizationAuthorities: fixture.capability}
+	generation := registry.register(call.SessionID, subAgentDriver{agent: binder, call: call, FinalizationAuthorities: fixture.capability})
+	call.DriverGeneration = generation
 	hook := NewFinalizationBindScopeHook(binder)
 
 	t.Run("forged logical call id", func(t *testing.T) {
@@ -92,23 +92,23 @@ func TestFinalizationBindScopeHookRefusesForeignIdentity(t *testing.T) {
 		wider, err := session.WithAgentFinalizationContext(fixture.ctx, other)
 		require.NoError(t, err)
 		forged := call
-		forged.finalizationAuthorities = session.CaptureAgentFinalizationContext(wider)
+		forged.FinalizationAuthorities = session.CaptureAgentFinalizationContext(wider)
 		require.ErrorIs(t, hook(fixture.ctx, forged), session.ErrAgentFinalizationChanged)
 	})
 	t.Run("stale driver generation", func(t *testing.T) {
-		registry.register(call.SessionID, subAgentDriver{agent: binder, call: call, finalizationAuthorities: fixture.capability})
+		registry.register(call.SessionID, subAgentDriver{agent: binder, call: call, FinalizationAuthorities: fixture.capability})
 		require.ErrorIs(t, hook(fixture.ctx, call), session.ErrAgentFinalizationDriverUnavailable)
 	})
 	t.Run("bound requirement without driver generation", func(t *testing.T) {
 		driverless := call
-		driverless.driverGeneration = 0
+		driverless.DriverGeneration = 0
 		require.ErrorIs(t, hook(fixture.ctx, driverless), session.ErrAgentFinalizationDriverUnavailable)
 	})
 	t.Run("no authorities stays inert", func(t *testing.T) {
-		require.NoError(t, hook(fixture.ctx, SessionAgentCall{SessionID: call.SessionID, LogicalCallID: call.LogicalCallID, driverGeneration: generation}))
+		require.NoError(t, hook(fixture.ctx, SessionAgentCall{SessionID: call.SessionID, LogicalCallID: call.LogicalCallID, DriverGeneration: generation}))
 	})
 	stored, ok := registry.get(call.SessionID)
 	require.True(t, ok)
 	require.Equal(t, fixture.child.LogicalCallID, stored.call.LogicalCallID)
-	require.Equal(t, fixture.capability.Requirement(), stored.finalizationAuthorities.Requirement())
+	require.Equal(t, fixture.capability.Requirement(), stored.FinalizationAuthorities.Requirement())
 }

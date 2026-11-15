@@ -1,3 +1,18 @@
+package agentcall
+
+import (
+	"context"
+	"io"
+	"sync"
+	"time"
+
+	"github.com/PHPCraftdream/rush/internal/agent/prompt"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/session"
+)
+
 // Per-call execution options (review R1-1, P0): the immutable per-call
 // counterpart of the coordinator's shared Set*-state.
 //
@@ -19,40 +34,30 @@
 // The value must be treated as immutable after construction: it is read
 // from several goroutines (turn loop, async agent builds) that may
 // outlive the ExecuteRun call frame.
-package agent
-
-import (
-	"context"
-	"time"
-
-	"github.com/PHPCraftdream/rush/internal/agent/prompt"
-	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
-	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
-)
 
 // CallOptions carries one run's per-call execution policy. The zero value
 // of every field means "unset — fall back to the legacy shared-state
 // path", matching how RunOverrides' zero values mean "no override" today.
 type CallOptions struct {
-	// diskBinding carries this immutable run's once-minted binding HANDLE
-	// behind a pointer so copying a CallOptions value borrows (never
-	// re-mints or clears) it (callDiskBinding, disk_provider_call.go). It
+	// DiskBinding carries this immutable run's once-minted binding HANDLE
+	// so copying a CallOptions value borrows (never re-mints or clears)
+	// it (CallBindingHandle, call_binding.go; the concrete binding is
+	// callDiskBinding, disk_provider_call.go, read through the
+	// interface). It
 	// is initialized by BindCallDiskProvider when the trusted call state is
 	// created — before the options are shared — and only the explicit
 	// Call-owner token returned there releases it.
-	diskBinding *callDiskBinding
+	DiskBinding CallBindingHandle
 
-	// buildScope is this trusted call state's closeable build-resource
-	// scope (buildResourceScope, disk_provider_capability.go): every
+	// BuildScope is this trusted call state's closeable build-resource
+	// scope (BuildResourceScope, call_binding.go): every
 	// construction pin performed for the call registers its Construction
 	// release here, and the scope is closed on resolution failure, call
 	// rejection, queue cancellation or final call completion. Copies of
 	// the options borrow the same scope.
-	buildScope *buildResourceScope
+	BuildScope *BuildResourceScope
 
-	// buildScopeRetained marks buildScope as the RETAINED scope of an
+	// BuildScopeRetained marks BuildScope as the RETAINED scope of an
 	// acknowledged queued call (armQueuedBuildRetention in
 	// queued_call_scope.go): a fresh scope holding ONLY that call's extra
 	// Construction owners, created at the moment the mailbox accepted the
@@ -61,7 +66,7 @@ type CallOptions struct {
 	// marked scope always belongs to queued-call retention and closing it is
 	// exactly the ownership release (close is idempotent). Internal trusted
 	// runtime metadata; never serialized.
-	buildScopeRetained bool
+	BuildScopeRetained bool
 
 	// MaxAgentDepth is the trusted remaining delegation-edge budget. Its
 	// presence is separate from the value so zero remains an enforced cap.
@@ -332,7 +337,7 @@ type callOptionsContextKey struct{}
 // point gets the same answer, and a scoped call's coder prompt always
 // matches the scoped toolset built from the same CallOptions.
 func WithCallOptions(ctx context.Context, o *CallOptions) context.Context {
-	if o != nil && o.buildScope == nil {
+	if o != nil && o.BuildScope == nil {
 		EnsureCallBuildScope(o)
 	}
 	scoped := o != nil && o.FolderScope != nil
@@ -340,19 +345,6 @@ func WithCallOptions(ctx context.Context, o *CallOptions) context.Context {
 		prompt.WithFolderScoped(ctx, scoped),
 		callOptionsContextKey{}, o,
 	)
-}
-
-// ownDeferredCallScope copies trusted per-call options for a deferred call
-// and gives that copy a fresh build-resource scope. The binding handle stays
-// borrowed and immutable; the caller's options are never modified.
-func ownDeferredCallScope(ctx context.Context) (context.Context, *buildResourceScope) {
-	opts := callOptionsFrom(ctx)
-	if opts == nil {
-		return ctx, nil
-	}
-	owned := *opts
-	owned.buildScope = newBuildResourceScope()
-	return WithCallOptions(ctx, &owned), owned.buildScope
 }
 
 // callOptionsFrom returns the per-call options carried by ctx, or nil when
@@ -363,42 +355,9 @@ func callOptionsFrom(ctx context.Context) *CallOptions {
 	return o
 }
 
-// callBuildScopeFrom returns the trusted call state's build-resource scope
-// carried by ctx (nil for legacy contexts without per-call options). Tool
-// construction registers its Construction releases in this scope.
-func callBuildScopeFrom(ctx context.Context) *buildResourceScope {
-	if opts := callOptionsFrom(ctx); opts != nil {
-		return EnsureCallBuildScope(opts)
-	}
-	return nil
-}
-
-// watchdogTimeoutPolicyForCall resolves the stream watchdog's
-// (extendsOnProgress, hardCap) policy for one call: the call's own values
-// when it carries a TimeoutOptionsSet CallOptions (even all-zero — a
-// deliberate policy, R3-6), otherwise the sessionAgent's shared
-// SetTimeoutOptions fields for legacy callers.
-func (a *sessionAgent) watchdogTimeoutPolicyForCall(call *CallOptions) (extendsOnProgress bool, hardCap time.Duration) {
-	if call != nil && call.TimeoutOptionsSet {
-		return call.TimeoutExtendsOnProgress, call.TimeoutHardCap
-	}
-	return a.timeoutExtendsOnProgress, a.timeoutHardCap
-}
-
-// effectiveIdleTimeoutForCall resolves the per-turn stream watchdog's
-// idle-stall threshold: the call's own override when positive, otherwise
-// the sessionAgent's shared streamIdleTimeout, otherwise
-// streamIdleTimeoutDefault. Mirrors watchdogTimeoutPolicyForCall's
-// call-wins-over-shared-state precedence.
-func (a *sessionAgent) effectiveIdleTimeoutForCall(call *CallOptions) time.Duration {
-	if call != nil && call.IdleTimeout > 0 {
-		return call.IdleTimeout
-	}
-	if a.streamIdleTimeout > 0 {
-		return a.streamIdleTimeout
-	}
-	return streamIdleTimeoutDefault
-}
+// CallOptionsFrom is the exported read side of callOptionsFrom: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+func CallOptionsFrom(ctx context.Context) *CallOptions { return callOptionsFrom(ctx) }
 
 // folderScopeSpecContextKey is the unexported context key carrying
 // *permission.FolderScopeSpec.
@@ -420,4 +379,257 @@ func WithFolderScopeSpec(ctx context.Context, spec *permission.FolderScopeSpec) 
 func folderScopeSpecFrom(ctx context.Context) *permission.FolderScopeSpec {
 	spec, _ := ctx.Value(folderScopeSpecContextKey{}).(*permission.FolderScopeSpec)
 	return spec
+}
+
+// FolderScopeSpecFrom is the exported read side of folderScopeSpecFrom: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+func FolderScopeSpecFrom(ctx context.Context) *permission.FolderScopeSpec {
+	return folderScopeSpecFrom(ctx)
+}
+
+// ModelOverridesFrom is the exported read side of modelOverridesFrom: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+func ModelOverridesFrom(ctx context.Context) (smart, fast *ModelOverride) {
+	return modelOverridesFrom(ctx)
+}
+
+// SessionModelPersistenceFrom is the exported read side of sessionModelPersistenceFrom: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+func SessionModelPersistenceFrom(ctx context.Context) (smart, fast *session.ModelSlotUpdate) {
+	return sessionModelPersistenceFrom(ctx)
+}
+
+// RoleReasoningEffortFrom is the exported read side of roleReasoningEffortFrom: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+func RoleReasoningEffortFrom(ctx context.Context) string { return roleReasoningEffortFrom(ctx) }
+
+// InheritWebPolicyCallOptions is the exported read side of inheritWebPolicyCallOptions: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+func InheritWebPolicyCallOptions(ctx context.Context) *CallOptions {
+	return inheritWebPolicyCallOptions(ctx)
+}
+
+// CallOptionsContextKey is the exported alias of callOptionsContextKey: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+type CallOptionsContextKey = callOptionsContextKey
+
+// Per-call restricted-run policy transport (review R3-4): the compiled
+// RunAllowlist an ExecuteRun caller computed for THIS invocation travels
+// on the call's context (WithRunAllowlist) and is stamped onto the
+// SessionAgentCall by buildCall/runInternal, so the policy reaches the
+// turn even when the call spends time in the mailbox queue first — the
+// turn runs under the OWNER's context, not the queued caller's, so a
+// context-only value would be lost across the handoff. The UNCOMPILED
+// spec travels alongside it (WithRunAllowlistSpec) so the durable run
+// queue can persist the caller's declared policy and a pump-driven
+// restart can recompile it (review R4-1/R4-2/R4-3).
+//
+// The value must be treated as immutable after construction.
+
+// runAllowlistContextKey is the unexported context key carrying
+// *permission.RunAllowlist.
+type runAllowlistContextKey struct{}
+
+// WithRunAllowlist returns a context carrying the compiled restricted-run
+// policy for this one call. nil (the zero case) arms nothing: the turn
+// keeps the historical fallback behavior.
+func WithRunAllowlist(ctx context.Context, a *permission.RunAllowlist) context.Context {
+	return context.WithValue(ctx, runAllowlistContextKey{}, a)
+}
+
+// runAllowlistFrom returns the per-call restricted-run policy carried by
+// ctx, or nil when the context has none (legacy caller).
+func runAllowlistFrom(ctx context.Context) *permission.RunAllowlist {
+	a, _ := ctx.Value(runAllowlistContextKey{}).(*permission.RunAllowlist)
+	return a
+}
+
+// runAllowlistSpecContextKey is the unexported context key carrying
+// *permission.RunAllowlistSpec.
+type runAllowlistSpecContextKey struct{}
+
+// WithRunAllowlistSpec returns a context carrying the UNCOMPILED
+// restricted-run policy spec for this one call, alongside the compiled
+// matcher carried by WithRunAllowlist. Only ExecuteRun attaches it: its
+// presence on a serialized call is the durable marker of an
+// ExecuteRun-lineage call, which is what lets RebuildSessionAgentCall
+// re-arm the restart's own policy and RunSessionAgentCall re-arm the
+// session's auto-approve after a real process restart. nil arms nothing.
+func WithRunAllowlistSpec(ctx context.Context, spec *permission.RunAllowlistSpec) context.Context {
+	return context.WithValue(ctx, runAllowlistSpecContextKey{}, spec)
+}
+
+// runAllowlistSpecFrom returns the per-call restricted-run policy spec
+// carried by ctx, or nil when the context has none (legacy caller).
+func runAllowlistSpecFrom(ctx context.Context) *permission.RunAllowlistSpec {
+	spec, _ := ctx.Value(runAllowlistSpecContextKey{}).(*permission.RunAllowlistSpec)
+	return spec
+}
+
+// RunAllowlistFrom is the exported read side of runAllowlistFrom: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+func RunAllowlistFrom(ctx context.Context) *permission.RunAllowlist { return runAllowlistFrom(ctx) }
+
+// RunAllowlistSpecFrom is the exported read side of runAllowlistSpecFrom: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+func RunAllowlistSpecFrom(ctx context.Context) *permission.RunAllowlistSpec {
+	return runAllowlistSpecFrom(ctx)
+}
+
+// Run-scoped, CLI-origin-gated rate-limit diagnostic sink: replaces the
+// app-wide process-stderr callback with a context-carried writer attached
+// per run in app.prepareExecuteRun.
+
+// rateLimitNotifySinkKey is the context key for the per-run diagnostic
+// sink. Unexported: only WithRateLimitNotifySink can set it.
+type rateLimitNotifySinkKey struct{}
+
+// WithRateLimitNotifySink attaches the run's diagnostic writer to the
+// turn context. A nil writer is a no-op so callers can gate on their own
+// predicate without a second branch here.
+func WithRateLimitNotifySink(ctx context.Context, w io.Writer) context.Context {
+	if w == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, rateLimitNotifySinkKey{}, w)
+}
+
+// RateLimitNotifySinkFrom returns the run-scoped rate-limit diagnostic
+// sink, or nil when this run carries none (non-CLI origins, library
+// callers, direct coordinator use).
+func RateLimitNotifySinkFrom(ctx context.Context) io.Writer {
+	if ctx == nil {
+		return nil
+	}
+	w, _ := ctx.Value(rateLimitNotifySinkKey{}).(io.Writer)
+	return w
+}
+
+// readyGateContextKey names the context value used to scope asynchronous
+// construction tasks to one rebuild or per-call tool build.
+type readyGateContextKey struct{}
+
+// WithReadyGate installs gate as the context-local asynchronous build group.
+func WithReadyGate(ctx context.Context, gate *ReadyGate) context.Context {
+	return context.WithValue(ctx, readyGateContextKey{}, gate)
+}
+
+// ReadyGateFor returns the context-local build group when present, otherwise
+// the coordinator's initialization gate.
+func ReadyGateFor(ctx context.Context, fallback *ReadyGate) *ReadyGate {
+	if gate, ok := ctx.Value(readyGateContextKey{}).(*ReadyGate); ok && gate != nil {
+		return gate
+	}
+	return fallback
+}
+
+// ReadyGate is the coordinator's "agent build still in flight" barrier: every
+// asynchronous piece of agent construction (buildAgent's system-prompt build
+// and its tool build) registers here, and every entry point that is about to
+// USE the built agent — Run, RunWithOverrides, RunWithCredentials,
+// RunWithReservedOwnership, the interrupt paths — waits on it first.
+//
+// It used to be an errgroup.Group, and that was a real, reportable data race.
+// errgroup documents both "A Group should not be reused for different tasks"
+// and "The first call to Go must happen before a Wait", and this coordinator
+// violates both by construction:
+//
+//   - the SAME gate is registered on every time an agent is (re)built —
+//     once from NewCoordinator, and then again from every UpdateModels, via
+//     buildTools -> agentTool -> buildAgent;
+//   - every run entry point calls Wait, and internal/app's ExecuteRun calls
+//     UpdateModels on its own goroutine right before starting the turn.
+//
+// One *App / one sdk.Client may have several runs in flight at once (that is
+// the whole point of sdk.Client.RunWithCredentials' multi-tenant story), so
+// run A's Wait can be parked as the FIRST waiter on the group's WaitGroup
+// while run B's UpdateModels drives buildAgent into a fresh registration
+// after the counter has already drained back to zero. sync.WaitGroup models
+// exactly that pair as a write of &wg.sema (Wait, first waiter) against a
+// read of &wg.sema (Add, on the 0 -> N transition) precisely so the detector
+// catches it: -race reports a genuine DATA RACE between
+// errgroup.(*Group).Wait and errgroup.(*Group).Go. In a build without -race
+// the same interleaving can instead trip WaitGroup's own
+// "sync: WaitGroup misuse: Add called concurrently with Wait" panic, so this
+// is a production defect, not a test artifact. errgroup.Wait's unsynchronized
+// `return g.err` racing a later task's `g.err = err` is the same bug again in
+// a second field.
+//
+// A counter plus a sync.Cond has none of those constraints: registrations and
+// waits may overlap freely and repeatedly, and — importantly — a task may
+// register MORE work while it is itself running (buildAgent's tool task calls
+// agentTool, which builds the sub-agent and registers two further tasks on
+// this same gate) without deadlocking a concurrent waiter, because Cond.Wait
+// releases the mutex while it blocks. A plain mutex around Go/Wait would
+// deadlock on exactly that re-entrant registration.
+//
+// The zero value is ready to use. Semantics deliberately match the errgroup
+// this replaces: Wait blocks until every task registered so far has returned,
+// returns the FIRST non-nil error, and keeps returning it on later calls;
+// panics inside a task are not recovered (they crash the process, as before),
+// but the pending count is released first so a concurrent Wait cannot be
+// wedged forever by one.
+type ReadyGate struct {
+	mu      sync.Mutex
+	cond    *sync.Cond
+	pending int
+	err     error
+}
+
+// condLocked returns the gate's condition variable, creating it on first use.
+// Caller must hold mu — which is also the Locker the Cond is built on, so a
+// waiter releases it for the duration of Cond.Wait.
+func (g *ReadyGate) condLocked() *sync.Cond {
+	if g.cond == nil {
+		g.cond = sync.NewCond(&g.mu)
+	}
+	return g.cond
+}
+
+// Go runs f in a new goroutine and counts it as pending until it returns.
+// Safe to call at any time, including concurrently with Wait and from inside
+// another task already registered on this gate.
+func (g *ReadyGate) Go(f func() error) {
+	g.mu.Lock()
+	g.pending++
+	g.mu.Unlock()
+
+	go func() {
+		var err error
+		// Deferred so a panicking task releases its slot before unwinding;
+		// the panic itself still propagates, exactly like errgroup.
+		defer func() {
+			g.mu.Lock()
+			g.pending--
+			if err != nil && g.err == nil {
+				g.err = err
+			}
+			if g.pending == 0 {
+				g.condLocked().Broadcast()
+			}
+			g.mu.Unlock()
+		}()
+		err = f()
+	}()
+}
+
+// PendingCount reports how many tasks are currently registered and not yet
+// returned. Test-support accessor only (e.g. asserting that exactly the
+// held task remains pending before cancelling under it); production code
+// must rely on Wait, not on polling this counter.
+func (g *ReadyGate) PendingCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.pending
+}
+
+// Wait blocks until no task is pending and returns the first error any task
+// has reported so far (sticky, as with errgroup).
+func (g *ReadyGate) Wait() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for g.pending > 0 {
+		g.condLocked().Wait()
+	}
+	return g.err
 }

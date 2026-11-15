@@ -112,7 +112,7 @@ func pctNewScopeFixture(t *testing.T, accepted, claim bool) *pctScopeFixture {
 	bind := &batchCoordinatorBinding{ingress: ingress, diskBindings: caps}
 	parent := newBuildResourceScope()
 	child := pctNewChildToolScope()
-	parent.register(child.pctProvisionalRelease())
+	parent.Register(child.pctProvisionalRelease())
 	viewTool := &countingTool{name: "view"}
 	viewBuild, err := newBatchWorkToolBuild(bind, []fantasy.AgentTool{viewTool}, child.scope, false)
 	require.NoError(t, err, "build the inner child tool")
@@ -126,7 +126,7 @@ func pctNewScopeFixture(t *testing.T, accepted, claim bool) *pctScopeFixture {
 	outer, ok := outerBuild.tools[0].(*batchIngressTool)
 	require.True(t, ok, "outer tool is armed through the batch ingress")
 	require.Equal(t, child, outer.pctChildScope, "outer assembly captures the actual child scope")
-	t.Cleanup(func() { parent.close() })
+	t.Cleanup(func() { parent.Close() })
 	return &pctScopeFixture{caps: caps, ingress: ingress, child: child, parent: parent, view: view, captured: captured, outer: outer, registry: viewBuild.registryID}
 }
 
@@ -153,7 +153,7 @@ func TestBatchChildToolScope_ParentCloseBeforeFirstTool(t *testing.T) {
 	f := pctNewScopeFixture(t, true, true)
 	h := f.pctStart(t, "start-before-first")
 	t.Cleanup(h.pctRelease)
-	f.parent.close()
+	f.parent.Close()
 	_, err := f.ingress.Registry(f.registry)
 	require.NoError(t, err, "outer execution lease preserves registry after parent close")
 	f.pctRunView(t, "first")
@@ -166,7 +166,7 @@ func TestBatchChildToolScope_SecondReaction(t *testing.T) {
 	f := pctNewScopeFixture(t, true, true)
 	h := f.pctStart(t, "start-reactions")
 	t.Cleanup(h.pctRelease)
-	f.parent.close()
+	f.parent.Close()
 	f.pctRunView(t, "reaction-1")
 	f.pctRunView(t, "reaction-2")
 	f.ingress.mu.Lock()
@@ -180,7 +180,7 @@ func TestBatchChildToolScope_RejectedAdmissionAndFailedLaunch(t *testing.T) {
 		f.ingress.fail = true
 		_, err := f.outer.Run(batchCallCtx("pct-parent"), fantasy.ToolCall{ID: "rejected", Name: AgentToolName, Input: `{}`})
 		require.Error(t, err)
-		f.parent.close()
+		f.parent.Close()
 		_, count := f.caps.ownerCounts()
 		require.Zero(t, count, "deferred pending cleanup releases a rejected handoff")
 	})
@@ -189,7 +189,7 @@ func TestBatchChildToolScope_RejectedAdmissionAndFailedLaunch(t *testing.T) {
 		h := f.pctStart(t, "launch-failed")
 		t.Cleanup(h.pctRelease)
 		h.pctRelease() // Unit helper only; this fake does not launch a child executor.
-		f.parent.close()
+		f.parent.Close()
 		_, count := f.caps.ownerCounts()
 		require.Zero(t, count, "explicit failed-launch cleanup releases the retained child reference")
 	})
@@ -203,7 +203,7 @@ func TestBatchChildToolScope_ClosureGeneration(t *testing.T) {
 	require.Len(t, oldRelease, 1, "driver retain can be claimed before execution handoff release")
 	newRelease := f.child.pctRetain()
 	require.NotNil(t, newRelease)
-	f.parent.close()
+	f.parent.Close()
 	drivers := newSubAgentDriverRegistry()
 	oldGeneration := drivers.register("child", subAgentDriver{pctReleases: oldRelease})
 	currentGeneration := drivers.register("child", subAgentDriver{pctReleases: []func(){newRelease}})
@@ -226,10 +226,10 @@ func TestBatchChildToolScope_UnrelatedScope(t *testing.T) {
 	hb := b.pctStart(t, "unrelated-b")
 	t.Cleanup(ha.pctRelease)
 	t.Cleanup(hb.pctRelease)
-	a.parent.close()
+	a.parent.Close()
 	_, err := b.ingress.Registry(b.registry)
 	require.NoError(t, err, "closing scope A does not close independently managed scope B")
-	b.parent.close()
+	b.parent.Close()
 	b.pctRunView(t, "unrelated-b-view")
 }
 
@@ -238,7 +238,7 @@ func TestBatchChildToolScope_Disposal(t *testing.T) {
 	h := f.pctStart(t, "dispose")
 	t.Cleanup(h.pctRelease)
 	driverReleases := h.pctClaimDriver()
-	f.parent.close()
+	f.parent.Close()
 	adapter := &pctDriverDisposer{SessionAgent: &mockSessionAgent{}, releases: driverReleases}
 	require.False(t, adapter.CancelAll(), "mock session agent is idle")
 	h.pctRelease()
@@ -250,7 +250,7 @@ func TestBatchChildToolScope_AcceptedWithoutDriver(t *testing.T) {
 	f := pctNewScopeFixture(t, true, false)
 	h := f.pctStart(t, "accepted-no-driver")
 	t.Cleanup(h.pctReleaseUnstarted)
-	f.parent.close()
+	f.parent.Close()
 	_, count := f.caps.ownerCounts()
 	require.Equal(t, 1, count, "accepted but unstarted handoff retains the child scope")
 	h.pctReleaseUnstarted()

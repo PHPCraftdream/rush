@@ -224,7 +224,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 			scope := callBuildScopeFrom(childCtx)
 			if scope == nil {
 				scope = newBuildResourceScope()
-				defer scope.close()
+				defer scope.Close()
 			}
 			fetchBuild := buildPrivateFetchTools(childCtx, fetchTools, restrictedRunAuthorizer(c.permissions), scope)
 

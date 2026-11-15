@@ -17,7 +17,7 @@ type delegationRoleModel struct {
 
 // requestedRoleSlot reads one built-in profile from an already pinned config snapshot.
 func requestedRoleSlot(cfg *config.Config, parent session.Session, role RequestedModelRole) (config.SelectedModel, string, error) {
-	if !role.valid() || !role.builtin() {
+	if !role.Valid() || !role.Builtin() {
 		return config.SelectedModel{}, "", ErrAgentRoleInvalid
 	}
 	selected := cfg.Models[config.SelectedModelType(role)]
@@ -51,16 +51,16 @@ func (c *coordinator) resolveRequestedDelegationModel(ctx context.Context, cfg *
 		if contract.Name == "" || contract.Name != string(role) {
 			return delegationRoleModel{}, ErrAgentRoleMismatch
 		}
-		if !role.builtin() {
+		if !role.Builtin() {
 			return c.resolveRoleContractModel(ctx, cfg, parentID, contract)
 		}
 		// A built-in role's contract only snapshots the inherited tool ceiling;
 		// its model resolves through the built-in slot path below.
 	}
-	if !role.valid() {
+	if !role.Valid() {
 		return delegationRoleModel{}, ErrAgentRoleInvalid
 	}
-	if !role.builtin() {
+	if !role.Builtin() {
 		contract, err := ResolveRoleContract(cfg, string(role), parentRoleContractFrom(ctx))
 		if err != nil {
 			return delegationRoleModel{}, err

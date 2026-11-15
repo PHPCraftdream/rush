@@ -406,7 +406,7 @@ func TestInjectAgent_CredentialedInterruptReusesDriverTemplate(t *testing.T) {
 	require.Same(t, creds, replacements[0].Credentials)
 	require.Same(t, &driverModel, replacements[0].SmartModel)
 	require.NotSame(t, options, replacements[0].CallOptions)
-	require.NotSame(t, options.buildScope, replacements[0].CallOptions.buildScope)
+	require.NotSame(t, options.BuildScope, replacements[0].CallOptions.BuildScope)
 	require.Equal(t, "tenant replacement", replacements[0].Prompt)
 }
 
@@ -523,10 +523,10 @@ func TestInjectAgent_CredentialedInterruptPreservesTemplateScopeOwnership(t *tes
 	replacements := driver.interruptAndReplacedSnapshot()
 	require.Len(t, replacements, 1)
 	call := replacements[0]
-	require.NotNil(t, call.onQueueResolved)
+	require.NotNil(t, call.OnQueueResolved)
 	require.NotSame(t, options, call.CallOptions)
-	require.NotSame(t, options.buildScope, call.CallOptions.buildScope)
-	require.NotNil(t, call.CallOptions.buildScope)
+	require.NotSame(t, options.BuildScope, call.CallOptions.BuildScope)
+	require.NotNil(t, call.CallOptions.BuildScope)
 	require.Equal(t, child, call.SessionID)
 }
 

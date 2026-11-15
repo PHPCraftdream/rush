@@ -165,7 +165,7 @@ func TestRoleContractRestartRebuildDispatchesOnlyAdmittedNativeAndMCPTools(t *te
 	require.NoError(t, os.WriteFile(path, []byte("role native reached\n"), 0o600))
 	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "session")
 	ctx = WithCallRoleContract(ctx, restored)
-	t.Cleanup(callBuildScopeFrom(ctx).close)
+	t.Cleanup(callBuildScopeFrom(ctx).Close)
 	base := config.Agent{AllowedTools: []string{"view", "write"}}
 	built, err := coord.buildPolicyTools(ctx, cfg, base, false)
 	require.NoError(t, err)
@@ -227,7 +227,7 @@ func TestRoleContractRestartRebuildDispatchesOnlyAdmittedNativeAndMCPTools(t *te
 
 	folder := newFolderScope(t, env.workingDir, permission.FileOpRead)
 	scopedCtx := WithCallOptions(t.Context(), &CallOptions{FolderScope: &folder, RoleContract: restored.Clone()})
-	t.Cleanup(callBuildScopeFrom(scopedCtx).close)
+	t.Cleanup(callBuildScopeFrom(scopedCtx).Close)
 	scoped, err := coord.buildPolicyTools(scopedCtx, cfg, base, false)
 	require.NoError(t, err)
 	require.Empty(t, scoped.tools, "folder-scope substitutions and MCP removal cannot widen a durable role cap")
@@ -261,7 +261,7 @@ func TestRoleContractRestartRebuildDispatchesOnlyAdmittedNativeAndMCPTools(t *te
 			admitted, err := ResolveRoleContract(cfg, "analyst", nil)
 			require.NoError(t, err)
 			caseCtx := WithCallRoleContract(t.Context(), admitted)
-			t.Cleanup(callBuildScopeFrom(caseCtx).close)
+			t.Cleanup(callBuildScopeFrom(caseCtx).Close)
 			built, err := coord.buildPolicyTools(caseCtx, cfg, base, false)
 			require.NoError(t, err)
 			require.ElementsMatch(t, test.want, pinnedToolNames(built.tools))
@@ -280,7 +280,7 @@ func TestRoleContractRestartRebuildDispatchesOnlyAdmittedNativeAndMCPTools(t *te
 		admitted, err := ResolveRoleContract(cfg, "analyst", nil)
 		require.NoError(t, err)
 		caseCtx := WithCallRoleContract(t.Context(), admitted)
-		t.Cleanup(callBuildScopeFrom(caseCtx).close)
+		t.Cleanup(callBuildScopeFrom(caseCtx).Close)
 		limited := config.Agent{AllowedTools: []string{"view"}, AllowedMCP: map[string][]string{}}
 		built, err := coord.buildPolicyTools(caseCtx, cfg, limited, false)
 		require.NoError(t, err)

@@ -88,11 +88,11 @@ func (a *sessionAgent) checkRecoverySummaryInput(ctx context.Context, sessionID 
 	visibleSummary.Role = message.User
 	candidate = append(candidate, visibleSummary)
 	candidate = append(candidate, tail...)
-	prepared, files := a.preparePrompt(candidate, todos, state.targetModel.Model.Provider(), state.targetAttachments...)
-	prepared = a.workaroundProviderMediaLimitations(prepared, state.targetModel)
+	prepared, files := a.preparePrompt(candidate, todos, state.TargetModel.Model.Provider(), state.TargetAttachments...)
+	prepared = a.workaroundProviderMediaLimitations(prepared, state.TargetModel)
 	prepared = append(prepared, fantasy.NewUserMessage(codexRecoveryNudge))
-	prepared = append([]fantasy.Message{fantasy.NewSystemMessage(state.targetSystem)}, prepared...)
-	return recoveryInputCapacity(state.targetModel, state.targetMaxOutput, state.targetPrefix, prepared, files, state.targetTools)
+	prepared = append([]fantasy.Message{fantasy.NewSystemMessage(state.TargetSystem)}, prepared...)
+	return recoveryInputCapacity(state.TargetModel, state.TargetMaxOutput, state.TargetPrefix, prepared, files, state.TargetTools)
 }
 
 func (a *sessionAgent) accountRecoverySummary(ctx context.Context, sessionID, messageID string, model Model, usage fantasy.Usage, cost float64, snapshot session.Session) error {

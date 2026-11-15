@@ -10,7 +10,7 @@ import (
 
 // resolveDelegationRequestedRole is called only after resume ownership is checked.
 func resolveDelegationRequestedRole(ctx context.Context, sessions session.Service, childID string, requested RequestedModelRole) (RequestedModelRole, error) {
-	if requested != "" && !requested.valid() {
+	if requested != "" && !requested.Valid() {
 		return "", ErrAgentRoleInvalid
 	}
 	store, supported := sessions.(session.AgentModelRoleStore)
@@ -44,7 +44,7 @@ func resolveDelegationRequestedRole(ctx context.Context, sessions session.Servic
 		return "", err
 	}
 	role := RequestedModelRole(saved)
-	if role != "" && !role.valid() {
+	if role != "" && !role.Valid() {
 		return "", fmt.Errorf("%w: invalid saved model role", ErrAgentRoleUnconfigured)
 	}
 	if requested != "" && requested != role {
@@ -68,7 +68,7 @@ func bindDelegationRoleContract(ctx context.Context, sessions session.Service, c
 }
 
 func bindDelegationRequestedRole(ctx context.Context, sessions session.Service, childID string, requested RequestedModelRole) error {
-	if requested != "" && !requested.builtin() {
+	if requested != "" && !requested.Builtin() {
 		store, supported := sessions.(session.SessionRoleContractStore)
 		if !supported {
 			return fmt.Errorf("%w: custom role contract persistence unavailable", ErrAgentRoleUnconfigured)

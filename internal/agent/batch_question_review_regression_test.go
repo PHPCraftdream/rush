@@ -22,9 +22,9 @@ func TestQuestionRouteWakeWithoutDriverUsesDurableDelegationFacts(t *testing.T) 
 		defer prep.release()
 	}
 	require.NoError(t, err)
-	require.NotNil(t, call.batchQuestion)
-	require.False(t, call.batchQuestion.Route)
-	require.False(t, call.batchQuestion.BindingOK)
+	require.NotNil(t, call.BatchQuestion)
+	require.False(t, call.BatchQuestion.Route)
+	require.False(t, call.BatchQuestion.BindingOK)
 	ctx := armBatchQuestionTurnContext(t.Context(), call)
 	route, known := batchQuestionRouteFrom(ctx)
 	require.True(t, known)
@@ -45,14 +45,14 @@ func TestQuestionRouteParentedForkRemainsAnOrdinarySession(t *testing.T) {
 	_, err = coord.RunSessionAgentCall(t.Context(), SessionAgentCall{SessionID: fork.ID})
 	require.NoError(t, err)
 	require.Equal(t, 1, capture.calls)
-	require.Nil(t, capture.call.batchQuestion)
+	require.Nil(t, capture.call.BatchQuestion)
 	require.False(t, capture.routeKnown)
 	call, prep, err := coord.drainCallFor(t.Context(), fork.ID)
 	if prep != nil {
 		defer prep.release()
 	}
 	require.NoError(t, err)
-	require.Nil(t, call.batchQuestion, "a parent link alone is not batch delegation authority")
+	require.Nil(t, call.BatchQuestion, "a parent link alone is not batch delegation authority")
 }
 
 func TestUpdateModelsDoesNotPublishOneChildQuestionRoute(t *testing.T) {

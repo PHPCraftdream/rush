@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -26,9 +25,6 @@ type (
 	batchAgentQuestionContextKey struct{}
 )
 
-type batchAgentQuestionBinding struct {
-	Ask func(context.Context, int, string) (json.RawMessage, error)
-}
 type batchAgentQuestionBindingKey struct{}
 
 func withBatchAgentLifecycle(ctx context.Context, lifecycle batchAgentLifecycle) context.Context {

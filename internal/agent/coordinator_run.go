@@ -247,7 +247,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// is the intended fail-closed direction — a drained queued call rebuilds
 	// under RunSessionAgentCall's own fresh scope.
 	if callOpts != nil {
-		defer callOpts.buildScope.close()
+		defer callOpts.BuildScope.Close()
 	}
 	// A human-initiated turn (web/SDK: no per-call options, not a Drain) spends
 	// a stale `sessions cancel` request AT ADMISSION (#1101, R8A-2): runOwned
@@ -811,7 +811,7 @@ func (c *coordinator) RunWithOverrides(ctx context.Context, sessionID, prompt st
 	// harmlessly. Captured from the ORIGINAL ctx: the later
 	// WithModelOverrides re-arm carries the same CallOptions pointer.
 	if callOpts := callOptionsFrom(ctx); callOpts != nil {
-		defer callOpts.buildScope.close()
+		defer callOpts.BuildScope.Close()
 	}
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, c.drainRefused(ctx, sessionID, err)
@@ -936,7 +936,7 @@ func (c *coordinator) RunWithReservedOwnership(ctx context.Context, sessionID, p
 	// run completes, so the defer fires at true call end. Close is
 	// idempotent.
 	if callOpts := callOptionsFrom(ctx); callOpts != nil {
-		defer callOpts.buildScope.close()
+		defer callOpts.BuildScope.Close()
 	}
 	if err := c.readyWg.Wait(); err != nil {
 		c.currentAgent.ReleaseExclusive(sessionID, epoch, cancel)

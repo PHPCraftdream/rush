@@ -49,69 +49,6 @@ type diskOwnerKey struct {
 	registryID string
 }
 
-// buildResourceScope is the closeable build-resource scope of one trusted
-// call state: every construction pin performed for the call registers its
-// construction release here, so closing the scope releases exactly those
-// construction owners and nothing else. Copies of the owning CallOptions
-// borrow the same scope pointer. A scope is closed once on resolution
-// failure, call rejection, queue cancellation or final call completion;
-// close is idempotent.
-type buildResourceScope struct {
-	mu       sync.Mutex
-	releases []func()
-	closed   bool
-}
-
-func newBuildResourceScope() *buildResourceScope { return &buildResourceScope{} }
-
-// register attaches one construction release to the scope. Registering on
-// an already-closed scope releases immediately (the scope's lifetime has
-// ended; the pin must not outlive it).
-func (s *buildResourceScope) register(release func()) {
-	if s == nil || release == nil {
-		return
-	}
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		release()
-		return
-	}
-	s.releases = append(s.releases, release)
-	s.mu.Unlock()
-}
-
-// registeredCount returns how many releases the still-open scope currently
-// holds. Test-support oracle: a closed scope's count is the number of pins
-// its close (or immediate release on register-after-close) has already run.
-func (s *buildResourceScope) registeredCount() int {
-	if s == nil {
-		return 0
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.releases)
-}
-
-// close runs every registered release exactly once.
-func (s *buildResourceScope) close() {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return
-	}
-	s.closed = true
-	releases := s.releases
-	s.releases = nil
-	s.mu.Unlock()
-	for _, release := range releases {
-		release()
-	}
-}
-
 // diskCapabilityManager is the App-owned owner-set authority. Construct
 // with newDiskCapabilityManager (NewDiskProviderRegistry keeps the
 // historical constructor name for app wiring).

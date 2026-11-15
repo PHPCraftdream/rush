@@ -109,9 +109,9 @@ func (p *preparedContinuation) restorePolicyBaseline(ctx context.Context, sessio
 		// bare CallOptions with no provider knowledge of its own.
 		policyOpts.DiskProvider = opts.DiskProvider
 		policyOpts.DiskBindingID = opts.DiskBindingID
-		policyOpts.diskBinding = opts.diskBinding
+		policyOpts.DiskBinding = opts.DiskBinding
 		policyOpts.Requirement = opts.Requirement
-		policyOpts.buildScope = opts.buildScope
+		policyOpts.BuildScope = opts.BuildScope
 		*opts = *policyOpts
 	}
 	if p.requirement.FolderScopeSpec != nil {
@@ -146,7 +146,7 @@ func (p *preparedContinuation) applyToOptions(opts *CallOptions) {
 	opts.DiskProvider = p.provider
 	opts.DiskBindingID = p.requirement.BindingID
 	opts.Requirement = &requirement
-	opts.diskBinding = &callDiskBinding{id: p.requirement.BindingID, provider: p.provider, caps: p.caps}
+	opts.DiskBinding = &callDiskBinding{id: p.requirement.BindingID, provider: p.provider, caps: p.caps}
 }
 
 // applyTo stamps the resolved capability onto the call for dispatch

@@ -83,7 +83,7 @@ func (b *BatchCLIBuilder) bind(ctx context.Context, sessionID, messageID string)
 		if existing.RoleContract != nil {
 			owned.RoleContract = existing.RoleContract.Clone()
 		}
-		if tools.IsCustomDiskProvider(existing.DiskProvider) || existing.DiskBindingID != "" || existing.diskBinding != nil {
+		if tools.IsCustomDiskProvider(existing.DiskProvider) || existing.DiskBindingID != "" || existing.DiskBinding != nil {
 			return batchCLIBinding{}, errors.New("batch CLI does not support caller-supplied disk providers")
 		}
 		owned = *existing
@@ -96,7 +96,7 @@ func (b *BatchCLIBuilder) bind(ctx context.Context, sessionID, messageID string)
 		owned.AgentDepthSet = true
 	}
 	scope := newBuildResourceScope()
-	owned.buildScope = scope
+	owned.BuildScope = scope
 	ctx = WithCallOptions(ctx, &owned)
 	if scopeSpec := folderScopeSpecFrom(ctx); scopeSpec != nil {
 		ctx = WithFolderScopeSpec(ctx, scopeSpec)
@@ -113,12 +113,12 @@ func (b *BatchCLIBuilder) bind(ctx context.Context, sessionID, messageID string)
 		err = waitErr
 	}
 	if err != nil {
-		scope.close()
+		scope.Close()
 		return batchCLIBinding{}, err
 	}
 	id := built.registryID
 	if id == "" {
-		scope.close()
+		scope.Close()
 		return batchCLIBinding{}, errors.New("batch CLI: policy tool construction did not acquire an owner")
 	}
 	var allow *permission.RunAllowlistSpec
@@ -167,7 +167,7 @@ func (b *BatchCLIBuilder) translate(ctx context.Context, bind batchCLIBinding, s
 				return jobbatch.Spec{}, err
 			}
 			selectedRoleContract = cloneRoleContractForCall(task.SelectedRoleContract)
-			if requested.Role != "" && !requested.Role.builtin() {
+			if requested.Role != "" && !requested.Role.Builtin() {
 				if err := validateSelectedBatchRole(selectedRoleContract, string(requested.Role), bind.roleContract); err != nil {
 					return jobbatch.Spec{}, err
 				}
@@ -240,15 +240,15 @@ func (b *BatchCLIBuilder) TranslateSpec(ctx context.Context, sessionID, messageI
 		return jobbatch.Spec{}, nil, err
 	}
 	if spec.Batch == nil || spec.Task != nil {
-		bind.scope.close()
+		bind.scope.Close()
 		return jobbatch.Spec{}, nil, errors.New("batch CLI run requires batch root")
 	}
 	translated, err := b.translate(ctx, bind, spec)
 	if err != nil {
-		bind.scope.close()
+		bind.scope.Close()
 		return jobbatch.Spec{}, nil, err
 	}
-	return translated, bind.scope.close, nil
+	return translated, bind.scope.Close, nil
 }
 
 func (b *BatchCLIBuilder) admitRoles(ctx context.Context, spec jobbatch.Spec) (jobbatch.Spec, error) {
@@ -283,9 +283,9 @@ func (b *BatchCLIBuilder) TranslateItems(ctx context.Context, sessionID, message
 	for i := range items {
 		out[i], err = b.translate(ctx, bind, items[i])
 		if err != nil {
-			bind.scope.close()
+			bind.scope.Close()
 			return nil, nil, err
 		}
 	}
-	return out, bind.scope.close, nil
+	return out, bind.scope.Close, nil
 }

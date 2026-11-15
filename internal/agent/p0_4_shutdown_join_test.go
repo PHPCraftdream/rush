@@ -181,7 +181,7 @@ func TestP0_4_CancelAllJoinsBlockedSummarize(t *testing.T) {
 	summarizeDone := make(chan struct{})
 	go func() {
 		defer close(summarizeDone)
-		snapshot := &SummarizeSnapshot{model: model, promptPrefix: "summarize this"}
+		snapshot := &SummarizeSnapshot{Model: model, PromptPrefix: "summarize this"}
 		_ = sa.Summarize(ctx, sess.ID, snapshot)
 	}()
 

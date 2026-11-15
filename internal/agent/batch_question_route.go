@@ -79,27 +79,13 @@ func stripAskQuestionTools(list []fantasy.AgentTool) []fantasy.AgentTool {
 	return kept
 }
 
-// batchChildQuestionState freezes ONE batch delegation's question
-// capability onto its driver call template: the stamped route, the
-// held-answer binding and the question depth. runSubAgent captures it
-// from the driver-stamped run context; runTurn re-arms it onto the
-// turn context of EVERY turn of the delegation (initial, wake Drain,
-// interrupt replacement), because a wake arrives on a background
-// callback context that carries none of them.
-type batchChildQuestionState struct {
-	Depth     int
-	Route     bool
-	Binding   batchAgentQuestionBinding
-	BindingOK bool
-}
-
 // armBatchQuestionTurnContext re-arms the delegation's question
 // capability onto ctx from the call's frozen state. A nil state is a
 // non-batch call: nothing is stamped and the legacy contracts stand.
 // Builders and durable consumers reconstruct deny-only state from delegation
 // facts when the live driver is missing; ordinary roots and forks remain nil.
 func armBatchQuestionTurnContext(ctx context.Context, call SessionAgentCall) context.Context {
-	state := call.batchQuestion
+	state := call.BatchQuestion
 	if state == nil {
 		return ctx
 	}

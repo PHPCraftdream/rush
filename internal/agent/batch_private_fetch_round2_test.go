@@ -57,7 +57,7 @@ func (l *round2ScopeProbeLeaf) Run(ctx context.Context, _ fantasy.ToolCall) (fan
 	if err := l.caps.acquireConstruction("", registry, instance); err != nil {
 		return fantasy.ToolResponse{}, err
 	}
-	scope.register(func() {
+	scope.Register(func() {
 		l.released.Store(true)
 		l.caps.release(diskOwnerKey{kind: diskOwnerConstruction, instance: instance, registryID: registry})
 	})
@@ -215,8 +215,8 @@ func TestAgenticFetchToolProductionStampArmsIngress(t *testing.T) {
 	// call lifecycle ending) must release the pin, and with the root's
 	// execution owner dropped by natural settlement disposal the private
 	// construction record disappears.
-	require.NotNil(t, opts.buildScope, "the trusted call state carries its own build scope")
-	opts.buildScope.close()
+	require.NotNil(t, opts.BuildScope, "the trusted call state carries its own build scope")
+	opts.BuildScope.Close()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		leftover := map[string]struct{}{}

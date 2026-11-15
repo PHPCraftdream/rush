@@ -508,7 +508,7 @@ func TestBatchAskWrapperNoRouteWithoutBindingNeverReachesRawAsk(t *testing.T) {
 // TestArmBatchQuestionTurnContextReArmsCapability: runTurn's re-arming of
 // the frozen delegation state onto every turn context. Catches a regression
 // where armBatchQuestionTurnContext stopped stamping the route marker,
-// depth or binding from call.batchQuestion — wake turns arriving on a
+// depth or binding from call.BatchQuestion — wake turns arriving on a
 // capability-less background context: a wake Drain would then run as a
 // non-batch session (raw ask reachable) or as a route-less child (answers
 // lost). Asserted on the rebuilt context's marker/depth/binding values.
@@ -526,7 +526,7 @@ func TestArmBatchQuestionTurnContextReArmsCapability(t *testing.T) {
 			"the untouched context must be returned, not a rebuilt one")
 	})
 	t.Run("route_ful_state_fully_armed", func(t *testing.T) {
-		call := SessionAgentCall{batchQuestion: &batchChildQuestionState{Depth: 3, Route: true, Binding: binding, BindingOK: true}}
+		call := SessionAgentCall{BatchQuestion: &batchChildQuestionState{Depth: 3, Route: true, Binding: binding, BindingOK: true}}
 		ctx := armBatchQuestionTurnContext(context.Background(), call)
 		route, ok := batchQuestionRouteFrom(ctx)
 		require.True(t, ok, "the route marker must be stamped for a batch call")
@@ -537,7 +537,7 @@ func TestArmBatchQuestionTurnContextReArmsCapability(t *testing.T) {
 		require.NotNil(t, stamped.Ask, "the re-armed binding must carry the frozen Ask func")
 	})
 	t.Run("no_route_no_binding_state", func(t *testing.T) {
-		call := SessionAgentCall{batchQuestion: &batchChildQuestionState{Depth: 1, Route: false, BindingOK: false}}
+		call := SessionAgentCall{BatchQuestion: &batchChildQuestionState{Depth: 1, Route: false, BindingOK: false}}
 		ctx := armBatchQuestionTurnContext(context.Background(), call)
 		route, ok := batchQuestionRouteFrom(ctx)
 		require.True(t, ok, "the marker must be stamped even when false: a batch child is not a non-batch session")
@@ -563,41 +563,41 @@ func TestBatchQuestionStateSurvivesWakeConstructors(t *testing.T) {
 	noRouteState := &batchChildQuestionState{Depth: 1, Route: false}
 	for name, st := range map[string]*batchChildQuestionState{"route_ful": routeState, "no_route": noRouteState} {
 		t.Run(name, func(t *testing.T) {
-			template := SessionAgentCall{SessionID: "child", batchQuestion: st}
+			template := SessionAgentCall{SessionID: "child", BatchQuestion: st}
 			fromActive := callFromActive(template)
-			require.Same(t, st, fromActive.batchQuestion,
+			require.Same(t, st, fromActive.BatchQuestion,
 				"callFromActive must preserve the SAME question state pointer")
 			drain := newDrainCall(template)
-			require.Same(t, st, drain.batchQuestion,
+			require.Same(t, st, drain.BatchQuestion,
 				"newDrainCall must preserve the SAME question state pointer")
 			drainFromActive := newDrainCall(callFromActive(template))
-			require.Same(t, st, drainFromActive.batchQuestion,
+			require.Same(t, st, drainFromActive.BatchQuestion,
 				"the composed wake constructor path must preserve the SAME question state pointer")
 			// applyDrainModelOptions takes the call BY VALUE and returns the
 			// adjusted copy: the state pointer must survive model re-pinning.
 			modeled := applyDrainModelOptions(template, Model{ModelCfg: config.SelectedModel{Provider: "prov", Model: "m"}})
-			require.Same(t, st, modeled.batchQuestion,
+			require.Same(t, st, modeled.BatchQuestion,
 				"applyDrainModelOptions must preserve the SAME question state pointer")
 			driver := subAgentDriver{call: template}
 			woken := driver.callFor("p")
-			require.Same(t, st, woken.batchQuestion,
+			require.Same(t, st, woken.BatchQuestion,
 				"subAgentDriver.callFor must preserve the SAME question state pointer")
 			// The VALUES survive too: identical pointers would mask a
 			// shallow-copy that swaps in a mutated clone.
-			require.Equal(t, st.Depth, woken.batchQuestion.Depth)
-			require.Equal(t, st.Route, woken.batchQuestion.Route)
-			require.Equal(t, st.BindingOK, woken.batchQuestion.BindingOK)
+			require.Equal(t, st.Depth, woken.BatchQuestion.Depth)
+			require.Equal(t, st.Route, woken.BatchQuestion.Route)
+			require.Equal(t, st.BindingOK, woken.BatchQuestion.BindingOK)
 		})
 	}
 	t.Run("stateless_stays_nil", func(t *testing.T) {
 		// A non-batch call built from any constructor must stay state-less:
 		// a fabricated state would arm a fake capability.
 		template := SessionAgentCall{SessionID: "plain"}
-		require.Nil(t, callFromActive(template).batchQuestion)
-		require.Nil(t, newDrainCall(template).batchQuestion)
-		require.Nil(t, newDrainCall(callFromActive(template)).batchQuestion)
-		require.Nil(t, applyDrainModelOptions(template, Model{}).batchQuestion)
-		require.Nil(t, (subAgentDriver{call: template}).callFor("").batchQuestion)
+		require.Nil(t, callFromActive(template).BatchQuestion)
+		require.Nil(t, newDrainCall(template).BatchQuestion)
+		require.Nil(t, newDrainCall(callFromActive(template)).BatchQuestion)
+		require.Nil(t, applyDrainModelOptions(template, Model{}).BatchQuestion)
+		require.Nil(t, (subAgentDriver{call: template}).callFor("").BatchQuestion)
 	})
 }
 
@@ -614,7 +614,7 @@ func TestBatchQuestionStateSurvivesWakeConstructors(t *testing.T) {
 // before ever being persisted) must carry no state.
 func TestSessionAgentCallDataCarriesNoQuestionCapability(t *testing.T) {
 	capabilityLess := SessionAgentCall{SessionID: "child"}
-	call := SessionAgentCall{SessionID: "child", batchQuestion: &batchChildQuestionState{
+	call := SessionAgentCall{SessionID: "child", BatchQuestion: &batchChildQuestionState{
 		Depth: 2,
 		Route: false,
 		Binding: batchAgentQuestionBinding{Ask: func(context.Context, int, string) (json.RawMessage, error) {
@@ -650,7 +650,7 @@ func TestSessionAgentCallDataCarriesNoQuestionCapability(t *testing.T) {
 		// must therefore rebuild a nil capability, never a re-armed one.
 		rebuilt, err := FromSessionAgentCallData(ToSessionAgentCallData(call))
 		require.NoError(t, err)
-		require.Nil(t, rebuilt.batchQuestion,
+		require.Nil(t, rebuilt.BatchQuestion,
 			"a rebuilt call must never carry question capability: it re-arms only from trusted intake")
 	})
 }
