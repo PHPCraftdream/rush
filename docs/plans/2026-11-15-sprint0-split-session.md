@@ -83,7 +83,7 @@
 ### 1.8. Тесты и помощники
 
 - 128 белых / 39 внешних (39 подтверждено переписью); 82 идентификатора помощников пересекают границы (prereq).
-- Дубль: `internal/app/itest/session_support_test.go` (409 строк) ≈ `internal/session/run_queue_test_support_test.go` (454) = 863; второй импортирует только `db`, `dbtest`, `session` — общая часть поднимается в `run/sessiontest` (S8).
+- Дубль (ПОПРАВЛЕНО 2026-11-15 по доказательству агента SM4): пара `internal/app/itest/session_support_test.go` (409) ↔ `internal/session/run_queue_test_support_test.go` (454) общих объявлений НЕ имеет (множества дополняют друг друга). Настоящие семейства дублей: (1) `itest/session_support_test.go` ≈ `pump_fake_clock_test.go`, `pump_failure_report_test.go`, `pump_queue_report_test.go` (`awaitPump`/`awaitPumpFor`: `pump_fake_clock_test.go:254,263` против `session_support_test.go:248,257`, тела и комментарии совпадают); (2) `run_queue_test_support_test.go` ≈ четыре сценария `itest` (`run_queue_round2`, `p575`, `p588`, `p592`); (3) третья копия `limitParallel`: `run_queue_test_support_test.go:74` и `parallel_gate_test.go:65`. Общая часть всех трёх семейств поднимается в `run/sessiontest` (S8), объём правки около 30 файлов тестов, а не 2.
 - Пять сценариев в `internal/app/itest`: `p575_background_outcome_handoff`, `p588_partial_drain`, `p592_cross_row_identity`, `p624_drain_visibility`, `run_queue_round2`.
 
 ## 2. Целевое дерево (конечное состояние)
@@ -259,7 +259,14 @@ jobbatch ← sessionbatch, ядро(batch_commit), [внешние]
 `session_notice_store.go` использует те же 5 имён guard (`:168,169,189,191,243,256,318,320,330`) — доставляются ядром (S2); inject/orphan после EX5 импортируют sessguard напрямую (соседи внутри components). Отдельного шва нет.
 
 ### S8. Тестовые помощники → `run/sessiontest`
-Без изменений против рев. 1: `mockCoordinator`, `gatedCoordinator`, `sequentialGatedCoordinator`, `twoRowFailThenSucceedCoordinator`, `fakePumpClock/Ticker`, `fakeClockService`, `testTimeline`, `setupTestSession`, `enqueueTwoRows`, `awaitPump/For`, `limitParallel/parallelSlots`, `stopPumpLoggingForcedShutdown`, `oneEntrySetupReported`; оба источника переходят на импорт; дубль 863 строк удалён.
+Перечень фикстур прежний (рев. 1): `mockCoordinator`, `gatedCoordinator`, `sequentialGatedCoordinator`, `twoRowFailThenSucceedCoordinator`, `fakePumpClock/Ticker`, `fakeClockService`, `testTimeline`, `setupTestSession`, `enqueueTwoRows`, `awaitPump/For`, `limitParallel/parallelSlots`, `stopPumpLoggingForcedShutdown`, `oneEntrySetupReported`. ПОПРАВКА (2026-11-15): источники и потребители — три семейства из §1.8 (около 30 файлов тестов), а не два файла.
+
+Порядок полосы SM4:
+1. Агент строит перепись компилятором, не grep: для каждого кандидата в `sessiontest` — объявления в обоих деревьях (`internal/session`, `internal/app/itest`), список файлов-потребителей, совпадение тел (оракул по мультимножеству строк). Фикстура с несовпадающими телами не поднимается молча: остаётся локальной, строка идёт в отчёт.
+2. Белый тест `parallel_gate_test.go` остаётся в пакете `session` (ему нужны неэкспортированные имена); он импортирует `sessiontest` только если все его фикстуры экспортируемы без расширения API ядра. Иначе локальная копия `limitParallel` остаётся и записывается в отчёт как остаток.
+3. `sessiontest` не импортирует ядро `session`: только `db`, `dbtest`, `message`, `pubsub`, интерфейсы-порты (если фикстура требует тип ядра — остаётся в потребителе).
+4. Инвариант: число функций `Test*` в `internal/session` и `internal/app/itest` до и после равно (до: 684 в `session`); каждая фикстура из перечня объявлена один раз во всём дереве (`grep -rn 'func <имя>'`).
+5. Храповик: +2 элемента (`run/`, `run/sessiontest`) — осознанной записью с комментарием оркестратора; падение удалённых дублей учитывается `ratchet_sync.py`.
 
 ### S9. Механика «alias + делегат» (сохранение публичного API при экстракции)
 - Тип `T`, используемый снаружи как `session.T`, объявляется в `sesstypes` (или в пакете-владельце, не импортирующем ядро); в ядре: `type T = pkg.T`. Вызовы `session.T` валидны без правок.
@@ -357,7 +364,7 @@ jobbatch ← sessionbatch, ядро(batch_commit), [внешние]
 | SM1 (S1) | track×5 + тесты → proctrack (новый лист `kit/sys/proctrack`); `TrackedProcessCount`; правка holds; перепись импортов | нет | grep: в internal/session нет `trackedGroups|trackedJobs|RegisterTrackedJobTerminator`; оракул; build/vet proctrack+procinfo+session+cliprovider+cmd |
 | SM2 (S2+S3-часть) | сигнатура writer; вызовы `finalization_mutation.go:25`, `batch_commit.go:138,375`; релокация `RootOwner`→batch_store.go | нет (∥SM1/SM3/SM4 — файлы не пересекаются) | build/vet; grep `admitBatchCommitOwners(` без `*BatchStore`; серийно: batch_commit_admission/authority |
 | SM3 (S5) | релокация `DrainSessionNow` (`run_queue_drain_session.go:13`) → `run_queue_pump.go` | нет | build/vet; число Test-функций пакета не изменилось; серийно: p421, pump_* |
-| SM4 (S8) | `run/sessiontest` (фикстуры), правка двух источников дубля | нет | build/vet; grep: объявления фикстур один раз; серийно: run-queue + itest |
+| SM4 (S8) | `run/sessiontest` (фикстуры), правка трёх семейств дублей (около 30 файлов тестов, см. §1.8 и S8) | нет | build/vet (+ `go vet` тестов обоих деревьев); grep: объявления фикстур один раз; число `Test*` неизменно; серийно: run-queue и pump в `session` + сценарии `itest` |
 
 ### Полосы размещения (D2, до экстракции)
 
