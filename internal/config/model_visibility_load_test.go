@@ -9,7 +9,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/discover"
-	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 	"github.com/stretchr/testify/require"
 )
@@ -23,7 +23,7 @@ func TestLoadKeepsExplicitlySelectedHiddenGLMModel(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	cfg.Models[SelectedModelTypeSmart] = SelectedModel{Provider: "zai", Model: "glm-5"}
 	envMap := env.NewFromMap(map[string]string{"ZAI_API_KEY": "zai-key"})
 	resolver := NewShellVariableResolver(envMap)
@@ -54,7 +54,7 @@ func TestLoadKeepsExplicitlySelectedHiddenCodexModel(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	cfg.Options.DisableDefaultProviders = true
 	cfg.Models[SelectedModelTypeSmart] = SelectedModel{Provider: "openai-codex", Model: "gpt-5.6-luna"}
 	cfg.Providers.Set("openai-codex", ProviderConfig{
@@ -85,7 +85,7 @@ func TestLoadResolvesReviewerGLM53Flash(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	cfg.Models[SelectedModelTypeReviewer] = SelectedModel{Provider: "zai", Model: "glm-5.3-flash"}
 	envMap := env.NewFromMap(map[string]string{"ZAI_API_KEY": "zai-key"})
 	resolver := NewShellVariableResolver(envMap)

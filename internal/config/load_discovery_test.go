@@ -190,11 +190,11 @@ func TestLookupConfigCandidatesCanonicalizesSymlinkedNestedRepository(t *testing
 	canonicalSubdir := canonicalConfigPath(subdir)
 	canonicalNested := canonicalConfigPath(nested)
 	lexicalSubdir := filepath.Join(link, "packages", "app")
-	worktreeRootCache.Store(canonicalSubdir, canonicalNested)
-	worktreeRootCache.Store(filepath.Clean(lexicalSubdir), canonicalNested)
+	worktreeRootCacheStore(canonicalSubdir, canonicalNested)
+	worktreeRootCacheStore(filepath.Clean(lexicalSubdir), canonicalNested)
 	t.Cleanup(func() {
-		worktreeRootCache.Delete(canonicalSubdir)
-		worktreeRootCache.Delete(filepath.Clean(lexicalSubdir))
+		worktreeRootCacheDelete(canonicalSubdir)
+		worktreeRootCacheDelete(filepath.Clean(lexicalSubdir))
 	})
 
 	paths := lookupConfigCandidates(lexicalSubdir)
@@ -306,7 +306,7 @@ func TestProjectSkillsDir_MonorepoGitRoot(t *testing.T) {
 		require.NoError(t, gitInit.Run())
 
 		got := ProjectSkillsDir(root)
-		require.Len(t, got, len(projectSkillSubdirs), "must not append git-root dirs a second time when workingDir already is the root")
+		require.Len(t, got, projectSkillSubdirsLen(), "must not append git-root dirs a second time when workingDir already is the root")
 	})
 
 	t.Run("falls back to working-dir-only paths outside a git repo", func(t *testing.T) {
@@ -314,7 +314,7 @@ func TestProjectSkillsDir_MonorepoGitRoot(t *testing.T) {
 		nonGit := t.TempDir()
 
 		got := ProjectSkillsDir(nonGit)
-		require.Len(t, got, len(projectSkillSubdirs))
+		require.Len(t, got, projectSkillSubdirsLen())
 	})
 }
 

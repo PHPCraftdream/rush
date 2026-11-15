@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 	"github.com/stretchr/testify/require"
@@ -53,7 +53,7 @@ func recordFactoryArgs(t *testing.T, transport http.RoundTripper) *[]*NetworkCon
 
 func configureOne(t *testing.T, cfg *Config, known []catwalk.Provider, vars map[string]string) {
 	t.Helper()
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	environ := env.NewFromMap(vars)
 	require.NoError(t, configureProviders(context.Background(), cfg, environ, NewShellVariableResolver(environ), known, testStore(cfg).removeConfigFieldBestEffort, nil))
 }
@@ -227,7 +227,7 @@ func TestConfigureProvidersWithScope_DiscoveryScoping(t *testing.T) {
 			t.Cleanup(func() { discoverZAIEffortDocs = originalDocs })
 
 			cfg := &Config{Providers: csync.NewMap[string, ProviderConfig]()}
-			cfg.setDefaults(t.TempDir(), "")
+			setDefaults(cfg, t.TempDir(), "")
 			cfg.Providers.Set(string(catwalk.InferenceProviderZAI), ProviderConfig{
 				ID:      string(catwalk.InferenceProviderZAI),
 				BaseURL: server.URL,

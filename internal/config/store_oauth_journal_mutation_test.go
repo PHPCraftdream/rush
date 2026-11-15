@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/stretchr/testify/require"
 )
 

@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 )
 
 // ConfigSetRequest represents a request to set a config field.

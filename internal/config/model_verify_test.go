@@ -122,7 +122,7 @@ func TestConfiguredCustomProviderLoadsFreshConfirmedRosterWithoutRequests(t *tes
 	models := []catwalk.Model{{ID: "verified-model", Name: "Verified"}}
 	require.NoError(t, PersistConfirmedModels("custom", "https://example.invalid", "secret", models))
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	cfg.Providers.Set("custom", ProviderConfig{ID: "custom", Type: "openai-compat", BaseURL: "https://example.invalid", APIKey: "secret", Models: []catwalk.Model{{ID: "configured"}}})
 	providers := []catwalk.Provider{{ID: "custom", Type: "openai-compat", APIEndpoint: "https://example.invalid", APIKey: "secret", Models: []catwalk.Model{{ID: "catalog"}}}}
 	e := env.NewFromMap(map[string]string{})
@@ -186,7 +186,7 @@ func TestKnownProviderWithEmptyConfiguredTypeMergesConfirmedModels(t *testing.T)
 	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 	require.NoError(t, PersistConfirmedModels("anthropic", "https://api.anthropic.com", "secret", []catwalk.Model{{ID: "future-model"}}))
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	cfg.Providers.Set("anthropic", ProviderConfig{ID: "anthropic", APIKey: "secret"})
 	providers := []catwalk.Provider{{ID: "anthropic", Type: "anthropic", APIEndpoint: "https://api.anthropic.com", APIKey: "secret", Models: []catwalk.Model{{ID: "embedded"}}}}
 	e := env.NewFromMap(map[string]string{})
@@ -264,7 +264,7 @@ func TestConfiguredCustomProviderDoesNotInheritRosterOfAnotherKeyOrEndpoint(t *t
 			t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 			require.NoError(t, PersistConfirmedModels("custom", "https://example.invalid", "secret", []catwalk.Model{{ID: "verified-model"}}))
 			cfg := &Config{}
-			cfg.setDefaults(t.TempDir(), "")
+			setDefaults(cfg, t.TempDir(), "")
 			cfg.Providers.Set("custom", ProviderConfig{ID: "custom", Type: "openai-compat", BaseURL: tc.endpoint, APIKey: tc.key, Models: []catwalk.Model{{ID: "configured"}}})
 			providers := []catwalk.Provider{{ID: "custom", Type: "openai-compat", APIEndpoint: tc.endpoint, APIKey: tc.key, Models: []catwalk.Model{{ID: "catalog"}}}}
 			e := env.NewFromMap(map[string]string{})

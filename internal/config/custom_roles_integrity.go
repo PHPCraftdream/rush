@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	"github.com/tidwall/gjson"
 )
 
@@ -17,14 +18,14 @@ func canonicalModelsAndRolesJSON(data []byte) (string, bool, error) {
 	if err := json.Unmarshal(data, &document); err != nil {
 		return "", false, err
 	}
-	rawRoles, rolesPresent, err := customRolesDocumentField(document)
+	rawRoles, rolesPresent, err := cfgmodel.CustomRolesDocumentField(document)
 	if err != nil {
 		return "", false, err
 	}
 	if !rolesPresent {
 		return models, modelsPresent, nil
 	}
-	roles, err := decodeCustomRoles(rawRoles)
+	roles, err := cfgmodel.DecodeCustomRoles(rawRoles)
 	if err != nil {
 		return "", false, err
 	}
