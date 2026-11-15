@@ -1,6 +1,6 @@
 //go:build windows
 
-package db
+package dbconn
 
 // Free-disk-space reporting for the compact command's space reservation
 // check (task #1161). Windows implementation: GetDiskFreeSpaceEx.
