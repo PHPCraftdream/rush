@@ -12,33 +12,32 @@ func TestDefaultDir_EnvAndGuard(t *testing.T) {
 	t.Setenv("RUSH_HEARTBEAT_DIR", tmp)
 	SetDirFunc(nil)
 	t.Cleanup(func() { SetDirFunc(nil) })
-	if got := DefaultDir(); got != tmp {
+	workspaceDir := t.TempDir()
+	workspace := func() string { return workspaceDir }
+	if got := DefaultDir(workspace, false); got != tmp {
 		t.Fatalf("env override: got %q, want %q", got, tmp)
 	}
 	t.Setenv("RUSH_HEARTBEAT_DIR", "")
-	tmp2 := t.TempDir()
-	t.Setenv("RUSH_GLOBAL_DATA", tmp2)
-	if got := DefaultDir(); got != "" {
-		t.Fatalf("test guard (even with RUSH_GLOBAL_DATA): got %q, want \"\"", got)
+	if got := DefaultDir(workspace, false); got != "" {
+		t.Fatalf("test guard (even with a supplied default dir): got %q, want \"\"", got)
 	}
 	skipDefaultDirInTests = false
 	t.Cleanup(func() { skipDefaultDirInTests = true })
-	want := filepath.Join(tmp2, "heartbeat")
-	if got := DefaultDir(); got != want {
-		t.Fatalf("global data: got %q, want %q", got, want)
+	want := filepath.Join(workspaceDir, "heartbeat")
+	if got := DefaultDir(workspace, false); got != want {
+		t.Fatalf("supplied dir: got %q, want %q", got, want)
 	}
 }
 
-// An isolated global dir must not bring the heartbeat directory back: the
-// process-wide writer outlives each test and raced the TempDir removal of
-// whichever test had set RUSH_GLOBAL_DIR ("data\heartbeat: The directory is
-// not empty").
+// An active --global-dir root (globalDirActive) must not bring the heartbeat
+// directory back in a test binary: the process-wide writer outlives each test
+// and raced the TempDir removal of whichever test had set RUSH_GLOBAL_DIR
+// ("data\heartbeat: The directory is not empty").
 func TestDefaultDir_GlobalDirDoesNotLiftTheTestGuard(t *testing.T) {
 	SetDirFunc(nil)
 	t.Cleanup(func() { SetDirFunc(nil) })
 	t.Setenv("RUSH_HEARTBEAT_DIR", "")
-	t.Setenv("RUSH_GLOBAL_DIR", t.TempDir())
-	if got := DefaultDir(); got != "" {
-		t.Fatalf("test guard with RUSH_GLOBAL_DIR: got %q, want \"\"", got)
+	if got := DefaultDir(func() string { return t.TempDir() }, true); got != "" {
+		t.Fatalf("test guard with a global-dir root: got %q, want \"\"", got)
 	}
 }
