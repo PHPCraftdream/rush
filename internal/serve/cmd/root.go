@@ -545,11 +545,7 @@ func initCommandConfig(cmd *cobra.Command) (*config.ConfigStore, string, bool, e
 	}
 	dataDir, _ := cmd.Flags().GetString("data-dir")
 	debug, _ := cmd.Flags().GetBool("debug")
-	initOpts := []config.LoadOption{config.WithCLIModels(cliprovider.AvailableCLIModels)}
-	if scope := commandDiscoveryScope(cmd); scope != nil {
-		initOpts = append(initOpts, config.WithDiscoveryProviders(scope...))
-	}
-	store, err := config.Init(cwd, dataDir, debug, initOpts...)
+	store, err := config.Init(cwd, dataDir, debug, commandLoadOptions(cmd)...)
 	if err != nil {
 		return nil, "", false, err
 	}

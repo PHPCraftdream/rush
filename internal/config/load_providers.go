@@ -23,17 +23,6 @@ import (
 
 var discoverZAIEffortDocs = discover.DiscoverZAIEffortDocs
 
-func configureProviders(ctx context.Context, cfg *Config, baseEnv env.Env, resolver VariableResolver, knownProviders []catwalk.Provider, dropField func(Scope, string), cliModels func() []catalog.LocalCLIModel) error {
-	return configureProvidersWithScope(ctx, cfg, baseEnv, resolver, knownProviders, dropField, cliModels, nil)
-}
-
-// discoveryEnabled reports whether provider id is inside the discovery
-// scope. A nil scope means every provider — the behavior is unchanged
-// when no scope was configured at Load time.
-func discoveryEnabled(scope map[string]bool, id string) bool {
-	return scope == nil || scope[id]
-}
-
 func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.Env, resolver VariableResolver, knownProviders []catwalk.Provider, dropField func(Scope, string), cliModels func() []catalog.LocalCLIModel, discoveryScope map[string]bool) error {
 	// Reset the endpoint-drop record from any previous run (see
 	// endpointDroppedProviders): this call's drops must not be confused with

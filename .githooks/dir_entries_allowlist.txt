@@ -34,7 +34,7 @@ internal/session/jobbatch 21
 internal/session/jobbatch/lab 24
 internal/serve/server 83
 internal/session 132
-internal/kit/sys/shell 24
+internal/kit/sys/shell 20
 web/src 21
 web/src/actions 52
 web/src/components 33
@@ -48,5 +48,4 @@ web/src/components/providers 9
 web/src/components/scopedModels 11
 web/src/liveWork 13
 web/src/net 8
-web/src/state 37
 web/tests/helpers 9
