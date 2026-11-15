@@ -17,7 +17,9 @@ internal/agent/tools/mcp 19
 # internal/app 61 -> 63: +1 internal/app/itest (cross-module scenario tests, sprint 0 wave 1);
 # +1 internal/app/projects moved in (stage C).
 # The count falls with the package split (stage D2).
-internal/app 63
+# 63 -> 64: +1 internal/app/app_bridge.go, the temporary bridge of the 0b-5 lane 0b-a (RunEnv, LoopHost, batch
+# params); lane D2-4 deletes it (deliberate, temporary; only down from here).
+internal/app 64
 # internal/serve/cmd 165 -> 167: +2 for internal/serve/cmd/queue and internal/serve/cmd/notification
 # moved in (stage C). The count falls with the package split (stage D2).
 internal/serve/cmd 167
