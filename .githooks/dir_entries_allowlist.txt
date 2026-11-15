@@ -34,7 +34,7 @@ internal/config/discover 13
 internal/session/heartbeat 10
 internal/session/jobbatch 21
 internal/session/jobbatch/lab 24
-internal/serve/server 77
+internal/serve/server 62
 internal/session 125
 internal/kit/sys/shell 17
 web/src/components 32
