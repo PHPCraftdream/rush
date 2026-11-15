@@ -33,7 +33,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := configureProviders(context.Background(), cfg, env, resolver, []catwalk.Provider{}, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
 		require.Equal(t, cfg.Providers.Len(), 1)
@@ -56,7 +56,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := configureProviders(context.Background(), cfg, env, resolver, []catwalk.Provider{}, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
 		require.Equal(t, cfg.Providers.Len(), 0)
@@ -78,7 +78,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := configureProviders(context.Background(), cfg, env, resolver, []catwalk.Provider{}, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
 		require.Equal(t, cfg.Providers.Len(), 0)
@@ -103,7 +103,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := configureProviders(context.Background(), cfg, env, resolver, []catwalk.Provider{}, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
 		require.Equal(t, cfg.Providers.Len(), 0)
@@ -128,7 +128,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := configureProviders(context.Background(), cfg, env, resolver, []catwalk.Provider{}, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
 		require.Equal(t, cfg.Providers.Len(), 1)
@@ -156,7 +156,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := configureProviders(context.Background(), cfg, env, resolver, []catwalk.Provider{}, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
 		require.Equal(t, cfg.Providers.Len(), 1)
@@ -186,7 +186,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := configureProviders(context.Background(), cfg, env, resolver, []catwalk.Provider{}, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
 		require.Equal(t, cfg.Providers.Len(), 0)
@@ -221,7 +221,7 @@ func TestConfig_configureProvidersEnhancedCredentialValidation(t *testing.T) {
 			"GOOGLE_GENAI_USE_VERTEXAI": "false",
 		})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
 		require.Equal(t, cfg.Providers.Len(), 0)
@@ -252,7 +252,7 @@ func TestConfig_configureProvidersEnhancedCredentialValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
 		require.Equal(t, cfg.Providers.Len(), 0)
@@ -283,7 +283,7 @@ func TestConfig_configureProvidersEnhancedCredentialValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
 		require.Equal(t, cfg.Providers.Len(), 0)
@@ -316,7 +316,7 @@ func TestConfig_configureProvidersEnhancedCredentialValidation(t *testing.T) {
 			"OPENAI_API_KEY": "test-key",
 		})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
 		require.Equal(t, cfg.Providers.Len(), 1)
@@ -357,7 +357,7 @@ func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 			"OPENAI_API_KEY": "test-key",
 		})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.ErrorContains(t, err, "no custom providers")
 
 		// openai should NOT be present because it lacks base_url and models.
@@ -400,7 +400,7 @@ func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 			"OPENAI_API_KEY": "test-key",
 		})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
 		// Only fully specified provider should be present.
@@ -454,7 +454,7 @@ func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 			"ANTHROPIC_API_KEY": "test-key",
 		})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
 		// Both providers should be present.
@@ -482,7 +482,7 @@ func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := configureProviders(context.Background(), cfg, env, resolver, []catwalk.Provider{}, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.ErrorContains(t, err, "no custom providers")
 
 		// Provider should be rejected for missing models.
@@ -506,7 +506,7 @@ func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := configureProviders(context.Background(), cfg, env, resolver, []catwalk.Provider{}, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.ErrorContains(t, err, "no custom providers")
 
 		// Provider should be rejected for missing base_url.

@@ -45,9 +45,7 @@ func setupCodexCatalogDumpTest(t *testing.T) catwalk.Model {
 func runCodexDumpScenario(t *testing.T, cfg *Config, known []catwalk.Provider) map[string]catwalk.Model {
 	t.Helper()
 	envMap := env.NewFromMap(map[string]string{})
-	require.NoError(t, cfg.configureProviders(
-		context.Background(), testStore(cfg), envMap, NewShellVariableResolver(envMap), known,
-	))
+	require.NoError(t, configureProviders(context.Background(), cfg, envMap, NewShellVariableResolver(envMap), known, testStore(cfg).removeConfigFieldBestEffort, nil))
 	pc, ok := cfg.Providers.Get("openai-codex")
 	require.True(t, ok)
 	byID := make(map[string]catwalk.Model, len(pc.Models))
@@ -165,10 +163,7 @@ func TestConfigureProviders_CustomProviderValueStaysUserSet(t *testing.T) {
 		},
 	})
 	envMap := env.NewFromMap(map[string]string{})
-	require.NoError(t, cfg.configureProviders(
-		context.Background(), testStore(cfg), envMap, NewShellVariableResolver(envMap),
-		[]catwalk.Provider{},
-	))
+	require.NoError(t, configureProviders(context.Background(), cfg, envMap, NewShellVariableResolver(envMap), []catwalk.Provider{}, testStore(cfg).removeConfigFieldBestEffort, nil))
 
 	pc, ok := cfg.Providers.Get("zai")
 	require.True(t, ok)
@@ -239,10 +234,7 @@ func TestConfigureProviders_KnownProviderCatalogDumpDoesNotCountAsUserSet(t *tes
 		Models: []catwalk.Model{{ID: modelID, Name: "GLM-5.3-Flash", ContextWindow: rawWindow, DefaultMaxTokens: 4096}},
 	})
 	envMap := env.NewFromMap(map[string]string{})
-	require.NoError(t, cfg.configureProviders(
-		context.Background(), testStore(cfg), envMap, NewShellVariableResolver(envMap),
-		[]catwalk.Provider{catalog},
-	))
+	require.NoError(t, configureProviders(context.Background(), cfg, envMap, NewShellVariableResolver(envMap), []catwalk.Provider{catalog}, testStore(cfg).removeConfigFieldBestEffort, nil))
 
 	pc, ok := cfg.Providers.Get("zai")
 	require.True(t, ok)

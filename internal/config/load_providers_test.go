@@ -41,7 +41,7 @@ func TestConfig_configureProviders(t *testing.T) {
 		"OPENAI_API_KEY": "test-key",
 	})
 	resolver := NewShellVariableResolver(env)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 	require.Equal(t, 1, cfg.Providers.Len())
 
@@ -84,7 +84,7 @@ func TestConfig_configureProvidersWithOverride(t *testing.T) {
 		"OPENAI_API_KEY": "test-key",
 	})
 	resolver := NewShellVariableResolver(env)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 	require.Equal(t, 1, cfg.Providers.Len())
 
@@ -123,7 +123,7 @@ func TestConfig_configureProviders_PreservesLocalCLICustomFields(t *testing.T) {
 	store.cliModels = func() []catalog.LocalCLIModel {
 		return []catalog.LocalCLIModel{{ID: "cli-claude-sonnet", Name: "Claude Sonnet"}}
 	}
-	err := cfg.configureProviders(context.Background(), store, e, resolver, []catwalk.Provider{})
+	err := configureProviders(context.Background(), cfg, e, resolver, []catwalk.Provider{}, store.removeConfigFieldBestEffort, store.cliModels)
 	require.NoError(t, err)
 
 	pc, ok := cfg.Providers.Get(catalog.LocalCLIProviderID)
@@ -170,7 +170,7 @@ func TestConfig_configureProvidersWithNewProvider(t *testing.T) {
 		"OPENAI_API_KEY": "test-key",
 	})
 	resolver := NewShellVariableResolver(env)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 	// Should be to because of the env variable
 	require.Equal(t, cfg.Providers.Len(), 2)
@@ -206,7 +206,7 @@ func TestConfig_configureProvidersBedrockWithCredentials(t *testing.T) {
 		"AWS_SECRET_ACCESS_KEY": "test-secret-key",
 	})
 	resolver := NewShellVariableResolver(env)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 	require.Equal(t, cfg.Providers.Len(), 1)
 
@@ -232,7 +232,7 @@ func TestConfig_configureProvidersBedrockWithoutCredentials(t *testing.T) {
 	cfg.setDefaults("/tmp", "")
 	env := env.NewFromMap(map[string]string{})
 	resolver := NewShellVariableResolver(env)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 	// Provider should not be configured without credentials
 	require.Equal(t, cfg.Providers.Len(), 0)
@@ -257,7 +257,7 @@ func TestConfig_configureProvidersVertexAIWithCredentials(t *testing.T) {
 		"VERTEXAI_LOCATION": "us-central1",
 	})
 	resolver := NewShellVariableResolver(env)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 	require.Equal(t, cfg.Providers.Len(), 1)
 
@@ -289,7 +289,7 @@ func TestConfig_configureProvidersVertexAIWithoutCredentials(t *testing.T) {
 		"GOOGLE_CLOUD_LOCATION":     "us-central1",
 	})
 	resolver := NewShellVariableResolver(env)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 	// Provider should not be configured without proper credentials
 	require.Equal(t, cfg.Providers.Len(), 0)
@@ -314,7 +314,7 @@ func TestConfig_configureProvidersVertexAIMissingProject(t *testing.T) {
 		"GOOGLE_CLOUD_LOCATION":     "us-central1",
 	})
 	resolver := NewShellVariableResolver(env)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 	// Provider should not be configured without project
 	require.Equal(t, cfg.Providers.Len(), 0)
@@ -338,7 +338,7 @@ func TestConfig_configureProvidersSetProviderID(t *testing.T) {
 		"OPENAI_API_KEY": "test-key",
 	})
 	resolver := NewShellVariableResolver(env)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 	require.Equal(t, cfg.Providers.Len(), 1)
 
@@ -536,7 +536,7 @@ func TestConfig_configureProvidersWithDisabledProvider(t *testing.T) {
 		"OPENAI_API_KEY": "test-key",
 	})
 	resolver := NewShellVariableResolver(env)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 
 	require.Equal(t, cfg.Providers.Len(), 1)
@@ -584,7 +584,7 @@ func TestConfig_configureProviders_PreservesProviderNetwork(t *testing.T) {
 			"OPENAI_API_KEY": "test-key",
 		})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
 		pc, ok := cfg.Providers.Get("openai")
@@ -612,7 +612,7 @@ func TestConfig_configureProviders_PreservesProviderNetwork(t *testing.T) {
 			"OPENAI_API_KEY": "test-key",
 		})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
+		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
 		pc, ok := cfg.Providers.Get("openai")
@@ -648,7 +648,7 @@ func TestConfigureProviders_CLIModelsMetadataAndOrdering(t *testing.T) {
 
 	e := env.NewFromMap(map[string]string{})
 	resolver := NewShellVariableResolver(e)
-	err := cfg.configureProviders(context.Background(), store, e, resolver, []catwalk.Provider{})
+	err := configureProviders(context.Background(), cfg, e, resolver, []catwalk.Provider{}, store.removeConfigFieldBestEffort, store.cliModels)
 	require.NoError(t, err)
 
 	pc, ok := cfg.Providers.Get(catalog.LocalCLIProviderID)

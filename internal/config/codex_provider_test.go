@@ -22,14 +22,14 @@ func TestConfigureProviders_CodexOAuthWithUnavailableCatalogKeepsConfigLoadable(
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	resolver := NewShellVariableResolver(env.NewFromMap(nil))
-	err := cfg.configureProviders(ctx, testStore(cfg), env.NewFromMap(nil), resolver, nil)
+	err := configureProviders(ctx, cfg, env.NewFromMap(nil), resolver, nil, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 
 	provider, ok := cfg.Providers.Get("openai-codex")
 	require.True(t, ok)
 	require.Empty(t, provider.Models)
 
-	err = configureSelectedModels(testStore(cfg), cfg, nil, false)
+	err = ConfigureSelectedModels(cfg, nil)
 	require.NoError(t, err, "a logged-in provider with an unavailable account catalog must not block config loading")
 	require.Empty(t, cfg.Models[SelectedModelTypeSmart].Provider)
 	require.Empty(t, cfg.Models[SelectedModelTypeSmart].Model)

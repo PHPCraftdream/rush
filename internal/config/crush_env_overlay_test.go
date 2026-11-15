@@ -70,7 +70,7 @@ func TestConfigureProviders_RushPrefixOverridesAPIKey(t *testing.T) {
 	})
 	resolver := NewShellVariableResolver(baseEnv)
 
-	err := cfg.configureProviders(context.Background(), testStore(cfg), baseEnv, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, baseEnv, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 
 	pc, ok := cfg.Providers.Get("openai")
@@ -99,7 +99,7 @@ func TestConfigureProviders_NoOverlayWhenNoRushPrefix(t *testing.T) {
 	baseEnv := env.NewFromMap(map[string]string{"OPENAI_API_KEY": "real-key"})
 	resolver := NewShellVariableResolver(baseEnv)
 
-	err := cfg.configureProviders(context.Background(), testStore(cfg), baseEnv, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, baseEnv, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 
 	pc, ok := cfg.Providers.Get("openai")
@@ -141,7 +141,7 @@ func TestConfigureProviders_DoesNotMutateProcessEnviron(t *testing.T) {
 	resolver := NewShellVariableResolver(baseEnv)
 
 	before := os.Environ()
-	err := cfg.configureProviders(context.Background(), testStore(cfg), baseEnv, resolver, knownProviders)
+	err := configureProviders(context.Background(), cfg, baseEnv, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 	after := os.Environ()
 
@@ -193,7 +193,7 @@ func TestConfigureProviders_ConcurrentDifferentOverlays_NoInterference(t *testin
 			})
 			resolver := NewShellVariableResolver(baseEnv)
 
-			err := cfg.configureProviders(context.Background(), testStore(cfg), baseEnv, resolver, knownProvidersTemplate())
+			err := configureProviders(context.Background(), cfg, baseEnv, resolver, knownProvidersTemplate(), testStore(cfg).removeConfigFieldBestEffort, nil)
 			require.NoError(t, err)
 
 			pc, ok := cfg.Providers.Get("openai")

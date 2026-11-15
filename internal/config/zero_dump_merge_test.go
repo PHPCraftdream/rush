@@ -52,10 +52,7 @@ func TestConfigureProviders_ZeroDumpDoesNotShadowCatalog(t *testing.T) {
 		},
 	})
 	envMap := env.NewFromMap(map[string]string{"ZAI_API_KEY": "zai-test-key"})
-	require.NoError(t, cfg.configureProviders(
-		context.Background(), testStore(cfg), envMap, NewShellVariableResolver(envMap),
-		[]catwalk.Provider{catalog},
-	))
+	require.NoError(t, configureProviders(context.Background(), cfg, envMap, NewShellVariableResolver(envMap), []catwalk.Provider{catalog}, testStore(cfg).removeConfigFieldBestEffort, nil))
 
 	pc, ok := cfg.Providers.Get("zai")
 	require.True(t, ok)

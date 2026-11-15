@@ -147,19 +147,6 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 		cfg.Options.Debug = true
 	}
 
-	// store is constructed early (with an empty/placeholder snapshot) only
-	// because configureProviders and mergeExternalMCPServers need a
-	// *ConfigStore to call scope-aware helpers (RemoveConfigField,
-	// HasConfigField) that read/write disk paths, not the in-memory
-	// config. Its real, fully-prepared snapshot is published in one shot
-	// at the end of this function via publish().
-	store := &ConfigStore{
-		workingDir:     workingDir,
-		globalDataPath: globalDataPath,
-		dataDirSource:  dataDirSource,
-		sharedDataDir:  sharedDataDir,
-		cliModels:      cliModels,
-	}
 	// Load workspace config last so it has highest priority.
 	if !pathAlreadyLoaded(loadedPaths, workspacePath) && workingDir != "" {
 		expectedOwner, enforceOwner, ownerErr := configOwnerForWorkingDir(workingDir)
@@ -206,12 +193,18 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 			loadedPaths = append(loadedPaths, normalizeReloadPath(workspacePath))
 		}
 	}
-	store.snap.Store(&storeSnapshot{
-		config:           cfg,
-		mcpRevisions:     initialMCPRevisions(cfg),
-		resolverRevision: 1,
-		workspacePath:    workspacePath,
-		loadedPaths:      loadedPaths,
+	// store is constructed with a placeholder snapshot only because
+	// configureProviders and mergeExternalMCPServers need a *ConfigStore to
+	// call scope-aware helpers (RemoveConfigField, HasConfigField) that
+	// read/write disk paths, not the in-memory config. Its real,
+	// fully-prepared snapshot is published in one shot inside InitialLoad's
+	// build callback below, once every step that can mutate the config has
+	// run to completion.
+	store := NewStore(workingDir, globalDataPath, dataDirSource, sharedDataDir, cliModels, &InitialSnapshot{
+		Config:        cfg,
+		MCPRevisions:  initialMCPRevisions(cfg),
+		WorkspacePath: workspacePath,
+		LoadedPaths:   loadedPaths,
 	})
 
 	// Load MCP servers from .mcp.json files (Claude Code format) and merge
@@ -276,91 +269,54 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 	// Configure providers
 	valueResolver := NewShellVariableResolver(env)
 
-	// Hold reloadMu AND publishMu during the initial load (same acquisition
-	// order as buildAndPublishReload: reloadMu -> publishMu), so that
-	// auto-reload triggered by config-modifying operations inside
-	// configureProviders (e.g. RemoveConfigField) is skipped instead of
-	// recursing.
-	//
-	// autoReload's redundant-reload dedup is reloadMu.TryLock(), not
-	// publishMu (see reloadMu's field doc) — holding only publishMu here,
-	// as this function did before, no longer makes a re-entrant autoReload
-	// call a safe no-op: it would find reloadMu free, succeed the TryLock,
-	// and hang forever trying to re-acquire publishMu on this same
-	// goroutine (sync.Mutex is not reentrant). This was a real,
-	// 100%-reproducible deadlock on any Load() call where a model role has
-	// no configured selection yet (confirmed via
-	// TestModelsBump_NonAtomModel_ReportsCleanly hanging past both a 600s
-	// and an isolated 30s test timeout with an identical stuck stack).
-	//
-	// Acquiring reloadMu here is safe with no other goroutine to race
-	// against: the *ConfigStore value doesn't exist (and so cannot be
-	// referenced by anything else) until this function constructs and
-	// returns it below, so nothing outside this call can possibly be
-	// reloading THIS store concurrently while both locks are held.
-	store.reloadMu.Lock()
-	defer store.reloadMu.Unlock()
-	store.publishMu.Lock()
-	defer store.publishMu.Unlock()
-	store.initializing.Store(true)
-	defer store.initializing.Store(false)
-	store.initialLoadFingerprints = fingerprints
-	defer func() { store.initialLoadFingerprints = nil }()
-
-	publish := func() error {
-		runLoadAfterProviderConfigTestHook(workingDir)
-		store.diskWriteMu.Lock()
-		defer store.diskWriteMu.Unlock()
-		if candidateInputsChanged(workingDir, configPaths, externalPaths, fingerprints) {
-			return errReloadDiskChanged
+	if err := store.InitialLoad(fingerprints, func(publish func(*InitialSnapshot) error) error {
+		publishSnapshot := func() *InitialSnapshot {
+			return &InitialSnapshot{
+				Config:              cfg,
+				Resolver:            valueResolver,
+				MCPRevisions:        initialMCPRevisions(cfg),
+				MCPInputs:           mcpInputFingerprints(configDocuments, externalDocuments),
+				ResolverFingerprint: resolverInputFingerprint(env.Env()),
+				ResolverDynamic:     configHasDynamicMCPResolution(cfg),
+				KnownProviders:      knownProviders,
+				LoadedPaths:         loadedPaths,
+				WorkspacePath:       workspacePath,
+				ConfigPaths:         configPaths,
+				ExternalPaths:       externalPaths,
+			}
 		}
-		stalenessPaths := configAndMCPStalenessPaths(lookupConfigCandidates(workingDir), workingDir)
-		stalenessPaths = append(stalenessPaths, workspacePath, globalDataPath)
-		trackedPaths, snapshots := reloadStalenessState(stalenessPaths, fingerprints)
-		store.snap.Store(&storeSnapshot{
-			config:              cfg,
-			resolver:            valueResolver,
-			mcpRevisions:        initialMCPRevisions(cfg),
-			mcpInputs:           mcpInputFingerprints(configDocuments, externalDocuments),
-			resolverRevision:    1,
-			resolverFingerprint: resolverInputFingerprint(env.Env()),
-			resolverDynamic:     configHasDynamicMCPResolution(cfg),
-			knownProviders:      knownProviders,
-			loadedPaths:         loadedPaths,
-			trackedConfigPaths:  trackedPaths,
-			snapshots:           snapshots,
-			workspacePath:       workspacePath,
-			generation:          1,
-		})
-		return nil
-	}
 
-	if err := cfg.configureProviders(context.Background(), store, env, valueResolver, knownProviders); err != nil {
-		return nil, fmt.Errorf("failed to configure providers: %w", err)
-	}
+		if err := configureProviders(context.Background(), cfg, env, valueResolver, knownProviders, store.removeConfigFieldBestEffort, cliModels); err != nil {
+			return fmt.Errorf("failed to configure providers: %w", err)
+		}
 
-	if !cfg.IsConfigured() {
-		slog.Warn("No providers configured")
-		if err := publish(); err != nil {
-			return nil, err
+		if !cfg.IsConfigured() {
+			slog.Warn("No providers configured")
+			runLoadAfterProviderConfigTestHook(workingDir)
+			if err := publish(publishSnapshot()); err != nil {
+				return err
+			}
+			store.verifyModelsIntegrityAtLoad()
+			return nil
+		}
+
+		if err := ConfigureSelectedModels(cfg, knownProviders); err != nil {
+			return fmt.Errorf("failed to configure selected models: %w", err)
+		}
+		cfg.SetupAgents()
+
+		// Verify and publish the fully-prepared generation together with the
+		// exact-byte staleness snapshot. publish holds diskWriteMu across the
+		// final verification and swap.
+		runLoadAfterProviderConfigTestHook(workingDir)
+		if err := publish(publishSnapshot()); err != nil {
+			return err
 		}
 		store.verifyModelsIntegrityAtLoad()
-		return store, nil
-	}
-
-	if err := configureSelectedModels(store, cfg, knownProviders, true); err != nil {
-		return nil, fmt.Errorf("failed to configure selected models: %w", err)
-	}
-	cfg.SetupAgents()
-
-	// Verify and publish the fully-prepared generation together with the
-	// exact-byte staleness snapshot. publish holds diskWriteMu across the
-	// final verification and swap.
-	if err := publish(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
-
-	store.verifyModelsIntegrityAtLoad()
 	return store, nil
 }
 
