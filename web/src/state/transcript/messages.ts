@@ -1,4 +1,4 @@
-import { mergePreserveContent } from "../domain/text/mergeMessage";
+import { mergePreserveContent } from "../../domain/text/mergeMessage";
 import { MessagesCarburetor } from "./MessagesCarburetor";
 
 // oxlint-disable-next-line carburetor/no-module-level-store -- client-only SPA: no server rendering, one store per page

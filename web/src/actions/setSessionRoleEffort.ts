@@ -1,6 +1,6 @@
 import { ws } from "../net/client";
-import type { ModelRole } from "../state/ConfigCarburetor";
-import { sessionsCarburetor } from "../state/sessions";
+import type { ModelRole } from "../state/config/ConfigCarburetor";
+import { sessionsCarburetor } from "../state/sessions/sessions";
 import { roleFieldPrefix } from "./roleFieldPrefix";
 
 /**

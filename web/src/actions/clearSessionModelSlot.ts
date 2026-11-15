@@ -1,5 +1,5 @@
 import { ws } from "../net/client";
-import { sessionsCarburetor } from "../state/sessions";
+import { sessionsCarburetor } from "../state/sessions/sessions";
 
 const CLEARED_FIELDS: Record<string, string> = {
   smart: "SmartModel",

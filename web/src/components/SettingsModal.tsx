@@ -5,8 +5,8 @@ import { addContextPath, removeContextPath, addSkillsPath, removeSkillsPath, set
 import { wsRequest } from "../ws";
 import { X, Plus, Trash2, RefreshCw, FolderOpen, Loader2 } from "lucide-react";
 import type { SkillInfo, SkillsSnapshot } from "../domain/types";
-import { configCarburetor } from "../state/config";
-import type { IConfigState } from "../state/ConfigCarburetor";
+import { configCarburetor } from "../state/config/config";
+import type { IConfigState } from "../state/config/ConfigCarburetor";
 
 /** Shared empty path list for a missing config. */
 const NO_PATHS: TReadonly<string[]> = [];

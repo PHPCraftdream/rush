@@ -1,4 +1,4 @@
-import { wakeSchedulesCarburetor } from "../state/wakeSchedules";
+import { wakeSchedulesCarburetor } from "../state/live/wakeSchedules";
 import { isStaleWakeSnapshot } from "../wakeSnapshot/isStaleWakeSnapshot";
 import { isWakeSchedulesCancelRequestID } from "./isWakeSchedulesCancelRequestID";
 import { isWakeSchedulesGetRequestID } from "./isWakeSchedulesGetRequestID";

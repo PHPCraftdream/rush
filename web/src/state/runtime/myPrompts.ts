@@ -1,8 +1,8 @@
 import { computed } from "@react-carburetor/core";
-import { isAsyncCompletionNotice } from "../domain/asyncJob/isAsyncCompletionNotice";
-import { buildMyPrompts } from "../domain/completion/buildMyPrompts";
-import type { Message } from "../domain/types";
-import { messagesCarburetor } from "./messages";
+import { isAsyncCompletionNotice } from "../../domain/asyncJob/isAsyncCompletionNotice";
+import { buildMyPrompts } from "../../domain/completion/buildMyPrompts";
+import type { Message } from "../../domain/types";
+import { messagesCarburetor } from "../transcript/messages";
 
 /**
  * The composer's prompt history, derived from the active transcript.

@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { drainSendableQueue } from "./queueOnIdle/drainSendableQueue.ts";
 import { flushQueueOnIdle } from "./queueOnIdle/flushQueueOnIdle.ts";
 import { sendQueuedItem } from "./queueOnIdle/sendQueuedItem.ts";
-import { QueueCarburetor } from "./state/QueueCarburetor.ts";
+import { QueueCarburetor } from "./state/transcript/QueueCarburetor.ts";
 
 /** One queued item as these tests model it. */
 interface ITestItem {

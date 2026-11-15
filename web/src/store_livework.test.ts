@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { isStaleWakeSnapshot } from "./wakeSnapshot/isStaleWakeSnapshot.ts";
 import { pickPendingWake } from "./wakeSnapshot/pickPendingWake.ts";
-import { WakeSchedulesCarburetor } from "./state/WakeSchedulesCarburetor.ts";
-import { LiveWorkCarburetor } from "./state/LiveWorkCarburetor.ts";
+import { WakeSchedulesCarburetor } from "./state/live/WakeSchedulesCarburetor.ts";
+import { LiveWorkCarburetor } from "./state/live/LiveWorkCarburetor.ts";
 import type { WakeScheduleItem } from "./domain/types.ts";
 
 /**

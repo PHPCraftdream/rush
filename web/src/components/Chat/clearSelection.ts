@@ -1,4 +1,4 @@
-import { selectionCarburetor } from "../../state/selection";
+import { selectionCarburetor } from "../../state/transcript/selection";
 
 /** Empties the batch selection. */
 export const clearSelection = (): void => {

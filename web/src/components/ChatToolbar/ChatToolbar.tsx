@@ -1,8 +1,8 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
-import { busyCarburetor } from "../../state/busy";
-import { sessionsCarburetor } from "../../state/sessions";
-import type { ISessionsState } from "../../state/SessionsCarburetor";
+import { busyCarburetor } from "../../state/status/busy";
+import { sessionsCarburetor } from "../../state/sessions/sessions";
+import type { ISessionsState } from "../../state/sessions/SessionsCarburetor";
 import { findSession } from "../Chat/findSession";
 import { StatusBar } from "../StatusBar";
 import { BusyDots } from "./BusyDots";

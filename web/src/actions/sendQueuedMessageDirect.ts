@@ -1,5 +1,5 @@
 import { ws } from "../net/client";
-import { queueCarburetor } from "../state/queue";
+import { queueCarburetor } from "../state/transcript/queue";
 import { queuedMessagePayload } from "./queuedMessagePayload";
 
 /**

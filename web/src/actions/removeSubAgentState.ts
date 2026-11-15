@@ -1,5 +1,5 @@
-import { messagesCarburetor } from "../state/messages";
-import { sessionsCarburetor } from "../state/sessions";
+import { messagesCarburetor } from "../state/transcript/messages";
+import { sessionsCarburetor } from "../state/sessions/sessions";
 
 /**
  * Clears every piece of state that outlives a removed session row (task #727).

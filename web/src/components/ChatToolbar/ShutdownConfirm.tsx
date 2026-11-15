@@ -1,6 +1,6 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { ws, wsRequest } from "../../ws";
-import { connectionCarburetor } from "../../state/connection";
+import { connectionCarburetor } from "../../state/link/connection";
 import { ConfirmDialog } from "../ConfirmDialog";
 
 /** Props of the shutdown confirmation. */

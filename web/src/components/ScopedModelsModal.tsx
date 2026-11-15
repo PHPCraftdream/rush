@@ -1,7 +1,7 @@
 import type { MouseEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { X } from "lucide-react";
-import { configCarburetor } from "../state/config";
+import { configCarburetor } from "../state/config/config";
 import { ws } from "../ws";
 import { buildModelList } from "./modelList/buildModelList";
 import type { ModelItem } from "./modelList/modelListTypes";

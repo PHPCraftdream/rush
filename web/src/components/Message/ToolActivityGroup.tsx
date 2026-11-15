@@ -4,8 +4,8 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
 import { ChevronDown, ChevronUp } from "lucide-react";
-import { signalsCarburetor } from "../../state/signals";
-import type { ExpandToolCallRequest, ISignalsState } from "../../state/SignalsCarburetor";
+import { signalsCarburetor } from "../../state/status/signals";
+import type { ExpandToolCallRequest, ISignalsState } from "../../state/status/SignalsCarburetor";
 import { SubAgentBlock } from "../SubAgentBlock";
 import { ActionRow } from "./ActionRow";
 import type { ActionItem } from "./ActionRow";

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { flush } from "@react-carburetor/core/testing";
-import { WakeCancelCarburetor } from "./state/WakeCancelCarburetor.ts";
+import { WakeCancelCarburetor } from "./WakeCancelCarburetor.ts";
 
 const selectError = (state: { error: string | null }): string | null => state.error;
 

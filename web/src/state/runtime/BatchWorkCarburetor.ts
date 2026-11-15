@@ -1,5 +1,5 @@
 import { Carburetor } from "@react-carburetor/core";
-import type { BatchWorkCompletion, BatchWorkNode, BatchWorkRoot, BatchWorkSnapshot } from "../domain/types";
+import type { BatchWorkCompletion, BatchWorkNode, BatchWorkRoot, BatchWorkSnapshot } from "../../domain/types";
 
 /** The last complete-or-merged snapshot of one session's batch work. */
 export interface BatchWorkState {

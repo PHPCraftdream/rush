@@ -11,7 +11,7 @@ import {
   type ModelRole,
 } from "../store";
 import type { Session } from "../domain/types";
-import { configCarburetor } from "../state/config";
+import { configCarburetor } from "../state/config/config";
 import { effortLabel } from "../domain/effort/effortLabel";
 import { deriveModelSelection, type IModelSelection } from "./modelList/deriveModelSelection";
 import type { ModelItem, ProviderGroup } from "./modelList/modelListTypes";
