@@ -85,3 +85,38 @@ func TestServeAPIEventStreamDeliversFirstFrame(t *testing.T) {
 		t.Fatalf("first line = %q (err %v), want the retry hint", line, err)
 	}
 }
+
+// statusWriter local copy (S2, lane L2): definition moved to apiauth/audit.go
+// (api_audit_middleware.go:100-141 at HEAD); this test layers the flush over
+// it while staying in package server. Verbatim copy; servertest (L6/L7) will
+// absorb it.
+type statusWriter struct {
+	http.ResponseWriter
+	status      int
+	bytes       int64
+	wroteHeader bool
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	if !w.wroteHeader {
+		w.wroteHeader = true
+		w.status = code
+		w.ResponseWriter.WriteHeader(code)
+	}
+}
+
+func (w *statusWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	n, err := w.ResponseWriter.Write(b)
+	w.bytes += int64(n)
+	return n, err
+}
+
+func (w *statusWriter) Flush() {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}

@@ -8,7 +8,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestAPIScopeGuardMatrix(t *testing.T) {
@@ -234,3 +236,97 @@ func TestAPIRoutesPinned(t *testing.T) {
 		t.Fatalf("routes differ:\n got %q\nwant %q", gotTuples, wantTuples)
 	}
 }
+
+// captureHandler helper local copy (S2, lane L2): definition moved to apiauth
+// (apiauth_capture_test.go at HEAD); api_feature_test.go and
+// api_read_errors_test.go stay in package server. Verbatim copy; servertest
+// (lanes L6/L7) will absorb it.
+type capturedRecord struct {
+	message string
+	attrs   map[string]any
+}
+
+type captureHandler struct {
+	mu      sync.Mutex
+	records []capturedRecord
+	notify  chan struct{}
+}
+
+func (c *captureHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (c *captureHandler) Handle(_ context.Context, r slog.Record) error {
+	rec := capturedRecord{message: r.Message, attrs: make(map[string]any)}
+	r.Attrs(func(attr slog.Attr) bool {
+		captureAttr(rec.attrs, "", attr)
+		return true
+	})
+	c.mu.Lock()
+	c.records = append(c.records, rec)
+	c.mu.Unlock()
+	if c.notify != nil {
+		select {
+		case c.notify <- struct{}{}:
+		default:
+		}
+	}
+	return nil
+}
+
+func captureAttr(dst map[string]any, prefix string, attr slog.Attr) {
+	key := attr.Key
+	if prefix != "" {
+		key = prefix + "." + key
+	}
+	value := attr.Value.Resolve()
+	switch value.Kind() {
+	case slog.KindGroup:
+		for _, child := range value.Group() {
+			captureAttr(dst, key, child)
+		}
+	case slog.KindInt64:
+		dst[key] = int(value.Int64())
+	case slog.KindUint64:
+		dst[key] = int(value.Uint64())
+	case slog.KindDuration:
+		dst[key] = value.Duration()
+	case slog.KindString:
+		dst[key] = value.String()
+	case slog.KindBool:
+		dst[key] = value.Bool()
+	case slog.KindTime:
+		dst[key] = value.Time()
+	case slog.KindAny:
+		dst[key] = value.Any()
+	default:
+		dst[key] = value.Any()
+	}
+}
+
+func (c *captureHandler) snapshot() []capturedRecord {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]capturedRecord(nil), c.records...)
+}
+
+func waitForRecords(t *testing.T, c *captureHandler, n int) []capturedRecord {
+	t.Helper()
+	if c.notify == nil {
+		t.Fatal("capture handler notifier must be initialized")
+	}
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	for {
+		records := c.snapshot()
+		if len(records) >= n {
+			return records
+		}
+		select {
+		case <-c.notify:
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for %d records; saw %d", n, len(c.snapshot()))
+		}
+	}
+}
+
+func (c *captureHandler) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c *captureHandler) WithGroup(string) slog.Handler      { return c }

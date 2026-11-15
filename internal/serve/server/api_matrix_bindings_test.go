@@ -122,7 +122,7 @@ func TestBindingMatrix(t *testing.T) {
 		{name: "unbound", token: func(m *bindingMatrix) string { return m.none }, createStatus: http.StatusCreated},
 		{name: "session-pinned", token: func(m *bindingMatrix) string { return m.pinned }, createStatus: http.StatusForbidden, denial: "pinned-token", intakeForbiddenText: "pinned-token"},
 		{name: "batch-bound", token: func(m *bindingMatrix) string { return m.batch }, createStatus: http.StatusForbidden, denial: "batch-only"},
-		{name: "unbound-on-route-batch", token: func(m *bindingMatrix) string { return m.none }, route: routeBatch, createStatus: http.StatusForbidden, denial: "batch-only"},
+		{name: "unbound-on-route-batch", token: func(m *bindingMatrix) string { return m.none }, route: RouteBatch, createStatus: http.StatusForbidden, denial: "batch-only"},
 	}
 	for _, ch := range apiMatrixChannels {
 		for _, tc := range expectations {
