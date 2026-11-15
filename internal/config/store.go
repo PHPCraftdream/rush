@@ -122,6 +122,11 @@ type ConfigStore struct {
 	// behavior as today when no CLI binary is available).
 	cliModels func() []catalog.LocalCLIModel
 
+	// discoveryProviders is the discovery scope given at Load time via
+	// WithDiscoveryProviders; nil discovers every provider. Read-only after
+	// Load, so reloads use it without synchronization.
+	discoveryProviders map[string]bool
+
 	// publishMu is the single mutex that serialises ALL snapshot
 	// publications — both ReloadFromDisk (which rebuilds the entire
 	// config from disk) and the copy-on-write mutators (updateConfig,
@@ -312,20 +317,22 @@ type InitialSnapshot struct {
 
 // NewStore constructs a ConfigStore with its construction-time identity —
 // the fields that never change after Load (workingDir, globalDataPath,
-// dataDirSource, sharedDataDir, cliModels) — and publishes seed as the
+// dataDirSource, sharedDataDir, cliModels, discoveryProviders) — and
+// publishes seed as the
 // placeholder snapshot that makes scope-aware helpers usable before the
 // real generation exists. Only the placeholder-relevant fields of seed are
 // published (config, mcpRevisions, workspacePath, loadedPaths,
 // resolverRevision 1). Load is the only production caller, and the store is
 // not visible to any other goroutine until loadOnce returns, so the
 // placeholder publish needs no synchronization.
-func NewStore(workingDir, globalDataPath string, dataDirSource DataDirSource, sharedDataDir bool, cliModels func() []catalog.LocalCLIModel, seed *InitialSnapshot) *ConfigStore {
+func NewStore(workingDir, globalDataPath string, dataDirSource DataDirSource, sharedDataDir bool, cliModels func() []catalog.LocalCLIModel, discoveryProviders map[string]bool, seed *InitialSnapshot) *ConfigStore {
 	s := &ConfigStore{
-		workingDir:     workingDir,
-		globalDataPath: globalDataPath,
-		dataDirSource:  dataDirSource,
-		sharedDataDir:  sharedDataDir,
-		cliModels:      cliModels,
+		workingDir:         workingDir,
+		globalDataPath:     globalDataPath,
+		dataDirSource:      dataDirSource,
+		sharedDataDir:      sharedDataDir,
+		cliModels:          cliModels,
+		discoveryProviders: discoveryProviders,
 	}
 	if seed != nil {
 		s.snap.Store(&storeSnapshot{

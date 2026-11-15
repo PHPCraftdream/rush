@@ -45,6 +45,11 @@ func runLoadAfterProviderConfigTestHook(workingDir string) {
 // loadOptions carries the optional construction-time inputs of Load.
 type loadOptions struct {
 	cliModels func() []catalog.LocalCLIModel
+
+	// discoveryProviders restricts network model-catalog discovery (Codex
+	// account catalog, stepfun/zai live catalogs, Z.AI effort docs) to the
+	// named provider ids. Nil means every provider, exactly as before.
+	discoveryProviders map[string]bool
 }
 
 // LoadOption customizes Load. Options are applied once, before any disk
@@ -61,6 +66,21 @@ func WithCLIModels(fn func() []catalog.LocalCLIModel) LoadOption {
 	return func(o *loadOptions) { o.cliModels = fn }
 }
 
+// WithDiscoveryProviders scopes network model-catalog discovery to the
+// listed provider ids; a reload of the returned store reuses the same
+// scope. Without this option every enabled provider is discovered, as
+// before. Calling it with no ids disables network discovery entirely.
+func WithDiscoveryProviders(ids ...string) LoadOption {
+	return func(o *loadOptions) {
+		if o.discoveryProviders == nil {
+			o.discoveryProviders = make(map[string]bool, len(ids))
+		}
+		for _, id := range ids {
+			o.discoveryProviders[id] = true
+		}
+	}
+}
+
 func Load(workingDir, dataDir string, debug bool, opts ...LoadOption) (*ConfigStore, error) {
 	var options loadOptions
 	for _, opt := range opts {
@@ -73,7 +93,7 @@ func Load(workingDir, dataDir string, debug bool, opts ...LoadOption) (*ConfigSt
 	ktavCtx, ktavCancel := context.WithTimeout(context.Background(), ktavMigrationBudget)
 	defer ktavCancel()
 	for attempt := 0; attempt < reloadMaxAttempts; attempt++ {
-		store, err := loadOnce(ktavCtx, workingDir, dataDir, debug, options.cliModels)
+		store, err := loadOnce(ktavCtx, workingDir, dataDir, debug, options.cliModels, options.discoveryProviders)
 		if !errors.Is(err, errReloadDiskChanged) && !errors.Is(err, errStableReadUnstable) {
 			if err == nil {
 				store.recoverOAuthJournalsAtLoad()
@@ -85,7 +105,7 @@ func Load(workingDir, dataDir string, debug bool, opts ...LoadOption) (*ConfigSt
 	return nil, fmt.Errorf("%w after %d attempts: %v", ErrConfigReloadUnstable, reloadMaxAttempts, lastErr)
 }
 
-func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, cliModels func() []catalog.LocalCLIModel) (*ConfigStore, error) {
+func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, cliModels func() []catalog.LocalCLIModel, discoveryProviders map[string]bool) (*ConfigStore, error) {
 	if err := checkAuthoritativeBackupOnly(workingDir); err != nil {
 		return nil, err
 	}
@@ -200,7 +220,7 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 	// fully-prepared snapshot is published in one shot inside InitialLoad's
 	// build callback below, once every step that can mutate the config has
 	// run to completion.
-	store := NewStore(workingDir, globalDataPath, dataDirSource, sharedDataDir, cliModels, &InitialSnapshot{
+	store := NewStore(workingDir, globalDataPath, dataDirSource, sharedDataDir, cliModels, discoveryProviders, &InitialSnapshot{
 		Config:        cfg,
 		MCPRevisions:  initialMCPRevisions(cfg),
 		WorkspacePath: workspacePath,
@@ -286,7 +306,7 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 			}
 		}
 
-		if err := configureProviders(context.Background(), cfg, env, valueResolver, knownProviders, store.removeConfigFieldBestEffort, cliModels); err != nil {
+		if err := configureProvidersWithScope(context.Background(), cfg, env, valueResolver, knownProviders, store.removeConfigFieldBestEffort, cliModels, discoveryProviders); err != nil {
 			return fmt.Errorf("failed to configure providers: %w", err)
 		}
 

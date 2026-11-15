@@ -24,6 +24,17 @@ import (
 var discoverZAIEffortDocs = discover.DiscoverZAIEffortDocs
 
 func configureProviders(ctx context.Context, cfg *Config, baseEnv env.Env, resolver VariableResolver, knownProviders []catwalk.Provider, dropField func(Scope, string), cliModels func() []catalog.LocalCLIModel) error {
+	return configureProvidersWithScope(ctx, cfg, baseEnv, resolver, knownProviders, dropField, cliModels, nil)
+}
+
+// discoveryEnabled reports whether provider id is inside the discovery
+// scope. A nil scope means every provider — the behavior is unchanged
+// when no scope was configured at Load time.
+func discoveryEnabled(scope map[string]bool, id string) bool {
+	return scope == nil || scope[id]
+}
+
+func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.Env, resolver VariableResolver, knownProviders []catwalk.Provider, dropField func(Scope, string), cliModels func() []catalog.LocalCLIModel, discoveryScope map[string]bool) error {
 	// Reset the endpoint-drop record from any previous run (see
 	// endpointDroppedProviders): this call's drops must not be confused with
 	// an earlier run's.
@@ -227,7 +238,7 @@ func configureProviders(ctx context.Context, cfg *Config, baseEnv env.Env, resol
 				continue
 			}
 			prepared.BaseURL = discover.CodexBaseURL
-			if !prepared.Disable {
+			if !prepared.Disable && discoveryEnabled(discoveryScope, prepared.ID) {
 				discoverCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				providerClient, err := cfg.ProviderHTTPClient(prepared)
 				var models []catwalk.Model
@@ -351,7 +362,8 @@ func configureProviders(ctx context.Context, cfg *Config, baseEnv env.Env, resol
 			}
 		}
 		if (p.ID == catwalk.InferenceProvider("stepfun") || p.ID == catwalk.InferenceProviderZAI) &&
-			!prepared.Disable && (config.AutoDiscoverModels == nil || *config.AutoDiscoverModels) {
+			!prepared.Disable && (config.AutoDiscoverModels == nil || *config.AutoDiscoverModels) &&
+			discoveryEnabled(discoveryScope, prepared.ID) {
 			key, keyErr := resolver.ResolveValue(prepared.APIKey)
 			endpoint, endpointErr := resolver.ResolveValue(prepared.BaseURL)
 			if keyErr == nil && endpointErr == nil && key != "" && endpoint != "" {
@@ -381,7 +393,7 @@ func configureProviders(ctx context.Context, cfg *Config, baseEnv env.Env, resol
 				}
 			}
 		}
-		if p.ID == catwalk.InferenceProviderZAI && !prepared.Disable && prepared.BaseURL != "" {
+		if p.ID == catwalk.InferenceProviderZAI && !prepared.Disable && prepared.BaseURL != "" && discoveryEnabled(discoveryScope, string(p.ID)) {
 			documentCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			documented, docsErr := cachedProviderModels(documentCtx, "zai-docs",
 				discover.ZAIEffortDocsURL, "public", discoverZAIEffortDocs)
