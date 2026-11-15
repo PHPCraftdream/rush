@@ -33,12 +33,21 @@ func pruneAuditFiles(days int, quiet bool) (int, error) {
 	return removed, nil
 }
 
+// heartbeatDefaultDir supplies heartbeat.DefaultDir's directory inputs from
+// config, keeping the heartbeat package free of the internal/config import:
+// RUSH_HEARTBEAT_DIR wins unless a --global-dir root pins the directory to
+// <global workspace>/heartbeat.
+func heartbeatDefaultDir() string {
+	_, globalDirActive := config.GlobalDir()
+	return heartbeat.DefaultDir(config.GlobalWorkspaceDir, globalDirActive)
+}
+
 // pruneHeartbeatFiles points the heartbeat resolver at the heartbeat/
 // directory next to the global settings file and removes snapshots past
 // the retention. The package's prune only ever touches that directory, its
 // own tmp files, and never a live process. days == 0 disables the prune.
 func pruneHeartbeatFiles(days int, quiet bool) (int, error) {
-	heartbeat.SetDirFunc(heartbeat.DefaultDir)
+	heartbeat.SetDirFunc(heartbeatDefaultDir)
 	if days == 0 {
 		if !quiet {
 			fmt.Fprintln(os.Stderr, "heartbeat pruning disabled (--heartbeat-days 0)")
