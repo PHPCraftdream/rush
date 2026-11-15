@@ -71,7 +71,7 @@ func TestCustomRoleChildResumeRefreshesModelAndPreservesDurableTools(t *testing.
 	// Omit both the role and the admission context: resume must load its durable binding.
 	require.NoError(t, coord.sessions.RequestCancel(t.Context(), childID))
 	resumeCtx := WithCallOptions(t.Context(), &CallOptions{})
-	t.Cleanup(callBuildScopeFrom(resumeCtx).close)
+	t.Cleanup(callBuildScopeFrom(resumeCtx).Close)
 	resumeCtx = withBatchAgentLifecycle(resumeCtx, lifecycle)
 	response, err = coord.runSubAgent(resumeCtx, subAgentParams{
 		Agent: child, SessionID: parent, ResumeSessionID: childID,

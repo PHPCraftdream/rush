@@ -48,15 +48,15 @@ func (a *busyThenResolvingAgent) resolvePending(result *fantasy.AgentResult, err
 	a.mu.Lock()
 	call := a.pending
 	a.mu.Unlock()
-	if call.onQueueResolved != nil {
-		call.onQueueResolved(result, err)
+	if call.OnQueueResolved != nil {
+		call.OnQueueResolved(result, err)
 	}
 }
 
 func (a *busyThenResolvingAgent) hasPending() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.pending.onQueueResolved != nil
+	return a.pending.OnQueueResolved != nil
 }
 
 // TestRunSubAgent_ResumeOfBusyChildDoesNotReportNoOutput pins #1036: if the

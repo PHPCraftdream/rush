@@ -186,7 +186,7 @@ func (w *finalizationWiring) readFacts(ctx context.Context, identity session.Age
 // authority of its own. Calls without a requirement, or descendants that only
 // inherit a foreign authority, get no execution and stay inert.
 func (w *finalizationWiring) newExecution(call SessionAgentCall) (*finalizationExecution, error) {
-	requirement := call.finalizationAuthorities.Requirement()
+	requirement := call.FinalizationAuthorities.Requirement()
 	if requirement == nil {
 		return nil, nil
 	}
@@ -219,7 +219,7 @@ func (w *finalizationWiring) newExecution(call SessionAgentCall) (*finalizationE
 // installed before any agent exists on the coordinator.
 func (w *finalizationWiring) bindScopeHook() func(context.Context, SessionAgentCall) error {
 	return func(ctx context.Context, call SessionAgentCall) error {
-		if call.finalizationAuthorities.Requirement() == nil {
+		if call.FinalizationAuthorities.Requirement() == nil {
 			return nil
 		}
 		agent := w.rootAgent()

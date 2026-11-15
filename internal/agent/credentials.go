@@ -19,7 +19,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
@@ -27,251 +26,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
-
-// ProviderType mirrors catwalk.Type (charm.land/catwalk,
-// pkg/catwalk/provider.go) one-to-one: a fixed closed enum, not a
-// free-form string. Keep in sync with catwalk.Type.
-type ProviderType string
-
-const (
-	ProviderTypeOpenAI       ProviderType = "openai"
-	ProviderTypeOpenAICompat ProviderType = "openai-compat"
-	ProviderTypeOpenRouter   ProviderType = "openrouter"
-	ProviderTypeAnthropic    ProviderType = "anthropic"
-	ProviderTypeGoogle       ProviderType = "google"
-	ProviderTypeGoogleVertex ProviderType = "google-vertex"
-	ProviderTypeAzure        ProviderType = "azure"
-	ProviderTypeBedrock      ProviderType = "bedrock"
-	ProviderTypeVercel       ProviderType = "vercel"
-)
-
-// Role names the model slot a ModelChoice fills in a CredentialSet. The
-// string values MUST stay literally identical to
-// config.SelectedModelType* so a Role casts to config.SelectedModelType
-// (and back) without conversion.
-type Role string
-
-const (
-	RoleSmart    Role = "smart"
-	RoleFast     Role = "fast"
-	RoleWorker   Role = "worker"
-	RoleReviewer Role = "reviewer"
-)
-
-// validRoles and validProviderTypes list the enum values in display
-// order for validation errors; the known* helpers are Validate's
-// membership checks. Keep both slices in sync with the const blocks
-// above.
-var (
-	validRoles         = []Role{RoleSmart, RoleFast, RoleWorker, RoleReviewer}
-	validProviderTypes = []ProviderType{
-		ProviderTypeOpenAI,
-		ProviderTypeOpenAICompat,
-		ProviderTypeOpenRouter,
-		ProviderTypeAnthropic,
-		ProviderTypeGoogle,
-		ProviderTypeGoogleVertex,
-		ProviderTypeAzure,
-		ProviderTypeBedrock,
-		ProviderTypeVercel,
-	}
-)
-
-// knownRole reports whether role is a built-in or syntactically valid custom slot.
-func knownRole(role Role) bool {
-	switch config.SelectedModelType(role) {
-	case config.SelectedModelTypeSmart, config.SelectedModelTypeFast, config.SelectedModelTypeWorker, config.SelectedModelTypeReviewer:
-		return true
-	default:
-		return config.ValidateCustomRoleName(string(role)) == nil
-	}
-}
-
-// knownProviderType reports whether t is one of the nine ProviderType
-// constants.
-func knownProviderType(t ProviderType) bool {
-	for _, known := range validProviderTypes {
-		if t == known {
-			return true
-		}
-	}
-	return false
-}
-
-// roleNames renders validRoles as a comma-separated list for error
-// messages.
-func roleNames() string {
-	names := make([]string, 0, len(validRoles))
-	for _, role := range validRoles {
-		names = append(names, string(role))
-	}
-	return strings.Join(names, ", ")
-}
-
-// providerTypeNames renders validProviderTypes as a comma-separated
-// list for error messages.
-func providerTypeNames() string {
-	names := make([]string, 0, len(validProviderTypes))
-	for _, t := range validProviderTypes {
-		names = append(names, string(t))
-	}
-	return strings.Join(names, ", ")
-}
-
-// CredentialModel describes one model a tenant's provider serves. Pure
-// metadata: Rush never validates a ModelChoice.Model against the owning
-// Credential's list — the first real provider call is the validator,
-// exactly like `rush run --model` today. Named CredentialModel rather
-// than Model because package agent already declares Model for a built
-// fantasy.LanguageModel wrapper; the JSON shape is the contract, not
-// the Go name.
-type CredentialModel struct {
-	ID               string `json:"id"`
-	ContextWindow    int64  `json:"context_window,omitempty"`
-	DefaultMaxTokens int64  `json:"default_max_tokens,omitempty"`
-	CanReason        bool   `json:"can_reason,omitempty"`
-}
-
-// Credential is one tenant provider: which API shape it speaks (Type),
-// where to reach it, and the literal API key to present. API-key only by
-// design — OAuth/token-refresh providers are explicitly out of scope
-// for per-call credentials. The Models list is informational metadata
-// (context window, max tokens, reasoning), never a validation allowlist.
-type Credential struct {
-	Provider string            `json:"provider"`
-	Type     ProviderType      `json:"type"`
-	APIKey   string            `json:"api_key"`
-	BaseURL  string            `json:"base_url,omitempty"`
-	Models   []CredentialModel `json:"models,omitempty"`
-}
-
-// ModelChoice selects which model of which provider serves one role for
-// this call. Model is NOT validated against the owning Credential's
-// Models list — an unknown id degrades exactly like an unverified model
-// in rush.json (zero-value metadata, warning log) and fails on the
-// first real provider call if truly wrong.
-type ModelChoice struct {
-	Provider        string `json:"provider"`
-	Model           string `json:"model"`
-	ReasoningEffort string `json:"reasoning_effort,omitempty"`
-	MaxTokens       int64  `json:"max_tokens,omitempty"`
-}
-
-// CredentialSet is the per-call credential bundle for
-// RunWithCredentials. The smart role is required in Models; fast,
-// worker, and reviewer are optional. Strict isolation is the default:
-// a smart/fast role the set does not cover is a hard error before any
-// provider traffic — Rush will NOT silently serve it from the Client's
-// configured providers. Set AllowConfiguredRoleFallback to explicitly
-// re-enable configured-model fallback for uncovered roles (see that
-// field's doc for the trust boundary it crosses). Treat the value as
-// immutable after construction; a RunWithCredentials call never
-// mutates it.
-type CredentialSet struct {
-	Credentials []Credential         `json:"credentials"`
-	Models      map[Role]ModelChoice `json:"models"`
-	// AllowConfiguredRoleFallback re-enables the ordinary session/config
-	// model resolution for roles this set does not cover. The default
-	// (false) is fail-closed: an uncovered smart/fast role is an error
-	// before any provider traffic. True deliberately crosses the
-	// tenant-credential boundary: the uncovered role — with whatever
-	// tenant data it carries (fast drives title generation) — is served
-	// by the Client's configured (operator) provider, not the tenant's.
-	AllowConfiguredRoleFallback bool `json:"allow_configured_role_fallback,omitempty"`
-}
-
-// Clone returns a deep copy safe to retain for an asynchronous run.
-func (cs CredentialSet) Clone() CredentialSet {
-	clone := cs
-	if cs.Credentials != nil {
-		clone.Credentials = make([]Credential, len(cs.Credentials))
-		for i, cred := range cs.Credentials {
-			clone.Credentials[i] = cred
-			if cred.Models != nil {
-				clone.Credentials[i].Models = append([]CredentialModel(nil), cred.Models...)
-			}
-		}
-	}
-	if cs.Models != nil {
-		clone.Models = make(map[Role]ModelChoice, len(cs.Models))
-		for role, choice := range cs.Models {
-			clone.Models[role] = choice
-		}
-	}
-	return clone
-}
-
-// Validate checks the bundle's internal consistency: at least one
-// credential, at least one role choice, every choice naming a known
-// credential, non-empty provider types drawn from the nine ProviderType
-// constants, a base URL wherever the provider type has no built-in
-// default endpoint, Models keys restricted to the four Role constants,
-// and the required smart role present. Model IDs are deliberately NOT
-// checked against the Credentials' Models lists.
-func (cs *CredentialSet) Validate() error {
-	if cs == nil {
-		return fmt.Errorf("credential set is nil")
-	}
-	if len(cs.Credentials) == 0 {
-		return fmt.Errorf("credential set has no credentials")
-	}
-	if len(cs.Models) == 0 {
-		return fmt.Errorf("credential set has no model choices")
-	}
-	known := make(map[string]struct{}, len(cs.Credentials))
-	for _, cred := range cs.Credentials {
-		if cred.Provider == "" {
-			return fmt.Errorf("credential is missing its provider name")
-		}
-		if err := validateCredentialProviderID(cred.Provider); err != nil {
-			return err
-		}
-		if _, dup := known[cred.Provider]; dup {
-			return fmt.Errorf("duplicate credential for provider %q", cred.Provider)
-		}
-		known[cred.Provider] = struct{}{}
-		if cred.Type == "" {
-			return fmt.Errorf("credential for provider %q is missing its type", cred.Provider)
-		}
-		if !knownProviderType(cred.Type) {
-			return fmt.Errorf("credential for provider %q has unknown type %q; valid types: %s", cred.Provider, cred.Type, providerTypeNames())
-		}
-		if cred.Type == ProviderTypeGoogleVertex {
-			return fmt.Errorf("provider %q: google-vertex credentials are unsupported because Vertex uses ambient credentials", cred.Provider)
-		}
-		if cred.APIKey == "" && cred.Type != ProviderTypeOpenAICompat {
-			return fmt.Errorf("provider %q: api_key is required for per-call credentials", cred.Provider)
-		}
-		if cred.Type == ProviderTypeOpenAICompat && cred.BaseURL == "" {
-			return fmt.Errorf("provider %q: base_url is required for the %q provider type", cred.Provider, cred.Type)
-		}
-	}
-	for role, choice := range cs.Models {
-		if !knownRole(role) {
-			return fmt.Errorf("model choice uses unknown role %q; valid roles: %s", role, roleNames())
-		}
-		if _, ok := known[choice.Provider]; !ok {
-			return fmt.Errorf("model choice for role %q references provider %q which is not in the credential set", role, choice.Provider)
-		}
-		if choice.Model == "" {
-			return fmt.Errorf("model choice for role %q has an empty model id", role)
-		}
-	}
-	if _, ok := cs.Models[RoleSmart]; !ok {
-		return fmt.Errorf("credential set must define the smart role (Models[RoleSmart]); smart drives every turn")
-	}
-	return nil
-}
-
-// credential returns the named credential from the set.
-func (cs *CredentialSet) credential(provider string) (Credential, bool) {
-	for _, cred := range cs.Credentials {
-		if cred.Provider == provider {
-			return cred, true
-		}
-	}
-	return Credential{}, false
-}
 
 // callCredentialsContextKey carries the parent call's CredentialSet
 // through the turn so sub-agent spawns (runSubAgent) resolve their
@@ -323,7 +77,7 @@ func (c *coordinator) RunWithCredentials(ctx context.Context, sessionID, prompt 
 	// it. Close is idempotent; runInternal's own defer double-closes
 	// harmlessly.
 	if callOpts := callOptionsFrom(ctx); callOpts != nil {
-		defer callOpts.buildScope.close()
+		defer callOpts.BuildScope.Close()
 	}
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
@@ -572,7 +326,7 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 		workerCovered = true
 	}
 	if workerCovered {
-		workerCredential, ok := creds.credential(workerChoice.Provider)
+		workerCredential, ok := creds.Credential(workerChoice.Provider)
 		if !ok {
 			return nil, fmt.Errorf("model choice references provider %q which is not in the credential set", workerChoice.Provider)
 		}
@@ -629,7 +383,7 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 // cfg is the caller's pinned config snapshot (F6); it only supplies the
 // global network defaults for the provider HTTP client.
 func (c *coordinator) buildCredentialModel(ctx context.Context, cfg *config.Config, creds *CredentialSet, choice ModelChoice) (Model, config.ProviderConfig, error) {
-	cred, ok := creds.credential(choice.Provider)
+	cred, ok := creds.Credential(choice.Provider)
 	if !ok {
 		return Model{}, config.ProviderConfig{}, fmt.Errorf("model choice references provider %q which is not in the credential set", choice.Provider)
 	}

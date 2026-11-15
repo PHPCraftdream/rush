@@ -4,7 +4,7 @@
 // queued, but its pinned toolset keeps only BORROWED construction ownership:
 // the tools were built into the sender's build scope (resolveSessionModels →
 // pinCallTools → newBatchWorkToolBuild), and the sender's deferred
-// callOpts.buildScope.close() (coordinator_run.go) releases that construction
+// callOpts.BuildScope.Close() (coordinator_run.go) releases that construction
 // as soon as the sender returns — long before the owner dispatcher promotes
 // the queued call and executes call.Tools directly (runTurn, agent_turn.go).
 // The promotion does not rebuild tools, so the queued turn's first batch
@@ -18,11 +18,11 @@
 // lock, or fails admission setup never acquires anything, so the round-1
 // leak (retained owners taken before the reservation, never released on
 // early refusal) is structurally impossible. The armed scope carries NO
-// onQueueResolved hook (round-1 flaw B: the hook is a live-waiter marker and
+// OnQueueResolved hook (round-1 flaw B: the hook is a live-waiter marker and
 // must never be set on queued calls) — every queue-exit path instead calls
 // releaseQueuedBuildOwnership, which closes the marked scope exactly once.
 // The arm guard (armQueuedBuildRetention, queued_call_scope.go:86) READS
-// call.onQueueResolved solely to SKIP calls whose scope is hook-managed
+// call.OnQueueResolved solely to SKIP calls whose scope is hook-managed
 // (the InterruptAndSend / runAwaitingAdmission family); the hook is never
 // written or invoked anywhere in this file.
 //
@@ -82,10 +82,10 @@ func pinnedBatchRegistryIDs(list []fantasy.AgentTool) []string {
 //     is the retry path), so there is nothing to retain for.
 //   - FailIfSessionBusy calls: submit refuses them before the enqueue
 //     branch; the release helper would never run.
-//   - Calls already carrying onQueueResolved (the InterruptAndSend /
+//   - Calls already carrying OnQueueResolved (the InterruptAndSend /
 //     runAwaitingAdmission family): they already own a scope through
 //     ownDeferredCallScope with a hook-managed lifetime; NOT reusing
-//     onQueueResolved for cleanup is the round-2 rule (flaw B), and these
+//     OnQueueResolved for cleanup is the round-2 rule (flaw B), and these
 //     calls do not need a second retained scope.
 //   - No bound capability manager, or no pinned batchIngressTool registry
 //     in call.Tools: nothing to retain (OFF mode is byte-identical).
@@ -96,10 +96,10 @@ func pinnedBatchRegistryIDs(list []fantasy.AgentTool) []string {
 // and its first batch tool hits the same ErrDiskProviderUnavailable
 // sentinel -- never a silent fallback to shared tools or the OS disk.
 func (a *sessionAgent) armQueuedBuildRetention(call *SessionAgentCall) {
-	if call == nil || call.IsDrain || call.FromDurableQueue || call.FailIfSessionBusy || call.onQueueResolved != nil || call.CallOptions == nil {
+	if call == nil || call.IsDrain || call.FromDurableQueue || call.FailIfSessionBusy || call.OnQueueResolved != nil || call.CallOptions == nil {
 		return
 	}
-	if call.CallOptions.buildScopeRetained {
+	if call.CallOptions.BuildScopeRetained {
 		return
 	}
 	caps := a.diskCapsRef()
@@ -114,14 +114,14 @@ func (a *sessionAgent) armQueuedBuildRetention(call *SessionAgentCall) {
 	for _, id := range ids {
 		key := diskOwnerKey{kind: diskOwnerConstruction, instance: uuid.NewString(), registryID: id}
 		if err := caps.acquire(key); err != nil {
-			scope.close()
+			scope.Close()
 			return
 		}
-		scope.register(func() { caps.release(key) })
+		scope.Register(func() { caps.release(key) })
 	}
 	owned := *call.CallOptions
-	owned.buildScope = scope
-	owned.buildScopeRetained = true
+	owned.BuildScope = scope
+	owned.BuildScopeRetained = true
 	call.CallOptions = &owned
 }
 
@@ -130,10 +130,10 @@ func (a *sessionAgent) armQueuedBuildRetention(call *SessionAgentCall) {
 // deleting the owner keys underneath turns the later release into a
 // no-op delete). No-op for anything that is not a retained queued call.
 func releaseQueuedBuildOwnership(call *SessionAgentCall) {
-	if call == nil || call.CallOptions == nil || !call.CallOptions.buildScopeRetained {
+	if call == nil || call.CallOptions == nil || !call.CallOptions.BuildScopeRetained {
 		return
 	}
-	call.CallOptions.buildScope.close()
+	call.CallOptions.BuildScope.Close()
 }
 
 // releaseQueuedCallsBuildOwnership applies releaseQueuedBuildOwnership to
@@ -157,18 +157,18 @@ func releaseQueuedCallsBuildOwnership(calls []SessionAgentCall) {
 // afterwards so a re-queued copy is freshly armed by submit instead of
 // keeping a closed scope. No-op for the origin's own first call (its scope
 // is closed by the entry-point defers) and for any call carrying
-// onQueueResolved (the hook family owns its scope through
+// OnQueueResolved (the hook family owns its scope through
 // ownDeferredCallScope; the guard necessarily READS the hook here -- it is
 // never written or invoked).
 func releaseTurnEndBuildScope(call *SessionAgentCall, originCallOpts *CallOptions) {
-	if call == nil || call.CallOptions == nil || call.onQueueResolved != nil {
+	if call == nil || call.CallOptions == nil || call.OnQueueResolved != nil {
 		return
 	}
-	if call.CallOptions != originCallOpts || call.CallOptions.buildScopeRetained {
-		if sc := call.CallOptions.buildScope; sc != nil {
-			sc.close()
+	if call.CallOptions != originCallOpts || call.CallOptions.BuildScopeRetained {
+		if sc := call.CallOptions.BuildScope; sc != nil {
+			sc.Close()
 		}
-		call.CallOptions.buildScopeRetained = false
+		call.CallOptions.BuildScopeRetained = false
 	}
 }
 
@@ -191,11 +191,11 @@ func releaseTurnEndBuildScope(call *SessionAgentCall, originCallOpts *CallOption
 // pump's RunSessionAgentCall, whose own unconditional entry defer already
 // closes any non-hooked scope (coordinator_run_queue_call.go:354-356).
 func deferReleaseRetainedRunScope(call *SessionAgentCall) func() {
-	if call == nil || call.CallOptions == nil || !call.CallOptions.buildScopeRetained {
+	if call == nil || call.CallOptions == nil || !call.CallOptions.BuildScopeRetained {
 		return func() {}
 	}
-	scope := call.CallOptions.buildScope
-	return func() { scope.close() }
+	scope := call.CallOptions.BuildScope
+	return func() { scope.Close() }
 }
 
 // turnEndRelease is the dispatcher's end-of-turn release SITE (invoked from

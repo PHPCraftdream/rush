@@ -336,7 +336,7 @@ func TestInterruptAndSendQueuedCallOwnsBuildScope(t *testing.T) {
 	require.NoError(t, err)
 	defer parkRelease()
 	parkCtx := WithCallOptions(t.Context(), parkOpts)
-	originalScope := parkOpts.buildScope
+	originalScope := parkOpts.BuildScope
 	require.NotNil(t, originalScope)
 
 	require.NoError(t, h.coord.InterruptAndSend(parkCtx, sessParked.ID, "parked replacement prompt", nil, nil),
@@ -348,7 +348,7 @@ func TestInterruptAndSendQueuedCallOwnsBuildScope(t *testing.T) {
 	queuedTools := queued.Tools
 	require.NotEmpty(t, queuedTools, "the queued call must carry its resolved pinned toolset")
 	require.NotNil(t, queued.CallOptions, "the queued call must carry call options")
-	require.NotEqual(t, originalScope, queued.CallOptions.buildScope,
+	require.NotEqual(t, originalScope, queued.CallOptions.BuildScope,
 		"the queued replacement call must carry its OWN build scope, not the interrupting ctx's shared one")
 
 	registryIDs := make([]string, 0, len(queuedTools))
@@ -359,7 +359,7 @@ func TestInterruptAndSendQueuedCallOwnsBuildScope(t *testing.T) {
 	}
 	require.NotEmpty(t, registryIDs, "queued toolset must include batch-armed tools with actual registry identities")
 	// Closing the caller scope must leave each queued construction registered.
-	originalScope.close()
+	originalScope.Close()
 	for _, registryID := range registryIDs {
 		registry, resolveErr := h.registries.Resolve(registryID)
 		require.NoError(t, resolveErr, "queued registry remains resolvable after caller scope close")
@@ -377,8 +377,8 @@ func TestInterruptAndSendQueuedCallOwnsBuildScope(t *testing.T) {
 		}
 		require.NotNil(t, tool, "queued registry resolves an offered pinned tool")
 	}
-	queuedScope := queued.CallOptions.buildScope
-	require.False(t, queuedScope.closed, "the queued call's own scope remains open")
+	queuedScope := queued.CallOptions.BuildScope
+	require.False(t, queuedScope.Closed(), "the queued call's own scope remains open")
 
 	// Phase 2 — fail-closed direction on a LIVE busy turn: run the
 	// original turn for real (blocked mid-stream on the SSE server's
@@ -410,7 +410,7 @@ func TestInterruptAndSendQueuedCallOwnsBuildScope(t *testing.T) {
 	require.NoError(t, err)
 	defer release()
 	interruptCtx := WithCallOptions(t.Context(), opts)
-	liveOriginalScope := opts.buildScope
+	liveOriginalScope := opts.BuildScope
 
 	runDone := make(chan error, 1)
 	go func() {
@@ -433,14 +433,14 @@ func TestInterruptAndSendQueuedCallOwnsBuildScope(t *testing.T) {
 	liveMB.mu.Lock()
 	require.NotNil(t, liveMB.replacement, "the live interrupt must have parked its replacement")
 	require.NotNil(t, liveMB.replacement.CallOptions, "the parked replacement must carry call options")
-	cloneScope := liveMB.replacement.CallOptions.buildScope
+	cloneScope := liveMB.replacement.CallOptions.BuildScope
 	liveMB.mu.Unlock()
 	require.NotNil(t, cloneScope, "the replacement's clone must carry its own build scope")
 	require.NotEqual(t, liveOriginalScope, cloneScope,
 		"the replacement's clone scope must not be the interrupting ctx's shared one")
 	// Close the ORIGINAL scope BEFORE letting the replacement run: with the
 	// clone, the replacement carries its own scope and must not fail closed.
-	liveOriginalScope.close()
+	liveOriginalScope.Close()
 	// Settled owner baseline BEFORE the replacement constructs anything
 	// (proceed is still closed): the live Call owner plus any session-
 	// lifetime shared toolset construction the original turn pinned.
@@ -452,7 +452,7 @@ func TestInterruptAndSendQueuedCallOwnsBuildScope(t *testing.T) {
 	// more would leak the clone's pins, fewer would over-release
 	// baseline owners.
 	settledOwners := h.caps.ownerCount()
-	clonePins := cloneScope.registeredCount()
+	clonePins := cloneScope.RegisteredCount()
 	require.Positive(t, clonePins, "the replacement's clone scope carries its own construction pins")
 	close(proceed)
 
@@ -476,7 +476,7 @@ func TestInterruptAndSendQueuedCallOwnsBuildScope(t *testing.T) {
 	// owner plus the session-lifetime shared toolset construction captured
 	// in settledOwners; the deferred release() drops the Call owner).
 	require.Eventually(t, func() bool {
-		return cloneScope.closed
+		return cloneScope.Closed()
 	}, 10*time.Second, 20*time.Millisecond,
 		"the replacement turn's OWN clone scope must be closed at its turn's end by the run loop")
 	// R12-H2a round 2: the replacement ran as the live run loop's popped

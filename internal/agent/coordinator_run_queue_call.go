@@ -101,13 +101,13 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 		if value := recover(); value != nil {
 			releasePrep()
 			if rebuiltCallOptions != nil {
-				rebuiltCallOptions.buildScope.close()
+				rebuiltCallOptions.BuildScope.Close()
 			}
 			panic(value)
 		}
 	}()
 
-	if role := RequestedModelRole(data.RequestedModelRole); role != "" && !role.valid() {
+	if role := RequestedModelRole(data.RequestedModelRole); role != "" && !role.Valid() {
 		releasePrep()
 		return SessionAgentCall{}, &ErrCallAlreadyAttempted{Err: ErrAgentRoleInvalid}
 	}
@@ -244,7 +244,7 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 		if rebuiltCallOptions == nil {
 			rebuiltCallOptions = &CallOptions{}
 		}
-		if rebuiltCallOptions.buildScope == nil {
+		if rebuiltCallOptions.BuildScope == nil {
 			EnsureCallBuildScope(rebuiltCallOptions)
 		}
 	}
@@ -311,7 +311,7 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 			}
 		}
 		opts.Requirement = &requirement
-		opts.buildScope.register(callRelease)
+		opts.BuildScope.Register(callRelease)
 		rebuiltCallOptions = opts
 		prep.release()
 		releaseDurableContinuationOwner(c.diskCaps, requirement.BindingID, rowID)
@@ -335,7 +335,7 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 		releasePrep()
 		return SessionAgentCall{}, ErrAgentRoleMismatch
 	}
-	if contract == nil && data.RequestedModelRole != "" && !RequestedModelRole(data.RequestedModelRole).builtin() {
+	if contract == nil && data.RequestedModelRole != "" && !RequestedModelRole(data.RequestedModelRole).Builtin() {
 		releasePrep()
 		return SessionAgentCall{}, ErrAgentRoleUnconfigured
 	}
@@ -343,7 +343,7 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 		rebuiltCallOptions = WithRoleContractCopy(rebuiltCallOptions, contract)
 	}
 	call := SessionAgentCall{
-		finalizationAuthorities: authorities,
+		FinalizationAuthorities: authorities,
 		SessionID:               data.SessionID,
 		LogicalCallID:           data.LogicalCallID, // P2-1 fix: restore stable ID
 		Prompt:                  data.Prompt,
@@ -394,7 +394,7 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 		// skip mb.submitted for this call (P0-1: avoid double-execution).
 		// See agent.SessionAgentCall.FromDurableQueue documentation.
 		FromDurableQueue: true,
-		batchQuestion:    questionState,
+		BatchQuestion:    questionState,
 	}
 	if call.RoleContract != nil {
 		if call.CallOptions == nil {
@@ -417,9 +417,9 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 	// failed. queued-call-owned scopes are still NOT closed here: they are
 	// closed by the call resolution hook when rejected, superseded, or
 	// completed. close is nil-receiver safe, and idempotent.
-	ownsScope := call.CallOptions != nil && call.onQueueResolved == nil
+	ownsScope := call.CallOptions != nil && call.OnQueueResolved == nil
 	if ownsScope {
-		defer call.CallOptions.buildScope.close()
+		defer call.CallOptions.BuildScope.Close()
 	}
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
@@ -428,12 +428,12 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 	if driverErr != nil {
 		return nil, &ErrCallAlreadyAttempted{Err: driverErr}
 	}
-	if call.batchQuestion == nil {
+	if call.BatchQuestion == nil {
 		state, err := c.rebuiltChildQuestionState(ctx, sessionID)
 		if err != nil {
 			return nil, err
 		}
-		call.batchQuestion = state
+		call.BatchQuestion = state
 	}
 	ctx = armBatchQuestionTurnContext(ctx, call)
 	// Durable calls bypass runInternal, so wire both result identities here.
@@ -542,7 +542,7 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 			// Assembly error: the build scope closes here, releasing this
 			// call's construction owners (R12-H2 §1.2).
 			if call.CallOptions != nil {
-				call.CallOptions.buildScope.close()
+				call.CallOptions.BuildScope.Close()
 			}
 			return nil, fmt.Errorf(
 				"failed to build the rebuilt call's tool-shaping toolset; refusing to restart the turn on the shared unscoped toolset: %w", err)

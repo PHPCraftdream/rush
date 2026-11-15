@@ -107,3 +107,30 @@ func (a *sessionAgent) effectiveStreamWatchdogTick() time.Duration {
 	}
 	return tick
 }
+
+// watchdogTimeoutPolicyForCall resolves the stream watchdog's
+// (extendsOnProgress, hardCap) policy for one call: the call's own values
+// when it carries a TimeoutOptionsSet CallOptions (even all-zero — a
+// deliberate policy, R3-6), otherwise the sessionAgent's shared
+// SetTimeoutOptions fields for legacy callers.
+func (a *sessionAgent) watchdogTimeoutPolicyForCall(call *CallOptions) (extendsOnProgress bool, hardCap time.Duration) {
+	if call != nil && call.TimeoutOptionsSet {
+		return call.TimeoutExtendsOnProgress, call.TimeoutHardCap
+	}
+	return a.timeoutExtendsOnProgress, a.timeoutHardCap
+}
+
+// effectiveIdleTimeoutForCall resolves the per-turn stream watchdog's
+// idle-stall threshold: the call's own override when positive, otherwise
+// the sessionAgent's shared streamIdleTimeout, otherwise
+// streamIdleTimeoutDefault. Mirrors watchdogTimeoutPolicyForCall's
+// call-wins-over-shared-state precedence.
+func (a *sessionAgent) effectiveIdleTimeoutForCall(call *CallOptions) time.Duration {
+	if call != nil && call.IdleTimeout > 0 {
+		return call.IdleTimeout
+	}
+	if a.streamIdleTimeout > 0 {
+		return a.streamIdleTimeout
+	}
+	return streamIdleTimeoutDefault
+}

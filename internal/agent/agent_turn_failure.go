@@ -290,12 +290,12 @@ func (ts *turnStream) handleStreamFailure(
 		)
 		return nil, SessionAgentCall{}, false, &ErrCallAlreadyAttempted{Err: updateErr}
 	}
-	if !isCancelErr && !turnCtxDone && !ts.call.recoveryContinuation && ts.recovery != nil &&
+	if !isCancelErr && !turnCtxDone && !ts.call.RecoveryContinuation && ts.recovery != nil &&
 		ts.smartModel.Model.Provider() == "openai-codex" && codexContextRejectedBeforeOutput(err) &&
 		len(toolCalls) == 0 && snap.FullText() == "" && snap.FullReasoningText() == "" {
 		next, ok, recoveryErr := ts.a.recoverCodexContext(ts.genCtx, ts.call, ts.smartModel, ts.promptPrefix, ts.recovery)
 		if recoveryErr == nil && ok {
-			next.drainTurnCommitted = next.IsDrain
+			next.DrainTurnCommitted = next.IsDrain
 			ts.cancel()
 			return nil, next, true, nil
 		}

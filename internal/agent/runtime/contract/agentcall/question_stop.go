@@ -1,4 +1,4 @@
-package agent
+package agentcall
 
 import (
 	"errors"
@@ -14,12 +14,16 @@ import (
 // awaitingAnswerStoppedTitle is the finish title of a question-tool stop;
 // awaitingQuestionPrefix and awaitingGuidanceMarker frame the question (and
 // its options) inside the finish details, so a sub-agent's question can be
-// read back from history (subAgentQuestionFromFinish).
+// read back from history (SubAgentQuestionFromFinish).
 const (
 	awaitingAnswerStoppedTitle = session.AwaitingAnswerStoppedTitle
 	awaitingQuestionPrefix     = session.AwaitingQuestionPrefix
 	awaitingGuidanceMarker     = session.AwaitingGuidanceMarker
 )
+
+// AwaitingAnswerStoppedTitle is the exported alias of awaitingAnswerStoppedTitle: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+const AwaitingAnswerStoppedTitle = awaitingAnswerStoppedTitle
 
 // AwaitingAnswerGuidance returns the orchestrator-facing instruction
 // paragraph for a question-tool stop. Unknown roles intentionally omit the
@@ -61,6 +65,17 @@ func awaitingAnswerGuidance(question string, options []string, sessionID string,
 // quoteResumeSessionID returns shell syntax for a session ID. Windows cmd.exe
 // expands percent variables even inside double quotes, and its quote/backslash
 // rules are not POSIX rules; only emit IDs from a conservative alphabet there.
+// QuoteResumeSessionID is the exported alias of quoteResumeSessionID: staying tests call it by its moved name.
+func QuoteResumeSessionID(sessionID string, windowsShell bool) (string, bool) {
+	return quoteResumeSessionID(sessionID, windowsShell)
+}
+
+// AwaitingAnswerGuidanceShell is the exported alias of awaitingAnswerGuidance with an explicit
+// windowsShell flag: staying tests call the helper by its moved name.
+func AwaitingAnswerGuidanceShell(question string, options []string, sessionID string, role string, windowsShell bool) string {
+	return awaitingAnswerGuidance(question, options, sessionID, role, windowsShell)
+}
+
 func quoteResumeSessionID(sessionID string, windowsShell bool) (string, bool) {
 	if windowsShell {
 		if sessionID == "" {
@@ -93,7 +108,7 @@ func quoteResumeSessionID(sessionID string, windowsShell bool) (string, bool) {
 	return sessionID, true
 }
 
-// subAgentQuestionText builds the tool-result text runSubAgent returns when
+// SubAgentQuestionText builds the tool-result text runSubAgent returns when
 // a sub-agent (the `agent` tool) stops on AwaitingAnswerError instead of
 // finishing normally. Sibling to AwaitingAnswerGuidance above: that function
 // is for the top-level session stopping rush run itself (nobody left to
@@ -105,7 +120,7 @@ func quoteResumeSessionID(sessionID string, windowsShell bool) (string, bool) {
 // section 3) is that a generic-looking error would make the parent think the
 // sub-agent crashed and redo the work itself instead of answering — so this
 // must read unambiguously as "the sub-agent is fine and paused, not failed".
-func subAgentQuestionText(childSessionID string, ae *AwaitingAnswerError) string {
+func SubAgentQuestionText(childSessionID string, ae *AwaitingAnswerError) string {
 	optsLine := ""
 	if len(ae.Options) > 0 {
 		optsLine = "\nSuggested options: " + strings.Join(ae.Options, " | ")
@@ -125,11 +140,11 @@ func subAgentQuestionFrame(childSessionID, questionBlock string) string {
 	)
 }
 
-// subAgentQuestionWithPreamble puts the words the child wrote before it asked
+// SubAgentQuestionWithPreamble puts the words the child wrote before it asked
 // in front of the question frame, so the parent reads the context the question
 // refers to. Only the preamble is truncated: the frame (question, options,
 // resume guidance) always survives.
-func subAgentQuestionWithPreamble(preamble, frame string) string {
+func SubAgentQuestionWithPreamble(preamble, frame string) string {
 	preamble = strings.TrimSpace(preamble)
 	if preamble == "" {
 		return frame
@@ -137,24 +152,24 @@ func subAgentQuestionWithPreamble(preamble, frame string) string {
 	return tools.TruncateOutput(preamble) + "\n\n" + frame
 }
 
-// subAgentQuestionFromFinish reads a question-tool stop back from the finish
-// part it was recorded as (awaitingAnswerStoppedFinishText) and returns the
+// SubAgentQuestionFromFinish reads a question-tool stop back from the finish
+// part it was recorded as (AwaitingAnswerStoppedFinishText) and returns the
 // text the parent should get for a child that asked it in a Drain turn --
 // there is no live AwaitingAnswerError left at that point.
-func subAgentQuestionFromFinish(childSessionID string, fp *message.Finish) (string, bool) {
-	block, ok := subAgentQuestionBlockFromFinish(fp)
+func SubAgentQuestionFromFinish(childSessionID string, fp *message.Finish) (string, bool) {
+	block, ok := SubAgentQuestionBlockFromFinish(fp)
 	if !ok {
 		return "", false
 	}
 	return subAgentQuestionFrame(childSessionID, block), true
 }
 
-// subAgentQuestionBlockFromFinish extracts the raw question block (question
+// SubAgentQuestionBlockFromFinish extracts the raw question block (question
 // plus suggested options) from a question-tool stop's finish part -- the
 // unwrapped input of subAgentQuestionFrame, for readers that compose their
 // own frame around it (delegation_question.go's notice and supervision
 // texts).
-func subAgentQuestionBlockFromFinish(fp *message.Finish) (string, bool) {
+func SubAgentQuestionBlockFromFinish(fp *message.Finish) (string, bool) {
 	if fp == nil || fp.Reason != message.FinishReasonError || fp.Message != awaitingAnswerStoppedTitle {
 		return "", false
 	}
@@ -169,13 +184,13 @@ func subAgentQuestionBlockFromFinish(fp *message.Finish) (string, bool) {
 	return block, true
 }
 
-// awaitingAnswerStoppedFinishText builds the (msg, details) pair recorded as
+// AwaitingAnswerStoppedFinishText builds the (msg, details) pair recorded as
 // the Finish part when a session is force-stopped because the agent called
 // the question tool. Mirrors peakHoursStoppedFinishText in
 // peak_hours_stop.go: msg is a short, unambiguous headline (never empty —
 // an empty message looks identical to a voluntary finish), details carries
 // the underlying error verbatim plus the full orchestrator guidance.
-func awaitingAnswerStoppedFinishText(err error, role string) (msg, details string) {
+func AwaitingAnswerStoppedFinishText(err error, role string) (msg, details string) {
 	msg = awaitingAnswerStoppedTitle
 	var ae *AwaitingAnswerError
 	question := ""

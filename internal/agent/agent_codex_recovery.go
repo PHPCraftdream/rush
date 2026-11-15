@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync/atomic"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
@@ -17,30 +16,6 @@ const codexRecoveryNudge = "Continue the original request using the conversation
 
 type codexContextRejection interface {
 	CodexContextRejectedBeforeOutput() bool
-}
-
-type codexRecoveryState struct {
-	cfg               *config.Config
-	session           session.Session
-	creds             *CredentialSet
-	userID            string
-	maxTokens         int64
-	maxCost           float64
-	targetModel       Model
-	targetPrefix      string
-	targetSystem      string
-	targetPrompt      string
-	targetMaxOutput   int64
-	targetAttachments []message.Attachment
-	targetTools       []fantasy.AgentTool
-	spent             atomic.Int64
-	attempted         atomic.Bool
-}
-
-func (s *codexRecoveryState) markUser(id string) {
-	if s != nil && s.userID == "" {
-		s.userID = id
-	}
 }
 
 func codexContextRejectedBeforeOutput(err error) bool {
@@ -112,62 +87,62 @@ func (a *sessionAgent) snapshotCodexRecovery(call SessionAgentCall, sess session
 		creds = &copy
 	}
 	return &codexRecoveryState{
-		cfg: cfg, session: sess, creds: creds, userID: call.ExistingMessageID,
-		maxTokens: call.MaxTokens, maxCost: call.MaxCost, targetMaxOutput: call.MaxOutputTokens,
+		Cfg: cfg, Session: sess, Creds: creds, UserID: call.ExistingMessageID,
+		MaxTokens: call.MaxTokens, MaxCost: call.MaxCost, TargetMaxOutput: call.MaxOutputTokens,
 	}
 }
 
 func (a *sessionAgent) recoveryWorker(ctx context.Context, state *codexRecoveryState) (*SummarizeSnapshot, error) {
-	if state == nil || state.cfg == nil || a.coord == nil || a.coord.cfg == nil {
+	if state == nil || state.Cfg == nil || a.coord == nil || a.coord.cfg == nil {
 		return nil, errors.New("automatic context recovery has no pinned worker configuration")
 	}
 	var model Model
 	var providerCfg config.ProviderConfig
-	if state.creds != nil {
-		choice, covered := state.creds.Models[RoleWorker]
+	if state.Creds != nil {
+		choice, covered := state.Creds.Models[RoleWorker]
 		if covered {
 			var err error
-			model, providerCfg, err = a.coord.buildCredentialModel(ctx, state.cfg, state.creds, choice)
+			model, providerCfg, err = a.coord.buildCredentialModel(ctx, state.Cfg, state.Creds, choice)
 			if err != nil {
 				return nil, fmt.Errorf("pinned credential worker is unavailable: %w", err)
 			}
-		} else if !state.creds.AllowConfiguredRoleFallback {
+		} else if !state.Creds.AllowConfiguredRoleFallback {
 			return nil, errors.New("pinned credential set does not cover the worker role")
 		} else {
-			selected, _, err := requestedRoleSlot(state.cfg, state.session, RequestedModelRole(config.SelectedModelTypeWorker))
+			selected, _, err := requestedRoleSlot(state.Cfg, state.Session, RequestedModelRole(config.SelectedModelTypeWorker))
 			if err != nil {
 				return nil, fmt.Errorf("pinned worker role is unavailable: %w", err)
 			}
 			var ok bool
-			providerCfg, ok = state.cfg.Providers.Get(selected.Provider)
+			providerCfg, ok = state.Cfg.Providers.Get(selected.Provider)
 			if !ok {
 				return nil, fmt.Errorf("pinned worker provider %q is unavailable", selected.Provider)
 			}
 			if providerCfg.Type == cliprovider.ProviderType {
 				return nil, fmt.Errorf("automatic context recovery cannot use CLI worker provider %q", selected.Provider)
 			}
-			model, _, err = a.coord.buildModelsFromCfg(ctx, state.cfg, selected, selected, false)
+			model, _, err = a.coord.buildModelsFromCfg(ctx, state.Cfg, selected, selected, false)
 			if err != nil {
 				return nil, fmt.Errorf("pinned worker model is unavailable: %w", err)
 			}
 		}
 	} else {
-		if a.coord.drainCredentialBoundary(ctx, state.session.ID) {
+		if a.coord.drainCredentialBoundary(ctx, state.Session.ID) {
 			return nil, ErrCredentialBindingUnavailable
 		}
-		selected, _, err := requestedRoleSlot(state.cfg, state.session, RequestedModelRole(config.SelectedModelTypeWorker))
+		selected, _, err := requestedRoleSlot(state.Cfg, state.Session, RequestedModelRole(config.SelectedModelTypeWorker))
 		if err != nil {
 			return nil, fmt.Errorf("pinned worker role is unavailable: %w", err)
 		}
 		var ok bool
-		providerCfg, ok = state.cfg.Providers.Get(selected.Provider)
+		providerCfg, ok = state.Cfg.Providers.Get(selected.Provider)
 		if !ok {
 			return nil, fmt.Errorf("pinned worker provider %q is unavailable", selected.Provider)
 		}
 		if providerCfg.Type == cliprovider.ProviderType {
 			return nil, fmt.Errorf("automatic context recovery cannot use CLI worker provider %q", selected.Provider)
 		}
-		model, _, err = a.coord.buildModelsFromCfg(ctx, state.cfg, selected, selected, false)
+		model, _, err = a.coord.buildModelsFromCfg(ctx, state.Cfg, selected, selected, false)
 		if err != nil {
 			return nil, fmt.Errorf("pinned worker model is unavailable: %w", err)
 		}
@@ -176,57 +151,57 @@ func (a *sessionAgent) recoveryWorker(ctx context.Context, state *codexRecoveryS
 		return nil, err
 	}
 	return &SummarizeSnapshot{
-		model: model, providerOptions: getProviderOptions(state.session.ID, model, providerCfg),
-		promptPrefix: providerCfg.SystemPromptPrefix, providerCfg: providerCfg,
+		Model: model, ProviderOptions: getProviderOptions(state.Session.ID, model, providerCfg),
+		PromptPrefix: providerCfg.SystemPromptPrefix, ProviderCfg: providerCfg,
 	}, nil
 }
 
 func (a *sessionAgent) recoverCodexContext(ctx context.Context, call SessionAgentCall, model Model, prefix string, state *codexRecoveryState) (SessionAgentCall, bool, error) {
-	if state == nil || state.attempted.Swap(true) {
+	if state == nil || state.Attempted.Swap(true) {
 		return SessionAgentCall{}, false, errors.New("automatic context recovery budget exhausted")
 	}
 	if err := ctx.Err(); err != nil {
 		return SessionAgentCall{}, false, err
 	}
-	if state.userID == "" {
+	if state.UserID == "" {
 		return SessionAgentCall{}, false, errors.New("automatic context recovery cannot identify the original user message")
 	}
-	if state.targetModel.Model == nil {
-		state.targetModel = model
+	if state.TargetModel.Model == nil {
+		state.TargetModel = model
 	}
-	if state.targetPrefix == "" {
-		state.targetPrefix = prefix
+	if state.TargetPrefix == "" {
+		state.TargetPrefix = prefix
 	}
-	if state.targetModel.Model == nil || state.targetModel.ModelCfg.Model == "" {
+	if state.TargetModel.Model == nil || state.TargetModel.ModelCfg.Model == "" {
 		return SessionAgentCall{}, false, errors.New("automatic context recovery has no captured target model")
 	}
 	worker, err := a.recoveryWorker(ctx, state)
 	if err != nil {
 		return SessionAgentCall{}, false, err
 	}
-	if worker.model.CatwalkCfg.ContextWindow <= 0 {
+	if worker.Model.CatwalkCfg.ContextWindow <= 0 {
 		return SessionAgentCall{}, false, errors.New("automatic context recovery requires known worker context metadata")
 	}
-	workerMaxOutput := effectiveMaxOutputTokens(worker.model, 0)
-	if workerMaxOutput <= 0 || workerMaxOutput >= int64(worker.model.CatwalkCfg.ContextWindow) {
+	workerMaxOutput := effectiveMaxOutputTokens(worker.Model, 0)
+	if workerMaxOutput <= 0 || workerMaxOutput >= int64(worker.Model.CatwalkCfg.ContextWindow) {
 		return SessionAgentCall{}, false, errors.New("automatic context recovery requires known worker output reserve")
 	}
-	if state.maxCost > 0 {
+	if state.MaxCost > 0 {
 		budget, budgetErr := a.sessions.SubtreeBudget(ctx, call.SessionID)
 		if budgetErr != nil {
 			return SessionAgentCall{}, false, fmt.Errorf("automatic context recovery cannot read cost budget: %w", budgetErr)
 		}
-		if budget >= state.maxCost {
+		if budget >= state.MaxCost {
 			return SessionAgentCall{}, false, errors.New("automatic context recovery exhausted the call cost cap")
 		}
 	}
-	if state.maxTokens > 0 && state.maxTokens-state.spent.Load() <= 0 {
+	if state.MaxTokens > 0 && state.MaxTokens-state.Spent.Load() <= 0 {
 		return SessionAgentCall{}, false, errors.New("automatic context recovery exhausted the call token cap")
 	}
 	if err := ctx.Err(); err != nil {
 		return SessionAgentCall{}, false, err
 	}
-	if err := a.runSummarizeSilentForRecovery(ctx, call.SessionID, worker.providerOptions, worker.model, worker.promptPrefix, state.userID, workerMaxOutput, state); err != nil {
+	if err := a.runSummarizeSilentForRecovery(ctx, call.SessionID, worker.ProviderOptions, worker.Model, worker.PromptPrefix, state.UserID, workerMaxOutput, state); err != nil {
 		return SessionAgentCall{}, false, fmt.Errorf("automatic context recovery summary failed: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
@@ -245,17 +220,17 @@ func (a *sessionAgent) recoverCodexContext(ctx context.Context, call SessionAgen
 	}
 	continuation := call
 	continuation.Prompt = codexRecoveryNudge
-	continuation.Attachments = cloneRecoveryAttachments(state.targetAttachments)
-	continuation.Tools = append([]fantasy.AgentTool(nil), state.targetTools...)
-	continuation.SmartModel = &state.targetModel
-	pinnedPrefix := state.targetPrefix
+	continuation.Attachments = cloneRecoveryAttachments(state.TargetAttachments)
+	continuation.Tools = append([]fantasy.AgentTool(nil), state.TargetTools...)
+	continuation.SmartModel = &state.TargetModel
+	pinnedPrefix := state.TargetPrefix
 	continuation.SystemPromptPrefix = &pinnedPrefix
-	continuation.ExistingMessageID = state.userID
-	continuation.MaxOutputTokens = state.targetMaxOutput
-	continuation.recoveryContinuation = true
-	continuation.compactionContinuation = true
-	continuation.recovery = state
-	continuation.recoverySpentTokens = state.spent.Load()
+	continuation.ExistingMessageID = state.UserID
+	continuation.MaxOutputTokens = state.TargetMaxOutput
+	continuation.RecoveryContinuation = true
+	continuation.CompactionContinuation = true
+	continuation.Recovery = state
+	continuation.RecoverySpentTokens = state.Spent.Load()
 	return continuation, true, nil
 }
 
@@ -273,7 +248,7 @@ func cloneRecoveryAttachments(attachments []message.Attachment) []message.Attach
 
 func addRecoveryUsage(state *codexRecoveryState, usage fantasy.Usage) {
 	if state != nil {
-		state.spent.Add(addStepUsageTokens(0, usage))
+		state.Spent.Add(addStepUsageTokens(0, usage))
 	}
 }
 

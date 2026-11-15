@@ -359,7 +359,7 @@ func batchOneItemSpec(inv BatchInvocation, call fantasy.ToolCall, input json.Raw
 		if err := json.Unmarshal(input, &selected); err != nil {
 			return jobbatch.Spec{}, batchToolInputError{err: err}
 		}
-		if selected.Role != "" && !selected.Role.builtin() {
+		if selected.Role != "" && !selected.Role.Builtin() {
 			cfg, err := configForBatchInvocation(inv)
 			if err != nil {
 				return jobbatch.Spec{}, err

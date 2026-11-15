@@ -42,7 +42,7 @@ type subAgentDriver struct {
 	agent SessionAgent
 	call  SessionAgentCall
 	// Frozen at delegation; wakes never bind or infer replacement capabilities.
-	finalizationAuthorities session.AgentFinalizationContext
+	FinalizationAuthorities session.AgentFinalizationContext
 	pctReleases             []func() // pct: retained child construction refs released at confirmed closure.
 	// parentSessionID is the delegating session that originally armed this
 	// child's restricted-run allowlist baseline (runSubAgent's
@@ -75,8 +75,8 @@ type subAgentDriver struct {
 func (d subAgentDriver) callFor(prompt string) SessionAgentCall {
 	call := callFromActive(d.call)
 	call.Prompt = prompt
-	call.finalizationAuthorities = d.finalizationAuthorities
-	call.driverGeneration = d.generation
+	call.FinalizationAuthorities = d.FinalizationAuthorities
+	call.DriverGeneration = d.generation
 	if call.CallOptions != nil {
 		copy := *call.CallOptions
 		call.CallOptions = &copy

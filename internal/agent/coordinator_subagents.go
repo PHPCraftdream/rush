@@ -157,7 +157,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 				return ErrAgentRoleMismatch
 			}
 		}
-		if !requestedRole.builtin() && childRoleContract == nil {
+		if !requestedRole.Builtin() && childRoleContract == nil {
 			childRoleContract, err = ResolveRoleContract(cfg, string(requestedRole), parentRoleContractFrom(ctx))
 			if err != nil {
 				return err
@@ -170,7 +170,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		if err != nil {
 			return err
 		}
-		if requestedRole.builtin() && childRoleContract == nil {
+		if requestedRole.Builtin() && childRoleContract == nil {
 			if parent := parentRoleContractFrom(ctx); parent != nil && (parent.Tools != nil || len(parent.Inherited) > 0) {
 				childRoleContract = roleContractWithName(selected.Model.ModelCfg, string(requestedRole), parent)
 				if childRoleContract == nil {
@@ -373,7 +373,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	}
 	// The refresh is best-effort; preserve the selected role for future turns.
 	var dispatchSlotRole config.SelectedModelType
-	if requestedRole != "" && !requestedRole.builtin() {
+	if requestedRole != "" && !requestedRole.Builtin() {
 		dispatchSlotRole = ""
 	} else if requestedRole == "" && params.slotModel && callCreds == nil && hbSource != hbSourceSessionOverride {
 		dispatchSlotRole = config.SelectedModelTypeSmart
@@ -523,7 +523,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	}
 	if lifecycleBound {
 		callTemplate.Tools = batchChildTools
-		callTemplate.batchQuestion = batchQuestionState
+		callTemplate.BatchQuestion = batchQuestionState
 	}
 	delegatedFinalization := sessionpkg.CaptureAgentFinalizationContext(ctx)
 	callTemplate.LogicalCallID, err = finalizationLogicalIdentity(delegatedFinalization, session.ID, callTemplate.LogicalCallID)
@@ -536,7 +536,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	generation := c.subAgentDrivers.register(session.ID, subAgentDriver{
 		agent: params.Agent, call: callTemplate, parentSessionID: params.SessionID,
 		slotRole: driverSlotRole, pctReleases: pctReleases,
-		finalizationAuthorities: delegatedFinalization,
+		FinalizationAuthorities: delegatedFinalization,
 	})
 	pctDriverTransferred = generation != 0
 	if !pctDriverTransferred {
@@ -584,7 +584,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		call := SessionAgentCall{
 			SessionID:            session.ID,
 			LogicalCallID:        callTemplate.LogicalCallID,
-			driverGeneration:     generation,
+			DriverGeneration:     generation,
 			Prompt:               params.Prompt,
 			MaxOutputTokens:      maxTokens,
 			ProviderOptions:      getProviderOptions(session.ID, model, providerCfg),
@@ -603,7 +603,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		}
 		if lifecycleBound {
 			call.Tools = batchChildTools
-			call.batchQuestion = batchQuestionState
+			call.BatchQuestion = batchQuestionState
 		}
 		result, runErr, _ := c.runAwaitingAdmission(runCtx, params.Agent, call)
 		return result, runErr
@@ -657,7 +657,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 // registered driver) and non-batch delegations (no capability on the
 // template) are untouched, byte-identical.
 func (c *coordinator) inheritBatchQuestionState(ctx context.Context, childSessionID string, call *SessionAgentCall) error {
-	if call == nil || call.batchQuestion != nil {
+	if call == nil || call.BatchQuestion != nil {
 		return nil
 	}
 	driver, ok := c.subAgentDrivers.get(childSessionID)
@@ -666,16 +666,16 @@ func (c *coordinator) inheritBatchQuestionState(ctx context.Context, childSessio
 		if err != nil {
 			return err
 		}
-		call.batchQuestion = state
+		call.BatchQuestion = state
 		if state != nil && call.Tools != nil {
 			call.Tools = stripAskQuestionTools(call.Tools)
 		}
 		return nil
 	}
-	if driver.call.batchQuestion == nil {
+	if driver.call.BatchQuestion == nil {
 		return nil
 	}
-	call.batchQuestion = driver.call.batchQuestion
+	call.BatchQuestion = driver.call.BatchQuestion
 	if driver.call.Tools != nil {
 		call.Tools = driver.call.Tools
 	}

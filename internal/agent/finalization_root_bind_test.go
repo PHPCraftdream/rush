@@ -56,7 +56,7 @@ func TestFinalizationRootBindCreatesRecordAndCarriesAuthority(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "executing", record.Phase)
 
-	requirement := got.finalizationAuthorities.Requirement()
+	requirement := got.FinalizationAuthorities.Requirement()
 	require.NotNil(t, requirement)
 	require.Contains(t, requirement.Authorities, identity)
 	require.NotNil(t, session.CaptureAgentFinalizationContext(execCtx).Requirement())
@@ -108,8 +108,8 @@ func TestFinalizationRootBindSubAgentCallIsInert(t *testing.T) {
 	bound, err := session.WithAgentFinalizationContext(t.Context(), parent)
 	require.NoError(t, err)
 
-	child := SessionAgentCall{SessionID: "child", LogicalCallID: "child-call", driverGeneration: 7}
-	child.finalizationAuthorities = session.CaptureAgentFinalizationContext(bound)
+	child := SessionAgentCall{SessionID: "child", LogicalCallID: "child-call", DriverGeneration: 7}
+	child.FinalizationAuthorities = session.CaptureAgentFinalizationContext(bound)
 	sub := &sessionAgent{sessions: env.sessions, isSubAgent: true, coord: a.coord}
 
 	execCtx, got, cleanup, err := sub.startExecution(t.Context(), child)
@@ -141,7 +141,7 @@ func TestFinalizationRootBindAcceptedLogicalCallFallsBackLegacy(t *testing.T) {
 	require.NotNil(t, cleanup)
 
 	require.Nil(t, session.CaptureAgentFinalizationContext(execCtx).Requirement())
-	require.Nil(t, got.finalizationAuthorities.Requirement())
+	require.Nil(t, got.FinalizationAuthorities.Requirement())
 	require.Nil(t, finalizationExecutionFor(execCtx, got))
 	require.Nil(t, w.authorities.Lookup("session"))
 

@@ -152,8 +152,8 @@ func startBatchAgentTurn(ctx context.Context, req batchAgentRunRequest, host bat
 		co := boundCallOptions(provider, req.DiskBindingID, batchDiskRegistryFromContext(ctx))
 		co.MaxAgentDepth = req.AgentDepth
 		co.AgentDepthSet = true
-		co.buildScope = newBuildResourceScope()
-		childScope = co.buildScope
+		co.BuildScope = newBuildResourceScope()
+		childScope = co.BuildScope
 		runCtx = WithCallOptions(runCtx, co)
 	}
 	call := fantasy.ToolCall{ID: req.ToolCallID, Name: req.Tool, Input: string(req.Input)}
@@ -161,7 +161,7 @@ func startBatchAgentTurn(ctx context.Context, req batchAgentRunRequest, host bat
 	go func() {
 		defer close(turn.exit)
 		defer releaseCredentials()
-		defer childScope.close()
+		defer childScope.Close()
 		defer close(turn.done)
 		// Отказы leaf до runSubAgent тоже должны закрывать scope без ребёнка.
 		defer markNoChild()

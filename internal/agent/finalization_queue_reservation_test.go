@@ -54,14 +54,14 @@ func (p *reservationQueueProbe) rebuild(ctx context.Context, rowID string, data 
 	}
 	options := &CallOptions{}
 	EnsureCallBuildScope(options)
-	options.buildScope.register(func() { p.releases.Add(1) })
+	options.BuildScope.Register(func() { p.releases.Add(1) })
 	if p.afterBuild != nil {
 		p.afterBuild(ctx)
 	}
 	return SessionAgentCall{
 		SessionID: data.SessionID, LogicalCallID: data.LogicalCallID, Prompt: data.Prompt,
 		AutoResumed: data.AutoResumed, MaxCost: data.MaxCost, MaxTokens: data.MaxTokens,
-		Tools: []fantasy.AgentTool{}, finalizationAuthorities: snapshot, CallOptions: options,
+		Tools: []fantasy.AgentTool{}, FinalizationAuthorities: snapshot, CallOptions: options,
 	}, nil
 }
 
@@ -183,7 +183,7 @@ func TestFinalizationReservationPostConsumeFailureReleasesEraAndBuildScope(t *te
 			root := NewSessionAgent(SessionAgentOptions{})
 			coordinator := &coordinator{sessions: sessions, currentAgent: root, subAgentDrivers: newSubAgentDriverRegistry()}
 			coordinator.subAgentDrivers.register(data.SessionID, subAgentDriver{
-				agent: driver, call: SessionAgentCall{SessionID: data.SessionID, LogicalCallID: data.LogicalCallID}, finalizationAuthorities: fixture.capability,
+				agent: driver, call: SessionAgentCall{SessionID: data.SessionID, LogicalCallID: data.LogicalCallID}, FinalizationAuthorities: fixture.capability,
 			})
 			probe := &reservationQueueProbe{coordinator: coordinator}
 			switch failure {
@@ -194,7 +194,7 @@ func TestFinalizationReservationPostConsumeFailureReleasesEraAndBuildScope(t *te
 			case "driver_replaced":
 				probe.afterBuild = func(context.Context) {
 					coordinator.subAgentDrivers.register(data.SessionID, subAgentDriver{
-						agent: driver, call: SessionAgentCall{SessionID: data.SessionID, LogicalCallID: data.LogicalCallID}, finalizationAuthorities: fixture.capability,
+						agent: driver, call: SessionAgentCall{SessionID: data.SessionID, LogicalCallID: data.LogicalCallID}, FinalizationAuthorities: fixture.capability,
 					})
 				}
 			}

@@ -32,7 +32,7 @@ func TestTask74InstalledControlsDispatchAgainstCapturedAndCurrentRoleCaps(t *tes
 	contract := task74RoleContract("analyst", &roleTools, nil)
 	installer := task74AssemblyInstaller("")
 	coord, buildCtx, scope, _, _ := task74AssemblyFixture(t, installer, "task74-installed-role-caps", contract)
-	defer scope.close()
+	defer scope.Close()
 
 	allowed := []string{"batch_run", "batch_add", "batch_status", "batch_output", "batch_stop"}
 	built, err := coord.finishToolAssembly(buildCtx, task74AcceptanceTools(coord), nil, false, allowed)
@@ -70,7 +70,7 @@ func TestTask74InstalledControlsDispatchAgainstCapturedAndCurrentRoleCaps(t *tes
 	closed := task74RoleContract("closed", &closedTools, nil)
 	deniedOptions := &CallOptions{RoleContract: closed}
 	deniedScope := EnsureCallBuildScope(deniedOptions)
-	defer deniedScope.close()
+	defer deniedScope.Close()
 	deniedCtx := WithCallOptions(WithCallRoleContract(context.Background(), closed), deniedOptions)
 	for _, tc := range []struct {
 		name  string
@@ -112,7 +112,7 @@ func TestTask74InstalledControlFilteringIntersectsMultipleInheritedGroups(t *tes
 	})
 	installer := task74AssemblyInstaller("")
 	coord, ctx, scope, _, _ := task74AssemblyFixture(t, installer, "task74-inherited-intersection", contract)
-	defer scope.close()
+	defer scope.Close()
 
 	allowed := []string{"batch_run", "batch_add", "batch_status", "batch_output", "batch_stop"}
 	built, err := coord.finishToolAssembly(ctx, task74AcceptanceTools(coord), nil, false, allowed)

@@ -257,7 +257,7 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 		}
 		recoveryAccounted = true
 		if !recoverySpentAdded {
-			state.spent.Add(recoverySpent)
+			state.Spent.Add(recoverySpent)
 			recoverySpentAdded = true
 		}
 		accountCtx, accountCancel := context.WithTimeout(context.WithoutCancel(ctx), summaryCommitMaxDuration)
@@ -290,10 +290,10 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 			capacityErr = errors.Join(capacityErr, errors.New("automatic context recovery summary was empty"))
 		}
 		var tokenErr error
-		if state.maxTokens > 0 && state.spent.Load()+recoverySpent > state.maxTokens {
+		if state.MaxTokens > 0 && state.Spent.Load()+recoverySpent > state.MaxTokens {
 			tokenErr = errors.New("automatic context recovery would exceed the call token cap")
 		}
-		costErr := a.checkRecoverySummaryCost(ctx, sessionID, state.maxCost, recoveryCostDelta)
+		costErr := a.checkRecoverySummaryCost(ctx, sessionID, state.MaxCost, recoveryCostDelta)
 		if costErr != nil {
 			accountErr := accountRecovery()
 			return cleanupUncommittedSummary(a.messages, ctx, summaryMessage.ID, errors.Join(costErr, accountErr))
@@ -305,7 +305,7 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 			accountErr := accountRecovery()
 			return cleanupUncommittedSummary(a.messages, ctx, summaryMessage.ID, errors.Join(capacityErr, tokenErr, costErr, accountErr))
 		}
-		state.spent.Add(recoverySpent)
+		state.Spent.Add(recoverySpent)
 		recoverySpentAdded = true
 	}
 	summaryMessage.AddFinish(message.FinishReasonEndTurn, "", "")

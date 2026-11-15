@@ -21,7 +21,7 @@ import (
 // credentials, tools, budgets and model settings stay untouched.
 func NewFinalizationBindScopeHook(agent *sessionAgent) func(context.Context, SessionAgentCall) error {
 	return func(ctx context.Context, call SessionAgentCall) error {
-		if call.finalizationAuthorities.Requirement() == nil {
+		if call.FinalizationAuthorities.Requirement() == nil {
 			return nil
 		}
 		if agent == nil {
@@ -30,7 +30,7 @@ func NewFinalizationBindScopeHook(agent *sessionAgent) func(context.Context, Ses
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		trusted, err := finalizationLogicalIdentity(call.finalizationAuthorities, call.SessionID, call.LogicalCallID)
+		trusted, err := finalizationLogicalIdentity(call.FinalizationAuthorities, call.SessionID, call.LogicalCallID)
 		if err != nil {
 			return err
 		}

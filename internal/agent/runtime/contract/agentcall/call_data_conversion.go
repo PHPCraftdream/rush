@@ -1,4 +1,4 @@
-package agent
+package agentcall
 
 import (
 	"errors"
@@ -103,7 +103,7 @@ func toSessionCallOptionsSpec(o *CallOptions) *session.CallOptionsSpec {
 		WebTurnOptIn:             o.WebTurnOptIn,
 		MaxAgentDepth:            o.MaxAgentDepth,
 		AgentDepthSet:            o.AgentDepthSet,
-		RoleContract:             cloneRoleContractForCall(o.RoleContract),
+		RoleContract:             CloneRoleContractForCall(o.RoleContract),
 	}
 }
 
@@ -157,7 +157,7 @@ func fromSessionCallOptionsSpec(spec *session.CallOptionsSpec) (*CallOptions, er
 		WebTurnOptIn:             spec.WebTurnOptIn,
 		MaxAgentDepth:            spec.MaxAgentDepth,
 		AgentDepthSet:            spec.AgentDepthSet,
-		RoleContract:             cloneRoleContractForCall(spec.RoleContract),
+		RoleContract:             CloneRoleContractForCall(spec.RoleContract),
 	}, nil
 }
 
@@ -263,10 +263,10 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 	}
 	callOptions := call.CallOptions
 	if callOptions != nil && call.RoleContract == nil {
-		call.RoleContract = cloneRoleContractForCall(callOptions.RoleContract)
+		call.RoleContract = CloneRoleContractForCall(callOptions.RoleContract)
 	}
 	if call.RoleContract != nil && (callOptions == nil || callOptions.RoleContract == nil) {
-		callOptions = WithRoleContractCopy(callOptions, call.RoleContract)
+		callOptions = withRoleContractCopy(callOptions, call.RoleContract)
 	}
 	return session.SessionAgentCallData{
 		SessionID:               call.SessionID,
@@ -277,7 +277,7 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 		NonInteractive:          call.NonInteractive,
 		RequestedModelRole:      string(call.RequestedModelRole),
 		RequestedModelSource:    call.RequestedModelSource,
-		FinalizationRequirement: call.finalizationAuthorities.Requirement(),
+		FinalizationRequirement: call.FinalizationAuthorities.Requirement(),
 		SystemPromptOverride:    call.SystemPromptOverride,
 		MaxCost:                 call.MaxCost,
 		MaxTokens:               call.MaxTokens,
@@ -295,14 +295,14 @@ func ToSessionAgentCallData(call SessionAgentCall) session.SessionAgentCallData 
 		RunAllowlistSpec:        toSessionRunAllowlistSpec(call.RunAllowlistSpec),
 		FolderScopeSpec:         toSessionFolderScopeSpec(call.FolderScopeSpec),
 		CallOptionsSpec:         toSessionCallOptionsSpec(callOptions),
-		RoleContract:            cloneRoleContractForCall(call.RoleContract),
+		RoleContract:            CloneRoleContractForCall(call.RoleContract),
 		// Layer 2 (belt and braces, design doc §7.3): mark the row so a
 		// consumer that somehow receives it (a producer added later, or a
 		// row written by a different binary version) still fails closed
 		// at RebuildSessionAgentCall instead of failing open. Every
 		// current producer already refuses to reach this point at all
 		// (Layer 1) when this is true.
-		HostDiskProvider: callCarriesDiskProvider(call),
+		HostDiskProvider: CallCarriesDiskProvider(call),
 		DiskRequirement:  diskRequirementForCall(call),
 	}
 }
@@ -336,7 +336,7 @@ func FromSessionAgentCallData(callData session.SessionAgentCallData) (SessionAge
 		return SessionAgentCall{}, session.ErrAgentFinalizationChanged
 	}
 	role := RequestedModelRole(callData.RequestedModelRole)
-	if role != "" && !role.valid() {
+	if role != "" && !role.Valid() {
 		return SessionAgentCall{}, ErrAgentRoleInvalid
 	}
 	opts, err := fromSessionCallOptionsSpec(callData.CallOptionsSpec)
@@ -346,7 +346,7 @@ func FromSessionAgentCallData(callData session.SessionAgentCallData) (SessionAge
 	if callData.RoleContract != nil && (callData.CallOptionsSpec == nil || callData.CallOptionsSpec.Version != session.CallOptionsSpecVersion) {
 		return SessionAgentCall{}, fmt.Errorf("%w: RoleContract requires version %d", ErrCallOptionsSpecVersionUnsupported, session.CallOptionsSpecVersion)
 	}
-	contract := cloneRoleContractForCall(callData.RoleContract)
+	contract := CloneRoleContractForCall(callData.RoleContract)
 	if contract != nil {
 		if err := contract.Validate(); err != nil {
 			return SessionAgentCall{}, fmt.Errorf("invalid durable role contract: %w", err)
@@ -359,13 +359,13 @@ func FromSessionAgentCallData(callData session.SessionAgentCallData) (SessionAge
 		}
 	}
 	if contract == nil && opts != nil {
-		contract = cloneRoleContractForCall(opts.RoleContract)
+		contract = CloneRoleContractForCall(opts.RoleContract)
 	}
-	if contract == nil && role != "" && !role.builtin() {
+	if contract == nil && role != "" && !role.Builtin() {
 		return SessionAgentCall{}, ErrAgentRoleUnconfigured
 	}
 	if contract != nil && (opts == nil || opts.RoleContract == nil) {
-		opts = WithRoleContractCopy(opts, contract)
+		opts = withRoleContractCopy(opts, contract)
 	}
 	return SessionAgentCall{
 		SessionID:            callData.SessionID,
@@ -419,4 +419,88 @@ func BuildSessionExecutionRequirement(bindingID, owner string, epoch int64, fold
 		RunAllowlistSpec: toSessionRunAllowlistSpec(&spec),
 		CallPolicy:       toSessionCallOptionsSpec(opts),
 	}
+}
+
+// CloneRoleContractForCall returns a detached copy of contract (nil-safe). Single
+// source; package agent delegates here.
+func CloneRoleContractForCall(contract *session.RoleContract) *session.RoleContract {
+	if contract == nil {
+		return nil
+	}
+	return contract.Clone()
+}
+
+// withRoleContractCopy returns options with a detached contract, preserving the
+// call's resource scope and other execution policy.
+func withRoleContractCopy(opts *CallOptions, contract *session.RoleContract) *CallOptions {
+	if opts == nil {
+		opts = &CallOptions{}
+	} else {
+		copy := *opts
+		opts = &copy
+	}
+	opts.RoleContract = CloneRoleContractForCall(contract)
+	return opts
+}
+
+// CallCarriesDiskProvider reports whether call's per-call options carry a
+// host-supplied filesystem that must never reach the durable run queue.
+func CallCarriesDiskProvider(call SessionAgentCall) bool {
+	return call.CallOptions != nil && tools.HasDiskProvider(call.CallOptions.DiskProvider)
+}
+
+// ToSessionModelCfg is the exported read side of toSessionModelCfg: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+func ToSessionModelCfg(cfg config.SelectedModel) session.ModelCfg { return toSessionModelCfg(cfg) }
+
+// FromSessionModelCfg is the exported read side of fromSessionModelCfg: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+func FromSessionModelCfg(cfg session.ModelCfg) config.SelectedModel { return fromSessionModelCfg(cfg) }
+
+// ToSessionModelSlotUpdate is the exported read side of toSessionModelSlotUpdate: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+func ToSessionModelSlotUpdate(update *session.ModelSlotUpdate) *session.ModelSlotUpdate {
+	return toSessionModelSlotUpdate(update)
+}
+
+// ToSessionRunAllowlistSpec is the exported read side of toSessionRunAllowlistSpec: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+func ToSessionRunAllowlistSpec(spec *permission.RunAllowlistSpec) *session.RunAllowlistSpec {
+	return toSessionRunAllowlistSpec(spec)
+}
+
+// FromSessionRunAllowlistSpec is the exported read side of fromSessionRunAllowlistSpec: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+func FromSessionRunAllowlistSpec(spec *session.RunAllowlistSpec) *permission.RunAllowlistSpec {
+	return fromSessionRunAllowlistSpec(spec)
+}
+
+// ToSessionCallOptionsSpec is the exported read side of toSessionCallOptionsSpec: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+func ToSessionCallOptionsSpec(o *CallOptions) *session.CallOptionsSpec {
+	return toSessionCallOptionsSpec(o)
+}
+
+// FromSessionCallOptionsSpec is the exported read side of fromSessionCallOptionsSpec: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+func FromSessionCallOptionsSpec(spec *session.CallOptionsSpec) (*CallOptions, error) {
+	return fromSessionCallOptionsSpec(spec)
+}
+
+// ToSessionFolderScopeSpec is the exported read side of toSessionFolderScopeSpec: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+func ToSessionFolderScopeSpec(spec *permission.FolderScopeSpec) *session.FolderScopeSpec {
+	return toSessionFolderScopeSpec(spec)
+}
+
+// FromSessionFolderScopeSpec is the exported read side of fromSessionFolderScopeSpec: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+func FromSessionFolderScopeSpec(spec *session.FolderScopeSpec) *permission.FolderScopeSpec {
+	return fromSessionFolderScopeSpec(spec)
+}
+
+// DiskRequirementForCall is the exported read side of diskRequirementForCall: staying
+// package-agent callers delegate here (design §3.1 contract reads).
+func DiskRequirementForCall(call SessionAgentCall) *session.SessionExecutionRequirement {
+	return diskRequirementForCall(call)
 }

@@ -109,7 +109,7 @@ func (c *coordinator) pinCallTools(ctx context.Context, cfg *config.Config) ([]f
 		// returns nil for bare contexts, so the coordinator's shared
 		// scope is never touched here.
 		if scope := callBuildScopeFrom(ctx); scope != nil {
-			scope.close()
+			scope.Close()
 		}
 		slog.Warn("Coordinator: failed to build per-call tools", "err", err, "distinct_toolset_required", required)
 		if required {
