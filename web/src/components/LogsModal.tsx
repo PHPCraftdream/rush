@@ -1,7 +1,7 @@
 import type { MouseEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { X, RefreshCw, Download } from "lucide-react";
-import { wsRequest } from "../ws";
+import { wsRequest } from "../backend";
 
 /** Props of the logs dialog. */
 interface ILogsModalProps {

@@ -3,7 +3,7 @@ import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
 import { mcpCarburetor } from "../state/config/mcp";
 import type { IMcpState } from "../state/config/McpCarburetor";
-import { ws, wsRequest } from "../ws";
+import { ws, wsRequest } from "../backend";
 import { X, Plus } from "lucide-react";
 import type { MCPServerInfo } from "../domain/types";
 import { MCPForm } from "./mcp/MCPForm";

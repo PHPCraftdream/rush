@@ -1,4 +1,4 @@
-import type { BatchWorkState } from "../state/runtime/BatchWorkCarburetor";
+import type { BatchWorkState } from "../../state/runtime/BatchWorkCarburetor";
 
 /**
  * One session's batch state, or null before any snapshot.

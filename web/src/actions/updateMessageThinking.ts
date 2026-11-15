@@ -1,4 +1,4 @@
-import { ws } from "../net/client";
+import { ws } from "../backend/ws/client";
 
 /**
  * Replaces a thinking part of a message.

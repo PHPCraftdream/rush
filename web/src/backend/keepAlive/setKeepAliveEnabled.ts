@@ -1,4 +1,4 @@
-import { ws } from "../net/client";
+import { ws } from "../ws/client";
 
 /**
  * Toggles the WebAudio keep-alive preference.

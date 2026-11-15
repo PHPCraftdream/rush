@@ -1,6 +1,6 @@
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { Square } from "lucide-react";
-import { ws } from "../../ws";
+import { ws } from "../../backend";
 
 /** Props of the busy indicator. */
 interface IBusyIndicatorProps {

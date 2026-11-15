@@ -1,4 +1,4 @@
-import { ws } from "../net/client";
+import { ws } from "../backend/ws/client";
 import type { ModelRole } from "../state/config/ConfigCarburetor";
 import { configCarburetor } from "../state/config/config";
 

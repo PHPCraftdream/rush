@@ -10,7 +10,7 @@ import {
   Wrench,
 } from "lucide-react";
 import type { MCPServerInfo } from "../../domain/types";
-import { ws, wsRequest } from "../../ws";
+import { ws, wsRequest } from "../../backend";
 import { MCPForm } from "./MCPForm";
 import { StatusBadge } from "./StatusBadge";
 import { mcpServerPayload } from "./mcpServerPayload";

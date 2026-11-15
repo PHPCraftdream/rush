@@ -1,6 +1,6 @@
 import type { ChangeEvent, MouseEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
-import { wsRequest } from "../../ws";
+import { wsRequest } from "../../backend";
 import { SystemPromptFetch } from "./SystemPromptFetch";
 
 /** Props of the system-prompt modal. */

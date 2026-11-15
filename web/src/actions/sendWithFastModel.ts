@@ -1,4 +1,4 @@
-import { ws } from "../net/client";
+import { ws } from "../backend/ws/client";
 import { configCarburetor } from "../state/config/config";
 import type { WireAttachment } from "../state/transcript/QueueCarburetor";
 import { sessionsCarburetor } from "../state/sessions/sessions";

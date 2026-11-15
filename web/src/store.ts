@@ -41,7 +41,7 @@ export { pauseProviderPeakHours } from "./actions/pauseProviderPeakHours";
 export { resumeProviderPeakHours } from "./actions/resumeProviderPeakHours";
 export { fetchPeakHoursStatus } from "./actions/fetchPeakHoursStatus";
 
-export { setKeepAliveEnabled } from "./actions/setKeepAliveEnabled";
+export { setKeepAliveEnabled } from "./backend/keepAlive/setKeepAliveEnabled";
 export { setProviderKey } from "./actions/setProviderKey";
 export { removeProviderKey } from "./actions/removeProviderKey";
 export { deleteMessage } from "./actions/deleteMessage";

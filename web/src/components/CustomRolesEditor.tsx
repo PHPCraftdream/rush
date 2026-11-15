@@ -9,7 +9,7 @@ import type {
 } from "../domain/types";
 import { customRoleAt, roleToolsMode, roleToolsPayload, type RoleToolsMode } from "../domain/customRole";
 import { effortLevelsFor } from "../domain/effort/effortLevelsFor";
-import { ws, wsRequest, WSRequestError } from "../ws";
+import { ws, wsRequest, WSRequestError } from "../backend";
 import type { ModelItem } from "./ModelSelector";
 
 const fieldClass = "w-full rounded-lg border border-surface bg-canvas px-2.5 py-1.5 text-xs text-text disabled:opacity-40";

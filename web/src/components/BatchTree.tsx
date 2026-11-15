@@ -1,8 +1,8 @@
 import type { ChangeEvent } from "react";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { TReadonly } from "@react-carburetor/core";
-import type { BatchTreeNode, BatchTreeRoot } from "../batchWork";
-import { buildBatchTree } from "../batchWork";
+import type { BatchTreeNode, BatchTreeRoot } from "../backend/batch";
+import { buildBatchTree } from "../backend/batch";
 import { batchWorkCarburetor } from "../state/runtime/batchWork";
 import {
   batchNodeNotice,

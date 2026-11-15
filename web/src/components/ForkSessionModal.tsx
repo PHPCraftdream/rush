@@ -3,7 +3,7 @@ import type { ChangeEvent, KeyboardEvent, MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { AntiHookComponent, bind } from "@react-carburetor/core";
 import { GitFork } from "lucide-react";
-import { ws } from "../ws";
+import { ws } from "../backend";
 
 /** Props of the fork-session dialog. */
 interface IForkSessionModalProps {

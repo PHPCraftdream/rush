@@ -1,4 +1,4 @@
-import type { BatchWorkNode, BatchWorkRoot } from "../domain/types";
+import type { BatchWorkNode, BatchWorkRoot } from "../../domain/types";
 
 /** A batch node with its in-root children and the nested batches its child session owns. */
 export interface BatchTreeNode {

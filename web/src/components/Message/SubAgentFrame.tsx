@@ -5,7 +5,7 @@ import type { TReadonly } from "@react-carburetor/core";
 import { Bot } from "lucide-react";
 import { messagesCarburetor } from "../../state/transcript/messages";
 import { sessionsCarburetor } from "../../state/sessions/sessions";
-import { sendLoadMessages } from "../../ws";
+import { sendLoadMessages } from "../../backend";
 import type { AsyncJobStatus } from "../../domain/asyncJob/asyncJobTypes";
 import type { Message, FinishPart } from "../../domain/types";
 import { EffortBadge } from "./EffortBadge";

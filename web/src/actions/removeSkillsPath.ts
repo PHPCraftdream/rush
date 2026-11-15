@@ -1,4 +1,4 @@
-import { ws } from "../net/client";
+import { ws } from "../backend/ws/client";
 
 /**
  * Removes a skills path from the config.

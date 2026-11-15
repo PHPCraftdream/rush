@@ -1,4 +1,4 @@
-import { wsRequest } from "../../ws";
+import { wsRequest } from "../../backend";
 import { batchControlCommands } from "./batchControlCommands";
 import { batchControlPayload } from "./batchControlPayload";
 import type { BatchCommandReply, BatchControlTarget } from "./batchControlTypes";
