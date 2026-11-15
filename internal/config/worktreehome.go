@@ -134,34 +134,3 @@ func dotGitRoot(dir string) string {
 func WorkspaceHome() bool {
 	return workspaceHomeFlag.Load()
 }
-
-// projectBoundary returns the directory at which an upward configuration
-// search rooted at dir should stop. It is the git working tree root when
-// one can be detected, otherwise dir itself. Returning dir as a
-// fallback keeps Rush from silently adopting state files placed above
-// the current project.
-func projectBoundary(dir string) string {
-	dir = canonicalConfigPath(dir)
-	if root := worktreeRoot(dir); root != "" {
-		return canonicalConfigPath(root)
-	}
-	return dir
-}
-
-// sameDir reports whether a and b refer to the same directory, accounting
-// for symbolic links. Paths are canonicalised with filepath.EvalSymlinks
-// before comparison so that a symlinked path (macOS /var) and its resolved
-// target (/private/var) compare equal. If either path cannot be resolved
-// (e.g. it does not exist), the raw value is used as a best-effort fallback.
-func sameDir(a, b string) bool {
-	if a == b {
-		return true
-	}
-	if ra, err := filepath.EvalSymlinks(a); err == nil {
-		a = ra
-	}
-	if rb, err := filepath.EvalSymlinks(b); err == nil {
-		b = rb
-	}
-	return a == b
-}

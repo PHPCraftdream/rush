@@ -161,7 +161,7 @@ func TestConfigDiskSyncDriftFailureRecoversWhenFileFixed(t *testing.T) {
 // the workspace path NOR the global data path, which store_config_disk_sync.go's
 // configDiskSyncCandidatePaths appends unconditionally and which therefore
 // can never drift) is replaced by a DIRECTORY (eligibleConfigCandidate
-// drops directories, load_files.go:184-200), shrinking the candidate set
+// drops directories, load_files.go:35-40), shrinking the candidate set
 // while every previously tracked file is byte-identical, and back to a real
 // signed file, growing it again. Each transition must perform exactly one
 // reload via the forced tick's sameReloadPathSet drift check
@@ -226,8 +226,8 @@ func TestConfigDiskSyncCandidateSetDriftBoundary(t *testing.T) {
 	// by the PROJECT CANDIDATE's priority alone: candidates are merged
 	// lowest-priority first (global candidates first, the project file
 	// last), so the project file's models outrank the global-config
-	// candidate's in the ordered merge (internal/config/load_files.go:43-97,
-	// load.go:59-64). No assertion here may depend on "gpt-globalcfg"
+	// candidate's in the ordered merge (internal/config/load_files.go:43-92,
+	// canonicalConfigPath now in globalpaths.go; load.go:59-64). No assertion here may depend on "gpt-globalcfg"
 	// reaching the store. Growth is proven by the drift reload itself
 	// (Reloaded, exactly one reloadAttempts, generation bump) plus the
 	// candidate joining the tracked set below. This keeps the drift-only

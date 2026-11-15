@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -19,7 +18,6 @@ import (
 	"charm.land/catwalk/pkg/embedded"
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/discover"
-	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/charmbracelet/x/etag"
 )
@@ -65,32 +63,6 @@ func ResetProviderCacheForTests() {
 	providerErr = nil
 	catwalkSyncer = &catwalkSync{}
 	hyperSyncer = &hyperSync{}
-}
-
-// file to cache provider data
-func cachePathFor(name string) string {
-	// Provider caches are Rush-owned data siblings: under --global-dir they
-	// move into the isolated root's data dir.
-	if dataRoot, ok := globalDataRoot(); ok {
-		return filepath.Join(dataRoot, name+".json")
-	}
-	xdgDataHome := os.Getenv("XDG_DATA_HOME")
-	if xdgDataHome != "" {
-		return filepath.Join(xdgDataHome, appName, name+".json")
-	}
-
-	// return the path to the main data directory
-	// for windows, it should be in `%LOCALAPPDATA%/rush/`
-	// for linux and macOS, it should be in `$HOME/.local/share/rush/`
-	if runtime.GOOS == "windows" {
-		localAppData := os.Getenv("LOCALAPPDATA")
-		if localAppData == "" {
-			localAppData = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
-		}
-		return filepath.Join(localAppData, appName, name+".json")
-	}
-
-	return filepath.Join(home.Dir(), ".local", "share", appName, name+".json")
 }
 
 // UpdateProviders updates the Catwalk providers list from a specified source.
