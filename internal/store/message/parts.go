@@ -1,14 +1,37 @@
 package message
 
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"slices"
+	"strings"
+
+	"charm.land/fantasy/providers/openai"
+)
+
+type Attachment struct {
+	FilePath string
+	FileName string
+	MimeType string
+	Content  []byte
+}
+
+func (a Attachment) IsText() bool     { return strings.HasPrefix(a.MimeType, "text/") }
+func (a Attachment) IsImage() bool    { return strings.HasPrefix(a.MimeType, "image/") }
+func (a Attachment) IsMarkdown() bool { return a.MimeType == "text/markdown" }
+
+// ContainsTextAttachment returns true if any of the attachments is a text attachment.
+func ContainsTextAttachment(attachments []Attachment) bool {
+	return slices.ContainsFunc(attachments, func(a Attachment) bool {
+		return a.IsText()
+	})
+}
+
 // Serialization of a message's content parts. Split out of message.go when
 // the 1000-line file limit landed; this is the only concern in the package
 // that talks about the on-disk shape of a part rather than the service's
 // behaviour.
-
-import (
-	"encoding/json"
-	"fmt"
-)
 
 type partType string
 
@@ -137,4 +160,27 @@ func unmarshalParts(data []byte) ([]ContentPart, error) {
 	}
 
 	return parts, nil
+}
+
+// decodeResponsesReasoningMetadata accepts the legacy flat representation and
+// fantasy's provider-type wrapper without changing its normal JSON encoding.
+func decodeResponsesReasoningMetadata(data json.RawMessage) (*openai.ResponsesReasoningMetadata, error) {
+	if len(data) == 0 || bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil, nil
+	}
+	var wrapped struct {
+		Type string          `json:"type"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(data, &wrapped); err != nil {
+		return nil, err
+	}
+	if wrapped.Type != "" && len(wrapped.Data) != 0 {
+		data = wrapped.Data
+	}
+	var metadata openai.ResponsesReasoningMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return nil, err
+	}
+	return &metadata, nil
 }
