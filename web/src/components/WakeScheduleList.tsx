@@ -8,7 +8,7 @@ import { AntiHookComponent, bind } from "@react-carburetor/core";
 import type { WakeScheduleItem } from "../domain/types";
 import { sendCancelWakeSchedule, pickPendingWakeSchedule } from "../actions";
 import { wakeCancelCarburetor } from "../state/live/wakeCancel";
-import { ConfirmDialog } from "./ConfirmDialog";
+import { ConfirmDialog } from "../ui/shared/ConfirmDialog";
 
 /**
  * Formats a unix-ms timestamp in the browser's locale.

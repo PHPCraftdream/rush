@@ -31,8 +31,6 @@ internal/session/jobbatch/lab 45
 internal/store/message 26
 # 45 -> 46: +1 sdk/client.go, the Client implementation cut out of sdk.go (D2m lane E-sdk); deliberate, only down from here.
 sdk 46
-web/src/components 22
-web/src/components/Message 48
 web/tests 64
 # internal/serve/server/apiauth is born over the limit: 6 production files plus 19 moved test files (server lane L2).
 # The tests spread over their own packages at stage F; deliberate, only down from here.

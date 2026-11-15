@@ -39,11 +39,7 @@ internal/session/jobbatch/lab 24
 internal/serve/server 62
 internal/session 125
 internal/kit/sys/shell 17
-web/src/components 32
-web/src/components/Chat 14
-web/src/components/ChatInput 18
-web/src/components/ChatToolbar 21
-web/src/components/Message 48
+web/src/components 22
 web/src/components/batchControl 8
 web/src/components/peakHours 12
 web/src/components/providers 9
