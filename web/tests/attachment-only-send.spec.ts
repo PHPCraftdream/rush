@@ -1,11 +1,11 @@
 import { test, expect, Page } from "@playwright/test";
-import { setupMockWS } from "./helpers/mock-ws";
-import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
-import { waitForWSSend } from "./helpers/wait-for-ws-send";
-import { clearWSSent } from "./helpers/clear-ws-sent";
-import { makeSession } from "./helpers/make-session";
-import { makeConfig } from "./helpers/make-config";
-import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
+import { setupMockWS } from "./helpers";
+import { sendMockWSMessage } from "./helpers";
+import { waitForWSSend } from "./helpers";
+import { clearWSSent } from "./helpers";
+import { makeSession } from "./helpers";
+import { makeConfig } from "./helpers";
+import { fulfillAuthOk } from "./helpers";
 
 // Regression coverage for review F3 (P2): an attachment-only draft (no typed
 // text) used to be unsendable — send/sendFast early-returned on empty

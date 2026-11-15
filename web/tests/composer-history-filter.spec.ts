@@ -27,11 +27,11 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { setupMockWS } from "./helpers/mock-ws";
-import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
-import { makeSession } from "./helpers/make-session";
-import { makeMessage } from "./helpers/make-message";
-import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
+import { setupMockWS } from "./helpers";
+import { sendMockWSMessage } from "./helpers";
+import { makeSession } from "./helpers";
+import { makeMessage } from "./helpers";
+import { fulfillAuthOk } from "./helpers";
 
 const SESSION_ID = "composer-sess";
 const RECALL_BTN = 'button[title="Click to put this prompt back in the input"]';
