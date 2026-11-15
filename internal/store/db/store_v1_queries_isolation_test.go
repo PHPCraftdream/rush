@@ -148,8 +148,10 @@ func openFixture(t *testing.T) *sql.DB {
 	path := filepath.Join(t.TempDir(), "store.db")
 	conn, err := dbtest.OpenFK(path)
 	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 	conn.SetMaxOpenConns(1)
 	fixture := storeV1FixtureMigrations()
+	require.NoError(t, conn.PingContext(context.Background()))
 	require.NoError(t, migrater.ApplyLocked(context.Background(), conn, path, fixture, migrater.MigrateOptions{MayMigrate: true}))
 	return conn
 }
