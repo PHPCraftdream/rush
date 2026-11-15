@@ -139,6 +139,7 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 		// authority and the old async/stall wrappers are not installed.
 		Ingress:      app.batchWorkIngress,
 		ModelControl: app.batchModelControl,
+		LiveReader:   app.batchLiveReader,
 		// F7b: an ephemeral App (dataDir == "") never installs the batch
 		// runtime, so BindCoordinatorBatchControls below never runs and
 		// the coordinator is left with NO capability manager. Its run path
