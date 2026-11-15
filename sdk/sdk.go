@@ -54,6 +54,7 @@ import (
 	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/app"
@@ -438,7 +439,7 @@ func openApplication(ctx context.Context, o Options) (*Client, error) {
 		return nil, err
 	}
 
-	store, err := config.Init(workDir, o.DataDir, o.Debug)
+	store, err := config.Init(workDir, o.DataDir, o.Debug, config.WithCLIModels(cliprovider.AvailableCLIModels))
 	if err != nil {
 		return nil, fmt.Errorf("sdk: failed to load config for %q: %w", workDir, err)
 	}

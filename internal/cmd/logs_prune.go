@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/audit"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/heartbeat"
@@ -114,7 +115,7 @@ rush logs path    # check size before/after
 		// messages and exit behaviour exactly as before.
 		cwd, _ := cmd.Flags().GetString("cwd")
 		dataDir, _ := cmd.Flags().GetString("data-dir")
-		cfg, err := config.Load(cwd, dataDir, false)
+		cfg, err := config.Load(cwd, dataDir, false, config.WithCLIModels(cliprovider.AvailableCLIModels))
 		if err != nil {
 			return err
 		}

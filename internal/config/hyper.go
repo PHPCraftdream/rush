@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/agent/hyper"
+	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	xetag "github.com/charmbracelet/x/etag"
 )
 
@@ -47,14 +47,14 @@ func (s *hyperSync) Get(ctx context.Context) (catwalk.Provider, error) {
 	s.once.Do(func() {
 		if !s.autoupdate {
 			slog.Info("Using embedded Hyper provider")
-			s.result = hyper.Embedded()
+			s.result = catalog.HyperEmbedded()
 			return
 		}
 
 		cached, etag, cachedErr := s.cache.Get()
 		if cached.ID == "" || cachedErr != nil {
 			// if cached file is empty, default to embedded provider
-			cached = hyper.Embedded()
+			cached = catalog.HyperEmbedded()
 		}
 
 		// Fork patch (orchestrator UX): cache-only mode short-circuits

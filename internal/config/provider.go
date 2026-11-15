@@ -17,7 +17,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/catwalk/pkg/embedded"
-	"github.com/PHPCraftdream/rush/internal/agent/hyper"
+	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/discover"
 	"github.com/PHPCraftdream/rush/internal/home"
@@ -135,11 +135,11 @@ func UpdateProviders(pathOrURL string) error {
 // UpdateHyper updates the Hyper provider information from a specified URL.
 func UpdateHyper(pathOrURL string) error {
 	var provider catwalk.Provider
-	pathOrURL = cmp.Or(pathOrURL, hyper.BaseURL())
+	pathOrURL = cmp.Or(pathOrURL, catalog.HyperBaseURL())
 
 	switch {
 	case pathOrURL == "embedded":
-		provider = hyper.Embedded()
+		provider = catalog.HyperEmbedded()
 	case strings.HasPrefix(pathOrURL, "http://") || strings.HasPrefix(pathOrURL, "https://"):
 		client := realHyperClient{baseURL: pathOrURL}
 		var err error
@@ -230,7 +230,7 @@ func Providers(cfg *Config) ([]catwalk.Provider, error) {
 				return
 			}
 			path := cachePathFor("hyper")
-			hyperSyncer.Init(realHyperClient{baseURL: hyper.BaseURL()}, path, autoupdate)
+			hyperSyncer.Init(realHyperClient{baseURL: catalog.HyperBaseURL()}, path, autoupdate)
 
 			item, err := hyperSyncer.Get(ctx)
 			if err != nil {

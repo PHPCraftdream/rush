@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/discover"
 	"github.com/PHPCraftdream/rush/internal/env"
 	"github.com/PHPCraftdream/rush/internal/oauth"
@@ -66,12 +65,6 @@ func TestModelMetadataGolden(t *testing.T) {
 		}, nil
 	}
 	t.Cleanup(func() { discoverZAIEffortDocs = origDocs })
-
-	// Local CLI detection depends on the machine's PATH; pin it to none so
-	// the golden only covers catalog-provided metadata.
-	origAvailable := cliprovider.AvailableFunc
-	cliprovider.AvailableFunc = func() []cliprovider.CLISpec { return nil }
-	t.Cleanup(func() { cliprovider.AvailableFunc = origAvailable })
 
 	seedModelCatalog(t, "openai-codex", discover.CodexBaseURL, "chatgpt-account", []catwalk.Model{
 		{

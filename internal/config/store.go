@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/config/catalog"
 )
 
 // RuntimeOverrides holds per-session settings that are never persisted to
@@ -111,6 +112,15 @@ type ConfigStore struct {
 	// systemConfigPathOverride is a white-box test seam for platforms such as
 	// Windows that have no native system config path.
 	systemConfigPathOverride string
+	// cliModels supplies the locally-available CLI model descriptors that
+	// configureProviders synthesizes the built-in local-cli provider from.
+	// It is the seam that keeps config free of imports on the agent
+	// provider packages: the composition root passes the agent-side
+	// detection function at Load time via WithCLIModels. Set once during
+	// Load and never mutated afterwards, so reloads read it without
+	// synchronization. Nil means no CLI provider is synthesized (the same
+	// behavior as today when no CLI binary is available).
+	cliModels func() []catalog.LocalCLIModel
 
 	// publishMu is the single mutex that serialises ALL snapshot
 	// publications — both ReloadFromDisk (which rebuilds the entire

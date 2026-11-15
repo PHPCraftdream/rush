@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -16,7 +17,7 @@ var logsPathCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cwd, _ := cmd.Flags().GetString("cwd")
 		dataDir, _ := cmd.Flags().GetString("data-dir")
-		cfg, err := config.Load(cwd, dataDir, false)
+		cfg, err := config.Load(cwd, dataDir, false, config.WithCLIModels(cliprovider.AvailableCLIModels))
 		if err != nil {
 			return err
 		}

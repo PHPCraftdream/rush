@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/agent/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/env"
 	"github.com/stretchr/testify/require"
 )
@@ -32,10 +31,6 @@ func TestConfigureProviders_UserSetsOnlyOneFieldTheOtherStaysUnknown(t *testing.
 	origDocs := discoverZAIEffortDocs
 	discoverZAIEffortDocs = func(context.Context) ([]catwalk.Model, error) { return nil, nil }
 	t.Cleanup(func() { discoverZAIEffortDocs = origDocs })
-	origAvailable := cliprovider.AvailableFunc
-	cliprovider.AvailableFunc = func() []cliprovider.CLISpec { return nil }
-	t.Cleanup(func() { cliprovider.AvailableFunc = origAvailable })
-
 	cfg := &Config{}
 	cfg.setDefaults(t.TempDir(), "")
 	cfg.Providers.Set("zai", ProviderConfig{

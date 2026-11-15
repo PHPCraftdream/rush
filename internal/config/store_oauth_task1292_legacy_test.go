@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	hyperp "github.com/PHPCraftdream/rush/internal/agent/hyper"
+	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/filelock"
 	"github.com/PHPCraftdream/rush/internal/oauth"
 	"github.com/stretchr/testify/require"
@@ -29,7 +29,7 @@ func (ctx *task1292WaitContext) Done() <-chan struct{} {
 
 func task1292LegacySeam(t *testing.T, id string, fn func(context.Context, *http.Client, string) (*oauth.Token, error)) {
 	t.Helper()
-	if id == hyperp.Name {
+	if id == catalog.HyperName {
 		old := hyperExchangeTokenFn
 		hyperExchangeTokenFn = fn
 		t.Cleanup(func() { hyperExchangeTokenFn = old })
@@ -56,7 +56,7 @@ func task1292LegacyReleased(t *testing.T, f codexRefreshFixture) {
 }
 
 func TestTask1292Legacy_SingleExchangeWinnerAdoption(t *testing.T) {
-	for _, id := range []string{hyperp.Name, string(catwalk.InferenceProviderCopilot)} {
+	for _, id := range []string{catalog.HyperName, string(catwalk.InferenceProviderCopilot)} {
 		for _, secondStore := range []bool{false, true} {
 			name := id + "/same-store"
 			if secondStore {
@@ -140,7 +140,7 @@ func TestTask1292Legacy_SingleExchangeWinnerAdoption(t *testing.T) {
 }
 
 func TestTask1292Legacy_EmptyRefreshUnchangedSemantics(t *testing.T) {
-	for _, id := range []string{hyperp.Name, string(catwalk.InferenceProviderCopilot)} {
+	for _, id := range []string{catalog.HyperName, string(catwalk.InferenceProviderCopilot)} {
 		t.Run(id, func(t *testing.T) {
 			f := task1292Fixture(t, id)
 			b := *f.next
@@ -160,7 +160,7 @@ func TestTask1292Legacy_EmptyRefreshUnchangedSemantics(t *testing.T) {
 }
 
 func TestTask1292Legacy_ErrorAndCancelRelease(t *testing.T) {
-	for _, id := range []string{hyperp.Name, string(catwalk.InferenceProviderCopilot)} {
+	for _, id := range []string{catalog.HyperName, string(catwalk.InferenceProviderCopilot)} {
 		for _, canceled := range []bool{false, true} {
 			name := id + "/error"
 			if canceled {
@@ -201,7 +201,7 @@ func TestTask1292Legacy_ErrorAndCancelRelease(t *testing.T) {
 }
 
 func TestTask1292Legacy_HeldSidecarBoundedWait(t *testing.T) {
-	for _, id := range []string{hyperp.Name, string(catwalk.InferenceProviderCopilot)} {
+	for _, id := range []string{catalog.HyperName, string(catwalk.InferenceProviderCopilot)} {
 		t.Run(id, func(t *testing.T) {
 			f := task1292Fixture(t, id)
 			path := oauthRefreshLockPath(f.path, id)
