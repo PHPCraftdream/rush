@@ -16,7 +16,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filepathext"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
-	"mvdan.cc/sh/v3/expand"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shexec"
 	"mvdan.cc/sh/v3/interp"
 	"mvdan.cc/sh/v3/syntax"
 )
@@ -207,15 +207,15 @@ func dispatchShebang(ctx context.Context, scriptPath string, probe []byte, args 
 	cmd := platform.Command(commandCtx, interpreter, cmdArgs...)
 	hc := interp.HandlerCtx(ctx)
 	cmd.Dir = hc.Dir
-	cmd.Env = execEnvList(hc.Env)
+	cmd.Env = shexec.ExecEnvList(hc.Env)
 	cmd.Stdin = hc.Stdin
 	cmd.Stdout = hc.Stdout
 	cmd.Stderr = hc.Stderr
-	isolateProcess(cmd)
+	shexec.IsolateProcess(cmd)
 
 	if retained {
-		err := runRetainedProcess(ctx, cmd, stops, func() error { return killRetainedProcess(cmd.Process.Pid) }, nil)
-		return retainedCommandResult(ctx, hc.Stderr, err)
+		err := runRetainedProcess(ctx, cmd, stops, func() error { return shexec.KillRetainedProcess(cmd.Process.Pid) }, nil)
+		return shexec.RetainedCommandResult(ctx, hc.Stderr, err)
 	}
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
@@ -622,18 +622,4 @@ func runShellSource(ctx context.Context, path string, args []string, blockFuncs 
 		return fmt.Errorf("could not build runner for %s: %w", path, err)
 	}
 	return runner.Run(ctx, file)
-}
-
-// execEnvList converts an expand.Environ to the []string form that
-// os/exec.Cmd.Env expects. Only exported string variables are included,
-// matching what a real shell would pass to a child process.
-func execEnvList(env expand.Environ) []string {
-	var out []string
-	env.Each(func(name string, vr expand.Variable) bool {
-		if vr.Exported && vr.Kind == expand.String {
-			out = append(out, name+"="+vr.Str)
-		}
-		return true
-	})
-	return out
 }

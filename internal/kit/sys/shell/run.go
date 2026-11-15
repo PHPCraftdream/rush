@@ -10,6 +10,8 @@ import (
 	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/interp"
 	"mvdan.cc/sh/v3/syntax"
+
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shexec"
 )
 
 // RunOptions configures a single stateless shell execution via [Run].
@@ -121,7 +123,7 @@ func newRunner(cwd string, env []string, stdin io.Reader, stdout, stderr io.Writ
 // detaches each child into its own session and kills the whole child
 // process group on cancellation; on Windows it is the unmodified default.
 func execHandlerOption(blockFuncs []BlockFunc, registerProcess func(int)) interp.RunnerOption {
-	base := processGroupExecHandler(defaultKillTimeout, registerProcess)
+	base := shexec.ProcessGroupExecHandler(shexec.DefaultKillTimeout, registerProcess, retainedLaunchRoute)
 	handler := base
 	for _, mw := range slices.Backward(standardHandlers(blockFuncs)) {
 		handler = mw(handler)
@@ -201,8 +203,8 @@ func standardHandlers(blockFuncs []BlockFunc) []execMiddleware {
 		scriptDispatchHandler(blockFuncs),
 		blockHandler(blockFuncs),
 	}
-	if useGoCoreUtils && coreUtilsExecHandler != nil {
-		handlers = append(handlers, xargsArgsHandler(), coreUtilsExecHandler)
+	if shexec.UseGoCoreUtils && shexec.CoreUtilsExecHandler != nil {
+		handlers = append(handlers, xargsArgsHandler(), shexec.CoreUtilsExecHandler)
 	}
 	if testInnermostHandler != nil {
 		handlers = append(handlers, func(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {

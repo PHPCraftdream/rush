@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shexec"
 	"github.com/stretchr/testify/require"
 )
 
@@ -68,7 +69,7 @@ func TestRetainedPhysicalStopRealProcess(t *testing.T) {
 	require.NoError(t, err)
 	cmd := platform.Command(context.Background(), self, "-test.run=^TestRetainedPhysicalStopRealProcess$")
 	cmd.Env = append(os.Environ(), "RUSH_RETAINED_STOP_HELPER=1")
-	isolateProcess(cmd)
+	shexec.IsolateProcess(cmd)
 	stdin, err := cmd.StdinPipe()
 	require.NoError(t, err)
 	defer stdin.Close()

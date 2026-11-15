@@ -107,3 +107,15 @@ func waitRetainedRegistered(ctx context.Context, cmd *exec.Cmd, s *retainedStops
 	s.mu.Unlock()
 	return err
 }
+
+// retainedLaunchRoute adapts the retained launch path to shexec's
+// ProcessGroupExecHandler hook: the retained stop types stay in this
+// package, so the moved exec handlers call back through this route
+// instead of referencing them directly.
+func retainedLaunchRoute(ctx context.Context, cmd *exec.Cmd, kill func() error, register func(int)) (bool, error) {
+	stops, ok := ctx.Value(retainedStopKey{}).(*retainedStops)
+	if !ok {
+		return false, nil
+	}
+	return true, runRetainedProcess(ctx, cmd, stops, kill, register)
+}
