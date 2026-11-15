@@ -365,7 +365,7 @@ jobbatch ← sessionbatch, ядро(batch_commit), [внешние]
 |---|---|---|---|---|
 | MV1 | 34 файла + тесты ядра → `internal/session/service/`; перепись импортов 12 внешних пакетов (`shell`/`hooks` исключены) + конфиги CI | SM1-4 | одна, первой | оракул 34; контрольный grep: в service/*.go нет импортов сателлитов; `internal/session` = 7 элементов |
 | MV2 | lock×8 (+В7, вклейки) → proc/sessionlock; childgroup/starttime×4 (+В7) → proc/sessioncgroup | MV1 | ∥MV3-MV5 | оракул; пары `_unix/_windows` вместе; ≤7 |
-| MV3 | batch/sessionbatch 26 + sessionbatchread 5 + finstore/finfacts/finholds/findebt/finterm 19 + тесты | MV1 | ∥ | оракул; границы S2; #70-окно |
+| MV3 | batch/sessionbatch 26 + sessionbatchread 5 + finstore/finfacts/finholds/findebt/finterm 19 + тесты | MV1 | ∥ | оракул; границы S2; #132-окно |
 | MV4 | run: 12 файлов → sessionrun/sessiondrain(врем.)/sessiontest | MV1, SM3 | ∥ | оракул; серийно run-queue |
 | MV5 | state: 17 файлов → 5 пакетов | MV1 | ∥ | оракул; grep-границы |
 
@@ -374,18 +374,18 @@ jobbatch ← sessionbatch, ядро(batch_commit), [внешние]
 | Полоса | Скоуп (файлы) | Предпосылки | Приёмка (оракул §4.4 + тесты оркестратора) |
 |---|---|---|---|
 | EX1 sesstypes | блоки типов из session.go/workspace/runqueue/credential/execution/role_contract + types_notice + types_batch; alias-блок в ядре | MV1 | сборка/vet; grep внешних `session\.X` — множество имён не изменилось; серийно: session_row_fields, role_contract, типовые |
-| EX4 sessguard+finqueue | 14 файлов guard/finqueue (7+7); `finalizationScoped`→context.go; `BatchCommitIdentity`→admission.go; `Authority.service`→`db`; `hasFinalizationScope`→Guard; делегаты ядра | EX1 | побайтовый diff тел; серийно: finalization_* (queue/authority/context/ingress/lease/tx/mutation/ancestors), batch_commit_admission/authority, p613; **#70-окно** |
+| EX4 sessguard+finqueue | 14 файлов guard/finqueue (7+7); `finalizationScoped`→context.go; `BatchCommitIdentity`→admission.go; `Authority.service`→`db`; `hasFinalizationScope`→Guard; делегаты ядра | EX1 | побайтовый diff тел; серийно: finalization_* (queue/authority/context/ingress/lease/tx/mutation/ancestors), batch_commit_admission/authority, p613; **#132-окно** |
 | EX2 sessrows | update/read/lifecycle/cost/purge/workspace → 5 файлов + делегаты | EX1, EX4 | оракул; серийно: session_update/read/lifecycle/cost/purge, p782 |
 | EX3 sessqueue+sessagent | runqueue-методы + credential/execution store + 4 agent-файла + делегаты | EX1, EX4 | оракул; серийно: session_runqueue*, credential/execution, agent_depth, role stores |
 | EX5 sessmutate | inject + orphan_outbox + делегаты | EX1, EX4 | оракул; серийно: session_inject*, orphan/outbox-тесты (p556), p0_3_orphan_outbox_drain |
-| EX6 batch-компоненты | reaction 1; deliver 13→5; recover 5; cli/api views +2; commit/doc прибытие из ядра; вклейки stop+control, outbox_doc→pull.go; делегаты BatchStore | EX1, EX4 (identity уже в sessguard) | побайтовый diff тел commit/fence; серийно: batch_commit_* (контention/close/authority/timeout/order), batch_control_races, batch_terminal_delivery, batch_sqllog, pda/pdc SQL-эквивалентность; **#70-окно** |
+| EX6 batch-компоненты | reaction 1; deliver 13→5; recover 5; cli/api views +2; commit/doc прибытие из ядра; вклейки stop+control, outbox_doc→pull.go; делегаты BatchStore | EX1, EX4 (identity уже в sessguard) | побайтовый diff тел commit/fence; серийно: batch_commit_* (контention/close/authority/timeout/order), batch_control_races, batch_terminal_delivery, batch_sqllog, pda/pdc SQL-эквивалентность; **#132-окно** |
 | EX7 run-компоненты | admission→runadmission; entry_exec→runexec; classify/drain_ledger/row_context/orphan→rundrain; sessiondrain растворяется; делегаты не нужны (DrainSessionNow остаётся) | MV4, SM3, EX1 | побайтовый diff тел; серийно: p587/p607/p613 (admission), p1_4/p616 (exec), p0_*/p1_*/p348/p350/p421/p5xx/p6xx/pump_* (drain), itest run_queue_round2 |
 
 Граф: `SM1∥SM2∥SM3∥SM4` → `MV1` → `(MV2∥MV3∥MV4∥MV5)` → `EX1` → `EX4` → `(EX2∥EX3∥EX5∥EX6∥EX7)` — ровно 5 агентов → `(MV7∥MV8)` → `FIN`. EX-полосы создают детей `components/` по одному — каталог никогда не превышает 7.
 
-### Окна конфликта с #70 (пересборка финализации)
+### Окна конфликта с #132 (пересборка финализации)
 
-Не вести одновременно с #70: **SM1** (holds-файлы), **SM2** (guard-вызовы), **MV3** (fin-файлы), **EX4** (guard/finqueue/identity), **EX6** (commit-протокол). Рекомендация: SM1-SM4 и EX1 до старта #70; EX4/EX6/MV3 — до старта или после завершения #70; MV1/MV2/MV4/MV5/EX2/EX3/EX5/EX7 с #70 по файлам не пересекаются, но правят импорты агента — в одну волну не ставить.
+Не вести одновременно с #132: **SM1** (holds-файлы), **SM2** (guard-вызовы), **MV3** (fin-файлы), **EX4** (guard/finqueue/identity), **EX6** (commit-протокол). Рекомендация: SM1-SM4 и EX1 до старта #132; EX4/EX6/MV3 — до старта или после завершения #132; MV1/MV2/MV4/MV5/EX2/EX3/EX5/EX7 с #132 по файлам не пересекаются, но правят импорты агента — в одну волну не ставить.
 
 ### Обязательные сплиты (решение Г1 «без постоянных исключений»)
 
