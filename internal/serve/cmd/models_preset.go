@@ -21,6 +21,3 @@ var modelsPresetCmd = &cobra.Command{
 	},
 }
 
-func init() {
-	modelsCmd.AddCommand(modelsPresetCmd)
-}

@@ -7,6 +7,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/serve/client/apiclient"
 	"github.com/spf13/cobra"
@@ -55,13 +57,13 @@ func newAPIClient(cmd *cobra.Command) (*apiclient.Client, error) {
 		fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: "+warning)
 	}
 	if err != nil {
-		return nil, &exitCodeError{code: apiclient.ExitCodeFor(err), err: err}
+		return nil, cliout.NewExitCodeError(apiclient.ExitCodeFor(err), err)
 	}
 	return client, nil
 }
 
 func apiConfigurationError(err error) error {
-	return &exitCodeError{code: 2, err: err}
+	return cliout.NewExitCodeError(2, err)
 }
 
 // apiCommandContext bounds a complete API operation, not merely its HTTP
@@ -89,7 +91,7 @@ func apiTimeout(cmd *cobra.Command) (time.Duration, error) {
 		if err == nil {
 			err = errors.New("--timeout must not be negative")
 		}
-		return 0, &exitCodeError{code: 2, err: err}
+		return 0, cliout.NewExitCodeError(2, err)
 	}
 	return duration, nil
 }

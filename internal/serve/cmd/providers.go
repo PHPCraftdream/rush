@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"sync"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -902,7 +903,44 @@ var providersGrepCmd = &cobra.Command{
 	},
 }
 
-func init() {
+
+// providerListItem is the JSON shape of providers list / show. Kept
+// separate from config.ProviderConfig so api_key is never serialised as
+// plaintext by accident.
+type providerListItem struct {
+	ID            string `json:"id"`
+	Name          string `json:"name,omitempty"`
+	Type          string `json:"type,omitempty"`
+	APIKey        string `json:"api_key"` // masked
+	APIKeyPresent bool   `json:"api_key_present"`
+	BaseURL       string `json:"base_url,omitempty"`
+	Disabled      bool   `json:"disabled"`
+	Models        int    `json:"models"`
+	HasOAuth      bool   `json:"oauth"`
+}
+
+func makeProviderListItem(id string, p config.ProviderConfig) providerListItem {
+	return providerListItem{
+		ID:            id,
+		Name:          p.Name,
+		Type:          string(p.Type),
+		APIKey:        maskKey(p.APIKey),
+		APIKeyPresent: p.APIKey != "",
+		BaseURL:       p.BaseURL,
+		Disabled:      p.Disable,
+		Models:        len(p.Models),
+		HasOAuth:      p.OAuthToken != nil,
+	}
+}
+
+// NewProvidersCmd returns the rush providersCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newProvidersCmdOnce sync.Once
+
+func NewProvidersCmd() *cobra.Command {
+	newProvidersCmdOnce.Do(func() {
 	providersListCmd.Flags().Bool("json", false, "Emit one JSON object per line instead of a table")
 	providersListCmd.Flags().String("grep", "", "Filter providers by id, name, or type (case-insensitive substring match)")
 	providersShowCmd.Flags().Bool("json", false, "Emit a JSON object instead of human-readable lines")
@@ -940,34 +978,43 @@ func init() {
 	providersFetchModelsCmd.Flags().Bool("diff", false, "Also show added/removed vs the locally-cached model list")
 
 	providersCmd.AddCommand(providersListCmd, providersShowCmd, providersSetCmd, providersAddCmd, providersEnableCmd, providersDisableCmd, providersUnsetCmd, providersUpdateCmd, providersGrepCmd, providersFetchModelsCmd)
-	rootCmd.AddCommand(providersCmd)
-}
 
-// providerListItem is the JSON shape of providers list / show. Kept
-// separate from config.ProviderConfig so api_key is never serialised as
-// plaintext by accident.
-type providerListItem struct {
-	ID            string `json:"id"`
-	Name          string `json:"name,omitempty"`
-	Type          string `json:"type,omitempty"`
-	APIKey        string `json:"api_key"` // masked
-	APIKeyPresent bool   `json:"api_key_present"`
-	BaseURL       string `json:"base_url,omitempty"`
-	Disabled      bool   `json:"disabled"`
-	Models        int    `json:"models"`
-	HasOAuth      bool   `json:"oauth"`
-}
+	providersPatchCmd.Flags().String("json", "", "Literal JSON object to merge into providers.<id>")
+	providersPatchCmd.Flags().String("json-file", "", "Path to a file containing the JSON object")
+	providersPatchCmd.Flags().Bool("global", false, "Target the global config (default)")
+	providersPatchCmd.Flags().Bool("local", false, "Target the workspace config")
+	providersPatchCmd.MarkFlagsMutuallyExclusive("global", "local")
+	providersPatchCmd.MarkFlagsMutuallyExclusive("json", "json-file")
+	providersCmd.AddCommand(providersPatchCmd)
 
-func makeProviderListItem(id string, p config.ProviderConfig) providerListItem {
-	return providerListItem{
-		ID:            id,
-		Name:          p.Name,
-		Type:          string(p.Type),
-		APIKey:        maskKey(p.APIKey),
-		APIKeyPresent: p.APIKey != "",
-		BaseURL:       p.BaseURL,
-		Disabled:      p.Disable,
-		Models:        len(p.Models),
-		HasOAuth:      p.OAuthToken != nil,
+	// Package-level vars are initialized before any init() runs, so
+	// providersCmd exists by the time this registers the subcommands.
+	peakHoursListCmd.Flags().Bool("json", false, "Emit one NDJSON object per provider instead of a table")
+	peakHoursShowCmd.Flags().Bool("json", false, "Emit a JSON object instead of human-readable lines")
+
+	for _, c := range []*cobra.Command{
+		peakHoursListCmd, peakHoursShowCmd, peakHoursSetCmd, peakHoursAddCmd,
+		peakHoursRmCmd, peakHoursTzCmd, peakHoursClearCmd, peakHoursPauseCmd,
+		peakHoursResumeCmd,
+	} {
+		c.Flags().Bool("global", false, "Target the global config (~/.local/share/rush/rush.json). Default when neither --global nor --local is given.")
+		c.Flags().Bool("local", false, "Target the workspace config (./.rush/rush.json).")
+		c.MarkFlagsMutuallyExclusive("global", "local")
 	}
+
+	peakHoursSetCmd.Flags().String("tz", "", "Timezone for the windows: IANA name, UTC+08:00 offset, utc, or local (stores an omitted timezone)")
+	peakHoursSetCmd.Flags().String("message", "", "Refusal text shown while the provider is blocked. Empty string clears it.")
+
+	providersPeakHoursCmd.AddCommand(
+		peakHoursListCmd, peakHoursShowCmd, peakHoursSetCmd, peakHoursAddCmd,
+		peakHoursRmCmd, peakHoursTzCmd, peakHoursClearCmd, peakHoursPauseCmd,
+		peakHoursResumeCmd,
+	)
+	providersCmd.AddCommand(providersPeakHoursCmd)
+
+	providersTestCmd.Flags().Bool("json", false, "Emit a JSON object instead of human-readable lines")
+	providersTestCmd.Flags().Duration("timeout", 0, "HTTP timeout (default 1m)")
+	providersCmd.AddCommand(providersTestCmd)
+	})
+	return providersCmd
 }

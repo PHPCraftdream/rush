@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+
 	"github.com/PHPCraftdream/rush/internal/serve/client/apiclient"
 	"github.com/spf13/cobra"
 )
@@ -121,7 +123,7 @@ func apiBatchWaitAndReport(cmd *cobra.Command, ctx context.Context, client *apic
 		var paused *apiclient.BatchPausedError
 		if errors.As(err, &paused) {
 			apiPrintBatchQuestionHint(cmd, root, paused.Batch)
-			return &exitCodeError{code: 6, err: err}
+			return cliout.NewExitCodeError(6, err)
 		}
 		var failed *apiclient.BatchFailedError
 		if errors.As(err, &failed) {
@@ -130,7 +132,7 @@ func apiBatchWaitAndReport(cmd *cobra.Command, ctx context.Context, client *apic
 			} else {
 				apiPrintBatchFailure(cmd, failed.Batch)
 			}
-			return &exitCodeError{code: 1, err: err}
+			return cliout.NewExitCodeError(1, err)
 		}
 		return apiClientError(err)
 	}
@@ -182,7 +184,7 @@ func apiBatchTaskNodes(batch *apiclient.Batch, only string) []apiclient.BatchNod
 func apiPrintBatchOutputs(cmd *cobra.Command, batch *apiclient.Batch, only string) error {
 	tasks := apiBatchTaskNodes(batch, only)
 	if only != "" && len(tasks) == 0 {
-		return &exitCodeError{code: 4, err: fmt.Errorf("node %s not found in batch %s", only, batch.RootID)}
+		return cliout.NewExitCodeError(4, fmt.Errorf("node %s not found in batch %s", only, batch.RootID))
 	}
 	for _, node := range tasks {
 		if node.OutputExpired && node.Output == "" {

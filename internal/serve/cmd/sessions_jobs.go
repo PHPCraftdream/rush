@@ -41,10 +41,6 @@ rush sessions jobs pr-42 --json
 	RunE: sessionsJobsCmdRun,
 }
 
-func init() {
-	sessionsJobsCmd.Flags().Bool("json", false, "Emit one JSON object per job")
-	sessionsCmd.AddCommand(sessionsJobsCmd)
-}
 
 // jobsJSONItem is the --json shape: one batch root plus its derived fields
 // (held/termination verdict, debt, task counts, the awaiting-answer flag).

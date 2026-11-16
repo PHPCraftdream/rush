@@ -6,6 +6,7 @@
 package cmd
 
 import (
+	"sync"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -50,10 +51,6 @@ a new run).`,
 	SilenceUsage: true,
 }
 
-func init() {
-	rootCmd.AddCommand(resultCmd)
-	addResultFlags(resultCmd)
-}
 
 // addResultFlags registers result's flags. Kept as a named helper so
 // tests can build a fresh command with the same flag set.
@@ -189,4 +186,17 @@ func writeResultText(w io.Writer, env *app.RunResult) {
 		return
 	}
 	w.Write(buf.Bytes())
+}
+
+// NewResultCmd returns the rush resultCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newResultCmdOnce sync.Once
+
+func NewResultCmd() *cobra.Command {
+	newResultCmdOnce.Do(func() {
+	addResultFlags(resultCmd)
+	})
+	return resultCmd
 }

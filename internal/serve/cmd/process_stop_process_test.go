@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	clijournal "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/journal"
+
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 )
 
@@ -65,7 +67,7 @@ func TestProcessStopHelper(t *testing.T) {
 		_ = leaf.Process.Kill()
 		t.Fatal(err)
 	}
-	commandJournal.mu.Lock()
+	clijournal.LockCommandJournalForTests()
 	fmt.Printf("ready %d\n", leaf.Process.Pid)
 	if mode == "console" {
 		if _, err := bufio.NewReader(os.Stdin).ReadString('\n'); err != nil {

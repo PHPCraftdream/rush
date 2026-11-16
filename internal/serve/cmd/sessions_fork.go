@@ -66,12 +66,6 @@ rush sessions fork my-session-id --session new-id --title "My Fork"
 	},
 }
 
-func init() {
-	sessionsForkCmd.Flags().Int("at", 0, "Copy only the first N messages (1-indexed, default: all)")
-	sessionsForkCmd.Flags().String("session", "", "ID for the new session (default: a generated UUID)")
-	sessionsForkCmd.Flags().String("title", "", "Title for the new session")
-	sessionsForkCmd.Flags().Bool("child", false, "Set source as parent_session_id (creates a child session)")
-}
 
 // forkOptions carries the CLI-specific fork knobs (--at / --session / --title
 // / --child) that session.Service.ForkSession's zero-value defaults do not

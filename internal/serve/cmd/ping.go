@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"sync"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -751,7 +752,13 @@ func pingUserPrompt(custom string) string {
 	return pingDefaultPrompt
 }
 
-func init() {
+// NewPingCmd returns the rush ping command (and registers ping/ping-fast
+// flags exactly once; former package init body, lane K2 of the sprint0 cmd
+// split removed package init registration).
+var newPingCmdOnce sync.Once
+
+func NewPingCmd() *cobra.Command {
+	newPingCmdOnce.Do(func() {
 	pingCmd.Flags().Bool("json", false, "Emit JSON output instead of human-readable text")
 	pingCmd.Flags().Duration("timeout", time.Minute, "Request timeout")
 	pingCmd.Flags().String("prompt", "", "Custom user prompt (default: an instruction to reply OK)")
@@ -762,6 +769,12 @@ func init() {
 	pingFastCmd.Flags().Duration("timeout", time.Minute, "Request timeout")
 	pingFastCmd.Flags().String("prompt", "", "Custom user prompt (default: an instruction to reply OK)")
 
-	rootCmd.AddCommand(pingCmd)
-	rootCmd.AddCommand(pingFastCmd)
+	})
+	return pingCmd
+}
+
+// NewPingFastCmd returns the rush ping-fast command.
+func NewPingFastCmd() *cobra.Command {
+	NewPingCmd()
+	return pingFastCmd
 }

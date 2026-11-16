@@ -2,6 +2,7 @@
 package cmd
 
 import (
+	"sync"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -131,8 +132,16 @@ func writeNativeMarkdownCommand(dir, name, desc, body string) error {
 	return writeSentinelledFile(filepath.Join(dir, name), claudeSlashCommandSentinel, content)
 }
 
-func init() {
+// NewOpencodeInitCmd returns the rush opencodeInitCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newOpencodeInitCmdOnce sync.Once
+
+func NewOpencodeInitCmd() *cobra.Command {
+	newOpencodeInitCmdOnce.Do(func() {
 	opencodeInitCmd.Flags().Bool("global", false, "Install globally (default).")
 	opencodeInitCmd.Flags().Bool("local", false, "Install into the current project's .opencode/commands/.")
-	rootCmd.AddCommand(opencodeInitCmd)
+	})
+	return opencodeInitCmd
 }

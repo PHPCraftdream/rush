@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"github.com/charmbracelet/x/term"
+	"sync"
 	"context"
 	"fmt"
 	"io"
@@ -10,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
 
 	"charm.land/log/v2"
 	"github.com/PHPCraftdream/rush/internal/app"
@@ -237,9 +241,9 @@ var runCmd = &cobra.Command{
 
 		// A closed stdout pipe fails the exit flush instead of killing the run
 		// (hook and Shutdown still run, R8C-7).
-		defer keepBrokenPipeAsError()()
+		defer cliproc.KeepBrokenPipeAsError()()
 
-		ctx, cancel := commandSignalContext(context.Background(), cancelSignals...)
+		ctx, cancel := cliproc.CommandSignalContext(context.Background(), cliproc.CancelSignals()...)
 		defer cancel()
 
 		// Both run deadlines carry their owned cause through graceful cleanup.
@@ -391,7 +395,14 @@ var runCmd = &cobra.Command{
 	},
 }
 
-func init() {
+// NewRunCmd returns the rush runCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newRunCmdOnce sync.Once
+
+func NewRunCmd() *cobra.Command {
+	newRunCmdOnce.Do(func() {
 	// A failed/incomplete run returns an error to drive a non-zero exit code
 	// (see app.RunNonInteractive / runIncompleteError). That is a runtime
 	// outcome, not a usage mistake — don't dump the (very long) help text on
@@ -455,4 +466,258 @@ func init() {
 	runCmd.MarkFlagsMutuallyExclusive("session", "continue")
 	runCmd.MarkFlagsMutuallyExclusive("system-prompt", "system-prompt-file")
 	runCmd.MarkFlagsMutuallyExclusive("stream", "json")
+	})
+	return runCmd
+}
+
+// stdinReadGraceDefault bounds how long MaybePrependStdin waits for a named
+// pipe to produce data before giving up on it. A `< file` redirect (regular
+// file) is always fully available immediately and is read directly with
+// no bound. A `|` pipe, though, can be connected to a writer that never
+// sends anything and never closes — observed in practice when a
+// background shell job's stdin fd is left open but unused (e.g. a
+// launcher that runs `rush run "$(...)"` without an explicit `< file`
+// redirect, so the process's stdin resolves to a dangling pipe instead of
+// a closed/empty one). io.ReadAll would then block forever: this happens
+// BEFORE --timeout's context deadline is even wired up, and without an
+// explicit --timeout the hard-kill backstop defaults to 6h — so rush
+// would sit doing nothing, invisible to `sessions list` (no session row
+// exists yet), for hours. rush must never hang like that regardless of
+// how it was invoked.
+//
+// It is a const (not a mutable package var) so tests inject a shorter grace
+// via the parameterized maybePrependStdin below instead of mutating shared
+// state — a mutable package var here would be the same
+// test-isolation footgun already eliminated elsewhere in this session
+// (internal/agent/agent.go's sessionPreambleMaxDuration /
+// titleGenerationMaxDuration): fine only as long as no test using it ever
+// gains t.Parallel(), and silently racy the moment one does.
+const stdinReadGraceDefault = 3 * time.Second
+
+// stdinChunkResult is one Read() result from the pipe-reading goroutine in
+// maybePrependStdin: either some data, an error (io.EOF or otherwise), or
+// both (a legal final io.Reader result).
+type stdinChunkResult struct {
+	data []byte
+	err  error
+}
+
+// drainPendingChunk does one non-blocking receive on chunkCh, returning
+// (chunk, true) if something was ready, or (zero value, false) if the
+// channel was genuinely empty at the moment of the check. Used by
+// maybePrependStdin's timeout branch to catch a chunk that raced in at
+// almost the exact instant the idle timer fired, so that boundary case
+// doesn't silently drop real data — see the "Boundary race" comment at its
+// call site for the full rationale.
+func drainPendingChunk(chunkCh <-chan stdinChunkResult) (stdinChunkResult, bool) {
+	select {
+	case chunk := <-chunkCh:
+		return chunk, true
+	default:
+		return stdinChunkResult{}, false
+	}
+}
+
+// MaybePrependStdin is the public entry point used by run.go. It always
+// applies stdinReadGraceDefault as the idle-timeout bound for `|` pipes; see
+// maybePrependStdin for the actual logic and stdinReadGraceDefault's doc
+// comment for why the grace duration is threaded through as a parameter
+// rather than read from a package var.
+func MaybePrependStdin(prompt string) (string, error) {
+	return maybePrependStdin(prompt, stdinReadGraceDefault)
+}
+
+// maybePrependStdin implements MaybePrependStdin with the idle-timeout grace
+// duration passed explicitly, so tests can use a short grace without
+// mutating shared package state.
+func maybePrependStdin(prompt string, grace time.Duration) (string, error) {
+	if term.IsTerminal(os.Stdin.Fd()) {
+		return prompt, nil
+	}
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return prompt, err
+	}
+	switch {
+	case fi.Mode().IsRegular():
+		// `< file`: fully available immediately, no risk of blocking.
+		bts, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return prompt, err
+		}
+		return string(bts) + "\n\n" + prompt, nil
+	case fi.Mode()&os.ModeNamedPipe != 0:
+		// `|` (or an inherited pipe fd from a background launcher): read in
+		// chunks and race EACH chunk against an IDLE timeout of grace,
+		// resetting the clock every time a new chunk arrives. This bounds
+		// the total time maybePrependStdin can block to "grace since the
+		// last byte seen", no matter how long the producer has already been
+		// streaming — as opposed to a bound on only the first byte, which
+		// left a producer that writes once and then goes silent forever (no
+		// EOF, no more data, no close) able to hang this call indefinitely.
+		// The reader goroutine is intentionally leaked if the producer truly
+		// never sends anything and never closes — Go can't cancel a blocked
+		// pipe Read — but that's a single goroutine for the life of the
+		// process, not a hang of maybePrependStdin/rush run itself.
+		//
+		// This replaces two earlier, each individually broken, versions of
+		// this fix:
+		//  1. Racing io.ReadAll of the WHOLE stream against grace: a
+		//     producer that wrote data but hadn't closed the pipe within the
+		//     grace window caused the timeout branch to fire and silently
+		//     discard everything already buffered, while logging a
+		//     misleading "produced no data".
+		//  2. Bounding only the FIRST read, then reading to EOF with no
+		//     further timeout: a producer that sent one chunk and then fell
+		//     silent forever (without closing) hung forever, since nothing
+		//     bounded the *rest* of the read.
+		//
+		// DELIBERATE TRADEOFF, not an accidental gap: when the idle timeout
+		// fires (or a non-EOF read error occurs) after SOME data was already
+		// read, this function proceeds with that partial data rather than
+		// treating it as an error. The alternative — discarding partial data
+		// or failing the call — was tried first (see broken version 1 above)
+		// and is worse: it throws away real input the producer did manage to
+		// send. But a truncated stdin can silently look like complete stdin
+		// to whatever consumes the returned prompt (typically fed straight
+		// to a model), so any partial-data return path below appends an
+		// explicit, model-readable marker noting the input may be
+		// incomplete — see the "may be truncated" note in the timeout and
+		// non-EOF-error branches. The clean-EOF path (chunk.err == io.EOF)
+		// never gets this marker: that data is complete, not a truncation.
+		//
+		// Capture os.Stdin into a local BEFORE spawning the goroutine: the
+		// goroutine reads it lazily (whenever the scheduler runs it), so
+		// reading the live package-level os.Stdin from inside the goroutine
+		// would race any later reassignment of that variable — caught by
+		// -race via this exact test's own withStdin(t, ...) helper
+		// reassigning os.Stdin in t.Cleanup while a prior test's leaked
+		// goroutine was still reading it.
+		stdin := os.Stdin
+		chunkCh := make(chan stdinChunkResult, 1)
+		go func() {
+			buf := make([]byte, 32*1024)
+			for {
+				n, err := stdin.Read(buf)
+				if n == 0 && err == nil {
+					// Spurious wakeup per the io.Reader contract: not EOF, not
+					// data, not an idle producer — just retry.
+					continue
+				}
+				var data []byte
+				if n > 0 {
+					data = make([]byte, n)
+					copy(data, buf[:n])
+				}
+				chunkCh <- stdinChunkResult{data: data, err: err}
+				if err != nil {
+					// EOF, or a genuine non-EOF error: either way the goroutine
+					// is done — the last chunk (if any) already went out above.
+					return
+				}
+			}
+		}()
+		var sb strings.Builder
+		// handleChunk processes one received stdinChunkResult against the
+		// in-progress sb buffer. It returns (result, done):
+		//  - done == true means the caller should return result immediately.
+		//  - done == false means "more to come, keep looping" (chunk.err ==
+		//    nil); result is meaningless in that case.
+		// Shared by both the main chunk<-chunkCh case and the boundary-race
+		// drain in the timeout branch below, so the two call sites can never
+		// drift out of sync on how an EOF/error/more-data chunk is handled.
+		handleChunk := func(chunk stdinChunkResult) (result string, done bool) {
+			sb.Write(chunk.data)
+			switch chunk.err {
+			case nil:
+				// More to come — caller should keep looping, which
+				// implicitly resets the idle timer.
+				return "", false
+			case io.EOF:
+				if sb.Len() == 0 {
+					return prompt, true
+				}
+				// Clean EOF: this is complete data, not a truncation — no
+				// truncation marker.
+				return sb.String() + "\n\n" + prompt, true
+			default:
+				// n>0 with a non-EOF error is a legal io.Reader result:
+				// don't lose the bytes already collected, and don't fail
+				// the whole call over it — log and return what we have,
+				// same as a clean EOF, but marked as possibly-truncated
+				// since a read error is not proof the stream was complete.
+				slog.Warn(
+					"stdin pipe read failed after receiving some data — proceeding with what was read",
+					"error", chunk.err,
+					"bytes", sb.Len(),
+				)
+				if sb.Len() == 0 {
+					return prompt, true
+				}
+				readErrReason := fmt.Sprintf("a read error occurred (%v)", chunk.err)
+				return sb.String() + stdinTruncationNote(readErrReason, sb.Len()) + "\n\n" + prompt, true
+			}
+		}
+		for {
+			select {
+			case chunk := <-chunkCh:
+				if result, done := handleChunk(chunk); done {
+					return result, nil
+				}
+				continue
+			case <-time.After(grace):
+				// Boundary race: a chunk may have become ready on chunkCh at
+				// almost the exact same instant the timer did — select picks
+				// pseudo-randomly between simultaneously-ready cases, so
+				// without this check a chunk that arrived right at the
+				// deadline could be silently dropped even though the
+				// producer was not actually idle. One non-blocking check is
+				// enough: chunkCh is capacity-1 buffered and only one send
+				// happens per loop iteration.
+				if chunk, ok := drainPendingChunk(chunkCh); ok {
+					if result, done := handleChunk(chunk); done {
+						return result, nil
+					}
+					continue // got real data just in time — not idle, keep looping
+				}
+				// Genuinely idle — no chunk raced in.
+				if sb.Len() == 0 {
+					slog.Warn(
+						"stdin is a pipe that produced no data within the grace window — proceeding without it",
+						"grace", grace,
+					)
+					return prompt, nil
+				}
+				slog.Warn(
+					"stdin pipe went idle after receiving some data — proceeding with partial data",
+					"bytes", sb.Len(),
+					"grace", grace,
+				)
+				idleReason := fmt.Sprintf("the producer went idle for over %s", grace)
+				return sb.String() + stdinTruncationNote(idleReason, sb.Len()) + "\n\n" + prompt, nil
+			}
+		}
+	default:
+		return prompt, nil
+	}
+}
+
+// stdinTruncationNote returns a marker appended to partial stdin content
+// returned on a non-clean-EOF path (idle timeout or a non-EOF read error
+// after some data was already read). It exists so the model that receives
+// the resulting prompt — not just a human tailing stderr, which `rush run`
+// invocations typically don't have watched — can tell the stdin section may
+// be an arbitrary mid-stream cut rather than complete input, and reason
+// accordingly instead of silently trusting truncated data as whole.
+//
+// reason must describe WHY the read stopped short (e.g. "the producer went
+// idle for over 3s" or "a read error occurred (<err>)") — the two call
+// sites (idle timeout, non-EOF read error) have different, non-interchangeable
+// causes, so the caller supplies the accurate wording rather than this
+// function assuming idleness.
+func stdinTruncationNote(reason string, bytesRead int) string {
+	return fmt.Sprintf(
+		"\n\n[NOTE: stdin input may be truncated — %s after %d bytes and was not fully read]",
+		reason, bytesRead,
+	)
 }

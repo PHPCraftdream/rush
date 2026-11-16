@@ -4,6 +4,7 @@
 package cmd
 
 import (
+	"sync"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -132,8 +133,16 @@ func removeQwenFileWithEitherSentinel(commandsDir, name string) error {
 	return nil
 }
 
-func init() {
+// NewQwenDelCmd returns the rush qwenDelCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newQwenDelCmdOnce sync.Once
+
+func NewQwenDelCmd() *cobra.Command {
+	newQwenDelCmdOnce.Do(func() {
 	qwenDelCmd.Flags().Bool("global", false, "Remove from ~/.qwen/commands/. Default when neither --global nor --local is given.")
 	qwenDelCmd.Flags().Bool("local", false, "Remove from the current project's .qwen/commands/ instead of ~/.qwen/commands/.")
-	rootCmd.AddCommand(qwenDelCmd)
+	})
+	return qwenDelCmd
 }

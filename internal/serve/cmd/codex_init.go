@@ -6,6 +6,7 @@
 package cmd
 
 import (
+	"sync"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -156,8 +157,16 @@ func writeCodexSkill(skillsDir, name, content string) error {
 	return writeSentinelledSkillDir(skillsDir, name, claudeSlashCommandSentinel, content)
 }
 
-func init() {
+// NewCodexInitCmd returns the rush codexInitCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newCodexInitCmdOnce sync.Once
+
+func NewCodexInitCmd() *cobra.Command {
+	newCodexInitCmdOnce.Do(func() {
 	codexInitCmd.Flags().Bool("global", false, "Install into ~/.agents/skills/ (available in every project). Default when neither --global nor --local is given.")
 	codexInitCmd.Flags().Bool("local", false, "Install into the current project's .agents/skills/ instead of ~/.agents/skills/.")
-	rootCmd.AddCommand(codexInitCmd)
+	})
+	return codexInitCmd
 }

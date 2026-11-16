@@ -44,10 +44,3 @@ func splitModelEffort(s string) (model, effort string) {
 	return s[:at], s[at+1:]
 }
 
-func init() {
-	// `models show` flag registration still belongs here for backwards
-	// compat — the command itself lives in models_show.go (was inlined
-	// into the old models_set.go before batch 11; if absent, this is a
-	// no-op).
-	modelsCmd.AddCommand(modelsSetCmd)
-}

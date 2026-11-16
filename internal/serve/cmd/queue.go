@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"sync"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -560,7 +561,14 @@ func decodeRunEnvelope(output []byte) (queueRunEnvelope, bool) {
 	return env, true
 }
 
-func init() {
+// NewQueueCmd returns the rush queueCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newQueueCmdOnce sync.Once
+
+func NewQueueCmd() *cobra.Command {
+	newQueueCmdOnce.Do(func() {
 	queueAddCmd.Flags().String("session", "", "Session ID for the run (default: auto-generated from task ID)")
 	queueAddCmd.Flags().String("role", "", "Model role forwarded verbatim to the spawned `rush run --role <role>` (queue run): smart | fast | worker | reviewer (default: smart)")
 	queueAddCmd.Flags().Float64("max-cost", 0, "Abort if cost exceeds this value (USD)")
@@ -578,5 +586,6 @@ func init() {
 	queueClearCmd.Flags().String("status", "", "Only clear tasks with this status")
 
 	queueCmd.AddCommand(queueAddCmd, queueListCmd, queueShowCmd, queueRunCmd, queueRmCmd, queueClearCmd)
-	rootCmd.AddCommand(queueCmd)
+	})
+	return queueCmd
 }

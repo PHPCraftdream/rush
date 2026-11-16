@@ -957,29 +957,3 @@ rush providers peak-hours resume zai --local
 	},
 }
 
-func init() {
-	// Package-level vars are initialized before any init() runs, so
-	// providersCmd exists by the time this registers the subcommands.
-	peakHoursListCmd.Flags().Bool("json", false, "Emit one NDJSON object per provider instead of a table")
-	peakHoursShowCmd.Flags().Bool("json", false, "Emit a JSON object instead of human-readable lines")
-
-	for _, c := range []*cobra.Command{
-		peakHoursListCmd, peakHoursShowCmd, peakHoursSetCmd, peakHoursAddCmd,
-		peakHoursRmCmd, peakHoursTzCmd, peakHoursClearCmd, peakHoursPauseCmd,
-		peakHoursResumeCmd,
-	} {
-		c.Flags().Bool("global", false, "Target the global config (~/.local/share/rush/rush.json). Default when neither --global nor --local is given.")
-		c.Flags().Bool("local", false, "Target the workspace config (./.rush/rush.json).")
-		c.MarkFlagsMutuallyExclusive("global", "local")
-	}
-
-	peakHoursSetCmd.Flags().String("tz", "", "Timezone for the windows: IANA name, UTC+08:00 offset, utc, or local (stores an omitted timezone)")
-	peakHoursSetCmd.Flags().String("message", "", "Refusal text shown while the provider is blocked. Empty string clears it.")
-
-	providersPeakHoursCmd.AddCommand(
-		peakHoursListCmd, peakHoursShowCmd, peakHoursSetCmd, peakHoursAddCmd,
-		peakHoursRmCmd, peakHoursTzCmd, peakHoursClearCmd, peakHoursPauseCmd,
-		peakHoursResumeCmd,
-	)
-	providersCmd.AddCommand(providersPeakHoursCmd)
-}

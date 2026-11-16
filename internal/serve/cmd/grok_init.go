@@ -6,6 +6,7 @@
 package cmd
 
 import (
+	"sync"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -111,8 +112,16 @@ func installGrokSkills(skillsDir string) error {
 	return nil
 }
 
-func init() {
+// NewGrokInitCmd returns the rush grokInitCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newGrokInitCmdOnce sync.Once
+
+func NewGrokInitCmd() *cobra.Command {
+	newGrokInitCmdOnce.Do(func() {
 	grokInitCmd.Flags().Bool("global", false, "Install into ~/.grok/skills/ (available in every project). Default when neither --global nor --local is given.")
 	grokInitCmd.Flags().Bool("local", false, "Install into the current project's .grok/skills/ instead of ~/.grok/skills/.")
-	rootCmd.AddCommand(grokInitCmd)
+	})
+	return grokInitCmd
 }

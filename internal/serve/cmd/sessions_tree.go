@@ -141,7 +141,3 @@ func printTreeNode(w *os.File, s session.Session, children map[string][]session.
 	}
 }
 
-func init() {
-	sessionsTreeCmd.Flags().Int("depth", 0, "Max tree depth (0 = unlimited)")
-	sessionsTreeCmd.Flags().Bool("json", false, "Emit nested JSON instead of ASCII tree")
-}

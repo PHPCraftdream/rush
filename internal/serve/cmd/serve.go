@@ -13,6 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
+
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/serve/server"
@@ -21,7 +24,7 @@ import (
 
 var serveSignals = func() (<-chan os.Signal, func()) {
 	ch := make(chan os.Signal, 1)
-	if processStopInstalled.Load() {
+	if cliproc.ProcessStopInstalled() {
 		return ch, func() {}
 	}
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
@@ -55,19 +58,6 @@ func serveAppOptions() []app.Option {
 	return []app.Option{app.RestrictMCPToCLI()}
 }
 
-func init() {
-	serveCmd.Flags().String("listen", "", "Override the first configured listener address")
-	serveCmd.Flags().String("tls-cert", "", "PEM server certificate for the first listener")
-	serveCmd.Flags().String("tls-key", "", "PEM server private key for the first listener")
-	serveCmd.Flags().String("client-ca", "", "PEM client CA; require and verify client certificates")
-	serveCmd.Flags().Bool("tls-self-signed", false, "Generate or reuse a self-signed TLS certificate")
-	serveCmd.Flags().StringSlice("tls-san", nil, "Additional TLS subject alternative name (repeatable)")
-	serveCmd.Flags().Bool("allow-cleartext", false, "Allow cleartext on non-loopback listeners")
-	serveCmd.Flags().String("route", "", "Listener route: full (default) or batch (batch intake is the only work route on the first listener)")
-	serveCmd.Flags().Bool("print-config", false, "Print effective listener configuration without starting")
-	serveCmd.Flags().StringArrayVar(&servePinSpecs, "pin-session", nil, "Narrow a token to one session (TOKEN_ID=SESSION_ID)")
-	rootCmd.AddCommand(serveCmd)
-}
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
@@ -139,7 +129,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		cmd.SetContext(context.Background())
 	}
 	if !cmd.Flags().Changed("cwd") || strings.TrimSpace(cmdFlagString(cmd, "cwd")) == "" {
-		return &tokenCLIError{code: 2, err: errors.New("rush serve requires an explicit --cwd")}
+		return cliout.NewTokenCLIError(2, errors.New("rush serve requires an explicit --cwd"))
 	}
 	if value, err := cmd.Flags().GetString("global-dir"); err == nil {
 		applyGlobalDir(value)
@@ -155,14 +145,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if len(servePinSpecs) > 0 {
 		pins, pinErr := parseServePinSpecs(servePinSpecs)
 		if pinErr != nil {
-			return &tokenCLIError{code: 2, err: pinErr}
+			return cliout.NewTokenCLIError(2, pinErr)
 		}
 		flags.Pins = pins
 	}
 	if cmd.Flags().Changed("route") {
 		route, _ := cmd.Flags().GetString("route")
 		if route != "full" && route != "batch" {
-			return &tokenCLIError{code: 2, err: fmt.Errorf("invalid --route %q (allowed: full, batch)", route)}
+			return cliout.NewTokenCLIError(2, fmt.Errorf("invalid --route %q (allowed: full, batch)", route))
 		}
 		flags.Route = &route
 	}
@@ -187,7 +177,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		if errors.Is(err, config.ErrListenerConfigRead) {
 			code = 1
 		}
-		return &tokenCLIError{code: code, err: err}
+		return cliout.NewTokenCLIError(code, err)
 	}
 	configuredListeners := len(listeners) > 0
 	if len(listeners) == 0 {
@@ -224,7 +214,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 		for _, surface := range surfaces {
 			if surface == server.SurfaceUI {
-				return &tokenCLIError{code: 2, err: errors.New("UI surface is not permitted for serve policies")}
+				return cliout.NewTokenCLIError(2, errors.New("UI surface is not permitted for serve policies"))
 			}
 		}
 		policyAuth := serveAuthFactory
@@ -240,27 +230,27 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			policy.TLS.SANs = append([]string(nil), sans...)
 		}
 		if policy.TLS.SelfSigned && (policy.TLS.Cert != "" || policy.TLS.Key != "") {
-			return &tokenCLIError{code: 2, err: errors.New("self-signed TLS cannot be combined with an explicit certificate or key")}
+			return cliout.NewTokenCLIError(2, errors.New("self-signed TLS cannot be combined with an explicit certificate or key"))
 		}
 		if cmd.Flags().Changed("allow-cleartext") && len(policies) == 0 {
 			policy.AllowCleartext = clear
 		}
 		resolved, err := policy.ResolvedAddress()
 		if err != nil {
-			return &tokenCLIError{code: 2, err: err}
+			return cliout.NewTokenCLIError(2, err)
 		}
 		policy.Address = resolved
 		if err := policy.Validate(); err != nil {
-			return &tokenCLIError{code: 2, err: err}
+			return cliout.NewTokenCLIError(2, err)
 		}
 		policies = append(policies, policy)
 	}
 	if err := server.ValidateListenerSet(policies); err != nil {
-		return &tokenCLIError{code: 2, err: err}
+		return cliout.NewTokenCLIError(2, err)
 	}
 	workspace, workspaceErr := canonicalServeWorkspace(cmdFlagString(cmd, "cwd"))
 	if workspaceErr != nil {
-		return &tokenCLIError{code: 2, err: workspaceErr}
+		return cliout.NewTokenCLIError(2, workspaceErr)
 	}
 	for i := range policies {
 		policies[i].Workspace = workspace
@@ -312,11 +302,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	now := serveNow()
 	bootstrap, bootstrapOK, err := serveConsumeBootstrapToken(store, now)
 	if err != nil {
-		return &tokenCLIError{code: 1, err: tokenStoreGuidance(err, cmdFlagString(cmd, "cwd"), serveGlobalDir(cmd))}
+		return cliout.NewTokenCLIError(1, tokenStoreGuidance(err, cmdFlagString(cmd, "cwd"), serveGlobalDir(cmd)))
 	}
 	tokens, err := store.ListAPITokens()
 	if err != nil {
-		return &tokenCLIError{code: 1, err: tokenStoreGuidance(err, cmdFlagString(cmd, "cwd"), serveGlobalDir(cmd))}
+		return cliout.NewTokenCLIError(1, tokenStoreGuidance(err, cmdFlagString(cmd, "cwd"), serveGlobalDir(cmd)))
 	}
 	usable := bootstrapOK
 	for _, token := range tokens {
@@ -326,17 +316,17 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	if !usable {
-		return &tokenCLIError{code: 2, err: fmt.Errorf("no usable API token; create one with: %s", tokenCreateCommand(cmdFlagString(cmd, "cwd"), serveGlobalDir(cmd)))}
+		return cliout.NewTokenCLIError(2, fmt.Errorf("no usable API token; create one with: %s", tokenCreateCommand(cmdFlagString(cmd, "cwd"), serveGlobalDir(cmd))))
 	}
 	for i := range policies {
 		resolvedPins, pinErr := server.EffectiveListenerPins(policies[i].Pins, tokens, nil)
 		if pinErr != nil {
-			return &tokenCLIError{code: 2, err: pinErr}
+			return cliout.NewTokenCLIError(2, pinErr)
 		}
 		policies[i].Pins = resolvedPins
 	}
 	if err := server.ValidatePinnedPermissionModesAcrossPolicies(tokens, policies); err != nil {
-		return &tokenCLIError{code: 2, err: err}
+		return cliout.NewTokenCLIError(2, err)
 	}
 	bound := make([]net.Listener, 0, len(policies))
 	for _, policy := range policies {
@@ -345,7 +335,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			for _, old := range bound {
 				_ = old.Close()
 			}
-			return &tokenCLIError{code: 1, err: err}
+			return cliout.NewTokenCLIError(1, err)
 		}
 		bound = append(bound, ln)
 	}
@@ -357,14 +347,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 				for _, listener := range bound {
 					_ = listener.Close()
 				}
-				return &tokenCLIError{code: 2, err: resolveErr}
+				return cliout.NewTokenCLIError(2, resolveErr)
 			}
 			certPath, keyPath, certErr := server.EnsureSelfSignedCertificateForListener(dataDir, policies[i].Address, bound[i].Addr().String(), policies[i].TLS.SANs, serveNow())
 			if certErr != nil {
 				for _, listener := range bound {
 					_ = listener.Close()
 				}
-				return &tokenCLIError{code: 2, err: certErr}
+				return cliout.NewTokenCLIError(2, certErr)
 			}
 			policies[i].Address = bound[i].Addr().String()
 			policies[i].TLS.Cert, policies[i].TLS.Key = certPath, keyPath
@@ -376,14 +366,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		for _, ln := range bound {
 			_ = ln.Close()
 		}
-		return &tokenCLIError{code: 1, err: err}
+		return cliout.NewTokenCLIError(1, err)
 	}
 	if err := server.ValidateEffectivePins(cmd.Context(), appInstance, tokens, policies, nil); err != nil {
 		for _, ln := range bound {
 			_ = ln.Close()
 		}
 		_ = serveAppShutdown(appInstance)
-		return &tokenCLIError{code: 2, err: err}
+		return cliout.NewTokenCLIError(2, err)
 	}
 	apis := make([]*server.ServeAPI, 0, len(policies))
 	bootstrapIDs := []string(nil)
@@ -400,7 +390,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 				_ = existing.Stop(context.Background())
 			}
 			_ = serveAppShutdown(appInstance)
-			return &tokenCLIError{code: 1, err: err}
+			return cliout.NewTokenCLIError(1, err)
 		}
 		api.Configure(&policies[i])
 		if serveAuthFactory != nil {
@@ -469,13 +459,35 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	shutdownErr := serveAppShutdown(appInstance)
 	if serverErr != nil {
-		return &tokenCLIError{code: 1, err: serverErr}
+		return cliout.NewTokenCLIError(1, serverErr)
 	}
 	if apiStopErr != nil {
-		return &tokenCLIError{code: 1, err: apiStopErr}
+		return cliout.NewTokenCLIError(1, apiStopErr)
 	}
 	if shutdownErr != nil {
-		return &tokenCLIError{code: 1, err: shutdownErr}
+		return cliout.NewTokenCLIError(1, shutdownErr)
 	}
 	return nil
+}
+
+// NewServeCmd returns the rush serveCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newServeCmdOnce sync.Once
+
+func NewServeCmd() *cobra.Command {
+	newServeCmdOnce.Do(func() {
+	serveCmd.Flags().String("listen", "", "Override the first configured listener address")
+	serveCmd.Flags().String("tls-cert", "", "PEM server certificate for the first listener")
+	serveCmd.Flags().String("tls-key", "", "PEM server private key for the first listener")
+	serveCmd.Flags().String("client-ca", "", "PEM client CA; require and verify client certificates")
+	serveCmd.Flags().Bool("tls-self-signed", false, "Generate or reuse a self-signed TLS certificate")
+	serveCmd.Flags().StringSlice("tls-san", nil, "Additional TLS subject alternative name (repeatable)")
+	serveCmd.Flags().Bool("allow-cleartext", false, "Allow cleartext on non-loopback listeners")
+	serveCmd.Flags().String("route", "", "Listener route: full (default) or batch (batch intake is the only work route on the first listener)")
+	serveCmd.Flags().Bool("print-config", false, "Print effective listener configuration without starting")
+	serveCmd.Flags().StringArrayVar(&servePinSpecs, "pin-session", nil, "Narrow a token to one session (TOKEN_ID=SESSION_ID)")
+	})
+	return serveCmd
 }

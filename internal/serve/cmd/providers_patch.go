@@ -93,15 +93,6 @@ echo '{"disable": true}' | rush providers patch hyper
 	},
 }
 
-func init() {
-	providersPatchCmd.Flags().String("json", "", "Literal JSON object to merge into providers.<id>")
-	providersPatchCmd.Flags().String("json-file", "", "Path to a file containing the JSON object")
-	providersPatchCmd.Flags().Bool("global", false, "Target the global config (default)")
-	providersPatchCmd.Flags().Bool("local", false, "Target the workspace config")
-	providersPatchCmd.MarkFlagsMutuallyExclusive("global", "local")
-	providersPatchCmd.MarkFlagsMutuallyExclusive("json", "json-file")
-	providersCmd.AddCommand(providersPatchCmd)
-}
 
 // readPatchJSON returns the JSON bytes from --json, --json-file, or stdin.
 func readPatchJSON(cmd *cobra.Command) ([]byte, error) {
@@ -130,36 +121,6 @@ func joinComma(ss []string) string {
 	return out
 }
 
-func scopeFromFlags(cmd *cobra.Command, def config.Scope) (config.Scope, error) {
-	global, _ := cmd.Flags().GetBool("global")
-	local, _ := cmd.Flags().GetBool("local")
-	switch {
-	case global && local:
-		return def, fmt.Errorf("--global and --local are mutually exclusive")
-	case global:
-		return config.ScopeGlobal, nil
-	case local:
-		return config.ScopeWorkspace, nil
-	default:
-		return def, nil
-	}
-}
-
-func maskKey(k string) string {
-	if k == "" {
-		return "-"
-	}
-	if strings.HasPrefix(k, "$") {
-		// Env-template still unresolved — show the template literally so
-		// it's obvious where the key comes from.
-		return k
-	}
-	if len(k) <= 4 {
-		return "****"
-	}
-	return strings.Repeat("*", 4) + k[len(k)-4:]
-}
-
 func matchesGrep(id string, p config.ProviderConfig, patternLower string) bool {
 	fields := []string{
 		strings.ToLower(id),
@@ -172,13 +133,6 @@ func matchesGrep(id string, p config.ProviderConfig, patternLower string) bool {
 		}
 	}
 	return false
-}
-
-func dash(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
 }
 
 func escapeSJSONPathComponent(s string) string {

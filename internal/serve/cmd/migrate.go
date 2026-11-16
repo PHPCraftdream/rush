@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"sync"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -106,11 +107,6 @@ rush migrate --recursive /path/to/project
 	RunE: runMigrate,
 }
 
-func init() {
-	migrateCmd.Flags().BoolP("recursive", "r", false, "Recursively walk the directory tree")
-	migrateCmd.Flags().Bool("dry-run", false, "Report what would happen without making changes")
-	rootCmd.AddCommand(migrateCmd)
-}
 
 // runMigrate implements the migrate command logic.
 func runMigrate(cmd *cobra.Command, args []string) error {
@@ -932,4 +928,18 @@ func rewriteSegmentAfter(p, afterSeg, oldSeg, newSeg string) string {
 	}
 
 	return joinPathSegments(segments, seps)
+}
+
+// NewMigrateCmd returns the rush migrateCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newMigrateCmdOnce sync.Once
+
+func NewMigrateCmd() *cobra.Command {
+	newMigrateCmdOnce.Do(func() {
+	migrateCmd.Flags().BoolP("recursive", "r", false, "Recursively walk the directory tree")
+	migrateCmd.Flags().Bool("dry-run", false, "Report what would happen without making changes")
+	})
+	return migrateCmd
 }

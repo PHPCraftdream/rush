@@ -294,10 +294,3 @@ func parseDurationDays(s string) (time.Duration, error) {
 	return d, nil
 }
 
-func init() {
-	sessionsGcCmd.Flags().Bool("dry-run", false, "Print what would be deleted without deleting")
-	sessionsGcCmd.Flags().String("older-than", "7d", "Delete empty sessions older than this (e.g. 7d, 24h, 30m)")
-	sessionsGcCmd.Flags().String("jobs-older-than", "", "Also purge finished, debt-free batch work older than this (e.g. 3d, 12h); empty = only the fixed 7-day retention (web server every 60s, each rush run at start and every 60s while it runs)")
-	sessionsGcCmd.Flags().Int("max-sessions", 0, "Maximum number of sessions to delete (0 = unlimited)")
-	sessionsGcCmd.Flags().Bool("json", false, "Emit one JSON object per deleted session (plus a job-count summary line with --jobs-older-than)")
-}

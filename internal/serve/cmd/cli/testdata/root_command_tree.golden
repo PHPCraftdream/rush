@@ -1,0 +1,517 @@
+api batch answer|answer ROOT NODE "text"
+api batch output|output ROOT [NODE]
+api batch run|--no-wait||bool|false
+api batch run|run [FILE]
+api batch show|show ROOT
+api batch stop|stop ROOT [NODE]
+api batch wait|wait ROOT
+api batch|batch
+api cancel|cancel RUN
+api events|--after||string|
+api events|--follow||bool|false
+api events|--idle||duration|1s
+api events|events SESSION
+api inject|inject SESSION TEXT
+api messages|--after||string|
+api messages|--all||bool|false
+api messages|--limit||int|0
+api messages|messages SESSION
+api models|models
+api openapi|openapi
+api permissions allow|allow ID
+api permissions deny|deny ID
+api permissions list|--session||string|
+api permissions list|list
+api permissions|permissions
+api raw|--data||string|
+api raw|raw METHOD PATH
+api remote add|--allow-cleartext||bool|false
+api remote add|--ca||string|
+api remote add|--client-cert||string|
+api remote add|--client-key||string|
+api remote add|--default||bool|false
+api remote add|--pin||string|
+api remote add|--replace||bool|false
+api remote add|--token-env||string|
+api remote add|--token-file||string|
+api remote add|--token-stdin||bool|false
+api remote add|--url||string|
+api remote add|add NAME
+api remote list|list
+api remote rm|rm NAME
+api remote show|show NAME
+api remote test|test [NAME]
+api remote|remote
+api runs cancel|cancel RUN
+api runs get|get RUN
+api runs wait|wait RUN
+api runs|runs
+api run|--model||string|
+api run|--no-wait||bool|false
+api run|--role||string|
+api run|--stream||bool|false
+api run|run SESSION "prompt"
+api sessions create|--title||string|
+api sessions create|create
+api sessions delete|delete ID
+api sessions fork|--title||string|
+api sessions fork|fork ID
+api sessions get|get ID
+api sessions list|--after||string|
+api sessions list|--all||bool|false
+api sessions list|--limit||int|0
+api sessions list|list
+api sessions|sessions
+api task|--no-wait||bool|false
+api task|--resume||string|
+api task|--task-timeout||duration|0s
+api task|task "prompt"
+api|api
+batch add|--spec|f|string|-
+batch add|add <root-or-parent>
+batch run|--detach||bool|false
+batch run|--json||bool|false
+batch run|--session||string|
+batch run|--spec|f|string|-
+batch run|run
+batch show|--json||bool|false
+batch show|show <root-id|prefix>
+batch stop|--json||bool|false
+batch stop|--wait||duration|0s
+batch stop|stop <root-id|node-id>
+batch|batch
+claude-del|--global||bool|false
+claude-del|--local||bool|false
+claude-del|claude-del
+claude-init|--global||bool|false
+claude-init|--local||bool|false
+claude-init|claude-init
+cli-refresh|--dry-run||bool|false
+cli-refresh|--global||bool|false
+cli-refresh|--recursive|r|bool|false
+cli-refresh|cli-refresh [root]
+codex-del|--global||bool|false
+codex-del|--local||bool|false
+codex-del|codex-del
+codex-init|--global||bool|false
+codex-init|--local||bool|false
+codex-init|codex-init
+dirs|dirs
+gemini-del|--global||bool|false
+gemini-del|--local||bool|false
+gemini-del|gemini-del
+gemini-init|--global||bool|false
+gemini-init|--local||bool|false
+gemini-init|gemini-init
+grok-del|--global||bool|false
+grok-del|--local||bool|false
+grok-del|grok-del
+grok-init|--global||bool|false
+grok-init|--local||bool|false
+grok-init|grok-init
+lock|--global||bool|false
+lock|--local||bool|false
+lock|lock [password]
+login|--device||bool|false
+login|--force|f|bool|false
+login|login [platform]
+logs path|path
+logs prune|--audit-days||int|30
+logs prune|--heartbeat-days||int|7
+logs prune|--json||bool|false
+logs prune|prune
+logs summary|--file||stringSlice|[]
+logs summary|--gap||duration|15m0s
+logs summary|--json||bool|false
+logs summary|--since||string|
+logs summary|summary
+logs|--follow|f|bool|false
+logs|--tail|t|int|1000
+logs|logs
+mcp add|--arg||stringSlice|[]
+mcp add|--command||string|
+mcp add|--enabled-in-cli||bool|false
+mcp add|--env||stringSlice|[]
+mcp add|--global||bool|false
+mcp add|--header||stringSlice|[]
+mcp add|--local||bool|false
+mcp add|--type||string|
+mcp add|--url||string|
+mcp add|add <id>
+mcp disable|--global||bool|false
+mcp disable|--local||bool|false
+mcp disable|disable <id>
+mcp enable|--global||bool|false
+mcp enable|--local||bool|false
+mcp enable|enable <id>
+mcp list|--grep||string|
+mcp list|--json||bool|false
+mcp list|list
+mcp remove|--global||bool|false
+mcp remove|--local||bool|false
+mcp remove|remove <id>
+mcp restart|restart <id>
+mcp set|--arg||stringSlice|[]
+mcp set|--command||string|
+mcp set|--disabled||bool|false
+mcp set|--enabled-in-cli||bool|false
+mcp set|--env||stringSlice|[]
+mcp set|--global||bool|false
+mcp set|--header||stringSlice|[]
+mcp set|--local||bool|false
+mcp set|--type||string|
+mcp set|--url||string|
+mcp set|set <id>
+mcp show|--json||bool|false
+mcp show|show <id>
+mcp test|--timeout||string|10s
+mcp test|test <id>
+mcp|mcp
+migrate|--dry-run||bool|false
+migrate|--recursive|r|bool|false
+migrate|migrate [root]
+models bump|--global||bool|false
+models bump|--local||bool|false
+models bump|bump <smart|fast|worker|reviewer> <up|down>
+models cache clear|clear [openai-codex|stepfun|zai|all]
+models cache|cache
+models efforts|efforts [model]
+models list|--json||bool|false
+models list|--refresh||bool|false
+models list|list
+models preset|preset
+models set|set
+models state|--json||bool|false
+models state|state
+models unset|--global||bool|false
+models unset|--local||bool|false
+models unset|unset [smart|fast|worker|reviewer|both|all]
+models use|--fast||string|
+models use|--global||bool|false
+models use|--local||bool|false
+models use|--reviewer||string|
+models use|--smart||string|
+models use|--worker||string|
+models use|use [<smart> <fast>]
+models|models
+omp-del|--global||bool|false
+omp-del|--local||bool|false
+omp-del|omp-del
+omp-init|--global||bool|false
+omp-init|--local||bool|false
+omp-init|omp-init
+opencode-del|--global||bool|false
+opencode-del|--local||bool|false
+opencode-del|opencode-del
+opencode-init|--global||bool|false
+opencode-init|--local||bool|false
+opencode-init|opencode-init
+ping-fast|--json||bool|false
+ping-fast|--prompt||string|
+ping-fast|--timeout||duration|1m0s
+ping-fast|ping-fast [--json] [--timeout 1m] [--prompt "<custom>"]
+ping|--json||bool|false
+ping|--model||string|
+ping|--prompt||string|
+ping|--role||string|
+ping|--timeout||duration|1m0s
+ping|ping [--role smart|fast] [--model <atom-or-provider/model>] [--json] [--timeout 1m] [--prompt "<custom>"]
+projects|--json||bool|false
+projects|projects
+providers add|--api-key||string|
+providers add|--base-url||string|
+providers add|--enable||bool|true
+providers add|--global||bool|false
+providers add|--local||bool|false
+providers add|--name||string|
+providers add|--peak-hours-message||string|
+providers add|--peak-hours||string|
+providers add|--type||string|
+providers add|add <id>
+providers disable|--global||bool|false
+providers disable|--local||bool|false
+providers disable|disable <id>
+providers enable|--global||bool|false
+providers enable|--local||bool|false
+providers enable|enable <id>
+providers fetch-models|--diff||bool|false
+providers fetch-models|--json||bool|false
+providers fetch-models|fetch-models <id>
+providers grep|grep <pattern>
+providers list|--grep||string|
+providers list|--json||bool|false
+providers list|list
+providers patch|--global||bool|false
+providers patch|--json-file||string|
+providers patch|--json||string|
+providers patch|--local||bool|false
+providers patch|patch <id>
+providers peak-hours add|--global||bool|false
+providers peak-hours add|--local||bool|false
+providers peak-hours add|add <id> [DAYS] HH:MM-HH:MM...
+providers peak-hours clear|--global||bool|false
+providers peak-hours clear|--local||bool|false
+providers peak-hours clear|clear <id>
+providers peak-hours list|--global||bool|false
+providers peak-hours list|--json||bool|false
+providers peak-hours list|--local||bool|false
+providers peak-hours list|list
+providers peak-hours pause|--global||bool|false
+providers peak-hours pause|--local||bool|false
+providers peak-hours pause|pause <id> [<duration-or-rfc3339>]
+providers peak-hours resume|--global||bool|false
+providers peak-hours resume|--local||bool|false
+providers peak-hours resume|resume <id>
+providers peak-hours rm|--global||bool|false
+providers peak-hours rm|--local||bool|false
+providers peak-hours rm|rm <id> <n>...
+providers peak-hours set|--global||bool|false
+providers peak-hours set|--local||bool|false
+providers peak-hours set|--message||string|
+providers peak-hours set|--tz||string|
+providers peak-hours set|set <id> [DAYS] HH:MM-HH:MM [[DAYS] HH:MM-HH:MM...]
+providers peak-hours show|--global||bool|false
+providers peak-hours show|--json||bool|false
+providers peak-hours show|--local||bool|false
+providers peak-hours show|show <id>
+providers peak-hours tz|--global||bool|false
+providers peak-hours tz|--local||bool|false
+providers peak-hours tz|tz <id> <zone>
+providers peak-hours|peak-hours
+providers set|--api-key||string|
+providers set|--base-url||string|
+providers set|--disabled||bool|false
+providers set|--global||bool|false
+providers set|--local||bool|false
+providers set|--name||string|
+providers set|--peak-hours-message||string|
+providers set|--peak-hours||string|
+providers set|--type||string|
+providers set|set <id>
+providers show|--json||bool|false
+providers show|show <id>
+providers test|--json||bool|false
+providers test|--timeout||duration|0s
+providers test|test <id>
+providers unset|--global||bool|false
+providers unset|--local||bool|false
+providers unset|unset <id>
+providers update|--all||bool|false
+providers update|update [<id> | --all]
+providers|providers
+ps|--all||bool|false
+ps|--json||bool|false
+ps|--model||string|
+ps|--watch||bool|false
+ps|ps
+queue add|--max-cost||float64|0
+queue add|--max-tokens||int64|0
+queue add|--prompt-file||string|
+queue add|--role||string|
+queue add|--session||string|
+queue add|--timeout||duration|0s
+queue add|add
+queue clear|--status||string|
+queue clear|clear
+queue list|--json||bool|false
+queue list|--status||string|
+queue list|list
+queue rm|rm <task-id>
+queue run|--concurrent||int|1
+queue run|--max-tasks||int|0
+queue run|--stop-on-fail||bool|false
+queue run|run
+queue show|show <task-id>
+queue|queue
+qwen-del|--global||bool|false
+qwen-del|--local||bool|false
+qwen-del|qwen-del
+qwen-init|--global||bool|false
+qwen-init|--local||bool|false
+qwen-init|qwen-init
+result|--field||string|
+result|--json||bool|false
+result|--review||bool|false
+result|result <session-id|path>
+roles list|list
+roles remove|remove <name>
+roles set|--inherit-tools||bool|false
+roles set|--tools||string|
+roles set|set <name> <provider/model[@effort]>
+roles show|show <name>
+roles|roles
+run|--agents||string|
+run|--aggregation||string|
+run|--all-mcp||bool|false
+run|--allow-peak-hours||bool|false
+run|--base||string|
+run|--branch||string|
+run|--continue|C|bool|false
+run|--effort||string|
+run|--fail-on-review||bool|false
+run|--fast-model||string|
+run|--findings-from||string|
+run|--format||string|
+run|--idle-timeout||string|15m
+run|--job-timeout||string|
+run|--json||bool|false
+run|--max-agent-depth||int|2
+run|--max-cost||string|
+run|--max-tokens||string|
+run|--model|m|string|
+run|--no-supervision||bool|false
+run|--on-finish||string|
+run|--quiet|q|bool|false
+run|--role||string|
+run|--session|s|string|
+run|--stall-timeout||duration|30m0s
+run|--stream||bool|false
+run|--supervision-interval||string|
+run|--system-prompt-file||string|
+run|--system-prompt||string|
+run|--timeout-extends-on-progress||bool|false
+run|--timeout-hard-cap||string|0
+run|--timeout||string|0
+run|--verbose|v|bool|false
+run|--worktree||string|
+run|run [prompt...]
+schema|schema
+serve|--allow-cleartext||bool|false
+serve|--client-ca||string|
+serve|--listen||string|
+serve|--pin-session||stringArray|[]
+serve|--print-config||bool|false
+serve|--route||string|
+serve|--tls-cert||string|
+serve|--tls-key||string|
+serve|--tls-san||stringSlice|[]
+serve|--tls-self-signed||bool|false
+serve|serve
+sessions audit|--all||bool|false
+sessions audit|--json||bool|false
+sessions audit|--since||string|
+sessions audit|--worktrees||bool|false
+sessions audit|audit [<id>|--all]
+sessions cache|--by||string|
+sessions cache|--json||bool|false
+sessions cache|--since||string|
+sessions cache|cache [session-id]
+sessions cancel|--all||bool|false
+sessions cancel|cancel <session-id>
+sessions compact|--dry-run||bool|false
+sessions compact|--force||bool|false
+sessions compact|--json||bool|false
+sessions compact|--role||string|worker
+sessions compact|compact [session]
+sessions cost|--by||string|model
+sessions cost|--json||bool|false
+sessions cost|--since||string|
+sessions cost|--top||int|20
+sessions cost|cost
+sessions delete|delete <id>
+sessions diff|--json||bool|false
+sessions diff|--stat||bool|false
+sessions diff|diff <session-id>
+sessions fork|--at||int|0
+sessions fork|--child||bool|false
+sessions fork|--session||string|
+sessions fork|--title||string|
+sessions fork|fork <source-id>
+sessions gc|--dry-run||bool|false
+sessions gc|--jobs-older-than||string|
+sessions gc|--json||bool|false
+sessions gc|--max-sessions||int|0
+sessions gc|--older-than||string|7d
+sessions gc|gc
+sessions grep|--json||bool|false
+sessions grep|--n|n|int|3
+sessions grep|--role||string|
+sessions grep|--session||string|
+sessions grep|grep <pattern>
+sessions inject|--file|f|string|
+sessions inject|--interrupt||bool|false
+sessions inject|--json||bool|false
+sessions inject|--message|m|string|
+sessions inject|inject <session-id>
+sessions jobs|--json||bool|false
+sessions jobs|jobs <session-id>
+sessions kill|--keep-lock||bool|false
+sessions kill|--wait||duration|5s
+sessions kill|kill <id>
+sessions last|--format||string|text
+sessions last|--n|n|int|10
+sessions last|--with-subagents||bool|false
+sessions last|last <id>
+sessions list|--json||bool|false
+sessions list|list
+sessions locks|--all||bool|false
+sessions locks|--json||bool|false
+sessions locks|--prune||bool|false
+sessions locks|--stale-only||bool|false
+sessions locks|locks [session-id]
+sessions pick|--tail||bool|false
+sessions pick|pick
+sessions purge|--dry-run||bool|false
+sessions purge|--matching||string|
+sessions purge|--yes||bool|false
+sessions purge|purge <age>
+sessions reap|--all||bool|false
+sessions reap|--dry-run||bool|false
+sessions reap|--idle-older-than||string|168h
+sessions reap|reap
+sessions reset|--force||bool|false
+sessions reset|reset <id>
+sessions show|--full||bool|false
+sessions show|--json||bool|false
+sessions show|--with-messages||bool|false
+sessions show|--with-subagents||bool|false
+sessions show|show <id>
+sessions status|--json||bool|false
+sessions status|status <id>
+sessions tail|--follow||bool|false
+sessions tail|--format||string|text
+sessions tail|--from-message||string|
+sessions tail|--with-subagents||bool|false
+sessions tail|tail <id>
+sessions tree|--depth||int|0
+sessions tree|--json||bool|false
+sessions tree|tree [<root-id>]
+sessions watch|--interval||duration|1s
+sessions watch|watch [session-id]
+sessions why|why <id>
+sessions|sessions
+stats|stats
+system-prompt|--session|s|string|
+system-prompt|system-prompt
+tokens create|--batch||bool|false
+tokens create|--expires||string|
+tokens create|--json||bool|false
+tokens create|--max-parallel||int|0
+tokens create|--max-roots||int|0
+tokens create|--name||string|
+tokens create|--permission||string|ask
+tokens create|--pin-session||string|
+tokens create|--scope||stringSlice|[run]
+tokens create|--tools||stringSlice|[]
+tokens create|create
+tokens list|--json||bool|false
+tokens list|list
+tokens revoke|revoke ID
+tokens show|--json||bool|false
+tokens show|show ID
+tokens|tokens
+unlock|--global||bool|false
+unlock|--local||bool|false
+unlock|unlock [password]
+update-providers|--source||string|catwalk
+update-providers|update-providers [path-or-url]
+web|--allow-cleartext||bool|false
+web|--host|H|string|localhost
+web|--no-open||bool|false
+web|--port|p|int|0
+web|web
+worktree list|list
+worktree remove|--force||bool|false
+worktree remove|--keep-branch||bool|false
+worktree remove|remove <slug>
+worktree|worktree

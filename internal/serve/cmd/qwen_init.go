@@ -12,6 +12,7 @@
 package cmd
 
 import (
+	"sync"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -122,8 +123,16 @@ func installQwenCommands(commandsDir string) error {
 	return nil
 }
 
-func init() {
+// NewQwenInitCmd returns the rush qwenInitCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newQwenInitCmdOnce sync.Once
+
+func NewQwenInitCmd() *cobra.Command {
+	newQwenInitCmdOnce.Do(func() {
 	qwenInitCmd.Flags().Bool("global", false, "Install into ~/.qwen/commands/ (available in every project). Default when neither --global nor --local is given.")
 	qwenInitCmd.Flags().Bool("local", false, "Install into the current project's .qwen/commands/ instead of ~/.qwen/commands/.")
-	rootCmd.AddCommand(qwenInitCmd)
+	})
+	return qwenInitCmd
 }

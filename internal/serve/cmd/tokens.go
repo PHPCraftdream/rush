@@ -1,11 +1,14 @@
 package cmd
 
 import (
+	"sync"
 	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/google/uuid"
@@ -215,21 +218,6 @@ var tokensCmd = &cobra.Command{
 	Example: "rush tokens list", Args: cobra.NoArgs,
 }
 
-func init() {
-	tokensCreateCmd.Flags().StringVar(&tokensPinSession, "pin-session", "", "Bind to one session ID, or new to generate one (requires --cwd)")
-	tokensCreateCmd.Flags().BoolVar(&tokensBatch, "batch", false, "Bind to batch intake: the token submits tasks and batches only; session runs, creation and forks are refused (excludes --pin-session and admin scope)")
-	tokensCreateCmd.Flags().StringSliceVar(&tokensBatchTools, "tools", nil, "With --batch: extra exact tool names the token may submit besides agent (repeatable, no wildcards)")
-	tokensCreateCmd.Flags().IntVar(&tokensMaxRoots, "max-roots", 0, "With --batch: live batch roots at once (0 = server default)")
-	tokensCreateCmd.Flags().IntVar(&tokensMaxParallel, "max-parallel", 0, "With --batch: parallel leaves per batch (0 = server default)")
-	tokensCreateCmd.Flags().StringVar(&tokensName, "name", "", "Human-readable token name")
-	tokensCreateCmd.Flags().StringSliceVar(&tokensScopes, "scope", []string{"run"}, "Repeated scopes: read, run, config, admin")
-	tokensCreateCmd.Flags().StringVar(&tokensPermission, "permission", "ask", "Permission mode: ask, readonly, auto")
-	tokensCreateCmd.Flags().StringVar(&tokensExpires, "expires", "", "Expiry: duration (30d) or RFC3339 timestamp")
-	tokensCreateCmd.Flags().BoolVar(&tokensJSON, "json", false, "Output JSON")
-	tokensListCmd.Flags().BoolVar(&tokensJSON, "json", false, "Output JSON")
-	tokensShowCmd.Flags().BoolVar(&tokensJSON, "json", false, "Output JSON")
-	tokensCmd.AddCommand(tokensCreateCmd, tokensListCmd, tokensShowCmd, tokensRevokeCmd)
-}
 
 func parseTokenExpiry(value string, now time.Time) (*time.Time, error) {
 	if value == "" {
@@ -264,4 +252,29 @@ func parseTokenExpiry(value string, now time.Time) (*time.Time, error) {
 	return &expiry, nil
 }
 
-func tokenUsageError(err error) error { return &tokenCLIError{code: 2, err: err} }
+func tokenUsageError(err error) error { return cliout.NewTokenCLIError(2, err) }
+
+// NewTokensCmd returns the rush tokensCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newTokensCmdOnce sync.Once
+
+func NewTokensCmd() *cobra.Command {
+	newTokensCmdOnce.Do(func() {
+	tokensCreateCmd.Flags().StringVar(&tokensPinSession, "pin-session", "", "Bind to one session ID, or new to generate one (requires --cwd)")
+	tokensCreateCmd.Flags().BoolVar(&tokensBatch, "batch", false, "Bind to batch intake: the token submits tasks and batches only; session runs, creation and forks are refused (excludes --pin-session and admin scope)")
+	tokensCreateCmd.Flags().StringSliceVar(&tokensBatchTools, "tools", nil, "With --batch: extra exact tool names the token may submit besides agent (repeatable, no wildcards)")
+	tokensCreateCmd.Flags().IntVar(&tokensMaxRoots, "max-roots", 0, "With --batch: live batch roots at once (0 = server default)")
+	tokensCreateCmd.Flags().IntVar(&tokensMaxParallel, "max-parallel", 0, "With --batch: parallel leaves per batch (0 = server default)")
+	tokensCreateCmd.Flags().StringVar(&tokensName, "name", "", "Human-readable token name")
+	tokensCreateCmd.Flags().StringSliceVar(&tokensScopes, "scope", []string{"run"}, "Repeated scopes: read, run, config, admin")
+	tokensCreateCmd.Flags().StringVar(&tokensPermission, "permission", "ask", "Permission mode: ask, readonly, auto")
+	tokensCreateCmd.Flags().StringVar(&tokensExpires, "expires", "", "Expiry: duration (30d) or RFC3339 timestamp")
+	tokensCreateCmd.Flags().BoolVar(&tokensJSON, "json", false, "Output JSON")
+	tokensListCmd.Flags().BoolVar(&tokensJSON, "json", false, "Output JSON")
+	tokensShowCmd.Flags().BoolVar(&tokensJSON, "json", false, "Output JSON")
+	tokensCmd.AddCommand(tokensCreateCmd, tokensListCmd, tokensShowCmd, tokensRevokeCmd)
+	})
+	return tokensCmd
+}

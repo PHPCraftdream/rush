@@ -9,6 +9,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+
 	"github.com/PHPCraftdream/rush/internal/serve/client/apiclient"
 	"github.com/spf13/cobra"
 )
@@ -132,7 +134,7 @@ func apiWithClient(cmd *cobra.Command, action func(*apiclient.Client, context.Co
 }
 
 func apiClientError(err error) error {
-	return &exitCodeError{code: apiclient.ExitCodeFor(err), err: err}
+	return cliout.NewExitCodeError(apiclient.ExitCodeFor(err), err)
 }
 
 var (

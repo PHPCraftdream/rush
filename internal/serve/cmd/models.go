@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"sync"
 	"fmt"
 	"os"
 	"slices"
@@ -192,6 +193,54 @@ func collectListModelEntries(cfg *config.Config, knownProviders []catwalk.Provid
 	return entries
 }
 
-func init() {
-	rootCmd.AddCommand(modelsCmd)
+// NewModelsCmd returns the rush modelsCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newModelsCmdOnce sync.Once
+
+func NewModelsCmd() *cobra.Command {
+	newModelsCmdOnce.Do(func() {
+
+
+	modelsBumpCmd.Flags().Bool("global", false, "Target the global config (default when neither --global nor --local is given)")
+	modelsBumpCmd.Flags().Bool("local", false, "Target the workspace config (./.rush/rush.json)")
+	modelsBumpCmd.MarkFlagsMutuallyExclusive("global", "local")
+	modelsCmd.AddCommand(modelsBumpCmd)
+
+	modelsCacheCmd.AddCommand(modelsCacheClearCmd)
+	modelsCmd.AddCommand(modelsCacheCmd)
+
+	modelsCmd.AddCommand(modelsEffortsCmd)
+
+	modelsListCmd.Flags().Bool("json", false, "Emit a structured JSON object instead of human-readable text")
+	modelsListCmd.Flags().Bool("refresh", false, "Force a network refresh of provider data before listing (default: read cache/embedded only, no network)")
+	modelsCmd.AddCommand(modelsListCmd)
+
+	modelsCmd.AddCommand(modelsPresetCmd)
+
+	// `models show` flag registration still belongs here for backwards
+	// compat — the command itself lives in models_show.go (was inlined
+	// into the old models_set.go before batch 11; if absent, this is a
+	// no-op).
+	modelsCmd.AddCommand(modelsSetCmd)
+
+	modelsStateCmd.Flags().Bool("json", false, "Emit a structured JSON object")
+	modelsCmd.AddCommand(modelsStateCmd)
+
+	modelsUnsetCmd.Flags().Bool("global", false, "Target the global config (default when neither --global nor --local is given)")
+	modelsUnsetCmd.Flags().Bool("local", false, "Target the workspace config (./.rush/rush.json)")
+	modelsUnsetCmd.MarkFlagsMutuallyExclusive("global", "local")
+	modelsCmd.AddCommand(modelsUnsetCmd)
+
+	modelsUseCmd.Flags().Bool("global", false, "Target the global config (default when neither --global nor --local is given)")
+	modelsUseCmd.Flags().Bool("local", false, "Target the workspace config (./.rush/rush.json)")
+	modelsUseCmd.MarkFlagsMutuallyExclusive("global", "local")
+	modelsUseCmd.Flags().String("smart", "", "Set only the smart slot (atom or provider/model[@level]) — cannot combine with positional args")
+	modelsUseCmd.Flags().String("fast", "", "Set only the fast slot (atom or provider/model[@level]) — cannot combine with positional args")
+	modelsUseCmd.Flags().String("worker", "", "Also set the optional worker slot (atom or provider/model[@level])")
+	modelsUseCmd.Flags().String("reviewer", "", "Also set the optional reviewer slot (atom or provider/model[@level])")
+	modelsCmd.AddCommand(modelsUseCmd)
+	})
+	return modelsCmd
 }

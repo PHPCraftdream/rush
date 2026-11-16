@@ -366,3 +366,9 @@ func generateHTML(stats *Stats, projName, username, path string) error {
 
 	return os.WriteFile(path, buf.Bytes(), 0o644)
 }
+
+// NewStatsCmd returns the rush statsCmd command (former root.go registration; lane K2 of
+// the sprint0 cmd split replaced rootCmd.AddCommand with constructors).
+func NewStatsCmd() *cobra.Command {
+	return statsCmd
+}

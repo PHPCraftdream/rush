@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 )
 
 func TestRejectAPITokenArguments(t *testing.T) {
@@ -29,8 +31,8 @@ func TestRejectAPITokenArguments(t *testing.T) {
 			if err == nil {
 				t.Fatal("token-looking value accepted")
 			}
-			var coded *exitCodeError
-			if !errors.As(err, &coded) || coded.code != 2 {
+			var coded *cliout.ExitCodeError
+			if !errors.As(err, &coded) || coded.Code() != 2 {
 				t.Fatalf("error = %v, want exit code 2", err)
 			}
 			if got := err.Error(); strings.Contains(got, token) {
@@ -56,8 +58,8 @@ func TestAPIRemoteArgumentValidation(t *testing.T) {
 			if err := cmd.Execute(); err == nil {
 				t.Fatal("invalid invocation accepted")
 			} else {
-				var coded *exitCodeError
-				if !errors.As(err, &coded) || coded.code != tc.want {
+				var coded *cliout.ExitCodeError
+				if !errors.As(err, &coded) || coded.Code() != tc.want {
 					t.Fatalf("error = %v, want code %d", err, tc.want)
 				}
 			}
@@ -72,7 +74,7 @@ func TestAPIExitCodeMapping(t *testing.T) {
 	}{
 		{0, 0}, {1, 1}, {2, 2}, {3, 3}, {4, 4}, {5, 5}, {6, 6}, {130, 130},
 	} {
-		err := &exitCodeError{code: tc.code, err: errors.New("fixture")}
+		err := cliout.NewExitCodeError(tc.code, errors.New("fixture"))
 		got, ok := tokensExitCode([]string{"api", "models"}, err)
 		if !ok || got != tc.want {
 			t.Errorf("code %d mapped to %d, recognized=%t", tc.code, got, ok)
@@ -81,7 +83,7 @@ func TestAPIExitCodeMapping(t *testing.T) {
 	if _, ok := apiExitCode(errors.New("untyped")); ok {
 		t.Fatal("untyped error recognized as API code")
 	}
-	if _, ok := apiExitCode(&exitCodeError{code: 99, err: errors.New("invalid")}); ok {
+	if _, ok := apiExitCode(cliout.NewExitCodeError(99, errors.New("invalid"))); ok {
 		t.Fatal("unsupported API code recognized")
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -164,34 +163,6 @@ func sessionsCostCmdRun(cmd *cobra.Command, args []string) error {
 	default:
 		return fmt.Errorf("--by: invalid value %q (allowed: model|day|session|total)", by)
 	}
-}
-
-// parseSinceDuration extends parseDurationDays to also support plain integers
-// as days.
-func parseSinceDuration(s string) (time.Duration, error) {
-	if strings.HasSuffix(s, "d") {
-		return parseDurationDays(s)
-	}
-	// Try plain integer as days.
-	if n, err := parsePlainInt(s); err == nil {
-		return time.Duration(n) * 24 * time.Hour, nil
-	}
-	return time.ParseDuration(s)
-}
-
-// parsePlainInt accepts ONLY a bare integer, e.g. "7".
-//
-// It used to use fmt.Sscanf(s, "%d", &n), which parses the leading digits and
-// reports no error for the trailing remainder. Since parseSinceDuration tries
-// this branch before time.ParseDuration, every Go duration was silently
-// swallowed as a day count: "2h" became 2 days, "30m" became 30 DAYS, "45s"
-// became 45 days, "1h30m" became 1 day. The help text has advertised
-// "Go durations (30m, 24h)" the whole time, so --since has been off by orders
-// of magnitude for anything but the "7d" and bare-integer forms.
-//
-// strconv.Atoi rejects trailing characters, which is the whole point here.
-func parsePlainInt(s string) (int, error) {
-	return strconv.Atoi(s)
 }
 
 type costRow struct {
@@ -403,9 +374,3 @@ func formatInt64(n int64) string {
 	return result.String()
 }
 
-func init() {
-	sessionsCostCmd.Flags().String("since", "", "Only include sessions updated within this duration (e.g. 7d, 24h, 30m, 3)")
-	sessionsCostCmd.Flags().String("by", "model", "Grouping: model|day|session|total")
-	sessionsCostCmd.Flags().Bool("json", false, "Emit JSON output")
-	sessionsCostCmd.Flags().Int("top", 20, "Number of sessions to show with --by session")
-}

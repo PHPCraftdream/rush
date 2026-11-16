@@ -6,6 +6,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
+
 	"github.com/PHPCraftdream/rush/internal/serve/client/apiclient"
 	"github.com/spf13/cobra"
 )
@@ -15,7 +18,7 @@ import (
 // than from the parent (deadline or caller); call it before stop.
 // apiNotifyContext is the signal seam: tests swap it because os.Interrupt cannot
 // be delivered to a Windows test process.
-var apiNotifyContext = commandSignalContext
+var apiNotifyContext = cliproc.CommandSignalContext
 
 func apiSignalContext(parent context.Context) (ctx context.Context, stop context.CancelFunc, interrupted func() bool) {
 	ctx, stop = apiNotifyContext(parent, os.Interrupt)
@@ -32,4 +35,4 @@ func apiCancelRemoteRun(cmd *cobra.Command, client *apiclient.Client, runID stri
 	}
 }
 
-func interruptedAPIError() error { return &exitCodeError{code: 130, err: fmt.Errorf("interrupted")} }
+func interruptedAPIError() error { return cliout.NewExitCodeError(130, fmt.Errorf("interrupted")) }

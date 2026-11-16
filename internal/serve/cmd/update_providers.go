@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"sync"
 	"fmt"
 	"log/slog"
 
@@ -78,6 +79,15 @@ rush update-providers --source=hyper https://hyper.example.com
 	},
 }
 
-func init() {
+// NewUpdateProvidersCmd returns the rush updateProvidersCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newUpdateProvidersCmdOnce sync.Once
+
+func NewUpdateProvidersCmd() *cobra.Command {
+	newUpdateProvidersCmdOnce.Do(func() {
 	updateProvidersCmd.Flags().StringVar(&updateProvidersSource, "source", "catwalk", "Provider source to update (catwalk or hyper)")
+	})
+	return updateProvidersCmd
 }

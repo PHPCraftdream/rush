@@ -248,6 +248,3 @@ func (m *pickerModel) View() tea.View {
 	return tea.NewView(b.String())
 }
 
-func init() {
-	sessionsPickCmd.Flags().Bool("tail", false, "Tail --follow the selected session instead of showing last N messages")
-}

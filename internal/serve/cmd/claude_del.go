@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"sync"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -216,8 +217,16 @@ func stripClaudeMdBlocks(path string) (int, error) {
 	return len(matches), nil
 }
 
-func init() {
+// NewClaudeDelCmd returns the rush claudeDelCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newClaudeDelCmdOnce sync.Once
+
+func NewClaudeDelCmd() *cobra.Command {
+	newClaudeDelCmdOnce.Do(func() {
 	claudeDelCmd.Flags().Bool("global", false, "Remove from ~/.claude/commands/. Default when neither --global nor --local is given.")
 	claudeDelCmd.Flags().Bool("local", false, "Remove from the current project's .claude/commands/ instead of ~/.claude/commands/.")
-	rootCmd.AddCommand(claudeDelCmd)
+	})
+	return claudeDelCmd
 }

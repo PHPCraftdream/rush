@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,7 +30,7 @@ func TestCancelSignals(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			found := false
-			for _, sig := range cancelSignals {
+			for _, sig := range cliproc.CancelSignals() {
 				if sig == tt.sig {
 					found = true
 					break
@@ -49,7 +51,7 @@ func TestCancelSignalsCatchSIGTERM(t *testing.T) {
 	signal.Notify(guard, syscall.SIGTERM)
 	defer signal.Stop(guard)
 
-	ctx, stop := signal.NotifyContext(context.Background(), cancelSignals...)
+	ctx, stop := signal.NotifyContext(context.Background(), cliproc.CancelSignals()...)
 	defer stop()
 	proc, err := os.FindProcess(os.Getpid())
 	require.NoError(t, err)

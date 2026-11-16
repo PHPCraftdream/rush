@@ -367,7 +367,3 @@ func printScopeRow(tw *stateTable, scopeName, role string, value, other *config.
 	tw.row(scopeName, role, value.Provider, value.Model, cellOr(value.ReasoningEffort), status, effortNoteText(*value))
 }
 
-func init() {
-	modelsStateCmd.Flags().Bool("json", false, "Emit a structured JSON object")
-	modelsCmd.AddCommand(modelsStateCmd)
-}

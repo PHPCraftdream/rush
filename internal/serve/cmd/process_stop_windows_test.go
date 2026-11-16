@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
-	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/proctrack"
 	"golang.org/x/sys/windows"
@@ -31,15 +30,4 @@ func processStopScenarios() []processStopScenario {
 		_, err := fmt.Fprintln(stdin, "break")
 		return err
 	}}}
-}
-
-func TestProcessStopWindowsConsoleEvents(t *testing.T) {
-	for _, event := range []uint32{windows.CTRL_C_EVENT, windows.CTRL_BREAK_EVENT, windows.CTRL_CLOSE_EVENT, windows.CTRL_LOGOFF_EVENT, windows.CTRL_SHUTDOWN_EVENT} {
-		if code, ok := consoleProcessStopCode(event); !ok || code != 130 {
-			t.Errorf("event %d: code=%d handled=%v", event, code, ok)
-		}
-	}
-	if _, ok := consoleProcessStopCode(999); ok {
-		t.Fatal("unknown console event was handled")
-	}
 }

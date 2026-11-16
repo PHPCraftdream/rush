@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"sync"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -14,6 +15,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
 
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	"github.com/spf13/cobra"
@@ -58,12 +61,6 @@ rush ps --watch            # redraw every 2s until Ctrl+C
 	RunE: psRunE,
 }
 
-func init() {
-	psCmd.Flags().Bool("watch", false, "Redraw every 2 seconds until Ctrl+C")
-	psCmd.Flags().Bool("json", false, "Emit stable machine-readable JSON")
-	psCmd.Flags().String("model", "", "Case-insensitive substring filter on provider/model")
-	psCmd.Flags().Bool("all", false, "Include stopped and stale rows")
-}
 
 // psHeartbeatDir resolves the global heartbeat directory: RUSH_HEARTBEAT_DIR
 // wins, else the heartbeat/ folder next to the global settings file.
@@ -123,7 +120,7 @@ func psRunE(cmd *cobra.Command, _ []string) error {
 // Ctrl+C or the command context is done.
 func psWatchFrames(ctx context.Context, frame func() (string, error)) error {
 	sig := make(chan os.Signal, 1)
-	if !processStopInstalled.Load() {
+	if !cliproc.ProcessStopInstalled() {
 		signal.Notify(sig, os.Interrupt)
 		defer signal.Stop(sig)
 	}
@@ -511,4 +508,20 @@ func psJSONEntryFromRow(r psRow) psJSONEntry {
 		})
 	}
 	return out
+}
+
+// NewPsCmd returns the rush psCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newPsCmdOnce sync.Once
+
+func NewPsCmd() *cobra.Command {
+	newPsCmdOnce.Do(func() {
+	psCmd.Flags().Bool("watch", false, "Redraw every 2 seconds until Ctrl+C")
+	psCmd.Flags().Bool("json", false, "Emit stable machine-readable JSON")
+	psCmd.Flags().String("model", "", "Case-insensitive substring filter on provider/model")
+	psCmd.Flags().Bool("all", false, "Include stopped and stale rows")
+	})
+	return psCmd
 }

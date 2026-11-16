@@ -268,13 +268,3 @@ func effortSuffix(effort string) string {
 	return " effort=" + effort
 }
 
-func init() {
-	modelsUseCmd.Flags().Bool("global", false, "Target the global config (default when neither --global nor --local is given)")
-	modelsUseCmd.Flags().Bool("local", false, "Target the workspace config (./.rush/rush.json)")
-	modelsUseCmd.MarkFlagsMutuallyExclusive("global", "local")
-	modelsUseCmd.Flags().String("smart", "", "Set only the smart slot (atom or provider/model[@level]) — cannot combine with positional args")
-	modelsUseCmd.Flags().String("fast", "", "Set only the fast slot (atom or provider/model[@level]) — cannot combine with positional args")
-	modelsUseCmd.Flags().String("worker", "", "Also set the optional worker slot (atom or provider/model[@level])")
-	modelsUseCmd.Flags().String("reviewer", "", "Also set the optional reviewer slot (atom or provider/model[@level])")
-	modelsCmd.AddCommand(modelsUseCmd)
-}

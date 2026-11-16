@@ -264,7 +264,3 @@ func gitDiffStat(path string) string {
 	return ""
 }
 
-func init() {
-	sessionsDiffCmd.Flags().Bool("stat", false, "Show line-change statistics per file")
-	sessionsDiffCmd.Flags().Bool("json", false, "Emit JSON output")
-}
