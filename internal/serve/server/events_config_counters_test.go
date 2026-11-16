@@ -20,12 +20,12 @@ func TestForwardConfigSnapshotCounters(t *testing.T) {
 			beforeEnqueued := configNotificationsEnqueued.Load()
 			h := newHub()
 			if tc.fullQueue {
-				for range cap(h.broadcast) {
-					h.broadcast <- []byte(`ordinary`)
+				for range cap(h.BroadcastBlockingChan()) {
+					h.BroadcastBlocking([]byte(`ordinary`))
 				}
 			}
 			if tc.stopped {
-				close(h.stopped)
+				h.TestHookCloseStopped()
 			}
 			wire := ConfigWire{}
 			forwardConfigSnapshot(h, wire, tc.valid)

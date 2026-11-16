@@ -54,9 +54,7 @@ import (
 // Broadcast/BroadcastConfig.
 func pendingConfigEnvelope(t *testing.T, h *Hub) []byte {
 	t.Helper()
-	h.configMu.Lock()
-	defer h.configMu.Unlock()
-	return h.configPending
+	return h.PendingConfigEnvelope()
 }
 
 // lockedSyncRev extracts the settings-lock hash from disk bytes. It fails if
@@ -76,7 +74,7 @@ func lockedSyncRev(t *testing.T, disk []byte) string {
 func readTrustedReply(t *testing.T, c *Client) WSMessage {
 	t.Helper()
 	select {
-	case raw := <-c.send:
+	case raw := <-c.SendChan():
 		var reply WSMessage
 		require.NoError(t, json.Unmarshal(raw, &reply))
 		return reply
@@ -89,7 +87,7 @@ func readTrustedReply(t *testing.T, c *Client) WSMessage {
 func requireNoMoreReplies(t *testing.T, c *Client) {
 	t.Helper()
 	select {
-	case raw := <-c.send:
+	case raw := <-c.SendChan():
 		t.Fatalf("unexpected extra reply: %s", raw)
 	default:
 	}
@@ -98,7 +96,7 @@ func requireNoMoreReplies(t *testing.T, c *Client) {
 func requireNoPlainBroadcast(t *testing.T, c *Client) {
 	t.Helper()
 	select {
-	case raw := <-c.hub.broadcast:
+	case raw := <-c.Hub().BroadcastChan():
 		t.Fatalf("unexpected broadcast: %s", raw)
 	default:
 	}
@@ -151,7 +149,7 @@ func TestLockedConfigHandlersTrustedUIClientApplies(t *testing.T) {
 		// only broadcasts).
 		wantReply bool
 		// extraBroadcast: additional plain-broadcast envelope the handler
-		// emits on client.hub.broadcast ("" = none). EventConfig is never
+		// emits on client.Hub().BroadcastChan() ("" = none). EventConfig is never
 		// here — it goes through the coalescing slot.
 		extraBroadcast string
 		// diskCheck asserts on the raw global config bytes after the write.
@@ -445,7 +443,7 @@ func TestLockedConfigHandlersTrustedUIClientApplies(t *testing.T) {
 			require.Contains(t, beforeContextPaths, "kept")
 			require.NotContains(t, beforeContextPaths, "added")
 			client := newTestClient()
-			client.trustedSettingsWrite = true
+			client.SetTrustedSettingsWrite(true)
 			tc.run(a, client)
 
 			// Reply: either an ok response (most handlers) or nothing
@@ -465,7 +463,7 @@ func TestLockedConfigHandlersTrustedUIClientApplies(t *testing.T) {
 			// (EventScopedModels for the scoped-model handlers), nothing else.
 			if tc.extraBroadcast != "" {
 				select {
-				case raw := <-client.hub.broadcast:
+				case raw := <-client.Hub().BroadcastChan():
 					var broadcastEnv WSMessage
 					require.NoError(t, json.Unmarshal(raw, &broadcastEnv))
 					require.Equal(t, tc.extraBroadcast, broadcastEnv.Type)
@@ -479,7 +477,7 @@ func TestLockedConfigHandlersTrustedUIClientApplies(t *testing.T) {
 			requireNoPlainBroadcast(t, client)
 
 			// EventConfig broadcast: the handler's coalesced envelope.
-			pending := pendingConfigEnvelope(t, client.hub)
+			pending := pendingConfigEnvelope(t, client.Hub())
 			require.NotEmpty(t, pending, "handler must emit an EventConfig broadcast")
 			var env WSMessage
 			require.NoError(t, json.Unmarshal(pending, &env))
@@ -572,7 +570,7 @@ func TestLockedConfigHandlersAdminScopedClientStillRefused(t *testing.T) {
 			// on an allow-admin listener. trustedSettingsWrite stays false —
 			// scopes and policies must never confer the UI write authority.
 			client := newTestClient()
-			client.auth = newClientAuth(Principal{Scopes: []string{"admin"}}, CommandPolicy{AllowAdmin: true})
+			client.SetAuth(newClientAuth(Principal{Scopes: []string{"admin"}}, CommandPolicy{AllowAdmin: true}))
 
 			tc.run(a, client)
 
@@ -590,7 +588,7 @@ func TestLockedConfigHandlersAdminScopedClientStillRefused(t *testing.T) {
 			}
 			requireNoMoreReplies(t, client)
 			requireNoPlainBroadcast(t, client)
-			require.Empty(t, pendingConfigEnvelope(t, client.hub),
+			require.Empty(t, pendingConfigEnvelope(t, client.Hub()),
 				"refused handler must not emit an EventConfig broadcast")
 
 			afterDisk, err := os.ReadFile(path)

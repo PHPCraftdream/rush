@@ -38,16 +38,16 @@ var batchAddForWeb = func(ctx context.Context, a *appPkg.App, root, node string,
 func handleBatchControl(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p batchControlPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.SessionID == "" {
-		c.reply(msg.ID, EventError, nil, "invalid payload: sessionID required")
+		c.Reply(msg.ID, EventError, nil, "invalid payload: sessionID required")
 		return
 	}
 	if _, err := a.Sessions.Get(ctx, p.SessionID); err != nil {
-		c.reply(msg.ID, EventError, nil, "session not found")
+		c.Reply(msg.ID, EventError, nil, "session not found")
 		return
 	}
 	switch msg.Type {
 	case CmdBatchStatus:
-		c.reply(msg.ID, EventSessionBatchWork, buildBatchWorkSnapshot(ctx, a, p.SessionID), "")
+		c.Reply(msg.ID, EventSessionBatchWork, buildBatchWorkSnapshot(ctx, a, p.SessionID), "")
 	case CmdBatchOutput:
 		batchControlOutput(ctx, a, c, msg, p)
 	case CmdBatchStop:
@@ -60,7 +60,7 @@ func handleBatchControl(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 }
 
 func batchControlReply(c *Client, msg WSMessage, p batchControlPayload, result string, ok bool) {
-	c.reply(msg.ID, EventBatchControlResult, BatchControlResult{SessionID: p.SessionID, RootID: p.RootID, NodeID: p.NodeID, Action: msg.Type, Result: result, OK: ok}, "")
+	c.Reply(msg.ID, EventBatchControlResult, BatchControlResult{SessionID: p.SessionID, RootID: p.RootID, NodeID: p.NodeID, Action: msg.Type, Result: result, OK: ok}, "")
 }
 
 func batchControlOutput(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage, p batchControlPayload) {
@@ -87,7 +87,7 @@ func batchControlOutput(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		batchControlReply(c, msg, p, "no retained outcome is available", false)
 		return
 	}
-	c.reply(msg.ID, EventBatchControlResult, map[string]any{"sessionID": p.SessionID, "rootID": identity.Root, "nodeID": nodeID, "action": msg.Type, "result": "retained outcome (not a live stream)", "ok": true, "outcomeSummary": node.OutcomeSummary, "outcomeRef": node.ResponseEnvelopeRef.String, "responseEnvelope": node.ResponseEnvelope.String}, "")
+	c.Reply(msg.ID, EventBatchControlResult, map[string]any{"sessionID": p.SessionID, "rootID": identity.Root, "nodeID": nodeID, "action": msg.Type, "result": "retained outcome (not a live stream)", "ok": true, "outcomeSummary": node.OutcomeSummary, "outcomeRef": node.ResponseEnvelopeRef.String, "responseEnvelope": node.ResponseEnvelope.String}, "")
 }
 
 func batchControlStop(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage, p batchControlPayload) {
@@ -133,7 +133,7 @@ func batchControlStop(ctx context.Context, a *appPkg.App, c *Client, msg WSMessa
 			return
 		}
 	}
-	c.reply(msg.ID, EventBatchControlResult, map[string]any{"sessionID": p.SessionID, "rootID": identity.Root, "nodeID": nodeID, "action": msg.Type, "result": state, "ok": true, "requestID": req.RequestID, "answerCode": ackCode}, "")
+	c.Reply(msg.ID, EventBatchControlResult, map[string]any{"sessionID": p.SessionID, "rootID": identity.Root, "nodeID": nodeID, "action": msg.Type, "result": state, "ok": true, "requestID": req.RequestID, "answerCode": ackCode}, "")
 }
 
 func batchControlAdd(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage, p batchControlPayload) {
@@ -160,7 +160,7 @@ func batchControlAdd(ctx context.Context, a *appPkg.App, c *Client, msg WSMessag
 		batchControlReply(c, msg, p, err.Error(), false)
 		return
 	}
-	c.reply(msg.ID, EventBatchControlResult, BatchControlResult{SessionID: p.SessionID, RootID: identity.Root, NodeID: nodeID, Action: msg.Type, Result: "added", OK: true}, "")
+	c.Reply(msg.ID, EventBatchControlResult, BatchControlResult{SessionID: p.SessionID, RootID: identity.Root, NodeID: nodeID, Action: msg.Type, Result: "added", OK: true}, "")
 }
 
 // batchControlHostProbe reports this process's own host as alive (the shared

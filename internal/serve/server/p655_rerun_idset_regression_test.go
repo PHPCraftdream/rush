@@ -204,7 +204,7 @@ func TestHandleRerunMessage_ErrorPathAfterCompactionDoesNotDuplicatePrompt(t *te
 
 	hub := newHub()
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 10)
+	client.ResizeSendChan(10)
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
 	require.NoError(t, err)
 
@@ -308,7 +308,7 @@ func TestHandleRerunMessage_PanicBetweenHandoffAndCreateUserMessagePreservesProm
 
 	hub := newHub()
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 10)
+	client.ResizeSendChan(10)
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
 	require.NoError(t, err)
 
@@ -509,7 +509,7 @@ func TestHandleRerunMessage_TransientBaselineListFailureDoesNotDuplicatePrompt(t
 
 	hub := newHub()
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 10)
+	client.ResizeSendChan(10)
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
 	require.NoError(t, err)
 
@@ -650,7 +650,7 @@ func TestHandleRerunMessage_SeedContentPinsEarlierIdenticalPromptOnFailedListPat
 
 	hub := newHub()
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 10)
+	client.ResizeSendChan(10)
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
 	require.NoError(t, err)
 
@@ -804,7 +804,7 @@ func TestHandleRerunMessage_UnionLoopPinsForeignRowInsideWindowOnSuccessPath(t *
 
 	hub := newHub()
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 10)
+	client.ResizeSendChan(10)
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
 	require.NoError(t, err)
 

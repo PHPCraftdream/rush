@@ -1,8 +1,10 @@
-package server
+package hub
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"runtime/pprof"
 	"strings"
 	"sync"
 	"testing"
@@ -100,4 +102,57 @@ func TestPanicTimelineReportsOnlyOnFailure(t *testing.T) {
 			t.Errorf("report lacks %q: %s", want, report)
 		}
 	}
+}
+
+// panicRecorder, panicWindowGoroutines — small local copies (sprint 0 L4
+// escape rule): this test file moved from package server to hub, but the
+// helpers live in the staying rerun-window fixture
+// (p623_panic_window_diag_test.go:21-66 at HEAD, wsapi row). Verbatim copies;
+// servertest (L6/L7) absorbs them. The goroutine-stack filter still greps for
+// the rerun/reservation symbol names it had at HEAD.
+type panicRecorder struct {
+	mu  sync.Mutex
+	val any
+	hit bool
+}
+
+// capture must be deferred directly: recover only works in the deferred func.
+func (r *panicRecorder) capture() {
+	v := recover()
+	r.mu.Lock()
+	r.val, r.hit = v, v != nil
+	r.mu.Unlock()
+}
+
+func (r *panicRecorder) String() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.hit {
+		return "no panic was recovered"
+	}
+	return fmt.Sprintf("recovered panic: %v", r.val)
+}
+
+func (r *panicRecorder) value() any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.val
+}
+
+// panicWindowGoroutines returns the stacks of goroutines that are inside the
+// rerun handler or the reservation code, capped for a readable CI log.
+func panicWindowGoroutines() string {
+	var buf bytes.Buffer
+	_ = pprof.Lookup("goroutine").WriteTo(&buf, 2)
+	var keep []string
+	for _, g := range strings.Split(buf.String(), "\n\n") {
+		if strings.Contains(g, "handleRerunMessage") || strings.Contains(g, "ReserveExclusive") || strings.Contains(g, "RunWithReservedOwnership") {
+			keep = append(keep, g)
+		}
+	}
+	out := fmt.Sprintf("goroutines in the rerun handler / reservation code: %d\n%s", len(keep), strings.Join(keep, "\n\n"))
+	if len(out) > 12000 {
+		out = out[:12000] + "\n...(truncated)"
+	}
+	return out
 }

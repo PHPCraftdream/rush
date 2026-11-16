@@ -26,6 +26,8 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -114,7 +116,7 @@ func TestHandleRerunMessage_PanicBeforeHandoffReleasesReservation(t *testing.T) 
 
 	hub := newHub()
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 10)
+	client.ResizeSendChan(10)
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
 	require.NoError(t, err)
 
@@ -208,7 +210,7 @@ func TestHandleRerunMessage_PanicBeforeHandoffRecreatesPrompt(t *testing.T) {
 
 	hub := newHub()
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 10)
+	client.ResizeSendChan(10)
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
 	require.NoError(t, err)
 
@@ -404,3 +406,74 @@ func (p *panicWindowCoordinator) ReleaseExclusive(sessionID string, epoch uint64
 func (p *panicWindowCoordinator) RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, onHandoff func(), smart, fast *agent.ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	return p.coordinator.RunWithReservedOwnership(ctx, sessionID, prompt, epoch, cancel, onHandoff, smart, fast, attachments...)
 }
+
+// panicTimeline, panicHandlerSnapshot, panicReportSink — small local copies
+// (sprint 0 L4 escape rule): this file stays in package server (wsapi row;
+// rerun seam) but its helpers lived in panic_timeline_test.go, which moved to
+// hub (hub/panic_timeline_test.go, itself moved from
+// panic_timeline_test.go:12-76 at HEAD). Verbatim copies; servertest (L6/L7)
+// absorbs them.
+type panicTimeline struct {
+	mu       sync.Mutex
+	start    time.Time
+	events   []string
+	reported bool
+	snapshot func() string
+}
+
+func (tl *panicTimeline) add(event string) {
+	tl.mu.Lock()
+	defer tl.mu.Unlock()
+	if tl.start.IsZero() {
+		tl.start = time.Now()
+	}
+	tl.events = append(tl.events, fmt.Sprintf("+%s %s", time.Since(tl.start).Round(time.Millisecond), event))
+}
+
+func (tl *panicTimeline) report(t interface {
+	Failed() bool
+	Log(...any)
+}, rec *panicRecorder,
+) {
+	if !t.Failed() {
+		return
+	}
+	tl.mu.Lock()
+	if tl.reported {
+		tl.mu.Unlock()
+		return
+	}
+	tl.reported = true
+	snapshot := tl.snapshot
+	tl.mu.Unlock()
+	state := ""
+	if snapshot != nil {
+		state = snapshot()
+	}
+	t.Log("panic-window timeline:\n" + tl.String() + "\n" + state + rec.String() + "\n" + panicWindowGoroutines())
+}
+
+func (tl *panicTimeline) String() string {
+	tl.mu.Lock()
+	defer tl.mu.Unlock()
+	return strings.Join(tl.events, "\n")
+}
+
+func panicHandlerSnapshot(ctx context.Context, done <-chan struct{}) string {
+	returned := false
+	select {
+	case <-done:
+		returned = true
+	default:
+	}
+	deadline, hasDeadline := ctx.Deadline()
+	return fmt.Sprintf("handler returned=%v context err=%v hasDeadline=%v deadline=%s\n", returned, ctx.Err(), hasDeadline, deadline.Format(time.RFC3339Nano))
+}
+
+type panicReportSink struct {
+	failed bool
+	logs   []any
+}
+
+func (s *panicReportSink) Failed() bool    { return s.failed }
+func (s *panicReportSink) Log(args ...any) { s.logs = append(s.logs, args...) }

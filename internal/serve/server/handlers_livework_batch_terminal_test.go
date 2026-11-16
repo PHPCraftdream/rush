@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/serve/server/hub"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -213,7 +214,7 @@ func TestBatchRootItem_TerminalCausesMapToStatusReason(t *testing.T) {
 		node.Cause = tc.cause
 		node.UpdatedAt = 500
 		m := batchRootMeta{root: node}
-		item := batchRootItem(m, map[liveWorkTitleKey]string{}, map[string]session.ChildQuestion{})
+		item := batchRootItem(m, map[hub.TitleKey]string{}, map[string]session.ChildQuestion{})
 		require.Equal(t, tc.state, item.Status, tc.state)
 		require.Equal(t, tc.cause, item.Reason, tc.state)
 		require.NotZero(t, item.FinishedAt, tc.state)

@@ -47,24 +47,24 @@ func notifyWakeScheduler(a *appPkg.App) {
 func handleGetSessionWakeSchedules(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p GetSessionWakeSchedulesPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.SessionID == "" {
-		c.reply(msg.ID, EventError, nil, "invalid payload: sessionID required")
+		c.Reply(msg.ID, EventError, nil, "invalid payload: sessionID required")
 		return
 	}
 	if _, err := a.Sessions.Get(ctx, p.SessionID); err != nil {
-		c.reply(msg.ID, EventError, nil, "session not found")
+		c.Reply(msg.ID, EventError, nil, "session not found")
 		return
 	}
 	store := wakeScheduleStoreFor(a)
 	if store == nil {
-		c.reply(msg.ID, EventSessionWakeSchedules, SessionWakeSchedulesPayload{SessionID: p.SessionID, Schedules: []WakeScheduleWire{}}, "")
+		c.Reply(msg.ID, EventSessionWakeSchedules, SessionWakeSchedulesPayload{SessionID: p.SessionID, Schedules: []WakeScheduleWire{}}, "")
 		return
 	}
 	snap, err := buildSessionWakeSchedules(ctx, store, p.SessionID)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
-	c.reply(msg.ID, EventSessionWakeSchedules, snap, "")
+	c.Reply(msg.ID, EventSessionWakeSchedules, snap, "")
 }
 
 // handleCancelWakeSchedule cancels one schedule owned by the requested
@@ -76,16 +76,16 @@ func handleGetSessionWakeSchedules(ctx context.Context, a *appPkg.App, c *Client
 func handleCancelWakeSchedule(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p CancelWakeSchedulePayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.SessionID == "" || p.ScheduleID == "" {
-		c.reply(msg.ID, EventError, nil, "invalid payload: sessionID and scheduleID required")
+		c.Reply(msg.ID, EventError, nil, "invalid payload: sessionID and scheduleID required")
 		return
 	}
 	if _, err := a.Sessions.Get(ctx, p.SessionID); err != nil {
-		c.reply(msg.ID, EventError, nil, "session not found")
+		c.Reply(msg.ID, EventError, nil, "session not found")
 		return
 	}
 	store := wakeScheduleStoreFor(a)
 	if store == nil {
-		c.reply(msg.ID, EventError, nil, "wake schedules are not available")
+		c.Reply(msg.ID, EventError, nil, "wake schedules are not available")
 		return
 	}
 	// CancelSchedule alone cannot distinguish "unknown id" from "foreign
@@ -94,7 +94,7 @@ func handleCancelWakeSchedule(ctx context.Context, a *appPkg.App, c *Client, msg
 	// owner's own list is the ownership check (SCHED-5).
 	rows, err := store.ListSchedules(ctx, p.SessionID)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	known := false
@@ -105,20 +105,20 @@ func handleCancelWakeSchedule(ctx context.Context, a *appPkg.App, c *Client, msg
 		}
 	}
 	if !known {
-		c.reply(msg.ID, EventError, nil, "wake schedule not found")
+		c.Reply(msg.ID, EventError, nil, "wake schedule not found")
 		return
 	}
 	if err := store.CancelSchedule(ctx, p.SessionID, p.ScheduleID, time.Now()); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	notifyWakeScheduler(a)
 	snap, err := buildSessionWakeSchedules(ctx, store, p.SessionID)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
-	c.reply(msg.ID, EventSessionWakeSchedules, snap, "")
+	c.Reply(msg.ID, EventSessionWakeSchedules, snap, "")
 }
 
 // buildSessionWakeSchedules reads the owner's wake_schedules rows (ANY

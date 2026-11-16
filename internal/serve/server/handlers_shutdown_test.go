@@ -29,7 +29,7 @@ func TestShutdownServerHandlerRepliesThenSignals(t *testing.T) {
 	// it ready before the select below can race a nil-channel read.
 	sig := s.shutdownSignal()
 
-	conn, _, readPumpDone := dialTestWS(t, s)
+	conn, readPumpDone := dialTestWS(t, s)
 
 	// Start a background reader that watches for the expected ack frame.
 	acked := make(chan struct{})
@@ -141,7 +141,7 @@ func TestStartReturnsAfterWSShutdownSignal(t *testing.T) {
 	// specifically exercises Start's server-lifetime cancellation on the WS
 	// shutdown path, rather than relying on ctx cancellation in the test.
 	select {
-	case <-s.hub.stopped:
+	case <-s.hub.StoppedChan():
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for hub to stop after WebSocket shutdown")
 	}

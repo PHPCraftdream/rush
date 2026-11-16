@@ -7,11 +7,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/server/hub"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -44,19 +44,19 @@ const (
 func handleGetSessionLiveWork(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p GetSessionLiveWorkPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.SessionID == "" {
-		c.reply(msg.ID, EventError, nil, "invalid payload: sessionID required")
+		c.Reply(msg.ID, EventError, nil, "invalid payload: sessionID required")
 		return
 	}
 	if _, err := a.Sessions.Get(ctx, p.SessionID); err != nil {
-		c.reply(msg.ID, EventError, nil, "session not found")
+		c.Reply(msg.ID, EventError, nil, "session not found")
 		return
 	}
-	snap, err := buildSessionLiveWork(ctx, a, c.hub.liveWorkTitles, p.SessionID)
+	snap, err := buildSessionLiveWork(ctx, a, c.Hub().LiveWorkTitles(), p.SessionID)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
-	c.reply(msg.ID, EventSessionLiveWork, snap, "")
+	c.Reply(msg.ID, EventSessionLiveWork, snap, "")
 }
 
 // buildSessionLiveWork reads the flat projection from batch_nodes and
@@ -76,68 +76,25 @@ type liveWorkTitleJob struct {
 	inputHash  string
 }
 
-// liveWorkTitleKey identifies ONE live-work row's title. tool_call_id is
-// NOT unique (providers number calls per response, and a reused id is
-// archived and re-claimed), so the key carries the owner session AND the
-// row's input_hash: input_hash changes exactly when a row is re-claimed
-// with different input, which is the only way the title text can change —
-// same hash means the same input, so the cached title is still correct.
-// Per-hub (see Hub.liveWorkTitles), never package-global: a global
-// id-keyed cache leaked one session's titles into another session's panel.
-type liveWorkTitleKey struct {
-	owner      string
-	toolCallID string
-	inputHash  string
-}
-
-// titleCache is a bounded per-hub tool-call title cache so a repeated
-// snapshot does not re-read session history: only keys MISSING from the
-// cache trigger a history read at all. FIFO eviction at titleCacheCap.
-type titleCache struct {
-	mu      sync.Mutex
-	entries map[liveWorkTitleKey]string
-	fifo    []liveWorkTitleKey
-}
-
-const titleCacheCap = 4096
-
-func newTitleCache() *titleCache {
-	return &titleCache{entries: make(map[liveWorkTitleKey]string)}
-}
-
-func (c *titleCache) get(key liveWorkTitleKey) (string, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	t, ok := c.entries[key]
-	return t, ok
-}
-
-func (c *titleCache) put(key liveWorkTitleKey, title string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if _, exists := c.entries[key]; exists {
-		return
-	}
-	c.entries[key] = title
-	c.fifo = append(c.fifo, key)
-	for len(c.fifo) > titleCacheCap {
-		delete(c.entries, c.fifo[0])
-		c.fifo = c.fifo[1:]
-	}
-}
-
 // titles fills the requested rows' titles from the cache and, ONLY for
 // keys the cache is missing, reads the owner sessions' history (the
 // command/prompt text a job was started with lives only in the assistant
 // message's tool_call part — the batch root row stores just its hash). Missing
 // text (no message, or an input shape with nothing readable) falls back to
 // the row's result_summary at the caller.
-func (c *titleCache) titles(ctx context.Context, a *appPkg.App, jobs []liveWorkTitleJob) map[liveWorkTitleKey]string {
-	out := make(map[liveWorkTitleKey]string, len(jobs))
-	missing := make(map[liveWorkTitleKey]struct{})
+//
+// Sprint 0 L4 (S4): was the (c *titleCache) titles method; the cache moved to
+// hub.TitleCache (handlers_livework.go:135-179 at HEAD) and this stays as a
+// free function because it reads internal/app history (§2.6 forbids app in
+// hub). Body otherwise verbatim; c.get/c.put became cache.Get/cache.Put and
+// the key construction is explicit because liveWorkTitleJob no longer
+// converts to the (renamed, field-renamed) hub.TitleKey by identity.
+func titles(ctx context.Context, a *appPkg.App, cache *hub.TitleCache, jobs []liveWorkTitleJob) map[hub.TitleKey]string {
+	out := make(map[hub.TitleKey]string, len(jobs))
+	missing := make(map[hub.TitleKey]struct{})
 	for _, j := range jobs {
-		key := liveWorkTitleKey(j)
-		if t, ok := c.get(key); ok {
+		key := hub.TitleKey{Owner: j.owner, ToolCallID: j.toolCallID, InputHash: j.inputHash}
+		if t, ok := cache.Get(key); ok {
 			out[key] = t
 		} else {
 			missing[key] = struct{}{}
@@ -149,7 +106,7 @@ func (c *titleCache) titles(ctx context.Context, a *appPkg.App, jobs []liveWorkT
 
 	owners := make(map[string]struct{})
 	for key := range missing {
-		owners[key.owner] = struct{}{}
+		owners[key.Owner] = struct{}{}
 	}
 	for sessionID := range owners {
 		msgs, _, err := a.Messages.ListWithWatermark(ctx, sessionID)
@@ -164,11 +121,11 @@ func (c *titleCache) titles(ctx context.Context, a *appPkg.App, jobs []liveWorkT
 					continue
 				}
 				for key := range missing {
-					if key.toolCallID != tc.ID || key.owner != m.SessionID {
+					if key.ToolCallID != tc.ID || key.Owner != m.SessionID {
 						continue
 					}
 					title := abbreviateToolInput(tc.Input)
-					c.put(key, title)
+					cache.Put(key, title)
 					out[key] = title
 					delete(missing, key)
 				}
@@ -290,7 +247,7 @@ func (p *liveWorkPusher) pushOne(sessionID string) {
 	if _, err := p.a.Sessions.Get(p.ctx, sessionID); err != nil {
 		return
 	}
-	snap, err := buildSessionLiveWork(p.ctx, p.a, p.h.liveWorkTitles, sessionID)
+	snap, err := buildSessionLiveWork(p.ctx, p.a, p.h.LiveWorkTitles(), sessionID)
 	if err != nil {
 		slog.Warn("live_work: could not build the change snapshot", "session", sessionID, "err", err)
 		return

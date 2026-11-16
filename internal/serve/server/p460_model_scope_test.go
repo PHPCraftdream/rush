@@ -144,6 +144,6 @@ func TestSetSessionModels_DoesNotChangeGlobalDefault(t *testing.T) {
 // event loop needs to be running for a handler to complete.
 func newTestClient() *Client {
 	c := newClient(newHub(), nil)
-	c.send = make(chan []byte, 8)
+	c.ResizeSendChan(8)
 	return c
 }

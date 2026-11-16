@@ -1,28 +1,31 @@
-package server
+package hub
 
 import (
 	"bytes"
 	"encoding/json"
 	"testing"
+
+	"github.com/PHPCraftdream/rush/internal/serve/server/apiauth"
+	wsproto "github.com/PHPCraftdream/rush/internal/serve/server/wire"
 )
 
 func TestServeWSMCPStateReceivePolicy(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		auth    *clientAuth
+		auth    *ClientAuth
 		allowed bool
 	}{
 		{name: "ui", allowed: true},
-		{name: "read", auth: newClientAuth(Principal{Scopes: []string{"read"}}, CommandPolicy{AllowAdmin: true})},
-		{name: "admin listener disabled", auth: newClientAuth(Principal{Scopes: []string{"admin"}}, CommandPolicy{})},
-		{name: "admin", auth: newClientAuth(Principal{Scopes: []string{"admin"}}, CommandPolicy{AllowAdmin: true}), allowed: true},
+		{name: "read", auth: NewClientAuth(apiauth.Principal{Scopes: []string{"read"}}, CommandPolicy{AllowAdmin: true})},
+		{name: "admin listener disabled", auth: NewClientAuth(apiauth.Principal{Scopes: []string{"admin"}}, CommandPolicy{})},
+		{name: "admin", auth: NewClientAuth(apiauth.Principal{Scopes: []string{"admin"}}, CommandPolicy{AllowAdmin: true}), allowed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client := &Client{auth: tc.auth}
-			if got := client.mayReceive(EventMCPState); got != tc.allowed {
+			if got := client.mayReceive(wsproto.EventMCPState); got != tc.allowed {
 				t.Fatalf("mayReceive(mcp_state) = %v, want %v", got, tc.allowed)
 			}
-			if !client.mayReceive(EventSessionCreated) {
+			if !client.mayReceive(wsproto.EventSessionCreated) {
 				t.Fatal("non-MCP event was filtered")
 			}
 		})
@@ -31,9 +34,9 @@ func TestServeWSMCPStateReceivePolicy(t *testing.T) {
 
 func TestEnvelopeType(t *testing.T) {
 	for _, tc := range []struct{ name, raw, want string }{
-		{"broadcast shape", `{"type":"mcp_state","payload":{"a":1}}`, EventMCPState},
-		{"id first", `{"id":"1","type":"mcp_state"}`, EventMCPState},
-		{"type with escape uses the decoder", `{"type":"mcp_state"}`, EventMCPState},
+		{"broadcast shape", `{"type":"mcp_state","payload":{"a":1}}`, wsproto.EventMCPState},
+		{"id first", `{"id":"1","type":"mcp_state"}`, wsproto.EventMCPState},
+		{"type with escape uses the decoder", `{"type":"mcp_state"}`, wsproto.EventMCPState},
 		{"payload containing the key", `{"payload":{"type":"mcp_state"},"type":"x"}`, "x"},
 		{"not json", `nope`, ""},
 		{"empty", ``, ""},
@@ -49,7 +52,7 @@ func TestEnvelopeType(t *testing.T) {
 
 const configEnvelopeWithPaths = `{"id":"7","type":"config","payload":{"models":{},"providers":{},"cwd":"/home/me/project","contextPaths":["/home/me/AGENTS.md"],"skillsPaths":["/home/me/skills"],"theme":"dark","version":"1"}}`
 
-func filterConfig(t *testing.T, auth *clientAuth, raw string) map[string]json.RawMessage {
+func filterConfig(t *testing.T, auth *ClientAuth, raw string) map[string]json.RawMessage {
 	t.Helper()
 	out := auth.filter([]byte(raw), newLazyMeta([]byte(raw)))
 	if out == nil {
@@ -63,7 +66,7 @@ func filterConfig(t *testing.T, auth *clientAuth, raw string) map[string]json.Ra
 	if err := json.Unmarshal(out, &envelope); err != nil {
 		t.Fatalf("filtered envelope is not JSON: %v: %s", err, out)
 	}
-	if envelope.ID != "7" || envelope.Type != EventConfig {
+	if envelope.ID != "7" || envelope.Type != wsproto.EventConfig {
 		t.Fatalf("envelope id/type changed: %+v", envelope)
 	}
 	return envelope.Payload
@@ -83,7 +86,7 @@ func TestConfigEventLocalPathsRequireConfigScope(t *testing.T) {
 		{"admin", []string{"admin"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			payload := filterConfig(t, newClientAuth(Principal{Scopes: tc.scopes}, CommandPolicy{AllowAdmin: true}), configEnvelopeWithPaths)
+			payload := filterConfig(t, NewClientAuth(apiauth.Principal{Scopes: tc.scopes}, CommandPolicy{AllowAdmin: true}), configEnvelopeWithPaths)
 			if payload == nil {
 				t.Fatal("config event was dropped")
 			}
@@ -102,7 +105,7 @@ func TestConfigEventLocalPathsRequireConfigScope(t *testing.T) {
 }
 
 func TestConfigEventRedactionFailsClosedAndLeavesOtherEventsAlone(t *testing.T) {
-	read := newClientAuth(Principal{Scopes: []string{"read"}}, CommandPolicy{})
+	read := NewClientAuth(apiauth.Principal{Scopes: []string{"read"}}, CommandPolicy{})
 	for _, bad := range []string{`{"type":"config","payload":"cwd"}`, `{"type":"config","payload":[1]}`} {
 		if out := read.filter([]byte(bad), newLazyMeta([]byte(bad))); out != nil {
 			t.Errorf("unparseable config payload leaked: %s", out)
@@ -118,13 +121,13 @@ func TestConfigEventRedactionFailsClosedAndLeavesOtherEventsAlone(t *testing.T) 
 	}
 }
 
-// TestConfigWireReplyHidesLocalPathsFromReadToken drives the real ConfigWire
+// TestConfigWireReplyHidesLocalPathsFromReadToken drives the real wsproto.ConfigWire
 // through Client.reply (the get_config path), so the redacted keys cannot
 // drift from the struct's JSON names.
 func TestConfigWireReplyHidesLocalPathsFromReadToken(t *testing.T) {
-	wire := ConfigWire{
-		Models:       map[string]ModelEntryWire{},
-		Providers:    map[string]ProviderWire{},
+	wire := wsproto.ConfigWire{
+		Models:       map[string]wsproto.ModelEntryWire{},
+		Providers:    map[string]wsproto.ProviderWire{},
 		ContextPaths: []string{"/home/me/AGENTS.md"},
 		SkillsPaths:  []string{"/home/me/skills"},
 		CWD:          "/home/me/project",
@@ -134,8 +137,8 @@ func TestConfigWireReplyHidesLocalPathsFromReadToken(t *testing.T) {
 		scopes    []string
 		wantPaths bool
 	}{{[]string{"read"}, false}, {[]string{"config"}, true}} {
-		client := &Client{send: make(chan []byte, 1), auth: newClientAuth(Principal{Scopes: tc.scopes}, CommandPolicy{})}
-		client.reply("1", EventConfig, wire, "")
+		client := &Client{send: make(chan []byte, 1), auth: NewClientAuth(apiauth.Principal{Scopes: tc.scopes}, CommandPolicy{})}
+		client.Reply("1", wsproto.EventConfig, wire, "")
 		var body []byte
 		select {
 		case body = <-client.send:

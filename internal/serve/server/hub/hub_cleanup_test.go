@@ -1,4 +1,4 @@
-package server
+package hub
 
 import (
 	"context"
@@ -13,11 +13,11 @@ import (
 )
 
 func TestReadPumpCleanupReturnsAfterHubStopped(t *testing.T) {
-	hub := newHub()
+	hub := NewHub()
 	runCtx, stopHub := context.WithCancel(context.Background())
 	defer stopHub()
 	go hub.Run(runCtx)
-	s := &Server{hub: hub}
+	g := &gate{hub: hub, onIncoming: func(context.Context, *Client, []byte) {}}
 
 	stopHub()
 	select {
@@ -63,7 +63,7 @@ func TestReadPumpCleanupReturnsAfterHubStopped(t *testing.T) {
 	client := newClient(hub, serverConn)
 	done := make(chan struct{})
 	go func() {
-		s.readPump(context.Background(), client)
+		g.readPump(context.Background(), client)
 		close(done)
 	}()
 

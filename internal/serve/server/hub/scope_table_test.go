@@ -1,4 +1,4 @@
-package server
+package hub
 
 import (
 	"errors"
@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/PHPCraftdream/rush/internal/serve/server/apiauth"
 )
 
 func TestScopeTableExhaustive(t *testing.T) {
@@ -17,7 +19,7 @@ func TestScopeTableExhaustive(t *testing.T) {
 	// wire/snapshots.go.
 	var decls []ast.Decl
 	for _, name := range []string{"protocol.go", "snapshots.go"} {
-		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(".", "wire", name), nil, 0)
+		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join("..", "wire", name), nil, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -58,27 +60,27 @@ func TestAuthorizeCommandScopeMatrix(t *testing.T) {
 	isolateAPIGlobals(t)
 	cases := []struct {
 		name       string
-		principal  Principal
+		principal  apiauth.Principal
 		command    string
 		allowAdmin bool
 		want       error
 	}{
-		{"read/read", Principal{Scopes: []string{"read"}}, "list_sessions", false, nil},
-		{"read/run", Principal{Scopes: []string{"read"}}, "send_message", false, ErrScopeForbidden},
-		{"read/config", Principal{Scopes: []string{"read"}}, "set_system_prompt", false, ErrScopeForbidden},
-		{"read/admin", Principal{Scopes: []string{"read"}}, "set_provider_key", true, ErrScopeForbidden},
-		{"run/read", Principal{Scopes: []string{"run"}}, "list_sessions", false, nil},
-		{"run/run", Principal{Scopes: []string{"run"}}, "send_message", false, nil},
-		{"run/config", Principal{Scopes: []string{"run"}}, "set_system_prompt", false, ErrScopeForbidden},
-		{"run/admin", Principal{Scopes: []string{"run"}}, "set_provider_key", true, ErrScopeForbidden},
-		{"config/read", Principal{Scopes: []string{"config"}}, "list_sessions", false, nil},
-		{"config/run", Principal{Scopes: []string{"config"}}, "send_message", false, nil},
-		{"config/config", Principal{Scopes: []string{"config"}}, "set_system_prompt", false, nil},
-		{"config/admin", Principal{Scopes: []string{"config"}}, "set_provider_key", true, ErrScopeForbidden},
-		{"admin/read", Principal{Scopes: []string{"admin"}}, "list_sessions", false, nil},
-		{"admin/run", Principal{Scopes: []string{"admin"}}, "send_message", false, nil},
-		{"admin/config", Principal{Scopes: []string{"admin"}}, "set_system_prompt", false, nil},
-		{"admin/admin", Principal{Scopes: []string{"admin"}}, "set_provider_key", true, nil},
+		{"read/read", apiauth.Principal{Scopes: []string{"read"}}, "list_sessions", false, nil},
+		{"read/run", apiauth.Principal{Scopes: []string{"read"}}, "send_message", false, ErrScopeForbidden},
+		{"read/config", apiauth.Principal{Scopes: []string{"read"}}, "set_system_prompt", false, ErrScopeForbidden},
+		{"read/admin", apiauth.Principal{Scopes: []string{"read"}}, "set_provider_key", true, ErrScopeForbidden},
+		{"run/read", apiauth.Principal{Scopes: []string{"run"}}, "list_sessions", false, nil},
+		{"run/run", apiauth.Principal{Scopes: []string{"run"}}, "send_message", false, nil},
+		{"run/config", apiauth.Principal{Scopes: []string{"run"}}, "set_system_prompt", false, ErrScopeForbidden},
+		{"run/admin", apiauth.Principal{Scopes: []string{"run"}}, "set_provider_key", true, ErrScopeForbidden},
+		{"config/read", apiauth.Principal{Scopes: []string{"config"}}, "list_sessions", false, nil},
+		{"config/run", apiauth.Principal{Scopes: []string{"config"}}, "send_message", false, nil},
+		{"config/config", apiauth.Principal{Scopes: []string{"config"}}, "set_system_prompt", false, nil},
+		{"config/admin", apiauth.Principal{Scopes: []string{"config"}}, "set_provider_key", true, ErrScopeForbidden},
+		{"admin/read", apiauth.Principal{Scopes: []string{"admin"}}, "list_sessions", false, nil},
+		{"admin/run", apiauth.Principal{Scopes: []string{"admin"}}, "send_message", false, nil},
+		{"admin/config", apiauth.Principal{Scopes: []string{"admin"}}, "set_system_prompt", false, nil},
+		{"admin/admin", apiauth.Principal{Scopes: []string{"admin"}}, "set_provider_key", true, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -88,7 +90,7 @@ func TestAuthorizeCommandScopeMatrix(t *testing.T) {
 			}
 		})
 	}
-	for _, p := range []Principal{{}, {Scopes: []string{"unknown"}}} {
+	for _, p := range []apiauth.Principal{{}, {Scopes: []string{"unknown"}}} {
 		for _, command := range []string{"list_sessions", "send_message", "set_system_prompt", "set_provider_key"} {
 			want := error(ErrScopeForbidden)
 			if command == "set_provider_key" {
@@ -99,7 +101,7 @@ func TestAuthorizeCommandScopeMatrix(t *testing.T) {
 			}
 		}
 	}
-	admin := Principal{Scopes: []string{"admin"}}
+	admin := apiauth.Principal{Scopes: []string{"admin"}}
 	if err := AuthorizeCommand(admin, "set_provider_key", CommandPolicy{}); !errors.Is(err, ErrAdminDisallowed) {
 		t.Fatalf("admin without listener policy: %v", err)
 	}
@@ -110,7 +112,7 @@ func TestAuthorizeCommandScopeMatrix(t *testing.T) {
 
 func TestAuthorizeCommandAdminPolicy(t *testing.T) {
 	isolateAPIGlobals(t)
-	p := Principal{Scopes: []string{"admin"}}
+	p := apiauth.Principal{Scopes: []string{"admin"}}
 	if !errors.Is(AuthorizeCommand(p, "shutdown_server", CommandPolicy{}), ErrAdminDisallowed) {
 		t.Fatal("admin command did not return ErrAdminDisallowed")
 	}
@@ -120,7 +122,20 @@ func TestAuthorizeCommandAdminPolicy(t *testing.T) {
 	if AuthorizeCommand(p, "shutdown_server", CommandPolicy{AllowAdmin: true}) != nil {
 		t.Fatal("admin command denied")
 	}
-	if !errors.Is(AuthorizeCommand(Principal{Scopes: []string{"read"}}, "unknown", CommandPolicy{AllowAdmin: true}), ErrCommandUnmapped) {
+	if !errors.Is(AuthorizeCommand(apiauth.Principal{Scopes: []string{"read"}}, "unknown", CommandPolicy{AllowAdmin: true}), ErrCommandUnmapped) {
 		t.Fatal("unmapped command did not return ErrCommandUnmapped")
 	}
+}
+
+// isolateAPIGlobals local copy (sprint 0 L4): this test file moved from
+// package server to hub; the helper it used lived in the staying server-side
+// serve fixtures (ws_serve_slots_test.go:169, itself an S2/L2 verbatim copy
+// of apiauth_chain_test.go:29-36 at HEAD). Verbatim copy again; servertest
+// (L6/L7) absorbs it.
+func isolateAPIGlobals(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("RUSH_GLOBAL_DATA", dir)
+	t.Setenv("RUSH_GLOBAL_CONFIG", dir)
+	t.Setenv("RUSH_GLOBAL_DIR", dir)
 }

@@ -1,10 +1,12 @@
-package server
+package hub
 
 import (
 	"context"
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
 )
 
 func TestBroadcastConfigCoalescesLatestWhileQueueFull(t *testing.T) {
@@ -23,7 +25,7 @@ func TestBroadcastConfigCoalescesLatestWhileQueueFull(t *testing.T) {
 		{name: "specialized then generic", updates: []string{"old", "latest"}, want: "latest", fullQueue: true, wantOrdinary: 1024},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newHub()
+			h := NewHub()
 			client := &Client{send: make(chan []byte, 1025)}
 			h.clients[client] = struct{}{}
 			if tc.fullQueue {
@@ -37,7 +39,7 @@ func TestBroadcastConfigCoalescesLatestWhileQueueFull(t *testing.T) {
 			for _, model := range tc.updates {
 				generic := (tc.genericOld && model == "old") || (!tc.genericOld && tc.name == "specialized then generic" && model == "latest")
 				if generic {
-					h.Broadcast(EventConfig, map[string]string{"model": model})
+					h.Broadcast(wire.EventConfig, map[string]string{"model": model})
 				} else if !h.BroadcastConfig(map[string]string{"model": model}) {
 					t.Fatal("config update rejected")
 				}
@@ -65,12 +67,12 @@ func TestBroadcastConfigCoalescesLatestWhileQueueFull(t *testing.T) {
 			ordinary, configs := 0, 0
 			for len(client.send) > 0 {
 				raw := <-client.send
-				var env WSMessage
+				var env wire.WSMessage
 				if err := json.Unmarshal(raw, &env); err != nil {
 					t.Fatal(err)
 				}
 				switch env.Type {
-				case EventConfig:
+				case wire.EventConfig:
 					configs++
 					var payload map[string]string
 					if err := json.Unmarshal(env.Payload, &payload); err != nil {
@@ -94,7 +96,7 @@ func TestBroadcastConfigCoalescesLatestWhileQueueFull(t *testing.T) {
 }
 
 func TestBroadcastConfigRejectsInvalidAndStoppedHub(t *testing.T) {
-	h := newHub()
+	h := NewHub()
 	if h.BroadcastConfig(make(chan int)) {
 		t.Fatal("unsupported payload accepted")
 	}

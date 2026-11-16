@@ -44,7 +44,7 @@ func requestSnapshot(t *testing.T, a *app.App, client *Client, sessionID string)
 	handleGetSessionLiveWork(t.Context(), a, client, WSMessage{ID: "req", Type: CmdGetSessionLiveWork, Payload: payload})
 	for {
 		select {
-		case raw := <-client.send:
+		case raw := <-client.SendChan():
 			var env WSMessage
 			require.NoError(t, json.Unmarshal(raw, &env))
 			if env.Type != EventSessionLiveWork {
@@ -59,7 +59,7 @@ func requestSnapshot(t *testing.T, a *app.App, client *Client, sessionID string)
 	}
 }
 
-// collectLiveWorkSnapshots drains client.send for d and returns every
+// collectLiveWorkSnapshots drains client.SendChan() for d and returns every
 // session_live_work payload received in that window.
 func collectLiveWorkSnapshots(t *testing.T, client *Client, d time.Duration) []*SessionLiveWorkPayload {
 	t.Helper()
@@ -67,7 +67,7 @@ func collectLiveWorkSnapshots(t *testing.T, client *Client, d time.Duration) []*
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
 		select {
-		case raw := <-client.send:
+		case raw := <-client.SendChan():
 			var env WSMessage
 			require.NoError(t, json.Unmarshal(raw, &env))
 			if env.Type != EventSessionLiveWork {
@@ -87,8 +87,8 @@ func TestHandleGetSessionLiveWork_EmptySession(t *testing.T) {
 	hub := newHub()
 	go hub.Run(t.Context())
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 
 	sess, err := a.Sessions.Create(t.Context(), "lw empty")
 	require.NoError(t, err)
@@ -105,8 +105,8 @@ func TestHandleGetSessionLiveWork_UnknownSessionIsRefused(t *testing.T) {
 	hub := newHub()
 	go hub.Run(t.Context())
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 
 	payload, err := json.Marshal(GetSessionLiveWorkPayload{SessionID: "does-not-exist"})
 	require.NoError(t, err)
@@ -116,7 +116,7 @@ func TestHandleGetSessionLiveWork_UnknownSessionIsRefused(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for !gotErr && time.Now().Before(deadline) {
 		select {
-		case raw := <-client.send:
+		case raw := <-client.SendChan():
 			var env WSMessage
 			require.NoError(t, json.Unmarshal(raw, &env))
 			gotErr = env.Type == EventError
@@ -134,8 +134,8 @@ func TestHandleGetSessionLiveWork_RunningAndTerminalCommands(t *testing.T) {
 	go func() { defer close(hubDone); hub.Run(ctx) }()
 	t.Cleanup(func() { cancel(); <-hubDone })
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 
 	sess, err := a.Sessions.Create(ctx, "lw commands")
 	require.NoError(t, err)
@@ -183,8 +183,8 @@ func TestHandleGetSessionLiveWork_TerminalCausesAreDistinct(t *testing.T) {
 	go func() { defer close(hubDone); hub.Run(ctx) }()
 	t.Cleanup(func() { cancel(); <-hubDone })
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 
 	sess, err := a.Sessions.Create(ctx, "lw causes")
 	require.NoError(t, err)
@@ -217,8 +217,8 @@ func TestHandleGetSessionLiveWork_SubAgentDelegation(t *testing.T) {
 	hub := newHub()
 	go hub.Run(t.Context())
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 	ctx := t.Context()
 
 	root, err := a.Sessions.Create(ctx, "lw root")
@@ -256,8 +256,8 @@ func TestHandleGetSessionLiveWork_CrossProcessRowsReadFromDB(t *testing.T) {
 	hub := newHub()
 	go hub.Run(t.Context())
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 	ctx := t.Context()
 
 	sess, err := a.Sessions.Create(ctx, "lw cross-process")
@@ -297,8 +297,8 @@ func TestLiveWorkPusher_CoalescesBurstIntoOneSnapshot(t *testing.T) {
 	hub := newHub()
 	go hub.Run(t.Context())
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 	ctx := t.Context()
 
 	sess, err := a.Sessions.Create(ctx, "lw coalesce")
@@ -318,7 +318,7 @@ func TestLiveWorkPusher_CoalescesBurstIntoOneSnapshot(t *testing.T) {
 	// and scheduler have completed after a fixed sleep.
 	var first *SessionLiveWorkPayload
 	select {
-	case raw := <-client.send:
+	case raw := <-client.SendChan():
 		var env WSMessage
 		require.NoError(t, json.Unmarshal(raw, &env))
 		require.Equal(t, EventSessionLiveWork, env.Type)
@@ -341,8 +341,8 @@ func TestLiveWorkPusher_DeletedSessionGetsNoSnapshot(t *testing.T) {
 	hub := newHub()
 	go hub.Run(t.Context())
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 	ctx := t.Context()
 
 	p := startLiveWorkPusher(ctx, a, hub)
@@ -396,8 +396,8 @@ func TestLiveWorkTitles_IsolatedPerSession(t *testing.T) {
 	hub := newHub()
 	go hub.Run(t.Context())
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 	ctx := t.Context()
 
 	for i, name := range []string{"lw iso a", "lw iso b"} {
@@ -431,8 +431,8 @@ func TestLiveWorkTitles_InputChangeInvalidates(t *testing.T) {
 	hub := newHub()
 	go hub.Run(t.Context())
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 	ctx := t.Context()
 
 	sess, err := a.Sessions.Create(ctx, "lw reuse")
@@ -482,8 +482,8 @@ func TestLiveWorkTitles_ReusedToolCallIDKeepsBothIncarnations(t *testing.T) {
 	hub := newHub()
 	go hub.Run(t.Context())
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 	ctx := t.Context()
 
 	sess, err := a.Sessions.Create(ctx, "lw reuse both")
@@ -541,8 +541,8 @@ func TestLiveWorkTitles_CacheAvoidsHistoryReread(t *testing.T) {
 	hub := newHub()
 	go hub.Run(t.Context())
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 	ctx := t.Context()
 
 	sess, err := a.Sessions.Create(ctx, "lw cache")
@@ -609,8 +609,8 @@ func TestBuildSessionLiveWork_TerminalCap(t *testing.T) {
 	go func() { defer close(hubDone); hub.Run(ctx) }()
 	t.Cleanup(func() { cancel(); <-hubDone })
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 
 	snap := requestSnapshot(t, a, client, sess.ID)
 	require.NotNil(t, snap)
@@ -668,8 +668,8 @@ func TestMaybeBroadcastSessionLiveWork(t *testing.T) {
 	hub := newHub()
 	go hub.Run(ctx)
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 
 	// The real wiring under test: events.go's message subscription marking
 	// dirty sessions and the worker pushing snapshots off the hot path.

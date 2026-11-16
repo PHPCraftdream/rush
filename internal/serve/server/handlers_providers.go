@@ -19,46 +19,46 @@ import (
 func handleSetProviderKey(a *appPkg.App, c *Client, msg WSMessage) {
 	var p SetProviderKeyPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	store := a.Store()
 	if store == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
-	if err := store.SetProviderAPIKeyWithAuthority(config.ScopeGlobal, p.ProviderID, p.APIKey, c.settingsWriteAuthority()); err != nil {
+	if err := store.SetProviderAPIKeyWithAuthority(config.ScopeGlobal, p.ProviderID, p.APIKey, c.SettingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to set provider API key", "provider", p.ProviderID, "err", err)
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	// Broadcast updated config to all clients
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 func handleRemoveProviderKey(a *appPkg.App, c *Client, msg WSMessage) {
 	var p RemoveProviderKeyPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	store := a.Store()
 	if store == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
-	if err := store.RemoveProviderAPIKeyWithAuthority(config.ScopeGlobal, p.ProviderID, c.settingsWriteAuthority()); err != nil {
+	if err := store.RemoveProviderAPIKeyWithAuthority(config.ScopeGlobal, p.ProviderID, c.SettingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to remove provider API key", "provider", p.ProviderID, "err", err)
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 // ── Custom providers ──────────────────────────────────────────────────────────
@@ -140,26 +140,26 @@ func scopeFromWire(s string) config.Scope {
 func handleAddCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 	var p AddCustomProviderPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	if p.ID == "" || p.BaseURL == "" {
-		c.reply(msg.ID, EventError, nil, "id and baseUrl are required")
+		c.Reply(msg.ID, EventError, nil, "id and baseUrl are required")
 		return
 	}
 	peakHours, err := peakHoursFromWire(p.PeakHours)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, fmt.Sprintf("invalid peakHours: %v", err))
+		c.Reply(msg.ID, EventError, nil, fmt.Sprintf("invalid peakHours: %v", err))
 		return
 	}
 	store := a.Store()
 	cfg := store.Config()
 	if cfg == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	if _, exists := cfg.Providers.Get(p.ID); exists {
-		c.reply(msg.ID, EventError, nil, fmt.Sprintf("provider %q already exists", p.ID))
+		c.Reply(msg.ID, EventError, nil, fmt.Sprintf("provider %q already exists", p.ID))
 		return
 	}
 	models := make([]catwalk.Model, len(p.Models))
@@ -183,38 +183,38 @@ func handleAddCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 	}
 	scope := scopeFromWire(p.Scope)
 	field := fmt.Sprintf("providers.%s", p.ID)
-	if err := store.SetConfigFieldsWithAuthority(scope, customProviderWriteFields(field, providerCfg, scope), c.settingsWriteAuthority()); err != nil {
+	if err := store.SetConfigFieldsWithAuthority(scope, customProviderWriteFields(field, providerCfg, scope), c.SettingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to persist custom provider", "id", p.ID, "err", err)
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	cfg.Providers.Set(p.ID, providerCfg)
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 func handleRemoveCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 	var p RemoveCustomProviderPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	if p.ID == "" {
-		c.reply(msg.ID, EventError, nil, "id is required")
+		c.Reply(msg.ID, EventError, nil, "id is required")
 		return
 	}
 	store := a.Store()
 	cfg := store.Config()
 	if cfg == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	field := fmt.Sprintf("providers.%s", p.ID)
-	if err := store.RemoveConfigFieldWithAuthority(scopeFromWire(p.Scope), field, c.settingsWriteAuthority()); err != nil {
+	if err := store.RemoveConfigFieldWithAuthority(scopeFromWire(p.Scope), field, c.SettingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to remove custom provider", "id", p.ID, "err", err)
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	// RemoveConfigField auto-reloads and publishes a new snapshot, making cfg
@@ -224,30 +224,30 @@ func handleRemoveCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 		liveCfg.Providers.Del(p.ID)
 	}
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 func handleUpdateCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 	var p UpdateCustomProviderPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	if p.OldID == "" || p.ID == "" || p.BaseURL == "" {
-		c.reply(msg.ID, EventError, nil, "oldId, id and baseUrl are required")
+		c.Reply(msg.ID, EventError, nil, "oldId, id and baseUrl are required")
 		return
 	}
 	peakHours, err := peakHoursFromWire(p.PeakHours)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, fmt.Sprintf("invalid peakHours: %v", err))
+		c.Reply(msg.ID, EventError, nil, fmt.Sprintf("invalid peakHours: %v", err))
 		return
 	}
 	store := a.Store()
 	cfg := store.Config()
 	if cfg == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	// Preserve the existing key when the edit form omits it. A non-empty
@@ -282,22 +282,22 @@ func handleUpdateCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 	newProviderField := fmt.Sprintf("providers.%s", p.ID)
 	if p.OldID != p.ID {
 		if _, exists := cfg.Providers.Get(p.ID); exists {
-			c.reply(msg.ID, EventError, nil, fmt.Sprintf("provider %q already exists", p.ID))
+			c.Reply(msg.ID, EventError, nil, fmt.Sprintf("provider %q already exists", p.ID))
 			return
 		}
 	}
-	if err := store.SetConfigFieldsWithAuthority(scope, customProviderWriteFields(newProviderField, providerCfg, scope), c.settingsWriteAuthority()); err != nil {
+	if err := store.SetConfigFieldsWithAuthority(scope, customProviderWriteFields(newProviderField, providerCfg, scope), c.SettingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to persist updated custom provider", "id", p.ID, "err", err)
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	if p.OldID != p.ID {
-		if err := store.RemoveConfigFieldWithAuthority(scope, fmt.Sprintf("providers.%s", p.OldID), c.settingsWriteAuthority()); err != nil {
+		if err := store.RemoveConfigFieldWithAuthority(scope, fmt.Sprintf("providers.%s", p.OldID), c.SettingsWriteAuthority()); err != nil {
 			slog.Warn("ws: failed to remove old custom provider; rolling back new provider", "id", p.OldID, "new_id", p.ID, "err", err)
-			if rollbackErr := store.RemoveConfigFieldWithAuthority(scope, newProviderField, c.settingsWriteAuthority()); rollbackErr != nil {
+			if rollbackErr := store.RemoveConfigFieldWithAuthority(scope, newProviderField, c.SettingsWriteAuthority()); rollbackErr != nil {
 				slog.Warn("ws: failed to roll back new custom provider after rename failure", "id", p.ID, "err", rollbackErr)
 			}
-			c.reply(msg.ID, EventError, nil, err.Error())
+			c.Reply(msg.ID, EventError, nil, err.Error())
 			return
 		}
 	}
@@ -306,9 +306,9 @@ func handleUpdateCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 	}
 	cfg.Providers.Set(p.ID, providerCfg)
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 // handleSetProviderPeakHours sets or clears ONLY the peak_hours field on any
@@ -327,27 +327,27 @@ func handleUpdateCustomProvider(a *appPkg.App, c *Client, msg WSMessage) {
 func handleSetProviderPeakHours(a *appPkg.App, c *Client, msg WSMessage) {
 	var p SetProviderPeakHoursPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	if p.ID == "" {
-		c.reply(msg.ID, EventError, nil, "id is required")
+		c.Reply(msg.ID, EventError, nil, "id is required")
 		return
 	}
 	peakHours, err := peakHoursFromWire(p.PeakHours)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, fmt.Sprintf("invalid peakHours: %v", err))
+		c.Reply(msg.ID, EventError, nil, fmt.Sprintf("invalid peakHours: %v", err))
 		return
 	}
 	store := a.Store()
 	cfg := store.Config()
 	if cfg == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	providerCfg, ok := cfg.Providers.Get(p.ID)
 	if !ok {
-		c.reply(msg.ID, EventError, nil, fmt.Sprintf("provider %q not found", p.ID))
+		c.Reply(msg.ID, EventError, nil, fmt.Sprintf("provider %q not found", p.ID))
 		return
 	}
 	scope := scopeFromWire(p.Scope)
@@ -356,19 +356,19 @@ func handleSetProviderPeakHours(a *appPkg.App, c *Client, msg WSMessage) {
 	normalized := peakHours.NormalizeForWrite()
 	if normalized == nil {
 		if scope == config.ScopeWorkspace {
-			if err := store.SetConfigFieldWithAuthority(scope, fieldKey, nil, c.settingsWriteAuthority()); err != nil {
+			if err := store.SetConfigFieldWithAuthority(scope, fieldKey, nil, c.SettingsWriteAuthority()); err != nil {
 				slog.Warn("ws: failed to persist explicit peak_hours off", "id", p.ID, "err", err)
-				c.reply(msg.ID, EventError, nil, fmt.Sprintf("failed to persist peak_hours: %v", err))
+				c.Reply(msg.ID, EventError, nil, fmt.Sprintf("failed to persist peak_hours: %v", err))
 				return
 			}
-		} else if err := store.RemoveConfigFieldWithAuthority(scope, fieldKey, c.settingsWriteAuthority()); err != nil {
+		} else if err := store.RemoveConfigFieldWithAuthority(scope, fieldKey, c.SettingsWriteAuthority()); err != nil {
 			slog.Warn("ws: failed to clear provider peak_hours", "id", p.ID, "err", err)
-			c.reply(msg.ID, EventError, nil, fmt.Sprintf("failed to persist peak_hours: %v", err))
+			c.Reply(msg.ID, EventError, nil, fmt.Sprintf("failed to persist peak_hours: %v", err))
 			return
 		}
 	} else {
-		if err := store.SetConfigFieldWithAuthority(scope, fieldKey, normalized, c.settingsWriteAuthority()); err != nil {
-			c.reply(msg.ID, EventError, nil, fmt.Sprintf("failed to persist peak_hours: %v", err))
+		if err := store.SetConfigFieldWithAuthority(scope, fieldKey, normalized, c.SettingsWriteAuthority()); err != nil {
+			c.Reply(msg.ID, EventError, nil, fmt.Sprintf("failed to persist peak_hours: %v", err))
 			return
 		}
 	}
@@ -378,7 +378,7 @@ func handleSetProviderPeakHours(a *appPkg.App, c *Client, msg WSMessage) {
 	providerCfg.PeakHours = normalized
 	cfg.Providers.Set(p.ID, providerCfg)
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }

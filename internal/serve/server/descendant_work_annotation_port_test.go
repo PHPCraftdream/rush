@@ -31,8 +31,8 @@ func testHandleListSessionsLiveWorkAnnotationBatchOn(t *testing.T) {
 	go func() { defer close(hubDone); hub.Run(hubCtx) }()
 	t.Cleanup(func() { cancel(); <-hubDone })
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 512)
-	hub.register <- client
+	client.ResizeSendChan(512)
+	hub.Register(client)
 
 	addOwner := func(name string, child bool) (string, string) {
 		owner, err := a.Sessions.Create(ctx, name)

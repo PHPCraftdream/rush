@@ -92,7 +92,7 @@ func TestCustomRoleHandlerLockedNonUIClientsCannotMutate(t *testing.T) {
 	for _, admin := range []bool{false, true} {
 		client := newTestClient()
 		if admin {
-			client.auth = newClientAuth(Principal{Scopes: []string{"admin"}}, CommandPolicy{AllowAdmin: true})
+			client.SetAuth(newClientAuth(Principal{Scopes: []string{"admin"}}, CommandPolicy{AllowAdmin: true}))
 		}
 		handleSetCustomRole(a, client, WSMessage{ID: "refused", Type: CmdSetCustomRole, Payload: json.RawMessage(`{"scope":"global","name":"reader","provider":"acme","model":"small-global","tools":[]}`)})
 		reply := readTrustedReply(t, client)

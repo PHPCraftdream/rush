@@ -1,6 +1,11 @@
-package server
+package hub
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
+	"github.com/PHPCraftdream/rush/internal/session"
+)
 
 type eventClass uint8
 
@@ -19,19 +24,19 @@ func newPinnedView(sessionID string) pinnedView { return pinnedView{sessionID: s
 // eventClasses explicitly classifies every outbound protocol event. Globals
 // not explicitly safe for pinned views are denied, including sensitive globals.
 var eventClasses = map[string]eventClass{
-	EventHello:          eventNeverPinned, // hello is emitted directly by handleWS, not the hub.
-	EventMessageCreated: eventSession, EventMessageUpdated: eventSession,
-	EventMessageDeleted: eventSession, EventSessionCreated: eventSession,
-	EventSessionUpdated: eventSession, EventSessionDeleted: eventSession,
-	EventMCPState: eventSensitiveGlobal, EventLSPState: eventNeverPinned,
-	EventAgentBusy: eventSession, EventSessionsList: eventSession,
-	EventMessagesList: eventSession, EventConfig: eventSensitiveGlobal,
-	EventLogs: eventSensitiveGlobal, EventUpdateAvailable: eventSafeGlobal,
-	EventResponse: eventSession, EventError: eventNeverPinned,
-	EventSystemPrompt: eventSession, EventSkills: eventNeverPinned,
-	EventSummarizeQueued: eventSession, EventScopedModels: eventNeverPinned,
-	EventSessionLiveWork: eventSession, EventSessionWakeSchedules: eventSession,
-	EventSessionBatchWork: eventSession, EventBatchControlResult: eventSession,
+	wire.EventHello:          eventNeverPinned, // hello is emitted directly by handleWS, not the hub.
+	wire.EventMessageCreated: eventSession, wire.EventMessageUpdated: eventSession,
+	wire.EventMessageDeleted: eventSession, wire.EventSessionCreated: eventSession,
+	wire.EventSessionUpdated: eventSession, wire.EventSessionDeleted: eventSession,
+	wire.EventMCPState: eventSensitiveGlobal, wire.EventLSPState: eventNeverPinned,
+	wire.EventAgentBusy: eventSession, wire.EventSessionsList: eventSession,
+	wire.EventMessagesList: eventSession, wire.EventConfig: eventSensitiveGlobal,
+	wire.EventLogs: eventSensitiveGlobal, wire.EventUpdateAvailable: eventSafeGlobal,
+	wire.EventResponse: eventSession, wire.EventError: eventNeverPinned,
+	wire.EventSystemPrompt: eventSession, wire.EventSkills: eventNeverPinned,
+	wire.EventSummarizeQueued: eventSession, wire.EventScopedModels: eventNeverPinned,
+	wire.EventSessionLiveWork: eventSession, wire.EventSessionWakeSchedules: eventSession,
+	wire.EventSessionBatchWork: eventSession, wire.EventBatchControlResult: eventSession,
 }
 
 type eventMetadata struct {
@@ -131,7 +136,7 @@ func (v pinnedView) allows(meta eventMetadata) bool {
 	}
 	switch meta.class {
 	case eventSafeGlobal:
-		return meta.msgType == EventUpdateAvailable
+		return meta.msgType == wire.EventUpdateAvailable
 	case eventSession:
 		if len(meta.sessionIDs) == 0 {
 			return false
@@ -154,7 +159,7 @@ func (v pinnedView) project(raw []byte, meta eventMetadata) []byte {
 	if meta.class != eventSafeGlobal {
 		return raw
 	}
-	var message WSMessage
+	var message wire.WSMessage
 	if json.Unmarshal(raw, &message) != nil {
 		return nil
 	}
@@ -178,3 +183,26 @@ func (v pinnedView) project(raw []byte, meta eventMetadata) []byte {
 }
 
 func isSessionEventType(msgType string) bool { return eventClasses[msgType] == eventSession }
+
+// filterSessionsForPinnedClient gives list_sessions the same pinned-session
+// visibility boundary as event delivery. Unbound clients retain the full list.
+func FilterSessionsForPinnedClient(sessions []session.Session, c *Client) []session.Session {
+	if c == nil || c.auth == nil || c.auth.view.sessionID == "" {
+		return sessions
+	}
+	return PinnedSessionsOnly(sessions, c.auth.view.sessionID)
+}
+
+// PinnedSessionsOnly keeps only the pinned session of a list. Exported for
+// its root REST consumer api_read_handlers.go:123 (provenance:
+// api_read_handlers.go:123 (REST sessions read) stays in package server
+// until L6 (provenance: hub_pin_sessions.go:16-24 at HEAD, body verbatim).
+func PinnedSessionsOnly(sessions []session.Session, pin string) []session.Session {
+	kept := make([]session.Session, 0, 1)
+	for _, sess := range sessions {
+		if sess.ID == pin {
+			kept = append(kept, sess)
+		}
+	}
+	return kept
+}

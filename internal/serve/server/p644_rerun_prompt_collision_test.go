@@ -63,7 +63,7 @@ func TestHandleRerunMessage_PromptRecreatedDespiteEarlierIdenticalPrompt(t *test
 
 	hub := newHub()
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 10)
+	client.ResizeSendChan(10)
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: targetID})
 	require.NoError(t, err)
 

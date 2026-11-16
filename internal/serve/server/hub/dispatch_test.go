@@ -1,4 +1,4 @@
-package server
+package hub
 
 import (
 	"bytes"
@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
 )
 
 // TestDispatchRecoversPanic verifies that a handler panic inside dispatch is
@@ -31,12 +33,12 @@ func TestDispatchRecoversPanic(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	c := newClient(newHub(), nil)
+	c := newClient(NewHub(), nil)
 	t.Cleanup(func() { close(c.workQueue) })
 
 	var done sync.WaitGroup
 	done.Add(1)
-	c.dispatch("handlePanicky", "", func() {
+	c.Dispatch("handlePanicky", "", func() {
 		defer done.Done()
 		var m map[string]int
 		m["boom"] = 1 //nolint:staticcheck // SA5000: deliberate nil-map write to trigger a real panic for this test
@@ -62,12 +64,12 @@ func TestDispatchConnectionSurvivesHandlerPanic(t *testing.T) {
 	// Deliberately NOT t.Parallel(): see the comment on
 	// TestDispatchRecoversPanic above - this test's panic also logs
 	// through the process-global slog.Default(), which that test captures.
-	c := newClient(newHub(), nil)
+	c := newClient(NewHub(), nil)
 	t.Cleanup(func() { close(c.workQueue) })
 
 	var panicked sync.WaitGroup
 	panicked.Add(1)
-	c.dispatch("boom", "", func() {
+	c.Dispatch("boom", "", func() {
 		defer panicked.Done()
 		panic("simulated handler panic")
 	})
@@ -80,7 +82,7 @@ func TestDispatchConnectionSurvivesHandlerPanic(t *testing.T) {
 	var rest sync.WaitGroup
 	rest.Add(n)
 	for i := 0; i < n; i++ {
-		c.dispatch("afterPanic", "", func() {
+		c.Dispatch("afterPanic", "", func() {
 			defer rest.Done()
 			atomic.AddInt32(&ran, 1)
 		})
@@ -101,7 +103,7 @@ func TestDispatchConnectionSurvivesHandlerPanic(t *testing.T) {
 func TestDispatchBoundsConcurrencyPerConnection(t *testing.T) {
 	t.Parallel()
 
-	c := newClient(newHub(), nil)
+	c := newClient(NewHub(), nil)
 	release := make(chan struct{})
 	releaseOnce := sync.Once{}
 	unblock := func() { releaseOnce.Do(func() { close(release) }) }
@@ -122,7 +124,7 @@ func TestDispatchBoundsConcurrencyPerConnection(t *testing.T) {
 		producers.Add(1)
 		go func() {
 			defer producers.Done()
-			c.dispatch("slow", "", func() {
+			c.Dispatch("slow", "", func() {
 				n := atomic.AddInt32(&inFlight, 1)
 				for {
 					old := atomic.LoadInt32(&maxObserved)
@@ -167,14 +169,14 @@ func TestDispatchBoundsConcurrencyPerConnection(t *testing.T) {
 // unit-level counterpart of the #612 fix: once workerPoolSize handlers are
 // running AND workQueueDepth more are already queued behind them, a further
 // dispatch call must not block its caller — admission is a non-blocking
-// select, and the excess item is dropped with an EventError overload reply
+// select, and the excess item is dropped with an wire.EventError overload reply
 // instead. This is what makes it safe for dispatch to be called synchronously
 // from readPump's read loop (see TestReadPumpCancelBypassesQueuedWorkFrame
 // for the full end-to-end version going through the actual socket).
 func TestDispatchQueueFullRepliesOverloadWithoutBlockingCaller(t *testing.T) {
 	t.Parallel()
 
-	c := newClient(newHub(), nil)
+	c := newClient(NewHub(), nil)
 	t.Cleanup(func() { close(c.workQueue) })
 	c.send = make(chan []byte, workQueueDepth+workerPoolSize+256)
 	warmUpWorkerPool(t, c)
@@ -184,9 +186,9 @@ func TestDispatchQueueFullRepliesOverloadWithoutBlockingCaller(t *testing.T) {
 
 	overflowRaw := saturateUntilSteadyOverload(t, c, release)
 
-	var overflowMsg WSMessage
+	var overflowMsg wire.WSMessage
 	require.NoError(t, json.Unmarshal(overflowRaw, &overflowMsg))
-	require.Equal(t, EventError, overflowMsg.Type, "an item that doesn't fit must be rejected with an overload EventError, not silently admitted")
+	require.Equal(t, wire.EventError, overflowMsg.Type, "an item that doesn't fit must be rejected with an overload wire.EventError, not silently admitted")
 	require.Equal(t, "filler-id", overflowMsg.ID)
 
 	// Confirm the SAME non-blocking behavior for one more probe dispatch,
@@ -194,7 +196,7 @@ func TestDispatchQueueFullRepliesOverloadWithoutBlockingCaller(t *testing.T) {
 	// never blocked acquiring a slot — the actual #612 property under test.
 	done := make(chan struct{})
 	go func() {
-		c.dispatch("overflow", "overflow-id", func() {})
+		c.Dispatch("overflow", "overflow-id", func() {})
 		close(done)
 	}()
 
@@ -210,14 +212,14 @@ func TestDispatchQueueFullRepliesOverloadWithoutBlockingCaller(t *testing.T) {
 		select {
 		case raw := <-c.send:
 			seen = append(seen, string(raw))
-			var m WSMessage
-			if err := json.Unmarshal(raw, &m); err == nil && m.ID == "overflow-id" && m.Type == EventError {
+			var m wire.WSMessage
+			if err := json.Unmarshal(raw, &m); err == nil && m.ID == "overflow-id" && m.Type == wire.EventError {
 				ok = true
 			}
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	require.Truef(t, ok, "overflowing dispatch must reply with an overload EventError (frames seen on c.send while waiting: %v)", seen)
+	require.Truef(t, ok, "overflowing dispatch must reply with an overload wire.EventError (frames seen on c.send while waiting: %v)", seen)
 }
 
 // TestDispatchControlBypassesWorkSemaphore is the regression test for the
@@ -238,7 +240,7 @@ func TestDispatchQueueFullRepliesOverloadWithoutBlockingCaller(t *testing.T) {
 func TestDispatchControlBypassesWorkSemaphore(t *testing.T) {
 	t.Parallel()
 
-	c := newClient(newHub(), nil)
+	c := newClient(NewHub(), nil)
 	t.Cleanup(func() { close(c.workQueue) })
 
 	// Saturate the WORK queue with workerPoolSize handlers that block until
@@ -248,7 +250,7 @@ func TestDispatchControlBypassesWorkSemaphore(t *testing.T) {
 	var blocked sync.WaitGroup
 	blocked.Add(workerPoolSize)
 	for i := 0; i < workerPoolSize; i++ {
-		c.dispatch("slowWork", "", func() {
+		c.Dispatch("slowWork", "", func() {
 			blocked.Done()
 			<-release
 		})
@@ -263,7 +265,7 @@ func TestDispatchControlBypassesWorkSemaphore(t *testing.T) {
 	var controlRan sync.WaitGroup
 	controlRan.Add(1)
 	start := time.Now()
-	c.dispatchControl("handleCancelAgent", "", func() {
+	c.DispatchControl("handleCancelAgent", "", func() {
 		defer controlRan.Done()
 	})
 	waitWithTimeout(t, &controlRan, time.Second)
@@ -285,7 +287,7 @@ func TestDispatchControlBypassesWorkSemaphore(t *testing.T) {
 func TestDispatchControlDoesNotStarveWorkQueue(t *testing.T) {
 	t.Parallel()
 
-	c := newClient(newHub(), nil)
+	c := newClient(NewHub(), nil)
 	c.send = make(chan []byte, workQueueDepth+workerPoolSize+256)
 	warmUpWorkerPool(t, c)
 	release := make(chan struct{})
@@ -310,7 +312,7 @@ func TestDispatchControlDoesNotStarveWorkQueue(t *testing.T) {
 	var controlDone sync.WaitGroup
 	controlDone.Add(controlBurst)
 	for i := 0; i < controlBurst; i++ {
-		c.dispatchControl("handleCancelAgent", "", func() {
+		c.DispatchControl("handleCancelAgent", "", func() {
 			controlDone.Done()
 		})
 	}
@@ -325,7 +327,7 @@ func TestDispatchControlDoesNotStarveWorkQueue(t *testing.T) {
 	producers.Add(1)
 	go func() {
 		defer producers.Done()
-		c.dispatch("oneMoreWork", "one-more-id", func() {})
+		c.Dispatch("oneMoreWork", "one-more-id", func() {})
 		close(done)
 	}()
 
@@ -338,8 +340,8 @@ func TestDispatchControlDoesNotStarveWorkQueue(t *testing.T) {
 	require.Eventually(t, func() bool {
 		select {
 		case raw := <-c.send:
-			var m WSMessage
-			if err := json.Unmarshal(raw, &m); err == nil && m.ID == "one-more-id" && m.Type == EventError {
+			var m wire.WSMessage
+			if err := json.Unmarshal(raw, &m); err == nil && m.ID == "one-more-id" && m.Type == wire.EventError {
 				return true
 			}
 		default:
@@ -392,7 +394,7 @@ func dispatchBounded(t *testing.T, c *Client, name, msgID string, fn func()) {
 	t.Helper()
 	done := make(chan struct{})
 	go func() {
-		c.dispatch(name, msgID, fn)
+		c.Dispatch(name, msgID, fn)
 		close(done)
 	}()
 	select {
@@ -413,8 +415,8 @@ func saturateUntilSteadyOverload(t *testing.T, c *Client, release chan struct{})
 		dispatchBounded(t, c, "filler", "filler-id", func() { <-release })
 		select {
 		case raw := <-c.send:
-			var m WSMessage
-			if json.Unmarshal(raw, &m) == nil && m.Type == EventError {
+			var m wire.WSMessage
+			if json.Unmarshal(raw, &m) == nil && m.Type == wire.EventError {
 				streak++
 				lastOverload = raw
 				if streak >= steadyOverloadStreak {
@@ -469,7 +471,7 @@ func warmUpWorkerPool(t *testing.T, c *Client) {
 		var started sync.WaitGroup
 		started.Add(workerPoolSize)
 		for i := 0; i < workerPoolSize; i++ {
-			c.dispatch("warmup", "", func() { started.Done() })
+			c.Dispatch("warmup", "", func() { started.Done() })
 		}
 		waitWithTimeout(t, &started, 5*time.Second)
 	}
