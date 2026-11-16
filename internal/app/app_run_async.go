@@ -810,20 +810,9 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 				if l.ctx.Err() != nil {
 					return stepExit, "", fmt.Errorf("rush run: pending interrupt: %w", pollErr)
 				}
-				// A poll that times out on a busy store is transient, like the
-				// scope read below: retry with a pause inside the same overall
-				// bound instead of ending the whole run.
 				slog.Warn("rush run: pending interrupt poll failed; retrying", "session_id", l.sessionID, "err", pollErr)
-				if dbErrorRetryStart.IsZero() {
-					dbErrorRetryStart = time.Now()
-				}
-				if time.Since(dbErrorRetryStart) > cliDBErrorRetryOverallLimit {
-					fmt.Fprintf(l.errOut(), "rush run: session %q's pending interrupts have been unreadable for %s (%s); giving up\n",
-						l.sessionID, cliDBErrorRetryOverallLimit, pollErr)
-					return stepExit, "", fmt.Errorf("rush run: pending interrupt: %w", pollErr)
-				}
-				if !sleepOrCtxDone(l.ctx, cliDBRetryPause) {
-					return stepExit, "", l.ctx.Err()
+				if err := l.retryTransientRead(&dbErrorRetryStart, "pending interrupts have", pollErr); err != nil {
+					return stepExit, "", fmt.Errorf("rush run: pending interrupt: %w", err)
 				}
 				continue
 			}
@@ -841,16 +830,8 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 				return stepExit, "", fmt.Errorf("rush run: batch fact source unavailable: %w", stateErr)
 			}
 			slog.Warn("rush run: scope check failed; retrying", "session_id", l.sessionID, "err", stateErr)
-			if dbErrorRetryStart.IsZero() {
-				dbErrorRetryStart = time.Now()
-			}
-			if time.Since(dbErrorRetryStart) > cliDBErrorRetryOverallLimit {
-				fmt.Fprintf(l.errOut(), "rush run: session %q's database has been unreadable for %s (%s); giving up\n",
-					l.sessionID, cliDBErrorRetryOverallLimit, stateErr)
-				return stepExit, "", stateErr
-			}
-			if !sleepOrCtxDone(l.ctx, cliDBRetryPause) {
-				return stepExit, "", l.ctx.Err()
+			if err := l.retryTransientRead(&dbErrorRetryStart, "database has", stateErr); err != nil {
+				return stepExit, "", err
 			}
 			continue
 		}
