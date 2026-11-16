@@ -25,38 +25,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// webCmd is an explicit alias for the bare `rush` command. Both start the
-// embedded web server — webCmd just makes the intent obvious in scripts.
-// (Merged from the former cmd/web.go, design §2.2 row 162.)
-var webCmd = &cobra.Command{
-	Use:   "web",
-	Args:  cobra.NoArgs,
-	Short: "Start the Rush web UI (same as running 'rush' with no subcommand)",
-	Long: `Start the Rush web UI.
-
-Launches an HTTP server with a React UI and a WebSocket endpoint for
-real-time communication with the agent. Sessions, permissions, model
-selection, logs, message queueing, and turn-interruption (the yellow
-"Interrupt" button that cancels the running turn while keeping
-everything produced so far) all happen in the browser.
-
-Remote browsers cannot connect to a non-loopback listener: WebSocket origins
-are restricted to loopback. For remote access, use SSH port forwarding with
---host localhost.
-
-At startup the server prints the URL and a one-time access token. The
-token is also copied to your clipboard. Paste it in the browser to
-authenticate — it is never transmitted as part of the URL.
-
-  rush web
-  rush web --port 8080 --no-open
-  rush web --host 0.0.0.0 --allow-cleartext --port 9000   # bind on all interfaces; remote browsers cannot connect
-`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runWebMode(cmd)
-	},
-}
-
 // NewRootCmd builds the whole Rush command tree. Every call returns a FRESH
 // root command (the former package-level rootCmd is gone); family sub-trees
 // come from the exported constructors of package cmd. Persistent flags,
@@ -211,8 +179,35 @@ rush claude-init --global
 			"Overrides RUSH_COLOR_SCHEME env var when set.",
 	)
 
-	// Build a fresh web command for each root construction (fresh-tree contract).
-	web := &cobra.Command{Use: webCmd.Use, Short: webCmd.Short, Long: webCmd.Long, Args: webCmd.Args, RunE: webCmd.RunE}
+	// Build a fresh web command per root construction (fresh-tree contract; former cmd/web.go, design §2.2 row 162).
+	web := &cobra.Command{
+		Use:   "web",
+		Args:  cobra.NoArgs,
+		Short: "Start the Rush web UI (same as running 'rush' with no subcommand)",
+		Long: `Start the Rush web UI.
+
+Launches an HTTP server with a React UI and a WebSocket endpoint for
+real-time communication with the agent. Sessions, permissions, model
+selection, logs, message queueing, and turn-interruption (the yellow
+"Interrupt" button that cancels the running turn while keeping
+everything produced so far) all happen in the browser.
+
+Remote browsers cannot connect to a non-loopback listener: WebSocket origins
+are restricted to loopback. For remote access, use SSH port forwarding with
+--host localhost.
+
+At startup the server prints the URL and a one-time access token. The
+token is also copied to your clipboard. Paste it in the browser to
+authenticate — it is never transmitted as part of the URL.
+
+  rush web
+  rush web --port 8080 --no-open
+  rush web --host 0.0.0.0 --allow-cleartext --port 9000   # bind on all interfaces; remote browsers cannot connect
+`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runWebMode(cmd)
+		},
+	}
 	web.Flags().StringP("host", "H", "localhost", "Host to listen on")
 	web.Flags().Bool("allow-cleartext", false, "Required to bind a non-loopback host; the UI uses plain HTTP and its per-process token is the only protection")
 	web.Flags().IntP("port", "p", 0, "Port to listen on (0 = random free port)")

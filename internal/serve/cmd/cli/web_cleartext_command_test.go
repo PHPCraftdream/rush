@@ -38,7 +38,6 @@ func resetWebCleartextCommandFlags(t *testing.T) {
 	t.Helper()
 	for _, flags := range []*pflag.FlagSet{
 		root.Flags(), root.PersistentFlags(),
-		webCmd.Flags(), webCmd.PersistentFlags(),
 	} {
 		flags.VisitAll(func(flag *pflag.Flag) {
 			if err := flag.Value.Set(flag.DefValue); err != nil {
