@@ -807,7 +807,14 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 				return stepCanceled, "", stopErr
 			}
 			if pollErr != nil {
-				return stepExit, "", fmt.Errorf("rush run: pending interrupt: %w", pollErr)
+				if l.ctx.Err() != nil {
+					return stepExit, "", fmt.Errorf("rush run: pending interrupt: %w", pollErr)
+				}
+				slog.Warn("rush run: pending interrupt poll failed; retrying", "session_id", l.sessionID, "err", pollErr)
+				if err := l.retryTransientRead(&dbErrorRetryStart, "pending interrupts have", pollErr); err != nil {
+					return stepExit, "", fmt.Errorf("rush run: pending interrupt: %w", err)
+				}
+				continue
 			}
 			if messageID != "" {
 				if err := l.runWaitingInterrupt(messageID); err != nil {
@@ -823,16 +830,8 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 				return stepExit, "", fmt.Errorf("rush run: batch fact source unavailable: %w", stateErr)
 			}
 			slog.Warn("rush run: scope check failed; retrying", "session_id", l.sessionID, "err", stateErr)
-			if dbErrorRetryStart.IsZero() {
-				dbErrorRetryStart = time.Now()
-			}
-			if time.Since(dbErrorRetryStart) > cliDBErrorRetryOverallLimit {
-				fmt.Fprintf(l.errOut(), "rush run: session %q's database has been unreadable for %s (%s); giving up\n",
-					l.sessionID, cliDBErrorRetryOverallLimit, stateErr)
-				return stepExit, "", stateErr
-			}
-			if !sleepOrCtxDone(l.ctx, cliDBRetryPause) {
-				return stepExit, "", l.ctx.Err()
+			if err := l.retryTransientRead(&dbErrorRetryStart, "database has", stateErr); err != nil {
+				return stepExit, "", err
 			}
 			continue
 		}

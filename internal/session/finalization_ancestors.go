@@ -25,10 +25,14 @@ type finalizationAncestry struct {
 	edges  []finalizationManagedEdge
 }
 
+// finalizationParentEdgesQuery runs once per ancestor on the writer connection,
+// also inside the commit transaction; idx_batch_nodes_child_session serves it.
+const finalizationParentEdgesQuery = `SELECT node_id, owner_session_id, token FROM batch_nodes
+		WHERE child_session_id=? ORDER BY node_id`
+
 // Rows close before the caller can recurse on the single writer connection.
 func readFinalizationParentEdges(ctx context.Context, reader finalizationAncestorReader, owner string) (edges []finalizationManagedEdge, retErr error) {
-	rows, err := reader.QueryContext(ctx, `SELECT node_id, owner_session_id, token FROM batch_nodes
-		WHERE child_session_id=? ORDER BY node_id`, owner)
+	rows, err := reader.QueryContext(ctx, finalizationParentEdgesQuery, owner)
 	if err != nil {
 		return nil, err
 	}
