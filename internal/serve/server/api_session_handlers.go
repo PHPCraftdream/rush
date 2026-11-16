@@ -70,7 +70,9 @@ func (s apiAppWriteStore) SessionBusy(id string) bool {
 	return false
 }
 
-func (s apiAppWriteStore) OwnsSession(item session.Session) bool { return wsapi.AppOwnsSession(s.app, item) }
+func (s apiAppWriteStore) OwnsSession(item session.Session) bool {
+	return wsapi.AppOwnsSession(s.app, item)
+}
 
 func apiSessionWriteRoutes(store APIWriteStore) []APIRoute {
 	// One store per route set (one per serve listener), not per process.
