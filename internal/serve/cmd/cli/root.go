@@ -67,7 +67,7 @@ func NewRootCmd() *cobra.Command {
 		Use:          "rush",
 		Short:        "Run the Rush coding agent with a browser-based UI",
 		SilenceUsage: true,
-	Long: `Rush is an AI coding assistant. Running ` + "`rush`" + ` (or ` + "`rush web`" + `)
+		Long: `Rush is an AI coding assistant. Running ` + "`rush`" + ` (or ` + "`rush web`" + `)
 starts a local HTTP + WebSocket server, prints the URL and a one-time
 access token, and opens your default browser to the UI.
 
@@ -211,11 +211,12 @@ rush claude-init --global
 			"Overrides RUSH_COLOR_SCHEME env var when set.",
 	)
 
-// webCmd flags (former cmd/web.go init body).
-	webCmd.Flags().StringP("host", "H", "localhost", "Host to listen on")
-	webCmd.Flags().Bool("allow-cleartext", false, "Required to bind a non-loopback host; the UI uses plain HTTP and its per-process token is the only protection")
-	webCmd.Flags().IntP("port", "p", 0, "Port to listen on (0 = random free port)")
-	webCmd.Flags().Bool("no-open", false, "Do not open browser automatically")
+	// Build a fresh web command for each root construction (fresh-tree contract).
+	web := &cobra.Command{Use: webCmd.Use, Short: webCmd.Short, Long: webCmd.Long, Args: webCmd.Args, RunE: webCmd.RunE}
+	web.Flags().StringP("host", "H", "localhost", "Host to listen on")
+	web.Flags().Bool("allow-cleartext", false, "Required to bind a non-loopback host; the UI uses plain HTTP and its per-process token is the only protection")
+	web.Flags().IntP("port", "p", 0, "Port to listen on (0 = random free port)")
+	web.Flags().Bool("no-open", false, "Do not open browser automatically")
 	// The moved journal/exit-code helpers need the live tree objects before
 	// any RunE runs (formerly installed by package cmd's init phase).
 	apiCmd := cmdpkg.NewAPICmd()
@@ -267,7 +268,7 @@ rush claude-init --global
 		cmdpkg.NewResultCmd(),
 		cmdpkg.NewRolesCmd(),
 		cmdpkg.NewSystemPromptCmd(),
-		webCmd,
+		web,
 	)
 	return root
 }
