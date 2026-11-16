@@ -14,10 +14,10 @@
 //	TestUnlock_WrongPasswordJournaled — dropping the pre-run denial journal
 //	  end record for a wrong --password against a GLOBAL lock (root.go).
 //	TestPersistentPreRunOnlyOnRoot — setting PersistentPreRun/PersistentPreRunE
-//	  on any command other than root anywhere in the tree.
+//	  on any command other than rootCmd anywhere in the tree.
 //	TestPassword_SetupAppCheckAppPasswordPath — removing the checkAppPassword
 //	  call from setupApp/setupAppLite or its empty-password skip (root.go).
-package cli
+package cmd
 
 import (
 	"os"
@@ -109,7 +109,6 @@ func TestUnlock_GlobalFlagAndOutputText(t *testing.T) {
 // TestUnlock_WrongPasswordJournaled: a wrong --password on unlock (global
 // lock) is journaled with the refusal's first line and without the password.
 func TestUnlock_WrongPasswordJournaled(t *testing.T) {
-	root := NewRootCmd()
 	journalTestEnv(t)
 	workspace, dataDir := t.TempDir(), t.TempDir()
 	_, _, err := runLockTree(t, workspace, dataDir, "lock", "right-pw-value")
@@ -135,13 +134,12 @@ func TestUnlock_WrongPasswordJournaled(t *testing.T) {
 	require.NotContains(t, raw, "right-pw-value")
 }
 
-// TestPersistentPreRunOnlyOnRoot: only root installs the journal/password
+// TestPersistentPreRunOnlyOnRoot: only rootCmd installs the journal/password
 // pre-run chain; no subcommand may set PersistentPreRun(Persistent)RunE.
 func TestPersistentPreRunOnlyOnRoot(t *testing.T) {
-	root := NewRootCmd()
 	var walk func(c *cobra.Command)
 	walk = func(c *cobra.Command) {
-		if c != root {
+		if c != rootCmd {
 			require.Nil(t, c.PersistentPreRun, "%s sets PersistentPreRun", c.CommandPath())
 			require.Nil(t, c.PersistentPreRunE, "%s sets PersistentPreRunE", c.CommandPath())
 		}
@@ -149,9 +147,9 @@ func TestPersistentPreRunOnlyOnRoot(t *testing.T) {
 			walk(sub)
 		}
 	}
-	walk(root)
-	require.NotNil(t, root.PersistentPreRunE, "root must keep the journal/password pre-run")
-	require.Nil(t, root.PersistentPreRun, "root must use the E variant only")
+	walk(rootCmd)
+	require.NotNil(t, rootCmd.PersistentPreRunE, "root must keep the journal/password pre-run")
+	require.Nil(t, rootCmd.PersistentPreRun, "root must use the E variant only")
 }
 
 // TestPassword_SetupAppCheckAppPasswordPath: the setupApp/setupAppLite shared

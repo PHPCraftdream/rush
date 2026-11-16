@@ -1,7 +1,7 @@
 // Tests for `rush models state`'s RESTORE block: the pure command builder,
 // a real-command-tree round trip, a literal golden of the full text output,
 // and the --json contract. Uses the models_use_test.go isolation harness.
-package cli
+package cmd
 
 import (
 	"bytes"
@@ -18,28 +18,26 @@ import (
 )
 
 func restoreSel(provider, model, effort string) *config.SelectedModel {
-	root := NewRootCmd()
 	return &config.SelectedModel{Provider: provider, Model: model, ReasoningEffort: effort}
 }
 
 // runRushTree executes args through the REAL root command, with stdout
 // captured (RunE prints via fmt, which bypasses cobra's output writers).
 // Flags that other replayed commands leave set are reset before each run,
-// and root's own state is restored for later tests in the binary.
+// and rootCmd's own state is restored for later tests in the binary.
 func runRushTree(t *testing.T, args ...string) (string, error) {
-	root := NewRootCmd()
 	t.Helper()
 	resetModelsUseFlags(t)
 	resetModelsStateFlags(t)
-	origCwd, _ := root.PersistentFlags().GetString("cwd")
-	origDataDir, _ := root.PersistentFlags().GetString("data-dir")
+	origCwd, _ := rootCmd.PersistentFlags().GetString("cwd")
+	origDataDir, _ := rootCmd.PersistentFlags().GetString("data-dir")
 	t.Cleanup(func() {
-		_ = root.PersistentFlags().Set("cwd", origCwd)
-		_ = root.PersistentFlags().Set("data-dir", origDataDir)
-		root.SetArgs(nil)
+		_ = rootCmd.PersistentFlags().Set("cwd", origCwd)
+		_ = rootCmd.PersistentFlags().Set("data-dir", origDataDir)
+		rootCmd.SetArgs(nil)
 	})
-	_ = root.PersistentFlags().Set("cwd", "")
-	_ = root.PersistentFlags().Set("data-dir", "")
+	_ = rootCmd.PersistentFlags().Set("cwd", "")
+	_ = rootCmd.PersistentFlags().Set("data-dir", "")
 
 	oldOut := os.Stdout
 	r, w, err := os.Pipe()
@@ -49,9 +47,9 @@ func runRushTree(t *testing.T, args ...string) (string, error) {
 	var buf bytes.Buffer
 	go func() { _, _ = io.Copy(&buf, r); close(done) }()
 
-	root.SetArgs(args)
-	runErr := root.Execute()
-	root.SetArgs(nil)
+	rootCmd.SetArgs(args)
+	runErr := rootCmd.Execute()
+	rootCmd.SetArgs(nil)
 
 	_ = w.Close()
 	os.Stdout = oldOut
@@ -199,7 +197,6 @@ func TestModelsState_UnsetRoleScopeLabels(t *testing.T) {
 // TestRestoreCommands_EmptyState covers the nothing-set-anywhere case: the
 // section still prints with the placeholder, and --json carries [] not null.
 func TestRestoreCommands_EmptyState(t *testing.T) {
-	root := NewRootCmd()
 	ktavGateOn(t)
 	isolatedModelsEnv(t)
 
@@ -221,7 +218,7 @@ func TestRestoreCommands_EmptyState(t *testing.T) {
 
 // TestRestoreCommands_RoundTrip is the oracle: a state built via `models use`
 // must be re-creatable byte-for-byte by replaying the emitted commands
-// through the REAL command tree (root.Execute) in a fresh store.
+// through the REAL command tree (rootCmd.Execute) in a fresh store.
 func TestRestoreCommands_RoundTrip(t *testing.T) {
 	ktavGateOn(t)
 	isolatedModelsEnv(t)

@@ -1,4 +1,4 @@
-package cli
+package cmd
 
 import (
 	"bytes"
@@ -466,7 +466,6 @@ func isolateRunCLIConfig(t *testing.T) {
 }
 
 func executeTopLevelRun(t *testing.T, cwd, dataDir, role string, traces ...*runCustomRoleDispatchTrace) ([]byte, error) {
-	root := NewRootCmd()
 	t.Helper()
 	var trace *runCustomRoleDispatchTrace
 	if len(traces) > 0 {
@@ -481,35 +480,35 @@ func executeTopLevelRun(t *testing.T, cwd, dataDir, role string, traces ...*runC
 	originalCwd, err := os.Getwd()
 	require.NoError(t, err)
 	previousStdout := os.Stdout
-	previousOut, previousErr := root.OutOrStdout(), root.ErrOrStderr()
-	previousContext := root.Context()
+	previousOut, previousErr := rootCmd.OutOrStdout(), rootCmd.ErrOrStderr()
+	previousContext := rootCmd.Context()
 	defer func() {
 		os.Stdout = previousStdout
 		_ = os.Chdir(originalCwd)
-		root.SetOut(previousOut)
-		root.SetErr(previousErr)
-		root.SetContext(previousContext)
+		rootCmd.SetOut(previousOut)
+		rootCmd.SetErr(previousErr)
+		rootCmd.SetContext(previousContext)
 		resetRunCmdContext()
-		root.SetArgs(nil)
+		rootCmd.SetArgs(nil)
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	root.SetContext(ctx)
+	rootCmd.SetContext(ctx)
 	// Cobra gives a subcommand the root context only while its own context is
 	// nil, so the previous execution's (canceled) context would otherwise
 	// stay on runCmd and fail the next top-level run at its database connect.
 	resetRunCmdContext()
 
-	restore := journalSnapshotRestore(t, runCmd.Flags(), root.PersistentFlags())
+	restore := journalSnapshotRestore(t, runCmd.Flags(), rootCmd.PersistentFlags())
 	t.Cleanup(restore)
-	for _, flags := range []*pflag.FlagSet{runCmd.Flags(), root.PersistentFlags()} {
+	for _, flags := range []*pflag.FlagSet{runCmd.Flags(), rootCmd.PersistentFlags()} {
 		flags.VisitAll(func(flag *pflag.Flag) {
 			_ = flag.Value.Set(flag.DefValue)
 			flag.Changed = false
 		})
 	}
-	root.SetOut(io.Discard)
-	root.SetErr(io.Discard)
+	rootCmd.SetOut(io.Discard)
+	rootCmd.SetErr(io.Discard)
 	read, write, err := os.Pipe()
 	require.NoError(t, err)
 	os.Stdout = write
@@ -523,19 +522,19 @@ func executeTopLevelRun(t *testing.T, cwd, dataDir, role string, traces ...*runC
 		_, _ = io.Copy(io.Discard, read)
 		captured <- output
 	}()
-	root.SetArgs([]string{
+	rootCmd.SetArgs([]string{
 		"--cwd", cwd, "--data-dir", dataDir,
 		"run", "--role", role, "--json", "--session", "custom-role-cli-session",
 		"--timeout", "10s", "test custom role dispatch",
 	})
 	recordExecute("Cobra Execute entered")
-	runErr := root.Execute()
+	runErr := rootCmd.Execute()
 	ctxState := "active"
 	if ctx.Err() != nil {
 		ctxState = "canceled-or-deadline"
 	}
 	recordExecute(fmt.Sprintf("Cobra Execute returned error_class=%s outer_context=%s", runCLICommandErrorClass(runErr), ctxState))
-	root.SetArgs(nil)
+	rootCmd.SetArgs(nil)
 	_ = write.Close()
 	output := <-captured
 	recordExecute(fmt.Sprintf("stdout capture completed bytes=%d", len(output)))

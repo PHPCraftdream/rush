@@ -6,8 +6,29 @@ import (
 	"strings"
 	"testing"
 
+	journal "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/journal"
 	"github.com/stretchr/testify/require"
 )
+
+func TestJournalPanicEnd(t *testing.T) {
+	journalCLIEnv(t)
+	root := NewRootCmd()
+	logsPathCmd, _, err := root.Find([]string{"logs", "path"})
+	require.NoError(t, err)
+	journal.JournalCommandStart(logsPathCmd, nil)
+	func() {
+		defer func() { require.Equal(t, "boom-value", recover()) }()
+		defer recoverAndLogPanic()
+		panic("boom-value")
+	}()
+
+	recs := journalRecords(t)
+	require.Len(t, recs, 2)
+	end := recs[1]
+	require.Equal(t, "command_end", end["kind"])
+	require.Equal(t, float64(2), end["exit"])
+	require.Equal(t, "panic", end["err"])
+}
 
 func TestWebReadyBannerUsesReadableSeparator(t *testing.T) {
 	for _, copied := range []bool{false, true} {

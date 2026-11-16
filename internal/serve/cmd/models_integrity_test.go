@@ -16,7 +16,7 @@
 //     anySettingsLockExists condition in
 //     internal/config/settings_models_integrity.go (missing cache_rev with
 //     a lock would wrongly be accepted).
-package cli
+package cmd
 
 import (
 	"bytes"
@@ -59,30 +59,29 @@ func seedLockedModelsMissingRev(t *testing.T, globalPath string) {
 // runRushTreeCapture runs args through the real root command capturing BOTH
 // stdout and stderr; flag resets clear Changed like the neighbouring helpers.
 func runRushTreeCapture(t *testing.T, args ...string) (string, string, error) {
-	root := NewRootCmd()
 	t.Helper()
 	resetModelsUseFlags(t)
 	resetModelsStateFlags(t)
 	resetModelsUnsetFlags(t)
-	origCwd, _ := root.PersistentFlags().GetString("cwd")
-	origDataDir, _ := root.PersistentFlags().GetString("data-dir")
+	origCwd, _ := rootCmd.PersistentFlags().GetString("cwd")
+	origDataDir, _ := rootCmd.PersistentFlags().GetString("data-dir")
 	t.Cleanup(func() {
-		_ = root.PersistentFlags().Set("cwd", origCwd)
-		if f := root.PersistentFlags().Lookup("cwd"); f != nil {
+		_ = rootCmd.PersistentFlags().Set("cwd", origCwd)
+		if f := rootCmd.PersistentFlags().Lookup("cwd"); f != nil {
 			f.Changed = false
 		}
-		_ = root.PersistentFlags().Set("data-dir", origDataDir)
-		if f := root.PersistentFlags().Lookup("data-dir"); f != nil {
+		_ = rootCmd.PersistentFlags().Set("data-dir", origDataDir)
+		if f := rootCmd.PersistentFlags().Lookup("data-dir"); f != nil {
 			f.Changed = false
 		}
-		root.SetArgs(nil)
+		rootCmd.SetArgs(nil)
 	})
-	_ = root.PersistentFlags().Set("cwd", "")
-	if f := root.PersistentFlags().Lookup("cwd"); f != nil {
+	_ = rootCmd.PersistentFlags().Set("cwd", "")
+	if f := rootCmd.PersistentFlags().Lookup("cwd"); f != nil {
 		f.Changed = false
 	}
-	_ = root.PersistentFlags().Set("data-dir", "")
-	if f := root.PersistentFlags().Lookup("data-dir"); f != nil {
+	_ = rootCmd.PersistentFlags().Set("data-dir", "")
+	if f := rootCmd.PersistentFlags().Lookup("data-dir"); f != nil {
 		f.Changed = false
 	}
 
@@ -100,9 +99,9 @@ func runRushTreeCapture(t *testing.T, args ...string) (string, string, error) {
 	var errBuf bytes.Buffer
 	go func() { _, _ = io.Copy(&errBuf, errR); close(errDone) }()
 
-	root.SetArgs(args)
-	runErr := root.Execute()
-	root.SetArgs(nil)
+	rootCmd.SetArgs(args)
+	runErr := rootCmd.Execute()
+	rootCmd.SetArgs(nil)
 
 	_ = outW.Close()
 	_ = errW.Close()

@@ -285,23 +285,6 @@ func TestExitWithAudit(t *testing.T) {
 	require.Equal(t, float64(7), recs[1]["exit"])
 }
 
-func TestJournalPanicEnd(t *testing.T) {
-	journalTestEnv(t)
-	journalCommandStart(logsPathCmd, nil)
-	func() {
-		defer func() { require.Equal(t, "boom-value", recover()) }()
-		defer recoverAndLogPanic()
-		panic("boom-value")
-	}()
-
-	recs := journalRecords(t)
-	require.Len(t, recs, 2)
-	end := recs[1]
-	require.Equal(t, "command_end", end["kind"])
-	require.Equal(t, float64(2), end["exit"])
-	require.Equal(t, "panic", end["err"])
-}
-
 func TestJournalCompletionSilent(t *testing.T) {
 	journalTestEnv(t)
 	rootCmd.SetOut(io.Discard)

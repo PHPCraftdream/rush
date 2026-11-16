@@ -1,4 +1,4 @@
-package cli
+package cmd
 
 import (
 	"bytes"
@@ -58,14 +58,13 @@ func TestLockUnlock_GlobalLocalAndRelock(t *testing.T) {
 }
 
 func TestPassword_PreRunDeniesWrongGlobalSettingsPassword(t *testing.T) {
-	root := NewRootCmd()
 	global, workspace, dataDir := isolateLockEnv(t)
 	path := filepath.Join(global, "rush.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{"sync_rev":"`+config.HashPassword("right")+`"}`), 0o600))
 	bodyRan := false
 	probe := &cobra.Command{Use: "probe", Run: func(*cobra.Command, []string) { bodyRan = true }}
-	root.AddCommand(probe)
-	defer root.RemoveCommand(probe)
+	rootCmd.AddCommand(probe)
+	defer rootCmd.RemoveCommand(probe)
 	_, stderr, err := runLockTree(t, workspace, dataDir, "--password", "wrong", "probe")
 	require.ErrorIs(t, err, config.ErrWrongPassword)
 	require.False(t, bodyRan)
@@ -73,13 +72,12 @@ func TestPassword_PreRunDeniesWrongGlobalSettingsPassword(t *testing.T) {
 }
 
 func TestPassword_FlagSetsProcessPasswordAndAuthorizesModelsUse(t *testing.T) {
-	root := NewRootCmd()
 	globalPath := isolatedModelsEnv(t)
 	defer resetModelsUseFlags(t)
 	config.SetProcessPassword("")
 	require.NoError(t, os.WriteFile(globalPath, []byte(`{"sync_rev":"`+config.HashPassword("models-pass")+`","providers":{"zai":{"api_key":"test-zai-key"}}}`), 0o600))
-	if modelsCmd.Parent() != root {
-		root.AddCommand(modelsCmd)
+	if modelsCmd.Parent() != rootCmd {
+		rootCmd.AddCommand(modelsCmd)
 	}
 	_, _, err := runLockTree(t, filepath.Dir(globalPath), filepath.Join(filepath.Dir(globalPath), "test-data"), "--password", "models-pass", "models", "use", "glm4_6", "glm5_turbo")
 	require.NoError(t, err)
@@ -100,15 +98,14 @@ func TestPassword_SetupAppLiteRejectsWrongLocalPasswordBeforeWrite(t *testing.T)
 }
 
 func TestSettingsLock_ScopePriorityAndModelsUseRefusal(t *testing.T) {
-	root := NewRootCmd()
 	globalPath := isolatedModelsEnv(t)
 	defer resetModelsUseFlags(t)
 	workspaceA, dataA := t.TempDir(), t.TempDir()
 	workspaceB, dataB := t.TempDir(), t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(workspaceA, ".rush"), 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Join(workspaceB, ".rush"), 0o700))
-	if modelsCmd.Parent() != root {
-		root.AddCommand(modelsCmd)
+	if modelsCmd.Parent() != rootCmd {
+		rootCmd.AddCommand(modelsCmd)
 	}
 
 	_, _, err := runLockTree(t, workspaceA, dataA, "lock", "--local", "local-pass")
@@ -303,23 +300,22 @@ func isolateLockEnv(t *testing.T) (string, string, string) {
 }
 
 func runLockTree(t *testing.T, cwd, dataDir string, args ...string) (stdout, stderr string, runErr error) {
-	root := NewRootCmd()
 	t.Helper()
-	oldPassword, _ := root.PersistentFlags().GetString("password")
+	oldPassword, _ := rootCmd.PersistentFlags().GetString("password")
 	defer func() { config.SetProcessPassword(oldPassword) }()
-	oldRootCtx, oldModelsCtx := root.Context(), modelsUseCmd.Context()
-	root.SetContext(context.Background())
+	oldRootCtx, oldModelsCtx := rootCmd.Context(), modelsUseCmd.Context()
+	rootCmd.SetContext(context.Background())
 	modelsUseCmd.SetContext(context.Background())
 	defer func() {
-		root.SetContext(oldRootCtx)
+		rootCmd.SetContext(oldRootCtx)
 		modelsUseCmd.SetContext(oldModelsCtx)
 	}()
-	if modelsCmd.Parent() != root {
-		root.AddCommand(modelsCmd)
+	if modelsCmd.Parent() != rootCmd {
+		rootCmd.AddCommand(modelsCmd)
 	}
 	// Snapshot root flag state before resetting or setting any models flag:
 	// inherited flags may share the root flag's Value pointer.
-	rootFlags := root.PersistentFlags()
+	rootFlags := rootCmd.PersistentFlags()
 	cwdRootFlag, dataRootFlag, passRootFlag := rootFlags.Lookup("cwd"), rootFlags.Lookup("data-dir"), rootFlags.Lookup("password")
 	origCwd, origCwdChanged := cwdRootFlag.Value.String(), cwdRootFlag.Changed
 	origData, origDataChanged := dataRootFlag.Value.String(), dataRootFlag.Changed
@@ -365,8 +361,8 @@ func runLockTree(t *testing.T, cwd, dataDir string, args ...string) (stdout, std
 	go func() { _, _ = io.Copy(&outBuf, rOut); close(doneOut) }()
 	go func() { _, _ = io.Copy(&errBuf, rErr); close(doneErr) }()
 	os.Stdout, os.Stderr = wOut, wErr
-	root.SetArgs(append([]string{"--cwd", cwd, "--data-dir", dataDir}, args...))
-	runErr = root.Execute()
+	rootCmd.SetArgs(append([]string{"--cwd", cwd, "--data-dir", dataDir}, args...))
+	runErr = rootCmd.Execute()
 	_ = wOut.Close()
 	_ = wErr.Close()
 	os.Stdout, os.Stderr = origOut, origErr

@@ -1,4 +1,4 @@
-package cli
+package cmd
 
 import (
 	"bytes"
@@ -83,7 +83,6 @@ func tokenTestCommandAtWithError(t *testing.T, base string, args ...string) (int
 }
 
 func tokenTestCommandAtWithErrorInDir(t *testing.T, cwd string, args ...string) (int, string, string, string) {
-	root := NewRootCmd()
 	t.Helper()
 	old, err := os.Getwd()
 	if err != nil {
@@ -99,24 +98,24 @@ func tokenTestCommandAtWithErrorInDir(t *testing.T, cwd string, args ...string) 
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	oldOut, oldErr := root.OutOrStdout(), root.ErrOrStderr()
+	oldOut, oldErr := rootCmd.OutOrStdout(), rootCmd.ErrOrStderr()
 	oldJSON, oldName, oldPermission, oldExpires := tokensJSON, tokensName, tokensPermission, tokensExpires
 	oldScopes := append([]string(nil), tokensScopes...)
 	restoreFlags := saveTokenCommandFlags(tokensCmd)
 	resetTokenCommandFlags(tokensCmd)
-	root.SetOut(&stdout)
-	root.SetErr(&stderr)
-	root.SetArgs(args)
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stderr)
+	rootCmd.SetArgs(args)
 	defer func() {
 		restoreFlags()
-		root.SetOut(oldOut)
-		root.SetErr(oldErr)
-		root.SetArgs(nil)
+		rootCmd.SetOut(oldOut)
+		rootCmd.SetErr(oldErr)
+		rootCmd.SetArgs(nil)
 		tokensJSON = oldJSON
 		tokensName, tokensPermission, tokensExpires = oldName, oldPermission, oldExpires
 		tokensScopes = oldScopes
 	}()
-	err = root.Execute()
+	err = rootCmd.Execute()
 	errorText := ""
 	if err != nil {
 		errorText = err.Error()
@@ -233,9 +232,8 @@ func TestTokensInvocationIsCommandScoped(t *testing.T) {
 }
 
 func TestTokensCommandRegisteredOnRoot(t *testing.T) {
-	root := NewRootCmd()
 	tokenTestEnv(t, t.TempDir())
-	command, _, err := root.Find([]string{"tokens"})
+	command, _, err := rootCmd.Find([]string{"tokens"})
 	if err != nil || command != tokensCmd {
 		t.Fatalf("root lookup for tokens = %v, %v; want registered tokens command", command, err)
 	}
