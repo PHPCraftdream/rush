@@ -17,6 +17,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // subAgentToolNames lists every tool name that the default `rush run`
@@ -241,4 +242,14 @@ func (l *cliLoop) retryTransientRead(start *time.Time, what string, err error) e
 		return l.ctx.Err()
 	}
 	return nil
+}
+
+// usageBySession reads the session's per-message usage for the JSON
+// envelope on its own cleanup budget: the finish phase's earlier reads share
+// finalCtx and can spend it on a busy store, which left the envelope
+// without usage.session.
+func (s *executeRunLoop) usageBySession() (message.UsageReport, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(s.ctx), cleanupTimeout)
+	defer cancel()
+	return s.env.Messages().UsageBySession(ctx, s.sess.ID)
 }
