@@ -247,6 +247,53 @@ func canonicalModelsJSON(raw string) (canonical string, present bool, err error)
 	return string(encoded), true, nil
 }
 
+// CanonicalModelsAndRolesJSON canonicalizes the models and custom-roles
+// payload bound into cache_rev signatures. Existing model-only documents
+// keep their exact v1 signature payload; role-aware payloads also bind
+// tools presence, preventing unsigned widening.
+func CanonicalModelsAndRolesJSON(data []byte) (string, bool, error) {
+	models, modelsPresent, err := canonicalModelsJSON(gjson.GetBytes(data, "models").Raw)
+	if err != nil {
+		return "", false, err
+	}
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(data, &document); err != nil {
+		return "", false, err
+	}
+	rawRoles, rolesPresent, err := CustomRolesDocumentField(document)
+	if err != nil {
+		return "", false, err
+	}
+	if !rolesPresent {
+		return models, modelsPresent, nil
+	}
+	roles, err := DecodeCustomRoles(rawRoles)
+	if err != nil {
+		return "", false, err
+	}
+	if len(roles) == 0 {
+		return models, modelsPresent, nil
+	}
+	canonicalRoles, _, err := canonicalModelsJSON(string(rawRoles))
+	if err != nil {
+		return "", false, err
+	}
+	payload := map[string]json.RawMessage{"roles": json.RawMessage(canonicalRoles)}
+	if modelsPresent {
+		payload["models"] = json.RawMessage(models)
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", false, err
+	}
+	return "roles-v1|" + string(encoded), true, nil
+}
+
+// ModelsIntegritySignature hashes the canonicalized models value.
+func ModelsIntegritySignature(canonical string) string {
+	return modelsIntegritySignature(canonical)
+}
+
 // modelsIntegritySignature hashes the canonicalized models value.
 func modelsIntegritySignature(canonical string) string {
 	digest := sha256.Sum256([]byte("v1|" + hashSalt + "|" + canonical))

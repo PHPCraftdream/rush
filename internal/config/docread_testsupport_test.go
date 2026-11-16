@@ -116,14 +116,7 @@ var (
 	errKtavMigrationRecord   = docread.ErrKtavMigrationRecord()
 )
 
-type settingsDocumentFormat = docread.SettingsDocumentFormat
-
 type settingsDocument = docread.SettingsDocument
-
-const (
-	settingsDocumentJSON = docread.SettingsDocumentJSON
-	settingsDocumentKtav = docread.SettingsDocumentKtav
-)
 
 func settingsDocumentFormatOf(path string) docread.SettingsDocumentFormat {
 	return docread.SettingsDocumentFormatOf(path)
@@ -139,6 +132,22 @@ func readSettingsDocument(path string) (docread.SettingsDocument, error) {
 
 func encodeSettingsDocument(data []byte, format docread.SettingsDocumentFormat) ([]byte, error) {
 	return docread.EncodeSettingsDocument(data, format)
+}
+
+func oauthJournalDigest(providerID string) string {
+	return docread.OAuthJournalDigest(providerID)
+}
+
+func oauthJournalLegacyPath(configPath, providerID string) string {
+	return docread.OAuthJournalLegacyPath(configPath, providerID)
+}
+
+func oauthJournalKtavPath(configPath, providerID string) string {
+	return docread.OAuthJournalKtavPath(configPath, providerID)
+}
+
+func validOAuthJournal(record *docread.OAuthJournalRecord) bool {
+	return docread.ValidOAuthJournal(record)
 }
 
 func mergeExternalMCPServersFromDocuments(cfg *Config, rush, external []stableConfigDocument) {

@@ -44,7 +44,7 @@ func (s *ConfigStore) ReloadFromDisk(ctx context.Context) error {
 	}
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, ktavMigrationBudget)
+		ctx, cancel = context.WithTimeout(ctx, ktavMigrationBudget())
 		defer cancel()
 	}
 	return s.reloadFromDiskUnlocked(ctx)
@@ -84,7 +84,7 @@ func (s *ConfigStore) reloadFromDiskUnlocked(ctx context.Context) error {
 func (s *ConfigStore) runReloadLocked(ctx context.Context) error {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, ktavMigrationBudget)
+		ctx, cancel = context.WithTimeout(ctx, ktavMigrationBudget())
 		defer cancel()
 	}
 	if err := ktavMigrateStartupSlots(ctx, s.workingDir); err != nil {

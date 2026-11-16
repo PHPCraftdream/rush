@@ -329,9 +329,8 @@ func TestKtavCreationRespectsAutoMigrateGate(t *testing.T) {
 
 	// Gate off (explicitly): the legacy JSON slot is created instead, and no
 	// Ktav file appears. NOT parallel: mutates the shared gate global.
-	prev := ktavAutoMigrate
-	ktavAutoMigrate = false
-	t.Cleanup(func() { ktavAutoMigrate = prev })
+	restore := SetKtavAutoMigrateForTest(false)
+	t.Cleanup(restore)
 	jsonPathOff := filepath.Join(t.TempDir(), "rush.json")
 	ktavPathOff := filepath.Join(filepath.Dir(jsonPathOff), "rush.ktav")
 	storeOff := ktavWriteStore(t, jsonPathOff)

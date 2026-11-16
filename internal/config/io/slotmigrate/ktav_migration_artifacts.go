@@ -1,7 +1,7 @@
 // Ktav sidecar-artifact migration: OAuth recovery journals and
 // provider/model-catalog caches are converted JSON -> Ktav through the SAME
 // transaction primitives as the config migration (commitConfigFile,
-// archiveKtavBackup, the shared ktavMigrationRecord format, loadKtavMigrationRecord
+// archiveKtavBackup, the shared KtavMigrationRecord format, loadKtavMigrationRecord
 // and finishKtavArchival). Artifacts are not authority data, so recovery may be
 // coarser than the config table — but it must never lose bytes: after any
 // interruption either the JSON is intact and active, or the Ktav file and its
@@ -21,7 +21,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
@@ -43,6 +46,20 @@ func runKtavArtifactMigrationStep(step string) error {
 		return ktavArtifactMigrationStepHook(step)
 	}
 	return nil
+}
+
+// SetKtavArtifactMigrationStepHookForTest installs the artifact step test
+// hook and returns the previous hook plus a restore func.
+func SetKtavArtifactMigrationStepHookForTest(hook func(step string) error) (prev func(string) error, restore func()) {
+	prev = ktavArtifactMigrationStepHook
+	ktavArtifactMigrationStepHook = hook
+	return prev, func() { ktavArtifactMigrationStepHook = prev }
+}
+
+// GetKtavArtifactMigrationStepHookForTest returns the currently installed
+// artifact step hook.
+func GetKtavArtifactMigrationStepHookForTest() func(string) error {
+	return ktavArtifactMigrationStepHook
 }
 
 func ktavArtifactCheckContext(ctx context.Context, step string) error {
@@ -136,14 +153,14 @@ func runKtavArtifactMigrationStateLocked(ctx context.Context, legacy, dest, work
 		if err != nil {
 			return err
 		}
-		owner, enforce, err := ownerPolicyForMigration(legacy, workingDir)
+		owner, enforce, err := OwnerPolicyForMigration(legacy, workingDir)
 		if err != nil {
 			return err
 		}
 		if err := verifyKtavGenerations(record, legacy, dest, owner, enforce, state); err != nil {
 			return err
 		}
-		if err := syncConfigParent(filepath.Dir(recordPath)); err != nil {
+		if err := cfgcommit.SyncConfigParent(filepath.Dir(recordPath)); err != nil {
 			return err
 		}
 		if err := runKtavArtifactMigrationStep("after-archive"); err != nil {
@@ -165,11 +182,11 @@ func runKtavArtifactMigrationStateLocked(ctx context.Context, legacy, dest, work
 			return err
 		}
 		return fmt.Errorf("%w: %s and its migration record exist but source and backup are gone", docread.ErrKtavMigrationConflict(), filepath.Base(dest))
-	case state.jsonExists && state.backupExists && !ktavKeepsLegacy(legacy):
+	case state.jsonExists && state.backupExists && !KtavKeepsLegacy(legacy):
 		return fmt.Errorf("%w: unexpected backup %s beside active %s; preserve every file and resolve manually", docread.ErrKtavMigrationConflict(), filepath.Base(backup), filepath.Base(legacy))
 	case state.ktavExists && state.jsonExists:
 		if !state.recordExists {
-			if ktavKeepsLegacy(legacy) {
+			if KtavKeepsLegacy(legacy) {
 				// The migration keeps the legacy JSON: readers prefer the
 				// Ktav generation and the JSON stays for older binaries.
 				return nil
@@ -183,7 +200,7 @@ func runKtavArtifactMigrationStateLocked(ctx context.Context, legacy, dest, work
 		if err != nil {
 			return err
 		}
-		owner, enforce, err := ownerPolicyForMigration(legacy, workingDir)
+		owner, enforce, err := OwnerPolicyForMigration(legacy, workingDir)
 		if err != nil {
 			return err
 		}
@@ -204,7 +221,7 @@ func runKtavArtifactMigrationStateLocked(ctx context.Context, legacy, dest, work
 
 func runKtavArtifactMigrationTransaction(ctx context.Context, legacy, dest, backup, recordPath, workingDir string, validateUnderLock func([]byte) error) error {
 	state := ktavArtifactMigrationEntries(legacy, dest)
-	var priorRecord *ktavMigrationRecord
+	var priorRecord *KtavMigrationRecord
 	if state.recordExists {
 		var err error
 		priorRecord, err = loadKtavMigrationRecord(recordPath, legacy, dest, workingDir)
@@ -212,10 +229,10 @@ func runKtavArtifactMigrationTransaction(ctx context.Context, legacy, dest, back
 			return err
 		}
 	}
-	if state.backupExists && !ktavKeepsLegacy(legacy) {
+	if state.backupExists && !KtavKeepsLegacy(legacy) {
 		return fmt.Errorf("%w: backup %s already exists", docread.ErrKtavMigrationConflict(), filepath.Base(backup))
 	}
-	owner, enforce, err := ownerPolicyForMigration(legacy, workingDir)
+	owner, enforce, err := OwnerPolicyForMigration(legacy, workingDir)
 	if err != nil {
 		return err
 	}
@@ -256,8 +273,8 @@ func runKtavArtifactMigrationTransaction(ctx context.Context, legacy, dest, back
 		return err
 	}
 	stagedDigest := sha256.Sum256(ktavBytes)
-	record := ktavMigrationRecord{
-		Version:      ktavMigrationRecordVersion,
+	record := KtavMigrationRecord{
+		Version:      KtavMigrationRecordVersion,
 		Source:       filepath.Base(legacy),
 		Destination:  filepath.Base(dest),
 		Backup:       filepath.Base(backup),
@@ -311,7 +328,7 @@ func runKtavArtifactMigrationTransaction(ctx context.Context, legacy, dest, back
 			if err := ktavArtifactCheckContext(ctx, "record-commit"); err != nil {
 				return err
 			}
-			if _, err := commitConfigFile(recordPath, recordPath, append(recordBytes, '\n'), 0o600, absent, owner, enforce); err != nil {
+			if _, err := cfgcommit.CommitConfigFile(recordPath, recordPath, append(recordBytes, '\n'), 0o600, absent, owner, enforce); err != nil {
 				return fmt.Errorf("ktav artifact migration: failed to persist record %s: %w", filepath.Base(recordPath), err)
 			}
 			return ktavArtifactCheckContext(ctx, "after-record")
@@ -323,7 +340,7 @@ func runKtavArtifactMigrationTransaction(ctx context.Context, legacy, dest, back
 	if err := ktavArtifactCheckContext(ctx, "before-ktav-rename"); err != nil {
 		return err
 	}
-	if _, err := commitConfigFile(dest, dest, ktavBytes, 0o600, expected, owner, enforce, publishHook); err != nil {
+	if _, err := cfgcommit.CommitConfigFile(dest, dest, ktavBytes, 0o600, expected, owner, enforce, publishHook); err != nil {
 		return fmt.Errorf("ktav artifact migration: failed to publish %s: %w", filepath.Base(dest), err)
 	}
 	// Ktav published, archival pending; the published Ktav is
@@ -344,7 +361,7 @@ func runKtavArtifactMigrationTransaction(ctx context.Context, legacy, dest, back
 
 // ktavArtifactFinishArchival archives the JSON to its retained backup through
 // the shared, identity-checked finishKtavArchival and retires the record.
-func ktavArtifactFinishArchival(ctx context.Context, legacy, dest, backup, recordPath string, record *ktavMigrationRecord, workingDir string) error {
+func ktavArtifactFinishArchival(ctx context.Context, legacy, dest, backup, recordPath string, record *KtavMigrationRecord, workingDir string) error {
 	if err := ktavArtifactCheckContext(ctx, "before-archive"); err != nil {
 		return err
 	}
@@ -359,7 +376,7 @@ func ktavArtifactFinishArchival(ctx context.Context, legacy, dest, backup, recor
 	// already complete, so a failure here must not report it as failed —
 	// warn paths-only instead. The source is the kept JSON or its backup.
 	source := legacy
-	if !ktavKeepsLegacy(legacy) {
+	if !KtavKeepsLegacy(legacy) {
 		source = backup
 	}
 	if err := ktavArtifactPreserveMTime(dest, source); err != nil {
@@ -399,7 +416,7 @@ func ktavMigrateOAuthJournalsAtStartup(ctx context.Context, configSlots []string
 		if canonical == "" {
 			continue
 		}
-		for _, descriptor := range oauthProviderDescriptors() {
+		for _, descriptor := range ktavOAuthProviderDescriptors() {
 			if !descriptor.rotating {
 				continue
 			}
@@ -516,9 +533,9 @@ func ktavMigrateCacheArtifactsStartup(ctx context.Context, workingDir string) {
 // their <name>.json.ktav-migration records, so a catalog whose legacy JSON is
 // already archived is still recovered.
 func ktavCacheArtifactPaths() []string {
-	providers := cachePathFor("providers")
+	providers := datadir.CachePathFor("providers")
 	cacheDir := filepath.Dir(providers)
-	paths := []string{providers, cachePathFor("hyper")}
+	paths := []string{providers, datadir.CachePathFor("hyper")}
 	seen := map[string]bool{}
 	for _, p := range paths {
 		seen[p] = true
@@ -537,4 +554,54 @@ func ktavCacheArtifactPaths() []string {
 		}
 	}
 	return paths
+}
+
+// SetKtavArtifactStatFileForTest installs the artifact stat hook and returns
+// the previous value plus a restore func.
+func SetKtavArtifactStatFileForTest(fn func(name string) (os.FileInfo, error)) (prev func(string) (os.FileInfo, error), restore func()) {
+	prev = ktavArtifactStatFile
+	ktavArtifactStatFile = fn
+	return prev, func() { ktavArtifactStatFile = prev }
+}
+
+// GetKtavArtifactStatFileForTest returns the currently installed stat hook.
+func GetKtavArtifactStatFileForTest() func(string) (os.FileInfo, error) { return ktavArtifactStatFile }
+
+// SetKtavArtifactChtimesForTest installs the artifact chtimes hook and
+// returns the previous value plus a restore func.
+func SetKtavArtifactChtimesForTest(fn func(name string, atime, mtime time.Time) error) (prev func(string, time.Time, time.Time) error, restore func()) {
+	prev = ktavArtifactChtimes
+	ktavArtifactChtimes = fn
+	return prev, func() { ktavArtifactChtimes = prev }
+}
+
+// GetKtavArtifactChtimesForTest returns the currently installed chtimes hook.
+func GetKtavArtifactChtimesForTest() func(string, time.Time, time.Time) error {
+	return ktavArtifactChtimes
+}
+
+// MigrateKtavArtifact converts one sidecar artifact. Exported wrapper over
+// migrateKtavArtifact.
+func MigrateKtavArtifact(ctx context.Context, legacy, workingDir string) error {
+	return migrateKtavArtifact(ctx, legacy, workingDir)
+}
+
+// KtavMigrateCacheArtifactsStartup converts provider/hyper catalogs and
+// recovers their pending records. Exported wrapper over
+// ktavMigrateCacheArtifactsStartup.
+func KtavMigrateCacheArtifactsStartup(ctx context.Context, workingDir string) {
+	ktavMigrateCacheArtifactsStartup(ctx, workingDir)
+}
+
+// KtavMigrateOAuthJournal converts one provider's pending journal. Exported
+// wrapper over ktavMigrateOAuthJournal.
+func KtavMigrateOAuthJournal(ctx context.Context, configPath, providerID, workingDir string) error {
+	return ktavMigrateOAuthJournal(ctx, configPath, providerID, workingDir)
+}
+
+// KtavMigrateOAuthJournalsAtStartup exposes the batch journal-at-startup
+// conversion to the root package (io layer that will consume it directly in
+// a later pass: root).
+func KtavMigrateOAuthJournalsAtStartup(ctx context.Context, configSlots []string, workingDir string) {
+	ktavMigrateOAuthJournalsAtStartup(ctx, configSlots, workingDir)
 }

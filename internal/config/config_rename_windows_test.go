@@ -360,8 +360,8 @@ func TestWindowsStageSupportsLongPath(t *testing.T) {
 
 	staged, err := stageConfigFileHandle(path, []byte(`{"long":true}`), 0o600)
 	require.NoError(t, err)
-	require.NoError(t, deleteWindowsConfigHandle(staged.file))
-	require.NoError(t, staged.file.Close())
+	require.NoError(t, deleteWindowsConfigHandle(staged.File))
+	require.NoError(t, staged.File.Close())
 }
 
 func TestWindowsCommitSupportsLongPath(t *testing.T) {

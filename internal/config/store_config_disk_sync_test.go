@@ -835,9 +835,8 @@ func TestConfigDiskSyncStopBeforeStartIsTerminal(t *testing.T) {
 //     fire.
 func TestReloadKeepsGlobalModelIntegrityAfterMidSessionKtavMigration(t *testing.T) {
 	dir, _, globalPath := configSyncIsolate(t)
-	savedGate := ktavAutoMigrate
-	t.Cleanup(func() { ktavAutoMigrate = savedGate })
-	ktavAutoMigrate = true
+	restoreGate := SetKtavAutoMigrateForTest(true)
+	t.Cleanup(restoreGate)
 
 	// Startup observes an absent global slot and retains its JSON spelling.
 	s, err := Load(dir, dir, false)

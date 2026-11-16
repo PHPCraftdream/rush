@@ -294,7 +294,7 @@ func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, f
 	// because recovery may have changed its spelling or fingerprint.
 	legacy := docread.LegacySlotOf(target.selectedPath)
 	if docread.KtavEntryExists(docread.MigrationRecordPathFor(legacy)) {
-		if err := runKtavMigrationStateLocked(ctx, legacy, s.workingDir); err != nil {
+		if err := RunKtavMigrationStateLocked(ctx, legacy, s.workingDir); err != nil {
 			_ = releaseConfigFileLock(target.lockPath, lock)
 			return fmt.Errorf("failed to recover config migration for %q: %w", path, err)
 		}

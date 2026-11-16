@@ -230,7 +230,7 @@ func TestStableDocumentsDedupAfterPreOpenRetarget(t *testing.T) {
 	documents, err := readStableConfigDocuments([]string{pathP, pathQ})
 	require.NoError(t, err)
 	require.Len(t, documents, 1)
-	require.Len(t, documents[0].aliases, 2)
+	require.Len(t, documents[0].Aliases, 2)
 }
 
 func TestWorkspaceOwnerPolicyAppliesOutsideCheckout(t *testing.T) {

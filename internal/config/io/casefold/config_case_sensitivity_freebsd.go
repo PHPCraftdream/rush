@@ -38,9 +38,9 @@ func configFreeBSDDirectoryCaseSensitivity(dir string) ConfigCaseSensitivity {
 			break
 		}
 	}
-	sensitivity := configFreeBSDCaseSensitivityFromFilesystemName(string(filesystemName))
+	sensitivity := FreeBSDCaseSensitivityFromFilesystemName(string(filesystemName))
 	if sensitivity == ConfigCaseSensitivityUnknown {
-		sensitivity = configDirectoryCaseSensitivityByEntries(dir)
+		sensitivity = DirectoryCaseSensitivityByEntries(dir)
 	}
 	return sensitivity
 }

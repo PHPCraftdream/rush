@@ -36,9 +36,9 @@ func configLinuxDirectoryCaseSensitivity(dir string) ConfigCaseSensitivity {
 	if value, err := unix.IoctlGetUint32(fd, unix.FS_IOC_GETFLAGS); err == nil {
 		flags, flagsKnown = value, true
 	}
-	sensitivity := configLinuxCaseSensitivityFromMetadata(uint64(filesystem.Type), flags, flagsKnown)
+	sensitivity := LinuxCaseSensitivityFromMetadata(uint64(filesystem.Type), flags, flagsKnown)
 	if sensitivity == ConfigCaseSensitivityUnknown {
-		sensitivity = configDirectoryCaseSensitivityByEntries(dir)
+		sensitivity = DirectoryCaseSensitivityByEntries(dir)
 	}
 	return sensitivity
 }

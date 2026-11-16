@@ -29,9 +29,8 @@ const secretHash = "24a5cfa44bee3072cadb1fea7af9a0ed638d118d63e21d8f5d6979e314b5
 // semantics (raw rush.json bytes, hard links, sidecar locks on rush.json).
 func pinKtavAutoMigrateOffForLegacyTest(t *testing.T) {
 	t.Helper()
-	prev := ktavAutoMigrate
-	ktavAutoMigrate = false
-	t.Cleanup(func() { ktavAutoMigrate = prev })
+	restore := SetKtavAutoMigrateForTest(false)
+	t.Cleanup(restore)
 }
 
 func lockStore(t *testing.T, path string) *ConfigStore {

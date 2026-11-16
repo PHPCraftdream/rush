@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/cfghooks"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fswap"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 )
 
@@ -77,190 +78,140 @@ func CommitOutcomeFromError(err error) (*CommitOutcome, bool) {
 	return outcome, true
 }
 
-var configTestHooks struct {
-	sync.Mutex
-	beforeOpen            func(string)
-	afterStableRead       func(string)
-	beforeCommitCheck     func()
-	afterCommitRename     func() error
-	afterCommitRenamePath func(string) error
-	// Test-only seam after a successful MCP commit.
-	afterMCPCommit func(string)
-	// Test-only seam between target resolution and sidecar acquisition.
-	afterMCPResolveTarget              func(*configWriteTarget)
-	beforeMCPTargetBindingVerification func(*configWriteTarget)
-	beforeCommitRename                 func()
-	beforeMCPReconcile                 func(string, []byte)
-	acquireConfigLock                  func(context.Context, string) (*filelock.FileLock, error)
-	releaseConfigLock                  func(string, *filelock.FileLock) error
-	withConfigTimeout                  func(context.Context, time.Duration) (context.Context, context.CancelFunc)
-	forceLinkNoReplace                 bool
-	renameNoReplace                    func(int, string, int, string) error
-	renameatxNp                        func(int, string, int, string, uint32) error
-	moveFileEx                         func(*uint16, *uint16, uint32) error
-	setFileInformation                 func(uintptr, uint32, *byte, uint32) error
-	flushFileBuffers                   func(uintptr) error
-	unlinkTemp                         func(int, string) error
-	syncParent                         func(string) error
-	syncParentFD                       func(int) error
-	syncParentFile                     func(*os.File) error
-}
-
 func runConfigBeforeOpenHook(path string) {
-	configTestHooks.Lock()
-	hook := configTestHooks.beforeOpen
-	configTestHooks.Unlock()
-	if hook != nil {
+	if hook := cfghooks.Snapshot().BeforeOpen; hook != nil {
 		hook(path)
 	}
 }
 
 func runConfigAfterStableReadHook(path string) {
-	configTestHooks.Lock()
-	hook := configTestHooks.afterStableRead
-	configTestHooks.Unlock()
-	if hook != nil {
+	if hook := cfghooks.Snapshot().AfterStableRead; hook != nil {
 		hook(path)
 	}
 }
 
 func runConfigBeforeCommitCheckHook() {
-	configTestHooks.Lock()
-	hook := configTestHooks.beforeCommitCheck
-	configTestHooks.Unlock()
-	if hook != nil {
+	if hook := cfghooks.Snapshot().BeforeCommitCheck; hook != nil {
 		hook()
 	}
 }
 
 func runConfigAfterCommitRenameHook() error {
-	configTestHooks.Lock()
-	hook := configTestHooks.afterCommitRename
-	configTestHooks.Unlock()
-	if hook != nil {
+	if hook := cfghooks.Snapshot().AfterCommitRename; hook != nil {
 		return hook()
 	}
 	return nil
 }
 
 func runConfigAfterCommitRenameHookForPath(path string) error {
-	configTestHooks.Lock()
-	hookPath := configTestHooks.afterCommitRenamePath
-	hook := configTestHooks.afterCommitRename
-	configTestHooks.Unlock()
-	if hookPath != nil {
-		return hookPath(path)
+	hooks := cfghooks.Snapshot()
+	if hooks.AfterCommitRenamePath != nil {
+		return hooks.AfterCommitRenamePath(path)
 	}
-	if hook != nil {
-		return hook()
+	if hooks.AfterCommitRename != nil {
+		return hooks.AfterCommitRename()
 	}
 	return nil
 }
 
 func runConfigAfterMCPCommitHook(path string) {
-	configTestHooks.Lock()
-	hook := configTestHooks.afterMCPCommit
-	configTestHooks.Unlock()
-	if hook != nil {
+	if hook := cfghooks.Snapshot().AfterMCPCommit; hook != nil {
 		hook(path)
 	}
 }
 
-func runConfigAfterMCPResolveTargetHook(target *configWriteTarget) {
-	configTestHooks.Lock()
-	hook := configTestHooks.afterMCPResolveTarget
-	configTestHooks.Unlock()
-	if hook != nil {
-		hook(target)
-	}
-}
-
-func runConfigBeforeMCPTargetBindingVerificationHook(target *configWriteTarget) {
-	configTestHooks.Lock()
-	hook := configTestHooks.beforeMCPTargetBindingVerification
-	configTestHooks.Unlock()
-	if hook != nil {
-		hook(target)
-	}
-}
-
 func runConfigBeforeCommitRenameHook() {
-	configTestHooks.Lock()
-	hook := configTestHooks.beforeCommitRename
-	configTestHooks.Unlock()
-	if hook != nil {
+	if hook := cfghooks.Snapshot().BeforeCommitRename; hook != nil {
 		hook()
 	}
 }
 
 func runConfigBeforeMCPReconcileHook(path string, data []byte) {
-	configTestHooks.Lock()
-	hook := configTestHooks.beforeMCPReconcile
-	configTestHooks.Unlock()
-	if hook != nil {
+	if hook := cfghooks.Snapshot().BeforeMCPReconcile; hook != nil {
 		hook(path, data)
 	}
 }
 
 func acquireConfigFileLock(ctx context.Context, path string) (*filelock.FileLock, error) {
-	configTestHooks.Lock()
-	hook := configTestHooks.acquireConfigLock
-	configTestHooks.Unlock()
-	if hook != nil {
+	if hook := cfghooks.Snapshot().AcquireConfigLock; hook != nil {
 		return hook(ctx, path)
 	}
 	return filelock.AcquireFileLockContext(ctx, path)
 }
 
 func releaseConfigFileLock(path string, lock *filelock.FileLock) error {
-	configTestHooks.Lock()
-	hook := configTestHooks.releaseConfigLock
-	configTestHooks.Unlock()
-	if hook != nil {
+	if hook := cfghooks.Snapshot().ReleaseConfigLock; hook != nil {
 		return hook(path, lock)
 	}
 	return lock.Release()
 }
 
 func configContextWithTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	configTestHooks.Lock()
-	hook := configTestHooks.withConfigTimeout
-	configTestHooks.Unlock()
-	if hook != nil {
+	if hook := cfghooks.Snapshot().WithConfigTimeout; hook != nil {
 		return hook(parent, timeout)
 	}
 	return context.WithTimeout(parent, timeout)
 }
 
 func syncConfigParent(path string) error {
-	configTestHooks.Lock()
-	hook := configTestHooks.syncParent
-	configTestHooks.Unlock()
-	if hook != nil {
+	if hook := cfghooks.Snapshot().SyncParent; hook != nil {
 		return hook(path)
 	}
 	return syncConfigParentOnDisk(path)
 }
 
+// SyncConfigParentFile flushes an already-open parent directory descriptor.
+func SyncConfigParentFile(file *os.File) error {
+	return syncConfigParentFile(file)
+}
+
 func syncConfigParentFile(file *os.File) error {
-	configTestHooks.Lock()
-	hookFD := configTestHooks.syncParentFD
-	hookFile := configTestHooks.syncParentFile
-	hookPath := configTestHooks.syncParent
-	configTestHooks.Unlock()
-	if hookFD != nil {
-		return hookFD(int(file.Fd()))
+	hooks := cfghooks.Snapshot()
+	if hooks.SyncParentFD != nil {
+		return hooks.SyncParentFD(int(file.Fd()))
 	}
-	if hookFile != nil {
-		return hookFile(file)
+	if hooks.SyncParentFile != nil {
+		return hooks.SyncParentFile(file)
 	}
-	if hookPath != nil {
+	if hooks.SyncParent != nil {
 		// Keep the legacy test seam working. Production commits use the
 		// already-open descriptor below and never reopen this pathname.
-		return hookPath(file.Name())
+		return hooks.SyncParent(file.Name())
 	}
 	return file.Sync()
 }
+
+// RunConfigAfterMCPCommitHook invokes the root test seam after a successful
+// MCP commit (io layer that consumes it directly in a later pass: root).
+func RunConfigAfterMCPCommitHook(path string) { runConfigAfterMCPCommitHook(path) }
+
+// RunConfigBeforeMCPReconcileHook invokes the root test seam before MCP
+// reconciliation (io layer: root).
+func RunConfigBeforeMCPReconcileHook(path string, data []byte) {
+	runConfigBeforeMCPReconcileHook(path, data)
+}
+
+// AcquireConfigFileLock acquires the sidecar config lock, honoring the test
+// seam (io layer: root).
+func AcquireConfigFileLock(ctx context.Context, path string) (*filelock.FileLock, error) {
+	return acquireConfigFileLock(ctx, path)
+}
+
+// ReleaseConfigFileLock releases the sidecar config lock, honoring the test
+// seam (io layer: root).
+func ReleaseConfigFileLock(path string, lock *filelock.FileLock) error {
+	return releaseConfigFileLock(path, lock)
+}
+
+// ConfigContextWithTimeout derives a context honoring the test seam (io
+// layer: root).
+func ConfigContextWithTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	return configContextWithTimeout(parent, timeout)
+}
+
+// SyncConfigParentOnDisk flushes the parent directory of path to stable
+// storage without any test seam (io layer: root).
+func SyncConfigParentOnDisk(path string) error { return syncConfigParentOnDisk(path) }
 
 func newCommitOutcome(path string, committed, reconciled bool, causes ...error) error {
 	return &CommitOutcome{
@@ -329,6 +280,34 @@ func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	return atomicWriteFile(path, data, perm)
 }
 
+// SyncConfigParent flushes the parent directory of path to stable storage.
+func SyncConfigParent(path string) error {
+	return syncConfigParent(path)
+}
+
+// NewCommitOutcome builds a public CommitOutcome error from commit causes.
+func NewCommitOutcome(path string, committed, reconciled bool, causes ...error) error {
+	return newCommitOutcome(path, committed, reconciled, causes...)
+}
+
+// CommitConfigFile verifies and publishes the requested bytes through the
+// platform atomic commit implementation.
+func CommitConfigFile(selectedPath, commitPath string, data []byte, perm os.FileMode, expected docread.Fingerprint, expectedOwner int, enforceOwner bool, migrationHooks ...func(string) error) (docread.Fingerprint, error) {
+	return commitConfigFile(selectedPath, commitPath, data, perm, expected, expectedOwner, enforceOwner, migrationHooks...)
+}
+
+// ErrConfigCommitCommitted reports that the rename completed.
+func ErrConfigCommitCommitted() error { return errConfigCommitCommitted }
+
+// ErrConfigCommitUncertain reports an unreadable post-rename state.
+func ErrConfigCommitUncertain() error { return errConfigCommitUncertain }
+
+// ErrConfigCommitDurabilityUncertain reports a commit without a synced parent.
+func ErrConfigCommitDurabilityUncertain() error { return errConfigCommitDurabilityUncertain }
+
+// ErrAtomicWriteCommitted reports a committed write with uncertain durability.
+func ErrAtomicWriteCommitted() error { return errAtomicWriteCommitted }
+
 // atomicWriteFile writes data to a file atomically by writing to a unique
 // temporary file in the same directory and renaming it into place. This
 // prevents concurrent readers from observing a partially-written file.
@@ -344,7 +323,7 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 			_ = os.Remove(tmp)
 		}
 	}()
-	if err := renameConfigTemp(tmp, path, true); err != nil {
+	if err := fswap.RenameConfigTemp(tmp, path, true); err != nil {
 		return err
 	}
 	removeTemp = false
@@ -384,4 +363,10 @@ func stageConfigFile(path string, data []byte, perm os.FileMode) (string, error)
 	}
 	removeTemp = false
 	return tmp, nil
+}
+
+// CloneCommitOutcome copies a public outcome, setting Reconciled (io layer
+// that will consume it directly in a later pass: root).
+func CloneCommitOutcome(outcome *CommitOutcome, reconciled bool) *CommitOutcome {
+	return cloneCommitOutcome(outcome, reconciled)
 }

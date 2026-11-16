@@ -73,7 +73,7 @@ func TestMCPAdmissionRejectsLogicalRetargetAfterSidecarResolution(t *testing.T) 
 func TestVerifyConfigTargetBindingRejectsInvalidExistingIdentity(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rush.json")
 	aliasChain := [32]byte{1}
-	identity := configFileIdentity{device: 1, inode: 1, valid: true}
+	identity := configFileIdentity{Device: 1, Inode: 1, Valid: true}
 	target := configWriteTarget{
 		path: path, selectedPath: path,
 		expected: reloadFileFingerprint{Exists: true, Identity: identity, AliasChain: aliasChain},

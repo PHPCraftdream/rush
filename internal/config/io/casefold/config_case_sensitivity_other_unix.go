@@ -7,5 +7,5 @@ func ConfigPlatformCaseFoldLeaf(dir, leaf string) (string, bool) {
 }
 
 func ConfigPlatformCaseSensitivity(dir string) ConfigCaseSensitivity {
-	return configDirectoryCaseSensitivityByEntries(dir)
+	return DirectoryCaseSensitivityByEntries(dir)
 }

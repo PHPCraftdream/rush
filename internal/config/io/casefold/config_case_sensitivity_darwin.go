@@ -23,5 +23,5 @@ func ConfigPlatformCaseSensitivity(dir string) ConfigCaseSensitivity {
 		return ConfigCaseSensitivityUnknown
 	}
 	value, err := unix.Pathconf(path, darwinPathconfCaseSensitive)
-	return configDarwinCaseSensitivityFromPathconf(value, err)
+	return DarwinCaseSensitivityFromPathconf(value, err)
 }

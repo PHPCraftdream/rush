@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 )
 
 // MCPAdmissionGuard is the final source validation boundary for a runtime
@@ -394,7 +395,7 @@ func validatePreparedAdmissionFile(ctx context.Context, path string, file *os.Fi
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%w: %s", ErrMCPMutationStale, ErrConfigNonRegular)
 	}
-	owner, ownerKnown := configFileOwner(info)
+	owner, ownerKnown := fileid.ConfigFileOwner(info)
 	if enforceOwner && (!ownerKnown || owner != expectedOwner) {
 		return ErrMCPMutationStale
 	}
@@ -419,8 +420,8 @@ func validatePreparedAdmissionFile(ctx context.Context, path string, file *os.Fi
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	owner, ownerKnown = configFileOwner(finalInfo)
-	actualNlink := configFileNlinkOfOpened(file, finalInfo)
+	owner, ownerKnown = fileid.ConfigFileOwner(finalInfo)
+	actualNlink := fileid.FileNlinkOfOpened(file, finalInfo)
 	if (expected.Identity.Valid || enforceOwner) && (!ownerKnown || owner != expected.Owner) ||
 		expected.Nlink != 0 && actualNlink != expected.Nlink ||
 		expected.Size != int64(len(second)) || expected.ModTime != finalInfo.ModTime().UnixNano() ||
@@ -535,15 +536,15 @@ func validateFinalMCPAdmissionFile(
 		}
 		return ErrMCPMutationStale
 	}
-	owner, ownerKnown := configFileOwner(info)
+	owner, ownerKnown := fileid.ConfigFileOwner(info)
 	if enforceOwner && (!ownerKnown || owner != expectedOwner) {
 		return ErrMCPMutationStale
 	}
-	identity := configFileIdentityOfOpened(file, info)
+	identity := fileid.FileIdentityOfOpened(file, info)
 	if expected.Identity.Valid && identity != expected.Identity {
 		return ErrMCPMutationStale
 	}
-	if expected.Nlink != 0 && configFileNlinkOfOpened(file, info) != expected.Nlink {
+	if expected.Nlink != 0 && fileid.FileNlinkOfOpened(file, info) != expected.Nlink {
 		return ErrMCPMutationStale
 	}
 	if err := verifyMCPAdmissionBytes(ctx, file, expected.Size, expected.Digest); err != nil {
@@ -559,9 +560,9 @@ func validateFinalMCPAdmissionFile(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	finalOwner, finalOwnerKnown := configFileOwner(finalInfo)
-	finalIdentity := configFileIdentityOfOpened(file, finalInfo)
-	finalNlink := configFileNlinkOfOpened(file, finalInfo)
+	finalOwner, finalOwnerKnown := fileid.ConfigFileOwner(finalInfo)
+	finalIdentity := fileid.FileIdentityOfOpened(file, finalInfo)
+	finalNlink := fileid.FileNlinkOfOpened(file, finalInfo)
 	if (expected.Identity.Valid || enforceOwner) && (!finalOwnerKnown || finalOwner != expected.Owner) ||
 		expected.Identity.Valid && finalIdentity != expected.Identity ||
 		expected.Nlink != 0 && finalNlink != expected.Nlink ||

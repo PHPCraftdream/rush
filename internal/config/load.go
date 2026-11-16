@@ -93,7 +93,7 @@ func Load(workingDir, dataDir string, debug bool, opts ...LoadOption) (*ConfigSt
 	}
 	var lastErr error
 	// ONE shared migration deadline for every slot and every load attempt.
-	ktavCtx, ktavCancel := context.WithTimeout(context.Background(), ktavMigrationBudget)
+	ktavCtx, ktavCancel := context.WithTimeout(context.Background(), ktavMigrationBudget())
 	defer ktavCancel()
 	for attempt := 0; attempt < reloadMaxAttempts; attempt++ {
 		store, err := loadOnce(ktavCtx, workingDir, dataDir, debug, options.cliModels, options.discoveryProviders)

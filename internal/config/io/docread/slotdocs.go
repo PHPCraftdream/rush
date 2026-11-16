@@ -404,8 +404,8 @@ func fileExists(path string) bool {
 type SettingsDocumentFormat int
 
 const (
-	SettingsDocumentJSON SettingsDocumentFormat = iota
-	SettingsDocumentKtav
+	settingsDocumentJSON SettingsDocumentFormat = iota
+	settingsDocumentKtav
 )
 
 // SettingsDocument pairs one settings file's raw on-disk bytes with the
@@ -413,7 +413,6 @@ const (
 type SettingsDocument struct {
 	Path           string
 	JSONBytes      []byte
-	RawBytes       []byte
 	RawFingerprint Fingerprint
 	Format         SettingsDocumentFormat
 }
@@ -421,9 +420,9 @@ type SettingsDocument struct {
 // SettingsDocumentFormatOf reports the disk format a path's extension names.
 func SettingsDocumentFormatOf(path string) SettingsDocumentFormat {
 	if isKtavConfigPath(path) {
-		return SettingsDocumentKtav
+		return settingsDocumentKtav
 	}
-	return SettingsDocumentJSON
+	return settingsDocumentJSON
 }
 
 // DecodeSettingsDocument decodes raw bytes while retaining their fingerprint.
@@ -433,7 +432,7 @@ func DecodeSettingsDocument(path string, rawBytes []byte, rawFingerprint Fingerp
 		return SettingsDocument{}, err
 	}
 	return SettingsDocument{
-		Path: path, JSONBytes: jsonBytes, RawBytes: rawBytes,
+		Path: path, JSONBytes: jsonBytes,
 		RawFingerprint: rawFingerprint, Format: SettingsDocumentFormatOf(path),
 	}, nil
 }
@@ -454,7 +453,7 @@ func ReadSettingsDocument(path string) (SettingsDocument, error) {
 
 // EncodeSettingsDocument converts JSON-shaped bytes to the selected disk format.
 func EncodeSettingsDocument(data []byte, format SettingsDocumentFormat) ([]byte, error) {
-	if format == SettingsDocumentJSON {
+	if format == settingsDocumentJSON {
 		return data, nil
 	}
 	ktavBytes, err := ktavcodec.ConvertJSONToKtav(data)

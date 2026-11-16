@@ -9,7 +9,12 @@ import (
 	"os"
 
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/slotmigrate"
 )
+
+// ktavAutoMigrate is the KTAV-4 gate storage in slots (the graph root);
+// slotmigrate keeps a private mirror synced only via the test seam below.
+var ktavAutoMigrate = true
 
 // ReadConfigDocumentLight reads the document for the logical slot named by
 // legacyPath without initializing the application: no store, no DB, no
@@ -42,13 +47,17 @@ func ActiveConfigFileName(legacyPath string) string {
 	return docread.SelectConfigSlot(docread.LegacySlotOf(legacyPath))
 }
 
-// test seam
 // SetKtavAutoMigrateForTest is a test seam ONLY: it sets the package-level
-// ktavAutoMigrate flag and returns a func restoring the previous value.
+// ktavAutoMigrate flag AND slotmigrate's private mirror, and returns a func
+// restoring both previous values.
 func SetKtavAutoMigrateForTest(on bool) (restore func()) {
 	prev := ktavAutoMigrate
 	ktavAutoMigrate = on
-	return func() { ktavAutoMigrate = prev }
+	restoreSlotmigrate := slotmigrate.SetKtavAutoMigrateForTest(on)
+	return func() {
+		ktavAutoMigrate = prev
+		restoreSlotmigrate()
+	}
 }
 
 // KtavAutoMigrateEnabled reports whether newly created config files default

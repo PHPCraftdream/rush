@@ -144,7 +144,7 @@ func TestMCPAdmissionTokenRejectsOwnerAndNlinkMismatch(t *testing.T) {
 		require.NoError(t, openErr)
 		t.Cleanup(func() { _ = file.Close() })
 		mismatch := expected
-		mismatch.owner++
+		mismatch.Owner++
 		require.ErrorIs(t, validatePreparedAdmissionFile(context.Background(), path, file, mismatch, 0, false), ErrMCPMutationStale)
 	})
 

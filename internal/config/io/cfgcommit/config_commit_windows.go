@@ -11,6 +11,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fswap"
 	"golang.org/x/sys/windows"
 )
 
@@ -30,12 +31,12 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	if err := verifySelectedCommitPath(selectedPath, commitPath); err != nil {
 		return docread.Fingerprint{}, err
 	}
-	publicationPath, err := physicalWindowsConfigPath(commitPath)
+	publicationPath, err := fileid.PhysicalWindowsConfigPath(commitPath)
 	if err != nil {
 		return docread.Fingerprint{}, fmt.Errorf("%w: resolve config destination: %v", fileid.ErrConfigCommitVerification(), err)
 	}
 
-	parent, err := openWindowsConfigParent(publicationPath)
+	parent, err := fileid.OpenWindowsConfigParent(publicationPath)
 	if err != nil {
 		return docread.Fingerprint{}, fmt.Errorf("%w: %v", fileid.ErrConfigCommitVerification(), err)
 	}
@@ -60,7 +61,7 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	if err := verifyWindowsCommitDestinationHandle(parent, base, expected, expectedOwner, enforceOwner, selectedPath); err != nil {
 		return docread.Fingerprint{}, err
 	}
-	staged, err := stageConfigFileHandleAt(parent, publicationPath, data, perm, migrationHooks...)
+	staged, err := fileid.StageConfigFileHandleAt(parent, publicationPath, data, perm, migrationHooks...)
 	if err != nil {
 		return docread.Fingerprint{}, err
 	}
@@ -70,10 +71,10 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 		if removeTemp && !stagedClosed {
 			// The handle is DELETE-capable and remains open until this cleanup
 			// completes. Never check a pathname, close, and then delete it.
-			_ = deleteWindowsConfigHandle(staged.file)
+			_ = fileid.DeleteWindowsConfigHandle(staged.File)
 		}
 		if !stagedClosed {
-			_ = staged.file.Close()
+			_ = staged.File.Close()
 		}
 	}()
 
@@ -95,7 +96,7 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 			return docread.Fingerprint{}, err
 		}
 	}
-	renameErr := renameConfigTempHandle(staged.file, staged.path, parent, base, expected.Exists, expected, expectedOwner, enforceOwner, selectedPath)
+	renameErr := fswap.RenameConfigTempHandle(staged.File, staged.Path, parent, base, expected.Exists, expected, expectedOwner, enforceOwner, selectedPath)
 	if renameErr != nil {
 		return docread.Fingerprint{}, classifyWindowsRenameFailure(publicationPath, parent, data, expected, expectedOwner, enforceOwner, staged, renameErr, &removeTemp, &stagedClosed)
 	}
@@ -105,9 +106,9 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 			return docread.Fingerprint{}, newCommitOutcome(commitPath, true, false, errAtomicWriteCommitted, err)
 		}
 	}
-	flushErr := flushWindowsConfigHandle(staged.file)
-	stagedData, stagedFingerprint, stagedReadErr := docread.ReadStableConfigHandle(staged.file, expectedOwner, enforceOwner)
-	_ = staged.file.Close()
+	flushErr := fileid.FlushWindowsConfigHandle(staged.File)
+	stagedData, stagedFingerprint, stagedReadErr := docread.ReadStableConfigHandle(staged.File, expectedOwner, enforceOwner)
+	_ = staged.File.Close()
 	stagedClosed = true
 
 	hookErr := runConfigAfterCommitRenameHookForPath(commitPath)
@@ -119,7 +120,7 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 	targetData, _, targetReadbackErr := docread.ReadStableConfigFileOwned(publicationPath, expectedOwner, enforceOwner)
 	selectedMatches := selectedReadbackErr == nil && docread.SameBytesFingerprint(committed, sha256.Sum256(data)) &&
 		committedFingerprint.ParentDiscovery == expected.ParentDiscovery
-	publicationProven := stagedReadErr == nil && stagedFingerprint.Identity == staged.identity &&
+	publicationProven := stagedReadErr == nil && stagedFingerprint.Identity == staged.Identity &&
 		docread.SameBytesFingerprint(stagedData, sha256.Sum256(data))
 	targetMatches := targetReadbackErr == nil && docread.SameBytesFingerprint(targetData, sha256.Sum256(data))
 	if publicationProven && !selectedMatches {
@@ -184,7 +185,7 @@ func verifyWindowsCommitParent(parent *os.File, publicationPath string, expected
 	if !pinned.Valid || (expected.ParentIdentity.Valid && pinned != expected.ParentIdentity) {
 		return fileid.ErrConfigCommitVerification()
 	}
-	current, err := openWindowsConfigParent(publicationPath)
+	current, err := fileid.OpenWindowsConfigParent(publicationPath)
 	if err != nil {
 		return fileid.ErrConfigCommitVerification()
 	}
@@ -197,9 +198,9 @@ func verifyWindowsCommitParent(parent *os.File, publicationPath string, expected
 }
 
 func verifyWindowsCommitDestinationHandle(parent *os.File, name string, expected docread.Fingerprint, expectedOwner int, enforceOwner bool, discoveryPath string) error {
-	file, err := openWindowsConfigEntryAt(parent, name)
+	file, err := fileid.OpenWindowsConfigEntryAt(parent, name)
 	if !expected.Exists {
-		if isWindowsEntryNotFound(err) {
+		if fileid.IsWindowsEntryNotFound(err) {
 			return nil
 		}
 		if err != nil {
@@ -215,7 +216,7 @@ func verifyWindowsCommitDestinationHandle(parent *os.File, name string, expected
 	if err != nil {
 		return fileid.ErrConfigCommitVerification()
 	}
-	handleInfo, err := windowsFileInformation(file)
+	handleInfo, err := fileid.WindowsFileInformation(file)
 	if err != nil || !info.Mode().IsRegular() || handleInfo.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 		return fileid.ErrConfigCommitVerification()
 	}
@@ -238,11 +239,11 @@ func verifyWindowsCommitDestinationHandle(parent *os.File, name string, expected
 	return nil
 }
 
-func classifyWindowsRenameFailure(commitPath string, parent *os.File, data []byte, expected docread.Fingerprint, expectedOwner int, enforceOwner bool, staged windowsStagedConfigFile, renameErr error, removeTemp, stagedClosed *bool) error {
+func classifyWindowsRenameFailure(commitPath string, parent *os.File, data []byte, expected docread.Fingerprint, expectedOwner int, enforceOwner bool, staged fileid.WindowsStagedConfigFile, renameErr error, removeTemp, stagedClosed *bool) error {
 	// Resolve both directory entries through the pinned parent. The staged
 	// handle remains open until classification and cleanup are complete.
-	temp, tempErr := openWindowsConfigEntryAt(parent, staged.name)
-	target, targetErr := openWindowsConfigEntryAt(parent, filepath.Base(commitPath))
+	temp, tempErr := fileid.OpenWindowsConfigEntryAt(parent, staged.Name)
+	target, targetErr := fileid.OpenWindowsConfigEntryAt(parent, filepath.Base(commitPath))
 	if temp != nil {
 		defer temp.Close()
 	}
@@ -256,7 +257,7 @@ func classifyWindowsRenameFailure(commitPath string, parent *os.File, data []byt
 	}
 	targetStaged := targetErr == nil && targetIdentity == staged.Identity
 	targetExpected := expected.Exists && targetErr == nil && targetIdentity == expected.Identity
-	targetAbsent := isWindowsEntryNotFound(targetErr) || os.IsNotExist(targetErr)
+	targetAbsent := fileid.IsWindowsEntryNotFound(targetErr) || os.IsNotExist(targetErr)
 
 	if sourcePresent && !targetStaged {
 		// No publication is proven. Cleanup is performed by the opened staged
@@ -291,7 +292,7 @@ func classifyWindowsRenameFailure(commitPath string, parent *os.File, data []byt
 	// callers can distinguish this byte-free state from a proven commit and
 	// must not retry without reconciling it themselves.
 	causes := []error{errConfigCommitUncertain, renameErr}
-	if tempErr != nil && !isWindowsEntryNotFound(tempErr) && !os.IsNotExist(tempErr) {
+	if tempErr != nil && !fileid.IsWindowsEntryNotFound(tempErr) && !os.IsNotExist(tempErr) {
 		causes = append(causes, tempErr)
 	}
 	if targetErr != nil {

@@ -27,3 +27,9 @@ func selectOAuthJournalPath(configPath, providerID string, forWrite bool) string
 	}
 	return legacy
 }
+
+// SelectOAuthJournalPath resolves the journal path one operation uses.
+// Exported wrapper over selectOAuthJournalPath.
+func SelectOAuthJournalPath(configPath, providerID string, forWrite bool) string {
+	return selectOAuthJournalPath(configPath, providerID, forWrite)
+}

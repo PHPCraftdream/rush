@@ -376,9 +376,9 @@ func (s *APITokenStore) read() (apiTokenDocument, error) {
 	if runtime.GOOS != "windows" && (info.Mode().Perm()&0o077 != 0 || info.Mode().Perm()&0o400 == 0) {
 		return apiTokenDocument{}, errors.New("invalid API token store permissions")
 	}
-	identity := fileid.ConfigFileIdentityOf(info)
+	identity := fileid.FileIdentityOf(info)
 	if runtime.GOOS == "windows" {
-		identity, statErr = fileid.ConfigFileIdentityAtPath(path)
+		identity, statErr = fileid.FileIdentityAtPath(path)
 		if statErr != nil {
 			return apiTokenDocument{}, statErr
 		}

@@ -66,3 +66,15 @@ func writeCacheDocument(legacyJSON string, jsonBytes []byte, perm os.FileMode, w
 	}
 	return cfgcommit.AtomicWriteFile(docread.KtavSiblingOf(legacyJSON), ktavBytes, perm)
 }
+
+// ReadCacheDocument reads the active generation of a Rush-owned cache slot
+// named by its legacy JSON path. Exported wrapper over readCacheDocument.
+func ReadCacheDocument(legacyJSON string) ([]byte, error) {
+	return readCacheDocument(legacyJSON)
+}
+
+// WriteCacheDocument writes JSON-shaped cache bytes in the gate-selected
+// format. Exported wrapper over writeCacheDocument.
+func WriteCacheDocument(legacyJSON string, jsonBytes []byte, perm os.FileMode, writeJSON func(path string, data []byte, perm os.FileMode) error) error {
+	return writeCacheDocument(legacyJSON, jsonBytes, perm, writeJSON)
+}

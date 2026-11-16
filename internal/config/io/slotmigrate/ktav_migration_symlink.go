@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
@@ -56,8 +57,8 @@ func runKtavSymlinkMigrationState(ctx context.Context, legacy, recordPath, worki
 // recoverKtavSymlinkBeforePublication rebuilds the staged document from the
 // still-authoritative symlink source after a crash between record commit and
 // destination publication.
-func recoverKtavSymlinkBeforePublication(ctx context.Context, legacy, recordPath, ktavPath string, record *ktavMigrationRecord, workingDir string) error {
-	owner, enforce, err := ownerPolicyForMigration(legacy, workingDir)
+func recoverKtavSymlinkBeforePublication(ctx context.Context, legacy, recordPath, ktavPath string, record *KtavMigrationRecord, workingDir string) error {
+	owner, enforce, err := OwnerPolicyForMigration(legacy, workingDir)
 	if err != nil {
 		return err
 	}
@@ -76,7 +77,7 @@ func recoverKtavSymlinkBeforePublication(ctx context.Context, legacy, recordPath
 	if err != nil {
 		return fmt.Errorf("ktav conversion failed for %s: %w", filepath.Base(legacy), err)
 	}
-	data, err = applyKtavMigrationModelsIntegrity(source, data)
+	data, err = ApplyKtavMigrationModelsIntegrity(source, data)
 	if err != nil {
 		return err
 	}
@@ -90,7 +91,7 @@ func recoverKtavSymlinkBeforePublication(ctx context.Context, legacy, recordPath
 	if expected.Exists {
 		return fmt.Errorf("%w: %s appeared during recovery", docread.ErrKtavMigrationConflict(), filepath.Base(ktavPath))
 	}
-	if _, err := commitConfigFile(ktavPath, ktavPath, data, 0o600, expected, owner, enforce); err != nil {
+	if _, err := cfgcommit.CommitConfigFile(ktavPath, ktavPath, data, 0o600, expected, owner, enforce); err != nil {
 		return fmt.Errorf("ktav migration: failed to publish %s: %w", ktavPath, err)
 	}
 	return finishKtavSymlinkMigration(ctx, legacy, recordPath, ktavPath, record, workingDir)
@@ -100,8 +101,8 @@ func recoverKtavSymlinkBeforePublication(ctx context.Context, legacy, recordPath
 // (Symlink: true) and published rush.ktav already exist: verify the
 // digests, retire the record, and log once; the link is kept. Crash points: record + ktav + link, or record +
 // ktav with the link already removed.
-func finishKtavSymlinkMigration(ctx context.Context, legacy, recordPath, ktavPath string, record *ktavMigrationRecord, workingDir string) error {
-	owner, enforce, err := ownerPolicyForMigration(legacy, workingDir)
+func finishKtavSymlinkMigration(ctx context.Context, legacy, recordPath, ktavPath string, record *KtavMigrationRecord, workingDir string) error {
+	owner, enforce, err := OwnerPolicyForMigration(legacy, workingDir)
 	if err != nil {
 		return err
 	}
@@ -138,7 +139,7 @@ func finishKtavSymlinkMigration(ctx context.Context, legacy, recordPath, ktavPat
 // legacy config. No .bak is ever created: the physical link target in the
 // dotfiles repository IS the backup.
 func migrateKtavSymlinkedConfig(ctx context.Context, legacy, recordPath, workingDir string) error {
-	owner, enforce, err := ownerPolicyForMigration(legacy, workingDir)
+	owner, enforce, err := OwnerPolicyForMigration(legacy, workingDir)
 	if err != nil {
 		return err
 	}
@@ -165,14 +166,14 @@ func migrateKtavSymlinkedConfig(ctx context.Context, legacy, recordPath, working
 	if err != nil {
 		return fmt.Errorf("ktav conversion failed for %s: %w", filepath.Base(legacy), err)
 	}
-	ktavBytes, err = applyKtavMigrationModelsIntegrity(source, ktavBytes)
+	ktavBytes, err = ApplyKtavMigrationModelsIntegrity(source, ktavBytes)
 	if err != nil {
 		return err
 	}
 	stagedDigest := sha256.Sum256(ktavBytes)
 	ktavPath := docread.KtavSiblingOf(legacy)
-	record := ktavMigrationRecord{
-		Version:      ktavMigrationRecordVersion,
+	record := KtavMigrationRecord{
+		Version:      KtavMigrationRecordVersion,
 		Source:       filepath.Base(legacy),
 		Destination:  filepath.Base(ktavPath),
 		Backup:       filepath.Base(docread.BackupPathFor(legacy)),
@@ -217,7 +218,7 @@ func migrateKtavSymlinkedConfig(ctx context.Context, legacy, recordPath, working
 			if err := ktavMigrationCheckContext(ctx, "record-commit"); err != nil {
 				return err
 			}
-			if _, err := commitConfigFile(recordPath, recordPath, append(recordBytes, '\n'), 0o600, absent, owner, enforce); err != nil {
+			if _, err := cfgcommit.CommitConfigFile(recordPath, recordPath, append(recordBytes, '\n'), 0o600, absent, owner, enforce); err != nil {
 				return fmt.Errorf("ktav migration: failed to persist record %s: %w", filepath.Base(recordPath), err)
 			}
 			if err := ktavMigrationCheckContext(ctx, "after-record"); err != nil {
@@ -231,7 +232,7 @@ func migrateKtavSymlinkedConfig(ctx context.Context, legacy, recordPath, working
 	}
 	// Publish rush.ktav as a regular file beside the LINK path; the
 	// physical link target is never written to or removed here.
-	if _, err := commitConfigFile(ktavPath, ktavPath, ktavBytes, 0o600, expected, owner, enforce, publishHook); err != nil {
+	if _, err := cfgcommit.CommitConfigFile(ktavPath, ktavPath, ktavBytes, 0o600, expected, owner, enforce, publishHook); err != nil {
 		return fmt.Errorf("ktav migration: failed to publish %s: %w", ktavPath, err)
 	}
 	if err := ktavMigrationCheckContext(ctx, "after-publish"); err != nil {

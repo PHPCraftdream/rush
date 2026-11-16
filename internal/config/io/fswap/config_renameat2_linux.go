@@ -6,22 +6,20 @@ import (
 	"errors"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/PHPCraftdream/rush/internal/config/io/cfghooks"
 )
 
-func renameConfigTempAt(oldDirFD int, oldName string, newDirFD int, newName string, replace bool) (bool, error) {
+func RenameConfigTempAt(oldDirFD int, oldName string, newDirFD int, newName string, replace bool) (bool, error) {
 	if replace {
 		err := unix.Renameat(oldDirFD, oldName, newDirFD, newName)
 		return err == nil, err
 	}
-	configTestHooks.Lock()
-	forceLink := configTestHooks.forceLinkNoReplace
-	configTestHooks.Unlock()
-	if forceLink {
-		return publishConfigTempNoReplaceAt(oldDirFD, oldName, newDirFD, newName)
+	hooks := cfghooks.Snapshot()
+	if hooks.ForceLinkNoReplace {
+		return PublishConfigTempNoReplaceAt(oldDirFD, oldName, newDirFD, newName)
 	}
-	configTestHooks.Lock()
-	renameNoReplace := configTestHooks.renameNoReplace
-	configTestHooks.Unlock()
+	renameNoReplace := hooks.RenameNoReplace
 	var err error
 	if renameNoReplace != nil {
 		err = renameNoReplace(oldDirFD, oldName, newDirFD, newName)
@@ -29,7 +27,7 @@ func renameConfigTempAt(oldDirFD int, oldName string, newDirFD int, newName stri
 		err = unix.Renameat2(oldDirFD, oldName, newDirFD, newName, unix.RENAME_NOREPLACE)
 	}
 	if errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EINVAL) || errors.Is(err, unix.EOPNOTSUPP) {
-		return publishConfigTempNoReplaceAt(oldDirFD, oldName, newDirFD, newName)
+		return PublishConfigTempNoReplaceAt(oldDirFD, oldName, newDirFD, newName)
 	}
 	return err == nil, err
 }

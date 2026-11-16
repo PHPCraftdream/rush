@@ -56,10 +56,10 @@ func windowsConfigDirectoryCaseInsensitive(path string) (bool, error) {
 		}
 		return false, err
 	}
-	return configWindowsCaseInsensitiveFromFlags(flags), nil
+	return WindowsCaseInsensitiveFromFlags(flags), nil
 }
 
-func configWindowsCaseInsensitiveFromFlags(flags uint32) bool {
+func WindowsCaseInsensitiveFromFlags(flags uint32) bool {
 	return flags&windows.FILE_CS_FLAG_CASE_SENSITIVE_DIR == 0
 }
 

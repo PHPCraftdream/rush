@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 	"golang.org/x/sys/unix"
@@ -65,17 +66,17 @@ func archiveKtavBackup(ctx context.Context, sourcePath, backupPath string, expec
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	published, err := renameConfigTempAt(parentFD, filepath.Base(sourcePath), parentFD, backupBase, false)
+	published, err := cfgcommit.RenameConfigTempAt(parentFD, filepath.Base(sourcePath), parentFD, backupBase, false)
 	if err != nil {
 		if published {
 			// The archival happened even though the API reported an error;
 			// never retry a mutation that may already be visible.
-			return newCommitOutcome(backupPath, true, false, errAtomicWriteCommitted, errConfigCommitDurabilityUncertain, err)
+			return cfgcommit.NewCommitOutcome(backupPath, true, false, cfgcommit.ErrAtomicWriteCommitted(), cfgcommit.ErrConfigCommitDurabilityUncertain(), err)
 		}
 		return err
 	}
 	if err := runKtavMigrationStep("after-backup-rename"); err != nil {
-		return newCommitOutcome(backupPath, true, false, errAtomicWriteCommitted, err)
+		return cfgcommit.NewCommitOutcome(backupPath, true, false, cfgcommit.ErrAtomicWriteCommitted(), err)
 	}
 	archived, archivedFP, err := docread.ReadConfigEntryAt(parentFD, backupBase, owner, enforceOwner)
 	if err != nil {
@@ -86,8 +87,8 @@ func archiveKtavBackup(ctx context.Context, sourcePath, backupPath string, expec
 		(enforceOwner && archivedFP.Owner != owner) {
 		return fmt.Errorf("%w: %s or %s changed during archival", docread.ErrKtavMigrationConflict(), filepath.Base(sourcePath), backupBase)
 	}
-	if err := syncConfigParentFile(parent); err != nil {
-		return newCommitOutcome(backupPath, true, false, errAtomicWriteCommitted, errConfigCommitDurabilityUncertain, err)
+	if err := cfgcommit.SyncConfigParentFile(parent); err != nil {
+		return cfgcommit.NewCommitOutcome(backupPath, true, false, cfgcommit.ErrAtomicWriteCommitted(), cfgcommit.ErrConfigCommitDurabilityUncertain(), err)
 	}
 	if err := ctx.Err(); err != nil {
 		return err

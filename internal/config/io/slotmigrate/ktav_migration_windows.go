@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fswap"
 	"golang.org/x/sys/windows"
 )
 
@@ -22,7 +24,7 @@ func archiveKtavBackup(ctx context.Context, sourcePath, backupPath string, expec
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	parent, err := openWindowsConfigParent(sourcePath)
+	parent, err := fileid.OpenWindowsConfigParent(sourcePath)
 	if err != nil {
 		return fmt.Errorf("open config parent: %w", err)
 	}
@@ -40,17 +42,17 @@ func archiveKtavBackup(ctx context.Context, sourcePath, backupPath string, expec
 		return fileid.ErrConfigCommitVerification()
 	}
 	backupBase := filepath.Base(backupPath)
-	backupHandle, inspectErr := openWindowsConfigEntryAt(parent, backupBase)
+	backupHandle, inspectErr := fileid.OpenWindowsConfigEntryAt(parent, backupBase)
 	if inspectErr == nil {
 		_ = backupHandle.Close()
 		return fmt.Errorf("%w: backup %s already exists", docread.ErrKtavMigrationConflict(), backupBase)
 	}
-	if !isWindowsEntryNotFound(inspectErr) && !os.IsNotExist(inspectErr) {
+	if !fileid.IsWindowsEntryNotFound(inspectErr) && !os.IsNotExist(inspectErr) {
 		return fmt.Errorf("inspect backup %s: %v", backupBase, inspectErr)
 	}
 
 	sourceBase := filepath.Base(sourcePath)
-	handle, err := createWindowsConfigEntryAt(parent, sourceBase, windows.GENERIC_READ|windows.FILE_READ_ATTRIBUTES|windows.DELETE|windows.SYNCHRONIZE, windows.FILE_OPEN, windows.FILE_NON_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT)
+	handle, err := fileid.CreateWindowsConfigEntryAt(parent, sourceBase, windows.GENERIC_READ|windows.FILE_READ_ATTRIBUTES|windows.DELETE|windows.SYNCHRONIZE, windows.FILE_OPEN, windows.FILE_NON_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT)
 	if err != nil {
 		return fmt.Errorf("%w: open source: %v", fileid.ErrConfigCommitVerification(), err)
 	}
@@ -70,11 +72,11 @@ func archiveKtavBackup(ctx context.Context, sourcePath, backupPath string, expec
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := renameConfigTempHandle(source, sourcePath, parent, backupBase, false, expected, owner, enforceOwner, sourcePath); err != nil {
+	if err := fswap.RenameConfigTempHandle(source, sourcePath, parent, backupBase, false, expected, owner, enforceOwner, sourcePath); err != nil {
 		return err
 	}
 	if err := runKtavMigrationStep("after-backup-rename"); err != nil {
-		return newCommitOutcome(backupPath, true, false, errAtomicWriteCommitted, err)
+		return cfgcommit.NewCommitOutcome(backupPath, true, false, cfgcommit.ErrAtomicWriteCommitted(), err)
 	}
 	archived, archivedFP, err := docread.ReadStableConfigHandle(source, owner, enforceOwner)
 	if err != nil {
@@ -85,8 +87,8 @@ func archiveKtavBackup(ctx context.Context, sourcePath, backupPath string, expec
 		(enforceOwner && archivedFP.Owner != owner) {
 		return fmt.Errorf("%w: %s or %s changed during archival", docread.ErrKtavMigrationConflict(), filepath.Base(sourcePath), backupBase)
 	}
-	if err := syncConfigParentFile(parent); err != nil {
-		return newCommitOutcome(backupPath, true, false, errAtomicWriteCommitted, errConfigCommitDurabilityUncertain, err)
+	if err := cfgcommit.SyncConfigParentFile(parent); err != nil {
+		return cfgcommit.NewCommitOutcome(backupPath, true, false, cfgcommit.ErrAtomicWriteCommitted(), cfgcommit.ErrConfigCommitDurabilityUncertain(), err)
 	}
 	if err := ctx.Err(); err != nil {
 		return err

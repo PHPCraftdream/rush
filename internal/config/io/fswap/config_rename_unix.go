@@ -4,6 +4,6 @@ package fswap
 
 import "os"
 
-func renameConfigTemp(source, destination string, _ bool) error {
+func RenameConfigTemp(source, destination string, _ bool) error {
 	return os.Rename(source, destination)
 }

@@ -10,9 +10,9 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 )
 
-func configDirectoryCaseSensitivityByEntries(dir string) ConfigCaseSensitivity {
-	readSnapshot := func() (configCaseDirectorySnapshot, error) {
-		return configReadCaseDirectorySnapshot(dir)
+func DirectoryCaseSensitivityByEntries(dir string) ConfigCaseSensitivity {
+	readSnapshot := func() (CaseDirectorySnapshot, error) {
+		return ReadCaseDirectorySnapshot(dir)
 	}
 	probe := func(path string) (fileid.FileIdentity, error) {
 		info, probeErr := os.Lstat(path)
@@ -28,39 +28,39 @@ func configDirectoryCaseSensitivityByEntries(dir string) ConfigCaseSensitivity {
 	return ConfigCaseSensitivityFromDirectorySnapshots(dir, readSnapshot, probe)
 }
 
-func configReadCaseDirectorySnapshot(dir string) (configCaseDirectorySnapshot, error) {
+func ReadCaseDirectorySnapshot(dir string) (CaseDirectorySnapshot, error) {
 	directory, err := os.Open(dir)
 	if err != nil {
-		return configCaseDirectorySnapshot{}, err
+		return CaseDirectorySnapshot{}, err
 	}
 	defer directory.Close()
 	info, err := directory.Stat()
 	if err != nil {
-		return configCaseDirectorySnapshot{}, err
+		return CaseDirectorySnapshot{}, err
 	}
 	if !info.IsDir() {
-		return configCaseDirectorySnapshot{}, os.ErrInvalid
+		return CaseDirectorySnapshot{}, os.ErrInvalid
 	}
 	identity := fileid.FileIdentityOf(info)
 	if !identity.Valid {
-		return configCaseDirectorySnapshot{}, os.ErrInvalid
+		return CaseDirectorySnapshot{}, os.ErrInvalid
 	}
-	names, err := directory.Readdirnames(configCaseDirectoryMaxEntries + 1)
+	names, err := directory.Readdirnames(CaseDirectoryMaxEntries + 1)
 	if err != nil && !errors.Is(err, io.EOF) {
-		return configCaseDirectorySnapshot{}, err
+		return CaseDirectorySnapshot{}, err
 	}
-	if configCaseDirectoryBudgetExceeded(names) {
-		return configCaseDirectorySnapshot{}, errConfigCaseDirectoryBudgetExceeded
+	if CaseDirectoryBudgetExceeded(names) {
+		return CaseDirectorySnapshot{}, errConfigCaseDirectoryBudgetExceeded
 	}
-	snapshot := configCaseDirectorySnapshot{
-		identity: identity,
-		modTime:  info.ModTime().UnixNano(),
-		size:     info.Size(),
-		entries:  make([]configCaseDirectoryEntry, 0, len(names)),
+	snapshot := CaseDirectorySnapshot{
+		Identity: identity,
+		ModTime:  info.ModTime().UnixNano(),
+		Size:     info.Size(),
+		Entries:  make([]CaseDirectoryEntry, 0, len(names)),
 	}
 	for _, name := range names {
-		snapshot.entries = append(snapshot.entries, configCaseDirectoryEntry{
-			name: name,
+		snapshot.Entries = append(snapshot.Entries, CaseDirectoryEntry{
+			Name: name,
 		})
 	}
 	return snapshot, nil

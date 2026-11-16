@@ -4,12 +4,17 @@ package slotmigrate
 import (
 	"fmt"
 
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
-// applyKtavMigrationModelsIntegrity carries the models-integrity cache_rev
+// cacheRevKey is a byte-identical local copy of the root package's
+// cacheRevKey (models_integrity.go).
+const cacheRevKey = "cache_rev"
+
+// ApplyKtavMigrationModelsIntegrity carries the models-integrity cache_rev
 // across the migration conversion. It runs on the CONVERTED Ktav bytes, just
 // before they are staged for publication, and classifies the legacy
 // document's cache_rev exactly once:
@@ -31,8 +36,8 @@ import (
 //
 // sync_rev is never touched here; it is copied by the conversion as-is and
 // is read without the lock password.
-func applyKtavMigrationModelsIntegrity(source, ktavBytes []byte) ([]byte, error) {
-	canonical, present, err := canonicalModelsAndRolesJSON(source)
+func ApplyKtavMigrationModelsIntegrity(source, ktavBytes []byte) ([]byte, error) {
+	canonical, present, err := cfgmodel.CanonicalModelsAndRolesJSON(source)
 	if err != nil || !present {
 		// Nothing hashable in the legacy document: leave the converted
 		// bytes (and whatever cache_rev they carry) untouched.
@@ -43,7 +48,7 @@ func applyKtavMigrationModelsIntegrity(source, ktavBytes []byte) ([]byte, error)
 		// (d) A missing signature stays missing.
 		return ktavBytes, nil
 	}
-	if rev.Type != gjson.String || rev.String() == "" || rev.String() != modelsIntegritySignature(canonical) {
+	if rev.Type != gjson.String || rev.String() == "" || rev.String() != cfgmodel.ModelsIntegritySignature(canonical) {
 		// (a)/(c) An existing mismatch stays a mismatch: copy the OLD
 		// cache_rev unchanged, never recompute over a tampered models
 		// block. The conversion already carried it over verbatim.
@@ -61,14 +66,14 @@ func applyKtavMigrationModelsIntegrity(source, ktavBytes []byte) ([]byte, error)
 	if err != nil {
 		return nil, fmt.Errorf("ktav round-trip failed while recomputing cache_rev: %w", err)
 	}
-	normalized, present, err := canonicalModelsAndRolesJSON(jsonBytes)
+	normalized, present, err := cfgmodel.CanonicalModelsAndRolesJSON(jsonBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to canonicalize model settings: %w", err)
 	}
 	if !present {
 		return ktavBytes, nil
 	}
-	doc, err := sjson.Set(string(source), cacheRevKey, modelsIntegritySignature(normalized))
+	doc, err := sjson.Set(string(source), cacheRevKey, cfgmodel.ModelsIntegritySignature(normalized))
 	if err != nil {
 		return nil, fmt.Errorf("failed to update cache_rev during ktav migration: %w", err)
 	}

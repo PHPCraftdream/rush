@@ -13,13 +13,13 @@ import (
 // identity. Unix derives it from the opened file's stat information; Windows
 // derives the equivalent identity from its handle API.
 type FileIdentity struct {
-	device uint64
-	inode  uint64
+	Device uint64
+	Inode  uint64
 	Valid  bool
 }
 
 func (identity FileIdentity) FingerprintString() string {
-	return fmt.Sprintf("%t|%d|%d", identity.Valid, identity.device, identity.inode)
+	return fmt.Sprintf("%t|%d|%d", identity.Valid, identity.Device, identity.Inode)
 }
 
 func FileIdentityOf(info os.FileInfo) FileIdentity {
@@ -27,7 +27,7 @@ func FileIdentityOf(info os.FileInfo) FileIdentity {
 	if !ok {
 		return FileIdentity{}
 	}
-	return FileIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino), Valid: true}
+	return FileIdentity{Device: uint64(stat.Dev), Inode: uint64(stat.Ino), Valid: true}
 }
 
 func FileIdentityOfOpened(_ *os.File, info os.FileInfo) FileIdentity {

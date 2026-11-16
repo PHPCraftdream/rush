@@ -13,6 +13,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fswap"
 	"golang.org/x/sys/unix"
 )
 
@@ -147,7 +148,7 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 			return docread.Fingerprint{}, err
 		}
 	}
-	published, renameErr := renameConfigTempAt(parentFD, tmpName, parentFD, base, expected.Exists)
+	published, renameErr := fswap.RenameConfigTempAt(parentFD, tmpName, parentFD, base, expected.Exists)
 	if renameErr != nil && !published {
 		if !expected.Exists {
 			return docread.Fingerprint{}, fmt.Errorf("%w: no-replace rename: %w", fileid.ErrConfigCommitVerification(), renameErr)

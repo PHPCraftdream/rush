@@ -25,7 +25,7 @@ type Hooks struct {
 	RenameNoReplace       func(int, string, int, string) error
 	RenameatxNp           func(int, string, int, string, uint32) error
 	MoveFileEx            func(*uint16, *uint16, uint32) error
-	SetFileInformation    func(uintptr, uint32, *byte) error
+	SetFileInformation    func(uintptr, uint32, *byte, uint32) error
 	FlushFileBuffers      func(uintptr) error
 	UnlinkTemp            func(int, string) error
 	SyncParent            func(string) error
@@ -34,9 +34,28 @@ type Hooks struct {
 }
 
 var (
-	mu       sync.Mutex
-	provider func() Hooks
+	mu                    sync.Mutex
+	provider              func() Hooks
+	beforeCommitCheckSeam struct {
+		mu   sync.Mutex
+		hook func()
+	}
 )
+
+// SetBeforeCommitCheckForTest installs a test-only override for the
+// BeforeCommitCheck seam on top of whatever the root provider reports. It
+// preserves the previous override; the returned func restores it.
+func SetBeforeCommitCheckForTest(hook func()) (restore func()) {
+	beforeCommitCheckSeam.mu.Lock()
+	prev := beforeCommitCheckSeam.hook
+	beforeCommitCheckSeam.hook = hook
+	beforeCommitCheckSeam.mu.Unlock()
+	return func() {
+		beforeCommitCheckSeam.mu.Lock()
+		beforeCommitCheckSeam.hook = prev
+		beforeCommitCheckSeam.mu.Unlock()
+	}
+}
 
 // SetProvider stores the root package's hook provider.
 func SetProvider(p func() Hooks) {
@@ -56,5 +75,12 @@ func Snapshot() Hooks {
 	if p == nil {
 		return Hooks{}
 	}
-	return p()
+	hooks := p()
+	beforeCommitCheckSeam.mu.Lock()
+	override := beforeCommitCheckSeam.hook
+	beforeCommitCheckSeam.mu.Unlock()
+	if override != nil {
+		hooks.BeforeCommitCheck = override
+	}
+	return hooks
 }

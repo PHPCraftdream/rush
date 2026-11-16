@@ -36,37 +36,40 @@ func ConfigCaseSensitivityFromMetadata(filesystemInsensitive, filesystemSensitiv
 
 const (
 	// Bound metadata-unknown directory probes to keep missing-path writes predictable.
-	configLinuxExt4SuperMagic       uint64 = 0xef53
-	configLinuxF2FSSuperMagic       uint64 = 0xf2f52010
-	configLinuxMSDOSSuperMagic      uint64 = 0x4d44
-	configLinuxExFATSuperMagic      uint64 = 0x2011bab0
-	configLinuxFSCasefoldFlag       uint32 = 0x40000000
-	configCaseDirectoryMaxEntries          = 64
-	configCaseDirectoryMaxNameBytes        = 4096
+	LinuxExt4SuperMagic       uint64 = 0xef53
+	LinuxF2FSSuperMagic       uint64 = 0xf2f52010
+	LinuxMSDOSSuperMagic      uint64 = 0x4d44
+	LinuxExFATSuperMagic      uint64 = 0x2011bab0
+	LinuxFSCasefoldFlag       uint32 = 0x40000000
+	CaseDirectoryMaxEntries          = 64
+	CaseDirectoryMaxNameBytes        = 4096
 )
 
 var errConfigCaseDirectoryBudgetExceeded = errors.New("config case probe directory budget exceeded")
 
-func configLinuxCaseSensitivityFromMetadata(filesystemType uint64, flags uint32, flagsKnown bool) ConfigCaseSensitivity {
-	filesystemInsensitive := filesystemType == configLinuxMSDOSSuperMagic ||
-		filesystemType == configLinuxExFATSuperMagic
-	filesystemSensitive := flagsKnown && (filesystemType == configLinuxExt4SuperMagic ||
-		filesystemType == configLinuxF2FSSuperMagic)
-	directoryCasefold := flagsKnown && flags&configLinuxFSCasefoldFlag != 0
+// ErrCaseDirectoryBudgetExceeded returns the package's single sentinel identity.
+func ErrCaseDirectoryBudgetExceeded() error { return errConfigCaseDirectoryBudgetExceeded }
+
+func LinuxCaseSensitivityFromMetadata(filesystemType uint64, flags uint32, flagsKnown bool) ConfigCaseSensitivity {
+	filesystemInsensitive := filesystemType == LinuxMSDOSSuperMagic ||
+		filesystemType == LinuxExFATSuperMagic
+	filesystemSensitive := flagsKnown && (filesystemType == LinuxExt4SuperMagic ||
+		filesystemType == LinuxF2FSSuperMagic)
+	directoryCasefold := flagsKnown && flags&LinuxFSCasefoldFlag != 0
 	return ConfigCaseSensitivityFromMetadata(filesystemInsensitive, filesystemSensitive, directoryCasefold)
 }
 
-func configFreeBSDCaseSensitivityFromFilesystemName(name string) ConfigCaseSensitivity {
+func FreeBSDCaseSensitivityFromFilesystemName(name string) ConfigCaseSensitivity {
 	return ConfigCaseSensitivityFromMetadata(name == "msdosfs", false, false)
 }
 
-func configCaseDirectoryBudgetExceeded(names []string) bool {
-	if len(names) > configCaseDirectoryMaxEntries {
+func CaseDirectoryBudgetExceeded(names []string) bool {
+	if len(names) > CaseDirectoryMaxEntries {
 		return true
 	}
 	totalNameBytes := 0
 	for _, name := range names {
-		if len(name) > configCaseDirectoryMaxNameBytes-totalNameBytes {
+		if len(name) > CaseDirectoryMaxNameBytes-totalNameBytes {
 			return true
 		}
 		totalNameBytes += len(name)
@@ -74,21 +77,21 @@ func configCaseDirectoryBudgetExceeded(names []string) bool {
 	return false
 }
 
-type configCaseDirectoryEntry struct {
-	name     string
-	identity fileid.FileIdentity
+type CaseDirectoryEntry struct {
+	Name     string
+	Identity fileid.FileIdentity
 }
 
-type configCaseDirectorySnapshot struct {
-	identity fileid.FileIdentity
-	modTime  int64
-	size     int64
-	entries  []configCaseDirectoryEntry
+type CaseDirectorySnapshot struct {
+	Identity fileid.FileIdentity
+	ModTime  int64
+	Size     int64
+	Entries  []CaseDirectoryEntry
 }
 
 func ConfigCaseSensitivityFromDirectorySnapshots(
 	dir string,
-	readSnapshot func() (configCaseDirectorySnapshot, error),
+	readSnapshot func() (CaseDirectorySnapshot, error),
 	probe func(string) (fileid.FileIdentity, error),
 ) ConfigCaseSensitivity {
 	if readSnapshot == nil || probe == nil {
@@ -100,15 +103,15 @@ func ConfigCaseSensitivityFromDirectorySnapshots(
 	}
 	middle, err := readSnapshot()
 	if err != nil || !configCaseDirectorySnapshotsEqual(initial, middle) ||
-		configCaseDirectoryHasVariantNames(initial.entries) {
+		configCaseDirectoryHasVariantNames(initial.Entries) {
 		return ConfigCaseSensitivityUnknown
 	}
 
 	var candidate string
 	variant := ""
-	for _, entry := range initial.entries {
-		if variant = configASCIICaseVariant(entry.name); variant != "" {
-			candidate = entry.name
+	for _, entry := range initial.Entries {
+		if variant = configASCIICaseVariant(entry.Name); variant != "" {
+			candidate = entry.Name
 			break
 		}
 	}
@@ -119,7 +122,7 @@ func ConfigCaseSensitivityFromDirectorySnapshots(
 	alternateIdentity, alternateErr := probe(filepath.Join(dir, variant))
 	final, finalErr := readSnapshot()
 	if finalErr != nil || !configCaseDirectorySnapshotsEqual(initial, final) ||
-		configCaseDirectoryHasVariantNames(final.entries) {
+		configCaseDirectoryHasVariantNames(final.Entries) {
 		return ConfigCaseSensitivityUnknown
 	}
 	if originalErr != nil || !originalIdentity.Valid {
@@ -134,28 +137,28 @@ func ConfigCaseSensitivityFromDirectorySnapshots(
 	return ConfigCaseSensitivityInsensitive
 }
 
-func configCaseDirectorySnapshotsEqual(left, right configCaseDirectorySnapshot) bool {
-	return left.identity.Valid && left.identity == right.identity &&
-		left.modTime == right.modTime && left.size == right.size &&
-		configCaseDirectoryEntriesEqual(left.entries, right.entries)
+func configCaseDirectorySnapshotsEqual(left, right CaseDirectorySnapshot) bool {
+	return left.Identity.Valid && left.Identity == right.Identity &&
+		left.ModTime == right.ModTime && left.Size == right.Size &&
+		configCaseDirectoryEntriesEqual(left.Entries, right.Entries)
 }
 
-func configCaseDirectoryEntriesEqual(left, right []configCaseDirectoryEntry) bool {
+func configCaseDirectoryEntriesEqual(left, right []CaseDirectoryEntry) bool {
 	if len(left) != len(right) {
 		return false
 	}
 	for i := range left {
-		if left[i].name != right[i].name {
+		if left[i].Name != right[i].Name {
 			return false
 		}
 	}
 	return true
 }
 
-func configCaseDirectoryHasVariantNames(entries []configCaseDirectoryEntry) bool {
+func configCaseDirectoryHasVariantNames(entries []CaseDirectoryEntry) bool {
 	seen := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
-		folded := configASCIINameFold(entry.name)
+		folded := configASCIINameFold(entry.Name)
 		if _, ok := seen[folded]; ok {
 			return true
 		}
@@ -189,7 +192,7 @@ func configASCIINameFold(name string) string {
 	return string(folded)
 }
 
-func configDarwinCaseSensitivityFromPathconf(value int, err error) ConfigCaseSensitivity {
+func DarwinCaseSensitivityFromPathconf(value int, err error) ConfigCaseSensitivity {
 	if err != nil {
 		return ConfigCaseSensitivityUnknown
 	}

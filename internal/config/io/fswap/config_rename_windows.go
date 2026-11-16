@@ -11,24 +11,24 @@ import (
 	"time"
 	"unsafe"
 
+	"golang.org/x/sys/windows"
+
+	"github.com/PHPCraftdream/rush/internal/config/io/cfghooks"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
-	"golang.org/x/sys/windows"
 )
 
-type windowsFileRenameInfo struct {
+type WindowsFileRenameInfo struct {
 	Flags          uint32
 	RootDirectory  windows.Handle
 	FileNameLength uint32
 	FileName       [1]uint16
 }
 
-func renameConfigTempHandle(source *os.File, sourcePath string, parent *os.File, destination string, replace bool, expected docread.Fingerprint, expectedOwner int, enforceOwner bool, discoveryPath string) error {
+func RenameConfigTempHandle(source *os.File, sourcePath string, parent *os.File, destination string, replace bool, expected docread.Fingerprint, expectedOwner int, enforceOwner bool, discoveryPath string) error {
 	// Keep the old seam for existing deterministic tests. Production has no
 	// MoveFileEx hook and therefore always takes the handle-based path below.
-	configTestHooks.Lock()
-	moveFileEx := configTestHooks.moveFileEx
-	configTestHooks.Unlock()
+	moveFileEx := cfghooks.Snapshot().MoveFileEx
 	if moveFileEx != nil {
 		from, err := windows.UTF16PtrFromString(sourcePath)
 		if err != nil {
@@ -50,9 +50,9 @@ func renameConfigTempHandle(source *os.File, sourcePath string, parent *os.File,
 		return err
 	}
 	name = name[:len(name)-1]
-	headerSize := int(unsafe.Offsetof(windowsFileRenameInfo{}.FileName))
+	headerSize := int(unsafe.Offsetof(WindowsFileRenameInfo{}.FileName))
 	buffer := make([]byte, headerSize+len(name)*2)
-	info := (*windowsFileRenameInfo)(unsafe.Pointer(&buffer[0]))
+	info := (*WindowsFileRenameInfo)(unsafe.Pointer(&buffer[0]))
 	info.Flags = windows.FILE_RENAME_POSIX_SEMANTICS
 	if replace {
 		info.Flags = windows.FILE_RENAME_REPLACE_IF_EXISTS
@@ -68,9 +68,7 @@ func renameConfigTempHandle(source *os.File, sourcePath string, parent *os.File,
 	}
 
 	setInfo := func(class uint32, payload []byte) error {
-		configTestHooks.Lock()
-		hook := configTestHooks.setFileInformation
-		configTestHooks.Unlock()
+		hook := cfghooks.Snapshot().SetFileInformation
 		if hook != nil {
 			return hook(uintptr(source.Fd()), class, &payload[0], uint32(len(payload)))
 		}
@@ -91,7 +89,7 @@ func renameConfigTempHandle(source *os.File, sourcePath string, parent *os.File,
 			continue
 		}
 		legacyBuffer := append([]byte(nil), buffer...)
-		legacyInfo := (*windowsFileRenameInfo)(unsafe.Pointer(&legacyBuffer[0]))
+		legacyInfo := (*WindowsFileRenameInfo)(unsafe.Pointer(&legacyBuffer[0]))
 		if replace {
 			legacyInfo.Flags = 1
 		} else {
@@ -164,7 +162,7 @@ func verifyWindowsRenameRetryState(source *os.File, sourcePath string, parent *o
 	if expected.ParentDiscovery != ([32]byte{}) && docread.ConfigDiscoveryFingerprint(filepath.Dir(discoveryPath)) != expected.ParentDiscovery {
 		return fileid.ErrConfigCommitVerification()
 	}
-	staged, err := openWindowsConfigEntryAt(parent, filepath.Base(sourcePath))
+	staged, err := fileid.OpenWindowsConfigEntryAt(parent, filepath.Base(sourcePath))
 	if err != nil {
 		return fileid.ErrConfigCommitVerification()
 	}
@@ -178,12 +176,12 @@ func verifyWindowsRenameRetryState(source *os.File, sourcePath string, parent *o
 		return fileid.ErrConfigCommitVerification()
 	}
 
-	target, err := openWindowsConfigEntryAt(parent, filepath.Base(destination))
+	target, err := fileid.OpenWindowsConfigEntryAt(parent, filepath.Base(destination))
 	if err == nil {
 		defer target.Close()
 	}
 	if !replace {
-		if isWindowsEntryNotFound(err) || os.IsNotExist(err) {
+		if fileid.IsWindowsEntryNotFound(err) || os.IsNotExist(err) {
 			return nil
 		}
 		return fileid.ErrConfigCommitVerification()
@@ -218,21 +216,19 @@ func isUnsupportedRenameError(err error) bool {
 }
 
 func hasSetFileInformationHook() bool {
-	configTestHooks.Lock()
-	hook := configTestHooks.setFileInformation
-	configTestHooks.Unlock()
+	hook := cfghooks.Snapshot().SetFileInformation
 	return hook != nil
 }
 
 // renameConfigTemp uses MoveFileEx directly so the expected-absent case is a
 // true no-replace operation. os.Rename on Windows is intentionally not used:
 // its implementation requests replacement semantics.
-func renameConfigTemp(source, destination string, replace bool) error {
-	apiSource, err := windowsConfigAPIPath(source)
+func RenameConfigTemp(source, destination string, replace bool) error {
+	apiSource, err := fileid.WindowsConfigAPIPath(source)
 	if err != nil {
 		return fmt.Errorf("encode temporary config path: %w", err)
 	}
-	apiDestination, err := windowsConfigAPIPath(destination)
+	apiDestination, err := fileid.WindowsConfigAPIPath(destination)
 	if err != nil {
 		return fmt.Errorf("encode config path: %w", err)
 	}
@@ -249,9 +245,7 @@ func renameConfigTemp(source, destination string, replace bool) error {
 		flags |= windows.MOVEFILE_REPLACE_EXISTING
 	}
 	for attempt := 0; ; attempt++ {
-		configTestHooks.Lock()
-		moveFileEx := configTestHooks.moveFileEx
-		configTestHooks.Unlock()
+		moveFileEx := cfghooks.Snapshot().MoveFileEx
 		if moveFileEx != nil {
 			err = moveFileEx(from, to, flags)
 		} else {

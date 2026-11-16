@@ -208,22 +208,22 @@ func TestKtavArtifactCrashBoundariesRecovers(t *testing.T) {
 			dir := canonicalArtifactTempDir(t)
 			slot, legacy := seedKtavArtifactJournal(t, dir)
 
-			previousArtifactHook := ktavArtifactMigrationStepHook
-			previousConfigHook := ktavMigrationStepHook
 			crash := func(step string) error {
 				if step == tc.step {
 					return errKtavMigrationCrashInjected
 				}
 				return nil
 			}
+			_, restoreArtifactHook := setKtavArtifactMigrationStepHookForTest(nil)
+			_, restoreConfigHook := setKtavMigrationStepHookForTest(nil)
 			if tc.configHook {
-				ktavMigrationStepHook = crash
+				setKtavMigrationStepHookForTest(crash)
 			} else {
-				ktavArtifactMigrationStepHook = crash
+				setKtavArtifactMigrationStepHookForTest(crash)
 			}
 			t.Cleanup(func() {
-				ktavArtifactMigrationStepHook = previousArtifactHook
-				ktavMigrationStepHook = previousConfigHook
+				restoreArtifactHook()
+				restoreConfigHook()
 			})
 			migrationErr := ktavMigrateOAuthJournal(context.Background(), slot, "openai-codex", dir)
 			require.ErrorIs(t, migrationErr, errKtavMigrationCrashInjected)
@@ -240,8 +240,8 @@ func TestKtavArtifactCrashBoundariesRecovers(t *testing.T) {
 			require.True(t, jsonThere || (ktavThere && bakThere), "no JSON without a verified Ktav and backup")
 
 			// Recovery converges without losing bytes (hooks released first).
-			ktavArtifactMigrationStepHook = previousArtifactHook
-			ktavMigrationStepHook = previousConfigHook
+			restoreArtifactHook()
+			restoreConfigHook()
 			require.NoError(t, ktavMigrateOAuthJournal(context.Background(), slot, "openai-codex", dir))
 			assertKtavArtifactJournalMigrated(t, dir, slot)
 		})
@@ -298,10 +298,9 @@ func TestKtavArtifactCatalogFetchedAtUntouched(t *testing.T) {
 // inside the journal bytes never reaches diagnostics.
 func TestKtavArtifactSharedStartupDeadline(t *testing.T) {
 	ktavSetupLoadMigrationTest(t, true)
-	savedBudget := ktavMigrationBudget
 	// Room for three slot migrations with fsync on slow Windows runners.
-	ktavMigrationBudget = 2 * time.Second
-	t.Cleanup(func() { ktavMigrationBudget = savedBudget })
+	_, restoreBudget := setKtavMigrationBudgetForTest(2 * time.Second)
+	t.Cleanup(restoreBudget)
 
 	dir := canonicalArtifactTempDir(t)
 	projectDataDir := filepath.Join(dir, "workspace-data")
@@ -364,7 +363,7 @@ func TestKtavArtifactSharedStartupDeadline(t *testing.T) {
 	// INSIDE Load's shared startup window must share Load's single deadline:
 	// a conversion that adds a fresh per-file timeout lands outside the
 	// window, so the in-window count drops and the assertion below fails.
-	windowEnd := started.Add(ktavMigrationBudget + 100*time.Millisecond)
+	windowEnd := started.Add(getKtavMigrationBudgetForTest() + 100*time.Millisecond)
 	inWindow := 0
 	sharedDeadline := time.Time{}
 	for _, deadline := range captured {
@@ -394,9 +393,8 @@ func TestKtavArtifactDeferredWarningOnLockFailure(t *testing.T) {
 	dir := canonicalArtifactTempDir(t)
 	slot, legacy := seedKtavArtifactJournal(t, dir)
 
-	savedGate := ktavAutoMigrate
-	ktavAutoMigrate = true
-	t.Cleanup(func() { ktavAutoMigrate = savedGate })
+	restoreGate := SetKtavAutoMigrateForTest(true)
+	t.Cleanup(restoreGate)
 
 	lock, err := acquireConfigFileLock(context.Background(), oauthRefreshLockPath(slot, "openai-codex"))
 	require.NoError(t, err)
@@ -525,12 +523,13 @@ func TestKtavArtifactChtimesFailureDefersConversion(t *testing.T) {
 	old := time.Now().Add(-72 * time.Hour)
 	require.NoError(t, os.Chtimes(providers, old, old))
 
-	savedStat, savedChtimes := ktavArtifactStatFile, ktavArtifactChtimes
-	ktavArtifactChtimes = func(string, time.Time, time.Time) error {
+	_, restoreStat := setKtavArtifactStatFileForTest(getKtavArtifactStatFileForTest())
+	_, restoreChtimes := setKtavArtifactChtimesForTest(func(string, time.Time, time.Time) error {
 		return errors.New("injected chtimes failure")
-	}
+	})
 	t.Cleanup(func() {
-		ktavArtifactStatFile, ktavArtifactChtimes = savedStat, savedChtimes
+		restoreStat()
+		restoreChtimes()
 	})
 
 	err := migrateKtavArtifact(context.Background(), providers, dir)
@@ -542,7 +541,8 @@ func TestKtavArtifactChtimesFailureDefersConversion(t *testing.T) {
 
 	// Restore BOTH seams INSIDE the body so the converging run uses a
 	// working Chtimes (the t.Cleanup is only a safety net).
-	ktavArtifactStatFile, ktavArtifactChtimes = savedStat, savedChtimes
+	restoreStat()
+	restoreChtimes()
 
 	// The staged Ktav plus its record converge on the next run with a
 	// working Chtimes — through the recovery rules, which HARD-apply the
@@ -567,16 +567,15 @@ func TestKtavArtifactJournalInvalidatedUnderLock(t *testing.T) {
 	slot, legacy := seedKtavArtifactJournal(t, dir)
 	invalid := `{"token":{"access_token":"","refresh_token":"","expires_at":0}}`
 
-	previousHook := ktavArtifactMigrationStepHook
-	ktavArtifactMigrationStepHook = func(step string) error {
+	_, restoreHook := setKtavArtifactMigrationStepHookForTest(func(step string) error {
 		if step == "after-lock" {
 			// Syntactically valid, structurally invalid: fire between lock
 			// acquisition and conversion.
 			writeTestFile(t, legacy, invalid)
 		}
 		return nil
-	}
-	t.Cleanup(func() { ktavArtifactMigrationStepHook = previousHook })
+	})
+	t.Cleanup(restoreHook)
 
 	require.NoError(t, ktavMigrateOAuthJournal(context.Background(), slot, "openai-codex", dir), "an invalid journal is skipped, not an error")
 
@@ -636,18 +635,16 @@ func TestKtavArtifactStartupJournalRecoversPostArchiveCrash(t *testing.T) {
 	dir := canonicalArtifactTempDir(t)
 	slot, legacy := seedKtavArtifactJournal(t, dir)
 
-	savedGate := ktavAutoMigrate
-	ktavAutoMigrate = true
-	t.Cleanup(func() { ktavAutoMigrate = savedGate })
+	restoreGate := SetKtavAutoMigrateForTest(true)
+	t.Cleanup(restoreGate)
 
-	previousHook := ktavMigrationStepHook
-	ktavMigrationStepHook = func(step string) error {
+	_, restoreHook := setKtavMigrationStepHookForTest(func(step string) error {
 		if step == "after-backup-rename" {
 			return errKtavMigrationCrashInjected
 		}
 		return nil
-	}
-	t.Cleanup(func() { ktavMigrationStepHook = previousHook })
+	})
+	t.Cleanup(restoreHook)
 	require.ErrorIs(t, ktavMigrateOAuthJournal(context.Background(), slot, "openai-codex", dir), errKtavMigrationCrashInjected)
 
 	// The crash-after-archive state: Ktav + backup + record, no JSON.
@@ -678,12 +675,13 @@ func TestKtavArtifactPersistentChtimesFailureNeverArchives(t *testing.T) {
 	old := time.Now().Add(-72 * time.Hour)
 	require.NoError(t, os.Chtimes(providers, old, old))
 
-	savedStat, savedChtimes := ktavArtifactStatFile, ktavArtifactChtimes
-	ktavArtifactChtimes = func(string, time.Time, time.Time) error {
+	_, restoreStat := setKtavArtifactStatFileForTest(getKtavArtifactStatFileForTest())
+	_, restoreChtimes := setKtavArtifactChtimesForTest(func(string, time.Time, time.Time) error {
 		return errors.New("injected chtimes failure")
-	}
+	})
 	t.Cleanup(func() {
-		ktavArtifactStatFile, ktavArtifactChtimes = savedStat, savedChtimes
+		restoreStat()
+		restoreChtimes()
 	})
 
 	// Attempt 1: the fresh transaction stops at its hard mtime step.
@@ -705,7 +703,8 @@ func TestKtavArtifactPersistentChtimesFailureNeverArchives(t *testing.T) {
 	require.FileExists(t, migrationRecordPathFor(providers))
 
 	// Attempt 3: with a working Chtimes the recovery converges fully.
-	ktavArtifactStatFile, ktavArtifactChtimes = savedStat, savedChtimes
+	restoreStat()
+	restoreChtimes()
 	require.NoError(t, migrateKtavArtifact(context.Background(), providers, dir))
 	require.FileExists(t, providers, "the JSON cache is kept for older binaries")
 	require.FileExists(t, ktavSiblingOf(providers))
@@ -724,9 +723,8 @@ func TestKtavArtifactPersistentChtimesFailureNeverArchives(t *testing.T) {
 func TestKtavCacheStartupRecoversPostArchiveTransactions(t *testing.T) {
 	ktavArtifactTestEnv(t)
 	dir := canonicalArtifactTempDir(t)
-	savedGate := ktavAutoMigrate
-	ktavAutoMigrate = true
-	t.Cleanup(func() { ktavAutoMigrate = savedGate })
+	restoreGate := SetKtavAutoMigrateForTest(true)
+	t.Cleanup(restoreGate)
 
 	slots := []struct{ name, body string }{
 		{"providers", `{"providers":[{"name":"p"}]}`},
@@ -741,14 +739,13 @@ func TestKtavCacheStartupRecoversPostArchiveTransactions(t *testing.T) {
 		require.NoError(t, os.Chtimes(legacy, old, old), "the stale source mtime must be inherited by the Ktav")
 	}
 
-	previousConfigHook := ktavMigrationStepHook
-	ktavMigrationStepHook = func(step string) error {
+	_, restoreConfigHook := setKtavMigrationStepHookForTest(func(step string) error {
 		if step == "after-archive" {
 			return errKtavMigrationCrashInjected
 		}
 		return nil
-	}
-	t.Cleanup(func() { ktavMigrationStepHook = previousConfigHook })
+	})
+	t.Cleanup(restoreConfigHook)
 	for _, tc := range slots {
 		err := migrateKtavArtifact(context.Background(), legacyPaths[tc.name], dir)
 		require.ErrorIs(t, err, errKtavMigrationCrashInjected)
@@ -764,7 +761,7 @@ func TestKtavCacheStartupRecoversPostArchiveTransactions(t *testing.T) {
 	}
 
 	// Release the crash hook BEFORE the recovery call.
-	ktavMigrationStepHook = previousConfigHook
+	restoreConfigHook()
 	ktavMigrateCacheArtifactsStartup(context.Background(), dir)
 
 	for _, tc := range slots {
@@ -789,9 +786,8 @@ func TestKtavArtifactStartupConflictWarnsExistingKtavActive(t *testing.T) {
 	dest := oauthJournalKtavPath(slot, "openai-codex")
 	writeTestFile(t, dest, string(testKtavBytes(t, ktavArtifactJournalBody)))
 
-	savedGate := ktavAutoMigrate
-	ktavAutoMigrate = true
-	t.Cleanup(func() { ktavAutoMigrate = savedGate })
+	restoreGate := SetKtavAutoMigrateForTest(true)
+	t.Cleanup(restoreGate)
 
 	logs := captureSlogOutput(t)
 	ktavMigrateOAuthJournalsAtStartup(context.Background(), []string{slot}, dir)

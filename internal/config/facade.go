@@ -23,13 +23,11 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/domains/peak"
 	"github.com/PHPCraftdream/rush/internal/config/io/casefold"
-	"github.com/PHPCraftdream/rush/internal/config/io/cfghooks"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	envresolve "github.com/PHPCraftdream/rush/internal/config/model/envresolve"
 	cfgmerge "github.com/PHPCraftdream/rush/internal/config/model/merge"
-	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
 
@@ -427,21 +425,4 @@ func openStableConfigFile(path string) (*os.File, error) {
 	return fileid.OpenStableConfigFile(path)
 }
 
-// Hook forwarding re-exports from io/cfghooks.
-func acquireConfigFileLock(ctx context.Context, path string) (*filelock.FileLock, error) {
-	return cfghooks.AcquireConfigFileLock(ctx, path)
-}
-
-func releaseConfigFileLock(path string, lock *filelock.FileLock) error {
-	return cfghooks.ReleaseConfigFileLock(path, lock)
-}
-
-func configContextWithTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	return cfghooks.ConfigContextWithTimeout(parent, timeout)
-}
-
-func runConfigAfterMCPCommitHook(path string) { cfghooks.RunConfigAfterMCPCommitHook(path) }
-
-func runConfigBeforeMCPReconcileHook(path string, data []byte) {
-	cfghooks.RunConfigBeforeMCPReconcileHook(path, data)
-}
+// Hook forwarding lives in io_forwarders.go (io/cfgcommit-backed).

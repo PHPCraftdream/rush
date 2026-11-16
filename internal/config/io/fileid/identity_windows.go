@@ -21,13 +21,13 @@ import (
 // identity; descriptor-relative rename is still unavailable through the
 // portable API, so commitConfigFile keeps the explicit pre/post path checks.
 type FileIdentity struct {
-	device uint64
-	inode  uint64
+	Device uint64
+	Inode  uint64
 	Valid  bool
 }
 
 func (identity FileIdentity) FingerprintString() string {
-	return fmt.Sprintf("%t|%d|%d", identity.Valid, identity.device, identity.inode)
+	return fmt.Sprintf("%t|%d|%d", identity.Valid, identity.Device, identity.Inode)
 }
 
 func FileIdentityOf(os.FileInfo) FileIdentity { return FileIdentity{} }
@@ -38,8 +38,8 @@ func FileIdentityOfOpened(file *os.File, _ os.FileInfo) FileIdentity {
 		return FileIdentity{}
 	}
 	return FileIdentity{
-		device: uint64(info.VolumeSerialNumber),
-		inode:  uint64(info.FileIndexHigh)<<32 | uint64(info.FileIndexLow),
+		Device: uint64(info.VolumeSerialNumber),
+		Inode:  uint64(info.FileIndexHigh)<<32 | uint64(info.FileIndexLow),
 		Valid:  true,
 	}
 }
@@ -112,7 +112,7 @@ func removeConfigTempIfIdentity(path string, expected FileIdentity) error {
 	if identity != expected {
 		return os.ErrInvalid
 	}
-	return deleteWindowsConfigHandle(file)
+	return DeleteWindowsConfigHandle(file)
 }
 
 func OpenWindowsConfigHandle(path string, access, flags uint32) (*os.File, error) {
@@ -140,6 +140,12 @@ func OpenWindowsConfigHandle(path string, access, flags uint32) (*os.File, error
 	return os.NewFile(uintptr(handle), clean), nil
 }
 
+// WindowsConfigAPIPath converts a path to the \\?\ extended-length form the
+// Windows config APIs require.
+func WindowsConfigAPIPath(path string) (string, error) {
+	return windowsConfigAPIPath(path)
+}
+
 func windowsConfigAPIPath(path string) (string, error) {
 	clean, err := filepath.Abs(filepath.Clean(path))
 	if err != nil {
@@ -164,6 +170,11 @@ func WindowsFileInformation(file *os.File) (windows.ByHandleFileInformation, err
 	return info, err
 }
 
+// OpenWindowsConfigParent opens the parent directory of path.
+func OpenWindowsConfigParent(path string) (*os.File, error) {
+	return openWindowsConfigParent(path)
+}
+
 func openWindowsConfigParent(path string) (*os.File, error) {
 	parentPath := filepath.Dir(filepath.Clean(path))
 	parent, err := OpenWindowsConfigHandle(parentPath, windows.GENERIC_READ|windows.GENERIC_WRITE, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT)
@@ -182,26 +193,26 @@ func openWindowsConfigParent(path string) (*os.File, error) {
 	return parent, nil
 }
 
-type windowsStagedConfigFile struct {
-	path     string
-	name     string
-	file     *os.File
-	identity FileIdentity
+type WindowsStagedConfigFile struct {
+	Path     string
+	Name     string
+	File     *os.File
+	Identity FileIdentity
 }
 
 const configTempNameAttempts = 16
 
-func stageConfigFileHandle(path string, data []byte, perm os.FileMode) (windowsStagedConfigFile, error) {
-	return stageConfigFileHandleAt(nil, path, data, perm)
+func StageConfigFileHandle(path string, data []byte, perm os.FileMode) (WindowsStagedConfigFile, error) {
+	return StageConfigFileHandleAt(nil, path, data, perm)
 }
 
-func stageConfigFileHandleAt(parent *os.File, path string, data []byte, perm os.FileMode, migrationHooks ...func(string) error) (windowsStagedConfigFile, error) {
+func StageConfigFileHandleAt(parent *os.File, path string, data []byte, perm os.FileMode, migrationHooks ...func(string) error) (WindowsStagedConfigFile, error) {
 	dir := filepath.Dir(filepath.Clean(path))
 	base := filepath.Base(path)
 	for range configTempNameAttempts {
 		suffix := make([]byte, 16)
 		if _, err := rand.Read(suffix); err != nil {
-			return windowsStagedConfigFile{}, fmt.Errorf("create temporary config name: %w", err)
+			return WindowsStagedConfigFile{}, fmt.Errorf("create temporary config name: %w", err)
 		}
 		tmpPath := filepath.Join(dir, "."+base+"."+hex.EncodeToString(suffix)+".tmp")
 		var handle windows.Handle
@@ -209,11 +220,11 @@ func stageConfigFileHandleAt(parent *os.File, path string, data []byte, perm os.
 		if parent == nil {
 			apiPath, pathErr := windowsConfigAPIPath(tmpPath)
 			if pathErr != nil {
-				return windowsStagedConfigFile{}, pathErr
+				return WindowsStagedConfigFile{}, pathErr
 			}
 			name, nameErr := windows.UTF16PtrFromString(apiPath)
 			if nameErr != nil {
-				return windowsStagedConfigFile{}, nameErr
+				return WindowsStagedConfigFile{}, nameErr
 			}
 			handle, err = windows.CreateFile(
 				name,
@@ -231,55 +242,60 @@ func stageConfigFileHandleAt(parent *os.File, path string, data []byte, perm os.
 			if err == windows.ERROR_FILE_EXISTS || err == windows.STATUS_OBJECT_NAME_COLLISION {
 				continue
 			}
-			return windowsStagedConfigFile{}, fmt.Errorf("create temporary config: %w", err)
+			return WindowsStagedConfigFile{}, fmt.Errorf("create temporary config: %w", err)
 		}
 		file := os.NewFile(uintptr(handle), filepath.Clean(tmpPath))
 		cleanup := true
 		defer func() {
 			if cleanup {
 				// Delete while the handle still pins the object.
-				_ = deleteWindowsConfigHandle(file)
+				_ = DeleteWindowsConfigHandle(file)
 				_ = file.Close()
 			}
 		}()
 		info, statErr := file.Stat()
 		if statErr != nil {
-			return windowsStagedConfigFile{}, statErr
+			return WindowsStagedConfigFile{}, statErr
 		}
 		identity := FileIdentityOfOpened(file, info)
 		if !identity.Valid || !info.Mode().IsRegular() {
-			return windowsStagedConfigFile{}, os.ErrInvalid
+			return WindowsStagedConfigFile{}, os.ErrInvalid
 		}
 		if _, err := file.Write(data[:len(data)/2]); err != nil {
-			return windowsStagedConfigFile{}, err
+			return WindowsStagedConfigFile{}, err
 		}
 		if len(migrationHooks) > 0 && migrationHooks[0] != nil {
 			if err := migrationHooks[0]("during-staging"); err != nil {
 				cleanup = false
 				_ = file.Close()
-				return windowsStagedConfigFile{}, err
+				return WindowsStagedConfigFile{}, err
 			}
 		}
 		if _, err := file.Write(data[len(data)/2:]); err != nil {
-			return windowsStagedConfigFile{}, err
+			return WindowsStagedConfigFile{}, err
 		}
 		if err := file.Chmod(perm); err != nil {
-			return windowsStagedConfigFile{}, err
+			return WindowsStagedConfigFile{}, err
 		}
 		if err := file.Sync(); err != nil {
-			return windowsStagedConfigFile{}, err
+			return WindowsStagedConfigFile{}, err
 		}
 		if len(migrationHooks) > 0 && migrationHooks[0] != nil {
 			if err := migrationHooks[0]("after-staging"); err != nil {
-				return windowsStagedConfigFile{}, err
+				return WindowsStagedConfigFile{}, err
 			}
 		}
 		// The identity is deliberately captured while this DELETE-capable
 		// handle remains open. The pathname is not used as an identity oracle.
 		cleanup = false
-		return windowsStagedConfigFile{path: filepath.Clean(tmpPath), name: filepath.Base(tmpPath), file: file, identity: identity}, nil
+		return WindowsStagedConfigFile{Path: filepath.Clean(tmpPath), Name: filepath.Base(tmpPath), File: file, Identity: identity}, nil
 	}
-	return windowsStagedConfigFile{}, fmt.Errorf("create temporary config: %w", os.ErrExist)
+	return WindowsStagedConfigFile{}, fmt.Errorf("create temporary config: %w", os.ErrExist)
+}
+
+// CreateWindowsConfigEntryAt creates a config entry under an opened parent.
+func CreateWindowsConfigEntryAt(parent *os.File, name string, access, disposition, options uint32) (windows.Handle, error) {
+	return createWindowsConfigEntryAt(parent, name, access, disposition, options)
 }
 
 func createWindowsConfigEntryAt(parent *os.File, name string, access, disposition, options uint32) (windows.Handle, error) {
@@ -319,7 +335,7 @@ func createWindowsConfigEntryAt(parent *os.File, name string, access, dispositio
 	return handle, nil
 }
 
-func openWindowsConfigEntryAt(parent *os.File, name string) (*os.File, error) {
+func OpenWindowsConfigEntryAt(parent *os.File, name string) (*os.File, error) {
 	handle, err := createWindowsConfigEntryAt(
 		parent,
 		name,
@@ -333,15 +349,15 @@ func openWindowsConfigEntryAt(parent *os.File, name string) (*os.File, error) {
 	return os.NewFile(uintptr(handle), filepath.Join(parent.Name(), name)), nil
 }
 
-func isWindowsEntryNotFound(err error) bool {
+func IsWindowsEntryNotFound(err error) bool {
 	return err == windows.STATUS_OBJECT_NAME_NOT_FOUND || err == windows.STATUS_OBJECT_PATH_NOT_FOUND
 }
 
-func deleteWindowsConfigHandle(file *os.File) error {
+func DeleteWindowsConfigHandle(file *os.File) error {
 	setInfo := func(class uint32, buffer *byte, length uint32) error {
 		hook := cfghooks.Snapshot().SetFileInformation
 		if hook != nil {
-			return hook(uintptr(file.Fd()), class, buffer)
+			return hook(uintptr(file.Fd()), class, buffer, length)
 		}
 		return windows.SetFileInformationByHandle(windows.Handle(file.Fd()), class, buffer, length)
 	}
@@ -357,7 +373,7 @@ func deleteWindowsConfigHandle(file *os.File) error {
 	return setInfo(windows.FileDispositionInfo, &delete, 1)
 }
 
-func flushWindowsConfigHandle(file *os.File) error {
+func FlushWindowsConfigHandle(file *os.File) error {
 	hook := cfghooks.Snapshot().FlushFileBuffers
 	if hook != nil {
 		return hook(uintptr(file.Fd()))
@@ -433,6 +449,12 @@ func ConfigFilePathIdentityMatches(path string, opened *os.File, openedInfo os.F
 	openedIdentity := FileIdentityOfOpened(opened, openedInfo)
 	currentIdentity := FileIdentityOfOpened(current, currentInfo)
 	return openedIdentity.Valid && openedIdentity == currentIdentity, nil
+}
+
+// PhysicalWindowsConfigPath resolves the physical (non-substituted) path of
+// a config file.
+func PhysicalWindowsConfigPath(path string) (string, error) {
+	return physicalWindowsConfigPath(path)
 }
 
 func physicalWindowsConfigPath(path string) (string, error) {
