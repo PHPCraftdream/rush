@@ -665,3 +665,80 @@ BOUNDARY 16: internal/session/state/sessionwake -> internal/session/service; une
 ## 9. Phase-2 handoff
 
 The evidence supports a **design stop**, not a source-change lane: revise the D1 map/schedule and its port/receiver tables to account for G1–G18; build a revised TSV without changing this phase’s snapshot; then rerun the symbol graph before MV1 under Rule 19. This operator instruction says to stop at the report; no design files, master plan, TSV, or code were changed by this phase.
+
+## Amended design (2026-11-16)
+
+The staged decisions D1–D7 were encoded in a new amended layout and measured. Original `2026-11-16-sprint0-session-layout.tsv` was left untouched.
+
+### A.1 Exact checker invocations and exit codes
+
+```text
+D:/dev/go/crush/.rush/tmp/sprint0/symgraph/symgraph.exe -dir D:/dev/go/crush/worktrees/s0-w5-sm1-20261115/internal/session -layout D:/dev/go/crush/worktrees/s0-w5-sm1-20261115/docs/plans/2026-11-16-sprint0-session-layout-amended.tsv -root-owner internal/session -max-elements 7 -json
+```
+run once with `GOOS=linux GOARCH=amd64` and once with `GOOS=windows GOARCH=amd64`. Final (converged) runs: linux exit 0, windows exit 0, empty stderr (0 bytes). Raw outputs: `D:/dev/go/crush/.rush/tmp/sprint0/symgraph/session-sg0-amended-20261116/amended-linux.json`, `amended-windows.json` (+ `.stderr`, plus `layout-alt-commit-in-service.tsv` and `alt-linux.json` for the D6 alternative, and `original-layout-copy.tsv`).
+
+An intermediate configuration was also measured and rejected: both `finalization_queue_failure.go`/`finalization_queue_lease.go` in `run/runadmission` and `role_contract.go` in `sesstypes` produced one 6-owner SCC ({sessionbatch, sessionbatchread, runadmission, sessionrun, service, sesstypes}), 35 edges, and 1 receiver violation (`service.bindFinalizationQueueLeaseTx`, receiver `session.go:417`). The converged layout reverts those three files to `service`.
+
+The D6 alternative (`batch_commit.go`/`batch_commit_doc.go` kept in `service`) was measured (linux exit 0): identical SCC shape — same 3 owners, 28 edges, 0 receiver violations. D6 as amended (early MV3 arrival) is SCC-neutral and was kept.
+
+### A.2 Amended TSV
+
+`docs/plans/2026-11-16-sprint0-session-layout-amended.tsv`: 284 rows — 123 non-test / 161 test; SHA-256 `933ea73b899b954399cf595d87698de318fde6e40468b7a9f2215d0501b9b34b` (original remains `e57703110e88d60d53d33d63f767b0d8fe1ae19765024cfa5260b6a6d1f90dea`). Deltas vs original: finstore dissolved (agent_finalization pair → finterm); notify/notify_gate (+test) staged in service; 5 sessiondrain non-test files + 13 drain tests → sessionrun; 4 notice/type files + `child_question_format_test.go` → new `internal/session/sesstypes`; batch_commit/batch_commit_doc → sessionbatch.
+
+### A.3 Measured result per GOOS (converged layout)
+
+| GOOS | Exit | Edges | SCCs | SCC members | Internal SCC edges | Receiver violations | Over-7 owners |
+|---|---:|---:|---:|---|---:|---:|---:|
+| linux | 0 | 28 | 1 | service, run/sessionrun, batch/sessionbatch | 4 | 0 | 4 |
+| windows | 0 | 27 | 1 | same | 4 (identical witnesses) | 0 | 4 |
+
+Original run for comparison: 35 edges, 1 SCC with 8 owners and 19 internal edges, 9 receiver violations.
+
+The residual SCC (hard target 0 not reachable at file granularity) has exactly four internal directed edges; each dissolves only after the named declaration decision:
+
+1. `service → run/sessionrun` (1 use): `ErrCallQueuedNotExecuted` decl `run_queue_pump.go:124`, use `finalization_queue_failure.go:21`. **Decision: EX1 moves the sentinel to sesstypes/types_runcall with an immutable alias in sessionrun.**
+2. `run/sessionrun → service` (147 uses / 32 witnesses): `Service` interface methods (`session.go:157..417`), `RunQueueEntry`/`SessionAgentCallData`/`OrphanOutboxFailureOutcome` (`session_runqueue.go`, `session_orphan_outbox.go`), `ceilUnixSeconds` (`session_runqueue.go:335`), `recordFinalizationQueueFailure` (`finalization_queue_failure.go:12`), `withFinalizationQueueLease` (`finalization_queue_lease.go:58`). **Decisions: EX1 moves the run wire types (RunQueueEntry, SessionAgentCallData, ModelCfg) to sesstypes; EX3 moves the queue stores; EX7 introduces the run consumer ports; EX4 moves failure/lease to finqueue.** Not dissolvable by file moves alone.
+3. `service → batch/sessionbatch` (47 uses / 7 witnesses): `BatchCommitIdentity` + methods (`batch_commit.go:25,43,47,49,50`), `BatchDeliveryEnvelope` (`batch_delivery_store.go:14`), `batchRequireRow` (`batch_store.go:244`). **Decisions: S2 signature changes (writer/identity as parameters) + EX1 batch wire types to sesstypes; batchRequireRow call site moves with the lease file at EX4.**
+4. `batch/sessionbatch → service` (39 uses / 10 witnesses): `admitBatchCommitOwners` (`batch_commit_admission.go:27`), `admitFinalizationMutation` (`finalization_mutation.go:13`), `batchCommitReleaseError` (`batch_commit_admission.go:169`), `batchFinalizationAdmission` (`batch_commit_admission.go:21`), `batchFinalizationIdentityFromContext` (`finalization_context.go:104`), `finalizationFenceError`/`finalizationScoped` (`finalization_ingress_helpers.go:268,277`), `validateBatchFinalizationTx` (`batch_finalization_tx.go:12`), `AgentFinalizationAuthority` (`finalization_authority.go:18`), type `service` (`session.go:417`). **Decisions: EX4 converts authority/guard to sessguard (`finalization_authority.go` pinned today by the `hasFinalizationScope *service` receiver); after EX1/S2 the admission/context/tx/ingress files join sessionbatch/sessguard per the MV3/EX4 schedule.** service and sessionbatch are NOT merged.
+
+Everything else is acyclic at file granularity: notably `sessionbatch → sessionbatchread` (29/21, G3 read seam) is now one-way and outside the SCC; `sessionnotice → sessionbatch` is the documented legal interim edge (G13, removed by EX6); `sessionnotice → finterm` and `sessionbatch → finterm` are the documented legal one-way error edges (G12); `finterm → service` (Session) is staged for EX1.
+
+### A.4 Receiver violations
+
+**0 measured violations on the amended TSV (both GOOS)** — the checker's own receiver diagnostics now report an empty list (original: 9). Classification of the original 9: the 5 `AgentFinalizationStore` method splits resolved by D1 (same-package colocation in finterm); the 4 `RunQueuePump` drain/orphan splits resolved by D3 (files reunified with the pump in sessionrun); their final EX-era homes still require the EX4/EX7 receiver conversions named in §7 (authority→Guard: EX4; `bindFinalizationQueueLeaseTx` receiver conversion: EX4; run component conversions: EX7).
+
+Receiver evidence source: the preserved original binary JSON (correct `receiver_type_line`) plus source greps (`^func (` per moved file, receiver type declarations). The installed shared `symgraph.exe` was not rebuilt or modified; an attempt to compile a private copy of the checker from `.rush/tmp/sprint0/symgraph/cmd/*.go` failed (the shared source tree does not compile: `projection.go:591` undefined `receiverOwner`/`receiverType`/`receiverFile`), so the shared binary (non-receiver fields corroborated by two GOOS runs) plus original JSON + source was used, as sanctioned. Notably the shared binary's receiver diagnostics on the amended layout agree with source: 0 violations, and the intermediate run's single violation matched the source-declared `*service` receiver exactly.
+
+### A.5 Per-owner non-test counts vs the 7 rule (amended TSV)
+
+| Owner | Non-test | Test | >7 |
+|---|---:|---:|---|
+| service | 34 | 44 | yes — ratchet core (FIN §2.2 schedule unchanged: 34→34→21→15→8→6→4) |
+| batch/sessionbatch | 28 | 31 | yes — ratchet core (amended FIN: starts 28 with commit/doc early arrival; final 7 unchanged) |
+| run/sessionrun | 12 | 42 | yes — ratchet core (D3; EX7 schedule) |
+| proc/sessionlock | 8 | 6 | yes — pre-existing, unchanged by amendments (В7 split) |
+| batch/finterm | 4 | 4 | no (final 6 after EX1) |
+| sesstypes | 4 | 1 | no (staged; final 5 files per EX1) |
+| batch/sessionbatchread | 5 | 5 | no |
+| proc/sessioncgroup | 4 | 2 | no |
+| state/sessionhosts | 6 | 7 | no |
+| batch/findebt, finfacts, finholds | 3, 3, 5 | 3, 2, 7 | no |
+| state/sessionnotice | 1 | 2 | no (4 files staged in sesstypes) |
+| state/sessionwake, sessionfacts, mcpoutput | 3, 2, 1 | 3, 1, 1 | no |
+
+Over-7 owners are exactly the ratchet cores service / sessionbatch / sessionrun (plus pre-existing sessionlock 8, untouched by this amendment) — no new owner exceeds 7.
+
+### A.6 Must-export boundary deltas vs the original run
+
+12 boundaries / 78 → 12 boundaries but fewer witnesses (172 vs 267 total; must_export records 12 vs the original 16-boundary/78-witness summary). Disappeared boundaries vs original: finstore↔finterm both directions (D1), finterm→sessionbatch (notify staged out; envelope decision deferred to EX6), finterm→service (Session; staged out), sessiondrain→sessionrun and sessionrun↔sessiondrain (D3), run/sessionrun→run/runadmission edges (D2 reverted), sesstypes→service (role_contract pinned; EX1 ModelCfg move named). Remaining must-export boundaries are the pre-existing named seams: finfacts→service (G15), sessionbatch→sessionbatchread (G3), sessionbatch→service + service→sessionbatch (G4/G10, SCC above), sessioncgroup→sessionlock, sessionrun→service (G8 + ports), service→finterm (G9: `AgentFinalizationIdentity.valid`, `AgentFinalizationRecord.active`, `readAgentFinalization` still need the EX4 sessguard→finterm port enumeration), sessionfacts/sessionhosts→sessionlock (G16/G17), sessionnotice→sessionbatch (G13 interim), sessionnotice→service (G14), sessionwake→service (G18).
+
+### A.7 Lane-ordering constraints discovered
+
+- SM3 (DrainSessionNow relocation) must precede ANY run package split (D3).
+- EX1 precedes: the finterm notify/notify_gate file moves, the role_contract sesstypes move (ModelCfg), the failure/lease finqueue move (sentinel), and the run wire-type extraction.
+- S2 precedes final MV3 if the residual service↔sessionbatch SCC must dissolve before EX6; EX4's Guard conversion precedes the authority file move.
+- D2's `runadmission` staged holder is NOT viable before EX1+EX4 (measured 6-owner SCC + receiver violation); finqueue is the only final home, reached via EX1 then EX4.
+
+### A.8 Updated verdict
+
+**MV1 can start as amended.** The corrected literal placement now has 0 receiver violations, all cycle members reduced to the three ratchet cores with named declaration decisions (EX1/S2/EX4/EX7), and every original gap G1–G18 mapped to a decision, symbol, and lane (design §7). MV1 itself (34 service files) is untouched by the residual SCC: the service row is unchanged and its ratchet schedule already accounts for the exits.
