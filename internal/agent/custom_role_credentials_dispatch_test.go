@@ -79,7 +79,7 @@ func customRoleDispatchContext(t *testing.T, contract *session.RoleContract, cre
 	t.Helper()
 	opts := &CallOptions{ModelRole: modelRole, RoleContract: contract.Clone()}
 	ctx := WithCallOptions(t.Context(), opts)
-	t.Cleanup(opts.buildScope.close)
+	t.Cleanup(opts.BuildScope.Close)
 	ctx = WithSelectedRoleContract(ctx, contract)
 	if creds != nil {
 		ctx = withCallCredentials(ctx, creds)

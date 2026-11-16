@@ -9,7 +9,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -109,9 +108,9 @@ func (p *preparedContinuation) restorePolicyBaseline(ctx context.Context, sessio
 		// bare CallOptions with no provider knowledge of its own.
 		policyOpts.DiskProvider = opts.DiskProvider
 		policyOpts.DiskBindingID = opts.DiskBindingID
-		policyOpts.diskBinding = opts.diskBinding
+		policyOpts.DiskBinding = opts.DiskBinding
 		policyOpts.Requirement = opts.Requirement
-		policyOpts.buildScope = opts.buildScope
+		policyOpts.BuildScope = opts.BuildScope
 		*opts = *policyOpts
 	}
 	if p.requirement.FolderScopeSpec != nil {
@@ -146,7 +145,7 @@ func (p *preparedContinuation) applyToOptions(opts *CallOptions) {
 	opts.DiskProvider = p.provider
 	opts.DiskBindingID = p.requirement.BindingID
 	opts.Requirement = &requirement
-	opts.diskBinding = &callDiskBinding{id: p.requirement.BindingID, provider: p.provider, caps: p.caps}
+	opts.DiskBinding = &callDiskBinding{id: p.requirement.BindingID, provider: p.provider, caps: p.caps}
 }
 
 // applyTo stamps the resolved capability onto the call for dispatch
@@ -233,22 +232,4 @@ func (c *coordinator) guardTurnDiskFence(ctx context.Context, sessionID string, 
 // clearly).
 func requirementFromCall(call SessionAgentCall) *session.SessionExecutionRequirement {
 	return diskRequirementForCall(call)
-}
-
-// SetCoordinatorExecutionRequirementStore wires the durable
-// session-execution-fence store onto a coordinator (internal/app
-// composition root), mirroring the SetBatchDriverClaimer setter pattern.
-func SetCoordinatorExecutionRequirementStore(c Coordinator, store session.SessionExecutionRequirementStore) error {
-	if c == nil {
-		return errors.New("execution requirement store: nil coordinator")
-	}
-	if store == nil {
-		return errors.New("execution requirement store: nil store")
-	}
-	co, ok := c.(*coordinator)
-	if !ok {
-		return errors.New("execution requirement store: unsupported coordinator type")
-	}
-	co.execReqs = store
-	return nil
 }

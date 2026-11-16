@@ -66,10 +66,10 @@ func TestWithCallOptionsRetainsResourceIdentityAndContractCloneHelperIsDetached(
 	require.NoError(t, err)
 	original := &CallOptions{RoleContract: contract, MaxCost: 9}
 	EnsureCallBuildScope(original)
-	t.Cleanup(original.buildScope.close)
+	t.Cleanup(original.BuildScope.Close)
 	copy := WithRoleContractCopy(original, contract)
 	require.NotSame(t, original, copy)
-	require.Same(t, original.buildScope, copy.buildScope, "resource ownership handles remain borrowed")
+	require.Same(t, original.BuildScope, copy.BuildScope, "resource ownership handles remain borrowed")
 	require.NotSame(t, original.RoleContract, copy.RoleContract)
 	*copy.RoleContract.Tools = append(*copy.RoleContract.Tools, "write")
 	require.Empty(t, *original.RoleContract.Tools)

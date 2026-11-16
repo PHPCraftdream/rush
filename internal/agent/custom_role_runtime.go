@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
@@ -155,11 +156,8 @@ func cloneRoleContractFromCallOptions(opts *CallOptions) *session.RoleContract {
 	return cloneRoleContractForCall(opts.RoleContract)
 }
 
-func cloneRoleContractForCall(contract *session.RoleContract) *session.RoleContract {
-	if contract == nil {
-		return nil
-	}
-	return contract.Clone()
+func cloneRoleContractForCall(c *session.RoleContract) *session.RoleContract {
+	return agentcall.CloneRoleContractForCall(c)
 }
 
 func roleContractAllowsTool(contract *session.RoleContract, name string) bool {

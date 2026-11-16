@@ -10,7 +10,7 @@ package agent
 // dispatcherCancel are untouched) — the owner is still running and merely
 // wants its pending queues discarded, not its reservation yanked.
 //
-// Any dropped call carrying onQueueResolved (#1036's live in-process waiter)
+// Any dropped call carrying OnQueueResolved (#1036's live in-process waiter)
 // is resolved with errQueuedTurnNotRun before this returns — ClearQueue
 // discards the call outright (unlike the orphan/restart path, there is no
 // durable row to fall back on), so silently dropping it would leave its

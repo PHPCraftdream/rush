@@ -8,7 +8,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/discover"
-	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 	"github.com/stretchr/testify/require"
 )
@@ -70,7 +70,7 @@ func TestConfigureProviders_CatalogDumpDoesNotCountAsUserSet(t *testing.T) {
 	live := setupCodexCatalogDumpTest(t)
 
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	cfg.Providers.Set("openai-codex", ProviderConfig{
 		ID:         "openai-codex",
 		OAuthToken: &oauth.Token{AccessToken: "rush-access-token", AccountID: "chatgpt-account"},
@@ -105,7 +105,7 @@ func TestConfigureProviders_UserValueDifferentFromCatalogWins(t *testing.T) {
 
 	userWindow := live.ContextWindow + 1000
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	cfg.Providers.Set("openai-codex", ProviderConfig{
 		ID:         "openai-codex",
 		OAuthToken: &oauth.Token{AccessToken: "rush-access-token", AccountID: "chatgpt-account"},
@@ -149,7 +149,7 @@ func TestConfigureProviders_CustomProviderValueStaysUserSet(t *testing.T) {
 	defer customModels.Close()
 
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	// Provider "zai" is NOT in the known-provider list below, so it is a
 	// custom provider with no catalog entry -- but the zai facts rows match
 	// its model, so a wrong inversion of the dump check would be caught by
@@ -226,7 +226,7 @@ func TestConfigureProviders_KnownProviderCatalogDumpDoesNotCountAsUserSet(t *tes
 		Models: []catwalk.Model{{ID: modelID, Name: "GLM-5.3-Flash", ContextWindow: rawWindow, DefaultMaxTokens: 4096}},
 	}
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	noDiscovery := false
 	cfg.Providers.Set("zai", ProviderConfig{
 		ID: "zai", APIKey: "k", AutoDiscoverModels: &noDiscovery,

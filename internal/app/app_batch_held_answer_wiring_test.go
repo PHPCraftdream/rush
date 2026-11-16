@@ -16,7 +16,7 @@ import (
 
 // TestBatchHeldAnswerWiring_InstallInstallsSinkAndShutdownClears: the batch
 // install with a live Runner -> non-nil sink; ShutdownWithResult (which runs
-// releaseBatchRuntimeGate) -> sink closed and cleared.
+// ReleaseBatchRuntimeGate) -> sink closed and cleared.
 // Mutation caught: deleting the App-side sink install leaves the field nil
 // and the first assertion fails; deleting the release-gate clear leaves it
 // non-nil after shutdown and the last assertion fails.
@@ -26,7 +26,7 @@ func TestBatchHeldAnswerWiring_InstallInstallsSinkAndShutdownClears(t *testing.T
 	require.NotNil(t, a.batchRuntime, "the runtime installed")
 	require.NotNil(t, a.batchHeldAnswerSink,
 		"a batch install with a live Runner installs the inject bridge sink")
-	a.batchRuntime.cfg.ReleaseWriter = func(context.Context) error { return nil }
+	a.batchRuntime.Config.ReleaseWriter = func(context.Context) error { return nil }
 	result := a.ShutdownWithResult()
 	require.False(t, result.Forced)
 	require.Nil(t, a.batchHeldAnswerSink, "the release gate cleared the sink")

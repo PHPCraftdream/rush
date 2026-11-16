@@ -80,7 +80,7 @@ func batchInventoryBuildNames(t *testing.T, coord *coordinator, agentCfg config.
 	}
 	scope := EnsureCallBuildScope(callOpts)
 	require.NotNil(t, scope, "the trusted call state carries its own build scope")
-	defer scope.close()
+	defer scope.Close()
 	ctx := WithCallOptions(batchCallCtx("batch-inventory"), callOpts)
 	built, err := coord.buildTools(ctx, coord.cfg.Config(), agentCfg, isSubAgent)
 	require.NoError(t, err)
@@ -319,7 +319,7 @@ func TestWorkerStopScopeComesFromTrustedCoordinatorBuild(t *testing.T) {
 		callOpts := &CallOptions{}
 		scope := EnsureCallBuildScope(callOpts)
 		require.NotNil(t, scope)
-		defer scope.close()
+		defer scope.Close()
 		ctx := WithCallOptions(batchCallCtx(callID), callOpts)
 		cfg := coord.cfg.Config().Agents[config.AgentCoder]
 		if isSubAgent {

@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -73,7 +74,7 @@ func (s *blockingReadsService) ListPendingRunQueueEntries(ctx context.Context) (
 // hangs for the full 60s test timeout instead of returning in ~5s.
 func TestP1_1_StopWaitsForMainLoopWithTimeout(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-p1-1-main-loop-timeout")
 	ctx := t.Context()
 
@@ -153,7 +154,7 @@ func TestP1_1_StopWaitsForMainLoopWithTimeout(t *testing.T) {
 // out because ListPendingRunQueueEntries blocks forever with no deadline.
 func TestP1_1_TickUsesDeadlineBoundContext(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-p1-1-tick-deadline")
 	ctx := t.Context()
 

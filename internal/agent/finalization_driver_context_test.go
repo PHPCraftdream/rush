@@ -69,7 +69,7 @@ func TestDriverWakePreservesAuthorityAndImmutableCallPolicy(t *testing.T) {
 	}
 	agent := &sessionAgent{}
 	registry := newSubAgentDriverRegistry()
-	generation := registry.register("child", subAgentDriver{agent: agent, call: original, finalizationAuthorities: fixture.capability})
+	generation := registry.register("child", subAgentDriver{agent: agent, call: original, FinalizationAuthorities: fixture.capability})
 	driver, ok := registry.get("child")
 	require.True(t, ok)
 	require.Same(t, agent, driver.agent, "wake retains the same driver")
@@ -100,7 +100,7 @@ func TestDriverWakeCannotRebindReplacementOrWidenLogicalCall(t *testing.T) {
 	for _, replacement := range []bool{false, true} {
 		t.Run(map[bool]string{false: "logical_call_mismatch", true: "replaced_incarnation"}[replacement], func(t *testing.T) {
 			fixture := newFinalizationDriverFixture(t)
-			driver := subAgentDriver{call: SessionAgentCall{SessionID: "child", LogicalCallID: "child-call"}, finalizationAuthorities: fixture.capability}
+			driver := subAgentDriver{call: SessionAgentCall{SessionID: "child", LogicalCallID: "child-call"}, FinalizationAuthorities: fixture.capability}
 			wake := driver.callFor("wake")
 			ctx := context.Background()
 			if replacement {
@@ -141,7 +141,7 @@ func TestRunRefusesStaleCarriedAuthorityBeforePreamble(t *testing.T) {
 				require.NoError(t, err)
 			}
 			agent := &sessionAgent{}
-			call := (subAgentDriver{call: SessionAgentCall{SessionID: "child", LogicalCallID: "child-call"}, finalizationAuthorities: fixture.capability}).callFor("")
+			call := (subAgentDriver{call: SessionAgentCall{SessionID: "child", LogicalCallID: "child-call"}, FinalizationAuthorities: fixture.capability}).callFor("")
 			_, err := agent.Run(context.Background(), call)
 			require.ErrorIs(t, err, session.ErrAgentFinalizationChanged, "stale authority is refused before even empty-prompt validation")
 			_, err = agent.Run(context.Background(), SessionAgentCall{SessionID: "child"})

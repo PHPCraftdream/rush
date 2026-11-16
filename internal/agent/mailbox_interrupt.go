@@ -160,7 +160,7 @@ func (mb *mailbox) interruptAndReplaceLocked(call SessionAgentCall) (context.Can
 	if !call.FromDurableQueue {
 		// A prior replacement being overwritten here never gets a turn --
 		// interruptAndReplace's whole point is "run THIS instead". If it
-		// carried onQueueResolved (#1036's live in-process waiter), resolve
+		// carried OnQueueResolved (#1036's live in-process waiter), resolve
 		// it now with errQueuedTurnNotRun instead of silently discarding the
 		// pointer, or that waiter blocks forever (no implicit timeout exists
 		// in this chain). Called while still holding mb.mu: the hook
@@ -297,7 +297,7 @@ func (mb *mailbox) reclaimReplacementOrKeep(call SessionAgentCall) SessionAgentC
 	if mb.replacement != nil {
 		next := *mb.replacement
 		mb.replacement = nil
-		next.replacementHandoff = true
+		next.ReplacementHandoff = true
 		// B17 fix: apply the SAME Drain-merge rule every other insertion
 		// path already applies, instead of a bare prepend -- a bare prepend
 		// let a displaced Drain sit alongside an already-queued Drain (or
@@ -359,7 +359,7 @@ func (mb *mailbox) drainAfterCancel() (SessionAgentCall, bool) {
 	if mb.replacement != nil {
 		next := *mb.replacement
 		mb.replacement = nil
-		next.replacementHandoff = true
+		next.ReplacementHandoff = true
 		mb.current.cancel = nil
 		return next, true
 	}

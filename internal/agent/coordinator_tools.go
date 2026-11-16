@@ -48,7 +48,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 
 	var smartProviderCfg config.ProviderConfig
 	if creds := callCredentialsFrom(ctx); creds != nil {
-		if cred, ok := creds.credential(smart.ModelCfg.Provider); ok {
+		if cred, ok := creds.Credential(smart.ModelCfg.Provider); ok {
 			smartProviderCfg = credentialProviderConfig(cred)
 		}
 	} else {
@@ -578,7 +578,7 @@ var nestedAgentToolWarnOnce sync.Once
 func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) ([]fantasy.AgentTool, error) {
 	if opts := callOptionsFrom(ctx); opts != nil && callBuildScopeFrom(ctx) == nil {
 		EnsureCallBuildScope(opts)
-		defer opts.buildScope.close()
+		defer opts.BuildScope.Close()
 	}
 	built, err := c.buildPolicyTools(ctx, cfg, agent, isSubAgent)
 	return built.tools, err

@@ -14,6 +14,7 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 )
 
@@ -307,7 +308,7 @@ func (a *sessionAgent) fireCacheKeepAliveHB(hb heartbeat.Context, sessionID stri
 		fantasy.WithStopConditions(fantasy.StepCountIs(2)),
 	)
 	result, err := replayAgent.Stream(ctx, fantasy.AgentStreamCall{
-		MaxRetries:      &ProviderMaxRetries,
+		MaxRetries:      &agentcall.ProviderMaxRetries,
 		Messages:        messages,
 		Headers:         sessionHeaders(sessionID),
 		ProviderOptions: providerOptions,

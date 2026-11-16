@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"slices"
@@ -23,7 +24,7 @@ type batchFinalizationAdmission struct {
 }
 
 // admitBatchCommitOwners resolves one ordered, distinct ticket set before SQL.
-func admitBatchCommitOwners(store *BatchStore, ctx context.Context, id BatchCommitIdentity, transition jobbatch.Transition, owners []string) (func() error, *batchFinalizationAdmission, error) {
+func admitBatchCommitOwners(writer *sql.DB, ctx context.Context, id BatchCommitIdentity, transition jobbatch.Transition, owners []string) (func() error, *batchFinalizationAdmission, error) {
 	if len(owners) == 0 {
 		return nil, nil, nil
 	}
@@ -49,7 +50,7 @@ func admitBatchCommitOwners(store *BatchStore, ctx context.Context, id BatchComm
 	}
 
 	service := id.finalizationService
-	if service.db == nil || store == nil || store.writer != service.db {
+	if service.db == nil || writer == nil || writer != service.db {
 		return nil, nil, errors.New("batch commit admission: authority and batch writer must share the service database")
 	}
 	ancestry, err := readFinalizationAncestry(ctx, service.db, owners)

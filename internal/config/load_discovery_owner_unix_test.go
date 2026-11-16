@@ -25,8 +25,8 @@ func TestLookupConfigCandidatesRejectsForeignOwnedConfig(t *testing.T) {
 	if err := os.Chown(path, foreignOwner, -1); err != nil {
 		t.Skipf("changing test-file ownership unavailable: %v", err)
 	}
-	worktreeRootCache.Store(canonicalConfigPath(root), "")
-	t.Cleanup(func() { worktreeRootCache.Delete(canonicalConfigPath(root)) })
+	worktreeRootCacheStore(canonicalConfigPath(root), "")
+	t.Cleanup(func() { worktreeRootCacheDelete(canonicalConfigPath(root)) })
 
 	require.NotContains(t, lookupConfigCandidates(root), canonicalConfigPath(path))
 }

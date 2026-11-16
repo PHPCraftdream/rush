@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/stretchr/testify/require"
@@ -272,7 +273,7 @@ func TestProbe_IgnoresGitHookEnv(t *testing.T) {
 	t.Setenv("GIT_WORK_TREE", "definitely-not-a-worktree")
 	probed := probeLinkedWorktree(wtRoot)
 	require.NotNil(t, probed)
-	require.Equal(t, clean.mainRoot, probed.mainRoot)
+	require.Equal(t, datadir.LinkedWorktreeMainRoot(clean), datadir.LinkedWorktreeMainRoot(probed))
 }
 
 // TestLoad_DataDirPriority_FlagAndConfigBeatDefaults: --data-dir wins over

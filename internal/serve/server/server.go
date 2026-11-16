@@ -309,7 +309,7 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady fun
 		// must not downgrade to a non-rush.v1 subprotocol on policy
 		// listeners); the composer's OnIncoming closure keeps the dispatch
 		// switch in package server until S5/L5.
-		var ws http.Handler = hub.NewGate(hub.GateOptions{
+		ws := hub.NewGate(hub.GateOptions{
 			Hub:         s.hub,
 			Ctx:         runCtx,
 			CheckOrigin: s.checkOrigin,

@@ -68,11 +68,11 @@
 
 | Что | Где |
 |---|---|
-| `type PeakHoursWindow struct` | `internal/config/peak_hours.go:14` |
-| `Validate()` | `internal/config/peak_hours.go:23` |
-| `InPeakHours(now)` | `internal/config/peak_hours.go:42` |
-| `EndTimeToday(now)` | `internal/config/peak_hours.go:71` |
-| Тесты | `internal/config/peak_hours_test.go` |
+| `type PeakHoursWindow struct` | `internal/config/domains/peak/peak_hours.go:16` |
+| `Validate()` | `internal/config/domains/peak/peak_hours.go:30` |
+| `InPeakHours(now)` | `internal/config/domains/peak/peak_hours.go:49` |
+| `EndTimeToday(now)` | `internal/config/domains/peak/peak_hours.go:78` |
+| Тесты | `internal/config/domains/peak/peak_hours_test.go` |
 | jsonschema поля `PeakHours` | `internal/config/config.go:183` |
 | `parsePeakHoursWindow(raw)` | `internal/cmd/providers.go:22` |
 | Чтение флага `--peak-hours` | `internal/cmd/providers.go:239` **и** `:309` |
@@ -125,7 +125,7 @@ jsonschema уходит в генерируемую документацию и 
 
 ### Этап 1 — модель и семантика
 
-Файлы: `internal/config/peak_hours.go`, `internal/config/peak_hours_test.go`.
+Файлы: `internal/config/domains/peak/peak_hours.go`, `internal/config/domains/peak/peak_hours_test.go`.
 
 1. Добавить `Days []int` (json `days`, `omitempty`). Пусто или отсутствует
    = каждый день. **Обратная совместимость обязательна**: существующие

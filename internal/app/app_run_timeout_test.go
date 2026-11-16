@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
 )
@@ -80,7 +81,7 @@ func TestRunTimeoutWaitPhases(t *testing.T) {
 				require.EqualValues(t, 1, h.requests.Load())
 			}
 			if phase == "quota" {
-				require.EqualValues(t, agent.ProviderMaxRetries+1, h.requests.Load(), "quota latched before waiting on the held job")
+				require.EqualValues(t, agentcall.ProviderMaxRetries+1, h.requests.Load(), "quota latched before waiting on the held job")
 			}
 		})
 	}
@@ -92,7 +93,7 @@ func TestRunTimeoutInnerDeadlineWithLiveContext(t *testing.T) {
 		loopText(w, "first", "answer", 1, 1)
 	})
 	var out bytes.Buffer
-	l := &cliLoop{app: h.app, ctx: t.Context(), output: &out, mode: RunModeJSON, sessionID: h.sessionID, final: &RunResult{SessionID: h.sessionID}}
+	l := &cliLoop{env: h.app.runEnv(), host: h.app.loopHost(), ctx: t.Context(), output: &out, mode: RunModeJSON, sessionID: h.sessionID, final: &RunResult{SessionID: h.sessionID}}
 	res, err := l.exitWait(context.DeadlineExceeded)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	var timeoutErr *RunTimeoutError

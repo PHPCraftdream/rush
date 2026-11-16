@@ -32,7 +32,7 @@ func TestConfigureProviders_ZAIAPIKeyPriority(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	envMap := env.NewFromMap(map[string]string{
 		"ZAI_API_KEY":   "zai-key",
 		"ZHIPU_API_KEY": "zhipu-key",
@@ -58,7 +58,7 @@ func TestConfigureProviders_ZAIAPIKeyFallback(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	envMap := env.NewFromMap(map[string]string{
 		"ZHIPU_API_KEY": "zhipu-key",
 	})
@@ -78,7 +78,7 @@ func TestConfigureProviders_ZAIAPIKeyMissing(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	envMap := env.NewFromMap(map[string]string{})
 	resolver := NewShellVariableResolver(envMap)
 
@@ -95,7 +95,7 @@ func TestConfigureProviders_ZAIConfigAPIKeyWins(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	cfg.Providers.Set(string(catwalk.InferenceProviderZAI), ProviderConfig{
 		ID:     string(catwalk.InferenceProviderZAI),
 		APIKey: "explicit-config-key",
@@ -125,7 +125,7 @@ func TestConfigureProviders_ZAIResolveErrorSkipsNoFallback(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	// An explicit api_key whose $(...) command fails to resolve (false exits
 	// non-zero → command-substitution error in the embedded shell).
 	prov := zaiKnownProvider()
@@ -151,7 +151,7 @@ func TestConfigureProviders_ZAISynthesizesGLM53WhenCatwalkLacksIt(t *testing.T) 
 	t.Parallel()
 
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	envMap := env.NewFromMap(map[string]string{"ZAI_API_KEY": "zai-key"})
 	resolver := NewShellVariableResolver(envMap)
 
@@ -204,7 +204,7 @@ func TestConfigureProviders_ZAIDoesNotDuplicateGLM53IfCatwalkAddsIt(t *testing.T
 	t.Parallel()
 
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	envMap := env.NewFromMap(map[string]string{"ZAI_API_KEY": "zai-key"})
 	resolver := NewShellVariableResolver(envMap)
 

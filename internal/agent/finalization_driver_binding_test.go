@@ -26,11 +26,11 @@ func TestFinalizationDriverBindingInstallsIdentityWithoutChangingFrozenPolicy(t 
 	}
 	generation := registry.register(original.SessionID, subAgentDriver{
 		agent: agent, call: original,
-		finalizationAuthorities: session.CaptureAgentFinalizationContext(parentCtx),
+		FinalizationAuthorities: session.CaptureAgentFinalizationContext(parentCtx),
 	})
 	incoming := SessionAgentCall{
 		SessionID: original.SessionID, LogicalCallID: fixture.child.LogicalCallID,
-		driverGeneration: generation, finalizationAuthorities: fixture.capability, MaxCost: 200,
+		DriverGeneration: generation, FinalizationAuthorities: fixture.capability, MaxCost: 200,
 		MaxTokens: 9999, RequestedModelRole: RequestedModelRole("smart"), Credentials: &CredentialSet{},
 	}
 	require.NoError(t, registry.bindFinalizationIdentity(agent, incoming))
@@ -47,9 +47,9 @@ func TestFinalizationDriverBindingInstallsIdentityWithoutChangingFrozenPolicy(t 
 	require.Equal(t, original.MaxTokens, stored.call.MaxTokens)
 	require.Equal(t, original.RequestedModelRole, stored.call.RequestedModelRole)
 	wake := stored.callFor("reaction")
-	require.Equal(t, generation, wake.driverGeneration)
+	require.Equal(t, generation, wake.DriverGeneration)
 	require.Equal(t, incoming.LogicalCallID, wake.LogicalCallID)
-	require.Equal(t, fixture.capability.Requirement(), wake.finalizationAuthorities.Requirement())
+	require.Equal(t, fixture.capability.Requirement(), wake.FinalizationAuthorities.Requirement())
 	for _, identity := range []session.AgentFinalizationIdentity{fixture.parent, fixture.child} {
 		state, err := session.NewAgentFinalizationStore(fixture.conn).Snapshot(fixture.ctx, identity)
 		require.NoError(t, err)
@@ -63,12 +63,12 @@ func TestFinalizationDriverBindingRejectsStaleGenerationAndLogicalReplacement(t 
 			fixture := newFinalizationDriverFixture(t)
 			registry := newSubAgentDriverRegistry()
 			agent := NewSessionAgent(SessionAgentOptions{})
-			call := SessionAgentCall{SessionID: fixture.child.SessionID, LogicalCallID: fixture.child.LogicalCallID, finalizationAuthorities: fixture.capability}
-			generation := registry.register(call.SessionID, subAgentDriver{agent: agent, call: call, finalizationAuthorities: fixture.capability})
-			call.driverGeneration = generation
+			call := SessionAgentCall{SessionID: fixture.child.SessionID, LogicalCallID: fixture.child.LogicalCallID, FinalizationAuthorities: fixture.capability}
+			generation := registry.register(call.SessionID, subAgentDriver{agent: agent, call: call, FinalizationAuthorities: fixture.capability})
+			call.DriverGeneration = generation
 			switch changed {
 			case "generation":
-				registry.register(call.SessionID, subAgentDriver{agent: agent, call: call, finalizationAuthorities: fixture.capability})
+				registry.register(call.SessionID, subAgentDriver{agent: agent, call: call, FinalizationAuthorities: fixture.capability})
 			case "agent":
 				agent = NewSessionAgent(SessionAgentOptions{})
 			case "logical":
@@ -78,7 +78,7 @@ func TestFinalizationDriverBindingRejectsStaleGenerationAndLogicalReplacement(t 
 			stored, ok := registry.get(call.SessionID)
 			require.True(t, ok)
 			require.Equal(t, fixture.child.LogicalCallID, stored.call.LogicalCallID)
-			require.Equal(t, fixture.capability.Requirement(), stored.finalizationAuthorities.Requirement())
+			require.Equal(t, fixture.capability.Requirement(), stored.FinalizationAuthorities.Requirement())
 		})
 	}
 }
@@ -93,14 +93,14 @@ func TestFinalizationDriverBindingCannotWidenAncestorAuthority(t *testing.T) {
 	require.NoError(t, err)
 	registry := newSubAgentDriverRegistry()
 	agent := NewSessionAgent(SessionAgentOptions{})
-	call := SessionAgentCall{SessionID: fixture.child.SessionID, LogicalCallID: fixture.child.LogicalCallID, finalizationAuthorities: fixture.capability}
-	generation := registry.register(call.SessionID, subAgentDriver{agent: agent, call: call, finalizationAuthorities: fixture.capability})
-	call.driverGeneration = generation
-	call.finalizationAuthorities = session.CaptureAgentFinalizationContext(wider)
+	call := SessionAgentCall{SessionID: fixture.child.SessionID, LogicalCallID: fixture.child.LogicalCallID, FinalizationAuthorities: fixture.capability}
+	generation := registry.register(call.SessionID, subAgentDriver{agent: agent, call: call, FinalizationAuthorities: fixture.capability})
+	call.DriverGeneration = generation
+	call.FinalizationAuthorities = session.CaptureAgentFinalizationContext(wider)
 	require.ErrorIs(t, registry.bindFinalizationIdentity(agent, call), session.ErrAgentFinalizationChanged)
 	stored, ok := registry.get(call.SessionID)
 	require.True(t, ok)
-	require.Equal(t, fixture.capability.Requirement(), stored.finalizationAuthorities.Requirement())
+	require.Equal(t, fixture.capability.Requirement(), stored.FinalizationAuthorities.Requirement())
 }
 
 func TestFinalizationLogicalIdentityDoesNotRebindAnExistingCall(t *testing.T) {

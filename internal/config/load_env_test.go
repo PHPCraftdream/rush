@@ -38,7 +38,7 @@ func TestConfig_configureProviders_HyperAPIKeyFromEnv(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 	env := env.NewFromMap(map[string]string{
 		"HYPER_API_KEY": "env-api-key",
 	})
@@ -83,7 +83,7 @@ func TestConfig_configureProviders_HyperAPIKeyFromConfigOverrides(t *testing.T) 
 			},
 		}),
 	}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 
 	// But they also have HYPER_API_KEY set - env var should take precedence
 	env := env.NewFromMap(map[string]string{
@@ -125,7 +125,7 @@ func TestConfig_configureProviders_ProviderHeaderResolveError(t *testing.T) {
 			},
 		}),
 	}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 
 	testEnv := env.NewFromMap(map[string]string{
 		"OPENAI_API_KEY": "test-key",
@@ -157,7 +157,7 @@ func TestConfig_configureProviders_CatwalkDefaultWithUnsetVarLoads(t *testing.T)
 	}
 
 	cfg := &Config{}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 
 	testEnv := env.NewFromMap(map[string]string{
 		"OPENAI_API_KEY": "test-key",
@@ -194,7 +194,7 @@ func TestConfig_configureProviders_LiteralEmptyHeaderDropped(t *testing.T) {
 			},
 		}),
 	}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 
 	testEnv := env.NewFromMap(map[string]string{
 		"PATH": os.Getenv("PATH"),
@@ -230,7 +230,7 @@ func TestConfig_configureProviders_EchoEmptyHeaderDropped(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 
 	testEnv := env.NewFromMap(map[string]string{
 		"OPENAI_API_KEY": "test-key",
@@ -279,7 +279,7 @@ func TestConfig_configureProviders_UnsetAPIKeySkipsProvider(t *testing.T) {
 			"openai": {BaseURL: "custom-url"},
 		}),
 	}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 
 	testEnv := env.NewFromMap(map[string]string{
 		"PATH": os.Getenv("PATH"),
@@ -317,7 +317,7 @@ func TestConfig_configureProviders_FailingAPIKeyCmdSkipsProvider(t *testing.T) {
 			"openai": {BaseURL: "custom-url"},
 		}),
 	}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 
 	testEnv := env.NewFromMap(map[string]string{
 		"PATH": os.Getenv("PATH"),
@@ -354,7 +354,7 @@ func TestConfig_configureProviders_UnsetAzureEndpointSkipsProvider(t *testing.T)
 			"azure": {BaseURL: ""},
 		}),
 	}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 
 	testEnv := env.NewFromMap(map[string]string{
 		"PATH": os.Getenv("PATH"),

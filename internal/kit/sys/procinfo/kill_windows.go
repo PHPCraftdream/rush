@@ -12,33 +12,18 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// trackedJobTerminator is the port through which KillProcess reaches the
-// process-wide tracked-job registry (internal/session's kill-on-close Job
-// Objects, registered at spawn time by session.TrackProcessTree). The
-// registry is written from the session layer, but the kill entry point
-// must be callable from below it (internal/shell), so the pass arrives as
-// an injected hook instead of an import. internal/session installs it via
-// RegisterTrackedJobTerminator.
-var trackedJobTerminator func(pid int) bool
+// KillProcess forcibly terminates the process tree rooted at pid. It is
+// KillProcessWithPass without a tracked-job pass; callers that registered
+// pids with proctrack.TrackProcessTree kill through proctrack.KillProcess,
+// which supplies the pass.
+func KillProcess(pid int) error { return KillProcessWithPass(pid, nil) }
 
-// RegisterTrackedJobTerminator installs the tracked-job pass KillProcess
-// runs. internal/session calls it once at init time; the pass is
-// process-global for the binary's lifetime.
-func RegisterTrackedJobTerminator(terminate func(pid int) bool) {
-	trackedJobTerminator = terminate
-}
-
-// terminateTrackedJob runs the registered terminator and reports false
-// when none is registered: without the session package linked in there is
-// no registry, which is behaviorally the same as an empty one.
-func terminateTrackedJob(pid int) bool {
-	if trackedJobTerminator == nil {
-		return false
-	}
-	return trackedJobTerminator(pid)
-}
-
-// KillProcess forcibly terminates the process tree rooted at pid.
+// KillProcessWithPass forcibly terminates the process tree rooted at pid,
+// running pass (when non-nil) as the Job Object pass described below.
+// pass terminates the tracked Job Object for pid, if any, and reports
+// whether it did; procinfo cannot import the registry that owns it
+// (internal/kit/sys/proctrack), so the pass is injected per call instead
+// of through a process-global hook.
 //
 // Tracked pids (registered via TrackProcessTree at spawn time) are killed
 // by BOTH mechanisms below, deliberately not short-circuited: taskkill
@@ -71,16 +56,18 @@ func terminateTrackedJob(pid int) bool {
 //
 // Returns nil if the process is already gone. Caller is expected to poll
 // IsProcessAlive afterwards.
-func KillProcess(pid int) error {
+func KillProcessWithPass(pid int, pass func(pid int) bool) error {
 	if pid <= 0 {
 		return fmt.Errorf("KillProcess: invalid pid %d", pid)
 	}
 	if !isProcessAlive(pid) {
 		// Already gone. Still consume any tracked entry so it cannot
-		// later collide with a recycled pid (see terminateTrackedJob);
+		// later collide with a recycled pid (see proctrack's terminateTrackedJob);
 		// closing its KILL_ON_JOB_CLOSE handle also tears down any
 		// straggler descendant still inside the job.
-		terminateTrackedJob(pid)
+		if pass != nil {
+			pass(pid)
+		}
 		return nil
 	}
 	if path, lookErr := exec.LookPath("taskkill"); lookErr == nil {
@@ -94,7 +81,9 @@ func KillProcess(pid int) error {
 	// MSYS-broken chains included. Identity-checked inside, so a stale
 	// entry whose pid the OS has since recycled is closed without
 	// faking success.
-	terminateTrackedJob(pid)
+	if pass != nil {
+		pass(pid)
+	}
 	if !isProcessAlive(pid) {
 		return nil
 	}

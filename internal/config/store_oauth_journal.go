@@ -14,13 +14,12 @@ import (
 	"slices"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 )
 
 var (
-	errOAuthJournalInvalid = errors.New("invalid OAuth journal")
-	errOAuthJournalRead    = errors.New("OAuth journal cannot be read")
-	errOAuthJournalDisk    = errors.New("OAuth config cannot be verified")
+	errOAuthJournalRead = errors.New("OAuth journal cannot be read")
+	errOAuthJournalDisk = errors.New("OAuth config cannot be verified")
 	// Serial test seams must be restored only after their users have joined.
 	oauthJournalReadWait     = waitCodexRefresh
 	oauthJournalReadBackoffs = []time.Duration{200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond}
@@ -30,16 +29,6 @@ var (
 	// Serial tests shrink the future synchronous write budget before workers start.
 	oauthJournalWriteBudget = 5 * time.Second
 )
-
-// Config verification and journal writes may share a parent directory.
-var oauthJournalConfigSyncParent = syncConfigParent
-
-// Only the predecessor refresh-token digest is persisted, never its secret.
-type oauthJournalRecord struct {
-	PredecessorRefreshTokenSHA256 string       `json:"predecessor_refresh_token_sha256"`
-	Token                         *oauth.Token `json:"token"`
-	BurnedRefreshTokenSHA256      []string     `json:"burned_refresh_token_sha256,omitempty"`
-}
 
 type oauthJournalDecision uint8
 
@@ -104,25 +93,6 @@ func oauthJournalPath(configPath, providerID string) string {
 	return normalizeReloadPath(configPath) + ".oauth-pending-" + hex.EncodeToString(digest[:8]) + ".json"
 }
 
-func validOAuthJournal(record *oauthJournalRecord) bool {
-	if record == nil || record.Token == nil || record.Token.AccessToken == "" || record.Token.RefreshToken == "" || record.Token.ExpiresAt <= 0 {
-		return false
-	}
-	if record.PredecessorRefreshTokenSHA256 != "" {
-		digest, err := hex.DecodeString(record.PredecessorRefreshTokenSHA256)
-		if err != nil || len(digest) != sha256.Size {
-			return false
-		}
-	}
-	for _, burned := range record.BurnedRefreshTokenSHA256 {
-		digest, err := hex.DecodeString(burned)
-		if err != nil || len(digest) != sha256.Size {
-			return false
-		}
-	}
-	return true
-}
-
 // Missing journals are normal; unreadable or corrupt journals are kept.
 func readOAuthJournal(path string) (*oauthJournalRecord, error) {
 	data, err := oauthJournalReadFile(path)
@@ -144,22 +114,6 @@ func readOAuthJournal(path string) (*oauthJournalRecord, error) {
 		return nil, errOAuthJournalInvalid
 	}
 	return &record, nil
-}
-
-// Only journal I/O receives bounded, context-cancelable retries.
-func readOAuthJournalWithRetry(ctx context.Context, path string) (*oauthJournalRecord, error) {
-	for attempt := 0; ; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		record, err := readOAuthJournal(path)
-		if !errors.Is(err, errOAuthJournalRead) || attempt >= len(oauthJournalReadBackoffs) {
-			return record, err
-		}
-		if err := oauthJournalReadWait(ctx, oauthJournalReadBackoffs[attempt]); err != nil {
-			return nil, err
-		}
-	}
 }
 
 // Bounded leader retries hand remaining durability work to the store outbox.
@@ -213,41 +167,6 @@ func readOAuthJournalDiskToken(path, providerID string) (*oauth.Token, error) {
 		return nil, errOAuthJournalDisk
 	}
 	return decodeOAuthJournalDiskToken(doc.jsonBytes, providerID)
-}
-
-func decodeOAuthJournalDiskToken(data []byte, providerID string) (*oauth.Token, error) {
-	var document map[string]json.RawMessage
-	if json.Unmarshal(data, &document) != nil || document == nil {
-		return nil, errOAuthJournalDisk
-	}
-	providersData, exists := document["providers"]
-	if !exists {
-		return nil, nil
-	}
-	var providers map[string]json.RawMessage
-	if json.Unmarshal(providersData, &providers) != nil || providers == nil {
-		return nil, errOAuthJournalDisk
-	}
-	providerData, exists := providers[providerID]
-	if !exists {
-		return nil, nil
-	}
-	var provider map[string]json.RawMessage
-	if json.Unmarshal(providerData, &provider) != nil || provider == nil {
-		return nil, errOAuthJournalDisk
-	}
-	tokenData, exists := provider["oauth"]
-	if !exists {
-		return nil, nil
-	}
-	var token *oauth.Token
-	if json.Unmarshal(tokenData, &token) != nil {
-		return nil, errOAuthJournalDisk
-	}
-	if token != nil && token.AccessToken == "" {
-		return nil, errOAuthJournalDisk
-	}
-	return token, nil
 }
 
 // Order: uncertainty, proven logout, equal, burned predecessor, then expiry.

@@ -38,7 +38,7 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		}
 
 		cfg := &Config{}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
 		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
@@ -74,7 +74,7 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		}
 
 		cfg := &Config{}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
 		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
@@ -107,7 +107,7 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		}
 
 		cfg := &Config{}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
 		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
@@ -150,7 +150,7 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 				},
 			}),
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
 		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
@@ -194,7 +194,7 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 				},
 			}),
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
 		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
@@ -236,7 +236,7 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 				},
 			}),
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
 		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
@@ -276,7 +276,7 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 				SelectedModelTypeSmart: {Provider: "ghost", Model: "missing"},
 			},
 		}
-		cfg.setDefaults(dir, "")
+		setDefaults(cfg, dir, "")
 		store := newTestConfigStore(testStoreOpts{config: cfg, globalDataPath: globalPath})
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
@@ -327,7 +327,7 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 				},
 			},
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
 		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
@@ -389,7 +389,7 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 				},
 			},
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
 		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
@@ -434,7 +434,7 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 				},
 			},
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
 		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
@@ -503,7 +503,7 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 				},
 			},
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
 		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)

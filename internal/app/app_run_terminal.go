@@ -44,7 +44,8 @@ type terminalReconciliation struct {
 // since both rows are equally "new" relative to A's baseline. ownID is the
 // additional filter; baseline stays in effect either way. Empty ownID is
 // accepted only for a durable continuation with explicit queue ownership.
-func (app *App) reconcileTerminalMessage(
+func reconcileTerminalMessage(
+	env RunEnv,
 	ctx context.Context,
 	sessionID string,
 	baselineIDs map[string]struct{},
@@ -53,7 +54,7 @@ func (app *App) reconcileTerminalMessage(
 	ownID string,
 	ownIDs map[string]struct{},
 ) (terminalReconciliation, error) {
-	messages, err := app.Messages.List(ctx, sessionID)
+	messages, err := env.Messages().List(ctx, sessionID)
 	if err != nil {
 		return terminalReconciliation{}, fmt.Errorf("list run messages: %w", err)
 	}

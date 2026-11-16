@@ -209,7 +209,7 @@ func TestPullPendingNotices_RecordsProgressExceptSupervision(t *testing.T) {
 // of the retry rule -- a committed Drain retry reaches the provider even
 // though its own turn-start pull finds nothing.
 //
-// Revert-check performed: removed `&& !call.drainTurnCommitted` from
+// Revert-check performed: removed `&& !call.DrainTurnCommitted` from
 // runTurn's Drain gate -- this test FAILED (provider never called). Restored;
 // re-ran, passed.
 func TestDrain_CommittedRetryReachesProviderWithNothingToPull(t *testing.T) {
@@ -244,7 +244,7 @@ func TestDrain_CommittedRetryReachesProviderWithNothingToPull(t *testing.T) {
 	require.NoError(t, err)
 
 	call := newDrainCall(SessionAgentCall{SessionID: sess.ID})
-	call.drainTurnCommitted = true
+	call.DrainTurnCommitted = true
 	result, err := sa.Run(ctx, call)
 	require.NoError(t, err)
 	require.NotNil(t, result)

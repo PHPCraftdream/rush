@@ -214,7 +214,7 @@ func dispatchShebang(ctx context.Context, scriptPath string, probe []byte, args 
 	shexec.IsolateProcess(cmd)
 
 	if retained {
-		err := runRetainedProcess(ctx, cmd, stops, func() error { return shexec.KillRetainedProcess(cmd.Process.Pid) }, nil)
+		err := runRetainedProcess(ctx, cmd, stops, func() error { return shexec.KillRetainedProcess(cmd.Process.Pid) }, nil, nil)
 		return shexec.RetainedCommandResult(ctx, hc.Stderr, err)
 	}
 	if err := cmd.Run(); err != nil {

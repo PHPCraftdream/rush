@@ -30,8 +30,10 @@ func (errSessions) Get(ctx context.Context, sessionID string) (session.Session, 
 // the run envelope must say exit_reason "stalled" and carry a non-nil
 // error (non-zero exit) instead of the generic "error".
 func TestExitMapsStallAbort(t *testing.T) {
+	probe := &App{Sessions: errSessions{}}
 	l := &cliLoop{
-		app:          &App{Sessions: errSessions{}},
+		env:          probe.runEnv(),
+		host:         probe.loopHost(),
 		ctx:          t.Context(),
 		output:       io.Discard,
 		final:        &RunResult{SessionID: "s", ToolCalls: []ToolCallStat{}},

@@ -27,37 +27,6 @@ func batchRoleContractsWereAdmitted(ctx context.Context) bool {
 	return admitted
 }
 
-// AdmitBatchRoleContracts resolves every explicitly selected custom role in a
-// structural batch before the caller can reserve capacity or construct tools.
-// The returned payloads contain immutable role snapshots used by later queue
-// execution; config is read only from the coordinator's pinned snapshot.
-func AdmitBatchRoleContracts(ctx context.Context, c Coordinator, spec jobbatch.Spec) (jobbatch.Spec, error) {
-	if err := validateBatchSpecShapeForRoleAdmission(spec); err != nil {
-		return jobbatch.Spec{}, err
-	}
-	if batchRoleContractsWereAdmitted(ctx) {
-		if err := validateBatchRolePayloads(spec); err != nil {
-			return jobbatch.Spec{}, err
-		}
-		return spec, nil
-	}
-	if cfg, ok := parentRoleConfigFrom(ctx); ok {
-		admitted, err := admitBatchRoleContracts(cfg, parentRoleContractFrom(ctx), spec)
-		if err != nil {
-			return jobbatch.Spec{}, err
-		}
-		return admitted, nil
-	}
-	if cc, ok := c.(*coordinator); ok && cc.cfg != nil {
-		cfg, _ := cc.cfg.Snapshot()
-		return admitBatchRoleContracts(cfg, parentRoleContractFrom(ctx), spec)
-	}
-	if batchSpecHasCustomRole(spec) {
-		return jobbatch.Spec{}, fmt.Errorf("%w: custom role configuration unavailable", ErrAgentRoleUnconfigured)
-	}
-	return spec, nil
-}
-
 func configForBatchInvocation(inv BatchInvocation) (*config.Config, error) {
 	if inv.roleConfig != nil {
 		return inv.roleConfig, nil
@@ -80,7 +49,7 @@ func batchSpecHasCustomRole(spec jobbatch.Spec) bool {
 		if json.Unmarshal(leaf.Input, &fields) != nil {
 			return false
 		}
-		return fields.Role != "" && !fields.Role.builtin()
+		return fields.Role != "" && !fields.Role.Builtin()
 	}
 	if spec.Batch != nil {
 		for _, child := range spec.Batch.Items {
@@ -164,7 +133,7 @@ func admitBatchRoleContracts(cfg *config.Config, inherited *session.RoleContract
 				return jobbatch.Spec{}, fmt.Errorf("batch role admission: invalid selected role snapshot: %w", err)
 			}
 		}
-		if selected.Role == "" || selected.Role.builtin() {
+		if selected.Role == "" || selected.Role.Builtin() {
 			if existing != nil {
 				return jobbatch.Spec{}, fmt.Errorf("%w: custom snapshot supplied for a built-in or omitted role", ErrAgentRoleMismatch)
 			}
@@ -272,10 +241,10 @@ func validateBatchRolePayloads(spec jobbatch.Spec) error {
 			if err := json.Unmarshal(p.Input, &selected); err != nil {
 				return err
 			}
-			if selected.Role != "" && !selected.Role.builtin() && p.SelectedRoleContract == nil {
+			if selected.Role != "" && !selected.Role.Builtin() && p.SelectedRoleContract == nil {
 				return fmt.Errorf("%w: selected custom role snapshot is missing", ErrAgentRoleUnconfigured)
 			}
-			if (selected.Role == "" || selected.Role.builtin()) && p.SelectedRoleContract != nil {
+			if (selected.Role == "" || selected.Role.Builtin()) && p.SelectedRoleContract != nil {
 				return fmt.Errorf("%w: custom snapshot supplied for built-in or omitted role", ErrAgentRoleMismatch)
 			}
 		} else if p.SelectedRoleContract != nil {

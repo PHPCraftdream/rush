@@ -278,7 +278,7 @@ func TestCustomRoleProcessLifetimeHelper(t *testing.T) {
 		}
 		roleCtx := WithSelectedRoleContract(WithCallOptions(ctx, &CallOptions{RoleContract: rootCall.RoleContract.Clone()}), rootCall.RoleContract)
 		roleOptions := callOptionsFrom(roleCtx)
-		t.Cleanup(roleOptions.buildScope.close)
+		t.Cleanup(roleOptions.BuildScope.Close)
 		if mode == "removed" {
 			_, configured := cfg.Config().Roles[roleProcessName]
 			require.False(t, configured)
@@ -296,7 +296,7 @@ func TestCustomRoleProcessLifetimeHelper(t *testing.T) {
 		base := config.Agent{AllowedTools: []string{"view", "write", "grep"}, AllowedMCP: map[string][]string{}}
 		options := &CallOptions{RoleContract: childContract.Clone()}
 		policyCtx := WithCallOptions(ctx, options)
-		t.Cleanup(options.buildScope.close)
+		t.Cleanup(options.BuildScope.Close)
 		built, buildErr := coord.buildPolicyTools(policyCtx, cfg.Config(), base, false)
 		require.NoError(t, buildErr)
 		require.Equal(t, []string{"view"}, pinnedToolNames(built.tools), "live removal of the role tools field cannot widen its durable ceiling")

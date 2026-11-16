@@ -27,7 +27,7 @@ func (l *cliLoop) describeOpenWork() string {
 	if clause := l.describeOnceWake(); clause != "" {
 		schedule = append(schedule, clause)
 	}
-	if l.app == nil {
+	if l.host == nil {
 		if len(schedule) > 0 {
 			return strings.Join(schedule, "; ")
 		}
@@ -41,15 +41,14 @@ func (l *cliLoop) describeOpenWork() string {
 // from the shared, non-acquiring lock probe. Display only, with the same
 // generic-wording fallback.
 func (l *cliLoop) describeOpenWorkBatch(schedule []string, generic string) string {
-	app := l.app
-	writer := app.batchCutoverWriter()
+	writer := l.host.batchCutoverWriter()
 	if writer == nil {
 		return joinOpenWork(schedule, generic)
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(l.ctx), 2*time.Second)
 	defer cancel()
-	readQ := db.New(app.batchCutoverReader(writer))
-	reader := session.NewBatchLiveReader(readQ, app.dataDir)
+	readQ := db.New(l.host.batchCutoverReader(writer))
+	reader := session.NewBatchLiveReader(readQ, l.env.DataDir())
 	// TxStarter: every live read runs in ONE read-only tx on the writer.
 	reader.TxStarter = writer
 	res := reader.BatchLiveForOwner(ctx, l.sessionID)
@@ -73,7 +72,7 @@ func (l *cliLoop) describeOpenWorkBatch(schedule []string, generic string) strin
 		if n.ChildSessionID != "" {
 			part += fmt.Sprintf(" (child session %s)", n.ChildSessionID)
 		}
-		part += " on " + describeBatchHost(ctx, readQ, app.dataDir, n.HostID, n.HostStatus)
+		part += " on " + describeBatchHost(ctx, readQ, l.env.DataDir(), n.HostID, n.HostStatus)
 		parts = append(parts, part)
 	}
 	return strings.Join(parts, "; ")

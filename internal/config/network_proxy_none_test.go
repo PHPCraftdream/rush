@@ -105,7 +105,7 @@ func TestProviderProxyNoneSurvivesConfigureProviders(t *testing.T) {
 		Models:  []catwalk.Model{{ID: "m"}},
 		Network: &NetworkConfig{Proxy: "NONE"},
 	})
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 	cfg.Options.Network = &NetworkConfig{Proxy: "http://global-proxy.example:8080"}
 
 	environ := env.NewFromMap(map[string]string{"OPENAI_API_KEY": "test-key"})

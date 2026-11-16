@@ -18,6 +18,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/discover"
+	envresolve "github.com/PHPCraftdream/rush/internal/config/model/envresolve"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
 
@@ -38,11 +39,11 @@ func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.E
 	overlay := rushEnvOverlay(baseEnv)
 	env := env.NewOverlay(baseEnv, overlay)
 	if len(overlay) > 0 {
-		if r, ok := resolver.(*shellVariableResolver); ok {
+		if rebased := envresolve.RebaseShellResolverEnv(resolver, env); rebased != nil {
 			// Preserve the caller's expander override (tests) and bound
 			// ctx (see resolve.go's WithContext) — only the env changes
 			// here, not the resolver's other behaviour.
-			resolver = NewShellVariableResolver(env, WithExpander(r.expand), WithContext(r.ctx))
+			resolver = rebased
 		} else {
 			resolver = NewShellVariableResolver(env, WithContext(ctx))
 		}

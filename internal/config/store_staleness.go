@@ -8,16 +8,6 @@ import (
 	"slices"
 )
 
-// fileSnapshot captures metadata about a config file at a point in time.
-type fileSnapshot struct {
-	Path        string
-	Exists      bool
-	Size        int64
-	ModTime     int64 // UnixNano.
-	ContentHash [32]byte
-	fingerprint reloadFileFingerprint
-}
-
 // StalenessResult contains the result of a staleness check.
 type StalenessResult struct {
 	Dirty   bool

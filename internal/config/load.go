@@ -12,6 +12,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
 
@@ -135,9 +136,9 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 		configuredDataDir = cfg.Options.DataDirectory
 	}
 	dataDirResolved, dataDirSource := resolveDataDirectory(workingDir, dataDir, configuredDataDir)
-	cfg.setDefaults(workingDir, dataDirResolved)
+	setDefaults(cfg, workingDir, dataDirResolved)
 	sharedDataDir := dataDirIsSharedOfLinkedWorktree(workingDir, dataDirResolved, dataDirSource)
-	workspaceHomeFlag.Store(!sharedDataDir)
+	datadir.SetWorkspaceHome(!sharedDataDir)
 
 	globalDataPath := normalizeReloadPath(selectConfigSlot(GlobalConfigData()))
 	workspaceDiscoveryPath := normalizeDiscoveryPath(workspaceConfigPath(cfg.Options.DataDirectory))
@@ -210,7 +211,7 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 			// Preserve defaults that setDefaults already applied.
 			dataDir := cfg.Options.DataDirectory
 			*cfg = *merged
-			cfg.setDefaults(workingDir, dataDir)
+			setDefaults(cfg, workingDir, dataDir)
 			loadedPaths = append(loadedPaths, normalizeReloadPath(workspacePath))
 		}
 	}

@@ -95,10 +95,10 @@ func validateBatchOwnerPayloads(owner string, spec jobbatch.Spec) error {
 			if err := json.Unmarshal(payload.Input, &selected); err != nil {
 				return err
 			}
-			if selected.Role != "" && !selected.Role.builtin() && payload.SelectedRoleContract == nil {
+			if selected.Role != "" && !selected.Role.Builtin() && payload.SelectedRoleContract == nil {
 				return fmt.Errorf("%w: role snapshot was not admitted", ErrAgentRoleUnconfigured)
 			}
-			if selected.Role.builtin() && payload.SelectedRoleContract != nil {
+			if selected.Role.Builtin() && payload.SelectedRoleContract != nil {
 				return fmt.Errorf("%w: custom snapshot does not match builtin role", ErrAgentRoleMismatch)
 			}
 		}

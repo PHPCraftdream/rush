@@ -715,7 +715,7 @@ func TestLegacySystemConfigPath(t *testing.T) {
 // system-config migration step is skipped cleanly (no panic, no crash on
 // filepath.Dir("")) when the legacy/current system paths are unavailable,
 // which is the real, permanent state on Windows (config.SystemConfig()
-// returns "" there — see internal/config/config_windows.go) and is
+// returns "" there — see internal/config/domains/datadir/systemconfig_windows.go) and is
 // reproduced directly here rather than by mocking package-level path
 // resolution, since runMigrate's system-config block already treats an
 // empty legacy or current path as "skip" by construction.

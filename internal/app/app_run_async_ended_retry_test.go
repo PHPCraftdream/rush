@@ -46,7 +46,7 @@ func TestPersistEndedReason_RetriesAfterATransientWriteFailure(t *testing.T) {
 	svc.fail.Store(1)
 	h.app.Sessions = svc
 
-	l := &cliLoop{app: h.app, ctx: t.Context(), sessionID: h.sessionID, firstSubmitted: true}
+	l := &cliLoop{env: h.app.runEnv(), host: h.app.loopHost(), ctx: t.Context(), sessionID: h.sessionID, firstSubmitted: true}
 	l.persistEndedReason(&RunResult{SessionID: h.sessionID, ExitReason: "end_turn"}, nil)
 
 	require.EqualValues(t, 2, svc.calls.Load(), "the failed first write must be retried exactly once more")
@@ -68,7 +68,7 @@ func TestPersistEndedReason_GivesUpAfterBoundedAttempts(t *testing.T) {
 	svc.fail.Store(1 << 30)
 	h.app.Sessions = svc
 
-	l := &cliLoop{app: h.app, ctx: t.Context(), sessionID: h.sessionID, firstSubmitted: true}
+	l := &cliLoop{env: h.app.runEnv(), host: h.app.loopHost(), ctx: t.Context(), sessionID: h.sessionID, firstSubmitted: true}
 	l.persistEndedReason(&RunResult{SessionID: h.sessionID, ExitReason: "end_turn"}, nil)
 
 	require.EqualValues(t, endedReasonWriteAttempts, svc.calls.Load())

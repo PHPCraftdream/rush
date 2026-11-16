@@ -60,6 +60,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
@@ -78,7 +79,7 @@ import (
 // defaults foreign key enforcement to OFF per-connection).
 func TestOrphanOutbox_PoisonEntryQuarantinesInsteadOfRetryingForever(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	dataDir := t.TempDir()
 	ctx := context.Background()
 
@@ -247,7 +248,7 @@ func (s *transientBusySessions) DrainOrphanOutboxEntry(ctx context.Context, id s
 // never actually broken.
 func TestOrphanOutbox_TransientBusyDoesNotCountAgainstBudget(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "orphan-transient-busy")
 	ctx := context.Background()
 
@@ -355,7 +356,7 @@ func realSQLiteBusyErrorForTest(t *testing.T) error {
 // enqueued still moves to the main run queue untouched by any of this.
 func TestOrphanOutbox_HealthyEntryStillDrains(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "orphan-healthy")
 	ctx := context.Background()
 

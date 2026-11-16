@@ -18,7 +18,7 @@ func TestConfig_setDefaults(t *testing.T) {
 		cfg := &Config{}
 		workingDir := t.TempDir()
 
-		cfg.setDefaults(workingDir, "")
+		setDefaults(cfg, workingDir, "")
 
 		require.NotNil(t, cfg.Options)
 		require.NotNil(t, cfg.Options.TUI)
@@ -37,7 +37,7 @@ func TestConfig_setDefaults(t *testing.T) {
 		cfg := &Config{Options: &Options{DataDirectory: "."}}
 		workingDir := filepath.Join(t.TempDir(), "worktree")
 
-		cfg.setDefaults(workingDir, "")
+		setDefaults(cfg, workingDir, "")
 
 		require.Equal(t, workingDir, cfg.Options.DataDirectory)
 	})
@@ -46,7 +46,7 @@ func TestConfig_setDefaults(t *testing.T) {
 		cfg := &Config{}
 		workingDir := filepath.Join(t.TempDir(), "worktree")
 
-		cfg.setDefaults(workingDir, "./state")
+		setDefaults(cfg, workingDir, "./state")
 
 		require.Equal(t, filepath.Join(workingDir, "state"), cfg.Options.DataDirectory)
 	})
@@ -57,7 +57,7 @@ func TestConfig_setDefaults(t *testing.T) {
 		absDir := filepath.Join(t.TempDir(), "data")
 		cfg := &Config{Options: &Options{DataDirectory: absDir}}
 
-		cfg.setDefaults(filepath.Join(t.TempDir(), "worktree"), "")
+		setDefaults(cfg, filepath.Join(t.TempDir(), "worktree"), "")
 
 		require.Equal(t, absDir, cfg.Options.DataDirectory)
 	})
@@ -68,12 +68,12 @@ func TestConfig_setDefaults(t *testing.T) {
 		// from an earlier merge as a relative string.
 		workingDir := filepath.Join(t.TempDir(), "worktree")
 		cfg := &Config{}
-		cfg.setDefaults(workingDir, "")
+		setDefaults(cfg, workingDir, "")
 
 		// Workspace JSON sets data_directory to a relative value; the
 		// merge replaces the struct, then setDefaults runs again.
 		cfg.Options.DataDirectory = "./state"
-		cfg.setDefaults(workingDir, "")
+		setDefaults(cfg, workingDir, "")
 
 		require.True(t, filepath.IsAbs(cfg.Options.DataDirectory),
 			"data directory must remain absolute after re-merge, got %q",
@@ -92,7 +92,7 @@ func TestConfig_setDefaults(t *testing.T) {
 		require.NoError(t, os.Mkdir(child, 0o755))
 
 		cfg := &Config{}
-		cfg.setDefaults(child, "")
+		setDefaults(cfg, child, "")
 
 		require.Equal(
 			t,
@@ -125,7 +125,7 @@ func TestConfig_setDefaults(t *testing.T) {
 		require.NoError(t, gitInit.Run())
 
 		cfg := &Config{}
-		cfg.setDefaults(sub, "")
+		setDefaults(cfg, sub, "")
 
 		// Resolve symlinks because TempDir on macOS sits under /var
 		// which is a symlink to /private/var. The data directory has
@@ -150,7 +150,7 @@ func TestConfig_setDefaultsDisableDefaultProvidersEnvVar(t *testing.T) {
 		t.Setenv("RUSH_DISABLE_DEFAULT_PROVIDERS", "true")
 
 		cfg := &Config{}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 
 		require.True(t, cfg.Options.DisableDefaultProviders)
 	})
@@ -161,7 +161,7 @@ func TestConfig_setDefaultsDisableDefaultProvidersEnvVar(t *testing.T) {
 				DisableDefaultProviders: true,
 			},
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 
 		require.True(t, cfg.Options.DisableDefaultProviders)
 	})

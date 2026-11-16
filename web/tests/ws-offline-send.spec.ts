@@ -1,9 +1,9 @@
 import { test, expect, Page } from "@playwright/test";
-import { setupMockWS } from "./helpers/mock-ws";
-import { sendMockWSMessage } from "./helpers/send-mock-ws-message";
-import { waitForWSSend } from "./helpers/wait-for-ws-send";
-import { makeSession } from "./helpers/make-session";
-import { fulfillAuthOk } from "./helpers/fulfill-auth-ok";
+import { setupMockWS } from "./helpers";
+import { sendMockWSMessage } from "./helpers";
+import { waitForWSSend } from "./helpers";
+import { makeSession } from "./helpers";
+import { fulfillAuthOk } from "./helpers";
 
 // Regression coverage for review F4 (P1): a send landing while the /ws
 // socket is down used to vanish silently — ws.send() no-opped and

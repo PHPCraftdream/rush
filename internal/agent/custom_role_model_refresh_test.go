@@ -124,7 +124,7 @@ func TestCustomRoleDiskRefreshPinsResolvedModelPromptAndTools(t *testing.T) {
 	contract, err := ResolveRoleContract(pinned, "analyst", nil)
 	require.NoError(t, err)
 	ctx := WithCallOptions(t.Context(), &CallOptions{RoleContract: contract, DisableSubAgents: true})
-	t.Cleanup(callBuildScopeFrom(ctx).close)
+	t.Cleanup(callBuildScopeFrom(ctx).Close)
 	before, err := coord.resolveSessionModels(ctx, "session")
 	require.NoError(t, err)
 	require.Equal(t, "before-refresh", before.smart.ModelCfg.Model)

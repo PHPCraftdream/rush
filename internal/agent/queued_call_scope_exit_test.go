@@ -79,7 +79,7 @@ func TestQueuedCallScope_OrphanHandoffReenqueuesAndReleases(t *testing.T) {
 	mb := a.getMailbox(sid)
 	require.Len(t, mb.submitted, 1)
 	require.Equal(t, "lc-orphan-marker", mb.submitted[0].LogicalCallID)
-	require.True(t, mb.submitted[0].CallOptions.buildScopeRetained)
+	require.True(t, mb.submitted[0].CallOptions.BuildScopeRetained)
 	owners1, _ := caps.ownerCounts()
 	require.Equal(t, owners0+1, owners1)
 
@@ -190,7 +190,7 @@ func TestQueuedCallScope_ClearAndShutdownReleaseExactlyOnce(t *testing.T) {
 			Tools:       []fantasy.AgentTool{pinnedIngressTool("reg-super")},
 		}
 		mb.armQueuedBuild(&retained)
-		require.True(t, retained.CallOptions.buildScopeRetained)
+		require.True(t, retained.CallOptions.BuildScopeRetained)
 		mb.mu.Lock()
 		mb.replacement = &retained
 		mb.mu.Unlock()
@@ -255,7 +255,7 @@ func TestQueuedCallScope_ClearAndShutdownReleaseExactlyOnce(t *testing.T) {
 
 		mb := a.getMailbox(sess.ID)
 		require.Len(t, mb.submitted, 1)
-		require.True(t, mb.submitted[0].CallOptions.buildScopeRetained)
+		require.True(t, mb.submitted[0].CallOptions.BuildScopeRetained)
 		owners0, con0 := caps.ownerCounts()
 		require.Equal(t, 2, owners0) // pin + retained
 		require.Equal(t, 1, con0)
@@ -417,7 +417,7 @@ func TestQueuedCallScope_FourPolicyDecisionsReduced(t *testing.T) {
 
 	mb := a.getMailbox(sid)
 	require.Len(t, mb.submitted, 1)
-	require.True(t, mb.submitted[0].CallOptions.buildScopeRetained)
+	require.True(t, mb.submitted[0].CallOptions.BuildScopeRetained)
 	require.Same(t, &policyB, mb.submitted[0].RunAllowlist)
 
 	// The REAL promotion pop (the primitive every live drain path uses via
@@ -426,7 +426,7 @@ func TestQueuedCallScope_FourPolicyDecisionsReduced(t *testing.T) {
 	require.True(t, hasNext)
 	require.Len(t, orphaned, 0)
 	require.NoError(t, relErr)
-	require.True(t, next.CallOptions.buildScopeRetained)
+	require.True(t, next.CallOptions.BuildScopeRetained)
 
 	// Dispatch an "edit" probe under the RETAINED call's own policy —
 	// granted (B allows edit).

@@ -33,7 +33,7 @@ func (c *coordinator) restoreFinalizationQueuedCall(ctx context.Context, rowID s
 
 // A durable child continuation cannot silently become a root-agent run.
 func (c *coordinator) finalizationQueueDriver(call SessionAgentCall) (SessionAgent, error) {
-	driver, _, err := c.selectFinalizationQueueDriver(call.SessionID, call.LogicalCallID, call.finalizationAuthorities.Requirement(), call.finalizationAuthorities.RequiresManagedDriver())
+	driver, _, err := c.selectFinalizationQueueDriver(call.SessionID, call.LogicalCallID, call.FinalizationAuthorities.Requirement(), call.FinalizationAuthorities.RequiresManagedDriver())
 	return driver, err
 }
 
@@ -42,7 +42,7 @@ func (c *coordinator) selectFinalizationQueueDriver(sessionID, logicalID string,
 		return c.currentAgent, 0, nil
 	}
 	if driver, ok := c.subAgentDrivers.get(sessionID); ok && driver.agent != nil {
-		stored := driver.finalizationAuthorities.Requirement()
+		stored := driver.FinalizationAuthorities.Requirement()
 		if driver.call.SessionID != sessionID || driver.call.LogicalCallID != logicalID || stored == nil ||
 			stored.Version != requirement.Version || !slices.Equal(stored.Authorities, requirement.Authorities) {
 			return nil, 0, session.ErrAgentFinalizationDriverUnavailable
@@ -60,7 +60,7 @@ func (c *coordinator) selectFinalizationQueueDriver(sessionID, logicalID string,
 }
 
 func enqueueFinalizationCall(ctx context.Context, sessions session.Service, rowID string, call SessionAgentCall, raw []byte) error {
-	restored, err := call.finalizationAuthorities.Restore(ctx)
+	restored, err := call.FinalizationAuthorities.Restore(ctx)
 	if err != nil {
 		return err
 	}

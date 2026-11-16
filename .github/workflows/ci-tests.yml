@@ -145,7 +145,7 @@ jobs:
                                  ["internal/store/db/", "internal/store/message/", "internal/serve/cmd/queue/",
                                   "internal/kit/sync/pubsub/", "internal/store/history/"]),
               ("oauth-deploy-update-version",
-                                 ["internal/config/oauth/", "internal/serve/ops/deploy/", "internal/serve/ops/update/",
+                                 ["internal/config/domains/oauth/", "internal/serve/ops/deploy/", "internal/serve/ops/update/",
                                   "internal/kit/diag/version/"]),
           ]
           left = []
@@ -515,7 +515,7 @@ jobs:
                                  ["internal/store/db/", "internal/store/message/", "internal/serve/cmd/queue/",
                                   "internal/kit/sync/pubsub/", "internal/store/history/"]),
               ("oauth-deploy-update-version",
-                                 ["internal/config/oauth/", "internal/serve/ops/deploy/", "internal/serve/ops/update/",
+                                 ["internal/config/domains/oauth/", "internal/serve/ops/deploy/", "internal/serve/ops/update/",
                                   "internal/kit/diag/version/"]),
           ]
           left = []

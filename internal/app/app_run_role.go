@@ -11,7 +11,7 @@ import (
 // resolveRunRole freezes a custom role for one logical execution. A caller
 // without an existing snapshot (every new SDK/CLI/API execution) resolves from
 // the current pinned config; subsequent turns reuse the immutable snapshot.
-func (app *App) resolveRunRole(overrides *RunOverrides) error {
+func resolveRunRole(env RunEnv, overrides *RunOverrides) error {
 	if overrides == nil {
 		return nil
 	}
@@ -36,7 +36,7 @@ func (app *App) resolveRunRole(overrides *RunOverrides) error {
 		}
 		return nil
 	}
-	cfg, _ := app.config.Snapshot()
+	cfg, _ := env.Config.Snapshot()
 	contract, err := agent.ResolveRoleContract(cfg, overrides.RequestedRole, nil)
 	if err != nil {
 		return fmt.Errorf("resolve custom role %q: %w", overrides.RequestedRole, err)

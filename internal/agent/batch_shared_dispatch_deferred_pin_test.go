@@ -43,7 +43,7 @@ func TestSharedToolsetBuildPublishesNothingAndDispatchPinsLazily(t *testing.T) {
 	scope := newBuildResourceScope()
 	built, err := newBatchWorkToolBuild(bind, []fantasy.AgentTool{env.leaf}, scope, true)
 	require.NoError(t, err)
-	scope.close()
+	scope.Close()
 
 	// Oracle 1: the build published NOTHING.
 	require.Empty(t, built.registryID, "a deferred build must not publish a registry identity")

@@ -381,7 +381,7 @@ func (OSWriter) Remove(p string) error    { return os.Remove(p) }
 
 const (
 	CmdPath   = "internal/serve/cmd/models_cah_gen.go"
-	SpecsPath = "internal/agent/provider/cliprovider/models_cah_gen.go"
+	SpecsPath = "internal/agent/provider/cliprovider/clipspec/models_cah_gen.go"
 )
 
 type Options struct {

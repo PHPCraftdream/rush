@@ -368,3 +368,8 @@ git mv ядра в store/cfgstore/ (+сплит store_reload.go 965 → ~650/~31
 8. **copilot.go** — 1 строка; удалить в D2-4.
 9. **Матричный тест** TestOAuthRound7_CartesianMatrix едет в oauthcred без изменений (В2); 160–200 с остаются в матрице oauthcred.
 10. **Риск X-полос**: перенос 229 методов с per-component адаптерами — самый большой шов спринта; защита — по-полосные оракулы + серийные тесты компонента и ядра на каждой полосе; прямые `s.publishMu`-секции (oauth 36, mcp 14 вхождений) сворачиваются в PublishMutation с сохранением CAS по generation.
+
+## Поправка 2026-11-15 (оркестратор, по остановке агента D2-1): методы на переезжающем `Config`
+
+Go требует объявлять методы в пакете, где определён тип; алиас `type Config = cfgmodel.Config` не помогает. Полный перечень методов на `Config`, оставшихся в корне после переезда: `setDefaults` (`load_defaults.go`) и `IsDockerMCPEnabled` (`docker_mcp.go`). Решение: (1) `setDefaults` становится свободной функцией `setDefaults(c *Config, workingDir, dataDir string)` в корневом `load_defaults.go` (меняется только строка сигнатуры, тело побайтно прежнее, приёмник переименовывается в параметр `c`; вызовы `cfg.setDefaults(` → `setDefaults(cfg, `, около 25 мест в `internal/config`); в D2-5 файл переезжает в `cfgload` уже как функция; (2) `IsDockerMCPEnabled` и константа `DockerMCPName` переезжают в `model/config_mcp.go`, в `facade.go` добавляется `const DockerMCPName = cfgmodel.DockerMCPName`. Других изменений объявлений в полосе нет. Приоритет «Config переезжает в D2-1» сохранён: откладывание на D2-5 отклонено, потому что та же проблема встала бы там с теми же двумя методами.
+

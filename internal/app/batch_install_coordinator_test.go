@@ -39,7 +39,7 @@ func TestBatchWorkIngressInstalled(t *testing.T) {
 			a.batchRuntime.Stop()
 		}
 	})
-	// installBatchRuntime ensured the HostStore; release its lock here
+	// InstallRuntime ensured the HostStore; release its lock here
 	// (this t.Cleanup runs after the one above, so LIFO order is fine).
 	t.Cleanup(func() { _ = a.batchHostRelease(context.Background()) })
 

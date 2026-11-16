@@ -63,7 +63,7 @@ func TestConfigureProviders_RushPrefixOverridesAPIKey(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	baseEnv := env.NewFromMap(map[string]string{
 		"OPENAI_API_KEY":      "real-key",
 		"RUSH_OPENAI_API_KEY": "rush-override-key",
@@ -95,7 +95,7 @@ func TestConfigureProviders_NoOverlayWhenNoRushPrefix(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	baseEnv := env.NewFromMap(map[string]string{"OPENAI_API_KEY": "real-key"})
 	resolver := NewShellVariableResolver(baseEnv)
 
@@ -136,7 +136,7 @@ func TestConfigureProviders_DoesNotMutateProcessEnviron(t *testing.T) {
 		},
 	}
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	baseEnv := env.New() // osEnv — reads the REAL process environment.
 	resolver := NewShellVariableResolver(baseEnv)
 
@@ -186,7 +186,7 @@ func TestConfigureProviders_ConcurrentDifferentOverlays_NoInterference(t *testin
 
 			want := fmt.Sprintf("override-%d", i)
 			cfg := &Config{}
-			cfg.setDefaults(t.TempDir(), "")
+			setDefaults(cfg, t.TempDir(), "")
 			baseEnv := env.NewFromMap(map[string]string{
 				"OPENAI_API_KEY":      "real-key",
 				"RUSH_OPENAI_API_KEY": want,

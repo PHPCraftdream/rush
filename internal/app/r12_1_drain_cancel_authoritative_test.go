@@ -67,7 +67,8 @@ func TestFinishRejectsSupersededRecorderRowAsAuthoritative_R12_1(t *testing.T) {
 
 	hookExitReason := new(string)
 	loop := &executeRunLoop{
-		app:            h.app,
+		env:            h.app.runEnv(),
+		host:           h.app.loopHost(),
 		sess:           h.sess,
 		ctx:            context.Background(),
 		mode:           RunModeJSON,
@@ -127,7 +128,8 @@ func TestFinishAcceptsOwnRecorderRowAsAuthoritative(t *testing.T) {
 
 	hookExitReason := new(string)
 	loop := &executeRunLoop{
-		app:            h.app,
+		env:            h.app.runEnv(),
+		host:           h.app.loopHost(),
 		sess:           h.sess,
 		ctx:            context.Background(),
 		mode:           RunModeJSON,

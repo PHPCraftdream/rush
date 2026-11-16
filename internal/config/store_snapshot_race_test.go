@@ -364,7 +364,7 @@ func TestConcurrentUpdateConfig_DoesNotLoseUpdates(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	store := NewTestStore(cfg)
 
 	// Use the four real SelectedModelType slots so we have enough
@@ -422,7 +422,7 @@ func TestConcurrentUpdatePreferredModels_SingleWriterSemantics(t *testing.T) {
 	require.NoError(t, os.WriteFile(workspacePath, []byte(`{}`), 0o600))
 
 	cfg := &Config{}
-	cfg.setDefaults(dir, "")
+	setDefaults(cfg, dir, "")
 	store := newTestConfigStore(testStoreOpts{
 		config:         cfg,
 		globalDataPath: globalPath,
@@ -473,7 +473,7 @@ func TestConcurrentUpdateConfig_DifferentNestedFields_BothVisible(t *testing.T) 
 	const iterations = 20
 	for range iterations {
 		cfg := &Config{}
-		cfg.setDefaults(t.TempDir(), "")
+		setDefaults(cfg, t.TempDir(), "")
 		store := NewTestStore(cfg)
 
 		var wg sync.WaitGroup
@@ -660,7 +660,7 @@ func TestConcurrentSetConfigFields_DifferentKeys_BothPersistedOnDisk(t *testing.
 		require.NoError(t, os.WriteFile(configPath, []byte(`{}`), 0o600))
 
 		cfg := &Config{}
-		cfg.setDefaults(dir, "")
+		setDefaults(cfg, dir, "")
 		store := newTestConfigStore(testStoreOpts{
 			config:         cfg,
 			globalDataPath: configPath,
@@ -719,7 +719,7 @@ func TestAutoReload_TryLockSkipsReentry_NoDeadlock(t *testing.T) {
 
 	dir := t.TempDir()
 	cfg := &Config{}
-	cfg.setDefaults(dir, "")
+	setDefaults(cfg, dir, "")
 	store := newTestConfigStore(testStoreOpts{config: cfg})
 	store.workingDir = dir // Enable the autoReload path past the early return.
 
@@ -764,7 +764,7 @@ func TestReloadCandidateBuild_DoesNotBlockRuntimeMutator(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	store := NewTestStore(cfg)
 
 	// Simulate "reload candidate-build phase in flight" by holding

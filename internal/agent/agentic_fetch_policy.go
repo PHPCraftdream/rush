@@ -81,7 +81,7 @@ func armPrivateFetchIngress(ctx context.Context, built policyToolBuild, ingress 
 		default:
 			constructionKey := diskOwnerKey{kind: diskOwnerConstruction, instance: uuid.NewString(), registryID: registryID}
 			if err = caps.acquireConstruction("", registryID, constructionKey.instance); err == nil {
-				scope.register(func() { caps.release(constructionKey) })
+				scope.Register(func() { caps.release(constructionKey) })
 			}
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -141,7 +142,7 @@ func TestP1_2_ReleaseUnlocksBeforeMetadataCleanup_Hang(t *testing.T) {
 //  4. Restore the fix (unlockFile first, then close, then clearHolderMetadataFn) and the test will PASS.
 func TestP1_2_ReleaseUnlocksBeforeMetadataCleanup(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	tmpDir := t.TempDir()
 	locksDir := filepath.Join(tmpDir, "locks")
 	require.NoError(t, os.MkdirAll(locksDir, 0o755))
@@ -182,7 +183,7 @@ func TestP1_2_ReleaseUnlocksBeforeMetadataCleanup(t *testing.T) {
 // This ensures the sync.Once mechanism works correctly.
 func TestP1_2_ReleaseIdempotentWithHungCleanup(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	tmpDir := t.TempDir()
 	sessionID := "test-session-p1-2-idempotent"
 
@@ -199,7 +200,7 @@ func TestP1_2_ReleaseIdempotentWithHungCleanup(t *testing.T) {
 // TestP1_2_ReleaseNilSafe verifies that Release() is safe to call on nil.
 func TestP1_2_ReleaseNilSafe(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	var lk *SessionLock
 	require.NoError(t, lk.Release(), "Release on nil should succeed (no-op)")
 }
@@ -210,7 +211,7 @@ func TestP1_2_ReleaseNilSafe(t *testing.T) {
 // that the file is closed and can be reopened after Release.
 func TestP1_2_ReleaseClosesFileDescriptor(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	tmpDir := t.TempDir()
 	sessionID := "test-session-p1-2-fd-close"
 
@@ -247,7 +248,7 @@ func TestP1_2_ReleaseClosesFileDescriptor(t *testing.T) {
 // sync.Once mechanism.
 func TestP1_2_ConcurrentReleaseDoesNotDeadlock(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	tmpDir := t.TempDir()
 	sessionID := "test-session-p1-2-concurrent"
 

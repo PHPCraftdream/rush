@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -80,7 +81,7 @@ func TestCLIQuotaBusyHeldChildQuestion(t *testing.T) {
 	require.NotNil(t, result)
 	require.Equal(t, "provider_limit", result.ExitReason)
 	require.EqualValues(t, 1, childRequests.Load())
-	require.EqualValues(t, agent.ProviderMaxRetries+2, rootRequests.Load())
+	require.EqualValues(t, agentcall.ProviderMaxRetries+2, rootRequests.Load())
 	require.Zero(t, unexpectedRequests.Load())
 	select {
 	case <-questionReady:

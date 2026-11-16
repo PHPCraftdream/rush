@@ -82,7 +82,7 @@ func f6a2CompleteDelegationErr(ctx context.Context, application *App, owner, too
 		return fmt.Errorf("fixture delegation root %s has no child node", rootID)
 	}
 	proj := session.BatchProjection{
-		Host: application.BatchHostStore().HostID(), RunnerID: f6BatchRunner, Sequence: 2,
+		Host: application.batchHostStore().HostID(), RunnerID: f6BatchRunner, Sequence: 2,
 		Roots: []session.BatchRootProjection{{Owner: owner, Root: rootID, Updates: []db.ProjectBatchNodeParams{
 			{NodeID: rootID, State: "completed", OutcomeState: "completed", OutcomeSummary: summary, ControlState: "none"},
 			{NodeID: node, State: "completed", OutcomeState: "completed", OutcomeSummary: summary, ControlState: "none"},
@@ -112,7 +112,7 @@ func f6a2ClaimOwnCommandJob(t *testing.T, ctx context.Context, application *App,
 // child is structure, not a second job), so a duplicate job is still
 // detected. state/delivery come from the row whose completion is actually
 // pending delivery (the selected child). The separate double-export of root
-// and child by batchFinishedWork is pinned by the unchanged FinishedWork
+// and child by appbatch.BatchFinishedWork is pinned by the unchanged FinishedWork
 // assertion of the billing test, not by this readback.
 func f6a2OwnJobReadback(t *testing.T, application *App, owner, toolCallID string) (count int, state, delivery string) {
 	t.Helper()

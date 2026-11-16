@@ -26,7 +26,7 @@ const todoNudgePrompt = `Your todo list still has unfinished items (pending or i
 // in_progress plus a fingerprint of their (content,status) pairs; a read
 // failure is (0, "", err) and never fires a nudge.
 func (l *cliLoop) openTodos() (count int, fingerprint string, err error) {
-	sess, err := l.app.Sessions.Get(l.ctx, l.sessionID)
+	sess, err := l.env.Sessions().Get(l.ctx, l.sessionID)
 	if err != nil {
 		return 0, "", err
 	}
@@ -141,7 +141,7 @@ func (l *cliLoop) nudgePhase() cliStepResult {
 // unless the reviewer pass already ran).
 func (l *cliLoop) runTodoNudgeTurn() (*RunResult, *bytes.Buffer, error) {
 	buffered, turnOutput := l.turnSink()
-	result, err := l.app.ExecuteRun(l.ctx, RunRequest{
+	result, err := l.host.executeRun(l.ctx, RunRequest{
 		Prompt: todoNudgePrompt, Overrides: l.turnOverrides, Mode: l.mode,
 		ContinueSessionID: l.sessionID,
 		Origin:            l.overrides.Origin, Stdout: turnOutput, Stderr: l.errOut(),

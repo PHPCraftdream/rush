@@ -68,7 +68,7 @@ func (w *finalizationWiring) bindRootFinalization(ctx context.Context, a *sessio
 	if err != nil {
 		return nil, call, nil, err
 	}
-	call.finalizationAuthorities = session.CaptureAgentFinalizationContext(boundCtx)
+	call.FinalizationAuthorities = session.CaptureAgentFinalizationContext(boundCtx)
 	unregisterAuthority := w.authorities.Register(call.SessionID, authority)
 	execCtx, unregisterExecution, err := w.startExecution(boundCtx, call)
 	if err != nil {
@@ -99,13 +99,13 @@ func (w *finalizationWiring) bindRootFinalization(ctx context.Context, a *sessio
 // rootBindEligible reports whether the call is a fresh root incarnation that
 // may bind its own finalization record.
 func rootBindEligible(a *sessionAgent, call SessionAgentCall) bool {
-	if a == nil || a.isSubAgent || call.driverGeneration != 0 {
+	if a == nil || a.isSubAgent || call.DriverGeneration != 0 {
 		return false
 	}
 	if call.SessionID == "" || call.LogicalCallID == "" {
 		return false
 	}
-	if requirement := call.finalizationAuthorities.Requirement(); requirement != nil {
+	if requirement := call.FinalizationAuthorities.Requirement(); requirement != nil {
 		for _, identity := range requirement.Authorities {
 			if identity.SessionID == call.SessionID {
 				return false

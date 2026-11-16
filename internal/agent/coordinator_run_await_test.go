@@ -36,7 +36,7 @@ func TestRunAwaitingAdmission_ImmediateRunPassesThrough(t *testing.T) {
 
 // TestRunAwaitingAdmission_ReturnsQueuedTurnsResult: a fake agent that marks
 // the call queued (as the real sessionAgent.Run does when the mailbox is
-// busy) and later fires call.onQueueResolved (as runOwned's dispatch loop
+// busy) and later fires call.OnQueueResolved (as runOwned's dispatch loop
 // does once the queued turn actually runs) must make runAwaitingAdmission
 // block until that fire and return ITS result, not (nil, nil).
 // Revert-check performed: removed the blocking `select` (returned
@@ -81,8 +81,8 @@ func TestRunAwaitingAdmission_ReturnsQueuedTurnsResult(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 
-	require.NotNil(t, savedCall.onQueueResolved, "runAwaitingAdmission must arm onQueueResolved on the call it passes to agent.Run")
-	savedCall.onQueueResolved(agentResultWithText("queued result"), nil)
+	require.NotNil(t, savedCall.OnQueueResolved, "runAwaitingAdmission must arm onQueueResolved on the call it passes to agent.Run")
+	savedCall.OnQueueResolved(agentResultWithText("queued result"), nil)
 
 	select {
 	case o := <-done:

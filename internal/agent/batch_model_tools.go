@@ -287,7 +287,7 @@ func modelBatchSpecAt(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRe
 			if err := json.Unmarshal(input, &selected); err != nil {
 				return jobbatch.Spec{}, err
 			}
-			if selected.Role != "" && !selected.Role.builtin() {
+			if selected.Role != "" && !selected.Role.Builtin() {
 				cfg, cfgErr := configForBatchInvocation(inv)
 				if cfgErr != nil {
 					return jobbatch.Spec{}, cfgErr

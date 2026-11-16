@@ -9,12 +9,14 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
@@ -113,7 +115,7 @@ type App struct {
 	// batchRuntime is the R11F app-owned batch runtime owner. Nil unless
 	// the App installed the batch runtime at New (SkipAgentSetup and
 	// dataDir=="" Apps never install).
-	batchRuntime *BatchRuntime
+	batchRuntime *appbatch.BatchRuntime
 	batchInstall *agent.BatchInstall
 
 	// finalizationAuthorities is the W1c owner-to-authority registry built
@@ -142,7 +144,7 @@ type App struct {
 	batchWorkIngress  agent.BatchWorkIngress
 	batchModelControl agent.BatchModelControl
 	batchLiveReader   *session.BatchLiveReader
-	batchTimeoutWake  *batchTimeoutWakeDispatcher
+	batchTimeoutWake  *appbatch.TimeoutWakeDispatcher
 	// batchHeldAnswerSink is the inject_agent held-question bridge over the
 	// installed batch Runner (agent.NewBatchHeldAnswerSink). Nil on an App
 	// without an installed runtime or a runnerless install; bound to the
@@ -151,7 +153,7 @@ type App struct {
 	batchHeldAnswerSink agent.BatchHeldAnswerSink
 	batchFaultOutputMu  sync.Mutex
 	batchFaultOutput    func(error)
-	batchFaultWriter    *batchFaultEnvelopeWriter
+	batchFaultWriter    *appbatch.FaultEnvelopeWriter
 
 	// RunQueuePump is the background pump for durable orphaned/detached calls (task #340).
 	// It scans session_run_queue periodically and executes pending work.
@@ -236,6 +238,12 @@ type App struct {
 	// so they can seed a real session lock and drive the live-holder
 	// branch without standing up a full config.
 	recoveryDataDir *string
+
+	// batchOwner is the identity handle keying the package-level batch
+	// registries (batchHostStores, batchNoticeStores,
+	// batchMaintenanceLoops). Created lazily by batchOwnerHandle so bare
+	// &App{} literals keep working.
+	batchOwner atomic.Pointer[appbatch.Owner]
 }
 
 // Option configures New's behavior. See SkipAgentSetup.
@@ -416,12 +424,12 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	}
 
 	if o.batchFaultOutput != nil {
-		app.batchFaultWriter = &batchFaultEnvelopeWriter{writer: o.batchFaultOutput}
+		app.batchFaultWriter = appbatch.NewFaultEnvelopeWriter(o.batchFaultOutput, batchFaultRunResult)
 	}
 	if app.batchFaultWriter != nil {
 		writer := app.batchFaultWriter
 		app.batchFaultOutput = func(fault error) {
-			if err := writer.writeFault(o.batchFaultSessionID, fault); err != nil {
+			if err := writer.WriteFault(o.batchFaultSessionID, fault); err != nil {
 				slog.Error("failed to encode batch-fault JSON result", "error", err)
 			}
 		}

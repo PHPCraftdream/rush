@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"strings"
 	"sync/atomic"
@@ -18,6 +17,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -53,7 +53,7 @@ var executeRunDoneCaseSeam func()
 // streaming behaviour). Streaming output goes to req.Stdout, diagnostics to
 // req.Stderr; nil falls back to io.Discard. For RunModeJSON the caller is
 // responsible for encoding the returned *RunResult.
-func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResult, runErr error) {
+func executeRun(env RunEnv, ctx context.Context, req RunRequest) (result *RunResult, runErr error) {
 	runCtx := ctx
 	sessionID := req.ContinueSessionID
 	defer func() {
@@ -67,7 +67,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	prompt := req.Prompt
 	slog.Info("Running in non-interactive mode")
 
-	ctx, cancel, setup, err := app.prepareExecuteRun(ctx, req)
+	ctx, cancel, setup, err := prepareExecuteRun(env, ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +96,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 
 	defer stopSpinner()
 
-	sess, err := app.resolveRunSession(ctx, req.mutationFree(), continueSessionID, useLast)
+	sess, err := resolveRunSession(env, ctx, req.mutationFree(), continueSessionID, useLast)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session for non-interactive mode: %w", err)
 	}
@@ -104,7 +104,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	if setup.callOpts == nil {
 		return nil, errors.New("agent depth call options unavailable")
 	}
-	depth, depthErr := agent.PersistSessionAgentDepth(ctx, app.Sessions, sess.ID, setup.callOpts.MaxAgentDepth)
+	depth, depthErr := agent.PersistSessionAgentDepth(ctx, env.Sessions(), sess.ID, setup.callOpts.MaxAgentDepth)
 	if depthErr != nil {
 		return nil, fmt.Errorf("resolve session agent depth: %w", depthErr)
 	}
@@ -124,7 +124,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	// (2026-09-23, five sessions after a --timeout). Fail-fast callers keep
 	// their immediate-busy contract.
 	if !failIfSessionBusy {
-		if err := app.drainPendingBeforeRun(ctx, sess.ID); err != nil {
+		if err := drainPendingBeforeRun(env, ctx, sess.ID); err != nil {
 			return nil, err
 		}
 	}
@@ -143,7 +143,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	// sessionAgent.Run (mailbox.submit), whose single check-and-set returns
 	// without queueing for such a call, so sessionAgent.Run reports
 	// ErrSessionBusy (R1-4).
-	if failIfSessionBusy && app.AgentCoordinator.IsSessionBusy(sess.ID) {
+	if failIfSessionBusy && env.Coord().IsSessionBusy(sess.ID) {
 		slog.Warn("Run rejected: session already has an in-process owner", "session_id", sess.ID)
 		return nil, fmt.Errorf("session %q is already processing another request: %w", sess.ID, agent.ErrSessionBusy)
 	}
@@ -181,7 +181,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 		reservedHold context.Context
 	)
 	if failIfSessionBusy {
-		holdCtx, epoch, cancel, ok := app.AgentCoordinator.ReserveExclusive(ctx, sess.ID)
+		holdCtx, epoch, cancel, ok := env.Coord().ReserveExclusive(ctx, sess.ID)
 		if !ok {
 			slog.Warn("Run rejected: session already has an in-process owner (atomic reservation)", "session_id", sess.ID)
 			return nil, fmt.Errorf("session %q is already processing another request: %w", sess.ID, agent.ErrSessionBusy)
@@ -203,7 +203,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 		})
 		defer func() {
 			if !reservedHandoff.Load() {
-				app.AgentCoordinator.ReleaseExclusive(sess.ID, reservedEpoch, reservedCancel)
+				env.Coord().ReleaseExclusive(sess.ID, reservedEpoch, reservedCancel)
 			}
 		}()
 	}
@@ -271,7 +271,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	// effort, model slots, cancel flag, budget, ended_reason, title -- ran once
 	// with the first turn (R2C-7).
 	if systemPrompt != "" && !req.mutationFree() {
-		if err := app.Sessions.UpdateSystemPrompt(mutCtx, sess.ID, systemPrompt); err != nil {
+		if err := env.Sessions().UpdateSystemPrompt(mutCtx, sess.ID, systemPrompt); err != nil {
 			return nil, fmt.Errorf("failed to set system prompt for session: %w", err)
 		}
 	}
@@ -283,7 +283,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	if err := checkHoldCanceled(); err != nil {
 		return nil, err
 	}
-	app.Permissions.AutoApproveSession(sess.ID)
+	env.Perms().AutoApproveSession(sess.ID)
 
 	// Fork patch (run allowlist): the spec merge moved above the
 	// per-call CallOptions (T10 — the folder scope's KeepCommandTools
@@ -312,7 +312,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	// accepted, documented migration-window behavior that any re-run
 	// through ExecuteRun heals. Never cleared on run end — a later run on
 	// the same session re-arms it.
-	if mgr, ok := app.Permissions.(permission.SessionRunAllowlistBaselineManager); ok {
+	if mgr, ok := env.Perms().(permission.SessionRunAllowlistBaselineManager); ok {
 		mgr.SetSessionRunAllowlistBaseline(sess.ID, compiled)
 	}
 	// R2-1: the unconditional process-wide SetRunAllowlist write is GONE
@@ -381,10 +381,10 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 		}
 		ctx = agent.WithExecutionProviderIntent(ctx, sessID, agent.ExecutionProviderIntent(providerIntent))
 		ctx = agent.WithAdmissionSetup(ctx, func(actx context.Context) error {
-			if err := persistSessionExecutionIntent(actx, app, sessID, providerIntent, requirement, customFenceEnabled); err != nil {
+			if err := appbatch.PersistSessionExecutionIntent(actx, env.Sessions(), sessID, providerIntent, requirement, customFenceEnabled); err != nil {
 				return err
 			}
-			app.prepareAdmittedRun(actx, sessID, overrides)
+			prepareAdmittedRun(env, actx, sessID, overrides)
 			return nil
 		})
 	}
@@ -405,7 +405,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 			}
 			return r
 		}, autoTitle)
-		if err := app.Sessions.Rename(mutCtx, sess.ID, autoTitle); err != nil {
+		if err := env.Sessions().Rename(mutCtx, sess.ID, autoTitle); err != nil {
 			slog.Warn("Failed to auto-title session", "session_id", sess.ID, "err", err)
 		}
 	}
@@ -423,7 +423,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	// not the root row's own ledger. A failed read makes the window UNKNOWN
 	// (costBeforeKnown): the hook and the envelope then report ZERO instead
 	// of the whole history — still under-reporting, not inventing a number.
-	costBefore, costBeforeErr := app.Sessions.SubtreeSpent(ctx, sess.ID)
+	costBefore, costBeforeErr := env.Sessions().SubtreeSpent(ctx, sess.ID)
 	if costBeforeErr != nil {
 		costBefore = 0
 	}
@@ -467,7 +467,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 		// Same retry contract as the loop's persistEndedReason: a one-shot
 		// 2s budget was observed dropping the write under concurrent exits.
 		if setErr := writeEndedReasonWithRetry(context.Background(), func(ctx context.Context) error {
-			return app.Sessions.SetEndedReason(ctx, sess.ID, reason)
+			return env.Sessions().SetEndedReason(ctx, sess.ID, reason)
 		}); setErr != nil {
 			slog.Warn("Failed to persist ended_reason", "session_id", sess.ID, "reason", reason, "err", setErr)
 		}
@@ -480,9 +480,9 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 			}
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), cleanupTimeout)
 			defer cleanupCancel()
-			if freshSess, err := app.Sessions.Get(cleanupCtx, sess.ID); err == nil {
+			if freshSess, err := env.Sessions().Get(cleanupCtx, sess.ID); err == nil {
 				hookTokens = freshSess.PromptTokens + freshSess.CompletionTokens - tokensBefore
-				spentNow, spentErr := app.Sessions.SubtreeSpent(cleanupCtx, sess.ID)
+				spentNow, spentErr := env.Sessions().SubtreeSpent(cleanupCtx, sess.ID)
 				if spentErr != nil {
 					slog.Warn("Failed to refresh session budget for on-finish hook usage", "session_id", sess.ID, "err", spentErr)
 				}
@@ -510,13 +510,13 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 
 	runFn := func(ctx context.Context, sessionID, prompt string) (*fantasy.AgentResult, error) {
 		if reservedHold != nil && modelOverrideRequested {
-			return app.AgentCoordinator.RunWithReservedOwnership(ctx, sessionID, prompt,
+			return env.Coord().RunWithReservedOwnership(ctx, sessionID, prompt,
 				reservedEpoch, reservedCancel, func() { reservedHandoff.Store(true) }, smartOverride, fastOverride)
 		}
 		if modelOverrideRequested {
-			return app.AgentCoordinator.RunWithOverrides(ctx, sessionID, prompt, smartOverride, fastOverride)
+			return env.Coord().RunWithOverrides(ctx, sessionID, prompt, smartOverride, fastOverride)
 		}
-		return app.AgentCoordinator.Run(ctx, sessionID, prompt)
+		return env.Coord().Run(ctx, sessionID, prompt)
 	}
 	if credsRunner != nil {
 		creds := req.Credentials
@@ -536,7 +536,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	if req.reviewerConfig {
 		// A Drain after the loop's reviewer turn reacts to that turn's own async
 		// work, so it runs as that turn did: reviewer model, sub-agents off.
-		runFn, ctx = app.buildReviewerPassTurn(ctx, setup.callOpts)
+		runFn, ctx = buildReviewerPassTurn(env, ctx, setup.callOpts)
 	}
 	// The event loop now lives on executeRunLoop (app_run_reviewer.go) so
 	// it can run twice: once for the primary turn, and — only when the
@@ -547,10 +547,11 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	// unchanged.
 	basis := req.reviewBasis
 	if basis == nil && !req.reviewerTurn && !req.drainTurn && !req.deferReviewer {
-		basis = app.captureReviewBasis(ctx, overrides.ModelRole, prompt, runStart)
+		basis = captureReviewBasis(env, ctx, overrides.ModelRole, prompt, runStart)
 	}
 	loop := &executeRunLoop{
-		app:             app,
+		env:             env,
+		host:            newLoopHost(env),
 		sess:            sess,
 		ctx:             ctx,
 		mode:            mode,
@@ -583,12 +584,12 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	if req.reviewerTurn {
 		// The loop's own reviewer pass: only the review phase runs, as an
 		// ordinary turn (the ctx carries no Drain marker).
-		reviewRunFn, reviewCtx := app.buildReviewerPassTurn(ctx, setup.callOpts)
+		reviewRunFn, reviewCtx := buildReviewerPassTurn(env, ctx, setup.callOpts)
 		loop.resetForReviewerPass(reviewCtx)
 		if req.onTurnSubmitted != nil {
 			req.onTurnSubmitted()
 		}
-		result, resultErr := loop.runTurnPhase(app.reviewerTurnPrompt(reviewCtx, sess.ID, basis), reviewRunFn)
+		result, resultErr := loop.runTurnPhase(reviewerTurnPrompt(env, reviewCtx, sess.ID, basis), reviewRunFn)
 		loop.flushTerseOutput()
 		return result, resultErr
 	}
@@ -642,10 +643,10 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	reviewerCandidate := resultErr == nil && req.Credentials == nil &&
 		!req.drainTurn && !req.deferReviewer &&
 		!loop.canceledAfterCommit && loop.ctx.Err() == nil &&
-		shouldRunReviewerPass(overrides.ModelRole, app.config.Config())
+		shouldRunReviewerPass(overrides.ModelRole, env.Config.Config())
 	if reviewerCandidate {
-		if source, ok := app.AgentCoordinator.(agent.ReactionDebtSource); ok {
-			if app.reviewerPassBlocked(ctx, source, sess.ID, stderr) {
+		if source, ok := env.Coord().(agent.ReactionDebtSource); ok {
+			if reviewerPassBlocked(env, ctx, source, sess.ID, stderr) {
 				reviewerCandidate = false
 			}
 		}
@@ -658,9 +659,9 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 		// the pass, and an always-stalling reviewer ends on the review-failed
 		// path with ErrReviewerUnresponsive.
 		attempt := func() (*RunResult, error) {
-			reviewRunFn, reviewCtx := app.buildReviewerPassTurn(ctx, setup.callOpts)
+			reviewRunFn, reviewCtx := buildReviewerPassTurn(env, ctx, setup.callOpts)
 			loop.resetForReviewerPass(reviewCtx)
-			return loop.runTurnPhase(app.reviewerTurnPrompt(reviewCtx, sess.ID, basis), reviewRunFn)
+			return loop.runTurnPhase(reviewerTurnPrompt(env, reviewCtx, sess.ID, basis), reviewRunFn)
 		}
 		reviewResult, reviewErr := retryStalledReviewerPass(attempt)
 		switch {
@@ -668,7 +669,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 			// A10/C9-21: the executor's answer stays the run's final text
 			// in every mode; the reviewer's verdict is additive.
 			if primaryResult != nil && reviewResult != nil {
-				app.attachReview(ctx, primaryResult, sess.ID, reviewResult.FinalText, stderr)
+				attachReview(env, ctx, primaryResult, sess.ID, reviewResult.FinalText, stderr)
 			} else if primaryResult == nil {
 				// No envelope in terse/stream without captureResult: surface
 				// the verdict's stderr line from a throwaway result. The
@@ -677,7 +678,7 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 				if reviewResult != nil {
 					reviewText = reviewResult.FinalText
 				}
-				app.attachReview(ctx, &RunResult{}, sess.ID, reviewText, stderr)
+				attachReview(env, ctx, &RunResult{}, sess.ID, reviewText, stderr)
 			}
 			loop.finalText = primaryFinalText
 			result, resultErr = primaryResult, nil
@@ -705,19 +706,4 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 	// decided which phase's result is the run's single final answer.
 	loop.flushTerseOutput()
 	return result, resultErr
-}
-
-// RunNonInteractive runs a single agent turn and writes its result to
-// `output`. See RunMode for the available output shapes. It is a thin
-// wrapper over ExecuteRun: it supplies the process streams as defaults
-// and renders the JSON envelope for RunModeJSON.
-func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt string, overrides RunOverrides, hideSpinner bool, mode RunMode, continueSessionID string, useLast bool) error {
-	_, err := app.RunNonInteractiveWithResult(ctx, output, prompt, overrides, hideSpinner, mode, continueSessionID, useLast)
-	return err
-}
-
-// RunNonInteractiveWithResult runs one agent turn, writes its output, and
-// returns the structured result when one is available.
-func (app *App) RunNonInteractiveWithResult(ctx context.Context, output io.Writer, prompt string, overrides RunOverrides, hideSpinner bool, mode RunMode, continueSessionID string, useLast bool) (*RunResult, error) {
-	return app.runNonInteractiveWithAsyncResults(ctx, output, prompt, overrides, hideSpinner, mode, continueSessionID, useLast)
 }

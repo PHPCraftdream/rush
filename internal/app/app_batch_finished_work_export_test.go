@@ -1,9 +1,9 @@
-// Acceptance tests for App.batchFinishedWork, the quota
+// Acceptance tests for App.BatchFinishedWork, the quota
 // finished-work export over batch nodes: a one-task root exports ONE row
 // keyed by the task with the root's ORIGINAL tool-call id; a multi-task
 // root exports each task with ToolCallID = node id; structural batch
 // children never export; child-session links are traversed. These tests
-// are batch-only by construction: batchFinishedWork IS the
+// are batch-only by construction: appbatch.BatchFinishedWork IS the
 // finished-work reader over the batch authority.
 package app
 
@@ -12,6 +12,8 @@ import (
 	"database/sql"
 	"net/http"
 	"testing"
+
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 
 	"github.com/stretchr/testify/require"
 )
@@ -124,7 +126,7 @@ func TestBatchFinishedWork_ReusedCallIDIncarnationsDistinct(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, incomplete)
 	require.Len(t, rows, 2, "both incarnations export; the shared call id merges nothing")
-	byKey := map[string]quotaWorkRow{}
+	byKey := map[string]appbatch.QuotaWorkRow{}
 	for _, row := range rows {
 		byKey[row.Key] = row
 	}
@@ -140,7 +142,7 @@ func TestBatchFinishedWork_ReusedCallIDIncarnationsDistinct(t *testing.T) {
 	// Pre-latch ONLY the old incarnation, as a previous pass would have;
 	// the export predicate (quotaTerminalState && Announced &&
 	// !terminal[Key]) still yields the NEW incarnation's key.
-	l := &cliLoop{app: h.app, ctx: ctx, sessionID: owner}
+	l := &cliLoop{env: h.app.runEnv(), host: h.app.loopHost(), ctx: ctx, sessionID: owner}
 	l.quota = &cliQuotaStop{cause: nil, terminal: map[string]bool{"root-fw-old/root-fw-old-t1": true}}
 	export := func() []string {
 		var finished []string
@@ -179,7 +181,7 @@ func TestBatchFinishedWork_ChildLinkTraversalExportsDescendantTasks(t *testing.T
 	require.NoError(t, err)
 	require.False(t, incomplete)
 	require.Len(t, rows, 2, "the descendant task exports through the child link")
-	byKey := map[string]quotaWorkRow{}
+	byKey := map[string]appbatch.QuotaWorkRow{}
 	for _, row := range rows {
 		byKey[row.Key] = row
 	}

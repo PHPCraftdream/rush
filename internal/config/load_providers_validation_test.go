@@ -29,7 +29,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 				},
 			}),
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
@@ -52,7 +52,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 				},
 			}),
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
@@ -74,7 +74,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 				},
 			}),
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
@@ -99,7 +99,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 				},
 			}),
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
@@ -124,7 +124,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 				},
 			}),
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
@@ -152,7 +152,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 				},
 			}),
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
@@ -182,7 +182,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 				},
 			}),
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
@@ -215,7 +215,7 @@ func TestConfig_configureProvidersEnhancedCredentialValidation(t *testing.T) {
 				},
 			}),
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 
 		env := env.NewFromMap(map[string]string{
 			"GOOGLE_GENAI_USE_VERTEXAI": "false",
@@ -248,7 +248,7 @@ func TestConfig_configureProvidersEnhancedCredentialValidation(t *testing.T) {
 				},
 			}),
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
@@ -279,7 +279,7 @@ func TestConfig_configureProvidersEnhancedCredentialValidation(t *testing.T) {
 				},
 			}),
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
@@ -310,7 +310,7 @@ func TestConfig_configureProvidersEnhancedCredentialValidation(t *testing.T) {
 				},
 			}),
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 
 		env := env.NewFromMap(map[string]string{
 			"OPENAI_API_KEY": "test-key",
@@ -351,7 +351,7 @@ func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 				},
 			}),
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 
 		env := env.NewFromMap(map[string]string{
 			"OPENAI_API_KEY": "test-key",
@@ -393,7 +393,7 @@ func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 				},
 			}),
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 
 		env := env.NewFromMap(map[string]string{
 			"MY_API_KEY":     "test-key",
@@ -447,7 +447,7 @@ func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 				},
 			}),
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 
 		env := env.NewFromMap(map[string]string{
 			"OPENAI_API_KEY":    "test-key",
@@ -478,7 +478,7 @@ func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 				},
 			}),
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
@@ -502,7 +502,7 @@ func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 				},
 			}),
 		}
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)

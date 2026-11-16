@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -64,7 +65,7 @@ func (c *retryThenSucceedCoordinator) Run(ctx context.Context, callData session.
 // drain, not the earlier attempt's stale failure.
 func TestDrainSessionNow_SameRowRetrySucceedsClearsErr(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "p578-same-row-retry")
 	coord := &retryThenSucceedCoordinator{}
 	coord.failuresLeft.Store(1) // fail once, then succeed
@@ -143,7 +144,7 @@ func (c *failOnceCoordinator) Run(ctx context.Context, callData session.SessionA
 // exists to catch.
 func TestDrainSessionNow_ExternalProcessStealAfterLocalNackReportsUnknown(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "p578-external-steal")
 	wrapped := &stealOnNackSessions{Service: svc, sessionID: sess.ID}
 	coord := &failOnceCoordinator{}
@@ -217,7 +218,7 @@ func (s *stealAndTerminalFailOnNackSessions) NackRunQueueEntry(ctx context.Conte
 // fails on the require.Error below.
 func TestDrainSessionNow_ExternalProcessTerminalFailAfterLocalNackReportsFailure(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "p578-external-terminal-fail")
 	wrapped := &stealAndTerminalFailOnNackSessions{Service: svc, sessionID: sess.ID}
 	coord := &failOnceCoordinator{}
@@ -264,7 +265,7 @@ func TestDrainSessionNow_ExternalProcessTerminalFailAfterLocalNackReportsFailure
 // NackRunQueueEntry call, not via a background goroutine racing on timing.
 func TestDrainSessionNow_ExternalProcessAckAfterLocalNackReportsUnconfirmed(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "p578-external-ack")
 	wrapped := &stealAndAckOnNackSessions{Service: svc, sessionID: sess.ID}
 	coord := &failOnceCoordinator{}
