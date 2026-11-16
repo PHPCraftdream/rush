@@ -15,8 +15,8 @@ package app
 //     fs_write tool call. The pinned fs_write leaf executes
 //     through the REAL ingress Invoke → REAL default executor — no seam.
 //   - app.ShutdownWithResult (the public CLI-shape shutdown): CancelAgents
-//     → the batch drain gate (DrainAndRelease via releaseBatchRuntimeGate)
-//     → graceful: drainResidualConstructions + host release (HostStore.Close
+//     → the batch drain gate (DrainAndRelease via ReleaseBatchRuntimeGate)
+//     → graceful: DrainResidualConstructions + host release (HostStore.Close
 //     releases the OS lock) + writer release (per-reference db release);
 //     forced: CloseKeepLock pins the OS lock, the writer and the manager's
 //     remaining owners are retained, the Runner stays the drain target.
@@ -274,7 +274,7 @@ func (d *shutdownGatedDisk) Search(context.Context, tools.SearchRequest) (tools.
 }
 
 // shutdownAcceptanceApp is the app-level fixture: a REAL New() App (flag ON,
-// so installBatchRuntime ran: real Runner budgets, real default executor,
+// so InstallRuntime ran: real Runner budgets, real default executor,
 // real HostStore + OS host lock) with a scripted openaicompat model that
 // makes the model call fs_write once and then stop.
 type shutdownAcceptanceApp struct {
@@ -672,7 +672,7 @@ func TestShutdownBlockedPhysicalDisposePreservesResources(t *testing.T) {
 // both gates are held: the drain must WAIT — mid-hold, the OS host lock is
 // still held (kernel-attested probe) and the DB writer still answers, i.e.
 // NOTHING has been released beneath the outstanding execution. Releasing the
-// gates within the graceful budget (appBatchDrainTimeout) lets the disposal
+// gates within the graceful budget (BatchDrainTimeout) lets the disposal
 // of the in-flight execution finish BEFORE the drain returns and releaseAll
 // runs; the shutdown completes graceful (Forced=false) with the disposal
 // observed first, then the host lock gone and the writer released. The
@@ -685,7 +685,7 @@ func TestShutdownBlockedPhysicalDisposePreservesResources(t *testing.T) {
 // check (ONE writer ping, ONE session.ProbeHostLockShared call — the
 // unguarded lock-level shared probe, internal/session/host_lock.go:243) — no
 // fixed sleeps, no subprocess probes inside the drain window — so the whole
-// observation sequence cannot approach appBatchDrainTimeout = 5s
+// observation sequence cannot approach BatchDrainTimeout = 5s
 // (internal/app/app_batch_install.go:27) and a slow probe can never push a
 // correct production run onto the Forced path. probeHostInChild (a
 // subprocess probe, 30s-bounded) is used only AFTER the drain budget has
@@ -764,7 +764,7 @@ func TestShutdownGracefulWaitsForInFlightWorkBeforeRelease(t *testing.T) {
 	// the host lock file WITHOUT acquiring it; unlike ProbeHostShared it has
 	// no self-guard, so probing the app's OWN host id from this process is
 	// allowed). Both checks are instantaneous
-	// against the drain budget appBatchDrainTimeout = 5s
+	// against the drain budget BatchDrainTimeout = 5s
 	// (internal/app/app_batch_install.go:27), so the drain cannot have timed
 	// out yet.
 	require.NoError(t, h.app.DB().PingContext(context.Background()),
@@ -802,7 +802,7 @@ func TestShutdownGracefulWaitsForInFlightWorkBeforeRelease(t *testing.T) {
 
 	// Phase 4 — NOW release the disposal and let the drain finish. The
 	// disposal completes, the drain returns to releaseAll, and the shutdown
-	// is graceful (the gates opened well inside appBatchDrainTimeout).
+	// is graceful (the gates opened well inside BatchDrainTimeout).
 	releaseDispose()
 	select {
 	case <-disposeDone:

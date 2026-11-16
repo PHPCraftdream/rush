@@ -32,7 +32,7 @@ func f6BatchOn() bool { return true }
 
 func f6HostID(t *testing.T, application *App) string {
 	t.Helper()
-	id := application.BatchHostStore().HostID()
+	id := application.batchHostStore().HostID()
 	require.NotEmpty(t, id, "the app must have a registered host identity")
 	return id
 }

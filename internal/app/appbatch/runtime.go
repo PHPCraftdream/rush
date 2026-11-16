@@ -1,23 +1,25 @@
-// App-owned batch runtime owner. Construction has no side
-// effects: no goroutine, no registration, no Runner. The install wires the
-// Runner and the gate into app_lifecycle.go.
-
-package app
+package appbatch
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	"modernc.org/sqlite"
 )
 
-// batchRunner is the narrow surface the host lifecycle needs from the
+// App-owned batch runtime owner. Construction has no side
+// effects: no goroutine, no registration, no Runner. The install wires the
+// Runner and the gate into app_lifecycle.go.
+
+// BatchRunner is the narrow surface the host lifecycle needs from the
 // Runner. *jobbatch.Runner satisfies it (runner_commit.go:26-27,
 // runner_requests.go:350).
-type batchRunner interface {
+type BatchRunner interface {
 	// Faulted closes exactly once when a commit fault latches.
 	Faulted() <-chan struct{}
 	// FaultErr returns the latched fault error, nil before a fault.
@@ -31,7 +33,7 @@ type batchRunner interface {
 
 // The real Runner satisfies the narrow interface; asserted at compile time
 // so an upstream API drift fails the build here, not at R11F install time.
-var _ batchRunner = (*jobbatch.Runner)(nil)
+var _ BatchRunner = (*jobbatch.Runner)(nil)
 
 // BatchRuntimeConfig configures one BatchRuntime. All fields are optional;
 // zero values select production defaults.
@@ -79,7 +81,7 @@ type BatchRuntimeConfig struct {
 	// stays runnerless — the ingress then fails closed on Invoke. Mutually
 	// exclusive with constructing the Runner before NewBatchRuntime (an
 	// eager SetRunner still wins).
-	RunnerFactory func() (batchRunner, error)
+	RunnerFactory func() (BatchRunner, error)
 
 	// TimeoutCheckin, when non-nil, is the wake_only check-in timer service
 	// owned by the batch runtime: Start arms it (inside Start's once block,
@@ -105,11 +107,11 @@ const DefaultBatchFaultContainment = 10 * time.Second
 // signal handler, no Runner registration. Start arms the fault watcher;
 // Stop disarms it.
 type BatchRuntime struct {
-	cfg               BatchRuntimeConfig
-	commitDiagnostics batchCommitDiagnostics
+	Config            BatchRuntimeConfig
+	CommitDiagnostics BatchCommitDiagnostics
 
 	mu        sync.Mutex
-	runner    batchRunner
+	runner    BatchRunner
 	runnerSet chan struct{} // Buffered 1; wakes the dormant watcher.
 	stop      chan struct{}
 	watch     sync.Once
@@ -128,13 +130,13 @@ type BatchRuntime struct {
 	// THIS runtime's dormant boundary (replacing a process-wide
 	// goroutine-stack check that any parallel test's watcher could satisfy).
 	// Production never sets it.
-	testParked chan struct{}
+	TestParked chan struct{}
 }
 
 // NewBatchRuntime builds a dormant runtime owner. It performs no I/O and
 // starts no goroutines.
 func NewBatchRuntime(cfg BatchRuntimeConfig) *BatchRuntime {
-	return &BatchRuntime{cfg: cfg, stop: make(chan struct{}), runnerSet: make(chan struct{}, 1)}
+	return &BatchRuntime{Config: cfg, stop: make(chan struct{}), runnerSet: make(chan struct{}, 1)}
 }
 
 // SetRunner attaches the live Runner. It is safe to call before or after
@@ -143,7 +145,7 @@ func NewBatchRuntime(cfg BatchRuntimeConfig) *BatchRuntime {
 // first SetRunner attaches; a second SetRunner with a DIFFERENT runner is
 // refused with a warning and no state change; re-setting the same pointer is
 // a no-op. R11F calls this at Runner construction.
-func (rt *BatchRuntime) SetRunner(r batchRunner) {
+func (rt *BatchRuntime) SetRunner(r BatchRunner) {
 	rt.mu.Lock()
 	if rt.runner != nil {
 		prev := rt.runner
@@ -162,7 +164,7 @@ func (rt *BatchRuntime) SetRunner(r batchRunner) {
 }
 
 // Runner returns the attached Runner, nil while dormant.
-func (rt *BatchRuntime) Runner() batchRunner {
+func (rt *BatchRuntime) Runner() BatchRunner {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	return rt.runner
@@ -170,7 +172,7 @@ func (rt *BatchRuntime) Runner() batchRunner {
 
 // CommitHook returns the held commit hook (for R11F Runner construction).
 func (rt *BatchRuntime) CommitHook() func(context.Context, jobbatch.Transition) error {
-	return rt.cfg.CommitHook
+	return rt.Config.CommitHook
 }
 
 // Fenced reports whether a fault has been observed: either the watcher set
@@ -201,8 +203,8 @@ func (rt *BatchRuntime) Fenced() bool {
 // waits.
 func (rt *BatchRuntime) Start() {
 	rt.watch.Do(func() {
-		if rt.cfg.RunnerFactory != nil {
-			r, err := rt.cfg.RunnerFactory()
+		if rt.Config.RunnerFactory != nil {
+			r, err := rt.Config.RunnerFactory()
 			if err != nil {
 				// Fail closed: no Runner attached, the ingress refuses
 				// every Invoke; the watcher still runs for Stop/Drain.
@@ -212,8 +214,8 @@ func (rt *BatchRuntime) Start() {
 			}
 		}
 		go rt.watchFaults()
-		if rt.cfg.TimeoutCheckin != nil {
-			rt.cfg.TimeoutCheckin.Start()
+		if rt.Config.TimeoutCheckin != nil {
+			rt.Config.TimeoutCheckin.Start()
 		}
 	})
 }
@@ -228,8 +230,8 @@ func (rt *BatchRuntime) Stop() {
 		close(rt.stop)
 	}
 	rt.mu.Unlock()
-	if rt.cfg.TimeoutCheckin != nil {
-		rt.cfg.TimeoutCheckin.Stop()
+	if rt.Config.TimeoutCheckin != nil {
+		rt.Config.TimeoutCheckin.Stop()
 	}
 }
 
@@ -242,16 +244,16 @@ func (rt *BatchRuntime) watchFaults() {
 		if runner != nil {
 			select {
 			case <-runner.Faulted():
-				rt.handleFault(runner.FaultErr())
+				rt.HandleFault(runner.FaultErr())
 				return
 			case <-stop:
 				return
 			}
 		}
 		// Dormant: wait for a Runner to be set (or shutdown); then re-read.
-		if rt.testParked != nil {
+		if rt.TestParked != nil {
 			select {
-			case rt.testParked <- struct{}{}:
+			case rt.TestParked <- struct{}{}:
 			default:
 			}
 		}
@@ -261,4 +263,54 @@ func (rt *BatchRuntime) watchFaults() {
 			return
 		}
 	}
+}
+
+type BatchCommitDiagnostics struct {
+	Writer   *sql.DB
+	Baseline sql.DBStats
+}
+
+// snapshot never acquires a database connection or invokes an error's callbacks.
+func (d BatchCommitDiagnostics) Snapshot(err error) []any {
+	attrs := make([]any, 0, 32)
+	classification := "unknown"
+	if fault, ok := err.(*jobbatch.CommitFault); ok && fault != nil {
+		details := fault.Details()
+		attrs = append(attrs,
+			"commit_kind", details.Kind, "commit_sequence", details.Sequence,
+			"commit_event", details.Event, "commit_budget", details.Budget,
+			"commit_elapsed", details.Elapsed, "commit_phase", details.Phase,
+			"commit_phase_elapsed", details.PhaseElapsed)
+		// Store SQL errors are returned directly. Do not walk arbitrary wrappers:
+		// their As/Unwrap methods may block or execute host code on the fatal path.
+		for _, cause := range fault.Unwrap() {
+			if sqlErr, ok := cause.(*sqlite.Error); ok && sqlErr != nil {
+				switch sqlErr.Code() & 0xff {
+				case 5:
+					classification = "sqlite_busy"
+				case 6:
+					classification = "sqlite_locked"
+				}
+			}
+		}
+	} else {
+		attrs = append(attrs, "commit_kind", "unknown", "commit_phase", "unknown")
+	}
+	attrs = append(attrs, "commit_error_class", classification)
+	if d.Writer != nil {
+		stats := d.Writer.Stats()
+		attrs = append(attrs,
+			"pool_max_open", stats.MaxOpenConnections, "pool_open", stats.OpenConnections,
+			"pool_in_use", stats.InUse, "pool_idle", stats.Idle,
+			"pool_wait_count_since_runtime_start", stats.WaitCount-d.Baseline.WaitCount,
+			"pool_wait_duration_since_runtime_start", stats.WaitDuration-d.Baseline.WaitDuration)
+	}
+	return attrs
+}
+
+func BatchCommitSafeFaultText(err error) string {
+	if fault, ok := err.(*jobbatch.CommitFault); ok && fault != nil {
+		return fault.Error()
+	}
+	return "jobbatch: commit failed: unknown"
 }

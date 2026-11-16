@@ -17,6 +17,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -380,7 +381,7 @@ func executeRun(env RunEnv, ctx context.Context, req RunRequest) (result *RunRes
 		}
 		ctx = agent.WithExecutionProviderIntent(ctx, sessID, agent.ExecutionProviderIntent(providerIntent))
 		ctx = agent.WithAdmissionSetup(ctx, func(actx context.Context) error {
-			if err := persistSessionExecutionIntent(actx, env.Sessions(), sessID, providerIntent, requirement, customFenceEnabled); err != nil {
+			if err := appbatch.PersistSessionExecutionIntent(actx, env.Sessions(), sessID, providerIntent, requirement, customFenceEnabled); err != nil {
 				return err
 			}
 			prepareAdmittedRun(env, actx, sessID, overrides)

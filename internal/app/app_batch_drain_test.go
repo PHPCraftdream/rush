@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
+
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +23,7 @@ func TestOrdinaryShutdownDrainsBeforeRelease(t *testing.T) {
 	runner := newFakeRunner()
 	rt, exits, rec := newTestRuntime(t, runner)
 
-	done := make(chan BatchDrainResult, 1)
+	done := make(chan appbatch.BatchDrainResult, 1)
 	go func() { done <- rt.DrainAndRelease(context.Background(), 5*time.Second) }()
 
 	// Close is entered but not finished: no release may happen yet.
@@ -45,7 +47,7 @@ func TestCloseTimeoutRetainsDrainingResources(t *testing.T) {
 	runner := newFakeRunner()
 	rt, exits, rec := newTestRuntime(t, runner)
 
-	done := make(chan BatchDrainResult, 1)
+	done := make(chan appbatch.BatchDrainResult, 1)
 	go func() { done <- rt.DrainAndRelease(context.Background(), 5*time.Second) }()
 	<-runner.closeEntered
 
@@ -72,7 +74,7 @@ func TestCloseTimeoutWithDeadlineExpiry(t *testing.T) {
 		return &jobbatch.CloseTimeoutError{Nodes: []jobbatch.ID{"r1"}}
 	}
 
-	done := make(chan BatchDrainResult, 1)
+	done := make(chan appbatch.BatchDrainResult, 1)
 	go func() { done <- rt.DrainAndRelease(context.Background(), 50*time.Millisecond) }()
 	res := <-done
 
@@ -100,7 +102,7 @@ func TestDormantRuntimeDrainReleasesDirectly(t *testing.T) {
 // collection).
 func TestDrainReleaseErrorSurfaces(t *testing.T) {
 	t.Parallel()
-	rt := NewBatchRuntime(BatchRuntimeConfig{
+	rt := appbatch.NewBatchRuntime(appbatch.BatchRuntimeConfig{
 		ReleaseHostIdentity: func(context.Context) error { return errors.New("host busy") },
 		ReleaseWriter:       func(context.Context) error { return nil },
 	})
@@ -116,7 +118,7 @@ func TestDisposeFailureRetains(t *testing.T) {
 	runner := newFakeRunner()
 	rt, _, rec := newTestRuntime(t, runner)
 
-	done := make(chan BatchDrainResult, 1)
+	done := make(chan appbatch.BatchDrainResult, 1)
 	go func() { done <- rt.DrainAndRelease(context.Background(), time.Second) }()
 	<-runner.closeEntered
 	runner.finishClose(&jobbatch.DisposeError{Failures: []jobbatch.DisposeFailure{{Node: "r1", Code: "dispose_failed"}}})

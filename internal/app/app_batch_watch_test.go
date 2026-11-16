@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,10 +23,10 @@ func TestWatcherWakesOnSetRunnerAfterStart(t *testing.T) {
 	runner := newFakeRunner()
 	rt, exits, rec := newTestRuntime(t, nil) // dormant: no runner yet
 	// Instance-local dormant boundary: the parked channel belongs to THIS
-	// BatchRuntime, unlike a process-wide goroutine-stack check that a
+	// appbatch.BatchRuntime, unlike a process-wide goroutine-stack check that a
 	// parallel test's own watcher could satisfy.
 	parked := make(chan struct{}, 1)
-	rt.testParked = parked
+	rt.TestParked = parked
 	rt.Start()
 	defer rt.Stop()
 
@@ -53,7 +55,7 @@ func TestWatcherWakesOnSetRunnerAfterStart(t *testing.T) {
 
 	require.Eventually(t, func() bool { return len(exits.called()) == 1 },
 		5*time.Second, time.Millisecond, "watcher must wake on SetRunner and exit once")
-	require.Equal(t, []int{BatchFaultExitCode}, exits.called())
+	require.Equal(t, []int{appbatch.BatchFaultExitCode}, exits.called())
 	require.True(t, rt.Fenced())
 	assertNoReleases(t, rec, "fault path must not release")
 }
@@ -87,7 +89,7 @@ func TestStoppedWatcherStillFences(t *testing.T) {
 	rt.Stop()
 
 	never := make(chan time.Time)
-	rt.cfg.WaitFunc = func(time.Duration) <-chan time.Time { return never }
+	rt.Config.WaitFunc = func(time.Duration) <-chan time.Time { return never }
 
 	runner.FireFault(errors.New("fault after stop"))
 	require.True(t, rt.Fenced(), "Fenced does not depend on the watcher having run")
@@ -118,6 +120,6 @@ func TestSecondSetRunnerRefused(t *testing.T) {
 	first.FireFault(errors.New("first runner fault"))
 	require.Eventually(t, func() bool { return len(exits.called()) == 1 },
 		5*time.Second, time.Millisecond)
-	require.Equal(t, []int{BatchFaultExitCode}, exits.called())
+	require.Equal(t, []int{appbatch.BatchFaultExitCode}, exits.called())
 	assertNoReleases(t, rec, "refusal must not affect retention")
 }

@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -47,7 +48,7 @@ import (
 func TestBatchHostStore_TeardownWithoutAsyncJobsTable(t *testing.T) {
 	app := newFullNewApp(t)
 	require.NotNil(t, app.batchRuntime, "runtime installed")
-	hostID := app.BatchHostStore().HostID()
+	hostID := app.batchHostStore().HostID()
 	require.NotEmpty(t, hostID)
 	// First real-schema assertion: the HostStore wrote the async_hosts row
 	// (the identity's durable bookkeeping).
@@ -99,7 +100,7 @@ func TestBatchHostStore_TeardownWithoutAsyncJobsTable(t *testing.T) {
 // Forced/CleanupErrors asserts.
 func TestBatchHostStore_ShutdownDrainCompletes(t *testing.T) {
 	app := newFullNewApp(t)
-	hostID := app.BatchHostStore().HostID()
+	hostID := app.batchHostStore().HostID()
 	require.NotEmpty(t, hostID)
 	var hosts int
 	require.NoError(t, app.DB().QueryRowContext(context.Background(),
@@ -553,7 +554,7 @@ func TestBatchHostStore_LockedHostFaultThenRecovery(t *testing.T) {
 	// Recovery: a real app over the same data dir installs
 	// and irrelevant) and tears down cleanly through the real gate.
 	app := newFullNewAppAt(t, dataDir)
-	got := app.BatchHostStore().HostID()
+	got := app.batchHostStore().HostID()
 	require.NotEmpty(t, got)
 	require.NotEqual(t, hostID, got, "recovered app runs on its own host identity")
 	var hosts int
@@ -655,7 +656,7 @@ func TestLiveSessionDrivers_LockProbe(t *testing.T) {
 	// (the session_drivers table), then the reader must never consult the
 	// store again. The App's Shutdown cleanup (harness) releases the own
 	// host identity through the drain gate.
-	require.NoError(t, h.app.BatchHostStore().ClaimSessionDriver(ctx, sess.ID))
+	require.NoError(t, h.app.batchHostStore().ClaimSessionDriver(ctx, sess.ID))
 	siblingStore := session.NewHostStore(h.app.DB(), h.dataDir, 6161, "sibling")
 	t.Cleanup(func() { _ = siblingStore.Close(context.Background()) })
 	sibling, err := h.app.Sessions.Create(ctx, "flagon-sibling")
@@ -725,8 +726,8 @@ func TestBatchNoticeStore_Wired(t *testing.T) {
 	t.Cleanup(func() { _ = a.batchHostRelease(context.Background()) })
 	ns := a.batchNoticeStore()
 	require.NotNil(t, ns)
-	require.Same(t, ns, a.BatchNoticeStore(), "memoized: one notice store per App")
-	require.False(t, a.BatchNoticeStore() == nil)
+	require.Same(t, ns, a.batchNoticeStore(), "memoized: one notice store per App")
+	require.False(t, a.batchNoticeStore() == nil)
 
 	// A crashed foreign host is provably not alive for the notice keeper.
 	deadStore := session.NewHostStore(a.DB(), a.dataDir, 4242, "dead")
@@ -852,18 +853,18 @@ func TestBatchRuntimeFactoryHostStoreIdentitySuffices(t *testing.T) {
 	// Same shape as TestBatchNoticeStore_Wired: no batch runtime, so
 	// the drain gate never runs — release the ensured HostStore lock here.
 	t.Cleanup(func() { _ = a.batchHostRelease(context.Background()) })
-	factory, err := newBatchRuntimeFactory(a.batchInstallParams(), batchFactoryDeps())
+	factory, err := appbatch.NewBatchRuntimeFactory(a.batchInstallParams(), batchFactoryDeps())
 	require.NoError(t, err)
-	require.Equal(t, "host", factory.deps.Host, "explicit identity still wins")
-	factory2, err := newBatchRuntimeFactory(a.batchInstallParams(), agent.BatchInstallDeps{RunnerID: "r", Owner: "o"})
+	require.Equal(t, "host", factory.Deps.Host, "explicit identity still wins")
+	factory2, err := appbatch.NewBatchRuntimeFactory(a.batchInstallParams(), agent.BatchInstallDeps{RunnerID: "r", Owner: "o"})
 	require.NoError(t, err)
-	require.Equal(t, a.BatchHostStore().HostID(), factory2.deps.Host,
+	require.Equal(t, a.batchHostStore().HostID(), factory2.Deps.Host,
 		"identity falls back to the HostStore's")
 }
 
 // TestBatchOwnerHandle_DistinctPerApp pins the registry-key identity: two Apps
-// must never share a batchOwner pointer. With a zero-size batchOwner every
-// &batchOwner{} is the same address, so the package-level batchHostStores map
+// must never share an appbatch.Owner pointer. With a zero-size appbatch.Owner every
+// &appbatch.Owner{} is the same address, so the package-level batchHostStores map
 // held ONE entry for all Apps and a later App adopted an earlier (closed)
 // App's HostStore ("database is closed" in RegisterHost).
 func TestBatchOwnerHandle_DistinctPerApp(t *testing.T) {
@@ -871,7 +872,7 @@ func TestBatchOwnerHandle_DistinctPerApp(t *testing.T) {
 	ha, hb := a.batchOwnerHandle(), b.batchOwnerHandle()
 	t.Cleanup(func() {
 		if t.Failed() {
-			t.Logf("batchOwner handles: a=%p b=%p a-again=%p", ha, hb, a.batchOwnerHandle())
+			t.Logf("appbatch.Owner handles: a=%p b=%p a-again=%p", ha, hb, a.batchOwnerHandle())
 		}
 	})
 	require.NotNil(t, ha)

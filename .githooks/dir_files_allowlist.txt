@@ -17,7 +17,7 @@ internal/agent/provider/nettransport 22
 internal/agent/tools 163
 internal/agent/tools/mcp 63
 # 287 -> 288: the same app_bridge.go of the 0b-5 lane 0b-a (deliberate, temporary; only down from here).
-internal/app 288
+internal/app 272
 # 303 -> 304: +1 internal/config/models_integrity.go from the 0b-3.1 seam lane (deliberate, temporary; only down from here).
 # 304 -> 309: the same +7/-2 files of the 0b-3.2 seam lane (deliberate, temporary; only down from here).
 internal/config 309
