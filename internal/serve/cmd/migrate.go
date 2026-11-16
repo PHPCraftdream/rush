@@ -7,7 +7,6 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
@@ -927,15 +926,4 @@ func rewriteSegmentAfter(p, afterSeg, oldSeg, newSeg string) string {
 	}
 
 	return joinPathSegments(segments, seps)
-}
-
-// NewMigrateCmd returns a fresh migrate command from the registered template.
-var newMigrateCmdOnce sync.Once
-
-func NewMigrateCmd() *cobra.Command {
-	newMigrateCmdOnce.Do(func() {
-		migrateCmd.Flags().BoolP("recursive", "r", false, "Recursively walk the directory tree")
-		migrateCmd.Flags().Bool("dry-run", false, "Report what would happen without making changes")
-	})
-	return deepFreshCmd(migrateCmd)
 }

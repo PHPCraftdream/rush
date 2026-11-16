@@ -1,4 +1,4 @@
-package cli
+package clibatchtest
 
 import (
 	"bytes"
@@ -14,6 +14,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -281,7 +282,7 @@ func assertNoBatchControlWrites(t *testing.T, fixture batchCLIAcceptanceFixture)
 }
 
 func executeBatchCLIHelper() {
-	root := NewRootCmd()
+	root := cli.NewRootCmd()
 	var args []string
 	if err := json.Unmarshal([]byte(os.Getenv("R14_BATCH_CLI_ARGS")), &args); err != nil {
 		_ = json.NewEncoder(os.Stdout).Encode(batchCLIResult{Error: err.Error()})
