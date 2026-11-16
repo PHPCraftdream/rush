@@ -10,7 +10,16 @@ var (
 func Execute() { executeForTest() }
 
 func InstallRootForTest(root *cobra.Command, execute func()) {
-	templates := []*cobra.Command{runCmd, tokensCmd, apiCmd, serveCmd, modelsCmd}
+	templates := []*cobra.Command{
+		lockCmd, unlockCmd, runCmd, dirsCmd, projectsCmd, updateProvidersCmd,
+		logsCmd, schemaCmd, psCmd, loginCmd, statsCmd, tokensCmd, apiCmd,
+		sessionsCmd, serveCmd, modelsCmd, pingCmd, pingFastCmd, migrateCmd,
+		queueCmd, batchCmd, providersCmd, worktreeCmd, mcpCmd, claudeInitCmd,
+		claudeDelCmd, cliRefreshCmd, codexInitCmd, codexDelCmd, geminiInitCmd,
+		geminiDelCmd, grokInitCmd, grokDelCmd, ompInitCmd, ompDelCmd,
+		opencodeInitCmd, opencodeDelCmd, qwenInitCmd, qwenDelCmd, resultCmd,
+		systemPromptCmd,
+	}
 	for _, template := range templates {
 		for _, child := range root.Commands() {
 			if child.Name() == template.Name() {
