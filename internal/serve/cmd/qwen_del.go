@@ -4,11 +4,11 @@
 package cmd
 
 import (
-	"sync"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 )
@@ -141,8 +141,8 @@ var newQwenDelCmdOnce sync.Once
 
 func NewQwenDelCmd() *cobra.Command {
 	newQwenDelCmdOnce.Do(func() {
-	qwenDelCmd.Flags().Bool("global", false, "Remove from ~/.qwen/commands/. Default when neither --global nor --local is given.")
-	qwenDelCmd.Flags().Bool("local", false, "Remove from the current project's .qwen/commands/ instead of ~/.qwen/commands/.")
+		qwenDelCmd.Flags().Bool("global", false, "Remove from ~/.qwen/commands/. Default when neither --global nor --local is given.")
+		qwenDelCmd.Flags().Bool("local", false, "Remove from the current project's .qwen/commands/ instead of ~/.qwen/commands/.")
 	})
-	return qwenDelCmd
+	return deepFreshCmd(qwenDelCmd)
 }

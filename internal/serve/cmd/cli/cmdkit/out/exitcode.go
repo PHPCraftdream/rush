@@ -44,7 +44,7 @@ func NewExitCodeError(code int, err error) *ExitCodeError {
 	return &ExitCodeError{code: code, err: err}
 }
 
-func APIExitCode(err error) (int, bool) {
+func apiExitCode(err error) (int, bool) {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return 5, true
 	}
@@ -88,9 +88,17 @@ func tokenCLIExitCode(err error) (int, bool) {
 	return e.code, true
 }
 
-// TokenCLIExitCode reports the token-family exit code carried by err
-// (exported; lane K1: cmd tests keep the lowercase bridge name).
-func TokenCLIExitCode(err error) (int, bool) { return tokenCLIExitCode(err) }
+// ErrorExitCode reports a typed exit code for the requested command family.
+func ErrorExitCode(err error, family string) (int, bool) {
+	switch family {
+	case "api":
+		return apiExitCode(err)
+	case "tokens":
+		return tokenCLIExitCode(err)
+	default:
+		return 0, false
+	}
+}
 
 // TokenStoreError wraps token-store failures with the token CLI exit codes.
 func TokenStoreError(err error) error {
@@ -112,10 +120,10 @@ func TokensExitCode(args []string, err error) (int, bool) {
 	if err != nil && errors.As(err, &coder) {
 		return coder.ExitCode(), true
 	}
-	if code, ok := APIExitCode(err); ok && isAPIInvocation(args) {
+	if code, ok := ErrorExitCode(err, "api"); ok && isAPIInvocation(args) {
 		return code, true
 	}
-	if code, ok := tokenCLIExitCode(err); ok {
+	if code, ok := ErrorExitCode(err, "tokens"); ok {
 		return code, true
 	}
 	if err != nil && (isTokensInvocation(args) || isServeInvocation(args) || isAPIInvocation(args)) {
@@ -152,11 +160,17 @@ func isTokensInvocation(args []string) bool {
 	return false
 }
 
-// IsServeInvocation / IsTokensInvocation expose the invocation predicates to
-// the cmd package's bridges (lane K1: cmd tests keep the lowercase names).
-func IsServeInvocation(args []string) bool { return isServeInvocation(args) }
-
-func IsTokensInvocation(args []string) bool { return isTokensInvocation(args) }
+// IsInvocation exposes the serve and tokens invocation predicates to cmd.
+func IsInvocation(args []string, family string) bool {
+	switch family {
+	case "serve":
+		return isServeInvocation(args)
+	case "tokens":
+		return isTokensInvocation(args)
+	default:
+		return false
+	}
+}
 
 func isServeInvocation(args []string) bool {
 	command, _, err := rootCmd.Find(args)

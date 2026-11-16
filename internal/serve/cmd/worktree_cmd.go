@@ -4,13 +4,13 @@
 package cmd
 
 import (
-	"sync"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"text/tabwriter"
 
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -75,7 +75,6 @@ var worktreeListCmd = &cobra.Command{
 		"no live run was detected (a finished session is not listed); " +
 		"PATH is the worktree's absolute path.",
 }
-
 
 // runWorktreeRemove implements `rush worktree remove <slug>`.
 func runWorktreeRemove(cmd *cobra.Command, args []string) error {
@@ -349,13 +348,13 @@ var newWorktreeCmdOnce sync.Once
 
 func NewWorktreeCmd() *cobra.Command {
 	newWorktreeCmdOnce.Do(func() {
-	worktreeRemoveCmd.Flags().Bool("keep-branch", false,
-		"Keep the branch after removing the worktree")
-	worktreeRemoveCmd.Flags().Bool("force", false,
-		"Remove a worktree with uncommitted or untracked changes and "+
-			"delete the branch even when unmerged (a live session lock "+
-			"still refuses removal)")
-	worktreeCmd.AddCommand(worktreeRemoveCmd, worktreeListCmd)
+		worktreeRemoveCmd.Flags().Bool("keep-branch", false,
+			"Keep the branch after removing the worktree")
+		worktreeRemoveCmd.Flags().Bool("force", false,
+			"Remove a worktree with uncommitted or untracked changes and "+
+				"delete the branch even when unmerged (a live session lock "+
+				"still refuses removal)")
+		worktreeCmd.AddCommand(worktreeRemoveCmd, worktreeListCmd)
 	})
-	return worktreeCmd
+	return deepFreshCmd(worktreeCmd)
 }

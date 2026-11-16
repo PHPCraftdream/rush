@@ -3,7 +3,6 @@
 package cmd
 
 import (
-	"sync"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -14,9 +13,10 @@ import (
 	"os/signal"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
+	cliproc "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
 
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	"github.com/spf13/cobra"
@@ -60,7 +60,6 @@ rush ps --watch            # redraw every 2s until Ctrl+C
   `,
 	RunE: psRunE,
 }
-
 
 // psHeartbeatDir resolves the global heartbeat directory: RUSH_HEARTBEAT_DIR
 // wins, else the heartbeat/ folder next to the global settings file.
@@ -510,18 +509,15 @@ func psJSONEntryFromRow(r psRow) psJSONEntry {
 	return out
 }
 
-// NewPsCmd returns the rush psCmd command tree, registering its flags and children
-// exactly once (former package init body; lane K2 of the sprint0 cmd split
-// removed package init registration). The command object itself is a package
-// var that only this constructor mutates.
+// NewPsCmd returns a fresh ps command from the registered template.
 var newPsCmdOnce sync.Once
 
 func NewPsCmd() *cobra.Command {
 	newPsCmdOnce.Do(func() {
-	psCmd.Flags().Bool("watch", false, "Redraw every 2 seconds until Ctrl+C")
-	psCmd.Flags().Bool("json", false, "Emit stable machine-readable JSON")
-	psCmd.Flags().String("model", "", "Case-insensitive substring filter on provider/model")
-	psCmd.Flags().Bool("all", false, "Include stopped and stale rows")
+		psCmd.Flags().Bool("watch", false, "Redraw every 2 seconds until Ctrl+C")
+		psCmd.Flags().Bool("json", false, "Emit stable machine-readable JSON")
+		psCmd.Flags().String("model", "", "Case-insensitive substring filter on provider/model")
+		psCmd.Flags().Bool("all", false, "Include stopped and stale rows")
 	})
-	return psCmd
+	return deepFreshCmd(psCmd)
 }

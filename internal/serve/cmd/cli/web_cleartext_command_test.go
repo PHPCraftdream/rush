@@ -33,11 +33,14 @@ func TestWebRefusesNonLoopbackBeforeAppSetup(t *testing.T) {
 	}
 }
 
-func resetWebCleartextCommandFlags(t *testing.T) {
-	root := NewRootCmd()
+func resetWebCleartextCommandFlags(t *testing.T, root *cobra.Command) {
 	t.Helper()
+	web, _, err := root.Find([]string{"web"})
+	if err != nil || web == nil {
+		t.Fatalf("find web command: command=%v err=%v", web, err)
+	}
 	for _, flags := range []*pflag.FlagSet{
-		root.Flags(), root.PersistentFlags(),
+		root.Flags(), root.PersistentFlags(), web.Flags(),
 	} {
 		flags.VisitAll(func(flag *pflag.Flag) {
 			if err := flag.Value.Set(flag.DefValue); err != nil {
@@ -66,10 +69,10 @@ func TestWebCleartextOptInWarnsAndBindsThroughRoot(t *testing.T) {
 		gotAddress = address
 		return nil, errors.New("stop before real server starts")
 	}
-	resetWebCleartextCommandFlags(t)
+	resetWebCleartextCommandFlags(t, root)
 	t.Cleanup(func() {
 		webAppFactory, server.Listen = oldFactory, oldListen
-		resetWebCleartextCommandFlags(t)
+		resetWebCleartextCommandFlags(t, root)
 		root.SetArgs(nil)
 		root.SetErr(nil)
 		root.SetContext(context.Background())

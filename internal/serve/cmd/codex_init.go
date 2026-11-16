@@ -6,10 +6,10 @@
 package cmd
 
 import (
-	"sync"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
 	"github.com/spf13/cobra"
@@ -165,8 +165,8 @@ var newCodexInitCmdOnce sync.Once
 
 func NewCodexInitCmd() *cobra.Command {
 	newCodexInitCmdOnce.Do(func() {
-	codexInitCmd.Flags().Bool("global", false, "Install into ~/.agents/skills/ (available in every project). Default when neither --global nor --local is given.")
-	codexInitCmd.Flags().Bool("local", false, "Install into the current project's .agents/skills/ instead of ~/.agents/skills/.")
+		codexInitCmd.Flags().Bool("global", false, "Install into ~/.agents/skills/ (available in every project). Default when neither --global nor --local is given.")
+		codexInitCmd.Flags().Bool("local", false, "Install into the current project's .agents/skills/ instead of ~/.agents/skills/.")
 	})
-	return codexInitCmd
+	return deepFreshCmd(codexInitCmd)
 }

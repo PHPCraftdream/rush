@@ -65,5 +65,5 @@ func setProviderTypeEnum(schema *jsonschema.Schema) {
 // NewSchemaCmd returns the rush schemaCmd command (former root.go registration; lane K2 of
 // the sprint0 cmd split replaced rootCmd.AddCommand with constructors).
 func NewSchemaCmd() *cobra.Command {
-	return schemaCmd
+	return deepFreshCmd(schemaCmd)
 }

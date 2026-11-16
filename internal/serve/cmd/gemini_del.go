@@ -4,11 +4,11 @@
 package cmd
 
 import (
-	"sync"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 )
@@ -141,8 +141,8 @@ var newGeminiDelCmdOnce sync.Once
 
 func NewGeminiDelCmd() *cobra.Command {
 	newGeminiDelCmdOnce.Do(func() {
-	geminiDelCmd.Flags().Bool("global", false, "Remove from ~/.gemini/commands/. Default when neither --global nor --local is given.")
-	geminiDelCmd.Flags().Bool("local", false, "Remove from the current project's .gemini/commands/ instead of ~/.gemini/commands/.")
+		geminiDelCmd.Flags().Bool("global", false, "Remove from ~/.gemini/commands/. Default when neither --global nor --local is given.")
+		geminiDelCmd.Flags().Bool("local", false, "Remove from the current project's .gemini/commands/ instead of ~/.gemini/commands/.")
 	})
-	return geminiDelCmd
+	return deepFreshCmd(geminiDelCmd)
 }

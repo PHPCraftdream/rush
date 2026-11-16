@@ -1,13 +1,13 @@
 package cmd
 
 import (
-	"sync"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
@@ -47,7 +47,6 @@ applied/accepted acknowledgement confirms the request was accepted, not
 that the node or process has terminated. Inspect the batch with
 rush batch show.`}
 )
-
 
 func batchApp(cmd *cobra.Command, owner bool) (*app.App, error) {
 	a, err := setupApp(cmd)
@@ -343,15 +342,15 @@ var newBatchCmdOnce sync.Once
 
 func NewBatchCmd() *cobra.Command {
 	newBatchCmdOnce.Do(func() {
-	batchRunCmd.Flags().StringP("spec", "f", "-", "BatchSpec JSON or Ktav file (default stdin)")
-	batchRunCmd.Flags().String("session", "", "Owner session ID (created when omitted)")
-	batchRunCmd.Flags().Bool("json", false, "Emit structured JSON")
-	batchRunCmd.Flags().Bool("detach", false, "Unsupported: detached execution is unavailable")
-	batchAddCmd.Flags().StringP("spec", "f", "-", "Items JSON or Ktav file (default stdin)")
-	batchStopCmd.Flags().Duration("wait", 0, "Wait up to 30s for owner acknowledgement; zero reports queued")
-	batchShowCmd.Flags().Bool("json", false, "Emit structured JSON")
-	batchStopCmd.Flags().Bool("json", false, "Emit structured JSON")
-	batchCmd.AddCommand(batchRunCmd, batchShowCmd, batchAddCmd, batchStopCmd)
+		batchRunCmd.Flags().StringP("spec", "f", "-", "BatchSpec JSON or Ktav file (default stdin)")
+		batchRunCmd.Flags().String("session", "", "Owner session ID (created when omitted)")
+		batchRunCmd.Flags().Bool("json", false, "Emit structured JSON")
+		batchRunCmd.Flags().Bool("detach", false, "Unsupported: detached execution is unavailable")
+		batchAddCmd.Flags().StringP("spec", "f", "-", "Items JSON or Ktav file (default stdin)")
+		batchStopCmd.Flags().Duration("wait", 0, "Wait up to 30s for owner acknowledgement; zero reports queued")
+		batchShowCmd.Flags().Bool("json", false, "Emit structured JSON")
+		batchStopCmd.Flags().Bool("json", false, "Emit structured JSON")
+		batchCmd.AddCommand(batchRunCmd, batchShowCmd, batchAddCmd, batchStopCmd)
 	})
-	return batchCmd
+	return deepFreshCmd(batchCmd)
 }

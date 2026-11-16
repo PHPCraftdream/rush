@@ -6,10 +6,10 @@
 package cmd
 
 import (
-	"sync"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/spf13/cobra"
 )
@@ -120,8 +120,8 @@ var newGrokInitCmdOnce sync.Once
 
 func NewGrokInitCmd() *cobra.Command {
 	newGrokInitCmdOnce.Do(func() {
-	grokInitCmd.Flags().Bool("global", false, "Install into ~/.grok/skills/ (available in every project). Default when neither --global nor --local is given.")
-	grokInitCmd.Flags().Bool("local", false, "Install into the current project's .grok/skills/ instead of ~/.grok/skills/.")
+		grokInitCmd.Flags().Bool("global", false, "Install into ~/.grok/skills/ (available in every project). Default when neither --global nor --local is given.")
+		grokInitCmd.Flags().Bool("local", false, "Install into the current project's .grok/skills/ instead of ~/.grok/skills/.")
 	})
-	return grokInitCmd
+	return deepFreshCmd(grokInitCmd)
 }

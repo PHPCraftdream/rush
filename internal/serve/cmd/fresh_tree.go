@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -20,26 +22,50 @@ func deepFreshCmd(src *cobra.Command) *cobra.Command {
 // rebind can register fresh flags with their package-variable bindings.
 func deepFreshCmdRebind(src *cobra.Command, skip map[string]bool, rebind func(fresh *cobra.Command)) *cobra.Command {
 	dst := &cobra.Command{
-		Use:                src.Use,
-		Short:              src.Short,
-		Long:               src.Long,
-		Example:            src.Example,
-		Args:               src.Args,
-		RunE:               src.RunE,
-		Run:                src.Run,
-		ValidArgs:          cloneFreshStrings(src.ValidArgs),
-		Aliases:            cloneFreshStrings(src.Aliases),
-		Hidden:             src.Hidden,
-		DisableFlagParsing: src.DisableFlagParsing,
-		SilenceUsage:       src.SilenceUsage,
-		SilenceErrors:      src.SilenceErrors,
-		Deprecated:         src.Deprecated,
-		Version:            src.Version,
-		FParseErrWhitelist: src.FParseErrWhitelist,
+		Use:                        src.Use,
+		Aliases:                    cloneFreshStrings(src.Aliases),
+		SuggestFor:                 cloneFreshStrings(src.SuggestFor),
+		Short:                      src.Short,
+		GroupID:                    src.GroupID,
+		Long:                       src.Long,
+		Example:                    src.Example,
+		ValidArgs:                  cloneFreshStrings(src.ValidArgs),
+		ValidArgsFunction:          src.ValidArgsFunction,
+		Args:                       src.Args,
+		ArgAliases:                 cloneFreshStrings(src.ArgAliases),
+		BashCompletionFunction:     src.BashCompletionFunction,
+		Deprecated:                 src.Deprecated,
+		Annotations:                cloneFreshStringMap(src.Annotations),
+		Version:                    src.Version,
+		PersistentPreRun:           src.PersistentPreRun,
+		PersistentPreRunE:          src.PersistentPreRunE,
+		PreRun:                     src.PreRun,
+		PreRunE:                    src.PreRunE,
+		Run:                        src.Run,
+		RunE:                       src.RunE,
+		PostRun:                    src.PostRun,
+		PostRunE:                   src.PostRunE,
+		PersistentPostRun:          src.PersistentPostRun,
+		PersistentPostRunE:         src.PersistentPostRunE,
+		FParseErrWhitelist:         src.FParseErrWhitelist,
+		CompletionOptions:          src.CompletionOptions,
+		TraverseChildren:           src.TraverseChildren,
+		Hidden:                     src.Hidden,
+		SilenceErrors:              src.SilenceErrors,
+		SilenceUsage:               src.SilenceUsage,
+		DisableFlagParsing:         src.DisableFlagParsing,
+		DisableAutoGenTag:          src.DisableAutoGenTag,
+		DisableFlagsInUseLine:      src.DisableFlagsInUseLine,
+		DisableSuggestions:         src.DisableSuggestions,
+		SuggestionsMinimumDistance: src.SuggestionsMinimumDistance,
+	}
+	for _, group := range src.Groups() {
+		groupCopy := *group
+		dst.AddGroup(&groupCopy)
 	}
 
-	cloneFreshFlags(src.Flags(), dst.Flags(), skip)
-	cloneFreshFlags(src.PersistentFlags(), dst.PersistentFlags(), skip)
+	cloneFreshFlags(src.Flags(), dst.Flags(), skip, src, dst)
+	cloneFreshFlags(src.PersistentFlags(), dst.PersistentFlags(), skip, src, dst)
 
 	for _, child := range src.Commands() {
 		dst.AddCommand(deepFreshCmdRebind(child, skip, nil))
@@ -51,7 +77,13 @@ func deepFreshCmdRebind(src *cobra.Command, skip map[string]bool, rebind func(fr
 	return dst
 }
 
-func cloneFreshFlags(src, dst *pflag.FlagSet, skip map[string]bool) {
+func cloneFreshFlags(src, dst *pflag.FlagSet, skip map[string]bool, srcCmd, dstCmd *cobra.Command) {
+	dst.SortFlags = src.SortFlags
+	dst.ParseErrorsAllowlist = src.ParseErrorsAllowlist
+	dst.ParseErrorsWhitelist = src.ParseErrorsWhitelist
+	dst.Usage = src.Usage
+	dst.SetNormalizeFunc(src.GetNormalizeFunc())
+
 	src.VisitAll(func(f *pflag.Flag) {
 		if skip[f.Name] {
 			return
@@ -60,28 +92,48 @@ func cloneFreshFlags(src, dst *pflag.FlagSet, skip map[string]bool) {
 		var register func()
 		switch f.Value.Type() {
 		case "bool":
-			register = func() { dst.BoolP(f.Name, f.Shorthand, false, f.Usage) }
+			value, err := strconv.ParseBool(f.DefValue)
+			if err != nil {
+				panic(fmt.Errorf("deepFreshCmd: invalid default for %s: %w", f.Name, err))
+			}
+			register = func() { dst.BoolP(f.Name, f.Shorthand, value, f.Usage) }
 		case "string":
-			register = func() { dst.StringP(f.Name, f.Shorthand, "", f.Usage) }
+			register = func() { dst.StringP(f.Name, f.Shorthand, f.DefValue, f.Usage) }
 		case "int":
-			register = func() { dst.IntP(f.Name, f.Shorthand, 0, f.Usage) }
+			value, err := strconv.ParseInt(f.DefValue, 0, 64)
+			if err != nil {
+				panic(fmt.Errorf("deepFreshCmd: invalid default for %s: %w", f.Name, err))
+			}
+			register = func() { dst.IntP(f.Name, f.Shorthand, int(value), f.Usage) }
 		case "int64":
-			register = func() { dst.Int64P(f.Name, f.Shorthand, 0, f.Usage) }
+			value, err := strconv.ParseInt(f.DefValue, 0, 64)
+			if err != nil {
+				panic(fmt.Errorf("deepFreshCmd: invalid default for %s: %w", f.Name, err))
+			}
+			register = func() { dst.Int64P(f.Name, f.Shorthand, value, f.Usage) }
 		case "float64":
-			register = func() { dst.Float64P(f.Name, f.Shorthand, 0, f.Usage) }
+			value, err := strconv.ParseFloat(f.DefValue, 64)
+			if err != nil {
+				panic(fmt.Errorf("deepFreshCmd: invalid default for %s: %w", f.Name, err))
+			}
+			register = func() { dst.Float64P(f.Name, f.Shorthand, value, f.Usage) }
 		case "duration":
-			register = func() { dst.DurationP(f.Name, f.Shorthand, 0, f.Usage) }
+			value, err := time.ParseDuration(f.DefValue)
+			if err != nil {
+				panic(fmt.Errorf("deepFreshCmd: invalid default for %s: %w", f.Name, err))
+			}
+			register = func() { dst.DurationP(f.Name, f.Shorthand, value, f.Usage) }
 		case "stringSlice":
-			register = func() { dst.StringSliceP(f.Name, f.Shorthand, nil, f.Usage) }
+			value := cloneFreshStrings(f.Value.(pflag.SliceValue).GetSlice())
+			register = func() { dst.StringSliceP(f.Name, f.Shorthand, value, f.Usage) }
 		case "stringArray":
-			register = func() { dst.StringArrayP(f.Name, f.Shorthand, nil, f.Usage) }
+			value := cloneFreshStrings(f.Value.(pflag.SliceValue).GetSlice())
+			register = func() { dst.StringArrayP(f.Name, f.Shorthand, value, f.Usage) }
 		default:
 			panic(fmt.Errorf("deepFreshCmd: unsupported flag type %s for %s", f.Value.Type(), f.Name))
 		}
 		register()
 		nf := dst.Lookup(f.Name)
-
-		_ = nf.Value.Set(f.Value.String())
 		nf.Changed = false
 		nf.DefValue = f.DefValue
 		nf.NoOptDefVal = f.NoOptDefVal
@@ -94,6 +146,11 @@ func cloneFreshFlags(src, dst *pflag.FlagSet, skip map[string]bool) {
 				nf.Annotations[key] = cloneFreshStrings(values)
 			}
 		}
+		if completion, ok := srcCmd.GetFlagCompletionFunc(f.Name); ok {
+			if err := dstCmd.RegisterFlagCompletionFunc(f.Name, completion); err != nil {
+				panic(fmt.Errorf("deepFreshCmd: copy completion for %s: %w", f.Name, err))
+			}
+		}
 	})
 }
 
@@ -103,5 +160,16 @@ func cloneFreshStrings(values []string) []string {
 	}
 	cloned := make([]string, len(values))
 	copy(cloned, values)
+	return cloned
+}
+
+func cloneFreshStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
 	return cloned
 }

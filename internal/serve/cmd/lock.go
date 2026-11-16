@@ -1,10 +1,10 @@
 package cmd
 
 import (
-	"sync"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/spf13/cobra"
@@ -82,16 +82,16 @@ var newLockCmdOnce sync.Once
 
 func NewLockCmd() *cobra.Command {
 	newLockCmdOnce.Do(func() {
-	for _, c := range []*cobra.Command{lockCmd, unlockCmd} {
-		c.Flags().Bool("global", false, "Use global settings")
-		c.Flags().Bool("local", false, "Use workspace settings")
-	}
+		for _, c := range []*cobra.Command{lockCmd, unlockCmd} {
+			c.Flags().Bool("global", false, "Use global settings")
+			c.Flags().Bool("local", false, "Use workspace settings")
+		}
 	})
-	return lockCmd
+	return deepFreshCmd(lockCmd)
 }
 
 // NewUnlockCmd returns the rush unlock command.
 func NewUnlockCmd() *cobra.Command {
 	NewLockCmd()
-	return unlockCmd
+	return deepFreshCmd(unlockCmd)
 }

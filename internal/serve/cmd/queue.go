@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"sync"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -14,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -569,23 +569,23 @@ var newQueueCmdOnce sync.Once
 
 func NewQueueCmd() *cobra.Command {
 	newQueueCmdOnce.Do(func() {
-	queueAddCmd.Flags().String("session", "", "Session ID for the run (default: auto-generated from task ID)")
-	queueAddCmd.Flags().String("role", "", "Model role forwarded verbatim to the spawned `rush run --role <role>` (queue run): smart | fast | worker | reviewer (default: smart)")
-	queueAddCmd.Flags().Float64("max-cost", 0, "Abort if cost exceeds this value (USD)")
-	queueAddCmd.Flags().Int64("max-tokens", 0, "Abort if tokens exceed this value")
-	queueAddCmd.Flags().Duration("timeout", 0, "Timeout for the run (e.g. 10m)")
-	queueAddCmd.Flags().String("prompt-file", "", "Read prompt from this file instead of stdin")
+		queueAddCmd.Flags().String("session", "", "Session ID for the run (default: auto-generated from task ID)")
+		queueAddCmd.Flags().String("role", "", "Model role forwarded verbatim to the spawned `rush run --role <role>` (queue run): smart | fast | worker | reviewer (default: smart)")
+		queueAddCmd.Flags().Float64("max-cost", 0, "Abort if cost exceeds this value (USD)")
+		queueAddCmd.Flags().Int64("max-tokens", 0, "Abort if tokens exceed this value")
+		queueAddCmd.Flags().Duration("timeout", 0, "Timeout for the run (e.g. 10m)")
+		queueAddCmd.Flags().String("prompt-file", "", "Read prompt from this file instead of stdin")
 
-	queueListCmd.Flags().String("status", "", "Filter by status: pending|running|done|failed|all")
-	queueListCmd.Flags().Bool("json", false, "Emit NDJSON (one object per line)")
+		queueListCmd.Flags().String("status", "", "Filter by status: pending|running|done|failed|all")
+		queueListCmd.Flags().Bool("json", false, "Emit NDJSON (one object per line)")
 
-	queueRunCmd.Flags().Int("concurrent", 1, "Number of tasks to run concurrently")
-	queueRunCmd.Flags().Bool("stop-on-fail", false, "Stop processing if any task fails")
-	queueRunCmd.Flags().Int("max-tasks", 0, "Maximum number of tasks to process (0 = unlimited)")
+		queueRunCmd.Flags().Int("concurrent", 1, "Number of tasks to run concurrently")
+		queueRunCmd.Flags().Bool("stop-on-fail", false, "Stop processing if any task fails")
+		queueRunCmd.Flags().Int("max-tasks", 0, "Maximum number of tasks to process (0 = unlimited)")
 
-	queueClearCmd.Flags().String("status", "", "Only clear tasks with this status")
+		queueClearCmd.Flags().String("status", "", "Only clear tasks with this status")
 
-	queueCmd.AddCommand(queueAddCmd, queueListCmd, queueShowCmd, queueRunCmd, queueRmCmd, queueClearCmd)
+		queueCmd.AddCommand(queueAddCmd, queueListCmd, queueShowCmd, queueRunCmd, queueRmCmd, queueClearCmd)
 	})
-	return queueCmd
+	return deepFreshCmd(queueCmd)
 }

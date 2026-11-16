@@ -3,6 +3,7 @@ package cmd
 
 import (
 	"sync"
+
 	"github.com/spf13/cobra"
 )
 
@@ -29,8 +30,8 @@ var newOmpDelCmdOnce sync.Once
 
 func NewOmpDelCmd() *cobra.Command {
 	newOmpDelCmdOnce.Do(func() {
-	ompDelCmd.Flags().Bool("global", false, "Remove globally (default).")
-	ompDelCmd.Flags().Bool("local", false, "Remove from the current project's .omp/commands/.")
+		ompDelCmd.Flags().Bool("global", false, "Remove globally (default).")
+		ompDelCmd.Flags().Bool("local", false, "Remove from the current project's .omp/commands/.")
 	})
-	return ompDelCmd
+	return deepFreshCmd(ompDelCmd)
 }

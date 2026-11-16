@@ -101,7 +101,7 @@ func loadEnvelope(path string) ([]byte, *app.RunResult, map[string]any, error) {
 func resolveEnvelopePath(ref string) (string, error) { return cliout.ResolveEnvelopePath(ref) }
 
 func apiExitCode(err error) (int, bool) {
-	return cliout.APIExitCode(err)
+	return cliout.ErrorExitCode(err, "api")
 }
 
 func tokensExitCode(args []string, err error) (int, bool) {
@@ -142,7 +142,9 @@ func ensureAuditDirFunc() { journal.EnsureAuditDirFunc() }
 
 func resetCommandJournalForTests() { journal.ResetCommandJournalForTests() }
 
-func tokenCLIExitCode(err error) (int, bool) { return cliout.TokenCLIExitCode(err) }
+func tokenCLIExitCode(err error) (int, bool) {
+	return cliout.ErrorExitCode(err, "tokens")
+}
 
 func maybeDetachConsole() { proc.MaybeDetachConsole() }
 
@@ -171,9 +173,9 @@ func SetupApp(c *cobra.Command) (*app.App, error) {
 }
 
 func isServeInvocation(args []string) bool {
-	return cliout.IsServeInvocation(args)
+	return cliout.IsInvocation(args, "serve")
 }
 
 func isTokensInvocation(args []string) bool {
-	return cliout.IsTokensInvocation(args)
+	return cliout.IsInvocation(args, "tokens")
 }

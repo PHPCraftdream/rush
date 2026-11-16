@@ -15,10 +15,10 @@
 package cmd
 
 import (
-	"sync"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 	"github.com/spf13/cobra"
@@ -173,7 +173,6 @@ rush cli-refresh --recursive --dry-run /path/to/workspace
 	RunE: runCLIRefresh,
 }
 
-
 func runCLIRefresh(cmd *cobra.Command, args []string) error {
 	recursive, _ := cmd.Flags().GetBool("recursive")
 	global, _ := cmd.Flags().GetBool("global")
@@ -309,9 +308,9 @@ var newCliRefreshCmdOnce sync.Once
 
 func NewCliRefreshCmd() *cobra.Command {
 	newCliRefreshCmdOnce.Do(func() {
-	cliRefreshCmd.Flags().BoolP("recursive", "r", false, "Recursively walk the directory tree, refreshing only directories that already have a tool-integration directory present")
-	cliRefreshCmd.Flags().Bool("global", false, "Refresh each tool's global scope instead of a project directory")
-	cliRefreshCmd.Flags().Bool("dry-run", false, "Report what would happen without making any changes")
+		cliRefreshCmd.Flags().BoolP("recursive", "r", false, "Recursively walk the directory tree, refreshing only directories that already have a tool-integration directory present")
+		cliRefreshCmd.Flags().Bool("global", false, "Refresh each tool's global scope instead of a project directory")
+		cliRefreshCmd.Flags().Bool("dry-run", false, "Report what would happen without making any changes")
 	})
-	return cliRefreshCmd
+	return deepFreshCmd(cliRefreshCmd)
 }

@@ -1,13 +1,13 @@
 package cmd
 
 import (
-	"sync"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -551,7 +551,6 @@ rush mcp set my-server --enabled-in-cli=true
 	},
 }
 
-
 type mcpListItem struct {
 	ID            string            `json:"id"`
 	Type          string            `json:"type"`
@@ -651,35 +650,35 @@ var newMcpCmdOnce sync.Once
 
 func NewMcpCmd() *cobra.Command {
 	newMcpCmdOnce.Do(func() {
-	mcpListCmd.Flags().Bool("json", false, "Emit one JSON object per line instead of a table")
-	mcpListCmd.Flags().String("grep", "", "Filter servers by id, type, command, or url (case-insensitive substring match)")
-	mcpShowCmd.Flags().Bool("json", false, "Emit a JSON object instead of human-readable lines")
-	mcpTestCmd.Flags().String("timeout", "10s", "Timeout for the connectivity test")
+		mcpListCmd.Flags().Bool("json", false, "Emit one JSON object per line instead of a table")
+		mcpListCmd.Flags().String("grep", "", "Filter servers by id, type, command, or url (case-insensitive substring match)")
+		mcpShowCmd.Flags().Bool("json", false, "Emit a JSON object instead of human-readable lines")
+		mcpTestCmd.Flags().String("timeout", "10s", "Timeout for the connectivity test")
 
-	for _, c := range []*cobra.Command{mcpEnableCmd, mcpDisableCmd, mcpAddCmd, mcpRemoveCmd, mcpSetCmd} {
-		c.Flags().Bool("global", false, "Target the global config (~/.local/share/rush/rush.json). Default when neither --global nor --local is given.")
-		c.Flags().Bool("local", false, "Target the workspace config (./.rush/rush.json).")
-		c.MarkFlagsMutuallyExclusive("global", "local")
-	}
+		for _, c := range []*cobra.Command{mcpEnableCmd, mcpDisableCmd, mcpAddCmd, mcpRemoveCmd, mcpSetCmd} {
+			c.Flags().Bool("global", false, "Target the global config (~/.local/share/rush/rush.json). Default when neither --global nor --local is given.")
+			c.Flags().Bool("local", false, "Target the workspace config (./.rush/rush.json).")
+			c.MarkFlagsMutuallyExclusive("global", "local")
+		}
 
-	mcpAddCmd.Flags().String("type", "", "Server type: stdio, sse, or http (required)")
-	mcpAddCmd.Flags().String("command", "", "Command to execute for stdio servers")
-	mcpAddCmd.Flags().StringSlice("arg", nil, "Arguments to pass to the command (repeatable)")
-	mcpAddCmd.Flags().StringSlice("env", nil, "Environment variables as KEY=VALUE (repeatable)")
-	mcpAddCmd.Flags().StringSlice("header", nil, "HTTP headers as KEY=VALUE (repeatable)")
-	mcpAddCmd.Flags().String("url", "", "URL for HTTP or SSE servers")
-	mcpAddCmd.Flags().Bool("enabled-in-cli", false, "Start this server during non-interactive CLI invocations (rush run, etc). Off by default — the web UI always starts it regardless.")
+		mcpAddCmd.Flags().String("type", "", "Server type: stdio, sse, or http (required)")
+		mcpAddCmd.Flags().String("command", "", "Command to execute for stdio servers")
+		mcpAddCmd.Flags().StringSlice("arg", nil, "Arguments to pass to the command (repeatable)")
+		mcpAddCmd.Flags().StringSlice("env", nil, "Environment variables as KEY=VALUE (repeatable)")
+		mcpAddCmd.Flags().StringSlice("header", nil, "HTTP headers as KEY=VALUE (repeatable)")
+		mcpAddCmd.Flags().String("url", "", "URL for HTTP or SSE servers")
+		mcpAddCmd.Flags().Bool("enabled-in-cli", false, "Start this server during non-interactive CLI invocations (rush run, etc). Off by default — the web UI always starts it regardless.")
 
-	mcpSetCmd.Flags().String("type", "", "Server type: stdio, sse, or http")
-	mcpSetCmd.Flags().String("command", "", "Command to execute for stdio servers")
-	mcpSetCmd.Flags().StringSlice("arg", nil, "Arguments to pass to the command (repeatable)")
-	mcpSetCmd.Flags().StringSlice("env", nil, "Environment variables as KEY=VALUE (repeatable)")
-	mcpSetCmd.Flags().StringSlice("header", nil, "HTTP headers as KEY=VALUE (repeatable)")
-	mcpSetCmd.Flags().String("url", "", "URL for HTTP or SSE servers")
-	mcpSetCmd.Flags().Bool("disabled", false, "Disable or enable the server")
-	mcpSetCmd.Flags().Bool("enabled-in-cli", false, "Start this server during non-interactive CLI invocations (rush run, etc). Off by default — the web UI always starts it regardless.")
+		mcpSetCmd.Flags().String("type", "", "Server type: stdio, sse, or http")
+		mcpSetCmd.Flags().String("command", "", "Command to execute for stdio servers")
+		mcpSetCmd.Flags().StringSlice("arg", nil, "Arguments to pass to the command (repeatable)")
+		mcpSetCmd.Flags().StringSlice("env", nil, "Environment variables as KEY=VALUE (repeatable)")
+		mcpSetCmd.Flags().StringSlice("header", nil, "HTTP headers as KEY=VALUE (repeatable)")
+		mcpSetCmd.Flags().String("url", "", "URL for HTTP or SSE servers")
+		mcpSetCmd.Flags().Bool("disabled", false, "Disable or enable the server")
+		mcpSetCmd.Flags().Bool("enabled-in-cli", false, "Start this server during non-interactive CLI invocations (rush run, etc). Off by default — the web UI always starts it regardless.")
 
-	mcpCmd.AddCommand(mcpListCmd, mcpShowCmd, mcpEnableCmd, mcpDisableCmd, mcpRestartCmd, mcpTestCmd, mcpAddCmd, mcpRemoveCmd, mcpSetCmd)
+		mcpCmd.AddCommand(mcpListCmd, mcpShowCmd, mcpEnableCmd, mcpDisableCmd, mcpRestartCmd, mcpTestCmd, mcpAddCmd, mcpRemoveCmd, mcpSetCmd)
 	})
-	return mcpCmd
+	return deepFreshCmd(mcpCmd)
 }

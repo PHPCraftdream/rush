@@ -8,7 +8,8 @@ base = ['go', 'test'] + race + ['-json', '-p', '1', '-parallel', '1', '-count=1'
 commands = {
     'cmd': base + ['-run', '^Test(ProcessStop|InstallConsoleProcessStop)', './internal/serve/cmd/cli/cmdkit/proc'],
     'proctrack': base + ['-run', '^TestProcessStop', './internal/kit/sys/proctrack'],
-    'main': base + ['-run', '^TestProcessStop', '.'],
+    'main': base + ['-run', '^TestProcessStopInstalledBeforeStartupIO$', '.'],
+    'audit': base + ['-run', '^TestProcessStopFirstSignalSkipsCleanupAndRecoversDatabase$', './internal/serve/cmd'],
 }
 
 def run(command):
@@ -38,7 +39,7 @@ mutants = [
     ('skip-tree-stop', 'internal/serve/cmd/cli/cmdkit/proc/signals.go', '\n\t\t\tstopTrees()\n', '\n\t\t\t_ = stopTrees\n', 'cmd', 'first request did not exit once'),
     ('skip-first-exit', 'internal/serve/cmd/cli/cmdkit/proc/signals.go', '\n\t\t\texit(code)\n', '\n\t\t\t_ = code\n', 'cmd', 'first request did not exit once'),
     ('skip-deadline', 'internal/serve/cmd/cli/cmdkit/proc/signals.go', 'stopDeadline := armDeadline(func() { exit(code) })', 'stopDeadline := func() {}', 'cmd', 'exit deadline was not armed before teardown'),
-    ('audit-exit', 'internal/serve/cmd/cli/cmdkit/proc/signals.go', 'newProcessStop(proctrack.StopTrackedProcessTrees, os.Exit,', 'newProcessStop(proctrack.StopTrackedProcessTrees, exitWithAudit,', 'cmd', 'first signal did not close process tree/output'),
+    ('audit-exit', 'internal/serve/cmd/cli/cmdkit/proc/signals.go', 'newProcessStop(proctrack.StopTrackedProcessTrees, os.Exit,', 'newProcessStop(proctrack.StopTrackedProcessTrees, journal.ExitWithAudit,', 'audit', 'first signal did not close process tree/output within guard'),
     ('skip-spawn-gate', 'internal/kit/sys/proctrack/track_stop.go', 'if processTreesStopping.Load() {', 'if false {', 'proctrack', 'start admitted after process stop'),
     ('skip-startup-handler', 'main.go', 'stopSignals := cli.InstallProcessStop()', 'stopSignals := func() {}', 'main', 'process-stop handler must be installed before startup disk work'),
 ]
@@ -59,8 +60,18 @@ for name, filename, before, after, group, expected in mutants:
     expected_count = 2 if filename.endswith('track_unix.go') else 1
     if original.count(before) != expected_count:
         raise SystemExit('mutant target changed: ' + name)
+    extra_path = None
+    extra_before = '\t"github.com/PHPCraftdream/rush/internal/kit/sys/proctrack"\n'
+    extra_after = extra_before + '\tjournal "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/journal"\n'
+    if name == 'audit-exit':
+        extra_path = path
+        if original.count(extra_before) != 1:
+            raise SystemExit('mutant target changed: audit-exit import')
     try:
-        path.write_text(original.replace(before, after), encoding='utf-8')
+        mutated = original.replace(before, after)
+        if extra_path:
+            mutated = mutated.replace(extra_before, extra_after)
+        path.write_text(mutated, encoding='utf-8')
         result = run(commands[group])
         Path('first-signal-mutant-' + name + '.jsonl').write_text(result.stdout, encoding='utf-8')
         if result.returncode == 0 or expected not in result.stdout:

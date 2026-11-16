@@ -8,12 +8,12 @@ package cmd
 // section 2 ("internal/cmd/login.go") and Section 4.M before merging.
 
 import (
-	"sync"
 	"context"
 	"fmt"
 	"os"
+	"sync"
 
-	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
+	cliproc "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
 
 	"charm.land/lipgloss/v2"
 	hyperp "github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
@@ -26,7 +26,6 @@ import (
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
 )
-
 
 var loginCmd = &cobra.Command{
 	Aliases: []string{"auth"},
@@ -300,20 +299,17 @@ func waitEnter() {
 	_, _ = fmt.Scanln()
 }
 
-// NewLoginCmd returns the rush loginCmd command tree, registering its flags and children
-// exactly once (former package init body; lane K2 of the sprint0 cmd split
-// removed package init registration). The command object itself is a package
-// var that only this constructor mutates.
+// NewLoginCmd returns a fresh login command tree from the registered template.
 var newLoginCmdOnce sync.Once
 
 func NewLoginCmd() *cobra.Command {
 	newLoginCmdOnce.Do(func() {
-	// Fork merge note (origin/main 2026-05-16 / 303b153b): upstream added
-	// --force so re-running login on an already-authenticated provider
-	// reports the existing token instead of starting a new device-auth dance.
-	// Useful UX, kept verbatim.
-	loginCmd.Flags().BoolP("force", "f", false, "Force re-authentication even if already logged in")
-	loginCmd.Flags().Bool("device", false, "Use device-code authentication instead of browser login")
+		// Fork merge note (origin/main 2026-05-16 / 303b153b): upstream added
+		// --force so re-running login on an already-authenticated provider
+		// reports the existing token instead of starting a new device-auth dance.
+		// Useful UX, kept verbatim.
+		loginCmd.Flags().BoolP("force", "f", false, "Force re-authentication even if already logged in")
+		loginCmd.Flags().Bool("device", false, "Use device-code authentication instead of browser login")
 	})
-	return loginCmd
+	return deepFreshCmd(loginCmd)
 }

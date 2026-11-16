@@ -3,11 +3,11 @@
 package cmd
 
 import (
-	"sync"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 )
@@ -143,8 +143,8 @@ var newGrokDelCmdOnce sync.Once
 
 func NewGrokDelCmd() *cobra.Command {
 	newGrokDelCmdOnce.Do(func() {
-	grokDelCmd.Flags().Bool("global", false, "Remove from ~/.grok/skills/. Default when neither --global nor --local is given.")
-	grokDelCmd.Flags().Bool("local", false, "Remove from the current project's .grok/skills/ instead of ~/.grok/skills/.")
+		grokDelCmd.Flags().Bool("global", false, "Remove from ~/.grok/skills/. Default when neither --global nor --local is given.")
+		grokDelCmd.Flags().Bool("local", false, "Remove from the current project's .grok/skills/ instead of ~/.grok/skills/.")
 	})
-	return grokDelCmd
+	return deepFreshCmd(grokDelCmd)
 }

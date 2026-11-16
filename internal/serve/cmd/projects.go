@@ -1,9 +1,9 @@
 package cmd
 
 import (
-	"sync"
 	"encoding/json"
 	"os"
+	"sync"
 
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/table"
@@ -74,15 +74,12 @@ rush projects --json
 	},
 }
 
-// NewProjectsCmd returns the rush projectsCmd command tree, registering its flags and children
-// exactly once (former package init body; lane K2 of the sprint0 cmd split
-// removed package init registration). The command object itself is a package
-// var that only this constructor mutates.
+// NewProjectsCmd returns a fresh projects command from the registered template.
 var newProjectsCmdOnce sync.Once
 
 func NewProjectsCmd() *cobra.Command {
 	newProjectsCmdOnce.Do(func() {
-	projectsCmd.Flags().Bool("json", false, "Output as JSON")
+		projectsCmd.Flags().Bool("json", false, "Output as JSON")
 	})
-	return projectsCmd
+	return deepFreshCmd(projectsCmd)
 }

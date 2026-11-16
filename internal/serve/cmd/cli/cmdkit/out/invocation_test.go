@@ -1,8 +1,28 @@
 package cliout
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/spf13/cobra"
+)
+
+func installInvocationTestCommands(t *testing.T) {
+	t.Helper()
+	oldRoot, oldAPI, oldTokens, oldServe := rootCmd, apiCmd, tokensCmd, serveCmd
+	root := &cobra.Command{Use: "rush"}
+	root.PersistentFlags().String("cwd", "", "working directory")
+	root.PersistentFlags().String("name", "", "name")
+	api := &cobra.Command{Use: "api"}
+	tokens := &cobra.Command{Use: "tokens"}
+	tokens.AddCommand(&cobra.Command{Use: "list"})
+	serve := &cobra.Command{Use: "serve"}
+	root.AddCommand(api, tokens, serve, &cobra.Command{Use: "run"})
+	SetInvocationCommands(root, api, tokens, serve)
+	t.Cleanup(func() { SetInvocationCommands(oldRoot, oldAPI, oldTokens, oldServe) })
+}
 
 func TestIsServeInvocationCommandParsing(t *testing.T) {
+	installInvocationTestCommands(t)
 	for _, tc := range []struct {
 		args []string
 		want bool
@@ -22,6 +42,7 @@ func TestIsServeInvocationCommandParsing(t *testing.T) {
 }
 
 func TestTokensInvocationIsCommandScoped(t *testing.T) {
+	installInvocationTestCommands(t)
 	for _, tc := range []struct {
 		args []string
 		want bool

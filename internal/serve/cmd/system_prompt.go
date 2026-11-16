@@ -1,9 +1,9 @@
 package cmd
 
 import (
-	"sync"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/spf13/cobra"
 )
@@ -79,7 +79,7 @@ var newSystemPromptCmdOnce sync.Once
 
 func NewSystemPromptCmd() *cobra.Command {
 	newSystemPromptCmdOnce.Do(func() {
-	systemPromptCmd.Flags().StringP("session", "s", "", "Print the prompt for this session (id or hash prefix). Defaults shown if the session has no override.")
+		systemPromptCmd.Flags().StringP("session", "s", "", "Print the prompt for this session (id or hash prefix). Defaults shown if the session has no override.")
 	})
-	return systemPromptCmd
+	return deepFreshCmd(systemPromptCmd)
 }

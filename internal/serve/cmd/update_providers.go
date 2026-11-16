@@ -1,9 +1,9 @@
 package cmd
 
 import (
-	"sync"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"charm.land/lipgloss/v2"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -38,56 +38,65 @@ rush update-providers --source=hyper
 rush update-providers --source=hyper https://hyper.example.com
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// NOTE(@andreynering): We want to skip logging output do stdout here.
-		slog.SetDefault(slog.New(slog.DiscardHandler))
-
-		var pathOrURL string
-		if len(args) > 0 {
-			pathOrURL = args[0]
-		}
-
-		var err error
-		switch updateProvidersSource {
-		case "catwalk":
-			err = config.UpdateProviders(pathOrURL)
-		case "hyper":
-			err = config.UpdateHyper(pathOrURL)
-		default:
-			return fmt.Errorf("invalid source %q, must be 'catwalk' or 'hyper'", updateProvidersSource)
-		}
-
-		if err != nil {
-			return err
-		}
-
-		// NOTE(@andreynering): This style is more-or-less copied from Fang's
-		// error message, adapted for success.
-		headerStyle := lipgloss.NewStyle().
-			Foreground(charmtone.Butter).
-			Background(charmtone.Guac).
-			Bold(true).
-			Padding(0, 1).
-			Margin(1).
-			MarginLeft(2).
-			SetString("SUCCESS")
-		textStyle := lipgloss.NewStyle().
-			MarginLeft(2).
-			SetString(fmt.Sprintf("%s provider updated successfully.", updateProvidersSource))
-
-		fmt.Printf("%s\n%s\n\n", headerStyle.Render(), textStyle.Render())
-		return nil
+		return runUpdateProvidersWithSource(cmd, args, updateProvidersSource)
 	},
 }
 
-// NewUpdateProvidersCmd returns the rush updateProvidersCmd command tree, registering its flags and children
-// exactly once (former package init body; lane K2 of the sprint0 cmd split
-// removed package init registration). The command object itself is a package
-// var that only this constructor mutates.
+func runUpdateProvidersWithSource(cmd *cobra.Command, args []string, source string) error {
+	// NOTE(@andreynering): We want to skip logging output do stdout here.
+	slog.SetDefault(slog.New(slog.DiscardHandler))
+
+	var pathOrURL string
+	if len(args) > 0 {
+		pathOrURL = args[0]
+	}
+
+	var err error
+	switch source {
+	case "catwalk":
+		err = config.UpdateProviders(pathOrURL)
+	case "hyper":
+		err = config.UpdateHyper(pathOrURL)
+	default:
+		return fmt.Errorf("invalid source %q, must be 'catwalk' or 'hyper'", source)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	// NOTE(@andreynering): This style is more-or-less copied from Fang's
+	// error message, adapted for success.
+	headerStyle := lipgloss.NewStyle().
+		Foreground(charmtone.Butter).
+		Background(charmtone.Guac).
+		Bold(true).
+		Padding(0, 1).
+		Margin(1).
+		MarginLeft(2).
+		SetString("SUCCESS")
+	textStyle := lipgloss.NewStyle().
+		MarginLeft(2).
+		SetString(fmt.Sprintf("%s provider updated successfully.", source))
+
+	fmt.Printf("%s\n%s\n\n", headerStyle.Render(), textStyle.Render())
+	return nil
+}
+
 var newUpdateProvidersCmdOnce sync.Once
 
 func NewUpdateProvidersCmd() *cobra.Command {
 	newUpdateProvidersCmdOnce.Do(func() {
-	updateProvidersCmd.Flags().StringVar(&updateProvidersSource, "source", "catwalk", "Provider source to update (catwalk or hyper)")
+		originalSource := updateProvidersSource
+		updateProvidersCmd.Flags().StringVar(&updateProvidersSource, "source", "catwalk", "Provider source to update (catwalk or hyper)")
+		updateProvidersSource = originalSource
 	})
-	return updateProvidersCmd
+	var source string
+	fresh := deepFreshCmdRebind(updateProvidersCmd, map[string]bool{"source": true}, func(fresh *cobra.Command) {
+		fresh.Flags().StringVar(&source, "source", "catwalk", "Provider source to update (catwalk or hyper)")
+	})
+	fresh.RunE = func(cmd *cobra.Command, args []string) error {
+		return runUpdateProvidersWithSource(cmd, args, source)
+	}
+	return fresh
 }

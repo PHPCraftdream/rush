@@ -1,14 +1,14 @@
 package cmd
 
 import (
-	"sync"
 	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/google/uuid"
@@ -55,6 +55,23 @@ func validateTokenID(id string) error {
 	return nil
 }
 
+func legacyTokenCreateOptions() tokenCreateOptions {
+	return tokenCreateOptions{
+		name: tokensName, permission: tokensPermission, expires: tokensExpires,
+		pinSession: tokensPinSession, scopes: tokensScopes, batchTools: tokensBatchTools,
+		batch: tokensBatch, maxRoots: tokensMaxRoots, maxParallel: tokensMaxParallel,
+		json: tokensJSON,
+	}
+}
+
+type tokenCreateOptions struct {
+	name, permission, expires, pinSession string
+	scopes, batchTools                    []string
+	batch                                 bool
+	maxRoots, maxParallel                 int
+	json                                  bool
+}
+
 var tokensCreateCmd = &cobra.Command{
 	Use:     "create",
 	Short:   "Create an API bearer token",
@@ -62,87 +79,91 @@ var tokensCreateCmd = &cobra.Command{
 	Example: "rush tokens create --name ci --scope run --expires 30d\nrush tokens create --name worker --batch --max-roots 4",
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		expires, err := parseTokenExpiry(tokensExpires, time.Now())
+		return runTokensCreate(cmd, legacyTokenCreateOptions())
+	},
+}
+
+func runTokensCreate(cmd *cobra.Command, options tokenCreateOptions) error {
+	expires, err := parseTokenExpiry(options.expires, time.Now())
+	if err != nil {
+		return tokenUsageError(fmt.Errorf("invalid expiry"))
+	}
+	scopes := options.scopes
+	if len(scopes) == 0 {
+		scopes = []string{"run"}
+	}
+	if strings.TrimSpace(options.name) == "" {
+		return tokenUsageError(fmt.Errorf("token name is required"))
+	}
+	seen := map[string]bool{}
+	for _, scope := range scopes {
+		if scope != "read" && scope != "run" && scope != "config" && scope != "admin" {
+			return tokenUsageError(fmt.Errorf("invalid scope (allowed: read, run, config, admin)"))
+		}
+		seen[scope] = true
+	}
+	permission := options.permission
+	if permission == "" {
+		permission = "ask"
+	}
+	if permission != "ask" && permission != "readonly" && permission != "auto" {
+		return tokenUsageError(fmt.Errorf("invalid permission (allowed: ask, readonly, auto)"))
+	}
+	if permission == "auto" && !seen["admin"] {
+		return tokenUsageError(fmt.Errorf("auto permission requires admin scope"))
+	}
+	if options.batch && options.pinSession != "" {
+		return tokenUsageError(fmt.Errorf("--batch cannot be combined with --pin-session"))
+	}
+	binding := config.APITokenBinding{Kind: "none"}
+	if options.pinSession != "" {
+		cwd, err := cmd.InheritedFlags().GetString("cwd")
+		if err != nil || cwd == "" {
+			return tokenUsageError(fmt.Errorf("--pin-session requires --cwd"))
+		}
+		workspace, err := config.CanonicalAPIWorkspace(cwd)
 		if err != nil {
-			return tokenUsageError(fmt.Errorf("invalid expiry"))
+			return tokenUsageError(fmt.Errorf("invalid --cwd: %w", err))
 		}
-		scopes := tokensScopes
-		if len(scopes) == 0 {
-			scopes = []string{"run"}
+		sessionID := options.pinSession
+		create := sessionID == "new"
+		if create {
+			sessionID = uuid.NewString()
 		}
-		if strings.TrimSpace(tokensName) == "" {
-			return tokenUsageError(fmt.Errorf("token name is required"))
+		binding = config.APITokenBinding{Kind: "session", Pin: &config.APITokenPinBinding{Session: sessionID, Workspace: workspace, Create: create}}
+	}
+	switch {
+	case options.batch:
+		if seen["admin"] {
+			return tokenUsageError(fmt.Errorf("--batch cannot be combined with the admin scope"))
 		}
-		seen := map[string]bool{}
-		for _, scope := range scopes {
-			if scope != "read" && scope != "run" && scope != "config" && scope != "admin" {
-				return tokenUsageError(fmt.Errorf("invalid scope (allowed: read, run, config, admin)"))
-			}
-			seen[scope] = true
+		batchBinding, err := tokenBatchBinding(options.batchTools, options.maxRoots, options.maxParallel)
+		if err != nil {
+			return tokenUsageError(err)
 		}
-		permission := tokensPermission
-		if permission == "" {
-			permission = "ask"
-		}
-		if permission != "ask" && permission != "readonly" && permission != "auto" {
-			return tokenUsageError(fmt.Errorf("invalid permission (allowed: ask, readonly, auto)"))
-		}
-		if permission == "auto" && !seen["admin"] {
-			return tokenUsageError(fmt.Errorf("auto permission requires admin scope"))
-		}
-		if tokensBatch && tokensPinSession != "" {
-			return tokenUsageError(fmt.Errorf("--batch cannot be combined with --pin-session"))
-		}
-		binding := config.APITokenBinding{Kind: "none"}
-		if tokensPinSession != "" {
-			cwd, err := cmd.InheritedFlags().GetString("cwd")
-			if err != nil || cwd == "" {
-				return tokenUsageError(fmt.Errorf("--pin-session requires --cwd"))
-			}
-			workspace, err := config.CanonicalAPIWorkspace(cwd)
-			if err != nil {
-				return tokenUsageError(fmt.Errorf("invalid --cwd: %w", err))
-			}
-			sessionID := tokensPinSession
-			create := sessionID == "new"
-			if create {
-				sessionID = uuid.NewString()
-			}
-			binding = config.APITokenBinding{Kind: "session", Pin: &config.APITokenPinBinding{Session: sessionID, Workspace: workspace, Create: create}}
-		}
-		switch {
-		case tokensBatch:
-			if seen["admin"] {
-				return tokenUsageError(fmt.Errorf("--batch cannot be combined with the admin scope"))
-			}
-			batchBinding, err := tokenBatchBinding(tokensBatchTools, tokensMaxRoots, tokensMaxParallel)
-			if err != nil {
-				return tokenUsageError(err)
-			}
-			binding = batchBinding
-		case len(tokensBatchTools) > 0 || tokensMaxRoots != 0 || tokensMaxParallel != 0:
-			return tokenUsageError(fmt.Errorf("--tools, --max-roots and --max-parallel require --batch"))
-		}
-		plain, record, err := config.GlobalAPITokenStore().CreateAPITokenWithBinding(tokensName, scopes, permission, expires, binding)
+		binding = batchBinding
+	case len(options.batchTools) > 0 || options.maxRoots != 0 || options.maxParallel != 0:
+		return tokenUsageError(fmt.Errorf("--tools, --max-roots and --max-parallel require --batch"))
+	}
+	plain, record, err := config.GlobalAPITokenStore().CreateAPITokenWithBinding(options.name, scopes, permission, expires, binding)
+	if err != nil {
+		return tokenStoreError(err)
+	}
+	if options.json {
+		fmt.Fprintln(cmd.ErrOrStderr(), "API token created; secret is printed once in JSON output")
+		data, err := json.Marshal(struct {
+			Token  string          `json:"token"`
+			Record config.APIToken `json:"record"`
+		}{plain, record})
 		if err != nil {
 			return tokenStoreError(err)
 		}
-		if tokensJSON {
-			fmt.Fprintln(cmd.ErrOrStderr(), "API token created; secret is printed once in JSON output")
-			data, err := json.Marshal(struct {
-				Token  string          `json:"token"`
-				Record config.APIToken `json:"record"`
-			}{plain, record})
-			if err != nil {
-				return tokenStoreError(err)
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), string(data))
-		} else {
-			fmt.Fprintln(cmd.ErrOrStderr(), "API token created; secret is printed once")
-			fmt.Fprintln(cmd.OutOrStdout(), plain)
-		}
-		return nil
-	},
+		fmt.Fprintln(cmd.OutOrStdout(), string(data))
+	} else {
+		fmt.Fprintln(cmd.ErrOrStderr(), "API token created; secret is printed once")
+		fmt.Fprintln(cmd.OutOrStdout(), plain)
+	}
+	return nil
 }
 
 var tokensListCmd = &cobra.Command{
@@ -150,23 +171,27 @@ var tokensListCmd = &cobra.Command{
 	Long:    "List API token metadata without secrets or credential digests.\n\nExit codes: 0 success, 1 store or I/O error, 2 usage or validation error.",
 	Example: "rush tokens list --json", Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		records, err := config.GlobalAPITokenStore().ListAPITokens()
-		if err != nil {
-			return tokenStoreError(err)
-		}
-		if tokensJSON {
-			b, e := json.Marshal(records)
-			if e != nil {
-				return tokenStoreError(e)
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), string(b))
-			return nil
-		}
-		for _, r := range records {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", r.ID, r.Name, strings.Join(r.Scopes, ","), tokenBindingPresentation(r.Binding))
-		}
-		return nil
+		return runTokensList(cmd, tokensJSON)
 	},
+}
+
+func runTokensList(cmd *cobra.Command, jsonOutput bool) error {
+	records, err := config.GlobalAPITokenStore().ListAPITokens()
+	if err != nil {
+		return tokenStoreError(err)
+	}
+	if jsonOutput {
+		b, e := json.Marshal(records)
+		if e != nil {
+			return tokenStoreError(e)
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), string(b))
+		return nil
+	}
+	for _, r := range records {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", r.ID, r.Name, strings.Join(r.Scopes, ","), tokenBindingPresentation(r.Binding))
+	}
+	return nil
 }
 
 var tokensShowCmd = &cobra.Command{
@@ -174,30 +199,34 @@ var tokensShowCmd = &cobra.Command{
 	Long:    "Show a token record by id; the secret and credential digest are never available after creation.\n\nExit codes: 0 success, 1 store or I/O error, 2 usage or validation error, 4 token not found.",
 	Example: "rush tokens show 12abcdef", Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := validateTokenID(args[0]); err != nil {
-			return err
-		}
-		r, err := config.GlobalAPITokenStore().ShowAPIToken(args[0])
+		return runTokensShow(cmd, args, tokensJSON)
+	},
+}
+
+func runTokensShow(cmd *cobra.Command, args []string, jsonOutput bool) error {
+	if err := validateTokenID(args[0]); err != nil {
+		return err
+	}
+	r, err := config.GlobalAPITokenStore().ShowAPIToken(args[0])
+	if err != nil {
+		return tokenStoreError(err)
+	}
+	if jsonOutput {
+		b, err := json.MarshalIndent(r, "", "  ")
 		if err != nil {
 			return tokenStoreError(err)
 		}
-		if tokensJSON {
-			b, err := json.MarshalIndent(r, "", "  ")
-			if err != nil {
-				return tokenStoreError(err)
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), string(b))
-		} else {
-			fmt.Fprintf(cmd.OutOrStdout(), "ID: %s\nName: %s\nScopes: %s\nPermission: %s\nBinding: %s\nCreated: %s\n", r.ID, r.Name, strings.Join(r.Scopes, ","), r.Permission, tokenBindingPresentation(r.Binding), r.Created.Format(time.RFC3339))
-			if r.Expires != nil {
-				fmt.Fprintf(cmd.OutOrStdout(), "Expires: %s\n", r.Expires.Format(time.RFC3339))
-			}
-			if r.RevokedAt != nil {
-				fmt.Fprintf(cmd.OutOrStdout(), "Revoked: %s\n", r.RevokedAt.Format(time.RFC3339))
-			}
+		fmt.Fprintln(cmd.OutOrStdout(), string(b))
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "ID: %s\nName: %s\nScopes: %s\nPermission: %s\nBinding: %s\nCreated: %s\n", r.ID, r.Name, strings.Join(r.Scopes, ","), r.Permission, tokenBindingPresentation(r.Binding), r.Created.Format(time.RFC3339))
+		if r.Expires != nil {
+			fmt.Fprintf(cmd.OutOrStdout(), "Expires: %s\n", r.Expires.Format(time.RFC3339))
 		}
-		return nil
-	},
+		if r.RevokedAt != nil {
+			fmt.Fprintf(cmd.OutOrStdout(), "Revoked: %s\n", r.RevokedAt.Format(time.RFC3339))
+		}
+	}
+	return nil
 }
 
 var tokensRevokeCmd = &cobra.Command{
@@ -217,7 +246,6 @@ var tokensCmd = &cobra.Command{
 	Long:    "Create, inspect, list and revoke user-global API tokens.\n\nExit codes: 0 success, 1 store or I/O error, 2 usage or validation error, 4 token not found.",
 	Example: "rush tokens list", Args: cobra.NoArgs,
 }
-
 
 func parseTokenExpiry(value string, now time.Time) (*time.Time, error) {
 	if value == "" {
@@ -254,27 +282,73 @@ func parseTokenExpiry(value string, now time.Time) (*time.Time, error) {
 
 func tokenUsageError(err error) error { return cliout.NewTokenCLIError(2, err) }
 
-// NewTokensCmd returns the rush tokensCmd command tree, registering its flags and children
-// exactly once (former package init body; lane K2 of the sprint0 cmd split
-// removed package init registration). The command object itself is a package
-// var that only this constructor mutates.
 var newTokensCmdOnce sync.Once
 
 func NewTokensCmd() *cobra.Command {
 	newTokensCmdOnce.Do(func() {
-	tokensCreateCmd.Flags().StringVar(&tokensPinSession, "pin-session", "", "Bind to one session ID, or new to generate one (requires --cwd)")
-	tokensCreateCmd.Flags().BoolVar(&tokensBatch, "batch", false, "Bind to batch intake: the token submits tasks and batches only; session runs, creation and forks are refused (excludes --pin-session and admin scope)")
-	tokensCreateCmd.Flags().StringSliceVar(&tokensBatchTools, "tools", nil, "With --batch: extra exact tool names the token may submit besides agent (repeatable, no wildcards)")
-	tokensCreateCmd.Flags().IntVar(&tokensMaxRoots, "max-roots", 0, "With --batch: live batch roots at once (0 = server default)")
-	tokensCreateCmd.Flags().IntVar(&tokensMaxParallel, "max-parallel", 0, "With --batch: parallel leaves per batch (0 = server default)")
-	tokensCreateCmd.Flags().StringVar(&tokensName, "name", "", "Human-readable token name")
-	tokensCreateCmd.Flags().StringSliceVar(&tokensScopes, "scope", []string{"run"}, "Repeated scopes: read, run, config, admin")
-	tokensCreateCmd.Flags().StringVar(&tokensPermission, "permission", "ask", "Permission mode: ask, readonly, auto")
-	tokensCreateCmd.Flags().StringVar(&tokensExpires, "expires", "", "Expiry: duration (30d) or RFC3339 timestamp")
-	tokensCreateCmd.Flags().BoolVar(&tokensJSON, "json", false, "Output JSON")
-	tokensListCmd.Flags().BoolVar(&tokensJSON, "json", false, "Output JSON")
-	tokensShowCmd.Flags().BoolVar(&tokensJSON, "json", false, "Output JSON")
-	tokensCmd.AddCommand(tokensCreateCmd, tokensListCmd, tokensShowCmd, tokensRevokeCmd)
+		originalJSON, originalName := tokensJSON, tokensName
+		originalPermission, originalExpires := tokensPermission, tokensExpires
+		originalPinSession, originalBatch := tokensPinSession, tokensBatch
+		originalScopes, originalBatchTools := tokensScopes, tokensBatchTools
+		originalMaxRoots, originalMaxParallel := tokensMaxRoots, tokensMaxParallel
+		tokensCreateCmd.Flags().StringVar(&tokensPinSession, "pin-session", "", "Bind to one session ID, or new to generate one (requires --cwd)")
+		tokensCreateCmd.Flags().BoolVar(&tokensBatch, "batch", false, "Bind to batch intake: the token submits tasks and batches only; session runs, creation and forks are refused (excludes --pin-session and admin scope)")
+		tokensCreateCmd.Flags().StringSliceVar(&tokensBatchTools, "tools", nil, "With --batch: extra exact tool names the token may submit besides agent (repeatable, no wildcards)")
+		tokensCreateCmd.Flags().IntVar(&tokensMaxRoots, "max-roots", 0, "With --batch: live batch roots at once (0 = server default)")
+		tokensCreateCmd.Flags().IntVar(&tokensMaxParallel, "max-parallel", 0, "With --batch: parallel leaves per batch (0 = server default)")
+		tokensCreateCmd.Flags().StringVar(&tokensName, "name", "", "Human-readable token name")
+		tokensCreateCmd.Flags().StringSliceVar(&tokensScopes, "scope", []string{"run"}, "Repeated scopes: read, run, config, admin")
+		tokensCreateCmd.Flags().StringVar(&tokensPermission, "permission", "ask", "Permission mode: ask, readonly, auto")
+		tokensCreateCmd.Flags().StringVar(&tokensExpires, "expires", "", "Expiry: duration (30d) or RFC3339 timestamp")
+		tokensCreateCmd.Flags().BoolVar(&tokensJSON, "json", false, "Output JSON")
+		tokensListCmd.Flags().BoolVar(&tokensJSON, "json", false, "Output JSON")
+		tokensShowCmd.Flags().BoolVar(&tokensJSON, "json", false, "Output JSON")
+		tokensJSON, tokensName = originalJSON, originalName
+		tokensPermission, tokensExpires = originalPermission, originalExpires
+		tokensPinSession, tokensBatch = originalPinSession, originalBatch
+		tokensScopes, tokensBatchTools = originalScopes, originalBatchTools
+		tokensMaxRoots, tokensMaxParallel = originalMaxRoots, originalMaxParallel
+		tokensCmd.AddCommand(tokensCreateCmd, tokensListCmd, tokensShowCmd, tokensRevokeCmd)
 	})
-	return tokensCmd
+	var options tokenCreateOptions
+	var jsonOutput bool
+	fresh := deepFreshCmdRebind(tokensCmd, map[string]bool{
+		"pin-session": true, "batch": true, "tools": true, "max-roots": true,
+		"max-parallel": true, "name": true, "scope": true, "permission": true,
+		"expires": true, "json": true,
+	}, func(fresh *cobra.Command) {
+		create, _, _ := fresh.Find([]string{"create"})
+		create.Flags().StringVar(&options.pinSession, "pin-session", "", "Bind to one session ID, or new to generate one (requires --cwd)")
+		create.Flags().BoolVar(&options.batch, "batch", false, "Bind to batch intake: the token submits tasks and batches only; session runs, creation and forks are refused (excludes --pin-session and admin scope)")
+		create.Flags().StringSliceVar(&options.batchTools, "tools", nil, "With --batch: extra exact tool names the token may submit besides agent (repeatable, no wildcards)")
+		create.Flags().IntVar(&options.maxRoots, "max-roots", 0, "With --batch: live batch roots at once (0 = server default)")
+		create.Flags().IntVar(&options.maxParallel, "max-parallel", 0, "With --batch: parallel leaves per batch (0 = server default)")
+		create.Flags().StringVar(&options.name, "name", "", "Human-readable token name")
+		create.Flags().StringSliceVar(&options.scopes, "scope", []string{"run"}, "Repeated scopes: read, run, config, admin")
+		create.Flags().StringVar(&options.permission, "permission", "ask", "Permission mode: ask, readonly, auto")
+		create.Flags().StringVar(&options.expires, "expires", "", "Expiry: duration (30d) or RFC3339 timestamp")
+		create.Flags().BoolVar(&jsonOutput, "json", false, "Output JSON")
+		list, _, _ := fresh.Find([]string{"list"})
+		list.Flags().BoolVar(&jsonOutput, "json", false, "Output JSON")
+		show, _, _ := fresh.Find([]string{"show"})
+		show.Flags().BoolVar(&jsonOutput, "json", false, "Output JSON")
+	})
+	for _, child := range fresh.Commands() {
+		switch child.Name() {
+		case "create":
+			child.RunE = func(cmd *cobra.Command, _ []string) error {
+				options.json = jsonOutput
+				return runTokensCreate(cmd, options)
+			}
+		case "list":
+			child.RunE = func(cmd *cobra.Command, _ []string) error {
+				return runTokensList(cmd, jsonOutput)
+			}
+		case "show":
+			child.RunE = func(cmd *cobra.Command, args []string) error {
+				return runTokensShow(cmd, args, jsonOutput)
+			}
+		}
+	}
+	return fresh
 }

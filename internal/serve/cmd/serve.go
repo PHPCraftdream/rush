@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
-	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
+	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+	cliproc "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -57,7 +57,6 @@ var (
 func serveAppOptions() []app.Option {
 	return []app.Option{app.RestrictMCPToCLI()}
 }
-
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
@@ -124,7 +123,11 @@ func watchServeSignals(ctx context.Context, cancel context.CancelFunc, signals <
 	}()
 }
 
-func runServe(cmd *cobra.Command, _ []string) error {
+func runServe(cmd *cobra.Command, args []string) error {
+	return runServeWithPinSpecs(cmd, args, servePinSpecs)
+}
+
+func runServeWithPinSpecs(cmd *cobra.Command, _ []string, pinSpecs []string) error {
 	if cmd.Context() == nil {
 		cmd.SetContext(context.Background())
 	}
@@ -142,8 +145,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	selfSigned, _ := cmd.Flags().GetBool("tls-self-signed")
 	sans, _ := cmd.Flags().GetStringSlice("tls-san")
 	flags := config.ServerListenerFlags{}
-	if len(servePinSpecs) > 0 {
-		pins, pinErr := parseServePinSpecs(servePinSpecs)
+	if len(pinSpecs) > 0 {
+		pins, pinErr := parseServePinSpecs(pinSpecs)
 		if pinErr != nil {
 			return cliout.NewTokenCLIError(2, pinErr)
 		}
@@ -470,24 +473,29 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// NewServeCmd returns the rush serveCmd command tree, registering its flags and children
-// exactly once (former package init body; lane K2 of the sprint0 cmd split
-// removed package init registration). The command object itself is a package
-// var that only this constructor mutates.
 var newServeCmdOnce sync.Once
 
 func NewServeCmd() *cobra.Command {
 	newServeCmdOnce.Do(func() {
-	serveCmd.Flags().String("listen", "", "Override the first configured listener address")
-	serveCmd.Flags().String("tls-cert", "", "PEM server certificate for the first listener")
-	serveCmd.Flags().String("tls-key", "", "PEM server private key for the first listener")
-	serveCmd.Flags().String("client-ca", "", "PEM client CA; require and verify client certificates")
-	serveCmd.Flags().Bool("tls-self-signed", false, "Generate or reuse a self-signed TLS certificate")
-	serveCmd.Flags().StringSlice("tls-san", nil, "Additional TLS subject alternative name (repeatable)")
-	serveCmd.Flags().Bool("allow-cleartext", false, "Allow cleartext on non-loopback listeners")
-	serveCmd.Flags().String("route", "", "Listener route: full (default) or batch (batch intake is the only work route on the first listener)")
-	serveCmd.Flags().Bool("print-config", false, "Print effective listener configuration without starting")
-	serveCmd.Flags().StringArrayVar(&servePinSpecs, "pin-session", nil, "Narrow a token to one session (TOKEN_ID=SESSION_ID)")
+		originalPinSpecs := append([]string(nil), servePinSpecs...)
+		serveCmd.Flags().String("listen", "", "Override the first configured listener address")
+		serveCmd.Flags().String("tls-cert", "", "PEM server certificate for the first listener")
+		serveCmd.Flags().String("tls-key", "", "PEM server private key for the first listener")
+		serveCmd.Flags().String("client-ca", "", "PEM client CA; require and verify client certificates")
+		serveCmd.Flags().Bool("tls-self-signed", false, "Generate or reuse a self-signed TLS certificate")
+		serveCmd.Flags().StringSlice("tls-san", nil, "Additional TLS subject alternative name (repeatable)")
+		serveCmd.Flags().Bool("allow-cleartext", false, "Allow cleartext on non-loopback listeners")
+		serveCmd.Flags().String("route", "", "Listener route: full (default) or batch (batch intake is the only work route on the first listener)")
+		serveCmd.Flags().Bool("print-config", false, "Print effective listener configuration without starting")
+		serveCmd.Flags().StringArrayVar(&servePinSpecs, "pin-session", nil, "Narrow a token to one session (TOKEN_ID=SESSION_ID)")
+		servePinSpecs = originalPinSpecs
 	})
-	return serveCmd
+	var pinSpecs []string
+	fresh := deepFreshCmdRebind(serveCmd, map[string]bool{"pin-session": true}, func(fresh *cobra.Command) {
+		fresh.Flags().StringArrayVar(&pinSpecs, "pin-session", nil, "Narrow a token to one session (TOKEN_ID=SESSION_ID)")
+	})
+	fresh.RunE = func(cmd *cobra.Command, args []string) error {
+		return runServeWithPinSpecs(cmd, args, pinSpecs)
+	}
+	return fresh
 }

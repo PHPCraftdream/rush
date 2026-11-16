@@ -6,10 +6,10 @@
 package cmd
 
 import (
-	"sync"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/spf13/cobra"
 )
@@ -138,8 +138,8 @@ var newGeminiInitCmdOnce sync.Once
 
 func NewGeminiInitCmd() *cobra.Command {
 	newGeminiInitCmdOnce.Do(func() {
-	geminiInitCmd.Flags().Bool("global", false, "Install into ~/.gemini/commands/ (available in every project). Default when neither --global nor --local is given.")
-	geminiInitCmd.Flags().Bool("local", false, "Install into the current project's .gemini/commands/ instead of ~/.gemini/commands/.")
+		geminiInitCmd.Flags().Bool("global", false, "Install into ~/.gemini/commands/ (available in every project). Default when neither --global nor --local is given.")
+		geminiInitCmd.Flags().Bool("local", false, "Install into the current project's .gemini/commands/ instead of ~/.gemini/commands/.")
 	})
-	return geminiInitCmd
+	return deepFreshCmd(geminiInitCmd)
 }

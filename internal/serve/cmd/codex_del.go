@@ -3,11 +3,11 @@
 package cmd
 
 import (
-	"sync"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 )
@@ -149,8 +149,8 @@ var newCodexDelCmdOnce sync.Once
 
 func NewCodexDelCmd() *cobra.Command {
 	newCodexDelCmdOnce.Do(func() {
-	codexDelCmd.Flags().Bool("global", false, "Remove from ~/.agents/skills/. Default when neither --global nor --local is given.")
-	codexDelCmd.Flags().Bool("local", false, "Remove from the current project's .agents/skills/ instead of ~/.agents/skills/.")
+		codexDelCmd.Flags().Bool("global", false, "Remove from ~/.agents/skills/. Default when neither --global nor --local is given.")
+		codexDelCmd.Flags().Bool("local", false, "Remove from the current project's .agents/skills/ instead of ~/.agents/skills/.")
 	})
-	return codexDelCmd
+	return deepFreshCmd(codexDelCmd)
 }

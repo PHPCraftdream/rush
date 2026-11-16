@@ -2,10 +2,10 @@
 package cmd
 
 import (
-	"sync"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/spf13/cobra"
 )
@@ -24,7 +24,6 @@ func runOpenCodeDel(cmd *cobra.Command, _ []string) error {
 	}
 	return removeMarkdownCommands(dir)
 }
-
 
 func nativeCommandDir(cmd *cobra.Command, globalPath, localPath string) (string, error) {
 	global, _ := cmd.Flags().GetBool("global")
@@ -56,16 +55,12 @@ func removeMarkdownCommands(dir string) error {
 	return nil
 }
 
-// NewOpencodeDelCmd returns the rush opencodeDelCmd command tree, registering its flags and children
-// exactly once (former package init body; lane K2 of the sprint0 cmd split
-// removed package init registration). The command object itself is a package
-// var that only this constructor mutates.
 var newOpencodeDelCmdOnce sync.Once
 
 func NewOpencodeDelCmd() *cobra.Command {
 	newOpencodeDelCmdOnce.Do(func() {
-	opencodeDelCmd.Flags().Bool("global", false, "Remove globally (default).")
-	opencodeDelCmd.Flags().Bool("local", false, "Remove from the current project's .opencode/commands/.")
+		opencodeDelCmd.Flags().Bool("global", false, "Remove globally (default).")
+		opencodeDelCmd.Flags().Bool("local", false, "Remove from the current project's .opencode/commands/.")
 	})
-	return opencodeDelCmd
+	return deepFreshCmd(opencodeDelCmd)
 }

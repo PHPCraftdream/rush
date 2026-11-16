@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"github.com/charmbracelet/x/term"
-	"sync"
 	"context"
 	"fmt"
 	"io"
@@ -11,15 +9,17 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
-
 	"charm.land/log/v2"
+	"github.com/charmbracelet/x/term"
+	"github.com/spf13/cobra"
+
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
+	cliproc "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
 	"github.com/PHPCraftdream/rush/internal/store/message"
-	"github.com/spf13/cobra"
 )
 
 var runCmd = &cobra.Command{
@@ -403,71 +403,71 @@ var newRunCmdOnce sync.Once
 
 func NewRunCmd() *cobra.Command {
 	newRunCmdOnce.Do(func() {
-	// A failed/incomplete run returns an error to drive a non-zero exit code
-	// (see app.RunNonInteractive / runIncompleteError). That is a runtime
-	// outcome, not a usage mistake — don't dump the (very long) help text on
-	// it. The concise error still prints to stderr.
-	runCmd.SilenceUsage = true
-	runCmd.Flags().BoolP("quiet", "q", false, "Hide spinner")
-	runCmd.Flags().BoolP("verbose", "v", false, "Show logs")
-	runCmd.Flags().String("role", "", "REQUIRED. Built-in model slot smart|fast|worker|reviewer, or an exact configured custom role name.")
-	runCmd.Flags().String("effort", "", "Reasoning effort for this turn: low|medium|high. Applies to whichever slot --role picked. Not persisted by rush run.")
-	runCmd.Flags().Bool("stream", false, "Stream every assistant token to stdout. Default is terse: tool-call names on stderr + final answer on stdout.")
-	runCmd.Flags().Bool("json", false, "Emit one JSON object on stdout summarising the run (session_id, final_text, tool_calls, usage, duration, exit_reason). Mutually exclusive with --stream.")
-	runCmd.Flags().String("timeout", "0", "Abort the whole run after this total wall-clock duration (e.g. 30s, 5m, 900 — plain number = seconds), including active work and waits. On deadline Rush requests graceful cancellation; if the process remains alive 60s later, the hard backstop force-exits it. Default 0 means no explicit deadline, but a 6h total default cap still applies; streaming progress does not reset it. RUSH_RUN_DEFAULT_HARD_TIMEOUT overrides that cap. See --idle-timeout for the separate inactivity backstop.")
-	runCmd.Flags().String("idle-timeout", "15m", "End the run if the agent produces no activity (no streamed output, no tool call/result) for this long — a stuck tool call still counts as activity and is bounded separately. Terminal: unlike a provider stall on other rush entry points, this never silently retries. e.g. 5m, 900, 0 to disable. Default 15m.")
-	runCmd.Flags().Duration("stall-timeout", 30*60*time.Second, "Abort a turn that has made no durable progress (tool call/result, step finish, checkpoint) for this long (turn-stall abort policy). Default 30m; 0 disables the abort.")
-	runCmd.Flags().StringP("model", "m", "", "Model to use. Accepts 'model' or 'provider/model' to disambiguate models with the same name across providers")
-	runCmd.Flags().String("fast-model", "", "Fast model to use. If not provided, uses the default fast model for the provider")
-	runCmd.Flags().StringP("session", "s", "", "Session ID to continue OR create. If a session with this id exists it is continued; otherwise a new one is created with this id. Accepts a hash prefix for existing sessions only.")
-	runCmd.Flags().String("findings-from", "", "Append a 'Findings from previous review' block (review verdict, review text, warnings) read from another run's envelope to this run's prompt. Value: a session id (resolves <main-checkout>/.rush/stdin/<id>.out, the file 'rush run --worktree' writes; see 'rush result') or a path to an envelope file. Missing or invalid envelope fails the run BEFORE it starts. Example: rush run --role smart --session fix-2 --findings-from fix-1 \"fix every finding\"")
-	runCmd.Flags().Bool("fail-on-review", false, "Exit with code 3 when this run's automatic reviewer verdict is \"fail\". pass and pass_with_notes stay 0; a run with no reviewer pass keeps 0; a run that itself failed keeps its own exit code (1/124). The stdout envelope is unchanged — only the process exit code is affected. Read the review afterwards with 'rush result <session> --review'.")
-	runCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
-	runCmd.Flags().String("system-prompt", "", "Override the session's system prompt with this string (persisted on the session)")
-	runCmd.Flags().String("system-prompt-file", "", "Read the system prompt from this file (mutually exclusive with --system-prompt)")
-	// Fork patch (orchestrator UX): per-turn output-shape and sub-agent
-	// policy. Neither persists on the session.
-	runCmd.Flags().String("format", "", "Per-turn output-shape hint appended to the user prompt. Presets: 'json' (final answer must be a single JSON value, no fences, no prose) | 'json-schema:<file>' (json + conform to this schema) | '@<file>' (use file contents verbatim as the hint) | any other text (used as a freeform 'Output format:' instruction). With --json or --format json, the envelope's final_text is also post-processed to strip ```json fences and prose preamble; the original is preserved in assistant_notes.")
-	runCmd.Flags().String("agents", "", "Sub-agent dispatch policy for this run. Default (unset) = NO sub-agents: the `agent`/`agentic_fetch` tools are removed from the toolset for this non-interactive process (no UI to surface sub-agent work; a nested run burns tokens out of view). 'single' (same — explicit) | 'agent-allow' (opt in: tools present, model decides) | 'with-agents' (opt in + nudge the model to fan out). NOT an absolute guarantee: if --role smart is used AND a Worker model is configured, the `agent` tool is restored regardless of 'single' — a configured Worker always means orchestrator mode. `agentic_fetch` stays stripped either way.")
-	runCmd.Flags().Int("max-agent-depth", 2, "Maximum remaining agent delegation edges (0..32). Default 2.")
-	runCmd.Flags().String("aggregation", "", "How sub-agent fan-out output reaches the orchestrator. 'summary' (default — parent composes a wrap-up, sub-agent detail lives in DB only) | 'concat' (prompt-nudge: parent includes each sub-agent reply verbatim in final_text) | 'attach' (collect each sub-agent's last assistant text into envelope.sub_agent_outputs; final_text becomes a brief wrap-up). An always-on reduction-loss warning fires regardless when parent collapses sub-agent outputs to <40% of their combined size.")
-	// Fork patch: batch 8 — timeout extension flags.
-	runCmd.Flags().Bool("timeout-extends-on-progress", false, "Reset the per-turn stream watchdog deadline every time streaming progress occurs. Does not extend the total --timeout/default-cap run deadline. Default: false (static watchdog deadline).")
-	runCmd.Flags().String("timeout-hard-cap", "0", "Maximum wall-clock time the stream watchdog allows even with --timeout-extends-on-progress (e.g. 30s, 5m, 900 — plain number = seconds); watchdog-only, separate from the total run deadline. Default: 0 (no cap).")
-	// Fork patch: batch 24 — on-finish hook.
-	runCmd.Flags().String("on-finish", "", "Shell command to execute after the run completes. Environment variables: RUSH_SESSION_ID, RUSH_EXIT_REASON, RUSH_COST_USD, RUSH_TOKENS, RUSH_DURATION_SEC. Hook errors are printed to stderr but don't affect exit code.")
-	// Fork patch: batch 30 — runaway protection.
-	runCmd.Flags().String("max-cost", "", "Abort the run if total cost (USD) exceeds this value. e.g. 0.50, 2.00")
-	runCmd.Flags().String("max-tokens", "", "Abort the run if total prompt+completion tokens exceed this value. e.g. 100k, 1M, 500000")
-	// Fork patch: MCP servers default to OFF in CLI mode (see mcpAppOptions
-	// in root.go) unless mcp.<id>.enabled_in_cli=true; this is the one-off
-	// escape hatch for a run that needs a server rush would otherwise skip.
-	runCmd.Flags().Bool("all-mcp", false, `Force-start every configured, non-disabled MCP server for this run, ignoring each server's enabled_in_cli setting. Does not affect interactive TUI/web sessions, which always start every non-disabled server regardless of this flag.`)
-	// Fork patch (peak-hours bypass): --allow-peak-hours skips the per-provider
-	// peak_hours refusal for THIS invocation only. There is intentionally NO
-	// config-level "always allow" equivalent — the whole point is a conscious
-	// one-off override.
-	//
-	// WARNING: this flag must NEVER be added by an orchestrating agent on its
-	// own initiative. Only pass --allow-peak-hours when a human operator has
-	// explicitly asked, in this specific request, to override peak hours. An
-	// agent that adds this flag without an explicit human instruction is
-	// violating the operator's intent.
-	runCmd.Flags().Bool("allow-peak-hours", false, `Bypass the per-provider peak_hours refusal for this single invocation only. WARNING: this flag must NEVER be added by an orchestrating agent on its own initiative — only pass it when a human operator has explicitly asked, in this specific request, to override peak hours. An agent that adds this flag without an explicit human instruction is violating the operator's intent. There is no persistent config-level equivalent; the override is conscious and one-off by design.`)
-	runCmd.Flags().Bool("no-supervision", false, "Disable the periodic root-session supervision check-in for this run (default on, fires after 5m of chat silence while background jobs/delegations are still open; never fires with no open work or mid-turn).")
-	runCmd.Flags().String("supervision-interval", "", "Override the supervision check-in's initial/reset silence interval (e.g. 10m, 600 — plain number = seconds). Empty = config's supervision_interval_minutes or the built-in 5m default.")
-	runCmd.Flags().String("job-timeout", "", "Default terminate_and_wake deadline for background bash/run_command jobs that pass no explicit timeout (e.g. 2m, 90s — plain number = seconds). Empty = off (config's background_job_default_timeout_seconds can also set it; a per-call timeout always wins).")
-	// Fork patch (worktree delegation): run inside an isolated git
-	// worktree created/reused under the main checkout's worktrees/
-	// directory. See run_worktree.go.
-	runCmd.Flags().String("worktree", "", "Resolve or create the git worktree <main>/worktrees/<slug> and run this invocation with cwd inside it. The slug is a single path segment ([a-z0-9][a-z0-9._-]*). Reuses a registered worktree whose branch matches; refuses a path occupied by anything else or a branch mismatch (pass --branch to match). Defaults --session to the slug and mirrors stdout/stderr into <main>/.rush/stdin/<session>.{out,err}. Incompatible with --cwd and --data-dir. Manage with `rush worktree list` / `rush worktree remove <slug>`.")
-	runCmd.Flags().String("base", "", "With --worktree: the ref the worktree's branch is created from (default: the main checkout's HEAD). Ignored when the branch already exists. Requires --worktree.")
-	runCmd.Flags().String("branch", "", "With --worktree: the branch the worktree uses, created when missing (default: the slug). Required to match when reusing a worktree that sits on a different branch. Requires --worktree.")
-	runCmd.MarkFlagsMutuallyExclusive("session", "continue")
-	runCmd.MarkFlagsMutuallyExclusive("system-prompt", "system-prompt-file")
-	runCmd.MarkFlagsMutuallyExclusive("stream", "json")
+		// A failed/incomplete run returns an error to drive a non-zero exit code
+		// (see app.RunNonInteractive / runIncompleteError). That is a runtime
+		// outcome, not a usage mistake — don't dump the (very long) help text on
+		// it. The concise error still prints to stderr.
+		runCmd.SilenceUsage = true
+		runCmd.Flags().BoolP("quiet", "q", false, "Hide spinner")
+		runCmd.Flags().BoolP("verbose", "v", false, "Show logs")
+		runCmd.Flags().String("role", "", "REQUIRED. Built-in model slot smart|fast|worker|reviewer, or an exact configured custom role name.")
+		runCmd.Flags().String("effort", "", "Reasoning effort for this turn: low|medium|high. Applies to whichever slot --role picked. Not persisted by rush run.")
+		runCmd.Flags().Bool("stream", false, "Stream every assistant token to stdout. Default is terse: tool-call names on stderr + final answer on stdout.")
+		runCmd.Flags().Bool("json", false, "Emit one JSON object on stdout summarising the run (session_id, final_text, tool_calls, usage, duration, exit_reason). Mutually exclusive with --stream.")
+		runCmd.Flags().String("timeout", "0", "Abort the whole run after this total wall-clock duration (e.g. 30s, 5m, 900 — plain number = seconds), including active work and waits. On deadline Rush requests graceful cancellation; if the process remains alive 60s later, the hard backstop force-exits it. Default 0 means no explicit deadline, but a 6h total default cap still applies; streaming progress does not reset it. RUSH_RUN_DEFAULT_HARD_TIMEOUT overrides that cap. See --idle-timeout for the separate inactivity backstop.")
+		runCmd.Flags().String("idle-timeout", "15m", "End the run if the agent produces no activity (no streamed output, no tool call/result) for this long — a stuck tool call still counts as activity and is bounded separately. Terminal: unlike a provider stall on other rush entry points, this never silently retries. e.g. 5m, 900, 0 to disable. Default 15m.")
+		runCmd.Flags().Duration("stall-timeout", 30*60*time.Second, "Abort a turn that has made no durable progress (tool call/result, step finish, checkpoint) for this long (turn-stall abort policy). Default 30m; 0 disables the abort.")
+		runCmd.Flags().StringP("model", "m", "", "Model to use. Accepts 'model' or 'provider/model' to disambiguate models with the same name across providers")
+		runCmd.Flags().String("fast-model", "", "Fast model to use. If not provided, uses the default fast model for the provider")
+		runCmd.Flags().StringP("session", "s", "", "Session ID to continue OR create. If a session with this id exists it is continued; otherwise a new one is created with this id. Accepts a hash prefix for existing sessions only.")
+		runCmd.Flags().String("findings-from", "", "Append a 'Findings from previous review' block (review verdict, review text, warnings) read from another run's envelope to this run's prompt. Value: a session id (resolves <main-checkout>/.rush/stdin/<id>.out, the file 'rush run --worktree' writes; see 'rush result') or a path to an envelope file. Missing or invalid envelope fails the run BEFORE it starts. Example: rush run --role smart --session fix-2 --findings-from fix-1 \"fix every finding\"")
+		runCmd.Flags().Bool("fail-on-review", false, "Exit with code 3 when this run's automatic reviewer verdict is \"fail\". pass and pass_with_notes stay 0; a run with no reviewer pass keeps 0; a run that itself failed keeps its own exit code (1/124). The stdout envelope is unchanged — only the process exit code is affected. Read the review afterwards with 'rush result <session> --review'.")
+		runCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
+		runCmd.Flags().String("system-prompt", "", "Override the session's system prompt with this string (persisted on the session)")
+		runCmd.Flags().String("system-prompt-file", "", "Read the system prompt from this file (mutually exclusive with --system-prompt)")
+		// Fork patch (orchestrator UX): per-turn output-shape and sub-agent
+		// policy. Neither persists on the session.
+		runCmd.Flags().String("format", "", "Per-turn output-shape hint appended to the user prompt. Presets: 'json' (final answer must be a single JSON value, no fences, no prose) | 'json-schema:<file>' (json + conform to this schema) | '@<file>' (use file contents verbatim as the hint) | any other text (used as a freeform 'Output format:' instruction). With --json or --format json, the envelope's final_text is also post-processed to strip ```json fences and prose preamble; the original is preserved in assistant_notes.")
+		runCmd.Flags().String("agents", "", "Sub-agent dispatch policy for this run. Default (unset) = NO sub-agents: the `agent`/`agentic_fetch` tools are removed from the toolset for this non-interactive process (no UI to surface sub-agent work; a nested run burns tokens out of view). 'single' (same — explicit) | 'agent-allow' (opt in: tools present, model decides) | 'with-agents' (opt in + nudge the model to fan out). NOT an absolute guarantee: if --role smart is used AND a Worker model is configured, the `agent` tool is restored regardless of 'single' — a configured Worker always means orchestrator mode. `agentic_fetch` stays stripped either way.")
+		runCmd.Flags().Int("max-agent-depth", 2, "Maximum remaining agent delegation edges (0..32). Default 2.")
+		runCmd.Flags().String("aggregation", "", "How sub-agent fan-out output reaches the orchestrator. 'summary' (default — parent composes a wrap-up, sub-agent detail lives in DB only) | 'concat' (prompt-nudge: parent includes each sub-agent reply verbatim in final_text) | 'attach' (collect each sub-agent's last assistant text into envelope.sub_agent_outputs; final_text becomes a brief wrap-up). An always-on reduction-loss warning fires regardless when parent collapses sub-agent outputs to <40% of their combined size.")
+		// Fork patch: batch 8 — timeout extension flags.
+		runCmd.Flags().Bool("timeout-extends-on-progress", false, "Reset the per-turn stream watchdog deadline every time streaming progress occurs. Does not extend the total --timeout/default-cap run deadline. Default: false (static watchdog deadline).")
+		runCmd.Flags().String("timeout-hard-cap", "0", "Maximum wall-clock time the stream watchdog allows even with --timeout-extends-on-progress (e.g. 30s, 5m, 900 — plain number = seconds); watchdog-only, separate from the total run deadline. Default: 0 (no cap).")
+		// Fork patch: batch 24 — on-finish hook.
+		runCmd.Flags().String("on-finish", "", "Shell command to execute after the run completes. Environment variables: RUSH_SESSION_ID, RUSH_EXIT_REASON, RUSH_COST_USD, RUSH_TOKENS, RUSH_DURATION_SEC. Hook errors are printed to stderr but don't affect exit code.")
+		// Fork patch: batch 30 — runaway protection.
+		runCmd.Flags().String("max-cost", "", "Abort the run if total cost (USD) exceeds this value. e.g. 0.50, 2.00")
+		runCmd.Flags().String("max-tokens", "", "Abort the run if total prompt+completion tokens exceed this value. e.g. 100k, 1M, 500000")
+		// Fork patch: MCP servers default to OFF in CLI mode (see mcpAppOptions
+		// in root.go) unless mcp.<id>.enabled_in_cli=true; this is the one-off
+		// escape hatch for a run that needs a server rush would otherwise skip.
+		runCmd.Flags().Bool("all-mcp", false, `Force-start every configured, non-disabled MCP server for this run, ignoring each server's enabled_in_cli setting. Does not affect interactive TUI/web sessions, which always start every non-disabled server regardless of this flag.`)
+		// Fork patch (peak-hours bypass): --allow-peak-hours skips the per-provider
+		// peak_hours refusal for THIS invocation only. There is intentionally NO
+		// config-level "always allow" equivalent — the whole point is a conscious
+		// one-off override.
+		//
+		// WARNING: this flag must NEVER be added by an orchestrating agent on its
+		// own initiative. Only pass --allow-peak-hours when a human operator has
+		// explicitly asked, in this specific request, to override peak hours. An
+		// agent that adds this flag without an explicit human instruction is
+		// violating the operator's intent.
+		runCmd.Flags().Bool("allow-peak-hours", false, `Bypass the per-provider peak_hours refusal for this single invocation only. WARNING: this flag must NEVER be added by an orchestrating agent on its own initiative — only pass it when a human operator has explicitly asked, in this specific request, to override peak hours. An agent that adds this flag without an explicit human instruction is violating the operator's intent. There is no persistent config-level equivalent; the override is conscious and one-off by design.`)
+		runCmd.Flags().Bool("no-supervision", false, "Disable the periodic root-session supervision check-in for this run (default on, fires after 5m of chat silence while background jobs/delegations are still open; never fires with no open work or mid-turn).")
+		runCmd.Flags().String("supervision-interval", "", "Override the supervision check-in's initial/reset silence interval (e.g. 10m, 600 — plain number = seconds). Empty = config's supervision_interval_minutes or the built-in 5m default.")
+		runCmd.Flags().String("job-timeout", "", "Default terminate_and_wake deadline for background bash/run_command jobs that pass no explicit timeout (e.g. 2m, 90s — plain number = seconds). Empty = off (config's background_job_default_timeout_seconds can also set it; a per-call timeout always wins).")
+		// Fork patch (worktree delegation): run inside an isolated git
+		// worktree created/reused under the main checkout's worktrees/
+		// directory. See run_worktree.go.
+		runCmd.Flags().String("worktree", "", "Resolve or create the git worktree <main>/worktrees/<slug> and run this invocation with cwd inside it. The slug is a single path segment ([a-z0-9][a-z0-9._-]*). Reuses a registered worktree whose branch matches; refuses a path occupied by anything else or a branch mismatch (pass --branch to match). Defaults --session to the slug and mirrors stdout/stderr into <main>/.rush/stdin/<session>.{out,err}. Incompatible with --cwd and --data-dir. Manage with `rush worktree list` / `rush worktree remove <slug>`.")
+		runCmd.Flags().String("base", "", "With --worktree: the ref the worktree's branch is created from (default: the main checkout's HEAD). Ignored when the branch already exists. Requires --worktree.")
+		runCmd.Flags().String("branch", "", "With --worktree: the branch the worktree uses, created when missing (default: the slug). Required to match when reusing a worktree that sits on a different branch. Requires --worktree.")
+		runCmd.MarkFlagsMutuallyExclusive("session", "continue")
+		runCmd.MarkFlagsMutuallyExclusive("system-prompt", "system-prompt-file")
+		runCmd.MarkFlagsMutuallyExclusive("stream", "json")
 	})
-	return runCmd
+	return deepFreshCmd(runCmd)
 }
 
 // stdinReadGraceDefault bounds how long MaybePrependStdin waits for a named

@@ -6,13 +6,13 @@
 package cmd
 
 import (
-	"sync"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -50,7 +50,6 @@ a new run).`,
 	RunE:         runResultCmd,
 	SilenceUsage: true,
 }
-
 
 // addResultFlags registers result's flags. Kept as a named helper so
 // tests can build a fresh command with the same flag set.
@@ -196,7 +195,7 @@ var newResultCmdOnce sync.Once
 
 func NewResultCmd() *cobra.Command {
 	newResultCmdOnce.Do(func() {
-	addResultFlags(resultCmd)
+		addResultFlags(resultCmd)
 	})
-	return resultCmd
+	return deepFreshCmd(resultCmd)
 }

@@ -2,10 +2,10 @@
 package cmd
 
 import (
-	"sync"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/spf13/cobra"
 )
@@ -51,8 +51,8 @@ var newOmpInitCmdOnce sync.Once
 
 func NewOmpInitCmd() *cobra.Command {
 	newOmpInitCmdOnce.Do(func() {
-	ompInitCmd.Flags().Bool("global", false, "Install globally (default).")
-	ompInitCmd.Flags().Bool("local", false, "Install into the current project's .omp/commands/.")
+		ompInitCmd.Flags().Bool("global", false, "Install globally (default).")
+		ompInitCmd.Flags().Bool("local", false, "Install into the current project's .omp/commands/.")
 	})
-	return ompInitCmd
+	return deepFreshCmd(ompInitCmd)
 }

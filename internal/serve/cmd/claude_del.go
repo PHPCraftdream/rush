@@ -1,11 +1,11 @@
 package cmd
 
 import (
-	"sync"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 	"github.com/spf13/cobra"
@@ -225,8 +225,8 @@ var newClaudeDelCmdOnce sync.Once
 
 func NewClaudeDelCmd() *cobra.Command {
 	newClaudeDelCmdOnce.Do(func() {
-	claudeDelCmd.Flags().Bool("global", false, "Remove from ~/.claude/commands/. Default when neither --global nor --local is given.")
-	claudeDelCmd.Flags().Bool("local", false, "Remove from the current project's .claude/commands/ instead of ~/.claude/commands/.")
+		claudeDelCmd.Flags().Bool("global", false, "Remove from ~/.claude/commands/. Default when neither --global nor --local is given.")
+		claudeDelCmd.Flags().Bool("local", false, "Remove from the current project's .claude/commands/ instead of ~/.claude/commands/.")
 	})
-	return claudeDelCmd
+	return deepFreshCmd(claudeDelCmd)
 }

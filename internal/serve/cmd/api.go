@@ -4,7 +4,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/spf13/cobra"
@@ -86,5 +86,5 @@ func APITokenArgumentGuard(root *cobra.Command, cmd *cobra.Command, args []strin
 // NewAPICmd returns the rush apiCmd command (former root.go registration; lane K2 of
 // the sprint0 cmd split replaced rootCmd.AddCommand with constructors).
 func NewAPICmd() *cobra.Command {
-	return apiCmd
+	return newAPICmd()
 }

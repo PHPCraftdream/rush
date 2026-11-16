@@ -1,13 +1,13 @@
 package cmd
 
 import (
-	"sync"
 	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/fantasy"
@@ -752,29 +752,26 @@ func pingUserPrompt(custom string) string {
 	return pingDefaultPrompt
 }
 
-// NewPingCmd returns the rush ping command (and registers ping/ping-fast
-// flags exactly once; former package init body, lane K2 of the sprint0 cmd
-// split removed package init registration).
+// NewPingCmd returns a fresh ping command from the registered template.
 var newPingCmdOnce sync.Once
 
 func NewPingCmd() *cobra.Command {
 	newPingCmdOnce.Do(func() {
-	pingCmd.Flags().Bool("json", false, "Emit JSON output instead of human-readable text")
-	pingCmd.Flags().Duration("timeout", time.Minute, "Request timeout")
-	pingCmd.Flags().String("prompt", "", "Custom user prompt (default: an instruction to reply OK)")
-	pingCmd.Flags().String("role", "", "Which model slot to ping: smart (default) | fast | worker | reviewer (worker/reviewer are optional, set via `rush models use --worker/--reviewer`)")
-	pingCmd.Flags().String("model", "", "Ping an ad-hoc model directly (atom short code or provider/model[@effort]) instead of a persisted slot — nothing is written to config. Mutually exclusive with --role.")
+		pingCmd.Flags().Bool("json", false, "Emit JSON output instead of human-readable text")
+		pingCmd.Flags().Duration("timeout", time.Minute, "Request timeout")
+		pingCmd.Flags().String("prompt", "", "Custom user prompt (default: an instruction to reply OK)")
+		pingCmd.Flags().String("role", "", "Which model slot to ping: smart (default) | fast | worker | reviewer (worker/reviewer are optional, set via `rush models use --worker/--reviewer`)")
+		pingCmd.Flags().String("model", "", "Ping an ad-hoc model directly (atom short code or provider/model[@effort]) instead of a persisted slot — nothing is written to config. Mutually exclusive with --role.")
 
-	pingFastCmd.Flags().Bool("json", false, "Emit JSON output instead of human-readable text")
-	pingFastCmd.Flags().Duration("timeout", time.Minute, "Request timeout")
-	pingFastCmd.Flags().String("prompt", "", "Custom user prompt (default: an instruction to reply OK)")
-
+		pingFastCmd.Flags().Bool("json", false, "Emit JSON output instead of human-readable text")
+		pingFastCmd.Flags().Duration("timeout", time.Minute, "Request timeout")
+		pingFastCmd.Flags().String("prompt", "", "Custom user prompt (default: an instruction to reply OK)")
 	})
-	return pingCmd
+	return deepFreshCmd(pingCmd)
 }
 
-// NewPingFastCmd returns the rush ping-fast command.
+// NewPingFastCmd returns a fresh ping-fast command from the registered template.
 func NewPingFastCmd() *cobra.Command {
 	NewPingCmd()
-	return pingFastCmd
+	return deepFreshCmd(pingFastCmd)
 }

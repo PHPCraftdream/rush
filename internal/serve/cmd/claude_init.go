@@ -11,13 +11,13 @@
 package cmd
 
 import (
-	"sync"
 	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 	"github.com/spf13/cobra"
@@ -356,8 +356,8 @@ var newClaudeInitCmdOnce sync.Once
 
 func NewClaudeInitCmd() *cobra.Command {
 	newClaudeInitCmdOnce.Do(func() {
-	claudeInitCmd.Flags().Bool("global", false, "Install into ~/.claude/commands/ (available in every project). Default when neither --global nor --local is given.")
-	claudeInitCmd.Flags().Bool("local", false, "Install into the current project's .claude/commands/ instead of ~/.claude/commands/.")
+		claudeInitCmd.Flags().Bool("global", false, "Install into ~/.claude/commands/ (available in every project). Default when neither --global nor --local is given.")
+		claudeInitCmd.Flags().Bool("local", false, "Install into the current project's .claude/commands/ instead of ~/.claude/commands/.")
 	})
-	return claudeInitCmd
+	return deepFreshCmd(claudeInitCmd)
 }
