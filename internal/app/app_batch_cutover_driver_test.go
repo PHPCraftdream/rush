@@ -78,7 +78,7 @@ func TestFlagOnDriverClaimUsesHostStore_NoLegacyLock(t *testing.T) {
 	// Core oracle: the job-independent HostStore identity WAS registered by
 	// the claim -- the driver claim ensures exactly one host identity, and
 	// it is the HostStore's.
-	hostID := application.BatchHostStore().HostID()
+	hostID := application.batchHostStore().HostID()
 	require.NotEmpty(t, hostID, "batch-only: the claim registered the HostStore identity")
 
 	// Release symmetric: the production release path removes the marker.

@@ -1,7 +1,7 @@
 package app
 
 // R11F round-2 P1-6 test: the Runner is constructed LAZILY at Start through
-// BatchRuntimeConfig.RunnerFactory — a factory-built runtime has no Runner
+// appbatch.BatchRuntimeConfig.RunnerFactory — a factory-built runtime has no Runner
 // (no engine goroutines) until Start. Compile-only in this worktree (CI runs
 // it); it fails against the pre-fix mutation that constructed the Runner at
 // install time.
@@ -10,6 +10,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 )
 
 // TestBatchRuntimeRunnerFactoryAtStart (P1-6): no Runner before Start; Start
@@ -17,11 +19,11 @@ import (
 // the runtime runnerless (fail closed) without panicking.
 func TestBatchRuntimeRunnerFactoryAtStart(t *testing.T) {
 	constructed := 0
-	build := func() (batchRunner, error) {
+	build := func() (appbatch.BatchRunner, error) {
 		constructed++
 		return newFakeRunner(), nil
 	}
-	rt := NewBatchRuntime(BatchRuntimeConfig{
+	rt := appbatch.NewBatchRuntime(appbatch.BatchRuntimeConfig{
 		ContainmentWait: time.Second,
 		WaitFunc:        immediateWaitFunc(),
 		ExitFunc:        func(int) {},
@@ -48,11 +50,11 @@ func TestBatchRuntimeRunnerFactoryAtStart(t *testing.T) {
 // error is survivable — the runtime stays runnerless and later calls (drain,
 // Invoke at the ingress boundary) fail closed.
 func TestBatchRuntimeRunnerFactoryErrorStaysRunnerless(t *testing.T) {
-	rt := NewBatchRuntime(BatchRuntimeConfig{
+	rt := appbatch.NewBatchRuntime(appbatch.BatchRuntimeConfig{
 		ContainmentWait: time.Second,
 		WaitFunc:        immediateWaitFunc(),
 		ExitFunc:        func(int) {},
-		RunnerFactory: func() (batchRunner, error) {
+		RunnerFactory: func() (appbatch.BatchRunner, error) {
 			return nil, errors.New("boom")
 		},
 	})

@@ -1,49 +1,43 @@
-// Startup recovery: the sweep that adds error finishes to orphaned
-// assistant messages from dead processes, and findOrphanPartial,
-// which surfaces recovered partial text in the run envelope.
-
-package app
+// Package apprecovery holds the startup recovery sweep: it adds error
+// finishes to orphaned assistant messages from dead processes.
+package apprecovery
 
 import (
 	"context"
 	"log/slog"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
-// recoverSessionListSeam is a test-only hook fired once per candidate
-// session actually processed by recoverInterruptedTurns (task #774). nil in
-// production. Tests use it to assert the recovery path's cost is
-// proportional to the number of CANDIDATES (sessions whose last message is
-// an unfinished assistant message) rather than the total number of sessions
-// in the data directory -- the whole point of routing discovery through
-// ListCandidateInterruptedAssistantSessions instead of Sessions.ListAll +
-// per-session Messages.List.
-var recoverSessionListSeam func()
+// RecoverParams are the explicit inputs of the startup recovery sweep.
+// OrphanAge and DataDirOverride are the test seams of the same names on
+// App (recoveryOrphanAge, recoveryDataDir). ListSeam and PreWriteSeam are
+// the test-only hooks (nil in production) threaded from the package-app
+// bridge vars recoverSessionListSeam / recoverSessionPreWriteSeam so that
+// package-app white tests can still observe the sweep (Ш6: тест-швы are
+// params fields).
+type RecoverParams struct {
+	Messages        message.Service
+	Config          *config.ConfigStore
+	OrphanAge       *time.Duration
+	DataDirOverride *string
+	// ListSeam is a test-only hook fired once per candidate session actually
+	// processed (task #774): lets tests assert the sweep's cost is
+	// proportional to CANDIDATES, not total sessions (task #774 discovery via
+	// ListCandidateInterruptedAssistantSessions). nil in production.
+	ListSeam func()
+	// PreWriteSeam is a deliberately BLOCKING test-only hook fired once per
+	// candidate after all guards pass and BEFORE the conditional stamp write
+	// (task #777): a fire-and-forget hook cannot force a deterministic
+	// interleaving, which is required to test the TOCTOU window non-vacuously.
+	// nil in production.
+	PreWriteSeam func()
+}
 
-// recoverSessionPreWriteSeam is a test-only hook fired once per candidate,
-// immediately after all guards (finished re-check, liveness lock, age
-// filter) have passed but BEFORE the conditional stamp write
-// (StampInterruptedAssistantIfStillLast) is issued (task #777). nil in
-// production.
-//
-// Unlike recoverSessionListSeam, this is deliberately a BLOCKING seam
-// (invoked in-line, expected to itself block via a channel handshake) rather
-// than fire-and-forget: a fire-and-forget hook cannot force a specific
-// interleaving, so a test built on one can only ever observe "the write
-// happened after some unspecified point," which is vacuous against exactly
-// the TOCTOU bug this task fixes -- the whole defect is that a message can
-// land in the narrow gap between the last guard check and the write. This
-// codebase has a documented history of vacuous seam tests passing against
-// deliberately-broken code, so this seam's contract requires deterministic
-// interleaving: a test sets this to a function that signals "the guards have
-// passed, safe to inject the race now" and then blocks until told to
-// proceed.
-var recoverSessionPreWriteSeam func()
-
-// recoverInterruptedTurns is the startup safety net for the "silent dying"
+// RecoverInterruptedTurns is the startup safety net for the "silent dying"
 // pattern: a previous rush process that died ungracefully (kill -9, power
 // loss, OS reboot, panic without recovery, or even a graceful Ctrl-C during
 // the brief window where ctx.Canceled would bypass the in-flight Update)
@@ -86,7 +80,7 @@ var recoverSessionPreWriteSeam func()
 // children and leaves them alone.
 //
 // The sweep is non-fatal on error and silent when there is nothing to recover.
-func recoverInterruptedTurns(ctx context.Context, p recoverParams) {
+func RecoverInterruptedTurns(ctx context.Context, p RecoverParams) {
 	// Bound the whole sweep so a slow disk (network mount, AV scan,
 	// fsync stall) cannot block app startup. 10s is generous for a
 	// candidate-proportional scan against SQLite; if it trips we'd rather
@@ -214,9 +208,9 @@ const (
 // message and, as of the discovery query's read, an unfinished assistant
 // message — so this only needs to fetch that ONE message (not the session's
 // full history) to re-check and act on it.
-func recoverSessionInterruptedTurn(ctx context.Context, p recoverParams, cand message.InterruptedAssistantCandidate, staleBefore int64, dataDir string) recoveryOutcome {
-	if recoverSessionListSeam != nil {
-		recoverSessionListSeam()
+func recoverSessionInterruptedTurn(ctx context.Context, p RecoverParams, cand message.InterruptedAssistantCandidate, staleBefore int64, dataDir string) recoveryOutcome {
+	if p.ListSeam != nil {
+		p.ListSeam()
 	}
 	lastAssistant, err := p.Messages.Get(ctx, cand.MessageID)
 	if err != nil {
@@ -284,8 +278,8 @@ func recoverSessionInterruptedTurn(ctx context.Context, p recoverParams, cand me
 		"Process restarted",
 		"The previous rush process exited before this turn completed (silent dying — see CHANGELOG.fork.md section 4.D). The assistant message had tool calls but no finish part. Cleanly recovered on startup; you can retry from the previous user message.",
 	)
-	if recoverSessionPreWriteSeam != nil {
-		recoverSessionPreWriteSeam()
+	if p.PreWriteSeam != nil {
+		p.PreWriteSeam()
 	}
 	// task #777 (P1 release blocker): a plain Update here rewrites the whole
 	// Parts blob unconditionally, which is unsafe against two remaining
@@ -319,39 +313,4 @@ func recoverSessionInterruptedTurn(ctx context.Context, p recoverParams, cand me
 		return recoveryOutcomeNone
 	}
 	return recoveryOutcomeRecovered
-}
-
-// findOrphanPartial scans the session for the latest assistant message that
-// has a Partial finish (mid-stream checkpoint) and is unfinished. Used by
-// RunNonInteractive to surface recovered text in the envelope.
-// Returns nil if no orphan found. Fork patch: batch 8.
-func findOrphanPartial(env RunEnv, ctx context.Context, sessionID string) *RecoveredPartial {
-	msgs, err := env.Messages().List(ctx, sessionID)
-	if err != nil {
-		return nil
-	}
-	// Find the LATEST assistant message that is partial and unfinished.
-	for i := len(msgs) - 1; i >= 0; i-- {
-		m := msgs[i]
-		if m.Role != message.Assistant {
-			continue
-		}
-		if m.IsPartial() && !m.IsFinished() {
-			text := m.FullText()
-			var lastFlushAt int64
-			if f := m.FinishPart(); f != nil {
-				lastFlushAt = f.Time
-			}
-			return &RecoveredPartial{
-				MessageID:   m.ID,
-				Chars:       len(text),
-				LastFlushAt: lastFlushAt,
-				Text:        text,
-			}
-		}
-		// Only surface the LATEST orphan — stop at the first assistant
-		// message we encounter (going backwards).
-		break
-	}
-	return nil
 }

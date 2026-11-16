@@ -16,6 +16,8 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
+
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -202,7 +204,7 @@ func TestQuotaFinishedWork_BatchNodes(t *testing.T) {
 	rows, incomplete, err := l.quotaJobsInTree(ctx)
 	require.NoError(t, err)
 	require.False(t, incomplete)
-	byKey := map[string]quotaWorkRow{}
+	byKey := map[string]appbatch.QuotaWorkRow{}
 	for _, row := range rows {
 		byKey[row.Key] = row
 	}

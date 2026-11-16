@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -26,7 +27,7 @@ func TestBatchTimeoutCheckinInstalledProductionPath(t *testing.T) {
 	a, conn, _ := newBatchMaintenanceApp(t)
 	clock := time.Unix(4102444800, 0)
 	var spy *timeoutCheckinSpy
-	batchRuntimeConfigHook = func(cfg *BatchRuntimeConfig) {
+	batchRuntimeConfigHook = func(cfg *appbatch.BatchRuntimeConfig) {
 		scanner := cfg.TimeoutCheckin.(*session.BatchTimeoutCheckin)
 		scanner.SetClock(func() time.Time { return clock })
 		spy = &timeoutCheckinSpy{scanner: scanner}
@@ -38,7 +39,7 @@ func TestBatchTimeoutCheckinInstalledProductionPath(t *testing.T) {
 	require.NoError(t, a.installBatchRuntime(context.Background()))
 	runtime := a.batchRuntime
 	require.NotNil(t, runtime)
-	a.batchRuntime.cfg.ReleaseWriter = func(context.Context) error { return nil }
+	a.batchRuntime.Config.ReleaseWriter = func(context.Context) error { return nil }
 	defer a.ShutdownWithResult()
 	require.EqualValues(t, 1, spy.starts.Load(), "runtime Start arms installed scanner")
 	require.NoError(t, a.installBatchRuntime(context.Background()))
@@ -49,7 +50,7 @@ func TestBatchTimeoutCheckinInstalledProductionPath(t *testing.T) {
 	callID := "timeout-install-call"
 	payload := `{"tool":"bash","tool_call_id":"` + callID + `","session_id":"` + owner.ID + `","timeout":{"kind":"wake_only","seconds":5}}`
 	_, err = store.Reserve(context.Background(), session.BatchReservation{
-		Owner: owner.ID, Host: a.BatchHostStore().HostID(), RunnerID: "timeout-install-runner", ToolCallID: callID,
+		Owner: owner.ID, Host: a.batchHostStore().HostID(), RunnerID: "timeout-install-runner", ToolCallID: callID,
 		InputHash: "timeout-install-hash", Sequence: 1,
 		Root: session.BatchReservationNode{Values: db.ReserveBatchNodeParams{Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true}, State: "running", ControlState: "none"}, Children: []session.BatchReservationNode{{Values: db.ReserveBatchNodeParams{Kind: "task", TaskKind: sql.NullString{String: "command", Valid: true}, State: "running", ControlState: "none", TaskPayload: sql.NullString{String: payload, Valid: true}}}}},
 	})
@@ -112,7 +113,7 @@ func TestBatchTimeoutCheckinInstalledProductionPath(t *testing.T) {
 	shutdown := a.ShutdownWithResult()
 	require.False(t, shutdown.Forced)
 	select {
-	case <-a.batchTimeoutWake.done:
+	case <-a.batchTimeoutWake.Done():
 	case <-time.After(time.Second):
 		t.Fatal("dispatcher did not join")
 	}
@@ -124,10 +125,7 @@ func TestBatchTimeoutCheckinAttachedToRealCoordinator(t *testing.T) {
 	a := newFullNewApp(t)
 	require.NotNil(t, a.batchTimeoutWake)
 	require.NotNil(t, a.AgentCoordinator)
-	a.batchTimeoutWake.mu.Lock()
-	coord := a.batchTimeoutWake.coord
-	a.batchTimeoutWake.mu.Unlock()
-	require.Same(t, a.AgentCoordinator, coord)
+	require.Same(t, a.AgentCoordinator, a.batchTimeoutWake.Coordinator())
 	_, ok := a.AgentCoordinator.(agent.SessionWakeDispatcher)
 	require.True(t, ok)
 	require.False(t, a.ShutdownWithResult().Forced)
@@ -137,20 +135,20 @@ func TestBatchTimeoutCheckinShutdownLeavesDebtWithoutCoordinator(t *testing.T) {
 	a, conn, _ := newBatchMaintenanceApp(t)
 	clock := time.Unix(4102444800, 0)
 	var scanner *session.BatchTimeoutCheckin
-	batchRuntimeConfigHook = func(cfg *BatchRuntimeConfig) {
+	batchRuntimeConfigHook = func(cfg *appbatch.BatchRuntimeConfig) {
 		scanner = cfg.TimeoutCheckin.(*session.BatchTimeoutCheckin)
 		scanner.SetClock(func() time.Time { return clock })
 	}
 	t.Cleanup(func() { batchRuntimeConfigHook = nil })
 	require.NoError(t, a.installBatchRuntime(context.Background()))
-	a.batchRuntime.cfg.ReleaseWriter = func(context.Context) error { return nil }
+	a.batchRuntime.Config.ReleaseWriter = func(context.Context) error { return nil }
 	defer a.ShutdownWithResult()
 	owner, err := a.Sessions.Create(context.Background(), "unattached timeout owner")
 	require.NoError(t, err)
 	callID := "unattached-timeout-call"
 	payload := `{"tool":"bash","tool_call_id":"` + callID + `","session_id":"` + owner.ID + `","timeout":{"kind":"wake_only","seconds":5}}`
 	_, err = session.NewBatchStore(conn).Reserve(context.Background(), session.BatchReservation{
-		Owner: owner.ID, Host: a.BatchHostStore().HostID(), RunnerID: "unattached-runner", ToolCallID: callID, InputHash: "unattached-hash", Sequence: 1,
+		Owner: owner.ID, Host: a.batchHostStore().HostID(), RunnerID: "unattached-runner", ToolCallID: callID, InputHash: "unattached-hash", Sequence: 1,
 		Root: session.BatchReservationNode{Values: db.ReserveBatchNodeParams{Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true}, State: "running", ControlState: "none"}, Children: []session.BatchReservationNode{{Values: db.ReserveBatchNodeParams{Kind: "task", TaskKind: sql.NullString{String: "command", Valid: true}, State: "running", ControlState: "none", TaskPayload: sql.NullString{String: payload, Valid: true}}}}},
 	})
 	require.NoError(t, err)
@@ -160,7 +158,7 @@ func TestBatchTimeoutCheckinShutdownLeavesDebtWithoutCoordinator(t *testing.T) {
 	result := a.ShutdownWithResult()
 	require.False(t, result.Forced)
 	select {
-	case <-a.batchTimeoutWake.done:
+	case <-a.batchTimeoutWake.Done():
 	case <-time.After(time.Second):
 		t.Fatal("dispatcher did not join")
 	}

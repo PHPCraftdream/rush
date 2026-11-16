@@ -18,7 +18,7 @@ internal/agent/tools/mcp 19
 # The count falls with the package split (stage D2).
 # 63 -> 64: +1 internal/app/app_bridge.go, the temporary bridge of the 0b-5 lane 0b-a (RunEnv, LoopHost, batch
 # params); lane D2-4 deletes it (deliberate, temporary; only down from here).
-internal/app 64
+internal/app 52
 # internal/serve/cmd 165 -> 167: +2 for internal/serve/cmd/queue and internal/serve/cmd/notification
 # moved in (stage C). The count falls with the package split (stage D2).
 internal/serve/cmd 167

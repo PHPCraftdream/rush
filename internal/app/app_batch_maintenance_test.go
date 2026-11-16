@@ -106,7 +106,7 @@ func TestBatchMaintenance_StartupPassRecoversOnceWakeZero(t *testing.T) {
 
 	a.startBatchMaintenance()
 	t.Cleanup(a.stopBatchMaintenance)
-	_, ok := batchMaintenanceLoops.Load(a.batchOwnerHandle())
+	ok := a.batchOwnerHandle().MaintenanceLoopRegistered()
 	require.True(t, ok, "flag on: the maintenance loop must be armed")
 
 	state, outcome := batchMaintenanceRootState(t, conn, root)
@@ -141,12 +141,9 @@ func TestBatchMaintenance_PeriodicPassAdvancesCursorAndConverges(t *testing.T) {
 	t.Cleanup(a.stopBatchMaintenance)
 	require.Equal(t, 1, batchMaintenanceInterruptedTotal(t, conn, roots), "the startup pass is pass #1: exactly one root recovered")
 
-	v, ok := batchMaintenanceLoops.Load(a.batchOwnerHandle())
-	require.True(t, ok)
-	loop := v.(*batchMaintenanceLoop)
-	loop.mu.Lock()
-	require.NotEqual(t, session.BatchRecoveryCursorStart, loop.cursor, "a budget-exhausted pass must park its keyset cursor on the last processed root")
-	loop.mu.Unlock()
+	require.True(t, a.batchOwnerHandle().MaintenanceLoopRegistered(), "the maintenance loop must stay armed across passes")
+	cursor := a.batchOwnerHandle().MaintenanceLoopCursor()
+	require.NotEqual(t, session.BatchRecoveryCursorStart, cursor, "a budget-exhausted pass must park its keyset cursor on the last processed root")
 
 	a.batchMaintenancePass()
 	require.Equal(t, 2, batchMaintenanceInterruptedTotal(t, conn, roots))
@@ -157,9 +154,8 @@ func TestBatchMaintenance_PeriodicPassAdvancesCursorAndConverges(t *testing.T) {
 	count, _ := batchMaintenanceTotalNotices(t, conn, roots)
 	require.Equal(t, 3, count, "no duplicate recovery notices")
 
-	loop.mu.Lock()
-	require.Equal(t, session.BatchRecoveryCursorStart, loop.cursor, "a fully scanned pass resets the cursor")
-	loop.mu.Unlock()
+	require.True(t, a.batchOwnerHandle().MaintenanceLoopRegistered(), "the loop must still be armed: an absent loop also reports the start cursor")
+	require.Equal(t, session.BatchRecoveryCursorStart, a.batchOwnerHandle().MaintenanceLoopCursor(), "a fully scanned pass resets the cursor")
 }
 
 // batchMaintenanceInterruptedTotal counts interrupted root rows among roots.
@@ -198,32 +194,32 @@ func TestBatchMaintenance_StopJoinsAndIsIdempotent(t *testing.T) {
 	a, _, _ := newBatchMaintenanceApp(t)
 
 	a.startBatchMaintenance()
-	_, ok := batchMaintenanceLoops.Load(a.batchOwnerHandle())
+	ok := a.batchOwnerHandle().MaintenanceLoopRegistered()
 	require.True(t, ok)
 
 	a.stopBatchMaintenance()
-	_, ok = batchMaintenanceLoops.Load(a.batchOwnerHandle())
+	ok = a.batchOwnerHandle().MaintenanceLoopRegistered()
 	require.False(t, ok, "a stop that forgets LoadAndDelete leaves the loop armed past shutdown")
 
 	a.stopBatchMaintenance() // idempotent: must not panic
 
 	a.startBatchMaintenance()
-	_, ok = batchMaintenanceLoops.Load(a.batchOwnerHandle())
+	ok = a.batchOwnerHandle().MaintenanceLoopRegistered()
 	require.True(t, ok, "a restart must arm a fresh loop")
 	a.stopBatchMaintenance()
 }
 
 // TestBatchMaintenance_InstallArmsAndShutdownDisarms pins BOTH wiring call
-// sites at composition level: installBatchRuntime arms the loop (first
-// assertion against the startBatchMaintenance call site,
+// sites at composition level: InstallRuntime arms the loop (first
+// assertion against the StartBatchMaintenance call site,
 // app_batch_install.go:146) and the REAL production shutdown entry
-// (ShutdownWithResult -> releaseResources -> stopBatchMaintenance,
+// (ShutdownWithResult -> releaseResources -> StopBatchMaintenance,
 // app_lifecycle.go, BEFORE the batchRuntime drain gate) disarms it.
 // SEQUENTIAL: the sync.Map and the App's shutdown-once are process-global.
 //
 // Why the bare fixture CAN drive the production install entry: with the
 // flag ON, newBatchRuntimeFactory's only hard preconditions are a store
-// (batchHostStore() lazily builds one from dataDir+writer,
+// (BatchHostStore() lazily builds one from dataDir+writer,
 // app_batch_cutover_hosts.go:34), a message service, and a DB writer
 // (batch_install_factory.go:33-46); everything else (profile, registries)
 // gets closed defaults (:60-72), and InstallBatchRuntimeDeferred builds a
@@ -235,11 +231,11 @@ func TestBatchMaintenance_InstallArmsAndShutdownDisarms(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, a.installBatchRuntime(ctx), "the production install entry must succeed on the bare fixture App")
-	_, ok := batchMaintenanceLoops.Load(a.batchOwnerHandle())
-	require.True(t, ok, "installBatchRuntime must arm the maintenance loop (app_batch_install.go:146)")
+	ok := a.batchOwnerHandle().MaintenanceLoopRegistered()
+	require.True(t, ok, "InstallRuntime must arm the maintenance loop (app_batch_install.go:146)")
 
 	res := a.ShutdownWithResult()
 	require.False(t, res.Forced, "graceful shutdown of an idle installed App must not be forced")
-	_, ok = batchMaintenanceLoops.Load(a.batchOwnerHandle())
-	require.False(t, ok, "releaseResources must disarm the maintenance loop before the drain gate releases the writer (app_lifecycle.go stopBatchMaintenance call site)")
+	ok = a.batchOwnerHandle().MaintenanceLoopRegistered()
+	require.False(t, ok, "releaseResources must disarm the maintenance loop before the drain gate releases the writer (app_lifecycle.go StopBatchMaintenance call site)")
 }

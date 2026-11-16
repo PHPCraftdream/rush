@@ -16,6 +16,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/text/format"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -77,12 +78,15 @@ type runExecSetup struct {
 	callBindingRelease func()
 }
 
-type sessionExecutionProviderIntent uint8
+// The session-execution provider intent lives in appbatch (Sh4: the
+// persist helper takes explicit params, no *App receiver); package app
+// keeps its historical names as aliases.
+type sessionExecutionProviderIntent = appbatch.SessionExecutionProviderIntent
 
 const (
-	sessionExecutionProviderOmitted sessionExecutionProviderIntent = iota
-	sessionExecutionProviderCustom
-	sessionExecutionProviderOS
+	sessionExecutionProviderOmitted = appbatch.SessionExecutionProviderOmitted
+	sessionExecutionProviderCustom  = appbatch.SessionExecutionProviderCustom
+	sessionExecutionProviderOS      = appbatch.SessionExecutionProviderOS
 )
 
 func explicitSessionExecutionProviderIntent(provider tools.DiskProvider) sessionExecutionProviderIntent {
@@ -93,42 +97,6 @@ func explicitSessionExecutionProviderIntent(provider tools.DiskProvider) session
 		return sessionExecutionProviderOS
 	}
 	return sessionExecutionProviderOmitted
-}
-
-func persistSessionExecutionIntent(ctx context.Context, sessions session.Service, sessionID string, intent sessionExecutionProviderIntent, requirement *session.SessionExecutionRequirement, customFenceEnabled bool) error {
-	reqStore, hasStore := sessions.(session.SessionExecutionRequirementStore)
-	switch intent {
-	case sessionExecutionProviderCustom:
-		if !customFenceEnabled {
-			return nil
-		}
-		if !hasStore {
-			return fmt.Errorf("%w: session service cannot persist the session execution requirement", agent.ErrDiskProviderUnavailable)
-		}
-		if requirement == nil {
-			return fmt.Errorf("%w: admitted provider run carries no execution requirement envelope", agent.ErrDiskProviderUnavailable)
-		}
-		if err := reqStore.StoreSessionExecutionRequirement(ctx, sessionID, *requirement); err != nil {
-			return fmt.Errorf("%w: failed to persist the session execution requirement: %v", agent.ErrDiskProviderUnavailable, err)
-		}
-	case sessionExecutionProviderOS:
-		if hasStore {
-			if err := reqStore.DeleteSessionExecutionRequirement(ctx, sessionID); err != nil {
-				return fmt.Errorf("%w: failed to supersede the session execution requirement: %v", agent.ErrDiskProviderUnavailable, err)
-			}
-		}
-	case sessionExecutionProviderOmitted:
-		if hasStore {
-			fence, err := reqStore.LoadSessionExecutionRequirement(ctx, sessionID)
-			if err != nil {
-				return fmt.Errorf("%w: session execution requirement cannot be validated: %v", agent.ErrDiskProviderUnavailable, err)
-			}
-			if fence != nil {
-				return fmt.Errorf("%w: session has a persistent custom-provider requirement", agent.ErrDiskProviderUnavailable)
-			}
-		}
-	}
-	return nil
 }
 
 // prepareExecuteRun performs ExecuteRun's request-to-config setup: context
@@ -666,7 +634,7 @@ type RunEnv struct {
 	// ResolveModelOverrides is the not-yet-converted setup helper.
 	ResolveModelOverrides func(smartModel, fastModel string) (*agent.ModelOverride, *agent.ModelOverride, error)
 	// BatchFaultWriter is built lazily by the batch runtime.
-	BatchFaultWriter func() *batchFaultEnvelopeWriter
+	BatchFaultWriter func() *appbatch.FaultEnvelopeWriter
 	// SetBatchFaultOutput stores the batch-fault sink under its mutex.
 	SetBatchFaultOutput func(f func(error))
 	// GetBatchFaultOutput reads the batch-fault sink under the same mutex.
@@ -675,5 +643,5 @@ type RunEnv struct {
 	// reads the quota/wait paths use (lazy, like every batch pool choice).
 	BatchCutoverWriter func() *sql.DB
 	BatchCutoverReader func(writer *sql.DB) *sql.DB
-	BatchFinishedWork  func(ctx context.Context, sessionID string) ([]quotaWorkRow, bool, error)
+	BatchFinishedWork  func(ctx context.Context, sessionID string) ([]appbatch.QuotaWorkRow, bool, error)
 }

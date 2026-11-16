@@ -10,7 +10,7 @@ import (
 )
 
 // TestBatchDriverStatus_OwnHostAlive pins the own-host shortcut in
-// batchCutoverHostLiveness: a host id registered as this process's own
+// BatchCutoverHostLiveness: a host id registered as this process's own
 // answers Alive without touching the shared probe.
 //
 // Revert-check: removing the session.IsOwnHostID shortcut makes the probe
@@ -20,8 +20,8 @@ func TestBatchDriverStatus_OwnHostAlive(t *testing.T) {
 	ctx := context.Background()
 	sess, err := app.Sessions.Create(ctx, "ph2-own-alive")
 	require.NoError(t, err)
-	require.NoError(t, app.BatchHostStore().ClaimSessionDriver(ctx, sess.ID))
-	require.NotEmpty(t, app.BatchHostStore().HostID())
+	require.NoError(t, app.batchHostStore().ClaimSessionDriver(ctx, sess.ID))
+	require.NotEmpty(t, app.batchHostStore().HostID())
 
 	got, err := app.LiveSessionDrivers(ctx)
 

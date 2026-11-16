@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
+
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -29,7 +31,7 @@ func TestBatchCommitDiagnosticsDoesNotAcquireExhaustedPool(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(writer)) })
 	writer.SetMaxOpenConns(1)
-	diagnostic := batchCommitDiagnostics{writer: writer, baseline: writer.Stats()}
+	diagnostic := appbatch.BatchCommitDiagnostics{Writer: writer, Baseline: writer.Stats()}
 	held, err := writer.Conn(ctx)
 	require.NoError(t, err)
 	defer held.Close()
@@ -52,7 +54,7 @@ func TestBatchCommitDiagnosticsDoesNotAcquireExhaustedPool(t *testing.T) {
 	_, fault := runner.Submit(ctx, jobbatch.SubmitRequest{Root: "r", Spec: jobbatch.OneItem(jobbatch.TaskSpec{Kind: "test"})})
 	require.ErrorIs(t, fault, secret)
 	captured := make(chan []any, 1)
-	go func() { captured <- diagnostic.snapshot(fault) }()
+	go func() { captured <- diagnostic.Snapshot(fault) }()
 	var attrs []any
 	select {
 	case attrs = <-captured:
@@ -71,11 +73,11 @@ func TestBatchCommitDiagnosticsDoesNotAcquireExhaustedPool(t *testing.T) {
 	require.Equal(t, 1, values["pool_max_open"])
 	require.Equal(t, 1, values["pool_in_use"])
 	require.NotContains(t, fmt.Sprint(attrs), secret.Error())
-	require.Equal(t, diagnostic.baseline.WaitCount, writer.Stats().WaitCount, "diagnostics must never enter the pool queue")
+	require.Equal(t, diagnostic.Baseline.WaitCount, writer.Stats().WaitCount, "diagnostics must never enter the pool queue")
 	require.Equal(t, []any{"commit_kind", "unknown", "commit_phase", "unknown", "commit_error_class", "unknown"},
-		(batchCommitDiagnostics{}).snapshot(batchDiagnosticPoisonError{}))
-	require.Equal(t, "jobbatch: commit failed: unknown", batchCommitSafeFaultText(batchDiagnosticPoisonError{}))
-	require.Equal(t, fault.Error(), batchCommitSafeFaultText(fault))
+		(appbatch.BatchCommitDiagnostics{}).Snapshot(batchDiagnosticPoisonError{}))
+	require.Equal(t, "jobbatch: commit failed: unknown", appbatch.BatchCommitSafeFaultText(batchDiagnosticPoisonError{}))
+	require.Equal(t, fault.Error(), appbatch.BatchCommitSafeFaultText(fault))
 	require.Contains(t, attrs, "unknown", "an arbitrary hook error must not imply SQLite contention")
 	require.ErrorIs(t, runner.Close(ctx), jobbatch.ErrCommitFailed)
 }
@@ -120,7 +122,7 @@ func TestBatchCommitDiagnosticsClassifiesOnlyObservedSQLiteBusy(t *testing.T) {
 	})
 	_, fault := runner.Submit(ctx, jobbatch.SubmitRequest{Root: "r", Spec: jobbatch.OneItem(jobbatch.TaskSpec{Kind: "test"})})
 	require.ErrorIs(t, fault, jobbatch.ErrCommitFailed)
-	attrs := (batchCommitDiagnostics{writer: writer}).snapshot(fault)
+	attrs := (appbatch.BatchCommitDiagnostics{Writer: writer}).Snapshot(fault)
 	values := make(map[string]any)
 	for i := 0; i < len(attrs); i += 2 {
 		values[attrs[i].(string)] = attrs[i+1]
