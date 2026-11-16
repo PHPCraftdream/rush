@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 )
 
 var (
@@ -79,7 +81,7 @@ func (s *ConfigStore) syncOAuthFromDisk(ctx context.Context, st *oauthDiskSyncSt
 		return
 	}
 	st.tick++
-	selected := readSlotOf(s.globalDataPath)
+	selected := docread.ReadSlotOf(s.globalDataPath)
 	fi, err := oauthDiskSyncStat(selected)
 	if err != nil {
 		st.settled = false
@@ -90,12 +92,12 @@ func (s *ConfigStore) syncOAuthFromDisk(ctx context.Context, st *oauthDiskSyncSt
 		return
 	}
 	st.fi, st.gen, st.settled = fi, sn.generation, false
-	doc, err := readSettingsDocument(s.globalDataPath)
+	doc, err := docread.ReadSettingsDocument(s.globalDataPath)
 	if err != nil {
 		st.settled = false
 		return
 	}
-	data := doc.jsonBytes
+	data := doc.JSONBytes
 	settled := true
 	for id, pc := range providers {
 		descriptor, known := oauthProvider(id)

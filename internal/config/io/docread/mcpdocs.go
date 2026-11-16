@@ -157,7 +157,7 @@ func loadExternalMCPDocumentsStable(paths []string, fingerprints map[string]Fing
 
 func LoadExternalMCPDocumentsStableForWorkingDir(paths []string, fingerprints map[string]Fingerprint, workingDir string) ([]StableConfigDocument, map[string]cfgmodel.MCPConfig, error) {
 	result := make(map[string]cfgmodel.MCPConfig)
-	documents, err := readStableConfigDocumentsWithOwner(paths, func(path string) (int, bool, error) {
+	documents, err := ReadStableConfigDocumentsWithOwner(paths, func(path string) (int, bool, error) {
 		// The global external file follows the home policy; the project file
 		// follows the working-directory policy. This is intentionally separate
 		// from rush.json provenance.
@@ -165,7 +165,7 @@ func LoadExternalMCPDocumentsStableForWorkingDir(paths []string, fingerprints ma
 		if NormalizeReloadPath(path) == NormalizeReloadPath(globalPath) {
 			return fileid.HomeConfigOwner(), true, nil
 		}
-		return configOwnerForWorkingDir(workingDir)
+		return ConfigOwnerForWorkingDir(workingDir)
 	})
 	if err != nil {
 		return nil, nil, err
@@ -278,12 +278,4 @@ func McpEntryFromJSON(data []byte, name string) (map[string]json.RawMessage, boo
 		return nil, false
 	}
 	return entry, true
-}
-
-// NormalizeReloadPath returns the canonical reload-path spelling.
-func NormalizeReloadPath(path string) string {
-	if path == "" {
-		return ""
-	}
-	return datadir.CanonicalConfigPath(path)
 }

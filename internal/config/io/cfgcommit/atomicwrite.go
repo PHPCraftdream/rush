@@ -327,6 +327,16 @@ func caseEquivalentConfigPaths(selectedPath, commitPath string) bool {
 		configDirectoryIsCaseInsensitive(filepath.Dir(commitPath))
 }
 
+// AtomicWriteFile writes data to path using the atomic config commit implementation.
+func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	return atomicWriteFile(path, data, perm)
+}
+
+// AtomicWriteFile writes data to path using the atomic config commit implementation.
+func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	return atomicWriteFile(path, data, perm)
+}
+
 // atomicWriteFile writes data to a file atomically by writing to a unique
 // temporary file in the same directory and renaming it into place. This
 // prevents concurrent readers from observing a partially-written file.

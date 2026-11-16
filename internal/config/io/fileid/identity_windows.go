@@ -364,9 +364,13 @@ func flushWindowsConfigHandle(file *os.File) error {
 	return windows.FlushFileBuffers(windows.Handle(file.Fd()))
 }
 
-func configFileOwner(os.FileInfo) (int, bool) { return -1, true }
+func OpenStableConfigFile(path string) (*os.File, error) {
+	return OpenWindowsConfigHandle(path, windows.GENERIC_READ, 0)
+}
 
-func configFileNlinkOfOpened(file *os.File, _ os.FileInfo) uint64 {
+func ConfigFileOwner(os.FileInfo) (int, bool) { return -1, true }
+
+func FileNlinkOfOpened(file *os.File, _ os.FileInfo) uint64 {
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(windows.Handle(file.Fd()), &info); err != nil {
 		return 0
@@ -374,14 +378,14 @@ func configFileNlinkOfOpened(file *os.File, _ os.FileInfo) uint64 {
 	return uint64(info.NumberOfLinks)
 }
 
-func sameConfigFileIdentity(left, right os.FileInfo) bool {
+func SameConfigFileIdentity(left, right os.FileInfo) bool {
 	// The opened handle identity is checked separately. FileInfo does not carry
 	// the handle's volume/file-index pair, so this path-level comparison is only
 	// the portable read-stability check, not a security decision.
 	return true
 }
 
-func configFilePathIdentityMatches(path string, opened *os.File, openedInfo os.FileInfo) (bool, error) {
+func ConfigFilePathIdentityMatches(path string, opened *os.File, openedInfo os.FileInfo) (bool, error) {
 	current, err := OpenWindowsConfigHandle(path, windows.GENERIC_READ, 0)
 	if err != nil {
 		return false, err

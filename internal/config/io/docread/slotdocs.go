@@ -2,6 +2,8 @@
 package docread
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,6 +17,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 )
@@ -42,7 +45,59 @@ var (
 	// errKtavMigrationRecord reports a migration record that exists but
 	// cannot be authenticated for the slot it names.
 	errKtavMigrationRecord = errors.New("ktav migration record is invalid or foreign; preserve it and resolve manually")
+	errOAuthJournalInvalid  = errors.New("invalid OAuth journal")
 )
+
+// Only the predecessor refresh-token digest is persisted, never its secret.
+type OAuthJournalRecord struct {
+	PredecessorRefreshTokenSHA256 string       `json:"predecessor_refresh_token_sha256"`
+	Token                         *oauth.Token `json:"token"`
+	BurnedRefreshTokenSHA256      []string     `json:"burned_refresh_token_sha256,omitempty"`
+}
+
+func ValidOAuthJournal(record *OAuthJournalRecord) bool {
+	if record == nil || record.Token == nil || record.Token.AccessToken == "" || record.Token.RefreshToken == "" || record.Token.ExpiresAt <= 0 {
+		return false
+	}
+	if record.PredecessorRefreshTokenSHA256 != "" {
+		digest, err := hex.DecodeString(record.PredecessorRefreshTokenSHA256)
+		if err != nil || len(digest) != sha256.Size {
+			return false
+		}
+	}
+	for _, burned := range record.BurnedRefreshTokenSHA256 {
+		digest, err := hex.DecodeString(burned)
+		if err != nil || len(digest) != sha256.Size {
+			return false
+		}
+	}
+	return true
+}
+
+// oauthJournalDigest returns the documented 8-byte hex suffix for a
+// provider's journal and sidecar names.
+func OAuthJournalDigest(providerID string) string {
+	digest := sha256.Sum256([]byte(providerID))
+	return hex.EncodeToString(digest[:8])
+}
+
+// oauthJournalLegacyPath returns the LEGACY JSON spelling of a provider's
+// pending journal: rush.json.oauth-pending-<hash>.json. It anchors on the
+// LEGACY slot name even for a rush.ktav config, so a migrated config still
+// discovers journals written before migration.
+func OAuthJournalLegacyPath(configPath, providerID string) string {
+	return NormalizeReloadPath(legacySlotOf(configPath)) + ".oauth-pending-" + OAuthJournalDigest(providerID) + ".json"
+}
+
+// oauthJournalKtavPath returns the Ktav spelling of a provider's pending
+// journal: rush.ktav.oauth-pending-<hash>.ktav, anchored on the ACTIVE
+// Ktav sibling of the legacy config slot. (KTAV-4: automatic conversion
+// of existing legacy JSON journals is deferred.)
+func OAuthJournalKtavPath(configPath, providerID string) string {
+	return NormalizeReloadPath(ktavSiblingOf(legacySlotOf(configPath))) + ".oauth-pending-" + OAuthJournalDigest(providerID) + ".ktav"
+}
+
+func ErrOAuthJournalInvalid() error { return errOAuthJournalInvalid }
 
 // ktavSiblingOf returns the preferred Ktav spelling of a legacy JSON path.
 func ktavSiblingOf(legacyJSON string) string {
@@ -209,7 +264,7 @@ func matchesLogicalSlot(canonical, legacyJSON string) bool {
 	if legacyJSON == "" {
 		return false
 	}
-	return normalizeReloadPath(legacySlotOf(canonical)) == normalizeReloadPath(legacySlotOf(legacyJSON))
+	return NormalizeReloadPath(legacySlotOf(canonical)) == NormalizeReloadPath(legacySlotOf(legacyJSON))
 }
 
 // checkBackupOnlySlot fails closed for an authoritative config location
@@ -331,118 +386,80 @@ func fileExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
-// settingsDocumentFormat distinguishes the disk representations a settings
+// SettingsDocumentFormat distinguishes the disk representations a settings
 // document can use: the legacy JSON spelling and the Ktav spelling.
-type settingsDocumentFormat int
+type SettingsDocumentFormat int
 
 const (
-	settingsDocumentJSON settingsDocumentFormat = iota
-	settingsDocumentKtav
+	SettingsDocumentJSON SettingsDocumentFormat = iota
+	SettingsDocumentKtav
 )
 
-// settingsDocument pairs one settings file's raw on-disk bytes with the
-// JSON-shaped bytes every guard, merge, and mutation operates on. The raw
-// fingerprint is bound to the RAW bytes as read; it must never be computed
-// from (or compared against) the normalized JSON bytes.
-type settingsDocument struct {
-	path           string
-	jsonBytes      []byte
-	rawBytes       []byte
-	rawFingerprint reloadFileFingerprint
-	format         settingsDocumentFormat
-}
-
-// SettingsDocument pairs a settings file's raw on-disk bytes with the
+// SettingsDocument pairs one settings file's raw on-disk bytes with the
 // JSON-shaped bytes used by decoders and mutations.
 type SettingsDocument struct {
 	Path           string
 	JSONBytes      []byte
 	RawBytes       []byte
 	RawFingerprint Fingerprint
-	Format         int
+	Format         SettingsDocumentFormat
 }
 
-// settingsDocumentFormatOf reports the disk format a path's extension names.
-func settingsDocumentFormatOf(path string) settingsDocumentFormat {
+// SettingsDocumentFormatOf reports the disk format a path's extension names.
+func SettingsDocumentFormatOf(path string) SettingsDocumentFormat {
 	if isKtavConfigPath(path) {
-		return settingsDocumentKtav
+		return SettingsDocumentKtav
 	}
-	return settingsDocumentJSON
+	return SettingsDocumentJSON
 }
 
-// decodeSettingsDocument converts raw bytes read from path into a
-// settingsDocument. A decode failure is returned as-is: it must never be
-// interpreted as a missing field, an absent sync_rev, or a nonexistent
-// document, and the codec's error messages carry no document values.
-func decodeSettingsDocument(path string, rawBytes []byte, rawFingerprint reloadFileFingerprint) (settingsDocument, error) {
-	jsonBytes, err := decodeConfigDocument(path, rawBytes)
+// DecodeSettingsDocument decodes raw bytes while retaining their fingerprint.
+func DecodeSettingsDocument(path string, rawBytes []byte, rawFingerprint Fingerprint) (SettingsDocument, error) {
+	jsonBytes, err := DecodeConfigDocument(path, rawBytes)
 	if err != nil {
-		return settingsDocument{}, err
+		return SettingsDocument{}, err
 	}
-	return settingsDocument{
-		path:           path,
-		jsonBytes:      jsonBytes,
-		rawBytes:       rawBytes,
-		rawFingerprint: rawFingerprint,
-		format:         settingsDocumentFormatOf(path),
+	return SettingsDocument{
+		Path: path, JSONBytes: jsonBytes, RawBytes: rawBytes,
+		RawFingerprint: rawFingerprint, Format: SettingsDocumentFormatOf(path),
 	}, nil
 }
 
-// readSettingsDocument is THE single choke point for reading any settings or
-// protection document. It takes a LOGICAL path in any spelling (legacy rush.json
-// or a rush.ktav sibling, any case) and, BY CONSTRUCTION rather than per call
-// site:
-//
-//  1. normalizes it to its logical LEGACY name (legacySlotOf);
-//  2. selects the active slot (selectConfigSlot — the Ktav sibling wins);
-//  3. fails closed BEFORE reading when the slot is backup-only
-//     (checkBackupOnlySlot) — that error propagates as an ERROR and must
-//     never be mapped to "no lock"/"unlocked" by any caller;
-//  4. stable-reads the SELECTED file and decodes it (decodeConfigDocument);
-//     decode errors propagate as errors.
-//
-// CONTRACT: an os.IsNotExist returned from this function means EXACTLY that
-// neither the .ktav nor the .json spelling of the slot exists AND no backup
-// exists (a backup-only slot already errored in step 3). Callers may treat
-// such an error as "no document"; every other error is a real failure.
-func readSettingsDocument(path string) (settingsDocument, error) {
-	legacy := legacySlotOf(path)
-	selected := selectConfigSlot(legacy)
-	if err := checkBackupOnlySlot(legacy); err != nil {
-		return settingsDocument{}, err
+// ReadSettingsDocument reads and decodes the selected config slot.
+func ReadSettingsDocument(path string) (SettingsDocument, error) {
+	legacy := LegacySlotOf(path)
+	selected := SelectConfigSlot(legacy)
+	if err := CheckBackupOnlySlot(legacy); err != nil {
+		return SettingsDocument{}, err
 	}
-	rawBytes, rawFingerprint, err := readStableConfigFile(selected)
+	rawBytes, rawFingerprint, err := ReadStableConfigFile(selected)
 	if err != nil {
-		return settingsDocument{}, err
+		return SettingsDocument{}, err
 	}
-	return decodeSettingsDocument(selected, rawBytes, rawFingerprint)
+	return DecodeSettingsDocument(selected, rawBytes, rawFingerprint)
 }
 
-// encodeSettingsDocument converts JSON-shaped bytes back to the raw bytes a
-// format-appropriate commit should write. JSON output is byte-for-byte the
-// input, so .json targets behave exactly as before this layer existed. Ktav
-// output is produced by the strict JSON-to-Ktav converter, which re-parses
-// and refuses anything it cannot represent losslessly.
-func encodeSettingsDocument(jsonBytes []byte, format settingsDocumentFormat) ([]byte, error) {
-	if format == settingsDocumentJSON {
-		return jsonBytes, nil
+// EncodeSettingsDocument converts JSON-shaped bytes to the selected disk format.
+func EncodeSettingsDocument(data []byte, format SettingsDocumentFormat) ([]byte, error) {
+	if format == SettingsDocumentJSON {
+		return data, nil
 	}
-	ktavBytes, err := ktavcodec.ConvertJSONToKtav(jsonBytes)
+	ktavBytes, err := ktavcodec.ConvertJSONToKtav(data)
 	if err != nil {
 		return nil, fmt.Errorf("ktav conversion failed: %w", err)
 	}
 	return ktavBytes, nil
 }
 
-// rejectUnconvertedKtavWrite fails a write boundary that has not yet been
-// converted to the settings-document layer when its target is a Ktav
-// document. Wave B call sites (store_oauth, store_mcp) use this until their
-// conversions land.
-func rejectUnconvertedKtavWrite(path string) error {
-	if isKtavConfigPath(filepath.Clean(path)) {
-		return fmt.Errorf("%w: %s", errKtavWriteNotSupported, path)
+func EncodeSettingsDocument(data []byte, format SettingsDocumentFormat) ([]byte, error) {
+	if format == SettingsDocumentJSON {
+		return data, nil
 	}
-	return nil
+	ktavBytes, err := ktavcodec.ConvertJSONToKtav(data)
+	if err != nil {
+		return nil, fmt.Errorf("ktav conversion failed: %w", err)
+	}
+	return ktavBytes, nil
 }
 
 // legacySlotOf returns the LEGACY JSON spelling of a logical config slot:
@@ -494,59 +511,39 @@ func readSlotOf(path string) string {
 	return selectConfigSlot(path)
 }
 
-// Fingerprint is the opaque snapshot token for one config document.
-// ReadSettingsDocument reads and decodes the selected config slot.
-func ReadSettingsDocument(path string) (SettingsDocument, error) {
-	doc, err := readSettingsDocument(path)
-	if err != nil {
-		return SettingsDocument{}, err
-	}
-	return exportSettingsDocument(doc), nil
+// NewConfigFileIsKtav reports whether new config files should default to Ktav.
+func NewConfigFileIsKtav() bool { return ktavAutoMigrate }
+
+// NewFileExists reports whether path names an existing non-directory file.
+func NewFileExists(path string) bool { return fileExists(path) }
+
+// NewConfigSlotSibling returns the preferred Ktav spelling of a legacy JSON path.
+func NewConfigSlotSibling(path string) string { return ktavSiblingOf(path) }
+
+// CheckAuthoritativeBackupOnly checks every authoritative config location.
+func CheckAuthoritativeBackupOnly(workingDir string) error {
+	return checkAuthoritativeBackupOnly(workingDir)
 }
 
-// DecodeSettingsDocument decodes raw bytes and binds their original fingerprint.
-func DecodeSettingsDocument(path string, rawBytes []byte, fingerprint Fingerprint) (SettingsDocument, error) {
-	doc, err := decodeSettingsDocument(path, rawBytes, importFingerprint(fingerprint))
-	if err != nil {
-		return SettingsDocument{}, err
-	}
-	return exportSettingsDocument(doc), nil
-}
-
-func exportSettingsDocument(doc settingsDocument) SettingsDocument {
-	return SettingsDocument{
-		Path:           doc.path,
-		JSONBytes:      doc.jsonBytes,
-		RawBytes:       doc.rawBytes,
-		RawFingerprint: exportFingerprint(doc.rawFingerprint),
-		Format:         int(doc.format),
-	}
-}
-
-// EncodeSettingsDocument converts JSON-shaped bytes to the selected disk format.
-func EncodeSettingsDocument(data []byte, format int) ([]byte, error) {
-	return encodeSettingsDocument(data, settingsDocumentFormat(format))
-}
-
-// RejectUnconvertedKtavWrite rejects a direct write to a Ktav config file.
-func RejectUnconvertedKtavWrite(path string) error { return rejectUnconvertedKtavWrite(path) }
+// CheckBackupOnlySlot fails closed for a backup-only config slot.
+func CheckBackupOnlySlot(path string) error { return checkBackupOnlySlot(path) }
 
 // KtavSiblingOf returns the preferred Ktav spelling of a legacy JSON path.
 func KtavSiblingOf(path string) string { return ktavSiblingOf(path) }
 
-// BackupPathFor returns the retained backup spelling for a legacy JSON path.
+// BackupPathFor returns the retained backup spelling for a legacy config backup.
 func BackupPathFor(path string) string { return backupPathFor(path) }
 
 // MigrationRecordPathFor returns the migration transaction record path.
 func MigrationRecordPathFor(path string) string { return migrationRecordPathFor(path) }
 
-// IsKtavConfigPath reports whether a path names a Ktav config document.
+// IsKtavConfigPath reports whether path names a Ktav config document.
 func IsKtavConfigPath(path string) bool { return isKtavConfigPath(path) }
 
-// IsKtavBackupPath reports whether a path names a retained config backup.
+// IsKtavBackupPath reports whether path names a retained backup.
 func IsKtavBackupPath(path string) bool { return isKtavBackupPath(path) }
 
-// IsKtavMigrationRecordPath reports whether a path names a migration record.
+// IsKtavMigrationRecordPath reports whether path names a migration record.
 func IsKtavMigrationRecordPath(path string) bool { return isKtavMigrationRecordPath(path) }
 
 // WarnBothFormatsOnce logs the both-formats condition once per source and kind.
@@ -558,19 +555,39 @@ func WarnMigrationDeferredOnce(legacy, reason string) { warnMigrationDeferredOnc
 // SelectConfigSlot returns the selected physical path for a logical slot.
 func SelectConfigSlot(path string) string { return selectConfigSlot(path) }
 
-// DecodeConfigDocument converts Ktav bytes into JSON-shaped config bytes.
+// DecodeConfigDocument decodes a selected document into JSON-shaped bytes.
 func DecodeConfigDocument(path string, data []byte) ([]byte, error) {
 	return decodeConfigDocument(path, data)
 }
 
-// WorkspaceConfigPath selects the config spelling inside a data directory.
+// WorkspaceConfigPath resolves the preferred config spelling inside a data directory.
 func WorkspaceConfigPath(path string) string { return workspaceConfigPath(path) }
 
-// MatchesLogicalSlot reports whether two paths name the same logical slot.
+// MatchesLogicalSlot reports whether two paths refer to the same logical slot.
 func MatchesLogicalSlot(path, slot string) bool { return matchesLogicalSlot(path, slot) }
 
-// CheckBackupOnlySlot rejects a config slot with only a retained backup.
-func CheckBackupOnlySlot(path string) error { return checkBackupOnlySlot(path) }
+// KtavMigrationPendingSlots reports slots with incomplete migration records.
+func KtavMigrationPendingSlots(workingDir string) []string {
+	return ktavMigrationPendingSlots(workingDir)
+}
+
+// KtavEntryExists reports whether a path exists, including non-regular entries.
+func KtavEntryExists(path string) bool { return ktavEntryExists(path) }
+
+// KtavEntryAbsentErr reports whether an error proves that the entry cannot exist.
+func KtavEntryAbsentErr(err error) bool { return ktavEntryAbsentErr(err) }
+
+// ExpandConfigSlotSiblings adds alternate spellings for logical config slots.
+func ExpandConfigSlotSiblings(paths []string) []string { return expandConfigSlotSiblings(paths) }
+
+// LegacySlotOf returns the legacy JSON spelling of a logical config slot.
+func LegacySlotOf(path string) string { return legacySlotOf(path) }
+
+// ConfigWriteLockAnchor returns the legacy slot spelling used by write locks.
+func ConfigWriteLockAnchor(path string) string { return legacySlotOf(path) }
+
+// ReadSlotOf resolves the physical read path for a logical config slot.
+func ReadSlotOf(path string) string { return readSlotOf(path) }
 
 // CheckAuthoritativeBackupOnly checks every authoritative config slot.
 func CheckAuthoritativeBackupOnly(workingDir string) error {

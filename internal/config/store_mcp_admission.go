@@ -15,6 +15,8 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 )
 
 // MCPAdmissionGuard is the final source validation boundary for a runtime
@@ -34,8 +36,8 @@ type mcpAdmissionToken struct {
 	store        *ConfigStore
 	snapshot     MCPAdmissionSnapshot
 	name         string
-	fingerprints map[string]reloadFileFingerprint
-	absent       map[string]reloadFileFingerprint
+	fingerprints map[string]docread.Fingerprint
+	absent       map[string]docread.Fingerprint
 	handles      map[string]*os.File
 	closeOnce    sync.Once
 	closed       atomic.Bool
@@ -198,7 +200,7 @@ type MCPMutationResult struct {
 	FallbackExists        bool
 	FallbackConfig        MCPConfig
 	FallbackOrigin        MCPOrigin
-	committedFingerprints map[string]reloadFileFingerprint
+	committedFingerprints map[string]docread.Fingerprint
 	committedMCPInputs    map[string][32]byte
 }
 
@@ -281,14 +283,14 @@ func (s *ConfigStore) WithCurrentMCPAdmissionContext(ctx context.Context, snapsh
 	return err
 }
 
-func (s *ConfigStore) prepareMCPAdmissionToken(ctx context.Context, snapshot MCPAdmissionSnapshot, name string, fingerprints map[string]reloadFileFingerprint) (*mcpAdmissionToken, error) {
+func (s *ConfigStore) prepareMCPAdmissionToken(ctx context.Context, snapshot MCPAdmissionSnapshot, name string, fingerprints map[string]docread.Fingerprint) (*mcpAdmissionToken, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	token := &mcpAdmissionToken{
 		store: s, snapshot: snapshot, name: name,
 		fingerprints: cloneReloadFingerprints(fingerprints),
-		absent:       make(map[string]reloadFileFingerprint),
+		absent:       make(map[string]docread.Fingerprint),
 		handles:      make(map[string]*os.File),
 	}
 	for path, fingerprint := range token.fingerprints {
@@ -296,7 +298,7 @@ func (s *ConfigStore) prepareMCPAdmissionToken(ctx context.Context, snapshot MCP
 			token.close()
 			return nil, err
 		}
-		if !fingerprint.exists {
+		if !fingerprint.Exists {
 			absence, err := stableMCPAdmissionAbsence(ctx, path, fingerprint)
 			if err != nil {
 				token.close()
@@ -342,43 +344,43 @@ func (s *ConfigStore) prepareMCPAdmissionToken(ctx context.Context, snapshot MCP
 	return token, nil
 }
 
-func stableMCPAdmissionAbsence(ctx context.Context, path string, expected reloadFileFingerprint) (reloadFileFingerprint, error) {
+func stableMCPAdmissionAbsence(ctx context.Context, path string, expected docread.Fingerprint) (docread.Fingerprint, error) {
 	if err := ctx.Err(); err != nil {
-		return reloadFileFingerprint{}, err
+		return docread.Fingerprint{}, err
 	}
 	first, err := mcpAdmissionAbsenceFingerprint(path)
 	if err != nil {
-		return reloadFileFingerprint{}, err
+		return docread.Fingerprint{}, err
 	}
 	if contextErr := ctx.Err(); contextErr != nil {
-		return reloadFileFingerprint{}, contextErr
+		return docread.Fingerprint{}, contextErr
 	}
 	second, err := mcpAdmissionAbsenceFingerprint(path)
 	if err != nil {
-		return reloadFileFingerprint{}, err
+		return docread.Fingerprint{}, err
 	}
 	if contextErr := ctx.Err(); contextErr != nil {
-		return reloadFileFingerprint{}, contextErr
+		return docread.Fingerprint{}, contextErr
 	}
 	if first != second || second != expected {
-		return reloadFileFingerprint{}, ErrMCPMutationStale
+		return docread.Fingerprint{}, ErrMCPMutationStale
 	}
 	return second, nil
 }
 
-func mcpAdmissionAbsenceFingerprint(path string) (reloadFileFingerprint, error) {
+func mcpAdmissionAbsenceFingerprint(path string) (docread.Fingerprint, error) {
 	if _, err := os.Lstat(path); err == nil || !os.IsNotExist(err) {
-		return reloadFileFingerprint{}, ErrMCPMutationStale
+		return docread.Fingerprint{}, ErrMCPMutationStale
 	}
-	return reloadFileFingerprint{
-		discovery:       configDiscoveryFingerprint(path),
-		parentDiscovery: configDiscoveryFingerprint(filepath.Dir(path)),
-		parentIdentity:  configParentIdentity(path),
-		aliasChain:      configAliasChainFingerprint(path),
+	return docread.Fingerprint{
+		Discovery:       docread.ConfigDiscoveryFingerprint(path),
+		ParentDiscovery: docread.ConfigDiscoveryFingerprint(filepath.Dir(path)),
+		ParentIdentity:  configParentIdentity(path),
+		AliasChain:      docread.ConfigAliasChainFingerprint(path),
 	}, nil
 }
 
-func validatePreparedAdmissionFile(ctx context.Context, path string, file *os.File, expected reloadFileFingerprint, expectedOwner int, enforceOwner bool) error {
+func validatePreparedAdmissionFile(ctx context.Context, path string, file *os.File, expected docread.Fingerprint, expectedOwner int, enforceOwner bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -419,14 +421,14 @@ func validatePreparedAdmissionFile(ctx context.Context, path string, file *os.Fi
 	}
 	owner, ownerKnown = configFileOwner(finalInfo)
 	actualNlink := configFileNlinkOfOpened(file, finalInfo)
-	if (expected.identity.valid || enforceOwner) && (!ownerKnown || owner != expected.owner) ||
-		expected.nlink != 0 && actualNlink != expected.nlink ||
-		expected.size != int64(len(second)) || expected.modTime != finalInfo.ModTime().UnixNano() ||
-		expected.digest != sha256.Sum256(second) ||
-		expected.discovery != configDiscoveryFingerprint(path) ||
-		expected.parentDiscovery != configDiscoveryFingerprint(filepath.Dir(path)) ||
-		expected.parentIdentity != configParentIdentity(path) ||
-		expected.aliasChain != configAliasChainFingerprint(path) {
+	if (expected.Identity.Valid || enforceOwner) && (!ownerKnown || owner != expected.Owner) ||
+		expected.Nlink != 0 && actualNlink != expected.Nlink ||
+		expected.Size != int64(len(second)) || expected.ModTime != finalInfo.ModTime().UnixNano() ||
+		expected.Digest != sha256.Sum256(second) ||
+		expected.Discovery != docread.ConfigDiscoveryFingerprint(path) ||
+		expected.ParentDiscovery != docread.ConfigDiscoveryFingerprint(filepath.Dir(path)) ||
+		expected.ParentIdentity != configParentIdentity(path) ||
+		expected.AliasChain != docread.ConfigAliasChainFingerprint(path) {
 		return ErrMCPMutationStale
 	}
 	pathMatches, err := configFilePathIdentityMatches(path, file, finalInfo)
@@ -510,14 +512,14 @@ func validateFinalMCPAdmissionFile(
 	ctx context.Context,
 	path string,
 	file *os.File,
-	expected reloadFileFingerprint,
+	expected docread.Fingerprint,
 	expectedOwner int,
 	enforceOwner bool,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if file == nil || !expected.exists {
+	if file == nil || !expected.Exists {
 		return ErrMCPMutationStale
 	}
 	info, err := file.Stat()
@@ -527,7 +529,7 @@ func validateFinalMCPAdmissionFile(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !info.Mode().IsRegular() || info.Size() != expected.size {
+	if !info.Mode().IsRegular() || info.Size() != expected.Size {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("%w: %s", ErrMCPMutationStale, ErrConfigNonRegular)
 		}
@@ -538,20 +540,20 @@ func validateFinalMCPAdmissionFile(
 		return ErrMCPMutationStale
 	}
 	identity := configFileIdentityOfOpened(file, info)
-	if expected.identity.valid && identity != expected.identity {
+	if expected.Identity.Valid && identity != expected.Identity {
 		return ErrMCPMutationStale
 	}
-	if expected.nlink != 0 && configFileNlinkOfOpened(file, info) != expected.nlink {
+	if expected.Nlink != 0 && configFileNlinkOfOpened(file, info) != expected.Nlink {
 		return ErrMCPMutationStale
 	}
-	if err := verifyMCPAdmissionBytes(ctx, file, expected.size, expected.digest); err != nil {
+	if err := verifyMCPAdmissionBytes(ctx, file, expected.Size, expected.Digest); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	finalInfo, err := file.Stat()
-	if err != nil || !finalInfo.Mode().IsRegular() || finalInfo.Size() != expected.size {
+	if err != nil || !finalInfo.Mode().IsRegular() || finalInfo.Size() != expected.Size {
 		return ErrMCPMutationStale
 	}
 	if err := ctx.Err(); err != nil {
@@ -560,14 +562,14 @@ func validateFinalMCPAdmissionFile(
 	finalOwner, finalOwnerKnown := configFileOwner(finalInfo)
 	finalIdentity := configFileIdentityOfOpened(file, finalInfo)
 	finalNlink := configFileNlinkOfOpened(file, finalInfo)
-	if (expected.identity.valid || enforceOwner) && (!finalOwnerKnown || finalOwner != expected.owner) ||
-		expected.identity.valid && finalIdentity != expected.identity ||
-		expected.nlink != 0 && finalNlink != expected.nlink ||
-		expected.modTime != finalInfo.ModTime().UnixNano() ||
-		expected.discovery != configDiscoveryFingerprint(path) ||
-		expected.parentDiscovery != configDiscoveryFingerprint(filepath.Dir(path)) ||
-		expected.parentIdentity != configParentIdentity(path) ||
-		expected.aliasChain != configAliasChainFingerprint(path) {
+	if (expected.Identity.Valid || enforceOwner) && (!finalOwnerKnown || finalOwner != expected.Owner) ||
+		expected.Identity.Valid && finalIdentity != expected.Identity ||
+		expected.Nlink != 0 && finalNlink != expected.Nlink ||
+		expected.ModTime != finalInfo.ModTime().UnixNano() ||
+		expected.Discovery != docread.ConfigDiscoveryFingerprint(path) ||
+		expected.ParentDiscovery != docread.ConfigDiscoveryFingerprint(filepath.Dir(path)) ||
+		expected.ParentIdentity != configParentIdentity(path) ||
+		expected.AliasChain != docread.ConfigAliasChainFingerprint(path) {
 		return ErrMCPMutationStale
 	}
 	pathMatches, err := configFilePathIdentityMatches(path, file, finalInfo)
@@ -594,7 +596,7 @@ func (s *ConfigStore) validateMCPAdmissionTokenContext(ctx context.Context, toke
 			return ErrMCPMutationStale
 		}
 		expected := token.fingerprints[path]
-		if !expected.exists {
+		if !expected.Exists {
 			absence, err := mcpAdmissionAbsenceFingerprint(path)
 			if err != nil {
 				return err
@@ -619,11 +621,11 @@ func (s *ConfigStore) validateMCPAdmissionTokenContext(ctx context.Context, toke
 	return nil
 }
 
-func cloneReloadFingerprints(source map[string]reloadFileFingerprint) map[string]reloadFileFingerprint {
+func cloneReloadFingerprints(source map[string]docread.Fingerprint) map[string]docread.Fingerprint {
 	if source == nil {
 		return nil
 	}
-	result := make(map[string]reloadFileFingerprint, len(source))
+	result := make(map[string]docread.Fingerprint, len(source))
 	for path, fingerprint := range source {
 		result[path] = fingerprint
 	}
@@ -663,7 +665,7 @@ func (s *ConfigStore) mcpMutationResultCurrentLocked(result MCPMutationResult, e
 	// predate committedFingerprints.
 	snapshot := s.loadSnapshot()
 	for path, expected := range snapshot.snapshots {
-		if expected.fingerprint == (reloadFileFingerprint{}) {
+		if expected.fingerprint == (docread.Fingerprint{}) {
 			continue
 		}
 		actual, ok := mcpEvaluationFingerprint(evaluation.fingerprints, path)
@@ -681,7 +683,7 @@ func (s *ConfigStore) mcpMutationResultCurrentLocked(result MCPMutationResult, e
 			if !expected.Exists {
 				continue
 			}
-			sibling, err := trackedSlotFingerprint(path, nil)
+			sibling, err := docread.TrackedSlotFingerprint(path, nil)
 			if err != nil || !reloadFingerprintContentEqual(expected.fingerprint, sibling) {
 				return false
 			}
@@ -711,18 +713,18 @@ func (s *ConfigStore) mcpMutationResultCurrentLocked(result MCPMutationResult, e
 	return true
 }
 
-func reloadFingerprintContentEqual(expected, actual reloadFileFingerprint) bool {
-	if expected.exists != actual.exists || expected.size != actual.size || expected.digest != actual.digest {
+func reloadFingerprintContentEqual(expected, actual docread.Fingerprint) bool {
+	if expected.Exists != actual.Exists || expected.Size != actual.Size || expected.Digest != actual.Digest {
 		return false
 	}
-	if !expected.exists {
+	if !expected.Exists {
 		return true
 	}
 	return expected == actual
 }
 
-func committedMCPFingerprints(files *mcpLockedFiles) map[string]reloadFileFingerprint {
-	result := make(map[string]reloadFileFingerprint)
+func committedMCPFingerprints(files *mcpLockedFiles) map[string]docread.Fingerprint {
+	result := make(map[string]docread.Fingerprint)
 	for _, record := range files.records {
 		if !files.changed[record.key] {
 			continue

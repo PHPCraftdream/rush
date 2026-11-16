@@ -43,6 +43,15 @@ type Fingerprint struct {
 // Fingerprint returns the snapshot's opaque file fingerprint.
 func (snapshot FileSnapshot) Fingerprint() Fingerprint { return snapshot.fingerprint }
 
+// NewFileSnapshot constructs a file snapshot while keeping its opaque fingerprint private.
+func NewFileSnapshot(path string, fingerprint Fingerprint) FileSnapshot {
+	return FileSnapshot{
+		Path: path, Exists: fingerprint.Exists, Size: fingerprint.Size,
+		ModTime: fingerprint.ModTime, ContentHash: fingerprint.Digest,
+		fingerprint: fingerprint,
+	}
+}
+
 // ConfigAliasChainFingerprint records the lexical path and every directory or
 // symlink in its discovery chain. Metadata belonging only to a regular-file
 // leaf is omitted so a cooperating atomic writer may replace its inode while
@@ -194,9 +203,6 @@ func writeConfigDiscoveryInfo(h hash.Hash, info os.FileInfo) {
 	_, _ = io.WriteString(h, identity.FingerprintString())
 }
 
-// NormalizeDiscoveryPath returns an absolute, cleaned spelling of path.
-func NormalizeDiscoveryPath(path string) string { return normalizeDiscoveryPath(path) }
-
 func CaptureReloadFingerprints(paths []string) (map[string]Fingerprint, error) {
 	fingerprints := make(map[string]Fingerprint, len(paths))
 	for _, path := range paths {
@@ -211,7 +217,7 @@ func AddReloadFingerprint(fingerprints map[string]Fingerprint, path string) erro
 	if path == "" {
 		return nil
 	}
-	path = normalizeReloadPath(path)
+	path = NormalizeReloadPath(path)
 	if _, exists := fingerprints[path]; exists {
 		return nil
 	}
@@ -224,7 +230,7 @@ func AddReloadFingerprint(fingerprints map[string]Fingerprint, path string) erro
 }
 
 func ReadReloadFingerprint(path string) (Fingerprint, error) {
-	_, fingerprint, err := readStableConfigFile(path)
+	_, fingerprint, err := ReadStableConfigFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return Fingerprint{}, err
 	}
@@ -245,7 +251,7 @@ func ReloadFingerprintsChangedWithOwner(before map[string]Fingerprint, owner fun
 				return true
 			}
 		}
-		_, actual, err := readStableConfigFileOwned(path, expectedOwner, enforceOwner)
+		_, actual, err := ReadStableConfigFileOwned(path, expectedOwner, enforceOwner)
 		if err != nil || actual != expected {
 			if os.IsNotExist(err) {
 				// readStableConfigFileOwned returns the discovery fingerprint along
@@ -263,11 +269,11 @@ func ReloadFingerprintsChangedWithOwner(before map[string]Fingerprint, owner fun
 func SameReloadPathSet(left, right []string) bool {
 	leftSet := make(map[string]struct{}, len(left))
 	for _, path := range left {
-		leftSet[normalizeReloadPath(path)] = struct{}{}
+		leftSet[NormalizeReloadPath(path)] = struct{}{}
 	}
 	rightSet := make(map[string]struct{}, len(right))
 	for _, path := range right {
-		rightSet[normalizeReloadPath(path)] = struct{}{}
+		rightSet[NormalizeReloadPath(path)] = struct{}{}
 	}
 	if len(leftSet) != len(rightSet) {
 		return false
@@ -298,12 +304,12 @@ func ReloadFingerprintForPath(fingerprints map[string]Fingerprint, path string) 
 	if fingerprint, ok := fingerprints[path]; ok {
 		return RebindReloadFingerprintPath(path, fingerprint)
 	}
-	canonical := normalizeReloadPath(path)
+	canonical := NormalizeReloadPath(path)
 	if fingerprint, ok := fingerprints[canonical]; ok {
 		return RebindReloadFingerprintPath(path, fingerprint)
 	}
 	for candidate, fingerprint := range fingerprints {
-		if normalizeReloadPath(candidate) == canonical {
+		if NormalizeReloadPath(candidate) == canonical {
 			return RebindReloadFingerprintPath(path, fingerprint)
 		}
 	}

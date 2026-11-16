@@ -19,6 +19,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 )
 
@@ -33,7 +36,7 @@ var (
 	apiTokenSecretPattern                           = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 	apiTokenCompareHook    func([]byte, []byte) int = subtle.ConstantTimeCompare
 	apiTokenBeforeLockHook func(*APITokenStore)
-	apiTokenWriteFile      = atomicWriteFile
+	apiTokenWriteFile      = docread.AtomicWriteFile
 )
 
 var ErrInvalidAPIToken = errors.New("invalid API token")
@@ -365,16 +368,16 @@ func (s *APITokenStore) read() (apiTokenDocument, error) {
 	if !info.Mode().IsRegular() {
 		return apiTokenDocument{}, errors.New("invalid API token store file")
 	}
-	owner, ownerKnown := configFileOwner(info)
-	if !ownerKnown || owner != homeConfigOwner() {
-		return apiTokenDocument{}, errConfigOwnerMismatch
+	owner, ownerKnown := docread.ConfigFileOwner(info)
+	if !ownerKnown || owner != docread.HomeConfigOwner() {
+		return apiTokenDocument{}, fileid.ErrConfigOwnerMismatch()
 	}
 	if runtime.GOOS != "windows" && (info.Mode().Perm()&0o077 != 0 || info.Mode().Perm()&0o400 == 0) {
 		return apiTokenDocument{}, errors.New("invalid API token store permissions")
 	}
-	identity := configFileIdentityOf(info)
+	identity := fileid.ConfigFileIdentityOf(info)
 	if runtime.GOOS == "windows" {
-		identity, statErr = configFileIdentityAtPath(path)
+		identity, statErr = fileid.ConfigFileIdentityAtPath(path)
 		if statErr != nil {
 			return apiTokenDocument{}, statErr
 		}
@@ -393,20 +396,20 @@ func (s *APITokenStore) read() (apiTokenDocument, error) {
 	if s.readHook != nil {
 		s.readHook()
 	}
-	data, stable, err := readStableConfigFileOwned(path, homeConfigOwner(), true)
+	data, stable, err := docread.ReadStableConfigFileOwned(path, docread.HomeConfigOwner(), true)
 	if err != nil {
 		return apiTokenDocument{}, err
 	}
-	fingerprint.size = stable.size
-	fingerprint.modified = time.Unix(0, stable.modTime)
-	fingerprint.digest = stable.digest
-	fingerprint.identity = fmt.Sprintf("%v", stable.identity)
+	fingerprint.size = stable.Size
+	fingerprint.modified = time.Unix(0, stable.ModTime)
+	fingerprint.digest = stable.Digest
+	fingerprint.identity = fmt.Sprintf("%v", stable.Identity)
 	var doc apiTokenDocument
-	document, err := decodeSettingsDocument(path, data, stable)
+	document, err := docread.DecodeSettingsDocument(path, data, stable)
 	if err != nil {
 		return apiTokenDocument{}, fmt.Errorf("invalid API token store: %w", err)
 	}
-	if err := json.Unmarshal(document.jsonBytes, &doc); err != nil {
+	if err := json.Unmarshal(document.JSONBytes, &doc); err != nil {
 		return apiTokenDocument{}, fmt.Errorf("invalid API token store: %w", err)
 	}
 	if doc.Version != apiTokenStoreVersion || doc.Tokens == nil {
@@ -459,7 +462,7 @@ func (s *APITokenStore) selectedPath() (string, error) {
 	} else if !os.IsNotExist(err) {
 		return "", err
 	}
-	if newConfigFileIsKtav() {
+	if docread.NewConfigFileIsKtav() {
 		return ktavPath, nil
 	}
 	return jsonPath, nil
@@ -485,7 +488,7 @@ func (s *APITokenStore) mutate(fn func(*apiTokenDocument) error) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	lockPath := configWriteLockAnchor(path)
+	lockPath := docread.ConfigWriteLockAnchor(path)
 	chosenPath := path
 	if apiTokenBeforeLockHook != nil {
 		apiTokenBeforeLockHook(s)
@@ -520,8 +523,8 @@ func (s *APITokenStore) mutate(fn func(*apiTokenDocument) error) error {
 		return err
 	}
 	data = append(data, '\n')
-	format := settingsDocumentFormatOf(path)
-	encoded, err := encodeSettingsDocument(data, format)
+	format := docread.SettingsDocumentFormatOf(path)
+	encoded, err := docread.EncodeSettingsDocument(data, format)
 	if err != nil {
 		return err
 	}
@@ -690,7 +693,7 @@ func (s *APITokenStore) flushLastUsedSnapshot(now time.Time, lastUsed map[string
 	if err != nil {
 		return err
 	}
-	return atomicWriteFile(statePath, data, 0o600)
+	return docread.AtomicWriteFile(statePath, data, 0o600)
 }
 
 func apiTokenDigest(token string) [sha256.Size]byte {

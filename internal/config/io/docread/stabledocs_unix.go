@@ -12,20 +12,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Fingerprint captures the stable file metadata needed by Unix config commits.
-// Discovery fields are carried through alias recovery by the caller.
-type Fingerprint struct {
-	Exists          bool
-	Size            int64
-	ModTime         int64
-	Digest          [sha256.Size]byte
-	Owner           int
-	Nlink           uint64
-	Identity        fileid.FileIdentity
-	Discovery       [sha256.Size]byte
-	ParentDiscovery [sha256.Size]byte
-}
-
 // ReadConfigEntryAt opens a directory entry without following symlinks and
 // returns bytes observed identically twice alongside their descriptor-bound
 // fingerprint.

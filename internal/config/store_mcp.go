@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 )
 
 var (
@@ -194,7 +196,7 @@ func (s *ConfigStore) PersistMCPFields(scope Scope, name string, fields map[stri
 	if err != nil {
 		return err
 	}
-	path = normalizeReloadPath(path)
+	path = docread.NormalizeReloadPath(path)
 	keys := make([]string, 0, len(fields))
 	for key := range fields {
 		keys = append(keys, key)
@@ -202,7 +204,7 @@ func (s *ConfigStore) PersistMCPFields(scope Scope, name string, fields map[stri
 	slices.Sort(keys)
 	var effective MCPConfig
 	var effectiveExists bool
-	var committed map[string]reloadFileFingerprint
+	var committed map[string]docread.Fingerprint
 	var committedInputs map[string][32]byte
 	var audit settingsWriteAudit
 	s.publishMu.Lock()
@@ -271,7 +273,7 @@ func (s *ConfigStore) PersistMCPFieldsExact(scope Scope, name string, fields map
 	if err != nil {
 		return err
 	}
-	path = normalizeReloadPath(path)
+	path = docread.NormalizeReloadPath(path)
 	keys := make([]string, 0, len(fields))
 	for key := range fields {
 		keys = append(keys, key)
@@ -279,7 +281,7 @@ func (s *ConfigStore) PersistMCPFieldsExact(scope Scope, name string, fields map
 	slices.Sort(keys)
 	var effective MCPConfig
 	var effectiveExists bool
-	var committed map[string]reloadFileFingerprint
+	var committed map[string]docread.Fingerprint
 	var committedInputs map[string][32]byte
 	var audit settingsWriteAudit
 	s.publishMu.Lock()
@@ -360,7 +362,7 @@ func (s *ConfigStore) PersistMCPFieldsInScope(scope Scope, name string, fields m
 	return s.PersistMCPFieldsExact(scope, name, fields)
 }
 
-func (s *ConfigStore) publishMCPValueAndStalenessLocked(name string, value MCPConfig, exists bool, committed map[string]reloadFileFingerprint, committedInputs map[string][32]byte) {
+func (s *ConfigStore) publishMCPValueAndStalenessLocked(name string, value MCPConfig, exists bool, committed map[string]docread.Fingerprint, committedInputs map[string][32]byte) {
 	cur := s.loadSnapshot()
 	if cur.config == nil {
 		return
@@ -389,16 +391,16 @@ func (s *ConfigStore) publishMCPValueAndStalenessLocked(name string, value MCPCo
 			next.snapshots = maps.Clone(next.snapshots)
 		}
 		for path, fingerprint := range committed {
-			key := normalizeDiscoveryPath(path)
+			key := docread.NormalizeDiscoveryPath(path)
 			snapshot, ok := next.snapshots[key]
 			if !ok {
 				continue
 			}
 			snapshot.Path = key
-			snapshot.Exists = fingerprint.exists
-			snapshot.Size = fingerprint.size
-			snapshot.ModTime = fingerprint.modTime
-			snapshot.ContentHash = fingerprint.digest
+			snapshot.Exists = fingerprint.Exists
+			snapshot.Size = fingerprint.Size
+			snapshot.ModTime = fingerprint.ModTime
+			snapshot.ContentHash = fingerprint.Digest
 			snapshot.fingerprint = fingerprint
 			next.snapshots[key] = snapshot
 		}

@@ -31,10 +31,6 @@ type StableConfigAlias struct {
 	Fingerprint Fingerprint
 }
 
-// ErrConfigReloadUnstable indicates that no stable file snapshot could be
-// built within the bounded reload retry budget.
-var ErrConfigReloadUnstable = errors.New("config files remained unstable during reload")
-
 // NormalizeReloadPath returns the canonical spelling used for reload bookkeeping.
 func NormalizeReloadPath(path string) string {
 	if path == "" {
@@ -54,6 +50,10 @@ func NormalizeDiscoveryPath(path string) string {
 	}
 	return filepath.Clean(abs)
 }
+
+// ErrConfigReloadUnstable indicates that no stable file snapshot could be
+// built within the bounded reload retry budget.
+var ErrConfigReloadUnstable = errors.New("config files remained unstable during reload")
 
 func ReadStableConfigDocumentsWithOwner(paths []string, owner func(string) (int, bool, error)) ([]StableConfigDocument, error) {
 	documents := make([]StableConfigDocument, 0, len(paths))
@@ -119,7 +119,9 @@ func ReadStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool
 	for attempt := 0; attempt < stableReadMaxAttempts; attempt++ {
 		beforeDiscovery := ConfigDiscoveryFingerprint(path)
 		beforeParentIdentity := fileid.ConfigParentIdentity(path)
-		cfghooks.RunConfigBeforeOpenHook(path)
+		if hook := cfghooks.Snapshot().BeforeOpen; hook != nil {
+			hook(path)
+		}
 		file, err := fileid.OpenStableConfigFile(path)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -156,7 +158,9 @@ func ReadStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool
 			if !bytes.Equal(first, second) {
 				return nil, Fingerprint{}, true, nil
 			}
-			cfghooks.RunConfigAfterStableReadHook(path)
+			if hook := cfghooks.Snapshot().AfterStableRead; hook != nil {
+				hook(path)
+			}
 			finalInfo, statErr := file.Stat()
 			if statErr != nil {
 				return nil, Fingerprint{}, false, statErr

@@ -21,6 +21,35 @@ func lookupConfigCandidates(cwd string) []string {
 	return append(candidates.Global, candidates.Project...)
 }
 
+// LookupConfigCandidates returns every fixed and bounded project path that
+// lookupConfigs can inspect, including paths that do not exist yet.
+func LookupConfigCandidates(cwd string) []string { return lookupConfigCandidates(cwd) }
+
+func ConfigDocumentBytes(documents []StableConfigDocument) ([][]byte, []string, map[string]Fingerprint) {
+	configs := make([][]byte, 0, len(documents))
+	loaded := make([]string, 0, len(documents))
+	fingerprints := make(map[string]Fingerprint, len(documents))
+	for _, document := range documents {
+		fingerprints[document.Path] = document.Fingerprint
+		if !document.Present {
+			continue
+		}
+		loaded = append(loaded, document.Path)
+		if len(document.Data) > 0 {
+			configs = append(configs, document.Data)
+		}
+	}
+	return configs, loaded, fingerprints
+}
+
+func AddDocumentAliasFingerprints(fingerprints map[string]Fingerprint, documents []StableConfigDocument) {
+	for _, document := range documents {
+		for _, alias := range document.Aliases {
+			fingerprints[alias.Path] = alias.Fingerprint
+		}
+	}
+}
+
 type ConfigCandidateGroups struct {
 	Global  []string
 	Project []string
@@ -32,7 +61,7 @@ func LookupConfigCandidateGroups(cwd string) ConfigCandidateGroups {
 		path  string
 		owner int
 	}{
-		{datadir.SystemConfig(), fileid.SystemConfigOwner()},
+		{datadir.SystemConfigSlot(), fileid.SystemConfigOwner()},
 		{datadir.GlobalConfig(), fileid.HomeConfigOwner()},
 		{datadir.GlobalConfigData(), fileid.HomeConfigOwner()},
 	} {
@@ -81,8 +110,12 @@ func configOwnersMatch(expected, actual int) bool {
 	return expected == -1 || actual == expected
 }
 
-// eligibleConfigCandidate retains absent candidates for negative staleness
+// EligibleConfigCandidate retains absent candidates for negative staleness
 // tracking, while rejecting existing foreign-owned files and directories.
+func EligibleConfigCandidate(path string, owner int) string {
+	return eligibleConfigCandidate(path, owner)
+}
+
 func eligibleConfigCandidate(path string, owner int) string {
 	if path == "" {
 		return ""
@@ -127,7 +160,7 @@ func eligibleWorkspaceConfig(path, workingDir string) string {
 	return eligibleConfigCandidate(path, owner)
 }
 
-// pathAlreadyLoaded reports whether path (typically the computed workspace
+// PathAlreadyLoaded reports whether path (typically the computed workspace
 // config path) is already present in loadedPaths (the paths loadFromConfigPaths
 // already merged into cfg).
 //
@@ -149,17 +182,17 @@ func eligibleWorkspaceConfig(path, workingDir string) string {
 // workspace path was already loaded closes this both structurally (no more
 // double-processing of one file's content) and for the concurrent-write
 // case (no second, possibly-different read of the same path).
-func pathAlreadyLoaded(loadedPaths []string, path string) bool {
-	clean := normalizeReloadPath(path)
+func PathAlreadyLoaded(loadedPaths []string, path string) bool {
+	clean := NormalizeReloadPath(path)
 	return slices.ContainsFunc(loadedPaths, func(p string) bool {
-		return normalizeReloadPath(p) == clean
+		return NormalizeReloadPath(p) == clean
 	})
 }
 
-// configOwnerForWorkingDir returns the explicit owner policy used when a
+// ConfigOwnerForWorkingDir returns the explicit owner policy used when a
 // discovered file is opened. Discovery's path check is only a filter; this
 // second check closes the stat/open race.
-func configOwnerForWorkingDir(workingDir string) (int, bool, error) {
+func ConfigOwnerForWorkingDir(workingDir string) (int, bool, error) {
 	if workingDir == "" {
 		return 0, false, nil
 	}
@@ -170,16 +203,16 @@ func configOwnerForWorkingDir(workingDir string) (int, bool, error) {
 	return owner, true, nil
 }
 
-func configOwnerPolicyForPath(path, workingDir string) (int, bool, error) {
+func ConfigOwnerPolicyForPath(path, workingDir string) (int, bool, error) {
 	if path == "" {
 		return 0, false, nil
 	}
-	canonical := normalizeReloadPath(path)
+	canonical := NormalizeReloadPath(path)
 	if datadir.SystemConfigSlot() != "" && matchesLogicalSlot(canonical, datadir.SystemConfigSlot()) {
 		return fileid.SystemConfigOwner(), true, nil
 	}
 	if matchesLogicalSlot(canonical, datadir.GlobalConfig()) || matchesLogicalSlot(canonical, datadir.GlobalConfigData()) {
 		return fileid.HomeConfigOwner(), true, nil
 	}
-	return configOwnerForWorkingDir(workingDir)
+	return ConfigOwnerForWorkingDir(workingDir)
 }

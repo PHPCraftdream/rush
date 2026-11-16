@@ -15,11 +15,13 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 )
 
 var (
 	errOAuthJournalRead = errors.New("OAuth journal cannot be read")
 	errOAuthJournalDisk = errors.New("OAuth config cannot be verified")
+	errOAuthJournalInvalid = docread.ErrOAuthJournalInvalid()
 	// Serial test seams must be restored only after their users have joined.
 	oauthJournalReadWait     = waitCodexRefresh
 	oauthJournalReadBackoffs = []time.Duration{200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond}
@@ -89,8 +91,7 @@ func oauthJournalWithBurned(record *oauthJournalRecord, digests ...string) oauth
 
 // Anchor selection never reads config contents, including malformed JSON.
 func oauthJournalPath(configPath, providerID string) string {
-	digest := sha256.Sum256([]byte(providerID))
-	return normalizeReloadPath(configPath) + ".oauth-pending-" + hex.EncodeToString(digest[:8]) + ".json"
+	return docread.NormalizeReloadPath(configPath) + ".oauth-pending-" + docread.OAuthJournalDigest(providerID) + ".json"
 }
 
 // Missing journals are normal; unreadable or corrupt journals are kept.
@@ -103,13 +104,13 @@ func readOAuthJournal(path string) (*oauthJournalRecord, error) {
 		logOAuthJournalFailure(path, "read", "Failed to read OAuth journal")
 		return nil, errOAuthJournalRead
 	}
-	jsonBytes, decodeErr := decodeConfigDocument(path, data)
+	jsonBytes, decodeErr := docread.DecodeConfigDocument(path, data)
 	if decodeErr != nil {
 		logOAuthJournalFailure(path, "invalid", "Failed to read OAuth journal")
 		return nil, errOAuthJournalInvalid
 	}
 	var record oauthJournalRecord
-	if json.Unmarshal(jsonBytes, &record) != nil || !validOAuthJournal(&record) {
+	if json.Unmarshal(jsonBytes, &record) != nil || !docread.ValidOAuthJournal(&record) {
 		logOAuthJournalFailure(path, "invalid", "Failed to read OAuth journal")
 		return nil, errOAuthJournalInvalid
 	}
@@ -139,14 +140,14 @@ func writeOAuthJournalUntilDurable(parent context.Context, path string, record *
 
 // A worker attempts one write without waiting under its refresh sidecar.
 func writeOAuthJournalOnce(path string, record *oauthJournalRecord) error {
-	if !validOAuthJournal(record) {
+	if !docread.ValidOAuthJournal(record) {
 		return errOAuthJournalInvalid
 	}
 	data, err := json.Marshal(record)
 	if err != nil {
 		return errOAuthJournalInvalid
 	}
-	data, encErr := encodeSettingsDocument(data, settingsDocumentFormatOf(path))
+	data, encErr := docread.EncodeSettingsDocument(data, docread.SettingsDocumentFormatOf(path))
 	if encErr != nil {
 		return errOAuthJournalInvalid
 	}
@@ -162,11 +163,11 @@ func writeOAuthJournalOnce(path string, record *oauthJournalRecord) error {
 
 // A successful read of a valid document is required to establish logout.
 func readOAuthJournalDiskToken(path, providerID string) (*oauth.Token, error) {
-	doc, err := readSettingsDocument(path)
+	doc, err := docread.ReadSettingsDocument(path)
 	if err != nil {
 		return nil, errOAuthJournalDisk
 	}
-	return decodeOAuthJournalDiskToken(doc.jsonBytes, providerID)
+	return decodeOAuthJournalDiskToken(doc.JSONBytes, providerID)
 }
 
 // Order: uncertainty, proven logout, equal, burned predecessor, then expiry.
@@ -202,7 +203,7 @@ func arbitrateOAuthJournal(record *oauthJournalRecord, predecessor, disk *oauth.
 
 // Caller holds refresh/config locks; equal bytes alone do not prove durability.
 func verifyOAuthJournalConfigDurable(path, providerID string, token *oauth.Token) error {
-	physical := readSlotOf(path)
+	physical := docread.ReadSlotOf(path)
 	file, err := os.OpenFile(physical, os.O_RDWR, 0)
 	if err != nil {
 		return errOAuthJournalDisk
@@ -212,7 +213,7 @@ func verifyOAuthJournalConfigDurable(path, providerID string, token *oauth.Token
 	if err != nil {
 		return errOAuthJournalDisk
 	}
-	jsonBytes, decodeErr := decodeConfigDocument(physical, data)
+	jsonBytes, decodeErr := docread.DecodeConfigDocument(physical, data)
 	if decodeErr != nil {
 		return errOAuthJournalDisk
 	}

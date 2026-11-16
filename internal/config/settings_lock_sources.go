@@ -3,6 +3,8 @@ package config
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 )
 
 // canonicalGlobalDataPath is the OS-resolved global settings file independent
@@ -14,7 +16,7 @@ var canonicalGlobalDataPath = func() string {
 	// isolated lock must not apply to the real instance. Route the
 	// canonical source into the isolated root instead of the platform path.
 	if root, ok := GlobalDir(); ok {
-		return readSlotOf(filepath.Join(root, "data", appName+".json"))
+		return docread.ReadSlotOf(filepath.Join(root, "data", appName+".json"))
 	}
 	if testing.Testing() {
 		return ""
@@ -29,9 +31,9 @@ func naturalWorkspaceSettingsPath(workingDir string) string {
 	dataDir, _ := defaultDataDirForWorkspace(workingDir)
 	// The natural workspace settings file is a LOGICAL slot: select the
 	// active sibling (rush.ktav when present) so a lock living only in the
-	// Ktav document is visible. readSlotOf passes an already-selected .ktav
+	// Ktav document is visible. docread.ReadSlotOf passes an already-selected .ktav
 	// path through unchanged.
-	return readSlotOf(filepath.Join(dataDir, "rush.json"))
+	return docread.ReadSlotOf(filepath.Join(dataDir, "rush.json"))
 }
 
 // checkExternalSettingsSources checks locks in settings sources outside the
@@ -68,7 +70,7 @@ func (s *ConfigStore) checkExternalSettingsSources(path string, data []byte) err
 	if processGlobal != "" {
 		globalHashes = append(globalHashes, processGlobal)
 	}
-	if canonicalGlobalHash != "" && (normalizeReloadPath(canonical) == normalizeReloadPath(globalDataPath) || normalizeReloadPath(path) != normalizeReloadPath(globalDataPath)) {
+	if canonicalGlobalHash != "" && (docread.NormalizeReloadPath(canonical) == docread.NormalizeReloadPath(globalDataPath) || docread.NormalizeReloadPath(path) != docread.NormalizeReloadPath(globalDataPath)) {
 		globalHashes = append(globalHashes, canonicalGlobalHash)
 	}
 	if len(globalHashes) != 0 {
@@ -86,12 +88,12 @@ func (s *ConfigStore) checkExternalSettingsSources(path string, data []byte) err
 		localHashes = append(localHashes, processLocal)
 	}
 	if naturalLocal != "" {
-		includeNatural := workspace == "" || normalizeReloadPath(natural) == normalizeReloadPath(workspace)
+		includeNatural := workspace == "" || docread.NormalizeReloadPath(natural) == docread.NormalizeReloadPath(workspace)
 		if !includeNatural && workspace != "" {
 			// A redirected workspace's natural lock applies only outside its directory.
 			// Both sides canonical: the target arrives resolved, so an aliased
 			// workspace dir (macOS /var → /private/var, Windows 8.3) must too.
-			rel, relErr := filepath.Rel(filepath.Dir(normalizeReloadPath(workspace)), normalizeReloadPath(path))
+			rel, relErr := filepath.Rel(filepath.Dir(docread.NormalizeReloadPath(workspace)), docread.NormalizeReloadPath(path))
 			if relErr != nil || rel == ".." || filepath.IsAbs(rel) || (len(rel) >= 3 && rel[:3] == ".."+string(filepath.Separator)) {
 				includeNatural = true
 			}

@@ -21,6 +21,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/codex"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/copilot"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/hyper"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -380,7 +381,7 @@ func (s *ConfigStore) setOAuthTokenIfCurrentWithLock(scope Scope, providerID str
 	if err != nil {
 		return false, err
 	}
-	if err := checkBackupOnlySlot(legacySlotOf(path)); err != nil {
+	if err := docread.CheckBackupOnlySlot(docread.LegacySlotOf(path)); err != nil {
 		return false, err
 	}
 	path = writeTargetSlot(path)
@@ -392,19 +393,19 @@ func (s *ConfigStore) setOAuthTokenIfCurrentWithLock(scope Scope, providerID str
 	slices.Sort(keys)
 	var committedErr error
 	err = withLock(path, func(target configWriteTarget) error {
-		raw, fingerprint, readErr := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+		raw, fingerprint, readErr := docread.ReadStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
 		if readErr != nil {
 			return fmt.Errorf("failed to read config file: %w", readErr)
 		}
-		doc, decodeErr := decodeSettingsDocument(target.selectedPath, raw, fingerprint)
+		doc, decodeErr := docread.DecodeSettingsDocument(target.selectedPath, raw, fingerprint)
 		if decodeErr != nil {
 			return decodeErr
 		}
 		var current oauth.Token
-		if decodeErr := json.Unmarshal([]byte(gjson.Get(string(doc.jsonBytes), fmt.Sprintf("providers.%s.oauth", providerID)).Raw), &current); decodeErr != nil || expected == nil || !reflect.DeepEqual(&current, expected) || (!isCodex && gjson.Get(string(doc.jsonBytes), fmt.Sprintf("providers.%s.api_key", providerID)).String() != expected.AccessToken) {
+		if decodeErr := json.Unmarshal([]byte(gjson.Get(string(doc.JSONBytes), fmt.Sprintf("providers.%s.oauth", providerID)).Raw), &current); decodeErr != nil || expected == nil || !reflect.DeepEqual(&current, expected) || (!isCodex && gjson.Get(string(doc.JSONBytes), fmt.Sprintf("providers.%s.api_key", providerID)).String() != expected.AccessToken) {
 			return errOAuthCredentialCAS
 		}
-		newValue := string(doc.jsonBytes)
+		newValue := string(doc.JSONBytes)
 		var setValueErr error
 		for _, key := range keys {
 			var value any = token
@@ -425,11 +426,11 @@ func (s *ConfigStore) setOAuthTokenIfCurrentWithLock(scope Scope, providerID str
 		if err := os.MkdirAll(filepath.Dir(target.path), 0o755); err != nil {
 			return fmt.Errorf("failed to create config directory %q: %w", path, err)
 		}
-		written, encErr := encodeSettingsDocument([]byte(newValue), doc.format)
+		written, encErr := docread.EncodeSettingsDocument([]byte(newValue), doc.Format)
 		if encErr != nil {
 			return encErr
 		}
-		_, commitErr := commitConfigFile(target.selectedPath, target.path, written, 0o600, doc.rawFingerprint, target.owner, target.enforce)
+		_, commitErr := commitConfigFile(target.selectedPath, target.path, written, 0o600, doc.RawFingerprint, target.owner, target.enforce)
 		if commitErr != nil {
 			if outcome, ok := CommitOutcomeFromError(commitErr); ok && outcome.Committed {
 				s.noteInitialLoadWriteLocked(path, written)
@@ -523,7 +524,7 @@ func (s *ConfigStore) loadTokenFromDisk(scope Scope, providerID string) (*oauth.
 		return nil, err
 	}
 
-	doc, err := readSettingsDocument(path)
+	doc, err := docread.ReadSettingsDocument(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -532,7 +533,7 @@ func (s *ConfigStore) loadTokenFromDisk(scope Scope, providerID string) (*oauth.
 	}
 
 	oauthKey := fmt.Sprintf("providers.%s.oauth", providerID)
-	oauthResult := gjson.Get(string(doc.jsonBytes), oauthKey)
+	oauthResult := gjson.Get(string(doc.JSONBytes), oauthKey)
 	if !oauthResult.Exists() {
 		return nil, nil
 	}
