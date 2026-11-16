@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
+
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -81,7 +83,7 @@ func pp4CrashSimulate(t *testing.T, application *App, process ...*pcrCrashProces
 		return
 	}
 	if application.batchInstall != nil && application.batchInstall.Runner != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), appBatchDrainTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), appbatch.BatchDrainTimeout)
 		defer cancel()
 		runner := application.batchInstall.Runner
 		observeCtx, cancelObserve := context.WithCancel(ctx)

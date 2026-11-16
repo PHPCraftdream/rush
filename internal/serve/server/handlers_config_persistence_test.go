@@ -160,12 +160,12 @@ func TestRemoveCustomProviderWithoutOverrideSucceeds(t *testing.T) {
 	_, exists := store.Config().Providers.Get("local-cli")
 	require.False(t, exists, "successful removal must delete the provider from the live config")
 	select {
-	case <-c.hub.configBroadcast:
+	case <-c.Hub().ConfigBroadcastChan():
 	default:
 		t.Fatal("expected config broadcast after successful removal")
 	}
 	select {
-	case raw := <-c.hub.broadcast:
+	case raw := <-c.Hub().BroadcastChan():
 		t.Fatalf("unexpected broadcast: %s", raw)
 	default:
 	}
@@ -174,12 +174,12 @@ func TestRemoveCustomProviderWithoutOverrideSucceeds(t *testing.T) {
 func assertNoConfigBroadcast(t *testing.T, c *Client) {
 	t.Helper()
 	select {
-	case <-c.hub.configBroadcast:
+	case <-c.Hub().ConfigBroadcastChan():
 		t.Fatal("unexpected config broadcast")
 	default:
 	}
 	select {
-	case raw := <-c.hub.broadcast:
+	case raw := <-c.Hub().BroadcastChan():
 		t.Fatalf("unexpected broadcast: %s", raw)
 	default:
 	}
@@ -193,7 +193,7 @@ func blockConfigWrites(t *testing.T, store *config.ConfigStore) {
 func readTestReply(t *testing.T, c *Client) WSMessage {
 	t.Helper()
 	select {
-	case raw := <-c.send:
+	case raw := <-c.SendChan():
 		var reply WSMessage
 		require.NoError(t, json.Unmarshal(raw, &reply))
 		return reply

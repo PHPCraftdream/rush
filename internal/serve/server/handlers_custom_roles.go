@@ -66,10 +66,10 @@ func customRolesToWire(roles map[string]config.CustomRole) map[string]CustomRole
 func handleGetCustomRoles(a *appPkg.App, c *Client, msg WSMessage) {
 	wire, err := buildCustomRolesWire(a)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
-	c.reply(msg.ID, EventCustomRoles, wire, "")
+	c.Reply(msg.ID, EventCustomRoles, wire, "")
 }
 
 func customRoleUpdateFromPayload(p SetCustomRolePayload) (config.CustomRoleUpdate, error) {
@@ -99,31 +99,31 @@ func customRoleUpdateFromPayload(p SetCustomRolePayload) (config.CustomRoleUpdat
 func handleSetCustomRole(a *appPkg.App, c *Client, msg WSMessage) {
 	var p SetCustomRolePayload
 	if err := decodeCustomRolePayload(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid role payload")
+		c.Reply(msg.ID, EventError, nil, "invalid role payload")
 		return
 	}
 	scope, err := scopedModelsScopeFromWire(p.Scope)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	update, err := customRoleUpdateFromPayload(p)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	store := a.Store()
 	if store == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	cfg, _ := store.Snapshot()
 	if err := config.ValidateCustomRoleSelection(cfg, config.CustomRole{SelectedModel: update.Model, Tools: update.Tools}); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
-	if err := store.SetCustomRoleWithAuthority(scope, p.Name, update, c.settingsWriteAuthority()); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+	if err := store.SetCustomRoleWithAuthority(scope, p.Name, update, c.SettingsWriteAuthority()); err != nil {
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	publishCustomRoleChange(a, c, msg)
@@ -132,21 +132,21 @@ func handleSetCustomRole(a *appPkg.App, c *Client, msg WSMessage) {
 func handleRemoveCustomRole(a *appPkg.App, c *Client, msg WSMessage) {
 	var p RemoveCustomRolePayload
 	if err := decodeCustomRolePayload(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid role payload")
+		c.Reply(msg.ID, EventError, nil, "invalid role payload")
 		return
 	}
 	scope, err := scopedModelsScopeFromWire(p.Scope)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	store := a.Store()
 	if store == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
-	if err := store.RemoveCustomRoleWithAuthority(scope, p.Name, c.settingsWriteAuthority()); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+	if err := store.RemoveCustomRoleWithAuthority(scope, p.Name, c.SettingsWriteAuthority()); err != nil {
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	publishCustomRoleChange(a, c, msg)
@@ -154,10 +154,10 @@ func handleRemoveCustomRole(a *appPkg.App, c *Client, msg WSMessage) {
 
 func publishCustomRoleChange(a *appPkg.App, c *Client, msg WSMessage) {
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
 	if wire, err := buildCustomRolesWire(a); err == nil {
-		c.hub.Broadcast(EventCustomRoles, wire)
+		c.Hub().Broadcast(EventCustomRoles, wire)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }

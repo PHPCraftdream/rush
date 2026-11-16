@@ -38,7 +38,7 @@ func drainSessionsListReplies(t *testing.T, client *Client) [][]session.Session 
 	var out [][]session.Session
 	for {
 		select {
-		case raw := <-client.send:
+		case raw := <-client.SendChan():
 			var env WSMessage
 			require.NoError(t, json.Unmarshal(raw, &env))
 			if env.Type != EventSessionsList {
@@ -80,8 +80,8 @@ func TestHandleListSessions_LiveDescendantWorkAnnotation(t *testing.T) {
 	hub := newHub()
 	go hub.Run(ctx)
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 100)
-	hub.register <- client
+	client.ResizeSendChan(100)
+	hub.Register(client)
 
 	list := func() []session.Session {
 		handleListSessions(ctx, a, client, WSMessage{ID: "req", Type: CmdListSessions})
@@ -149,8 +149,8 @@ func TestHandleListSessions_LiveOwnWorkAnnotation(t *testing.T) {
 	hub := newHub()
 	go hub.Run(ctx)
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 100)
-	hub.register <- client
+	client.ResizeSendChan(100)
+	hub.Register(client)
 
 	list := func() session.Session {
 		handleListSessions(ctx, a, client, WSMessage{ID: "req", Type: CmdListSessions})

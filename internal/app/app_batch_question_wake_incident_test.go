@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,8 +19,8 @@ func TestBatchInstallQuestionWakeUsesAppDispatcher(t *testing.T) {
 	var deps agent.BatchInstallDeps
 	batchInstallWiringHook = func(d agent.BatchInstallDeps) { deps = d }
 	t.Cleanup(func() { batchInstallWiringHook = nil })
-	batchRuntimeConfigHook = func(cfg *BatchRuntimeConfig) {
-		cfg.RunnerFactory = func() (batchRunner, error) { return nil, errors.New("dormant question-wake install") }
+	batchRuntimeConfigHook = func(cfg *appbatch.BatchRuntimeConfig) {
+		cfg.RunnerFactory = func() (appbatch.BatchRunner, error) { return nil, errors.New("dormant question-wake install") }
 	}
 	t.Cleanup(func() { batchRuntimeConfigHook = nil })
 	require.NoError(t, a.installBatchRuntime(context.Background()))

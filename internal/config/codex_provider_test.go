@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 	"github.com/stretchr/testify/require"
@@ -12,7 +12,7 @@ import (
 
 func TestConfigureProviders_CodexOAuthWithUnavailableCatalogKeepsConfigLoadable(t *testing.T) {
 	cfg := &Config{Providers: csync.NewMap[string, ProviderConfig]()}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 	cfg.Options.DisableDefaultProviders = true
 	cfg.Providers.Set("openai-codex", ProviderConfig{
 		ID:         "openai-codex",

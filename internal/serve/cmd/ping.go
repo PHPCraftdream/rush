@@ -23,6 +23,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
@@ -305,7 +306,7 @@ func runPing(cmd *cobra.Command, a *app.App, modelType config.SelectedModelType,
 
 	// Stream the response
 	streamCall := fantasy.AgentStreamCall{
-		MaxRetries: &rushagent.ProviderMaxRetries,
+		MaxRetries: &agentcall.ProviderMaxRetries,
 		Prompt:     userPrompt,
 	}
 

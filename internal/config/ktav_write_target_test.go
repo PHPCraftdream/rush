@@ -32,7 +32,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"

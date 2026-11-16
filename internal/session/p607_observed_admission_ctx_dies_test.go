@@ -42,12 +42,13 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 )
 
 func TestDrainSessionNow_ObservedAdmission_CtxDiesAfterOneSuccess_NeverReportsCleanSuccess(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "p607-observed-ctx-dies")
 
 	coord := &twoRowFailThenSucceedCoordinator{firstFn: func() (*any, error) { return nil, nil }}

@@ -20,7 +20,7 @@ Authorization denial is returned as an error response without closing the connec
 
 ## Command scope table
 
-This table reflects every entry in `internal/serve/server/scope_table.go` (`commandScopes`). `admin` scope includes lower scopes for authorization.
+This table reflects every entry in `internal/serve/server/hub/scope.go` (`commandScopes`). `admin` scope includes lower scopes for authorization.
 
 | Command | Scope | Command | Scope |
 |---|---|---|---|
@@ -63,4 +63,4 @@ On external listeners, admin commands additionally require listener `allow_admin
 
 The serve connection cap is per token; token revocation/expiry closes the WebSocket with policy close code 1008. Authentication and upgrade failures use HTTP rejection (not a WebSocket close code). The UI listener is distinct and retains its existing behavior.
 
-Derivation: `internal/serve/server/scope_table.go`, `ws_serve_scope.go`, `ws_serve_origin.go`, `server.go` hello write and listener policy. Design comparison: plan §8 lines 199–214 describes header/subprotocol auth, hello and cap; it agrees on the broad behavior, but actual scope table includes all listed batch, LSP, message and configuration commands. Plan §17.5 lines 772–777 identifies `get_logs` and `mcp_state` disclosure; observed filter withholds `mcp_state` only, while `get_logs` is denied through its admin scope.
+Derivation: `internal/serve/server/hub/scope.go`, `internal/serve/server/listener/policy.go`, `internal/serve/server/hub/gate.go` hello write and listener policy. Design comparison: plan §8 lines 199–214 describes header/subprotocol auth, hello and cap; it agrees on the broad behavior, but actual scope table includes all listed batch, LSP, message and configuration commands. Plan §17.5 lines 772–777 identifies `get_logs` and `mcp_state` disclosure; observed filter withholds `mcp_state` only, while `get_logs` is denied through its admin scope.

@@ -38,6 +38,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -60,7 +61,7 @@ import (
 // the test always passes.
 func TestReleaseGate_P1_3_FIFOOrderPreservedWithSameCreatedAt(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-fifo-same-created")
 	ctx := t.Context()
 

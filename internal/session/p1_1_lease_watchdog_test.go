@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 )
@@ -125,7 +126,7 @@ func (s *hangingRenewalsService) RenewRunQueueLease(ctx context.Context, id, pum
 // timing at this test's original sub-second scale.
 func TestP1_1_WatchdogCancelsBeforeExpiry(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc, _ := setupTestSessionWithDB(t, "test-session-p1-1-watchdog")
 	ctx := t.Context()
 
@@ -274,7 +275,7 @@ func TestP1_1_WatchdogCancelsBeforeExpiry(t *testing.T) {
 // positive this test is the only regression guard for.
 func TestP1_1_FastRenewalNoFalsePositive(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc, _ := setupTestSessionWithDB(t, "test-session-p1-1-false-positive")
 	ctx := t.Context()
 
@@ -328,18 +329,18 @@ func TestP1_1_FastRenewalNoFalsePositive(t *testing.T) {
 	// registered before fake time moves, or their first period would start
 	// late (same discipline as
 	// TestReleaseGate_P350_LeaseRenewedDuringLongExecution).
-	awaitPump(t, func() bool { return clk.liveTickers() >= 1 }, "scan ticker must be registered")
+	sessiontest.AwaitPump(t, func() bool { return clk.liveTickers() >= 1 }, "scan ticker must be registered")
 
 	// One scan tick of fake time leases and dispatches the entry.
 	clk.Advance(tick)
-	awaitPump(t, func() bool { return coord.entryCount.Load() > 0 },
+	sessiontest.AwaitPump(t, func() bool { return coord.entryCount.Load() > 0 },
 		"coordinator must be called (worker started)")
-	awaitPump(t, func() bool { return clk.liveTickers() >= 3 },
+	sessiontest.AwaitPump(t, func() bool { return clk.liveTickers() >= 3 },
 		"watchdog and renewal tickers must be registered")
 
 	// One renewal interval of fake time makes the renewal loop's tick fire.
 	clk.Advance(ttl / 3)
-	awaitPump(t, func() bool { return probe.renewals.Load() >= 1 },
+	sessiontest.AwaitPump(t, func() bool { return probe.renewals.Load() >= 1 },
 		"at least one renewal must land while renewals are healthy")
 
 	// Fake time now sits at lease + ~10s, well short of the watchdog's
@@ -350,7 +351,7 @@ func TestP1_1_FastRenewalNoFalsePositive(t *testing.T) {
 
 	// Unblock and let execution finish normally
 	close(blockCh)
-	awaitPump(t, func() bool {
+	sessiontest.AwaitPump(t, func() bool {
 		select {
 		case <-coord.completedCh:
 			return true
@@ -381,7 +382,7 @@ func TestP1_1_FastRenewalNoFalsePositive(t *testing.T) {
 // ~1s of slack that dominates timing at sub-second TTL/margin scales.
 func TestP1_1_WatchdogWithVeryShortTTL(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc, _ := setupTestSessionWithDB(t, "test-session-p1-1-short-ttl")
 	ctx := t.Context()
 
@@ -494,7 +495,7 @@ func TestP1_1_WatchdogWithVeryShortTTL(t *testing.T) {
 // new 10x scale, ~1s of slack is a small, tolerable fraction of a 3s TTL.
 func TestP1_1_DynamicRenewalTimeout(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc, sqlDB := setupTestSessionWithDB(t, "test-session-p1-1-dynamic-timeout")
 	ctx := t.Context()
 

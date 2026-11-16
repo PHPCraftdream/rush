@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -90,8 +92,8 @@ func TestHubMCPStateStillReachesUnauthenticatedClients(t *testing.T) {
 
 	register := func() *Client {
 		c := newClient(hub, nil)
-		c.send = make(chan []byte, 64)
-		require.True(t, hub.tryRegister(ctx, c))
+		c.ResizeSendChan(64)
+		require.True(t, hub.TryRegister(ctx, c))
 		return c
 	}
 	drain := func(c *Client) []string {
@@ -101,8 +103,8 @@ func TestHubMCPStateStillReachesUnauthenticatedClients(t *testing.T) {
 			t.Fatal("hub did not drain")
 		}
 		var types []string
-		for len(c.send) > 0 {
-			types = append(types, envelopeType(<-c.send))
+		for len(c.SendChan()) > 0 {
+			types = append(types, envelopeType(<-c.SendChan()))
 		}
 		return types
 	}
@@ -142,4 +144,25 @@ func TestServeWSMCPStateStickyBroadcastToConnectedClients(t *testing.T) {
 	awaitType(t, conns["admin"], EventMCPState) // fails on timeout if the admin never gets it
 	seen := awaitType(t, conns["read"], sentinelType)
 	require.False(t, containsType(seen, EventMCPState), "a read token received mcp_state: %v", seen)
+}
+
+// envelopeType is a small local copy (sprint 0 L4 escape rule): the function
+// moved to hub/scope.go with ws_serve_scope.go (ws_serve_scope.go:74-95 at
+// HEAD); this staying server test calls it directly. Verbatim copy;
+// servertest (L6/L7) absorbs it.
+func envelopeType(raw []byte) string {
+	const prefix = `{"type":"`
+	if bytes.HasPrefix(raw, []byte(prefix)) {
+		rest := raw[len(prefix):]
+		if end := bytes.IndexByte(rest, '"'); end >= 0 && bytes.IndexByte(rest[:end], '\\') < 0 {
+			return string(rest[:end])
+		}
+	}
+	var message struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(raw, &message) != nil {
+		return ""
+	}
+	return message.Type
 }

@@ -24,22 +24,22 @@ import (
 func handlePauseProviderPeakHours(a *appPkg.App, c *Client, msg WSMessage) {
 	var p PauseProviderPeakHoursPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	if p.ID == "" {
-		c.reply(msg.ID, EventError, nil, "id is required")
+		c.Reply(msg.ID, EventError, nil, "id is required")
 		return
 	}
 	store := a.Store()
 	cfg := store.Config()
 	if cfg == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	providerCfg, ok := cfg.Providers.Get(p.ID)
 	if !ok {
-		c.reply(msg.ID, EventError, nil, fmt.Sprintf("provider %q not found", p.ID))
+		c.Reply(msg.ID, EventError, nil, fmt.Sprintf("provider %q not found", p.ID))
 		return
 	}
 	scope := scopeFromWire(p.Scope)
@@ -49,14 +49,14 @@ func handlePauseProviderPeakHours(a *appPkg.App, c *Client, msg WSMessage) {
 	case p.Until != "":
 		t, err := config.ParsePeakPauseDuration(p.Until, now)
 		if err != nil {
-			c.reply(msg.ID, EventError, nil, fmt.Sprintf("invalid until: %v", err))
+			c.Reply(msg.ID, EventError, nil, fmt.Sprintf("invalid until: %v", err))
 			return
 		}
 		until = t
 	case p.Duration != "":
 		t, err := config.ParsePeakPauseDuration(p.Duration, now)
 		if err != nil {
-			c.reply(msg.ID, EventError, nil, fmt.Sprintf("invalid duration: %v", err))
+			c.Reply(msg.ID, EventError, nil, fmt.Sprintf("invalid duration: %v", err))
 			return
 		}
 		until = t
@@ -64,16 +64,16 @@ func handlePauseProviderPeakHours(a *appPkg.App, c *Client, msg WSMessage) {
 		// No explicit deadline: pause until the active peak window ends.
 		ph := providerCfg.PeakHours
 		if ph == nil || ph.IsOff() {
-			c.reply(msg.ID, EventError, nil, fmt.Sprintf("provider %q is not inside an active peak window — pass a duration", p.ID))
+			c.Reply(msg.ID, EventError, nil, fmt.Sprintf("provider %q is not inside an active peak window — pass a duration", p.ID))
 			return
 		}
 		st := ph.Status(now)
 		if st.Paused {
-			c.reply(msg.ID, EventError, nil, fmt.Sprintf("already paused until %s — resume first", st.PausedUntil.Format(time.RFC3339)))
+			c.Reply(msg.ID, EventError, nil, fmt.Sprintf("already paused until %s — resume first", st.PausedUntil.Format(time.RFC3339)))
 			return
 		}
 		if !st.InPeak || st.ReopensAt.IsZero() {
-			c.reply(msg.ID, EventError, nil, fmt.Sprintf("provider %q is not inside an active peak window — pass a duration", p.ID))
+			c.Reply(msg.ID, EventError, nil, fmt.Sprintf("provider %q is not inside an active peak window — pass a duration", p.ID))
 			return
 		}
 		until = st.ReopensAt
@@ -81,7 +81,7 @@ func handlePauseProviderPeakHours(a *appPkg.App, c *Client, msg WSMessage) {
 	entry, err := store.PeakHoursEntryForScope(scope, p.ID)
 	if err != nil {
 		slog.Warn("ws: failed to resolve peak hours entry", "id", p.ID, "err", err)
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	if entry == nil {
@@ -92,7 +92,7 @@ func handlePauseProviderPeakHours(a *appPkg.App, c *Client, msg WSMessage) {
 		// legacy provider from the web works instead of erroring.
 		conv := providerCfg.PeakHours.AsPolicy()
 		if conv == nil {
-			c.reply(msg.ID, EventError, nil, fmt.Sprintf("provider %q has no peak-hours policy to pause", p.ID))
+			c.Reply(msg.ID, EventError, nil, fmt.Sprintf("provider %q has no peak-hours policy to pause", p.ID))
 			return
 		}
 		entry = &config.ProviderPeakHours{Policy: conv}
@@ -110,7 +110,7 @@ func handlePauseProviderPeakHours(a *appPkg.App, c *Client, msg WSMessage) {
 	}
 	entry.Policy.PausedUntil = until.Format(time.RFC3339)
 	if err := entry.Policy.Validate(); err != nil {
-		c.reply(msg.ID, EventError, nil, fmt.Sprintf("invalid peakHours: %v", err))
+		c.Reply(msg.ID, EventError, nil, fmt.Sprintf("invalid peakHours: %v", err))
 		return
 	}
 	wrapped := &config.ProviderPeakHours{Policy: entry.Policy}
@@ -118,19 +118,19 @@ func handlePauseProviderPeakHours(a *appPkg.App, c *Client, msg WSMessage) {
 	// drop it; treat a nil result as an invariant violation and refuse.
 	if wrapped.NormalizeForWrite() == nil {
 		slog.Warn("ws: paused peak hours entry normalized to nil; refusing write", "id", p.ID)
-		c.reply(msg.ID, EventError, nil, fmt.Sprintf("failed to persist pause for provider %q", p.ID))
+		c.Reply(msg.ID, EventError, nil, fmt.Sprintf("failed to persist pause for provider %q", p.ID))
 		return
 	}
 	fieldKey := fmt.Sprintf("providers.%s.peak_hours", p.ID)
-	if err := store.SetConfigFieldWithAuthority(scope, fieldKey, wrapped, c.settingsWriteAuthority()); err != nil {
+	if err := store.SetConfigFieldWithAuthority(scope, fieldKey, wrapped, c.SettingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to persist peak hours pause", "id", p.ID, "err", err)
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 // handleResumeProviderPeakHours clears an active pause in the chosen
@@ -139,27 +139,27 @@ func handlePauseProviderPeakHours(a *appPkg.App, c *Client, msg WSMessage) {
 func handleResumeProviderPeakHours(a *appPkg.App, c *Client, msg WSMessage) {
 	var p ResumeProviderPeakHoursPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	if p.ID == "" {
-		c.reply(msg.ID, EventError, nil, "id is required")
+		c.Reply(msg.ID, EventError, nil, "id is required")
 		return
 	}
 	store := a.Store()
 	if store.Config() == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	scope := scopeFromWire(p.Scope)
 	entry, err := store.PeakHoursEntryForScope(scope, p.ID)
 	if err != nil {
 		slog.Warn("ws: failed to resolve peak hours entry", "id", p.ID, "err", err)
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	if entry == nil || entry.Policy == nil || entry.Policy.PausedUntil == "" {
-		c.reply(msg.ID, EventError, nil, fmt.Sprintf("provider %q is not paused in %s scope", p.ID, scope))
+		c.Reply(msg.ID, EventError, nil, fmt.Sprintf("provider %q is not paused in %s scope", p.ID, scope))
 		return
 	}
 	entry.Policy.PausedUntil = ""
@@ -167,20 +167,20 @@ func handleResumeProviderPeakHours(a *appPkg.App, c *Client, msg WSMessage) {
 	normalized := wrapped.NormalizeForWrite()
 	fieldKey := fmt.Sprintf("providers.%s.peak_hours", p.ID)
 	if normalized == nil && scope == config.ScopeGlobal {
-		if err := store.RemoveConfigFieldWithAuthority(scope, fieldKey, c.settingsWriteAuthority()); err != nil {
+		if err := store.RemoveConfigFieldWithAuthority(scope, fieldKey, c.SettingsWriteAuthority()); err != nil {
 			slog.Warn("ws: failed to clear provider peak_hours", "id", p.ID, "err", err)
-			c.reply(msg.ID, EventError, nil, err.Error())
+			c.Reply(msg.ID, EventError, nil, err.Error())
 			return
 		}
-	} else if err := store.SetConfigFieldWithAuthority(scope, fieldKey, normalized, c.settingsWriteAuthority()); err != nil {
+	} else if err := store.SetConfigFieldWithAuthority(scope, fieldKey, normalized, c.SettingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to persist peak hours resume", "id", p.ID, "err", err)
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 // handleGetPeakHoursStatus reports the live peak-hours state of one
@@ -189,20 +189,20 @@ func handleResumeProviderPeakHours(a *appPkg.App, c *Client, msg WSMessage) {
 func handleGetPeakHoursStatus(a *appPkg.App, c *Client, msg WSMessage) {
 	var p GetPeakHoursStatusPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	store := a.Store()
 	cfg := store.Config()
 	if cfg == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	now := time.Now()
 	ids := make([]string, 0, cfg.Providers.Len())
 	if p.ID != "" {
 		if _, ok := cfg.Providers.Get(p.ID); !ok {
-			c.reply(msg.ID, EventError, nil, fmt.Sprintf("provider %q not found", p.ID))
+			c.Reply(msg.ID, EventError, nil, fmt.Sprintf("provider %q not found", p.ID))
 			return
 		}
 		ids = append(ids, p.ID)
@@ -224,7 +224,7 @@ func handleGetPeakHoursStatus(a *appPkg.App, c *Client, msg WSMessage) {
 		}
 		statuses = append(statuses, peakHoursStatusWire(id, st, ph))
 	}
-	c.reply(msg.ID, EventResponse, PeakHoursStatusesWire{
+	c.Reply(msg.ID, EventResponse, PeakHoursStatusesWire{
 		CheckedAt: now.Format(time.RFC3339),
 		Statuses:  statuses,
 	}, "")

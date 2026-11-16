@@ -14,6 +14,7 @@ import (
 	"charm.land/fantasy/providers/google"
 	"charm.land/fantasy/providers/openai"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -250,7 +251,7 @@ func (ts *turnStream) streamCall(history []fantasy.Message, files []fantasy.File
 		prompt = ""
 	}
 	return fantasy.AgentStreamCall{
-		MaxRetries:       &ProviderMaxRetries,
+		MaxRetries:       &agentcall.ProviderMaxRetries,
 		Prompt:           prompt,
 		Files:            files,
 		Messages:         history,

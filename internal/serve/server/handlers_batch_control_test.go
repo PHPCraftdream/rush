@@ -20,8 +20,8 @@ import (
 // would never intercept it).
 func controlClient(hub *Hub) *Client {
 	c := newClient(hub, nil)
-	c.send = make(chan []byte, 64)
-	hub.register <- c
+	c.ResizeSendChan(64)
+	hub.Register(c)
 	return c
 }
 
@@ -43,7 +43,7 @@ func controlFixture(t *testing.T) (*app.App, session.Session, string, string) {
 }
 
 // controlRequest sends a batch control message through handleIncoming on a
-// real hub client, then drains client.send within a bounded deadline and
+// real hub client, then drains client.SendChan() within a bounded deadline and
 // returns the FIRST frame whose type matches expectedType (the queue may
 // interleave unrelated frames).
 func controlRequest(t *testing.T, a *app.App, c *Client, typ string, expectedType string, payload any) WSMessage {
@@ -56,7 +56,7 @@ func controlRequest(t *testing.T, a *app.App, c *Client, typ string, expectedTyp
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
-		case response := <-c.send:
+		case response := <-c.SendChan():
 			var got WSMessage
 			require.NoError(t, json.Unmarshal(response, &got))
 			if got.Type == expectedType {

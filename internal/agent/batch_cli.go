@@ -56,16 +56,6 @@ func NewBatchCLIBuilder(c Coordinator, in BatchWorkIngress) (*BatchCLIBuilder, e
 	return NewBatchCLIBuilderWithQuestionRoute(c, in, true)
 }
 
-// NewBatchCLIBuilderWithQuestionRoute builds like NewBatchCLIBuilder and
-// stamps the answer-route capability carried by the calling intake surface.
-func NewBatchCLIBuilderWithQuestionRoute(c Coordinator, in BatchWorkIngress, questionRoute bool) (*BatchCLIBuilder, error) {
-	cc, ok := c.(*coordinator)
-	if !ok || in == nil {
-		return nil, errors.New("batch CLI: installed coordinator and runtime are required")
-	}
-	return &BatchCLIBuilder{coord: cc, ingress: in, questionRoute: questionRoute}, nil
-}
-
 func (b *BatchCLIBuilder) bind(ctx context.Context, sessionID, messageID string) (batchCLIBinding, error) {
 	if b == nil || b.coord == nil || b.ingress == nil || sessionID == "" || messageID == "" {
 		return batchCLIBinding{}, errors.New("batch CLI: missing installed runtime or owner identity")

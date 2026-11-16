@@ -6,13 +6,22 @@ package server
 // takes (Start's watcher -> srv.Shutdown -> runWebMode's deferred
 // app.Shutdown). There is deliberately no parallel teardown here.
 
-import "log/slog"
+import (
+	"log/slog"
+	"time"
+)
+
+// shutdownAckWriteLimit bounds handleShutdownServer's wait for the
+// acknowledgement write (hub.go:823 at HEAD). Sprint 0 L4: the var stays in
+// package server (its only consumer is this file; the hub's replyAndWait
+// takes the timeout as a parameter).
+var shutdownAckWriteLimit = 2 * time.Second
 
 // handleShutdownServer waits until its acknowledgement is written to the
 // WebSocket (or the bounded wait ends) before signaling the shutdown watcher.
 // This keeps teardown from closing the connection ahead of the queued reply.
 func handleShutdownServer(s *Server, c *Client, msg WSMessage) {
-	c.replyAndWait(msg.ID, EventResponse, map[string]string{"status": "shutting_down"}, "", shutdownAckWriteLimit)
+	c.ReplyAndWait(msg.ID, EventResponse, map[string]string{"status": "shutting_down"}, "", shutdownAckWriteLimit)
 	slog.Info("ws: shutdown_server requested by client")
 	s.requestShutdown()
 }

@@ -27,11 +27,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// decodeReply reads exactly one WSMessage off c.send and unmarshals it.
+// decodeReply reads exactly one WSMessage off c.SendChan() and unmarshals it.
 func decodeReply(t *testing.T, c *Client) WSMessage {
 	t.Helper()
 	select {
-	case raw := <-c.send:
+	case raw := <-c.SendChan():
 		var env WSMessage
 		require.NoError(t, json.Unmarshal(raw, &env))
 		return env
@@ -62,7 +62,7 @@ func TestHandleDeleteMessage_RefusesStillStreamingAssistantMessage(t *testing.T)
 	require.NoError(t, err)
 	require.False(t, created.IsFinished(), "precondition: freshly created assistant message has no Finish part")
 
-	c := &Client{send: make(chan []byte, 4)}
+	c := newDetachedTestClient(4)
 	payload, err := json.Marshal(DeleteMessagePayload{MessageID: created.ID})
 	require.NoError(t, err)
 
@@ -93,7 +93,7 @@ func TestHandleDeleteMessage_AllowsTerminallyFinishedAssistantMessage(t *testing
 	created.AddFinish(message.FinishReasonEndTurn, "", "")
 	require.NoError(t, a.Messages.Update(ctx, created))
 
-	c := &Client{send: make(chan []byte, 4)}
+	c := newDetachedTestClient(4)
 	payload, err := json.Marshal(DeleteMessagePayload{MessageID: created.ID})
 	require.NoError(t, err)
 
@@ -136,7 +136,7 @@ func TestHandleDeleteMessages_PartialFailureDoesNotReportOk(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, streaming.IsFinished(), "precondition: this one has no Finish part yet")
 
-	c := &Client{send: make(chan []byte, 4)}
+	c := newDetachedTestClient(4)
 	payload, err := json.Marshal(DeleteMessagesPayload{MessageIDs: []string{finished.ID, streaming.ID}})
 	require.NoError(t, err)
 
@@ -177,7 +177,7 @@ func TestHandleDeleteMessages_AllSucceedRepliesOk(t *testing.T) {
 		ids = append(ids, m.ID)
 	}
 
-	c := &Client{send: make(chan []byte, 4)}
+	c := newDetachedTestClient(4)
 	payload, err := json.Marshal(DeleteMessagesPayload{MessageIDs: ids})
 	require.NoError(t, err)
 
@@ -251,7 +251,7 @@ func TestHandleRerunMessage_OrphanedStreamingMessageIsForceDeleted(t *testing.T)
 	// Create a client to receive the response.
 	hub := newHub()
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 10)
+	client.ResizeSendChan(10)
 
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
 	require.NoError(t, err)

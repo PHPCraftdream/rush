@@ -106,6 +106,8 @@ CREATE INDEX idx_batch_nodes_pending_notice ON batch_nodes (owner_session_id, ro
     WHERE notice_selected = 1 AND delivery = 'pending';
 CREATE INDEX idx_batch_nodes_debt ON batch_nodes (owner_session_id, root_id)
     WHERE notice_selected = 1 AND wake = 1 AND reacted = 0 AND delivery != 'void';
+CREATE INDEX idx_batch_nodes_child_session ON batch_nodes (child_session_id, node_id)
+    WHERE child_session_id IS NOT NULL;
 CREATE TABLE orphan_call_outbox (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,

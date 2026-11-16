@@ -88,6 +88,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -176,7 +177,7 @@ func (c *concurrencyTrackingCoordinator) Run(ctx context.Context, callData sessi
 //  4. Restore the inFlight guard and PASS.
 func TestReleaseGate_P350_NoDuplicateDispatchForSameSession(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-dup-dispatch")
 	ctx := t.Context()
 
@@ -284,24 +285,24 @@ func (c *queuedNotExecutedCoordinator) Run(ctx context.Context, callData session
 //  4. Restore the branch and PASS.
 func TestReleaseGate_P350_QueuedNotExecutedNeitherAcksNorSpamRetries(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
-	tl := newTestTimeline()
-	reportPumpSetupOnFailure(t, tl)
-	tl.addf("fixture setup started")
+	sessiontest.LimitParallel(t)
+	tl := sessiontest.NewTestTimeline()
+	sessiontest.ReportPumpSetupOnFailure(t, tl)
+	tl.Addf("fixture setup started")
 	sess, svc := setupTestSession(t, "test-session-queued-not-executed")
-	tl.addf("fixture ready")
+	tl.Addf("fixture ready")
 	ctx := t.Context()
 
 	callData := map[string]any{"SessionID": sess.ID, "Prompt": "test prompt"}
 	callDataJSON, err := json.Marshal(callData)
 	require.NoError(t, err)
 	getEntry := registerPumpQueueReport(t, tl, svc, "queued-not-executed-probe")
-	tl.stepf(func() {
+	tl.Stepf(func() {
 		require.NoError(t, svc.EnqueueRunQueueEntry(ctx, "queued-not-executed-probe", sess.ID, callDataJSON))
 	}, "enqueue")
 
 	coord := &queuedNotExecutedCoordinator{}
-	registerPumpCalls(t, "queuedNotExecuted", &coord.calls)
+	sessiontest.RegisterPumpCalls(t, "queuedNotExecuted", &coord.calls)
 
 	// Fake TTL, so the pump's local backoff (one TTL) is an hour of fake
 	// time. pumpTick is the tick period; see the backs-off test below for why
@@ -320,13 +321,13 @@ func TestReleaseGate_P350_QueuedNotExecutedNeitherAcksNorSpamRetries(t *testing.
 	})
 	pump.Start()
 	t.Cleanup(func() { pump.Stop() })
-	reportPumpOnFailure(t, tl)
-	tl.addf("pump started")
+	sessiontest.ReportPumpOnFailure(t, tl)
+	tl.Addf("pump started")
 
-	awaitPump(t, func() bool { return coord.calls.Load() >= 1 }, "the entry must be leased and attempted once")
+	sessiontest.AwaitPump(t, func() bool { return coord.calls.Load() >= 1 }, "the entry must be leased and attempted once")
 	// Released back to pending before any fake time passes, so no cleanup
 	// pass can see it leased.
-	awaitPump(t, func() bool {
+	sessiontest.AwaitPump(t, func() bool {
 		e, getErr := getEntry(ctx)
 		return getErr == nil && e != nil && e.Status == "pending"
 	}, "the entry must be released back to pending")
@@ -337,7 +338,7 @@ func TestReleaseGate_P350_QueuedNotExecutedNeitherAcksNorSpamRetries(t *testing.
 	// entry) are complete.
 	for i := int64(1); i <= 5; i++ {
 		clk.Advance(ttl / 10)
-		awaitPump(t, func() bool { return probe.cleanups.Load() >= 1+i }, "tick must run")
+		sessiontest.AwaitPump(t, func() bool { return probe.cleanups.Load() >= 1+i }, "tick must run")
 	}
 	require.Equal(t, int64(1), coord.calls.Load(), "must not be retried while still within its local busy-backoff window — retrying would append a duplicate to the external owner's mailbox on every attempt")
 	require.Equal(t, int64(1), probe.leases.Load(), "the backed-off entry must not even be re-leased inside the window")
@@ -357,7 +358,7 @@ func TestReleaseGate_P350_QueuedNotExecutedNeitherAcksNorSpamRetries(t *testing.
 	// a cleanup tick whose cutoff overtakes the lease stamp would reap it
 	// mid-execution and charge an attempt.
 	clk.Advance(ttl)
-	awaitPump(t, func() bool {
+	sessiontest.AwaitPump(t, func() bool {
 		if coord.calls.Load() >= 2 {
 			return true
 		}
@@ -419,7 +420,7 @@ func (c *slowCoordinator) Run(ctx context.Context, callData session.SessionAgent
 //  4. Restore the renewal loop and PASS.
 func TestReleaseGate_P350_LeaseRenewedDuringLongExecution(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-lease-renewal")
 	ctx := t.Context()
 
@@ -453,17 +454,17 @@ func TestReleaseGate_P350_LeaseRenewedDuringLongExecution(t *testing.T) {
 	t.Cleanup(func() { pump.Stop() })
 	t.Cleanup(releaseCall) // runs before Stop, so Stop never waits on a held call
 
-	awaitPump(t, func() bool { return coord.calls.Load() >= 1 }, "the entry must be leased and execution started")
+	sessiontest.AwaitPump(t, func() bool { return coord.calls.Load() >= 1 }, "the entry must be leased and execution started")
 	// Tick loop + the execution's watchdog and renewal tickers: all must
 	// exist before time moves, or their first period would start late.
-	awaitPump(t, func() bool { return clk.liveTickers() >= 3 }, "pump, watchdog and renewal tickers must be registered")
+	sessiontest.AwaitPump(t, func() bool { return clk.liveTickers() >= 3 }, "pump, watchdog and renewal tickers must be registered")
 
 	for step := int64(1); step <= windows*3; step++ {
 		clk.Advance(renewEvery)
 		at := clk.Now()
-		awaitPump(t, func() bool { return probe.renewals.Load() >= step },
+		sessiontest.AwaitPump(t, func() bool { return probe.renewals.Load() >= step },
 			"the lease must be renewed at every renewal interval — the renewal loop is not running")
-		awaitPump(t, func() bool { return probe.cleanups.Load() >= step+1 }, "the pump must clean up expired leases at every tick")
+		sessiontest.AwaitPump(t, func() bool { return probe.cleanups.Load() >= step+1 }, "the pump must clean up expired leases at every tick")
 
 		require.Equal(t, at.Unix(), probe.lastCleanupBefore.Load(), "step %d: cleanup must run at the fake instant", step)
 		entry, getErr := svc.GetRunQueueEntry(ctx, entryID)
@@ -478,7 +479,7 @@ func TestReleaseGate_P350_LeaseRenewedDuringLongExecution(t *testing.T) {
 	}
 
 	releaseCall()
-	awaitPump(t, func() bool {
+	sessiontest.AwaitPump(t, func() bool {
 		entry, getErr := svc.GetRunQueueEntry(ctx, entryID)
 		return getErr == nil && entry == nil
 	}, "entry should be acked once the long call finally completes")
@@ -488,7 +489,7 @@ func TestReleaseGate_P350_LeaseRenewedDuringLongExecution(t *testing.T) {
 	for range 3 {
 		before := probe.cleanups.Load()
 		clk.Advance(renewEvery)
-		awaitPump(t, func() bool { return probe.cleanups.Load() > before }, "tick must run")
+		sessiontest.AwaitPump(t, func() bool { return probe.cleanups.Load() > before }, "tick must run")
 		pending, listErr := svc.ListPendingRunQueueEntries(ctx)
 		require.NoError(t, listErr)
 		require.Empty(t, pending)
@@ -538,12 +539,12 @@ func (c *queuedNotExecutedThenSuccessCoordinator) Run(ctx context.Context, callD
 //  4. Restore the fix and PASS.
 func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
-	tl := newTestTimeline()
-	reportPumpSetupOnFailure(t, tl)
-	tl.addf("fixture setup started")
+	sessiontest.LimitParallel(t)
+	tl := sessiontest.NewTestTimeline()
+	sessiontest.ReportPumpSetupOnFailure(t, tl)
+	tl.Addf("fixture setup started")
 	sess, svc := setupTestSession(t, "test-session-queued-backoff")
-	tl.addf("fixture ready")
+	tl.Addf("fixture ready")
 	ctx := t.Context()
 
 	const entryID = "queued-backoff-probe"
@@ -551,7 +552,7 @@ func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *test
 	callDataJSON, err := json.Marshal(callData)
 	require.NoError(t, err)
 	getEntry := registerPumpQueueReport(t, tl, svc, entryID)
-	tl.stepf(func() {
+	tl.Stepf(func() {
 		require.NoError(t, svc.EnqueueRunQueueEntry(ctx, entryID, sess.ID, callDataJSON))
 	}, "enqueue")
 
@@ -559,7 +560,7 @@ func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *test
 	// still counted as an attempt (the pre-fix behavior), the entry would
 	// be dead-lettered long before reaching this many cycles.
 	coord := &queuedNotExecutedThenSuccessCoordinator{busyUntilCall: 25}
-	registerPumpCalls(t, "queuedNotExecutedThenSuccess", &coord.calls)
+	sessiontest.RegisterPumpCalls(t, "queuedNotExecutedThenSuccess", &coord.calls)
 
 	const ttl = time.Hour // fake time; also the local backoff length
 	const pumpTick = ttl / 10
@@ -575,13 +576,13 @@ func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *test
 	})
 	pump.Start()
 	t.Cleanup(func() { pump.Stop() })
-	reportPumpOnFailure(t, tl)
-	tl.addf("pump started")
+	sessiontest.ReportPumpOnFailure(t, tl)
+	tl.Addf("pump started")
 
 	for cycle := int64(1); cycle <= coord.busyUntilCall; cycle++ {
-		tl.addf("cycle=%d waiting for call; fake now=%s calls=%d", cycle, clk.Now(), coord.calls.Load())
-		awaitPump(t, func() bool { return coord.calls.Load() >= cycle }, "the pump must re-attempt the entry each backoff window")
-		awaitPump(t, func() bool {
+		tl.Addf("cycle=%d waiting for call; fake now=%s calls=%d", cycle, clk.Now(), coord.calls.Load())
+		sessiontest.AwaitPump(t, func() bool { return coord.calls.Load() >= cycle }, "the pump must re-attempt the entry each backoff window")
+		sessiontest.AwaitPump(t, func() bool {
 			e, getErr := getEntry(ctx)
 			return getErr == nil && e != nil && e.Status == "pending"
 		}, "a busy outcome must release the row back to pending, not dead-letter it")
@@ -615,9 +616,9 @@ func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *test
 		// charge an attempt (the penalty this test forbids) and make the
 		// in-flight Nack match zero rows. A leased row just needs real
 		// scheduling time, never fake time.
-		tl.addf("cycle=%d pending attempts=%d; advancing TTL from %s", cycle, entry.Attempts, clk.Now())
+		tl.Addf("cycle=%d pending attempts=%d; advancing TTL from %s", cycle, entry.Attempts, clk.Now())
 		clk.Advance(ttl)
-		awaitPump(t, func() bool {
+		sessiontest.AwaitPump(t, func() bool {
 			if coord.calls.Load() > cycle {
 				// The call has started; wait out its outcome write. On the
 				// final cycle the call SUCCEEDS and acks (deletes) the row,
@@ -637,9 +638,9 @@ func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *test
 	}
 
 	// The 26th call succeeds; the row must be acked, not left behind.
-	awaitPump(t, func() bool {
+	sessiontest.AwaitPump(t, func() bool {
 		gone, checkErr := runQueueGoneEverywhere(ctx, svc)
-		tl.observef("queue gone check", "gone=%v err=%v", gone, checkErr)
+		tl.Observef("queue gone check", "gone=%v err=%v", gone, checkErr)
 		return checkErr == nil && gone
 	}, "entry should be acked once the external owner frees up")
 	require.Greater(t, coord.calls.Load(), coord.busyUntilCall)
@@ -691,7 +692,7 @@ func (s *postNackAdvancingService) NackRunQueueEntryNoAttemptPenalty(ctx context
 // deterministically with "Condition never satisfied"; the new loop PASSes.
 func TestReleaseGate_P350_BackoffRetryMustSurvivePostNackBackoffWrite(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-post-nack-advance")
 	ctx := t.Context()
 
@@ -718,11 +719,11 @@ func TestReleaseGate_P350_BackoffRetryMustSurvivePostNackBackoffWrite(t *testing
 	pump.Start()
 	t.Cleanup(func() { pump.Stop() })
 
-	awaitPump(t, func() bool { return coord.calls.Load() >= 1 }, "the entry must be leased and attempted once")
+	sessiontest.AwaitPump(t, func() bool { return coord.calls.Load() >= 1 }, "the entry must be leased and attempted once")
 	// The forced interleaving: the wrapper has already jumped the clock past
 	// the whole backoff window, so the row must be pending (and its
 	// busyBackoffUntil still in the future — see the doc comment).
-	awaitPump(t, func() bool {
+	sessiontest.AwaitPump(t, func() bool {
 		e, getErr := svc.GetRunQueueEntry(ctx, entryID)
 		return getErr == nil && e != nil && e.Status == "pending"
 	}, "a busy outcome must release the row back to pending")
@@ -730,7 +731,7 @@ func TestReleaseGate_P350_BackoffRetryMustSurvivePostNackBackoffWrite(t *testing
 	// With the pre-fix 1ms advance this loop can never succeed: the single
 	// tick of the wrapper's jump was skipped (in-flight slot), and no
 	// further tick fires until a full fake period passes.
-	awaitPump(t, func() bool {
+	sessiontest.AwaitPump(t, func() bool {
 		if coord.calls.Load() >= 2 {
 			return true
 		}
@@ -742,7 +743,7 @@ func TestReleaseGate_P350_BackoffRetryMustSurvivePostNackBackoffWrite(t *testing
 	}, "the entry must be retried despite the post-Nack backoff write")
 
 	// The retry succeeds (call 2 > busyUntilCall 1), so the row is acked.
-	awaitPump(t, func() bool {
+	sessiontest.AwaitPump(t, func() bool {
 		gone, checkErr := runQueueGoneEverywhere(ctx, svc)
 		return checkErr == nil && gone
 	}, "entry should be acked once the retry succeeds")

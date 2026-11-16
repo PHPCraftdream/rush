@@ -28,8 +28,8 @@ func TestHandleListSessions_LiveRunDriverAnnotation(t *testing.T) {
 	hub := newHub()
 	go hub.Run(ctx)
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 100)
-	hub.register <- client
+	client.ResizeSendChan(100)
+	hub.Register(client)
 
 	list := func() []session.Session {
 		handleListSessions(ctx, a, client, WSMessage{ID: "req", Type: CmdListSessions})

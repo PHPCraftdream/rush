@@ -28,23 +28,23 @@ var batchRerunReconcile = func(ctx context.Context, writer *sql.DB, messages mes
 func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p RerunMessagePayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 
 	targetMsg, err := a.Messages.Get(ctx, p.MessageID)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, "message not found")
+		c.Reply(msg.ID, EventError, nil, "message not found")
 		return
 	}
 	if targetMsg.Role != message.User {
-		c.reply(msg.ID, EventError, nil, "can only rerun user messages")
+		c.Reply(msg.ID, EventError, nil, "can only rerun user messages")
 		return
 	}
 
 	text := targetMsg.Content().Text
 	if text == "" {
-		c.reply(msg.ID, EventError, nil, "empty message")
+		c.Reply(msg.ID, EventError, nil, "empty message")
 		return
 	}
 
@@ -64,12 +64,12 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	if sess, getErr := a.Sessions.Get(ctx, sessionID); getErr == nil && !appOwnsSession(a, sess) {
 		slog.Warn("ws: rerun: refusing a foreign-workspace session",
 			"sessionID", sessionID, "messageID", p.MessageID, "owner", sess.WorkspaceRoot)
-		c.reply(msg.ID, EventError, nil, foreignSessionRefusal(sess).Error())
+		c.Reply(msg.ID, EventError, nil, foreignSessionRefusal(sess).Error())
 		return
 	}
 
 	if a.AgentCoordinator == nil {
-		c.reply(msg.ID, EventError, nil, "agent not configured")
+		c.Reply(msg.ID, EventError, nil, "agent not configured")
 		return
 	}
 
@@ -118,7 +118,7 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 			"sessionID", sessionID,
 			"messageID", p.MessageID,
 			"timeout_seconds", 10)
-		c.reply(msg.ID, EventError, nil, "session still stopping — please retry")
+		c.Reply(msg.ID, EventError, nil, "session still stopping — please retry")
 		return
 	}
 
@@ -157,7 +157,7 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	if !reserved {
 		slog.Warn("ws: rerun: could not claim exclusive ownership (session became busy again)",
 			"sessionID", sessionID, "messageID", p.MessageID)
-		c.reply(msg.ID, EventError, nil, "session became busy again — please retry")
+		c.Reply(msg.ID, EventError, nil, "session became busy again — please retry")
 		return
 	}
 	// releaseOnBailout is true on every return path below UNTIL step 6 hands
@@ -193,7 +193,7 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	if refuse {
 		slog.Warn("ws: rerun: refusing: "+why,
 			"sessionID", sessionID, "messageID", p.MessageID)
-		c.reply(msg.ID, EventError, nil, why)
+		c.Reply(msg.ID, EventError, nil, why)
 		return
 	}
 	// probeHeld guards the bailout paths between here and the step-6
@@ -225,12 +225,12 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// already-ordered list and delete only the slice strictly after it.
 	allMsgs, listErr := a.Messages.List(holdCtx, sessionID)
 	if listErr != nil {
-		c.reply(msg.ID, EventError, nil, "failed to list messages")
+		c.Reply(msg.ID, EventError, nil, "failed to list messages")
 		return
 	}
 	// Check if the hold was cancelled while listing messages
 	if holdCtx.Err() != nil {
-		c.reply(msg.ID, EventError, nil, "cancelled")
+		c.Reply(msg.ID, EventError, nil, "cancelled")
 		return
 	}
 	targetIdx := -1
@@ -245,7 +245,7 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		// cannot safely tell "before" from "after", so delete nothing.
 		slog.Warn("ws: rerun: target message not found in session list",
 			"sessionID", sessionID, "messageID", targetMsg.ID)
-		c.reply(msg.ID, EventError, nil, "target message not found in session")
+		c.Reply(msg.ID, EventError, nil, "target message not found in session")
 		return
 	}
 
@@ -269,7 +269,7 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 
 	// The tail, target and batch bookkeeping are removed by ONE transaction.
 	if holdCtx.Err() != nil {
-		c.reply(msg.ID, EventError, nil, "cancelled")
+		c.Reply(msg.ID, EventError, nil, "cancelled")
 		return
 	}
 
@@ -298,12 +298,12 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		if errors.Is(truncErr, session.ErrRerunTargetGone) {
 			slog.Warn("ws: rerun: target message no longer exists at truncation",
 				"sessionID", sessionID, "messageID", targetMsg.ID)
-			c.reply(msg.ID, EventError, nil, "target message not found in session")
+			c.Reply(msg.ID, EventError, nil, "target message not found in session")
 			return
 		}
 		slog.Error("ws: rerun: truncation failed, nothing was changed",
 			"sessionID", sessionID, "messageID", targetMsg.ID, "err", truncErr)
-		c.reply(msg.ID, EventError, nil, "rerun failed, nothing was changed — please retry: "+truncErr.Error())
+		c.Reply(msg.ID, EventError, nil, "rerun failed, nothing was changed — please retry: "+truncErr.Error())
 		return
 	}
 	// COMMIT POINT: the user's own message is deleted, so nothing below may
@@ -491,7 +491,7 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	}
 
 	agentCtx := agent.WithCallOptions(agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb), &agent.CallOptions{WebTurnOptIn: true})
-	c.hub.Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: sessionID, Busy: true})
+	c.Hub().Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: sessionID, Busy: true})
 	if smartOverride != nil || fastOverride != nil {
 		_, err = a.AgentCoordinator.RunWithReservedOwnership(agentCtx, sessionID, text, epoch, reserveCancel, func() { releaseOnBailout = false }, smartOverride, fastOverride)
 	} else {
@@ -508,7 +508,7 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// P2-2 fix: broadcast the actual busy state derived from mailbox ownership,
 	// not from this request handler's lifetime.
 	if !a.AgentCoordinator.IsSessionBusy(sessionID) {
-		c.hub.Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: sessionID, Busy: false})
+		c.Hub().Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: sessionID, Busy: false})
 	}
 
 	if err != nil {
@@ -532,10 +532,10 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		// narrow pre-handoff path.
 		recreateRerunPromptIfLost(deleteCtx, a, sessionID, baselineIDs, targetMsg.ID, text)
 		recreateHandled = true
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 // recreateRerunPromptIfLost restores a rerun target deleted at truncation when

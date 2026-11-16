@@ -242,8 +242,8 @@ func TestHandleGetSessionBatchWork_RepliesSnapshot(t *testing.T) {
 	hub := newHub()
 	go hub.Run(t.Context())
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 
 	sess, err := a.Sessions.Create(t.Context(), "batch flag on")
 	require.NoError(t, err)
@@ -256,7 +256,7 @@ func TestHandleGetSessionBatchWork_RepliesSnapshot(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
-		case raw := <-client.send:
+		case raw := <-client.SendChan():
 			var env WSMessage
 			require.NoError(t, json.Unmarshal(raw, &env))
 			if env.Type != EventSessionBatchWork {
@@ -278,8 +278,8 @@ func TestHandleGetSessionBatchWork_UnknownSessionRefused(t *testing.T) {
 	hub := newHub()
 	go hub.Run(t.Context())
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 
 	payload, _ := json.Marshal(GetSessionBatchWorkPayload{SessionID: "does-not-exist"})
 	require.NoError(t, handleIncomingSync(t, a, client, payload))
@@ -287,7 +287,7 @@ func TestHandleGetSessionBatchWork_UnknownSessionRefused(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
-		case raw := <-client.send:
+		case raw := <-client.SendChan():
 			var env WSMessage
 			require.NoError(t, json.Unmarshal(raw, &env))
 			if env.Type != EventError {

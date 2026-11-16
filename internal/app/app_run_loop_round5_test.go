@@ -20,20 +20,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// capabilityLayerCallOptions names the CallOptions fields the agent capability
+// layer owns (BindCallDiskProvider mints the binding handle, the build scope is
+// per call and deliberately not shared with a reviewer follow-up, the retained flag belongs to it). They were
+// unexported inside package agent and so skipped by reflection; since the call
+// contract moved to agentcall they are exported and must be skipped by name.
+var capabilityLayerCallOptions = map[string]bool{"DiskBinding": true, "BuildScope": true, "BuildScopeRetained": true}
+
 // fillCallOptions sets every field of agent.CallOptions to a non-zero value.
 func fillCallOptions(t *testing.T) *agent.CallOptions {
 	t.Helper()
 	opts := &agent.CallOptions{}
 	v := reflect.ValueOf(opts).Elem()
+	var filled, skipped []string
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("fillCallOptions: filled=%v skipped(capability layer or unexported)=%v", filled, skipped)
+		}
+	})
 	for i := range v.NumField() {
 		f, name := v.Field(i), v.Type().Field(i).Name
-		// The unexported binding-handle/build-scope fields (diskBinding,
-		// buildScope) are managed by the agent capability layer
-		// (BindCallDiskProvider): they are not part of the per-field copy
-		// contract under test and cannot be reflect-set (unexported).
-		if !f.CanSet() {
+		// The binding-handle/build-scope fields are managed by the agent
+		// capability layer: they are not part of the per-field copy contract
+		// under test (and unexported ones cannot be reflect-set).
+		if !f.CanSet() || capabilityLayerCallOptions[name] {
+			skipped = append(skipped, name)
 			continue
 		}
+		filled = append(filled, name)
 		switch f.Kind() {
 		case reflect.Bool:
 			f.SetBool(true)
@@ -82,10 +96,10 @@ func TestReviewerCallOptionsCarryEveryPrimaryField(t *testing.T) {
 	pv, gv := reflect.ValueOf(*primary), reflect.ValueOf(*got)
 	for i := range pv.NumField() {
 		name := pv.Type().Field(i).Name
-		// Unexported fields (the capability layer's binding handle and
-		// build scope) panic on Interface() and are not part of the
-		// per-field copy contract under test — skip them.
-		if !pv.Field(i).CanInterface() {
+		// Unexported fields panic on Interface(); the capability layer's
+		// binding handle and build scope are not part of the per-field copy
+		// contract under test — skip them.
+		if !pv.Field(i).CanInterface() || capabilityLayerCallOptions[name] {
 			continue
 		}
 		if overridden[name] {

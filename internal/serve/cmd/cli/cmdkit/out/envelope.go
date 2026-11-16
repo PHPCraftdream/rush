@@ -91,7 +91,7 @@ func mainRootFromCommonDirOutput(dir, out string) (string, error) {
 
 // stripWorktreeEnv removes the GIT_* variables git exports to hooks so
 // the probe observes the real repository, not the hook's view. Local
-// copy of the unexported helper in internal/config/datadir.go.
+// copy of the unexported helper in internal/config/domains/datadir/datadir.go.
 func stripWorktreeEnv(cmd *exec.Cmd) {
 	stripped := map[string]bool{
 		"GIT_DIR": true, "GIT_WORK_TREE": true,

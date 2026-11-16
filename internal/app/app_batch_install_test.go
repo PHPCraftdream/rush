@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -138,7 +140,7 @@ func TestBatchRuntimeLibraryModeNoInstall(t *testing.T) {
 	t.Cleanup(app.Shutdown)
 	require.Nil(t, app.batchRuntime, "library mode: no batch runtime object is built")
 	require.Nil(t, app.batchWorkIngress, "library mode: no ingress seam is built")
-	require.Empty(t, app.BatchHostStore().HostID(), "library mode: no host identity is registered")
+	require.Empty(t, app.batchHostStore().HostID(), "library mode: no host identity is registered")
 
 	// No batch surface wrote anything: zero rows over ALL owners.
 	var count int
@@ -157,7 +159,7 @@ func TestBatchRuntimeInstall(t *testing.T) {
 	// The host identity registers during the install (R11F M3:
 	// EnsureHost precedes the commit-hook identity), so read it after.
 	require.NoError(t, a.installBatchRuntime(context.Background()))
-	hostID := a.BatchHostStore().HostID()
+	hostID := a.batchHostStore().HostID()
 	require.NotEmpty(t, hostID)
 
 	release := func() {
@@ -169,7 +171,7 @@ func TestBatchRuntimeInstall(t *testing.T) {
 			}
 			a.batchRuntime.Stop()
 		}
-		if hs := a.BatchHostStore(); hs != nil {
+		if hs := a.batchHostStore(); hs != nil {
 			// Close (not CloseKeepLock): the test's TempDir cleanup must be
 			// able to unlink the host lock on Windows.
 			_ = hs.Close(context.Background())
@@ -180,16 +182,16 @@ func TestBatchRuntimeInstall(t *testing.T) {
 	rt := a.batchRuntime
 	require.NotNil(t, rt)
 	require.NotNil(t, rt.Runner(), "Runner attached at install")
-	require.NotNil(t, rt.cfg.ReleaseHostIdentity, "gate release seams wired")
-	require.NotNil(t, rt.cfg.ReleaseWriter)
-	require.NotNil(t, rt.cfg.RetainHostIdentity)
+	require.NotNil(t, rt.Config.ReleaseHostIdentity, "gate release seams wired")
+	require.NotNil(t, rt.Config.ReleaseWriter)
+	require.NotNil(t, rt.Config.RetainHostIdentity)
 	require.False(t, rt.Fenced())
 
 	// A second install must refuse (first-wins authority policy): the same
 	// App keeps its original runtime and Runner.
 	require.NoError(t, a.installBatchRuntime(context.Background()))
 	require.Same(t, rt, a.batchRuntime)
-	require.NotEmpty(t, a.BatchHostStore().HostID())
+	require.NotEmpty(t, a.batchHostStore().HostID())
 }
 
 // TestBatchRuntimeInstallFailsClosed: a hand-assembled App without a
@@ -200,7 +202,7 @@ func TestBatchRuntimeInstallFailsClosed(t *testing.T) {
 	a := batchFactoryApp(t)
 	a.Messages = nil
 	t.Cleanup(func() {
-		if hs := a.BatchHostStore(); hs != nil {
+		if hs := a.batchHostStore(); hs != nil {
 			_ = hs.Close(context.Background())
 		}
 	})
@@ -249,7 +251,7 @@ func TestAppReleaseResourcesCloseTimeoutForced(t *testing.T) {
 	app := batchFactoryApp(t)
 	runner := newFakeRunner()
 	rec, _, _ := wireTestBatchRuntimeFull(t, app, runner)
-	// The drain bound is production-owned (appBatchDrainTimeout = 5s), so the
+	// The drain bound is production-owned (BatchDrainTimeout = 5s), so the
 	// timeout is simulated the way a REAL Runner.Close reports it (the R11E
 	// contract: *jobbatch.CloseTimeoutError, errors.Is ErrCloseTimeout) —
 	// Close returns the error early instead of silently returning nil on
@@ -282,7 +284,7 @@ func TestAppReleaseResourcesFaultFenceRetains(t *testing.T) {
 	app := batchFactoryApp(t)
 	runner := newFakeRunner()
 	rec, exits, rt := wireTestBatchRuntimeFull(t, app, runner)
-	rt.handleFault(nil)
+	rt.HandleFault(nil)
 	require.NotEmpty(t, exits.called(), "fault path exits the process (exit 70)")
 
 	res := app.releaseResources(false)
@@ -310,11 +312,11 @@ func TestAppReleaseResourcesForcedAgentsBusy(t *testing.T) {
 // carrying the SAME wiring release seams but a fake Runner and injected
 // wait/exit — so the drain, timeout and fence paths are observable
 // in-process. Returns the release recorder and a channel closed when the
-func wireTestBatchRuntimeFull(t *testing.T, app *App, runner *fakeRunner) (*releaseRecorder, *exitRecorder, *BatchRuntime) {
+func wireTestBatchRuntimeFull(t *testing.T, app *App, runner *fakeRunner) (*releaseRecorder, *exitRecorder, *appbatch.BatchRuntime) {
 	t.Helper()
 	rec := &releaseRecorder{}
 	exits := &exitRecorder{}
-	rt := NewBatchRuntime(BatchRuntimeConfig{
+	rt := appbatch.NewBatchRuntime(appbatch.BatchRuntimeConfig{
 		ContainmentWait: time.Second,
 		WaitFunc:        immediateWaitFunc(),
 		ExitFunc:        exits.exit,

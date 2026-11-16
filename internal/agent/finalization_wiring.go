@@ -310,26 +310,3 @@ func (c *coordinator) finalizationWiring() *finalizationWiring {
 	}
 	return c.finalization
 }
-
-// SetCoordinatorFinalizationWiring builds the finalization wiring from deps
-// and binds it to the concrete coordinator. A disabled flag builds nothing
-// and binds nothing; a partially installable configuration fails closed.
-func SetCoordinatorFinalizationWiring(c Coordinator, deps FinalizationWiringDeps) error {
-	if !deps.Enabled {
-		return nil
-	}
-	if c == nil {
-		return fmt.Errorf("finalization wiring: nil coordinator")
-	}
-	co, ok := c.(*coordinator)
-	if !ok {
-		return fmt.Errorf("finalization wiring: unsupported coordinator type %T", c)
-	}
-	w, err := newFinalizationWiring(deps, co)
-	if err != nil {
-		return err
-	}
-	co.finalization = w
-	slog.Info("Finalization wiring installed", "session_poll", w.poll.String())
-	return nil
-}

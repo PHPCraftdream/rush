@@ -314,11 +314,35 @@ type modelPairCache interface {
 // generations and arbitrary per-session overrides cannot grow without bound.
 const modelCacheMaxEntries = 16
 
+// BatchRuntimeCapabilities is the SA2 construction bundle (design
+// 2026-11-15-sprint0-split-agent.md §3.2 S-A2): every App-owned batch
+// capability is passed once at construction instead of being set after
+// it. Zero value means "capability not installed", the exact semantics
+// of the setters it replaces.
+type BatchRuntimeCapabilities struct {
+	Ingress        BatchWorkIngress
+	ModelControl   BatchModelControl
+	DiskBindings   *DiskProviderRegistry
+	LiveReader     *session.BatchLiveReader
+	DriverClaimer  BatchDriverClaimer
+	CutoverFacts   BatchCutoverFacts
+	HeldAnswerSink BatchHeldAnswerSink
+	NoticeStore    *session.SessionNoticeStore
+}
+
+// SessionExecutionCapabilities carries the optional durable execution/credential requirement stores (same bundle rules).
+type SessionExecutionCapabilities struct {
+	ExecReqs session.SessionExecutionRequirementStore
+	CredReqs session.SessionCredentialRequirementStore
+}
+
 // NewCoordinator wires the agent coordinator. Async work is batch-only: the
 // jobbatch engine (batch_nodes + the batch outbox) decides every outcome; the
 // coordinator's own runtime state (hint counter, supervision registry,
 // timeout service) is in-process coordination memory rehomed from the deleted
 // workLedger (batch_rehome_coord_runtime.go).
+// The batchCaps/execCaps bundles replace the post-construction setters for
+// the app composition root; the setters remain for other callers.
 func NewCoordinator(
 	ctx context.Context,
 	cfg *config.ConfigStore,
@@ -329,6 +353,8 @@ func NewCoordinator(
 	filetracker filetracker.Service,
 	notify pubsub.Publisher[notify.Notification],
 	mcpOwner *mcp.Owner,
+	batchCaps BatchRuntimeCapabilities,
+	execCaps SessionExecutionCapabilities,
 	backgroundManagers ...*shell.BackgroundShellManager,
 ) (Coordinator, error) {
 	p, err := coderPrompt(prompt.WithWorkingDir(cfg.WorkingDir()))
@@ -406,6 +432,48 @@ func NewCoordinator(
 	}
 	c.currentAgent = agent
 	c.agents[config.AgentCoder] = agent
+	if batchCaps.NoticeStore != nil {
+		if err := SetCoordinatorSessionNoticeStore(c, batchCaps.NoticeStore); err != nil {
+			_ = c.responsesWS.Close()
+			return nil, err
+		}
+	}
+	if execCaps.ExecReqs != nil {
+		if err := SetCoordinatorExecutionRequirementStore(c, execCaps.ExecReqs); err != nil {
+			_ = c.responsesWS.Close()
+			return nil, err
+		}
+	}
+	if execCaps.CredReqs != nil {
+		if err := SetCoordinatorSessionCredentialRequirementStore(c, execCaps.CredReqs); err != nil {
+			_ = c.responsesWS.Close()
+			return nil, err
+		}
+	}
+	if batchCaps.DiskBindings != nil {
+		if err := SetCoordinatorDiskCapabilityManager(c, batchCaps.DiskBindings); err != nil {
+			_ = c.responsesWS.Close()
+			return nil, err
+		}
+	}
+	if batchCaps.Ingress != nil {
+		if err := BindCoordinatorBatchControls(c, batchCaps.Ingress, batchCaps.ModelControl, batchCaps.LiveReader); err != nil {
+			_ = c.responsesWS.Close()
+			return nil, err
+		}
+	}
+	if batchCaps.HeldAnswerSink != nil {
+		SetCoordinatorBatchHeldAnswerSink(c, batchCaps.HeldAnswerSink)
+	}
+	if batchCaps.DriverClaimer != nil {
+		if err := SetBatchDriverClaimer(c, batchCaps.DriverClaimer); err != nil {
+			_ = c.responsesWS.Close()
+			return nil, err
+		}
+	}
+	if batchCaps.CutoverFacts != nil {
+		BindCoordinatorBatchCutoverFacts(c, batchCaps.CutoverFacts)
+	}
 	return c, nil
 }
 

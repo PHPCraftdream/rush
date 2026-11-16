@@ -35,7 +35,7 @@ import (
 	mcp "github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/discover"
-	"github.com/PHPCraftdream/rush/internal/config/oauth/copilot"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/copilot"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/event"
 	"github.com/PHPCraftdream/rush/internal/session"
 	openaisdk "github.com/charmbracelet/openai-go/option"

@@ -11,7 +11,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"time"
 
@@ -189,25 +188,6 @@ func (c *coordinator) foreignLiveDriver(ctx context.Context, owner string) (bool
 	}
 	_, foreign, err := hs.ForeignLiveDriver(ctx, owner)
 	return foreign, err
-}
-
-// SetCoordinatorSessionNoticeStore binds the retained SessionNoticeStore
-// onto a coordinator (internal/app composition root). The completion-notice
-// writers (supervision tick, reaction-chain marker, bg-shell done, held
-// child question) persist through it; nil store or coordinator is refused.
-func SetCoordinatorSessionNoticeStore(c Coordinator, s *session.SessionNoticeStore) error {
-	if c == nil {
-		return errors.New("session notice store: nil coordinator")
-	}
-	if s == nil {
-		return errors.New("session notice store: nil store")
-	}
-	co, ok := c.(*coordinator)
-	if !ok {
-		return errors.New("session notice store: unsupported coordinator type")
-	}
-	co.noticeStore = s
-	return nil
 }
 
 // sessionNoticeStore returns the bound SessionNoticeStore, or nil.

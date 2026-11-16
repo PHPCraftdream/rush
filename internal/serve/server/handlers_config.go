@@ -152,23 +152,23 @@ func buildConfigWire(a *appPkg.App) (ConfigWire, bool) {
 func handleGetConfig(a *appPkg.App, c *Client, msg WSMessage) {
 	wire, ok := buildConfigWire(a)
 	if !ok {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
-	c.reply(msg.ID, EventConfig, wire, "")
+	c.Reply(msg.ID, EventConfig, wire, "")
 }
 
 func handleGetLogs(a *appPkg.App, c *Client, msg WSMessage) {
 	var p GetLogsPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 
 	// Get log file path
 	logPath := a.Store().LogPath()
 	if logPath == "" {
-		c.reply(msg.ID, EventError, nil, "log path not configured")
+		c.Reply(msg.ID, EventError, nil, "log path not configured")
 		return
 	}
 
@@ -176,11 +176,11 @@ func handleGetLogs(a *appPkg.App, c *Client, msg WSMessage) {
 	logs, err := readLastNLines(logPath, p.Lines)
 	if err != nil {
 		slog.Error("Failed to read log file", "path", logPath, "error", err)
-		c.reply(msg.ID, EventError, nil, fmt.Sprintf("failed to read logs: %v", err))
+		c.Reply(msg.ID, EventError, nil, fmt.Sprintf("failed to read logs: %v", err))
 		return
 	}
 
-	c.reply(msg.ID, EventLogs, logs, "")
+	c.Reply(msg.ID, EventLogs, logs, "")
 }
 
 // readLastNLines reads the last N lines from a file (0 = all lines).
@@ -250,30 +250,30 @@ func readLastNLinesFromChunk(file io.ReadSeeker, n, chunkSize int) (string, erro
 func handleSetTheme(a *appPkg.App, c *Client, msg WSMessage) {
 	var p SetThemePayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
-	if err := a.Store().SetConfigFieldWithAuthority(config.ScopeGlobal, "options.tui.theme", p.Theme, c.settingsWriteAuthority()); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+	if err := a.Store().SetConfigFieldWithAuthority(config.ScopeGlobal, "options.tui.theme", p.Theme, c.SettingsWriteAuthority()); err != nil {
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
 }
 
 func handleSetKeepAlive(a *appPkg.App, c *Client, msg WSMessage) {
 	var p SetKeepAlivePayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
-	if err := a.Store().SetConfigFieldWithAuthority(config.ScopeGlobal, "options.keep_alive_enabled", p.Enabled, c.settingsWriteAuthority()); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+	if err := a.Store().SetConfigFieldWithAuthority(config.ScopeGlobal, "options.keep_alive_enabled", p.Enabled, c.SettingsWriteAuthority()); err != nil {
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
 }
 
@@ -282,24 +282,24 @@ func handleSetKeepAlive(a *appPkg.App, c *Client, msg WSMessage) {
 func handleSetDebug(a *appPkg.App, c *Client, msg WSMessage) {
 	var p SetDebugPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	store := a.Store()
 	cfg := store.Config()
 	if cfg == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
-	if err := store.SetConfigFieldWithAuthority(config.ScopeGlobal, "options.debug", p.Debug, c.settingsWriteAuthority()); err != nil {
+	if err := store.SetConfigFieldWithAuthority(config.ScopeGlobal, "options.debug", p.Debug, c.SettingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to persist debug setting", "err", err)
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 // ── Context paths ─────────────────────────────────────────────────────────────
@@ -307,17 +307,17 @@ func handleSetDebug(a *appPkg.App, c *Client, msg WSMessage) {
 func handleAddContextPath(a *appPkg.App, c *Client, msg WSMessage) {
 	var p AddContextPathPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	if p.Path == "" {
-		c.reply(msg.ID, EventError, nil, "path is required")
+		c.Reply(msg.ID, EventError, nil, "path is required")
 		return
 	}
 	store := a.Store()
 	cfg := store.Config()
 	if cfg == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	paths := []string(nil)
@@ -325,47 +325,47 @@ func handleAddContextPath(a *appPkg.App, c *Client, msg WSMessage) {
 		paths = cfg.Options.ContextPaths
 	}
 	if slices.Contains(paths, p.Path) {
-		c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+		c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 		return
 	}
 	paths = append(slices.Clone(paths), p.Path)
-	if err := store.SetConfigFieldWithAuthority(config.ScopeGlobal, "options.context_paths", paths, c.settingsWriteAuthority()); err != nil {
+	if err := store.SetConfigFieldWithAuthority(config.ScopeGlobal, "options.context_paths", paths, c.SettingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to persist context paths", "err", err)
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 func handleRemoveContextPath(a *appPkg.App, c *Client, msg WSMessage) {
 	var p RemoveContextPathPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	store := a.Store()
 	cfg := store.Config()
 	if cfg == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	if cfg.Options == nil {
-		c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+		c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 		return
 	}
 	paths := slices.DeleteFunc(slices.Clone(cfg.Options.ContextPaths), func(s string) bool { return s == p.Path })
-	if err := store.SetConfigFieldWithAuthority(config.ScopeGlobal, "options.context_paths", paths, c.settingsWriteAuthority()); err != nil {
+	if err := store.SetConfigFieldWithAuthority(config.ScopeGlobal, "options.context_paths", paths, c.SettingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to persist context paths", "err", err)
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 // ── Skills paths ──────────────────────────────────────────────────────────────
@@ -373,7 +373,7 @@ func handleRemoveContextPath(a *appPkg.App, c *Client, msg WSMessage) {
 func handleGetSkills(a *appPkg.App, c *Client, msg WSMessage) {
 	cfg := a.Config()
 	if cfg == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	paths := []string{}
@@ -393,70 +393,70 @@ func handleGetSkills(a *appPkg.App, c *Client, msg WSMessage) {
 			Instructions: s.Instructions,
 		})
 	}
-	c.reply(msg.ID, EventSkills, SkillsSnapshot{Skills: infos, Paths: paths}, "")
+	c.Reply(msg.ID, EventSkills, SkillsSnapshot{Skills: infos, Paths: paths}, "")
 }
 
 func handleAddSkillsPath(a *appPkg.App, c *Client, msg WSMessage) {
 	var p AddSkillsPathPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	if p.Path == "" {
-		c.reply(msg.ID, EventError, nil, "path is required")
+		c.Reply(msg.ID, EventError, nil, "path is required")
 		return
 	}
 	store := a.Store()
 	cfg := store.Config()
 	if cfg == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	if cfg.Options == nil {
 		cfg.Options = &config.Options{}
 	}
 	if slices.Contains(cfg.Options.SkillsPaths, p.Path) {
-		c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+		c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 		return
 	}
 	paths := append(slices.Clone(cfg.Options.SkillsPaths), p.Path)
-	if err := store.SetConfigFieldWithAuthority(config.ScopeGlobal, "options.skills_paths", paths, c.settingsWriteAuthority()); err != nil {
+	if err := store.SetConfigFieldWithAuthority(config.ScopeGlobal, "options.skills_paths", paths, c.SettingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to persist skills paths", "err", err)
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	cfg.Options.SkillsPaths = paths
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 func handleRemoveSkillsPath(a *appPkg.App, c *Client, msg WSMessage) {
 	var p RemoveSkillsPathPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	store := a.Store()
 	cfg := store.Config()
 	if cfg == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	if cfg.Options == nil {
-		c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+		c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 		return
 	}
 	paths := slices.DeleteFunc(slices.Clone(cfg.Options.SkillsPaths), func(s string) bool { return s == p.Path })
-	if err := store.SetConfigFieldWithAuthority(config.ScopeGlobal, "options.skills_paths", paths, c.settingsWriteAuthority()); err != nil {
+	if err := store.SetConfigFieldWithAuthority(config.ScopeGlobal, "options.skills_paths", paths, c.SettingsWriteAuthority()); err != nil {
 		slog.Warn("ws: failed to persist skills paths", "err", err)
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	cfg.Options.SkillsPaths = paths
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }

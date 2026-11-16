@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -38,7 +39,7 @@ func (c *observingCoordinator) Run(ctx context.Context, _ session.SessionAgentCa
 
 func TestP0_3_LongTurnOutcomeWriteSurvivesDBWriteTimeout(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc, sqlDB := setupTestSessionWithDB(t, "test-session-p0-3-long-turn")
 	ctx := t.Context()
 	wrapped := &outcomeContextService{Service: svc, writeBudget: time.Hour}
@@ -60,11 +61,11 @@ func TestP0_3_LongTurnOutcomeWriteSurvivesDBWriteTimeout(t *testing.T) {
 	})
 	pump.Start()
 	t.Cleanup(func() { pump.Stop() })
-	awaitPump(t, func() bool { return clk.liveTickers() >= 1 }, "scan ticker must be registered")
+	sessiontest.AwaitPump(t, func() bool { return clk.liveTickers() >= 1 }, "scan ticker must be registered")
 	// Watchdog ticks may fire, but 100ms does not reach the lease deadline.
 	// Lease loss skips outcome writes and leaves the row leased.
 	clk.Advance(100 * time.Millisecond)
-	awaitPump(t, func() bool {
+	sessiontest.AwaitPump(t, func() bool {
 		var exists bool
 		row := sqlDB.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM session_run_queue WHERE id = ?)", idempotencyKey)
 		if err := row.Scan(&exists); err != nil {

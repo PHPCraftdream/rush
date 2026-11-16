@@ -10,7 +10,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	hyperp "github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/stretchr/testify/require"
 )

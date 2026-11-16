@@ -14,6 +14,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -89,6 +90,12 @@ func (app *App) SetDataDirForTest(dir string) {
 // self-heal, the lazily built batch-fault writer), so each read must
 // happen at the same moment the old method-body read did.
 func (app *App) runEnv() RunEnv {
+	// A bare &App{} literal has no DB func: env.DB stays nil so every
+	// `env.DB == nil` check keeps the old `app.DB == nil` meaning.
+	var db func() *sql.DB
+	if app.DB != nil {
+		db = func() *sql.DB { return app.DB() }
+	}
 	return RunEnv{
 		WorkspaceRoot:         app.workspaceRoot,
 		Config:                app.config,
@@ -98,14 +105,14 @@ func (app *App) runEnv() RunEnv {
 		Perms:                 func() permission.Service { return app.Permissions },
 		Pump:                  func() *session.RunQueuePump { return app.RunQueuePump },
 		WakeStore:             func() *session.WakeScheduleStore { return app.wakeScheduleStore },
-		DB:                    func() *sql.DB { return app.DB() },
+		DB:                    db,
 		DataDir:               func() string { return app.dataDir },
 		MCPOwner:              func() *mcp.Owner { return app.mcpOwner },
 		ProcessHome:           app.ProcessHome,
 		SessionActivity:       app.SessionActivity,
 		DiskBindings:          app.resolveDiskBindings,
 		ResolveModelOverrides: app.resolveModelOverridesForNonInteractive,
-		BatchFaultWriter:      func() *batchFaultEnvelopeWriter { return app.batchFaultWriter },
+		BatchFaultWriter:      func() *appbatch.FaultEnvelopeWriter { return app.batchFaultWriter },
 		SetBatchFaultOutput: func(f func(error)) {
 			app.batchFaultOutputMu.Lock()
 			app.batchFaultOutput = f
@@ -158,28 +165,28 @@ func (app *App) ProcessHome() bool {
 
 // Permanent batch-CLI accessors: thin same-signature wrappers over the Sh5
 // batch free functions (chunk 4 of lane 0b-a).
-func (app *App) BatchCLIStore() (*BatchCLIStore, error) {
-	return batchCLIStore(app.batchCLIParams())
+func (app *App) BatchCLIStore() (*appbatch.BatchCLIStore, error) {
+	return appbatch.NewBatchCLIStore(app.batchCLIParams())
 }
 
 // BatchCLISpecWithQuestionRoute stamps the route chosen by trusted intake.
 func (app *App) BatchCLISpecWithQuestionRoute(ctx context.Context, owner, messageID string, spec jobbatch.Spec, questionRoute bool) (jobbatch.Spec, func(), error) {
-	return batchCLISpecWithQuestionRoute(app.batchCLIParams(), ctx, owner, messageID, spec, questionRoute)
+	return appbatch.BatchCLISpecWithQuestionRoute(app.batchCLIParams(), ctx, owner, messageID, spec, questionRoute)
 }
 
 // BatchSubmitRefWithQuestionRoute is BatchSubmit with a caller-chosen submit
 // reference (see agent.BatchInstall.SubmitCLIRef) and the intake's answer-route
 // decision.
 func (app *App) BatchSubmitRefWithQuestionRoute(ctx context.Context, owner string, spec jobbatch.Spec, ref func(root string) string, questionRoute bool) (string, error) {
-	return batchSubmitRefWithQuestionRoute(app.batchCLIParams(), ctx, owner, spec, ref, questionRoute)
+	return appbatch.BatchSubmitRefWithQuestionRoute(app.batchCLIParams(), ctx, owner, spec, ref, questionRoute)
 }
 
 // BatchSettleDebt settles the owner's notice debt for a terminal root without
 // releasing the root, so its live output stays readable.
 func (app *App) BatchSettleDebt(ctx context.Context, owner, root string) error {
-	return batchSettleDebt(app.batchCLIParams(), ctx, owner, root)
+	return appbatch.BatchSettleDebt(app.batchCLIParams(), ctx, owner, root)
 }
 
 func (app *App) BatchWait(ctx context.Context, owner, root string) (db.BatchNode, error) {
-	return batchWait(app.batchCLIParams(), ctx, owner, root)
+	return appbatch.BatchWait(app.batchCLIParams(), ctx, owner, root)
 }

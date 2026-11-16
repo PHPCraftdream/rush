@@ -32,7 +32,7 @@ func TestConfigureProviders_UserSetsOnlyOneFieldTheOtherStaysUnknown(t *testing.
 	discoverZAIEffortDocs = func(context.Context) ([]catwalk.Model, error) { return nil, nil }
 	t.Cleanup(func() { discoverZAIEffortDocs = origDocs })
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	cfg.Providers.Set("zai", ProviderConfig{
 		ID:      "zai",
 		BaseURL: zaiModels.URL,

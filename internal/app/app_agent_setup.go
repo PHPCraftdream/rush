@@ -133,82 +133,37 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 		return fmt.Errorf("coder agent configuration is missing")
 	}
 	var err error
-	app.AgentCoordinator, err = agent.NewCoordinator(
-		ctx,
-		app.config,
-		app.Sessions,
-		app.Messages,
-		app.Permissions,
-		app.History,
-		app.FileTracker,
-		app.agentNotifications,
-		app.mcpOwner,
-		app.BackgroundShellManager,
-	)
-	if err != nil {
-		slog.Error("Failed to create coder agent", "err", err)
-		return err
-	}
-	if noticeStore := app.batchNoticeStore(); noticeStore != nil {
-		if err := agent.SetCoordinatorSessionNoticeStore(app.AgentCoordinator, noticeStore); err != nil {
-			slog.Error("Failed to bind session notice store", "err", err)
-			return err
-		}
-	}
-	// R12-H2b §2.3: wire the durable session-execution-fence store so
-	// continuations resolve the fence through the same session service; a
-	// service that does not implement the store simply means no fence.
-	if reqStore, ok := app.Sessions.(session.SessionExecutionRequirementStore); ok {
-		if err := agent.SetCoordinatorExecutionRequirementStore(app.AgentCoordinator, reqStore); err != nil {
-			slog.Error("Failed to bind session execution requirement store", "err", err)
-			return err
-		}
-	}
-	if reqStore, ok := app.Sessions.(session.SessionCredentialRequirementStore); ok {
-		if err := agent.SetCoordinatorSessionCredentialRequirementStore(app.AgentCoordinator, reqStore); err != nil {
-			slog.Error("Failed to bind session credential requirement store", "err", err)
-			return err
-		}
-	}
-	// F7b: an ephemeral App (dataDir == "") never installs the batch
-	// runtime, so BindCoordinatorBatchControls below never runs and
-	// the coordinator is left with NO capability manager. Its run path
-	// (coordinator.PrepareContinuation) then fails closed with
-	// agent.ErrDiskProviderUnavailable ("no capability manager is bound")
-	// for every custom-DiskProvider run whose admission persisted a
-	// session execution requirement — even though app_run_setup.go bound
-	// the Call owner against the App's own in-memory registry. Bind the
-	// SAME registry so continuations resolve through it. Persisted Apps
-	// are untouched: app.New constructs ephemeralDiskBindings only on the
-	// ephemeral branch.
-	if app.ephemeralDiskBindings != nil {
-		if err := agent.SetCoordinatorDiskCapabilityManager(app.AgentCoordinator, app.ephemeralDiskBindings); err != nil {
-			slog.Error("Failed to bind ephemeral disk capability manager", "err", err)
-			return err
-		}
-	}
-	// R11F (M3): bind the coordinator to the batch runtime. After
-	// this every tool build re-arms its work tools through the ONE ingress
-	// authority and the old async/stall wrappers are not installed.
-	if app.batchWorkIngress != nil {
-		if err := agent.BindCoordinatorBatchControls(app.AgentCoordinator, app.batchWorkIngress, app.batchModelControl, app.batchLiveReader); err != nil {
-			slog.Error("Failed to bind batch runtime", "err", err)
-			return err
-		}
-	}
-	// Held-question inject bridge: bind the App-owned sink to THIS
-	// coordinator (never a process global) so non-interrupt inject_agent
-	// releases a child's committed held question through Runner.Inject.
-	if app.batchHeldAnswerSink != nil {
-		agent.SetCoordinatorBatchHeldAnswerSink(app.AgentCoordinator, app.batchHeldAnswerSink)
+	batchCaps := agent.BatchRuntimeCapabilities{
+		// R11F (M3): bind the coordinator to the batch runtime. After
+		// this every tool build re-arms its work tools through the ONE ingress
+		// authority and the old async/stall wrappers are not installed.
+		Ingress:      app.batchWorkIngress,
+		ModelControl: app.batchModelControl,
+		LiveReader:   app.batchLiveReader,
+		// F7b: an ephemeral App (dataDir == "") never installs the batch
+		// runtime, so BindCoordinatorBatchControls below never runs and
+		// the coordinator is left with NO capability manager. Its run path
+		// (coordinator.PrepareContinuation) then fails closed with
+		// agent.ErrDiskProviderUnavailable ("no capability manager is bound")
+		// for every custom-DiskProvider run whose admission persisted a
+		// session execution requirement — even though app_run_setup.go bound
+		// the Call owner against the App's own in-memory registry. Bind the
+		// SAME registry so continuations resolve through it. Persisted Apps
+		// are untouched: app.New constructs ephemeralDiskBindings only on the
+		// ephemeral branch.
+		DiskBindings: app.ephemeralDiskBindings,
+		// Held-question inject bridge: bind the App-owned sink to THIS
+		// coordinator (never a process global) so non-interrupt inject_agent
+		// releases a child's committed held question through Runner.Inject.
+		HeldAnswerSink: app.batchHeldAnswerSink,
+		NoticeStore:    app.batchNoticeStore(),
 	}
 	// The CLI loop's durable driver markers route through the
 	// job-independent HostStore (released by the shutdown drain gate), so
 	// no legacy store ever ensures a host or creates a hosts/<id>.lock.
-	if app.batchWorkIngress != nil && app.batchHostStore() != nil {
-		if err := agent.SetBatchDriverClaimer(app.AgentCoordinator, app.batchHostStore()); err != nil {
-			slog.Error("Failed to set batch driver claimer", "err", err)
-			return err
+	if app.batchWorkIngress != nil {
+		if hs := app.batchHostStore(); hs != nil {
+			batchCaps.DriverClaimer = hs
 		}
 	}
 	// Bind the node-backed cutover facts so every App that runs turns reads
@@ -222,7 +177,35 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 			// TxStarter: every live read runs in ONE read-only tx on the writer.
 			live.TxStarter = writer
 		}
-		agent.BindCoordinatorBatchCutoverFacts(app.AgentCoordinator, agent.NewBatchCutoverNodeFacts(session.NewBatchStoreWithReader(writer, app.batchCutoverReader(writer)), live, writer))
+		batchCaps.CutoverFacts = agent.NewBatchCutoverNodeFacts(session.NewBatchStoreWithReader(writer, app.batchCutoverReader(writer)), live, writer)
+	}
+	var execCaps agent.SessionExecutionCapabilities
+	// R12-H2b §2.3: wire the durable session-execution-fence store so
+	// continuations resolve the fence through the same session service; a
+	// service that does not implement the store simply means no fence.
+	if reqStore, ok := app.Sessions.(session.SessionExecutionRequirementStore); ok {
+		execCaps.ExecReqs = reqStore
+	}
+	if reqStore, ok := app.Sessions.(session.SessionCredentialRequirementStore); ok {
+		execCaps.CredReqs = reqStore
+	}
+	app.AgentCoordinator, err = agent.NewCoordinator(
+		ctx,
+		app.config,
+		app.Sessions,
+		app.Messages,
+		app.Permissions,
+		app.History,
+		app.FileTracker,
+		app.agentNotifications,
+		app.mcpOwner,
+		batchCaps,
+		execCaps,
+		app.BackgroundShellManager,
+	)
+	if err != nil {
+		slog.Error("Failed to create coder agent", "err", err)
+		return err
 	}
 	// Stage 4b: start the durable wake-schedule worker over this App's
 	// store. Optional-interface assertion (agent.WakeScheduleController):

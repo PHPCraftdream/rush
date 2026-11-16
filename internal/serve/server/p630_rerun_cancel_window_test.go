@@ -160,7 +160,7 @@ func newRerunHandlerFxIn(t *testing.T, workingDir, title string) *rerunHandlerFx
 func (f *rerunHandlerFx) run(t *testing.T) WSMessage {
 	t.Helper()
 	client := newClient(newHub(), nil)
-	client.send = make(chan []byte, 10)
+	client.ResizeSendChan(10)
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: f.target.ID})
 	require.NoError(t, err)
 	done := make(chan struct{})

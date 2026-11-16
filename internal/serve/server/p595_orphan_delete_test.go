@@ -51,7 +51,7 @@ func TestHandleDeleteMessage_OrphanRescue_BusySession_RefusesDelete(t *testing.T
 		busy: true,
 	}
 
-	c := &Client{send: make(chan []byte, 4)}
+	c := newDetachedTestClient(4)
 	payload, err := json.Marshal(DeleteMessagePayload{MessageID: created.ID})
 	require.NoError(t, err)
 
@@ -105,7 +105,7 @@ func TestHandleDeleteMessage_OrphanRescue_IdleSession_DeletesOrphan(t *testing.T
 		busy: false,
 	}
 
-	c := &Client{send: make(chan []byte, 4)}
+	c := newDetachedTestClient(4)
 	payload, err := json.Marshal(DeleteMessagePayload{MessageID: created.ID})
 	require.NoError(t, err)
 
@@ -162,7 +162,7 @@ func TestHandleDeleteMessages_OrphanRescue_IdleSession_DeletesBoth(t *testing.T)
 		busy: false,
 	}
 
-	c := &Client{send: make(chan []byte, 4)}
+	c := newDetachedTestClient(4)
 	payload, err := json.Marshal(DeleteMessagesPayload{MessageIDs: []string{finished.ID, orphan.ID}})
 	require.NoError(t, err)
 
@@ -201,7 +201,7 @@ func TestHandleDeleteMessage_OrphanRescue_NilCoordinator_FailsClosed(t *testing.
 	// Explicitly set coordinator to nil (default from newMessageEditTestApp).
 	a.AgentCoordinator = nil
 
-	c := &Client{send: make(chan []byte, 4)}
+	c := newDetachedTestClient(4)
 	payload, err := json.Marshal(DeleteMessagePayload{MessageID: created.ID})
 	require.NoError(t, err)
 

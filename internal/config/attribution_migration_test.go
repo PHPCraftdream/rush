@@ -84,7 +84,7 @@ func TestAttributionMigration(t *testing.T) {
 			cfg, err := loadFromBytes([][]byte{[]byte(tt.configJSON)})
 			require.NoError(t, err)
 
-			cfg.setDefaults(t.TempDir(), "")
+			setDefaults(cfg, t.TempDir(), "")
 
 			require.Equal(t, tt.expectedTrailer, cfg.Options.Attribution.TrailerStyle)
 			require.Equal(t, tt.expectedGenerate, cfg.Options.Attribution.GeneratedWith)

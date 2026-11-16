@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 )
 
 // TokenSource supplies memory snapshots and refreshes rejected credentials.

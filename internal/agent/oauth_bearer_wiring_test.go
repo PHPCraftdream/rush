@@ -11,8 +11,8 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/config/oauth"
-	"github.com/PHPCraftdream/rush/internal/config/oauth/copilot"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/copilot"
 	"github.com/stretchr/testify/require"
 )
 

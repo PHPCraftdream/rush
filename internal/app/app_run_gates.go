@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"slices"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
@@ -222,4 +223,22 @@ func fsToolsForScope(scope *permission.FolderScope) []string {
 		return nil
 	}
 	return tools.FolderScopeToolNames(*scope)
+}
+
+// retryTransientRead paces a transient store-read failure of the CLI loop: nil
+// after a pause means retry; the error ends the run once the failures outlast
+// cliDBErrorRetryOverallLimit (or the run's context is done).
+func (l *cliLoop) retryTransientRead(start *time.Time, what string, err error) error {
+	if start.IsZero() {
+		*start = time.Now()
+	}
+	if time.Since(*start) > cliDBErrorRetryOverallLimit {
+		fmt.Fprintf(l.errOut(), "rush run: session %q's %s been unreadable for %s (%s); giving up\n",
+			l.sessionID, what, cliDBErrorRetryOverallLimit, err)
+		return err
+	}
+	if !sleepOrCtxDone(l.ctx, cliDBRetryPause) {
+		return l.ctx.Err()
+	}
+	return nil
 }

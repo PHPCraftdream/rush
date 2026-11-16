@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -32,7 +33,7 @@ const pwWakeTimeout = 2 * time.Second
 
 // pwAttachWakeRecorder attaches a fake coordinator that records every wake
 // delivery into the returned channel and never blocks the dispatcher.
-func pwAttachWakeRecorder(d *batchTimeoutWakeDispatcher) chan pwWakeRecord {
+func pwAttachWakeRecorder(d *appbatch.TimeoutWakeDispatcher) chan pwWakeRecord {
 	wakes := make(chan pwWakeRecord, 8)
 	d.Attach(wakeDispatchTestCoordinator{wake: func(_ context.Context, owner string, fact bool) error {
 		wakes <- pwWakeRecord{owner: owner, fact: fact}
@@ -80,8 +81,8 @@ func TestBatchCompletionWake_CommittedSelectedCompletionWakesDurableOwner(t *tes
 	require.NoError(t, err)
 	root := pwReserveCompletionRoot(t, a, owner.ID, "pw-durable-call")
 
-	d := newBatchTimeoutWakeDispatcher()
-	d.rootOwner = pwBatchCompletionRootOwner(a.batchCLIParams())
+	d := appbatch.NewTimeoutWakeDispatcher()
+	d.SetRootOwner(appbatch.CompletionRootOwner(a.batchCLIParams()))
 	t.Cleanup(d.Stop)
 	wakes := pwAttachWakeRecorder(d)
 	d.WakeCompletion(context.Background(), root)
@@ -114,8 +115,8 @@ func TestBatchCompletionWake_RepeatedCommitWhileInFlightWakesOnce(t *testing.T) 
 	require.NoError(t, err)
 	root := pwReserveCompletionRoot(t, a, owner.ID, "pw-dedupe-call")
 
-	d := newBatchTimeoutWakeDispatcher()
-	d.rootOwner = pwBatchCompletionRootOwner(a.batchCLIParams())
+	d := appbatch.NewTimeoutWakeDispatcher()
+	d.SetRootOwner(appbatch.CompletionRootOwner(a.batchCLIParams()))
 	t.Cleanup(d.Stop)
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -136,9 +137,8 @@ func TestBatchCompletionWake_RepeatedCommitWhileInFlightWakesOnce(t *testing.T) 
 	d.WakeCompletion(context.Background(), root)
 	close(release)
 	require.Eventually(t, func() bool {
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		return len(d.queued) == 0 && len(d.pend) == 0
+		q, p := d.PendingWakeDepths()
+		return q == 0 && p == 0
 	}, pwWakeTimeout, 10*time.Millisecond)
 	require.EqualValues(t, 1, count.Load(), "the repeated commit must not wake twice")
 }
@@ -157,8 +157,8 @@ func TestBatchCompletionWake_CompletionBeforeCoordinatorAttachIsNotLost(t *testi
 	require.NoError(t, err)
 	root := pwReserveCompletionRoot(t, a, owner.ID, "pw-early-call")
 
-	d := newBatchTimeoutWakeDispatcher()
-	d.rootOwner = pwBatchCompletionRootOwner(a.batchCLIParams())
+	d := appbatch.NewTimeoutWakeDispatcher()
+	d.SetRootOwner(appbatch.CompletionRootOwner(a.batchCLIParams()))
 	t.Cleanup(d.Stop)
 	// No coordinator attached yet: the completion commits first.
 	d.WakeCompletion(context.Background(), root)
@@ -180,8 +180,8 @@ func TestBatchCompletionWake_CompletionBeforeCoordinatorAttachIsNotLost(t *testi
 // assertion is the seed's require.NoError, then the empty-channel check.
 func TestBatchCompletionWake_UnknownRootNeverWakes(t *testing.T) {
 	a, _, _ := newBatchMaintenanceApp(t)
-	d := newBatchTimeoutWakeDispatcher()
-	d.rootOwner = pwBatchCompletionRootOwner(a.batchCLIParams())
+	d := appbatch.NewTimeoutWakeDispatcher()
+	d.SetRootOwner(appbatch.CompletionRootOwner(a.batchCLIParams()))
 	t.Cleanup(d.Stop)
 	wakes := pwAttachWakeRecorder(d)
 	d.WakeCompletion(context.Background(), "pw-missing-root")
@@ -212,14 +212,14 @@ func pwInstallWakeApp(t *testing.T) (*App, *sql.DB, agent.BatchInstallDeps, chan
 	// forced shutdown retains the host lock and breaks TempDir cleanup.
 	// Runnerless also keeps DrainAndRelease on the graceful releaseAll
 	// path (Forced=false on every OS).
-	batchRuntimeConfigHook = func(cfg *BatchRuntimeConfig) {
-		cfg.RunnerFactory = func() (batchRunner, error) {
+	batchRuntimeConfigHook = func(cfg *appbatch.BatchRuntimeConfig) {
+		cfg.RunnerFactory = func() (appbatch.BatchRunner, error) {
 			return nil, errors.New("pw completion wake test: dormant install")
 		}
 	}
 	t.Cleanup(func() { batchRuntimeConfigHook = nil })
 	require.NoError(t, a.installBatchRuntime(context.Background()))
-	a.batchRuntime.cfg.ReleaseWriter = func(context.Context) error { return nil }
+	a.batchRuntime.Config.ReleaseWriter = func(context.Context) error { return nil }
 	require.NotNil(t, a.batchTimeoutWake, "the install must arm the wake dispatcher")
 	require.Nil(t, a.batchRuntime.Runner(), "the pw install must stay runnerless")
 	wakes := pwAttachWakeRecorder(a.batchTimeoutWake)
@@ -260,7 +260,7 @@ func pwCommitSettledNotice(t *testing.T, a *App, deps agent.BatchInstallDeps, ro
 // pwCompletionWakeHook wrap of NewBatchCommitHook) would leave the durable
 // selected notice without any scheduled reaction — the exact reviewer-
 // observed "expected 1 got 0" child consumption; the first failing
-// assertion is installBatchRuntime's require.NoError, then the wake
+// assertion is InstallRuntime's require.NoError, then the wake
 // delivery timeout below.
 func TestBatchCompletionWake_CommitHookSettledNoticeWakesOwner(t *testing.T) {
 	a, _, deps, wakes := pwInstallWakeApp(t)
@@ -303,7 +303,7 @@ func TestBatchCompletionWake_CommitHookSettledNoticeWakesOwner(t *testing.T) {
 // and returns the root and the two task node ids.
 func pwReserveWakeDelegation(t *testing.T, a *App, owner, callID string, deps agent.BatchInstallDeps) (string, string, string) {
 	t.Helper()
-	host := a.BatchHostStore().HostID()
+	host := a.batchHostStore().HostID()
 	res, err := session.NewBatchStore(a.DB()).Reserve(context.Background(), session.BatchReservation{
 		Owner: owner, Host: host, RunnerID: deps.RunnerID, ToolCallID: callID,
 		InputHash: "pw-hash-" + callID, Sequence: 1,
@@ -346,7 +346,7 @@ func pwReserveWakeDelegation(t *testing.T, a *App, owner, callID string, deps ag
 //
 // Mutation caught: dropping the wrapper's sticky closing mirror would wake
 // the owner from closing settlements (a paid turn launched by shutdown or
-// recovery); the first failing assertion is installBatchRuntime's
+// recovery); the first failing assertion is InstallRuntime's
 // require.NoError, then the empty-wake checks below.
 func TestBatchCompletionWake_ShutdownClosingCommitsWakeZero(t *testing.T) {
 	a, _, deps, wakes := pwInstallWakeApp(t)

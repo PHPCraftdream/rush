@@ -47,7 +47,7 @@ type CallOptions struct {
 	// is initialized by BindCallDiskProvider when the trusted call state is
 	// created — before the options are shared — and only the explicit
 	// Call-owner token returned there releases it.
-	DiskBinding CallBindingHandle
+	DiskBinding CallBindingHandle `json:"-"`
 
 	// BuildScope is this trusted call state's closeable build-resource
 	// scope (BuildResourceScope, call_binding.go): every
@@ -55,7 +55,7 @@ type CallOptions struct {
 	// release here, and the scope is closed on resolution failure, call
 	// rejection, queue cancellation or final call completion. Copies of
 	// the options borrow the same scope.
-	BuildScope *BuildResourceScope
+	BuildScope *BuildResourceScope `json:"-"`
 
 	// BuildScopeRetained marks BuildScope as the RETAINED scope of an
 	// acknowledged queued call (armQueuedBuildRetention in
@@ -66,7 +66,7 @@ type CallOptions struct {
 	// marked scope always belongs to queued-call retention and closing it is
 	// exactly the ownership release (close is idempotent). Internal trusted
 	// runtime metadata; never serialized.
-	BuildScopeRetained bool
+	BuildScopeRetained bool `json:"-"`
 
 	// MaxAgentDepth is the trusted remaining delegation-edge budget. Its
 	// presence is separate from the value so zero remains an enforced cap.

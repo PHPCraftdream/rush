@@ -61,8 +61,8 @@ func TestUIDeleteSessionKeepsLegacyBehaviour(t *testing.T) {
 	hub := newHub()
 	go hub.Run(ctx)
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 16)
-	hub.register <- client
+	client.ResizeSendChan(16)
+	hub.Register(client)
 
 	handleDeleteSession(ctx, a, client, WSMessage{ID: "ui-del", Type: CmdDeleteSession, Payload: deletePayload(foreign.ID)})
 	reply := replyByID(t, client, "ui-del")

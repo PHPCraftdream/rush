@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
+
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -28,7 +30,7 @@ func TestBatchFaultExits70AfterContainment(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return len(exits.called()) == 1
 	}, 5*time.Second, time.Millisecond, "exit must be called once")
-	require.Equal(t, []int{BatchFaultExitCode}, exits.called(), "exit code must be 70")
+	require.Equal(t, []int{appbatch.BatchFaultExitCode}, exits.called(), "exit code must be 70")
 	require.True(t, rt.Fenced(), "fence must be set on fault")
 	require.Equal(t, []string{"retain-host"}, rec.snapshot(),
 		"fault path retains the host identity handle and never releases")
@@ -46,7 +48,7 @@ func TestBatchFaultFenceBeforeContainmentWait(t *testing.T) {
 	// Slow containment: the exit is NOT called during this test's window,
 	// but the fence is already active.
 	blocked := make(chan time.Time)
-	rt.cfg.WaitFunc = func(time.Duration) <-chan time.Time { return blocked }
+	rt.Config.WaitFunc = func(time.Duration) <-chan time.Time { return blocked }
 	rt.Start()
 	defer rt.Stop()
 
@@ -61,7 +63,7 @@ func TestBatchFaultFenceBeforeContainmentWait(t *testing.T) {
 	blocked <- time.Now()
 	require.Eventually(t, func() bool { return len(exits.called()) == 1 },
 		5*time.Second, time.Millisecond)
-	require.Equal(t, []int{BatchFaultExitCode}, exits.called())
+	require.Equal(t, []int{appbatch.BatchFaultExitCode}, exits.called())
 }
 
 // TestFaultRacingShutdownFaultFirst: fault starts shutdown — the gate retains
@@ -79,7 +81,7 @@ func TestFaultRacingShutdownFaultFirst(t *testing.T) {
 	assertNoReleases(t, rec, "no release after fault")
 	require.Eventually(t, func() bool { return len(exits.called()) == 1 },
 		5*time.Second, time.Millisecond, "exit 70 exactly once")
-	require.Equal(t, []int{BatchFaultExitCode}, exits.called(), "exit 70 exactly once")
+	require.Equal(t, []int{appbatch.BatchFaultExitCode}, exits.called(), "exit 70 exactly once")
 	require.EqualValues(t, 0, runner.closeCalls.Load(), "drain after fault must not Close the Runner")
 }
 
@@ -93,7 +95,7 @@ func TestFaultRacingShutdownFaultDuringDrain(t *testing.T) {
 	rt.Start()
 	defer rt.Stop()
 
-	done := make(chan BatchDrainResult, 1)
+	done := make(chan appbatch.BatchDrainResult, 1)
 	go func() { done <- rt.DrainAndRelease(context.Background(), 10*time.Second) }()
 
 	<-runner.closeEntered // Close is in flight, nothing released yet
@@ -107,7 +109,7 @@ func TestFaultRacingShutdownFaultDuringDrain(t *testing.T) {
 	assertNoReleases(t, rec, "fault during drain retains lock and writer")
 	require.Eventually(t, func() bool { return len(exits.called()) == 1 },
 		5*time.Second, time.Millisecond, "exit 70 exactly once")
-	require.Equal(t, []int{BatchFaultExitCode}, exits.called())
+	require.Equal(t, []int{appbatch.BatchFaultExitCode}, exits.called())
 }
 
 // TestShutdownRacingFaultReleaseAbortsMidway: the fence is re-checked between
@@ -131,7 +133,7 @@ func TestShutdownRacingFaultReleaseAbortsMidway(t *testing.T) {
 	// stable. releaseHostEntered signals the callback body has run.
 	hold := make(chan struct{})
 	releaseHostEntered := make(chan struct{})
-	rt.cfg.ReleaseHostIdentity = func(context.Context) error {
+	rt.Config.ReleaseHostIdentity = func(context.Context) error {
 		rec.record("release-host")
 		close(releaseHostEntered)
 		runner.FireFault(errors.New("fault between releases"))
@@ -141,7 +143,7 @@ func TestShutdownRacingFaultReleaseAbortsMidway(t *testing.T) {
 	rt.Start()
 	defer rt.Stop()
 
-	done := make(chan BatchDrainResult, 1)
+	done := make(chan appbatch.BatchDrainResult, 1)
 	go func() { done <- rt.DrainAndRelease(context.Background(), time.Second) }()
 
 	<-releaseHostEntered
@@ -161,7 +163,7 @@ func TestShutdownRacingFaultReleaseAbortsMidway(t *testing.T) {
 	// removing that check records "release-writer" here and fails.
 	require.Eventually(t, func() bool { return len(exits.called()) == 1 },
 		5*time.Second, time.Millisecond, "exit 70 exactly once")
-	require.Equal(t, []int{BatchFaultExitCode}, exits.called())
+	require.Equal(t, []int{appbatch.BatchFaultExitCode}, exits.called())
 	require.Equal(t, []string{"release-host", "retain-host"}, rec.snapshot(),
 		"writer release must be skipped once the fence is set: the inter-release fence recheck must prevent 'release-writer'")
 }
@@ -170,7 +172,7 @@ func TestBatchFaultDrainFencesWithoutWatcher(t *testing.T) {
 	runner := newFakeRunner()
 	rt, exits, rec := newTestRuntime(t, runner)
 
-	done := make(chan BatchDrainResult, 1)
+	done := make(chan appbatch.BatchDrainResult, 1)
 	go func() { done <- rt.DrainAndRelease(context.Background(), time.Second) }()
 	<-runner.closeEntered
 	runner.FireFault(errors.New("commit failed after watcher teardown"))

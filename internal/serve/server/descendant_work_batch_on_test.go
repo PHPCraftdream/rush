@@ -115,8 +115,8 @@ func TestHandleGetSessionLiveWork_BatchOnSnapshotReaderChunkedReads(t *testing.T
 	hub := newHub()
 	go hub.Run(ctx)
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 512)
-	hub.register <- client
+	client.ResizeSendChan(512)
+	hub.Register(client)
 	handleListSessions(ctx, a, client, WSMessage{ID: "req", Type: CmdListSessions})
 	replies := drainSessionsListReplies(t, client)
 	require.NotEmpty(t, replies)

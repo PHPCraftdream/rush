@@ -14,7 +14,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 )
 
-func (c *Config) setDefaults(workingDir, dataDir string) {
+func setDefaults(c *Config, workingDir, dataDir string) {
 	if c.Options == nil {
 		c.Options = &Options{}
 	}
