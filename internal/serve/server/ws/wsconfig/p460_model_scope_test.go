@@ -138,4 +138,3 @@ func TestSetSessionModels_DoesNotChangeGlobalDefault(t *testing.T) {
 	// ...and the system level did not move.
 	requireGlobalSmartUnchanged(t, store, before)
 }
-

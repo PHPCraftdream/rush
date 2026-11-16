@@ -75,9 +75,11 @@ func newClient(h *hub.Hub, conn *websocket.Conn) *hub.Client { return hub.NewCli
 func newClientAuth(p Principal, policy CommandPolicy) *hub.ClientAuth {
 	return hub.NewClientAuth(p, policy)
 }
+
 func AuthorizeCommand(p Principal, command string, policy CommandPolicy) error {
 	return hub.AuthorizeCommand(p, command, policy)
 }
+
 func SessionResolutionFor(command string) (field, class string, ok bool) {
 	return apiauth.SessionResolutionFor(command)
 }
