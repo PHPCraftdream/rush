@@ -414,7 +414,7 @@ func renderCmd(version string, names map[string]Name, notes []string) ([]byte, e
 
 func renderSpecs(version string, specs []Spec) ([]byte, error) {
 	var b bytes.Buffer
-	header(&b, version, "cliprovider")
+	header(&b, version, "clipspec")
 	b.WriteString("// cahSpecs contains the generated model catalog.\n// Constructor adapters preserve current signatures and set per-model metadata.\nfunc cahClaudeSpec(id, display, arg string, ctx int64, efforts []string) CLISpec { s := claudeSpec(id,display,arg,ctx); s.EffortLevels=efforts; return s }\nfunc cahCodexSpec(id, display, arg string, ctx int64, efforts []string) CLISpec { s := codexSpec(id,display,arg,efforts); s.ContextWindow=ctx; return s }\nvar cahSpecs = []CLISpec{\n")
 	for _, s := range specs {
 		ctor := "cahClaudeSpec"
