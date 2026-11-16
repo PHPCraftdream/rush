@@ -10,7 +10,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 )
 
 type oauthTokenStore interface {

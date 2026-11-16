@@ -93,7 +93,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// incarnation, keep even a fallback toolset stripped of the stale
 	// ask tool — fail closed, never a raw ask on an unattended child.
 	ctx = armBatchQuestionTurnContext(ctx, call)
-	if state := call.batchQuestion; state != nil && !state.Route {
+	if state := call.BatchQuestion; state != nil && !state.Route {
 		agentTools = stripAskQuestionTools(agentTools)
 		call.Tools = agentTools
 	}
@@ -102,17 +102,17 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// applyModelOverrides could land BETWEEN the reads, so a single turn ran
 	// with a mismatched model/prompt pair — and the next turn silently
 	// inherited another session's model.
-	if call.recoveryContinuation && call.recovery != nil {
-		pinnedModel := call.recovery.targetModel
+	if call.RecoveryContinuation && call.Recovery != nil {
+		pinnedModel := call.Recovery.TargetModel
 		call.SmartModel = &pinnedModel
-		pinnedSystem := call.recovery.targetSystem
+		pinnedSystem := call.Recovery.TargetSystem
 		call.SystemPrompt = &pinnedSystem
 		call.SystemPromptOverride = ""
-		pinnedPrefix := call.recovery.targetPrefix
+		pinnedPrefix := call.Recovery.TargetPrefix
 		call.SystemPromptPrefix = &pinnedPrefix
-		agentTools = append([]fantasy.AgentTool{}, call.recovery.targetTools...)
+		agentTools = append([]fantasy.AgentTool{}, call.Recovery.TargetTools...)
 		call.Tools = agentTools
-		call.Attachments = append([]message.Attachment(nil), call.recovery.targetAttachments...)
+		call.Attachments = append([]message.Attachment(nil), call.Recovery.TargetAttachments...)
 	}
 	cfg := a.resolveTurnConfig(call)
 	smartModel := cfg.smartModel
@@ -128,7 +128,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 
 	slog.Info("SessionAgent.Run: starting", "sessionID", call.SessionID, "model", smartModel.ModelCfg.Model, "promptLen", len(systemPrompt))
 
-	systemPrompt = withTurnMCPInstructions(systemPrompt, call.recoveryContinuation, a.config, maps.All(mcp.GetStates()))
+	systemPrompt = withTurnMCPInstructions(systemPrompt, call.RecoveryContinuation, a.config, maps.All(mcp.GetStates()))
 	// Add Anthropic caching to the last tool. Via a per-turn wrapper, NOT
 	// SetProviderOptions on the shared tool object: a.tools' ELEMENTS are one
 	// set of pointers shared by every concurrent turn on this agent, and two
@@ -170,19 +170,19 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		return nil, SessionAgentCall{}, false, fmt.Errorf("failed to get session: %w", err)
 	}
 
-	if state := call.recovery; state != nil {
-		if call.recoverySpentTokens > state.spent.Load() {
-			state.spent.Store(call.recoverySpentTokens)
+	if state := call.Recovery; state != nil {
+		if call.RecoverySpentTokens > state.Spent.Load() {
+			state.Spent.Store(call.RecoverySpentTokens)
 		}
 	} else if a.coord != nil && a.coord.cfg != nil {
-		call.recovery = a.snapshotCodexRecovery(call, currentSession)
-		call.recovery.targetPrompt = call.Prompt
-		call.recovery.targetAttachments = cloneRecoveryAttachments(call.Attachments)
-		call.recovery.targetTools = recoveryTools
-		call.recovery.targetModel = smartModel
-		call.recovery.targetPrefix = promptPrefix
-		call.recovery.targetSystem = systemPrompt
-		call.recovery.targetMaxOutput = call.MaxOutputTokens
+		call.Recovery = a.snapshotCodexRecovery(call, currentSession)
+		call.Recovery.TargetPrompt = call.Prompt
+		call.Recovery.TargetAttachments = cloneRecoveryAttachments(call.Attachments)
+		call.Recovery.TargetTools = recoveryTools
+		call.Recovery.TargetModel = smartModel
+		call.Recovery.TargetPrefix = promptPrefix
+		call.Recovery.TargetSystem = systemPrompt
+		call.Recovery.TargetMaxOutput = call.MaxOutputTokens
 		call.SystemPrompt = &systemPrompt
 	}
 	// Recovery IDs are tracked independently; do not wrap the caller callback.
@@ -222,7 +222,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		case berr == nil:
 			att.batchSnapshot, att.batchCaptured = bsnap, true
 			hasVisibleDebt = len(bsnap.Nodes)+len(bsnap.Notices) > 0
-		case call.drainTurnCommitted:
+		case call.DrainTurnCommitted:
 			// A committed continuation runs uncounted, never fails.
 			slog.Warn("drain turn: pull-time batch debt capture failed; the leg will run uncounted",
 				"session_id", call.SessionID, "err", berr)
@@ -230,7 +230,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			preambleCancel()
 			return nil, SessionAgentCall{}, false, fmt.Errorf("drain turn: reading the visible debt failed: %w", berr)
 		}
-		if !call.drainTurnCommitted {
+		if !call.DrainTurnCommitted {
 			commit, verdict := a.decideDrainTurn(preambleCtx, call.SessionID, hasVisibleDebt)
 			if !commit {
 				// No visible debt, or policy forbids a turn: finish through the
@@ -329,11 +329,11 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// Its reaction is purely to the notice(s) the turn-start pull already
 	// spliced into msgs/history above.
 	userMessageCreated := call.ExistingMessageID != ""
-	if call.ExistingMessageID != "" && call.recovery != nil {
-		call.recovery.markUser(call.ExistingMessageID)
+	if call.ExistingMessageID != "" && call.Recovery != nil {
+		call.Recovery.MarkUser(call.ExistingMessageID)
 	}
 	skipUserMessage := call.IsDrain && call.Prompt == "" && call.ExistingMessageID == ""
-	if call.recoveryContinuation {
+	if call.RecoveryContinuation {
 		skipUserMessage = true
 	}
 	if call.ExistingMessageID == "" && !skipUserMessage {
@@ -348,8 +348,8 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			return nil, SessionAgentCall{}, false, err
 		}
 		userMessageCreated = true
-		if call.recovery != nil {
-			call.recovery.markUser(createdMsg.ID)
+		if call.Recovery != nil {
+			call.Recovery.MarkUser(createdMsg.ID)
 		}
 		if call.OnUserMessageCreated != nil {
 			call.OnUserMessageCreated(createdMsg.ID)
@@ -533,7 +533,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		last := len(history) - 1
 		if last < 0 || (history[last].Role != fantasy.MessageRoleUser && history[last].Role != fantasy.MessageRoleTool) {
 			nudge := "Continue based on the notice(s) above."
-			if call.drainTurnCommitted {
+			if call.DrainTurnCommitted {
 				nudge = "The conversation was summarized; continue reacting to the notice(s) above."
 			}
 			history = append(history, fantasy.NewUserMessage(nudge))
@@ -571,7 +571,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		promptPrefix:     promptPrefix,
 		historyIDs:       historyIDs,
 		currentSession:   currentSession,
-		recovery:         call.recovery,
+		recovery:         call.Recovery,
 		bumpActivity:     bumpActivity,
 		toolStarted:      toolStarted,
 		toolFinished:     toolFinished,
@@ -658,7 +658,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 				last := len(stallRetryHistory) - 1
 				if last < 0 || (stallRetryHistory[last].Role != fantasy.MessageRoleUser && stallRetryHistory[last].Role != fantasy.MessageRoleTool) {
 					nudge := "Continue based on the notice(s) above."
-					if call.drainTurnCommitted {
+					if call.DrainTurnCommitted {
 						nudge = "The conversation was summarized; continue reacting to the notice(s) above."
 					}
 					stallRetryHistory = append(stallRetryHistory, fantasy.NewUserMessage(nudge))
@@ -729,9 +729,9 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			// pulled notice reacted=1, so the re-gate finds no visible debt and
 			// takes the no-turn branch, ending the turn with the compaction's
 			// pending tool calls never answered (mirrors coordinator_run.go's
-			// own `trackCall.drainTurnCommitted = trackCall.IsDrain` retry rule).
-			continuationCall.drainTurnCommitted = continuationCall.IsDrain
-			continuationCall.compactionContinuation = true
+			// own `trackCall.DrainTurnCommitted = trackCall.IsDrain` retry rule).
+			continuationCall.DrainTurnCommitted = continuationCall.IsDrain
+			continuationCall.CompactionContinuation = true
 			return nil, continuationCall, true, nil
 		}
 	}
@@ -796,7 +796,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	}
 	// There are queued messages — the caller's loop runs another turn. The
 	// finished turn's own outcome is NOT dropped: returning it here lets the
-	// loop's per-iteration onQueueResolved hook deliver the real result/err
+	// loop's per-iteration OnQueueResolved hook deliver the real result/err
 	// for the call that just completed, instead of a spurious (nil, nil).
 	return result, firstQueuedMessage, true, nil
 }

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -228,7 +229,7 @@ func TestP1_5_GenerationCheckSkipsOnPositiveMismatch(t *testing.T) {
 // that stale cleanup goroutines never clobber a newer owner's metadata.
 func TestP1_5_GenerationMultipleSequentialReleases(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	tmpDir := t.TempDir()
 	sessionID := "test-session-p1-5-sequential"
 

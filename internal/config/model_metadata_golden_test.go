@@ -22,7 +22,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/discover"
-	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 	"github.com/stretchr/testify/require"
 )
@@ -89,7 +89,7 @@ func TestModelMetadataGolden(t *testing.T) {
 	})
 
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	cfg.Providers.Set("zai", ProviderConfig{
 		ID:      "zai",
 		BaseURL: zaiModels.URL,

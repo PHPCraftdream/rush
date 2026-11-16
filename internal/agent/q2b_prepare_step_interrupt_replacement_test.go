@@ -79,7 +79,7 @@ func TestInterruptReplacementDuringFirstPrepareStepDrainSurvives(t *testing.T) {
 	// generation blocked in the first PrepareStep drain.
 	require.True(t, sa.InterruptAndReplace(sess.ID, SessionAgentCall{
 		SessionID: sess.ID, Prompt: replacementPrompt, MaxOutputTokens: 1000,
-		onQueueResolved: func(_ *fantasy.AgentResult, err error) { resolved <- err },
+		OnQueueResolved: func(_ *fantasy.AgentResult, err error) { resolved <- err },
 	}))
 	select {
 	case <-requestStarted:

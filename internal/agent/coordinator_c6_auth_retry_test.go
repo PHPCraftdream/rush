@@ -13,7 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/stretchr/testify/require"
 )
@@ -271,8 +271,8 @@ func TestSummarize_ProactiveRefreshRebuildsImmutableSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	snapshot, err := coord.buildSummarizeSnapshot(t.Context(), session.ID)
 	require.NoError(t, err)
-	snapshot.model.Model = &c6IdentityModel{tag: "old-client"}
-	oldClient := snapshot.model.Model
+	snapshot.Model.Model = &c6IdentityModel{tag: "old-client"}
+	oldClient := snapshot.Model.Model
 
 	coord.refreshOAuth2TokenFn = func(_ context.Context, _ config.ProviderConfig) error {
 		fresh := config.ProviderConfig{
@@ -286,10 +286,10 @@ func TestSummarize_ProactiveRefreshRebuildsImmutableSnapshot(t *testing.T) {
 		return nil
 	}
 	var calls int
-	agent := &mockSessionAgent{model: snapshot.model}
+	agent := &mockSessionAgent{model: snapshot.Model}
 	agent.summarizeFunc = func(_ context.Context, _ string, got *SummarizeSnapshot) error {
 		calls++
-		_, old := got.model.Model.(*c6IdentityModel)
+		_, old := got.Model.Model.(*c6IdentityModel)
 		require.False(t, old)
 		return nil
 	}
@@ -297,7 +297,7 @@ func TestSummarize_ProactiveRefreshRebuildsImmutableSnapshot(t *testing.T) {
 
 	require.NoError(t, coord.Summarize(t.Context(), session.ID, snapshot))
 	require.Equal(t, 1, calls)
-	originalClient, originalOld := snapshot.model.Model.(*c6IdentityModel)
+	originalClient, originalOld := snapshot.Model.Model.(*c6IdentityModel)
 	require.True(t, originalOld)
 	require.Same(t, oldClient, originalClient)
 }
@@ -312,7 +312,7 @@ func TestSummarize_401RebuildsPinnedClient(t *testing.T) {
 	snapshot, err := coord.buildSummarizeSnapshot(t.Context(), session.ID)
 	require.NoError(t, err)
 	oldClient := &c6IdentityModel{tag: "old-client"}
-	snapshot.model.Model = oldClient
+	snapshot.Model.Model = oldClient
 	coord.refreshOAuth2TokenFn = func(_ context.Context, _ config.ProviderConfig) error {
 		c6ConfigureProvider(t, coord, "replacement-provider", "replacement-model", "replacement-key", nil)
 		fresh := config.ProviderConfig{
@@ -327,11 +327,11 @@ func TestSummarize_401RebuildsPinnedClient(t *testing.T) {
 	}
 	var calls []fantasy.LanguageModel
 	var selections []config.SelectedModel
-	agent := &mockSessionAgent{model: snapshot.model}
+	agent := &mockSessionAgent{model: snapshot.Model}
 	agent.summarizeFunc = func(_ context.Context, _ string, got *SummarizeSnapshot) error {
-		calls = append(calls, got.model.Model)
-		selections = append(selections, got.model.ModelCfg)
-		if _, old := got.model.Model.(*c6IdentityModel); old {
+		calls = append(calls, got.Model.Model)
+		selections = append(selections, got.Model.ModelCfg)
+		if _, old := got.Model.Model.(*c6IdentityModel); old {
 			return c6Unauthorized()
 		}
 		return nil
@@ -352,7 +352,7 @@ func TestSummarize_401RebuildsPinnedClient(t *testing.T) {
 	}
 	require.Equal(t, "replacement-provider", coord.cfg.Config().Models[config.SelectedModelTypeSmart].Provider)
 	require.Equal(t, "replacement-model", coord.cfg.Config().Models[config.SelectedModelTypeSmart].Model)
-	originalClient, originalOld := snapshot.model.Model.(*c6IdentityModel)
+	originalClient, originalOld := snapshot.Model.Model.(*c6IdentityModel)
 	require.True(t, originalOld)
 	require.Same(t, oldClient, originalClient)
 }
@@ -378,7 +378,7 @@ func TestSummarize_RefreshRebuildFailureDoesNotRetry(t *testing.T) {
 		return nil
 	}
 	calls := 0
-	agent := &mockSessionAgent{model: snapshot.model}
+	agent := &mockSessionAgent{model: snapshot.Model}
 	agent.summarizeFunc = func(context.Context, string, *SummarizeSnapshot) error {
 		calls++
 		return c6Unauthorized()

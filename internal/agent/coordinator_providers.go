@@ -31,37 +31,19 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	mcp "github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/discover"
-	"github.com/PHPCraftdream/rush/internal/config/oauth/copilot"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/copilot"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/event"
 	"github.com/PHPCraftdream/rush/internal/session"
 	openaisdk "github.com/charmbracelet/openai-go/option"
 	"github.com/qjebbs/go-jsons"
 )
 
-// reservedCredentialProviderIDs lists IDs with provider-specific construction
-// that would change the API or authentication used by tenant credentials.
-var reservedCredentialProviderIDs = map[string]struct{}{
-	"openai-codex": {},
-	"hyper":        {},
-	"opencode-go":  {},
-	"opencode-zen": {},
-	"zai":          {},
-	"minimax":      {},
-	"minimax-cn":   {},
-	"copilot":      {},
-}
-
 func validateCredentialProviderID(id string) error {
-	if id == "" {
-		return fmt.Errorf("credential is missing its provider name")
-	}
-	if _, reserved := reservedCredentialProviderIDs[id]; reserved {
-		return fmt.Errorf("provider ID %q is reserved and cannot be used for per-call credentials", id)
-	}
-	return nil
+	return agentcall.ValidateCredentialProviderID(id)
 }
 
 // Copilot models that use the Responses API instead of Chat Completions.

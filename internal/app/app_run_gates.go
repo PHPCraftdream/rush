@@ -35,8 +35,8 @@ var subAgentToolNames = []string{"agent", "agentic_fetch"}
 // practice.
 //
 // Fork patch (orchestrator UX): see CHANGELOG.fork.md (Section 4.J).
-func (app *App) disableSubAgentToolsInConfig() {
-	app.disableToolsInConfig(subAgentToolNames)
+func disableSubAgentToolsInConfig(env RunEnv) {
+	disableToolsInConfig(env, subAgentToolNames)
 }
 
 // disableToolsInConfig drops exactly the named tools from the coder
@@ -55,8 +55,8 @@ func (app *App) disableSubAgentToolsInConfig() {
 // the mutation retroactively).
 //
 // Fork patch (orchestrator UX, plan phase 2): bypass restores `agent` only.
-func (app *App) disableToolsInConfig(toolNames []string) {
-	cfg := app.config.Config()
+func disableToolsInConfig(env RunEnv, toolNames []string) {
+	cfg := env.Config.Config()
 	if cfg == nil {
 		return
 	}
@@ -71,7 +71,7 @@ func (app *App) disableToolsInConfig(toolNames []string) {
 		}
 		filtered = append(filtered, t)
 	}
-	app.config.UpdateAgentAllowedTools(config.AgentCoder, filtered)
+	env.Config.UpdateAgentAllowedTools(config.AgentCoder, filtered)
 }
 
 // shouldBypassSubAgentBan decides whether the `rush run` default
@@ -157,7 +157,7 @@ const reviewerPassScopeOpenRetries = 3
 //
 // Only called when every cheap, in-memory gate (ExecuteRun's own error,
 // credentials, cancellation, shouldRunReviewerPass) already passed.
-func (app *App) reviewerPassBlocked(ctx context.Context, source agent.ReactionDebtSource, sessionID string, stderr io.Writer) bool {
+func reviewerPassBlocked(env RunEnv, ctx context.Context, source agent.ReactionDebtSource, sessionID string, stderr io.Writer) bool {
 	var lastErr error
 	for attempt := 1; attempt <= reviewerPassScopeOpenRetries; attempt++ {
 		state, err := source.CLIScope(ctx, sessionID)

@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/proctrack"
 	"golang.org/x/sys/windows"
 )
 
@@ -21,7 +21,7 @@ func configureStopParent(command *exec.Cmd) {
 func configureStopLeaf(command *exec.Cmd) {
 	command.SysProcAttr.CreationFlags |= windows.CREATE_NEW_PROCESS_GROUP
 }
-func trackStopLeaf(pid int) error { return session.TrackProcessTree(pid) }
+func trackStopLeaf(pid int) error { return proctrack.TrackProcessTree(pid) }
 func triggerOwnStopConsole() error {
 	return windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, 0)
 }

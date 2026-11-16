@@ -351,7 +351,7 @@ func newBatchWorkToolBuildForContext(ctx context.Context, bind *batchCoordinator
 	if err := bind.diskBindings.acquireConstruction("", registryID, constructionKey.instance); err != nil {
 		return policyToolBuild{}, err
 	}
-	scope.register(func() { bind.diskBindings.release(constructionKey) })
+	scope.Register(func() { bind.diskBindings.release(constructionKey) })
 	built.registryID = registryID
 	if fingerprint == "" {
 		fingerprint = registryID

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -26,9 +25,6 @@ type (
 	batchAgentQuestionContextKey struct{}
 )
 
-type batchAgentQuestionBinding struct {
-	Ask func(context.Context, int, string) (json.RawMessage, error)
-}
 type batchAgentQuestionBindingKey struct{}
 
 func withBatchAgentLifecycle(ctx context.Context, lifecycle batchAgentLifecycle) context.Context {
@@ -223,41 +219,6 @@ func (f pscChildReactionFacts) ChildFinalOutcome(ctx context.Context, childSessi
 		return initial, false
 	}
 	return f.outcome(ctx, childSessionID, initial)
-}
-
-// PscCoordinatorChildReactionFactsLate builds the production child
-// reaction facts for an App-level wiring site whose coordinator is
-// assigned AFTER the batch install is built: get is re-read on every
-// call, so a not-yet-bound coordinator reports the conservative answers
-// (scope open/incomplete; initial outcome kept) until it is. The outcome
-// half reuses coordinator.refreshSubAgentCompletion — the legacy release
-// path's refresh — so reaction-failure markers, the paused-question
-// delivery and the empty-final-text notice keep their existing
-// semantics.
-func PscCoordinatorChildReactionFactsLate(get func() Coordinator) BatchChildReactionFacts {
-	if get == nil {
-		return nil
-	}
-	return pscChildReactionFacts{
-		scope: func(ctx context.Context, childSessionID string) (CLIScopeState, error) {
-			c := get()
-			if c == nil {
-				return CLIScopeState{}, errPscChildScopeUnavailable
-			}
-			src, ok := c.(ReactionDebtSource)
-			if !ok {
-				return CLIScopeState{}, errPscChildScopeUnavailable
-			}
-			return src.CLIScope(ctx, childSessionID)
-		},
-		outcome: func(ctx context.Context, childSessionID string, initial AsyncCompletion) (AsyncCompletion, bool) {
-			cc, ok := get().(*coordinator)
-			if !ok || cc == nil {
-				return initial, false
-			}
-			return cc.refreshSubAgentCompletion(childSessionID, initial), true
-		},
-	}
 }
 
 // CoordinatorBatchAgentDepsWithLive builds the flagged agent-family seams

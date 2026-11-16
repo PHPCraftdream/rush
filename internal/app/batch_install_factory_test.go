@@ -36,13 +36,13 @@ func batchFactoryDeps() agent.BatchInstallDeps {
 
 func TestBatchRuntimeFactoryFailsClosedWithoutResources(t *testing.T) {
 	t.Parallel()
-	_, err := newBatchRuntimeFactory(nil, batchFactoryDeps())
+	_, err := newBatchRuntimeFactory(batchInstallParams{}, batchFactoryDeps())
 	require.Error(t, err)
-	_, err = newBatchRuntimeFactory(&App{}, batchFactoryDeps())
+	_, err = newBatchRuntimeFactory((&App{}).batchInstallParams(), batchFactoryDeps())
 	require.Error(t, err, "no agent store")
 	a := batchFactoryApp(t)
 	a.Messages = nil
-	_, err = newBatchRuntimeFactory(a, batchFactoryDeps())
+	_, err = newBatchRuntimeFactory(a.batchInstallParams(), batchFactoryDeps())
 	require.Error(t, err, "no message service")
 }
 
@@ -52,13 +52,13 @@ func TestBatchRuntimeFactoryFailsClosedWithoutResources(t *testing.T) {
 func TestBatchRuntimeFactoryCommitBudgetOutlastsLockWait(t *testing.T) {
 	t.Parallel()
 	a := batchFactoryApp(t)
-	factory, err := newBatchRuntimeFactory(a, batchFactoryDeps())
+	factory, err := newBatchRuntimeFactory(a.batchInstallParams(), batchFactoryDeps())
 	require.NoError(t, err)
 	require.Greater(t, factory.deps.CommitTimeout, db.BusyTimeout)
 	require.Equal(t, 45*time.Second, factory.deps.CommitTimeout)
 	explicit := batchFactoryDeps()
 	explicit.CommitTimeout = time.Second
-	factory, err = newBatchRuntimeFactory(a, explicit)
+	factory, err = newBatchRuntimeFactory(a.batchInstallParams(), explicit)
 	require.NoError(t, err)
 	require.Equal(t, time.Second, factory.deps.CommitTimeout, "explicit budget wins")
 }
@@ -69,7 +69,7 @@ func TestBatchRuntimeFactoryCommitBudgetOutlastsLockWait(t *testing.T) {
 func TestBatchRuntimeFactoryBuildDormant(t *testing.T) {
 	t.Parallel()
 	a := batchFactoryApp(t)
-	factory, err := newBatchRuntimeFactory(a, batchFactoryDeps())
+	factory, err := newBatchRuntimeFactory(a.batchInstallParams(), batchFactoryDeps())
 	require.NoError(t, err)
 	require.Equal(t, "host", factory.deps.Host, "explicit host identity wins")
 	require.NotNil(t, factory.deps.Store)

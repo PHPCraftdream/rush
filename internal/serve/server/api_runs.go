@@ -7,6 +7,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
 )
 
 const (
@@ -19,17 +21,6 @@ var (
 	ErrAPIRunInvalidState = errors.New("invalid API run state transition")
 	ErrAPIRunRegistryFull = errors.New("API run registry is full")
 	ErrAPIRunIDGeneration = errors.New("could not generate API run ID")
-)
-
-type APIRunState string
-
-const (
-	APIRunQueued         APIRunState = "queued"
-	APIRunRunning        APIRunState = "running"
-	APIRunSucceeded      APIRunState = "succeeded"
-	APIRunFailed         APIRunState = "failed"
-	APIRunCancelled      APIRunState = "cancelled"
-	APIRunAwaitingAnswer APIRunState = "awaiting_answer"
 )
 
 type APIRunError struct {
@@ -146,7 +137,7 @@ func (r *APIRunRegistry) Transition(id string, state APIRunState, errorCode, err
 	if state == APIRunRunning && entry.run.StartedAt == nil {
 		entry.run.StartedAt = timePointer(now.UTC())
 	}
-	if terminalAPIRunState(state) {
+	if wire.TerminalAPIRunState(state) {
 		entry.run.FinishedAt = timePointer(now.UTC())
 	}
 	if errorCode != "" || errorSummary != "" {
@@ -171,7 +162,7 @@ func (r *APIRunRegistry) setObserver(observer func(APIRun)) {
 }
 
 func validAPIRunTransition(from, to APIRunState) bool {
-	if terminalAPIRunState(from) {
+	if wire.TerminalAPIRunState(from) {
 		return false
 	}
 	switch from {
@@ -184,10 +175,6 @@ func validAPIRunTransition(from, to APIRunState) bool {
 	default:
 		return false
 	}
-}
-
-func terminalAPIRunState(state APIRunState) bool {
-	return state == APIRunSucceeded || state == APIRunFailed || state == APIRunCancelled
 }
 
 func (r *APIRunRegistry) SnapshotAndWait(id string) (APIRun, <-chan struct{}, bool) {
@@ -238,7 +225,7 @@ func (r *APIRunRegistry) ActiveSessionIDs() []string {
 
 func (r *APIRunRegistry) evictExpiredLocked(now time.Time) {
 	for id, entry := range r.runs {
-		if terminalAPIRunState(entry.run.State) && entry.run.FinishedAt != nil && now.Sub(*entry.run.FinishedAt) >= apiRunTTL {
+		if wire.TerminalAPIRunState(entry.run.State) && entry.run.FinishedAt != nil && now.Sub(*entry.run.FinishedAt) >= apiRunTTL {
 			delete(r.runs, id)
 		}
 	}
@@ -248,7 +235,7 @@ func (r *APIRunRegistry) evictOldestFinishedLocked() {
 	var oldestID string
 	var oldestFinished time.Time
 	for id, entry := range r.runs {
-		if !terminalAPIRunState(entry.run.State) || entry.run.FinishedAt == nil {
+		if !wire.TerminalAPIRunState(entry.run.State) || entry.run.FinishedAt == nil {
 			continue
 		}
 		if oldestID == "" || entry.run.FinishedAt.Before(oldestFinished) {

@@ -9,11 +9,87 @@ import (
 	"testing"
 	"time"
 
-	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire/finalgate"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
+
+// finalizationNotifyGateStub is a deterministic in-memory terminal gate: no
+// goroutines, no tickers, no polling.
+type finalizationNotifyGateStub struct {
+	mu        sync.Mutex
+	active    map[string]bool
+	seals     map[string]chan struct{} // Created lazily, buffered cap 1.
+	awaitErr  error                    // Deterministic AwaitSealed failure.
+	failAllow bool                     // Deterministic AllowTerminal=false.
+}
+
+func newFinalizationNotifyGateStub() *finalizationNotifyGateStub {
+	return &finalizationNotifyGateStub{
+		active: map[string]bool{},
+		seals:  map[string]chan struct{}{},
+	}
+}
+
+func (s *finalizationNotifyGateStub) sealChanLocked(owner string) chan struct{} {
+	ch, ok := s.seals[owner]
+	if !ok {
+		ch = make(chan struct{}, 1)
+		s.seals[owner] = ch
+	}
+	return ch
+}
+
+// activate marks the owner's finalization record active.
+func (s *finalizationNotifyGateStub) activate(owner string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.active[owner] = true
+}
+
+// seal releases the owner's hold: the record leaves the active phase and the
+// AwaitSealed watcher is woken by a buffered signal.
+func (s *finalizationNotifyGateStub) seal(owner string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.active[owner] = false
+	select {
+	case s.sealChanLocked(owner) <- struct{}{}:
+	default:
+	}
+}
+
+func (s *finalizationNotifyGateStub) AllowTerminal(_ context.Context, owner string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failAllow {
+		return false
+	}
+	return !s.active[owner]
+}
+
+func (s *finalizationNotifyGateStub) AwaitSealed(ctx context.Context, owner string) error {
+	for {
+		s.mu.Lock()
+		if s.awaitErr != nil {
+			err := s.awaitErr
+			s.mu.Unlock()
+			return err
+		}
+		active := s.active[owner]
+		seal := s.sealChanLocked(owner)
+		s.mu.Unlock()
+		if !active {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-seal:
+		}
+	}
+}
 
 // finalizationWiringGateStub wraps the package's signal-based gate stub with
 // an AwaitSealed entry barrier and owner recording, so tests can prove a
@@ -142,7 +218,7 @@ func finalizationWaitForEventLogEntry(t *testing.T, log *APIEventLog, sessionID,
 // the API event log immediately, exactly as before the wiring existed.
 func TestAPIEventsFeederNilGateFeedsTerminalMessageImmediately(t *testing.T) {
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
-	require.Nil(t, finalizationTerminalGateFor(a),
+	require.Nil(t, finalgate.GateFor(a),
 		"the flag-off fixture app must resolve to the inert nil gate")
 	log := NewAPIEventLog(nil)
 	// The feeder subscribes from its own goroutine: take the baseline BEFORE
@@ -174,9 +250,6 @@ func TestAPIEventsFeederNilGateFeedsTerminalMessageImmediately(t *testing.T) {
 // held message is published exactly once.
 func TestAPIEventsFeederGatesTerminalMessageUntilSeal(t *testing.T) {
 	stub := newFinalizationWiringGateStub()
-	orig := finalizationTerminalGateFor
-	finalizationTerminalGateFor = func(*appPkg.App) session.FinalizationTerminalGate { return stub }
-	t.Cleanup(func() { finalizationTerminalGateFor = orig })
 
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	log := NewAPIEventLog(nil)
@@ -185,7 +258,7 @@ func TestAPIEventsFeederGatesTerminalMessageUntilSeal(t *testing.T) {
 	// below targets one subscriber that never comes.
 	messages := a.Messages.(apiEventsSubscriberCounter)
 	before := messages.GetSubscriberCount()
-	feeder := startAPIEventFeeder(a, log, nil)
+	feeder := startAPIEventFeeder(a, log, nil, stub)
 	t.Cleanup(func() { _ = feeder.Stop(context.Background()) })
 
 	finalizationWaitForSubscriberCount(t, "gated message feed", messages.GetSubscriberCount, before+1)
@@ -228,9 +301,6 @@ func TestAPIEventsFeederGatesTerminalMessageUntilSeal(t *testing.T) {
 // still broadcasts while the hold is active, so the hub is not blocked.
 func TestSubscribeAndBroadcastGatesTerminalMessageUntilSeal(t *testing.T) {
 	stub := newFinalizationWiringGateStub()
-	orig := finalizationTerminalGateFor
-	finalizationTerminalGateFor = func(*appPkg.App) session.FinalizationTerminalGate { return stub }
-	t.Cleanup(func() { finalizationTerminalGateFor = orig })
 
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	ctx := t.Context()
@@ -247,7 +317,7 @@ func TestSubscribeAndBroadcastGatesTerminalMessageUntilSeal(t *testing.T) {
 	// The forwarders subscribe from their own goroutines: baseline first.
 	messages := a.Messages.(apiEventsSubscriberCounter)
 	before := messages.GetSubscriberCount()
-	subscribeAndBroadcast(ctx, a, hub)
+	subscribeAndBroadcast(ctx, a, hub, stub)
 	finalizationWaitForSubscriberCount(t, "gated ws message feed", messages.GetSubscriberCount, before+1)
 
 	// Non-terminal assistant message broadcasts immediately.

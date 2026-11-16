@@ -114,7 +114,7 @@ func protectAPIRoute(route APIRoute) http.Handler {
 			WriteAPIProblem(w, r, http.StatusInternalServerError, "Internal Server Error", "", "", fmt.Errorf("missing authenticated principal"))
 			return
 		}
-		if status := resolvePinnedRoute(p.PinnedSession, route, r); status != 0 {
+		if status := ResolvePinnedRoute(p.PinnedSession, route.OperationID, r.PathValue("id")); status != 0 {
 			if status == http.StatusNotFound {
 				WriteAPIProblem(w, r, status, "Not Found", "resource not found", "", nil)
 			} else {
@@ -122,7 +122,7 @@ func protectAPIRoute(route APIRoute) http.Handler {
 			}
 			return
 		}
-		if p.BatchOnly && resolveBatchOnlyRoute(route) != 0 {
+		if p.BatchOnly && ResolveBatchOnlyRoute(route.OperationID) != 0 {
 			WriteAPIProblem(w, r, http.StatusForbidden, "Forbidden", "batch-only", "", nil)
 			return
 		}

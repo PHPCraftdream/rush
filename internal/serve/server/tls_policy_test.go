@@ -77,14 +77,14 @@ func TestTLSCertificateReloadKeepsLastGoodOnInvalidCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := store.current.Load()
+	old := store.CurrentSnapshot()
 	if err = os.WriteFile(cert, []byte("not a certificate"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err = store.reload(); err == nil {
+	if err = store.Reload(); err == nil {
 		t.Fatal("invalid replacement accepted")
 	}
-	if store.current.Load() != old || !store.current.Load().cert.Leaf.Equal(first) {
+	if store.CurrentSnapshot() != old || !store.CurrentCertificate().Leaf.Equal(first) {
 		t.Fatal("failed reload replaced active certificate")
 	}
 }

@@ -505,7 +505,7 @@ func legacyGlobalDataPath() string {
 // legacySystemConfigPath returns the legacy Crush system-wide config path
 // (/etc/crush/crush.json). It mirrors config.SystemConfig()'s Unix-only
 // gating: empty on Windows, where no system-wide config location exists
-// (see internal/config/config_unix.go and config_windows.go). A runtime
+// (see internal/config/domains/datadir/systemconfig_unix.go and systemconfig_windows.go). A runtime
 // check is used here, rather than a build-tag-gated file like config_unix.go,
 // because this is a single constant path with no other Unix-only logic
 // attached — a whole extra file pair would be disproportionate.

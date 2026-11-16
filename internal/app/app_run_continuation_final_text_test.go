@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -73,7 +74,7 @@ func newContinuationApp(t *testing.T, withReviewer bool) *App {
 func continuationFirstCoordinatorRequest() int {
 	// 2 = partial-text attempt + the coordinator continuation; retries are
 	// the pinned fantasy count.
-	return agent.ProviderMaxRetries + 2
+	return agentcall.ProviderMaxRetries + 2
 }
 
 func continuationRetryFailure(n int, w http.ResponseWriter) bool {
@@ -123,9 +124,9 @@ func newContinuationAppWithStub(t *testing.T, withReviewer bool, smartStub func(
 	// is shrunk. Tests here are not parallel (t.Setenv below), so the package
 	// vars are not shared. Cleanups run last-in-first-out: the App shuts down
 	// before the values are restored.
-	prevRetries := agent.ProviderMaxRetries
-	agent.ProviderMaxRetries = 0
-	t.Cleanup(func() { agent.ProviderMaxRetries = prevRetries })
+	prevRetries := agentcall.ProviderMaxRetries
+	agentcall.ProviderMaxRetries = 0
+	t.Cleanup(func() { agentcall.ProviderMaxRetries = prevRetries })
 	t.Cleanup(agent.SetTurnRetryBackoffForTest(time.Millisecond))
 	isolationTmp := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", isolationTmp)

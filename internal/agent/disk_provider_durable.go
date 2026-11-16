@@ -19,7 +19,7 @@ package agent
 import (
 	"errors"
 
-	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 )
 
 // ErrDiskProviderNotDurable is returned only for a forbidden durable
@@ -48,7 +48,7 @@ var ErrCredentialSetNotDurable = errors.New(
 // callCarriesDiskProvider reports whether call's per-call options carry a
 // host-supplied filesystem that must never reach the durable run queue.
 func callCarriesDiskProvider(call SessionAgentCall) bool {
-	return call.CallOptions != nil && tools.HasDiskProvider(call.CallOptions.DiskProvider)
+	return agentcall.CallCarriesDiskProvider(call)
 }
 
 // callCarriesNonDurableDependency reports whether rebuilding a call from a
@@ -65,5 +65,5 @@ func callCarriesNonDurableDependency(call SessionAgentCall) bool {
 // one delegation). Like credentials and a caller-supplied DiskProvider, it
 // cannot cross the durable queue boundary.
 func callCarriesBatchQuestionCapability(call SessionAgentCall) bool {
-	return call.batchQuestion != nil
+	return call.BatchQuestion != nil
 }

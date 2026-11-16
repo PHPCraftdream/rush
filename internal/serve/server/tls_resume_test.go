@@ -115,14 +115,14 @@ func TestTLSCertificateReloadChangesLiveHandshakeByContentAndKeepsGoodPair(t *te
 	if got := leafSerial(); got != first.SerialNumber.String() {
 		t.Fatalf("initial serial=%s", got)
 	}
-	old := store.current.Load()
+	old := store.CurrentSnapshot()
 	if err := os.WriteFile(certPath, []byte("broken certificate"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.reload(); err == nil {
+	if err := store.Reload(); err == nil {
 		t.Fatal("corrupt candidate accepted")
 	}
-	if store.current.Load() != old {
+	if store.CurrentSnapshot() != old {
 		t.Fatal("corrupt candidate replaced active certificate")
 	}
 	if err := os.WriteFile(certPath, certBytes, 0o600); err != nil {
@@ -132,13 +132,13 @@ func TestTLSCertificateReloadChangesLiveHandshakeByContentAndKeepsGoodPair(t *te
 		t.Fatal(err)
 	}
 	// reloadAt is the injected deterministic tick action used by runTLSReload.
-	if err := store.reloadAt(time.Now()); err != nil {
+	if err := store.ReloadAt(time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if got := leafSerial(); got != second.SerialNumber.String() {
 		t.Fatalf("reloaded serial=%s, want %s", got, second.SerialNumber)
 	}
-	before := store.current.Load()
+	before := store.CurrentSnapshot()
 	info, err := os.Stat(certPath)
 	if err != nil {
 		t.Fatal(err)
@@ -146,10 +146,10 @@ func TestTLSCertificateReloadChangesLiveHandshakeByContentAndKeepsGoodPair(t *te
 	if err := os.Chtimes(certPath, info.ModTime().Add(time.Second), info.ModTime().Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.reloadAt(time.Now()); err != nil {
+	if err := store.ReloadAt(time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if store.current.Load() != before {
+	if store.CurrentSnapshot() != before {
 		t.Fatal("mtime-only touch swapped certificate")
 	}
 }
@@ -359,7 +359,7 @@ func TestTLSPinFormatsMatchCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pins, err := store.pins()
+	pins, err := store.Pins()
 	if err != nil {
 		t.Fatal(err)
 	}

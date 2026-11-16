@@ -93,7 +93,7 @@ the orchestrator-facing CLI is first-class.
 | Primary user | Human in a terminal | Another agent (LLM, CI, orchestrator) calling the CLI |
 | Front-end | Bubble Tea TUI (~495 files under `internal/ui/`) | React/Tailwind SPA in `web/`, embedded via `go:embed`. Optional. |
 | Transport | REST `/v1/...` over Unix socket / Windows named pipe | WebSocket `/ws` over TCP loopback (single embedded server) |
-| Auth | None (local-socket trust) | Token-based, see `internal/serve/server/auth.go` |
+| Auth | None (local-socket trust) | Token-based, see `internal/serve/server/apiauth/ui_auth.go` |
 | Sessions | One model per agent role, set globally | Per-session model overrides + per-session system prompt, all persisted in SQLite |
 | Permissions | In-memory rules during a TUI run | Persistent per-session rules in SQLite; cross-process visible |
 | Parallel runs | Not a target | Separate sessions with shared data; session locks and SQLite protect store state, not overlapping workspace-file edits (use separate worktrees or another isolation boundary). |

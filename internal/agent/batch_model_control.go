@@ -374,7 +374,7 @@ func batchModelItemHasCustomRole(item batchModelItem) bool {
 	if json.Unmarshal(item.Input, &input) != nil {
 		return false
 	}
-	return input.Role != "" && !input.Role.builtin()
+	return input.Role != "" && !input.Role.Builtin()
 }
 
 func (c *installedBatchModelControl) Add(ctx context.Context, caller, root, parent string, inv BatchInvocation, reg *policyLeafRegistry, items []batchModelItem) ([]jobbatch.ID, error) {

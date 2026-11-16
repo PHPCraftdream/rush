@@ -59,10 +59,10 @@ func (c *coordinator) restoreRequestedDelegationCall(ctx context.Context, call S
 			ctx = WithCallOptions(ctx, call.CallOptions)
 		}
 	}
-	if call.RequestedModelRole != "" && !call.RequestedModelRole.valid() {
+	if call.RequestedModelRole != "" && !call.RequestedModelRole.Valid() {
 		return SessionAgentCall{}, ErrAgentRoleInvalid
 	}
-	if call.RequestedModelRole != "" && !call.RequestedModelRole.builtin() {
+	if call.RequestedModelRole != "" && !call.RequestedModelRole.Builtin() {
 		if call.CallOptions == nil || call.CallOptions.RoleContract == nil || call.CallOptions.RoleContract.Name != string(call.RequestedModelRole) {
 			return SessionAgentCall{}, ErrAgentRoleUnconfigured
 		}
@@ -106,7 +106,7 @@ func (c *coordinator) restoreRequestedDelegationCall(ctx context.Context, call S
 		return call, nil
 	}
 	call.RequestedModelRole = RequestedModelRole(saved)
-	if !call.RequestedModelRole.valid() {
+	if !call.RequestedModelRole.Valid() {
 		return SessionAgentCall{}, ErrAgentRoleInvalid
 	}
 	child, err := c.sessions.Get(ctx, call.SessionID)

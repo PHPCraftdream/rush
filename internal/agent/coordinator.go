@@ -43,13 +43,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
-// ModelOverride allows callers to specify per-run model overrides (provider + model ID).
-type ModelOverride struct {
-	Provider        string
-	Model           string
-	ReasoningEffort string
-}
-
 // Coordinator errors.
 var (
 	errCoderAgentNotConfigured         = errors.New("coder agent not configured")
@@ -103,169 +96,10 @@ func (e *PeakHoursError) Error() string {
 // that only care about the error class, not the structured detail.
 func (e *PeakHoursError) Unwrap() error { return errProviderPeakHours }
 
-// errAwaitingAnswer classifies AwaitingAnswerError the same way
-// errProviderPeakHours classifies PeakHoursError: it lets callers that only
-// care about the error class (not the structured question/options/session
-// detail) use errors.Is without knowing the concrete type.
-var errAwaitingAnswer = errors.New("agent asked a question and is awaiting an operator/orchestrator answer")
-
-// AwaitingAnswerError is the sentinel error the (forthcoming) question tool
-// returns to force-stop the current turn instead of blocking on a synchronous
-// answer — this fork's `rush run` has no code path that can wait mid-turn
-// for operator input (web sessions auto-approve permissions unconditionally,
-// see internal/server/handlers.go:170-175; headless sessions do too), so
-// "ask a question" has to mean "stop the turn cleanly and hand the operator
-// an unambiguous resume command" rather than "block until answered".
-//
-// Structurally this mirrors PeakHoursError: a concrete, typed error carrying
-// exactly what the orchestrator-facing guidance needs (the question, any
-// suggested answer options, and the session id to resume), so callers don't
-// have to parse Error()'s prose to act on it.
-type AwaitingAnswerError struct {
-	Question  string
-	Options   []string
-	SessionID string
-}
-
-func (e *AwaitingAnswerError) Error() string {
-	return fmt.Sprintf(
-		"agent asked a question and is awaiting an answer (session %s): %s",
-		e.SessionID, e.Question,
-	)
-}
-
-// Unwrap lets errors.Is(err, errAwaitingAnswer) keep working for callers
-// that only care about the error class, not the structured detail.
-func (e *AwaitingAnswerError) Unwrap() error { return errAwaitingAnswer }
-
 // maxConsecutiveAutoResumes bounds Phase 4 autonomous idle-resumes per session
 // without human involvement (reset by any human message). Anti-runaway: an
 // agent that keeps backgrounding self-completing jobs cannot loop forever.
 const maxConsecutiveAutoResumes = 5
-
-type Coordinator interface {
-	// INFO: (kujtim) this is not used yet we will use this when we have multiple agents
-	// SetMainAgent(string)
-	Run(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error)
-	// RunWithOverrides is like Run but allows overriding the smart and/or fast model for this call.
-	RunWithOverrides(ctx context.Context, sessionID, prompt string, smart, fast *ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error)
-	Cancel(sessionID string)
-	CancelAll() (stillBusy bool)
-	IsSessionBusy(sessionID string) bool
-	IsBusy() bool
-	// ReserveExclusive atomically claims exclusive ownership of sessionID
-	// without starting a turn (task #614). See SessionAgent.ReserveExclusive
-	// for the full contract — in particular that the returned holdCtx/epoch/cancel
-	// tuple must be handed to exactly one of RunWithReservedOwnership or
-	// ReleaseExclusive, exactly once. ok is false (fail closed) when the
-	// session is already busy or the session's mailbox is hard-stopped
-	// (the CancelAll/shutdown latch — see mailbox.hardStop). This is a
-	// pure mailbox-state check: it does NOT consult the coordinator's own
-	// readiness gate (readyWg), so a coordinator whose parent ctx has
-	// already been cancelled still grants reservations.
-	ReserveExclusive(ctx context.Context, sessionID string) (holdCtx context.Context, epoch uint64, cancel context.CancelFunc, ok bool)
-	// ReleaseExclusive drops a reservation taken by ReserveExclusive without
-	// running a turn. Use on any bail-out path that will not call
-	// RunWithReservedOwnership.
-	ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc)
-	// RunWithReservedOwnership runs prompt for sessionID using ownership
-	// already claimed by ReserveExclusive, continuing the SAME ownership
-	// era instead of releasing and re-claiming it — this is what lets a
-	// caller (handleRerunMessage) hold exclusive ownership across deleting
-	// history and starting the replacement turn with no gap in between for
-	// a concurrent Send/Rerun to slip through. smart/fast follow the same
-	// override semantics as RunWithOverrides (nil means "use session/config
-	// defaults"). onHandoff, if non-nil, is invoked immediately before the
-	// handoff to the agent layer; it is used by the caller to transfer
-	// release responsibility.
-	RunWithReservedOwnership(ctx context.Context, sessionID, prompt string, epoch uint64, cancel context.CancelFunc, onHandoff func(), smart, fast *ModelOverride, attachments ...message.Attachment) (*fantasy.AgentResult, error)
-	QueuedPrompts(sessionID string) int
-	QueuedPromptsList(sessionID string) []string
-	ClearQueue(sessionID string)
-	// InterruptAndSend queues a new user message and cancels the running
-	// turn so the queued message picks up immediately with everything
-	// produced so far retained in history.
-	InterruptAndSend(ctx context.Context, sessionID, prompt string, smart, fast *ModelOverride, attachments ...message.Attachment) error
-	// InjectMessage persists a user message and, if the session is currently
-	// running, schedules it to be merged into the next provider request
-	// without cancelling the in-flight turn. See SessionAgent.InjectMessage.
-	InjectMessage(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) (message.Message, error)
-	// Summarize compresses the session history. If the session is currently
-	// busy the request is queued; call TakeSummarizeQueue after the task
-	// finishes to pick it up. Returns ErrSummarizeQueued when queued.
-	//
-	// The snapshot contains the model, provider options, and prompt prefix
-	// resolved from the target session (or shared state for sessions without
-	// overrides), ensuring the entire summarize operation uses consistent
-	// configuration regardless of concurrent SetModels calls (task #341).
-	Summarize(context.Context, string, *SummarizeSnapshot) error
-	SummarizeQueued(sessionID string) bool
-	TakeSummarizeQueue(sessionID string) (*SummarizeSnapshot, bool)
-	CancelQueuedSummarize(sessionID string)
-	Model() Model
-	UpdateModels(ctx context.Context) error
-	GetSystemPrompt() string
-	BuildSystemPrompt(ctx context.Context) (string, error)
-	BuildSystemPromptForSession(ctx context.Context, sessionID string) (string, error)
-	UpdateSessionSystemPrompt(ctx context.Context, sessionID, prompt string) error
-	// SetAgentTimeoutOptions configures the stream watchdog's deadline
-	// extension on the current agent. Called from RunNonInteractive when
-	// --timeout-extends-on-progress is set. Fork patch: batch 8.
-	SetAgentTimeoutOptions(extendsOnProgress bool, hardCap time.Duration)
-	// SetRunLimits sets cost and token caps for the next Run call.
-	// Fork patch: batch 30.
-	SetRunLimits(maxCost float64, maxTokens int64)
-	// SetActiveModelRole records which named model slot (smart, fast,
-	// worker, reviewer) is driving the CURRENT top-level run, so sub-agent
-	// spawns can decide whether to prefer the cheaper Worker slot instead of
-	// blindly inheriting the parent's Smart model. An empty/unset value
-	// means "unknown — treat as smart": the interactive TUI/web path never
-	// calls this, and for those the default behavior — use Smart for
-	// everything, i.e. exactly today's behavior — is correct, since
-	// "Smart" = the default slot. Fork patch (reviewer/worker roles).
-	SetActiveModelRole(role config.SelectedModelType)
-	// SetAllowPeakHours arms a one-shot bypass of the peak-hours refusal
-	// for the next Run call. It exists so `rush run --allow-peak-hours`
-	// can override an operator-configured peak_hours window for a single
-	// conscious invocation without introducing a persistent "always
-	// allow" config setting. Fork patch (peak-hours bypass).
-	SetAllowPeakHours(allow bool)
-	// SetPersistentMode marks this coordinator as the long-lived web/interactive
-	// server (enables Phase 4 autonomous idle-resume eligibility). rush run
-	// leaves it false.
-	SetPersistentMode(persistent bool)
-	// ResetAutoResumeCounter clears the Phase 4 consecutive-auto-resume bound
-	// for a session. Called from the human send path so a human re-entering the
-	// loop re-arms autonomy.
-	ResetAutoResumeCounter(sessionID string)
-	// RebuildSessionAgentCall reconstructs a full SessionAgentCall from SessionAgentCallData
-	// for run queue pump execution (task #340, ROUND 3 migration).
-	// rowID is the leased run-queue entry's durable id (R12-H2b §2.4):
-	// the rebuild releases the row-keyed Continuation holder through it.
-	// Callers without a row id pass "".
-	RebuildSessionAgentCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (SessionAgentCall, error)
-	// RunSessionAgentCall executes a SessionAgentCall directly for run queue pump execution
-	// (task #340, ROUND 3 migration). This bypasses the normal buildCall path since the
-	// call is already fully reconstructed with all necessary data.
-	RunSessionAgentCall(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error)
-	// CancelTurn cancels ONLY sessionID's live generation (its own agent's
-	// Cancel): no job stop, no delegation-tree walk, no wake zeroing, no
-	// auto-resume suspension -- unlike Cancel, which is the full Stop. Rerun
-	// uses it so a kept history's running jobs, unreacted debt and autonomy
-	// survive the rerun (docs/reviews/2026-09-29-async-phase4-round1-rerun-
-	// design.md).
-	CancelTurn(sessionID string)
-	// BatchRerunStopVoided stops the executors a committed batch rerun
-	// truncation voided (session.BatchStore.BatchRerunReconcile's Voided
-	// node set): each still-running local root incarnation is stopped with
-	// Stop semantics, and every voided delegation's child tree is stopped
-	// like Stop (stopTree). Best effort, called strictly AFTER the
-	// truncation transaction committed -- a stop that fails or cannot reach
-	// a foreign host's executor is safe: the rows are already void, so the
-	// completion commits void (no debt, never pulled). See
-	// batch_cutover_rerun.go (the BatchRerunStopper surface).
-	BatchRerunStopVoided(ctx context.Context, sessionID string, voided []session.BatchRerunVoidedNode)
-}
 
 type coordinator struct {
 	cfg         *config.ConfigStore
@@ -480,11 +314,35 @@ type modelPairCache interface {
 // generations and arbitrary per-session overrides cannot grow without bound.
 const modelCacheMaxEntries = 16
 
+// BatchRuntimeCapabilities is the SA2 construction bundle (design
+// 2026-11-15-sprint0-split-agent.md §3.2 S-A2): every App-owned batch
+// capability is passed once at construction instead of being set after
+// it. Zero value means "capability not installed", the exact semantics
+// of the setters it replaces.
+type BatchRuntimeCapabilities struct {
+	Ingress        BatchWorkIngress
+	ModelControl   BatchModelControl
+	DiskBindings   *DiskProviderRegistry
+	LiveReader     *session.BatchLiveReader
+	DriverClaimer  BatchDriverClaimer
+	CutoverFacts   BatchCutoverFacts
+	HeldAnswerSink BatchHeldAnswerSink
+	NoticeStore    *session.SessionNoticeStore
+}
+
+// SessionExecutionCapabilities carries the optional durable execution/credential requirement stores (same bundle rules).
+type SessionExecutionCapabilities struct {
+	ExecReqs session.SessionExecutionRequirementStore
+	CredReqs session.SessionCredentialRequirementStore
+}
+
 // NewCoordinator wires the agent coordinator. Async work is batch-only: the
 // jobbatch engine (batch_nodes + the batch outbox) decides every outcome; the
 // coordinator's own runtime state (hint counter, supervision registry,
 // timeout service) is in-process coordination memory rehomed from the deleted
 // workLedger (batch_rehome_coord_runtime.go).
+// The batchCaps/execCaps bundles replace the post-construction setters for
+// the app composition root; the setters remain for other callers.
 func NewCoordinator(
 	ctx context.Context,
 	cfg *config.ConfigStore,
@@ -495,6 +353,8 @@ func NewCoordinator(
 	filetracker filetracker.Service,
 	notify pubsub.Publisher[notify.Notification],
 	mcpOwner *mcp.Owner,
+	batchCaps BatchRuntimeCapabilities,
+	execCaps SessionExecutionCapabilities,
 	backgroundManagers ...*shell.BackgroundShellManager,
 ) (Coordinator, error) {
 	p, err := coderPrompt(prompt.WithWorkingDir(cfg.WorkingDir()))
@@ -572,6 +432,48 @@ func NewCoordinator(
 	}
 	c.currentAgent = agent
 	c.agents[config.AgentCoder] = agent
+	if batchCaps.NoticeStore != nil {
+		if err := SetCoordinatorSessionNoticeStore(c, batchCaps.NoticeStore); err != nil {
+			_ = c.responsesWS.Close()
+			return nil, err
+		}
+	}
+	if execCaps.ExecReqs != nil {
+		if err := SetCoordinatorExecutionRequirementStore(c, execCaps.ExecReqs); err != nil {
+			_ = c.responsesWS.Close()
+			return nil, err
+		}
+	}
+	if execCaps.CredReqs != nil {
+		if err := SetCoordinatorSessionCredentialRequirementStore(c, execCaps.CredReqs); err != nil {
+			_ = c.responsesWS.Close()
+			return nil, err
+		}
+	}
+	if batchCaps.DiskBindings != nil {
+		if err := SetCoordinatorDiskCapabilityManager(c, batchCaps.DiskBindings); err != nil {
+			_ = c.responsesWS.Close()
+			return nil, err
+		}
+	}
+	if batchCaps.Ingress != nil {
+		if err := BindCoordinatorBatchControls(c, batchCaps.Ingress, batchCaps.ModelControl, batchCaps.LiveReader); err != nil {
+			_ = c.responsesWS.Close()
+			return nil, err
+		}
+	}
+	if batchCaps.HeldAnswerSink != nil {
+		SetCoordinatorBatchHeldAnswerSink(c, batchCaps.HeldAnswerSink)
+	}
+	if batchCaps.DriverClaimer != nil {
+		if err := SetBatchDriverClaimer(c, batchCaps.DriverClaimer); err != nil {
+			_ = c.responsesWS.Close()
+			return nil, err
+		}
+	}
+	if batchCaps.CutoverFacts != nil {
+		BindCoordinatorBatchCutoverFacts(c, batchCaps.CutoverFacts)
+	}
 	return c, nil
 }
 
@@ -583,7 +485,7 @@ func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, 
 	// it. Close is idempotent; runInternal's own defer double-closes
 	// harmlessly.
 	if callOpts := callOptionsFrom(ctx); callOpts != nil {
-		defer callOpts.buildScope.close()
+		defer callOpts.BuildScope.Close()
 	}
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, c.drainRefused(ctx, sessionID, err)

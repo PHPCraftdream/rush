@@ -694,7 +694,7 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// majority of iterations.
 		previousCall := call
 		reclaimed := mb.reclaimReplacementOrKeep(call)
-		if reclaimed.replacementHandoff && previousCall.FromDurableQueue {
+		if reclaimed.ReplacementHandoff && previousCall.FromDurableQueue {
 			replacedDurableCallID = previousCall.LogicalCallID
 			replacementError = ""
 		}
@@ -811,16 +811,16 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// helper clears the marker afterwards so a re-queued closed-scope
 		// copy is freshly armed by submit (armQueuedBuildRetention skips
 		// only while buildScopeRetained is true).
-		isCompactionContinuation := hasNext && next.compactionContinuation
+		isCompactionContinuation := hasNext && next.CompactionContinuation
 		// The marker describes this edge only. Consume it before next enters
 		// another iteration (or is copied through a mailbox handoff).
 		if hasNext {
-			next.compactionContinuation = false
+			next.CompactionContinuation = false
 		}
 		if !isCompactionContinuation {
 			turnEndRelease(&call, originCallOpts)
-			if call.onQueueResolved != nil {
-				call.onQueueResolved(result, err)
+			if call.OnQueueResolved != nil {
+				call.OnQueueResolved(result, err)
 			}
 		}
 		mb.clearCurrentCall(epoch)
@@ -874,13 +874,13 @@ func finalTurnOutcome(result *fantasy.AgentResult, err error, carried *fantasy.A
 }
 
 func inheritReplacementIdentityCallback(previous, next *SessionAgentCall) {
-	if !next.replacementHandoff {
+	if !next.ReplacementHandoff {
 		return
 	}
 	if next.OnAssistantMessageCreated == nil {
 		next.OnAssistantMessageCreated = previous.OnAssistantMessageCreated
 	}
-	next.replacementHandoff = false
+	next.ReplacementHandoff = false
 }
 
 // runPreReservedOwnership is Run's body for a call whose ownership era was

@@ -28,7 +28,8 @@ func TestFinishMarksUnconfirmedDrainEndTurnCanceledInJSON_R13_2(t *testing.T) {
 	bRecorder := agent.NewCallResultRecorder()
 	hookExitReason := new(string)
 	loop := &executeRunLoop{
-		app:                   h.app,
+		env:                   h.app.runEnv(),
+		host:                  h.app.loopHost(),
 		sess:                  h.sess,
 		ctx:                   context.Background(),
 		mode:                  RunModeJSON,

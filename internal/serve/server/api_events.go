@@ -12,13 +12,6 @@ const (
 	apiEventSubscriberCap = 256
 )
 
-type APIEvent struct {
-	ID   uint64          `json:"id"`
-	Type string          `json:"type"`
-	Data json.RawMessage `json:"data"`
-	At   time.Time       `json:"at"`
-}
-
 type apiEventSession struct {
 	events           []APIEvent
 	subscribers      map[*apiEventSubscriber]struct{}

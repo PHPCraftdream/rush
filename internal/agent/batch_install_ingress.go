@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/google/uuid"
@@ -159,50 +158,6 @@ func BindCoordinatorBatchRuntime(c Coordinator, ingress BatchWorkIngress) error 
 
 func BindCoordinatorBatchControls(c Coordinator, ingress BatchWorkIngress, controls BatchModelControl, live ...*session.BatchLiveReader) error {
 	return BindCoordinatorBatchRuntimeBindings(c, ingress, controls, registryForIngress(ingress), live...)
-}
-
-// BindCoordinatorBatchRuntimeBindings binds one coordinator to its specific
-// runtime and provider-binding registry; no process-global provider lookup
-// is used, so separate App instances remain isolated.
-func BindCoordinatorBatchRuntimeBindings(c Coordinator, ingress BatchWorkIngress, controls BatchModelControl, diskBindings *DiskProviderRegistry, live ...*session.BatchLiveReader) error {
-	if c == nil || ingress == nil || diskBindings == nil {
-		return errors.New("batch coordinator binding: coordinator, ingress and disk registry are required")
-	}
-	bind := &batchCoordinatorBinding{ingress: ingress, controls: controls, diskBindings: diskBindings}
-	if len(live) > 0 {
-		bind.live = live[0]
-	}
-	// Continuations resolve through the SAME App-owned manager, never a
-	// process global. The coordinator fields are written BEFORE the binding
-	// is published and only after the asynchronous tool builds started at
-	// construction have finished: those builds read diskCaps and bind.coord
-	// without a lock, so writing them while a build runs is a data race.
-	if cc, ok := c.(*coordinator); ok {
-		_ = cc.readyWg.Wait() // first build error is reported by its own path
-		cc.diskCaps = diskBindings
-		bind.coord = cc
-	}
-	coordinatorBatchBindings.Store(c, bind)
-	// The root agent is built before the batch install binds the manager,
-	// so propagate the registry onto it here too.
-	if cc, ok := c.(*coordinator); ok {
-		if cc.currentAgent != nil {
-			if sa, ok := cc.currentAgent.(*sessionAgent); ok {
-				sa.bindDiskCaps(diskBindings)
-			}
-		}
-	}
-	processBatchBinding.CompareAndSwap(nil, bind)
-	// MCP executor routing (R7a): names registered by the MCP family resolve
-	// through the MCP kind; every other name keeps the built-in mapping.
-	setBatchLeafKindOverride(func(tool string) (string, bool) {
-		if strings.HasPrefix(tool, "mcp_") {
-			return batchKindMCP, true
-		}
-		return "", false
-	})
-	cliprovider.SetBridgeFallback(coordinatorBridgeFallback)
-	return nil
 }
 
 // coordinatorBatchBindingFor returns c's binding, or nil (flag-off).

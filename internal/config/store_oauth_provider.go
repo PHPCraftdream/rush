@@ -7,7 +7,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
-	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 )
 
 type oauthProviderDescriptor struct {

@@ -39,32 +39,32 @@ type batchRuntimeFactory struct {
 // newBatchRuntimeFactory resolves the App-owned resources. It fails closed
 // when the App has no host store or message service (SkipAgentSetup, empty
 // data directory): the runtime never installs half-wired.
-func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeFactory, error) {
-	if a == nil {
+func newBatchRuntimeFactory(p batchInstallParams, deps agent.BatchInstallDeps) (*batchRuntimeFactory, error) {
+	if p.cli.owner == nil {
 		return nil, errors.New("batch runtime factory: nil app")
 	}
-	if a.batchHostStore() == nil {
+	if batchHostStore(p.cli) == nil {
 		return nil, errors.New("batch runtime factory: no host store (agent setup skipped)")
 	}
-	if a.Messages == nil {
+	if p.messages() == nil {
 		return nil, errors.New("batch runtime factory: no message service")
 	}
-	writer := a.DB()
+	writer := p.cli.env.DB()
 	if writer == nil {
 		return nil, errors.New("batch runtime factory: no db writer")
 	}
 	if deps.Host == "" {
-		if hs := a.batchHostStore(); hs != nil {
+		if hs := batchHostStore(p.cli); hs != nil {
 			deps.Host = hs.HostID()
 		}
 	}
-	deps.Store = session.NewBatchStoreWithReader(writer, a.batchCutoverReader(writer))
-	deps.Messages = a.Messages
-	deps.Sessions = a.Sessions
+	deps.Store = session.NewBatchStoreWithReader(writer, batchCutoverReader(p.cli, writer))
+	deps.Messages = p.messages()
+	deps.Sessions = p.sessions()
 	// Package psv: restore legacy supervision arming at the batch started
 	// boundary. The coordinator is assigned later by InitCoderAgent, so the
 	// getter re-reads it per call; a not-yet-bound coordinator is a no-op.
-	deps.ArmSupervision = agent.PsvBatchSupervisionArmingLate(func() agent.Coordinator { return a.AgentCoordinator })
+	deps.ArmSupervision = agent.PsvBatchSupervisionArmingLate(func() agent.Coordinator { return p.coord() })
 	// R11F (M3): closed defaults so a bare install never builds half-wired.
 	// The install keeps its own idempotent guards on top.
 	if deps.Profile == nil {
@@ -82,7 +82,7 @@ func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeF
 		// store-backed live-descendant reader over the same writer pool the
 		// batch store uses; a nil reader would report an incomplete read
 		// forever (scope never closes).
-		reader := session.NewBatchLiveReader(db.New(writer), a.dataDir)
+		reader := session.NewBatchLiveReader(db.New(writer), p.cli.env.DataDir())
 		// TxStarter: every live read runs in ONE read-only tx on the writer.
 		reader.TxStarter = writer
 		// Package S (jb/psc): keep the delegation open through the child's
@@ -91,7 +91,7 @@ func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeF
 		// 2-3). The coordinator is assigned later by InitCoderAgent, so
 		// the facts resolve it lazily per read.
 		deps.AgentDeps = agent.CoordinatorBatchAgentDepsWithChildScope(reader,
-			agent.PscCoordinatorChildReactionFactsLate(func() agent.Coordinator { return a.AgentCoordinator }))
+			agent.PscCoordinatorChildReactionFactsLate(func() agent.Coordinator { return p.coord() }))
 	}
 	if deps.Resolver == nil {
 		deps.Resolver = agent.BatchNonReentrantMCPResolver()
@@ -111,7 +111,7 @@ func newBatchRuntimeFactory(a *App, deps agent.BatchInstallDeps) (*batchRuntimeF
 	if deps.RecordRetention <= 0 {
 		deps.RecordRetention = 256
 	}
-	live := session.NewBatchLiveReader(db.New(writer), a.dataDir)
+	live := session.NewBatchLiveReader(db.New(writer), p.cli.env.DataDir())
 	// TxStarter: every live read runs in ONE read-only tx on the writer.
 	live.TxStarter = writer
 	f := &batchRuntimeFactory{deps: deps, live: live, writer: writer}

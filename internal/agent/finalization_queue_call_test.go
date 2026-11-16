@@ -15,7 +15,7 @@ func TestFinalizationCallDataIsDeclarationNotCapability(t *testing.T) {
 	call := SessionAgentCall{
 		SessionID: fixture.child.SessionID, LogicalCallID: fixture.child.LogicalCallID,
 		Prompt: "compose settled results", MaxCost: 2, MaxTokens: 100,
-		RequestedModelRole: RequestedModelRole("reviewer"), finalizationAuthorities: fixture.capability,
+		RequestedModelRole: RequestedModelRole("reviewer"), FinalizationAuthorities: fixture.capability,
 	}
 	data := ToSessionAgentCallData(call)
 	require.Equal(t, fixture.capability.Requirement(), data.FinalizationRequirement)
@@ -29,7 +29,7 @@ func TestFinalizationCallDataIsDeclarationNotCapability(t *testing.T) {
 	decoded.FinalizationRequirement = nil
 	legacy, err := FromSessionAgentCallData(decoded)
 	require.NoError(t, err)
-	require.Nil(t, legacy.finalizationAuthorities.Requirement())
+	require.Nil(t, legacy.FinalizationAuthorities.Requirement())
 	require.Equal(t, call.MaxCost, legacy.MaxCost)
 	require.Equal(t, call.MaxTokens, legacy.MaxTokens)
 	require.Equal(t, call.RequestedModelRole, legacy.RequestedModelRole)
@@ -61,15 +61,15 @@ func TestFinalizationChildQueueCannotSubstituteRootDriver(t *testing.T) {
 	root := &sessionAgent{}
 	child := &sessionAgent{}
 	coordinator := &coordinator{sessions: session.NewService(db.New(fixture.conn), fixture.conn), currentAgent: root, subAgentDrivers: newSubAgentDriverRegistry()}
-	call := SessionAgentCall{SessionID: fixture.child.SessionID, LogicalCallID: fixture.child.LogicalCallID, finalizationAuthorities: fixture.capability}
+	call := SessionAgentCall{SessionID: fixture.child.SessionID, LogicalCallID: fixture.child.LogicalCallID, FinalizationAuthorities: fixture.capability}
 	_, err := coordinator.RunSessionAgentCall(fixture.ctx, call)
 	require.ErrorIs(t, err, session.ErrAgentFinalizationDriverUnavailable, "restart cannot invent a child driver or execute on the root")
 	var attempted *ErrCallAlreadyAttempted
 	require.ErrorAs(t, err, &attempted)
-	coordinator.subAgentDrivers.register(call.SessionID, subAgentDriver{agent: child, call: SessionAgentCall{SessionID: call.SessionID, LogicalCallID: "replacement"}, finalizationAuthorities: fixture.capability})
+	coordinator.subAgentDrivers.register(call.SessionID, subAgentDriver{agent: child, call: SessionAgentCall{SessionID: call.SessionID, LogicalCallID: "replacement"}, FinalizationAuthorities: fixture.capability})
 	_, err = coordinator.finalizationQueueDriver(call)
 	require.ErrorIs(t, err, session.ErrAgentFinalizationDriverUnavailable, "a recorded but different logical driver is not proof")
-	coordinator.subAgentDrivers.register(call.SessionID, subAgentDriver{agent: child, call: call, finalizationAuthorities: fixture.capability})
+	coordinator.subAgentDrivers.register(call.SessionID, subAgentDriver{agent: child, call: call, FinalizationAuthorities: fixture.capability})
 	driver, err := coordinator.finalizationQueueDriver(call)
 	require.NoError(t, err)
 	require.Same(t, child, driver)
@@ -83,7 +83,7 @@ func TestFinalizationEnqueueCarriesOnlyCapturedProducerAuthority(t *testing.T) {
 	fixture := newFinalizationDriverFixture(t)
 	call := SessionAgentCall{
 		SessionID: fixture.child.SessionID, LogicalCallID: fixture.child.LogicalCallID,
-		Prompt: "compose settled results", finalizationAuthorities: fixture.capability,
+		Prompt: "compose settled results", FinalizationAuthorities: fixture.capability,
 	}
 	raw, err := json.Marshal(ToSessionAgentCallData(call))
 	require.NoError(t, err)

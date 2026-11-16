@@ -695,12 +695,12 @@ func TestDescribeOpenWork_BatchNodes(t *testing.T) {
 	require.NoError(t, err)
 	f6ReserveDelegation(t, h.app, sess.ID, "call-wait", "", "shell", "running")
 
-	l := &cliLoop{app: h.app, ctx: ctx, sessionID: sess.ID}
+	l := &cliLoop{env: h.app.runEnv(), host: h.app.loopHost(), ctx: ctx, sessionID: sess.ID}
 	got := l.describeOpenWork()
 	require.Contains(t, got, "call-wait", "the heartbeat names the live batch work")
 
 	// No live rows anywhere: generic wording.
-	empty := &cliLoop{app: h.app, ctx: ctx, sessionID: "no-such-session"}
+	empty := &cliLoop{env: h.app.runEnv(), host: h.app.loopHost(), ctx: ctx, sessionID: "no-such-session"}
 	require.Equal(t,
 		"a running job/delegation, a host that is not provably dead, or an open wake schedule",
 		empty.describeOpenWork())
@@ -852,11 +852,31 @@ func TestBatchRuntimeFactoryHostStoreIdentitySuffices(t *testing.T) {
 	// Same shape as TestBatchNoticeStore_Wired: no batch runtime, so
 	// the drain gate never runs — release the ensured HostStore lock here.
 	t.Cleanup(func() { _ = a.batchHostRelease(context.Background()) })
-	factory, err := newBatchRuntimeFactory(a, batchFactoryDeps())
+	factory, err := newBatchRuntimeFactory(a.batchInstallParams(), batchFactoryDeps())
 	require.NoError(t, err)
 	require.Equal(t, "host", factory.deps.Host, "explicit identity still wins")
-	factory2, err := newBatchRuntimeFactory(a, agent.BatchInstallDeps{RunnerID: "r", Owner: "o"})
+	factory2, err := newBatchRuntimeFactory(a.batchInstallParams(), agent.BatchInstallDeps{RunnerID: "r", Owner: "o"})
 	require.NoError(t, err)
 	require.Equal(t, a.BatchHostStore().HostID(), factory2.deps.Host,
 		"identity falls back to the HostStore's")
+}
+
+// TestBatchOwnerHandle_DistinctPerApp pins the registry-key identity: two Apps
+// must never share a batchOwner pointer. With a zero-size batchOwner every
+// &batchOwner{} is the same address, so the package-level batchHostStores map
+// held ONE entry for all Apps and a later App adopted an earlier (closed)
+// App's HostStore ("database is closed" in RegisterHost).
+func TestBatchOwnerHandle_DistinctPerApp(t *testing.T) {
+	a, b := &App{}, &App{}
+	ha, hb := a.batchOwnerHandle(), b.batchOwnerHandle()
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("batchOwner handles: a=%p b=%p a-again=%p", ha, hb, a.batchOwnerHandle())
+		}
+	})
+	require.NotNil(t, ha)
+	require.NotNil(t, hb)
+	require.NotSame(t, ha, hb, "two Apps share one registry key")
+	require.Same(t, ha, a.batchOwnerHandle(), "the handle is stable per App")
+	require.Nil(t, (*App)(nil).batchOwnerHandle(), "a nil App yields a nil key")
 }

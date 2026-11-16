@@ -21,10 +21,6 @@ import (
 // and re-issued before the turn is aborted with causeStall.
 const stallMaxRetries = 2
 
-// ErrTurnStalled is joined into the turn error when the stall abort fires,
-// so the CLI can map the exit to exit_reason "stalled".
-var ErrTurnStalled = errors.New("turn aborted: no durable progress past the stall timeout")
-
 // turnStallPolicyInstall registers turnStallAbortPolicy exactly once, on
 // the first armTurnStall — the least invasive startup hook (no coordinator
 // or app wiring needed).

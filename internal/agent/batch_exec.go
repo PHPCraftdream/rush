@@ -149,7 +149,7 @@ func (e *batchExecutor) Start(ctx context.Context, l jobbatch.Launch, report fun
 		if err := json.Unmarshal(p.Input, &requested); err != nil {
 			return nil, &batchStartError{batchCodeBadPayload, err}
 		}
-		if requested.Role != "" && !requested.Role.builtin() {
+		if requested.Role != "" && !requested.Role.Builtin() {
 			if p.SelectedRoleContract == nil || p.SelectedRoleContract.Name != string(requested.Role) {
 				return nil, &batchStartError{batchCodeBadPayload, fmt.Errorf("%w: selected custom role snapshot missing or mismatched", ErrAgentRoleMismatch)}
 			}

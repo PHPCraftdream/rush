@@ -40,7 +40,7 @@ func TestConfigureProviders_ZeroDumpDoesNotShadowCatalog(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	cfg.Providers.Set("zai", ProviderConfig{
 		ID:      "zai",
 		BaseURL: zaiModels.URL,

@@ -28,6 +28,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire/finalgate"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -672,7 +673,7 @@ func TestMaybeBroadcastSessionLiveWork(t *testing.T) {
 
 	// The real wiring under test: events.go's message subscription marking
 	// dirty sessions and the worker pushing snapshots off the hot path.
-	subscribeAndBroadcast(ctx, a, hub)
+	subscribeAndBroadcast(ctx, a, hub, finalgate.GateFor(a))
 
 	// Plain prose never triggers a snapshot.
 	_, err = a.Messages.Create(ctx, sess.ID, message.CreateMessageParams{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "hello"}}})

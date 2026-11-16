@@ -34,7 +34,7 @@ import (
 // queue/durable-persistence markers.
 func newDrainCall(base SessionAgentCall) SessionAgentCall {
 	base.IsDrain = true
-	base.drainTurnCommitted = false
+	base.DrainTurnCommitted = false
 	base.Prompt = ""
 	base.AutoResumed = true
 	base.BackgroundJobNotice = true
@@ -44,7 +44,7 @@ func newDrainCall(base SessionAgentCall) SessionAgentCall {
 	base.OnAssistantMessageCreated = nil
 	base.FromDurableQueue = false
 	base.FailIfSessionBusy = false
-	base.onQueueResolved = nil
+	base.OnQueueResolved = nil
 	return base
 }
 
@@ -75,7 +75,7 @@ func lastUserMessageOrigin(ctx context.Context, messages message.Service, sessio
 func callFromActive(active SessionAgentCall) SessionAgentCall {
 	call := active
 	call.IsDrain = false
-	call.drainTurnCommitted = false
+	call.DrainTurnCommitted = false
 	call.AutoResumed = false
 	call.BackgroundJobNotice = false
 	call.NoticeKind = ""
@@ -188,7 +188,7 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 	defer func() {
 		if !transferred && prep != nil {
 			if capOpts != nil {
-				capOpts.buildScope.close()
+				capOpts.BuildScope.Close()
 			}
 			prep.release()
 		}

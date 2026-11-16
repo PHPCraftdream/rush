@@ -10,7 +10,7 @@ package agent
 //     tool construction — pins the leaf registry, publishes the construction
 //     record and registers the Construction owner's release in the call's
 //     build-resource scope.
-//   - buildResourceScope.close (disk_provider_capability.go) and the
+//   - buildResourceScope.Close (disk_provider_capability.go) and the
 //     manager's prune rules.
 //
 // Oracles: variant A constructs a toolset, invokes NOTHING and closes the
@@ -203,7 +203,7 @@ func TestConstructionScopeBoundary(t *testing.T) {
 
 	// The call uses the toolset ZERO times and the scope closes (final call
 	// completion / resolution failure shape).
-	scope.close()
+	scope.Close()
 	_, err = registries.Resolve(built.registryID)
 	require.Error(t, err, "closing the build scope must delete the unused construction record")
 	// The binding survives: the Call owner retains the PROVIDER without

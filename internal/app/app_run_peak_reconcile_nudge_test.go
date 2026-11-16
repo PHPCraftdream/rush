@@ -184,12 +184,12 @@ func TestCLILoopTodoNudgeDue_SkipsDuringPeakHours(t *testing.T) {
 	peakRunErr := fmt.Errorf("run did not complete cleanly (peak_hours): failed to start agent processing stream: %w", &agent.DrainNotAttemptedError{Err: pe})
 
 	var stderr bytes.Buffer
-	l := &cliLoop{app: h.app, ctx: ctx, sessionID: h.sess.ID, stderr: &stderr, runErr: peakRunErr}
+	l := &cliLoop{env: h.app.runEnv(), host: h.app.loopHost(), ctx: ctx, sessionID: h.sess.ID, stderr: &stderr, runErr: peakRunErr}
 	require.False(t, l.todoNudgeDue(), "a peak pause must not fire a reminder turn")
 	require.Contains(t, stderr.String(), "peak-hours window")
 
 	var plain bytes.Buffer
-	l2 := &cliLoop{app: h.app, ctx: ctx, sessionID: h.sess.ID, stderr: &plain, runErr: fmt.Errorf("provider 500")}
+	l2 := &cliLoop{env: h.app.runEnv(), host: h.app.loopHost(), ctx: ctx, sessionID: h.sess.ID, stderr: &plain, runErr: fmt.Errorf("provider 500")}
 	require.True(t, l2.todoNudgeDue(), "an ordinary provider failure still fires the reminder")
 }
 

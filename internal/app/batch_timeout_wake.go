@@ -34,22 +34,22 @@ func (r pwBatchWakeRequest) key() string {
 // apiServiceOwner reports whether the owner is an API service session: such a
 // session holds batch roots for a token and never runs a conversational turn,
 // so no batch event may wake its model.
-func apiServiceOwner(a *App) func(context.Context, string) bool {
+func apiServiceOwner(p batchCLIParams) func(context.Context, string) bool {
 	return func(ctx context.Context, owner string) bool {
-		if a == nil || a.Sessions == nil {
+		if p.env.Sessions == nil || p.env.Sessions() == nil {
 			return false
 		}
-		item, err := a.Sessions.Get(ctx, owner)
+		item, err := p.env.Sessions().Get(ctx, owner)
 		return err == nil && item.Origin == message.OriginAPIService
 	}
 }
 
-func pwBatchCompletionRootOwner(a *App) func(context.Context, string) (string, error) {
+func pwBatchCompletionRootOwner(p batchCLIParams) func(context.Context, string) (string, error) {
 	return func(ctx context.Context, root string) (string, error) {
-		if a == nil {
+		if p.owner == nil {
 			return "", errors.New("batch completion wake: nil app")
 		}
-		w := a.batchCutoverWriter()
+		w := batchCutoverWriter(p)
 		if w == nil {
 			return "", errors.New("batch completion wake: no cutover writer")
 		}

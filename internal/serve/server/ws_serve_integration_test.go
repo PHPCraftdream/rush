@@ -36,7 +36,7 @@ func TestServeWSProductionAuthenticationIntegration(t *testing.T) {
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuffer, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
-	endpoint, token, _, _ := newServeWSFixture(t, 2)
+	endpoint, token, _, _ := newServeWSFixture(t, 2, nil)
 	validProtocols := []string{"rush.v1", "rush.bearer." + token}
 	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second, Subprotocols: validProtocols}
 	conn, response, err := dialer.Dial(endpoint+"/ws", nil) //nolint:bodyclose // gorilla upgrade responses carry no body
@@ -142,7 +142,7 @@ func TestServeWSProductionAuthenticationIntegration(t *testing.T) {
 }
 
 func TestServeWSSubprotocolOnlyOnWSPath(t *testing.T) {
-	endpoint, token, _, _ := newServeWSFixture(t, 2)
+	endpoint, token, _, _ := newServeWSFixture(t, 2, nil)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, strings.Replace(endpoint, "ws://", "http://", 1)+"/api/v1/version", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +165,7 @@ func TestServeWSSubprotocolOnlyOnWSPath(t *testing.T) {
 
 func TestServeWSProductionOriginAndUIHelloIntegration(t *testing.T) {
 	allowedOrigin := "http://allowed.example:8080"
-	endpoint, token, _, _ := newServeWSFixtureWithOrigins(t, 2, []string{allowedOrigin})
+	endpoint, token, _, _ := newServeWSFixtureWithOrigins(t, 2, []string{allowedOrigin}, nil)
 	originEndpoint, originToken := endpoint, token
 	originCases := []struct {
 		name   string

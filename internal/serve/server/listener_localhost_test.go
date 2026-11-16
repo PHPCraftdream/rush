@@ -25,16 +25,15 @@ func TestListenerPolicyLocalhostResolver(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			calls := 0
-			policy := ListenerPolicy{
+			policy := (ListenerPolicy{
 				Address: "localhost:8080", Surfaces: []ListenerSurface{SurfaceREST}, Auth: DenyAllAuth,
-				resolver: func(host string) ([]net.IP, error) {
-					calls++
-					if host != "localhost" {
-						t.Errorf("resolver host = %q, want localhost", host)
-					}
-					return test.addresses, test.resolveErr
-				},
-			}
+			}).WithResolver(func(host string) ([]net.IP, error) {
+				calls++
+				if host != "localhost" {
+					t.Errorf("resolver host = %q, want localhost", host)
+				}
+				return test.addresses, test.resolveErr
+			})
 			address, err := policy.ResolvedAddress()
 			if test.wantErr {
 				if err == nil {
@@ -52,13 +51,12 @@ func TestListenerPolicyLocalhostResolver(t *testing.T) {
 
 func TestStartResolvesLocalhostOnceAndBindsResolvedIP(t *testing.T) {
 	calls := 0
-	server := NewWithPolicy(nil, ListenerPolicy{
+	server := NewWithPolicy(nil, (ListenerPolicy{
 		Address: "localhost:0", Surfaces: []ListenerSurface{SurfaceREST}, Auth: DenyAllAuth,
-		resolver: func(string) ([]net.IP, error) {
-			calls++
-			return []net.IP{net.ParseIP("127.0.0.1")}, nil
-		},
-	}, nil)
+	}).WithResolver(func(string) ([]net.IP, error) {
+		calls++
+		return []net.IP{net.ParseIP("127.0.0.1")}, nil
+	}), nil)
 	ctx, cancel := context.WithCancel(t.Context())
 	ready := make(chan string, 1)
 	errCh := make(chan error, 1)
@@ -102,13 +100,12 @@ func TestStartRefusesUnsafeLocalhostResolution(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			calls := 0
-			server := NewWithPolicy(nil, ListenerPolicy{
+			server := NewWithPolicy(nil, (ListenerPolicy{
 				Address: "localhost:0", Surfaces: []ListenerSurface{SurfaceREST}, Auth: DenyAllAuth,
-				resolver: func(string) ([]net.IP, error) {
-					calls++
-					return test.addresses, test.resolveErr
-				},
-			}, nil)
+			}).WithResolver(func(string) ([]net.IP, error) {
+				calls++
+				return test.addresses, test.resolveErr
+			}), nil)
 			err := server.Start(t.Context(), nil)
 			if err == nil || !strings.Contains(err.Error(), "unparsable address") {
 				t.Fatalf("Start() error = %v, want unresolved localhost refusal", err)

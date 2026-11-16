@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire/finalgate"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -39,7 +40,7 @@ func TestTitleSaveIsBroadcastToEveryTab(t *testing.T) {
 	hub.register <- client
 
 	// The production bridge itself.
-	subscribeAndBroadcast(ctx, a, hub)
+	subscribeAndBroadcast(ctx, a, hub, finalgate.GateFor(a))
 
 	// Stand in for what the agent's title goroutine does when its fast-model
 	// call returns: one Rename on the session row.

@@ -53,7 +53,7 @@ func pinnedIngressTool(registryID string) *batchIngressTool {
 // the real queueing path, the real drain pop, and the real release helper.
 //
 // MUTATION CAUGHT — removing the arm call in submit (or releasing at arm
-// time) makes senderScope.close() prune the construction, so the root
+// time) makes senderScope.Close() prune the construction, so the root
 // acquire at promotion fails ErrDiskProviderUnavailable.
 func TestQueuedCallScope_PromotionKeepsConstructionUsable(t *testing.T) {
 	t.Parallel()
@@ -71,11 +71,11 @@ func TestQueuedCallScope_PromotionKeepsConstructionUsable(t *testing.T) {
 	// Fixture acquire (not production-facing): establishes the sender-side
 	// construction owner the queued call must outlive.
 	require.NoError(t, caps.acquireConstruction("", "reg-p1", "constr-p1"))
-	senderScope.register(func() {
+	senderScope.Register(func() {
 		caps.release(diskOwnerKey{kind: diskOwnerConstruction, instance: "constr-p1", registryID: "reg-p1"})
 	})
 
-	opts := &CallOptions{buildScope: senderScope}
+	opts := &CallOptions{BuildScope: senderScope}
 	call := SessionAgentCall{
 		SessionID:   sid,
 		Prompt:      "queued",
@@ -97,14 +97,14 @@ func TestQueuedCallScope_PromotionKeepsConstructionUsable(t *testing.T) {
 	require.Len(t, mb.submitted, 1)
 	// FIRST PRODUCTION-FACING ASSERTION: the queued copy carries the
 	// retained marker on its OWN options copy.
-	require.True(t, mb.submitted[0].CallOptions.buildScopeRetained)
+	require.True(t, mb.submitted[0].CallOptions.BuildScopeRetained)
 	require.NotSame(t, opts, mb.submitted[0].CallOptions)
 	owners1, con1 := caps.ownerCounts()
 	require.Equal(t, owners0+1, owners1)
 	require.Equal(t, con0, con1)
 
 	// The sender returns and its scope closes.
-	senderScope.close()
+	senderScope.Close()
 
 	// The REAL pop the dispatcher's drain calls — drainOrReleaseFinal is
 	// the primitive every live drain path uses via drainOrReleaseMerged
@@ -125,7 +125,7 @@ func TestQueuedCallScope_PromotionKeepsConstructionUsable(t *testing.T) {
 	// must close the scope and clear the marker.
 	ownersRoot, _ := caps.ownerCounts()
 	releaseTurnEndBuildScope(&next, next.CallOptions)
-	require.False(t, next.CallOptions.buildScopeRetained)
+	require.False(t, next.CallOptions.BuildScopeRetained)
 	ownersAfterTurnEnd, _ := caps.ownerCounts()
 	require.Equal(t, ownersRoot-1, ownersAfterTurnEnd)
 	caps.release(diskOwnerKey{kind: diskOwnerRoot, instance: "root-p1", registryID: "reg-p1"})
@@ -208,11 +208,11 @@ func TestQueuedCallScope_RetentionSurvivesSenderScopeClose(t *testing.T) {
 	// Fixture acquire (not production-facing): the sender-side construction
 	// owner the armed scope must outlive.
 	require.NoError(t, caps.acquireConstruction("", "reg-l1", "constr-l1"))
-	senderScope.register(func() {
+	senderScope.Register(func() {
 		caps.release(diskOwnerKey{kind: diskOwnerConstruction, instance: "constr-l1", registryID: "reg-l1"})
 	})
 
-	opts := &CallOptions{buildScope: senderScope}
+	opts := &CallOptions{BuildScope: senderScope}
 	call := SessionAgentCall{
 		SessionID:   "s-l1",
 		Prompt:      "p",
@@ -230,8 +230,8 @@ func TestQueuedCallScope_RetentionSurvivesSenderScopeClose(t *testing.T) {
 	// NO hook (flaw B: onQueueResolved is never touched).
 	require.NotNil(t, call.CallOptions)
 	require.NotSame(t, opts, call.CallOptions)
-	require.True(t, call.CallOptions.buildScopeRetained)
-	require.Nil(t, call.onQueueResolved)
+	require.True(t, call.CallOptions.BuildScopeRetained)
+	require.Nil(t, call.OnQueueResolved)
 	// The arming acquire adds a SECOND Construction owner on the existing
 	// record: owners +1, constructions unchanged.
 	owners1, con1 := caps.ownerCounts()
@@ -240,7 +240,7 @@ func TestQueuedCallScope_RetentionSurvivesSenderScopeClose(t *testing.T) {
 
 	// The sender returns and its scope closes; the retained owner alone
 	// keeps the record alive.
-	senderScope.close()
+	senderScope.Close()
 	ownersMid, conMid := caps.ownerCounts()
 	require.Equal(t, 1, ownersMid)
 	require.Equal(t, 1, conMid)
@@ -302,7 +302,7 @@ func TestQueuedCallScope_NoRetentionGuards(t *testing.T) {
 				SessionID: "s-hooked", Prompt: "p",
 				CallOptions:     &CallOptions{},
 				Tools:           []fantasy.AgentTool{pinnedIngressTool("reg-l4c")},
-				onQueueResolved: func(*fantasy.AgentResult, error) {},
+				OnQueueResolved: func(*fantasy.AgentResult, error) {},
 			},
 		},
 		{
@@ -360,7 +360,7 @@ func TestQueuedCallScope_NoRetentionGuards(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			opts := tc.call.CallOptions
-			hooked := tc.call.onQueueResolved != nil
+			hooked := tc.call.OnQueueResolved != nil
 			if tc.caps != nil {
 				owners0, con0 := tc.caps.ownerCounts()
 				if tc.pin != "" {
@@ -380,9 +380,9 @@ func TestQueuedCallScope_NoRetentionGuards(t *testing.T) {
 				require.Same(t, opts, tc.call.CallOptions)
 			}
 			if hooked {
-				require.NotNil(t, tc.call.onQueueResolved)
+				require.NotNil(t, tc.call.OnQueueResolved)
 			} else {
-				require.Nil(t, tc.call.onQueueResolved)
+				require.Nil(t, tc.call.OnQueueResolved)
 			}
 		})
 	}
@@ -435,7 +435,7 @@ func TestQueuedCallScope_TurnEndReleaseRule(t *testing.T) {
 			Tools:       []fantasy.AgentTool{pinnedIngressTool(reg)},
 		}
 		ag.armQueuedBuildRetention(&call)
-		require.True(t, call.CallOptions.buildScopeRetained)
+		require.True(t, call.CallOptions.BuildScopeRetained)
 		return call
 	}
 
@@ -448,7 +448,7 @@ func TestQueuedCallScope_TurnEndReleaseRule(t *testing.T) {
 		require.Equal(t, 1, con0)
 
 		releaseTurnEndBuildScope(&call, call.CallOptions)
-		require.False(t, call.CallOptions.buildScopeRetained)
+		require.False(t, call.CallOptions.BuildScopeRetained)
 		owners1, con1 := caps.ownerCounts()
 		require.Equal(t, owners0-1, owners1)
 		require.Equal(t, con0, con1)
@@ -461,7 +461,7 @@ func TestQueuedCallScope_TurnEndReleaseRule(t *testing.T) {
 		origin := &CallOptions{}
 
 		releaseTurnEndBuildScope(&call, origin)
-		require.False(t, call.CallOptions.buildScopeRetained)
+		require.False(t, call.CallOptions.BuildScopeRetained)
 		_, con1 := caps.ownerCounts()
 		require.Equal(t, 1, con1) // the pin only
 	})
@@ -480,7 +480,7 @@ func TestQueuedCallScope_TurnEndReleaseRule(t *testing.T) {
 		require.Equal(t, 1, owners0)
 
 		releaseTurnEndBuildScope(&call, call.CallOptions)
-		require.False(t, call.CallOptions.buildScopeRetained) // already false
+		require.False(t, call.CallOptions.BuildScopeRetained) // already false
 		require.NotNil(t, call.CallOptions)                   // same options untouched
 		owners1, _ := caps.ownerCounts()
 		require.Equal(t, owners0, owners1) // untouched: the owner stays
@@ -490,11 +490,11 @@ func TestQueuedCallScope_TurnEndReleaseRule(t *testing.T) {
 		t.Parallel()
 		caps, a := newQueuedCallScopeFixture(t)
 		call := newMarkedCall(t, a, "s-ter4", "reg-ter4")
-		call.onQueueResolved = func(*fantasy.AgentResult, error) {}
+		call.OnQueueResolved = func(*fantasy.AgentResult, error) {}
 		owners0, _ := caps.ownerCounts()
 
 		releaseTurnEndBuildScope(&call, &CallOptions{})
-		require.True(t, call.CallOptions.buildScopeRetained) // untouched
+		require.True(t, call.CallOptions.BuildScopeRetained) // untouched
 		owners1, _ := caps.ownerCounts()
 		require.Equal(t, owners0, owners1)
 	})
@@ -507,7 +507,7 @@ func TestQueuedCallScope_TurnEndReleaseRule(t *testing.T) {
 		releaseTurnEndBuildScope(&call, call.CallOptions)
 		owners1, _ := caps.ownerCounts()
 		releaseTurnEndBuildScope(&call, call.CallOptions)
-		require.False(t, call.CallOptions.buildScopeRetained)
+		require.False(t, call.CallOptions.BuildScopeRetained)
 		owners2, _ := caps.ownerCounts()
 		require.Equal(t, owners1, owners2)
 	})
@@ -606,9 +606,9 @@ func TestQueuedCallScope_SenderFirstRunUnaffected(t *testing.T) {
 	require.Nil(t, res)
 	// The SENDER's call parameter is untouched: arming happened on the copy in mb.submitted.
 	require.Same(t, opts, call.CallOptions)
-	require.False(t, call.CallOptions.buildScopeRetained)
+	require.False(t, call.CallOptions.BuildScopeRetained)
 	mb := a.getMailbox(sid)
-	require.True(t, mb.submitted[0].CallOptions.buildScopeRetained)
+	require.True(t, mb.submitted[0].CallOptions.BuildScopeRetained)
 	owners0, _ := caps.ownerCounts()
 	require.Equal(t, 2, owners0) // pin + armed copy
 	mb.clearAll()                // I2: queue-exit release
@@ -682,7 +682,7 @@ func TestQueuedCallScope_DispatcherSiteFiresOnRealTurn(t *testing.T) {
 	// The REAL dispatcher site fired.
 	require.Positive(t, atomic.LoadInt32(&fired))
 	// The marker was cleared by the site.
-	require.False(t, call.CallOptions.buildScopeRetained)
+	require.False(t, call.CallOptions.BuildScopeRetained)
 	// Owner counts back to the pin baseline: the real site closed the
 	// retained scope.
 	owners1, con1 := caps.ownerCounts()

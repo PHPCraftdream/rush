@@ -29,7 +29,7 @@ func TestStepFunLiveRosterReplacesRetiredSeedAndCachesEfforts(t *testing.T) {
 	}}
 	load := func() ProviderConfig {
 		cfg := &Config{Providers: csync.NewMap[string, ProviderConfig]()}
-		cfg.setDefaults(t.TempDir(), "")
+		setDefaults(cfg, t.TempDir(), "")
 		require.NoError(t, configureProviders(t.Context(), cfg, env.NewFromMap(nil), NewShellVariableResolver(env.NewFromMap(nil)), catalog, testStore(cfg).removeConfigFieldBestEffort, nil))
 		provider, ok := cfg.Providers.Get("stepfun")
 		require.True(t, ok)
@@ -54,7 +54,7 @@ func TestZAILiveRosterAddsModelsWithoutDiscardingKnownModels(t *testing.T) {
 	defer server.Close()
 
 	cfg := &Config{Providers: csync.NewMap[string, ProviderConfig]()}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	require.NoError(t, configureProviders(context.Background(), cfg, env.NewFromMap(nil), NewShellVariableResolver(env.NewFromMap(nil)), []catwalk.Provider{{
 		ID: catwalk.InferenceProviderZAI, Name: "Z.AI", Type: catwalk.TypeOpenAICompat,
 		APIEndpoint: server.URL, APIKey: "key", Models: []catwalk.Model{{ID: "glm-5.2"}},
@@ -85,7 +85,7 @@ func TestZAIDocumentedEffortsApplyWhenModelsAPIHasNoCapabilities(t *testing.T) {
 	defer server.Close()
 
 	cfg := &Config{Providers: csync.NewMap[string, ProviderConfig]()}
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	require.NoError(t, configureProviders(t.Context(), cfg, env.NewFromMap(nil), NewShellVariableResolver(env.NewFromMap(nil)), []catwalk.Provider{{
 		ID: catwalk.InferenceProviderZAI, Name: "Z.AI", Type: catwalk.TypeOpenAICompat,
 		APIEndpoint: server.URL, APIKey: "key",

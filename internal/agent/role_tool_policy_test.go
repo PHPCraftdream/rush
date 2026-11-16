@@ -41,7 +41,7 @@ func TestRoleToolGuardEnforcesCapturedAndCurrentCeilings(t *testing.T) {
 
 	currentOptions := &CallOptions{RoleContract: captured}
 	currentScope := EnsureCallBuildScope(currentOptions)
-	defer currentScope.close()
+	defer currentScope.Close()
 	currentCtx := WithCallOptions(context.Background(), currentOptions)
 	widerTools := []string{"probe", "write"}
 	wider := &session.RoleContract{Version: session.RoleContractVersion, Tools: &widerTools}
@@ -55,7 +55,7 @@ func TestRoleToolGuardEnforcesCapturedAndCurrentCeilings(t *testing.T) {
 	shared := []fantasy.AgentTool{newProbe("probe"), newProbe("write")}
 	sharedOptions := &CallOptions{RoleContract: captured}
 	sharedScope := EnsureCallBuildScope(sharedOptions)
-	defer sharedScope.close()
+	defer sharedScope.Close()
 	sharedCtx := WithCallOptions(context.Background(), sharedOptions)
 	pruned := filterRoleContractTools(sharedCtx, shared)
 	require.Len(t, pruned, 1)

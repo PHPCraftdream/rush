@@ -1,5 +1,5 @@
 import { Carburetor } from "@react-carburetor/core";
-import { drainSendableQueue } from "../../queueOnIdle/drainSendableQueue.ts";
+import { drainSendableQueue } from "../../backend/queue/drainSendableQueue.ts";
 import type { TReadonly } from "@react-carburetor/core";
 
 /** The wire shape of an attachment, shared by the queue and the send wrappers. */

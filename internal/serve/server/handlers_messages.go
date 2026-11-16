@@ -11,6 +11,7 @@ import (
 	"log/slog"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -126,7 +127,7 @@ func handleLoadMessages(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// chat or the sub-agent buffer — it would blindly clear the active.
 	c.reply(msg.ID, EventMessagesList, map[string]any{
 		"SessionID": p.SessionID,
-		"Messages":  toMessagesWire(msgs),
+		"Messages":  wire.ToMessagesWire(msgs),
 		"Watermark": watermark,
 	}, "")
 }

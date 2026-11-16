@@ -1,0 +1,161 @@
+// Left-aligned system notice for background-job results.
+
+import { AntiHookComponent, bind } from "@react-carburetor/core";
+import ReactMarkdown from "react-markdown";
+import type { Message as Msg } from "../../../domain/types";
+import { MD_REMARK } from "../markdown/mdRemarkPlugins";
+import { MD_REHYPE } from "../markdown/mdRehypePlugins";
+import { watchCollapseAllSignal } from "../watchCollapseAllSignal";
+import { extractText } from "../../chat/Message/content/extractText";
+
+// ── BackgroundJobNotice ───────────────────────────────────────────────────────
+// Background-job notices are persisted as Role:"user" (the model must react to
+// the job's result) but the operator never typed them, so they render on the
+// LEFT as a muted system notice — mirroring SummaryMessage's container idiom.
+
+/** The header chip of a notice kind. */
+interface INoticeChip {
+  icon: string;
+  label: string;
+  title: string;
+}
+
+/**
+ * Maps the message's NoticeKind to the header chip.
+ *
+ * Every kind is a system
+ * event injected by rush — never a human's words — so the chip names WHICH
+ * system event this is (stage 5b: wake events must read as system events, not
+ * as a user reply). Absent kind keeps the generic background-job chip.
+ *
+ * @param kind - the message's NoticeKind
+ */
+function noticeKindLabel(kind: string | undefined): INoticeChip {
+  switch (kind) {
+    case "wake_fired":
+      return {
+        icon: "⏰", label: "wake",
+        title: "scheduled wake fired — injected by rush, not typed by you",
+      };
+    case "supervision":
+      return {
+        icon: "👁", label: "supervision",
+        title: "supervision check-in — injected by rush, not typed by you",
+      };
+    case "timeout_wake_only":
+      return {
+        icon: "⏱", label: "timeout (still running)",
+        title: "async job timeout check-in — injected by rush, not typed by you",
+      };
+    case "timeout_terminated":
+      return {
+        icon: "⏱", label: "timed out",
+        title: "async job timed out — injected by rush, not typed by you",
+      };
+    case "reaction_chain":
+      return {
+        icon: "🔁", label: "reaction chain stopped",
+        title: "automatic turns paused: only sleep/echo commands, no progress — injected by rush, not typed by you",
+      };
+    case "wake_failed":
+      return {
+        icon: "⏰", label: "wake failed",
+        title: "wake delivery failed — injected by rush, not typed by you",
+      };
+    default:
+      return {
+        icon: "⚙", label: "background job",
+        title: "background job finished — injected by rush, not typed by you",
+      };
+  }
+}
+
+/** Props of the background-job notice. */
+interface IBackgroundJobNoticeProps {
+  message: Msg;
+}
+
+/** Local state of the background-job notice. */
+interface IBackgroundJobNoticeState {
+  open: boolean;
+}
+
+/** System notice with a collapsed-by-default output spoiler. */
+export class BackgroundJobNotice extends AntiHookComponent<IBackgroundJobNoticeProps, IBackgroundJobNoticeState> {
+  // Collapsed by default — orchestrator output is noise the operator only
+  // occasionally needs to inspect, so it folds into a spoiler like every
+  // other orchestrator block (mirrors SummaryMessage's toggle).
+  public state: IBackgroundJobNoticeState = { open: false };
+
+  /** Subscribes to the global "Collapse all" signal. */
+  protected useEffects(): void {
+    super.useEffects();
+    this.useEffect(this.watchCollapseAll, []);
+  }
+
+  /** Starts watching the collapse-all signal; returns its disposer. */
+  @bind
+  protected watchCollapseAll(): () => void {
+    return watchCollapseAllSignal(this.collapse);
+  }
+
+  /** Folds the output spoiler. */
+  @bind
+  protected collapse(): void {
+    this.setState({ open: false });
+  }
+
+  /** Flips the output spoiler. */
+  @bind
+  protected toggleOpen(): void {
+    this.setState({ open: !this.state.open });
+  }
+
+  /** Renders the notice header and the output spoiler. */
+  public render() {
+    const { message } = this.props;
+    const { open } = this.state;
+    const text = extractText(message.Parts);
+    const kind = noticeKindLabel(message.NoticeKind);
+    return (
+      <div className="px-8 py-3">
+        <div className="summary-card">
+          <div className="summary-header">
+            <span
+              data-test-id="notice-kind-label"
+              className="px-1 py-0.5 rounded bg-base-subtle text-text-muted font-mono text-[10px]"
+              title={kind.title}
+            >
+              {kind.icon} {kind.label}
+            </span>
+            {message.AutoResumed && (
+              <span
+                className="px-1 py-0.5 rounded bg-base-subtle text-text-muted font-mono text-[10px]"
+                title="auto-resumed: background job finished"
+              >
+                ↻ auto-resumed
+              </span>
+            )}
+          </div>
+          {text ? (
+            <div className="group">
+              <button
+                type="button"
+                onClick={this.toggleOpen}
+                aria-expanded={open}
+                className="summary-toggle w-full text-left bg-transparent border-0"
+              >
+                {open ? "Hide output ▾" : "Show output ▸"}
+              </button>
+              {open && (
+                <div className="summary-body md">
+                  <ReactMarkdown remarkPlugins={MD_REMARK} rehypePlugins={MD_REHYPE}>{text}</ReactMarkdown>
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+}

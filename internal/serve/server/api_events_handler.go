@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire/finalgate"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -54,7 +55,7 @@ func newAPIEventsHandler(store apiEventsSessionStore, log *APIEventLog, limiter 
 	if len(gates) > 0 {
 		h.gate = gates[0]
 	} else if ws, ok := store.(apiAppWriteStore); ok {
-		h.gate = finalizationTerminalGateFor(ws.app)
+		h.gate = finalgate.GateFor(ws.app)
 	}
 	return h.serveHTTP
 }
@@ -88,7 +89,7 @@ func (h apiEventsHandler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	// a held terminal "run" event waits for the owner's seal. NOTE: the
 	// Last-Event-ID replay below bypasses this gate (known gap, out of
 	// scope).
-	ch = FinalizationGatedAPIEventStream(r.Context(), h.gate, item.ID, ch)
+	ch = finalgate.FinalizationGatedAPIEventStream(r.Context(), h.gate, item.ID, ch)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Accel-Buffering", "no")

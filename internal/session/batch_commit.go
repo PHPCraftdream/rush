@@ -135,7 +135,7 @@ func batchCommitSubmit(ctx context.Context, store *BatchStore, id BatchCommitIde
 		}
 		notices[i] = p
 	}
-	release, admission, err := admitBatchCommitOwners(store, ctx, id, t, []string{owner})
+	release, admission, err := admitBatchCommitOwners(store.writer, ctx, id, t, []string{owner})
 	if release != nil {
 		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
 	}
@@ -372,7 +372,7 @@ func batchCommitProject(ctx context.Context, store *BatchStore, id BatchCommitId
 		owners = append(owners, owner)
 		p.Roots = append(p.Roots, *g)
 	}
-	release, admission, err := admitBatchCommitOwners(store, ctx, id, t, owners)
+	release, admission, err := admitBatchCommitOwners(store.writer, ctx, id, t, owners)
 	if release != nil {
 		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
 	}
@@ -467,19 +467,4 @@ type batchCommitEnvelope struct {
 	Code    string          `json:"code,omitempty"`
 	Summary string          `json:"summary,omitempty"`
 	Details json.RawMessage `json:"details,omitempty"`
-}
-
-// RootOwner resolves the owning session of any projected root; cross-root
-// transitions (admission, Release) project under the row's owner, never the
-// hook identity's owner. It is a single read, not a lock across writer I/O.
-func (s *BatchStore) RootOwner(ctx context.Context, root string) (string, error) {
-	q, err := db.PdaBatchWriterQueries(ctx, s.writer)
-	if err != nil {
-		return "", err
-	}
-	row, err := q.GetBatchRootIdentity(ctx, root)
-	if err != nil {
-		return "", err
-	}
-	return row.OwnerSessionID, nil
 }

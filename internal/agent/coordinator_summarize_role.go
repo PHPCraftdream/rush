@@ -81,10 +81,10 @@ func (s *standaloneSummarizer) SummarizeWithRole(ctx context.Context, sessionID 
 		Tools:                []fantasy.AgentTool{},
 	})
 	snapshot := &SummarizeSnapshot{
-		model:           model,
-		providerOptions: getProviderOptions(sessionID, model, providerCfg),
-		promptPrefix:    providerCfg.SystemPromptPrefix,
-		providerCfg:     providerCfg,
+		Model:           model,
+		ProviderOptions: getProviderOptions(sessionID, model, providerCfg),
+		PromptPrefix:    providerCfg.SystemPromptPrefix,
+		ProviderCfg:     providerCfg,
 	}
 	// Preserve the selected worker's session identity and configured effort for
 	// direct Codex requests (cache affinity and reasoning dispatch).

@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -57,7 +58,7 @@ import (
 // test fails with result=DrainComplete, err=nil.
 func TestDrainSessionNow_ForeignLeasedRow_NeverReportsComplete(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "drain-p610-foreign-leased-live")
 	coord := &countingCoordinatorForDrain{}
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
@@ -118,7 +119,7 @@ func TestDrainSessionNow_ForeignLeasedRow_NeverReportsComplete(t *testing.T) {
 // at the moment this call returned.
 func TestDrainSessionNow_ForeignLeasedRow_ExpiredButNotYetCleaned(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "drain-p610-foreign-leased-expired")
 	coord := &countingCoordinatorForDrain{}
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
@@ -199,7 +200,7 @@ func (s *outstandingCheckFailingService) HasOutstandingRunQueueEntriesForSession
 // err=nil.
 func TestDrainSessionNow_OutstandingCheckFailure_NeverReportsComplete(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "drain-p610-outstanding-check-fails")
 	failing := &outstandingCheckFailingService{
 		Service: svc,
@@ -239,7 +240,7 @@ func TestDrainSessionNow_OutstandingCheckFailure_NeverReportsComplete(t *testing
 // would be worse than the defect being fixed.
 func TestDrainSessionNow_TrulyEmptyQueue_StillReportsComplete(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "drain-p610-truly-empty")
 	coord := &countingCoordinatorForDrain{}
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{

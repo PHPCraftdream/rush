@@ -15,7 +15,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/object"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
-	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 )
 
 const (

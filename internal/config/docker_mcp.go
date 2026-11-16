@@ -33,9 +33,6 @@ var dockerMCPAvailabilityCache struct {
 // running it more than once for callers that overlap in time.
 var dockerMCPRefreshGroup singleflight.Group
 
-// DockerMCPName is the name of the Docker MCP configuration.
-const DockerMCPName = "docker"
-
 // IsDockerMCPAvailable checks if Docker MCP is available by running
 // 'docker mcp version'.
 func IsDockerMCPAvailable() bool {
@@ -77,15 +74,6 @@ func RefreshDockerMCPAvailability() bool {
 	})
 	available, _ := v.(bool)
 	return available
-}
-
-// IsDockerMCPEnabled checks if Docker MCP is already configured.
-func (c *Config) IsDockerMCPEnabled() bool {
-	if c.MCP == nil {
-		return false
-	}
-	_, exists := c.MCP[DockerMCPName]
-	return exists
 }
 
 // DockerMCPConfig returns the default Docker MCP stdio configuration.

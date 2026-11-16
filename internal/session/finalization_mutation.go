@@ -22,5 +22,5 @@ func admitFinalizationMutation(ctx context.Context, writer *sql.DB, owners ...st
 		finalizationService:     authorities[0].service,
 		finalizationAuthorities: authorities,
 	}
-	return admitBatchCommitOwners(NewBatchStore(writer), ctx, identity, jobbatch.Transition{}, owners)
+	return admitBatchCommitOwners(writer, ctx, identity, jobbatch.Transition{}, owners)
 }

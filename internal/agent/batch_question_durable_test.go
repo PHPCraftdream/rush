@@ -94,7 +94,7 @@ func TestDurableProducersRefuseBatchQuestionCapability(t *testing.T) {
 	t.Run("unit_predicates", func(t *testing.T) {
 		capabilityCall := SessionAgentCall{
 			SessionID: "sess-cap",
-			batchQuestion: &batchChildQuestionState{
+			BatchQuestion: &batchChildQuestionState{
 				Depth: 2, Route: false, BindingOK: true,
 				Binding: batchAgentQuestionBinding{Ask: func(context.Context, int, string) (json.RawMessage, error) { return nil, nil }},
 			},
@@ -124,7 +124,7 @@ func TestDurableProducersRefuseBatchQuestionCapability(t *testing.T) {
 			SessionID:     sess.ID,
 			Prompt:        "orphaned batch delegation restart",
 			LogicalCallID: "bqd-capability-logical-id",
-			batchQuestion: &batchChildQuestionState{Depth: 1, Route: false},
+			BatchQuestion: &batchChildQuestionState{Depth: 1, Route: false},
 		}
 		err = sa.restartOrphanedWithRetry([]SessionAgentCall{call})
 		require.ErrorIs(t, err, ErrBatchQuestionCapabilityNotDurable,
@@ -156,7 +156,7 @@ func TestDurableProducersRefuseBatchQuestionCapability(t *testing.T) {
 			SessionID:     sess.ID,
 			Prompt:        "detached batch delegation replacement",
 			LogicalCallID: "bqd-detached-logical-id",
-			batchQuestion: &batchChildQuestionState{Depth: 1, Route: true, BindingOK: true},
+			BatchQuestion: &batchChildQuestionState{Depth: 1, Route: true, BindingOK: true},
 		}
 		err = coord.startDetachedRun(context.Background(), call)
 		require.ErrorIs(t, err, ErrBatchQuestionCapabilityNotDurable,
@@ -184,7 +184,7 @@ func TestBuildCallInheritsBatchChildQuestionCapability(t *testing.T) {
 	denyState := &batchChildQuestionState{Depth: 2, Route: false}
 	coord.subAgentDrivers.register(denyChild, subAgentDriver{
 		agent:           &mockSessionAgent{},
-		call:            SessionAgentCall{SessionID: denyChild, batchQuestion: denyState, Tools: bqdShapedTools(t, false)},
+		call:            SessionAgentCall{SessionID: denyChild, BatchQuestion: denyState, Tools: bqdShapedTools(t, false)},
 		parentSessionID: parentID,
 	})
 
@@ -197,7 +197,7 @@ func TestBuildCallInheritsBatchChildQuestionCapability(t *testing.T) {
 	}
 	coord.subAgentDrivers.register(routeChild, subAgentDriver{
 		agent:           &mockSessionAgent{},
-		call:            SessionAgentCall{SessionID: routeChild, batchQuestion: routeState, Tools: bqdShapedTools(t, true)},
+		call:            SessionAgentCall{SessionID: routeChild, BatchQuestion: routeState, Tools: bqdShapedTools(t, true)},
 		parentSessionID: parentID,
 	})
 
@@ -208,7 +208,7 @@ func TestBuildCallInheritsBatchChildQuestionCapability(t *testing.T) {
 		require.Contains(t, bqdToolNames(pinned.tools), tools.AskQuestionToolName)
 		built, err := coord.buildCall(ctx, denyChild, "p", pinned, nil)
 		require.NoError(t, err)
-		require.Same(t, denyState, built.batchQuestion,
+		require.Same(t, denyState, built.BatchQuestion,
 			"the built call must carry the SAME frozen capability pointer as the template")
 		require.NotContains(t, bqdToolNames(built.Tools), tools.AskQuestionToolName,
 			"a no-route delegation's replacement call must advertise NO ask_question")
@@ -222,7 +222,7 @@ func TestBuildCallInheritsBatchChildQuestionCapability(t *testing.T) {
 		require.NotContains(t, bqdToolNames(pinned.tools), tools.AskQuestionToolName)
 		built, err := coord.buildCall(ctx, routeChild, "p", pinned, nil)
 		require.NoError(t, err)
-		require.Same(t, routeState, built.batchQuestion,
+		require.Same(t, routeState, built.BatchQuestion,
 			"the built call must carry the SAME frozen capability pointer as the template")
 		var wrapped bool
 		for _, tool := range built.Tools {
@@ -241,7 +241,7 @@ func TestBuildCallInheritsBatchChildQuestionCapability(t *testing.T) {
 		require.NoError(t, err)
 		built, err := coord.buildCall(ctx, parentID, "p", pinned, nil)
 		require.NoError(t, err)
-		require.Nil(t, built.batchQuestion,
+		require.Nil(t, built.BatchQuestion,
 			"a session with no registered driver must build a legacy capability-less call")
 		require.Equal(t, pinned.tools, built.Tools,
 			"a session with no registered driver must preserve its resolved toolset")
@@ -277,7 +277,7 @@ func TestInjectAgentReplacementInheritsChildCapability(t *testing.T) {
 			spy := &mockSessionAgent{}
 			coord.subAgentDrivers.register(childID, subAgentDriver{
 				agent:           spy,
-				call:            SessionAgentCall{SessionID: childID, batchQuestion: state, Tools: bqdShapedTools(t, tc.route)},
+				call:            SessionAgentCall{SessionID: childID, BatchQuestion: state, Tools: bqdShapedTools(t, tc.route)},
 				parentSessionID: parentID,
 			})
 
@@ -292,7 +292,7 @@ func TestInjectAgentReplacementInheritsChildCapability(t *testing.T) {
 			require.Len(t, captured, 1,
 				"the interrupt replacement must reach the child's driver agent exactly once")
 			replacement := captured[0]
-			require.Same(t, state, replacement.batchQuestion,
+			require.Same(t, state, replacement.BatchQuestion,
 				"the replacement call must carry the SAME frozen capability pointer")
 			require.Equal(t, "replacement prompt", replacement.Prompt)
 			if tc.route {
@@ -342,13 +342,13 @@ func TestDrainCallForCarriesDriverCapability(t *testing.T) {
 			// start.
 			f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{
 				agent: f.sa,
-				call:  SessionAgentCall{SessionID: f.sessID, SmartModel: &f.model, batchQuestion: state, Tools: bqdShapedTools(t, tc.route)},
+				call:  SessionAgentCall{SessionID: f.sessID, SmartModel: &f.model, BatchQuestion: state, Tools: bqdShapedTools(t, tc.route)},
 			})
 
 			call, prep, err := f.coord.drainCallFor(ctx, f.sessID)
 			require.NoError(t, err)
 			require.True(t, call.IsDrain)
-			require.Same(t, state, call.batchQuestion,
+			require.Same(t, state, call.BatchQuestion,
 				"the wake call must preserve the SAME frozen capability pointer as the template")
 			if tc.route {
 				var wrapped bool

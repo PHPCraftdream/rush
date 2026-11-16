@@ -36,20 +36,20 @@ func TestRebuildLegacyChildCallRestoresNoQuestionRoute(t *testing.T) {
 	require.NoError(t, err)
 	original, err := coord.buildCall(t.Context(), childID, "old queued child", pinned, nil)
 	require.NoError(t, err)
-	original.batchQuestion = &batchChildQuestionState{Depth: 2, Route: false}
+	original.BatchQuestion = &batchChildQuestionState{Depth: 2, Route: false}
 	encoded, err := json.Marshal(ToSessionAgentCallData(original))
 	require.NoError(t, err)
 	var data session.SessionAgentCallData
 	require.NoError(t, json.Unmarshal(encoded, &data))
 	legacy, err := FromSessionAgentCallData(data)
 	require.NoError(t, err)
-	require.Nil(t, legacy.batchQuestion, "the fixture must reproduce a row with no process-local capability")
+	require.Nil(t, legacy.BatchQuestion, "the fixture must reproduce a row with no process-local capability")
 
 	rebuilt, err := coord.RebuildSessionAgentCall(t.Context(), "legacy-child-row", data)
 	require.NoError(t, err)
-	require.NotNil(t, rebuilt.batchQuestion)
-	require.False(t, rebuilt.batchQuestion.Route)
-	require.False(t, rebuilt.batchQuestion.BindingOK)
+	require.NotNil(t, rebuilt.BatchQuestion)
+	require.False(t, rebuilt.BatchQuestion.Route)
+	require.False(t, rebuilt.BatchQuestion.BindingOK)
 	capture := &rebuiltQuestionCaptureAgent{}
 	coord.currentAgent = capture
 	_, err = coord.RunSessionAgentCall(t.Context(), rebuilt)
@@ -68,14 +68,14 @@ func TestRunLegacyChildCallWithoutRebuildCannotMintQuestionRoute(t *testing.T) {
 	_, err := coord.RunSessionAgentCall(t.Context(), SessionAgentCall{SessionID: childID})
 	require.NoError(t, err)
 	require.Equal(t, 1, capture.calls)
-	require.NotNil(t, capture.call.batchQuestion)
+	require.NotNil(t, capture.call.BatchQuestion)
 	require.True(t, capture.routeKnown)
 	require.False(t, capture.route)
 
 	_, err = coord.RunSessionAgentCall(t.Context(), SessionAgentCall{SessionID: parentID})
 	require.NoError(t, err)
 	require.Equal(t, 2, capture.calls)
-	require.Nil(t, capture.call.batchQuestion, "ordinary root queue calls retain their legacy contract")
+	require.Nil(t, capture.call.BatchQuestion, "ordinary root queue calls retain their legacy contract")
 	require.False(t, capture.routeKnown)
 }
 
@@ -137,7 +137,7 @@ func TestNoRouteTurnKeepsAskHiddenAfterSharedToolsRefresh(t *testing.T) {
 	t.Cleanup(func() { runTurnToolsSnapshotSeam = previous })
 	_, err = a.Run(t.Context(), SessionAgentCall{
 		SessionID: childID, Prompt: "finish", NonInteractive: true,
-		batchQuestion: &batchChildQuestionState{Depth: 1, Route: false},
+		BatchQuestion: &batchChildQuestionState{Depth: 1, Route: false},
 	})
 	require.NoError(t, err)
 	require.Equal(t, 1, inner.callCount())

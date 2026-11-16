@@ -310,7 +310,7 @@ func (c *coordinator) InjectAgent(ctx context.Context, callerSessionID, childSes
 	if ownedScope != nil {
 		defer func() {
 			if !scopeTransferred {
-				ownedScope.close()
+				ownedScope.Close()
 			}
 		}()
 	}
@@ -338,22 +338,22 @@ func (c *coordinator) InjectAgent(ctx context.Context, callerSessionID, childSes
 		}
 		if callOptions != nil {
 			if ownedScope != nil {
-				ownedScope.close()
+				ownedScope.Close()
 			}
 			ownedOptions := *callOptions
-			ownedOptions.buildScope = newBuildResourceScope()
+			ownedOptions.BuildScope = newBuildResourceScope()
 			call.CallOptions = &ownedOptions
-			ownedScope = ownedOptions.buildScope
+			ownedScope = ownedOptions.BuildScope
 		}
 		if ownedScope != nil {
-			call.onQueueResolved = func(_ *fantasy.AgentResult, _ error) { ownedScope.close() }
+			call.OnQueueResolved = func(_ *fantasy.AgentResult, _ error) { ownedScope.Close() }
 		}
 		if c.agentFor(childSessionID).InterruptAndReplace(childSessionID, call) {
 			scopeTransferred = true
 			return "Interrupted the sub-agent's current turn; it will process this message next.", nil
 		}
 		if ownedScope != nil {
-			ownedScope.close()
+			ownedScope.Close()
 			scopeTransferred = true
 		}
 		if _, err := c.InjectMessage(ctx, childSessionID, msg); err != nil {
@@ -370,7 +370,7 @@ func (c *coordinator) InjectAgent(ctx context.Context, callerSessionID, childSes
 		return "", err
 	}
 	if ownedScope != nil {
-		call.onQueueResolved = func(_ *fantasy.AgentResult, _ error) { ownedScope.close() }
+		call.OnQueueResolved = func(_ *fantasy.AgentResult, _ error) { ownedScope.Close() }
 	}
 	if c.agentFor(childSessionID).InterruptAndReplace(childSessionID, call) {
 		scopeTransferred = true
@@ -379,7 +379,7 @@ func (c *coordinator) InjectAgent(ctx context.Context, callerSessionID, childSes
 	// Idle fallback does not accept this built call; release its privately
 	// resolved scope before preserving the historical InjectMessage behavior.
 	if ownedScope != nil {
-		ownedScope.close()
+		ownedScope.Close()
 		scopeTransferred = true
 	}
 	// Idle: nothing to interrupt — fall back to the queue behavior and say so.

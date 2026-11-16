@@ -82,7 +82,7 @@ func TestFlaggedAssemblyRegistersOnlyControlsAllowedByRole(t *testing.T) {
 	callOpts := &CallOptions{}
 	scope := EnsureCallBuildScope(callOpts)
 	require.NotNil(t, scope, "the trusted call state carries its own build scope")
-	defer scope.close()
+	defer scope.Close()
 	ctx := WithCallOptions(batchCallCtx("flagged-assembly"), callOpts)
 	built, err := c.finishToolAssembly(ctx, tools, nil, false, granted)
 	require.NoError(t, err)

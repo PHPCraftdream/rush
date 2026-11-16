@@ -18,60 +18,72 @@ type BatchCLIStore struct {
 	Reader *session.BatchLiveReader
 }
 
-func (a *App) BatchCLIStore() (*BatchCLIStore, error) {
-	if a == nil || a.DB == nil {
+func batchCLIStore(p batchCLIParams) (*BatchCLIStore, error) {
+	if p.env.DB == nil {
 		return nil, errors.New("batch store unavailable")
 	}
-	writer := a.DB()
-	if len(a.dbConns) > 0 {
-		writer = a.dbConns[0]
+	writer := p.env.DB()
+	if conns := p.dbConns(); len(conns) > 0 {
+		writer = conns[0]
 	}
 	if writer == nil {
 		return nil, errors.New("batch store unavailable")
 	}
-	read := a.readDB
+	read := p.readDB()
 	if read == nil {
 		read = writer
 	}
-	return &BatchCLIStore{session.NewBatchStoreWithReader(writer, read), session.NewBatchLiveReader(db.New(read), a.dataDir)}, nil
+	return &BatchCLIStore{session.NewBatchStoreWithReader(writer, read), session.NewBatchLiveReader(db.New(read), p.env.DataDir())}, nil
 }
 
 func (a *App) BatchOwnerRuntime() bool {
-	return a != nil && a.batchRuntime != nil && a.batchInstall != nil && a.batchInstall.Runner != nil
+	return batchOwnerRuntime(a.batchCLIParams())
+}
+
+func batchOwnerRuntime(p batchCLIParams) bool {
+	return p.batchRuntime != nil && p.batchRuntime() != nil && p.batchInstall() != nil && p.batchInstall().Runner != nil
 }
 
 func (a *App) DataDirectory() string {
-	if a == nil {
+	return dataDirectory(a.batchCLIParams())
+}
+
+func dataDirectory(p batchCLIParams) string {
+	if p.env.DataDir == nil {
 		return ""
 	}
-	return a.dataDir
+	return p.env.DataDir()
 }
 
 func (a *App) BatchCLISession(ctx context.Context, id string) (session.Session, error) {
+	return batchCLISession(a.batchCLIParams(), ctx, id)
+}
+
+func batchCLISession(p batchCLIParams, ctx context.Context, id string) (session.Session, error) {
 	if id == "" {
-		return a.Sessions.Create(ctx, "rush batch")
+		return p.env.Sessions().Create(ctx, "rush batch")
 	}
-	if a.Sessions.IsAgentToolSession(id) {
+	if p.env.Sessions().IsAgentToolSession(id) {
 		return session.Session{}, fmt.Errorf("cannot continue an agent tool session: %s", id)
 	}
-	sess, err := a.Sessions.Get(ctx, id)
+	sess, err := p.env.Sessions().Get(ctx, id)
 	if err != nil {
 		return session.Session{}, err
 	}
-	sess, err = a.validateResolvedSession(sess, id)
+	sess, err = validateResolvedSession(sess, id, p.env.WorkspaceRoot, p.env.ProcessHome())
 	if err != nil {
 		return session.Session{}, err
 	}
-	if a.AgentCoordinator != nil && a.AgentCoordinator.IsSessionBusy(sess.ID) {
+	if p.env.Coord() != nil && p.env.Coord().IsSessionBusy(sess.ID) {
 		return session.Session{}, fmt.Errorf("session %q is already processing another request: %w", sess.ID, agent.ErrSessionBusy)
 	}
-	if a.dataDir == "" {
+	if p.env.DataDir() == "" {
 		return sess, nil
 	}
 	// Another process (rush run, web) holds the session's OS lock while it
 	// drives a turn; probe it and release at once: the batch's own leaves
 	// may need the lock.
-	lock, err := session.TryAcquireSessionLock(a.dataDir, sess.ID)
+	lock, err := session.TryAcquireSessionLock(p.env.DataDir(), sess.ID)
 	if err != nil {
 		var busyErr *session.SessionLockBusyError
 		if errors.As(err, &busyErr) {
@@ -86,28 +98,27 @@ func (a *App) BatchCLISession(ctx context.Context, id string) (session.Session, 
 }
 
 func (a *App) BatchCLISpec(ctx context.Context, owner, messageID string, spec jobbatch.Spec) (jobbatch.Spec, func(), error) {
-	return a.BatchCLISpecWithQuestionRoute(ctx, owner, messageID, spec, true)
+	return batchCLISpecWithQuestionRoute(a.batchCLIParams(), ctx, owner, messageID, spec, true)
 }
 
-// BatchCLISpecWithQuestionRoute stamps the route chosen by trusted intake.
-func (a *App) BatchCLISpecWithQuestionRoute(ctx context.Context, owner, messageID string, spec jobbatch.Spec, questionRoute bool) (jobbatch.Spec, func(), error) {
-	if !a.BatchOwnerRuntime() || a.AgentCoordinator == nil {
+func batchCLISpecWithQuestionRoute(p batchCLIParams, ctx context.Context, owner, messageID string, spec jobbatch.Spec, questionRoute bool) (jobbatch.Spec, func(), error) {
+	if !batchOwnerRuntime(p) || p.env.Coord() == nil {
 		return jobbatch.Spec{}, nil, errors.New("batch runtime unavailable")
 	}
-	admitted, err := agent.AdmitBatchRoleContracts(ctx, a.AgentCoordinator, spec)
+	admitted, err := agent.AdmitBatchRoleContracts(ctx, p.env.Coord(), spec)
 	if err != nil {
 		return jobbatch.Spec{}, nil, err
 	}
 	ctx = agent.WithAdmittedBatchRoleContracts(ctx)
 	spec = admitted
-	if err := persistSessionExecutionIntent(ctx, a, owner, sessionExecutionProviderOmitted, nil, false); err != nil {
+	if err := persistSessionExecutionIntent(ctx, p.env.Sessions(), owner, sessionExecutionProviderOmitted, nil, false); err != nil {
 		return jobbatch.Spec{}, nil, err
 	}
 	requestedDepth, depthErr := agent.MaxAgentDepthFrom(ctx)
 	if depthErr != nil {
 		return jobbatch.Spec{}, nil, depthErr
 	}
-	remainingDepth, depthErr := agent.PersistSessionAgentDepth(ctx, a.Sessions, owner, requestedDepth)
+	remainingDepth, depthErr := agent.PersistSessionAgentDepth(ctx, p.env.Sessions(), owner, requestedDepth)
 	if depthErr != nil {
 		return jobbatch.Spec{}, nil, depthErr
 	}
@@ -115,7 +126,7 @@ func (a *App) BatchCLISpecWithQuestionRoute(ctx context.Context, owner, messageI
 	if err != nil {
 		return jobbatch.Spec{}, nil, err
 	}
-	b, err := agent.NewBatchCLIBuilderWithQuestionRoute(a.AgentCoordinator, a.batchWorkIngress, questionRoute)
+	b, err := agent.NewBatchCLIBuilderWithQuestionRoute(p.env.Coord(), p.batchWorkIngress(), questionRoute)
 	if err != nil {
 		return jobbatch.Spec{}, nil, err
 	}
@@ -123,7 +134,7 @@ func (a *App) BatchCLISpecWithQuestionRoute(ctx context.Context, owner, messageI
 }
 
 func (a *App) BatchSubmit(ctx context.Context, owner string, spec jobbatch.Spec) (string, error) {
-	return a.BatchSubmitRef(ctx, owner, spec, nil)
+	return batchSubmitRefWithQuestionRoute(a.batchCLIParams(), ctx, owner, spec, nil, true)
 }
 
 // BatchAutoApproveOwner lets the tool calls of an API-owned batch service
@@ -131,32 +142,33 @@ func (a *App) BatchSubmit(ctx context.Context, owner string, spec jobbatch.Spec)
 // it; the service session has no user to answer a prompt, and it is never a
 // conversational session.
 func (a *App) BatchAutoApproveOwner(owner string) {
-	if a == nil || a.Permissions == nil {
-		return
-	}
-	a.Permissions.AutoApproveSession(owner)
+	batchAutoApproveOwner(a.batchCLIParams(), owner)
 }
 
-// BatchSubmitRefWithQuestionRoute is BatchSubmit with a caller-chosen submit
-// reference (see agent.BatchInstall.SubmitCLIRef) and the intake's answer-route
-// decision.
-func (a *App) BatchSubmitRefWithQuestionRoute(ctx context.Context, owner string, spec jobbatch.Spec, ref func(root string) string, questionRoute bool) (string, error) {
-	if !a.BatchOwnerRuntime() {
+func batchAutoApproveOwner(p batchCLIParams, owner string) {
+	if p.env.Perms == nil || p.env.Perms() == nil {
+		return
+	}
+	p.env.Perms().AutoApproveSession(owner)
+}
+
+func batchSubmitRefWithQuestionRoute(p batchCLIParams, ctx context.Context, owner string, spec jobbatch.Spec, ref func(root string) string, questionRoute bool) (string, error) {
+	if !batchOwnerRuntime(p) {
 		return "", errors.New("batch submit requires owning runtime")
 	}
 	if spec.Batch == nil || spec.Task != nil {
 		return "", errors.New("batch submit requires batch root")
 	}
-	translated, release, err := a.BatchCLISpecWithQuestionRoute(ctx, owner, uuid.NewString(), spec, questionRoute)
+	translated, release, err := batchCLISpecWithQuestionRoute(p, ctx, owner, uuid.NewString(), spec, questionRoute)
 	if err != nil {
 		return "", err
 	}
-	batch, err := a.batchInstall.SubmitCLIRef(ctx, owner, translated, ref)
+	batch, err := p.batchInstall().SubmitCLIRef(ctx, owner, translated, ref)
 	if err != nil {
 		release()
 		return "", err
 	}
-	if err := a.batchInstall.RetainCLIConstruction(batch.ID(), release); err != nil {
+	if err := p.batchInstall().RetainCLIConstruction(batch.ID(), release); err != nil {
 		release()
 		return "", err
 	}
@@ -165,13 +177,13 @@ func (a *App) BatchSubmitRefWithQuestionRoute(ctx context.Context, owner string,
 
 // BatchSubmitRef is kept for the served intake and other route-ful callers.
 func (a *App) BatchSubmitRef(ctx context.Context, owner string, spec jobbatch.Spec, ref func(root string) string) (string, error) {
-	return a.BatchSubmitRefWithQuestionRoute(ctx, owner, spec, ref, true)
+	return batchSubmitRefWithQuestionRoute(a.batchCLIParams(), ctx, owner, spec, ref, true)
 }
 
 // BatchSubmitRefUnattended serves the standalone unattended CLI batch surface:
 // no answering process is bound, so agent leaves must not get ask_question.
 func (a *App) BatchSubmitRefUnattended(ctx context.Context, owner string, spec jobbatch.Spec) (string, error) {
-	return a.BatchSubmitRefWithQuestionRoute(ctx, owner, spec, nil, false)
+	return batchSubmitRefWithQuestionRoute(a.batchCLIParams(), ctx, owner, spec, nil, false)
 }
 
 // BatchNodeOutput returns the live output of one node of a root this process
@@ -179,13 +191,17 @@ func (a *App) BatchSubmitRefUnattended(ctx context.Context, owner string, spec j
 // bounded by ctx: the output of a node that is still running blocks until it
 // ends, so callers pass only terminal nodes with a short deadline.
 func (a *App) BatchNodeOutput(ctx context.Context, owner, root, node string) (string, error) {
-	if a == nil || a.batchInstall == nil {
+	return batchNodeOutput(a.batchCLIParams(), ctx, owner, root, node)
+}
+
+func batchNodeOutput(p batchCLIParams, ctx context.Context, owner, root, node string) (string, error) {
+	if p.batchInstall() == nil {
 		return "", errors.New("batch runtime unavailable")
 	}
-	if a.batchInstall.CLIOwner(jobbatch.ID(root)) != owner {
+	if p.batchInstall().CLIOwner(jobbatch.ID(root)) != owner {
 		return "", errors.New("batch CLI: root is not owned by this session")
 	}
-	chunk, err := a.batchInstall.CLIOutput(ctx, owner, jobbatch.ID(root), jobbatch.ID(node))
+	chunk, err := p.batchInstall().CLIOutput(ctx, owner, jobbatch.ID(root), jobbatch.ID(node))
 	if err != nil {
 		return "", err
 	}
@@ -197,7 +213,11 @@ func (a *App) BatchNodeOutput(ctx context.Context, owner, root, node string) (st
 // agent.ErrBatchHeldAnswerNone or a stale/stopped sentinel when there is no
 // current question to answer.
 func (a *App) BatchAnswerHeld(ctx context.Context, owner, childSessionID, text string) error {
-	answerer, ok := a.AgentCoordinator.(agent.BatchHeldAnswerer)
+	return batchAnswerHeld(a.batchCLIParams(), ctx, owner, childSessionID, text)
+}
+
+func batchAnswerHeld(p batchCLIParams, ctx context.Context, owner, childSessionID, text string) error {
+	answerer, ok := p.env.Coord().(agent.BatchHeldAnswerer)
 	if !ok {
 		return errors.New("batch runtime unavailable")
 	}
@@ -205,13 +225,11 @@ func (a *App) BatchAnswerHeld(ctx context.Context, owner, childSessionID, text s
 	return err
 }
 
-// BatchSettleDebt settles the owner's notice debt for a terminal root without
-// releasing the root, so its live output stays readable.
-func (a *App) BatchSettleDebt(ctx context.Context, owner, root string) error {
-	if a == nil || a.batchInstall == nil || a.batchInstall.CLIOwner(jobbatch.ID(root)) != owner {
+func batchSettleDebt(p batchCLIParams, ctx context.Context, owner, root string) error {
+	if p.batchInstall() == nil || p.batchInstall().CLIOwner(jobbatch.ID(root)) != owner {
 		return errors.New("batch CLI: root is not owned by this session")
 	}
-	fac, err := a.BatchCLIStore()
+	fac, err := batchCLIStore(p)
 	if err != nil {
 		return err
 	}
@@ -219,27 +237,35 @@ func (a *App) BatchSettleDebt(ctx context.Context, owner, root string) error {
 }
 
 func (a *App) BatchRelease(ctx context.Context, owner, root string) error {
-	if a == nil || a.batchInstall == nil || a.batchInstall.CLIOwner(jobbatch.ID(root)) != owner {
+	return batchRelease(a.batchCLIParams(), ctx, owner, root)
+}
+
+func batchRelease(p batchCLIParams, ctx context.Context, owner, root string) error {
+	if p.batchInstall() == nil || p.batchInstall().CLIOwner(jobbatch.ID(root)) != owner {
 		return errors.New("batch CLI: root is not owned by this session")
 	}
-	fac, err := a.BatchCLIStore()
+	fac, err := batchCLIStore(p)
 	if err != nil {
 		return err
 	}
 	if err = fac.Store.BatchSettleCLIWakeDebt(ctx, owner, root); err != nil {
 		return err
 	}
-	return a.batchInstall.ReleaseCLIAfterResult(jobbatch.ID(root))
+	return p.batchInstall().ReleaseCLIAfterResult(jobbatch.ID(root))
 }
 
 func (a *App) BatchResult(ctx context.Context, owner, root string) ([]db.BatchNode, map[string]string, error) {
-	if a == nil || a.batchInstall == nil {
+	return batchResult(a.batchCLIParams(), ctx, owner, root)
+}
+
+func batchResult(p batchCLIParams, ctx context.Context, owner, root string) ([]db.BatchNode, map[string]string, error) {
+	if p.batchInstall() == nil {
 		return nil, nil, errors.New("batch runtime unavailable")
 	}
-	if a.batchInstall.CLIOwner(jobbatch.ID(root)) != owner {
+	if p.batchInstall().CLIOwner(jobbatch.ID(root)) != owner {
 		return nil, nil, errors.New("batch CLI: root is not owned by this session")
 	}
-	fac, err := a.BatchCLIStore()
+	fac, err := batchCLIStore(p)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -252,7 +278,7 @@ func (a *App) BatchResult(ctx context.Context, owner, root string) ([]db.BatchNo
 		if node.Kind != "task" {
 			continue
 		}
-		chunk, outputErr := a.batchInstall.CLIOutput(ctx, owner, jobbatch.ID(root), jobbatch.ID(node.NodeID))
+		chunk, outputErr := p.batchInstall().CLIOutput(ctx, owner, jobbatch.ID(root), jobbatch.ID(node.NodeID))
 		if outputErr != nil {
 			// Never started, or released and no longer cached: the outcome
 			// still reports, without output.
@@ -268,17 +294,17 @@ func (a *App) BatchResult(ctx context.Context, owner, root string) ([]db.BatchNo
 	return snapshot.Nodes, outputs, nil
 }
 
-func (a *App) BatchWait(ctx context.Context, owner, root string) (db.BatchNode, error) {
-	if a == nil || a.batchInstall == nil {
+func batchWait(p batchCLIParams, ctx context.Context, owner, root string) (db.BatchNode, error) {
+	if p.batchInstall() == nil {
 		return db.BatchNode{}, errors.New("batch runtime unavailable")
 	}
-	if a.batchInstall.CLIOwner(jobbatch.ID(root)) != owner {
+	if p.batchInstall().CLIOwner(jobbatch.ID(root)) != owner {
 		return db.BatchNode{}, errors.New("batch CLI: root is not owned by this session")
 	}
 	waitCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { _, err := a.batchInstall.WaitCLI(waitCtx, jobbatch.ID(root)); done <- err }()
+	go func() { _, err := p.batchInstall().WaitCLI(waitCtx, jobbatch.ID(root)); done <- err }()
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -291,13 +317,13 @@ func (a *App) BatchWait(ctx context.Context, owner, root string) (db.BatchNode, 
 		case <-ctx.Done():
 			return db.BatchNode{}, ctx.Err()
 		case <-ticker.C:
-			if err := a.batchInstall.PumpCLIControls(ctx, owner, jobbatch.ID(root)); err != nil {
+			if err := p.batchInstall().PumpCLIControls(ctx, owner, jobbatch.ID(root)); err != nil {
 				return db.BatchNode{}, err
 			}
 		}
 	}
 completed:
-	fac, err := a.BatchCLIStore()
+	fac, err := batchCLIStore(p)
 	if err != nil {
 		return db.BatchNode{}, err
 	}
@@ -309,10 +335,14 @@ completed:
 }
 
 func (a *App) BatchAdd(ctx context.Context, root, node string, items []jobbatch.Spec) error {
-	if !a.BatchOwnerRuntime() {
+	return batchAdd(a.batchCLIParams(), ctx, root, node, items)
+}
+
+func batchAdd(p batchCLIParams, ctx context.Context, root, node string, items []jobbatch.Spec) error {
+	if !batchOwnerRuntime(p) {
 		return errors.New("batch add is owner-process-only; use rush batch stop for cross-process control")
 	}
-	fac, err := a.BatchCLIStore()
+	fac, err := batchCLIStore(p)
 	if err != nil {
 		return err
 	}
@@ -330,14 +360,14 @@ func (a *App) BatchAdd(ctx context.Context, root, node string, items []jobbatch.
 	if nodeIdentity.Owner != rootIdentity.Owner || nodeIdentity.Root != rootIdentity.Root {
 		return errors.New("node does not belong to selected root")
 	}
-	if hs := a.batchHostStore(); hs == nil || hs.HostID() != rootIdentity.Host {
+	if hs := batchHostStore(p); hs == nil || hs.HostID() != rootIdentity.Host {
 		return errors.New("batch add is owner-process-only; use rush batch stop for cross-process control")
 	}
-	if a.batchInstall.CLIOwner(jobbatch.ID(rootID)) != rootIdentity.Owner {
+	if p.batchInstall().CLIOwner(jobbatch.ID(rootID)) != rootIdentity.Owner {
 		return errors.New("batch add is owner-process-only; use rush batch stop for cross-process control")
 	}
 	// CLI owner-process add = the same unattended surface.
-	b, err := agent.NewBatchCLIBuilderWithQuestionRoute(a.AgentCoordinator, a.batchWorkIngress, false)
+	b, err := agent.NewBatchCLIBuilderWithQuestionRoute(p.env.Coord(), p.batchWorkIngress(), false)
 	if err != nil {
 		return err
 	}
@@ -346,11 +376,11 @@ func (a *App) BatchAdd(ctx context.Context, root, node string, items []jobbatch.
 	if err != nil {
 		return err
 	}
-	if err := a.batchInstall.AddCLI(ctx, jobbatch.ID(rootID), jobbatch.ID(nodeID), translated); err != nil {
+	if err := p.batchInstall().AddCLI(ctx, jobbatch.ID(rootID), jobbatch.ID(nodeID), translated); err != nil {
 		release()
 		return err
 	}
-	if err := a.batchInstall.RetainCLIConstruction(jobbatch.ID(rootID), release); err != nil {
+	if err := p.batchInstall().RetainCLIConstruction(jobbatch.ID(rootID), release); err != nil {
 		release()
 		return err
 	}

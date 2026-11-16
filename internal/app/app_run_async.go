@@ -43,18 +43,6 @@ var (
 	cliSetupRetryPause = 500 * time.Millisecond
 )
 
-// cliLoopTurnDoneSeam is a test-only hook called right after each loop turn's
-// ExecuteRun returns, before its result is classified. Lets a test land a
-// cancellation exactly between a finished turn and the loop's next decision.
-// nil in every production path.
-var cliLoopTurnDoneSeam func()
-
-// cliLoopBeforeDrainSeam is a test-only hook called after the pre-launch
-// checks passed and right before a Drain's ExecuteRun starts: the window in
-// which an operator's `sessions cancel` can land after the check. nil in every
-// production path.
-var cliLoopBeforeDrainSeam func()
-
 // flushLoopExit renders final's envelope through output exactly the way the
 // loop's normal "scope closed" exit always did: every exit from the loop --
 // refusal give-up, ctx cancellation, a wait error, a stuck debt, or the
@@ -196,7 +184,8 @@ func (t *loopTotals) applyTo(final *RunResult, started time.Time) {
 // decisions: a first turn (the user's request), then Drain turns while the
 // session owes a reaction and work is still running.
 type cliLoop struct {
-	app    *App
+	env    RunEnv
+	host   LoopHost
 	source agent.ReactionDebtSource
 	ctx    context.Context
 	output io.Writer
@@ -279,36 +268,34 @@ func (l *cliLoop) errOut() io.Writer {
 	return os.Stderr
 }
 
-func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io.Writer, prompt string, overrides RunOverrides, hideSpinner bool, mode RunMode, continueSessionID string, useLast bool) (final *RunResult, runErr error) {
+func runNonInteractiveWithAsyncResults(env RunEnv, ctx context.Context, output io.Writer, prompt string, overrides RunOverrides, hideSpinner bool, mode RunMode, continueSessionID string, useLast bool) (final *RunResult, runErr error) {
 	if output == nil {
 		output = io.Discard
 	}
-	if err := app.resolveRunRole(&overrides); err != nil {
+	if err := resolveRunRole(env, &overrides); err != nil {
 		return nil, err
 	}
 	if overrides.roleContract != nil {
 		overrides.DisableSubAgents = true
 		overrides.roleContract = overrides.roleContract.Clone()
 	}
-	if app.batchFaultWriter != nil && mode == RunModeJSON {
-		output = app.batchFaultWriter
-		app.batchFaultOutputMu.Lock()
-		app.batchFaultOutput = func(fault error) {
-			if err := app.batchFaultWriter.writeFault(continueSessionID, fault); err != nil {
+	if env.BatchFaultWriter() != nil && mode == RunModeJSON {
+		output = env.BatchFaultWriter()
+		env.SetBatchFaultOutput(func(fault error) {
+			if err := env.BatchFaultWriter().writeFault(continueSessionID, fault); err != nil {
 				slog.Error("failed to encode batch-fault JSON result", "error", err)
 			}
-		}
-		app.batchFaultOutputMu.Unlock()
+		})
 	}
-	source, isReactionSource := app.AgentCoordinator.(agent.ReactionDebtSource)
+	source, isReactionSource := env.Coord().(agent.ReactionDebtSource)
 	if overrides.Origin == message.OriginCLI && !isReactionSource {
 		// The loop cannot run without the coordinator's scope answers; running one
 		// plain turn instead would drop the driver marker and every reaction
 		// silently (R4C-5).
-		return nil, fmt.Errorf("rush run: the agent coordinator (%T) is not an agent.ReactionDebtSource; the async reaction loop cannot run", app.AgentCoordinator)
+		return nil, fmt.Errorf("rush run: the agent coordinator (%T) is not an agent.ReactionDebtSource; the async reaction loop cannot run", env.Coord())
 	}
 	if !isReactionSource || overrides.Origin != message.OriginCLI {
-		final, runErr = app.ExecuteRun(ctx, RunRequest{
+		final, runErr = executeRun(env, ctx, RunRequest{
 			Prompt: prompt, Overrides: overrides, Mode: mode,
 			ContinueSessionID: continueSessionID, UseLast: useLast,
 			Origin: overrides.Origin, Stdout: output, Stderr: os.Stderr,
@@ -328,16 +315,16 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 	source.RunMaintenanceSweep(ctx)
 	// Resolve once for continue/useLast/new before orphan cleanup. Pin the
 	// selected session so the first turn cannot resolve a different owner.
-	sess, err := app.resolveSession(agent.WithCallOrigin(ctx, overrides.Origin), continueSessionID, useLast)
+	sess, err := resolveSession(env, agent.WithCallOrigin(ctx, overrides.Origin), continueSessionID, useLast)
 	if err != nil {
 		return nil, err
 	}
 	continueSessionID, useLast = sess.ID, false
-	if store := app.WakeScheduleStore(); store != nil {
+	if store := env.WakeStore(); store != nil {
 		if _, err := store.CancelAwaitTasksMaxWait(ctx, sess.ID, time.Now()); err != nil {
 			return nil, fmt.Errorf("run-start await_tasks cleanup: %w", err)
 		}
-		if n, ok := app.AgentCoordinator.(interface{ WakeSchedulerNotify() }); ok {
+		if n, ok := env.Coord().(interface{ WakeSchedulerNotify() }); ok {
 			n.WakeSchedulerNotify()
 		}
 	}
@@ -352,11 +339,12 @@ func (app *App) runNonInteractiveWithAsyncResults(ctx context.Context, output io
 		}
 	}()
 	l := &cliLoop{
-		app: app, source: source, ctx: ctx, output: output, mode: mode,
+		env:  env,
+		host: newLoopHost(env), source: source, ctx: ctx, output: output, mode: mode,
 		hideSpinner: hideSpinner, overrides: overrides, turnOverrides: turnOverrides,
 		prompt: prompt, continueSessionID: continueSessionID, useLast: useLast,
 		started: started, sessionID: continueSessionID, lastBuffered: &bytes.Buffer{},
-		reviewBasis: app.captureReviewBasis(ctx, overrides.ModelRole, prompt, started),
+		reviewBasis: captureReviewBasis(env, ctx, overrides.ModelRole, prompt, started),
 	}
 	// Doc sec.3.4: this loop IS the external driver for its session -- claimed
 	// (durably, so no other process starts a reaction turn for it) as soon as
@@ -398,7 +386,7 @@ func (l *cliLoop) runTurn(first bool) (*RunResult, *bytes.Buffer, error) {
 		// into history.
 		turnCtx = agent.WithDrainCall(agent.WithBackgroundJobNotice(l.ctx))
 	}
-	result, err := l.app.ExecuteRun(turnCtx, RunRequest{
+	result, err := l.host.executeRun(turnCtx, RunRequest{
 		Prompt: l.prompt, Overrides: l.turnOverrides, Mode: l.mode,
 		ContinueSessionID: l.continueSessionID, UseLast: l.useLast,
 		Origin: l.overrides.Origin, Stdout: turnOutput, Stderr: l.errOut(),
@@ -442,14 +430,14 @@ func (l *cliLoop) turnSink() (buffered *bytes.Buffer, out io.Writer) {
 // credentials.
 func (l *cliLoop) reviewerDue() bool {
 	return !l.reviewerDone && l.runErr == nil && l.final != nil && l.ctx.Err() == nil &&
-		shouldRunReviewerPass(l.overrides.ModelRole, l.app.config.Config())
+		shouldRunReviewerPass(l.overrides.ModelRole, l.env.Config.Config())
 }
 
 // runReviewerTurn runs the reviewer pass: a plain turn on the claimed session,
 // no Drain marker on its ctx.
 func (l *cliLoop) runReviewerTurn() (*RunResult, *bytes.Buffer, error) {
 	buffered, turnOutput := l.turnSink()
-	result, err := l.app.ExecuteRun(l.ctx, RunRequest{
+	result, err := l.host.executeRun(l.ctx, RunRequest{
 		Overrides: l.turnOverrides, Mode: l.mode,
 		ContinueSessionID: l.sessionID,
 		Origin:            l.overrides.Origin, Stdout: turnOutput, Stderr: l.errOut(),
@@ -517,7 +505,7 @@ func (l *cliLoop) closePhase() cliStepResult {
 			// terse output stays the printed answer); the reviewer's verdict
 			// is attached as the additive review field.
 			if l.final != nil {
-				l.app.attachReview(l.ctx, l.final, l.sessionID, result.FinalText, l.errOut())
+				l.host.attachReview(l.ctx, l.final, l.sessionID, result.FinalText, l.errOut())
 			}
 			l.runErr, l.lastFailed = nil, nil
 			return cliStepResult{ev: evCloseAgain}
@@ -961,11 +949,11 @@ type usageMark struct {
 func (l *cliLoop) sessionUsage() usageMark {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(l.ctx), cleanupTimeout)
 	defer cancel()
-	sess, err := l.app.Sessions.Get(ctx, l.sessionID)
+	sess, err := l.env.Sessions().Get(ctx, l.sessionID)
 	if err != nil {
 		return usageMark{}
 	}
-	spent, err := l.app.Sessions.SubtreeSpent(ctx, l.sessionID)
+	spent, err := l.env.Sessions().SubtreeSpent(ctx, l.sessionID)
 	if err != nil {
 		return usageMark{}
 	}

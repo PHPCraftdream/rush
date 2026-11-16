@@ -14,7 +14,7 @@ func TestSupplementalCatalogModelLoadsForConfiguredAnthropic(t *testing.T) {
 	isolateConfigEnvironment(t)
 	cfg := &Config{Providers: csync.NewMap[string, ProviderConfig]()}
 	cfg.Providers.Set("anthropic", ProviderConfig{})
-	cfg.setDefaults(t.TempDir(), "")
+	setDefaults(cfg, t.TempDir(), "")
 	predecessor := catwalk.Model{
 		ID:                 "claude-haiku-4-5-20251001",
 		CostPer1MIn:        0.8,

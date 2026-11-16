@@ -218,7 +218,7 @@ func TestRunLoop_MaxCostWhileWaitingEndsTheRun(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
 			l := &cliLoop{
-				app: h.app, source: src, ctx: ctx, output: &out, mode: RunModeJSON, hideSpinner: true,
+				env: h.app.runEnv(), host: h.app.loopHost(), source: src, ctx: ctx, output: &out, mode: RunModeJSON, hideSpinner: true,
 				overrides: overrides, turnOverrides: overrides, prompt: "do it",
 				continueSessionID: h.sessionID, started: time.Now(), sessionID: h.sessionID,
 				lastBuffered: &bytes.Buffer{}, stderr: &stderr,

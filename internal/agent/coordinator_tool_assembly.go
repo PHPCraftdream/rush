@@ -54,11 +54,11 @@ func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fa
 		shared := scope == nil
 		if shared {
 			scope = newBuildResourceScope()
-			defer scope.close()
+			defer scope.Close()
 		}
 		failBuildScope := func(err error) (policyToolBuild, error) {
 			if !shared {
-				scope.close()
+				scope.Close()
 			}
 			return policyToolBuild{}, err
 		}

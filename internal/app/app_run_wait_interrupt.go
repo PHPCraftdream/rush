@@ -13,17 +13,17 @@ var cliLoopInterruptWaitSeam func()
 
 // Queue остаётся единственным владельцем исполнения; CLI забирает его результат.
 func (l *cliLoop) runWaitingInterrupt(messageID string) error {
-	if l.app.RunQueuePump == nil {
+	if l.env.Pump() == nil {
 		return fmt.Errorf("rush run: interrupt requires the durable run queue")
 	}
 	before := l.sessionUsage()
-	if err := l.app.drainPendingBeforeRun(l.ctx, l.sessionID); err != nil {
+	if err := l.host.drainPendingBeforeRun(l.ctx, l.sessionID); err != nil {
 		return err
 	}
-	if err := l.app.waitLocalOwnerReleased(l.ctx, l.sessionID); err != nil {
+	if err := l.host.waitLocalOwnerReleased(l.ctx, l.sessionID); err != nil {
 		return err
 	}
-	msgs, err := l.app.Messages.List(l.ctx, l.sessionID)
+	msgs, err := l.env.Messages().List(l.ctx, l.sessionID)
 	if err != nil {
 		return fmt.Errorf("rush run: read interrupt outcome: %w", err)
 	}
@@ -71,10 +71,10 @@ func (l *cliLoop) runWaitingInterrupt(messageID string) error {
 	}
 	var subOutputs []SubAgentOutput
 	if l.overrides.AggregationMode == "attach" {
-		subOutputs = l.app.collectSubAgentOutputs(l.ctx, l.sessionID)
+		subOutputs = l.host.collectSubAgentOutputs(l.ctx, l.sessionID)
 	}
 	result := buildRunResult(l.sessionID, text, notes, string(final.FinishReason()), nil, false, counts, tokens, cost, time.Since(l.started), "", "", stripped, stripError, stripReason, subOutputs, "")
-	if usage, err := l.app.Messages.UsageBySession(l.ctx, l.sessionID); err == nil {
+	if usage, err := l.env.Messages().UsageBySession(l.ctx, l.sessionID); err == nil {
 		result.Usage.Session = buildSessionUsageInfo(usage)
 	}
 	l.flushQueuedUsage(before)
@@ -88,6 +88,6 @@ func (l *cliLoop) runWaitingInterrupt(messageID string) error {
 	l.runErr, l.lastFailed = nil, nil
 	l.streak = drainStreak{}
 	l.reviewerDone = false
-	l.reviewBasis = l.app.captureReviewBasis(l.ctx, l.overrides.ModelRole, msgs[anchor].FullText(), l.started)
+	l.reviewBasis = l.host.captureReviewBasis(l.ctx, l.overrides.ModelRole, msgs[anchor].FullText(), l.started)
 	return nil
 }

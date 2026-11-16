@@ -49,7 +49,7 @@ func TestRecordRecentModel_AddsAndPersists(t *testing.T) {
 
 	dir := t.TempDir()
 	cfg := &Config{}
-	cfg.setDefaults(dir, "")
+	setDefaults(cfg, dir, "")
 	store := testStoreWithPath(cfg, dir)
 
 	err := store.recordRecentModel(ScopeGlobal, SelectedModelTypeSmart, SelectedModel{Provider: "openai", Model: "gpt-4o"})
@@ -76,7 +76,7 @@ func TestRecordRecentModel_DedupeAndMoveToFront(t *testing.T) {
 
 	dir := t.TempDir()
 	cfg := &Config{}
-	cfg.setDefaults(dir, "")
+	setDefaults(cfg, dir, "")
 	store := testStoreWithPath(cfg, dir)
 
 	// Add two entries
@@ -96,7 +96,7 @@ func TestRecordRecentModel_TrimsToMax(t *testing.T) {
 
 	dir := t.TempDir()
 	cfg := &Config{}
-	cfg.setDefaults(dir, "")
+	setDefaults(cfg, dir, "")
 	store := testStoreWithPath(cfg, dir)
 
 	// Insert 6 unique models; max is 5
@@ -141,7 +141,7 @@ func TestRecordRecentModel_SkipsEmptyValues(t *testing.T) {
 
 	dir := t.TempDir()
 	cfg := &Config{}
-	cfg.setDefaults(dir, "")
+	setDefaults(cfg, dir, "")
 	store := testStoreWithPath(cfg, dir)
 
 	// Missing provider
@@ -166,7 +166,7 @@ func TestRecordRecentModel_NoPersistOnNoop(t *testing.T) {
 
 	dir := t.TempDir()
 	cfg := &Config{}
-	cfg.setDefaults(dir, "")
+	setDefaults(cfg, dir, "")
 	store := testStoreWithPath(cfg, dir)
 
 	entry := SelectedModel{Provider: "openai", Model: "gpt-4o"}
@@ -201,7 +201,7 @@ func TestUpdatePreferredModel_UpdatesRecents(t *testing.T) {
 
 	dir := t.TempDir()
 	cfg := &Config{}
-	cfg.setDefaults(dir, "")
+	setDefaults(cfg, dir, "")
 	store := testStoreWithPath(cfg, dir)
 
 	sel := SelectedModel{Provider: "openai", Model: "gpt-4o"}
@@ -223,7 +223,7 @@ func TestRecordRecentModel_TypeIsolation(t *testing.T) {
 
 	dir := t.TempDir()
 	cfg := &Config{}
-	cfg.setDefaults(dir, "")
+	setDefaults(cfg, dir, "")
 	store := testStoreWithPath(cfg, dir)
 
 	// Add models to both smart and small types

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 )
@@ -50,7 +51,7 @@ import (
 // the cause assertion.
 func TestP1_2_LeaseLossCancelCauseIsRenewalNotWatchdog(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc, sqlDB := setupTestSessionWithDB(t, "test-session-p1-2-cancel-cause")
 	ctx := t.Context()
 

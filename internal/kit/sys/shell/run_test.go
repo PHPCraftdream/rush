@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shpolicy"
 )
 
 func TestRun_Echo(t *testing.T) {
@@ -213,7 +215,7 @@ func TestRun_ParseError(t *testing.T) {
 }
 
 func TestRun_BlockFuncs(t *testing.T) {
-	block := CommandsBlocker([]string{"forbidden"})
+	block := shpolicy.CommandsBlocker([]string{"forbidden"})
 	var stderr bytes.Buffer
 	err := Run(t.Context(), RunOptions{
 		Command:    "forbidden",

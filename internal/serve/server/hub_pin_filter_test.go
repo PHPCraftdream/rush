@@ -24,10 +24,17 @@ import (
 func TestEventSessionClassificationExhaustive(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	require.True(t, ok)
-	protocol, err := parser.ParseFile(token.NewFileSet(), filepath.Join(filepath.Dir(file), "protocol.go"), nil, parser.ParseComments)
-	require.NoError(t, err)
+	// The protocol constants moved to the wire leaf package: the former
+	// protocol.go is now wire/protocol.go plus the live-work section in
+	// wire/snapshots.go.
+	var protocolDecls []ast.Decl
+	for _, name := range []string{"protocol.go", "snapshots.go"} {
+		parsed, err := parser.ParseFile(token.NewFileSet(), filepath.Join(filepath.Dir(file), "wire", name), nil, parser.ParseComments)
+		require.NoError(t, err)
+		protocolDecls = append(protocolDecls, parsed.Decls...)
+	}
 	values := map[string]string{}
-	for _, decl := range protocol.Decls {
+	for _, decl := range protocolDecls {
 		gen, ok := decl.(*ast.GenDecl)
 		if !ok || gen.Tok != token.CONST {
 			continue

@@ -45,25 +45,25 @@ type batchMaintenanceLoop struct {
 
 // batchMaintenanceLoops memoizes each App's maintenance loop (one
 // goroutine per App, never per candidate), mirroring batchHostStores.
-var batchMaintenanceLoops sync.Map // *App -> *batchMaintenanceLoop
+var batchMaintenanceLoops sync.Map // *batchOwner -> *batchMaintenanceLoop
 
 // startBatchMaintenance runs the startup maintenance pass synchronously
 // (bounded by batchMaintenancePassBudget) and arms the periodic pass at
 // batchMaintenanceInterval. Without a data dir or DB writer,
 // it is a no-op. First wins: a second call never starts a second loop.
-func (app *App) startBatchMaintenance() {
-	if app.dataDir == "" || app.batchCutoverWriter() == nil {
+func startBatchMaintenance(p batchCLIParams) {
+	if p.env.DataDir == nil || p.env.DataDir() == "" || batchCutoverWriter(p) == nil {
 		return
 	}
 	base, cancel := context.WithCancel(context.Background())
 	loop := &batchMaintenanceLoop{baseCtx: base, cancel: cancel, stop: make(chan struct{}), done: make(chan struct{})}
-	if _, loaded := batchMaintenanceLoops.LoadOrStore(app, loop); loaded {
+	if _, loaded := batchMaintenanceLoops.LoadOrStore(p.owner(), loop); loaded {
 		cancel()
 		return
 	}
 	// Startup pass: outside host-registration locks, before the App
 	// advertises readiness, exactly one bounded pass.
-	app.batchMaintenancePass()
+	batchMaintenancePass(p)
 	go func() {
 		defer close(loop.done)
 		ticker := time.NewTicker(batchMaintenanceInterval)
@@ -73,7 +73,7 @@ func (app *App) startBatchMaintenance() {
 			case <-loop.stop:
 				return
 			case <-ticker.C:
-				app.batchMaintenancePass()
+				batchMaintenancePass(p)
 			}
 		}
 	}()
@@ -85,8 +85,8 @@ func (app *App) startBatchMaintenance() {
 // cursor carried across passes. A failed or expired pass leaves the
 // cursor resumable — the next pass continues where this one stopped.
 // Best-effort: the pass never fails its caller.
-func (app *App) batchMaintenancePass() {
-	v, ok := batchMaintenanceLoops.Load(app)
+func batchMaintenancePass(p batchCLIParams) {
+	v, ok := batchMaintenanceLoops.Load(p.owner())
 	if !ok {
 		return
 	}
@@ -96,8 +96,8 @@ func (app *App) batchMaintenancePass() {
 	ctx, cancel := context.WithTimeout(loop.baseCtx, batchMaintenancePassBudget)
 	defer cancel()
 	cursor := loop.cursor
-	out, cursor, done, err := session.NewBatchStore(app.batchCutoverWriter()).
-		BatchRecoverPass(ctx, session.BatchSharedHostProbe(app.dataDir),
+	out, cursor, done, err := session.NewBatchStore(batchCutoverWriter(p)).
+		BatchRecoverPass(ctx, session.BatchSharedHostProbe(p.env.DataDir()),
 			session.BatchRecoveryLimits{MaxRoots: batchMaintenanceMaxRoots, PageSize: batchMaintenancePageSize},
 			cursor)
 	loop.cursor = cursor
@@ -112,8 +112,8 @@ func (app *App) batchMaintenancePass() {
 // in-flight pass, and joins the goroutine — the same synchronous
 // before-DB-close ordering as the other App pollers. Idempotent and
 // nil-safe for bare App literals.
-func (app *App) stopBatchMaintenance() {
-	v, ok := batchMaintenanceLoops.LoadAndDelete(app)
+func stopBatchMaintenance(p batchCLIParams) {
+	v, ok := batchMaintenanceLoops.LoadAndDelete(p.owner())
 	if !ok {
 		return
 	}

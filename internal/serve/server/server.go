@@ -17,6 +17,8 @@ import (
 	"time"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire/finalgate"
 	"github.com/gorilla/websocket"
 )
 
@@ -87,7 +89,7 @@ func (s *Server) policyHasSurface(surface ListenerSurface) bool {
 func (s *Server) checkOrigin(r *http.Request) bool {
 	// A server built by NewWithPolicy carries explicit surfaces; a bare Server keeps the legacy rule.
 	if !s.uiAuth && len(s.policy.Surfaces) > 0 {
-		return serveOriginAllowed(r.Header.Get("Origin"), s.policy.AllowedOrigins)
+		return OriginsAllowed(r.Header.Get("Origin"), s.policy.AllowedOrigins)
 	}
 	origin := r.Header.Get("Origin")
 	if origin == "" {
@@ -112,7 +114,7 @@ func (s *Server) checkOrigin(r *http.Request) bool {
 }
 
 func (s *Server) validatePolicy() error {
-	if err := validateAllowedOrigins(s.policy.AllowedOrigins); err != nil {
+	if err := ValidateAllowedOrigins(s.policy.AllowedOrigins); err != nil {
 		return &ListenerPolicyError{Address: s.policy.Address, Rule: "invalid allowed origin", Cause: err}
 	}
 	for _, surface := range s.policy.Surfaces {
@@ -160,7 +162,7 @@ func newServer(a *appPkg.App, policy ListenerPolicy, staticFS fs.FS, uiAuth bool
 	policy = cloneListenerPolicy(policy)
 	var auth *Auth
 	if uiAuth {
-		auth = newAuth()
+		auth = NewAuth()
 	}
 	return &Server{
 		app:          a,
@@ -179,7 +181,7 @@ func (s *Server) TLSPins() (TLSPins, error) {
 	if s.tlsStore == nil {
 		return TLSPins{}, nil
 	}
-	return s.tlsStore.pins()
+	return s.tlsStore.Pins()
 }
 
 func (s *Server) Token() string {
@@ -235,7 +237,7 @@ func (s *Server) Start(ctx context.Context, onReady func(addr string)) error {
 	if err != nil {
 		return err
 	}
-	if !IsLoopbackHost(listenerHost(ln.Addr())) && !s.policy.AllowCleartext && !s.policy.TLS.hasCertificatePair() {
+	if !IsLoopbackHost(listenerHost(ln.Addr())) && !s.policy.AllowCleartext && !s.policy.TLS.HasCertificatePair() {
 		_ = ln.Close()
 		return fmt.Errorf("%w: %q", ErrUnexpectedNonLoopbackBind, ln.Addr().String())
 	}
@@ -245,7 +247,7 @@ func (s *Server) Start(ctx context.Context, onReady func(addr string)) error {
 // ServeListener serves on a listener that was prebound by the caller. The
 // post-bind host check is repeated here for callers that inject a listener.
 func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady func(addr string)) error {
-	if !IsLoopbackHost(listenerHost(ln.Addr())) && !s.policy.AllowCleartext && !s.policy.TLS.hasCertificatePair() {
+	if !IsLoopbackHost(listenerHost(ln.Addr())) && !s.policy.AllowCleartext && !s.policy.TLS.HasCertificatePair() {
 		_ = ln.Close()
 		return fmt.Errorf("%w: %q", ErrUnexpectedNonLoopbackBind, ln.Addr().String())
 	}
@@ -257,7 +259,7 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady fun
 	}
 	var serverTLS *tls.Config
 	var certificateStore *tlsCertificateStore
-	if s.policy.TLS.configured() {
+	if s.policy.TLS.Configured() {
 		var err error
 		certificateStore, err = newTLSCertificateStore(s.policy.TLS)
 		if err != nil {
@@ -282,7 +284,7 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady fun
 	runCtx, cancelRun := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelRun()
 	if certificateStore != nil {
-		go runTLSReload(runCtx, certificateStore, tlsReloadOptions{})
+		go runTLSReload(runCtx, certificateStore)
 	}
 	var joined sync.WaitGroup
 	joined.Add(1)
@@ -291,7 +293,7 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady fun
 		s.hub.Run(runCtx)
 	}()
 	if s.app != nil {
-		forwarders := subscribeAndBroadcast(runCtx, s.app, s.hub)
+		forwarders := subscribeAndBroadcast(runCtx, s.app, s.hub, finalgate.GateFor(s.app))
 		joined.Add(1)
 		go func() {
 			defer joined.Done()
@@ -525,7 +527,7 @@ func (s *Server) handleWS(ctx context.Context, w http.ResponseWriter, r *http.Re
 
 	if !s.uiAuth {
 		if principal, ok := PrincipalFrom(r.Context()); ok {
-			if err := conn.WriteJSON(WSMessage{Type: EventHello, Payload: mustJSON(helloPayload{Protocol: "rush.v1", TokenID: principal.TokenID, Scopes: principal.Scopes})}); err != nil {
+			if err := conn.WriteJSON(WSMessage{Type: EventHello, Payload: wire.MustJSONRaw(wire.HelloPayload{Protocol: "rush.v1", TokenID: principal.TokenID, Scopes: principal.Scopes})}); err != nil {
 				_ = conn.Close()
 				return
 			}

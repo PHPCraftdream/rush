@@ -37,9 +37,9 @@ func (c *coordinator) runAwaitingAdmission(ctx context.Context, agent SessionAge
 	// resolveOnce guards the hook itself, independent of the channel's own
 	// buffering: this call's outcome must be delivered exactly once even if
 	// something upstream (a future call site, not any today) ever invokes
-	// onQueueResolved more than once for the same call.
+	// OnQueueResolved more than once for the same call.
 	var resolveOnce sync.Once
-	call.onQueueResolved = func(r *fantasy.AgentResult, e error) {
+	call.OnQueueResolved = func(r *fantasy.AgentResult, e error) {
 		resolveOnce.Do(func() {
 			select {
 			case done <- outcome{r, e}:

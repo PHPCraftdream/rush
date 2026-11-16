@@ -81,7 +81,7 @@ func TestBatchCompletionWake_CommittedSelectedCompletionWakesDurableOwner(t *tes
 	root := pwReserveCompletionRoot(t, a, owner.ID, "pw-durable-call")
 
 	d := newBatchTimeoutWakeDispatcher()
-	d.rootOwner = pwBatchCompletionRootOwner(a)
+	d.rootOwner = pwBatchCompletionRootOwner(a.batchCLIParams())
 	t.Cleanup(d.Stop)
 	wakes := pwAttachWakeRecorder(d)
 	d.WakeCompletion(context.Background(), root)
@@ -115,7 +115,7 @@ func TestBatchCompletionWake_RepeatedCommitWhileInFlightWakesOnce(t *testing.T) 
 	root := pwReserveCompletionRoot(t, a, owner.ID, "pw-dedupe-call")
 
 	d := newBatchTimeoutWakeDispatcher()
-	d.rootOwner = pwBatchCompletionRootOwner(a)
+	d.rootOwner = pwBatchCompletionRootOwner(a.batchCLIParams())
 	t.Cleanup(d.Stop)
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -158,7 +158,7 @@ func TestBatchCompletionWake_CompletionBeforeCoordinatorAttachIsNotLost(t *testi
 	root := pwReserveCompletionRoot(t, a, owner.ID, "pw-early-call")
 
 	d := newBatchTimeoutWakeDispatcher()
-	d.rootOwner = pwBatchCompletionRootOwner(a)
+	d.rootOwner = pwBatchCompletionRootOwner(a.batchCLIParams())
 	t.Cleanup(d.Stop)
 	// No coordinator attached yet: the completion commits first.
 	d.WakeCompletion(context.Background(), root)
@@ -181,7 +181,7 @@ func TestBatchCompletionWake_CompletionBeforeCoordinatorAttachIsNotLost(t *testi
 func TestBatchCompletionWake_UnknownRootNeverWakes(t *testing.T) {
 	a, _, _ := newBatchMaintenanceApp(t)
 	d := newBatchTimeoutWakeDispatcher()
-	d.rootOwner = pwBatchCompletionRootOwner(a)
+	d.rootOwner = pwBatchCompletionRootOwner(a.batchCLIParams())
 	t.Cleanup(d.Stop)
 	wakes := pwAttachWakeRecorder(d)
 	d.WakeCompletion(context.Background(), "pw-missing-root")
