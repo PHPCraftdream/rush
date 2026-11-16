@@ -11,30 +11,48 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
+	"github.com/PHPCraftdream/rush/internal/app/apprecovery"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
-// recoverParams are the explicit inputs of the startup recovery sweep.
-// OrphanAge and DataDirOverride are the test seams of the same names on
-// App (recoveryOrphanAge, recoveryDataDir).
-type recoverParams struct {
-	Messages        message.Service
-	Config          *config.ConfigStore
-	OrphanAge       *time.Duration
-	DataDirOverride *string
-}
+// Maintenance limits retain their original package-private locations. The
+// appbatch provider closes over these values and reads them on demand.
+var (
+	batchMaintenanceInterval   = 60 * time.Second
+	batchMaintenancePassBudget = 1 * time.Second
+	batchMaintenanceMaxRoots   = 64
+	batchMaintenancePageSize   = 64
+)
 
-// recoverInterruptedTurns delegates the startup recovery sweep to the free
-// function.
+// recoverSessionListSeam / recoverSessionPreWriteSeam are test-only seams of
+// the startup recovery sweep (moved to apprecovery in lane D2-2); they are
+// threaded into apprecovery.RecoverParams by recoverInterruptedTurns so
+// package-app white tests keep setting them. Nil in production.
+var recoverSessionListSeam func()
+
+// recoverSessionPreWriteSeam is the blocking pre-write seam of the recovery
+// sweep (task #777); see apprecovery.RecoverParams.PreWriteSeam. Nil in
+// production.
+var recoverSessionPreWriteSeam func()
+
+// recoverInterruptedTurns delegates the startup recovery sweep to
+// apprecovery.RecoverInterruptedTurns. Called from New (app.go) after the
+// mcpOwner setup and before InitCoderAgent; the call position must not move.
+// Closures resolve App fields at call time, matching the old direct reads
+// (nil-field meaning preserved for bare &App{}).
 func (app *App) recoverInterruptedTurns(ctx context.Context) {
-	recoverInterruptedTurns(ctx, recoverParams{
+	apprecovery.RecoverInterruptedTurns(ctx, apprecovery.RecoverParams{
 		Messages:        app.Messages,
 		Config:          app.config,
 		OrphanAge:       app.recoveryOrphanAge,
 		DataDirOverride: app.recoveryDataDir,
+		ListSeam:        recoverSessionListSeam,
+		PreWriteSeam:    recoverSessionPreWriteSeam,
 	})
 }
 
@@ -104,179 +122,324 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 	return prepareExecuteRun(app.runEnv(), ctx, req)
 }
 
-// batchCLIParams is the explicit capability set the batch free functions
-// (Sh5 port) read from *App. env carries the run-cluster closures (DB,
-// DataDir, Sessions, Coord, Perms, ProcessHome, fault-output access); the
-// remaining fields close over the App fields that are mutable after New
-// (batch install pieces, pools, registry owner key, activity conn).
-type batchCLIParams struct {
-	env                 RunEnv
-	dbConns             func() []*sql.DB
-	readDB              func() *sql.DB
-	dbReleasesNeeded    func() int
-	activityConn        func() *db.Queries
-	owner               func() *batchOwner
-	batchInstall        func() *agent.BatchInstall
-	batchRuntime        func() *BatchRuntime
-	batchWorkIngress    func() agent.BatchWorkIngress
-	batchTimeoutWake    func() *batchTimeoutWakeDispatcher
-	setBatchTimeoutWake func(*batchTimeoutWakeDispatcher)
-}
-
-// batchCLIParams snapshots the batch capability set at wrapper entry.
-// Every closure resolves its App field lazily at the same moment the old
-// method body read it. A nil App yields a zero params (nil closures);
-// the converted bodies keep the nil-App behaviour through their own guards.
-func (app *App) batchCLIParams() batchCLIParams {
+// batchCLIParams snapshots the batch capability set at wrapper entry (the
+// Sh5 port input, appbatch.BatchCLIParams). Every closure resolves its App
+// field lazily at the same moment the old method body read it. A nil App
+// yields a zero params (nil closures); the appbatch bodies keep the
+// nil-App behaviour through their own guards.
+func (app *App) batchCLIParams() appbatch.BatchCLIParams {
 	if app == nil {
-		return batchCLIParams{}
+		return appbatch.BatchCLIParams{}
 	}
-	return batchCLIParams{
-		env:                 app.runEnv(),
-		dbConns:             func() []*sql.DB { return app.dbConns },
-		readDB:              func() *sql.DB { return app.readDB },
-		dbReleasesNeeded:    func() int { return app.dbReleasesNeeded },
-		activityConn:        app.activityConn,
-		owner:               app.batchOwnerHandle,
-		batchInstall:        func() *agent.BatchInstall { return app.batchInstall },
-		batchRuntime:        func() *BatchRuntime { return app.batchRuntime },
-		batchWorkIngress:    func() agent.BatchWorkIngress { return app.batchWorkIngress },
-		batchTimeoutWake:    func() *batchTimeoutWakeDispatcher { return app.batchTimeoutWake },
-		setBatchTimeoutWake: func(d *batchTimeoutWakeDispatcher) { app.batchTimeoutWake = d },
+	env := app.runEnv()
+	return appbatch.BatchCLIParams{
+		WorkspaceRoot:       env.WorkspaceRoot,
+		Sessions:            env.Sessions,
+		Messages:            env.Messages,
+		Coord:               env.Coord,
+		Perms:               env.Perms,
+		DB:                  env.DB,
+		DataDir:             env.DataDir,
+		ProcessHome:         env.ProcessHome,
+		GetBatchFaultOutput: env.GetBatchFaultOutput,
+		DBConns:             func() []*sql.DB { return app.dbConns },
+		ReadDB:              func() *sql.DB { return app.readDB },
+		DBReleasesNeeded:    func() int { return app.dbReleasesNeeded },
+		ActivityConn:        app.activityConn,
+		Owner:               app.batchOwnerHandle,
+		MaintenanceBounds: func() appbatch.MaintenanceBounds {
+			return appbatch.MaintenanceBounds{
+				Interval:   batchMaintenanceInterval,
+				PassBudget: batchMaintenancePassBudget,
+				MaxRoots:   batchMaintenanceMaxRoots,
+				PageSize:   batchMaintenancePageSize,
+			}
+		},
+		BatchInstall:        func() *agent.BatchInstall { return app.batchInstall },
+		BatchRuntime:        func() *appbatch.BatchRuntime { return app.batchRuntime },
+		BatchWorkIngress:    func() agent.BatchWorkIngress { return app.batchWorkIngress },
+		BatchTimeoutWake:    func() *appbatch.TimeoutWakeDispatcher { return app.batchTimeoutWake },
+		SetBatchTimeoutWake: func(d *appbatch.TimeoutWakeDispatcher) { app.batchTimeoutWake = d },
 	}
 }
 
-// batchInstallParams is the explicit input of the Sh5 install port:
-// installBatchRuntime, releaseBatchRuntimeGate and their release seams.
-type batchInstallParams struct {
-	cli                    batchCLIParams
-	sessions               func() session.Service
-	messages               func() message.Service
-	coord                  func() agent.Coordinator
-	hostEnsure             func(context.Context) (string, error)
-	hostRelease            func(context.Context) error
-	hostReleaseKeepLock    func()
-	drainResidual          func()
-	handleFaultOutput      func(error)
-	releaseWriter          func() error
-	finalizationAuth       func() *agent.FinalizationAuthorityRegistry
-	getBatchHeldAnswerSink func() agent.BatchHeldAnswerSink
-	setBatchHeldAnswerSink func(agent.BatchHeldAnswerSink)
-	setBatchWorkIngress    func(agent.BatchWorkIngress)
-	setBatchModelControl   func(agent.BatchModelControl)
-	setBatchLiveReader     func(*session.BatchLiveReader)
-	setBatchRuntime        func(*BatchRuntime)
-	setBatchInstall        func(*agent.BatchInstall)
-}
-
-func (app *App) batchInstallParams() batchInstallParams {
+// batchOwnerHandle returns this App's registry key, creating it on first
+// use. Safe for concurrent callers and for bare App literals; a nil App
+// yields a nil key, as the nil *App key did before.
+func (app *App) batchOwnerHandle() *appbatch.Owner {
 	if app == nil {
-		return batchInstallParams{}
+		return nil
+	}
+	if o := app.batchOwner.Load(); o != nil {
+		return o
+	}
+	app.batchOwner.CompareAndSwap(nil, &appbatch.Owner{})
+	return app.batchOwner.Load()
+}
+
+// batchInstallParams is the explicit input of the Sh5 install port
+// (appbatch.InstallParams): InstallRuntime, ReleaseBatchRuntimeGate and
+// their release seams.
+func (app *App) batchInstallParams() appbatch.InstallParams {
+	if app == nil {
+		return appbatch.InstallParams{}
 	}
 	cli := app.batchCLIParams()
-	return batchInstallParams{
-		cli:                    cli,
-		sessions:               cli.env.Sessions,
-		messages:               cli.env.Messages,
-		coord:                  cli.env.Coord,
-		hostEnsure:             func(ctx context.Context) (string, error) { return batchHostEnsure(cli, ctx) },
-		hostRelease:            func(ctx context.Context) error { return batchHostRelease(cli, ctx) },
-		hostReleaseKeepLock:    func() { batchHostReleaseKeepLock(cli) },
-		drainResidual:          func() { drainResidualConstructions(cli) },
-		handleFaultOutput:      func(fault error) { handleBatchFaultOutput(cli, fault) },
-		releaseWriter:          func() error { return releaseBatchWriter(cli) },
-		finalizationAuth:       app.finalizationAuthorityRegistry,
-		getBatchHeldAnswerSink: func() agent.BatchHeldAnswerSink { return app.batchHeldAnswerSink },
-		setBatchHeldAnswerSink: func(sink agent.BatchHeldAnswerSink) { app.batchHeldAnswerSink = sink },
-		setBatchWorkIngress:    func(ingress agent.BatchWorkIngress) { app.batchWorkIngress = ingress },
-		setBatchModelControl:   func(mc agent.BatchModelControl) { app.batchModelControl = mc },
-		setBatchLiveReader:     func(r *session.BatchLiveReader) { app.batchLiveReader = r },
-		setBatchRuntime:        func(rt *BatchRuntime) { app.batchRuntime = rt },
-		setBatchInstall:        func(install *agent.BatchInstall) { app.batchInstall = install },
+	return appbatch.InstallParams{
+		CLI:                    cli,
+		HostEnsure:             func(ctx context.Context) (string, error) { return appbatch.BatchHostEnsure(cli, ctx) },
+		HostRelease:            func(ctx context.Context) error { return appbatch.BatchHostRelease(cli, ctx) },
+		HostReleaseKeepLock:    func() { appbatch.BatchHostReleaseKeepLock(cli) },
+		DrainResidual:          func() { appbatch.DrainResidualConstructions(cli) },
+		HandleFaultOutput:      func(fault error) { appbatch.HandleBatchFaultOutput(cli, fault) },
+		ReleaseWriter:          func() error { return releaseBatchWriterParams(cli) },
+		FinalizationAuth:       app.finalizationAuthorityRegistry,
+		GetBatchHeldAnswerSink: func() agent.BatchHeldAnswerSink { return app.batchHeldAnswerSink },
+		SetBatchHeldAnswerSink: func(sink agent.BatchHeldAnswerSink) { app.batchHeldAnswerSink = sink },
+		SetBatchWorkIngress:    func(ingress agent.BatchWorkIngress) { app.batchWorkIngress = ingress },
+		SetBatchModelControl:   func(mc agent.BatchModelControl) { app.batchModelControl = mc },
+		SetBatchLiveReader:     func(r *session.BatchLiveReader) { app.batchLiveReader = r },
+		SetBatchRuntime:        func(rt *appbatch.BatchRuntime) { app.batchRuntime = rt },
+		SetBatchInstall:        func(install *agent.BatchInstall) { app.batchInstall = install },
 	}
 }
 
-// Private same-signature wrappers over the Sh5 batch free functions, kept
-// so the composition root, lifecycle, agent setup and tests keep calling
-// the App methods. The public wrappers live in their production files.
-func (app *App) batchCutoverWriter() *sql.DB {
-	return batchCutoverWriter(app.batchCLIParams())
+// releaseBatchWriterParams releases the App's pooled DB references exactly
+// like the graceful branch of releaseResources' DB block (per
+// Connect/ConnectRead call, or the legacy dbReleasesNeeded count for
+// hand-assembled Apps). Delegates to the appbatch pool-release helper.
+func releaseBatchWriterParams(cli appbatch.BatchCLIParams) error {
+	var firstErr error
+	record := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if conns := cli.DBConns(); len(conns) > 0 {
+		for _, conn := range conns {
+			record(db.ReleaseConn(conn))
+		}
+		return firstErr
+	}
+	for i := 0; i < cli.DBReleasesNeeded(); i++ {
+		record(db.Release(cli.DataDir()))
+	}
+	return firstErr
 }
 
-func (app *App) batchCutoverReader(writer *sql.DB) *sql.DB {
-	return batchCutoverReader(app.batchCLIParams(), writer)
+// batchFaultRunResult builds the fault envelope payload for the batch-fault
+// JSON writer; it stays in package app because it constructs the run-result
+// protocol types. appbatch.FaultEnvelopeWriter receives it as the injected
+// fault-result builder.
+func batchFaultRunResult(sessionID string, fault error) any {
+	text := "batch runner fault"
+	if fault != nil {
+		text = fault.Error()
+	}
+	return &RunResult{SessionID: sessionID, ExitReason: "batch_fault", Error: text, ToolCalls: []ToolCallStat{}, FinalText: "", Usage: UsageInfo{}}
 }
 
-func (app *App) batchFinishedWork(ctx context.Context, sessionID string) ([]quotaWorkRow, bool, error) {
-	return batchFinishedWork(app.batchCLIParams(), ctx, sessionID)
+// Thin same-signature wrappers over the appbatch exported free functions,
+// kept so the composition root, lifecycle, agent setup and tests keep
+// calling the App methods. The bodies live in internal/app/appbatch.
+func (app *App) BatchOwnerRuntime() bool {
+	return appbatch.BatchOwnerRuntime(app.batchCLIParams())
+}
+
+func (app *App) DataDirectory() string {
+	return appbatch.DataDirectory(app.batchCLIParams())
+}
+
+func (app *App) BatchCLISession(ctx context.Context, id string) (session.Session, error) {
+	return appbatch.BatchCLISession(app.batchCLIParams(), ctx, id)
+}
+
+func (app *App) BatchCLISpec(ctx context.Context, owner, messageID string, spec jobbatch.Spec) (jobbatch.Spec, func(), error) {
+	return appbatch.BatchCLISpecWithQuestionRoute(app.batchCLIParams(), ctx, owner, messageID, spec, true)
+}
+
+func (app *App) BatchSubmit(ctx context.Context, owner string, spec jobbatch.Spec) (string, error) {
+	return appbatch.BatchSubmitRefWithQuestionRoute(app.batchCLIParams(), ctx, owner, spec, nil, true)
+}
+
+// BatchAutoApproveOwner lets the tool calls of an API-owned batch service
+// session run without a prompt. Only the "auto" token permission mode asks for
+// it; the service session has no user to answer a prompt, and it is never a
+// conversational session.
+func (app *App) BatchAutoApproveOwner(owner string) {
+	appbatch.BatchAutoApproveOwner(app.batchCLIParams(), owner)
+}
+
+// BatchSubmitRef is kept for the served intake and other route-ful callers.
+func (app *App) BatchSubmitRef(ctx context.Context, owner string, spec jobbatch.Spec, ref func(root string) string) (string, error) {
+	return appbatch.BatchSubmitRefWithQuestionRoute(app.batchCLIParams(), ctx, owner, spec, ref, true)
+}
+
+// BatchSubmitRefUnattended serves the standalone unattended CLI batch surface:
+// no answering process is bound, so agent leaves must not get ask_question.
+func (app *App) BatchSubmitRefUnattended(ctx context.Context, owner string, spec jobbatch.Spec) (string, error) {
+	return appbatch.BatchSubmitRefWithQuestionRoute(app.batchCLIParams(), ctx, owner, spec, nil, false)
+}
+
+// BatchNodeOutput returns the live output of one node of a root this process
+// still holds, or an error when it is released, expired or not started. It is
+// bounded by ctx: the output of a node that is still running blocks until it
+// ends, so callers pass only terminal nodes with a short deadline.
+func (app *App) BatchNodeOutput(ctx context.Context, owner, root, node string) (string, error) {
+	return appbatch.BatchNodeOutput(app.batchCLIParams(), ctx, owner, root, node)
+}
+
+// BatchAnswerHeld answers the held question of a child of an owner session in
+// the same batch execution (never as a new generation). The error is
+// agent.ErrBatchHeldAnswerNone or a stale/stopped sentinel when there is no
+// current question to answer.
+func (app *App) BatchAnswerHeld(ctx context.Context, owner, childSessionID, text string) error {
+	return appbatch.BatchAnswerHeld(app.batchCLIParams(), ctx, owner, childSessionID, text)
+}
+
+func (app *App) BatchRelease(ctx context.Context, owner, root string) error {
+	return appbatch.BatchRelease(app.batchCLIParams(), ctx, owner, root)
+}
+
+func (app *App) BatchResult(ctx context.Context, owner, root string) ([]db.BatchNode, map[string]string, error) {
+	return appbatch.BatchResult(app.batchCLIParams(), ctx, owner, root)
+}
+
+func (app *App) BatchAdd(ctx context.Context, root, node string, items []jobbatch.Spec) error {
+	return appbatch.BatchAdd(app.batchCLIParams(), ctx, root, node, items)
 }
 
 func (app *App) findOrphanPartial(ctx context.Context, sessionID string) *RecoveredPartial {
 	return findOrphanPartial(app.runEnv(), ctx, sessionID)
 }
 
+// findOrphanPartial scans the session for the latest assistant message that
+// has a Partial finish (mid-stream checkpoint) and is unfinished. Used by
+// RunNonInteractive to surface recovered text in the envelope.
+// Returns nil if no orphan found. Fork patch: batch 8.
+// It stays in package app: it consumes RunEnv and produces the run-result
+// protocol type RecoveredPartial.
+func findOrphanPartial(env RunEnv, ctx context.Context, sessionID string) *RecoveredPartial {
+	msgs, err := env.Messages().List(ctx, sessionID)
+	if err != nil {
+		return nil
+	}
+	// Find the LATEST assistant message that is partial and unfinished.
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Role != message.Assistant {
+			continue
+		}
+		if m.IsPartial() && !m.IsFinished() {
+			text := m.FullText()
+			var lastFlushAt int64
+			if f := m.FinishPart(); f != nil {
+				lastFlushAt = f.Time
+			}
+			return &RecoveredPartial{
+				MessageID:   m.ID,
+				Chars:       len(text),
+				LastFlushAt: lastFlushAt,
+				Text:        text,
+			}
+		}
+		// Only surface the LATEST orphan — stop at the first assistant
+		// message we encounter (going backwards).
+		break
+	}
+	return nil
+}
+
+func (app *App) batchCutoverWriter() *sql.DB {
+	return appbatch.CutoverWriter(app.batchCLIParams())
+}
+
+func (app *App) batchCutoverReader(writer *sql.DB) *sql.DB {
+	return appbatch.CutoverReader(app.batchCLIParams(), writer)
+}
+
+func (app *App) batchFinishedWork(ctx context.Context, sessionID string) ([]appbatch.QuotaWorkRow, bool, error) {
+	return appbatch.BatchFinishedWork(app.batchCLIParams(), ctx, sessionID)
+}
+
 func (app *App) batchHostStore() *session.HostStore {
-	return batchHostStore(app.batchCLIParams())
+	return appbatch.BatchHostStore(app.batchCLIParams())
 }
 
 func (app *App) batchNoticeStore() *session.SessionNoticeStore {
-	return batchNoticeStore(app.batchCLIParams())
+	return appbatch.BatchNoticeStore(app.batchCLIParams())
 }
 
 func (app *App) batchHostEnsure(ctx context.Context) (string, error) {
-	return batchHostEnsure(app.batchCLIParams(), ctx)
+	return appbatch.BatchHostEnsure(app.batchCLIParams(), ctx)
 }
 
 func (app *App) batchHostRelease(ctx context.Context) error {
-	return batchHostRelease(app.batchCLIParams(), ctx)
+	return appbatch.BatchHostRelease(app.batchCLIParams(), ctx)
 }
 
 func (app *App) batchHostReleaseKeepLock() {
-	batchHostReleaseKeepLock(app.batchCLIParams())
+	appbatch.BatchHostReleaseKeepLock(app.batchCLIParams())
 }
 
 func (app *App) batchCutoverStoresForget() {
-	batchCutoverStoresForget(app.batchCLIParams())
+	appbatch.BatchCutoverStoresForget(app.batchCLIParams())
 }
 
 func (app *App) batchCutoverHostLiveness() func(string) session.HostLockStatus {
-	return batchCutoverHostLiveness(app.batchCLIParams())
+	return appbatch.BatchCutoverHostLiveness(app.batchCLIParams())
 }
 
 func (app *App) batchCutoverDebtOwners(ctx context.Context, ids []string) (map[string]bool, error) {
-	return batchCutoverDebtOwners(app.batchCLIParams(), ctx, ids)
+	return appbatch.BatchCutoverDebtOwners(app.batchCLIParams(), ctx, ids)
 }
 
-func (app *App) batchCutoverLiveWork(ctx context.Context, ids []string) map[string]batchWorkFacts {
-	return batchCutoverLiveWork(app.batchCLIParams(), ctx, ids)
+func (app *App) batchCutoverLiveWork(ctx context.Context, ids []string) map[string]appbatch.BatchWorkFacts {
+	return appbatch.BatchCutoverLiveWork(app.batchCLIParams(), ctx, ids)
 }
 
 func (app *App) drainResidualConstructions() {
-	drainResidualConstructions(app.batchCLIParams())
+	appbatch.DrainResidualConstructions(app.batchCLIParams())
 }
 
 func (app *App) startBatchMaintenance() {
-	startBatchMaintenance(app.batchCLIParams())
+	appbatch.StartBatchMaintenance(app.batchCLIParams())
 }
 
 func (app *App) batchMaintenancePass() {
-	batchMaintenancePass(app.batchCLIParams())
+	appbatch.BatchMaintenancePass(app.batchCLIParams())
 }
 
 func (app *App) stopBatchMaintenance() {
-	stopBatchMaintenance(app.batchCLIParams())
+	appbatch.StopBatchMaintenance(app.batchCLIParams())
 }
 
 func (app *App) handleBatchFaultOutput(fault error) {
-	handleBatchFaultOutput(app.batchCLIParams(), fault)
+	appbatch.HandleBatchFaultOutput(app.batchCLIParams(), fault)
 }
 
+// batchRuntimeConfigHook is a test-only seam applied to the runtime config
+// right after the factory build and BEFORE the fault watcher starts; it is
+// threaded into appbatch.InstallRuntime through InstallParams so package-app
+// white tests keep setting it. Nil in production.
+var batchRuntimeConfigHook func(*appbatch.BatchRuntimeConfig)
+
+// batchInstallDepsHook is a test-only, per-install dependency decorator.
+var batchInstallDepsHook func(*agent.BatchInstallDeps)
+
+// batchInstallWiringHook observes the completed app-owned wake wiring in tests.
+var batchInstallWiringHook func(agent.BatchInstallDeps)
+
 func (app *App) installBatchRuntime(ctx context.Context) error {
-	return installBatchRuntime(app.batchInstallParams(), ctx)
+	params := app.batchInstallParams()
+	params.RuntimeConfigHook = batchRuntimeConfigHook
+	params.InstallDepsHook = batchInstallDepsHook
+	params.InstallWiringHook = batchInstallWiringHook
+	return appbatch.InstallRuntime(params, ctx)
 }
 
 func (app *App) releaseBatchRuntimeGate(ctx context.Context, stillBusy bool, record func(error)) bool {
-	return releaseBatchRuntimeGate(app.batchInstallParams(), ctx, stillBusy, record)
+	return appbatch.ReleaseBatchRuntimeGate(app.batchInstallParams(), ctx, stillBusy, record)
 }
 
 // Temporary bridge declarations (LoopHost seam and turnRunFunc); deleted by design lanes D2-3/D2-4.
@@ -295,7 +458,7 @@ type LoopHost interface {
 	findOrphanPartial(ctx context.Context, sessionID string) *RecoveredPartial
 	batchCutoverWriter() *sql.DB
 	batchCutoverReader(writer *sql.DB) *sql.DB
-	batchFinishedWork(ctx context.Context, sessionID string) ([]quotaWorkRow, bool, error)
+	batchFinishedWork(ctx context.Context, sessionID string) ([]appbatch.QuotaWorkRow, bool, error)
 }
 
 // loopHost adapts a RunEnv to LoopHost: every method resolves through the
@@ -357,7 +520,7 @@ func (h *loopHost) batchCutoverReader(writer *sql.DB) *sql.DB {
 	return h.env.BatchCutoverReader(writer)
 }
 
-func (h *loopHost) batchFinishedWork(ctx context.Context, sessionID string) ([]quotaWorkRow, bool, error) {
+func (h *loopHost) batchFinishedWork(ctx context.Context, sessionID string) ([]appbatch.QuotaWorkRow, bool, error) {
 	return h.env.BatchFinishedWork(ctx, sessionID)
 }
 

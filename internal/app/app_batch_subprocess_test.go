@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
+
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -57,7 +59,7 @@ func TestAppBatchFaultSubprocess(t *testing.T) {
 			require.Error(t, err, "the helper must exit non-zero")
 			var exitErr *exec.ExitError
 			require.ErrorAs(t, err, &exitErr, "%s", output)
-			require.Equal(t, BatchFaultExitCode, exitErr.ExitCode(), "output: %s", output)
+			require.Equal(t, appbatch.BatchFaultExitCode, exitErr.ExitCode(), "output: %s", output)
 			require.Less(t, time.Since(start), 30*time.Second, "fatal diagnostics must not wait for a pool connection")
 			require.FileExists(t, lockPath, "the host lock must be retained")
 			text := string(output)
@@ -79,7 +81,7 @@ func TestAppBatchFaultSubprocess(t *testing.T) {
 			require.Equal(t, mode, diagnostic["commit_kind"])
 			require.Equal(t, float64(1), diagnostic["commit_sequence"])
 			require.Equal(t, string(jobbatch.EventSubmit), diagnostic["commit_event"])
-			require.Equal(t, float64(BatchFaultExitCode), diagnostic["exit_code"])
+			require.Equal(t, float64(appbatch.BatchFaultExitCode), diagnostic["exit_code"])
 			require.Equal(t, "100ms", diagnostic["containment"])
 			require.Equal(t, "unknown", diagnostic["commit_error_class"])
 			require.Equal(t, float64(1), diagnostic["pool_max_open"])
@@ -114,7 +116,7 @@ func batchFaultSubprocessHelper() {
 		os.Exit(3)
 	}
 	defer func() { _ = db.ReleaseConn(writer) }()
-	diagnostic := batchCommitDiagnostics{writer: writer, baseline: writer.Stats()}
+	diagnostic := appbatch.BatchCommitDiagnostics{Writer: writer, Baseline: writer.Stats()}
 	held, err := writer.Conn(context.Background())
 	if err != nil {
 		os.Exit(4)
@@ -148,8 +150,8 @@ func batchFaultSubprocessHelper() {
 		os.Exit(5)
 	}
 	retained := false
-	var rt *BatchRuntime
-	rt = NewBatchRuntime(BatchRuntimeConfig{
+	var rt *appbatch.BatchRuntime
+	rt = appbatch.NewBatchRuntime(appbatch.BatchRuntimeConfig{
 		ContainmentWait: 100 * time.Millisecond,
 		RetainHostIdentity: func() {
 			retained = true
@@ -161,7 +163,7 @@ func batchFaultSubprocessHelper() {
 			}
 		},
 	})
-	rt.commitDiagnostics = diagnostic
+	rt.CommitDiagnostics = diagnostic
 	rt.SetRunner(runner)
 	rt.Start()
 	_, submitErr := runner.Submit(context.Background(), jobbatch.SubmitRequest{

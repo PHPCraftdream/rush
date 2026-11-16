@@ -282,7 +282,7 @@ func runNonInteractiveWithAsyncResults(env RunEnv, ctx context.Context, output i
 	if env.BatchFaultWriter() != nil && mode == RunModeJSON {
 		output = env.BatchFaultWriter()
 		env.SetBatchFaultOutput(func(fault error) {
-			if err := env.BatchFaultWriter().writeFault(continueSessionID, fault); err != nil {
+			if err := env.BatchFaultWriter().WriteFault(continueSessionID, fault); err != nil {
 				slog.Error("failed to encode batch-fault JSON result", "error", err)
 			}
 		})

@@ -41,7 +41,6 @@ internal/serve/cmd/migrate_test.go 954
 internal/serve/cmd/providers.go 973
 internal/serve/cmd/providers_peak_hours.go 985
 internal/serve/cmd/root.go 971
-internal/serve/server/hub.go 992
 internal/session/childgroup_registry_unix.go 976
 internal/session/lock.go 976
 # 985 -> 986: +1 import line (run/sessiontest, lane SM4: the local limitParallel copy moved out); the file is cut by the session lanes MV/EX.

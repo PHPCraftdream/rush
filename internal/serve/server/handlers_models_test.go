@@ -77,8 +77,8 @@ func TestHandleSetSessionModels_BroadcastCarriesExternalOwnership(t *testing.T) 
 	hub := newHub()
 	go hub.Run(ctx)
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 100)
-	hub.register <- client
+	client.ResizeSendChan(100)
+	hub.Register(client)
 
 	payload, err := json.Marshal(SetSessionModelsPayload{
 		SessionID:  sess.ID,
@@ -91,7 +91,7 @@ func TestHandleSetSessionModels_BroadcastCarriesExternalOwnership(t *testing.T) 
 	deadline := time.Now().Add(2 * time.Second)
 	for updated == nil && time.Now().Before(deadline) {
 		select {
-		case raw := <-client.send:
+		case raw := <-client.SendChan():
 			var env WSMessage
 			require.NoError(t, json.Unmarshal(raw, &env))
 			if env.Type != EventSessionUpdated {

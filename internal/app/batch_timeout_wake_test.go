@@ -9,13 +9,14 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
 
 func TestBatchTimeoutWakeDispatcherBoundsAndJoins(t *testing.T) {
-	d := newBatchTimeoutWakeDispatcher()
+	d := appbatch.NewTimeoutWakeDispatcher()
 	t.Cleanup(d.Stop)
 	entered := make(chan struct{})
 	canceled := make(chan struct{})
@@ -33,7 +34,7 @@ func TestBatchTimeoutWakeDispatcherBoundsAndJoins(t *testing.T) {
 	}
 	queued := make(chan struct{})
 	go func() {
-		for i := 0; i < batchTimeoutWakeQueueSize*4; i++ {
+		for i := 0; i < appbatch.TimeoutWakeQueueSize*4; i++ {
 			d.Wake(context.Background(), "owner")
 		}
 		close(queued)
@@ -53,7 +54,7 @@ func TestBatchTimeoutWakeDispatcherBoundsAndJoins(t *testing.T) {
 	}
 	wg.Wait()
 	select {
-	case <-d.done:
+	case <-d.Done():
 	default:
 		t.Fatal("dispatcher did not join")
 	}
@@ -61,18 +62,18 @@ func TestBatchTimeoutWakeDispatcherBoundsAndJoins(t *testing.T) {
 }
 
 func TestBatchTimeoutWakeDispatcherJoinsWhenCanceledWaitingForSlot(t *testing.T) {
-	d := newBatchTimeoutWakeDispatcher()
-	entered := make(chan struct{}, batchTimeoutWakeQueueSize)
+	d := appbatch.NewTimeoutWakeDispatcher()
+	entered := make(chan struct{}, appbatch.TimeoutWakeQueueSize)
 	release := make(chan struct{})
 	d.Attach(wakeDispatchTestCoordinator{wake: func(_ context.Context, _ string, _ bool) error {
 		entered <- struct{}{}
 		<-release
 		return nil
 	}})
-	for i := 0; i <= batchTimeoutWakeQueueSize; i++ {
+	for i := 0; i <= appbatch.TimeoutWakeQueueSize; i++ {
 		d.Wake(context.Background(), fmt.Sprintf("owner-%d", i))
 	}
-	for i := 0; i < batchTimeoutWakeQueueSize; i++ {
+	for i := 0; i < appbatch.TimeoutWakeQueueSize; i++ {
 		select {
 		case <-entered:
 		case <-time.After(time.Second):
@@ -99,7 +100,7 @@ func TestBatchTimeoutWakeDispatcherJoinsWhenCanceledWaitingForSlot(t *testing.T)
 }
 
 func TestBatchTimeoutWakeDispatcherDoesNotSerializeBlockedSessions(t *testing.T) {
-	d := newBatchTimeoutWakeDispatcher()
+	d := appbatch.NewTimeoutWakeDispatcher()
 	t.Cleanup(d.Stop)
 	firstEntered := make(chan struct{})
 	firstRelease := make(chan struct{})
@@ -134,13 +135,13 @@ func TestBatchTimeoutCheckinFutureAndMalformedPayloadsDoNotFire(t *testing.T) {
 	a, conn, _ := newBatchMaintenanceApp(t)
 	clock := time.Unix(2000000000, 0)
 	var scanner *session.BatchTimeoutCheckin
-	batchRuntimeConfigHook = func(cfg *BatchRuntimeConfig) {
+	batchRuntimeConfigHook = func(cfg *appbatch.BatchRuntimeConfig) {
 		scanner = cfg.TimeoutCheckin.(*session.BatchTimeoutCheckin)
 		scanner.SetClock(func() time.Time { return clock })
 	}
 	t.Cleanup(func() { batchRuntimeConfigHook = nil })
 	require.NoError(t, a.installBatchRuntime(context.Background()))
-	a.batchRuntime.cfg.ReleaseWriter = func(context.Context) error { return nil }
+	a.batchRuntime.Config.ReleaseWriter = func(context.Context) error { return nil }
 	defer func() { require.False(t, a.ShutdownWithResult().Forced) }()
 	owner, err := a.Sessions.Create(context.Background(), "future timeout owner")
 	require.NoError(t, err)
@@ -152,7 +153,7 @@ func TestBatchTimeoutCheckinFutureAndMalformedPayloadsDoNotFire(t *testing.T) {
 	for i, payload := range payloads {
 		callID := []string{"malformed-timeout", "future-timeout"}[i]
 		_, err := store.Reserve(context.Background(), session.BatchReservation{
-			Owner: owner.ID, Host: a.BatchHostStore().HostID(), RunnerID: "future-runner", ToolCallID: callID, InputHash: "hash-" + callID, Sequence: 1,
+			Owner: owner.ID, Host: a.batchHostStore().HostID(), RunnerID: "future-runner", ToolCallID: callID, InputHash: "hash-" + callID, Sequence: 1,
 			Root: session.BatchReservationNode{
 				Values:   db.ReserveBatchNodeParams{Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true}, State: "running", ControlState: "none"},
 				Children: []session.BatchReservationNode{{Values: db.ReserveBatchNodeParams{Kind: "task", TaskKind: sql.NullString{String: "command", Valid: true}, State: "running", ControlState: "none", TaskPayload: payload}}},
@@ -174,7 +175,7 @@ func TestBatchTimeoutCheckinShutdownStopsDueScanner(t *testing.T) {
 	a, conn, _ := newBatchMaintenanceApp(t)
 	clock := time.Unix(4102444800, 0)
 	var spy *timeoutCheckinSpy
-	batchRuntimeConfigHook = func(cfg *BatchRuntimeConfig) {
+	batchRuntimeConfigHook = func(cfg *appbatch.BatchRuntimeConfig) {
 		scanner := cfg.TimeoutCheckin.(*session.BatchTimeoutCheckin)
 		scanner.SetClock(func() time.Time { return clock })
 		spy = &timeoutCheckinSpy{scanner: scanner}
@@ -184,10 +185,10 @@ func TestBatchTimeoutCheckinShutdownStopsDueScanner(t *testing.T) {
 	owner, err := a.Sessions.Create(context.Background(), "shutdown timeout owner")
 	require.NoError(t, err)
 	require.NoError(t, a.installBatchRuntime(context.Background()))
-	a.batchRuntime.cfg.ReleaseWriter = func(context.Context) error {
+	a.batchRuntime.Config.ReleaseWriter = func(context.Context) error {
 		require.Greater(t, spy.stops.Load(), int32(0))
 		select {
-		case <-a.batchTimeoutWake.done:
+		case <-a.batchTimeoutWake.Done():
 		default:
 			t.Fatal("dispatcher not joined before writer release")
 		}
@@ -197,7 +198,7 @@ func TestBatchTimeoutCheckinShutdownStopsDueScanner(t *testing.T) {
 	callID := "shutdown-timeout-call"
 	payload := `{"tool":"bash","tool_call_id":"` + callID + `","session_id":"` + owner.ID + `","timeout":{"kind":"wake_only","seconds":5}}`
 	_, err = session.NewBatchStore(conn).Reserve(context.Background(), session.BatchReservation{
-		Owner: owner.ID, Host: a.BatchHostStore().HostID(), RunnerID: "shutdown-runner", ToolCallID: callID, InputHash: "shutdown-hash", Sequence: 1,
+		Owner: owner.ID, Host: a.batchHostStore().HostID(), RunnerID: "shutdown-runner", ToolCallID: callID, InputHash: "shutdown-hash", Sequence: 1,
 		Root: session.BatchReservationNode{
 			Values:   db.ReserveBatchNodeParams{Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true}, State: "running", ControlState: "none"},
 			Children: []session.BatchReservationNode{{Values: db.ReserveBatchNodeParams{Kind: "task", TaskKind: sql.NullString{String: "command", Valid: true}, State: "running", ControlState: "none", TaskPayload: sql.NullString{String: payload, Valid: true}}}},

@@ -311,8 +311,8 @@ func TestSubscribeAndBroadcastGatesTerminalMessageUntilSeal(t *testing.T) {
 	hub := newHub()
 	go hub.Run(ctx)
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 100)
-	hub.register <- client
+	client.ResizeSendChan(100)
+	hub.Register(client)
 
 	// The forwarders subscribe from their own goroutines: baseline first.
 	messages := a.Messages.(apiEventsSubscriberCounter)
@@ -325,7 +325,7 @@ func TestSubscribeAndBroadcastGatesTerminalMessageUntilSeal(t *testing.T) {
 		Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: "partial"}},
 	})
 	require.NoError(t, err)
-	finalizationWaitForEvent(t, client.send, func(env WSMessage) bool {
+	finalizationWaitForEvent(t, client.SendChan(), func(env WSMessage) bool {
 		return env.Type == EventMessageCreated && strings.Contains(string(env.Payload), partial.ID)
 	}, "created broadcast of the non-terminal message")
 
@@ -342,12 +342,12 @@ func TestSubscribeAndBroadcastGatesTerminalMessageUntilSeal(t *testing.T) {
 
 	// While the hold is active the hub still broadcasts other events.
 	require.NoError(t, a.Sessions.Rename(ctx, sess.ID, "renamed under hold"))
-	finalizationWaitForEvent(t, client.send, func(env WSMessage) bool {
+	finalizationWaitForEvent(t, client.SendChan(), func(env WSMessage) bool {
 		return env.Type == EventSessionUpdated
 	}, "session rename broadcast while the hold is active")
 
 	stub.seal(sess.ID)
-	finalizationWaitForEvent(t, client.send, func(env WSMessage) bool {
+	finalizationWaitForEvent(t, client.SendChan(), func(env WSMessage) bool {
 		return env.Type == EventMessageUpdated && strings.Contains(string(env.Payload), final.ID)
 	}, "held terminal message broadcast after seal")
 }

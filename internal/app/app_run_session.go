@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -43,16 +44,6 @@ func owns(sess session.Session, workspaceRoot string, home bool) bool {
 	return session.Owns(sess.WorkspaceRoot, workspaceRoot, home)
 }
 
-func validateResolvedSession(sess session.Session, id, workspaceRoot string, home bool) (session.Session, error) {
-	if sess.ParentSessionID != "" {
-		return session.Session{}, fmt.Errorf("cannot continue a child session: %s", id)
-	}
-	if !owns(sess, workspaceRoot, home) {
-		return session.Session{}, refuseForeign(sess)
-	}
-	return sess, nil
-}
-
 // resolveSession resolves which session to use for a non-interactive run
 // If continueSessionID is set, it looks up that session by ID
 // If useLast is set, it returns the most recently updated top-level session
@@ -66,7 +57,7 @@ func resolveSession(env RunEnv, ctx context.Context, continueSessionID string, u
 		}
 		sess, err := env.Sessions().Get(ctx, continueSessionID)
 		if err == nil {
-			return validateResolvedSession(sess, continueSessionID, env.WorkspaceRoot, env.ProcessHome())
+			return appbatch.ValidateResolvedSession(sess, continueSessionID, env.WorkspaceRoot, env.ProcessHome())
 		}
 		// Get-or-create semantics: --session <id> with an unknown id creates
 		// a brand-new top-level session with that exact id. Lets CI / scripts
@@ -122,7 +113,7 @@ func resolveSession(env RunEnv, ctx context.Context, continueSessionID string, u
 			if sess, getErr := env.Sessions().Get(ctx, continueSessionID); getErr == nil {
 				// The winner of the create race may have bound the row to its
 				// own workspace: same ownership check as the first Get.
-				sess, err := validateResolvedSession(sess, continueSessionID, env.WorkspaceRoot, env.ProcessHome())
+				sess, err := appbatch.ValidateResolvedSession(sess, continueSessionID, env.WorkspaceRoot, env.ProcessHome())
 				if err == nil {
 					slog.Info("Session creation raced another process; attached to the winner's row",
 						"session_id", continueSessionID)

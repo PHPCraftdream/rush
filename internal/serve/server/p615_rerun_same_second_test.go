@@ -104,7 +104,7 @@ func TestHandleRerunMessage_SameSecondBeforeMessageIsPreserved(t *testing.T) {
 
 	hub := newHub()
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 10)
+	client.ResizeSendChan(10)
 
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: target.ID})
 	require.NoError(t, err)
@@ -167,7 +167,7 @@ func TestHandleRerunMessage_TargetMissingFromListFailsClosed(t *testing.T) {
 
 	hub := newHub()
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 10)
+	client.ResizeSendChan(10)
 
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: "does-not-exist"})
 	require.NoError(t, err)

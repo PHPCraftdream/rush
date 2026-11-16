@@ -32,8 +32,8 @@ func TestHandleUpdateMessageThinkingTargetsPartIndex(t *testing.T) {
 	hub := newHub()
 	go hub.Run(ctx)
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 1)
-	hub.register <- client
+	client.ResizeSendChan(1)
+	hub.Register(client)
 
 	payload, err := json.Marshal(struct {
 		MessageID string `json:"messageID"`
@@ -44,7 +44,7 @@ func TestHandleUpdateMessageThinkingTargetsPartIndex(t *testing.T) {
 	handleUpdateMessageThinking(ctx, a, client, WSMessage{ID: "update-thinking", Payload: payload})
 
 	var reply WSMessage
-	require.NoError(t, json.Unmarshal(<-client.send, &reply))
+	require.NoError(t, json.Unmarshal(<-client.SendChan(), &reply))
 	require.Equal(t, EventResponse, reply.Type)
 	updated, err := a.Messages.Get(ctx, m.ID)
 	require.NoError(t, err)

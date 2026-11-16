@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -214,7 +215,7 @@ func (l *cliLoop) snapshotQuotaTerminal() {
 
 // quotaJobsInTree reads the finished-work rows of the session's tree: the
 // batch root/node walk (batchFinishedWork in app_batch_cutover_facts.go).
-func (l *cliLoop) quotaJobsInTree(ctx context.Context) ([]quotaWorkRow, bool, error) {
+func (l *cliLoop) quotaJobsInTree(ctx context.Context) ([]appbatch.QuotaWorkRow, bool, error) {
 	return l.host.batchFinishedWork(ctx, l.sessionID)
 }
 

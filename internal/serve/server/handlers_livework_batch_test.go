@@ -62,8 +62,8 @@ func TestBuildSessionLiveWork_BatchOnlySchemaHasNoAsyncJobsTable(t *testing.T) {
 	hub := newHub()
 	go hub.Run(ctx)
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 
 	snap := requestSnapshot(t, a, client, sess.ID)
 	require.NotNil(t, snap, "the ON path must answer without the old table")
@@ -146,8 +146,8 @@ func TestLiveWorkPusher_SkipsIncompleteOnPathSnapshot(t *testing.T) {
 	hub := newHub()
 	go hub.Run(ctx)
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 
 	p := startLiveWorkPusher(ctx, a, hub)
 	t.Cleanup(func() { <-p.stopped })

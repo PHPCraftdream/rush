@@ -527,13 +527,13 @@ func heldQuestion(q session.ChildQuestion, held bool) string {
 func handleGetSessionBatchWork(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p GetSessionBatchWorkPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.SessionID == "" {
-		c.reply(msg.ID, EventError, nil, "invalid payload: sessionID required")
+		c.Reply(msg.ID, EventError, nil, "invalid payload: sessionID required")
 		return
 	}
 	if _, err := a.Sessions.Get(ctx, p.SessionID); err != nil {
-		c.reply(msg.ID, EventError, nil, "session not found")
+		c.Reply(msg.ID, EventError, nil, "session not found")
 		return
 	}
 	snap := buildBatchWorkSnapshot(ctx, a, p.SessionID)
-	c.reply(msg.ID, EventSessionBatchWork, snap, "")
+	c.Reply(msg.ID, EventSessionBatchWork, snap, "")
 }

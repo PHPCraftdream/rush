@@ -22,8 +22,8 @@ func TestHandleGetSessionLiveWork_AwaitingAnswerBadge(t *testing.T) {
 	hub := newHub()
 	go hub.Run(t.Context())
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 	ctx := t.Context()
 
 	root, err := a.Sessions.Create(ctx, "lw awaiting root")

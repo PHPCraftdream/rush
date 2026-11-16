@@ -30,13 +30,14 @@ import (
 	"log/slog"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 )
 
 // peNewErrorReleaseTimeout bounds the Runner drain on New's error path,
 // so a wedged Runner can never hang New. Same budget as the ordinary
 // graceful Shutdown drain (appBatchDrainTimeout, the per-cleanup
 // shutdownCtx budget of releaseResources).
-const peNewErrorReleaseTimeout = appBatchDrainTimeout
+const peNewErrorReleaseTimeout = appbatch.BatchDrainTimeout
 
 // peReleaseBatchRuntimeOnNewError tears down everything installBatchRuntime
 // gave this (about-to-be-discarded) App, EXCEPT DB references: stop the
@@ -98,7 +99,7 @@ func (app *App) peReleaseBatchRuntimeOnNewError(ctx context.Context) {
 // drain timeout or a faulted Runner retains the host identity
 // (CloseKeepLock), exactly like the forced Shutdown path: the lock is
 // pinned until process exit and this helper must never hang New.
-func (app *App) peDrainRunnerAndReleaseHost(ctx context.Context, rt *BatchRuntime) {
+func (app *App) peDrainRunnerAndReleaseHost(ctx context.Context, rt *appbatch.BatchRuntime) {
 	runner := rt.Runner()
 	if runner == nil {
 		// Dormant runtime (runnerless install): nothing to drain; the

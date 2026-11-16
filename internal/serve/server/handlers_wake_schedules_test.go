@@ -31,8 +31,8 @@ func newWakeSchedulesTestApp(t *testing.T) (*app.App, *Client) {
 	hub := newHub()
 	go hub.Run(t.Context())
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 64)
-	hub.register <- client
+	client.ResizeSendChan(64)
+	hub.Register(client)
 	return a, client
 }
 
@@ -51,7 +51,7 @@ func readWakeSchedulesReply(t *testing.T, client *Client) (*SessionWakeSchedules
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
-		case raw := <-client.send:
+		case raw := <-client.SendChan():
 			var env WSMessage
 			require.NoError(t, json.Unmarshal(raw, &env))
 			switch env.Type {

@@ -63,8 +63,8 @@ func TestHandleDeleteMessagePartTypeGuard(t *testing.T) {
 	t.Cleanup(func() { ctx.Done() })
 
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 100)
-	hub.register <- client
+	client.ResizeSendChan(100)
+	hub.Register(client)
 
 	// Test 1: Deleting a ToolCall should fail.
 	t.Run("delete_tool_call_fails", func(t *testing.T) {
@@ -84,7 +84,7 @@ func TestHandleDeleteMessagePartTypeGuard(t *testing.T) {
 		handleDeleteMessagePart(ctx, a, client, msg)
 
 		// Read the reply.
-		sentBytes := <-client.send
+		sentBytes := <-client.SendChan()
 		var reply WSMessage
 		require.NoError(t, json.Unmarshal(sentBytes, &reply))
 
@@ -115,7 +115,7 @@ func TestHandleDeleteMessagePartTypeGuard(t *testing.T) {
 
 		handleDeleteMessagePart(ctx, a, client, msg)
 
-		sentBytes := <-client.send
+		sentBytes := <-client.SendChan()
 		var reply WSMessage
 		require.NoError(t, json.Unmarshal(sentBytes, &reply))
 
@@ -145,7 +145,7 @@ func TestHandleDeleteMessagePartTypeGuard(t *testing.T) {
 
 		handleDeleteMessagePart(ctx, a, client, msg)
 
-		sentBytes := <-client.send
+		sentBytes := <-client.SendChan()
 		var reply WSMessage
 		require.NoError(t, json.Unmarshal(sentBytes, &reply))
 
@@ -184,7 +184,7 @@ func TestHandleDeleteMessagePartTypeGuard(t *testing.T) {
 
 		handleDeleteMessagePart(ctx, a, client, msg)
 
-		sentBytes := <-client.send
+		sentBytes := <-client.SendChan()
 		var reply WSMessage
 		require.NoError(t, json.Unmarshal(sentBytes, &reply))
 
@@ -226,8 +226,8 @@ func TestHandleUpdateMessagePartPreservesFields(t *testing.T) {
 	t.Cleanup(func() { ctx.Done() })
 
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 100)
-	hub.register <- client
+	client.ResizeSendChan(100)
+	hub.Register(client)
 
 	// Test 1: Updating ToolCall Input preserves ProviderExecuted.
 	t.Run("update_tool_call_preserves_provider_executed", func(t *testing.T) {
@@ -247,7 +247,7 @@ func TestHandleUpdateMessagePartPreservesFields(t *testing.T) {
 
 		handleUpdateMessagePart(ctx, a, client, msg)
 
-		sentBytes := <-client.send
+		sentBytes := <-client.SendChan()
 		var reply WSMessage
 		require.NoError(t, json.Unmarshal(sentBytes, &reply))
 
@@ -285,7 +285,7 @@ func TestHandleUpdateMessagePartPreservesFields(t *testing.T) {
 
 		handleUpdateMessagePart(ctx, a, client, msg)
 
-		sentBytes := <-client.send
+		sentBytes := <-client.SendChan()
 		var reply WSMessage
 		require.NoError(t, json.Unmarshal(sentBytes, &reply))
 
@@ -326,7 +326,7 @@ func TestHandleUpdateMessagePartPreservesFields(t *testing.T) {
 
 		handleUpdateMessagePart(ctx, a, client, msg)
 
-		sentBytes := <-client.send
+		sentBytes := <-client.SendChan()
 		var reply WSMessage
 		require.NoError(t, json.Unmarshal(sentBytes, &reply))
 

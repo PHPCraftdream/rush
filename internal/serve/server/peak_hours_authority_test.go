@@ -56,7 +56,7 @@ func TestPeakPauseResumePreservesSettingsAuthority(t *testing.T) {
 					beforeTarget, err := os.ReadFile(targetPath)
 					require.NoError(t, err)
 					client := newTestClient()
-					client.trustedSettingsWrite = trusted
+					client.SetTrustedSettingsWrite(trusted)
 					payload, err := json.Marshal(map[string]string{"id": id, "scope": wireScope, "duration": "1h"})
 					require.NoError(t, err)
 					msg := WSMessage{ID: operation, Payload: payload}
@@ -76,7 +76,7 @@ func TestPeakPauseResumePreservesSettingsAuthority(t *testing.T) {
 						require.Contains(t, reply.Error, config.ErrSettingsLocked.Error())
 						require.Equal(t, beforeTarget, afterTarget)
 						require.Equal(t, beforeGlobal, afterGlobal)
-						require.Empty(t, pendingConfigEnvelope(t, client.hub))
+						require.Empty(t, pendingConfigEnvelope(t, client.Hub()))
 						return
 					}
 					require.Equal(t, EventResponse, reply.Type)
@@ -90,7 +90,7 @@ func TestPeakPauseResumePreservesSettingsAuthority(t *testing.T) {
 					require.Equal(t, policy.Timezone, entry.Policy.Timezone)
 					require.Equal(t, policy.Message, entry.Policy.Message)
 					require.Equal(t, operation == "pause", entry.Status(time.Now()).Paused)
-					require.NotEmpty(t, pendingConfigEnvelope(t, client.hub))
+					require.NotEmpty(t, pendingConfigEnvelope(t, client.Hub()))
 					if scope == config.ScopeWorkspace {
 						require.Equal(t, beforeGlobal, afterGlobal)
 					}

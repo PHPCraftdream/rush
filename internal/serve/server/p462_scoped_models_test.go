@@ -151,7 +151,7 @@ func TestClearScopedModel_MissingKeyIsNoOp(t *testing.T) {
 	handleClearScopedModel(a, client, WSMessage{ID: "c1", Type: CmdClearScopedModel, Payload: clearPayload})
 
 	select {
-	case raw := <-client.send:
+	case raw := <-client.SendChan():
 		var resp WSMessage
 		require.NoError(t, json.Unmarshal(raw, &resp))
 		require.Empty(t, resp.Error, "clearing an already-unset slot must succeed, not error")
@@ -171,7 +171,7 @@ func TestSetScopedModel_RejectsUnknownScope(t *testing.T) {
 	client := newTestClient()
 	handleSetScopedModel(a, client, WSMessage{ID: "c1", Type: CmdSetScopedModel, Payload: payload})
 
-	raw := <-client.send
+	raw := <-client.SendChan()
 	var resp WSMessage
 	require.NoError(t, json.Unmarshal(raw, &resp))
 	require.Equal(t, EventError, resp.Type)
