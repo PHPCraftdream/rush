@@ -807,7 +807,25 @@ func (l *cliLoop) nextStep() (step cliStep, why string, err error) {
 				return stepCanceled, "", stopErr
 			}
 			if pollErr != nil {
-				return stepExit, "", fmt.Errorf("rush run: pending interrupt: %w", pollErr)
+				if l.ctx.Err() != nil {
+					return stepExit, "", fmt.Errorf("rush run: pending interrupt: %w", pollErr)
+				}
+				// A poll that times out on a busy store is transient, like the
+				// scope read below: retry with a pause inside the same overall
+				// bound instead of ending the whole run.
+				slog.Warn("rush run: pending interrupt poll failed; retrying", "session_id", l.sessionID, "err", pollErr)
+				if dbErrorRetryStart.IsZero() {
+					dbErrorRetryStart = time.Now()
+				}
+				if time.Since(dbErrorRetryStart) > cliDBErrorRetryOverallLimit {
+					fmt.Fprintf(l.errOut(), "rush run: session %q's pending interrupts have been unreadable for %s (%s); giving up\n",
+						l.sessionID, cliDBErrorRetryOverallLimit, pollErr)
+					return stepExit, "", fmt.Errorf("rush run: pending interrupt: %w", pollErr)
+				}
+				if !sleepOrCtxDone(l.ctx, cliDBRetryPause) {
+					return stepExit, "", l.ctx.Err()
+				}
+				continue
 			}
 			if messageID != "" {
 				if err := l.runWaitingInterrupt(messageID); err != nil {
