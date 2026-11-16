@@ -12,7 +12,6 @@
 # When you split a directory: delete its line here. A count may never
 # go up.
 internal/agent 816
-internal/agent/provider/cliprovider 59
 internal/agent/provider/nettransport 22
 internal/agent/tools 163
 internal/agent/tools/mcp 63
@@ -35,3 +34,6 @@ web/tests 64
 # internal/serve/server/apiauth is born over the limit: 6 production files plus 19 moved test files (server lane L2).
 # The tests spread over their own packages at stage F; deliberate, only down from here.
 internal/serve/server/apiauth 25
+# internal/agent/provider/cliprovider/clipstream is born over the limit: 7 production files plus 15 moved test files (cliprovider lane CL-C).
+# The tests spread over their own packages at stage F; deliberate, only down from here.
+internal/agent/provider/cliprovider/clipstream 22

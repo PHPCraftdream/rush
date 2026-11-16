@@ -1,0 +1,51 @@
+//go:build windows
+
+package clipproc
+
+import (
+	"log/slog"
+	"os"
+	"os/exec"
+
+	"github.com/PHPCraftdream/rush/internal/kit/sys/proctrack"
+)
+
+// TrackChildTree registers the freshly started CLI child's whole tree
+// for teardown: proctrack.TrackProcessTree assigns it a kill-on-close Job
+// Object that proctrack.KillProcess terminates, reaching grandchildren
+// the PPID walk behind taskkill /T cannot see (MSYS2/Git-Bash
+// intermediary parents). Returns the pid for the matching
+// UntrackProcessTree call.
+//
+// A failure to track (pre-Win8 nested-job limits, exotic job silos) is
+// logged and otherwise ignored: the taskkill fallback inside
+// KillProcess still applies, which is exactly the pre-Job-Object
+// behavior.
+//
+// dataDir/sessionID are accepted (and ignored) only so this function's
+// signature matches the Unix build's -- see procgroup_unix.go, where they
+// are used to register the child's process group in the cross-process,
+// generation-checked registry sessions kill reads on Unix. Windows has no
+// equivalent need: KillProcess already reaches the whole tracked tree via
+// the Job Object above, directly by pid, with no separate handoff.
+func TrackChildTree(proc *os.Process, _, _ string) int {
+	if proc == nil {
+		return 0
+	}
+	if err := proctrack.TrackProcessTree(proc.Pid); err != nil {
+		slog.Warn("cliprovider: could not track child process tree; falling back to taskkill teardown", "pid", proc.Pid, "err", err)
+	}
+	return proc.Pid
+}
+
+// ConfigureChildProcessGroup is a no-op on Windows: there are no POSIX
+// process groups, and tree teardown is the Job Object assigned by
+// TrackChildTree instead.
+func ConfigureChildProcessGroup(*exec.Cmd) {}
+
+func KillChildProcess(proc *os.Process) error {
+	if proc == nil || proc.Pid <= 0 {
+		return os.ErrProcessDone
+	}
+	return proctrack.KillProcess(proc.Pid)
+}
