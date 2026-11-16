@@ -22,12 +22,12 @@ var batchRerunReconcile = func(ctx context.Context, writer *sql.DB, messages mes
 	return session.NewBatchStore(writer).BatchRerunReconcile(ctx, messages, p)
 }
 
-// HandleRerunMessage is an atomic "retry from this user message": it cancels
+// handleRerunMessage is an atomic "retry from this user message": it cancels
 // any in-flight agent run, waits for idle, deletes every message created AFTER
 // the target user message, then deletes the target itself and re-runs the agent
 // with the same prompt. Run() creates a fresh user message so the history reads
 // naturally. All steps happen in one goroutine — no client-side race.
-func HandleRerunMessage(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleRerunMessage(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.RerunMessagePayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload")

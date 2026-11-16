@@ -32,6 +32,12 @@ func appWorkspaceRoot(a *appPkg.App) string {
 	return config.WorkspaceRoot(a.Store().WorkingDir())
 }
 
+// AppOwnsSession exposes the ownership predicate to the remaining root API
+// adapter until all package-server callers migrate.
+func AppOwnsSession(a *appPkg.App, sess session.Session) bool {
+	return appOwnsSession(a, sess)
+}
+
 // appOwnsSession reports whether THIS process may drive sess: the same
 // predicate app.owns runs on the run path (session.Owns), fed the process's
 // workspace here so a destructive web action (rerun, delete-other) never
@@ -66,6 +72,18 @@ func foreignSessionRefusal(sess session.Session) error {
 }
 
 func HandleCreateSession(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+	handleCreateSession(ctx, a, c, msg)
+}
+
+func HandleDeleteSession(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+	handleDeleteSession(ctx, a, c, msg)
+}
+
+func HandleListSessions(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+	handleListSessions(ctx, a, c, msg)
+}
+
+func handleCreateSession(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.CreateSessionPayload
 	if len(msg.Payload) > 0 && string(msg.Payload) != "null" {
 		if err := json.Unmarshal(msg.Payload, &p); err != nil {
@@ -120,7 +138,7 @@ func HandleCreateSession(ctx context.Context, a *appPkg.App, c *hub.Client, msg 
 	c.Hub().Broadcast(wire.EventSessionCreated, sess)
 }
 
-func HandleForkSession(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleForkSession(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.ForkSessionPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload")
@@ -147,7 +165,7 @@ func HandleForkSession(ctx context.Context, a *appPkg.App, c *hub.Client, msg wi
 	c.Hub().Broadcast(wire.EventSessionCreated, fork)
 }
 
-func HandleDeleteSession(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleDeleteSession(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.DeleteSessionPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload")
@@ -167,13 +185,13 @@ func HandleDeleteSession(ctx context.Context, a *appPkg.App, c *hub.Client, msg 
 	c.Reply(msg.ID, wire.EventResponse, map[string]string{"status": "ok"}, "")
 }
 
-// HandleDeleteOtherSessions deletes every top-level session this process OWNS
+// handleDeleteOtherSessions deletes every top-level session this process OWNS
 // except the one identified by KeepID (WS-1, #1142 step C). Owned means this
 // workspace's own sessions, plus legacy ” rows when this is a home process; a
 // row bound to another checkout — visible here only because the data directory
 // is shared — is skipped, never deleted. Sub-sessions are not deleted directly
 // — they are cleaned up by a.Sessions.Delete when their parent is removed,
-// mirroring HandleDeleteSession. Each deletion publishes a DeletedEvent that
+// mirroring handleDeleteSession. Each deletion publishes a DeletedEvent that
 // the events.go pubsub bridge broadcasts as session_deleted, so every connected
 // client updates.
 //
@@ -186,7 +204,7 @@ func HandleDeleteSession(ctx context.Context, a *appPkg.App, c *hub.Client, msg 
 // Callers should only drop rows whose ID appears in deletedIDs. A no-op ack
 // (empty deletedIDs/failedIDs) is returned when KeepID is empty or there is
 // nothing else to delete.
-func HandleDeleteOtherSessions(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleDeleteOtherSessions(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.DeleteOtherSessionsPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload")
@@ -205,7 +223,7 @@ func HandleDeleteOtherSessions(ctx context.Context, a *appPkg.App, c *hub.Client
 	failedIDs := []string{}
 	for _, s := range sessions {
 		// Skip the kept session and any sub-session (those go when their
-		// parent is deleted, matching HandleDeleteSession's behaviour).
+		// parent is deleted, matching handleDeleteSession's behaviour).
 		if s.ID == p.KeepID || s.ParentSessionID != "" {
 			continue
 		}
@@ -322,7 +340,7 @@ func AnnotateSessionExternalOwnership(a *appPkg.App, s *session.Session) {
 // both live in annotateSessionActivity now; the two functions and the
 // parallel liveness models behind them are gone.
 
-func HandleListSessions(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleListSessions(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	sessions, err := a.Sessions.List(ctx)
 	if err != nil {
 		c.Reply(msg.ID, wire.EventError, nil, err.Error())
@@ -349,7 +367,7 @@ func HandleListSessions(ctx context.Context, a *appPkg.App, c *hub.Client, msg w
 	}
 }
 
-func HandleRenameSession(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleRenameSession(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.RenameSessionPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload")
@@ -373,7 +391,7 @@ func HandleRenameSession(ctx context.Context, a *appPkg.App, c *hub.Client, msg 
 	c.Hub().Broadcast(wire.EventSessionUpdated, sess)
 }
 
-func HandleGetSystemPrompt(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleGetSystemPrompt(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.GetSystemPromptPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.SessionID == "" {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload: sessionID required")
@@ -387,7 +405,7 @@ func HandleGetSystemPrompt(ctx context.Context, a *appPkg.App, c *hub.Client, ms
 	c.Reply(msg.ID, wire.EventSystemPrompt, map[string]string{"sessionID": p.SessionID, "content": sess.SystemPrompt}, "")
 }
 
-func HandleSetSystemPrompt(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleSetSystemPrompt(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.SetSystemPromptPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.SessionID == "" {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload: sessionID required")
@@ -406,7 +424,7 @@ func HandleSetSystemPrompt(ctx context.Context, a *appPkg.App, c *hub.Client, ms
 
 // ── Todos ─────────────────────────────────────────────────────────────────────
 
-func HandleUpdateTodos(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleUpdateTodos(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.UpdateTodosPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload")

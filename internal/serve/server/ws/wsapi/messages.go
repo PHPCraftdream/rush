@@ -97,7 +97,7 @@ func updateMessageAndVerify(ctx context.Context, a *appPkg.App, c *hub.Client, m
 	return true
 }
 
-func HandleLoadMessages(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleLoadMessages(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.LoadMessagesPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload")
@@ -214,7 +214,7 @@ func deleteMessageRescuingOrphan(ctx context.Context, a *appPkg.App, id string) 
 	return nil
 }
 
-func HandleDeleteMessage(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleDeleteMessage(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.DeleteMessagePayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload")
@@ -228,7 +228,7 @@ func HandleDeleteMessage(ctx context.Context, a *appPkg.App, c *hub.Client, msg 
 	c.Reply(msg.ID, wire.EventResponse, map[string]string{"status": "ok"}, "")
 }
 
-func HandleDeleteMessages(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleDeleteMessages(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.DeleteMessagesPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload")
@@ -269,7 +269,7 @@ func HandleDeleteMessages(ctx context.Context, a *appPkg.App, c *hub.Client, msg
 	c.Reply(msg.ID, wire.EventResponse, map[string]string{"status": "ok"}, "")
 }
 
-func HandleUpdateMessageContent(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleUpdateMessageContent(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.UpdateMessageContentPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload")
@@ -315,7 +315,7 @@ func updatedReasoningContent(rc message.ReasoningContent, thinking string) messa
 	}
 }
 
-func HandleUpdateMessageThinking(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleUpdateMessageThinking(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p struct {
 		MessageID string `json:"messageID"`
 		Thinking  string `json:"thinking"`
@@ -364,7 +364,7 @@ func HandleUpdateMessageThinking(ctx context.Context, a *appPkg.App, c *hub.Clie
 	c.Reply(msg.ID, wire.EventResponse, map[string]string{"status": "ok"}, "")
 }
 
-func HandleDeleteMessagePart(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleDeleteMessagePart(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.DeleteMessagePartPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.MessageID == "" {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload")
@@ -396,7 +396,7 @@ func HandleDeleteMessagePart(ctx context.Context, a *appPkg.App, c *hub.Client, 
 	c.Reply(msg.ID, wire.EventResponse, map[string]string{"status": "ok"}, "")
 }
 
-func HandleUpdateMessagePart(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleUpdateMessagePart(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.UpdateMessagePartPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.MessageID == "" {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload")
@@ -444,7 +444,7 @@ func HandleUpdateMessagePart(ctx context.Context, a *appPkg.App, c *hub.Client, 
 	c.Reply(msg.ID, wire.EventResponse, map[string]string{"status": "ok"}, "")
 }
 
-func HandleTogglePinMessage(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleTogglePinMessage(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.TogglePinMessagePayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.MessageID == "" {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload")

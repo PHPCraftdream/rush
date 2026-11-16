@@ -47,6 +47,12 @@ var rerunHoldingReservationSeam func()
 // production path.
 var rerunPreHandoffSeam func()
 
+// HoldExternalSilenceProof exposes the lock-probe seam to remaining server
+// API callers while the WS package migration is completed.
+func HoldExternalSilenceProof(a *appPkg.App, sessionID string) (*session.SharedLockProbe, bool, string) {
+	return holdExternalSilenceProof(a, sessionID)
+}
+
 // holdExternalSilenceProof acquires the kernel-attested proof that no
 // external process owns sessionID: a non-blocking SHARED OS lock on the
 // session's lock file (session.TryHoldSessionLockShared), which the caller
@@ -132,6 +138,10 @@ func holdExternalSilenceProofFromConfig(cfg *config.Config, sessionID string) (*
 	return nil, true, "cannot verify external session ownership (lock probe failed: " + err.Error() + ") — please retry"
 }
 
+func SaveAttachmentToDisk(dataDir, fileName string, data []byte) (string, error) {
+	return saveAttachmentToDisk(dataDir, fileName, data)
+}
+
 // saveAttachmentToDisk saves an attachment to <dataDir>/attachments/ with a
 // timestamped filename and returns the absolute path. dataDir must already be
 // the fully resolved data directory (e.g. cfg.Options.DataDirectory, which
@@ -163,6 +173,14 @@ func saveAttachmentToDisk(dataDir, fileName string, data []byte) (string, error)
 }
 
 func HandleSendMessage(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+	handleSendMessage(ctx, a, c, msg)
+}
+
+func AttachmentsDataDir(a *appPkg.App) string {
+	return attachmentsDataDir(a)
+}
+
+func handleSendMessage(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.SendMessagePayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload")
@@ -269,13 +287,13 @@ func HandleSendMessage(ctx context.Context, a *appPkg.App, c *hub.Client, msg wi
 	// in abandonOwnershipWithHandoff is the authoritative drain point.
 }
 
-// HandleInterruptAndSend cancels the running turn and queues a new user
+// handleInterruptAndSend cancels the running turn and queues a new user
 // message in one shot. The in-flight agent.Run() finalises the cancelled
 // assistant message with FinishReasonCanceled, then its cancel-handling
 // branch drains the queue and immediately re-enters Run() with the new
 // message — so the user keeps everything produced so far plus their new
 // instruction.
-func HandleInterruptAndSend(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleInterruptAndSend(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.SendMessagePayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload")
@@ -293,7 +311,7 @@ func HandleInterruptAndSend(ctx context.Context, a *appPkg.App, c *hub.Client, m
 	autoApproveWebSession(a, p.SessionID)
 	a.AgentCoordinator.ResetAutoResumeCounter(p.SessionID)
 
-	// Same attachments path as HandleSendMessage: save to disk, append paths
+	// Same attachments path as handleSendMessage: save to disk, append paths
 	// to the prompt text so CLI tools can read them, and forward attachment
 	// metadata so vision-capable providers can ingest images.
 	var attachments []message.Attachment
@@ -311,7 +329,7 @@ func HandleInterruptAndSend(ctx context.Context, a *appPkg.App, c *hub.Client, m
 		})
 	}
 
-	// Model overrides follow the same priority as HandleSendMessage:
+	// Model overrides follow the same priority as handleSendMessage:
 	// payload > DB session record > global defaults.
 	var smartOverride, fastOverride *agent.ModelOverride
 	if p.SmartModel != nil {
@@ -342,19 +360,19 @@ func HandleInterruptAndSend(ctx context.Context, a *appPkg.App, c *hub.Client, m
 		c.Reply(msg.ID, wire.EventError, nil, err.Error())
 		return
 	}
-	// Don't toggle EventAgentBusy here: the running HandleSendMessage
+	// Don't toggle EventAgentBusy here: the running handleSendMessage
 	// goroutine will publish busy=false when its Run() returns, and the
 	// queue drain inside Run() will publish busy=true again for the new
 	// turn. Touching the flag here would create a flicker.
 	c.Reply(msg.ID, wire.EventResponse, map[string]string{"status": "queued"}, "")
 }
 
-// HandleInjectMessage persists a user message to the session DB right now
+// handleInjectMessage persists a user message to the session DB right now
 // (so the UI shows it instantly) and — if the session is busy — schedules
 // the same message to be merged into the next provider request without
 // cancelling the in-flight turn. See SessionAgent.InjectMessage for the
 // drain-at-PrepareStep mechanism.
-func HandleInjectMessage(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleInjectMessage(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.SendMessagePayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload")
@@ -372,7 +390,7 @@ func HandleInjectMessage(ctx context.Context, a *appPkg.App, c *hub.Client, msg 
 	autoApproveWebSession(a, p.SessionID)
 	a.AgentCoordinator.ResetAutoResumeCounter(p.SessionID)
 
-	// Same attachments path as HandleSendMessage.
+	// Same attachments path as handleSendMessage.
 	var attachments []message.Attachment
 	for _, att := range p.Attachments {
 		savedPath, saveErr := saveAttachmentToDisk(attachmentsDataDir(a), att.FileName, att.Data)
@@ -397,7 +415,7 @@ func HandleInjectMessage(ctx context.Context, a *appPkg.App, c *hub.Client, msg 
 	c.Reply(msg.ID, wire.EventResponse, map[string]string{"status": "injected"}, "")
 }
 
-func HandleCancelAgent(_ context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleCancelAgent(_ context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.CancelAgentPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload")
@@ -419,7 +437,7 @@ func attachmentsDataDir(a *appPkg.App) string {
 	return cmp.Or(externalOwnershipDataDir(a), filepath.Join(a.Store().WorkingDir(), ".rush"))
 }
 
-func HandleSummarizeSession(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleSummarizeSession(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.SummarizeSessionPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.SessionID == "" {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload")
@@ -454,7 +472,7 @@ func HandleSummarizeSession(ctx context.Context, a *appPkg.App, c *hub.Client, m
 	c.Reply(msg.ID, wire.EventResponse, map[string]string{"status": "ok"}, "")
 }
 
-func HandleCancelQueuedSummarize(a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleCancelQueuedSummarize(a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	var p wire.CancelQueuedSummarizePayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.SessionID == "" {
 		c.Reply(msg.ID, wire.EventError, nil, "invalid payload")
@@ -471,7 +489,7 @@ func HandleCancelQueuedSummarize(a *appPkg.App, c *hub.Client, msg wire.WSMessag
 
 // ── Project initialization ────────────────────────────────────────────────────
 
-func HandleInitializeProject(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
+func handleInitializeProject(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {
 	store := a.Store()
 	if store == nil {
 		c.Reply(msg.ID, wire.EventError, nil, "config not available")
