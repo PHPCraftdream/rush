@@ -3,16 +3,16 @@
 package docread
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"maps"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
+	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
 )
 
@@ -32,61 +32,62 @@ type mcpJSONEntry struct {
 }
 
 // loadMCPJSON reads a .mcp.json file and converts its entries to MCPConfig.
-func loadMCPJSON(path string) (map[string]MCPConfig, error) {
+func loadMCPJSON(path string) (map[string]cfgmodel.MCPConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 
-	return loadMCPJSONBytes(data)
+	return LoadMCPJSONBytes(data)
 }
 
-func loadMCPJSONBytes(data []byte) (map[string]MCPConfig, error) {
+// LoadMCPJSONBytes parses JSON bytes in the external .mcp.json format.
+func LoadMCPJSONBytes(data []byte) (map[string]cfgmodel.MCPConfig, error) {
 	var file mcpJSONFile
 	if err := json.Unmarshal(data, &file); err != nil {
 		return nil, err
 	}
 
-	result := make(map[string]MCPConfig, len(file.MCPServers))
+	result := make(map[string]cfgmodel.MCPConfig, len(file.MCPServers))
 	for name, entry := range file.MCPServers {
-		mcpType := MCPStdio
-		switch MCPType(entry.Type) {
-		case MCPSSE:
-			mcpType = MCPSSE
-		case MCPHttp:
-			mcpType = MCPHttp
+		mcpType := cfgmodel.MCPStdio
+		switch cfgmodel.MCPType(entry.Type) {
+		case cfgmodel.MCPSSE:
+			mcpType = cfgmodel.MCPSSE
+		case cfgmodel.MCPHttp:
+			mcpType = cfgmodel.MCPHttp
 		}
 
-		result[name] = MCPConfig{
+		result[name] = cfgmodel.MCPConfig{
 			Type:    mcpType,
 			Command: entry.Command,
 			Args:    entry.Args,
 			Env:     entry.Env,
 			URL:     entry.URL,
 			Headers: entry.Headers,
-			Source:  MCPSourceExternal,
+			Source:  cfgmodel.MCPSourceExternal,
 			Timeout: 60, // Higher default for external servers (uvx, npx etc. may be slow to start).
 		}
 	}
 	return result, nil
 }
 
-// mcpJSONCandidatePaths returns every location that may provide .mcp.json,
+// McpJSONCandidatePaths returns every location that may provide .mcp.json,
 // including files that do not currently exist. Keeping the candidate set
 // explicit lets staleness tracking detect later additions.
-func mcpJSONCandidatePaths(workingDir string) []string {
+func McpJSONCandidatePaths(workingDir string) []string {
 	var paths []string
 
 	// Global: ~/.claude/.mcp.json
 	if homeDir := home.Dir(); homeDir != "" {
-		if path := eligibleConfigCandidate(filepath.Join(homeDir, ".claude", ".mcp.json"), homeConfigOwner()); path != "" {
+		if path := eligibleConfigCandidate(filepath.Join(homeDir, ".claude", ".mcp.json"), fileid.HomeConfigOwner()); path != "" {
 			paths = append(paths, path)
 		}
 	}
 
 	// Project root: <workingDir>/.mcp.json
 	if workingDir != "" {
-		if path := eligibleWorkspaceConfig(filepath.Join(canonicalConfigPath(workingDir), ".mcp.json"), workingDir); path != "" {
+		if path := eligibleWorkspaceConfig(filepath.Join(datadir.CanonicalConfigPath(workingDir), ".mcp.json"), workingDir); path != "" {
 			paths = append(paths, path)
 		}
 	}
@@ -98,7 +99,7 @@ func mcpJSONCandidatePaths(workingDir string) []string {
 // (lowest priority first): global (~/.claude/.mcp.json), then project root.
 func discoverMCPJSONFiles(workingDir string) []string {
 	var paths []string
-	for _, path := range mcpJSONCandidatePaths(workingDir) {
+	for _, path := range McpJSONCandidatePaths(workingDir) {
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
 			paths = append(paths, path)
 		}
@@ -106,21 +107,23 @@ func discoverMCPJSONFiles(workingDir string) []string {
 	return paths
 }
 
-func configAndMCPStalenessPaths(configPaths []string, workingDir string) []string {
-	return append(slices.Clone(configPaths), mcpJSONCandidatePaths(workingDir)...)
+// ConfigAndMCPStalenessPaths combines config paths with all external MCP
+// candidate paths, including files that do not currently exist.
+func ConfigAndMCPStalenessPaths(configPaths []string, workingDir string) []string {
+	return append(slices.Clone(configPaths), McpJSONCandidatePaths(workingDir)...)
 }
 
 // loadExternalMCPServers discovers and loads all .mcp.json files, returning
 // a merged map of server configs. Later files override earlier ones.
-func loadExternalMCPServers(workingDir string) map[string]MCPConfig {
+func loadExternalMCPServers(workingDir string) map[string]cfgmodel.MCPConfig {
 	return loadExternalMCPServersFromPaths(discoverMCPJSONFiles(workingDir))
 }
 
 // loadExternalMCPServersFromPaths loads one previously discovered, stable
 // path set. Reload uses this variant so discovery itself is part of the
 // candidate fingerprint instead of being repeated halfway through the read.
-func loadExternalMCPServersFromPaths(paths []string) map[string]MCPConfig {
-	result := make(map[string]MCPConfig)
+func loadExternalMCPServersFromPaths(paths []string) map[string]cfgmodel.MCPConfig {
+	result := make(map[string]cfgmodel.MCPConfig)
 	for _, path := range paths {
 		servers, err := loadMCPJSON(path)
 		if err != nil {
@@ -135,7 +138,7 @@ func loadExternalMCPServersFromPaths(paths []string) map[string]MCPConfig {
 	return result
 }
 
-func loadExternalMCPServersFromStablePaths(paths []string, fingerprints map[string]reloadFileFingerprint) map[string]MCPConfig {
+func loadExternalMCPServersFromStablePaths(paths []string, fingerprints map[string]Fingerprint) map[string]cfgmodel.MCPConfig {
 	_, result, err := loadExternalMCPDocumentsStable(paths, fingerprints)
 	if err != nil {
 		slog.Warn("Failed to load .mcp.json", "error", err)
@@ -143,24 +146,24 @@ func loadExternalMCPServersFromStablePaths(paths []string, fingerprints map[stri
 	return result
 }
 
-func loadExternalMCPServersFromStableDocuments(paths []string, fingerprints map[string]reloadFileFingerprint) (map[string]MCPConfig, error) {
+func loadExternalMCPServersFromStableDocuments(paths []string, fingerprints map[string]Fingerprint) (map[string]cfgmodel.MCPConfig, error) {
 	_, result, err := loadExternalMCPDocumentsStable(paths, fingerprints)
 	return result, err
 }
 
-func loadExternalMCPDocumentsStable(paths []string, fingerprints map[string]reloadFileFingerprint) ([]stableConfigDocument, map[string]MCPConfig, error) {
-	return loadExternalMCPDocumentsStableForWorkingDir(paths, fingerprints, "")
+func loadExternalMCPDocumentsStable(paths []string, fingerprints map[string]Fingerprint) ([]StableConfigDocument, map[string]cfgmodel.MCPConfig, error) {
+	return LoadExternalMCPDocumentsStableForWorkingDir(paths, fingerprints, "")
 }
 
-func loadExternalMCPDocumentsStableForWorkingDir(paths []string, fingerprints map[string]reloadFileFingerprint, workingDir string) ([]stableConfigDocument, map[string]MCPConfig, error) {
-	result := make(map[string]MCPConfig)
+func LoadExternalMCPDocumentsStableForWorkingDir(paths []string, fingerprints map[string]Fingerprint, workingDir string) ([]StableConfigDocument, map[string]cfgmodel.MCPConfig, error) {
+	result := make(map[string]cfgmodel.MCPConfig)
 	documents, err := readStableConfigDocumentsWithOwner(paths, func(path string) (int, bool, error) {
 		// The global external file follows the home policy; the project file
 		// follows the working-directory policy. This is intentionally separate
 		// from rush.json provenance.
 		globalPath := filepath.Join(home.Dir(), ".claude", ".mcp.json")
-		if normalizeReloadPath(path) == normalizeReloadPath(globalPath) {
-			return homeConfigOwner(), true, nil
+		if NormalizeReloadPath(path) == NormalizeReloadPath(globalPath) {
+			return fileid.HomeConfigOwner(), true, nil
 		}
 		return configOwnerForWorkingDir(workingDir)
 	})
@@ -168,21 +171,21 @@ func loadExternalMCPDocumentsStableForWorkingDir(paths []string, fingerprints ma
 		return nil, nil, err
 	}
 	for _, document := range documents {
-		if !document.present {
-			fingerprints[document.path] = reloadFileFingerprint{}
-			for _, alias := range document.aliases {
-				fingerprints[alias.path] = alias.fingerprint
+		if !document.Present {
+			fingerprints[document.Path] = Fingerprint{}
+			for _, alias := range document.Aliases {
+				fingerprints[alias.Path] = alias.Fingerprint
 			}
 			continue
 		}
-		data := document.data
-		fingerprints[document.path] = document.fingerprint
-		for _, alias := range document.aliases {
-			fingerprints[alias.path] = alias.fingerprint
+		data := document.Data
+		fingerprints[document.Path] = document.Fingerprint
+		for _, alias := range document.Aliases {
+			fingerprints[alias.Path] = alias.Fingerprint
 		}
-		servers, err := loadMCPJSONBytes(data)
+		servers, err := LoadMCPJSONBytes(data)
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid JSON in .mcp.json %s: %w", document.path, err)
+			return nil, nil, fmt.Errorf("invalid JSON in .mcp.json %s: %w", document.Path, err)
 		}
 		for name, cfg := range servers {
 			result[name] = cfg
@@ -191,32 +194,14 @@ func loadExternalMCPDocumentsStableForWorkingDir(paths []string, fingerprints ma
 	return documents, result, nil
 }
 
-// mergeExternalMCPServers injects .mcp.json servers into the config's MCP map.
-// Servers already defined in rush.json take full precedence. For external
-// servers, the disabled state is read from the rush config store.
-func mergeExternalMCPServers(cfg *Config, store *ConfigStore, external map[string]MCPConfig, loadedPaths []string) {
-	_ = store
-	_ = loadedPaths
-	if cfg.MCP == nil {
-		cfg.MCP = make(MCPs)
-	}
-	for name, extCfg := range external {
-		if _, exists := cfg.MCP[name]; exists {
-			// A complete Rush definition takes precedence over .mcp.json.
-			continue
-		}
-		cfg.MCP[name] = extCfg
-	}
-}
-
-// mergeExternalMCPServersFromDocuments applies the same MCP precedence used
+// MergeExternalMCPServersFromDocuments applies the same MCP precedence used
 // by transaction evaluation. Rush documents are already ordered from lowest
 // to highest priority, followed by external documents in global-to-project
 // order. A complete Rush definition wins over every external definition;
 // disabled-only Rush entries are overlays for an otherwise external server.
-func mergeExternalMCPServersFromDocuments(cfg *Config, rushDocuments, externalDocuments []stableConfigDocument) {
+func MergeExternalMCPServersFromDocuments(cfg *cfgmodel.Config, rushDocuments, externalDocuments []StableConfigDocument) {
 	if cfg.MCP == nil {
-		cfg.MCP = make(MCPs)
+		cfg.MCP = make(cfgmodel.MCPs)
 	}
 	rushDefined := make(map[string]struct{}, len(cfg.MCP))
 	for name := range cfg.MCP {
@@ -224,10 +209,10 @@ func mergeExternalMCPServersFromDocuments(cfg *Config, rushDocuments, externalDo
 	}
 	overlays := mcpDisabledOverlays(rushDocuments)
 	for _, document := range externalDocuments {
-		if !document.present {
+		if !document.Present {
 			continue
 		}
-		servers, err := loadMCPJSONBytes(document.data)
+		servers, err := LoadMCPJSONBytes(document.Data)
 		if err != nil {
 			continue
 		}
@@ -243,21 +228,21 @@ func mergeExternalMCPServersFromDocuments(cfg *Config, rushDocuments, externalDo
 	}
 }
 
-func mcpDisabledOverlays(documents []stableConfigDocument) map[string]bool {
+func mcpDisabledOverlays(documents []StableConfigDocument) map[string]bool {
 	overlays := make(map[string]bool)
 	for _, document := range documents {
-		if !document.present {
+		if !document.Present {
 			continue
 		}
 		var root struct {
 			MCP map[string]json.RawMessage `json:"mcp"`
 		}
-		if json.Unmarshal(document.data, &root) != nil {
+		if json.Unmarshal(document.Data, &root) != nil {
 			continue
 		}
 		for name, raw := range root.MCP {
 			var entry map[string]json.RawMessage
-			if json.Unmarshal(raw, &entry) != nil || !isMCPDisabledOnlyEntry(entry, true) {
+			if json.Unmarshal(raw, &entry) != nil || !IsMCPDisabledOnlyEntry(entry, true) {
 				continue
 			}
 			var disabled bool
@@ -269,34 +254,7 @@ func mcpDisabledOverlays(documents []stableConfigDocument) map[string]bool {
 	return overlays
 }
 
-func readMCPDisabledOverride(store *ConfigStore, scope Scope, name string) (bool, bool) {
-	path, err := store.configPath(scope)
-	if err != nil {
-		return false, false
-	}
-	// The scope path is a logical slot: readSettingsDocument selects the
-	// active file (rush.ktav wins) and decodes Ktav to JSON-shaped bytes.
-	// A read or decode failure stays "no override", as before.
-	doc, err := readSettingsDocument(path)
-	if err != nil {
-		return false, false
-	}
-	entry, ok := mcpEntryFromJSON(doc.jsonBytes, name)
-	if !isMCPDisabledOnlyEntry(entry, ok) {
-		return false, false
-	}
-	raw, ok := entry["disabled"]
-	if !ok {
-		return false, false
-	}
-	var disabled bool
-	if json.Unmarshal(raw, &disabled) != nil {
-		return false, false
-	}
-	return disabled, true
-}
-
-func isMCPDisabledOnlyEntry(entry map[string]json.RawMessage, exists bool) bool {
+func IsMCPDisabledOnlyEntry(entry map[string]json.RawMessage, exists bool) bool {
 	if !exists || len(entry) != 1 {
 		return false
 	}
@@ -304,7 +262,7 @@ func isMCPDisabledOnlyEntry(entry map[string]json.RawMessage, exists bool) bool 
 	return hasDisabled
 }
 
-func mcpEntryFromJSON(data []byte, name string) (map[string]json.RawMessage, bool) {
+func McpEntryFromJSON(data []byte, name string) (map[string]json.RawMessage, bool) {
 	var root struct {
 		MCP map[string]json.RawMessage `json:"mcp"`
 	}
@@ -322,54 +280,10 @@ func mcpEntryFromJSON(data []byte, name string) (map[string]json.RawMessage, boo
 	return entry, true
 }
 
-// mcpRevisionDiff advances only names whose effective definition or exact
-// source input changed. A missing revision is deliberately treated as zero so
-// an in-memory staged entry receives a real admission token.
-func mcpRevisionDiff(current map[string]uint64, previous, next *Config, previousInputs, nextInputs map[string][sha256.Size]byte, force ...string) map[string]uint64 {
-	result := maps.Clone(current)
-	if result == nil {
-		result = make(map[string]uint64)
+// NormalizeReloadPath returns the canonical reload-path spelling.
+func NormalizeReloadPath(path string) string {
+	if path == "" {
+		return ""
 	}
-	names := make(map[string]struct{})
-	for name := range mcpNames(previous) {
-		names[name] = struct{}{}
-	}
-	for name := range mcpNames(next) {
-		names[name] = struct{}{}
-	}
-	for name := range previousInputs {
-		names[name] = struct{}{}
-	}
-	for name := range nextInputs {
-		names[name] = struct{}{}
-	}
-	for _, name := range force {
-		if name != "" {
-			names[name] = struct{}{}
-		}
-	}
-	forced := make(map[string]struct{}, len(force))
-	for _, name := range force {
-		forced[name] = struct{}{}
-	}
-	for name := range names {
-		previousConfig, previousExists := mcpConfig(previous, name)
-		nextConfig, nextExists := mcpConfig(next, name)
-		previousInput, previousHasInput := previousInputs[name]
-		nextInput, nextHasInput := nextInputs[name]
-		if _, ok := forced[name]; ok || previousExists != nextExists ||
-			previousExists && !reflect.DeepEqual(previousConfig, nextConfig) ||
-			previousHasInput != nextHasInput ||
-			previousHasInput && nextHasInput && previousInput != nextInput {
-			result[name]++
-		}
-	}
-	return result
-}
-
-func mcpNames(cfg *Config) map[string]MCPConfig {
-	if cfg == nil {
-		return nil
-	}
-	return cfg.MCP
+	return datadir.CanonicalConfigPath(path)
 }

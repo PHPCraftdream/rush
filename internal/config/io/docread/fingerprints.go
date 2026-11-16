@@ -1,50 +1,53 @@
-// Config input fingerprints: file snapshots, discovery/alias-chain digests and
-// the staleness and MCP revision inputs built from them.
+// Config input fingerprints: file snapshots and discovery/alias-chain digests.
 package docread
 
 import (
 	"crypto/sha256"
-	"encoding/json"
-	"errors"
+	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 
-	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
+	"github.com/PHPCraftdream/rush/internal/config/io/casefold"
+	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 )
 
-// fileSnapshot captures metadata about a config file at a point in time.
-type fileSnapshot struct {
+// FileSnapshot captures metadata about a config file at a point in time.
+type FileSnapshot struct {
 	Path        string
 	Exists      bool
 	Size        int64
 	ModTime     int64 // UnixNano.
 	ContentHash [32]byte
-	fingerprint reloadFileFingerprint
+	fingerprint Fingerprint
 }
 
-type reloadFileFingerprint struct {
-	exists          bool
-	size            int64
-	modTime         int64
-	digest          [sha256.Size]byte
-	owner           int
-	nlink           uint64
-	identity        configFileIdentity
-	discovery       [sha256.Size]byte
-	parentDiscovery [sha256.Size]byte
-	parentIdentity  configFileIdentity
-	// aliasChain excludes mutable regular-file metadata at the leaf.
-	aliasChain [sha256.Size]byte
+// Fingerprint is the opaque snapshot token for one config document.
+type Fingerprint struct {
+	Exists          bool
+	Size            int64
+	ModTime         int64
+	Digest          [sha256.Size]byte
+	Owner           int
+	Nlink           uint64
+	Identity        fileid.FileIdentity
+	Discovery       [sha256.Size]byte
+	ParentDiscovery [sha256.Size]byte
+	ParentIdentity  fileid.FileIdentity
+	// AliasChain excludes mutable regular-file metadata at the leaf.
+	AliasChain [sha256.Size]byte
 }
 
-// configAliasChainFingerprint records the lexical path and every directory or
+// Fingerprint returns the snapshot's opaque file fingerprint.
+func (snapshot FileSnapshot) Fingerprint() Fingerprint { return snapshot.fingerprint }
+
+// ConfigAliasChainFingerprint records the lexical path and every directory or
 // symlink in its discovery chain. Metadata belonging only to a regular-file
 // leaf is omitted so a cooperating atomic writer may replace its inode while
 // retaining the same physical binding.
-func configAliasChainFingerprint(path string) [sha256.Size]byte {
+func ConfigAliasChainFingerprint(path string) [sha256.Size]byte {
 	h := sha256.New()
 	abs := configFingerprintPath(path)
 	var components []string
@@ -86,10 +89,10 @@ func configAliasChainFingerprint(path string) [sha256.Size]byte {
 	return sha256.Sum256(h.Sum(nil))
 }
 
-// configDiscoveryFingerprint includes every lexical component leading to the
+// ConfigDiscoveryFingerprint includes every lexical component leading to the
 // file. It makes a symlink retarget or a parent-directory replacement dirty
 // even when the final target and bytes happen to return to their old values.
-func configDiscoveryFingerprint(path string) [sha256.Size]byte {
+func ConfigDiscoveryFingerprint(path string) [sha256.Size]byte {
 	h := sha256.New()
 	abs := configFingerprintPath(path)
 	var components []string
@@ -126,12 +129,12 @@ func configDiscoveryFingerprint(path string) [sha256.Size]byte {
 	return sha256.Sum256(h.Sum(nil))
 }
 
-func reloadStalenessState(paths []string, fingerprints map[string]reloadFileFingerprint) ([]string, map[string]fileSnapshot) {
-	paths = expandConfigSlotSiblings(paths)
+func ReloadStalenessState(paths []string, fingerprints map[string]Fingerprint) ([]string, map[string]FileSnapshot) {
+	paths = ExpandConfigSlotSiblings(paths)
 	trackedSet := make(map[string]struct{}, len(paths))
 	for _, path := range paths {
 		if path != "" {
-			trackedSet[normalizeDiscoveryPath(path)] = struct{}{}
+			trackedSet[NormalizeDiscoveryPath(path)] = struct{}{}
 		}
 	}
 	tracked := make([]string, 0, len(trackedSet))
@@ -140,138 +143,177 @@ func reloadStalenessState(paths []string, fingerprints map[string]reloadFileFing
 	}
 	slices.Sort(tracked)
 
-	snapshots := make(map[string]fileSnapshot, len(tracked))
+	snapshots := make(map[string]FileSnapshot, len(tracked))
 	for _, path := range tracked {
 		// The fingerprints map only holds SELECTED documents; an unselected
 		// slot sibling that exists on disk (rush.ktav selected, ignored
 		// rush.json present) must still contribute its real on-disk
 		// fingerprint, or the snapshot would publish Exists:false for an
 		// existing file and ConfigStaleness would report Dirty forever.
-		fingerprint, fpErr := trackedSlotFingerprint(path, fingerprints)
+		fingerprint, fpErr := TrackedSlotFingerprint(path, fingerprints)
 		if fpErr != nil {
-			fingerprint = reloadFileFingerprint{}
+			fingerprint = Fingerprint{}
 		}
-		snapshots[path] = fileSnapshot{
+		snapshots[path] = FileSnapshot{
 			Path:        path,
-			Exists:      fingerprint.exists,
-			Size:        fingerprint.size,
-			ModTime:     fingerprint.modTime,
-			ContentHash: fingerprint.digest,
+			Exists:      fingerprint.Exists,
+			Size:        fingerprint.Size,
+			ModTime:     fingerprint.ModTime,
+			ContentHash: fingerprint.Digest,
 			fingerprint: fingerprint,
 		}
 	}
 	return tracked, snapshots
 }
 
-func candidateInputsChanged(workingDir string, configPaths, externalPaths []string, fingerprints map[string]reloadFileFingerprint) bool {
-	return !sameReloadPathSet(configPaths, lookupConfigCandidates(workingDir)) ||
-		!sameReloadPathSet(externalPaths, mcpJSONCandidatePaths(workingDir)) ||
-		reloadFingerprintsChangedWithOwner(fingerprints, func(path string) (int, bool, error) {
-			globalExternal := filepath.Join(home.Dir(), ".claude", ".mcp.json")
-			if normalizeReloadPath(path) == normalizeReloadPath(globalExternal) {
-				return homeConfigOwner(), true, nil
-			}
-			return configOwnerPolicyForPath(path, workingDir)
-		})
+const stableReadMaxAttempts = 4
+
+// configFingerprintPath folds the leaf spelling when the containing directory
+// is case-insensitive. Case-only aliases are one filesystem object there and
+// must not produce different staleness fingerprints.
+func configFingerprintPath(path string) string {
+	abs := NormalizeDiscoveryPath(path)
+	dir, leaf := filepath.Dir(abs), filepath.Base(abs)
+	if folded, ok := casefold.ConfigPlatformCaseFoldLeaf(dir, leaf); ok {
+		return filepath.Join(dir, folded)
+	}
+	return abs
 }
 
-var errReloadDiskChanged = errors.New("config files changed while reloading")
-
-func initialMCPRevisions(cfg *Config) map[string]uint64 {
-	result := make(map[string]uint64)
-	if cfg != nil {
-		for name := range cfg.MCP {
-			result[name] = 1
-		}
+func writeConfigDiscoveryInfo(h hash.Hash, info os.FileInfo) {
+	_, _ = io.WriteString(h, info.Mode().String())
+	// Directory mtimes change for unrelated files created beside a candidate;
+	// their physical identity is the part relevant to parent replacement.
+	// Regular-file metadata remains part of the exact file fingerprint below.
+	if info.IsDir() {
+		_, _ = io.WriteString(h, fmt.Sprintf("|dir|%d|", info.Mode()))
+	} else {
+		_, _ = io.WriteString(h, fmt.Sprintf("|%d|%d|%d|", info.Size(), info.ModTime().UnixNano(), info.Mode()))
 	}
-	return result
+	identity := fileid.FileIdentityOf(info)
+	_, _ = io.WriteString(h, identity.FingerprintString())
 }
 
-// mcpInputFingerprints fingerprints only the MCP entries in each source
-// document. Changes to unrelated config fields therefore preserve an entry's
-// revision across reloads.
-func mcpInputFingerprints(rush, external []stableConfigDocument) map[string][sha256.Size]byte {
-	type document struct {
-		path    string
-		entries map[string]json.RawMessage
-		// rawDigest is the RAW disk digest of a Ktav rush document. It is
-		// mixed into the hash of every entry this document DEFINES, so two
-		// Ktav documents that decode to identical JSON but differ in raw
-		// bytes still produce different revisions (JSON documents keep the
-		// legacy entry-only hash). It is never mixed into an entry the
-		// document does not define: a write to an unrelated Ktav document
-		// (for example the app-managed data file) must not move that
-		// entry's revision.
-		rawDigest []byte
-	}
-	documentsByPath := make(map[string]document, len(rush)+len(external))
-	names := make(map[string]struct{})
-	addDocument := func(sourceDocument stableConfigDocument, entries map[string]json.RawMessage, rawDigest []byte) {
-		path := normalizeReloadPath(sourceDocument.path)
-		if path == "" {
-			path = normalizeDiscoveryPath(sourceDocument.path)
-		}
-		if existing, ok := documentsByPath[path]; ok {
-			if len(existing.entries) == 0 && len(entries) != 0 {
-				documentsByPath[path] = document{path: path, entries: entries, rawDigest: rawDigest}
-			}
-			return
-		}
-		documentsByPath[path] = document{path: path, entries: entries, rawDigest: rawDigest}
-	}
-	for _, sourceDocument := range rush {
-		var rawDigest []byte
-		if isKtavConfigPath(sourceDocument.path) && sourceDocument.fingerprint.exists {
-			rawDigest = append([]byte(nil), sourceDocument.fingerprint.digest[:]...)
-		}
-		var root struct {
-			MCP map[string]json.RawMessage `json:"mcp"`
-		}
-		if json.Unmarshal(sourceDocument.data, &root) == nil {
-			addDocument(sourceDocument, root.MCP, rawDigest)
-			for name := range root.MCP {
-				names[name] = struct{}{}
-			}
+// NormalizeDiscoveryPath returns an absolute, cleaned spelling of path.
+func NormalizeDiscoveryPath(path string) string { return normalizeDiscoveryPath(path) }
+
+func CaptureReloadFingerprints(paths []string) (map[string]Fingerprint, error) {
+	fingerprints := make(map[string]Fingerprint, len(paths))
+	for _, path := range paths {
+		if err := AddReloadFingerprint(fingerprints, path); err != nil {
+			return nil, err
 		}
 	}
-	for _, sourceDocument := range external {
-		var root struct {
-			MCPServers map[string]json.RawMessage `json:"mcpServers"`
-		}
-		if json.Unmarshal(sourceDocument.data, &root) == nil {
-			addDocument(sourceDocument, root.MCPServers, nil)
-			for name := range root.MCPServers {
-				names[name] = struct{}{}
+	return fingerprints, nil
+}
+
+func AddReloadFingerprint(fingerprints map[string]Fingerprint, path string) error {
+	if path == "" {
+		return nil
+	}
+	path = normalizeReloadPath(path)
+	if _, exists := fingerprints[path]; exists {
+		return nil
+	}
+	fingerprint, err := ReadReloadFingerprint(path)
+	if err != nil {
+		return err
+	}
+	fingerprints[path] = fingerprint
+	return nil
+}
+
+func ReadReloadFingerprint(path string) (Fingerprint, error) {
+	_, fingerprint, err := readStableConfigFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return Fingerprint{}, err
+	}
+	return fingerprint, nil
+}
+
+func ReloadFingerprintsChanged(before map[string]Fingerprint) bool {
+	return ReloadFingerprintsChangedWithOwner(before, nil)
+}
+
+func ReloadFingerprintsChangedWithOwner(before map[string]Fingerprint, owner func(string) (int, bool, error)) bool {
+	for path, expected := range before {
+		expectedOwner, enforceOwner := 0, false
+		var ownerErr error
+		if owner != nil {
+			expectedOwner, enforceOwner, ownerErr = owner(path)
+			if ownerErr != nil {
+				return true
 			}
 		}
-	}
-	documents := make([]document, 0, len(documentsByPath))
-	for _, document := range documentsByPath {
-		documents = append(documents, document)
-	}
-	sort.Slice(documents, func(i, j int) bool { return documents[i].path < documents[j].path })
-	result := make(map[string][sha256.Size]byte, len(names))
-	for name := range names {
-		hash := sha256.New()
-		for _, document := range documents {
-			path := normalizeReloadPath(document.path)
-			if path == "" {
-				path = normalizeDiscoveryPath(document.path)
-			}
-			hash.Write([]byte(path))
-			if raw, ok := document.entries[name]; ok {
-				if len(document.rawDigest) > 0 {
-					hash.Write(document.rawDigest)
+		_, actual, err := readStableConfigFileOwned(path, expectedOwner, enforceOwner)
+		if err != nil || actual != expected {
+			if os.IsNotExist(err) {
+				// readStableConfigFileOwned returns the discovery fingerprint along
+				// with a not-exist error, so this remains an exact comparison.
+				if actual == expected {
+					continue
 				}
-				hash.Write([]byte{1})
-				hash.Write(raw)
-			} else {
-				hash.Write([]byte{0})
 			}
+			return true
 		}
-		var digest [sha256.Size]byte
-		copy(digest[:], hash.Sum(nil))
-		result[name] = digest
 	}
-	return result
+	return false
+}
+
+func SameReloadPathSet(left, right []string) bool {
+	leftSet := make(map[string]struct{}, len(left))
+	for _, path := range left {
+		leftSet[normalizeReloadPath(path)] = struct{}{}
+	}
+	rightSet := make(map[string]struct{}, len(right))
+	for _, path := range right {
+		rightSet[normalizeReloadPath(path)] = struct{}{}
+	}
+	if len(leftSet) != len(rightSet) {
+		return false
+	}
+	for path := range rightSet {
+		if _, ok := leftSet[path]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// TrackedSlotFingerprint is the single disk-fingerprint accessor for
+// tracked slot paths: it returns the captured reload fingerprint when one
+// exists for the path (selected documents, plus canonical/normalized
+// aliases via ReloadFingerprintForPath), and falls back to a REAL on-disk
+// fingerprint (raw bytes: existence plus identity/digest, no decoding,
+// never applied to the config) for tracked paths the selected set does not
+// cover — an unselected slot sibling that exists must not look absent.
+func TrackedSlotFingerprint(path string, fingerprints map[string]Fingerprint) (Fingerprint, error) {
+	if fingerprint := ReloadFingerprintForPath(fingerprints, path); fingerprint != (Fingerprint{}) {
+		return fingerprint, nil
+	}
+	return ReadReloadFingerprint(path)
+}
+
+func ReloadFingerprintForPath(fingerprints map[string]Fingerprint, path string) Fingerprint {
+	if fingerprint, ok := fingerprints[path]; ok {
+		return RebindReloadFingerprintPath(path, fingerprint)
+	}
+	canonical := normalizeReloadPath(path)
+	if fingerprint, ok := fingerprints[canonical]; ok {
+		return RebindReloadFingerprintPath(path, fingerprint)
+	}
+	for candidate, fingerprint := range fingerprints {
+		if normalizeReloadPath(candidate) == canonical {
+			return RebindReloadFingerprintPath(path, fingerprint)
+		}
+	}
+	return Fingerprint{}
+}
+
+func RebindReloadFingerprintPath(path string, fingerprint Fingerprint) Fingerprint {
+	fingerprint.Discovery = ConfigDiscoveryFingerprint(path)
+	fingerprint.ParentDiscovery = ConfigDiscoveryFingerprint(filepath.Dir(path))
+	fingerprint.ParentIdentity = fileid.ConfigParentIdentity(path)
+	fingerprint.AliasChain = ConfigAliasChainFingerprint(path)
+	return fingerprint
 }

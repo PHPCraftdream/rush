@@ -4,8 +4,11 @@ package docread
 
 import (
 	"os"
+	"path/filepath"
 	"slices"
 
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
+	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 )
 
@@ -14,8 +17,68 @@ import (
 // tracking must retain these negative lookups so creating a previously
 // absent config file is observable by the watcher.
 func lookupConfigCandidates(cwd string) []string {
-	candidates := lookupConfigCandidateGroups(cwd)
-	return append(candidates.global, candidates.project...)
+	candidates := LookupConfigCandidateGroups(cwd)
+	return append(candidates.Global, candidates.Project...)
+}
+
+type ConfigCandidateGroups struct {
+	Global  []string
+	Project []string
+}
+
+func LookupConfigCandidateGroups(cwd string) ConfigCandidateGroups {
+	candidates := ConfigCandidateGroups{Global: make([]string, 0, 3)}
+	for _, candidate := range []struct {
+		path  string
+		owner int
+	}{
+		{datadir.SystemConfig(), fileid.SystemConfigOwner()},
+		{datadir.GlobalConfig(), fileid.HomeConfigOwner()},
+		{datadir.GlobalConfigData(), fileid.HomeConfigOwner()},
+	} {
+		// Each logical slot resolves to exactly one file: rush.ktav when it
+		// exists, otherwise the legacy rush.json spelling.
+		if eligible := eligibleConfigCandidate(selectConfigSlot(candidate.path), candidate.owner); eligible != "" {
+			candidates.Global = append(candidates.Global, eligible)
+		}
+	}
+	if cwd == "" {
+		return candidates
+	}
+	abs := datadir.CanonicalConfigPath(cwd)
+	boundary := datadir.CanonicalConfigPath(datadir.ProjectBoundary(abs))
+	owner, err := fsext.Owner(abs)
+	if err != nil {
+		return candidates
+	}
+	var projectPaths []string
+	for dir := abs; ; dir = filepath.Dir(dir) {
+		dirOwner, err := fsext.Owner(dir)
+		if err != nil || !configOwnersMatch(owner, dirOwner) {
+			break
+		}
+		for _, base := range configSlotBaseNames() {
+			// Visible rush.ktav/rush.json keeps its historical priority over
+			// the hidden pair; only one format per slot is ever selected.
+			selected := selectConfigSlot(filepath.Join(dir, base+".json"))
+			if candidate := eligibleConfigCandidate(selected, owner); candidate != "" {
+				projectPaths = append(projectPaths, candidate)
+			}
+		}
+		if datadir.SameDir(dir, boundary) || filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	// The merge contract is lowest priority first. The upward walk discovers
+	// the nearest directory first, so reverse the complete candidate list as
+	// well as the historical existing-file discovery result.
+	slices.Reverse(projectPaths)
+	candidates.Project = projectPaths
+	return candidates
+}
+
+func configOwnersMatch(expected, actual int) bool {
+	return expected == -1 || actual == expected
 }
 
 // eligibleConfigCandidate retains absent candidates for negative staleness
@@ -57,7 +120,7 @@ func eligibleWorkspaceConfig(path, workingDir string) string {
 	if workingDir == "" {
 		return ""
 	}
-	owner, err := fsext.Owner(canonicalConfigPath(workingDir))
+	owner, err := fsext.Owner(datadir.CanonicalConfigPath(workingDir))
 	if err != nil {
 		return ""
 	}
@@ -100,7 +163,7 @@ func configOwnerForWorkingDir(workingDir string) (int, bool, error) {
 	if workingDir == "" {
 		return 0, false, nil
 	}
-	owner, err := fsext.Owner(canonicalConfigPath(workingDir))
+	owner, err := fsext.Owner(datadir.CanonicalConfigPath(workingDir))
 	if err != nil {
 		return 0, false, err
 	}
@@ -112,11 +175,11 @@ func configOwnerPolicyForPath(path, workingDir string) (int, bool, error) {
 		return 0, false, nil
 	}
 	canonical := normalizeReloadPath(path)
-	if systemConfigSlot() != "" && matchesLogicalSlot(canonical, systemConfigSlot()) {
-		return systemConfigOwner(), true, nil
+	if datadir.SystemConfigSlot() != "" && matchesLogicalSlot(canonical, datadir.SystemConfigSlot()) {
+		return fileid.SystemConfigOwner(), true, nil
 	}
-	if matchesLogicalSlot(canonical, GlobalConfig()) || matchesLogicalSlot(canonical, GlobalConfigData()) {
-		return homeConfigOwner(), true, nil
+	if matchesLogicalSlot(canonical, datadir.GlobalConfig()) || matchesLogicalSlot(canonical, datadir.GlobalConfigData()) {
+		return fileid.HomeConfigOwner(), true, nil
 	}
 	return configOwnerForWorkingDir(workingDir)
 }

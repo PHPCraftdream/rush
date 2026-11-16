@@ -417,9 +417,9 @@ func configParentIdentity(path string) configFileIdentity {
 	return fileid.ConfigParentIdentity(path)
 }
 
-func homeConfigOwner() (int, bool) { return fileid.HomeConfigOwner() }
+func homeConfigOwner() int { return fileid.HomeConfigOwner() }
 
-func systemConfigOwner() (int, bool) { return fileid.SystemConfigOwner() }
+func systemConfigOwner() int { return fileid.SystemConfigOwner() }
 
 func readOpenedConfigBytes(file *os.File) ([]byte, error) {
 	return fileid.ReadOpenedConfigBytes(file)

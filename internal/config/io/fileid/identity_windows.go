@@ -25,6 +25,10 @@ type FileIdentity struct {
 	Valid  bool
 }
 
+func (identity FileIdentity) FingerprintString() string {
+	return fmt.Sprintf("%t|%d|%d", identity.Valid, identity.device, identity.inode)
+}
+
 func FileIdentityOf(os.FileInfo) FileIdentity { return FileIdentity{} }
 
 func FileIdentityOfOpened(file *os.File, _ os.FileInfo) FileIdentity {
@@ -423,7 +427,7 @@ func physicalWindowsConfigPath(path string) (string, error) {
 
 // Windows does not expose Unix uid ownership. fsext.Owner returns -1 there,
 // which is the deliberate platform-neutral bypass for this policy.
-func homeConfigOwner() int { return -1 }
+func HomeConfigOwner() int { return -1 }
 
 func SystemConfigOwner() int { return -1 }
 

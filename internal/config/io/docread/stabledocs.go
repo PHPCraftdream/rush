@@ -5,61 +5,62 @@ package docread
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
+	"github.com/PHPCraftdream/rush/internal/config/io/cfghooks"
+	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 )
 
-// stableConfigDocument is the exact byte document used to build a candidate.
+// StableConfigDocument is the exact byte document used to build a candidate.
 // Keeping the bytes and fingerprint together prevents a second read from
 // supplying overlay metadata that belongs to a different generation.
-type stableConfigDocument struct {
-	path        string
-	data        []byte
-	fingerprint reloadFileFingerprint
-	present     bool
-	aliases     []stableConfigAlias
+type StableConfigDocument struct {
+	Path        string
+	Data        []byte
+	Fingerprint Fingerprint
+	Present     bool
+	Aliases     []StableConfigAlias
 }
 
-type stableConfigAlias struct {
-	path        string
-	fingerprint reloadFileFingerprint
+type StableConfigAlias struct {
+	Path        string
+	Fingerprint Fingerprint
 }
 
-func loadConfigCandidateStableForWorkingDir(configPaths []string, workingDir string) (*Config, []string, map[string]reloadFileFingerprint, []stableConfigDocument, error) {
-	documents, err := readStableConfigDocumentsWithOwner(configPaths, func(path string) (int, bool, error) {
-		return configOwnerPolicyForPath(path, workingDir)
-	})
+// ErrConfigReloadUnstable indicates that no stable file snapshot could be
+// built within the bounded reload retry budget.
+var ErrConfigReloadUnstable = errors.New("config files remained unstable during reload")
+
+// NormalizeReloadPath returns the canonical spelling used for reload bookkeeping.
+func NormalizeReloadPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	return datadir.CanonicalConfigPath(path)
+}
+
+// NormalizeDiscoveryPath returns the absolute cleaned spelling used for file discovery.
+func NormalizeDiscoveryPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return filepath.Clean(path)
 	}
-	for _, document := range documents {
-		if document.present && len(document.data) > 0 && !json.Valid(document.data) {
-			return nil, nil, nil, nil, fmt.Errorf("invalid JSON in config file %s", document.path)
-		}
-		if document.present {
-			if err := validateMCPDisabledOverlays(document.data); err != nil {
-				return nil, nil, nil, nil, fmt.Errorf("invalid MCP configuration in config file %s: %w", document.path, err)
-			}
-		}
-	}
-	configs, loaded, fingerprints := configDocumentBytes(documents)
-	addDocumentAliasFingerprints(fingerprints, documents)
-
-	cfg, err := loadFromBytes(configs)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-	return cfg, loaded, fingerprints, documents, nil
+	return filepath.Clean(abs)
 }
 
-func readStableConfigDocumentsWithOwner(paths []string, owner func(string) (int, bool, error)) ([]stableConfigDocument, error) {
-	documents := make([]stableConfigDocument, 0, len(paths))
-	seenPresent := make(map[configFileIdentity]int, len(paths))
+func ReadStableConfigDocumentsWithOwner(paths []string, owner func(string) (int, bool, error)) ([]StableConfigDocument, error) {
+	documents := make([]StableConfigDocument, 0, len(paths))
+	seenPresent := make(map[fileid.FileIdentity]int, len(paths))
 	seenAbsent := make(map[[sha256.Size]byte]int, len(paths))
 	for _, path := range paths {
-		discoveryPath := normalizeDiscoveryPath(path)
+		discoveryPath := NormalizeDiscoveryPath(path)
 		if discoveryPath == "" {
 			continue
 		}
@@ -71,139 +72,139 @@ func readStableConfigDocumentsWithOwner(paths []string, owner func(string) (int,
 				return nil, ownerErr
 			}
 		}
-		data, fingerprint, readErr := readStableConfigFileOwned(discoveryPath, expectedOwner, enforceOwner)
+		data, fingerprint, readErr := ReadStableConfigFileOwned(discoveryPath, expectedOwner, enforceOwner)
 		if readErr != nil && !os.IsNotExist(readErr) {
 			return nil, fmt.Errorf("failed to open config file %s: %w", discoveryPath, readErr)
 		}
 		decoded := data
 		if readErr == nil {
 			var decodeErr error
-			decoded, decodeErr = decodeConfigDocument(discoveryPath, data)
+			decoded, decodeErr = DecodeConfigDocument(discoveryPath, data)
 			if decodeErr != nil {
 				return nil, decodeErr
 			}
 		}
-		alias := stableConfigAlias{path: discoveryPath, fingerprint: fingerprint}
+		alias := StableConfigAlias{Path: discoveryPath, Fingerprint: fingerprint}
 		if readErr != nil {
-			if fingerprint.discovery != ([sha256.Size]byte{}) {
-				if index, ok := seenAbsent[fingerprint.discovery]; ok {
-					documents[index].aliases = append(documents[index].aliases, alias)
+			if fingerprint.Discovery != ([sha256.Size]byte{}) {
+				if index, ok := seenAbsent[fingerprint.Discovery]; ok {
+					documents[index].Aliases = append(documents[index].Aliases, alias)
 					continue
 				}
-				seenAbsent[fingerprint.discovery] = len(documents)
+				seenAbsent[fingerprint.Discovery] = len(documents)
 			}
-			documents = append(documents, stableConfigDocument{path: discoveryPath, aliases: []stableConfigAlias{alias}})
+			documents = append(documents, StableConfigDocument{Path: discoveryPath, Aliases: []StableConfigAlias{alias}})
 			continue
 		}
-		if fingerprint.identity.valid {
-			if index, ok := seenPresent[fingerprint.identity]; ok {
-				documents[index].aliases = append(documents[index].aliases, alias)
+		if fingerprint.Identity.Valid {
+			if index, ok := seenPresent[fingerprint.Identity]; ok {
+				documents[index].Aliases = append(documents[index].Aliases, alias)
 				continue
 			}
-			seenPresent[fingerprint.identity] = len(documents)
+			seenPresent[fingerprint.Identity] = len(documents)
 		}
-		documents = append(documents, stableConfigDocument{
-			path: discoveryPath, data: decoded, fingerprint: fingerprint, present: fingerprint.exists,
-			aliases: []stableConfigAlias{alias},
+		documents = append(documents, StableConfigDocument{
+			Path: discoveryPath, Data: decoded, Fingerprint: fingerprint, Present: fingerprint.Exists,
+			Aliases: []StableConfigAlias{alias},
 		})
 	}
 	return documents, nil
 }
 
-// readStableConfigFileOwned binds the trust decision, bytes, physical file
+// ReadStableConfigFileOwned binds the trust decision, bytes, physical file
 // identity, and discovery chain to one open file descriptor. A path is only a
 // name: stat-then-ReadFile would allow a symlink or parent directory to be
 // retargeted between those operations.
-func readStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool) ([]byte, reloadFileFingerprint, error) {
+func ReadStableConfigFileOwned(path string, expectedOwner int, enforceOwner bool) ([]byte, Fingerprint, error) {
 	for attempt := 0; attempt < stableReadMaxAttempts; attempt++ {
-		beforeDiscovery := configDiscoveryFingerprint(path)
-		beforeParentIdentity := configParentIdentity(path)
-		runConfigBeforeOpenHook(path)
-		file, err := openStableConfigFile(path)
+		beforeDiscovery := ConfigDiscoveryFingerprint(path)
+		beforeParentIdentity := fileid.ConfigParentIdentity(path)
+		cfghooks.RunConfigBeforeOpenHook(path)
+		file, err := fileid.OpenStableConfigFile(path)
 		if err != nil {
 			if os.IsNotExist(err) {
-				return nil, reloadFileFingerprint{
-					discovery:       beforeDiscovery,
-					parentDiscovery: configDiscoveryFingerprint(filepath.Dir(path)),
-					parentIdentity:  beforeParentIdentity,
-					aliasChain:      configAliasChainFingerprint(path),
+				return nil, Fingerprint{
+					Discovery:       beforeDiscovery,
+					ParentDiscovery: ConfigDiscoveryFingerprint(filepath.Dir(path)),
+					ParentIdentity:  beforeParentIdentity,
+					AliasChain:      ConfigAliasChainFingerprint(path),
 				}, err
 			}
-			return nil, reloadFileFingerprint{}, err
+			return nil, Fingerprint{}, err
 		}
-		data, fingerprint, retry, readErr := func() ([]byte, reloadFileFingerprint, bool, error) {
+		data, fingerprint, retry, readErr := func() ([]byte, Fingerprint, bool, error) {
 			defer file.Close()
 			info, statErr := file.Stat()
 			if statErr != nil {
-				return nil, reloadFileFingerprint{}, false, statErr
+				return nil, Fingerprint{}, false, statErr
 			}
 			if !info.Mode().IsRegular() {
-				return nil, reloadFileFingerprint{}, false, fmt.Errorf("%w: %s", ErrConfigNonRegular, path)
+				return nil, Fingerprint{}, false, fmt.Errorf("%w: %s", fileid.ErrConfigNonRegular, path)
 			}
-			owner, ownerKnown := configFileOwner(info)
+			owner, ownerKnown := fileid.ConfigFileOwner(info)
 			if enforceOwner && (!ownerKnown || owner != expectedOwner) {
-				return nil, reloadFileFingerprint{}, false, errConfigOwnerMismatch
+				return nil, Fingerprint{}, false, fileid.ErrConfigOwnerMismatch()
 			}
-			first, readErr := readOpenedConfigBytes(file)
+			first, readErr := fileid.ReadOpenedConfigBytes(file)
 			if readErr != nil {
-				return nil, reloadFileFingerprint{}, false, readErr
+				return nil, Fingerprint{}, false, readErr
 			}
-			second, readErr := readOpenedConfigBytes(file)
+			second, readErr := fileid.ReadOpenedConfigBytes(file)
 			if readErr != nil {
-				return nil, reloadFileFingerprint{}, false, readErr
+				return nil, Fingerprint{}, false, readErr
 			}
 			if !bytes.Equal(first, second) {
-				return nil, reloadFileFingerprint{}, true, nil
+				return nil, Fingerprint{}, true, nil
 			}
-			runConfigAfterStableReadHook(path)
+			cfghooks.RunConfigAfterStableReadHook(path)
 			finalInfo, statErr := file.Stat()
 			if statErr != nil {
-				return nil, reloadFileFingerprint{}, false, statErr
+				return nil, Fingerprint{}, false, statErr
 			}
-			afterDiscovery := configDiscoveryFingerprint(path)
+			afterDiscovery := ConfigDiscoveryFingerprint(path)
 			if beforeDiscovery != afterDiscovery {
-				return nil, reloadFileFingerprint{}, true, nil
+				return nil, Fingerprint{}, true, nil
 			}
-			afterParentIdentity := configParentIdentity(path)
+			afterParentIdentity := fileid.ConfigParentIdentity(path)
 			if beforeParentIdentity != afterParentIdentity {
-				return nil, reloadFileFingerprint{}, true, nil
+				return nil, Fingerprint{}, true, nil
 			}
-			pathMatches, identityErr := configFilePathIdentityMatches(path, file, info)
+			pathMatches, identityErr := fileid.ConfigFilePathIdentityMatches(path, file, info)
 			if identityErr != nil {
 				if os.IsNotExist(identityErr) && attempt+1 < stableReadMaxAttempts {
-					return nil, reloadFileFingerprint{}, true, nil
+					return nil, Fingerprint{}, true, nil
 				}
-				return nil, reloadFileFingerprint{}, false, identityErr
+				return nil, Fingerprint{}, false, identityErr
 			}
 			if !pathMatches {
-				return nil, reloadFileFingerprint{}, true, nil
+				return nil, Fingerprint{}, true, nil
 			}
-			identity := configFileIdentityOfOpened(file, finalInfo)
-			nlink := configFileNlinkOfOpened(file, finalInfo)
-			return second, reloadFileFingerprint{
-				exists: true, size: int64(len(second)), modTime: finalInfo.ModTime().UnixNano(),
-				digest: sha256.Sum256(second), owner: owner, nlink: nlink,
-				identity: identity, discovery: afterDiscovery,
-				parentDiscovery: configDiscoveryFingerprint(filepath.Dir(path)),
-				parentIdentity:  afterParentIdentity,
-				aliasChain:      configAliasChainFingerprint(path),
+			identity := fileid.FileIdentityOfOpened(file, finalInfo)
+			nlink := fileid.FileNlinkOfOpened(file, finalInfo)
+			return second, Fingerprint{
+				Exists: true, Size: int64(len(second)), ModTime: finalInfo.ModTime().UnixNano(),
+				Digest: sha256.Sum256(second), Owner: owner, Nlink: nlink,
+				Identity: identity, Discovery: afterDiscovery,
+				ParentDiscovery: ConfigDiscoveryFingerprint(filepath.Dir(path)),
+				ParentIdentity:  afterParentIdentity,
+				AliasChain:      ConfigAliasChainFingerprint(path),
 			}, false, nil
 		}()
 		if retry {
 			continue
 		}
 		if readErr != nil {
-			return nil, reloadFileFingerprint{}, readErr
+			return nil, Fingerprint{}, readErr
 		}
 		return data, fingerprint, nil
 	}
-	return nil, reloadFileFingerprint{}, errStableReadUnstable
+	return nil, Fingerprint{}, fileid.ErrStableReadUnstable()
 }
 
-// readStableConfigFile returns bytes that were observed identically by two
+// ReadStableConfigFile returns bytes that were observed identically by two
 // consecutive reads. A fingerprint is made from those exact bytes; callers
 // must not fingerprint a path before reading it because that admits a stale
 // candidate when the file changes between the two operations.
-func readStableConfigFile(path string) ([]byte, reloadFileFingerprint, error) {
-	return readStableConfigFileOwned(path, 0, false)
+func ReadStableConfigFile(path string) ([]byte, Fingerprint, error) {
+	return ReadStableConfigFileOwned(path, 0, false)
 }

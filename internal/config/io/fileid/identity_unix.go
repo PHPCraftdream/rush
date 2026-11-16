@@ -3,6 +3,7 @@
 package fileid
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -15,6 +16,10 @@ type FileIdentity struct {
 	device uint64
 	inode  uint64
 	Valid  bool
+}
+
+func (identity FileIdentity) FingerprintString() string {
+	return fmt.Sprintf("%t|%d|%d", identity.Valid, identity.device, identity.inode)
 }
 
 func FileIdentityOf(info os.FileInfo) FileIdentity {
@@ -52,6 +57,10 @@ func ConfigFileOwner(info os.FileInfo) (int, bool) {
 	return int(stat.Uid), true
 }
 
+func FileNlinkOfInfo(info os.FileInfo) uint64 {
+	return FileNlinkOfOpened(nil, info)
+}
+
 func FileNlinkOfOpened(_ *os.File, info os.FileInfo) uint64 {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
@@ -82,7 +91,7 @@ func ConfigFilePathIdentityMatches(path string, _ *os.File, openedInfo os.FileIn
 func HomeConfigOwner() int { return os.Getuid() }
 
 // systemConfigOwner is the explicit trust policy for the system config.
-func systemConfigOwner() int { return 0 }
+func SystemConfigOwner() int { return 0 }
 
 func ConfigParentIdentity(path string) FileIdentity {
 	info, err := os.Stat(filepath.Dir(filepath.Clean(path)))
