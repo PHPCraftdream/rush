@@ -51,8 +51,8 @@ type SessionAgentCall struct {
 	RequestedModelRole   RequestedModelRole
 	RequestedModelSource string
 	// In-process capabilities only; durable IDs cannot reconstruct authority.
-	FinalizationAuthorities session.AgentFinalizationContext
-	DriverGeneration        uint64
+	FinalizationAuthorities session.AgentFinalizationContext `json:"-"`
+	DriverGeneration        uint64                           `json:"-"`
 	// SystemPromptOverride, if non-empty, replaces the agent's global system prompt
 	// for this single call. Used to apply per-session system prompts from the DB.
 	SystemPromptOverride string
@@ -99,15 +99,15 @@ type SessionAgentCall struct {
 	OnAssistantMessageCreated func(messageID string) `json:"-"`
 
 	// ReplacementHandoff marks a call extracted from mailbox.replacement.
-	ReplacementHandoff bool
+	ReplacementHandoff bool `json:"-"`
 
 	// CompactionContinuation marks an internal continuation of this call's turn.
-	CompactionContinuation bool
+	CompactionContinuation bool `json:"-"`
 	// RecoveryContinuation is an internal same-logical-call continuation after
 	// a certified pre-output Codex context rejection; it never creates a user row.
-	RecoveryContinuation bool
-	Recovery             *CodexRecoveryState
-	RecoverySpentTokens  int64
+	RecoveryContinuation bool                `json:"-"`
+	Recovery             *CodexRecoveryState `json:"-"`
+	RecoverySpentTokens  int64               `json:"-"`
 
 	// InjectID, when non-empty, is the ID of a pending_injects row that
 	// must be deleted AFTER successful OS lock acquisition. Set by the
@@ -177,7 +177,7 @@ type SessionAgentCall struct {
 	// producers refuse live capability-bearing calls, while durable consumers
 	// reconstruct deny-only state from durable delegation facts, including legacy rows.
 	// A batch leaf restart independently reads its durable question_route.
-	BatchQuestion *BatchChildQuestionState
+	BatchQuestion *BatchChildQuestionState `json:"-"`
 
 	// RunAllowlist pins THIS call's restricted-run permission policy
 	// (R3-4): the compiled matcher, armed by the turn loop (runOwned) ONLY
@@ -310,7 +310,7 @@ type SessionAgentCall struct {
 	// already reached the provider (a transient failure or 401 retry): the
 	// notice it reacts to was pulled by that first attempt, so the retry
 	// must not re-apply the turn-start "pulled a wake=1 notice" gate.
-	DrainTurnCommitted bool
+	DrainTurnCommitted bool `json:"-"`
 }
 
 type SessionAgent interface {
