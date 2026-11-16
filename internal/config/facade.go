@@ -14,17 +14,13 @@
 package config
 
 import (
+	"context"
+	"encoding/json"
 	"os/exec"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/domains/peak"
-)
-
-import (
-	"context"
-	"encoding/json"
-
 	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	envresolve "github.com/PHPCraftdream/rush/internal/config/model/envresolve"
 	cfgmerge "github.com/PHPCraftdream/rush/internal/config/model/merge"
