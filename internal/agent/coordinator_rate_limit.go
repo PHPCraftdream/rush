@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"strconv"
@@ -214,4 +215,16 @@ func (c *coordinator) notifyRateLimitWait(sessionID string, until time.Time, att
 	if f := c.rateLimitNotify.Load(); f != nil {
 		(*f)(sessionID, until, attempt)
 	}
+}
+
+// notifyRateLimitWaitContext reports one provider rate-limit wait to the
+// run's own sink when it has one, falling back to the legacy app-installed
+// callback otherwise. Same line format the removed app-wide callback wrote.
+func (c *coordinator) notifyRateLimitWaitContext(ctx context.Context, sessionID string, until time.Time, attempt int) {
+	if w := RateLimitNotifySinkFrom(ctx); w != nil {
+		fmt.Fprintf(w, "rush run: session %q waiting for provider rate limit until %s (attempt %d)\n",
+			sessionID, until.Format("15:04"), attempt)
+		return
+	}
+	c.notifyRateLimitWait(sessionID, until, attempt)
 }

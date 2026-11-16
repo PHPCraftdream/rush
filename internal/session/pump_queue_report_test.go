@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 )
 
 func pumpQueueSnapshot(svc session.Service, id string) string {
@@ -26,8 +27,8 @@ func pumpQueueSnapshot(svc session.Service, id string) string {
 		e.Status, e.Attempts, e.LeasedBy, e.LeasedAt, e.LeaseExpiresAt, e.TerminalFailure)
 }
 
-func registerPumpQueueReport(t *testing.T, tl *testTimeline, svc session.Service, id string) func(context.Context) (*session.RunQueueEntry, error) {
-	registerPumpDiag(t, func() string { return pumpQueueSnapshot(svc, id) })
+func registerPumpQueueReport(t *testing.T, tl *sessiontest.TestTimeline, svc session.Service, id string) func(context.Context) (*session.RunQueueEntry, error) {
+	sessiontest.RegisterPumpDiag(t, func() string { return pumpQueueSnapshot(svc, id) })
 	return func(ctx context.Context) (*session.RunQueueEntry, error) {
 		began := time.Now()
 		e, err := svc.GetRunQueueEntry(ctx, id)
@@ -36,9 +37,9 @@ func registerPumpQueueReport(t *testing.T, tl *testTimeline, svc session.Service
 			state = fmt.Sprintf("status=%s attempts=%d leaseExpiresAt=%d", e.Status, e.Attempts, e.LeaseExpiresAt)
 		}
 		if err != nil {
-			tl.observef("queue read error", "err=%v ctx=%v elapsed=%s", err, ctx.Err(), time.Since(began))
+			tl.Observef("queue read error", "err=%v ctx=%v elapsed=%s", err, ctx.Err(), time.Since(began))
 		}
-		tl.observef("queue read", "%s err=%v ctx=%v elapsed=%s", state, err, ctx.Err(), time.Since(began))
+		tl.Observef("queue read", "%s err=%v ctx=%v elapsed=%s", state, err, ctx.Err(), time.Since(began))
 		return e, err
 	}
 }
@@ -52,20 +53,20 @@ func (s *pumpReportSink) Failed() bool    { return s.failed }
 func (s *pumpReportSink) Log(args ...any) { s.logs = append(s.logs, args...) }
 
 func TestPumpReportOnlyOnFailure(t *testing.T) {
-	tl := newTestTimeline()
-	tl.addf("fixture setup started")
-	tl.observef("queue read", "first observation")
-	tl.observef("queue read", "last read error")
+	tl := sessiontest.NewTestTimeline()
+	tl.Addf("fixture setup started")
+	tl.Observef("queue read", "first observation")
+	tl.Observef("queue read", "last read error")
 	sink := &pumpReportSink{}
 	calls := 0
 	render := func() string { calls++; return tl.String() }
-	tl.report(sink, render)
+	tl.Report(sink, render)
 	if calls != 0 || len(sink.logs) != 0 {
 		t.Fatal("successful test emitted or collected diagnostics")
 	}
 	sink.failed = true
-	tl.report(sink, render)
-	tl.report(sink, render)
+	tl.Report(sink, render)
+	tl.Report(sink, render)
 	if calls != 1 || len(sink.logs) != 1 {
 		t.Fatalf("failure report calls=%d logs=%d, want one", calls, len(sink.logs))
 	}
@@ -91,15 +92,15 @@ func (s queueReportService) GetRunQueueEntry(context.Context, string) (*session.
 }
 
 func TestPumpQueueReportRetainsReadErrors(t *testing.T) {
-	tl := newTestTimeline()
-	registerPumpDiag(t, tl.String)
+	tl := sessiontest.NewTestTimeline()
+	sessiontest.RegisterPumpDiag(t, tl.String)
 	svc := &queueReportService{err: errors.New("transient probe error")}
 	getEntry := registerPumpQueueReport(t, tl, svc, "probe")
 	_, _ = getEntry(t.Context())
 	svc.err = nil
 	svc.entry = &session.RunQueueEntry{Status: "pending"}
 	_, _ = getEntry(t.Context())
-	report := pumpFailureReport(t)
+	report := sessiontest.PumpFailureReport(t)
 	for _, want := range []string{"queue read error:", "transient probe error", "queue snapshot: status=pending attempts=0"} {
 		if !strings.Contains(report, want) {
 			t.Errorf("report lacks %q: %s", want, report)

@@ -6,10 +6,8 @@ package session_test
 // windows" cannot be broken by wall-clock scheduling.
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"runtime/pprof"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +16,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -126,7 +125,7 @@ type fakeClockService struct {
 // timeout the probe counters and the rows of every leased entry are printed.
 func newFakeClockService(t *testing.T, svc session.Service, clk *fakePumpClock) *fakeClockService {
 	s := &fakeClockService{Service: svc, clk: clk}
-	registerPumpDiag(t, s.describe)
+	sessiontest.RegisterPumpDiag(t, s.describe)
 	return s
 }
 
@@ -192,86 +191,6 @@ func (s *fakeClockService) CleanupExpiredLeases(ctx context.Context, beforeTime 
 	return err
 }
 
-// pumpDiags holds, per test, the state describers that awaitPump prints when
-// its condition never becomes true.
-var pumpDiags sync.Map // *testing.T -> *pumpDiagSet
-
-type pumpDiagSet struct {
-	mu  sync.Mutex
-	fns []func() string
-}
-
-// registerPumpDiag adds a state describer printed on an awaitPump timeout of t.
-func registerPumpDiag(t *testing.T, fn func() string) {
-	v, _ := pumpDiags.LoadOrStore(t, &pumpDiagSet{})
-	set := v.(*pumpDiagSet)
-	set.mu.Lock()
-	set.fns = append(set.fns, fn)
-	set.mu.Unlock()
-	t.Cleanup(func() { pumpDiags.Delete(t) })
-}
-
-// registerPumpCalls adds a coordinator's call counter to the failure report.
-func registerPumpCalls(t *testing.T, name string, calls *atomic.Int64) {
-	registerPumpDiag(t, func() string { return fmt.Sprintf("coordinator %s: calls=%d\n", name, calls.Load()) })
-}
-
-// pumpDiagnostics renders the registered describers plus the stacks of the
-// pump's goroutines, capped so a CI log stays readable.
-func pumpDiagnostics(t *testing.T) string {
-	var b strings.Builder
-	if v, ok := pumpDiags.Load(t); ok {
-		set := v.(*pumpDiagSet)
-		set.mu.Lock()
-		fns := append([]func() string(nil), set.fns...)
-		set.mu.Unlock()
-		for _, fn := range fns {
-			b.WriteString(fn())
-		}
-	}
-	var buf bytes.Buffer
-	_ = pprof.Lookup("goroutine").WriteTo(&buf, 2)
-	var stacks []string
-	for _, g := range strings.Split(buf.String(), "\n\n") {
-		if strings.Contains(g, "RunQueuePump") {
-			stacks = append(stacks, g)
-		}
-	}
-	fmt.Fprintf(&b, "pump goroutines: %d\n", len(stacks))
-	dump := strings.Join(stacks, "\n\n")
-	if len(dump) > 12000 {
-		dump = dump[:12000] + "\n...(truncated)"
-	}
-	b.WriteString(dump)
-	return b.String()
-}
-
-// awaitPump waits for a pump-side event that must eventually happen. It is a
-// hang guard, not a timing window: fake time does not move while it waits.
-// When the condition never holds it prints the pump's observable state (fake
-// clock, probe counters, queue rows, pump goroutine stacks), so a flake that
-// shows up once on a CI runner carries its own evidence.
-func awaitPump(t *testing.T, cond func() bool, msg string) {
-	t.Helper()
-	if report, ok := awaitPumpFor(t, 15*time.Second, cond, msg); !ok {
-		t.Fatal(report)
-	}
-}
-
-// awaitPumpFor polls cond until timeout; on failure it returns the report
-// awaitPump prints.
-func awaitPumpFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) (string, bool) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for !cond() {
-		if time.Now().After(deadline) {
-			return fmt.Sprintf("awaitPump timed out after %s: %s\n--- pump state at timeout ---\n%s", timeout, msg, pumpDiagnostics(t)), false
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	return "", true
-}
-
 // The failure report is the only evidence a one-off CI flake leaves, so pin
 // that it carries the clock, the probe counters and the queue row.
 func TestAwaitPumpTimeoutReportsPumpState(t *testing.T) {
@@ -285,7 +204,7 @@ func TestAwaitPumpTimeoutReportsPumpState(t *testing.T) {
 	require.NotNil(t, e)
 	clk.Advance(time.Minute)
 
-	report, ok := awaitPumpFor(t, 20*time.Millisecond, func() bool { return false }, "never happens")
+	report, ok := sessiontest.AwaitPumpFor(t, 20*time.Millisecond, func() bool { return false }, "never happens")
 	require.False(t, ok)
 	require.Contains(t, report, "never happens")
 	require.Contains(t, report, "fake clock now=2001-01-01T00:01:00Z")

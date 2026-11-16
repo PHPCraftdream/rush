@@ -81,7 +81,7 @@ func callSetSessionModels(t *testing.T, ctx context.Context, a *appPkg.App, reqI
 	handleSetSessionModels(ctx, a, client, WSMessage{ID: reqID, Type: CmdSetSessionModels, Payload: raw})
 	for {
 		select {
-		case raw := <-client.send:
+		case raw := <-client.SendChan():
 			var env WSMessage
 			require.NoError(t, json.Unmarshal(raw, &env))
 			if env.ID != reqID {

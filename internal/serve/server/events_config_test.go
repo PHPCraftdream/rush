@@ -17,6 +17,7 @@ import (
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire/finalgate"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -70,9 +71,9 @@ func TestSubscribeAndBroadcastForwardsModelsChangedAsEventConfig(t *testing.T) {
 	hub := newHub()
 	hubDone := make(chan struct{})
 	go func() { hub.Run(ctx); close(hubDone) }()
-	client := &Client{send: make(chan []byte, 100)}
-	hub.register <- client
-	forwarders := subscribeAndBroadcast(ctx, application, hub)
+	client := newDetachedTestClient(100)
+	hub.Register(client)
+	forwarders := subscribeAndBroadcast(ctx, application, hub, finalgate.GateFor(application))
 	t.Cleanup(func() {
 		cancel()
 		forwarders.Wait()
@@ -111,7 +112,7 @@ func TestSubscribeAndBroadcastForwardsModelsChangedAsEventConfig(t *testing.T) {
 	store.StopConfigDiskSync()
 	forwarders.SyncConfig()
 	<-hub.WaitDelivery()
-	if countConfigEvents(client.send) != 0 {
+	if countConfigEvents(client.SendChan()) != 0 {
 		t.Fatal("unexpected EventConfig broadcast before the controlled debug tick")
 	}
 	processedBefore := configNotificationsProcessed.Load()
@@ -127,7 +128,7 @@ func TestSubscribeAndBroadcastForwardsModelsChangedAsEventConfig(t *testing.T) {
 	require.True(t, options.Debug)
 	forwarders.SyncConfig()
 	<-hub.WaitDelivery()
-	if countConfigEvents(client.send) != 0 {
+	if countConfigEvents(client.SendChan()) != 0 {
 		t.Fatal("unexpected EventConfig broadcast for an unrelated update")
 	}
 	require.Zero(t, configNotificationsProcessed.Load()-processedBefore)
@@ -153,7 +154,7 @@ func TestSubscribeAndBroadcastForwardsModelsChangedAsEventConfig(t *testing.T) {
 	// frame from the debug reload (carrying probe-b) would have arrived first and
 	// failed the settler-model assertion above. Nothing may follow the settler
 	// either.
-	after := countConfigEvents(client.send)
+	after := countConfigEvents(client.SendChan())
 	require.Zero(t, after,
 		"no EventConfig may follow the settler; an extra frame means an unrelated reload broadcast")
 }
@@ -166,7 +167,7 @@ func waitForEvent(t *testing.T, client *Client, eventType string, within time.Du
 	deadline := time.Now().Add(within)
 	for time.Now().Before(deadline) {
 		select {
-		case raw := <-client.send:
+		case raw := <-client.SendChan():
 			var env WSMessage
 			if json.Unmarshal(raw, &env) == nil && env.Type == eventType {
 				return &env

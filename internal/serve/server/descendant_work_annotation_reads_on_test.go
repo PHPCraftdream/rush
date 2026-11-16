@@ -318,8 +318,8 @@ func TestHandleListSessions_AnnotationReadsBoundedInOwners(t *testing.T) {
 	hub := newHub()
 	go hub.Run(ctx)
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 512)
-	hub.register <- client
+	client.ResizeSendChan(512)
+	hub.Register(client)
 
 	// Round A: 3 top-level owners; two of them carry one delegation child.
 	addOwner := func(name string, withChild bool) (string, string) {

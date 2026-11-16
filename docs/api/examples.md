@@ -76,4 +76,4 @@ if response["id"] != requestID {
 
 Imports needed: `fmt`, `net/http`, and `github.com/gorilla/websocket`. The token variable is assumed to be loaded from a secret store. The hello envelope includes protocol, token id and scopes; command-specific response fields depend on the command.
 
-Derivation: `internal/serve/client/apiclient/api_sessions.go`, `api_runs.go`; WebSocket protocol and dispatch in `internal/serve/server/protocol.go`, `server.go`, `ws_serve_auth.go`, and `ws_serve_scope.go`. The design §15 defers a WebSocket `rush api` client, so this Go sample is a direct protocol illustration, not an `apiclient` feature. Use `wss://` against a TLS listener ([tls.md](tls.md)).
+Derivation: `internal/serve/client/apiclient/api_sessions.go`, `api_runs.go`; WebSocket protocol and dispatch in `internal/serve/server/wire/protocol.go`, `server.go`, `apiauth/chain.go`, and `ws_serve_scope.go`. The design §15 defers a WebSocket `rush api` client, so this Go sample is a direct protocol illustration, not an `apiclient` feature. Use `wss://` against a TLS listener ([tls.md](tls.md)).

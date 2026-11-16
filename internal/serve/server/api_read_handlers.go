@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -140,7 +141,7 @@ func apiListSessionsHandler(store APIReadStore) http.HandlerFunc {
 		items := make([]APISession, 0, end-start)
 		ids := make([]string, 0, end-start)
 		for _, item := range sessions[start:end] {
-			items = append(items, apiSessionFromModel(item))
+			items = append(items, wire.APISessionFromModel(item))
 			ids = append(ids, item.ID)
 		}
 		WritePaginatedResponse(w, r, http.StatusOK, items, ids, hasMore)
@@ -158,7 +159,7 @@ func apiGetSessionHandler(store APIReadStore) http.HandlerFunc {
 			apiReadFailure(w, r, err)
 			return
 		}
-		WriteAPIResponse(w, r, http.StatusOK, apiSessionFromModel(item))
+		WriteAPIResponse(w, r, http.StatusOK, wire.APISessionFromModel(item))
 	}
 }
 
@@ -196,7 +197,7 @@ func apiListMessagesHandler(store APIReadStore) http.HandlerFunc {
 		projected := make([]APIMessage, 0, end-start)
 		ids := make([]string, 0, end-start)
 		for _, item := range items[start:end] {
-			projected = append(projected, apiMessageFromModel(item))
+			projected = append(projected, wire.APIMessageFromModel(item))
 			ids = append(ids, item.ID)
 		}
 		WritePaginatedResponse(w, r, http.StatusOK, projected, ids, hasMore)

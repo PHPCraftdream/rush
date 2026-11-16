@@ -18,7 +18,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/config/model"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filepathext"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"

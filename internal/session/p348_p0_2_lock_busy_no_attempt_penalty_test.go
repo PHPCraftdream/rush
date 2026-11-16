@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -121,7 +122,7 @@ func (c *alwaysFailingCoordinator) callTimesSnapshot() []time.Time {
 //  4. Restore the busy-error branch and PASS.
 func TestReleaseGate_P0_2_LockBusyNeverExhaustsRetries(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-lock-busy")
 	ctx := t.Context()
 
@@ -196,7 +197,7 @@ func TestReleaseGate_P0_2_LockBusyNeverExhaustsRetries(t *testing.T) {
 // NackRunQueueEntry both incrementing attempts per cycle) produced.
 func TestReleaseGate_P0_2_GenuineFailureStillExhaustsAfterMaxAttempts(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "test-session-genuine-failure")
 	ctx := t.Context()
 

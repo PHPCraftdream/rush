@@ -164,7 +164,7 @@ func TestMailbox_ClearAll_ResolvesQueuedCallsWithHooks(t *testing.T) {
 	require.True(t, becomeOwner)
 
 	resolved := make(chan error, 1)
-	queued := SessionAgentCall{SessionID: "s1", Prompt: "queued", onQueueResolved: func(_ *fantasy.AgentResult, e error) {
+	queued := SessionAgentCall{SessionID: "s1", Prompt: "queued", OnQueueResolved: func(_ *fantasy.AgentResult, e error) {
 		resolved <- e
 	}}
 	becomeOwner2, _ := mb.submit(queued, func() {})
@@ -200,7 +200,7 @@ func TestMailbox_InterruptAndReplace_ResolvesOverwrittenReplacementHook(t *testi
 	require.True(t, becomeOwner)
 
 	resolvedA := make(chan error, 1)
-	callA := SessionAgentCall{SessionID: "s1", Prompt: "replacement A", onQueueResolved: func(_ *fantasy.AgentResult, e error) {
+	callA := SessionAgentCall{SessionID: "s1", Prompt: "replacement A", OnQueueResolved: func(_ *fantasy.AgentResult, e error) {
 		resolvedA <- e
 	}}
 	_, hadOwner := mb.interruptAndReplace(callA)
@@ -208,7 +208,7 @@ func TestMailbox_InterruptAndReplace_ResolvesOverwrittenReplacementHook(t *testi
 	require.NotNil(t, mb.replacement)
 
 	resolvedB := make(chan error, 1)
-	callB := SessionAgentCall{SessionID: "s1", Prompt: "replacement B", onQueueResolved: func(_ *fantasy.AgentResult, e error) {
+	callB := SessionAgentCall{SessionID: "s1", Prompt: "replacement B", OnQueueResolved: func(_ *fantasy.AgentResult, e error) {
 		resolvedB <- e
 	}}
 	_, hadOwner2 := mb.interruptAndReplace(callB)

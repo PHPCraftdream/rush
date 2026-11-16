@@ -16,7 +16,7 @@ func TestRequestedRoleContinuationRefreshesModelWithoutChangingAuthority(t *test
 	require.NoError(t, store.BindAgentModelRole(t.Context(), child.ID, "worker"))
 	opts := &CallOptions{ModelRole: config.SelectedModelTypeFast, DisableSubAgents: true, MaxAgentDepth: 1, AgentDepthSet: true, MaxCost: 7}
 	ctx := WithCallOptions(t.Context(), opts)
-	t.Cleanup(opts.buildScope.close)
+	t.Cleanup(opts.BuildScope.Close)
 	before := *opts
 	taskPrompt, prefix := "unchanged task prompt", "unchanged prefix"
 	original := SessionAgentCall{

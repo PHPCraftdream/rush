@@ -1,17 +1,20 @@
 package server
 
+// Sprint 0 L4 (S4): this file is the package-server remainder of the hub-row
+// pin-filter tests (design §2.5). The hub-white tests moved to
+// internal/serve/server/hub/hub_pin_filter_test.go; this test stays because
+// its fixtures are server-package (startPolicyServer on *Server,
+// newAttachmentsTestApp) which hub must not import (§2.6). The diagnostics
+// helpers and sessionIDs below are verbatim local copies from the file
+// (hub_pin_filter_test.go:106-162,430-439 at HEAD); servertest (L6/L7)
+// absorbs them.
+
 import (
 	"context"
 	"encoding/json"
 	"errors"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"log/slog"
-	"path/filepath"
-	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,81 +23,6 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 )
-
-func TestEventSessionClassificationExhaustive(t *testing.T) {
-	_, file, _, ok := runtime.Caller(0)
-	require.True(t, ok)
-	protocol, err := parser.ParseFile(token.NewFileSet(), filepath.Join(filepath.Dir(file), "protocol.go"), nil, parser.ParseComments)
-	require.NoError(t, err)
-	values := map[string]string{}
-	for _, decl := range protocol.Decls {
-		gen, ok := decl.(*ast.GenDecl)
-		if !ok || gen.Tok != token.CONST {
-			continue
-		}
-		for _, spec := range gen.Specs {
-			valueSpec, ok := spec.(*ast.ValueSpec)
-			if !ok {
-				continue
-			}
-			for i, name := range valueSpec.Names {
-				if !strings.HasPrefix(name.Name, "Event") {
-					continue
-				}
-				exprIndex := i
-				if exprIndex >= len(valueSpec.Values) {
-					exprIndex = len(valueSpec.Values) - 1
-				}
-				require.GreaterOrEqual(t, exprIndex, 0, "event %s must have an explicit string value", name.Name)
-				literal, ok := valueSpec.Values[exprIndex].(*ast.BasicLit)
-				require.True(t, ok, "event %s must have a string literal value", name.Name)
-				value, err := strconv.Unquote(literal.Value)
-				require.NoError(t, err)
-				values[value] = name.Name
-			}
-		}
-	}
-	for value, name := range values {
-		class, ok := eventClasses[value]
-		require.True(t, ok, "event constant %s=%q lacks explicit classification", name, value)
-		require.NotEqual(t, eventUnknown, class, "event constant %s=%q has unknown classification", name, value)
-	}
-	for value := range eventClasses {
-		require.Contains(t, values, value, "classification %q has no Event* constant", value)
-	}
-}
-
-func broadcastMarkerAfterDelivery(h *Hub, payload any) error {
-	timer := time.NewTimer(5 * time.Second)
-	defer timer.Stop()
-	done := make(chan struct{})
-	select {
-	case h.deliveryBarrier <- done:
-	case <-h.stopped:
-		return errors.New("hub stopped before delivery barrier was accepted")
-	case <-timer.C:
-		return errors.New("timed out submitting hub delivery barrier")
-	}
-	select {
-	case <-h.stopped:
-		return errors.New("hub stopped before delivery barrier completed")
-	default:
-	}
-	select {
-	case <-done:
-	case <-h.stopped:
-		return errors.New("hub stopped before delivery barrier completed")
-	case <-timer.C:
-		return errors.New("timed out waiting for hub delivery barrier")
-	}
-	select {
-	case <-h.stopped:
-		return errors.New("hub stopped before marker broadcast")
-	default:
-	}
-	h.Broadcast(EventSessionCreated, payload)
-	return nil
-}
 
 func isPinnedViewDeliveryMarker(message WSMessage, sessionID string) bool {
 	if message.Type != EventSessionCreated {
@@ -150,75 +78,6 @@ func logHubFrameDiagnosticsOnUnexpected(t *testing.T, frames, sentinel string, w
 	t.Helper()
 	if strings.Contains(frames, sentinel) != wantPresent {
 		logHubFrameDiagnostics(t, frames, sentinel)
-	}
-}
-
-func TestPinnedViewDeliveryMarkerMatchesExactMarker(t *testing.T) {
-	valid := WSMessage{Type: EventSessionCreated, Payload: json.RawMessage(`{"sessionID":"own","id":"delivery-barrier"}`)}
-	for _, tc := range []struct {
-		name      string
-		message   WSMessage
-		sessionID string
-		want      bool
-	}{
-		{name: "exact marker", message: valid, sessionID: "own", want: true},
-		{name: "foreign session", message: valid, sessionID: "foreign"},
-		{name: "other marker id", message: WSMessage{Type: EventSessionCreated, Payload: json.RawMessage(`{"sessionID":"own","id":"other"}`)}, sessionID: "own"},
-		{name: "unrelated session created", message: WSMessage{Type: EventSessionCreated, Payload: json.RawMessage(`{"sessionID":"own","id":"ordinary"}`)}, sessionID: "own"},
-		{name: "malformed payload", message: WSMessage{Type: EventSessionCreated, Payload: json.RawMessage(`{`)}, sessionID: "own"},
-		{name: "other event type", message: WSMessage{Type: EventSessionUpdated, Payload: valid.Payload}, sessionID: "own"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, isPinnedViewDeliveryMarker(tc.message, tc.sessionID))
-		})
-	}
-}
-
-func TestHubMarkerWaitsForPriorDeliveryBeforeBroadcast(t *testing.T) {
-	h := newHub()
-	t.Cleanup(func() { close(h.stopped) })
-	result := make(chan error, 1)
-	go func() {
-		result <- broadcastMarkerAfterDelivery(h, map[string]string{"sessionID": "own", "id": "delivery-barrier"})
-	}()
-
-	var ack chan struct{}
-	ackClosed := false
-	defer func() {
-		if ack != nil && !ackClosed {
-			close(ack)
-		}
-	}()
-	timer := time.NewTimer(5 * time.Second)
-	defer timer.Stop()
-	select {
-	case ack = <-h.deliveryBarrier:
-	case err := <-result:
-		t.Fatalf("marker helper returned before its barrier was accepted: %v", err)
-	case <-timer.C:
-		t.Fatal("marker helper did not request a delivery barrier")
-	}
-	select {
-	case raw := <-h.broadcast:
-		t.Fatalf("marker was queued before the barrier acknowledgement: type=%q", envelopeType(raw))
-	default:
-	}
-
-	close(ack)
-	ackClosed = true
-	select {
-	case err := <-result:
-		require.NoError(t, err)
-	case <-timer.C:
-		t.Fatal("marker helper did not finish after barrier acknowledgement")
-	}
-	select {
-	case raw := <-h.broadcast:
-		var message WSMessage
-		require.NoError(t, json.Unmarshal(raw, &message))
-		require.True(t, isPinnedViewDeliveryMarker(message, "own"), "queued event is not the exact delivery marker")
-	case <-timer.C:
-		t.Fatal("marker helper did not queue the marker after barrier acknowledgement")
 	}
 }
 
@@ -431,85 +290,34 @@ func sessionIDs(sessions []struct {
 	return ids
 }
 
-func TestClientReplyAppliesPinnedViewExceptCorrelatedErrors(t *testing.T) {
-	client := &Client{send: make(chan []byte, 8), auth: newClientAuth(Principal{PinnedSession: "own", Scopes: []string{"read"}}, CommandPolicy{})}
-	drain := func() []string {
-		var out []string
-		for {
-			select {
-			case msg := <-client.send:
-				out = append(out, string(msg))
-			default:
-				return out
-			}
-		}
+func broadcastMarkerAfterDelivery(h *Hub, payload any) error {
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	done := make(chan struct{})
+	select {
+	case h.DeliveryBarrierChan() <- done:
+	case <-h.StoppedChan():
+		return errors.New("hub stopped before delivery barrier was accepted")
+	case <-timer.C:
+		return errors.New("timed out submitting hub delivery barrier")
 	}
-
-	client.reply("a", EventSessionUpdated, map[string]string{"sessionID": "foreign"}, "")
-	client.reply("b", EventSessionsList, []map[string]string{{"id": "own"}, {"id": "foreign"}}, "")
-	client.reply("c", EventLogs, map[string]string{"line": "SECRET"}, "")
-	require.Empty(t, drain(), "replies about foreign sessions or non-session classes must not reach a pinned client")
-
-	client.reply("d", EventSessionUpdated, map[string]string{"sessionID": "own"}, "")
-	require.Len(t, drain(), 1, "a reply about the pinned session is delivered")
-
-	client.reply("e", EventError, nil, "not found")
-	client.reply("f", EventResponse, map[string]string{"ok": "true"}, "")
-	require.Len(t, drain(), 2, "correlated error and response replies bypass the view")
-
-	client.reply("", EventError, nil, "uncorrelated")
-	require.Empty(t, drain(), "an error without a request id is an event and stays filtered")
-}
-
-func TestPinnedViewNeverAllowsInvalidMetadata(t *testing.T) {
-	view := newPinnedView("own")
-	for _, meta := range []eventMetadata{
-		{valid: false, class: eventSafeGlobal, msgType: EventUpdateAvailable},
-		{valid: false, class: eventSession, sessionIDs: []string{"own"}},
-	} {
-		require.False(t, view.allows(meta), "%+v", meta)
+	select {
+	case <-h.StoppedChan():
+		return errors.New("hub stopped before delivery barrier completed")
+	default:
 	}
-	require.True(t, view.allows(eventMetadata{valid: true, class: eventSession, sessionIDs: []string{"own"}}))
-	require.True(t, newPinnedView("").allows(eventMetadata{}), "an unpinned view allows everything")
-}
-
-// WaitDelivery is the barrier tests read through; a sticky fan-out still
-// queued behind it would arrive after the frame the test stops at. Many
-// clients keep that late fan-out busy long enough for the check to see it.
-func TestHubDeliveryBarrierIncludesPendingStickyFanOut(t *testing.T) {
-	for i := 0; i < 20; i++ {
-		h := newHub()
-		clients := make([]*Client, 3000)
-		for j := range clients {
-			clients[j] = &Client{hub: h, send: make(chan []byte, 1)}
-			h.clients[clients[j]] = struct{}{}
-		}
-		h.BroadcastSticky(EventSkills, map[string]string{"skill": "S"})
-		barrier := make(chan (<-chan struct{}), 1)
-		go func() { barrier <- h.WaitDelivery() }() // parks until Run starts, so both inputs are ready at once
-		ctx, cancel := context.WithCancel(t.Context())
-		go h.Run(ctx)
-		select {
-		case done := <-barrier:
-			select {
-			case <-done:
-			case <-time.After(5 * time.Second):
-				cancel()
-				t.Fatal("barrier did not complete")
-			}
-		case <-time.After(5 * time.Second):
-			cancel()
-			t.Fatal("barrier was not accepted")
-		}
-		for j, client := range clients {
-			select {
-			case msg := <-client.send:
-				require.Contains(t, string(msg), `"skill":"S"`)
-			default:
-				cancel()
-				t.Fatalf("iteration %d: client %d had no sticky event when the barrier completed", i, j)
-			}
-		}
-		cancel()
+	select {
+	case <-done:
+	case <-h.StoppedChan():
+		return errors.New("hub stopped before delivery barrier completed")
+	case <-timer.C:
+		return errors.New("timed out waiting for hub delivery barrier")
 	}
+	select {
+	case <-h.StoppedChan():
+		return errors.New("hub stopped before marker broadcast")
+	default:
+	}
+	h.Broadcast(EventSessionCreated, payload)
+	return nil
 }

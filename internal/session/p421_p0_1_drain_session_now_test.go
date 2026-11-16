@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -26,7 +27,7 @@ import (
 // alone instead of fabricating a success.
 func TestDrainSessionNow_NothingPending(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "drain-now-nothing-pending")
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       svc,
@@ -48,7 +49,7 @@ func TestDrainSessionNow_NothingPending(t *testing.T) {
 // finish a cross-process interrupt's continuation before the process exits.
 func TestDrainSessionNow_ExecutesPendingEntry(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "drain-now-executes")
 	coord := &countingCoordinatorForDrain{}
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
@@ -82,17 +83,17 @@ func TestDrainSessionNow_ExecutesPendingEntry(t *testing.T) {
 // just because ITS OWN lease attempt found the row already taken by a
 // goroutine it didn't start.
 func TestDrainSessionNow_WaitsForConcurrentBackgroundTick(t *testing.T) {
-	tl := newTestTimeline()
-	reportPumpSetupOnFailure(t, tl)
+	tl := sessiontest.NewTestTimeline()
+	sessiontest.ReportPumpSetupOnFailure(t, tl)
 	var sess *session.Session
 	var svc session.Service
-	tl.stepf(func() { sess, svc = setupTestSession(t, "drain-now-race") }, "fixture setup")
+	tl.Stepf(func() { sess, svc = setupTestSession(t, "drain-now-race") }, "fixture setup")
 	registerPumpQueueReport(t, tl, svc, "drain-now-race-idem-1")
 	coord := &slowCoordinatorForDrain{
 		started: make(chan struct{}, 1),
 		release: make(chan struct{}),
 	}
-	registerPumpCalls(t, "slow", &coord.calls)
+	sessiontest.RegisterPumpCalls(t, "slow", &coord.calls)
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    coord,
@@ -100,13 +101,13 @@ func TestDrainSessionNow_WaitsForConcurrentBackgroundTick(t *testing.T) {
 		TestTick:       func() time.Duration { return 5 * time.Millisecond },
 	})
 	pump.Start()
-	tl.addf("pump started")
+	tl.Addf("pump started")
 	stopPumpLoggingForcedShutdown(t, pump)
-	reportPumpOnFailure(t, tl)
+	sessiontest.ReportPumpOnFailure(t, tl)
 
 	callData, err := json.Marshal(map[string]any{"SessionID": sess.ID, "Prompt": "continue"})
 	require.NoError(t, err)
-	tl.stepf(func() {
+	tl.Stepf(func() {
 		require.NoError(t, svc.EnqueueRunQueueEntry(context.Background(), "drain-now-race-idem-1", sess.ID, callData))
 	}, "enqueue")
 
@@ -117,7 +118,7 @@ func TestDrainSessionNow_WaitsForConcurrentBackgroundTick(t *testing.T) {
 	// how fast the disk is, which is not what this test measures.
 	select {
 	case <-coord.started:
-		tl.addf("background tick started executing")
+		tl.Addf("background tick started executing")
 	case <-time.After(30 * time.Second):
 		t.Fatal("background tick never started executing — test setup is broken, proves nothing")
 	}
@@ -125,28 +126,28 @@ func TestDrainSessionNow_WaitsForConcurrentBackgroundTick(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
-	tl.addf("drain deadline=%s", deadline.Format(time.RFC3339Nano))
+	tl.Addf("drain deadline=%s", deadline.Format(time.RFC3339Nano))
 	drainDone := make(chan struct{})
 	var result session.DrainResult
 	var drainErr error
 	go func() {
 		defer close(drainDone)
-		tl.addf("DrainSessionNow called")
+		tl.Addf("DrainSessionNow called")
 		result, drainErr = pump.DrainSessionNow(ctx, sess.ID)
-		tl.addf("DrainSessionNow returned result=%v err=%v", result, drainErr)
+		tl.Addf("DrainSessionNow returned result=%v err=%v", result, drainErr)
 	}()
 
 	// Give DrainSessionNow time to find nothing pending (already leased by
 	// the background tick) and enter its inFlight poll loop before
 	// releasing the background execution.
 	time.Sleep(50 * time.Millisecond)
-	tl.addf("releasing the background execution")
+	tl.Addf("releasing the background execution")
 	close(coord.release)
 
 	select {
 	case <-drainDone:
 	case <-time.After(30 * time.Second):
-		tl.addf("drain wait expired ctx=%v remaining=%s", ctx.Err(), time.Until(deadline))
+		tl.Addf("drain wait expired ctx=%v remaining=%s", ctx.Err(), time.Until(deadline))
 		t.Fatal("DrainSessionNow did not return after the concurrent background execution finished")
 	}
 

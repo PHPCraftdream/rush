@@ -3,10 +3,12 @@
 package shexec
 
 import (
+	"context"
 	"os/exec"
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 	"golang.org/x/sys/windows"
 )
@@ -19,7 +21,7 @@ import (
 // startSleeper starts a quiet bash sleep as a stand-in command process.
 func startSleeper(t *testing.T) *exec.Cmd {
 	t.Helper()
-	cmd := exec.Command("bash", "-c", "sleep 30")
+	cmd := platform.Command(context.Background(), "bash", "-c", "sleep 30")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start sleeper: %v", err)
 	}

@@ -14,11 +14,11 @@ func (a *sessionAgent) restoreFinalizationCallContext(ctx context.Context, call 
 	}
 	guardCtx, cancel := context.WithTimeout(ctx, a.effectiveSessionPreambleMaxDuration())
 	defer cancel()
-	validated, err := call.finalizationAuthorities.RestoreCall(guardCtx, call.SessionID, call.LogicalCallID)
+	validated, err := call.FinalizationAuthorities.RestoreCall(guardCtx, call.SessionID, call.LogicalCallID)
 	if err != nil {
 		return nil, err
 	}
-	call.finalizationAuthorities = session.CaptureAgentFinalizationContext(validated)
+	call.FinalizationAuthorities = session.CaptureAgentFinalizationContext(validated)
 	// Preserve the caller's lifetime, not the bounded validation context.
-	return call.finalizationAuthorities.Restore(ctx)
+	return call.FinalizationAuthorities.Restore(ctx)
 }

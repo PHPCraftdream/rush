@@ -171,8 +171,8 @@ func NewFinalizationBatchRootHoldsProviderForInstall(install *BatchInstall) sess
 
 // NewFinalizationTrackedProcessHoldsProvider counts the tracked process
 // trees as a PROCESS-level conservative over-approximation: the pid-keyed
-// registries in package session (trackedJobs on Windows, trackedGroups
-// elsewhere) carry no owning session, and the cliprovider spawn sites have
+// registries in package proctrack (Job Objects on Windows, process
+// groups elsewhere) carry no owning session, and the cliprovider spawn sites have
 // no session index, so ANY live tracked tree defers every owner's seal
 // until physical teardown, then the count returns to baseline. It returns
 // a session.FinalizationHoldsProvider.
@@ -180,7 +180,7 @@ func NewFinalizationBatchRootHoldsProviderForInstall(install *BatchInstall) sess
 // No-self-deadlock guarantee for the owner's own current CLI stream, with
 // code evidence: the spawn sites are
 // internal/agent/cliprovider/provider_stream.go:424 (PTY) and :626 (pipe);
-// unregistration is provider_stream.go:663 session.UntrackProcessTree
+// unregistration is provider_stream.go:663 proctrack.UntrackProcessTree
 // (childPid) inside visibleCleanup, deferred in the stream generator at
 // :697, so it runs when the stream generator returns — before the turn
 // pipeline observes stream completion. TrySeal only runs when a candidate

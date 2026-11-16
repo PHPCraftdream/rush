@@ -8,54 +8,53 @@ package cliprovider
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 
 	"charm.land/fantasy"
-	"charm.land/fantasy/object"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider/clipmcp"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider/clipspec"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider/clipstream"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider/cliptool"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
-// sessionIDContextKey is a private key type so it cannot collide with other packages.
-type sessionIDContextKey struct{}
+// CL-B facade aliases for the clipmcp seam (design §3.4 S4). The legacy
+// unqualified names below are never reassigned.
+type (
+	rushMCPServer = clipmcp.RushMCPServer
+	mcpToolEvent  = clipmcp.MCPToolEvent
+)
 
-// SessionIDContextKey is the context key for the session ID, set by the agent
-// before calling Stream so MCP tools and CLI resume can identify the session.
-var SessionIDContextKey = sessionIDContextKey{}
+var newRushMCPServer = clipmcp.NewRushMCPServer
 
-type titleGenerationContextKey struct{}
+// CL-A facade aliases: the declarations live in clipspec (design §3.5/§4.1);
+// these names are never reassigned, so value aliases preserve identity.
+var (
+	SessionIDContextKey       = clipspec.SessionIDContextKey
+	TitleGenerationContextKey = clipspec.TitleGenerationContextKey
+	ReasoningEffortContextKey = clipspec.ReasoningEffortContextKey
+	NonInteractiveContextKey  = clipspec.NonInteractiveContextKey
+)
 
-// TitleGenerationContextKey marks a provider request as a cosmetic session-title call.
-var TitleGenerationContextKey = titleGenerationContextKey{}
+// CL-A facade aliases for the spec catalog and CLI spec type (design §3.5).
+var All = clipspec.All
 
-// reasoningEffortContextKey is a private key type for the reasoning effort value.
-type reasoningEffortContextKey struct{}
+type CLISpec = clipspec.CLISpec
 
-// ReasoningEffortContextKey is the context key for the reasoning effort level
-// (e.g. "low", "medium", "high", "max"), set by the agent before calling
-// Stream so CLI models can inject the --effort flag dynamically.
-var ReasoningEffortContextKey = reasoningEffortContextKey{}
+// streamEvent is the Claude CLI stream-json envelope; moved to clipspec in CL-A.
+type streamEvent = clipspec.StreamEvent
 
-// Fork patch: batch 14 — non-interactive context propagation.
-//
-// nonInteractiveContextKey marks the request as coming from `rush run` (a
-// non-interactive entry point with no human at the keyboard). When set, the
-// CLI sub-process is launched with its own bypass-permissions flag
-// (claude --dangerously-skip-permissions, codex --approval-mode yolo,
-// gemini --yolo) regardless of the runtime yoloFn. Otherwise the inner
-// CLI would block waiting for an interactive permission prompt that
-// nobody is there to answer, and `rush run` would hang silently.
-type nonInteractiveContextKey struct{}
-
-// NonInteractiveContextKey is set by app.RunNonInteractive on the agent
-// context so cliprovider.Stream can force bypass-permissions for the inner
-// CLI when there is provably no human to confirm.
-var NonInteractiveContextKey = nonInteractiveContextKey{}
+// CL-C facade alias: StreamResult moved to clipstream (design §3.3 S3).
+type StreamResult = clipstream.StreamResult
 
 // ProviderType is the catwalk.Type value used for CLI providers.
 const ProviderType = catalog.LocalCLIProviderType
@@ -135,20 +134,130 @@ func effectiveMaxPromptArgLen(rawBinary string) int {
 	return maxPromptArgLen
 }
 
-// ansiEscape matches ANSI/VT escape sequences injected by PTY drivers:
-//   - CSI sequences: ESC [ <params> <letter>  (e.g. \x1b[2J, \x1b[?25h)
-//   - OSC sequences: ESC ] <text> BEL         (e.g. \x1b]0;title\a)
-//   - other two-char escapes: ESC <char>
+// resolveBinary resolves name (a bare command like "claude" or "bash") to
+// the executable that will actually run, going through the same
+// WSL-launcher-aware PATH lookup internal/shell uses for #!/bin/bash
+// shebang dispatch (see shell.LookPathSkippingWSL).
 //
-// Also strips bare \r so JSON lines from PTY output parse cleanly.
-var ansiEscape = regexp.MustCompile(`\x1b(?:\[[0-9;?]*[a-zA-Z]|\][^\x07]*\x07|[^\[])|\r`)
+// This matters specifically for Binary: "bash": plain exec.LookPath (and
+// the implicit lookup os/exec.Cmd performs on a bare name) can resolve to
+// %SystemRoot%\System32\bash.exe — the WSL launcher — if it happens to sit
+// ahead of Git Bash/MSYS bash on PATH. The WSL launcher expects Linux-style
+// paths (/mnt/c/...) and cannot run a script given a Windows-style path or
+// working directory, so silently handing it back here would launch a
+// process that appears to start but fails in confusing ways downstream.
+// Both call sites in Stream (PTY branch and pipe-fallback branch) resolve
+// through this helper rather than trusting exec.LookPath/os/exec's default
+// resolution directly.
+//
+// On non-Windows this is a thin wrapper around exec.LookPath.
+func resolveBinary(name string) (string, error) {
+	return shell.LookPathSkippingWSL(name)
+}
 
-// cliSessionEntry stores a CLI session ID along with a hash of the conversation
-// prefix (all messages except the last), so we can detect edits/deletes that
-// would make the CLI session's history stale.
-type cliSessionEntry struct {
-	CLISessionID string
-	PrefixHash   uint64
+// AvailableFunc returns the locally-installed CLI specs. It is a package
+// var so tests can stub CLI detection deterministically — otherwise the set
+// depends on whatever binaries (claude, gemini, npx, …) happen to be on the
+// runner's PATH, which makes provider-count assertions environment-dependent.
+var AvailableFunc = detectAvailable
+
+// Available reports which CLI model specs are usable on this machine.
+func Available() []CLISpec { return AvailableFunc() }
+
+// AvailableCLIModels projects the locally-available CLI specs onto the
+// execution-free [catalog.LocalCLIModel] descriptor config synthesizes the
+// local-cli provider from. It follows [AvailableFunc], so stubbing that var
+// in tests also controls this projection.
+func AvailableCLIModels() []catalog.LocalCLIModel {
+	specs := Available()
+	models := make([]catalog.LocalCLIModel, 0, len(specs))
+	for _, spec := range specs {
+		models = append(models, catalog.LocalCLIModel{
+			ID:            spec.ModelID,
+			Name:          spec.ModelName,
+			ContextWindow: spec.ContextWindow,
+		})
+	}
+	return models
+}
+
+// detectAvailableCache memoizes detectAvailable's PATH scan, keyed on the
+// PATH (and, on Windows, PATHEXT) value the scan was performed against.
+//
+// Why this cache exists: detectAvailable resolves one binary per distinct
+// CLISpec.Binary (claude/gemini/codex/qwen) through exec.LookPath, and
+// exec.LookPath does no caching of its own — every call re-walks every PATH
+// entry, on Windows multiplied by every PATHEXT suffix. Measured on a
+// developer workstation with 71 PATH entries and 11 PATHEXT suffixes, one
+// detectAvailable() call costs ~360ms (~90ms per binary); a runner where
+// none of the four CLIs are installed pays the full unsuccessful walk for
+// each.
+//
+// That would be a once-per-process cost if Available() were called once, but
+// it is called from config.configureProviders, which runs on the initial
+// config Load AND on every buildAndPublishReload — i.e. once per config
+// field write. A single `rush models use ...` invocation triggers ~5 of
+// them, so ~1.8s of the command's runtime was spent re-answering "is
+// claude on PATH?" with an answer that had not changed. In the test suite
+// the same multiplier applied per test: internal/cmd's models_* tests each
+// paid ~2s of PATH scanning out of a ~2.8s total runtime.
+//
+// Keying on PATH/PATHEXT rather than caching unconditionally keeps the
+// tests that install a fake binary into a temp dir and point PATH at it
+// (internal/agent/cliprovider/provider_windows_test.go, internal/shell's
+// dispatch tests) working unchanged: changing PATH invalidates the entry.
+// The remaining behavioral difference from an uncached scan is that
+// installing a CLI into an already-on-PATH directory while a long-lived
+// rush process is running is no longer picked up by a config reload; it
+// needs a restart. That is the same trade the fork already makes for the
+// Catwalk/Hyper provider catalogs (see internal/config/catwalk.go's
+// providerCacheTTL) and is why detection is only ever consulted to
+// synthesize the local-cli provider list, never on the hot path of actually
+// launching a CLI (Stream resolves its binary directly through
+// resolveBinary every time).
+var detectAvailableCache struct {
+	mu     sync.Mutex
+	key    string
+	specs  []CLISpec
+	loaded bool
+}
+
+// detectAvailablePathKey returns the cache key identifying the lookup
+// environment detectAvailable would resolve against. PATHEXT only affects
+// resolution on Windows, but including it unconditionally costs nothing and
+// keeps the key definition platform-independent.
+func detectAvailablePathKey() string {
+	return os.Getenv("PATH") + "\x00" + os.Getenv("PATHEXT")
+}
+
+func detectAvailable() []CLISpec {
+	key := detectAvailablePathKey()
+
+	detectAvailableCache.mu.Lock()
+	defer detectAvailableCache.mu.Unlock()
+	if detectAvailableCache.loaded && detectAvailableCache.key == key {
+		// Hand back a copy: callers (config.configureProviders) range over
+		// the result and a shared backing array would let one caller's
+		// append alias another's.
+		return slices.Clone(detectAvailableCache.specs)
+	}
+
+	seen := make(map[string]bool)
+	var result []CLISpec
+	for _, spec := range All {
+		if !seen[spec.Binary] {
+			_, err := resolveBinary(spec.Binary)
+			seen[spec.Binary] = err == nil
+		}
+		if seen[spec.Binary] {
+			result = append(result, spec)
+		}
+	}
+
+	detectAvailableCache.key = key
+	detectAvailableCache.specs = result
+	detectAvailableCache.loaded = true
+	return slices.Clone(result)
 }
 
 type cliProvider struct {
@@ -159,25 +268,29 @@ type cliProvider struct {
 	sessions    session.Service
 	mcpProxy    ExternalMCPProxy
 	specs       map[string]CLISpec
-	cliSessions *csync.Map[string, cliSessionEntry] // rush session key → CLI session entry
+	cliSessions *csync.Map[string, clipstream.CLISessionEntry] // rush session key → CLI session entry
 }
 
-// ExternalMCPTool describes an external MCP tool to expose through the rush MCP bridge.
-type ExternalMCPTool struct {
-	ServerName  string
-	Name        string
-	Description string
-	InputSchema any // JSON schema
-}
+// CL-B facade aliases for the cliptool seam (design §3.4/§3.5, §4.1:
+// bridgeFallback lives in cliptool; ExternalMCPTool/ExternalMCPProxy are
+// physically defined in cliptool because cliptool's policy layer consumes
+// them, with clipmcp aliasing them). All names below are never reassigned.
+type (
+	ToolBridge       = cliptool.ToolBridge
+	BridgeTool       = cliptool.BridgeTool
+	ToolPolicy       = cliptool.ToolPolicy
+	ExternalMCPTool  = cliptool.ExternalMCPTool
+	ExternalMCPProxy = cliptool.ExternalMCPProxy
+)
 
-// ExternalMCPProxy provides access to external MCP tools and the ability
-// to call them. Implemented by the coordinator to avoid circular imports.
-type ExternalMCPProxy interface {
-	// ListTools returns all enabled external MCP tools.
-	ListTools() []ExternalMCPTool
-	// CallTool invokes a tool on the named MCP server and returns the text result.
-	CallTool(ctx context.Context, serverName, toolName, inputJSON string) (string, error)
-}
+var (
+	WithToolBridge     = cliptool.WithToolBridge
+	WithToolPolicy     = cliptool.WithToolPolicy
+	ToolPolicyFrom     = cliptool.ToolPolicyFrom
+	BuiltinBridgeTools = cliptool.BuiltinBridgeTools
+	FilterBridgeRead   = cliptool.FilterBridgeRead
+	SetBridgeFallback  = cliptool.SetBridgeFallback
+)
 
 // New creates a CLI provider that runs all specs from [All].
 // workingDir is set as the working directory for every CLI invocation.
@@ -204,7 +317,7 @@ func New(workingDir, dataDir string, yoloFn func() bool, perms permission.Servic
 		sessions:    sessions,
 		mcpProxy:    mcpProxy,
 		specs:       specs,
-		cliSessions: csync.NewMap[string, cliSessionEntry](),
+		cliSessions: csync.NewMap[string, clipstream.CLISessionEntry](),
 	}
 }
 
@@ -215,54 +328,11 @@ func (p *cliProvider) LanguageModel(_ context.Context, modelID string) (fantasy.
 	if !ok {
 		return nil, fmt.Errorf("unknown CLI model: %q", modelID)
 	}
-	return &cliModel{spec: spec, workingDir: p.workingDir, dataDir: p.dataDir, yoloFn: p.yoloFn, perms: p.perms, sessions: p.sessions, mcpProxy: p.mcpProxy, cliSessions: p.cliSessions}, nil
+	// Delegates to clipstream (design §3.3 S3): cliModel lives there.
+	return clipstream.NewModel(spec, p.workingDir, p.dataDir, p.yoloFn, p.perms, p.sessions, p.mcpProxy, p.cliSessions), nil
 }
 
-type cliModel struct {
-	streamProcess        func(bool, []string) procHandle
-	streamVisibleCleanup func()
-	spec                 CLISpec
-	mcpProxy             ExternalMCPProxy
-	cliSessions          *csync.Map[string, cliSessionEntry]
-	workingDir           string
-	dataDir              string
-	yoloFn               func() bool
-	perms                permission.Service
-	sessions             session.Service
-}
-
-func (m *cliModel) Provider() string { return ProviderID }
-func (m *cliModel) Model() string    { return m.spec.ModelID }
-
-func (m *cliModel) GenerateObject(ctx context.Context, call fantasy.ObjectCall) (*fantasy.ObjectResponse, error) {
-	return object.GenerateWithTool(ctx, m, call)
-}
-
-func (m *cliModel) StreamObject(ctx context.Context, call fantasy.ObjectCall) (fantasy.ObjectStreamResponse, error) {
-	return object.StreamWithTool(ctx, m, call)
-}
-
-func (m *cliModel) Generate(ctx context.Context, call fantasy.Call) (*fantasy.Response, error) {
-	var text strings.Builder
-	var usage fantasy.Usage
-	stream, err := m.Stream(ctx, call)
-	if err != nil {
-		return nil, err
-	}
-	for part := range stream {
-		if part.Type == fantasy.StreamPartTypeError {
-			return nil, part.Error
-		}
-		if part.Type == fantasy.StreamPartTypeTextDelta {
-			text.WriteString(part.Delta)
-		}
-		if part.Type == fantasy.StreamPartTypeFinish {
-			usage = part.Usage
-		}
-	}
-	return &fantasy.Response{
-		Content:      fantasy.ResponseContent{fantasy.TextContent{Text: text.String()}},
-		FinishReason: fantasy.FinishReasonStop,
-		Usage:        usage,
-	}, nil
-}
+// LogRawPromptEnabled delegates to clipstream (design §3.3 S3), where the
+// raw-prompt logging helpers physically live; consumed by
+// internal/agent/agent_ownership.go without changes.
+func LogRawPromptEnabled() bool { return clipstream.LogRawPromptEnabled() }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 )
 
@@ -20,6 +21,10 @@ type callDiskBinding struct {
 	provider tools.DiskProvider
 	caps     *diskCapabilityManager
 }
+
+// BindingID implements agentcall.CallBindingHandle: the opaque binding
+// identity the immutable handle was minted with.
+func (b *callDiskBinding) BindingID() string { return b.id }
 
 // newCallDiskBinding mints the binding handle and acquires the Call owner
 // keyed by instance. The returned closure releases EXACTLY that owner key
@@ -58,7 +63,7 @@ func boundCallOptions(provider tools.DiskProvider, bindingID string, caps *DiskP
 	return &CallOptions{
 		DiskProvider:  provider,
 		DiskBindingID: bindingID,
-		diskBinding:   &callDiskBinding{id: bindingID, provider: provider, caps: caps},
+		DiskBinding:   &callDiskBinding{id: bindingID, provider: provider, caps: caps},
 	}
 }
 
@@ -66,24 +71,13 @@ func boundCallOptions(provider tools.DiskProvider, bindingID string, caps *DiskP
 // of the owning options to borrow (H2a §1.2): copies of the owning options
 // borrow the same immutable handle without acquiring a new owner — the
 // caller's Call owner retains it. nil when the options carry none (a call
-// with no provider binding).
-func BorrowCallDiskBinding(opts *CallOptions) *callDiskBinding {
+// with no provider binding). The handle is read through the
+// agentcall.CallBindingHandle interface.
+func BorrowCallDiskBinding(opts *CallOptions) agentcall.CallBindingHandle {
 	if opts == nil {
 		return nil
 	}
-	return opts.diskBinding
-}
-
-// BorrowDiskBindingFrom copies the binding HANDLE from src into opts (H2a
-// §1.2 borrow semantics): a copy of the owning options borrows the same
-// immutable handle without acquiring a new owner — src's Call owner retains
-// it. buildScope is deliberately left untouched: the borrowing turn's tool
-// builds own their scope via the normal per-call setup.
-func (opts *CallOptions) BorrowDiskBindingFrom(src *CallOptions) {
-	if opts == nil {
-		return
-	}
-	opts.diskBinding = BorrowCallDiskBinding(src)
+	return opts.DiskBinding
 }
 
 // BindCallDiskProvider is the trusted-call-state entry point (R12-H2
@@ -103,9 +97,9 @@ func BindCallDiskProvider(caps *DiskProviderRegistry, provider tools.DiskProvide
 	}
 	opts.DiskProvider = provider
 	opts.DiskBindingID = binding.id
-	opts.diskBinding = binding
-	if opts.buildScope == nil {
-		opts.buildScope = newBuildResourceScope()
+	opts.DiskBinding = binding
+	if opts.BuildScope == nil {
+		opts.BuildScope = newBuildResourceScope()
 	}
 	return opts, release, nil
 }
@@ -138,21 +132,7 @@ func bindExistingCallDiskBinding(caps *DiskProviderRegistry, bindingID string, i
 	}
 	opts.DiskProvider = provider
 	opts.DiskBindingID = bindingID
-	opts.diskBinding = &callDiskBinding{id: bindingID, provider: provider, caps: caps}
+	opts.DiskBinding = &callDiskBinding{id: bindingID, provider: provider, caps: caps}
 	EnsureCallBuildScope(opts)
 	return opts, release, nil
-}
-
-// EnsureCallBuildScope returns the trusted call state's build-resource
-// scope, creating it first when the options carry none yet (ordinary,
-// non-provider calls). It must be called before the options are shared;
-// copies borrow the same scope.
-func EnsureCallBuildScope(opts *CallOptions) *buildResourceScope {
-	if opts == nil {
-		return nil
-	}
-	if opts.buildScope == nil {
-		opts.buildScope = newBuildResourceScope()
-	}
-	return opts.buildScope
 }

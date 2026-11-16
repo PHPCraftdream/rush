@@ -192,7 +192,7 @@ func TestP1_6_Rerun_FailsClosedWhenStillStopping(t *testing.T) {
 	// Build a fake hub and client to capture the reply.
 	hub := newHub()
 	client := newClient(hub, nil) // No real WebSocket connection needed for test
-	client.send = make(chan []byte, 10)
+	client.ResizeSendChan(10)
 
 	// Build the WSMessage payload.
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: targetMsg.ID})
@@ -219,7 +219,7 @@ func TestP1_6_Rerun_FailsClosedWhenStillStopping(t *testing.T) {
 	// (b) send EventError if Run() itself failed for some other reason.
 
 	select {
-	case replyBytes := <-client.send:
+	case replyBytes := <-client.SendChan():
 		var reply WSMessage
 		require.NoError(t, json.Unmarshal(replyBytes, &reply))
 		require.Equal(t, msg.ID, reply.ID, "reply should echo the message ID")

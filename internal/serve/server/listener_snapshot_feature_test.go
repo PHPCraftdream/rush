@@ -68,9 +68,9 @@ func TestNewWithPolicyCopiesSlices(t *testing.T) {
 }
 
 func TestResolvedLocalhostRejectsAnyNonLoopback(t *testing.T) {
-	policy := ListenerPolicy{Address: "localhost:80", resolver: func(string) ([]net.IP, error) {
+	policy := (ListenerPolicy{Address: "localhost:80"}).WithResolver(func(string) ([]net.IP, error) {
 		return []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("10.0.0.5")}, nil
-	}}
+	})
 	if _, err := policy.ResolvedAddress(); err == nil {
 		t.Fatal("mixed loopback/non-loopback result accepted")
 	}

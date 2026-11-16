@@ -163,7 +163,7 @@ func saveAttachmentToDisk(dataDir, fileName string, data []byte) (string, error)
 func handleSendMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p SendMessagePayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 
@@ -192,7 +192,7 @@ func handleSendMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMess
 	}
 
 	if a.AgentCoordinator == nil {
-		c.reply(msg.ID, EventError, nil, "agent not configured")
+		c.Reply(msg.ID, EventError, nil, "agent not configured")
 		return
 	}
 
@@ -239,7 +239,7 @@ func handleSendMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMess
 	agentCtx := agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb)
 	agentCtx = agent.WithCallOptions(agentCtx, &agent.CallOptions{WebTurnOptIn: true})
 
-	c.hub.Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: p.SessionID, Busy: true})
+	c.Hub().Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: p.SessionID, Busy: true})
 	var err error
 	if smartOverride != nil || fastOverride != nil {
 		_, err = a.AgentCoordinator.RunWithOverrides(agentCtx, p.SessionID, p.Content, smartOverride, fastOverride, attachments...)
@@ -252,12 +252,12 @@ func handleSendMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMess
 	// but the original owner is still active. IsSessionBusy reflects the live
 	// mailbox state and is the authoritative source of truth.
 	if !a.AgentCoordinator.IsSessionBusy(p.SessionID) {
-		c.hub.Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: p.SessionID, Busy: false})
+		c.Hub().Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: p.SessionID, Busy: false})
 	}
 
 	if err != nil {
 		slog.Error("ws: agent run error", "err", err)
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 	}
 
 	// P2-1 fix: summarizeQueue is now drained by abandonOwnershipWithHandoff
@@ -276,14 +276,14 @@ func handleSendMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMess
 func handleInterruptAndSend(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p SendMessagePayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 
 	slog.Info("ws: handleInterruptAndSend", "sessionID", p.SessionID, "content", p.Content, "attachments", len(p.Attachments))
 
 	if a.AgentCoordinator == nil {
-		c.reply(msg.ID, EventError, nil, "agent not configured")
+		c.Reply(msg.ID, EventError, nil, "agent not configured")
 		return
 	}
 
@@ -337,14 +337,14 @@ func handleInterruptAndSend(ctx context.Context, a *appPkg.App, c *Client, msg W
 
 	if err := a.AgentCoordinator.InterruptAndSend(agentCtx, p.SessionID, p.Content, smartOverride, fastOverride, attachments...); err != nil {
 		slog.Error("ws: interrupt-and-send failed", "err", err)
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	// Don't toggle EventAgentBusy here: the running handleSendMessage
 	// goroutine will publish busy=false when its Run() returns, and the
 	// queue drain inside Run() will publish busy=true again for the new
 	// turn. Touching the flag here would create a flicker.
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "queued"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "queued"}, "")
 }
 
 // handleInjectMessage persists a user message to the session DB right now
@@ -355,14 +355,14 @@ func handleInterruptAndSend(ctx context.Context, a *appPkg.App, c *Client, msg W
 func handleInjectMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p SendMessagePayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 
 	slog.Info("ws: handleInjectMessage", "sessionID", p.SessionID, "content", p.Content, "attachments", len(p.Attachments))
 
 	if a.AgentCoordinator == nil {
-		c.reply(msg.ID, EventError, nil, "agent not configured")
+		c.Reply(msg.ID, EventError, nil, "agent not configured")
 		return
 	}
 
@@ -389,23 +389,23 @@ func handleInjectMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMe
 	agentCtx := agent.WithCallOptions(agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb), &agent.CallOptions{WebTurnOptIn: true})
 	if _, err := a.AgentCoordinator.InjectMessage(agentCtx, p.SessionID, p.Content, attachments...); err != nil {
 		slog.Error("ws: inject-message failed", "err", err)
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "injected"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "injected"}, "")
 }
 
 func handleCancelAgent(_ context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p CancelAgentPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	a.AgentCoordinator.Cancel(p.SessionID)
 	// Force-broadcast busy=false immediately so the UI unblocks and the replay
 	// buffer records a definitive "not busy" state. The goroutine will also
 	// broadcast false when it actually finishes (harmless duplicate).
-	c.hub.Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: p.SessionID, Busy: false})
+	c.Hub().Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: p.SessionID, Busy: false})
 }
 
 // attachmentsDataDir resolves the configured data directory for saved
@@ -420,51 +420,51 @@ func attachmentsDataDir(a *appPkg.App) string {
 func handleSummarizeSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p SummarizeSessionPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.SessionID == "" {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	if a.AgentCoordinator == nil {
-		c.reply(msg.ID, EventError, nil, "agent not configured")
+		c.Reply(msg.ID, EventError, nil, "agent not configured")
 		return
 	}
 	agentCtx := context.WithoutCancel(ctx)
 	// Summarize will queue the request and return ErrSummarizeQueued if busy.
 	// We pass nil for the snapshot, which causes Summarize to resolve it from the target session.
-	c.hub.Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: p.SessionID, Busy: true})
+	c.Hub().Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: p.SessionID, Busy: true})
 	err := a.AgentCoordinator.Summarize(agentCtx, p.SessionID, nil)
 	if errors.Is(err, agent.ErrSummarizeQueued) {
 		// The session is still busy with the owning turn that triggered the queue.
 		// Do NOT broadcast Busy: false — that would mislead clients into thinking
 		// the session is idle when it's still owned by the compaction turn.
-		c.hub.Broadcast(EventSummarizeQueued, SummarizeQueuedPayload{SessionID: p.SessionID, Queued: true})
-		c.reply(msg.ID, EventResponse, map[string]string{"status": "queued"}, "")
+		c.Hub().Broadcast(EventSummarizeQueued, SummarizeQueuedPayload{SessionID: p.SessionID, Queued: true})
+		c.Reply(msg.ID, EventResponse, map[string]string{"status": "queued"}, "")
 		return
 	}
 	// Broadcast the actual busy state derived from mailbox ownership.
 	if !a.AgentCoordinator.IsSessionBusy(p.SessionID) {
-		c.hub.Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: p.SessionID, Busy: false})
+		c.Hub().Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: p.SessionID, Busy: false})
 	}
 	if err != nil {
 		slog.Error("ws: summarize error", "err", err)
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 func handleCancelQueuedSummarize(a *appPkg.App, c *Client, msg WSMessage) {
 	var p CancelQueuedSummarizePayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.SessionID == "" {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	if a.AgentCoordinator == nil {
-		c.reply(msg.ID, EventError, nil, "agent not configured")
+		c.Reply(msg.ID, EventError, nil, "agent not configured")
 		return
 	}
 	a.AgentCoordinator.CancelQueuedSummarize(p.SessionID)
-	c.hub.Broadcast(EventSummarizeQueued, SummarizeQueuedPayload{SessionID: p.SessionID, Queued: false})
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Hub().Broadcast(EventSummarizeQueued, SummarizeQueuedPayload{SessionID: p.SessionID, Queued: false})
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 // ── Project initialization ────────────────────────────────────────────────────
@@ -472,17 +472,17 @@ func handleCancelQueuedSummarize(a *appPkg.App, c *Client, msg WSMessage) {
 func handleInitializeProject(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	store := a.Store()
 	if store == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	if a.AgentCoordinator == nil {
-		c.reply(msg.ID, EventError, nil, "agent not configured")
+		c.Reply(msg.ID, EventError, nil, "agent not configured")
 		return
 	}
 
 	initPrompt, err := agent.InitializePrompt(store)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, "failed to build initialization prompt: "+err.Error())
+		c.Reply(msg.ID, EventError, nil, "failed to build initialization prompt: "+err.Error())
 		return
 	}
 
@@ -497,7 +497,7 @@ func handleInitializeProject(ctx context.Context, a *appPkg.App, c *Client, msg 
 	}
 	err = createErr
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, "failed to create session: "+err.Error())
+		c.Reply(msg.ID, EventError, nil, "failed to create session: "+err.Error())
 		return
 	}
 
@@ -512,17 +512,17 @@ func handleInitializeProject(ctx context.Context, a *appPkg.App, c *Client, msg 
 
 	// Broadcast the new session before replying so the client can navigate.
 	if updated, fetchErr := a.Sessions.Get(ctx, sess.ID); fetchErr == nil {
-		c.hub.Broadcast(EventSessionCreated, updated)
+		c.Hub().Broadcast(EventSessionCreated, updated)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok", "sessionID": sess.ID}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok", "sessionID": sess.ID}, "")
 
 	// Run the agent in a background context so closing the tab won't cancel it.
 	agentCtx := agent.WithCallOptions(agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb), &agent.CallOptions{WebTurnOptIn: true})
-	c.hub.Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: sess.ID, Busy: true})
+	c.Hub().Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: sess.ID, Busy: true})
 	_, runErr := a.AgentCoordinator.Run(agentCtx, sess.ID, initPrompt)
 	// P2-2 fix: broadcast the actual busy state derived from mailbox ownership.
 	if !a.AgentCoordinator.IsSessionBusy(sess.ID) {
-		c.hub.Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: sess.ID, Busy: false})
+		c.Hub().Broadcast(EventAgentBusy, AgentBusyPayload{SessionID: sess.ID, Busy: false})
 	}
 	if runErr != nil {
 		slog.Error("ws: initialization run error", "err", runErr)

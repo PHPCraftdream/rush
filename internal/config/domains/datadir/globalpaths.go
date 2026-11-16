@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/PHPCraftdream/rush/internal/config/model"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
 )
 

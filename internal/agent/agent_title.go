@@ -18,6 +18,7 @@ import (
 	"charm.land/fantasy/providers/openaicompat"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 )
 
@@ -273,7 +274,7 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 
 	var reasoningBuf strings.Builder
 	streamCall := fantasy.AgentStreamCall{
-		MaxRetries: &ProviderMaxRetries,
+		MaxRetries: &agentcall.ProviderMaxRetries,
 		Prompt:     fmt.Sprintf("Generate a concise title for the following content:\n\n%s\n <think>\n\n</think>", userPrompt),
 		Headers:    sessionHeaders(sessionID),
 		// A reasoning-only stream (the whole answer as `reasoning_content`, no

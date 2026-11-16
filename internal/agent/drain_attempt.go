@@ -278,7 +278,7 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 		// attempt produced no evidence about. A failed capture cannot reach
 		// the no-turn path: the ON capture either fails the turn (error
 		// return) or runs uncounted committed (the !commit branch is
-		// skipped for drainTurnCommitted), so att.batchCaptured true here
+		// skipped for DrainTurnCommitted), so att.batchCaptured true here
 		// means the capture succeeded.
 		batchRefused := att.batchCaptured && !att.batchSnapshot.Empty()
 		facts.Attempt = AttemptFacts{NoTurn: true, PendingLeft: att.pendingLeft, CommitRefused: batchRefused}

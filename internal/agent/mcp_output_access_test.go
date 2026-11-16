@@ -81,7 +81,7 @@ func TestMCPOutputFinalAssemblyControlsRetentionAndRetrievalAuthority(t *testing
 			opts.FolderScope = &permission.FolderScope{}
 		}
 		scope := EnsureCallBuildScope(opts)
-		defer scope.close()
+		defer scope.Close()
 		list, err := coord.buildTools(WithCallOptions(ctx, opts), &cfg, agentCfg, false)
 		require.NoError(t, err)
 		result := make(map[string]fantasy.AgentTool)

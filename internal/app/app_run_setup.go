@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,9 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/text/format"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -27,16 +31,16 @@ import (
 // ended_reason since the session is being (re)started. Best effort, like the
 // pre-admission writes it replaced; runs on a context detached from the
 // turn's so a cancelled run cannot silently drop the bookkeeping.
-func (app *App) prepareAdmittedRun(ctx context.Context, sessionID string, overrides RunOverrides) {
+func prepareAdmittedRun(env RunEnv, ctx context.Context, sessionID string, overrides RunOverrides) {
 	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if err := app.Sessions.ClearCancelRequest(actx, sessionID); err != nil {
+	if err := env.Sessions().ClearCancelRequest(actx, sessionID); err != nil {
 		slog.Warn("Failed to clear cancel request flag", "session_id", sessionID, "err", err)
 	}
-	if err := app.Sessions.SetBudget(actx, sessionID, overrides.MaxCost, overrides.MaxTokens, int64(overrides.Timeout.Seconds())); err != nil {
+	if err := env.Sessions().SetBudget(actx, sessionID, overrides.MaxCost, overrides.MaxTokens, int64(overrides.Timeout.Seconds())); err != nil {
 		slog.Warn("Failed to persist budget", "session_id", sessionID, "err", err)
 	}
-	if err := app.Sessions.SetEndedReason(actx, sessionID, ""); err != nil {
+	if err := env.Sessions().SetEndedReason(actx, sessionID, ""); err != nil {
 		slog.Warn("Failed to clear ended_reason", "session_id", sessionID, "err", err)
 	}
 }
@@ -74,12 +78,15 @@ type runExecSetup struct {
 	callBindingRelease func()
 }
 
-type sessionExecutionProviderIntent uint8
+// The session-execution provider intent lives in appbatch (Sh4: the
+// persist helper takes explicit params, no *App receiver); package app
+// keeps its historical names as aliases.
+type sessionExecutionProviderIntent = appbatch.SessionExecutionProviderIntent
 
 const (
-	sessionExecutionProviderOmitted sessionExecutionProviderIntent = iota
-	sessionExecutionProviderCustom
-	sessionExecutionProviderOS
+	sessionExecutionProviderOmitted = appbatch.SessionExecutionProviderOmitted
+	sessionExecutionProviderCustom  = appbatch.SessionExecutionProviderCustom
+	sessionExecutionProviderOS      = appbatch.SessionExecutionProviderOS
 )
 
 func explicitSessionExecutionProviderIntent(provider tools.DiskProvider) sessionExecutionProviderIntent {
@@ -90,42 +97,6 @@ func explicitSessionExecutionProviderIntent(provider tools.DiskProvider) session
 		return sessionExecutionProviderOS
 	}
 	return sessionExecutionProviderOmitted
-}
-
-func persistSessionExecutionIntent(ctx context.Context, app *App, sessionID string, intent sessionExecutionProviderIntent, requirement *session.SessionExecutionRequirement, customFenceEnabled bool) error {
-	reqStore, hasStore := app.Sessions.(session.SessionExecutionRequirementStore)
-	switch intent {
-	case sessionExecutionProviderCustom:
-		if !customFenceEnabled {
-			return nil
-		}
-		if !hasStore {
-			return fmt.Errorf("%w: session service cannot persist the session execution requirement", agent.ErrDiskProviderUnavailable)
-		}
-		if requirement == nil {
-			return fmt.Errorf("%w: admitted provider run carries no execution requirement envelope", agent.ErrDiskProviderUnavailable)
-		}
-		if err := reqStore.StoreSessionExecutionRequirement(ctx, sessionID, *requirement); err != nil {
-			return fmt.Errorf("%w: failed to persist the session execution requirement: %v", agent.ErrDiskProviderUnavailable, err)
-		}
-	case sessionExecutionProviderOS:
-		if hasStore {
-			if err := reqStore.DeleteSessionExecutionRequirement(ctx, sessionID); err != nil {
-				return fmt.Errorf("%w: failed to supersede the session execution requirement: %v", agent.ErrDiskProviderUnavailable, err)
-			}
-		}
-	case sessionExecutionProviderOmitted:
-		if hasStore {
-			fence, err := reqStore.LoadSessionExecutionRequirement(ctx, sessionID)
-			if err != nil {
-				return fmt.Errorf("%w: session execution requirement cannot be validated: %v", agent.ErrDiskProviderUnavailable, err)
-			}
-			if fence != nil {
-				return fmt.Errorf("%w: session has a persistent custom-provider requirement", agent.ErrDiskProviderUnavailable)
-			}
-		}
-	}
-	return nil
 }
 
 // prepareExecuteRun performs ExecuteRun's request-to-config setup: context
@@ -148,9 +119,9 @@ func persistSessionExecutionIntent(ctx context.Context, app *App, sessionID stri
 // once, caught by the package's own -race suite. The caller has nothing
 // to do with the returned cancel on the error path; it is only ever
 // meant to be deferred on success.
-func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ context.Context, cancel context.CancelFunc, setup *runExecSetup, err error) {
+func prepareExecuteRun(env RunEnv, ctx context.Context, req RunRequest) (_ context.Context, cancel context.CancelFunc, setup *runExecSetup, err error) {
 	overrides := req.Overrides
-	if err := app.resolveRunRole(&overrides); err != nil {
+	if err := resolveRunRole(env, &overrides); err != nil {
 		return nil, cancel, nil, err
 	}
 	if overrides.roleContract != nil {
@@ -218,7 +189,7 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 	// with awaiting_answer). The fact is read at tool-call time through the
 	// activity classifier's live-work facts.
 	ctx = tools.WithOwnRunningJobsReader(ctx, func(ctx context.Context, sessionID string) (int, bool) {
-		act, err := app.SessionActivity(ctx, sessionID)
+		act, err := env.SessionActivity(ctx, sessionID)
 		if err != nil {
 			return 0, false
 		}
@@ -236,7 +207,7 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		if err := req.Credentials.Validate(); err != nil {
 			return nil, cancel, nil, fmt.Errorf("invalid per-call credentials: %w", err)
 		}
-		cr, ok := app.AgentCoordinator.(credentialsRunner)
+		cr, ok := env.Coord().(credentialsRunner)
 		if !ok {
 			return nil, cancel, nil, fmt.Errorf("per-call credentials are not supported by this coordinator")
 		}
@@ -249,7 +220,7 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		}
 	}
 
-	smartOverride, fastOverride, err := app.resolveModelOverridesForNonInteractive(smartModel, fastModel)
+	smartOverride, fastOverride, err := env.ResolveModelOverrides(smartModel, fastModel)
 	if err != nil {
 		return nil, cancel, nil, fmt.Errorf("failed to override models: %w", err)
 	}
@@ -272,7 +243,7 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 	)
 
 	stderrTTY = term.IsTerminal(os.Stderr.Fd())
-	progress = app.config.Config().Options.Progress == nil || *app.config.Config().Options.Progress
+	progress = env.Config.Config().Options.Progress == nil || *env.Config.Config().Options.Progress
 
 	if !hideSpinner && stderrTTY {
 		spinner = format.NewSpinner()
@@ -290,8 +261,8 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 	// Wait for MCP initialization to complete before reading MCP tools. A
 	// library-mode App deliberately has no MCP owner, so it must not observe
 	// or wait on the application mode's process-wide initialization barrier.
-	if app.mcpOwner != nil {
-		if err := app.mcpOwner.WaitForInit(ctx); err != nil { // bound to this App's own owner, not the installed owner's barrier
+	if env.MCPOwner() != nil {
+		if err := env.MCPOwner().WaitForInit(ctx); err != nil { // bound to this App's own owner, not the installed owner's barrier
 			return nil, cancel, nil, fmt.Errorf("failed to wait for MCP initialization: %w", err)
 		}
 	}
@@ -305,7 +276,7 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 	// baseline pin, the WithRunAllowlist ctx attachments) stays at its
 	// original spot because it needs the resolved session and the final
 	// ctx.
-	runSpec := runAllowlistSpecFromConfig(app.config.Config().Permissions)
+	runSpec := runAllowlistSpecFromConfig(env.Config.Config().Permissions)
 	if overrides.RestrictedRun {
 		runSpec.Restrict = true
 	}
@@ -344,7 +315,7 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 	// (non-OSDisk) DiskProvider, full stop. The opposite-direction
 	// checks (DiskProvider without FolderScopes, and DiskProvider with
 	// a command-keeping scope) are kept unchanged below.
-	if cfgOpts := app.config.Config().Options; cfgOpts != nil && cfgOpts.NoRealWorkspace &&
+	if cfgOpts := env.Config.Config().Options; cfgOpts != nil && cfgOpts.NoRealWorkspace &&
 		len(overrides.FolderScopes) > 0 &&
 		!tools.IsCustomDiskProvider(overrides.DiskProvider) {
 		return nil, cancel, nil, errors.New(
@@ -365,7 +336,7 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 	var folderScopeSpec *permission.FolderScopeSpec
 	if len(overrides.FolderScopes) > 0 {
 		spec := permission.FolderScopeSpec{
-			WorkingDir: app.config.WorkingDir(),
+			WorkingDir: env.Config.WorkingDir(),
 			Entries:    overrides.FolderScopes,
 			// Command-executing tools stay in a scoped toolset only when
 			// the restricted-run gate is armed AND this run grants actual
@@ -524,7 +495,7 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		// registry; nil still fails closed with the same sentinel — a
 		// persisted App whose install genuinely failed, or a flag-ON
 		// ephemeral App built before the field existed, must not run.
-		bindings := app.resolveDiskBindings()
+		bindings := env.DiskBindings()
 		if bindings == nil {
 			return nil, cancel, nil, agent.ErrDiskProviderUnavailable
 		}
@@ -554,7 +525,7 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 	// got theirs with the binding handle above.
 	agent.EnsureCallBuildScope(callOpts)
 	// Turn-stall policy: resolve --stall-timeout (default 30m) onto this call.
-	applyTurnStallCallTimeout(callOpts, app.config.Config().Options)
+	applyTurnStallCallTimeout(callOpts, env.Config.Config().Options)
 	ctx = agent.WithCallOptions(ctx, callOpts)
 	// R6 (docs/plans/2026-10-15-role-models-hot-reload.md): --effort on a
 	// non-smart role run rides the role-slot resolution (roleSlotOverride)
@@ -621,4 +592,56 @@ func (app *App) prepareExecuteRun(ctx context.Context, req RunRequest) (_ contex
 		providerIntent:         explicitSessionExecutionProviderIntent(overrides.DiskProvider),
 		callBindingRelease:     callBindingRelease,
 	}, nil
+}
+
+// RunEnv is the capability set the run-cluster free functions read from
+// *App, built once at wrapper entry by (*App).runEnv. Plain values only
+// for App fields provably never reassigned after New (WorkspaceRoot,
+// Config); everything that tests, InitCoderAgent's self-heal, or lazy
+// construction can still change is a closure evaluated at the same moment
+// the old method body read it.
+type RunEnv struct {
+	// WorkspaceRoot is read-only once New filled it in.
+	WorkspaceRoot string
+	// Config is the config store pointer, set once in New; the store
+	// publishes generations internally, so the pointer alone preserves
+	// every read.
+	Config *config.ConfigStore
+
+	// Sessions, Messages, Coord and Perms are closures: tests swap fakes
+	// onto an App after New, and InitCoderAgent's self-heal replaces the
+	// coordinator (p350), so each read must resolve at its original moment.
+	Sessions func() session.Service
+	Messages func() message.Service
+	Coord    func() agent.Coordinator
+	Perms    func() permission.Service
+	// Pump is the run-queue pump, constructed late in New.
+	Pump func() *session.RunQueuePump
+	// WakeStore is the wake-schedule store; tests can wire it after New.
+	WakeStore func() *session.WakeScheduleStore
+	// DB is the nilable underlying SQLite connection (nil in library mode).
+	DB func() *sql.DB
+	// DataDir is the on-disk data directory ("" in library mode).
+	DataDir func() string
+	// MCPOwner is set late by InitCoderAgent and nil in library mode.
+	MCPOwner func() *mcp.Owner
+	// ProcessHome carries the nil-safe *App method.
+	ProcessHome func() bool
+	// SessionActivity is the live-work classifier entry point.
+	SessionActivity func(ctx context.Context, sessionID string) (SessionActivity, error)
+	// DiskBindings resolves the per-App disk-provider registry.
+	DiskBindings func() *agent.DiskProviderRegistry
+	// ResolveModelOverrides is the not-yet-converted setup helper.
+	ResolveModelOverrides func(smartModel, fastModel string) (*agent.ModelOverride, *agent.ModelOverride, error)
+	// BatchFaultWriter is built lazily by the batch runtime.
+	BatchFaultWriter func() *appbatch.FaultEnvelopeWriter
+	// SetBatchFaultOutput stores the batch-fault sink under its mutex.
+	SetBatchFaultOutput func(f func(error))
+	// GetBatchFaultOutput reads the batch-fault sink under the same mutex.
+	GetBatchFaultOutput func() func(error)
+	// BatchCutoverWriter/Reader and BatchFinishedWork are the batch cutover
+	// reads the quota/wait paths use (lazy, like every batch pool choice).
+	BatchCutoverWriter func() *sql.DB
+	BatchCutoverReader func(writer *sql.DB) *sql.DB
+	BatchFinishedWork  func(ctx context.Context, sessionID string) ([]appbatch.QuotaWorkRow, bool, error)
 }

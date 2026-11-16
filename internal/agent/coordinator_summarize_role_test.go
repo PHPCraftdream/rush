@@ -106,7 +106,7 @@ func TestStandaloneSummarizer_BusyAdmissionAndOSLockRefuseWithoutQueueOrWrite(t 
 				defer lock.Release()
 			}
 
-			err = standaloneAgent.SummarizeNow(ctx, sessionID, &SummarizeSnapshot{model: model})
+			err = standaloneAgent.SummarizeNow(ctx, sessionID, &SummarizeSnapshot{Model: model})
 			probe.recordState(standaloneAgent.IsSessionBusy(sessionID), standaloneAgent.SummarizeQueued(sessionID), false)
 			require.Error(t, err)
 			require.False(t, standaloneAgent.SummarizeQueued(sessionID))

@@ -158,7 +158,7 @@ func TestP1_1_AdmissionGateRejectsSummarize(t *testing.T) {
 
 	// Summarize() must refuse immediately with ErrAgentShuttingDown, and it must
 	// NOT register in runWg at all.
-	snapshot := &SummarizeSnapshot{model: model, promptPrefix: "summarize this"}
+	snapshot := &SummarizeSnapshot{Model: model, PromptPrefix: "summarize this"}
 	err = sa.Summarize(ctx, sess.ID, snapshot)
 	require.ErrorIs(t, err, ErrAgentShuttingDown, "Summarize() must return ErrAgentShuttingDown after gate latched")
 

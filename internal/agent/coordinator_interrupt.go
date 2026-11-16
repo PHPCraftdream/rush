@@ -380,7 +380,7 @@ func (c *coordinator) handleInterruptTickObserved(ctx context.Context, sessionID
 		if callOptionsFrom(ctx) != nil {
 			ownedCtx, ownedScope := ownDeferredCallScope(ctx)
 			ctx = ownedCtx
-			defer ownedScope.close()
+			defer ownedScope.Close()
 		}
 		pinned, resolveErr := c.resolveSessionModels(ctx, sessionID)
 		if resolveErr != nil {
@@ -422,7 +422,7 @@ func (c *coordinator) handleInterruptTickObserved(ctx context.Context, sessionID
 	// row is left untouched (peek never deletes) as the operator's record
 	// instead of being consumed into a row a restart could only replay as
 	// a non-batch session.
-	if call.batchQuestion != nil {
+	if call.BatchQuestion != nil {
 		slog.Error("coordinator: refusing to durably enqueue a call carrying batch question capability",
 			"session_id", call.SessionID, "logical_call_id", call.LogicalCallID)
 		return false, fmt.Errorf("%w (session=%s)", ErrBatchQuestionCapabilityNotDurable, call.SessionID)
@@ -642,7 +642,7 @@ func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt st
 	if ownedScope != nil {
 		defer func() {
 			if !scopeTransferred {
-				ownedScope.close()
+				ownedScope.Close()
 			}
 		}()
 	}
@@ -668,7 +668,7 @@ func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt st
 		return err
 	}
 	if ownedScope != nil {
-		call.onQueueResolved = func(_ *fantasy.AgentResult, _ error) { ownedScope.close() }
+		call.OnQueueResolved = func(_ *fantasy.AgentResult, _ error) { ownedScope.Close() }
 	}
 	// The owned scope was established before resolution and is carried through
 	// buildCall; do not replace it with a fresh, empty scope here.
@@ -753,7 +753,7 @@ func (c *coordinator) startDetachedRun(ctx context.Context, call SessionAgentCal
 			"session_id", call.SessionID, "logical_call_id", call.LogicalCallID)
 		return fmt.Errorf("%w (session=%s)", ErrCredentialSetNotDurable, call.SessionID)
 	}
-	if call.batchQuestion != nil {
+	if call.BatchQuestion != nil {
 		slog.Error("coordinator: refusing to durably enqueue a call carrying batch question capability",
 			"session_id", call.SessionID, "logical_call_id", call.LogicalCallID)
 		return fmt.Errorf("%w (session=%s)", ErrBatchQuestionCapabilityNotDurable, call.SessionID)

@@ -16,6 +16,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
@@ -240,7 +241,7 @@ func (a *sessionAgent) runSummarize(ctx context.Context, genCtx context.Context,
 	// session (or shared state for sessions without overrides), ensuring the
 	// entire summarize operation uses consistent configuration regardless of
 	// concurrent SetModels calls (task #341, P1-1).
-	err := a.runSummarizeBody(genCtx, sessionID, snapshot.providerOptions, snapshot.model, snapshot.promptPrefix)
+	err := a.runSummarizeBody(genCtx, sessionID, snapshot.ProviderOptions, snapshot.Model, snapshot.PromptPrefix)
 
 	// P1-2 fix (2026-08-09): Transition mailbox to mbReleasing before releasing
 	// the OS lock. This provides the same visibility that normal turns get
@@ -339,9 +340,9 @@ func (a *sessionAgent) testBuildSummarizeSnapshot() *SummarizeSnapshot {
 	opts := fantasy.ProviderOptions{}
 
 	return &SummarizeSnapshot{
-		model:           model,
-		providerOptions: opts,
-		promptPrefix:    prefix,
+		Model:           model,
+		ProviderOptions: opts,
+		PromptPrefix:    prefix,
 	}
 }
 
@@ -426,7 +427,7 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 	}
 
 	resp, err := agent.Stream(ctx, fantasy.AgentStreamCall{
-		MaxRetries:      &ProviderMaxRetries,
+		MaxRetries:      &agentcall.ProviderMaxRetries,
 		Prompt:          summaryPromptText,
 		Messages:        aiMsgs,
 		Headers:         sessionHeaders(sessionID),

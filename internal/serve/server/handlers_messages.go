@@ -11,6 +11,7 @@ import (
 	"log/slog"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -59,7 +60,7 @@ func updateMessageAndVerify(ctx context.Context, a *appPkg.App, c *Client, msgID
 	// landing between the caller's Get and this call.
 	current, err := a.Messages.Get(ctx, m.ID)
 	if err != nil {
-		c.reply(msgID, EventError, nil, err.Error())
+		c.Reply(msgID, EventError, nil, err.Error())
 		return false
 	}
 	// The caller's edit was based on an unfinished assistant message, but a
@@ -68,7 +69,7 @@ func updateMessageAndVerify(ctx context.Context, a *appPkg.App, c *Client, msgID
 	// removal of the Finish part), and it could overwrite fresh terminal text
 	// or other parts as well as the Finish.
 	if m.Role == message.Assistant && !m.IsFinished() && current.IsFinished() {
-		c.reply(msgID, EventError, nil, "message changed while it was being edited; please reload and try again")
+		c.Reply(msgID, EventError, nil, "message changed while it was being edited; please reload and try again")
 		return false
 	}
 	// Only assistant messages ever carry a Finish part -- user/system/tool
@@ -82,11 +83,11 @@ func updateMessageAndVerify(ctx context.Context, a *appPkg.App, c *Client, msgID
 		// write here would be overwritten by that turn's next checkpoint or,
 		// unconditionally, its terminal write -- see the doc comment above.
 		// Refuse now rather than report an "ok" that will not stick.
-		c.reply(msgID, EventError, nil, "message is still streaming and cannot be edited yet; please wait for it to finish")
+		c.Reply(msgID, EventError, nil, "message is still streaming and cannot be edited yet; please wait for it to finish")
 		return false
 	}
 	if err := a.Messages.Update(ctx, m); err != nil {
-		c.reply(msgID, EventError, nil, err.Error())
+		c.Reply(msgID, EventError, nil, err.Error())
 		return false
 	}
 	// current was already terminal, so Update took the unconditional
@@ -98,7 +99,7 @@ func updateMessageAndVerify(ctx context.Context, a *appPkg.App, c *Client, msgID
 func handleLoadMessages(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p LoadMessagesPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	// ListWithWatermark over List: the reply must carry the session's
@@ -113,7 +114,7 @@ func handleLoadMessages(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// numeric-comparison contract, not the old rowid semantics.
 	msgs, watermark, err := a.Messages.ListWithWatermark(ctx, p.SessionID)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	if msgs == nil {
@@ -124,9 +125,9 @@ func handleLoadMessages(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// this, a lazy load_messages for a sub-agent session that's still empty
 	// returns [], and the frontend can't tell whether to clear the active
 	// chat or the sub-agent buffer — it would blindly clear the active.
-	c.reply(msg.ID, EventMessagesList, map[string]any{
+	c.Reply(msg.ID, EventMessagesList, map[string]any{
 		"SessionID": p.SessionID,
-		"Messages":  toMessagesWire(msgs),
+		"Messages":  wire.ToMessagesWire(msgs),
 		"Watermark": watermark,
 	}, "")
 }
@@ -215,21 +216,21 @@ func deleteMessageRescuingOrphan(ctx context.Context, a *appPkg.App, id string) 
 func handleDeleteMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p DeleteMessagePayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	// Delete publishes DeletedEvent internally; events.go broadcasts EventMessageDeleted.
 	if err := deleteMessageRescuingOrphan(ctx, a, p.MessageID); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 func handleDeleteMessages(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p DeleteMessagesPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	// task #595 (P1-1): this used to swallow every per-ID error into a slog
@@ -256,7 +257,7 @@ func handleDeleteMessages(ctx context.Context, a *appPkg.App, c *Client, msg WSM
 		}
 	}
 	if len(failed) > 0 {
-		c.reply(msg.ID, EventError, map[string]any{
+		c.Reply(msg.ID, EventError, map[string]any{
 			"status":  "partial",
 			"failed":  failed,
 			"deleted": len(p.MessageIDs) - len(failed),
@@ -264,18 +265,18 @@ func handleDeleteMessages(ctx context.Context, a *appPkg.App, c *Client, msg WSM
 		}, fmt.Sprintf("failed to delete %d of %d selected messages", len(failed), len(p.MessageIDs)))
 		return
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 func handleUpdateMessageContent(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p UpdateMessageContentPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	m, err := a.Messages.Get(ctx, p.MessageID)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	// Replace text parts with the new content, keep all other parts intact
@@ -298,7 +299,7 @@ func handleUpdateMessageContent(ctx context.Context, a *appPkg.App, c *Client, m
 	if !updateMessageAndVerify(ctx, a, c, msg.ID, m) {
 		return
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 func updatedReasoningContent(rc message.ReasoningContent, thinking string) message.ReasoningContent {
@@ -320,23 +321,23 @@ func handleUpdateMessageThinking(ctx context.Context, a *appPkg.App, c *Client, 
 		PartIndex *int   `json:"partIndex,omitempty"`
 	}
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	m, err := a.Messages.Get(ctx, p.MessageID)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	found := false
 	if p.PartIndex != nil {
 		if *p.PartIndex < 0 || *p.PartIndex >= len(m.Parts) {
-			c.reply(msg.ID, EventError, nil, "part index out of range")
+			c.Reply(msg.ID, EventError, nil, "part index out of range")
 			return
 		}
 		rc, ok := m.Parts[*p.PartIndex].(message.ReasoningContent)
 		if !ok {
-			c.reply(msg.ID, EventError, nil, "part type not editable")
+			c.Reply(msg.ID, EventError, nil, "part type not editable")
 			return
 		}
 		m.Parts[*p.PartIndex] = updatedReasoningContent(rc, p.Thinking)
@@ -353,28 +354,28 @@ func handleUpdateMessageThinking(ctx context.Context, a *appPkg.App, c *Client, 
 		}
 	}
 	if !found {
-		c.reply(msg.ID, EventError, nil, "message has no thinking part")
+		c.Reply(msg.ID, EventError, nil, "message has no thinking part")
 		return
 	}
 	if !updateMessageAndVerify(ctx, a, c, msg.ID, m) {
 		return
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 func handleDeleteMessagePart(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p DeleteMessagePartPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.MessageID == "" {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	m, err := a.Messages.Get(ctx, p.MessageID)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	if p.PartIndex < 0 || p.PartIndex >= len(m.Parts) {
-		c.reply(msg.ID, EventError, nil, "part index out of range")
+		c.Reply(msg.ID, EventError, nil, "part index out of range")
 		return
 	}
 	// Part-level delete is a user-facing affordance for text/thinking rows only.
@@ -384,29 +385,29 @@ func handleDeleteMessagePart(ctx context.Context, a *appPkg.App, c *Client, msg 
 	case message.TextContent, message.ReasoningContent:
 		// Allowed deletions.
 	default:
-		c.reply(msg.ID, EventError, nil, "part type not deletable")
+		c.Reply(msg.ID, EventError, nil, "part type not deletable")
 		return
 	}
 	m.Parts = append(m.Parts[:p.PartIndex], m.Parts[p.PartIndex+1:]...)
 	if !updateMessageAndVerify(ctx, a, c, msg.ID, m) {
 		return
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 func handleUpdateMessagePart(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p UpdateMessagePartPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.MessageID == "" {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	m, err := a.Messages.Get(ctx, p.MessageID)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	if p.PartIndex < 0 || p.PartIndex >= len(m.Parts) {
-		c.reply(msg.ID, EventError, nil, "part index out of range")
+		c.Reply(msg.ID, EventError, nil, "part index out of range")
 		return
 	}
 	switch part := m.Parts[p.PartIndex].(type) {
@@ -433,24 +434,24 @@ func handleUpdateMessagePart(ctx context.Context, a *appPkg.App, c *Client, msg 
 		updated.Content = p.Content
 		m.Parts[p.PartIndex] = updated
 	default:
-		c.reply(msg.ID, EventError, nil, "part type not editable")
+		c.Reply(msg.ID, EventError, nil, "part type not editable")
 		return
 	}
 	if !updateMessageAndVerify(ctx, a, c, msg.ID, m) {
 		return
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 func handleTogglePinMessage(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p TogglePinMessagePayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.MessageID == "" {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	if err := a.Messages.SetPinned(ctx, p.MessageID, p.Pinned); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }

@@ -25,7 +25,7 @@ func pt2PresentationLoop(t *testing.T, h *loopHarness, name string) (string, str
 	ctx := context.Background()
 	sess, err := h.app.Sessions.Create(ctx, name)
 	require.NoError(t, err)
-	l := &cliLoop{app: h.app, ctx: ctx, sessionID: sess.ID}
+	l := &cliLoop{env: h.app.runEnv(), host: h.app.loopHost(), ctx: ctx, sessionID: sess.ID}
 	return sess.ID, l.describeOpenWork()
 }
 
@@ -43,7 +43,7 @@ func TestBatchHeartbeatPresentation_OneTaskRootNamesTaskKind(t *testing.T) {
 	h := pt2PresentationHarness(t)
 	sessID, _ := pt2PresentationLoop(t, h, "pt2-hb-one")
 	f6ReserveDelegation(t, h.app, sessID, "call-pt2-one", "", "shell", "running")
-	l := &cliLoop{app: h.app, ctx: context.Background(), sessionID: sessID}
+	l := &cliLoop{env: h.app.runEnv(), host: h.app.loopHost(), ctx: context.Background(), sessionID: sessID}
 	got := l.describeOpenWork()
 	require.Contains(t, got, `shell "call-pt2-one" on this process`)
 	require.NotContains(t, got, `batch "call-pt2-one"`)
@@ -56,7 +56,7 @@ func TestBatchHeartbeatPresentation_MultiTaskRootKeepsStructuralLabel(t *testing
 	sessID, _ := pt2PresentationLoop(t, h, "pt2-hb-multi")
 	ownHost := f6HostID(t, h.app) // register the own host identity before seeding
 	pt2ReserveLiveRoot(t, h.app, sessID, ownHost, "call-pt2-multi", "shell", "agent")
-	l := &cliLoop{app: h.app, ctx: context.Background(), sessionID: sessID}
+	l := &cliLoop{env: h.app.runEnv(), host: h.app.loopHost(), ctx: context.Background(), sessionID: sessID}
 	got := l.describeOpenWork()
 	require.Contains(t, got, `batch "call-pt2-multi" on this process`)
 	require.NotContains(t, got, `shell "call-pt2-multi"`)
@@ -72,7 +72,7 @@ func TestBatchHeartbeatPresentation_ForeignHostShowsRetainedPID(t *testing.T) {
 	require.NoError(t, err)
 	sessID, _ := pt2PresentationLoop(t, h, "pt2-hb-pid")
 	pt2ReserveLiveRoot(t, h.app, sessID, "pt2-peer", "call-pt2-pid", "argv")
-	l := &cliLoop{app: h.app, ctx: ctx, sessionID: sessID}
+	l := &cliLoop{env: h.app.runEnv(), host: h.app.loopHost(), ctx: ctx, sessionID: sessID}
 	got := l.describeOpenWork()
 	require.Contains(t, got, `argv "call-pt2-pid" on host pt2-peer (PID 4242, alive)`)
 }
@@ -81,7 +81,7 @@ func TestBatchHeartbeatPresentation_OwnHostHasNoPID(t *testing.T) {
 	h := pt2PresentationHarness(t)
 	sessID, _ := pt2PresentationLoop(t, h, "pt2-hb-own")
 	f6ReserveDelegation(t, h.app, sessID, "call-pt2-own", "", "agent", "running")
-	l := &cliLoop{app: h.app, ctx: context.Background(), sessionID: sessID}
+	l := &cliLoop{env: h.app.runEnv(), host: h.app.loopHost(), ctx: context.Background(), sessionID: sessID}
 	got := l.describeOpenWork()
 	require.Contains(t, got, `"call-pt2-own" on this process`)
 	require.NotContains(t, got, "PID")

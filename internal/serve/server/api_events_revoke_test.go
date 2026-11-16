@@ -25,7 +25,7 @@ func (revokedTokenVerifier) ShowAPIToken(string) (config.APIToken, error) {
 
 func TestAPIEventsRevocationTickerClosesOnRevokedPrincipal(t *testing.T) {
 	ticker := revokeTicker{ch: make(chan time.Time, 1)}
-	principal := Principal{TokenID: "deadbeef", verifier: revokedTokenVerifier{}, tickerFactory: func(time.Duration) Ticker { return ticker }}
+	principal := NewVerifiablePrincipal("deadbeef", revokedTokenVerifier{}, func(time.Duration) Ticker { return ticker })
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	closed := apiSSERevocation(ctx, principal)

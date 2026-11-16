@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"net/http"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 )
@@ -31,171 +30,159 @@ func handleIncoming(ctx context.Context, s *Server, c *Client, raw []byte) {
 	var msg WSMessage
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		slog.Debug("ws: malformed message", "err", err)
-		c.reply("", EventError, nil, "malformed message")
+		c.Reply("", EventError, nil, "malformed message")
 		return
 	}
 
-	if c.auth != nil {
-		if status := resolvePinnedCommand(c.auth.principal.PinnedSession, msg.Type, msg.Payload); status != 0 {
-			if status == http.StatusNotFound {
-				c.reply(msg.ID, EventError, nil, "not found")
-			} else {
-				c.reply(msg.ID, EventError, nil, "forbidden: pinned-token")
-			}
-			return
-		}
-		if c.auth.principal.BatchOnly && resolveBatchOnlyCommand(msg.Type) != 0 {
-			c.reply(msg.ID, EventError, nil, "forbidden: batch-only")
-			return
-		}
-		if err := authorizeWSCommand(*c.auth, msg.Type); err != nil {
-			c.reply(msg.ID, EventError, nil, err.Error())
-			return
-		}
+	// Sprint 0 L4 (S4, design §3): the authorization block moved verbatim
+	// into Client.AuthorizeIncoming (hub/scope.go); it replies with the same
+	// denial envelopes and returns non-zero when the frame is denied.
+	if status := c.AuthorizeIncoming(msg.ID, msg.Type, msg.Payload); status != 0 {
+		return
 	}
 
 	switch msg.Type {
 	case CmdSendMessage:
-		c.dispatch("handleSendMessage", msg.ID, func() { handleSendMessage(ctx, a, c, msg) })
+		c.Dispatch("handleSendMessage", msg.ID, func() { handleSendMessage(ctx, a, c, msg) })
 	case CmdInterruptAndSend:
 		// Control-plane: must cancel an in-flight (possibly stuck/long-running)
 		// turn promptly, so it cannot share sem with handleSendMessage — see
 		// dispatchControl's doc comment in hub.go for the full rationale.
-		c.dispatchControl("handleInterruptAndSend", msg.ID, func() { handleInterruptAndSend(ctx, a, c, msg) })
+		c.DispatchControl("handleInterruptAndSend", msg.ID, func() { handleInterruptAndSend(ctx, a, c, msg) })
 	case CmdInjectMessage:
-		c.dispatch("handleInjectMessage", msg.ID, func() { handleInjectMessage(ctx, a, c, msg) })
+		c.Dispatch("handleInjectMessage", msg.ID, func() { handleInjectMessage(ctx, a, c, msg) })
 	case CmdCancelAgent:
 		// Control-plane: same rationale as CmdInterruptAndSend above.
-		c.dispatchControl("handleCancelAgent", msg.ID, func() { handleCancelAgent(ctx, a, c, msg) })
+		c.DispatchControl("handleCancelAgent", msg.ID, func() { handleCancelAgent(ctx, a, c, msg) })
 	case CmdShutdownServer:
 		// Control-plane: a shutdown request must not queue behind long-running
 		// turns — same rationale as CmdInterruptAndSend above.
-		c.dispatchControl("handleShutdownServer", msg.ID, func() { handleShutdownServer(s, c, msg) })
+		c.DispatchControl("handleShutdownServer", msg.ID, func() { handleShutdownServer(s, c, msg) })
 	case CmdCreateSession:
-		c.dispatch("handleCreateSession", msg.ID, func() { handleCreateSession(ctx, a, c, msg) })
+		c.Dispatch("handleCreateSession", msg.ID, func() { handleCreateSession(ctx, a, c, msg) })
 	case CmdForkSession:
-		c.dispatch("handleForkSession", msg.ID, func() { handleForkSession(ctx, a, c, msg) })
+		c.Dispatch("handleForkSession", msg.ID, func() { handleForkSession(ctx, a, c, msg) })
 	case CmdDeleteSession:
-		c.dispatch("handleDeleteSession", msg.ID, func() { handleDeleteSession(ctx, a, c, msg) })
+		c.Dispatch("handleDeleteSession", msg.ID, func() { handleDeleteSession(ctx, a, c, msg) })
 	case CmdDeleteOtherSessions:
-		c.dispatch("handleDeleteOtherSessions", msg.ID, func() { handleDeleteOtherSessions(ctx, a, c, msg) })
+		c.Dispatch("handleDeleteOtherSessions", msg.ID, func() { handleDeleteOtherSessions(ctx, a, c, msg) })
 	case CmdListSessions:
-		c.dispatch("handleListSessions", msg.ID, func() { handleListSessions(ctx, a, c, msg) })
+		c.Dispatch("handleListSessions", msg.ID, func() { handleListSessions(ctx, a, c, msg) })
 	case CmdLoadMessages:
-		c.dispatch("handleLoadMessages", msg.ID, func() { handleLoadMessages(ctx, a, c, msg) })
+		c.Dispatch("handleLoadMessages", msg.ID, func() { handleLoadMessages(ctx, a, c, msg) })
 	case CmdGetConfig:
-		c.dispatch("handleGetConfig", msg.ID, func() { handleGetConfig(a, c, msg) })
+		c.Dispatch("handleGetConfig", msg.ID, func() { handleGetConfig(a, c, msg) })
 	case CmdGetLogs:
-		c.dispatch("handleGetLogs", msg.ID, func() { handleGetLogs(a, c, msg) })
+		c.Dispatch("handleGetLogs", msg.ID, func() { handleGetLogs(a, c, msg) })
 	case CmdSetTheme:
-		c.dispatch("handleSetTheme", msg.ID, func() { handleSetTheme(a, c, msg) })
+		c.Dispatch("handleSetTheme", msg.ID, func() { handleSetTheme(a, c, msg) })
 	case CmdSetKeepAlive:
-		c.dispatch("handleSetKeepAlive", msg.ID, func() { handleSetKeepAlive(a, c, msg) })
+		c.Dispatch("handleSetKeepAlive", msg.ID, func() { handleSetKeepAlive(a, c, msg) })
 	case CmdRenameSession:
-		c.dispatch("handleRenameSession", msg.ID, func() { handleRenameSession(ctx, a, c, msg) })
+		c.Dispatch("handleRenameSession", msg.ID, func() { handleRenameSession(ctx, a, c, msg) })
 	case CmdSetSessionModels:
-		c.dispatch("handleSetSessionModels", msg.ID, func() { handleSetSessionModels(ctx, a, c, msg) })
+		c.Dispatch("handleSetSessionModels", msg.ID, func() { handleSetSessionModels(ctx, a, c, msg) })
 	case CmdRemoveRecentModel:
-		c.dispatch("handleRemoveRecentModel", msg.ID, func() { handleRemoveRecentModel(a, c, msg) })
+		c.Dispatch("handleRemoveRecentModel", msg.ID, func() { handleRemoveRecentModel(a, c, msg) })
 	case CmdTrackModelUsage:
-		c.dispatch("handleTrackModelUsage", msg.ID, func() { handleTrackModelUsage(a, c, msg) })
+		c.Dispatch("handleTrackModelUsage", msg.ID, func() { handleTrackModelUsage(a, c, msg) })
 	case CmdGetScopedModels:
-		c.dispatch("handleGetScopedModels", msg.ID, func() { handleGetScopedModels(a, c, msg) })
+		c.Dispatch("handleGetScopedModels", msg.ID, func() { handleGetScopedModels(a, c, msg) })
 	case CmdSetScopedModel:
-		c.dispatch("handleSetScopedModel", msg.ID, func() { handleSetScopedModel(a, c, msg) })
+		c.Dispatch("handleSetScopedModel", msg.ID, func() { handleSetScopedModel(a, c, msg) })
 	case CmdClearScopedModel:
-		c.dispatch("handleClearScopedModel", msg.ID, func() { handleClearScopedModel(a, c, msg) })
+		c.Dispatch("handleClearScopedModel", msg.ID, func() { handleClearScopedModel(a, c, msg) })
 	case CmdGetCustomRoles:
-		c.dispatch("handleGetCustomRoles", msg.ID, func() { handleGetCustomRoles(a, c, msg) })
+		c.Dispatch("handleGetCustomRoles", msg.ID, func() { handleGetCustomRoles(a, c, msg) })
 	case CmdSetCustomRole:
-		c.dispatch("handleSetCustomRole", msg.ID, func() { handleSetCustomRole(a, c, msg) })
+		c.Dispatch("handleSetCustomRole", msg.ID, func() { handleSetCustomRole(a, c, msg) })
 	case CmdRemoveCustomRole:
-		c.dispatch("handleRemoveCustomRole", msg.ID, func() { handleRemoveCustomRole(a, c, msg) })
+		c.Dispatch("handleRemoveCustomRole", msg.ID, func() { handleRemoveCustomRole(a, c, msg) })
 	case CmdSetProviderKey:
-		c.dispatch("handleSetProviderKey", msg.ID, func() { handleSetProviderKey(a, c, msg) })
+		c.Dispatch("handleSetProviderKey", msg.ID, func() { handleSetProviderKey(a, c, msg) })
 	case CmdRemoveProviderKey:
-		c.dispatch("handleRemoveProviderKey", msg.ID, func() { handleRemoveProviderKey(a, c, msg) })
+		c.Dispatch("handleRemoveProviderKey", msg.ID, func() { handleRemoveProviderKey(a, c, msg) })
 	case CmdDeleteMessage:
-		c.dispatch("handleDeleteMessage", msg.ID, func() { handleDeleteMessage(ctx, a, c, msg) })
+		c.Dispatch("handleDeleteMessage", msg.ID, func() { handleDeleteMessage(ctx, a, c, msg) })
 	case CmdDeleteMessages:
-		c.dispatch("handleDeleteMessages", msg.ID, func() { handleDeleteMessages(ctx, a, c, msg) })
+		c.Dispatch("handleDeleteMessages", msg.ID, func() { handleDeleteMessages(ctx, a, c, msg) })
 	case CmdUpdateMessageContent:
-		c.dispatch("handleUpdateMessageContent", msg.ID, func() { handleUpdateMessageContent(ctx, a, c, msg) })
+		c.Dispatch("handleUpdateMessageContent", msg.ID, func() { handleUpdateMessageContent(ctx, a, c, msg) })
 	case CmdUpdateMessageThinking:
-		c.dispatch("handleUpdateMessageThinking", msg.ID, func() { handleUpdateMessageThinking(ctx, a, c, msg) })
+		c.Dispatch("handleUpdateMessageThinking", msg.ID, func() { handleUpdateMessageThinking(ctx, a, c, msg) })
 	case CmdGetSystemPrompt:
-		c.dispatch("handleGetSystemPrompt", msg.ID, func() { handleGetSystemPrompt(ctx, a, c, msg) })
+		c.Dispatch("handleGetSystemPrompt", msg.ID, func() { handleGetSystemPrompt(ctx, a, c, msg) })
 	case CmdSetSystemPrompt:
-		c.dispatch("handleSetSystemPrompt", msg.ID, func() { handleSetSystemPrompt(ctx, a, c, msg) })
+		c.Dispatch("handleSetSystemPrompt", msg.ID, func() { handleSetSystemPrompt(ctx, a, c, msg) })
 	case CmdSummarizeSession:
-		c.dispatch("handleSummarizeSession", msg.ID, func() { handleSummarizeSession(ctx, a, c, msg) })
+		c.Dispatch("handleSummarizeSession", msg.ID, func() { handleSummarizeSession(ctx, a, c, msg) })
 	case CmdCancelQueuedSummarize:
-		c.dispatch("handleCancelQueuedSummarize", msg.ID, func() { handleCancelQueuedSummarize(a, c, msg) })
+		c.Dispatch("handleCancelQueuedSummarize", msg.ID, func() { handleCancelQueuedSummarize(a, c, msg) })
 	case CmdDeleteMessagePart:
-		c.dispatch("handleDeleteMessagePart", msg.ID, func() { handleDeleteMessagePart(ctx, a, c, msg) })
+		c.Dispatch("handleDeleteMessagePart", msg.ID, func() { handleDeleteMessagePart(ctx, a, c, msg) })
 	case CmdUpdateMessagePart:
-		c.dispatch("handleUpdateMessagePart", msg.ID, func() { handleUpdateMessagePart(ctx, a, c, msg) })
+		c.Dispatch("handleUpdateMessagePart", msg.ID, func() { handleUpdateMessagePart(ctx, a, c, msg) })
 	case CmdTogglePinMessage:
-		c.dispatch("handleTogglePinMessage", msg.ID, func() { handleTogglePinMessage(ctx, a, c, msg) })
+		c.Dispatch("handleTogglePinMessage", msg.ID, func() { handleTogglePinMessage(ctx, a, c, msg) })
 	case CmdRerunMessage:
-		c.dispatch("handleRerunMessage", msg.ID, func() { handleRerunMessage(ctx, a, c, msg) })
+		c.Dispatch("handleRerunMessage", msg.ID, func() { handleRerunMessage(ctx, a, c, msg) })
 	case CmdLogClientEvent:
-		c.dispatch("handleLogClientEvent", msg.ID, func() { handleLogClientEvent(a, c, msg) })
+		c.Dispatch("handleLogClientEvent", msg.ID, func() { handleLogClientEvent(a, c, msg) })
 	case CmdLogClientError:
-		c.dispatch("handleLogClientError", msg.ID, func() { handleLogClientError(c, msg) })
+		c.Dispatch("handleLogClientError", msg.ID, func() { handleLogClientError(c, msg) })
 	case CmdSetMCPDisabled:
-		c.dispatch("handleSetMCPDisabled", msg.ID, func() { handleSetMCPDisabled(ctx, a, c, msg) })
+		c.Dispatch("handleSetMCPDisabled", msg.ID, func() { handleSetMCPDisabled(ctx, a, c, msg) })
 	case CmdAddMCPServer:
-		c.dispatch("handleAddMCPServer", msg.ID, func() { handleAddMCPServer(ctx, a, c, msg) })
+		c.Dispatch("handleAddMCPServer", msg.ID, func() { handleAddMCPServer(ctx, a, c, msg) })
 	case CmdRemoveMCPServer:
-		c.dispatch("handleRemoveMCPServer", msg.ID, func() { handleRemoveMCPServer(a, c, msg) })
+		c.Dispatch("handleRemoveMCPServer", msg.ID, func() { handleRemoveMCPServer(a, c, msg) })
 	case CmdUpdateMCPServer:
-		c.dispatch("handleUpdateMCPServer", msg.ID, func() { handleUpdateMCPServer(ctx, a, c, msg) })
+		c.Dispatch("handleUpdateMCPServer", msg.ID, func() { handleUpdateMCPServer(ctx, a, c, msg) })
 	case CmdSetDebug:
-		c.dispatch("handleSetDebug", msg.ID, func() { handleSetDebug(a, c, msg) })
+		c.Dispatch("handleSetDebug", msg.ID, func() { handleSetDebug(a, c, msg) })
 	case CmdAddContextPath:
-		c.dispatch("handleAddContextPath", msg.ID, func() { handleAddContextPath(a, c, msg) })
+		c.Dispatch("handleAddContextPath", msg.ID, func() { handleAddContextPath(a, c, msg) })
 	case CmdRemoveContextPath:
-		c.dispatch("handleRemoveContextPath", msg.ID, func() { handleRemoveContextPath(a, c, msg) })
+		c.Dispatch("handleRemoveContextPath", msg.ID, func() { handleRemoveContextPath(a, c, msg) })
 	case CmdGetSkills:
-		c.dispatch("handleGetSkills", msg.ID, func() { handleGetSkills(a, c, msg) })
+		c.Dispatch("handleGetSkills", msg.ID, func() { handleGetSkills(a, c, msg) })
 	case CmdAddSkillsPath:
-		c.dispatch("handleAddSkillsPath", msg.ID, func() { handleAddSkillsPath(a, c, msg) })
+		c.Dispatch("handleAddSkillsPath", msg.ID, func() { handleAddSkillsPath(a, c, msg) })
 	case CmdRemoveSkillsPath:
-		c.dispatch("handleRemoveSkillsPath", msg.ID, func() { handleRemoveSkillsPath(a, c, msg) })
+		c.Dispatch("handleRemoveSkillsPath", msg.ID, func() { handleRemoveSkillsPath(a, c, msg) })
 	case CmdInitializeProject:
-		c.dispatch("handleInitializeProject", msg.ID, func() { handleInitializeProject(ctx, a, c, msg) })
+		c.Dispatch("handleInitializeProject", msg.ID, func() { handleInitializeProject(ctx, a, c, msg) })
 	case CmdAddCustomProvider:
-		c.dispatch("handleAddCustomProvider", msg.ID, func() { handleAddCustomProvider(a, c, msg) })
+		c.Dispatch("handleAddCustomProvider", msg.ID, func() { handleAddCustomProvider(a, c, msg) })
 	case CmdRemoveCustomProvider:
-		c.dispatch("handleRemoveCustomProvider", msg.ID, func() { handleRemoveCustomProvider(a, c, msg) })
+		c.Dispatch("handleRemoveCustomProvider", msg.ID, func() { handleRemoveCustomProvider(a, c, msg) })
 	case CmdUpdateCustomProvider:
-		c.dispatch("handleUpdateCustomProvider", msg.ID, func() { handleUpdateCustomProvider(a, c, msg) })
+		c.Dispatch("handleUpdateCustomProvider", msg.ID, func() { handleUpdateCustomProvider(a, c, msg) })
 	case CmdSetProviderPeakHours:
-		c.dispatch("handleSetProviderPeakHours", msg.ID, func() { handleSetProviderPeakHours(a, c, msg) })
+		c.Dispatch("handleSetProviderPeakHours", msg.ID, func() { handleSetProviderPeakHours(a, c, msg) })
 	case CmdPauseProviderPeakHours:
-		c.dispatch("handlePauseProviderPeakHours", msg.ID, func() { handlePauseProviderPeakHours(a, c, msg) })
+		c.Dispatch("handlePauseProviderPeakHours", msg.ID, func() { handlePauseProviderPeakHours(a, c, msg) })
 	case CmdResumeProviderPeakHours:
-		c.dispatch("handleResumeProviderPeakHours", msg.ID, func() { handleResumeProviderPeakHours(a, c, msg) })
+		c.Dispatch("handleResumeProviderPeakHours", msg.ID, func() { handleResumeProviderPeakHours(a, c, msg) })
 	case CmdGetPeakHoursStatus:
-		c.dispatch("handleGetPeakHoursStatus", msg.ID, func() { handleGetPeakHoursStatus(a, c, msg) })
+		c.Dispatch("handleGetPeakHoursStatus", msg.ID, func() { handleGetPeakHoursStatus(a, c, msg) })
 	case CmdUpdateTodos:
-		c.dispatch("handleUpdateTodos", msg.ID, func() { handleUpdateTodos(ctx, a, c, msg) })
+		c.Dispatch("handleUpdateTodos", msg.ID, func() { handleUpdateTodos(ctx, a, c, msg) })
 	case CmdGetSessionLiveWork:
-		c.dispatch("handleGetSessionLiveWork", msg.ID, func() { handleGetSessionLiveWork(ctx, a, c, msg) })
+		c.Dispatch("handleGetSessionLiveWork", msg.ID, func() { handleGetSessionLiveWork(ctx, a, c, msg) })
 	case CmdGetSessionBatchWork:
-		c.dispatch("handleGetSessionBatchWork", msg.ID, func() { handleGetSessionBatchWork(ctx, a, c, msg) })
+		c.Dispatch("handleGetSessionBatchWork", msg.ID, func() { handleGetSessionBatchWork(ctx, a, c, msg) })
 	case CmdBatchStatus, CmdBatchOutput:
-		c.dispatch("handleBatchRead", msg.ID, func() { handleBatchControl(ctx, a, c, msg) })
+		c.Dispatch("handleBatchRead", msg.ID, func() { handleBatchControl(ctx, a, c, msg) })
 	case CmdBatchStop, CmdBatchAdd, CmdBatchDrain:
-		c.dispatchControl("handleBatchControl", msg.ID, func() { handleBatchControl(ctx, a, c, msg) })
+		c.DispatchControl("handleBatchControl", msg.ID, func() { handleBatchControl(ctx, a, c, msg) })
 	case CmdGetSessionWakeSchedules:
-		c.dispatch("handleGetSessionWakeSchedules", msg.ID, func() { handleGetSessionWakeSchedules(ctx, a, c, msg) })
+		c.Dispatch("handleGetSessionWakeSchedules", msg.ID, func() { handleGetSessionWakeSchedules(ctx, a, c, msg) })
 	case CmdCancelWakeSchedule:
-		c.dispatch("handleCancelWakeSchedule", msg.ID, func() { handleCancelWakeSchedule(ctx, a, c, msg) })
+		c.Dispatch("handleCancelWakeSchedule", msg.ID, func() { handleCancelWakeSchedule(ctx, a, c, msg) })
 	default:
 		slog.Debug("ws: unknown command", "type", msg.Type)
-		c.reply(msg.ID, EventError, nil, "unknown command: "+msg.Type)
+		c.Reply(msg.ID, EventError, nil, "unknown command: "+msg.Type)
 	}
 }
 

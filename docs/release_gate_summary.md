@@ -82,7 +82,7 @@ go build ./...
 
 # Vet check (whole repo, not just touched packages)
 go vet ./...
-# Clean except one PRE-EXISTING, unrelated warning in internal/csync/maps.go
+# Clean except one PRE-EXISTING, unrelated warning in internal/kit/sync/csync/maps.go
 # (confirmed unrelated: file untouched by this round's diff)
 
 # Lint check

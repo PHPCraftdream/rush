@@ -98,12 +98,12 @@ type commandResult struct {
 // captureReviewBasis snapshots the run's git state before its first turn. It
 // returns nil unless the run is a candidate for the reviewer pass at all, so
 // every run that will not be reviewed pays nothing and stays byte-identical.
-func (app *App) captureReviewBasis(ctx context.Context, role config.SelectedModelType, prompt string, start time.Time) *reviewBasis {
-	cfg := app.config.Config()
+func captureReviewBasis(env RunEnv, ctx context.Context, role config.SelectedModelType, prompt string, start time.Time) *reviewBasis {
+	cfg := env.Config.Config()
 	if !shouldRunReviewerPass(role, cfg) {
 		return nil
 	}
-	dir := app.config.WorkingDir()
+	dir := env.Config.WorkingDir()
 	return &reviewBasis{
 		Start:      start,
 		Prompt:     prompt,
@@ -247,17 +247,17 @@ func evidenceNumstatEntry(line string) (path, entry string, ok bool) {
 // prompt, plus the deterministic evidence block when a basis was captured.
 // A nil basis (no reviewer configured, or a call that is not the first turn of
 // a `rush run` loop) returns the prompt alone, byte-identical to before.
-func (app *App) reviewerTurnPrompt(ctx context.Context, sessionID string, basis *reviewBasis) string {
+func reviewerTurnPrompt(env RunEnv, ctx context.Context, sessionID string, basis *reviewBasis) string {
 	if basis == nil {
 		return reviewerPassPrompt
 	}
-	msgs, err := app.Messages.List(ctx, sessionID)
+	msgs, err := env.Messages().List(ctx, sessionID)
 	if err != nil {
 		slog.Warn("run: failed to read the session transcript for the review evidence; the reviewer prompt goes out without it",
 			"session", sessionID, "err", err)
 		return reviewerPassPrompt
 	}
-	sess, err := app.Sessions.Get(ctx, sessionID)
+	sess, err := env.Sessions().Get(ctx, sessionID)
 	if err != nil {
 		slog.Warn("run: failed to read the session row for the review evidence; the reviewer prompt goes out without it",
 			"session", sessionID, "err", err)

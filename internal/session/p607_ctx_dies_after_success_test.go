@@ -44,6 +44,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -92,7 +93,7 @@ func (c *successThenCancelCoordinator) Run(ctx context.Context, callData session
 // fix (see the sibling test below for that one).
 func TestDrainSessionNow_CtxDiesAfterOneSuccess_NeverReportsCleanSuccess(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "p607-ctx-dies-after-success")
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -114,10 +114,10 @@ func (c *coordinator) runFinalizationQueuedCall(ctx context.Context, rowID strin
 	if err != nil {
 		return nil, &ErrCallAlreadyAttempted{Err: err}
 	}
-	call.finalizationAuthorities = snapshot
-	call.driverGeneration = generation
+	call.FinalizationAuthorities = snapshot
+	call.DriverGeneration = generation
 	if call.CallOptions != nil {
-		defer call.CallOptions.buildScope.close()
+		defer call.CallOptions.BuildScope.Close()
 	}
 	if call.SessionID != frozen.SessionID || call.LogicalCallID != frozen.LogicalCallID {
 		return nil, &ErrCallAlreadyAttempted{Err: session.ErrAgentFinalizationChanged}
@@ -136,7 +136,7 @@ func (c *coordinator) runFinalizationQueuedCall(ctx context.Context, rowID strin
 }
 
 func (c *coordinator) finalizationQueueDriverForRun(ctx context.Context, call SessionAgentCall) (SessionAgent, error) {
-	driver, generation, err := c.selectFinalizationQueueDriver(call.SessionID, call.LogicalCallID, call.finalizationAuthorities.Requirement(), call.finalizationAuthorities.RequiresManagedDriver())
+	driver, generation, err := c.selectFinalizationQueueDriver(call.SessionID, call.LogicalCallID, call.FinalizationAuthorities.Requirement(), call.FinalizationAuthorities.RequiresManagedDriver())
 	if err != nil {
 		return nil, err
 	}

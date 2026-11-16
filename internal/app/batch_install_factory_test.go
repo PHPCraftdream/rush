@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -14,8 +15,8 @@ import (
 
 // batchFactoryApp is the explicit batch-construction fixture: a
 // hand-assembled App over a real data dir and writer connection, with the
-// batch side built through the production seams only (batchHostStore() memoizes
-// the session.HostStore over the App's writer on first use; batchHostEnsure
+// batch side built through the production seams only (BatchHostStore() memoizes
+// the session.HostStore over the App's writer on first use; BatchHostEnsure
 // registers the host identity). No legacy store exists in the final world.
 func batchFactoryApp(t *testing.T) *App {
 	t.Helper()
@@ -36,13 +37,13 @@ func batchFactoryDeps() agent.BatchInstallDeps {
 
 func TestBatchRuntimeFactoryFailsClosedWithoutResources(t *testing.T) {
 	t.Parallel()
-	_, err := newBatchRuntimeFactory(nil, batchFactoryDeps())
+	_, err := appbatch.NewBatchRuntimeFactory(appbatch.InstallParams{}, batchFactoryDeps())
 	require.Error(t, err)
-	_, err = newBatchRuntimeFactory(&App{}, batchFactoryDeps())
+	_, err = appbatch.NewBatchRuntimeFactory((&App{}).batchInstallParams(), batchFactoryDeps())
 	require.Error(t, err, "no agent store")
 	a := batchFactoryApp(t)
 	a.Messages = nil
-	_, err = newBatchRuntimeFactory(a, batchFactoryDeps())
+	_, err = appbatch.NewBatchRuntimeFactory(a.batchInstallParams(), batchFactoryDeps())
 	require.Error(t, err, "no message service")
 }
 
@@ -52,15 +53,15 @@ func TestBatchRuntimeFactoryFailsClosedWithoutResources(t *testing.T) {
 func TestBatchRuntimeFactoryCommitBudgetOutlastsLockWait(t *testing.T) {
 	t.Parallel()
 	a := batchFactoryApp(t)
-	factory, err := newBatchRuntimeFactory(a, batchFactoryDeps())
+	factory, err := appbatch.NewBatchRuntimeFactory(a.batchInstallParams(), batchFactoryDeps())
 	require.NoError(t, err)
-	require.Greater(t, factory.deps.CommitTimeout, db.BusyTimeout)
-	require.Equal(t, 45*time.Second, factory.deps.CommitTimeout)
+	require.Greater(t, factory.Deps.CommitTimeout, db.BusyTimeout)
+	require.Equal(t, 45*time.Second, factory.Deps.CommitTimeout)
 	explicit := batchFactoryDeps()
 	explicit.CommitTimeout = time.Second
-	factory, err = newBatchRuntimeFactory(a, explicit)
+	factory, err = appbatch.NewBatchRuntimeFactory(a.batchInstallParams(), explicit)
 	require.NoError(t, err)
-	require.Equal(t, time.Second, factory.deps.CommitTimeout, "explicit budget wins")
+	require.Equal(t, time.Second, factory.Deps.CommitTimeout, "explicit budget wins")
 }
 
 // build constructs the adapted install and attaches the Runner; the fault
@@ -69,18 +70,18 @@ func TestBatchRuntimeFactoryCommitBudgetOutlastsLockWait(t *testing.T) {
 func TestBatchRuntimeFactoryBuildDormant(t *testing.T) {
 	t.Parallel()
 	a := batchFactoryApp(t)
-	factory, err := newBatchRuntimeFactory(a, batchFactoryDeps())
+	factory, err := appbatch.NewBatchRuntimeFactory(a.batchInstallParams(), batchFactoryDeps())
 	require.NoError(t, err)
-	require.Equal(t, "host", factory.deps.Host, "explicit host identity wins")
-	require.NotNil(t, factory.deps.Store)
-	require.NotNil(t, factory.deps.Messages)
-	rt, install, err := factory.build(context.Background())
+	require.Equal(t, "host", factory.Deps.Host, "explicit host identity wins")
+	require.NotNil(t, factory.Deps.Store)
+	require.NotNil(t, factory.Deps.Messages)
+	rt, install, err := factory.Build(context.Background())
 	require.NoError(t, err)
 	t.Cleanup(rt.Stop)
-	require.Same(t, a.DB(), rt.commitDiagnostics.writer, "diagnostics must use the installed single writer")
-	require.Equal(t, factory.writer.Stats(), rt.commitDiagnostics.baseline, "dormant build captures the pool baseline")
+	require.Same(t, a.DB(), rt.CommitDiagnostics.Writer, "diagnostics must use the installed single writer")
+	require.Equal(t, factory.Writer.Stats(), rt.CommitDiagnostics.Baseline, "dormant build captures the pool baseline")
 	// R11F P1-6: the deferred install keeps NO Runner at build — the Runner
-	// is constructed at BatchRuntime.Start through the RunnerFactory.
+	// is constructed at appbatch.BatchRuntime.Start through the RunnerFactory.
 	require.Nil(t, rt.Runner(), "dormant build constructs no Runner")
 	require.False(t, rt.Fenced(), "dormant build is not fenced")
 	require.NotNil(t, install.Runtime)

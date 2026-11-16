@@ -93,7 +93,7 @@ func TestHandleRerunMessage_PromptPreservedWhenReplacementTurnFailsEarly(t *test
 
 	hub := newHub()
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 10)
+	client.ResizeSendChan(10)
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
 	require.NoError(t, err)
 
@@ -174,7 +174,7 @@ func TestHandleRerunMessage_NoDuplicateWhenPromptAlreadyRecreated(t *testing.T) 
 
 	hub := newHub()
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 10)
+	client.ResizeSendChan(10)
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
 	require.NoError(t, err)
 

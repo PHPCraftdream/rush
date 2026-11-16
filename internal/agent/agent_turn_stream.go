@@ -14,6 +14,7 @@ import (
 	"charm.land/fantasy/providers/google"
 	"charm.land/fantasy/providers/openai"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -235,7 +236,7 @@ func newTurnStream(cfg turnStreamConfig) *turnStream {
 		idleTimeout:        cfg.idleTimeout,
 		phase:              phaseToolBoundary,
 		sanitizedToolCalls: make(map[string]bool),
-		runTotalTokens:     cfg.call.recoverySpentTokens,
+		runTotalTokens:     cfg.call.RecoverySpentTokens,
 	}
 }
 
@@ -244,13 +245,13 @@ func newTurnStream(cfg turnStreamConfig) *turnStream {
 // closure, this is the whole "router": one flat struct literal, no branching.
 func (ts *turnStream) streamCall(history []fantasy.Message, files []fantasy.FilePart, maxOutputTokens *int64) fantasy.AgentStreamCall {
 	prompt := message.PromptWithTextAttachments(ts.call.Prompt, ts.call.Attachments)
-	if ts.call.recoveryContinuation {
+	if ts.call.RecoveryContinuation {
 		prompt = codexRecoveryNudge
 	} else if _, present := ts.historyIDs[ts.call.ExistingMessageID]; ts.call.ExistingMessageID != "" && present {
 		prompt = ""
 	}
 	return fantasy.AgentStreamCall{
-		MaxRetries:       &ProviderMaxRetries,
+		MaxRetries:       &agentcall.ProviderMaxRetries,
 		Prompt:           prompt,
 		Files:            files,
 		Messages:         history,

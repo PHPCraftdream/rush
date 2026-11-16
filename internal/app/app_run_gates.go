@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"slices"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
@@ -35,8 +36,8 @@ var subAgentToolNames = []string{"agent", "agentic_fetch"}
 // practice.
 //
 // Fork patch (orchestrator UX): see CHANGELOG.fork.md (Section 4.J).
-func (app *App) disableSubAgentToolsInConfig() {
-	app.disableToolsInConfig(subAgentToolNames)
+func disableSubAgentToolsInConfig(env RunEnv) {
+	disableToolsInConfig(env, subAgentToolNames)
 }
 
 // disableToolsInConfig drops exactly the named tools from the coder
@@ -55,8 +56,8 @@ func (app *App) disableSubAgentToolsInConfig() {
 // the mutation retroactively).
 //
 // Fork patch (orchestrator UX, plan phase 2): bypass restores `agent` only.
-func (app *App) disableToolsInConfig(toolNames []string) {
-	cfg := app.config.Config()
+func disableToolsInConfig(env RunEnv, toolNames []string) {
+	cfg := env.Config.Config()
 	if cfg == nil {
 		return
 	}
@@ -71,7 +72,7 @@ func (app *App) disableToolsInConfig(toolNames []string) {
 		}
 		filtered = append(filtered, t)
 	}
-	app.config.UpdateAgentAllowedTools(config.AgentCoder, filtered)
+	env.Config.UpdateAgentAllowedTools(config.AgentCoder, filtered)
 }
 
 // shouldBypassSubAgentBan decides whether the `rush run` default
@@ -157,7 +158,7 @@ const reviewerPassScopeOpenRetries = 3
 //
 // Only called when every cheap, in-memory gate (ExecuteRun's own error,
 // credentials, cancellation, shouldRunReviewerPass) already passed.
-func (app *App) reviewerPassBlocked(ctx context.Context, source agent.ReactionDebtSource, sessionID string, stderr io.Writer) bool {
+func reviewerPassBlocked(env RunEnv, ctx context.Context, source agent.ReactionDebtSource, sessionID string, stderr io.Writer) bool {
 	var lastErr error
 	for attempt := 1; attempt <= reviewerPassScopeOpenRetries; attempt++ {
 		state, err := source.CLIScope(ctx, sessionID)
@@ -222,4 +223,22 @@ func fsToolsForScope(scope *permission.FolderScope) []string {
 		return nil
 	}
 	return tools.FolderScopeToolNames(*scope)
+}
+
+// retryTransientRead paces a transient store-read failure of the CLI loop: nil
+// after a pause means retry; the error ends the run once the failures outlast
+// cliDBErrorRetryOverallLimit (or the run's context is done).
+func (l *cliLoop) retryTransientRead(start *time.Time, what string, err error) error {
+	if start.IsZero() {
+		*start = time.Now()
+	}
+	if time.Since(*start) > cliDBErrorRetryOverallLimit {
+		fmt.Fprintf(l.errOut(), "rush run: session %q's %s been unreadable for %s (%s); giving up\n",
+			l.sessionID, what, cliDBErrorRetryOverallLimit, err)
+		return err
+	}
+	if !sleepOrCtxDone(l.ctx, cliDBRetryPause) {
+		return l.ctx.Err()
+	}
+	return nil
 }

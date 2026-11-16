@@ -11,10 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
+
 	"github.com/stretchr/testify/require"
 )
 
-// fakeRunner is a controllable batchRunner: tests fire faults explicitly and
+// fakeRunner is a controllable appbatch.BatchRunner: tests fire faults explicitly and
 // script Close (including a never-returning hook shape).
 type fakeRunner struct {
 	faulted  chan struct{}
@@ -134,11 +136,11 @@ func (r *releaseRecorder) snapshot() []string {
 	return append([]string(nil), r.events...)
 }
 
-func newTestRuntime(t *testing.T, runner *fakeRunner) (*BatchRuntime, *exitRecorder, *releaseRecorder) {
+func newTestRuntime(t *testing.T, runner *fakeRunner) (*appbatch.BatchRuntime, *exitRecorder, *releaseRecorder) {
 	t.Helper()
 	rec := &releaseRecorder{}
 	exits := &exitRecorder{}
-	rt := NewBatchRuntime(BatchRuntimeConfig{
+	rt := appbatch.NewBatchRuntime(appbatch.BatchRuntimeConfig{
 		ContainmentWait: time.Second,
 		WaitFunc:        immediateWaitFunc(),
 		ExitFunc:        exits.exit,
@@ -166,11 +168,11 @@ func newTestRuntime(t *testing.T, runner *fakeRunner) (*BatchRuntime, *exitRecor
 // is not parallel: other tests' goroutines start and exit around it.
 func TestBatchRuntimeConstructionHasNoGoroutines(t *testing.T) {
 	before := watcherGoroutines()
-	rt := NewBatchRuntime(BatchRuntimeConfig{})
+	rt := appbatch.NewBatchRuntime(appbatch.BatchRuntimeConfig{})
 	require.Equal(t, before, watcherGoroutines(), "construction must not start goroutines")
 	require.Nil(t, rt.Runner(), "dormant runtime has no Runner")
 	require.False(t, rt.Fenced(), "dormant runtime is not fenced")
-	require.Nil(t, rt.cfg.ReleaseWriter, "construction must not invent release hooks")
+	require.Nil(t, rt.Config.ReleaseWriter, "construction must not invent release hooks")
 }
 
 // allStacks returns a full process goroutine stack dump, growing the buffer

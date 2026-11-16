@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,18 +24,18 @@ func TestBatchFaultHandleFaultWritesStderrAndJSONBeforeExitExactlyOnce(t *testin
 	})
 
 	var output strings.Builder
-	writer := &batchFaultEnvelopeWriter{writer: &output}
+	writer := appbatch.NewFaultEnvelopeWriter(&output, batchFaultRunResult)
 	app := &App{
 		batchFaultWriter: writer,
 		batchFaultOutput: func(err error) {
-			if writeErr := writer.writeFault("session-1", err); writeErr != nil {
+			if writeErr := writer.WriteFault("session-1", err); writeErr != nil {
 				t.Errorf("write fault envelope: %v", writeErr)
 			}
 		},
 	}
 	called := 0
-	var rt *BatchRuntime
-	rt = NewBatchRuntime(BatchRuntimeConfig{
+	var rt *appbatch.BatchRuntime
+	rt = appbatch.NewBatchRuntime(appbatch.BatchRuntimeConfig{
 		ContainmentWait: time.Nanosecond,
 		WaitFunc: func(time.Duration) <-chan time.Time {
 			ch := make(chan time.Time, 1)
@@ -48,7 +50,7 @@ func TestBatchFaultHandleFaultWritesStderrAndJSONBeforeExitExactlyOnce(t *testin
 		},
 		ExitFunc: func(code int) {
 			require.Equal(t, 1, called, "output callback must run before process exit")
-			require.Equal(t, BatchFaultExitCode, code)
+			require.Equal(t, appbatch.BatchFaultExitCode, code)
 			_, seekErr := stderrFile.Seek(0, 0)
 			require.NoError(t, seekErr)
 			stderr, readErr := os.ReadFile(stderrFile.Name())
@@ -60,16 +62,16 @@ func TestBatchFaultHandleFaultWritesStderrAndJSONBeforeExitExactlyOnce(t *testin
 		},
 	})
 
-	rt.handleFault(fault)
-	rt.handleFault(fault)
+	rt.HandleFault(fault)
+	rt.HandleFault(fault)
 	require.Equal(t, 1, called)
 	require.Equal(t, 1, strings.Count(output.String(), "\n"))
 }
 
 func TestBatchFaultJSONEnvelopeWriterPreventsCompetingEnvelope(t *testing.T) {
 	var output strings.Builder
-	writer := &batchFaultEnvelopeWriter{writer: &output}
-	require.NoError(t, writer.writeFault("s", errors.New("fault")))
+	writer := appbatch.NewFaultEnvelopeWriter(&output, batchFaultRunResult)
+	require.NoError(t, writer.WriteFault("s", errors.New("fault")))
 	_, err := writer.Write([]byte(`{"exit_reason":"stop"}`))
 	require.NoError(t, err)
 	require.Equal(t, 1, strings.Count(output.String(), "\n"))
@@ -79,7 +81,7 @@ func TestBatchFaultJSONEnvelopeWriterPreventsCompetingEnvelope(t *testing.T) {
 
 func TestBatchFaultJSONEnvelopeWriterWritesSplitNormalImmediatelyAndSuppressesFault(t *testing.T) {
 	var output strings.Builder
-	writer := &batchFaultEnvelopeWriter{writer: &output}
+	writer := appbatch.NewFaultEnvelopeWriter(&output, batchFaultRunResult)
 	first := []byte(`{"session_id":"session-1",`)
 	second := []byte(`"exit_reason":"completed"}` + "\n")
 
@@ -94,27 +96,27 @@ func TestBatchFaultJSONEnvelopeWriterWritesSplitNormalImmediatelyAndSuppressesFa
 	normal := append(append([]byte(nil), first...), second...)
 	require.Equal(t, string(normal), output.String(), "every normal write must pass through")
 
-	require.NoError(t, writer.writeFault("session-1", errors.New("late fault")))
+	require.NoError(t, writer.WriteFault("session-1", errors.New("late fault")))
 	require.Equal(t, string(normal), output.String(), "normal output suppresses later fault envelope")
 }
 
 func TestBatchFaultJSONEnvelopeWriterWritesNormalImmediatelyAndSuppressesFault(t *testing.T) {
 	var output strings.Builder
-	writer := &batchFaultEnvelopeWriter{writer: &output}
+	writer := appbatch.NewFaultEnvelopeWriter(&output, batchFaultRunResult)
 	normal := []byte(`{"session_id":"session-1","exit_reason":"completed"}` + "\n")
 	n, err := writer.Write(normal)
 	require.NoError(t, err)
 	require.Equal(t, len(normal), n)
 	require.Equal(t, string(normal), output.String(), "normal JSON must pass through immediately")
 
-	require.NoError(t, writer.writeFault("session-1", errors.New("late fault")))
+	require.NoError(t, writer.WriteFault("session-1", errors.New("late fault")))
 	require.Equal(t, string(normal), output.String())
 }
 
 func TestBatchFaultJSONEnvelopeWriterFaultBeforeOutput(t *testing.T) {
 	var output strings.Builder
-	writer := &batchFaultEnvelopeWriter{writer: &output}
-	require.NoError(t, writer.writeFault("session-1", errors.New("fault")))
+	writer := appbatch.NewFaultEnvelopeWriter(&output, batchFaultRunResult)
+	require.NoError(t, writer.WriteFault("session-1", errors.New("fault")))
 	_, err := writer.Write([]byte(`{"exit_reason":"completed"}` + "\n"))
 	require.NoError(t, err)
 	require.Equal(t, 1, strings.Count(output.String(), "\n"))
@@ -124,9 +126,9 @@ func TestBatchFaultJSONEnvelopeWriterFaultBeforeOutput(t *testing.T) {
 
 func TestBatchFaultJSONEnvelopeWriterFaultTwice(t *testing.T) {
 	var output strings.Builder
-	writer := &batchFaultEnvelopeWriter{writer: &output}
-	require.NoError(t, writer.writeFault("session-1", errors.New("first fault")))
-	require.NoError(t, writer.writeFault("session-1", errors.New("second fault")))
+	writer := appbatch.NewFaultEnvelopeWriter(&output, batchFaultRunResult)
+	require.NoError(t, writer.WriteFault("session-1", errors.New("first fault")))
+	require.NoError(t, writer.WriteFault("session-1", errors.New("second fault")))
 	require.Equal(t, 1, strings.Count(output.String(), "\n"))
 	require.Contains(t, output.String(), `"error":"first fault"`)
 	require.NotContains(t, output.String(), `"error":"second fault"`)
@@ -144,18 +146,18 @@ func (w *partialFailWriter) Write(p []byte) (int, error) {
 
 func TestBatchFaultJSONEnvelopeWriterDoesNotAppendAfterPartialWrite(t *testing.T) {
 	out := &partialFailWriter{}
-	writer := &batchFaultEnvelopeWriter{writer: out}
-	require.Error(t, writer.writeFault("s", errors.New("fault")))
+	writer := appbatch.NewFaultEnvelopeWriter(out, batchFaultRunResult)
+	require.Error(t, writer.WriteFault("s", errors.New("fault")))
 	first := append([]byte(nil), out.written...)
 	_, err := writer.Write([]byte("normal"))
 	require.NoError(t, err)
-	require.NoError(t, writer.writeFault("s", errors.New("retry")))
+	require.NoError(t, writer.WriteFault("s", errors.New("retry")))
 	require.Equal(t, first, out.written, "partial JSON must not get a second envelope appended")
 }
 
 func TestWriteBatchFaultOutputUsesSingleStderrLine(t *testing.T) {
 	var stderr strings.Builder
-	writeBatchFaultOutput(&stderr, errors.New("commit projection failed"))
+	appbatch.WriteBatchFaultOutput(&stderr, errors.New("commit projection failed"))
 	require.Equal(t, "rush run: batch runtime fault: commit projection failed; exiting with code 70\n", stderr.String())
 }
 
@@ -173,17 +175,17 @@ func TestBatchFaultHandleFaultAfterNormalOutputAddsNoSecondEnvelope(t *testing.T
 	})
 
 	var output strings.Builder
-	writer := &batchFaultEnvelopeWriter{writer: &output}
+	writer := appbatch.NewFaultEnvelopeWriter(&output, batchFaultRunResult)
 	normal := `{"session_id":"session-1","exit_reason":"completed"}` + "\n"
 	_, err = writer.Write([]byte(normal))
 	require.NoError(t, err)
 
 	app := &App{
 		batchFaultWriter: writer,
-		batchFaultOutput: func(err error) { _ = writer.writeFault("session-1", err) },
+		batchFaultOutput: func(err error) { _ = writer.WriteFault("session-1", err) },
 	}
 	exited := 0
-	rt := NewBatchRuntime(BatchRuntimeConfig{
+	rt := appbatch.NewBatchRuntime(appbatch.BatchRuntimeConfig{
 		ContainmentWait: time.Nanosecond,
 		WaitFunc: func(time.Duration) <-chan time.Time {
 			ch := make(chan time.Time, 1)
@@ -193,11 +195,11 @@ func TestBatchFaultHandleFaultAfterNormalOutputAddsNoSecondEnvelope(t *testing.T
 		BeforeExit: app.handleBatchFaultOutput,
 		ExitFunc: func(code int) {
 			exited++
-			require.Equal(t, BatchFaultExitCode, code)
+			require.Equal(t, appbatch.BatchFaultExitCode, code)
 		},
 	})
 
-	rt.handleFault(fault)
+	rt.HandleFault(fault)
 
 	require.Equal(t, 1, exited)
 	require.Equal(t, normal, output.String(), "stdout keeps exactly the normal envelope")

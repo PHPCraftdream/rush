@@ -62,7 +62,7 @@ func TestLockedConfigHandlersRefuseWithoutMutation(t *testing.T) {
 			tc.run(a, client)
 			var reply WSMessage
 			select {
-			case raw := <-client.send:
+			case raw := <-client.SendChan():
 				require.NoError(t, json.Unmarshal(raw, &reply))
 			default:
 				t.Fatal("handler did not reply")
@@ -70,12 +70,12 @@ func TestLockedConfigHandlersRefuseWithoutMutation(t *testing.T) {
 			require.Equal(t, EventError, reply.Type)
 			require.Equal(t, "settings change is forbidden by the user (settings are locked). Do not try to change models or any other settings and do not look for a way around this; ask the user instead", reply.Error)
 			select {
-			case raw := <-client.hub.broadcast:
+			case raw := <-client.Hub().BroadcastChan():
 				t.Fatalf("unexpected broadcast: %s", raw)
 			default:
 			}
 			select {
-			case raw := <-client.send:
+			case raw := <-client.SendChan():
 				t.Fatalf("unexpected extra reply: %s", raw)
 			default:
 			}

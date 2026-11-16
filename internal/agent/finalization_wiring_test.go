@@ -271,7 +271,7 @@ func TestFinalizationWiringNewExecutionIdentityAndEpoch(t *testing.T) {
 	w := newFinalizationWiringAssembled(t, env, nil)
 
 	call := SessionAgentCall{SessionID: "session", LogicalCallID: "logical"}
-	call.finalizationAuthorities = session.CaptureAgentFinalizationContext(ctx)
+	call.FinalizationAuthorities = session.CaptureAgentFinalizationContext(ctx)
 	exec, err := w.newExecution(call)
 	require.NoError(t, err)
 	require.NotNil(t, exec)
@@ -290,7 +290,7 @@ func TestFinalizationWiringNewExecutionIdentityAndEpoch(t *testing.T) {
 
 	// A descendant inheriting a foreign authority stays inert.
 	child := SessionAgentCall{SessionID: "child", LogicalCallID: "child-call"}
-	child.finalizationAuthorities = session.CaptureAgentFinalizationContext(ctx)
+	child.FinalizationAuthorities = session.CaptureAgentFinalizationContext(ctx)
 	exec, err = w.newExecution(child)
 	require.NoError(t, err)
 	require.Nil(t, exec)
@@ -309,7 +309,7 @@ func TestFinalizationWiringStartExecutionRegistersAndUnregisters(t *testing.T) {
 	ctx, err := session.WithAgentFinalizationContext(t.Context(), authority)
 	require.NoError(t, err)
 	call := SessionAgentCall{SessionID: "session", LogicalCallID: "logical"}
-	call.finalizationAuthorities = session.CaptureAgentFinalizationContext(ctx)
+	call.FinalizationAuthorities = session.CaptureAgentFinalizationContext(ctx)
 
 	coord := &coordinator{currentAgent: &sessionAgent{}}
 	w, err := newFinalizationWiring(finalizationWiringDepsOn(env), coord)
@@ -383,7 +383,7 @@ func TestFinalizationWiringIntegrationWaitSealAccepted(t *testing.T) {
 	ctx, err := session.WithAgentFinalizationContext(t.Context(), authority)
 	require.NoError(t, err)
 	call := SessionAgentCall{SessionID: "session", LogicalCallID: "logical"}
-	call.finalizationAuthorities = session.CaptureAgentFinalizationContext(ctx)
+	call.FinalizationAuthorities = session.CaptureAgentFinalizationContext(ctx)
 	coord := &coordinator{currentAgent: &sessionAgent{}}
 	w, err := newFinalizationWiring(finalizationWiringDepsOn(env), coord)
 	require.NoError(t, err)
@@ -471,7 +471,7 @@ func TestFinalizationWiringTrySealPausesOnHeldQuestion(t *testing.T) {
 	ctx, err := session.WithAgentFinalizationContext(t.Context(), authority)
 	require.NoError(t, err)
 	call := SessionAgentCall{SessionID: "session", LogicalCallID: "logical"}
-	call.finalizationAuthorities = session.CaptureAgentFinalizationContext(ctx)
+	call.FinalizationAuthorities = session.CaptureAgentFinalizationContext(ctx)
 	coord := &coordinator{currentAgent: &sessionAgent{}}
 	w, err := newFinalizationWiring(finalizationWiringDepsOn(env), coord)
 	require.NoError(t, err)
@@ -534,7 +534,7 @@ func TestFinalizationWiringOnCancelUnblocksWaiter(t *testing.T) {
 	ctx, err := session.WithAgentFinalizationContext(t.Context(), authority)
 	require.NoError(t, err)
 	call := SessionAgentCall{SessionID: "session", LogicalCallID: "logical"}
-	call.finalizationAuthorities = session.CaptureAgentFinalizationContext(ctx)
+	call.FinalizationAuthorities = session.CaptureAgentFinalizationContext(ctx)
 	coord := &coordinator{currentAgent: &sessionAgent{}}
 	w, err := newFinalizationWiring(finalizationWiringDepsOn(env), coord)
 	require.NoError(t, err)

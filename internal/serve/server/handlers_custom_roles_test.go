@@ -92,7 +92,7 @@ func TestCustomRoleHandlerLockedNonUIClientsCannotMutate(t *testing.T) {
 	for _, admin := range []bool{false, true} {
 		client := newTestClient()
 		if admin {
-			client.auth = newClientAuth(Principal{Scopes: []string{"admin"}}, CommandPolicy{AllowAdmin: true})
+			client.SetAuth(newClientAuth(Principal{Scopes: []string{"admin"}}, CommandPolicy{AllowAdmin: true}))
 		}
 		handleSetCustomRole(a, client, WSMessage{ID: "refused", Type: CmdSetCustomRole, Payload: json.RawMessage(`{"scope":"global","name":"reader","provider":"acme","model":"small-global","tools":[]}`)})
 		reply := readTrustedReply(t, client)
@@ -114,10 +114,10 @@ func TestCustomRoleCommandsRequireModelConfigAuthorityAndRejectPinnedSessions(t 
 		require.NoError(t, AuthorizeCommand(Principal{Scopes: []string{"config"}}, command, CommandPolicy{}))
 	}
 	for _, command := range []string{CmdGetCustomRoles, CmdSetCustomRole, CmdRemoveCustomRole} {
-		rule, exists := sessionResolutionTable[command]
+		field, class, exists := SessionResolutionFor(command)
 		require.True(t, exists)
-		require.Equal(t, "deny", rule.class)
-		require.Empty(t, rule.field)
+		require.Equal(t, "deny", class)
+		require.Empty(t, field)
 	}
 }
 

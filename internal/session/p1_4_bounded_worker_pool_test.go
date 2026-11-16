@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/dbtest"
 	"github.com/stretchr/testify/require"
@@ -96,7 +97,7 @@ func (c *boundedPoolTestCoordinator) Run(ctx context.Context, callData session.S
 // (no semaphore), and maxInFlight exceeds TestMaxConcurrentExecutions.
 func TestP1_4_BoundedWorkerPoolRespectsLimit(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	ctx := t.Context()
 
 	// Create 10 sessions with different IDs to bypass per-session inFlight guard

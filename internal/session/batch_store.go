@@ -397,3 +397,18 @@ func (s *BatchStore) DeleteRoot(ctx context.Context, owner, host, root string) e
 	}
 	return batchRequireRow(q.DeleteBatchSubtree(ctx, db.DeleteBatchSubtreeParams{OwnerSessionID: owner, HostID: host, RootID: root, NodeID: root}))
 }
+
+// RootOwner resolves the owning session of any projected root; cross-root
+// transitions (admission, Release) project under the row's owner, never the
+// hook identity's owner. It is a single read, not a lock across writer I/O.
+func (s *BatchStore) RootOwner(ctx context.Context, root string) (string, error) {
+	q, err := db.PdaBatchWriterQueries(ctx, s.writer)
+	if err != nil {
+		return "", err
+	}
+	row, err := q.GetBatchRootIdentity(ctx, root)
+	if err != nil {
+		return "", err
+	}
+	return row.OwnerSessionID, nil
+}

@@ -65,15 +65,15 @@ func (l *cliLoop) persistEndedReason(final *RunResult, err error) {
 // per-attempt read keeps the idempotent skip when a retry follows a write
 // that failed on the caller's side after landing.
 func (l *cliLoop) recordEndedReason(ctx context.Context, reason string) error {
-	if l.app.DB != nil {
+	if l.env.DB != nil {
 		var current string
-		qErr := l.app.DB().QueryRowContext(ctx,
+		qErr := l.env.DB().QueryRowContext(ctx,
 			`SELECT COALESCE(ended_reason, '') FROM sessions WHERE id = ?`, l.sessionID).Scan(&current)
 		if qErr == nil && current == reason {
 			return nil
 		}
 	}
-	return l.app.Sessions.SetEndedReason(ctx, l.sessionID, reason)
+	return l.env.Sessions().SetEndedReason(ctx, l.sessionID, reason)
 }
 
 // endedReasonFor is the value persistEndedReason records ("" = record nothing).

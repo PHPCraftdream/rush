@@ -232,7 +232,7 @@ func (p *pumpTestCoordinator) Run(ctx context.Context, callData session.SessionA
 	// mark this call as originating from the durable queue so mailbox.submit
 	// skips mb.submitted for it (P0-1, closing-review round).
 	call.FromDurableQueue = true
-	call.onQueueResolved = p.onQueueResolved
+	call.OnQueueResolved = p.onQueueResolved
 
 	// Execute the call through the sessionAgent
 	result, err := p.sessionAgent.Run(ctx, call)

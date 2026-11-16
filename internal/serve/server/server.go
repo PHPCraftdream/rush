@@ -17,7 +17,8 @@ import (
 	"time"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
-	"github.com/gorilla/websocket"
+	"github.com/PHPCraftdream/rush/internal/serve/server/hub"
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire/finalgate"
 )
 
 var (
@@ -87,7 +88,7 @@ func (s *Server) policyHasSurface(surface ListenerSurface) bool {
 func (s *Server) checkOrigin(r *http.Request) bool {
 	// A server built by NewWithPolicy carries explicit surfaces; a bare Server keeps the legacy rule.
 	if !s.uiAuth && len(s.policy.Surfaces) > 0 {
-		return serveOriginAllowed(r.Header.Get("Origin"), s.policy.AllowedOrigins)
+		return OriginsAllowed(r.Header.Get("Origin"), s.policy.AllowedOrigins)
 	}
 	origin := r.Header.Get("Origin")
 	if origin == "" {
@@ -112,7 +113,7 @@ func (s *Server) checkOrigin(r *http.Request) bool {
 }
 
 func (s *Server) validatePolicy() error {
-	if err := validateAllowedOrigins(s.policy.AllowedOrigins); err != nil {
+	if err := ValidateAllowedOrigins(s.policy.AllowedOrigins); err != nil {
 		return &ListenerPolicyError{Address: s.policy.Address, Rule: "invalid allowed origin", Cause: err}
 	}
 	for _, surface := range s.policy.Surfaces {
@@ -160,11 +161,11 @@ func newServer(a *appPkg.App, policy ListenerPolicy, staticFS fs.FS, uiAuth bool
 	policy = cloneListenerPolicy(policy)
 	var auth *Auth
 	if uiAuth {
-		auth = newAuth()
+		auth = NewAuth()
 	}
 	return &Server{
 		app:          a,
-		hub:          newHub(),
+		hub:          NewHub(),
 		auth:         auth,
 		addr:         policy.Address,
 		static:       staticFS,
@@ -179,7 +180,7 @@ func (s *Server) TLSPins() (TLSPins, error) {
 	if s.tlsStore == nil {
 		return TLSPins{}, nil
 	}
-	return s.tlsStore.pins()
+	return s.tlsStore.Pins()
 }
 
 func (s *Server) Token() string {
@@ -235,7 +236,7 @@ func (s *Server) Start(ctx context.Context, onReady func(addr string)) error {
 	if err != nil {
 		return err
 	}
-	if !IsLoopbackHost(listenerHost(ln.Addr())) && !s.policy.AllowCleartext && !s.policy.TLS.hasCertificatePair() {
+	if !IsLoopbackHost(listenerHost(ln.Addr())) && !s.policy.AllowCleartext && !s.policy.TLS.HasCertificatePair() {
 		_ = ln.Close()
 		return fmt.Errorf("%w: %q", ErrUnexpectedNonLoopbackBind, ln.Addr().String())
 	}
@@ -245,7 +246,7 @@ func (s *Server) Start(ctx context.Context, onReady func(addr string)) error {
 // ServeListener serves on a listener that was prebound by the caller. The
 // post-bind host check is repeated here for callers that inject a listener.
 func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady func(addr string)) error {
-	if !IsLoopbackHost(listenerHost(ln.Addr())) && !s.policy.AllowCleartext && !s.policy.TLS.hasCertificatePair() {
+	if !IsLoopbackHost(listenerHost(ln.Addr())) && !s.policy.AllowCleartext && !s.policy.TLS.HasCertificatePair() {
 		_ = ln.Close()
 		return fmt.Errorf("%w: %q", ErrUnexpectedNonLoopbackBind, ln.Addr().String())
 	}
@@ -257,7 +258,7 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady fun
 	}
 	var serverTLS *tls.Config
 	var certificateStore *tlsCertificateStore
-	if s.policy.TLS.configured() {
+	if s.policy.TLS.Configured() {
 		var err error
 		certificateStore, err = newTLSCertificateStore(s.policy.TLS)
 		if err != nil {
@@ -282,7 +283,7 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady fun
 	runCtx, cancelRun := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelRun()
 	if certificateStore != nil {
-		go runTLSReload(runCtx, certificateStore, tlsReloadOptions{})
+		go runTLSReload(runCtx, certificateStore)
 	}
 	var joined sync.WaitGroup
 	joined.Add(1)
@@ -291,7 +292,7 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady fun
 		s.hub.Run(runCtx)
 	}()
 	if s.app != nil {
-		forwarders := subscribeAndBroadcast(runCtx, s.app, s.hub)
+		forwarders := subscribeAndBroadcast(runCtx, s.app, s.hub, finalgate.GateFor(s.app))
 		joined.Add(1)
 		go func() {
 			defer joined.Done()
@@ -302,16 +303,36 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, onReady fun
 
 	mux := http.NewServeMux()
 	if s.policyHasSurface(SurfaceWS) {
-		var ws http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !s.uiAuth && hasBearerSubprotocol(r) && !offeredSubprotocol(r, "rush.v1") {
-				writeProblem(w, http.StatusBadRequest, "{\"type\":\"about:blank\",\"title\":\"Bad Request\",\"status\":400}\n")
-				return
-			}
-			// The server-lifetime ctx (same one Hub.Run drains) is what the
-			// guarded register send inside handleWS needs; r.Context() alone
-			// cannot unblock it (it ends only when the handler returns).
-			s.handleWS(runCtx, w, r)
+		// Sprint 0 L4 (S4, design §3): the gate is mounted directly — no
+		// delegating method remains on Server. The subprotocol guard wraps the
+		// gate exactly as it wrapped Server.handleWS at HEAD (bearer tokens
+		// must not downgrade to a non-rush.v1 subprotocol on policy
+		// listeners); the composer's OnIncoming closure keeps the dispatch
+		// switch in package server until S5/L5.
+		ws := hub.NewGate(hub.GateOptions{
+			Hub:         s.hub,
+			Ctx:         runCtx,
+			CheckOrigin: s.checkOrigin,
+			UIAuth:      s.uiAuth,
+			AllowAdmin:  s.policy.AllowAdmin,
+			OnIncoming:  func(ctx context.Context, c *Client, raw []byte) { handleIncoming(ctx, s, c, raw) },
+			BeforeWrite: beforeClientWrite,
+			Workers:     &s.wsWorkers,
 		})
+		if !s.uiAuth {
+			gated := ws
+			ws = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if hasBearerSubprotocol(r) && !offeredSubprotocol(r, "rush.v1") {
+					writeProblem(w, http.StatusBadRequest, "{\"type\":\"about:blank\",\"title\":\"Bad Request\",\"status\":400}\n")
+					return
+				}
+				// The server-lifetime ctx (same one Hub.Run drains) is what the
+				// guarded register send inside handleWS needs; r.Context() alone
+				// cannot unblock it (it ends only when the handler returns).
+				// GateOptions.Ctx carries it (see hub.GateOptions).
+				gated.ServeHTTP(w, r)
+			})
+		}
 		if s.uiAuth {
 			ws = s.auth.Middleware(ws)
 		} else if s.policy.Auth != nil {
@@ -497,151 +518,6 @@ func listenerHost(addr net.Addr) string {
 		return ""
 	}
 	return host
-}
-
-// ctx is the server's lifetime context (Start's), so the register send
-// below can be abandoned when the hub has already stopped.
-func (s *Server) handleWS(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-	upgrader := websocket.Upgrader{
-		ReadBufferSize:  64 * 1024,
-		WriteBufferSize: 64 * 1024,
-		CheckOrigin:     s.checkOrigin,
-	}
-	if !s.uiAuth {
-		// Gorilla's Upgrader reads only Header.Get for this field. Normalize
-		// repeated header lines so all client-offered protocols are considered.
-		r = r.Clone(r.Context())
-		protocols := r.Header.Values("Sec-WebSocket-Protocol")
-		if len(protocols) > 1 {
-			r.Header.Set("Sec-WebSocket-Protocol", strings.Join(protocols, ","))
-		}
-		upgrader.Subprotocols = []string{"rush.v1"}
-	}
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		slog.Debug("ws: upgrade failed", "err", err)
-		return
-	}
-
-	if !s.uiAuth {
-		if principal, ok := PrincipalFrom(r.Context()); ok {
-			if err := conn.WriteJSON(WSMessage{Type: EventHello, Payload: mustJSON(helloPayload{Protocol: "rush.v1", TokenID: principal.TokenID, Scopes: principal.Scopes})}); err != nil {
-				_ = conn.Close()
-				return
-			}
-			startServeRevocationWatch(r.Context(), conn, principal)
-		}
-	}
-	c := newClient(s.hub, conn)
-	if s.uiAuth {
-		// The UI listener is the only transport that grants the
-		// trusted-UI settings-write authority: Auth.Middleware has
-		// already verified the operator's cookie/token for this
-		// connection before the upgrade completed.
-		c.trustedSettingsWrite = true
-	}
-	if !s.uiAuth {
-		if principal, ok := PrincipalFrom(r.Context()); ok {
-			c.auth = newClientAuth(principal, CommandPolicy{AllowAdmin: s.policy.AllowAdmin})
-		}
-	}
-	s.wsWorkers.Add(1)
-	go func() {
-		defer s.wsWorkers.Done()
-		c.workers.Wait()
-	}()
-	// register is buffered (64) but nothing drains it once Hub.Run has
-	// returned, and a bare select between the send and ctx.Done() cannot
-	// close the shutdown race: with buffer space left and ctx cancelled,
-	// Go picks a branch at random, so the send can strand the client in a
-	// channel nobody reads (task #723). tryRegister checks the hub's
-	// explicit stopped signal — closed before Run's final register drain —
-	// both before and after the send, which makes the check airtight. On
-	// false, tear the just-constructed client down the way readPump's
-	// defers would have: close the socket and stop newClient's worker
-	// pool. No unregister send — the hub is gone, nothing would read it.
-	if !s.hub.tryRegister(ctx, c) {
-		_ = conn.Close()
-		close(c.workQueue)
-		return
-	}
-
-	// Start write pump in background; read pump blocks this goroutine.
-	go c.writePump()
-	s.readPump(r.Context(), c)
-}
-
-// readPump reads messages from the WebSocket and dispatches them.
-func (s *Server) readPump(ctx context.Context, c *Client) {
-	// c.conn.Close() runs unconditionally in its own defer, independent of
-	// whether the unregister send below completes. Hub.Run stops reading
-	// from unregister once ctx is cancelled (see its ctx.Done() case), so
-	// on shutdown, once the buffered channel (cap 64) fills up, sending
-	// would block this goroutine forever — and with it, the deferred
-	// conn.Close() that never runs, leaking both the goroutine and the
-	// socket. Splitting the close into its own unconditional defer means
-	// the connection is always torn down even when the unregister send
-	// below is abandoned via ctx.Done().
-	defer c.conn.Close()
-	defer func() {
-		select {
-		case s.hub.unregister <- c:
-		case <-s.hub.stopped:
-		case <-ctx.Done():
-		}
-	}()
-	// Closing workQueue stops this connection's fixed worker pool (see
-	// startWorkers in hub.go) once no more items will ever be enqueued.
-	// Safe here specifically because dispatch is only ever called
-	// synchronously from within this function's read loop below — by the
-	// time this defer runs, the loop has already exited, so nothing can
-	// still be sending on workQueue concurrently with this close.
-	//
-	// DECISION (task #698 review): items already queued — including
-	// still-buffered ones, since `for range` drains a closed channel's
-	// buffer before exiting — are deliberately allowed to run to
-	// completion after the connection is gone. This is intended
-	// decoupling, not a leak: agent turns are session-scoped, not
-	// connection-scoped (the agent-driving handlers run the coordinator
-	// under context.WithoutCancel precisely so a browser refresh
-	// mid-turn does not cancel the run — see handlers_agent.go), and a
-	// reconnecting client re-attaches via the sessions_list poll plus
-	// the hub's event replay. The blast radius is bounded
-	// (workQueueDepth items, panic-isolated by runRecovered) and
-	// post-teardown replies are harmless (Client.reply recovers the
-	// closed-send-channel case). Do not "fix" this by draining-and-
-	// dropping the queue on disconnect.
-	defer close(c.workQueue)
-
-	c.conn.SetReadLimit(maxMessageSize)
-	_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))
-	c.conn.SetPongHandler(func(string) error {
-		_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))
-		return nil
-	})
-
-	// Fork merge note (origin/main 9c35ee01 "fix(server): recover from handler panics"):
-	// upstream wraps the REST mux with recoverHandler; our WebSocket loop reads
-	// frames directly. The equivalent in our architecture lives one layer down
-	// from handleIncoming: every message handler is handed to Client.dispatch
-	// (hub.go), which enqueues it on a per-connection bounded work queue
-	// drained by a fixed worker pool whose runRecovered recovers any panic —
-	// with the control-plane exception (CmdCancelAgent/CmdInterruptAndSend/
-	// CmdShutdownServer) going through Client.dispatchControl, which does spawn
-	// a goroutine per command, semaphore-bounded, under the same runRecovered net.
-	// No handler runs as a bare `go handleX(...)` off the read loop. See
-	// CHANGELOG.fork.md section 4.A.
-	for {
-		_, raw, err := c.conn.ReadMessage()
-		if err != nil {
-			if websocket.IsUnexpectedCloseError(err,
-				websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				slog.Debug("ws: read error", "err", err)
-			}
-			return
-		}
-		handleIncoming(ctx, s, c, raw)
-	}
 }
 
 // spaHandler serves static files and falls back to index.html for any path

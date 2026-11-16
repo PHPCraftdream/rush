@@ -150,14 +150,6 @@ func (a *sessionAgent) tryAdmitRunWg() bool {
 	return true
 }
 
-// DefaultCancelAllGrace is CancelAll's default grace period: how long it
-// waits for in-flight Run()/Summarize() goroutines to unwind after
-// cancellation before reporting stillBusy. App.ShutdownAfterDrain reuses
-// the same duration as the stall bound after which a shutdown stops
-// waiting for its caller's admitted calls and cancels them instead, so
-// every shutdown wait shares one policy value.
-const DefaultCancelAllGrace = 5 * time.Second
-
 func (a *sessionAgent) CancelAll() (stillBusy bool) {
 	// Refuse all FUTURE Run() calls before touching anything else (closing
 	// review, blocker 1). This must come first and must live on the agent

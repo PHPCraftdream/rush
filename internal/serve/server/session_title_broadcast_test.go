@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/server/wire/finalgate"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -35,11 +36,11 @@ func TestTitleSaveIsBroadcastToEveryTab(t *testing.T) {
 	hub := newHub()
 	go hub.Run(ctx)
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 100)
-	hub.register <- client
+	client.ResizeSendChan(100)
+	hub.Register(client)
 
 	// The production bridge itself.
-	subscribeAndBroadcast(ctx, a, hub)
+	subscribeAndBroadcast(ctx, a, hub, finalgate.GateFor(a))
 
 	// Stand in for what the agent's title goroutine does when its fast-model
 	// call returns: one Rename on the session row.
@@ -57,7 +58,7 @@ func TestTitleSaveIsBroadcastToEveryTab(t *testing.T) {
 		deadline := time.Now().Add(1 * time.Second)
 		for updated == nil && time.Now().Before(deadline) {
 			select {
-			case raw := <-client.send:
+			case raw := <-client.SendChan():
 				var env WSMessage
 				require.NoError(t, json.Unmarshal(raw, &env))
 				if env.Type != EventSessionUpdated {

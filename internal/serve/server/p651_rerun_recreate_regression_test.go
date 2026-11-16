@@ -206,7 +206,7 @@ func TestHandleRerunMessage_SuccessWithCompactionDoesNotDuplicatePrompt(t *testi
 
 	hub := newHub()
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 10)
+	client.ResizeSendChan(10)
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
 	require.NoError(t, err)
 
@@ -347,7 +347,7 @@ func TestHandleRerunMessage_ConcurrentUnrelatedWriterDoesNotSuppressRecreate(t *
 
 	hub := newHub()
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 10)
+	client.ResizeSendChan(10)
 	payload, err := json.Marshal(RerunMessagePayload{MessageID: userMsg.ID})
 	require.NoError(t, err)
 

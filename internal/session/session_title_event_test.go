@@ -13,13 +13,14 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestRename_PublishesUpdatedEventWithNewTitle(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sqlDB, q := newTestDB(t)
 	svc := NewService(q, sqlDB)
 	ctx := t.Context()

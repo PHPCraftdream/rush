@@ -164,7 +164,7 @@ func TestSummarize_ProactiveRefreshRebuildCarriesFreshProviderPair(t *testing.T)
 	require.NoError(t, err)
 	snapshot, err := coord.buildSummarizeSnapshot(t.Context(), session.ID)
 	require.NoError(t, err)
-	require.True(t, snapshot.model.FlatRate, "precondition: the initial snapshot carries generation 0's FlatRate=true pairing")
+	require.True(t, snapshot.Model.FlatRate, "precondition: the initial snapshot carries generation 0's FlatRate=true pairing")
 
 	coord.refreshOAuth2TokenFn = func(_ context.Context, _ config.ProviderConfig) error {
 		fresh := config.ProviderConfig{
@@ -179,7 +179,7 @@ func TestSummarize_ProactiveRefreshRebuildCarriesFreshProviderPair(t *testing.T)
 		return nil
 	}
 	var gotSnap *SummarizeSnapshot
-	agent := &mockSessionAgent{model: snapshot.model}
+	agent := &mockSessionAgent{model: snapshot.Model}
 	agent.summarizeFunc = func(_ context.Context, _ string, got *SummarizeSnapshot) error {
 		gotSnap = got
 		return nil
@@ -188,9 +188,9 @@ func TestSummarize_ProactiveRefreshRebuildCarriesFreshProviderPair(t *testing.T)
 
 	require.NoError(t, coord.Summarize(t.Context(), session.ID, snapshot))
 	require.NotNil(t, gotSnap)
-	require.False(t, gotSnap.model.FlatRate, "the rebuilt model must carry the fresh generation's FlatRate")
-	require.Equal(t, "new-key", gotSnap.providerCfg.APIKey, "the rebuilt snapshot's providerCfg must be the fresh generation's, not the stale outer one")
-	require.Equal(t, "smart-provider", gotSnap.providerCfg.ID)
+	require.False(t, gotSnap.Model.FlatRate, "the rebuilt model must carry the fresh generation's FlatRate")
+	require.Equal(t, "new-key", gotSnap.ProviderCfg.APIKey, "the rebuilt snapshot's providerCfg must be the fresh generation's, not the stale outer one")
+	require.Equal(t, "smart-provider", gotSnap.ProviderCfg.ID)
 }
 
 // TestRunSubAgent_401RebuildCarriesFreshProviderPair does the same for the

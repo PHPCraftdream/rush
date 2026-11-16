@@ -82,6 +82,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -119,7 +120,7 @@ func (c *twoRowFailThenSucceedCoordinator) Run(ctx context.Context, callData ses
 // evidence for the single-site reverts that reproduce it.
 func TestDrainSessionNow_LocalExecution_TerminalThenSuccess_ReportsFailed(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "p592-local-terminal-then-success")
 	termErr := &agent.ErrCallAlreadyAttempted{Err: errors.New("p592: row A already attempted")}
 	coord := &twoRowFailThenSucceedCoordinator{firstFn: func() (*any, error) { return nil, termErr }}
@@ -174,7 +175,7 @@ func (s *ackFailingServiceP592) AckRunQueueEntry(ctx context.Context, id, leased
 // time.
 func TestDrainSessionNow_LocalExecution_AckFailureThenSuccess_ReportsFailed(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "p592-local-ack-then-success")
 	failing := &ackFailingServiceP592{Service: svc, ackErr: errors.New("p592: disk on fire during row A's ack")}
 	coord := &twoRowFailThenSucceedCoordinator{firstFn: func() (*any, error) { return nil, nil }}
@@ -262,7 +263,7 @@ func (c *gatedThenSucceedCoordinator) Run(ctx context.Context, callData session.
 // unrelated success could possibly resolve.
 func TestDrainSessionNow_LocalExecution_LeaseLossThenSuccess_ReportsFailed(t *testing.T) {
 	t.Parallel()
-	limitParallel(t)
+	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "p592-local-lease-then-success")
 
 	callDataA, err := json.Marshal(map[string]any{"SessionID": sess.ID, "Prompt": "row-A"})
@@ -312,7 +313,7 @@ func TestDrainSessionNow_LocalExecution_LeaseLossThenSuccess_ReportsFailed(t *te
 	// loss -- the gated coordinator's Run() call observes ctx.Done() and
 	// returns on its own once execCancel() fires, so nothing needs to be
 	// sent on coord.release for row A.
-	awaitPump(t, func() bool {
+	sessiontest.AwaitPump(t, func() bool {
 		select {
 		case <-coord.started:
 			return true
@@ -325,10 +326,10 @@ func TestDrainSessionNow_LocalExecution_LeaseLossThenSuccess_ReportsFailed(t *te
 	// moves, or the advance would be missed. Then one renewal interval
 	// (TTL/3) elapses: the renewal is refused for row A, which is the lease
 	// loss under test.
-	awaitPump(t, func() bool { return clk.liveTickers() >= 2 }, "the execution's watchdog and renewal tickers must be running")
+	sessiontest.AwaitPump(t, func() bool { return clk.liveTickers() >= 2 }, "the execution's watchdog and renewal tickers must be running")
 	clk.Advance(ttl/3 + time.Millisecond)
 
-	awaitPump(t, func() bool {
+	sessiontest.AwaitPump(t, func() bool {
 		select {
 		case <-drainDone:
 			return true

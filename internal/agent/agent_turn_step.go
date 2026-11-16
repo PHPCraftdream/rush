@@ -690,7 +690,7 @@ func (ts *turnStream) applyStepUsage(stepResult fantasy.StepResult) (session.Ses
 	ts.logCacheStepUsage(usage, estimated, stepResult.ProviderMetadata)
 	ts.runTotalTokens = addStepUsageTokens(ts.runTotalTokens, usage)
 	if ts.recovery != nil {
-		ts.recovery.spent.Add(addStepUsageTokens(0, usage))
+		ts.recovery.Spent.Add(addStepUsageTokens(0, usage))
 	}
 	costDelta := ts.a.updateSessionUsage(ts.smartModel, &updatedSession, usage, ts.a.openrouterCost(stepResult.ProviderMetadata))
 	// Heartbeat usage: one add per accounted step, executing model identity (design pt. 4).
@@ -786,7 +786,7 @@ func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 	}
 	totalTokens := ts.runTotalTokens
 	if ts.recovery != nil {
-		totalTokens = ts.recovery.spent.Load()
+		totalTokens = ts.recovery.Spent.Load()
 	}
 	if ts.call.MaxTokens > 0 && totalTokens > ts.call.MaxTokens {
 		slog.Warn(

@@ -1,9 +1,11 @@
 package shell
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
@@ -111,26 +113,131 @@ func normalizeXargsArgs(args []string) ([]string, error) {
 	return out, nil
 }
 
-// xargsArgsHandler returns middleware that rewrites the option tokens of an
-// `xargs` invocation before they reach the u-root Go coreutils handler, so
-// that attached values ("-n1") and long options ("--max-args=3") are passed
-// in the canonical form u-root parses safely. It is only installed when the
-// Go coreutils are enabled. An invalid -n value fails the command with exit
-// status 1 without invoking the downstream handler.
+// xargsDefaultMaxArgs matches the u-root xargs default batch size.
+const xargsDefaultMaxArgs = 5000
+
+// xargsPlan is a normalized xargs invocation this package runs itself.
+type xargsPlan struct {
+	maxArgs int
+	trace   bool
+	null    bool
+	command []string
+}
+
+// planXargs reads the canonical tokens produced by normalizeXargsArgs. It
+// reports false for anything it does not run itself (-p, an unknown option):
+// those stay with the u-root handler, which owns the prompt and the error text.
+func planXargs(args []string) (xargsPlan, bool) {
+	plan := xargsPlan{maxArgs: xargsDefaultMaxArgs}
+	for i := 0; i < len(args); i++ {
+		switch arg := args[i]; {
+		case arg == "--":
+			plan.command = args[i+1:]
+			return plan, true
+		case arg == "-n" && i+1 < len(args):
+			n, err := parseXargsN(args[i+1])
+			if err != nil {
+				return plan, false
+			}
+			plan.maxArgs = n
+			i++
+		case arg == "-t":
+			plan.trace = true
+		case arg == "-0":
+			plan.null = true
+		case arg == "-" || !strings.HasPrefix(arg, "-"):
+			plan.command = args[i:]
+			return plan, true
+		default:
+			return plan, false
+		}
+	}
+	return plan, true
+}
+
+// readXargsItems splits standard input the way u-root xargs does: NUL
+// separated with -0, otherwise whitespace separated fields of every line.
+func readXargsItems(r io.Reader, null bool) ([]string, error) {
+	if r == nil {
+		return nil, nil
+	}
+	var items []string
+	if !null {
+		scanner := bufio.NewScanner(r)
+		for scanner.Scan() {
+			items = append(items, strings.Fields(scanner.Text())...)
+		}
+		return items, nil
+	}
+	br := bufio.NewReader(r)
+	for {
+		b, err := br.ReadBytes(0)
+		if err != nil && err != io.EOF {
+			return nil, err
+		}
+		if n := len(b); n != 0 {
+			if b[n-1] == 0 {
+				b = b[:n-1]
+			}
+			items = append(items, string(b))
+		}
+		if err == io.EOF {
+			return items, nil
+		}
+	}
+}
+
+// xargsArgsHandler returns middleware that owns xargs when the Go coreutils
+// are on. It rewrites the option tokens into the canonical short form (see
+// normalizeXargsArgs) and then runs every COMMAND batch through the exec
+// chain below it instead of letting u-root xargs start the process: u-root
+// calls os/exec directly, which skips the sanctioned process handler, so on
+// Windows each batch opened a console window (no CREATE_NO_WINDOW) and ran
+// outside the working directory, environment and kill handling of the
+// shell. The first failing batch ends the run with its status, as before.
+// It is installed immediately before the coreutils handler and passes
+// non-xargs commands through unchanged.
 func xargsArgsHandler() execMiddleware {
 	return func(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
-		return func(ctx context.Context, args []string) error {
+		var handler interp.ExecHandlerFunc
+		handler = func(ctx context.Context, args []string) error {
 			if len(args) == 0 || args[0] != "xargs" {
 				return next(ctx, args)
 			}
+			hc := interp.HandlerCtx(ctx)
 			rewritten, err := normalizeXargsArgs(args[1:])
 			if err != nil {
-				fmt.Fprintln(interp.HandlerCtx(ctx).Stderr, err.Error())
+				fmt.Fprintln(hc.Stderr, err.Error())
 				return interp.ExitStatus(1)
 			}
-			out := make([]string, 0, len(rewritten)+1)
-			out = append(out, args[0])
-			return next(ctx, append(out, rewritten...))
+			plan, ok := planXargs(rewritten)
+			if !ok {
+				out := make([]string, 0, len(rewritten)+1)
+				out = append(out, args[0])
+				return next(ctx, append(out, rewritten...))
+			}
+			if len(plan.command) == 0 {
+				plan.command = []string{"echo"}
+			}
+			items, err := readXargsItems(hc.Stdin, plan.null)
+			if err != nil {
+				fmt.Fprintln(hc.Stderr, "xargs: "+err.Error())
+				return interp.ExitStatus(1)
+			}
+			for i := 0; i < len(items); i += plan.maxArgs {
+				batch := make([]string, 0, len(plan.command)+plan.maxArgs)
+				batch = append(batch, plan.command...)
+				batch = append(batch, items[i:min(i+plan.maxArgs, len(items))]...)
+				if plan.trace {
+					fmt.Fprintln(hc.Stderr, strings.Join(batch, " "))
+				}
+				// A nested xargs takes this handler again, never u-root's.
+				if err := handler(ctx, batch); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
+		return handler
 	}
 }

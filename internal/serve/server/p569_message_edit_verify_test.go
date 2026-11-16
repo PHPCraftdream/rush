@@ -55,10 +55,10 @@ func TestUpdateMessageAndVerify_RejectsEditAfterConcurrentFinish(t *testing.T) {
 	finished.AddFinish(message.FinishReasonEndTurn, "", "")
 	require.NoError(t, a.Messages.Update(t.Context(), finished))
 
-	c := &Client{send: make(chan []byte, 4)}
+	c := newDetachedTestClient(4)
 	require.False(t, updateMessageAndVerify(t.Context(), a, c, created.ID, staleEdit))
 	select {
-	case raw := <-c.send:
+	case raw := <-c.SendChan():
 		var env WSMessage
 		require.NoError(t, json.Unmarshal(raw, &env))
 		require.Equal(t, EventError, env.Type)
@@ -128,12 +128,12 @@ func TestUpdateMessageAndVerify_RefusesEditToPartialMessage(t *testing.T) {
 	edit := checkpoint.Clone()
 	edit.Parts = []message.ContentPart{message.TextContent{Text: "OPERATOR EDIT"}, edit.Parts[len(edit.Parts)-1]}
 
-	c := &Client{send: make(chan []byte, 4)}
+	c := newDetachedTestClient(4)
 	ok := updateMessageAndVerify(ctx, a, c, "req-1", edit)
 	require.False(t, ok, "updateMessageAndVerify must refuse an edit to a message that is still mid-stream")
 
 	select {
-	case raw := <-c.send:
+	case raw := <-c.SendChan():
 		var env WSMessage
 		require.NoError(t, json.Unmarshal(raw, &env))
 		require.Equal(t, EventError, env.Type,
@@ -168,7 +168,7 @@ func TestUpdateMessageAndVerify_NormalEditLands(t *testing.T) {
 	edited := created.Clone()
 	edited.Parts[0] = message.TextContent{Text: "edited"}
 
-	c := &Client{send: make(chan []byte, 4)}
+	c := newDetachedTestClient(4)
 	ok := updateMessageAndVerify(ctx, a, c, "req-1", edited)
 	require.True(t, ok, "editing a terminally finished assistant message must succeed")
 
@@ -204,7 +204,7 @@ func TestUpdateMessageAndVerify_UserMessageEditLands(t *testing.T) {
 	edited := created.Clone()
 	edited.Parts[0] = message.TextContent{Text: "hello, edited"}
 
-	c := &Client{send: make(chan []byte, 4)}
+	c := newDetachedTestClient(4)
 	ok := updateMessageAndVerify(ctx, a, c, "req-1", edited)
 	require.True(t, ok, "editing a user message must succeed even though IsFinished() is always false for it")
 

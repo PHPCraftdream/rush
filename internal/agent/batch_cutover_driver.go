@@ -6,7 +6,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 )
 
 // BatchDriverClaimer is the durable session-driver-marker surface
@@ -17,23 +16,6 @@ import (
 type BatchDriverClaimer interface {
 	ClaimSessionDriver(ctx context.Context, sessionID string) error
 	ReleaseSessionDriver(ctx context.Context, sessionID string) error
-}
-
-// SetBatchDriverClaimer wires the driver-marker store onto a coordinator
-// (internal/app composition root). Fails closed on nil receiver or store.
-func SetBatchDriverClaimer(c Coordinator, s BatchDriverClaimer) error {
-	if c == nil {
-		return errors.New("batch driver claimer: nil coordinator")
-	}
-	if s == nil {
-		return errors.New("batch driver claimer: nil store")
-	}
-	co, ok := c.(*coordinator)
-	if !ok {
-		return errors.New("batch driver claimer: unsupported coordinator type")
-	}
-	co.batchDriverClaimer = s
-	return nil
 }
 
 // driverMarkerStore is the durable driver-marker store the claim/release

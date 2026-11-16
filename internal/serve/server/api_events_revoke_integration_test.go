@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/serve/server/apiauth"
 )
 
 type revokeIntegrationTicker struct{ ch chan time.Time }
@@ -21,9 +22,7 @@ func TestServeAPIEventsProductionListenerRevokesToken(t *testing.T) {
 		t.Setenv(key, t.TempDir())
 	}
 	ticker := revokeIntegrationTicker{ch: make(chan time.Time, 1)}
-	previousTicker := serveAuthTickerFactory
-	serveAuthTickerFactory = func(time.Duration) Ticker { return ticker }
-	t.Cleanup(func() { serveAuthTickerFactory = previousTicker })
+	tickerFactory := func(time.Duration) apiauth.Ticker { return ticker }
 	store := config.GlobalAPITokenStore()
 	token, record, err := store.CreateAPIToken("sse-revoke-integration", []string{"read"}, "ask", nil)
 	if err != nil {
@@ -35,7 +34,7 @@ func TestServeAPIEventsProductionListenerRevokesToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy := ListenerPolicy{Address: "127.0.0.1:0", Surfaces: []ListenerSurface{SurfaceREST}}
-	api, err := NewServeAPI(policy, app, store, nil)
+	api, err := newServeAPI(policy, app, store, nil, tickerFactory, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

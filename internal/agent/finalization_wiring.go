@@ -186,7 +186,7 @@ func (w *finalizationWiring) readFacts(ctx context.Context, identity session.Age
 // authority of its own. Calls without a requirement, or descendants that only
 // inherit a foreign authority, get no execution and stay inert.
 func (w *finalizationWiring) newExecution(call SessionAgentCall) (*finalizationExecution, error) {
-	requirement := call.finalizationAuthorities.Requirement()
+	requirement := call.FinalizationAuthorities.Requirement()
 	if requirement == nil {
 		return nil, nil
 	}
@@ -219,7 +219,7 @@ func (w *finalizationWiring) newExecution(call SessionAgentCall) (*finalizationE
 // installed before any agent exists on the coordinator.
 func (w *finalizationWiring) bindScopeHook() func(context.Context, SessionAgentCall) error {
 	return func(ctx context.Context, call SessionAgentCall) error {
-		if call.finalizationAuthorities.Requirement() == nil {
+		if call.FinalizationAuthorities.Requirement() == nil {
 			return nil
 		}
 		agent := w.rootAgent()
@@ -309,27 +309,4 @@ func (c *coordinator) finalizationWiring() *finalizationWiring {
 		return nil
 	}
 	return c.finalization
-}
-
-// SetCoordinatorFinalizationWiring builds the finalization wiring from deps
-// and binds it to the concrete coordinator. A disabled flag builds nothing
-// and binds nothing; a partially installable configuration fails closed.
-func SetCoordinatorFinalizationWiring(c Coordinator, deps FinalizationWiringDeps) error {
-	if !deps.Enabled {
-		return nil
-	}
-	if c == nil {
-		return fmt.Errorf("finalization wiring: nil coordinator")
-	}
-	co, ok := c.(*coordinator)
-	if !ok {
-		return fmt.Errorf("finalization wiring: unsupported coordinator type %T", c)
-	}
-	w, err := newFinalizationWiring(deps, co)
-	if err != nil {
-		return err
-	}
-	co.finalization = w
-	slog.Info("Finalization wiring installed", "session_poll", w.poll.String())
-	return nil
 }

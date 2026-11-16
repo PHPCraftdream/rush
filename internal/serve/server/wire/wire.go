@@ -1,0 +1,296 @@
+package wire
+
+import (
+	"time"
+
+	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/store/message"
+)
+
+// PartWire is the JSON wire format for a ContentPart sent to the browser.
+// All fields use PascalCase to match the TypeScript interface names.
+type PartWire struct {
+	Type string `json:"type"`
+
+	// text
+	Text string `json:"Text,omitempty"`
+
+	// thinking
+	Thinking string `json:"Thinking,omitempty"`
+
+	// tool_call
+	ID       string `json:"ID,omitempty"`
+	Name     string `json:"Name,omitempty"`
+	Input    string `json:"Input,omitempty"`
+	Finished bool   `json:"Finished,omitempty"`
+
+	// tool_result
+	ToolCallID string `json:"ToolCallID,omitempty"`
+	Content    string `json:"Content,omitempty"`
+	IsError    bool   `json:"IsError,omitempty"`
+	Metadata   string `json:"Metadata,omitempty"`
+
+	// finish
+	Reason        string `json:"Reason,omitempty"`
+	FinishMessage string `json:"Message,omitempty"`
+	Details       string `json:"Details,omitempty"`
+	// Partial mirrors message.Finish.Partial: true when this Finish part was
+	// written by the auto-checkpoint ticker mid-stream, not a real step-end.
+	// The web UI uses this (task #590) to tell an in-flight assistant
+	// message apart from a terminally finished one, so it can hide the Edit
+	// control while editing it would be silently overwritten by the turn's
+	// next checkpoint or terminal write.
+	Partial bool `json:"Partial,omitempty"`
+}
+
+// UsageWire is the per-message token accounting sent to the browser.
+//
+// CacheHitRatio is a POINTER so it can be null: a provider that does not
+// report caching has no ratio, and emitting 0 there would be indistinguishable
+// from a genuine cache miss. The browser must render "n/a" on null rather than
+// substituting a number.
+type UsageWire struct {
+	InputTokens         int64    `json:"InputTokens"`
+	OutputTokens        int64    `json:"OutputTokens"`
+	ReasoningTokens     int64    `json:"ReasoningTokens,omitempty"`
+	CacheCreationTokens int64    `json:"CacheCreationTokens"`
+	CacheReadTokens     int64    `json:"CacheReadTokens"`
+	PromptTokens        int64    `json:"PromptTokens"`
+	TotalTokens         int64    `json:"TotalTokens"`
+	CostUSD             float64  `json:"CostUSD"`
+	Provider            string   `json:"Provider,omitempty"`
+	Model               string   `json:"Model,omitempty"`
+	CacheSupport        string   `json:"CacheSupport,omitempty"`
+	CacheHitRatio       *float64 `json:"CacheHitRatio"`
+	Estimated           bool     `json:"Estimated,omitempty"`
+}
+
+func ToUsageWire(u *message.TokenUsage) *UsageWire {
+	if u == nil {
+		return nil
+	}
+	w := &UsageWire{
+		InputTokens:         u.InputTokens,
+		OutputTokens:        u.OutputTokens,
+		ReasoningTokens:     u.ReasoningTokens,
+		CacheCreationTokens: u.CacheCreationTokens,
+		CacheReadTokens:     u.CacheReadTokens,
+		PromptTokens:        u.PromptTokens(),
+		TotalTokens:         u.TotalTokens,
+		CostUSD:             u.CostUSD,
+		Provider:            u.Provider,
+		Model:               u.Model,
+		CacheSupport:        string(u.CacheSupport),
+		Estimated:           u.Estimated,
+	}
+	if ratio, ok := u.CacheHitRatio(); ok {
+		w.CacheHitRatio = &ratio
+	}
+	return w
+}
+
+// MessageWire is the JSON wire format for a Message sent to the browser.
+type MessageWire struct {
+	ID                  string     `json:"ID"`
+	Role                string     `json:"Role"`
+	SessionID           string     `json:"SessionID"`
+	Parts               []PartWire `json:"Parts"`
+	Model               string     `json:"Model"`
+	Provider            string     `json:"Provider"`
+	ReasoningEffort     string     `json:"ReasoningEffort,omitempty"`
+	CreatedAt           int64      `json:"CreatedAt"`
+	UpdatedAt           int64      `json:"UpdatedAt"`
+	IsSummaryMessage    bool       `json:"IsSummaryMessage"`
+	Pinned              bool       `json:"Pinned"`
+	Hidden              bool       `json:"Hidden"`
+	AutoResumed         bool       `json:"AutoResumed"`
+	BackgroundJobNotice bool       `json:"BackgroundJobNotice"`
+	// Origin is the entry channel the message arrived through
+	// ("cli"/"web"/"sdk"; empty = unspecified), mirroring
+	// message.Origin. The web composer's recall history is derived
+	// client-side from these rows ($myPrompts in web/src/store.ts): it
+	// must contain ONLY prompts a human typed in the web composer, so the
+	// client needs the authorship metadata to exclude CLI-originated
+	// prompts and other channels. It cannot live on the transcript
+	// itself, which must keep rendering every channel's messages.
+	Origin string `json:"Origin,omitempty"`
+	// NoticeKind mirrors message.Message.NoticeKind: "" for an ordinary
+	// message, otherwise the kind of system notice (e.g. "supervision",
+	// "timeout_wake_only", "wake_failed" -- see message.Message.NoticeKind's
+	// doc for the value set). Exposed so HumanTyped (below) can be recomputed
+	// client-side if ever needed, and so future notice kinds are visible on
+	// the wire without another field being added.
+	NoticeKind string `json:"NoticeKind,omitempty"`
+	// HumanTyped is true when a human typed this message directly into the
+	// web composer -- computed server-side by isHumanTyped, from structured
+	// fields ONLY (role, Hidden, IsSummaryMessage, NoticeKind, AutoResumed,
+	// BackgroundJobNotice, Origin), never from message text. It is the
+	// single source of truth the web composer's recall history and history
+	// dropdown ($myPrompts in web/src/store.ts) filter on, so a message
+	// qualifies regardless of which server-side code path persisted it
+	// (Run, InjectMessage, or any future delivery mechanism), as long as
+	// that path stamps the same markers.
+	HumanTyped bool       `json:"HumanTyped"`
+	Usage      *UsageWire `json:"Usage,omitempty"`
+	// DeleteGeneration is the delete-generation watermark (task #737,
+	// replacing task #731's RowID field -- message.Message.DeleteGeneration's
+	// doc comment has the full mechanism). Only ever non-zero on the
+	// payload of an EventMessageDeleted push -- ToMessageWire is also used
+	// for message_created/message_updated broadcasts and the messages_list
+	// snapshot's per-message rows, none of which populate
+	// Message.DeleteGeneration server-side, so this field is 0/omitted
+	// there. The web client reads it ONLY off message_deleted.
+	DeleteGeneration int64 `json:"DeleteGeneration,omitempty"`
+}
+
+// isHumanTyped reports whether m is something a human typed directly into
+// the web composer, as opposed to a system-injected notice (async job
+// completion, autonomous idle-resume, supervision check-in, timeout/
+// wake-failed marker, ...) or a prompt that arrived through another entry
+// channel (CLI `rush run`/`rush sessions inject`, SDK).
+//
+// Computed ONLY from structured fields, never message text: Origin,
+// AutoResumed, BackgroundJobNotice and NoticeKind. Every notice the driver
+// pulls into history (agent.buildJobNoticeMessageParams/
+// buildSessionNoticeMessageParams) sets AutoResumed and BackgroundJobNotice,
+// and a supervision, timeout or wake-failed one also a NoticeKind, so any of
+// the markers excludes it. The NoticeKind != "" check keeps a future notice
+// kind out without enumerating values here, as long as the pull keeps
+// stamping one of those markers.
+func isHumanTyped(m message.Message) bool {
+	if m.Role != message.User || m.Hidden || m.IsSummaryMessage {
+		return false
+	}
+	if m.AutoResumed || m.BackgroundJobNotice || m.NoticeKind != "" {
+		return false
+	}
+	return m.Origin == message.OriginWeb
+}
+
+func toPartWire(part message.ContentPart) PartWire {
+	switch p := part.(type) {
+	case message.TextContent:
+		return PartWire{Type: "text", Text: p.Text}
+	case message.ReasoningContent:
+		return PartWire{Type: "thinking", Thinking: p.Thinking}
+	case message.ToolCall:
+		return PartWire{Type: "tool_call", ID: p.ID, Name: p.Name, Input: p.Input, Finished: p.Finished}
+	case message.ToolResult:
+		return PartWire{Type: "tool_result", ToolCallID: p.ToolCallID, Name: p.Name, Content: p.Content, IsError: p.IsError, Metadata: p.Metadata}
+	case message.Finish:
+		return PartWire{Type: "finish", Reason: string(p.Reason), FinishMessage: p.Message, Details: p.Details, Partial: p.Partial}
+	default:
+		return PartWire{Type: "unknown"}
+	}
+}
+
+func ToMessageWire(m message.Message) MessageWire {
+	parts := make([]PartWire, len(m.Parts))
+	for i, p := range m.Parts {
+		parts[i] = toPartWire(p)
+	}
+	return MessageWire{
+		ID:                  m.ID,
+		Role:                string(m.Role),
+		SessionID:           m.SessionID,
+		Parts:               parts,
+		Model:               m.Model,
+		Provider:            m.Provider,
+		ReasoningEffort:     m.ReasoningEffort,
+		CreatedAt:           m.CreatedAt,
+		UpdatedAt:           m.UpdatedAt,
+		IsSummaryMessage:    m.IsSummaryMessage,
+		Pinned:              m.Pinned,
+		Hidden:              m.Hidden,
+		AutoResumed:         m.AutoResumed,
+		BackgroundJobNotice: m.BackgroundJobNotice,
+		Origin:              string(m.Origin),
+		NoticeKind:          m.NoticeKind,
+		HumanTyped:          isHumanTyped(m),
+		Usage:               ToUsageWire(m.Usage),
+		DeleteGeneration:    m.DeleteGeneration,
+	}
+}
+
+func ToMessagesWire(msgs []message.Message) []MessageWire {
+	result := make([]MessageWire, len(msgs))
+	for i, m := range msgs {
+		result[i] = ToMessageWire(m)
+	}
+	return result
+}
+
+// APISession is a safe public projection of a stored session. Workspace roots,
+// model configuration, prompts, tokens, and process details are deliberately
+// excluded. Times are formatted as RFC 3339 UTC strings.
+type APISession struct {
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+	MessageCount int64  `json:"message_count"`
+}
+
+// APIMessage is a faithful but deliberately reduced message projection.
+// Binary attachments are omitted to avoid exposing paths or encoded private
+// data; tool inputs/results remain visible as typed parts and may themselves
+// contain paths supplied by a tool or model.
+type APIMessage struct {
+	ID        string           `json:"id"`
+	SessionID string           `json:"session_id"`
+	Role      string           `json:"role"`
+	Parts     []APIMessagePart `json:"parts"`
+	CreatedAt string           `json:"created_at"`
+}
+
+// APIMessagePart contains only user-facing text and tool call/result data.
+type APIMessagePart struct {
+	Type       string `json:"type"`
+	Text       string `json:"text,omitempty"`
+	ID         string `json:"id,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Input      string `json:"input,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	Content    string `json:"content,omitempty"`
+	IsError    bool   `json:"is_error,omitempty"`
+}
+
+// APIModel identifies an available model without provider credentials.
+type APIModel struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+	Role     string `json:"role,omitempty"`
+}
+
+func APISessionFromModel(value session.Session) APISession {
+	return APISession{
+		ID: value.ID, Title: value.Title,
+		CreatedAt: APITimestamp(value.CreatedAt), UpdatedAt: APITimestamp(value.UpdatedAt),
+		MessageCount: value.MessageCount,
+	}
+}
+
+func APIMessageFromModel(value message.Message) APIMessage {
+	parts := make([]APIMessagePart, 0, len(value.Parts))
+	for _, part := range value.Parts {
+		switch item := part.(type) {
+		case message.TextContent:
+			parts = append(parts, APIMessagePart{Type: "text", Text: item.Text})
+		case message.ToolCall:
+			parts = append(parts, APIMessagePart{Type: "tool_call", ID: item.ID, Name: item.Name, Input: item.Input})
+		case message.ToolResult:
+			parts = append(parts, APIMessagePart{Type: "tool_result", ToolCallID: item.ToolCallID, Name: item.Name, Content: item.Content, IsError: item.IsError})
+		case message.ImageURLContent:
+			parts = append(parts, APIMessagePart{Type: "image", Content: "external image omitted"})
+		}
+	}
+	return APIMessage{
+		ID: value.ID, SessionID: value.SessionID, Role: string(value.Role),
+		Parts: parts, CreatedAt: APITimestamp(value.CreatedAt),
+	}
+}
+
+func APITimestamp(unix int64) string {
+	return time.Unix(unix, 0).UTC().Format(time.RFC3339)
+}

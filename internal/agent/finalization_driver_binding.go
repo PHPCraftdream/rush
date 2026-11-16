@@ -26,10 +26,10 @@ func finalizationLogicalIdentity(snapshot session.AgentFinalizationContext, sess
 // bindFinalizationIdentity changes only identity transport, not frozen policy,
 // credentials, tools, budgets, model settings or construction owners.
 func (r *subAgentDriverRegistry) bindFinalizationIdentity(agent SessionAgent, call SessionAgentCall) error {
-	if r == nil || call.driverGeneration == 0 {
+	if r == nil || call.DriverGeneration == 0 {
 		return session.ErrAgentFinalizationDriverUnavailable
 	}
-	requirement := call.finalizationAuthorities.Requirement()
+	requirement := call.FinalizationAuthorities.Requirement()
 	if requirement == nil {
 		return session.ErrAgentFinalizationChanged
 	}
@@ -44,12 +44,12 @@ func (r *subAgentDriverRegistry) bindFinalizationIdentity(agent SessionAgent, ca
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	driver, exists := r.byChild[call.SessionID]
-	if !exists || driver.agent != agent || driver.call.SessionID != call.SessionID || driver.generation != call.driverGeneration ||
+	if !exists || driver.agent != agent || driver.call.SessionID != call.SessionID || driver.generation != call.DriverGeneration ||
 		driver.call.LogicalCallID != "" && driver.call.LogicalCallID != call.LogicalCallID {
 		return session.ErrAgentFinalizationDriverUnavailable
 	}
 	previous := make(map[string]session.AgentFinalizationIdentity)
-	if stored := driver.finalizationAuthorities.Requirement(); stored != nil {
+	if stored := driver.FinalizationAuthorities.Requirement(); stored != nil {
 		for _, identity := range stored.Authorities {
 			previous[identity.SessionID] = identity
 			if incoming[identity.SessionID] != identity {
@@ -65,14 +65,14 @@ func (r *subAgentDriverRegistry) bindFinalizationIdentity(agent SessionAgent, ca
 		}
 	}
 	driver.call.LogicalCallID = call.LogicalCallID
-	driver.call.driverGeneration = call.driverGeneration
-	driver.finalizationAuthorities = call.finalizationAuthorities
+	driver.call.DriverGeneration = call.DriverGeneration
+	driver.FinalizationAuthorities = call.FinalizationAuthorities
 	r.byChild[call.SessionID] = driver
 	return nil
 }
 
 func (a *sessionAgent) bindFinalizationDriverCall(call SessionAgentCall) error {
-	requirement := call.finalizationAuthorities.Requirement()
+	requirement := call.FinalizationAuthorities.Requirement()
 	if requirement == nil {
 		return nil
 	}
@@ -80,8 +80,8 @@ func (a *sessionAgent) bindFinalizationDriverCall(call SessionAgentCall) error {
 		if identity.SessionID != call.SessionID {
 			continue
 		}
-		if call.driverGeneration == 0 {
-			if identity.NodeID != "" || call.finalizationAuthorities.RequiresManagedDriver() || a.isSubAgent {
+		if call.DriverGeneration == 0 {
+			if identity.NodeID != "" || call.FinalizationAuthorities.RequiresManagedDriver() || a.isSubAgent {
 				return session.ErrAgentFinalizationDriverUnavailable
 			}
 			return nil

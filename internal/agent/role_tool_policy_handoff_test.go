@@ -141,7 +141,7 @@ func TestRunTurnAttachesRoleToolPolicyToEveryConstrainedTurn(t *testing.T) {
 			if tc.contract != nil {
 				callOptions = &CallOptions{RoleContract: tc.contract.Clone()}
 				ctx = WithCallOptions(ctx, callOptions)
-				t.Cleanup(callOptions.buildScope.close)
+				t.Cleanup(callOptions.BuildScope.Close)
 			}
 			_, err = agent.Run(ctx, SessionAgentCall{
 				SessionID:          sess.ID,
@@ -191,7 +191,7 @@ func TestRunTurnAttachesRoleToolPolicyToEveryConstrainedTurn(t *testing.T) {
 				require.NotNil(t, restoredCall.CallOptions)
 				require.NotNil(t, restoredCall.CallOptions.RoleContract)
 				require.True(t, tc.contract.Equal(restoredCall.CallOptions.RoleContract))
-				t.Cleanup(restoredCall.CallOptions.buildScope.close)
+				t.Cleanup(restoredCall.CallOptions.BuildScope.Close)
 				_, err = agent.Run(t.Context(), restoredCall)
 				require.NoError(t, err)
 				resumedCtx, resumedCall := model.snapshot()
