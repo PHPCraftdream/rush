@@ -716,8 +716,12 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 		}
 		// Per-message token/cache accounting for the session (task
 		// #480). Best-effort: an orchestrator losing statistics must
-		// never turn a successful run into a failed one.
-		if report, uErr := s.env.Messages().UsageBySession(finalCtx, s.sess.ID); uErr != nil {
+		// never turn a successful run into a failed one. Own budget: the
+		// reads above share finalCtx and can spend it on a busy store.
+		usageCtx, usageCancel := context.WithTimeout(context.WithoutCancel(s.ctx), cleanupTimeout)
+		report, uErr := s.env.Messages().UsageBySession(usageCtx, s.sess.ID)
+		usageCancel()
+		if uErr != nil {
 			slog.Warn("run: failed to read per-message usage for the JSON envelope", "session", s.sess.ID, "err", uErr)
 		} else {
 			summary.Usage.Session = buildSessionUsageInfo(report)
