@@ -24,10 +24,15 @@ import (
 import (
 	"context"
 	"encoding/json"
+	"os"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/casefold"
+	"github.com/PHPCraftdream/rush/internal/config/io/cfghooks"
+	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	envresolve "github.com/PHPCraftdream/rush/internal/config/model/envresolve"
 	cfgmerge "github.com/PHPCraftdream/rush/internal/config/model/merge"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
 
@@ -376,3 +381,69 @@ func SharedWorkspaceMarkerPath(mainDataDir, wsRoot string) string {
 func globalSkillsDirs(homeDir string) []string { return datadir.GlobalSkillsDirsForHome(homeDir) }
 
 func projectSkillSubdirsLen() int { return datadir.ProjectSkillSubdirsLen() }
+
+// Case-sensitivity re-exports from io/casefold.
+type configCaseSensitivity = casefold.ConfigCaseSensitivity
+
+const configCaseSensitivityUnknown = casefold.ConfigCaseSensitivityUnknown
+
+func configPlatformCaseFoldLeaf(dir, leaf string) (string, bool) {
+	return casefold.ConfigPlatformCaseFoldLeaf(dir, leaf)
+}
+
+func configPlatformCaseSensitivity(dir string) configCaseSensitivity {
+	return casefold.ConfigPlatformCaseSensitivity(dir)
+}
+
+func configFoldCaseLeaf(leaf string, sensitivity configCaseSensitivity) (string, bool) {
+	return casefold.ConfigFoldCaseLeaf(leaf, sensitivity)
+}
+
+// File-identity re-exports from io/fileid (vars preserve single error identity).
+type configFileIdentity = fileid.FileIdentity
+
+var (
+	ErrConfigNonRegular    = fileid.ErrConfigNonRegular
+	ErrConfigHardLink      = fileid.ErrConfigHardLink
+	errConfigOwnerMismatch = fileid.ErrConfigOwnerMismatch()
+	errStableReadUnstable  = fileid.ErrStableReadUnstable()
+)
+
+func configFilePathIdentityMatches(path string, opened *os.File, openedInfo os.FileInfo) (bool, error) {
+	return fileid.ConfigFilePathIdentityMatches(path, opened, openedInfo)
+}
+
+func configParentIdentity(path string) configFileIdentity {
+	return fileid.ConfigParentIdentity(path)
+}
+
+func homeConfigOwner() (int, bool) { return fileid.HomeConfigOwner() }
+
+func systemConfigOwner() (int, bool) { return fileid.SystemConfigOwner() }
+
+func readOpenedConfigBytes(file *os.File) ([]byte, error) {
+	return fileid.ReadOpenedConfigBytes(file)
+}
+
+func openStableConfigFile(path string) (*os.File, error) {
+	return fileid.OpenStableConfigFile(path)
+}
+
+// Hook forwarding re-exports from io/cfghooks.
+func acquireConfigFileLock(ctx context.Context, path string) (*filelock.FileLock, error) {
+	return cfghooks.AcquireConfigFileLock(ctx, path)
+}
+
+func releaseConfigFileLock(path string, lock *filelock.FileLock) error {
+	return cfghooks.ReleaseConfigFileLock(path, lock)
+}
+
+func configContextWithTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	return cfghooks.ConfigContextWithTimeout(parent, timeout)
+}
+
+func runConfigAfterMCPCommitHook(path string) { cfghooks.RunConfigAfterMCPCommitHook(path) }
+
+func runConfigBeforeMCPReconcileHook(path string, data []byte) {
+	cfghooks.RunConfigBeforeMCPReconcileHook(path, data)
+}
