@@ -1,4 +1,4 @@
-package cli
+package cmd
 
 // Fixture and read-only guarantees of `rush sessions audit`.
 //
@@ -24,6 +24,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
 
@@ -218,10 +219,12 @@ func seedAuditFixtureDB(t *testing.T, dataDir string) string {
 	return dbPath
 }
 
-// runAuditCmd executes the real `rush sessions audit` through the root
-// command, exactly as the CLI does, with both output streams captured.
+// runAuditCmd executes the real `rush sessions audit` command with both output streams captured.
 func runAuditCmd(t *testing.T, args ...string) (stdout, stderr string, runErr error) {
-	root := NewRootCmd()
+	root := &cobra.Command{Use: "rush"}
+	root.PersistentFlags().String("data-dir", "", "")
+	root.PersistentFlags().String("cwd", "", "")
+	root.AddCommand(NewSessionsCmd())
 	t.Helper()
 
 	var out, errOut bytes.Buffer
@@ -229,8 +232,8 @@ func runAuditCmd(t *testing.T, args ...string) (stdout, stderr string, runErr er
 	root.SetErr(&errOut)
 	resetAuditCmdFlags(t)
 	root.SetArgs(append([]string{"sessions", "audit"}, args...))
-	// root is a package-level var shared with every other test in the
-	// package; restore it so no later test sees this one's arguments.
+	// The command tree's flags are shared; restore their defaults so no later
+	// test inherits this invocation's values.
 	t.Cleanup(func() {
 		root.SetOut(nil)
 		root.SetErr(nil)
@@ -247,17 +250,14 @@ func runAuditCmd(t *testing.T, args ...string) (stdout, stderr string, runErr er
 // these commands are package-level vars shared by the whole test binary —
 // without this, a `--all` left set by one test silently applies to the next.
 func resetAuditCmdFlags(t *testing.T) {
-	root := NewRootCmd()
 	t.Helper()
 
 	for name, zero := range map[string]string{
-		"data-dir":  "",
 		"all":       "false",
 		"json":      "false",
 		"since":     "",
 		"worktrees": "false",
 	} {
-		_ = root.PersistentFlags().Set(name, zero)
 		_ = sessionsAuditCmd.Flags().Set(name, zero)
 	}
 }

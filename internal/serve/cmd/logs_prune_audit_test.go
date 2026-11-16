@@ -1,4 +1,4 @@
-package cli
+package cmd
 
 import (
 	"os"
@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
 
@@ -14,7 +15,10 @@ import (
 // SetErr does not see its output. Cobra keeps flag values on the shared
 // command var, so audit-days is reset around every run.
 func runLogsPrune(t *testing.T, args ...string) (string, error) {
-	root := NewRootCmd()
+	root := &cobra.Command{Use: "rush"}
+	root.PersistentFlags().String("data-dir", "", "")
+	root.PersistentFlags().String("cwd", "", "")
+	root.AddCommand(NewLogsCmd())
 	t.Helper()
 
 	stderrPath := filepath.Join(t.TempDir(), "stderr.txt")

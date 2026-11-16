@@ -21,7 +21,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/kit/diag/audit"
+	"github.com/PHPCraftdream/rush/internal/kit/diag/log"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
+	journal "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/journal"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -67,22 +70,34 @@ func TestJournalGroupUsageErrorNotHelp(t *testing.T) {
 	root := NewRootCmd()
 	var group *cobra.Command
 	for _, c := range root.Commands() {
-		if !c.Runnable() && c.HasSubCommands() && !journalCommandSuppressed(c, c.CommandPath()) {
+		if !c.Runnable() && c.HasSubCommands() && !journal.JournalCommandSuppressed(c, c.CommandPath()) {
 			group = c
 			break
 		}
 	}
 	require.NotNil(t, group, "no non-runnable command group in the tree")
-	path, kind, fixedErr, suppressed := classifyJournalFallback(
+	path, kind, fixedErr, suppressed := journal.ClassifyJournalFallback(
 		[]string{group.Name(), "--definitely-no-such-flag"}, errors.New("unknown flag: --definitely-no-such-flag"))
 	require.False(t, suppressed)
 	require.Equal(t, group.CommandPath(), path)
 	require.Equal(t, "usage_error", kind)
 	require.Equal(t, "flag parse error", fixedErr)
 
-	_, kind, fixedErr, _ = classifyJournalFallback([]string{group.Name()}, nil)
+	_, kind, fixedErr, _ = journal.ClassifyJournalFallback([]string{group.Name()}, nil)
 	require.Equal(t, "help", kind)
 	require.Empty(t, fixedErr)
+}
+
+func journalCLIEnv(t *testing.T) string {
+	t.Helper()
+	log.Setup("", false)
+	dataDir := t.TempDir()
+	t.Setenv("RUSH_GLOBAL_DATA", dataDir)
+	t.Setenv("RUSH_GLOBAL_CONFIG", t.TempDir())
+	journal.EnsureAuditDirFunc()
+	journal.ResetCommandJournalForTests()
+	t.Cleanup(func() { audit.SetDirFunc(journal.JournalAuditDir) })
+	return dataDir
 }
 
 func TestJournalExecuteEndToEnd(t *testing.T) {
@@ -98,7 +113,7 @@ func TestJournalExecuteEndToEnd(t *testing.T) {
 		scenario string
 		exit     int
 	}{{"ok", 0}, {"badflag", 1}} {
-		journalTestEnv(t)
+		journalCLIEnv(t)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		child := platform.Command(ctx, os.Args[0], "-test.run=^TestJournalExecuteEndToEnd$")
 		child.Env = append(os.Environ(), "RUSH_JOURNAL_CHILD="+tc.scenario)

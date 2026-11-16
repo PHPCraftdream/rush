@@ -13,7 +13,7 @@
 //	  assignment in logs prune's RunE — the JSON count would be 0.
 //	TestLogsPruneHeartbeatDaysZeroDisables: remove the days==0 early return
 //	  in pruneHeartbeatFiles — the old snapshot would be pruned anyway.
-package cli
+package cmd
 
 import (
 	"encoding/json"
@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -63,7 +64,10 @@ func resetLogsPruneFlags(t *testing.T) {
 // runLogsPruneFull runs `rush logs prune` through the root command,
 // capturing stdout (--json) and stderr (text) separately.
 func runLogsPruneFull(t *testing.T, args ...string) (stdout, stderr string, err error) {
-	root := NewRootCmd()
+	root := &cobra.Command{Use: "rush"}
+	root.PersistentFlags().String("data-dir", "", "")
+	root.PersistentFlags().String("cwd", "", "")
+	root.AddCommand(NewLogsCmd())
 	t.Helper()
 	resetLogsPruneFlags(t)
 	outPath := filepath.Join(t.TempDir(), "stdout.txt")

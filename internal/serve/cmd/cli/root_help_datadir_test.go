@@ -5,10 +5,15 @@ package cli
 // usage string must carry the whole selection order an operator needs.
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+// oneLine collapses the help text's hard wraps so assertions do not depend on
+// where a line happens to break.
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 // TestRootHelp_DataDirDocumentsSelectionOrder: the --data-dir usage must
 // name every branch of the selection order -- the flag itself, the

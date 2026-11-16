@@ -1,4 +1,4 @@
-package cmd
+package cli
 
 import (
 	"bytes"
@@ -16,6 +16,22 @@ import (
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
+
+type batchRunResult struct {
+	RootID         string               `json:"root_id"`
+	OwnerSessionID string               `json:"owner_session_id"`
+	State          string               `json:"state"`
+	Leaves         []batchRunLeafResult `json:"leaves"`
+}
+
+type batchRunLeafResult struct {
+	NodeID  string          `json:"node_id"`
+	State   string          `json:"state"`
+	Code    string          `json:"code"`
+	Summary string          `json:"summary"`
+	Output  string          `json:"output"`
+	Details json.RawMessage `json:"details,omitempty"`
+}
 
 func TestBatchCLIRunTextJSONAndConsecutiveRuns(t *testing.T) {
 	if os.Getenv(batchCLIHelperEnv) == "1" {

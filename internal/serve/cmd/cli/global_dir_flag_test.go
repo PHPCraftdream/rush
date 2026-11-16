@@ -1,6 +1,6 @@
 // --global-dir flag plumbing: arg scanning, applyGlobalDir (env override +
 // eager layout creation), and flag-beats-env precedence.
-package cmd
+package cli
 
 import (
 	"os"
@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	"github.com/stretchr/testify/require"
 )
 
@@ -42,7 +43,7 @@ func TestApplyGlobalDir(t *testing.T) {
 	t.Setenv(config.GlobalDirEnv, "")
 
 	target := filepath.Join(tempHome, "gd-target")
-	applyGlobalDir(target)
+	cmdkit.ApplyGlobalDir(target)
 
 	got := os.Getenv(config.GlobalDirEnv)
 	want, err := filepath.Abs(target)
@@ -71,7 +72,7 @@ func TestApplyGlobalDirRelativePath(t *testing.T) {
 	t.Setenv(config.GlobalDirEnv, "")
 
 	t.Chdir(t.TempDir())
-	applyGlobalDir("relative-gd-root")
+	cmdkit.ApplyGlobalDir("relative-gd-root")
 
 	got := os.Getenv(config.GlobalDirEnv)
 	require.True(t, filepath.IsAbs(got), "env value must be made absolute: %q", got)
@@ -90,7 +91,7 @@ func TestApplyGlobalDirFlagWinsOverEnv(t *testing.T) {
 	newRoot := filepath.Join(t.TempDir(), "new-root")
 	t.Setenv(config.GlobalDirEnv, old)
 
-	applyGlobalDir(newRoot)
+	cmdkit.ApplyGlobalDir(newRoot)
 
 	want, err := filepath.Abs(newRoot)
 	require.NoError(t, err)
@@ -107,7 +108,7 @@ func TestApplyGlobalDirEmptyIsNoop(t *testing.T) {
 	envValue := filepath.Join(t.TempDir(), "env-only-root")
 	t.Setenv(config.GlobalDirEnv, envValue)
 
-	applyGlobalDir("")
+	cmdkit.ApplyGlobalDir("")
 
 	require.Equal(t, envValue, os.Getenv(config.GlobalDirEnv))
 }
