@@ -335,7 +335,7 @@ func (s *ConfigStore) guardSettingsWriteForAuthority(path string, data []byte, k
 	if allRecent {
 		return "", nil
 	}
-	if authority.liftsSettingsLock() {
+	if liftsSettingsLock(authority) {
 		return "", nil
 	}
 	if err := s.checkExternalSettingsSources(path, data); err != nil {

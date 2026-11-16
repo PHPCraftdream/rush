@@ -322,7 +322,7 @@ fi
 out="$(bash "$guard" 2>&1)"
 status=$?
 expect_status "case 11: unmocked guard run on the real repository exits 0" 0 "$status"
-expect_output_contains "case 11: summary reports the seeded allowlist size" "$out" "13 allowlisted over 7"
+expect_output_contains "case 11: summary reports the seeded allowlist size" "$out" "14 allowlisted over 7"
 
 if [ "$failures" -gt 0 ]; then
 	printf 'check_dir_entries_selftest: %d failure(s)\n' "$failures"

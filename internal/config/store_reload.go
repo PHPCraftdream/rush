@@ -210,7 +210,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	if prev.config != nil && prev.config.Options != nil {
 		dataDir = prev.config.Options.DataDirectory
 	}
-	cfg.setDefaults(s.workingDir, dataDir)
+	setDefaults(cfg, s.workingDir, dataDir)
 
 	workspaceDiscoveryPath := normalizeDiscoveryPath(workspaceConfigPath(cfg.Options.DataDirectory))
 	workspacePath := normalizeReloadPath(workspaceDiscoveryPath)
@@ -257,7 +257,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 			}
 			dataDir := cfg.Options.DataDirectory
 			*cfg = *merged
-			cfg.setDefaults(s.workingDir, dataDir)
+			setDefaults(cfg, s.workingDir, dataDir)
 			loadedPaths = append(loadedPaths, normalizeReloadPath(workspacePath))
 		}
 	}

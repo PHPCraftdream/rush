@@ -51,7 +51,7 @@ func TestConfigureProviders_AutoDiscovers(t *testing.T) {
 			},
 		}),
 	}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 
 	e := env.NewFromMap(map[string]string{})
 	resolver := NewShellVariableResolver(e)
@@ -83,7 +83,7 @@ func TestConfigureProviders_DiscoveryOptOut(t *testing.T) {
 			},
 		}),
 	}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 
 	e := env.NewFromMap(map[string]string{})
 	resolver := NewShellVariableResolver(e)
@@ -111,7 +111,7 @@ func TestConfigureProviders_DiscoveryMergesWithExisting(t *testing.T) {
 			},
 		}),
 	}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 
 	e := env.NewFromMap(map[string]string{})
 	resolver := NewShellVariableResolver(e)

@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 	"github.com/stretchr/testify/require"
@@ -23,7 +23,7 @@ func captureProviderLoadLog(t *testing.T, provider ProviderConfig) string {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	cfg := &Config{Providers: csync.NewMap[string, ProviderConfig]()}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 	cfg.Providers.Set("openai-codex", provider)
 
 	ctx, cancel := context.WithCancel(context.Background())

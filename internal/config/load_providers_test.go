@@ -36,7 +36,7 @@ func TestConfig_configureProviders(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 	env := env.NewFromMap(map[string]string{
 		"OPENAI_API_KEY": "test-key",
 	})
@@ -78,7 +78,7 @@ func TestConfig_configureProvidersWithOverride(t *testing.T) {
 			},
 		},
 	})
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 
 	env := env.NewFromMap(map[string]string{
 		"OPENAI_API_KEY": "test-key",
@@ -115,7 +115,7 @@ func TestConfig_configureProviders_PreservesLocalCLICustomFields(t *testing.T) {
 		PeakHours: peakHours,
 		Disable:   true,
 	})
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 
 	e := env.NewFromMap(map[string]string{})
 	resolver := NewShellVariableResolver(e)
@@ -165,7 +165,7 @@ func TestConfig_configureProvidersWithNewProvider(t *testing.T) {
 			},
 		}),
 	}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 	env := env.NewFromMap(map[string]string{
 		"OPENAI_API_KEY": "test-key",
 	})
@@ -200,7 +200,7 @@ func TestConfig_configureProvidersBedrockWithCredentials(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 	env := env.NewFromMap(map[string]string{
 		"AWS_ACCESS_KEY_ID":     "test-key-id",
 		"AWS_SECRET_ACCESS_KEY": "test-secret-key",
@@ -229,7 +229,7 @@ func TestConfig_configureProvidersBedrockWithoutCredentials(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 	env := env.NewFromMap(map[string]string{})
 	resolver := NewShellVariableResolver(env)
 	err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
@@ -251,7 +251,7 @@ func TestConfig_configureProvidersVertexAIWithCredentials(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 	env := env.NewFromMap(map[string]string{
 		"VERTEXAI_PROJECT":  "test-project",
 		"VERTEXAI_LOCATION": "us-central1",
@@ -282,7 +282,7 @@ func TestConfig_configureProvidersVertexAIWithoutCredentials(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 	env := env.NewFromMap(map[string]string{
 		"GOOGLE_GENAI_USE_VERTEXAI": "false",
 		"GOOGLE_CLOUD_PROJECT":      "test-project",
@@ -308,7 +308,7 @@ func TestConfig_configureProvidersVertexAIMissingProject(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 	env := env.NewFromMap(map[string]string{
 		"GOOGLE_GENAI_USE_VERTEXAI": "true",
 		"GOOGLE_CLOUD_LOCATION":     "us-central1",
@@ -333,7 +333,7 @@ func TestConfig_configureProvidersSetProviderID(t *testing.T) {
 	}
 
 	cfg := &Config{}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 	env := env.NewFromMap(map[string]string{
 		"OPENAI_API_KEY": "test-key",
 	})
@@ -530,7 +530,7 @@ func TestConfig_configureProvidersWithDisabledProvider(t *testing.T) {
 			},
 		}),
 	}
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 
 	env := env.NewFromMap(map[string]string{
 		"OPENAI_API_KEY": "test-key",
@@ -576,7 +576,7 @@ func TestConfig_configureProviders_PreservesProviderNetwork(t *testing.T) {
 			BaseURL: "https://api.openai.com/v2",
 			Network: providerNetwork,
 		})
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 		// No global options.network in this subtest: the provider-level
 		// block alone must round-trip the rebuild.
 
@@ -602,7 +602,7 @@ func TestConfig_configureProviders_PreservesProviderNetwork(t *testing.T) {
 			APIKey:  "xyz",
 			Network: providerNetwork,
 		})
-		cfg.setDefaults("/tmp", "")
+		setDefaults(cfg, "/tmp", "")
 		// setDefaults guarantees cfg.Options != nil (load_defaults.go checks
 		// c.Options == nil first); now set the global network to prove the
 		// provider-level block is not dropped in its favor.
@@ -636,7 +636,7 @@ func TestConfigureProviders_CLIModelsMetadataAndOrdering(t *testing.T) {
 		Name:   "My Local CLI",
 		Models: []catwalk.Model{{ID: "cli-user-model", Name: "User Model", ContextWindow: 999}},
 	})
-	cfg.setDefaults("/tmp", "")
+	setDefaults(cfg, "/tmp", "")
 
 	store := testStore(cfg)
 	store.cliModels = func() []catalog.LocalCLIModel {

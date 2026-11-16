@@ -14,7 +14,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/config/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 )
 
 var (

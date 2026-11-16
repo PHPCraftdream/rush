@@ -5,10 +5,6 @@
 package config
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -17,60 +13,6 @@ import (
 )
 
 const cacheRevKey = "cache_rev"
-
-// Constant mixed into the cache revision hash; the name is deliberately generic.
-const hashSalt = "7c1f4e9a2b8d6350af02c4e8b19d5736"
-
-var ErrModelsEditedDirectly = errors.New("models cannot be changed by editing the settings file directly; they can only be changed with the rush models commands (ask the user if that is refused)")
-
-// settingsKeyFirstComponent extracts the first sjson path component.
-func settingsKeyFirstComponent(key string) string {
-	first := strings.TrimPrefix(key, ":")
-	var component strings.Builder
-	for i := 0; i < len(first); i++ {
-		switch first[i] {
-		case '.':
-			return component.String()
-		case '\\':
-			i++
-			if i < len(first) {
-				component.WriteByte(first[i])
-			}
-		default:
-			component.WriteByte(first[i])
-		}
-	}
-	return component.String()
-}
-
-// canonicalModelsJSON canonicalizes a models value for hashing. Absent, null,
-// or empty values are treated as not present.
-func canonicalModelsJSON(raw string) (canonical string, present bool, err error) {
-	value := gjson.Parse(raw)
-	if !value.Exists() || value.Type == gjson.Null {
-		return "", false, nil
-	}
-	if value.IsObject() && len(value.Map()) == 0 {
-		return "", false, nil
-	}
-	var decoded any
-	decoder := json.NewDecoder(strings.NewReader(raw))
-	decoder.UseNumber()
-	if err := decoder.Decode(&decoded); err != nil {
-		return "", false, err
-	}
-	encoded, err := json.Marshal(decoded)
-	if err != nil {
-		return "", false, err
-	}
-	return string(encoded), true, nil
-}
-
-// modelsIntegritySignature hashes the canonicalized models value.
-func modelsIntegritySignature(canonical string) string {
-	digest := sha256.Sum256([]byte("v1|" + hashSalt + "|" + canonical))
-	return hex.EncodeToString(digest[:])
-}
 
 // applyModelsIntegrity signs built-in models and custom role definitions.
 func applyModelsIntegrity(doc string) (string, error) {
