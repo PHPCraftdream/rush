@@ -40,7 +40,7 @@ func TestResumeGlobalPeakPausePreservesEffectiveWorkspacePolicy(t *testing.T) {
 	require.NoError(t, err)
 	handleResumeProviderPeakHours(a, client, WSMessage{ID: "resume-global", Payload: payload})
 	select {
-	case raw := <-client.send:
+	case raw := <-client.SendChan():
 		var reply WSMessage
 		require.NoError(t, json.Unmarshal(raw, &reply))
 		require.Equal(t, EventResponse, reply.Type)
@@ -65,9 +65,7 @@ func TestResumeGlobalPeakPausePreservesEffectiveWorkspacePolicy(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, local, localEntry)
 
-	client.hub.configMu.Lock()
-	pending := append([]byte(nil), client.hub.configPending...)
-	client.hub.configMu.Unlock()
+	pending := append([]byte(nil), client.Hub().PendingConfigEnvelope()...)
 	var broadcast WSMessage
 	require.NoError(t, json.Unmarshal(pending, &broadcast))
 	require.Equal(t, EventConfig, broadcast.Type)
@@ -102,7 +100,7 @@ func TestResumeWorkspacePauseOnlyKeepsExplicitOff(t *testing.T) {
 	require.NoError(t, err)
 	handleResumeProviderPeakHours(a, client, WSMessage{ID: "resume-local", Payload: payload})
 	select {
-	case raw := <-client.send:
+	case raw := <-client.SendChan():
 		var reply WSMessage
 		require.NoError(t, json.Unmarshal(raw, &reply))
 		require.Equal(t, EventResponse, reply.Type)
@@ -144,7 +142,7 @@ func TestCustomProviderWorkspaceOffKeepsExplicitNull(t *testing.T) {
 	client := newTestClient()
 	handleUpdateCustomProvider(a, client, WSMessage{ID: "custom-off", Payload: payload})
 	select {
-	case raw := <-client.send:
+	case raw := <-client.SendChan():
 		var reply WSMessage
 		require.NoError(t, json.Unmarshal(raw, &reply))
 		require.Equal(t, EventResponse, reply.Type)

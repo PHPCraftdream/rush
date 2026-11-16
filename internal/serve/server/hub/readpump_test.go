@@ -1,4 +1,4 @@
-package server
+package hub
 
 import (
 	"context"
@@ -37,7 +37,7 @@ import (
 func TestReadPumpUnregisterDoesNotBlockWhenHubStoppedReading(t *testing.T) {
 	t.Parallel()
 
-	hub := newHub()
+	hub := NewHub()
 	// Do NOT run hub.Run at all — this simulates the post-shutdown state
 	// where nothing reads from hub.unregister ever again, the worst case
 	// the fix must survive.
@@ -70,7 +70,7 @@ func TestReadPumpUnregisterDoesNotBlockWhenHubStoppedReading(t *testing.T) {
 	serverSideConn := <-connReady
 	c := newClient(hub, serverSideConn)
 
-	s := &Server{hub: hub}
+	g := &gate{hub: hub, onIncoming: func(context.Context, *Client, []byte) {}}
 
 	// ctx is already cancelled, mirroring the state readPump would observe
 	// during/after server shutdown (Start's shutdown goroutine cancels the
@@ -85,7 +85,7 @@ func TestReadPumpUnregisterDoesNotBlockWhenHubStoppedReading(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		s.readPump(ctx, c)
+		g.readPump(ctx, c)
 		close(done)
 	}()
 

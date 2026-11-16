@@ -67,7 +67,7 @@ func handleCreateSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMe
 	var p CreateSessionPayload
 	if len(msg.Payload) > 0 && string(msg.Payload) != "null" {
 		if err := json.Unmarshal(msg.Payload, &p); err != nil {
-			c.reply(msg.ID, EventError, nil, "invalid payload")
+			c.Reply(msg.ID, EventError, nil, "invalid payload")
 			return
 		}
 	}
@@ -84,7 +84,7 @@ func handleCreateSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMe
 		sess, err = a.Sessions.Create(ctx, title)
 	}
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	// Web sessions never prompt for permissions — arm auto-approve at birth.
@@ -115,17 +115,17 @@ func handleCreateSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMe
 	}
 
 	// Broadcast to all clients so every tab sees the new session.
-	c.hub.Broadcast(EventSessionCreated, sess)
+	c.Hub().Broadcast(EventSessionCreated, sess)
 }
 
 func handleForkSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p ForkSessionPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	if p.SessionID == "" {
-		c.reply(msg.ID, EventError, nil, "sessionID required")
+		c.Reply(msg.ID, EventError, nil, "sessionID required")
 		return
 	}
 
@@ -135,34 +135,34 @@ func handleForkSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMess
 	// half-built fork the client mistakes for a complete one.
 	fork, err := a.Sessions.ForkSession(ctx, p.SessionID, p.Title)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	// Web sessions never prompt for permissions — arm auto-approve at birth.
 	autoApproveWebSession(a, fork.ID)
 
 	// Broadcast so all tabs see the fork and switch to it
-	c.hub.Broadcast(EventSessionCreated, fork)
+	c.Hub().Broadcast(EventSessionCreated, fork)
 }
 
 func handleDeleteSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p DeleteSessionPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
-	if c.auth != nil {
+	if c.HasAuth() {
 		sess, err := a.Sessions.Get(ctx, p.SessionID)
 		if err != nil || !appOwnsSession(a, sess) {
-			c.reply(msg.ID, EventError, nil, "session not found")
+			c.Reply(msg.ID, EventError, nil, "session not found")
 			return
 		}
 	}
 	if err := a.Sessions.Delete(ctx, p.SessionID); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 // handleDeleteOtherSessions deletes every top-level session this process OWNS
@@ -187,16 +187,16 @@ func handleDeleteSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMe
 func handleDeleteOtherSessions(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p DeleteOtherSessionsPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	if p.KeepID == "" {
-		c.reply(msg.ID, EventResponse, DeleteOtherSessionsResult{DeletedIDs: []string{}, FailedIDs: []string{}}, "")
+		c.Reply(msg.ID, EventResponse, DeleteOtherSessionsResult{DeletedIDs: []string{}, FailedIDs: []string{}}, "")
 		return
 	}
 	sessions, err := a.Sessions.List(ctx)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	deletedIDs := []string{}
@@ -226,7 +226,7 @@ func handleDeleteOtherSessions(ctx context.Context, a *appPkg.App, c *Client, ms
 		}
 		deletedIDs = append(deletedIDs, s.ID)
 	}
-	c.reply(msg.ID, EventResponse, DeleteOtherSessionsResult{DeletedIDs: deletedIDs, FailedIDs: failedIDs}, "")
+	c.Reply(msg.ID, EventResponse, DeleteOtherSessionsResult{DeletedIDs: deletedIDs, FailedIDs: failedIDs}, "")
 }
 
 // externalOwnershipDataDir resolves the configured data directory (also
@@ -323,7 +323,7 @@ func AnnotateSessionExternalOwnership(a *appPkg.App, s *session.Session) {
 func handleListSessions(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	sessions, err := a.Sessions.List(ctx)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	if sessions == nil {
@@ -331,7 +331,7 @@ func handleListSessions(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	}
 	sessions = filterSessionsForPinnedClient(sessions, c)
 	annotateSessionActivity(ctx, a, sessions)
-	c.reply(msg.ID, EventSessionsList, sessions, "")
+	c.Reply(msg.ID, EventSessionsList, sessions, "")
 
 	// Correct any stale agent_busy and summarize_queued state in the replay
 	// buffer by sending the server's authoritative state for every session
@@ -341,8 +341,8 @@ func handleListSessions(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		for _, s := range sessions {
 			busy := a.AgentCoordinator.IsSessionBusy(s.ID)
 			queued := a.AgentCoordinator.SummarizeQueued(s.ID)
-			c.reply("", EventAgentBusy, AgentBusyPayload{SessionID: s.ID, Busy: busy}, "")
-			c.reply("", EventSummarizeQueued, SummarizeQueuedPayload{SessionID: s.ID, Queued: queued}, "")
+			c.Reply("", EventAgentBusy, AgentBusyPayload{SessionID: s.ID, Busy: busy}, "")
+			c.Reply("", EventSummarizeQueued, SummarizeQueuedPayload{SessionID: s.ID, Queued: queued}, "")
 		}
 	}
 }
@@ -350,16 +350,16 @@ func handleListSessions(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 func handleRenameSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p RenameSessionPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	if err := a.Sessions.Rename(ctx, p.SessionID, p.Title); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	sess, err := a.Sessions.Get(ctx, p.SessionID)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	// Rename publishes an UpdatedEvent of its own now (see
@@ -368,38 +368,38 @@ func handleRenameSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMe
 	// ownership annotation, so it stays. The two are idempotent for the
 	// client (upsertSession replaces by ID).
 	AnnotateSessionExternalOwnership(a, &sess)
-	c.hub.Broadcast(EventSessionUpdated, sess)
+	c.Hub().Broadcast(EventSessionUpdated, sess)
 }
 
 func handleGetSystemPrompt(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p GetSystemPromptPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.SessionID == "" {
-		c.reply(msg.ID, EventError, nil, "invalid payload: sessionID required")
+		c.Reply(msg.ID, EventError, nil, "invalid payload: sessionID required")
 		return
 	}
 	sess, err := a.Sessions.Get(ctx, p.SessionID)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
-	c.reply(msg.ID, EventSystemPrompt, map[string]string{"sessionID": p.SessionID, "content": sess.SystemPrompt}, "")
+	c.Reply(msg.ID, EventSystemPrompt, map[string]string{"sessionID": p.SessionID, "content": sess.SystemPrompt}, "")
 }
 
 func handleSetSystemPrompt(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p SetSystemPromptPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil || p.SessionID == "" {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	if a.AgentCoordinator == nil {
-		c.reply(msg.ID, EventError, nil, "agent not configured")
+		c.Reply(msg.ID, EventError, nil, "agent not configured")
 		return
 	}
 	if err := a.AgentCoordinator.UpdateSessionSystemPrompt(ctx, p.SessionID, p.Content); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 // ── Todos ─────────────────────────────────────────────────────────────────────
@@ -407,12 +407,12 @@ func handleSetSystemPrompt(ctx context.Context, a *appPkg.App, c *Client, msg WS
 func handleUpdateTodos(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p UpdateTodosPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	sess, err := a.Sessions.Get(ctx, p.SessionID)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, "session not found")
+		c.Reply(msg.ID, EventError, nil, "session not found")
 		return
 	}
 	todos := make([]session.Todo, len(p.Todos))
@@ -463,8 +463,8 @@ func handleUpdateTodos(ctx context.Context, a *appPkg.App, c *Client, msg WSMess
 	sess.DeletedTodos = filtered
 
 	if err := a.Sessions.SetTodos(ctx, sess.ID, todos, filtered); err != nil {
-		c.reply(msg.ID, EventError, nil, "failed to save todos")
+		c.Reply(msg.ID, EventError, nil, "failed to save todos")
 		return
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }

@@ -1,4 +1,4 @@
-package server
+package hub
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 func TestP723_TryRegisterRefusesAfterHubCommittedToExit(t *testing.T) {
 	t.Parallel()
 
-	hub := newHub()
+	hub := NewHub()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -30,7 +30,7 @@ func TestP723_TryRegisterRefusesAfterHubCommittedToExit(t *testing.T) {
 	<-runDone
 
 	c := newClient(hub, nil)
-	require.False(t, hub.tryRegister(context.Background(), c),
+	require.False(t, hub.TryRegister(context.Background(), c),
 		"tryRegister must refuse after hub.stopped is closed")
 	require.Zero(t, len(hub.register),
 		"refused client must not be left in the register channel")
@@ -55,7 +55,7 @@ func TestP723_RunClosesSendOfLateBufferedRegistrations(t *testing.T) {
 	t.Parallel()
 
 	for i := 0; i < 20; i++ {
-		hub := newHub()
+		hub := NewHub()
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
@@ -109,7 +109,7 @@ func TestP723_TryRegisterNoLeakWhenHubStopsDuringInFlightSend(t *testing.T) {
 	var trueCount, falseCount int
 
 	for i := 0; i < 20; i++ {
-		hub := newHub()
+		hub := NewHub()
 
 		// Fill register to capacity so the real test client's send parks.
 		for i := 0; i < cap(hub.register); i++ {
@@ -124,7 +124,7 @@ func TestP723_TryRegisterNoLeakWhenHubStopsDuringInFlightSend(t *testing.T) {
 		// Start the registration in its own goroutine — it will block on the
 		// full buffer until Run's drain frees a slot.
 		go func() {
-			res <- hub.tryRegister(context.Background(), c)
+			res <- hub.TryRegister(context.Background(), c)
 		}()
 
 		// Run with a pre-cancelled context so it immediately enters shutdown,
@@ -183,7 +183,7 @@ func TestP723_TryRegisterNoLeakWhenHubStopsDuringInFlightSend(t *testing.T) {
 func TestP723_TryRegisterPostSendCheckCatchesLateLanding(t *testing.T) {
 	t.Parallel()
 
-	hub := newHub()
+	hub := NewHub()
 
 	// Fill register to capacity to force the sender to park.
 	for i := 0; i < cap(hub.register); i++ {
@@ -198,7 +198,7 @@ func TestP723_TryRegisterPostSendCheckCatchesLateLanding(t *testing.T) {
 	// Start the registration in its own goroutine — it will block on the
 	// full buffer until we free a slot below.
 	go func() {
-		res <- hub.tryRegister(context.Background(), c)
+		res <- hub.TryRegister(context.Background(), c)
 	}()
 
 	// Pragmatic park wait: Go provides no way to observe that a send is
@@ -240,7 +240,7 @@ func TestP723_TryRegisterPostSendCheckCatchesLateLanding(t *testing.T) {
 func TestP723_TryRegisterUnblockedByContextCancel(t *testing.T) {
 	t.Parallel()
 
-	hub := newHub()
+	hub := NewHub()
 
 	// Fill register to capacity.
 	for i := 0; i < cap(hub.register); i++ {
@@ -255,7 +255,7 @@ func TestP723_TryRegisterUnblockedByContextCancel(t *testing.T) {
 	c := newClient(hub, nil)
 	// Buffer is full, stopped is open, ctx is cancelled — the Done branch
 	// fires immediately, no goroutine needed.
-	require.False(t, hub.tryRegister(ctx, c),
+	require.False(t, hub.TryRegister(ctx, c),
 		"tryRegister must return false when ctx is cancelled, unblocking the caller")
 
 	close(c.workQueue)

@@ -14,19 +14,19 @@ import (
 func handleSetMCPDisabled(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p SetMCPDisabledPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	store := a.Store()
 	if store == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	var err error
 	// Trusted-UI connections may write settings while the settings lock is
 	// active: route to the Owner's TrustedUI variants, which lift ONLY the
 	// settings-lock veto. Non-UI clients keep the guarded behavior.
-	trusted := c.settingsWriteAuthority() == config.SettingsAuthorityTrustedUI
+	trusted := c.SettingsWriteAuthority() == config.SettingsAuthorityTrustedUI
 	if p.Disabled {
 		// Mutations route through the App's own MCP owner (task #923): a second
 		// application-mode App holds a standalone owner, and package-level calls
@@ -46,25 +46,25 @@ func handleSetMCPDisabled(ctx context.Context, a *appPkg.App, c *Client, msg WSM
 		}
 	}
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 func handleAddMCPServer(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p AddMCPServerPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	if p.Name == "" {
-		c.reply(msg.ID, EventError, nil, "name is required")
+		c.Reply(msg.ID, EventError, nil, "name is required")
 		return
 	}
 	store := a.Store()
 	if store == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	mcpCfg := config.MCPConfig{
@@ -79,63 +79,63 @@ func handleAddMCPServer(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 	// Trusted-UI connections may write settings while the settings lock is
 	// active: route to the Owner's TrustedUI variant, which lifts ONLY the
 	// settings-lock veto. Non-UI clients keep the guarded behavior.
-	if c.settingsWriteAuthority() == config.SettingsAuthorityTrustedUI {
+	if c.SettingsWriteAuthority() == config.SettingsAuthorityTrustedUI {
 		if err := a.MCPOwner().AddServerTrustedUI(ctx, store, p.Name, mcpCfg); err != nil {
-			c.reply(msg.ID, EventError, nil, err.Error())
+			c.Reply(msg.ID, EventError, nil, err.Error())
 			return
 		}
-		c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+		c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 		return
 	}
 	if err := a.MCPOwner().AddServer(ctx, store, p.Name, mcpCfg); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 func handleRemoveMCPServer(a *appPkg.App, c *Client, msg WSMessage) {
 	var p RemoveMCPServerPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	store := a.Store()
 	if store == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	// Trusted-UI connections may write settings while the settings lock is
 	// active: route to the Owner's TrustedUI variant, which lifts ONLY the
 	// settings-lock veto. Non-UI clients keep the guarded behavior.
-	if c.settingsWriteAuthority() == config.SettingsAuthorityTrustedUI {
+	if c.SettingsWriteAuthority() == config.SettingsAuthorityTrustedUI {
 		if err := a.MCPOwner().RemoveServerTrustedUI(store, p.Name); err != nil {
-			c.reply(msg.ID, EventError, nil, err.Error())
+			c.Reply(msg.ID, EventError, nil, err.Error())
 			return
 		}
-		c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+		c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 		return
 	}
 	if err := a.MCPOwner().RemoveServer(store, p.Name); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 func handleUpdateMCPServer(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p UpdateMCPServerPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	if p.OldName == "" || p.Name == "" {
-		c.reply(msg.ID, EventError, nil, "oldName and name are required")
+		c.Reply(msg.ID, EventError, nil, "oldName and name are required")
 		return
 	}
 	store := a.Store()
 	if store == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	mcpCfg := config.MCPConfig{
@@ -150,17 +150,17 @@ func handleUpdateMCPServer(ctx context.Context, a *appPkg.App, c *Client, msg WS
 	// Trusted-UI connections may write settings while the settings lock is
 	// active: route to the Owner's TrustedUI variant, which lifts ONLY the
 	// settings-lock veto. Non-UI clients keep the guarded behavior.
-	if c.settingsWriteAuthority() == config.SettingsAuthorityTrustedUI {
+	if c.SettingsWriteAuthority() == config.SettingsAuthorityTrustedUI {
 		if err := a.MCPOwner().ReplaceServerTrustedUI(ctx, store, p.OldName, p.Name, mcpCfg); err != nil {
-			c.reply(msg.ID, EventError, nil, err.Error())
+			c.Reply(msg.ID, EventError, nil, err.Error())
 			return
 		}
-		c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+		c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 		return
 	}
 	if err := a.MCPOwner().ReplaceServer(ctx, store, p.OldName, p.Name, mcpCfg); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }

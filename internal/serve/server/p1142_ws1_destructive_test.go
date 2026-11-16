@@ -136,7 +136,7 @@ func replyByID(t *testing.T, c *Client, id string) WSMessage {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		select {
-		case raw := <-c.send:
+		case raw := <-c.SendChan():
 			var env WSMessage
 			require.NoError(t, json.Unmarshal(raw, &env))
 			if env.ID == id {
@@ -183,8 +183,8 @@ func TestHandleDeleteOtherSessions_SkipsForeignWorkspace(t *testing.T) {
 	hub := newHub()
 	go hub.Run(ctx)
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 100)
-	hub.register <- client
+	client.ResizeSendChan(100)
+	hub.Register(client)
 
 	payload, err := json.Marshal(DeleteOtherSessionsPayload{KeepID: keep.ID})
 	require.NoError(t, err)
@@ -290,8 +290,8 @@ func TestWS1_LegacyRowsAreOwnedByGitCheckoutServer(t *testing.T) {
 		hub := newHub()
 		go hub.Run(ctx)
 		client := newClient(hub, nil)
-		client.send = make(chan []byte, 100)
-		hub.register <- client
+		client.ResizeSendChan(100)
+		hub.Register(client)
 
 		payload, err := json.Marshal(DeleteOtherSessionsPayload{KeepID: keep.ID})
 		require.NoError(t, err)

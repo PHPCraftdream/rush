@@ -30,7 +30,7 @@ const (
 func handleSetSessionModels(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
 	var p SetSessionModelsPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 
@@ -183,19 +183,19 @@ func handleSetSessionModels(ctx context.Context, a *appPkg.App, c *Client, msg W
 	// a client — see AnnotateSessionExternalOwnership.
 	if sess, err := a.Sessions.Get(ctx, p.SessionID); err == nil {
 		AnnotateSessionExternalOwnership(a, &sess)
-		c.hub.Broadcast(EventSessionUpdated, sess)
+		c.Hub().Broadcast(EventSessionUpdated, sess)
 	}
 	// Broadcast updated config so all clients see the new recent-models list immediately.
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
-	c.reply(msg.ID, EventResponse, result, "")
+	c.Reply(msg.ID, EventResponse, result, "")
 }
 
 func handleRemoveRecentModel(a *appPkg.App, c *Client, msg WSMessage) {
 	var p RemoveRecentModelPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	store := a.Store()
@@ -207,15 +207,15 @@ func handleRemoveRecentModel(a *appPkg.App, c *Client, msg WSMessage) {
 		slog.Warn("ws: failed to remove recent model", "err", err)
 	}
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 func handleTrackModelUsage(a *appPkg.App, c *Client, msg WSMessage) {
 	var p TrackModelUsagePayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	store := a.Store()
@@ -243,9 +243,9 @@ func handleTrackModelUsage(a *appPkg.App, c *Client, msg WSMessage) {
 		slog.Warn("ws: failed to track model usage", "err", err)
 	}
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 // scopedModelSlots is the fixed slot set the scoped-models API exposes, in
@@ -339,15 +339,15 @@ func buildScopedModelsWire(a *appPkg.App) (ScopedModelsWire, error) {
 func handleGetScopedModels(a *appPkg.App, c *Client, msg WSMessage) {
 	store := a.Store()
 	if store == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	wire, err := buildScopedModelsWire(a)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
-	c.reply(msg.ID, EventScopedModels, wire, "")
+	c.Reply(msg.ID, EventScopedModels, wire, "")
 }
 
 // handleSetScopedModel writes one slot at one scope (config.ScopeGlobal =
@@ -357,43 +357,43 @@ func handleGetScopedModels(a *appPkg.App, c *Client, msg WSMessage) {
 func handleSetScopedModel(a *appPkg.App, c *Client, msg WSMessage) {
 	var p SetScopedModelPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	store := a.Store()
 	if store == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	scope, err := scopedModelsScopeFromWire(p.Scope)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	slot := config.SelectedModelType(p.Slot)
 	if !slices.Contains(scopedModelSlots, slot) {
-		c.reply(msg.ID, EventError, nil, fmt.Sprintf("unknown slot %q", p.Slot))
+		c.Reply(msg.ID, EventError, nil, fmt.Sprintf("unknown slot %q", p.Slot))
 		return
 	}
 	if p.Provider == "" || p.Model == "" {
-		c.reply(msg.ID, EventError, nil, "provider and model are required")
+		c.Reply(msg.ID, EventError, nil, "provider and model are required")
 		return
 	}
 	if err := store.UpdatePreferredModelWithAuthority(scope, slot, config.SelectedModel{
 		Provider:        p.Provider,
 		Model:           p.Model,
 		ReasoningEffort: p.ReasoningEffort,
-	}, c.settingsWriteAuthority()); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+	}, c.SettingsWriteAuthority()); err != nil {
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
 	if wire, err := buildScopedModelsWire(a); err == nil {
-		c.hub.Broadcast(EventScopedModels, wire)
+		c.Hub().Broadcast(EventScopedModels, wire)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
 // handleClearScopedModel removes one slot's explicit value at one scope
@@ -403,39 +403,39 @@ func handleSetScopedModel(a *appPkg.App, c *Client, msg WSMessage) {
 func handleClearScopedModel(a *appPkg.App, c *Client, msg WSMessage) {
 	var p ClearScopedModelPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
-		c.reply(msg.ID, EventError, nil, "invalid payload")
+		c.Reply(msg.ID, EventError, nil, "invalid payload")
 		return
 	}
 	store := a.Store()
 	if store == nil {
-		c.reply(msg.ID, EventError, nil, "config not available")
+		c.Reply(msg.ID, EventError, nil, "config not available")
 		return
 	}
 	scope, err := scopedModelsScopeFromWire(p.Scope)
 	if err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	slot := config.SelectedModelType(p.Slot)
 	if !slices.Contains(scopedModelSlots, slot) {
-		c.reply(msg.ID, EventError, nil, fmt.Sprintf("unknown slot %q", p.Slot))
+		c.Reply(msg.ID, EventError, nil, fmt.Sprintf("unknown slot %q", p.Slot))
 		return
 	}
-	if err := store.RemoveConfigFieldWithAuthority(scope, "models."+string(slot), c.settingsWriteAuthority()); err != nil {
-		c.reply(msg.ID, EventError, nil, err.Error())
+	if err := store.RemoveConfigFieldWithAuthority(scope, "models."+string(slot), c.SettingsWriteAuthority()); err != nil {
+		c.Reply(msg.ID, EventError, nil, err.Error())
 		return
 	}
 	// Best-effort cleanup: if that was the last slot in this scope's
 	// "models" object, strip the now-empty object so the file stays clean —
 	// same behavior as `rush models unset` (internal/cmd/models_unset.go).
 	if remaining, rerr := store.ReadAllModelsAtScope(scope); rerr == nil && len(remaining) == 0 {
-		_ = store.RemoveConfigFieldWithAuthority(scope, "models", c.settingsWriteAuthority())
+		_ = store.RemoveConfigFieldWithAuthority(scope, "models", c.SettingsWriteAuthority())
 	}
 	if wire, ok := buildConfigWire(a); ok {
-		c.hub.Broadcast(EventConfig, wire)
+		c.Hub().Broadcast(EventConfig, wire)
 	}
 	if wire, err := buildScopedModelsWire(a); err == nil {
-		c.hub.Broadcast(EventScopedModels, wire)
+		c.Hub().Broadcast(EventScopedModels, wire)
 	}
-	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
+	c.Reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }

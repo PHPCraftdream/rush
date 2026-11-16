@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -131,53 +130,34 @@ func (f *blockingCoordinator) SetAllowPeakHours(allow bool)                     
 func (f *blockingCoordinator) SetPersistentMode(persistent bool)                {}
 func (f *blockingCoordinator) ResetAutoResumeCounter(sessionID string)          {}
 
-// dialTestWS upgrades an httptest server to a real WebSocket connection and
-// hands the server side to s.readPump on its own goroutine, exactly the way
-// Server.handleWS does in production. Returns the client-side conn for the
-// test to write/read frames on, plus a channel closed when readPump returns.
-func dialTestWS(t *testing.T, s *Server) (*websocket.Conn, *Client, <-chan struct{}) {
+// dialTestWS dials the real S4 WS gate mounted on an httptest server.
+// Sprint 0 L4 adaptation (S4): handleWS/readPump moved into hub.Gate, so the
+// fixture no longer mirrors Server.handleWS by hand (manual upgrade + register
+// + writePump + readPump — readpump_control_starvation_test.go:138-179 at
+// HEAD); it mounts hub_bridge.ServeWSGate (same GateOptions the composer
+// builds, OnIncoming wired to handleIncoming) and dials /ws through it, so the
+// frames traverse the production upgrade→hello→register→readPump path.
+// Returns the client-side conn for the test to write/read frames on, plus a
+// channel closed when the fixture's context is torn down (the old channel was
+// closed when readPump returned; both staying callers only used it as a
+// best-effort cleanup wait with a timeout fallback).
+func dialTestWS(t *testing.T, s *Server) (*websocket.Conn, <-chan struct{}) {
 	t.Helper()
 
-	upgrader := websocket.Upgrader{}
-	connReady := make(chan *websocket.Conn, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		require.NoError(t, err)
-		connReady <- conn
-	}))
+	done := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() { cancel(); close(done) })
+
+	srv := httptest.NewServer(ServeWSGate(s, ctx))
 	t.Cleanup(srv.Close)
 
-	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
 	clientSide, handshakeResp, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = clientSide.Close() })
 	_ = handshakeResp.Body.Close()
 
-	serverSideConn := <-connReady
-	c := newClient(s.hub, serverSideConn)
-
-	// Mirror Server.handleWS: register with the hub so Hub.Run's broadcast
-	// fan-out (range h.clients) actually reaches this client's c.send — the
-	// EventAgentBusy broadcast handleCancelAgent force-sends would otherwise
-	// silently go nowhere, since it's only ever delivered to clients present
-	// in h.clients.
-	s.hub.register <- c
-
-	// Mirror Server.handleWS: writePump runs in the background so anything
-	// written to c.send (broadcasts, replies) actually reaches the socket.
-	// Without this, EventAgentBusy broadcasts and c.reply calls would just
-	// pile up in c.send and never be observable by a client-side reader.
-	go c.writePump()
-
-	done := make(chan struct{})
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go func() {
-		s.readPump(ctx, c)
-		close(done)
-	}()
-
-	return clientSide, c, done
+	return clientSide, done
 }
 
 // sendWS marshals and writes one WSMessage frame to the given client-side
@@ -220,11 +200,11 @@ func TestReadPumpCancelBypassesQueuedWorkFrame(t *testing.T) {
 	s := &Server{app: a, hub: newHub()}
 	go s.hub.Run(t.Context())
 
-	conn, _, readPumpDone := dialTestWS(t, s)
+	conn, readPumpDone := dialTestWS(t, s)
 
 	// Read every server->client frame on a background goroutine so replies
 	// (including the eventual overload/error replies from the queue) never
-	// block writePump-independent sends into c.send from filling up and
+	// block writePump-independent sends into c.SendChan() from filling up and
 	// wedging anything. We only assert on order via the barriers below, not
 	// on frame content from this drain.
 	cancelReplyID := "cancel-msg-id"
@@ -355,21 +335,21 @@ func waitForSaturation(t *testing.T, s *Server, n int) {
 		// Tap directly into the hub's broadcast channel via a second
 		// registered client, since Hub has no public subscribe-and-count
 		// API. A lightweight fake client with a large send buffer is
-		// sufficient: Run() fans out non-blockingly to c.send.
+		// sufficient: Run() fans out non-blockingly to c.SendChan().
 	}()
 	_ = sub // placeholder removed below; see inline registration instead.
 
 	tapClient := newClient(s.hub, nil)
-	tapClient.send = make(chan []byte, 4096)
-	s.hub.register <- tapClient
+	tapClient.ResizeSendChan(4096)
+	s.hub.Register(tapClient)
 	defer func() {
-		s.hub.unregister <- tapClient
+		s.hub.Unregister(tapClient)
 	}()
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
-		case raw := <-tapClient.send:
+		case raw := <-tapClient.SendChan():
 			var env WSMessage
 			if json.Unmarshal(raw, &env) == nil && env.Type == EventAgentBusy {
 				var p AgentBusyPayload

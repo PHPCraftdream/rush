@@ -73,8 +73,8 @@ func TestHandleListSessions_LiveWorkAnnotationIsBatched(t *testing.T) {
 	go func() { defer close(hubDone); hub.Run(ctx) }()
 	t.Cleanup(func() { cancel(); <-hubDone })
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 512)
-	hub.register <- client
+	client.ResizeSendChan(512)
+	hub.Register(client)
 	list := func() []session.Session {
 		handleListSessions(ctx, a, client, WSMessage{ID: "req", Type: CmdListSessions})
 		replies := drainSessionsListReplies(t, client)

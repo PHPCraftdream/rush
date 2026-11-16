@@ -1,4 +1,4 @@
-package server
+package hub
 
 import (
 	"bytes"
@@ -134,7 +134,7 @@ func TestReplayBufferNoReallocationOnEviction(t *testing.T) {
 func TestHubReplayOrder(t *testing.T) {
 	t.Parallel()
 
-	h := newHub()
+	h := NewHub()
 	// Drive the buffer directly — deterministic, no Run()/channel timing.
 	msgs := [][]byte{
 		[]byte("first"),

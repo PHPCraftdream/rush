@@ -60,8 +60,8 @@ func TestHandleDeleteOtherSessions_PartialFailureReportsBothLists(t *testing.T) 
 	hub := newHub()
 	go hub.Run(ctx)
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 100)
-	hub.register <- client
+	client.ResizeSendChan(100)
+	hub.Register(client)
 
 	payload, err := json.Marshal(DeleteOtherSessionsPayload{KeepID: keep.ID})
 	require.NoError(t, err)
@@ -71,7 +71,7 @@ func TestHandleDeleteOtherSessions_PartialFailureReportsBothLists(t *testing.T) 
 	deadline := time.Now().Add(2 * time.Second)
 	for reply == nil && time.Now().Before(deadline) {
 		select {
-		case raw := <-client.send:
+		case raw := <-client.SendChan():
 			var env WSMessage
 			require.NoError(t, json.Unmarshal(raw, &env))
 			if env.ID != "req-684" {
@@ -122,8 +122,8 @@ func TestHandleDeleteOtherSessions_FullSuccessReportsAllDeletedNoneFailed(t *tes
 	hub := newHub()
 	go hub.Run(ctx)
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 100)
-	hub.register <- client
+	client.ResizeSendChan(100)
+	hub.Register(client)
 
 	payload, err := json.Marshal(DeleteOtherSessionsPayload{KeepID: keep.ID})
 	require.NoError(t, err)
@@ -133,7 +133,7 @@ func TestHandleDeleteOtherSessions_FullSuccessReportsAllDeletedNoneFailed(t *tes
 	deadline := time.Now().Add(2 * time.Second)
 	for reply == nil && time.Now().Before(deadline) {
 		select {
-		case raw := <-client.send:
+		case raw := <-client.SendChan():
 			var env WSMessage
 			require.NoError(t, json.Unmarshal(raw, &env))
 			if env.ID != "req-684-ok" {

@@ -205,8 +205,8 @@ func TestP2_2_ConcurrentSend_DoesNotBroadcastBusyFalseWhileStillOwned(t *testing
 	t.Cleanup(func() { ctx.Done() }) // Ensure hub stops via context cancellation
 
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 100)
-	hub.register <- client
+	client.ResizeSendChan(100)
+	hub.Register(client)
 
 	// Build the WSMessage payload for handleSendMessage.
 	payload, err := json.Marshal(SendMessagePayload{
@@ -233,7 +233,7 @@ func TestP2_2_ConcurrentSend_DoesNotBroadcastBusyFalseWhileStillOwned(t *testing
 drainLoop:
 	for {
 		select {
-		case sentBytes := <-client.send:
+		case sentBytes := <-client.SendChan():
 			var sent WSMessage
 			require.NoError(t, json.Unmarshal(sentBytes, &sent))
 			sentEvents = append(sentEvents, sent)
@@ -303,8 +303,8 @@ func TestP2_2_ConcurrentSend_BroadcastsBusyFalseWhenActuallyIdle(t *testing.T) {
 	t.Cleanup(func() { ctx.Done() }) // Ensure hub stops via context cancellation
 
 	client := newClient(hub, nil)
-	client.send = make(chan []byte, 100)
-	hub.register <- client
+	client.ResizeSendChan(100)
+	hub.Register(client)
 
 	// Helper function to drain and check broadcasts.
 	checkBroadcasts := func(fakeCoord *fakeIsSessionBusyCoordinator) bool {
@@ -325,7 +325,7 @@ func TestP2_2_ConcurrentSend_BroadcastsBusyFalseWhenActuallyIdle(t *testing.T) {
 	drainLoop:
 		for {
 			select {
-			case <-client.send:
+			case <-client.SendChan():
 			default:
 				break drainLoop
 			}
@@ -342,7 +342,7 @@ func TestP2_2_ConcurrentSend_BroadcastsBusyFalseWhenActuallyIdle(t *testing.T) {
 	drainCheck:
 		for {
 			select {
-			case sentBytes := <-client.send:
+			case sentBytes := <-client.SendChan():
 				var sent WSMessage
 				require.NoError(t, json.Unmarshal(sentBytes, &sent))
 				if sent.Type == EventAgentBusy {

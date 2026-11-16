@@ -17,6 +17,7 @@ import (
 	"sort"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/server/hub"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 )
@@ -102,7 +103,7 @@ func buildSessionLiveWorkFromBatch(ctx context.Context, a *appPkg.App, cache *ti
 	// A root started by one direct call carries its own input: only the other
 	// roots (batch_run, rows without a payload) need the history lookup.
 	jobs := make([]liveWorkTitleJob, 0, len(roots))
-	payloadTitles := make(map[liveWorkTitleKey]string, len(roots))
+	payloadTitles := make(map[hub.TitleKey]string, len(roots))
 	for _, m := range roots {
 		job := liveWorkTitleJob{
 			owner:      m.root.OwnerSessionID,
@@ -110,12 +111,12 @@ func buildSessionLiveWorkFromBatch(ctx context.Context, a *appPkg.App, cache *ti
 			inputHash:  m.root.InputHash.String,
 		}
 		if t := m.payloadTitle(); t != "" {
-			payloadTitles[liveWorkTitleKey(job)] = t
+			payloadTitles[hub.TitleKey{Owner: job.owner, ToolCallID: job.toolCallID, InputHash: job.inputHash}] = t
 			continue
 		}
 		jobs = append(jobs, job)
 	}
-	titles := cache.titles(ctx, a, jobs)
+	titles := titles(ctx, a, cache, jobs)
 	for key, t := range payloadTitles {
 		titles[key] = t
 	}
@@ -326,9 +327,9 @@ func capBatchRoots(metas []batchRootMeta) []batchRootMeta {
 // executing task child the agent family launched on (m.askNodeID, the
 // production question identity per batch_exec_agent.go's Launch.ID); the
 // root's node id stays the last-resort fallback for legacy root-keyed rows.
-func batchRootItem(m batchRootMeta, titles map[liveWorkTitleKey]string, questions map[string]session.ChildQuestion) LiveWorkItemWire {
+func batchRootItem(m batchRootMeta, titles map[hub.TitleKey]string, questions map[string]session.ChildQuestion) LiveWorkItemWire {
 	root := m.root
-	key := liveWorkTitleKey{root.OwnerSessionID, root.ToolCallID.String, root.InputHash.String}
+	key := hub.TitleKey{Owner: root.OwnerSessionID, ToolCallID: root.ToolCallID.String, InputHash: root.InputHash.String}
 	item := LiveWorkItemWire{
 		ToolCallID:     root.ToolCallID.String,
 		ToolName:       m.taskKind,
