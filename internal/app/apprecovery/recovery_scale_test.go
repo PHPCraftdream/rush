@@ -45,7 +45,7 @@ type recoveryTestDiagnostics struct {
 	waits      []recoveryWaitDiagnostic
 }
 
-func (d *recoveryTestDiagnostics) event(format string, args ...any) {
+func (d *recoveryTestDiagnostics) eventf(format string, args ...any) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.events = append(d.events, fmt.Sprintf(format, args...))
@@ -230,7 +230,7 @@ func newRecoveryTestServices(t *testing.T) (session.Service, message.Service, Re
 func TestRecoverInterruptedTurns_CostProportionalToCandidates(t *testing.T) {
 	sessions, msgs, params, diagnostics := newRecoveryTestServices(t)
 	ctx := t.Context()
-	diagnostics.event("cost test setup started")
+	diagnostics.eventf("cost test setup started")
 
 	const numFinished = 100
 	const numOrphans = 5
@@ -266,11 +266,11 @@ func TestRecoverInterruptedTurns_CostProportionalToCandidates(t *testing.T) {
 		require.NoError(t, err)
 		orphanIDs[sess.ID] = true
 		diagnostics.candidate(sess.ID, orphan.ID)
-		diagnostics.event("seeded orphan candidate session=%s message=%s", sess.ID, orphan.ID)
+		diagnostics.eventf("seeded orphan candidate session=%s message=%s", sess.ID, orphan.ID)
 	}
 
 	RecoverInterruptedTurns(ctx, params)
-	diagnostics.event("recovery returned elapsed=%s listCalls=%d", time.Since(diagnostics.started), diagnostics.listCalls.Load())
+	diagnostics.eventf("recovery returned elapsed=%s listCalls=%d", time.Since(diagnostics.started), diagnostics.listCalls.Load())
 
 	assert.Equal(t, int64(numOrphans), diagnostics.listCalls.Load(),
 		"recovery must only process the %d candidate sessions, not all %d sessions",

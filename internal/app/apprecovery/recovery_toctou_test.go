@@ -46,7 +46,7 @@ func TestRecoverInterruptedTurns_StaleCandidateNotStamped(t *testing.T) {
 	})
 	require.NoError(t, err)
 	diagnostics.candidate(sess.ID, orphan.ID)
-	diagnostics.event("TOCTOU orphan session=%s message=%s", sess.ID, orphan.ID)
+	diagnostics.eventf("TOCTOU orphan session=%s message=%s", sess.ID, orphan.ID)
 	require.False(t, orphan.IsFinished(), "precondition: orphan must not be finished")
 
 	guardsPassed := make(chan struct{})
@@ -60,7 +60,7 @@ func TestRecoverInterruptedTurns_StaleCandidateNotStamped(t *testing.T) {
 		if priorPreWrite != nil {
 			priorPreWrite()
 		}
-		diagnostics.event("PreWriteSeam reached for candidate message=%s", orphan.ID)
+		diagnostics.eventf("PreWriteSeam reached for candidate message=%s", orphan.ID)
 		close(guardsPassed)
 		select {
 		case <-proceed:
@@ -88,7 +88,7 @@ func TestRecoverInterruptedTurns_StaleCandidateNotStamped(t *testing.T) {
 		}
 		joinElapsed := time.Since(joinStarted)
 		diagnostics.wait(joinTarget, joinSeen, joinElapsed, waitTimeout)
-		diagnostics.event("cleanup join target=%q seen=%q elapsed=%s timeout=%s", joinTarget, joinSeen, joinElapsed, waitTimeout)
+		diagnostics.eventf("cleanup join target=%q seen=%q elapsed=%s timeout=%s", joinTarget, joinSeen, joinElapsed, waitTimeout)
 		if joinSeen != "completed" {
 			t.Errorf("recovery worker did not join during cleanup: target=%q seen=%q elapsed=%s timeout=%s (worker started %s ago)",
 				joinTarget, joinSeen, joinElapsed, waitTimeout, time.Since(started))
@@ -112,7 +112,7 @@ func TestRecoverInterruptedTurns_StaleCandidateNotStamped(t *testing.T) {
 	}
 	waitElapsed := time.Since(waitStarted)
 	diagnostics.wait(waitTarget, waitSeen, waitElapsed, waitTimeout)
-	diagnostics.event("wait target=%q seen=%q elapsed=%s timeout=%s", waitTarget, waitSeen, waitElapsed, waitTimeout)
+	diagnostics.eventf("wait target=%q seen=%q elapsed=%s timeout=%s", waitTarget, waitSeen, waitElapsed, waitTimeout)
 	if !waitOK {
 		t.Errorf("recovery did not reach pre-write seam: target=%q seen=%q elapsed=%s timeout=%s", waitTarget, waitSeen, waitElapsed, waitTimeout)
 		return
@@ -127,7 +127,7 @@ func TestRecoverInterruptedTurns_StaleCandidateNotStamped(t *testing.T) {
 	})
 	require.NoError(t, err)
 	diagnostics.candidate(sess.ID, newer.ID)
-	diagnostics.event("newer finished message inserted session=%s message=%s", sess.ID, newer.ID)
+	diagnostics.eventf("newer finished message inserted session=%s message=%s", sess.ID, newer.ID)
 	releaseGate()
 	doneWaitStarted := time.Now()
 	doneWaitTarget := "recovery worker completion"
@@ -139,7 +139,7 @@ func TestRecoverInterruptedTurns_StaleCandidateNotStamped(t *testing.T) {
 	}
 	doneWaitElapsed := time.Since(doneWaitStarted)
 	diagnostics.wait(doneWaitTarget, doneWaitSeen, doneWaitElapsed, waitTimeout)
-	diagnostics.event("wait target=%q seen=%q elapsed=%s timeout=%s", doneWaitTarget, doneWaitSeen, doneWaitElapsed, waitTimeout)
+	diagnostics.eventf("wait target=%q seen=%q elapsed=%s timeout=%s", doneWaitTarget, doneWaitSeen, doneWaitElapsed, waitTimeout)
 	if doneWaitSeen != "completed" {
 		t.Errorf("recovery worker did not finish after gate release: target=%q seen=%q elapsed=%s timeout=%s",
 			doneWaitTarget, doneWaitSeen, doneWaitElapsed, waitTimeout)
