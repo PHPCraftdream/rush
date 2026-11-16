@@ -35,7 +35,7 @@ internal/config/discover 13
 internal/session/heartbeat 10
 internal/session/jobbatch 21
 internal/session/jobbatch/lab 24
-internal/serve/server 58
+internal/serve/server 46
 # 125 -> 126: +1 internal/session/run (run/sessiontest: shared test fixtures, lane SM4 of the session design, S8);
 # run/ holds the run components after lane EX7, the row falls with the session cut (FIN).
 internal/session 126
