@@ -10,6 +10,13 @@ blocks:
       `rush run --role smart` reads the repo, plans, delegates, reviews, and reports. Tell it **what and why** (goal, observable acceptance, evidence, hard scope/constraints), not how. Honor caller hard constraints and policy, including CI-only verification when requested. Launch in repo/worktree and await completion. Do not prescribe implementation plans, file:line edits, sequence, tools/roles/workers, or a verification checklist; do not forbid its internal delegation. Nested executors are expected: don't stop or ask; wait.
       Only `--role`, `--session`, and `--json`; don't tune models/effort/`--agents`. Don't coach mid-run: `sessions inject` is only for genuinely new facts or changed operator requirements. A follow-up passes reviewer findings, CI output, or new requirements verbatim into the same `--session`.
 
+      ## The run's internals are not yours to manage
+      `rush run --role smart` has no write tools, by design: it plans, hands every edit and command to workers it starts itself, and reviews their reports. Delegation is how it works, not a deviation from your prompt.
+      - Never write "do it yourself", "no sub-agents", "don't delegate", or which worker/model/role should do what; never forbid its `agent`/batch tools. A prompt that forbids delegation leaves it unable to do the task.
+      - It delegating, re-delegating, or starting nested executors after you said otherwise is expected. It is not a reason to interrupt, inject, ask the operator, or report a problem.
+      - Don't inspect, steer, answer, or kill its internal children (workers, batch nodes, nested sessions) from outside, and don't use `sessions inject` to correct its process. Chunking, worker choice, retries, and review inside the run are owned by Rush.
+      - Your levers: the task text before launch (goal, acceptance, scope, constraints), the result after the process exits, and a follow-up in the same `--session` carrying findings verbatim. Judge the delivered diff and evidence, not how the run organized itself.
+
       Map the need to the existing flag/command instead of improvising:
 
       | Need | Use |
