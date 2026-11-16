@@ -9,10 +9,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 )
 
-var (
-	errOAuthJournalInvalid = docread.ErrOAuthJournalInvalid()
-	oauthJournalConfigSyncParent = syncConfigParent
-)
+var oauthJournalConfigSyncParent = syncConfigParent
 
 type oauthJournalRecord = docread.OAuthJournalRecord
 

@@ -887,12 +887,7 @@ func (s *ConfigStore) publishMCPMutationLocked(result MCPMutationResult) {
 }
 
 func updateMCPCommittedSnapshot(snapshot *fileSnapshot, key string, fingerprint docread.Fingerprint) {
-	snapshot.Path = key
-	snapshot.Exists = fingerprint.Exists
-	snapshot.Size = fingerprint.Size
-	snapshot.ModTime = fingerprint.ModTime
-	snapshot.ContentHash = fingerprint.Digest
-	snapshot.fingerprint = fingerprint
+	*snapshot = docread.NewFileSnapshot(key, fingerprint)
 }
 
 func (s *ConfigStore) configPathOrEmpty(scope Scope) string {

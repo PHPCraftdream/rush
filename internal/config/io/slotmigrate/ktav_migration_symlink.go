@@ -14,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 )
 
@@ -29,7 +31,7 @@ func isKtavSymlinkPath(path string) bool {
 // migration matter, so the generic machine keeps its own recovery and
 // conflict semantics.
 func runKtavSymlinkMigrationState(ctx context.Context, legacy, recordPath, workingDir string, state ktavMigrationEntries) (bool, error) {
-	ktavPath := ktavSiblingOf(legacy)
+	ktavPath := docread.KtavSiblingOf(legacy)
 	if state.recordExists {
 		record, err := loadKtavMigrationRecord(recordPath, legacy, ktavPath, workingDir)
 		if err != nil {
@@ -59,13 +61,13 @@ func recoverKtavSymlinkBeforePublication(ctx context.Context, legacy, recordPath
 	if err != nil {
 		return err
 	}
-	source, fp, err := readStableConfigFileOwned(legacy, owner, enforce)
+	source, fp, err := docread.ReadStableConfigFileOwned(legacy, owner, enforce)
 	if err != nil {
-		return fmt.Errorf("%w: cannot read symlinked source %s: %v", errKtavMigrationConflict, filepath.Base(legacy), err)
+		return fmt.Errorf("%w: cannot read symlinked source %s: %v", docread.ErrKtavMigrationConflict(), filepath.Base(legacy), err)
 	}
 	var want [sha256.Size]byte
-	if _, err := hex.Decode(want[:], []byte(record.SourceDigest)); err != nil || fp.digest != want || !sameBytesFingerprint(source, want) || fmt.Sprintf("%v", fp.identity) != record.SourceID || fmt.Sprintf("%v", fp.parentIdentity) != record.ParentID {
-		return fmt.Errorf("%w: migration record does not match source %s", errKtavMigrationConflict, filepath.Base(legacy))
+	if _, err := hex.Decode(want[:], []byte(record.SourceDigest)); err != nil || fp.Digest != want || !docread.SameBytesFingerprint(source, want) || fmt.Sprintf("%v", fp.Identity) != record.SourceID || fmt.Sprintf("%v", fp.ParentIdentity) != record.ParentID {
+		return fmt.Errorf("%w: migration record does not match source %s", docread.ErrKtavMigrationConflict(), filepath.Base(legacy))
 	}
 	if err := ktavMigrationCheckContext(ctx, "before-convert"); err != nil {
 		return err
@@ -79,14 +81,14 @@ func recoverKtavSymlinkBeforePublication(ctx context.Context, legacy, recordPath
 		return err
 	}
 	if fmt.Sprintf("%x", sha256.Sum256(data)) != record.StagedDigest {
-		return fmt.Errorf("%w: regenerated destination does not match migration record", errKtavMigrationConflict)
+		return fmt.Errorf("%w: regenerated destination does not match migration record", docread.ErrKtavMigrationConflict())
 	}
-	_, expected, err := readStableConfigFileOwned(ktavPath, owner, enforce)
+	_, expected, err := docread.ReadStableConfigFileOwned(ktavPath, owner, enforce)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if expected.exists {
-		return fmt.Errorf("%w: %s appeared during recovery", errKtavMigrationConflict, filepath.Base(ktavPath))
+	if expected.Exists {
+		return fmt.Errorf("%w: %s appeared during recovery", docread.ErrKtavMigrationConflict(), filepath.Base(ktavPath))
 	}
 	if _, err := commitConfigFile(ktavPath, ktavPath, data, 0o600, expected, owner, enforce); err != nil {
 		return fmt.Errorf("ktav migration: failed to publish %s: %w", ktavPath, err)
@@ -103,25 +105,25 @@ func finishKtavSymlinkMigration(ctx context.Context, legacy, recordPath, ktavPat
 	if err != nil {
 		return err
 	}
-	ktavData, ktavFP, err := readStableConfigFileOwned(ktavPath, owner, enforce)
+	ktavData, ktavFP, err := docread.ReadStableConfigFileOwned(ktavPath, owner, enforce)
 	if err != nil {
-		return fmt.Errorf("%w: cannot verify published Ktav %s: %v", errKtavMigrationRecord, filepath.Base(ktavPath), err)
+		return fmt.Errorf("%w: cannot verify published Ktav %s: %v", docread.ErrKtavMigrationRecord(), filepath.Base(ktavPath), err)
 	}
 	var staged [sha256.Size]byte
 	if _, err := hex.Decode(staged[:], []byte(record.StagedDigest)); err != nil {
-		return fmt.Errorf("%w: staged digest is malformed", errKtavMigrationRecord)
+		return fmt.Errorf("%w: staged digest is malformed", docread.ErrKtavMigrationRecord())
 	}
-	if ktavFP.digest != staged || !sameBytesFingerprint(ktavData, staged) {
-		return fmt.Errorf("%w: migration record does not match published %s", errKtavMigrationRecord, filepath.Base(ktavPath))
+	if ktavFP.Digest != staged || !docread.SameBytesFingerprint(ktavData, staged) {
+		return fmt.Errorf("%w: migration record does not match published %s", docread.ErrKtavMigrationRecord(), filepath.Base(ktavPath))
 	}
 	if isKtavSymlinkPath(legacy) {
-		data, fp, err := readStableConfigFileOwned(legacy, owner, enforce)
+		data, fp, err := docread.ReadStableConfigFileOwned(legacy, owner, enforce)
 		if err != nil {
-			return fmt.Errorf("%w: cannot read symlinked source %s: %v", errKtavMigrationConflict, filepath.Base(legacy), err)
+			return fmt.Errorf("%w: cannot read symlinked source %s: %v", docread.ErrKtavMigrationConflict(), filepath.Base(legacy), err)
 		}
 		var want [sha256.Size]byte
-		if _, err := hex.Decode(want[:], []byte(record.SourceDigest)); err != nil || fp.digest != want || !sameBytesFingerprint(data, want) || fmt.Sprintf("%v", fp.identity) != record.SourceID || fmt.Sprintf("%v", fp.parentIdentity) != record.ParentID {
-			return fmt.Errorf("%w: migration record does not match source %s", errKtavMigrationConflict, filepath.Base(legacy))
+		if _, err := hex.Decode(want[:], []byte(record.SourceDigest)); err != nil || fp.Digest != want || !docread.SameBytesFingerprint(data, want) || fmt.Sprintf("%v", fp.Identity) != record.SourceID || fmt.Sprintf("%v", fp.ParentIdentity) != record.ParentID {
+			return fmt.Errorf("%w: migration record does not match source %s", docread.ErrKtavMigrationConflict(), filepath.Base(legacy))
 		}
 		// The link is kept, like a regular legacy JSON, for older binaries.
 	}
@@ -142,16 +144,16 @@ func migrateKtavSymlinkedConfig(ctx context.Context, legacy, recordPath, working
 	}
 	info, err := os.Stat(legacy)
 	if err != nil || !info.Mode().IsRegular() {
-		warnMigrationDeferredOnce(legacy, ktavSymlinkDeferredReason)
+		docread.WarnMigrationDeferredOnce(legacy, ktavSymlinkDeferredReason)
 		return nil
 	}
-	source, sourceFP, err := readStableConfigFileOwned(legacy, owner, enforce)
+	source, sourceFP, err := docread.ReadStableConfigFileOwned(legacy, owner, enforce)
 	if err != nil {
-		warnMigrationDeferredOnce(legacy, ktavSymlinkDeferredReason)
+		docread.WarnMigrationDeferredOnce(legacy, ktavSymlinkDeferredReason)
 		return nil
 	}
-	if sourceFP.nlink != 1 {
-		return ErrConfigHardLink
+	if sourceFP.Nlink != 1 {
+		return fileid.ErrConfigHardLink
 	}
 	if err := ktavMigrationCheckContext(ctx, "after-read"); err != nil {
 		return err
@@ -168,28 +170,28 @@ func migrateKtavSymlinkedConfig(ctx context.Context, legacy, recordPath, working
 		return err
 	}
 	stagedDigest := sha256.Sum256(ktavBytes)
-	ktavPath := ktavSiblingOf(legacy)
+	ktavPath := docread.KtavSiblingOf(legacy)
 	record := ktavMigrationRecord{
 		Version:      ktavMigrationRecordVersion,
 		Source:       filepath.Base(legacy),
 		Destination:  filepath.Base(ktavPath),
-		Backup:       filepath.Base(backupPathFor(legacy)),
-		SourceDigest: hex.EncodeToString(sourceFP.digest[:]),
+		Backup:       filepath.Base(docread.BackupPathFor(legacy)),
+		SourceDigest: hex.EncodeToString(sourceFP.Digest[:]),
 		StagedDigest: hex.EncodeToString(stagedDigest[:]),
-		SourceID:     fmt.Sprintf("%v", sourceFP.identity),
-		ParentID:     fmt.Sprintf("%v", sourceFP.parentIdentity),
+		SourceID:     fmt.Sprintf("%v", sourceFP.Identity),
+		ParentID:     fmt.Sprintf("%v", sourceFP.ParentIdentity),
 		Symlink:      true,
 	}
 	recordBytes, err := json.Marshal(record)
 	if err != nil {
 		return fmt.Errorf("ktav migration: failed to encode record: %w", err)
 	}
-	_, expected, err := readStableConfigFileOwned(ktavPath, owner, enforce)
+	_, expected, err := docread.ReadStableConfigFileOwned(ktavPath, owner, enforce)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("ktav migration: failed to inspect %s: %w", ktavPath, err)
 	}
-	if expected.exists {
-		return fmt.Errorf("%w: %s appeared during migration", errKtavMigrationConflict, filepath.Base(ktavPath))
+	if expected.Exists {
+		return fmt.Errorf("%w: %s appeared during migration", docread.ErrKtavMigrationConflict(), filepath.Base(ktavPath))
 	}
 	commitHooks := ktavMigrationCommitHook(ctx, "publish")
 	publishHook := func(step string) error {
@@ -203,13 +205,13 @@ func migrateKtavSymlinkedConfig(ctx context.Context, legacy, recordPath, working
 			if err := ktavMigrationCheckContext(ctx, "before-record"); err != nil {
 				return err
 			}
-			absent := reloadFileFingerprint{
-				discovery:       configDiscoveryFingerprint(recordPath),
-				parentDiscovery: configDiscoveryFingerprint(filepath.Dir(recordPath)),
-				parentIdentity:  configParentIdentity(recordPath),
-				aliasChain:      configAliasChainFingerprint(recordPath),
+			absent := docread.Fingerprint{
+				Discovery:       docread.ConfigDiscoveryFingerprint(recordPath),
+				ParentDiscovery: docread.ConfigDiscoveryFingerprint(filepath.Dir(recordPath)),
+				ParentIdentity:  fileid.ConfigParentIdentity(recordPath),
+				AliasChain:      docread.ConfigAliasChainFingerprint(recordPath),
 			}
-			if !absent.parentIdentity.valid {
+			if !absent.ParentIdentity.Valid {
 				return fmt.Errorf("ktav migration: cannot pin record parent %s", filepath.Dir(recordPath))
 			}
 			if err := ktavMigrationCheckContext(ctx, "record-commit"); err != nil {

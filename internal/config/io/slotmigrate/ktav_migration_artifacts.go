@@ -18,11 +18,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 )
 
@@ -54,14 +55,14 @@ func ktavArtifactCheckContext(ctx context.Context, step string) error {
 // ktavArtifactMigrationEntries reports the on-disk generations for one
 // artifact. It is destination-aware: unlike the config table, a journal's
 // published Ktav name is NOT the trailing-suffix Ktav sibling of its legacy
-// JSON name (it is oauthJournalKtavPath), so the state machine must inspect
+// JSON name (it is docread.OAuthJournalKtavPath), so the state machine must inspect
 // exactly the destination the readers resolve.
 func ktavArtifactMigrationEntries(legacy, dest string) ktavMigrationEntries {
 	return ktavMigrationEntries{
-		jsonExists:   ktavEntryExists(legacy),
-		ktavExists:   ktavEntryExists(dest),
-		backupExists: ktavEntryExists(backupPathFor(legacy)),
-		recordExists: ktavEntryExists(migrationRecordPathFor(legacy)),
+		jsonExists:   docread.KtavEntryExists(legacy),
+		ktavExists:   docread.KtavEntryExists(dest),
+		backupExists: docread.KtavEntryExists(docread.BackupPathFor(legacy)),
+		recordExists: docread.KtavEntryExists(docread.MigrationRecordPathFor(legacy)),
 	}
 }
 
@@ -70,19 +71,19 @@ func ktavArtifactMigrationEntries(legacy, dest string) ktavMigrationEntries {
 // Callers pass the shared startup deadline context; a budget is applied only
 // when the context carries none, so startup never adds per-file timeouts.
 func migrateKtavArtifact(ctx context.Context, legacy, workingDir string) error {
-	return migrateKtavArtifactToWithLock(ctx, legacy, ktavSiblingOf(legacy), workingDir, legacy+".lock", nil)
+	return migrateKtavArtifactToWithLock(ctx, legacy, docread.KtavSiblingOf(legacy), workingDir, legacy+".lock", nil)
 }
 
 // migrateKtavArtifactWithLock converts one sidecar artifact under an explicit
 // sidecar lock path, publishing to the legacy JSON's Ktav sibling.
 func migrateKtavArtifactWithLock(ctx context.Context, legacy, workingDir, lockPath string) error {
-	return migrateKtavArtifactToWithLock(ctx, legacy, ktavSiblingOf(legacy), workingDir, lockPath, nil)
+	return migrateKtavArtifactToWithLock(ctx, legacy, docread.KtavSiblingOf(legacy), workingDir, lockPath, nil)
 }
 
 // migrateKtavArtifactToWithLock converts one sidecar artifact under an
 // explicit sidecar lock path and publishes the Ktav generation to dest —
 // ONE destination resolved by ONE source of truth: journals pass
-// oauthJournalKtavPath (the path selectOAuthJournalPath reads), caches pass
+// docread.OAuthJournalKtavPath (the path selectOAuthJournalPath reads), caches pass
 // the Ktav sibling. validateUnderLock, when non-nil, re-validates the exact
 // bytes read under the lock BEFORE conversion; an error skips the migration
 // (the artifact is left untouched, e.g. an invalid journal left for
@@ -117,14 +118,14 @@ func runKtavArtifactMigrationStateLocked(ctx context.Context, legacy, dest, work
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("ktav artifact migration: budget exhausted: %w", err)
 	}
-	backup := backupPathFor(legacy)
-	recordPath := migrationRecordPathFor(legacy)
+	backup := docread.BackupPathFor(legacy)
+	recordPath := docread.MigrationRecordPathFor(legacy)
 	state := ktavArtifactMigrationEntries(legacy, dest)
 	switch {
 	case !state.ktavExists && !state.jsonExists && !state.recordExists && !state.backupExists:
 		return nil
 	case !state.ktavExists && !state.jsonExists && state.backupExists && !state.recordExists:
-		return fmt.Errorf("%w: %s exists without %s or %s", errKtavBackupOnly, filepath.Base(backup), filepath.Base(legacy), filepath.Base(dest))
+		return fmt.Errorf("%w: %s exists without %s or %s", docread.ErrKtavBackupOnly(), filepath.Base(backup), filepath.Base(legacy), filepath.Base(dest))
 	case state.ktavExists && state.backupExists && !state.jsonExists:
 		// Both post-migration generations survive: no bytes can be lost, so
 		// recovery only has to retire an authenticated leftover record.
@@ -151,7 +152,7 @@ func runKtavArtifactMigrationStateLocked(ctx context.Context, legacy, dest, work
 		// Tolerant re-apply: the JSON is already gone, so a failure here can
 		// only affect freshness heuristics — it must not fail the recovery.
 		if err := ktavArtifactPreserveMTime(dest, backup); err != nil {
-			warnMigrationDeferredOnce(dest, err.Error())
+			docread.WarnMigrationDeferredOnce(dest, err.Error())
 		}
 		return removeKtavMigrationRecord(recordPath)
 	case state.ktavExists && !state.jsonExists && !state.backupExists:
@@ -163,9 +164,9 @@ func runKtavArtifactMigrationStateLocked(ctx context.Context, legacy, dest, work
 		if _, err := loadKtavMigrationRecord(recordPath, legacy, dest, workingDir); err != nil {
 			return err
 		}
-		return fmt.Errorf("%w: %s and its migration record exist but source and backup are gone", errKtavMigrationConflict, filepath.Base(dest))
+		return fmt.Errorf("%w: %s and its migration record exist but source and backup are gone", docread.ErrKtavMigrationConflict(), filepath.Base(dest))
 	case state.jsonExists && state.backupExists && !ktavKeepsLegacy(legacy):
-		return fmt.Errorf("%w: unexpected backup %s beside active %s; preserve every file and resolve manually", errKtavMigrationConflict, filepath.Base(backup), filepath.Base(legacy))
+		return fmt.Errorf("%w: unexpected backup %s beside active %s; preserve every file and resolve manually", docread.ErrKtavMigrationConflict(), filepath.Base(backup), filepath.Base(legacy))
 	case state.ktavExists && state.jsonExists:
 		if !state.recordExists {
 			if ktavKeepsLegacy(legacy) {
@@ -176,7 +177,7 @@ func runKtavArtifactMigrationStateLocked(ctx context.Context, legacy, dest, work
 			// Readers prefer the Ktav generation, so the EXISTING Ktav file
 			// stays active; the JSON copy is ignored. Both files are left
 			// untouched for manual resolution.
-			return fmt.Errorf("%w: Ktav and JSON coexist without an authenticated migration record; the existing %s stays the active generation and %s is ignored", errKtavMigrationConflict, filepath.Base(dest), filepath.Base(legacy))
+			return fmt.Errorf("%w: Ktav and JSON coexist without an authenticated migration record; the existing %s stays the active generation and %s is ignored", docread.ErrKtavMigrationConflict(), filepath.Base(dest), filepath.Base(legacy))
 		}
 		record, err := loadKtavMigrationRecord(recordPath, legacy, dest, workingDir)
 		if err != nil {
@@ -212,7 +213,7 @@ func runKtavArtifactMigrationTransaction(ctx context.Context, legacy, dest, back
 		}
 	}
 	if state.backupExists && !ktavKeepsLegacy(legacy) {
-		return fmt.Errorf("%w: backup %s already exists", errKtavMigrationConflict, filepath.Base(backup))
+		return fmt.Errorf("%w: backup %s already exists", docread.ErrKtavMigrationConflict(), filepath.Base(backup))
 	}
 	owner, enforce, err := ownerPolicyForMigration(legacy, workingDir)
 	if err != nil {
@@ -221,12 +222,12 @@ func runKtavArtifactMigrationTransaction(ctx context.Context, legacy, dest, back
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	source, sourceFP, err := readStableConfigFileOwned(legacy, owner, enforce)
+	source, sourceFP, err := docread.ReadStableConfigFileOwned(legacy, owner, enforce)
 	if err != nil {
 		return fmt.Errorf("ktav artifact migration: failed to read %s: %w", filepath.Base(legacy), err)
 	}
-	if sourceFP.nlink != 1 {
-		return ErrConfigHardLink
+	if sourceFP.Nlink != 1 {
+		return fileid.ErrConfigHardLink
 	}
 	// Re-validate the EXACT bytes this transaction would convert, now that
 	// the lock is held: an artifact that became invalid while the lock was
@@ -236,8 +237,8 @@ func runKtavArtifactMigrationTransaction(ctx context.Context, legacy, dest, back
 			return nil
 		}
 	}
-	if priorRecord != nil && (!validKtavMigrationDigest(priorRecord.SourceDigest) || fmt.Sprintf("%v", sourceFP.identity) != priorRecord.SourceID || fmt.Sprintf("%v", sourceFP.parentIdentity) != priorRecord.ParentID || hex.EncodeToString(sourceFP.digest[:]) != priorRecord.SourceDigest) {
-		return fmt.Errorf("%w: existing record does not match source %s", errKtavMigrationConflict, filepath.Base(legacy))
+	if priorRecord != nil && (!validKtavMigrationDigest(priorRecord.SourceDigest) || fmt.Sprintf("%v", sourceFP.Identity) != priorRecord.SourceID || fmt.Sprintf("%v", sourceFP.ParentIdentity) != priorRecord.ParentID || hex.EncodeToString(sourceFP.Digest[:]) != priorRecord.SourceDigest) {
+		return fmt.Errorf("%w: existing record does not match source %s", docread.ErrKtavMigrationConflict(), filepath.Base(legacy))
 	}
 	if err := ktavArtifactCheckContext(ctx, "after-read"); err != nil {
 		return err
@@ -260,14 +261,14 @@ func runKtavArtifactMigrationTransaction(ctx context.Context, legacy, dest, back
 		Source:       filepath.Base(legacy),
 		Destination:  filepath.Base(dest),
 		Backup:       filepath.Base(backup),
-		SourceDigest: hex.EncodeToString(sourceFP.digest[:]),
+		SourceDigest: hex.EncodeToString(sourceFP.Digest[:]),
 		StagedDigest: hex.EncodeToString(stagedDigest[:]),
-		SourceID:     fmt.Sprintf("%v", sourceFP.identity),
-		ParentID:     fmt.Sprintf("%v", sourceFP.parentIdentity),
+		SourceID:     fmt.Sprintf("%v", sourceFP.Identity),
+		ParentID:     fmt.Sprintf("%v", sourceFP.ParentIdentity),
 	}
 	if priorRecord != nil {
-		if fmt.Sprintf("%v", sourceFP.identity) != priorRecord.SourceID || fmt.Sprintf("%v", sourceFP.parentIdentity) != priorRecord.ParentID || hex.EncodeToString(sourceFP.digest[:]) != priorRecord.SourceDigest || hex.EncodeToString(stagedDigest[:]) != priorRecord.StagedDigest {
-			return fmt.Errorf("%w: existing record for %s does not match regenerated transaction", errKtavMigrationConflict, filepath.Base(legacy))
+		if fmt.Sprintf("%v", sourceFP.Identity) != priorRecord.SourceID || fmt.Sprintf("%v", sourceFP.ParentIdentity) != priorRecord.ParentID || hex.EncodeToString(sourceFP.Digest[:]) != priorRecord.SourceDigest || hex.EncodeToString(stagedDigest[:]) != priorRecord.StagedDigest {
+			return fmt.Errorf("%w: existing record for %s does not match regenerated transaction", docread.ErrKtavMigrationConflict(), filepath.Base(legacy))
 		}
 		record = *priorRecord
 	}
@@ -275,12 +276,12 @@ func runKtavArtifactMigrationTransaction(ctx context.Context, legacy, dest, back
 	if err != nil {
 		return fmt.Errorf("ktav artifact migration: failed to encode record: %w", err)
 	}
-	_, expected, err := readStableConfigFileOwned(dest, owner, enforce)
+	_, expected, err := docread.ReadStableConfigFileOwned(dest, owner, enforce)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("ktav artifact migration: failed to inspect %s: %w", filepath.Base(dest), err)
 	}
-	if expected.exists {
-		return fmt.Errorf("%w: %s appeared during migration", errKtavMigrationConflict, filepath.Base(dest))
+	if expected.Exists {
+		return fmt.Errorf("%w: %s appeared during migration", docread.ErrKtavMigrationConflict(), filepath.Base(dest))
 	}
 	publishHook := func(step string) error {
 		if err := ctx.Err(); err != nil {
@@ -298,13 +299,13 @@ func runKtavArtifactMigrationTransaction(ctx context.Context, legacy, dest, back
 			if err := ktavArtifactCheckContext(ctx, "before-record"); err != nil {
 				return err
 			}
-			absent := reloadFileFingerprint{
-				discovery:       configDiscoveryFingerprint(recordPath),
-				parentDiscovery: configDiscoveryFingerprint(filepath.Dir(recordPath)),
-				parentIdentity:  configParentIdentity(recordPath),
-				aliasChain:      configAliasChainFingerprint(recordPath),
+			absent := docread.Fingerprint{
+				Discovery:       docread.ConfigDiscoveryFingerprint(recordPath),
+				ParentDiscovery: docread.ConfigDiscoveryFingerprint(filepath.Dir(recordPath)),
+				ParentIdentity:  fileid.ConfigParentIdentity(recordPath),
+				AliasChain:      docread.ConfigAliasChainFingerprint(recordPath),
 			}
-			if !absent.parentIdentity.valid {
+			if !absent.ParentIdentity.Valid {
 				return fmt.Errorf("ktav artifact migration: cannot pin record parent %s", filepath.Dir(recordPath))
 			}
 			if err := ktavArtifactCheckContext(ctx, "record-commit"); err != nil {
@@ -362,7 +363,7 @@ func ktavArtifactFinishArchival(ctx context.Context, legacy, dest, backup, recor
 		source = backup
 	}
 	if err := ktavArtifactPreserveMTime(dest, source); err != nil {
-		warnMigrationDeferredOnce(dest, err.Error())
+		docread.WarnMigrationDeferredOnce(dest, err.Error())
 	}
 	return nil
 }
@@ -394,7 +395,7 @@ func ktavMigrateOAuthJournalsAtStartup(ctx context.Context, configSlots []string
 		return
 	}
 	for _, slot := range configSlots {
-		canonical := legacySlotOf(normalizeReloadPath(slot))
+		canonical := docread.LegacySlotOf(docread.NormalizeReloadPath(slot))
 		if canonical == "" {
 			continue
 		}
@@ -402,12 +403,12 @@ func ktavMigrateOAuthJournalsAtStartup(ctx context.Context, configSlots []string
 			if !descriptor.rotating {
 				continue
 			}
-			legacy := oauthJournalLegacyPath(canonical, descriptor.id)
+			legacy := docread.OAuthJournalLegacyPath(canonical, descriptor.id)
 			if err := ktavMigrateOAuthJournal(ctx, canonical, descriptor.id, workingDir); err != nil {
-				if errors.Is(err, errKtavMigrationConflict) && ktavEntryExists(oauthJournalKtavPath(canonical, descriptor.id)) && ktavEntryExists(legacy) {
-					warnKtavArtifactConflictOnce(oauthJournalKtavPath(canonical, descriptor.id), legacy, err.Error())
+				if errors.Is(err, docread.ErrKtavMigrationConflict()) && docread.KtavEntryExists(docread.OAuthJournalKtavPath(canonical, descriptor.id)) && docread.KtavEntryExists(legacy) {
+					docread.WarnKtavArtifactConflictOnce(docread.OAuthJournalKtavPath(canonical, descriptor.id), legacy, err.Error())
 				} else {
-					warnMigrationDeferredOnce(legacy, err.Error())
+					docread.WarnMigrationDeferredOnce(legacy, err.Error())
 				}
 			}
 		}
@@ -418,9 +419,9 @@ func ktavMigrateOAuthJournalsAtStartup(ctx context.Context, configSlots []string
 // record. It runs INSIDE the refresh lock on the exact bytes the converter
 // would convert, closing the validate-then-convert TOCTOU window.
 func ktavValidateOAuthJournalBytes(raw []byte) error {
-	var record oauthJournalRecord
-	if json.Unmarshal(raw, &record) != nil || !validOAuthJournal(&record) {
-		return errOAuthJournalInvalid
+	var record docread.OAuthJournalRecord
+	if json.Unmarshal(raw, &record) != nil || !docread.ValidOAuthJournal(&record) {
+		return docread.ErrOAuthJournalInvalid()
 	}
 	return nil
 }
@@ -433,12 +434,12 @@ func ktavValidateOAuthJournalBytes(raw []byte) error {
 // and backup), the state machine still runs so the record is retired and no
 // bytes are stranded.
 func ktavMigrateOAuthJournal(ctx context.Context, configPath, providerID, workingDir string) error {
-	legacy := oauthJournalLegacyPath(configPath, providerID)
-	dest := oauthJournalKtavPath(configPath, providerID)
-	if ktavEntryExists(legacy) {
+	legacy := docread.OAuthJournalLegacyPath(configPath, providerID)
+	dest := docread.OAuthJournalKtavPath(configPath, providerID)
+	if docread.KtavEntryExists(legacy) {
 		record, err := readOAuthJournalWithRetry(ctx, legacy)
 		if err != nil {
-			if errors.Is(err, errOAuthJournalInvalid) {
+			if errors.Is(err, docread.ErrOAuthJournalInvalid()) {
 				return nil
 			}
 			return err
@@ -446,7 +447,7 @@ func ktavMigrateOAuthJournal(ctx context.Context, configPath, providerID, workin
 		if record == nil {
 			return nil
 		}
-	} else if !ktavEntryExists(migrationRecordPathFor(legacy)) && !ktavEntryExists(dest) {
+	} else if !docread.KtavEntryExists(docread.MigrationRecordPathFor(legacy)) && !docread.KtavEntryExists(dest) {
 		// Absent JSON without any leftover transaction: nothing to recover
 		// and nothing to convert — never an error.
 		return nil
@@ -454,8 +455,8 @@ func ktavMigrateOAuthJournal(ctx context.Context, configPath, providerID, workin
 	if err := migrateKtavArtifactToWithLock(ctx, legacy, dest, workingDir, oauthRefreshLockPath(configPath, providerID), ktavValidateOAuthJournalBytes); err != nil {
 		return err
 	}
-	backup := backupPathFor(legacy)
-	if !ktavEntryExists(backup) {
+	backup := docread.BackupPathFor(legacy)
+	if !docread.KtavEntryExists(backup) {
 		// Nothing was archived (e.g. the journal was invalidated under the
 		// lock and left for quarantine).
 		return nil
@@ -485,19 +486,6 @@ func ktavMigrateOAuthJournal(ctx context.Context, configPath, providerID, workin
 	return nil
 }
 
-// warnKtavArtifactConflictOnce logs an artifact migration that stopped on a
-// conflict beside an EXISTING destination Ktav: the existing Ktav generation
-// stays active and the JSON copy is left untouched. It keys off the shared
-// ktavBothFormatsWarned map (distinct prefix) so tests can reset it, once
-// per destination, paths only.
-func warnKtavArtifactConflictOnce(ktav, legacy, reason string) {
-	if _, dup := ktavBothFormatsWarned.LoadOrStore("conflict:"+ktav, struct{}{}); dup {
-		return
-	}
-	slog.Warn("Ktav artifact migration stopped; an existing Ktav generation stays active and the JSON copy is left untouched",
-		"ktav", ktav, "json", legacy, "reason", reason)
-}
-
 // ktavMigrateCacheArtifactsStartup converts the provider/hyper catalogs and
 // every model-catalog cache in the data directory, and finishes any pending
 // cache transaction. It runs INDEPENDENTLY of the workspace config format:
@@ -509,14 +497,14 @@ func ktavMigrateCacheArtifactsStartup(ctx context.Context, workingDir string) {
 		return
 	}
 	for _, legacy := range ktavCacheArtifactPaths() {
-		if !ktavEntryExists(legacy) && !ktavEntryExists(migrationRecordPathFor(legacy)) && !ktavEntryExists(ktavSiblingOf(legacy)) {
+		if !docread.KtavEntryExists(legacy) && !docread.KtavEntryExists(docread.MigrationRecordPathFor(legacy)) && !docread.KtavEntryExists(docread.KtavSiblingOf(legacy)) {
 			continue
 		}
 		if err := migrateKtavArtifact(ctx, legacy, workingDir); err != nil {
-			if errors.Is(err, errKtavMigrationConflict) && ktavEntryExists(ktavSiblingOf(legacy)) && ktavEntryExists(legacy) {
-				warnKtavArtifactConflictOnce(ktavSiblingOf(legacy), legacy, err.Error())
+			if errors.Is(err, docread.ErrKtavMigrationConflict()) && docread.KtavEntryExists(docread.KtavSiblingOf(legacy)) && docread.KtavEntryExists(legacy) {
+				docread.WarnKtavArtifactConflictOnce(docread.KtavSiblingOf(legacy), legacy, err.Error())
 			} else {
-				warnMigrationDeferredOnce(legacy, err.Error())
+				docread.WarnMigrationDeferredOnce(legacy, err.Error())
 			}
 		}
 	}

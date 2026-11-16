@@ -665,7 +665,7 @@ func (s *ConfigStore) mcpMutationResultCurrentLocked(result MCPMutationResult, e
 	// predate committedFingerprints.
 	snapshot := s.loadSnapshot()
 	for path, expected := range snapshot.snapshots {
-		if expected.fingerprint == (docread.Fingerprint{}) {
+		if expected.Fingerprint() == (docread.Fingerprint{}) {
 			continue
 		}
 		actual, ok := mcpEvaluationFingerprint(evaluation.fingerprints, path)
@@ -684,12 +684,12 @@ func (s *ConfigStore) mcpMutationResultCurrentLocked(result MCPMutationResult, e
 				continue
 			}
 			sibling, err := docread.TrackedSlotFingerprint(path, nil)
-			if err != nil || !reloadFingerprintContentEqual(expected.fingerprint, sibling) {
+			if err != nil || !reloadFingerprintContentEqual(expected.Fingerprint(), sibling) {
 				return false
 			}
 			continue
 		}
-		if !reloadFingerprintContentEqual(expected.fingerprint, actual) {
+		if !reloadFingerprintContentEqual(expected.Fingerprint(), actual) {
 			return false
 		}
 	}

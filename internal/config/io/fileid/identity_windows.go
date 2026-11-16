@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -366,6 +367,25 @@ func flushWindowsConfigHandle(file *os.File) error {
 
 func OpenStableConfigFile(path string) (*os.File, error) {
 	return OpenWindowsConfigHandle(path, windows.GENERIC_READ, 0)
+}
+
+// WriteStableConfigFile writes config data to the existing stable file.
+func WriteStableConfigFile(path string, data []byte) error {
+	file, err := OpenWindowsConfigHandle(path, windows.GENERIC_READ|windows.GENERIC_WRITE, 0)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if err := file.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	return file.Sync()
 }
 
 func ConfigFileOwner(os.FileInfo) (int, bool) { return -1, true }

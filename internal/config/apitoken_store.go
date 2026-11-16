@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 	"github.com/PHPCraftdream/rush/internal/config/io/slots"
@@ -36,7 +37,7 @@ var (
 	apiTokenSecretPattern                           = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 	apiTokenCompareHook    func([]byte, []byte) int = subtle.ConstantTimeCompare
 	apiTokenBeforeLockHook func(*APITokenStore)
-	apiTokenWriteFile      = docread.AtomicWriteFile
+	apiTokenWriteFile      = cfgcommit.AtomicWriteFile
 )
 
 var ErrInvalidAPIToken = errors.New("invalid API token")
@@ -368,8 +369,8 @@ func (s *APITokenStore) read() (apiTokenDocument, error) {
 	if !info.Mode().IsRegular() {
 		return apiTokenDocument{}, errors.New("invalid API token store file")
 	}
-	owner, ownerKnown := docread.ConfigFileOwner(info)
-	if !ownerKnown || owner != docread.HomeConfigOwner() {
+	owner, ownerKnown := fileid.ConfigFileOwner(info)
+	if !ownerKnown || owner != fileid.HomeConfigOwner() {
 		return apiTokenDocument{}, fileid.ErrConfigOwnerMismatch()
 	}
 	if runtime.GOOS != "windows" && (info.Mode().Perm()&0o077 != 0 || info.Mode().Perm()&0o400 == 0) {
@@ -396,7 +397,7 @@ func (s *APITokenStore) read() (apiTokenDocument, error) {
 	if s.readHook != nil {
 		s.readHook()
 	}
-	data, stable, err := docread.ReadStableConfigFileOwned(path, docread.HomeConfigOwner(), true)
+	data, stable, err := docread.ReadStableConfigFileOwned(path, fileid.HomeConfigOwner(), true)
 	if err != nil {
 		return apiTokenDocument{}, err
 	}
@@ -462,7 +463,7 @@ func (s *APITokenStore) selectedPath() (string, error) {
 	} else if !os.IsNotExist(err) {
 		return "", err
 	}
-	if docread.NewConfigFileIsKtav() {
+	if slots.NewConfigFileIsKtav() {
 		return ktavPath, nil
 	}
 	return jsonPath, nil
@@ -693,7 +694,7 @@ func (s *APITokenStore) flushLastUsedSnapshot(now time.Time, lastUsed map[string
 	if err != nil {
 		return err
 	}
-	return docread.AtomicWriteFile(statePath, data, 0o600)
+	return cfgcommit.AtomicWriteFile(statePath, data, 0o600)
 }
 
 func apiTokenDigest(token string) [sha256.Size]byte {

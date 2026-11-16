@@ -148,7 +148,7 @@ func TestKtavSymlinkMigrationRecoversBeforeDestinationPublication(t *testing.T) 
 	require.NoError(t, err)
 	ktavBytes, err := ktavcodec.ConvertJSONToKtav(original)
 	require.NoError(t, err)
-	record := ktavMigrationRecord{Version: ktavMigrationRecordVersion, Source: filepath.Base(legacy), Destination: filepath.Base(ktavSiblingOf(legacy)), Backup: filepath.Base(backupPathFor(legacy)), SourceDigest: hex.EncodeToString(sourceFP.digest[:]), StagedDigest: fmt.Sprintf("%x", sha256.Sum256(ktavBytes)), SourceID: fmt.Sprintf("%v", sourceFP.identity), ParentID: fmt.Sprintf("%v", sourceFP.parentIdentity), Symlink: true}
+	record := ktavMigrationRecord{Version: ktavMigrationRecordVersion, Source: filepath.Base(legacy), Destination: filepath.Base(ktavSiblingOf(legacy)), Backup: filepath.Base(backupPathFor(legacy)), SourceDigest: hex.EncodeToString(sourceFP.Digest[:]), StagedDigest: fmt.Sprintf("%x", sha256.Sum256(ktavBytes)), SourceID: fmt.Sprintf("%v", sourceFP.Identity), ParentID: fmt.Sprintf("%v", sourceFP.ParentIdentity), Symlink: true}
 	recordBytes, err := json.Marshal(record)
 	require.NoError(t, err)
 	recordPath := migrationRecordPathFor(legacy)
@@ -205,10 +205,10 @@ func TestKtavSymlinkMigrationCrashRecovery(t *testing.T) {
 			Source:       filepath.Base(logical),
 			Destination:  filepath.Base(ktavPath),
 			Backup:       filepath.Base(backupPathFor(logical)),
-			SourceDigest: hex.EncodeToString(sourceFP.digest[:]),
+			SourceDigest: hex.EncodeToString(sourceFP.Digest[:]),
 			StagedDigest: fmt.Sprintf("%x", sha256.Sum256(ktavBytes)),
-			SourceID:     fmt.Sprintf("%v", sourceFP.identity),
-			ParentID:     fmt.Sprintf("%v", sourceFP.parentIdentity),
+			SourceID:     fmt.Sprintf("%v", sourceFP.Identity),
+			ParentID:     fmt.Sprintf("%v", sourceFP.ParentIdentity),
 			Symlink:      true,
 		}
 		recordBytes, err := json.Marshal(record)
@@ -288,10 +288,10 @@ func TestKtavSymlinkRecordParentAnchor(t *testing.T) {
 		Source:       filepath.Base(logical),
 		Destination:  filepath.Base(ktavPath),
 		Backup:       filepath.Base(backupPathFor(logical)),
-		SourceDigest: hex.EncodeToString(sourceFP.digest[:]),
+		SourceDigest: hex.EncodeToString(sourceFP.Digest[:]),
 		StagedDigest: fmt.Sprintf("%x", sha256.Sum256(ktavBytes)),
-		SourceID:     fmt.Sprintf("%v", sourceFP.identity),
-		ParentID:     fmt.Sprintf("%v", sourceFP.parentIdentity),
+		SourceID:     fmt.Sprintf("%v", sourceFP.Identity),
+		ParentID:     fmt.Sprintf("%v", sourceFP.ParentIdentity),
 		Symlink:      true,
 	}
 	recordBytes, err := json.Marshal(record)

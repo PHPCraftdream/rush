@@ -64,7 +64,7 @@ func TestCustomRoleIntegrityKtavMigrationPreservesValidation(t *testing.T) {
 		require.NoError(t, err)
 		doc, err := decodeSettingsDocument("rush.ktav", converted, reloadFileFingerprint{})
 		require.NoError(t, err)
-		err = modelsIntegrityOf(doc.jsonBytes, true)
+		err = modelsIntegrityOf(doc.JSONBytes, true)
 		if validSignature {
 			require.NoError(t, err, "a valid role signature must survive numeric normalization")
 		} else {

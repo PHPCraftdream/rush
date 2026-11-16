@@ -14,20 +14,17 @@
 package config
 
 import (
+	"context"
+	"encoding/json"
+	"os"
 	"os/exec"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/domains/peak"
-)
-
-import (
-	"context"
-	"encoding/json"
-	"os"
-
 	"github.com/PHPCraftdream/rush/internal/config/io/casefold"
 	"github.com/PHPCraftdream/rush/internal/config/io/cfghooks"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	envresolve "github.com/PHPCraftdream/rush/internal/config/model/envresolve"
@@ -403,10 +400,11 @@ func configFoldCaseLeaf(leaf string, sensitivity configCaseSensitivity) (string,
 type configFileIdentity = fileid.FileIdentity
 
 var (
-	ErrConfigNonRegular    = fileid.ErrConfigNonRegular
-	ErrConfigHardLink      = fileid.ErrConfigHardLink
-	errConfigOwnerMismatch = fileid.ErrConfigOwnerMismatch()
-	errStableReadUnstable  = fileid.ErrStableReadUnstable()
+	ErrConfigReloadUnstable = docread.ErrConfigReloadUnstable
+	ErrConfigNonRegular     = fileid.ErrConfigNonRegular
+	ErrConfigHardLink       = fileid.ErrConfigHardLink
+	errConfigOwnerMismatch  = fileid.ErrConfigOwnerMismatch()
+	errStableReadUnstable   = fileid.ErrStableReadUnstable()
 )
 
 func configFilePathIdentityMatches(path string, opened *os.File, openedInfo os.FileInfo) (bool, error) {

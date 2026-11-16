@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 )
 
@@ -77,11 +78,11 @@ func (s *ConfigStore) codexRefreshAlreadyCurrent(ctx context.Context, scope Scop
 }
 
 // Snapshot ownership without consuming the recovery reader's retry attempts.
-func (s *ConfigStore) codexOAuthAuthorityRecord(path, provider string) (*oauthJournalRecord, *oauth.Token) {
+func (s *ConfigStore) codexOAuthAuthorityRecord(path, provider string) (*docread.OAuthJournalRecord, *oauth.Token) {
 	s.publishMu.Lock()
-	entry := s.oauthOutbox[oauthOutboxKey{normalizeReloadPath(path), provider}]
+	entry := s.oauthOutbox[oauthOutboxKey{docread.NormalizeReloadPath(path), provider}]
 	pending, hasPending := s.pendingOAuth[provider]
-	var record *oauthJournalRecord
+	var record *docread.OAuthJournalRecord
 	if entry != nil {
 		copyRecord := entry.record
 		record = &copyRecord
@@ -297,7 +298,7 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 		return err
 	}
 	// Install ownership before publication or I/O; failed CAS cannot lose rotation.
-	record := &oauthJournalRecord{PredecessorRefreshTokenSHA256: oauthRotationDigest(pc.OAuthToken, refreshed), Token: refreshed}
+	record := &docread.OAuthJournalRecord{PredecessorRefreshTokenSHA256: oauthRotationDigest(pc.OAuthToken, refreshed), Token: refreshed}
 	known, _ := s.codexOAuthAuthorityRecord(path, pc.ID)
 	if known == nil {
 		known = pending

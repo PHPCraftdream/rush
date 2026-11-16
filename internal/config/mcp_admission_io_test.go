@@ -114,7 +114,7 @@ func TestMCPAdmissionRejectsAppearanceOfAbsentHigherPrioritySource(t *testing.T)
 		}
 		absent, ok := evaluation.fingerprints[normalizeDiscoveryPath(projectPath)]
 		require.True(t, ok)
-		require.False(t, absent.exists)
+		require.False(t, absent.Exists)
 		snapshot = store.SnapshotMCPAdmission("server")
 		snapshot.MCPInput, snapshot.HasMCPInput = evaluation.mcpInputs["server"]
 		return nil

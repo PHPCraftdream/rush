@@ -396,12 +396,7 @@ func (s *ConfigStore) publishMCPValueAndStalenessLocked(name string, value MCPCo
 			if !ok {
 				continue
 			}
-			snapshot.Path = key
-			snapshot.Exists = fingerprint.Exists
-			snapshot.Size = fingerprint.Size
-			snapshot.ModTime = fingerprint.ModTime
-			snapshot.ContentHash = fingerprint.Digest
-			snapshot.fingerprint = fingerprint
+			snapshot = docread.NewFileSnapshot(key, fingerprint)
 			next.snapshots[key] = snapshot
 		}
 	}

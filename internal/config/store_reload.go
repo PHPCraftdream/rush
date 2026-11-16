@@ -162,7 +162,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	configPaths := docread.LookupConfigCandidates(s.workingDir)
 	// Mirror the initial-load fail-closed rule: an authoritative slot that
 	// holds only a backup must never reload into an unlocked, empty config.
-	if err := checkAuthoritativeBackupOnly(s.workingDir); err != nil {
+	if err := docread.CheckAuthoritativeBackupOnly(s.workingDir); err != nil {
 		return err
 	}
 	externalPaths := docread.McpJSONCandidatePaths(s.workingDir)
@@ -330,7 +330,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 		workspacePath:       workspacePath,
 		overrides:           prev.overrides,
 	}
-	stalenessPaths := configAndMCPStalenessPaths(docread.LookupConfigCandidates(s.workingDir), s.workingDir)
+	stalenessPaths := docread.ConfigAndMCPStalenessPaths(docread.LookupConfigCandidates(s.workingDir), s.workingDir)
 	stalenessPaths = append(stalenessPaths, workspacePath, s.globalDataPath)
 	candidate.trackedConfigPaths, candidate.snapshots = docread.ReloadStalenessState(stalenessPaths, fingerprints)
 

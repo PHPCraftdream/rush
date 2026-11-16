@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/sjson"
@@ -83,11 +84,7 @@ func configSyncRefreshPublishedSnapshot(s *ConfigStore) {
 		if err != nil {
 			continue
 		}
-		next.snapshots[path] = fileSnapshot{
-			Path: path, Exists: fingerprint.exists, Size: fingerprint.size,
-			ModTime: fingerprint.modTime, ContentHash: fingerprint.digest,
-			fingerprint: fingerprint,
-		}
+		next.snapshots[path] = docread.NewFileSnapshot(path, fingerprint)
 	}
 	s.publishLocked(next)
 }

@@ -132,13 +132,13 @@ func TestExactWorkspaceMutationSharesPhysicalSymlinkDocument(t *testing.T) {
 	require.NoError(t, err)
 	_, workspaceAfter, err := readStableConfigFile(workspace)
 	require.NoError(t, err)
-	projectFingerprint := store.loadSnapshot().snapshots[normalizeDiscoveryPath(project)].fingerprint
-	workspaceFingerprint := store.loadSnapshot().snapshots[normalizeDiscoveryPath(workspace)].fingerprint
+	projectFingerprint := store.loadSnapshot().snapshots[normalizeDiscoveryPath(project)].Fingerprint()
+	workspaceFingerprint := store.loadSnapshot().snapshots[normalizeDiscoveryPath(workspace)].Fingerprint()
 	require.Equal(t, projectAfter, projectFingerprint)
 	require.Equal(t, workspaceAfter, workspaceFingerprint)
-	require.NotEqual(t, projectAfter.discovery, workspaceAfter.discovery)
-	require.NotEqual(t, projectAfter.parentDiscovery, workspaceAfter.parentDiscovery)
-	require.NotEqual(t, projectAfter.parentIdentity, workspaceAfter.parentIdentity)
+	require.NotEqual(t, projectAfter.Discovery, workspaceAfter.Discovery)
+	require.NotEqual(t, projectAfter.ParentDiscovery, workspaceAfter.ParentDiscovery)
+	require.NotEqual(t, projectAfter.ParentIdentity, workspaceAfter.ParentIdentity)
 	require.False(t, store.ConfigStaleness().Dirty)
 }
 

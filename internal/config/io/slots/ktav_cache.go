@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 )
 
@@ -23,8 +25,8 @@ import (
 // file. When neither generation exists the legacy path's not-exist error is
 // returned unchanged.
 func readCacheDocument(legacyJSON string) ([]byte, error) {
-	ktav := ktavSiblingOf(legacyJSON)
-	if _, statErr := os.Stat(ktav); statErr == nil || !ktavEntryAbsentErr(statErr) {
+	ktav := docread.KtavSiblingOf(legacyJSON)
+	if _, statErr := os.Stat(ktav); statErr == nil || !docread.KtavEntryAbsentErr(statErr) {
 		raw, err := os.ReadFile(ktav)
 		if err != nil {
 			return nil, err
@@ -38,7 +40,7 @@ func readCacheDocument(legacyJSON string) ([]byte, error) {
 			return nil, fmt.Errorf("invalid Ktav in provider cache file %s: %w", ktav, err)
 		}
 		if _, jsonErr := os.Stat(legacyJSON); jsonErr == nil {
-			warnBothFormatsOnce("cache", ktav, legacyJSON)
+			docread.WarnBothFormatsOnce("cache", ktav, legacyJSON)
 		}
 		return jsonBytes, nil
 	}
@@ -48,19 +50,19 @@ func readCacheDocument(legacyJSON string) ([]byte, error) {
 // writeCacheDocument writes JSON-shaped cache bytes in the gate-selected
 // format. The caller supplies its historical JSON writer so that with the
 // gate off BOTH the bytes AND the write mechanics are unchanged per call
-// site (os.WriteFile where os.WriteFile was used before, atomicWriteFile
-// where atomicWriteFile was used before). With the gate on the bytes are
-// converted strictly to Ktav and the <name>.ktav sibling is published
+// site (os.WriteFile where os.WriteFile was used before,
+// cfgcommit.AtomicWriteFile where it was used before). With the gate on the
+// bytes are converted strictly to Ktav and the <name>.ktav sibling is published
 // through the same atomic stage+rename helper the config documents use; the
 // legacy JSON file is deliberately left alone because reads always prefer
 // the Ktav sibling, so a stale JSON copy can never win.
 func writeCacheDocument(legacyJSON string, jsonBytes []byte, perm os.FileMode, writeJSON func(path string, data []byte, perm os.FileMode) error) error {
-	if !newConfigFileIsKtav() {
+	if !NewConfigFileIsKtav() {
 		return writeJSON(legacyJSON, jsonBytes, perm)
 	}
 	ktavBytes, err := ktavcodec.ConvertJSONToKtav(jsonBytes)
 	if err != nil {
 		return fmt.Errorf("failed to convert provider cache to Ktav: %w", err)
 	}
-	return atomicWriteFile(ktavSiblingOf(legacyJSON), ktavBytes, perm)
+	return cfgcommit.AtomicWriteFile(docread.KtavSiblingOf(legacyJSON), ktavBytes, perm)
 }

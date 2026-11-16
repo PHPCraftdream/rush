@@ -88,13 +88,13 @@ func TestMergeExternalMCPDocumentsUsesExactRushAndExternalPrecedence(t *testing.
 	}
 
 	externalDocuments := []stableConfigDocument{
-		{path: "global.mcp.json", data: server("http://global.example"), present: true},
-		{path: "project.mcp.json", data: server("http://project.example"), present: true},
+		{Path: "global.mcp.json", Data: server("http://global.example"), Present: true},
+		{Path: "project.mcp.json", Data: server("http://project.example"), Present: true},
 	}
 	cfg, err := loadFromBytes([][]byte{rush("http://rush.example")})
 	require.NoError(t, err)
 	mergeExternalMCPServersFromDocuments(cfg, []stableConfigDocument{
-		{path: "project.rush.json", data: rush("http://rush.example"), present: true},
+		{Path: "project.rush.json", Data: rush("http://rush.example"), Present: true},
 	}, externalDocuments)
 	require.Equal(t, "http://rush.example", cfg.MCP["same"].URL)
 

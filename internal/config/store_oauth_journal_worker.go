@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 )
 
@@ -30,7 +31,7 @@ var (
 
 func oauthRefreshLockPath(path, provider string) string {
 	digest := sha256.Sum256([]byte(provider))
-	return fmt.Sprintf("%s.oauth-refresh-%x.lock", normalizeReloadPath(configWriteLockAnchor(path)), digest[:8])
+	return fmt.Sprintf("%s.oauth-refresh-%x.lock", docread.NormalizeReloadPath(docread.ConfigWriteLockAnchor(path)), digest[:8])
 }
 
 // Cleanup also cancels and joins the OAuth disk sync worker.
@@ -71,7 +72,7 @@ func (s *ConfigStore) startOAuthJournalWorker(scope Scope, provider string) {
 }
 
 // Caller holds the refresh sidecar, never publishMu or diskWriteMu.
-func (s *ConfigStore) recoverCodexOAuthJournal(ctx context.Context, scope Scope, provider string) (*oauth.Token, *oauthJournalRecord, error) {
+func (s *ConfigStore) recoverCodexOAuthJournal(ctx context.Context, scope Scope, provider string) (*oauth.Token, *docread.OAuthJournalRecord, error) {
 	if oauthJournalRecoveryHook != nil {
 		oauthJournalRecoveryHook()
 	}
@@ -232,14 +233,14 @@ func (s *ConfigStore) withOAuthJournalRecoveryWriteLock(parent context.Context, 
 		}
 	}
 	defer s.diskWriteMu.Unlock()
-	canonical := normalizeReloadPath(path)
-	lockAnchor := normalizeReloadPath(configWriteLockAnchor(canonical))
+	canonical := docread.NormalizeReloadPath(path)
+	lockAnchor := docread.NormalizeReloadPath(docread.ConfigWriteLockAnchor(canonical))
 	lock, err := acquireConfigFileLock(ctx, lockAnchor+".lock")
 	if err != nil {
 		return err
 	}
 	defer releaseConfigFileLock(lockAnchor+".lock", lock)
-	if normalizeReloadPath(path) != canonical {
+	if docread.NormalizeReloadPath(path) != canonical {
 		return errOAuthJournalDisk
 	}
 	return fn()

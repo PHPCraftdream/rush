@@ -42,7 +42,6 @@ func ktavArtifactTestEnv(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("RUSH_DISABLE_DEFAULT_PROVIDERS", "true")
-	resetBothFormatsWarnings()
 }
 
 func seedKtavArtifactJournal(t *testing.T, dir string) (slot, legacy string) {
@@ -299,7 +298,6 @@ func TestKtavArtifactCatalogFetchedAtUntouched(t *testing.T) {
 // inside the journal bytes never reaches diagnostics.
 func TestKtavArtifactSharedStartupDeadline(t *testing.T) {
 	ktavSetupLoadMigrationTest(t, true)
-	resetBothFormatsWarnings()
 	savedBudget := ktavMigrationBudget
 	// Room for three slot migrations with fsync on slow Windows runners.
 	ktavMigrationBudget = 2 * time.Second
@@ -399,7 +397,6 @@ func TestKtavArtifactDeferredWarningOnLockFailure(t *testing.T) {
 	savedGate := ktavAutoMigrate
 	ktavAutoMigrate = true
 	t.Cleanup(func() { ktavAutoMigrate = savedGate })
-	resetBothFormatsWarnings()
 
 	lock, err := acquireConfigFileLock(context.Background(), oauthRefreshLockPath(slot, "openai-codex"))
 	require.NoError(t, err)
@@ -603,7 +600,6 @@ func TestKtavLoadConvertsCachesRegardlessOfWorkspaceFormat(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ktavSetupLoadMigrationTest(t, true)
-			resetBothFormatsWarnings()
 			dir := canonicalArtifactTempDir(t)
 			providerConfig := `{"options":{"debug":true},"providers":{"custom":{"base_url":"https://example.invalid/v1","api_key":"test-key","models":[{"id":"model","name":"Model"}]}}}`
 			if tc.workspaceFile != "" {
@@ -637,7 +633,6 @@ func TestKtavLoadConvertsCachesRegardlessOfWorkspaceFormat(t *testing.T) {
 // record, JSON already gone) and converges to a record-retired migration.
 func TestKtavArtifactStartupJournalRecoversPostArchiveCrash(t *testing.T) {
 	ktavArtifactTestEnv(t)
-	resetBothFormatsWarnings()
 	dir := canonicalArtifactTempDir(t)
 	slot, legacy := seedKtavArtifactJournal(t, dir)
 
@@ -797,7 +792,6 @@ func TestKtavArtifactStartupConflictWarnsExistingKtavActive(t *testing.T) {
 	savedGate := ktavAutoMigrate
 	ktavAutoMigrate = true
 	t.Cleanup(func() { ktavAutoMigrate = savedGate })
-	resetBothFormatsWarnings()
 
 	logs := captureSlogOutput(t)
 	ktavMigrateOAuthJournalsAtStartup(context.Background(), []string{slot}, dir)

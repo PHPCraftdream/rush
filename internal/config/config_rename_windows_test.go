@@ -387,14 +387,14 @@ func TestWindowsAbsentFingerprintPinsParentIdentity(t *testing.T) {
 
 	_, expected, err := readStableConfigFile(path)
 	require.ErrorIs(t, err, os.ErrNotExist)
-	require.True(t, expected.parentIdentity.valid)
+	require.True(t, expected.ParentIdentity.Valid)
 
 	movedPath := filepath.Join(root, "config.moved")
 	require.NoError(t, os.Rename(parentPath, movedPath))
 	require.NoError(t, os.Mkdir(parentPath, 0o755))
 	_, actual, err := readStableConfigFile(path)
 	require.ErrorIs(t, err, os.ErrNotExist)
-	require.NotEqual(t, expected.parentIdentity, actual.parentIdentity)
+	require.NotEqual(t, expected.ParentIdentity, actual.ParentIdentity)
 }
 
 func TestRenameConfigTempHandleUsesPinnedParentAndRelativeName(t *testing.T) {

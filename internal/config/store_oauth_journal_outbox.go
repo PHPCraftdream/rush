@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 )
 
@@ -23,12 +24,12 @@ type oauthOutboxKey struct {
 
 type oauthOutboxEntry struct {
 	scope    Scope
-	record   oauthJournalRecord
+	record   docread.OAuthJournalRecord
 	obsolete bool // Guarded by publishMu; reload must not resurrect this entry.
 }
 
 // Entries are immutable; pointer identity fences completion of older rotations.
-func (s *ConfigStore) installOAuthOutbox(path string, scope Scope, provider string, record *oauthJournalRecord) *oauthOutboxEntry {
+func (s *ConfigStore) installOAuthOutbox(path string, scope Scope, provider string, record *docread.OAuthJournalRecord) *oauthOutboxEntry {
 	token := *record.Token
 	s.publishMu.Lock()
 	defer s.publishMu.Unlock()
@@ -37,7 +38,7 @@ func (s *ConfigStore) installOAuthOutbox(path string, scope Scope, provider stri
 		digests = append(digests, pending.record.PredecessorRefreshTokenSHA256)
 		digests = append(digests, pending.record.BurnedRefreshTokenSHA256...)
 	}
-	if previous := s.oauthOutbox[oauthOutboxKey{normalizeReloadPath(path), provider}]; previous != nil {
+	if previous := s.oauthOutbox[oauthOutboxKey{docread.NormalizeReloadPath(path), provider}]; previous != nil {
 		digests = append(digests, previous.record.PredecessorRefreshTokenSHA256)
 		digests = append(digests, previous.record.BurnedRefreshTokenSHA256...)
 	}
@@ -47,20 +48,20 @@ func (s *ConfigStore) installOAuthOutbox(path string, scope Scope, provider stri
 	if s.oauthOutbox == nil {
 		s.oauthOutbox = make(map[oauthOutboxKey]*oauthOutboxEntry)
 	}
-	s.oauthOutbox[oauthOutboxKey{normalizeReloadPath(path), provider}] = entry
+	s.oauthOutbox[oauthOutboxKey{docread.NormalizeReloadPath(path), provider}] = entry
 	return entry
 }
 
 func (s *ConfigStore) oauthOutboxCurrent(path, provider string) *oauthOutboxEntry {
 	s.publishMu.Lock()
 	defer s.publishMu.Unlock()
-	return s.oauthOutbox[oauthOutboxKey{normalizeReloadPath(path), provider}]
+	return s.oauthOutbox[oauthOutboxKey{docread.NormalizeReloadPath(path), provider}]
 }
 
 func (s *ConfigStore) clearOAuthOutbox(path, provider string, entry *oauthOutboxEntry) {
 	s.publishMu.Lock()
 	defer s.publishMu.Unlock()
-	key := oauthOutboxKey{normalizeReloadPath(path), provider}
+	key := oauthOutboxKey{docread.NormalizeReloadPath(path), provider}
 	if s.oauthOutbox[key] == entry {
 		delete(s.oauthOutbox, key)
 	}
@@ -93,7 +94,7 @@ func (s *ConfigStore) settleOAuthOutbox(ctx context.Context, path, provider stri
 	}
 	s.publishMu.Lock()
 	defer s.publishMu.Unlock()
-	key := oauthOutboxKey{normalizeReloadPath(path), provider}
+	key := oauthOutboxKey{docread.NormalizeReloadPath(path), provider}
 	if s.oauthOutbox[key] != entry {
 		return false, errOAuthCredentialCAS
 	}
@@ -121,7 +122,7 @@ func (s *ConfigStore) settleOAuthOutbox(ctx context.Context, path, provider stri
 }
 
 // An external WAL must be synced and unchanged before replacing owned rotation.
-func verifyOAuthOutboxJournal(path string, record *oauthJournalRecord) error {
+func verifyOAuthOutboxJournal(path string, record *docread.OAuthJournalRecord) error {
 	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		return errOAuthJournalDisk
@@ -131,8 +132,8 @@ func verifyOAuthOutboxJournal(path string, record *oauthJournalRecord) error {
 	if err != nil {
 		return errOAuthJournalDisk
 	}
-	jsonBytes, decodeErr := decodeConfigDocument(path, before)
-	var actual oauthJournalRecord
+	jsonBytes, decodeErr := docread.DecodeConfigDocument(path, before)
+	var actual docread.OAuthJournalRecord
 	if decodeErr != nil || json.Unmarshal(jsonBytes, &actual) != nil || !reflect.DeepEqual(&actual, record) {
 		return errOAuthJournalDisk
 	}
@@ -226,7 +227,7 @@ func logOAuthJournalFailure(path, kind, message string) {
 }
 
 func logOAuthJournalFailureAt(path, kind, message string, now time.Time) {
-	key := oauthJournalLogKey{normalizeReloadPath(path), kind}
+	key := oauthJournalLogKey{docread.NormalizeReloadPath(path), kind}
 	oauthJournalLogs.Lock()
 	last := oauthJournalLogs.last[key]
 	if !last.IsZero() && now.Sub(last) < oauthJournalLogWindow {

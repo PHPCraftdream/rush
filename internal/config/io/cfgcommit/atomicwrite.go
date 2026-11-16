@@ -2,7 +2,6 @@ package cfgcommit
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 )
 
@@ -261,10 +262,6 @@ func syncConfigParentFile(file *os.File) error {
 	return file.Sync()
 }
 
-func sameBytesFingerprint(data []byte, digest [sha256.Size]byte) bool {
-	return sha256.Sum256(data) == digest
-}
-
 func newCommitOutcome(path string, committed, reconciled bool, causes ...error) error {
 	return &CommitOutcome{
 		Committed:  committed,
@@ -311,9 +308,9 @@ func verifySelectedCommitPath(selectedPath, commitPath string) error {
 	// later rename. commitPath remains pinned after this check; a later
 	// retarget is reported as an uncertain readback outcome when it changes the
 	// selected spelling's visible bytes.
-	if normalizeReloadPath(selectedPath) != normalizeReloadPath(commitPath) &&
+	if docread.NormalizeReloadPath(selectedPath) != docread.NormalizeReloadPath(commitPath) &&
 		!caseEquivalentConfigPaths(selectedPath, commitPath) {
-		return errConfigCommitVerification
+		return fileid.ErrConfigCommitVerification()
 	}
 	return nil
 }
@@ -322,14 +319,9 @@ func caseEquivalentConfigPaths(selectedPath, commitPath string) bool {
 	if !configEquivalentLeafNames(filepath.Dir(commitPath), filepath.Base(selectedPath), filepath.Base(commitPath)) {
 		return false
 	}
-	selectedParent, commitParent := configParentIdentity(selectedPath), configParentIdentity(commitPath)
-	return selectedParent.valid && selectedParent == commitParent &&
+	selectedParent, commitParent := fileid.ConfigParentIdentity(selectedPath), fileid.ConfigParentIdentity(commitPath)
+	return selectedParent.Valid && selectedParent == commitParent &&
 		configDirectoryIsCaseInsensitive(filepath.Dir(commitPath))
-}
-
-// AtomicWriteFile writes data to path using the atomic config commit implementation.
-func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
-	return atomicWriteFile(path, data, perm)
 }
 
 // AtomicWriteFile writes data to path using the atomic config commit implementation.

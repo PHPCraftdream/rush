@@ -7,27 +7,29 @@ package slots
 
 import (
 	"os"
+
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 )
 
 // ReadConfigDocumentLight reads the document for the logical slot named by
 // legacyPath without initializing the application: no store, no DB, no
 // migration. It selects the active physical file (rush.ktav when present,
-// otherwise rush.json), fails closed via checkBackupOnlySlot when only a
+// otherwise rush.json), fails closed via docread.CheckBackupOnlySlot when only a
 // backup exists, and decodes .ktav bytes into JSON-shaped bytes. JSON
 // documents are returned unchanged. Errors are returned as-is; the caller
 // distinguishes os.IsNotExist as "no document".
 func ReadConfigDocumentLight(legacyPath string) ([]byte, error) {
-	legacy := legacySlotOf(legacyPath)
-	if err := checkBackupOnlySlot(legacy); err != nil {
+	legacy := docread.LegacySlotOf(legacyPath)
+	if err := docread.CheckBackupOnlySlot(legacy); err != nil {
 		return nil, err
 	}
-	selected := selectConfigSlot(legacy)
+	selected := docread.SelectConfigSlot(legacy)
 	data, err := os.ReadFile(selected)
 	if err != nil {
 		return nil, err
 	}
-	if isKtavConfigPath(selected) {
-		return decodeConfigDocument(selected, data)
+	if docread.IsKtavConfigPath(selected) {
+		return docread.DecodeConfigDocument(selected, data)
 	}
 	return data, nil
 }
@@ -37,7 +39,7 @@ func ReadConfigDocumentLight(legacyPath string) ([]byte, error) {
 // error text can name the real file without hardcoding a spelling. An empty
 // legacyPath returns "".
 func ActiveConfigFileName(legacyPath string) string {
-	return selectConfigSlot(legacySlotOf(legacyPath))
+	return docread.SelectConfigSlot(docread.LegacySlotOf(legacyPath))
 }
 
 // test seam

@@ -8,13 +8,15 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 	"golang.org/x/sys/unix"
 )
 
 // archiveKtavBackup renames the legacy JSON to its retained backup name
 // using an identity-checked, no-replace operation through the pinned parent
 // descriptor. A pre-existing backup is never replaced.
-func archiveKtavBackup(ctx context.Context, sourcePath, backupPath string, expected reloadFileFingerprint, owner int, enforceOwner bool) error {
+func archiveKtavBackup(ctx context.Context, sourcePath, backupPath string, expected docread.Fingerprint, owner int, enforceOwner bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -30,19 +32,19 @@ func archiveKtavBackup(ctx context.Context, sourcePath, backupPath string, expec
 	if err != nil {
 		return err
 	}
-	parentOwner, ownerKnown := configFileOwner(parentInfo)
+	parentOwner, ownerKnown := fileid.ConfigFileOwner(parentInfo)
 	if enforceOwner && (!ownerKnown || parentOwner != owner) {
-		return errConfigCommitVerification
+		return fileid.ErrConfigCommitVerification()
 	}
-	actualParent := configFileIdentityOf(parentInfo)
-	if !actualParent.valid || actualParent != expected.parentIdentity {
-		return errConfigCommitVerification
+	actualParent := fileid.FileIdentityOf(parentInfo)
+	if !actualParent.Valid || actualParent != expected.ParentIdentity {
+		return fileid.ErrConfigCommitVerification()
 	}
 	backupBase := filepath.Base(backupPath)
 	backupFD, backupErr := unix.Openat(parentFD, backupBase, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if backupErr == nil {
 		_ = unix.Close(backupFD)
-		return fmt.Errorf("%w: backup %s already exists", errKtavMigrationConflict, backupBase)
+		return fmt.Errorf("%w: backup %s already exists", docread.ErrKtavMigrationConflict(), backupBase)
 	}
 	if backupErr != unix.ENOENT {
 		return fmt.Errorf("inspect backup %s: %w", backupBase, backupErr)
@@ -50,12 +52,12 @@ func archiveKtavBackup(ctx context.Context, sourcePath, backupPath string, expec
 
 	// Prove the pinned directory still holds exactly the generation that
 	// was converted, through the same descriptor the rename will use.
-	data, actual, err := readConfigEntryAt(parentFD, filepath.Base(sourcePath), owner, enforceOwner)
+	data, actual, err := docread.ReadConfigEntryAt(parentFD, filepath.Base(sourcePath), owner, enforceOwner)
 	if err != nil {
 		return err
 	}
-	if actual.digest != expected.digest || !sameBytesFingerprint(data, expected.digest) || actual.identity != expected.identity || actual.nlink != 1 || (enforceOwner && actual.owner != owner) {
-		return fmt.Errorf("%w: config source changed during migration", errConfigCommitVerification)
+	if actual.Digest != expected.Digest || !docread.SameBytesFingerprint(data, expected.Digest) || actual.Identity != expected.Identity || actual.Nlink != 1 || (enforceOwner && actual.Owner != owner) {
+		return fmt.Errorf("%w: config source changed during migration", fileid.ErrConfigCommitVerification())
 	}
 	if err := runKtavMigrationStep("during-backup-rename"); err != nil {
 		return err
@@ -75,14 +77,14 @@ func archiveKtavBackup(ctx context.Context, sourcePath, backupPath string, expec
 	if err := runKtavMigrationStep("after-backup-rename"); err != nil {
 		return newCommitOutcome(backupPath, true, false, errAtomicWriteCommitted, err)
 	}
-	archived, archivedFP, err := readConfigEntryAt(parentFD, backupBase, owner, enforceOwner)
+	archived, archivedFP, err := docread.ReadConfigEntryAt(parentFD, backupBase, owner, enforceOwner)
 	if err != nil {
-		return fmt.Errorf("%w: %s or %s cannot be verified after archival: %v", errKtavMigrationConflict, filepath.Base(sourcePath), backupBase, err)
+		return fmt.Errorf("%w: %s or %s cannot be verified after archival: %v", docread.ErrKtavMigrationConflict(), filepath.Base(sourcePath), backupBase, err)
 	}
-	if archivedFP.digest != expected.digest || !sameBytesFingerprint(archived, expected.digest) ||
-		archivedFP.identity != expected.identity || archivedFP.nlink != 1 ||
-		(enforceOwner && archivedFP.owner != owner) {
-		return fmt.Errorf("%w: %s or %s changed during archival", errKtavMigrationConflict, filepath.Base(sourcePath), backupBase)
+	if archivedFP.Digest != expected.Digest || !docread.SameBytesFingerprint(archived, expected.Digest) ||
+		archivedFP.Identity != expected.Identity || archivedFP.Nlink != 1 ||
+		(enforceOwner && archivedFP.Owner != owner) {
+		return fmt.Errorf("%w: %s or %s changed during archival", docread.ErrKtavMigrationConflict(), filepath.Base(sourcePath), backupBase)
 	}
 	if err := syncConfigParentFile(parent); err != nil {
 		return newCommitOutcome(backupPath, true, false, errAtomicWriteCommitted, errConfigCommitDurabilityUncertain, err)

@@ -11,6 +11,8 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 	"golang.org/x/sys/windows"
 )
 
@@ -21,7 +23,7 @@ type windowsFileRenameInfo struct {
 	FileName       [1]uint16
 }
 
-func renameConfigTempHandle(source *os.File, sourcePath string, parent *os.File, destination string, replace bool, expected reloadFileFingerprint, expectedOwner int, enforceOwner bool, discoveryPath string) error {
+func renameConfigTempHandle(source *os.File, sourcePath string, parent *os.File, destination string, replace bool, expected docread.Fingerprint, expectedOwner int, enforceOwner bool, discoveryPath string) error {
 	// Keep the old seam for existing deterministic tests. Production has no
 	// MoveFileEx hook and therefore always takes the handle-based path below.
 	configTestHooks.Lock()
@@ -141,7 +143,7 @@ func renameConfigTempHandle(source *os.File, sourcePath string, parent *os.File,
 
 const windowsRenameRetryAttempts = 32
 
-func waitAndVerifyWindowsRenameRetry(source *os.File, sourcePath string, parent *os.File, destination string, replace bool, expected reloadFileFingerprint, expectedOwner int, enforceOwner bool, discoveryPath string, attempt int) error {
+func waitAndVerifyWindowsRenameRetry(source *os.File, sourcePath string, parent *os.File, destination string, replace bool, expected docread.Fingerprint, expectedOwner int, enforceOwner bool, discoveryPath string, attempt int) error {
 	delay := time.Duration(attempt+1) * 2 * time.Millisecond
 	if delay > 50*time.Millisecond {
 		delay = 50 * time.Millisecond
@@ -150,30 +152,30 @@ func waitAndVerifyWindowsRenameRetry(source *os.File, sourcePath string, parent 
 	return verifyWindowsRenameRetryState(source, sourcePath, parent, destination, replace, expected, expectedOwner, enforceOwner, discoveryPath)
 }
 
-func verifyWindowsRenameRetryState(source *os.File, sourcePath string, parent *os.File, destination string, replace bool, expected reloadFileFingerprint, expectedOwner int, enforceOwner bool, discoveryPath string) error {
+func verifyWindowsRenameRetryState(source *os.File, sourcePath string, parent *os.File, destination string, replace bool, expected docread.Fingerprint, expectedOwner int, enforceOwner bool, discoveryPath string) error {
 	// Validate after backoff while the publication handle remains pinned.
-	stagedIdentity := configFileIdentityOfOpened(source, nil)
-	if !stagedIdentity.valid {
-		return errConfigCommitVerification
+	stagedIdentity := fileid.FileIdentityOfOpened(source, nil)
+	if !stagedIdentity.Valid {
+		return fileid.ErrConfigCommitVerification()
 	}
-	if expected.parentIdentity.valid && configFileIdentityOfOpened(parent, nil) != expected.parentIdentity {
-		return errConfigCommitVerification
+	if expected.ParentIdentity.Valid && fileid.FileIdentityOfOpened(parent, nil) != expected.ParentIdentity {
+		return fileid.ErrConfigCommitVerification()
 	}
-	if expected.parentDiscovery != ([32]byte{}) && configDiscoveryFingerprint(filepath.Dir(discoveryPath)) != expected.parentDiscovery {
-		return errConfigCommitVerification
+	if expected.ParentDiscovery != ([32]byte{}) && docread.ConfigDiscoveryFingerprint(filepath.Dir(discoveryPath)) != expected.ParentDiscovery {
+		return fileid.ErrConfigCommitVerification()
 	}
 	staged, err := openWindowsConfigEntryAt(parent, filepath.Base(sourcePath))
 	if err != nil {
-		return errConfigCommitVerification
+		return fileid.ErrConfigCommitVerification()
 	}
 	defer staged.Close()
 	stagedInfo, err := staged.Stat()
 	if err != nil || stagedInfo.IsDir() {
-		return errConfigCommitVerification
+		return fileid.ErrConfigCommitVerification()
 	}
-	stagedHandleInfo, err := windowsFileInformation(staged)
-	if err != nil || stagedHandleInfo.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 || configFileIdentityOfOpened(staged, stagedInfo) != stagedIdentity {
-		return errConfigCommitVerification
+	stagedHandleInfo, err := fileid.WindowsFileInformation(staged)
+	if err != nil || stagedHandleInfo.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 || fileid.FileIdentityOfOpened(staged, stagedInfo) != stagedIdentity {
+		return fileid.ErrConfigCommitVerification()
 	}
 
 	target, err := openWindowsConfigEntryAt(parent, filepath.Base(destination))
@@ -184,29 +186,29 @@ func verifyWindowsRenameRetryState(source *os.File, sourcePath string, parent *o
 		if isWindowsEntryNotFound(err) || os.IsNotExist(err) {
 			return nil
 		}
-		return errConfigCommitVerification
+		return fileid.ErrConfigCommitVerification()
 	}
 	if err != nil {
-		return errConfigCommitVerification
+		return fileid.ErrConfigCommitVerification()
 	}
 	targetInfo, err := target.Stat()
 	if err != nil || targetInfo.IsDir() {
-		return errConfigCommitVerification
+		return fileid.ErrConfigCommitVerification()
 	}
-	targetHandleInfo, err := windowsFileInformation(target)
+	targetHandleInfo, err := fileid.WindowsFileInformation(target)
 	if err != nil || targetHandleInfo.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-		return errConfigCommitVerification
+		return fileid.ErrConfigCommitVerification()
 	}
-	targetData, targetFingerprint, err := readStableConfigHandle(target, expectedOwner, enforceOwner)
-	if err != nil || !expected.exists || !expected.identity.valid || targetFingerprint.exists != expected.exists ||
-		targetFingerprint.size != expected.size || targetFingerprint.modTime != expected.modTime ||
-		targetFingerprint.digest != expected.digest || targetFingerprint.owner != expected.owner ||
-		targetFingerprint.nlink != expected.nlink || targetFingerprint.identity != expected.identity ||
-		!sameBytesFingerprint(targetData, expected.digest) {
-		return errConfigCommitVerification
+	targetData, targetFingerprint, err := docread.ReadStableConfigHandle(target, expectedOwner, enforceOwner)
+	if err != nil || !expected.Exists || !expected.Identity.Valid || targetFingerprint.Exists != expected.Exists ||
+		targetFingerprint.Size != expected.Size || targetFingerprint.ModTime != expected.ModTime ||
+		targetFingerprint.Digest != expected.Digest || targetFingerprint.Owner != expected.Owner ||
+		targetFingerprint.Nlink != expected.Nlink || targetFingerprint.Identity != expected.Identity ||
+		!docread.SameBytesFingerprint(targetData, expected.Digest) {
+		return fileid.ErrConfigCommitVerification()
 	}
-	if expected.discovery != ([32]byte{}) && configDiscoveryFingerprint(discoveryPath) != expected.discovery {
-		return errConfigCommitVerification
+	if expected.Discovery != ([32]byte{}) && docread.ConfigDiscoveryFingerprint(discoveryPath) != expected.Discovery {
+		return fileid.ErrConfigCommitVerification()
 	}
 	return nil
 }

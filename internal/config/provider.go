@@ -18,6 +18,7 @@ import (
 	"charm.land/catwalk/pkg/embedded"
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/discover"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/charmbracelet/x/etag"
 )
@@ -84,7 +85,7 @@ func UpdateProviders(pathOrURL string) error {
 		if err != nil {
 			return fmt.Errorf("failed to read file: %w", err)
 		}
-		content, err = decodeConfigDocument(pathOrURL, content)
+		content, err = docread.DecodeConfigDocument(pathOrURL, content)
 		if err != nil {
 			return fmt.Errorf("failed to decode Ktav provider data: %w", err)
 		}
@@ -124,7 +125,7 @@ func UpdateHyper(pathOrURL string) error {
 		if err != nil {
 			return fmt.Errorf("failed to read file: %w", err)
 		}
-		content, err = decodeConfigDocument(pathOrURL, content)
+		content, err = docread.DecodeConfigDocument(pathOrURL, content)
 		if err != nil {
 			return fmt.Errorf("failed to decode Ktav provider data: %w", err)
 		}
@@ -274,7 +275,7 @@ func newCache[T any](path string) cache[T] {
 // wrongly mark stale cache content fresh.
 func (c cache[T]) Age() (time.Duration, error) {
 	path := c.path
-	if ktav := ktavSiblingOf(c.path); ktavEntryExists(ktav) {
+	if ktav := docread.KtavSiblingOf(c.path); docread.KtavEntryExists(ktav) {
 		path = ktav
 	}
 	fi, err := os.Stat(path)

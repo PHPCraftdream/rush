@@ -14,6 +14,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/discover"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 )
 
 const modelCatalogTTL = 7 * 24 * time.Hour
@@ -123,7 +124,7 @@ func clearAllConfirmedModels() error {
 			return fmt.Errorf("clear confirmed models: %w", err)
 		}
 		if strings.HasSuffix(path, ".json") {
-			if err := os.Remove(ktavSiblingOf(path)); err != nil && !os.IsNotExist(err) {
+			if err := os.Remove(docread.KtavSiblingOf(path)); err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("clear confirmed models: %w", err)
 			}
 		}
@@ -133,7 +134,7 @@ func clearAllConfirmedModels() error {
 
 func clearConfirmedModels(provider string) error {
 	path := confirmedModelsPath(provider)
-	for _, candidate := range []string{path, ktavSiblingOf(path)} {
+	for _, candidate := range []string{path, docread.KtavSiblingOf(path)} {
 		if err := os.Remove(candidate); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("clear %s confirmed models: %w", provider, err)
 		}
@@ -144,7 +145,7 @@ func clearConfirmedModels(provider string) error {
 func clearModelCatalog(provider string) error {
 	// Both generations must go: leaving one behind would let the next
 	// process resurrect the cleared catalog.
-	for _, path := range []string{modelCatalogPath(provider), ktavSiblingOf(modelCatalogPath(provider))} {
+	for _, path := range []string{modelCatalogPath(provider), docread.KtavSiblingOf(modelCatalogPath(provider))} {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("clear %s model catalog: %w", provider, err)
 		}

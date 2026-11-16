@@ -50,13 +50,13 @@ func AddDocumentAliasFingerprints(fingerprints map[string]Fingerprint, documents
 	}
 }
 
-type ConfigCandidateGroups struct {
+type configCandidateGroups struct {
 	Global  []string
 	Project []string
 }
 
-func LookupConfigCandidateGroups(cwd string) ConfigCandidateGroups {
-	candidates := ConfigCandidateGroups{Global: make([]string, 0, 3)}
+func LookupConfigCandidateGroups(cwd string) configCandidateGroups {
+	candidates := configCandidateGroups{Global: make([]string, 0, 3)}
 	for _, candidate := range []struct {
 		path  string
 		owner int

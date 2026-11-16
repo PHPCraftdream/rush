@@ -19,8 +19,8 @@ import (
 )
 
 var (
-	errOAuthJournalRead = errors.New("OAuth journal cannot be read")
-	errOAuthJournalDisk = errors.New("OAuth config cannot be verified")
+	errOAuthJournalRead    = errors.New("OAuth journal cannot be read")
+	errOAuthJournalDisk    = errors.New("OAuth config cannot be verified")
 	errOAuthJournalInvalid = docread.ErrOAuthJournalInvalid()
 	// Serial test seams must be restored only after their users have joined.
 	oauthJournalReadWait     = waitCodexRefresh

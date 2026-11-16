@@ -14,6 +14,11 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 )
 
+// SameBytesFingerprint reports whether data matches the supplied content digest.
+func SameBytesFingerprint(data []byte, digest [sha256.Size]byte) bool {
+	return sha256.Sum256(data) == digest
+}
+
 // FileSnapshot captures metadata about a config file at a point in time.
 type FileSnapshot struct {
 	Path        string
@@ -203,17 +208,17 @@ func writeConfigDiscoveryInfo(h hash.Hash, info os.FileInfo) {
 	_, _ = io.WriteString(h, identity.FingerprintString())
 }
 
-func CaptureReloadFingerprints(paths []string) (map[string]Fingerprint, error) {
+func captureReloadFingerprints(paths []string) (map[string]Fingerprint, error) {
 	fingerprints := make(map[string]Fingerprint, len(paths))
 	for _, path := range paths {
-		if err := AddReloadFingerprint(fingerprints, path); err != nil {
+		if err := addReloadFingerprint(fingerprints, path); err != nil {
 			return nil, err
 		}
 	}
 	return fingerprints, nil
 }
 
-func AddReloadFingerprint(fingerprints map[string]Fingerprint, path string) error {
+func addReloadFingerprint(fingerprints map[string]Fingerprint, path string) error {
 	if path == "" {
 		return nil
 	}
@@ -237,7 +242,7 @@ func ReadReloadFingerprint(path string) (Fingerprint, error) {
 	return fingerprint, nil
 }
 
-func ReloadFingerprintsChanged(before map[string]Fingerprint) bool {
+func reloadFingerprintsChanged(before map[string]Fingerprint) bool {
 	return ReloadFingerprintsChangedWithOwner(before, nil)
 }
 
@@ -289,18 +294,18 @@ func SameReloadPathSet(left, right []string) bool {
 // TrackedSlotFingerprint is the single disk-fingerprint accessor for
 // tracked slot paths: it returns the captured reload fingerprint when one
 // exists for the path (selected documents, plus canonical/normalized
-// aliases via ReloadFingerprintForPath), and falls back to a REAL on-disk
+// aliases via reloadFingerprintForPath), and falls back to a REAL on-disk
 // fingerprint (raw bytes: existence plus identity/digest, no decoding,
 // never applied to the config) for tracked paths the selected set does not
 // cover — an unselected slot sibling that exists must not look absent.
 func TrackedSlotFingerprint(path string, fingerprints map[string]Fingerprint) (Fingerprint, error) {
-	if fingerprint := ReloadFingerprintForPath(fingerprints, path); fingerprint != (Fingerprint{}) {
+	if fingerprint := reloadFingerprintForPath(fingerprints, path); fingerprint != (Fingerprint{}) {
 		return fingerprint, nil
 	}
 	return ReadReloadFingerprint(path)
 }
 
-func ReloadFingerprintForPath(fingerprints map[string]Fingerprint, path string) Fingerprint {
+func reloadFingerprintForPath(fingerprints map[string]Fingerprint, path string) Fingerprint {
 	if fingerprint, ok := fingerprints[path]; ok {
 		return RebindReloadFingerprintPath(path, fingerprint)
 	}

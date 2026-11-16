@@ -15,9 +15,9 @@ import (
 	"syscall"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
 	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
-	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 )
@@ -45,7 +45,7 @@ var (
 	// errKtavMigrationRecord reports a migration record that exists but
 	// cannot be authenticated for the slot it names.
 	errKtavMigrationRecord = errors.New("ktav migration record is invalid or foreign; preserve it and resolve manually")
-	errOAuthJournalInvalid  = errors.New("invalid OAuth journal")
+	errOAuthJournalInvalid = errors.New("invalid OAuth journal")
 )
 
 // Only the predecessor refresh-token digest is persisted, never its secret.
@@ -197,6 +197,19 @@ func warnMigrationDeferredOnce(legacy, reason string) {
 	}
 	slog.Warn("Ktav config migration deferred; continuing with legacy JSON",
 		"path", legacy, "reason", reason)
+}
+
+// WarnKtavArtifactConflictOnce logs an artifact migration that stopped on a
+// conflict beside an EXISTING destination Ktav: the existing Ktav generation
+// stays active and the JSON copy is left untouched. It keys off the shared
+// ktavBothFormatsWarned map (distinct prefix) so tests can reset it, once
+// per destination, paths only.
+func WarnKtavArtifactConflictOnce(ktav, legacy, reason string) {
+	if _, dup := ktavBothFormatsWarned.LoadOrStore("conflict:"+ktav, struct{}{}); dup {
+		return
+	}
+	slog.Warn("Ktav artifact migration stopped; an existing Ktav generation stays active and the JSON copy is left untouched",
+		"ktav", ktav, "json", legacy, "reason", reason)
 }
 
 // selectConfigSlot picks exactly one file for the logical slot named by a
@@ -451,17 +464,6 @@ func EncodeSettingsDocument(data []byte, format SettingsDocumentFormat) ([]byte,
 	return ktavBytes, nil
 }
 
-func EncodeSettingsDocument(data []byte, format SettingsDocumentFormat) ([]byte, error) {
-	if format == SettingsDocumentJSON {
-		return data, nil
-	}
-	ktavBytes, err := ktavcodec.ConvertJSONToKtav(data)
-	if err != nil {
-		return nil, fmt.Errorf("ktav conversion failed: %w", err)
-	}
-	return ktavBytes, nil
-}
-
 // legacySlotOf returns the LEGACY JSON spelling of a logical config slot:
 // a .ktav path maps to its .json sibling, any other path is returned
 // unchanged. Mirrors ktavSiblingOf's construction inverted: same directory,
@@ -510,15 +512,6 @@ func readSlotOf(path string) string {
 	}
 	return selectConfigSlot(path)
 }
-
-// NewConfigFileIsKtav reports whether new config files should default to Ktav.
-func NewConfigFileIsKtav() bool { return ktavAutoMigrate }
-
-// NewFileExists reports whether path names an existing non-directory file.
-func NewFileExists(path string) bool { return fileExists(path) }
-
-// NewConfigSlotSibling returns the preferred Ktav spelling of a legacy JSON path.
-func NewConfigSlotSibling(path string) string { return ktavSiblingOf(path) }
 
 // CheckAuthoritativeBackupOnly checks every authoritative config location.
 func CheckAuthoritativeBackupOnly(workingDir string) error {
@@ -589,36 +582,8 @@ func ConfigWriteLockAnchor(path string) string { return legacySlotOf(path) }
 // ReadSlotOf resolves the physical read path for a logical config slot.
 func ReadSlotOf(path string) string { return readSlotOf(path) }
 
-// CheckAuthoritativeBackupOnly checks every authoritative config slot.
-func CheckAuthoritativeBackupOnly(workingDir string) error {
-	return checkAuthoritativeBackupOnly(workingDir)
-}
-
-// KtavMigrationPendingSlots returns legacy slots with incomplete transactions.
-func KtavMigrationPendingSlots(workingDir string) []string {
-	return ktavMigrationPendingSlots(workingDir)
-}
-
-// KtavEntryExists reports whether an entry exists or cannot be proven absent.
-func KtavEntryExists(path string) bool { return ktavEntryExists(path) }
-
-// KtavEntryAbsentErr reports whether an error proves an entry is absent.
-func KtavEntryAbsentErr(err error) bool { return ktavEntryAbsentErr(err) }
-
 // FileExists reports whether a non-directory file exists at path.
 func FileExists(path string) bool { return fileExists(path) }
-
-// ExpandConfigSlotSiblings appends the alternate spelling of every config slot.
-func ExpandConfigSlotSiblings(paths []string) []string { return expandConfigSlotSiblings(paths) }
-
-// LegacySlotOf returns the legacy JSON spelling of a logical config slot.
-func LegacySlotOf(path string) string { return legacySlotOf(path) }
-
-// ConfigWriteLockAnchor returns the legacy JSON path used for the config lock.
-func ConfigWriteLockAnchor(path string) string { return configWriteLockAnchor(path) }
-
-// ReadSlotOf resolves the physical read path for a logical config slot.
-func ReadSlotOf(path string) string { return readSlotOf(path) }
 
 // ErrKtavBackupOnly returns docread's single backup-only sentinel identity.
 func ErrKtavBackupOnly() error { return errKtavBackupOnly }

@@ -76,10 +76,10 @@ func TestVerifyConfigTargetBindingRejectsInvalidExistingIdentity(t *testing.T) {
 	identity := configFileIdentity{device: 1, inode: 1, valid: true}
 	target := configWriteTarget{
 		path: path, selectedPath: path,
-		expected: reloadFileFingerprint{exists: true, identity: identity, aliasChain: aliasChain},
+		expected: reloadFileFingerprint{Exists: true, Identity: identity, AliasChain: aliasChain},
 	}
 	actual := target.expected
-	actual.identity = configFileIdentity{}
+	actual.Identity = configFileIdentity{}
 
 	err := verifyConfigTargetBinding(target, actual, nil)
 	require.ErrorIs(t, err, errConfigCommitVerification)
@@ -112,7 +112,7 @@ func TestMCPAdmissionInvokesBindingVerifierAfterSidecarAcquisition(t *testing.T)
 	previous := configTestHooks.beforeMCPTargetBindingVerification
 	configTestHooks.beforeMCPTargetBindingVerification = func(target *configWriteTarget) {
 		verified = true
-		target.expected.aliasChain[0] ^= 0xff
+		target.expected.AliasChain[0] ^= 0xff
 	}
 	configTestHooks.Unlock()
 	t.Cleanup(func() {

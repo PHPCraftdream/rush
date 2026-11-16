@@ -33,7 +33,7 @@ func newWriteReloadFixture(t *testing.T, initial string) (*ConfigStore, string) 
 			}
 			actual, err := trackedSlotFingerprint(path, nil)
 			expected := snapshot.snapshots[path]
-			t.Logf("path=%s expected_exists=%v actual_exists=%v size=%d/%d mtime=%d/%d fingerprint_equal=%v error=%v", path, expected.Exists, actual.exists, expected.Size, actual.size, expected.ModTime, actual.modTime, expected.fingerprint == actual, err)
+			t.Logf("path=%s expected_exists=%v actual_exists=%v size=%d/%d mtime=%d/%d fingerprint_equal=%v error=%v", path, expected.Exists, actual.Exists, expected.Size, actual.Size, expected.ModTime, actual.ModTime, expected.Fingerprint() == actual, err)
 		}
 	})
 	return store, path

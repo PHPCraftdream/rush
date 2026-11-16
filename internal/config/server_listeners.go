@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/qjebbs/go-jsons"
 )
 
@@ -149,15 +150,15 @@ func GlobalServerListenersWithSources(flags ServerListenerFlags) ([]ServerListen
 		if candidate.path == "" {
 			continue
 		}
-		path := selectConfigSlot(candidate.path)
-		data, _, err := readStableConfigFileOwned(path, candidate.owner, true)
+		path := docread.SelectConfigSlot(candidate.path)
+		data, _, err := docread.ReadStableConfigFileOwned(path, candidate.owner, true)
 		if os.IsNotExist(err) {
 			continue
 		}
 		if err != nil {
 			return nil, nil, fmt.Errorf("%w: read global listener config %s: %w", ErrListenerConfigRead, path, err)
 		}
-		data, err = decodeConfigDocument(path, data)
+		data, err = docread.DecodeConfigDocument(path, data)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%w %s: %w", ErrListenerConfigDecode, path, err)
 		}
