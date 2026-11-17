@@ -210,3 +210,29 @@ func TestOverrides(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+// A Codex model never ends up with less than the measured window, whatever
+// contextWindow cah carries (or omits).
+func TestCodexContextNeverBelowFloor(t *testing.T) {
+	m := fixture(t)
+	for i := range m.Codex {
+		m.Codex[i].ContextWindow = 1000 * int64(len(m.Codex[i].Model)%3) // per model, 0 = missing
+	}
+	out, err := Transform(m, Overrides())
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, s := range out.Models {
+		if s.Family != "codex" {
+			continue
+		}
+		n++
+		if s.Context < CodexContextFloor {
+			t.Fatalf("%s context %d below %d", s.Model, s.Context, CodexContextFloor)
+		}
+	}
+	if n == 0 {
+		t.Fatal("fixture has no codex models")
+	}
+}
