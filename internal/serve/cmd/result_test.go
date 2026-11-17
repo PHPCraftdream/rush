@@ -12,6 +12,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
@@ -19,7 +20,6 @@ import (
 )
 
 const (
-	cyrEnv     = `{"session_id":"s1-review","exit_reason":"end_turn","final_text":"Проверено: замечаний нет.","review":"Замечаний нет, изменения точны.","review_verdict":"pass","usage":{"delta_tokens":120,"delta_cost_usd":0.02},"duration_ms":65000}`
 	warnEnv    = `{"session_id":"s2","exit_reason":"stop","final_text":"","warnings":["final_text is empty and no tools were called this turn.","reduction-loss: final_text is 0 chars."]}`
 	warnErrEnv = `{"session_id":"s2","exit_reason":"stop","final_text":"","error":"Provider X stopped sending streaming data","warnings":["final_text is empty and no tools were called this turn."]}`
 	minEnv     = `{"exit_reason":"stop"}`
@@ -50,7 +50,7 @@ func writeEnv(t *testing.T, name, content string) string {
 // acceptance criterion "no failures at any console codepage" rests on.
 func TestResultTextCyrillic(t *testing.T) {
 	cmd, buf := newResultHarness(t)
-	path := writeEnv(t, "cyr.out", cyrEnv)
+	path := writeEnv(t, "cyr.out", cmdtest.CyrillicEnvelope)
 	cmd.SetArgs([]string{path})
 	require.NoError(t, cmd.Execute())
 
@@ -102,7 +102,7 @@ func TestResultJSONPassthrough(t *testing.T) {
 	cmd, buf := newResultHarness(t)
 	// No trailing newline on purpose: the bytes must be written back
 	// exactly as stored.
-	path := writeEnv(t, "raw.out", cyrEnv)
+	path := writeEnv(t, "raw.out", cmdtest.CyrillicEnvelope)
 	raw, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.False(t, bytes.HasSuffix(raw, []byte("\n")))
@@ -115,7 +115,7 @@ func TestResultJSONPassthrough(t *testing.T) {
 // never the executor's final_text or the text-mode labels.
 func TestResultReview(t *testing.T) {
 	cmd, buf := newResultHarness(t)
-	path := writeEnv(t, "cyr.out", cyrEnv)
+	path := writeEnv(t, "cyr.out", cmdtest.CyrillicEnvelope)
 	cmd.SetArgs([]string{path, "--review"})
 	require.NoError(t, cmd.Execute())
 
@@ -140,7 +140,7 @@ func TestResultReviewEmpty(t *testing.T) {
 // written without quotes, plus exactly one trailing newline.
 func TestResultFieldString(t *testing.T) {
 	cmd, buf := newResultHarness(t)
-	path := writeEnv(t, "cyr.out", cyrEnv)
+	path := writeEnv(t, "cyr.out", cmdtest.CyrillicEnvelope)
 	cmd.SetArgs([]string{path, "--field", "final_text"})
 	require.NoError(t, cmd.Execute())
 	assert.Equal(t, "Проверено: замечаний нет.\n", buf.String())
@@ -149,7 +149,7 @@ func TestResultFieldString(t *testing.T) {
 // Revert-check: non-string fields render as JSON, not Go syntax.
 func TestResultFieldNonString(t *testing.T) {
 	cmd, buf := newResultHarness(t)
-	path := writeEnv(t, "cyr.out", cyrEnv)
+	path := writeEnv(t, "cyr.out", cmdtest.CyrillicEnvelope)
 	cmd.SetArgs([]string{path, "--field", "usage"})
 	require.NoError(t, cmd.Execute())
 	var m map[string]any
@@ -169,7 +169,7 @@ func TestResultFieldNonString(t *testing.T) {
 // an empty line.
 func TestResultFieldMissing(t *testing.T) {
 	cmd, _ := newResultHarness(t)
-	path := writeEnv(t, "cyr.out", cyrEnv)
+	path := writeEnv(t, "cyr.out", cmdtest.CyrillicEnvelope)
 	cmd.SetArgs([]string{path, "--field", "nope"})
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -189,7 +189,7 @@ func TestResultMissingEnvelope(t *testing.T) {
 // the conflict must error instead of picking one silently.
 func TestResultConflictingModes(t *testing.T) {
 	cmd, _ := newResultHarness(t)
-	path := writeEnv(t, "cyr.out", cyrEnv)
+	path := writeEnv(t, "cyr.out", cmdtest.CyrillicEnvelope)
 	cmd.SetArgs([]string{path, "--json", "--review"})
 	err := cmd.Execute()
 	require.Error(t, err)

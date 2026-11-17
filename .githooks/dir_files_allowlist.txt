@@ -22,7 +22,7 @@ internal/app 272
 internal/config 233
 internal/config/discover 27
 internal/kit/sys/shell 46
-internal/serve/cmd 369
+internal/serve/cmd 336
 internal/serve/server 173
 internal/session 226
 # MV1 temporary second-ratchet debt: the service subtree has 61 code files, above the ≤21 target.

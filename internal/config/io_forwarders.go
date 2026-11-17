@@ -47,6 +47,11 @@ func ActiveConfigFileName(legacyPath string) string {
 	return slots.ActiveConfigFileName(legacyPath)
 }
 
+// Exported facade API for external layers (agent, agent/tools/mcp tests): forwards to io/slots.
+func SetKtavAutoMigrateForTest(on bool) (restore func()) {
+	return slots.SetKtavAutoMigrateForTest(on)
+}
+
 // io layer: slots. Exported wrapper for serve/cmd production callers.
 func KtavAutoMigrateEnabled() bool { return slots.KtavAutoMigrateEnabled() }
 

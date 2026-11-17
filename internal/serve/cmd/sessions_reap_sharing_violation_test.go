@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -87,7 +89,7 @@ func TestSessionsReapCmdRun_SurvivesTransientSharingViolation(t *testing.T) {
 		release()
 	}()
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil))
 	})
 	t.Logf("sessions reap stderr:\n%s", stderr)
@@ -155,7 +157,7 @@ func TestSessionsReapCmdRun_RetryBudgetIsSharedAndBounded(t *testing.T) {
 	}
 
 	start := time.Now()
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil))
 	})
 	elapsed := time.Since(start)

@@ -14,6 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const CyrillicEnvelope = `{"session_id":"s1-review","exit_reason":"end_turn","final_text":"Проверено: замечаний нет.","review":"Замечаний нет, изменения точны.","review_verdict":"pass","usage":{"delta_tokens":120,"delta_cost_usd":0.02},"duration_ms":65000}`
+
 // SeedCmdBatchDelegation reserves and announces a live running batch
 // delegation (kind=batch root with tool call + input hash, one running task
 // child linked to childID) for owner on the given host, and returns the root

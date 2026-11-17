@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -78,7 +80,7 @@ func TestQueueRunCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	require.NoError(t, queueRunCmd.Flags().Set("max-tasks", "0"))
 	queueRunCmd.SetContext(context.Background())
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runErr := queueRunCmd.RunE(queueRunCmd, nil)
 		require.NoError(t, runErr)
 	})

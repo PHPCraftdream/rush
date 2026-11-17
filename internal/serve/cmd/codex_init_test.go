@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -360,7 +362,7 @@ func TestCodexInit_SlashCommandSkipsWithoutSentinel(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(skillPath), 0o755))
 	require.NoError(t, os.WriteFile(skillPath, []byte("someone else's file"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runCodexInitInDir(t, dir)
 	})
 
@@ -376,7 +378,7 @@ func TestCodexInit_WrushSkipsWithoutSentinel(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(skillPath), 0o755))
 	require.NoError(t, os.WriteFile(skillPath, []byte("someone else's file"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runCodexInitInDir(t, dir)
 	})
 
@@ -392,7 +394,7 @@ func TestCodexInit_WcrushSkipsWithoutSentinel(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(skillPath), 0o755))
 	require.NoError(t, os.WriteFile(skillPath, []byte("someone else's file"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runCodexInitInDir(t, dir)
 	})
 
@@ -428,7 +430,7 @@ func TestCodexDel_RefusesSlashCommandWithoutSentinel(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(skillPath), 0o755))
 	require.NoError(t, os.WriteFile(skillPath, []byte("not ours"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runCodexDelInDir(t, dir)
 	})
 
@@ -460,7 +462,7 @@ func TestCodexDel_RefusesWrushWithoutSentinel(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(skillPath), 0o755))
 	require.NoError(t, os.WriteFile(skillPath, []byte("not ours"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runCodexDelInDir(t, dir)
 	})
 
@@ -490,7 +492,7 @@ func TestCodexDel_RefusesWcrushWithoutSentinel(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(skillPath), 0o755))
 	require.NoError(t, os.WriteFile(skillPath, []byte("not ours"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runCodexDelInDir(t, dir)
 	})
 
@@ -505,7 +507,7 @@ func TestCodexDel_IdempotentOnSecondRun(t *testing.T) {
 	runCodexInitInDir(t, dir)
 
 	runCodexDelInDir(t, dir)
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runCodexDelInDir(t, dir)
 	})
 	// Second run is a no-op: nothing left to remove, no errors raised.
@@ -563,7 +565,7 @@ func TestCodexDel_RemovesLegacyPrerenameInstall(t *testing.T) {
 	require.NoError(t, os.WriteFile(foreignCrushPath, []byte(foreignContent), 0o644))
 
 	// Run codex-del
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		require.NoError(t, runCodexDel(dir))
 	})
 

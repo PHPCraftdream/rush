@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/stretchr/testify/require"
@@ -168,7 +170,7 @@ func TestQueueRunCmd_UsesPerWorkspaceLockFileForLinkedWorktree(t *testing.T) {
 	}
 	queueRunCmd.SetContext(context.Background())
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runErr := queueRunCmd.RunE(queueRunCmd, nil)
 		require.NoError(t, runErr)
 	})
