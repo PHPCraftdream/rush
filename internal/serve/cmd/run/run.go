@@ -1,4 +1,4 @@
-package cmd
+package run
 
 import (
 	"context"
@@ -18,7 +18,9 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
+	cmdpkg "github.com/PHPCraftdream/rush/internal/serve/cmd"
 	cliproc "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
+	runfinish "github.com/PHPCraftdream/rush/internal/serve/cmd/run/finish"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -35,7 +37,7 @@ var runCmd = &cobra.Command{
 		// drop the console so the parent shell's exit can't hard-kill us
 		// via CTRL_CLOSE_EVENT. See console_detach_windows.go — this kill
 		// is unavoidable from a ctrl handler and has hit runs mid-boot.
-		maybeDetachConsole()
+		cmdpkg.maybeDetachConsole()
 		var (
 			quiet, _            = cmd.Flags().GetBool("quiet")
 			verbose, _          = cmd.Flags().GetBool("verbose")
@@ -103,7 +105,7 @@ var runCmd = &cobra.Command{
 			}
 		}
 
-		modelType, err := validateRunRole(role)
+		modelType, err := cmdpkg.validateRunRole(role)
 		if err != nil {
 			return err
 		}
@@ -128,7 +130,7 @@ var runCmd = &cobra.Command{
 		// hand on every invocation. Explicit flags always win — silent
 		// auto-load only fills the gap when nothing was passed.
 		if systemPrompt == "" {
-			if cwd, cwdErr := ResolveCwd(cmd); cwdErr == nil {
+			if cwd, cwdErr := cmdpkg.ResolveCwd(cmd); cwdErr == nil {
 				autoPath := filepath.Join(cwd, ".rush", "system-prompts", "default.md")
 				if bts, err := os.ReadFile(autoPath); err == nil && len(bts) > 0 {
 					systemPrompt = string(bts)
@@ -167,12 +169,12 @@ var runCmd = &cobra.Command{
 		case "agent-allow":
 			// Explicit opt-in: tools present, no nudge — model decides.
 		case "with-agents":
-			agentsHint = agentsModePromptHint
+			agentsHint = runfinish.AgentsModePromptHint
 		default:
 			return fmt.Errorf("--agents: invalid value %q (allowed: single|with-agents|agent-allow)", agentsMode)
 		}
 
-		formatHint, err := resolveFormatHint(formatFlag)
+		formatHint, err := runfinish.ResolveFormatHint(formatFlag)
 		if err != nil {
 			return err
 		}
@@ -185,9 +187,9 @@ var runCmd = &cobra.Command{
 		case "", "summary":
 			// no hint
 		case "concat":
-			aggregationHint = aggregationConcatPromptHint
+			aggregationHint = runfinish.AggregationConcatPromptHint
 		case "attach":
-			aggregationHint = aggregationAttachPromptHint
+			aggregationHint = runfinish.AggregationAttachPromptHint
 		default:
 			return fmt.Errorf("--aggregation: invalid value %q (allowed: summary|concat|attach)", aggregationMode)
 		}
@@ -249,9 +251,9 @@ var runCmd = &cobra.Command{
 		// Both run deadlines carry their owned cause through graceful cleanup.
 		// Only a process still alive past hardKillGrace is force-killed.
 		var stopDeadline func()
-		ctx, stopDeadline = installRunDeadline(ctx, timeoutDur,
-			resolveDefaultHardTimeout(os.Getenv("RUSH_RUN_DEFAULT_HARD_TIMEOUT")),
-			hardKillGrace, os.Stderr, exitWithAudit)
+		ctx, stopDeadline = runfinish.InstallRunDeadline(ctx, timeoutDur,
+			cmdpkg.resolveDefaultHardTimeout(os.Getenv("RUSH_RUN_DEFAULT_HARD_TIMEOUT")),
+			runfinish.HardKillGrace, os.Stderr, cmdpkg.exitWithAudit)
 		defer stopDeadline()
 
 		// Fork patch (worktree delegation): --worktree resolves or
@@ -283,7 +285,7 @@ var runCmd = &cobra.Command{
 		// resolveSession's get-or-create branch will create a session
 		// whose ID is exactly the user-supplied string.
 		if sessionID != "" {
-			if sess, err := resolveSessionID(ctx, a.Sessions, sessionID); err == nil {
+			if sess, err := cmdpkg.resolveSessionID(ctx, a.Sessions, sessionID); err == nil {
 				sessionID = sess.ID
 			}
 		}
@@ -297,7 +299,7 @@ var runCmd = &cobra.Command{
 
 		// foldRoleModel validates --role and resolves --continue's session;
 		// the role model itself resolves live per turn (plan D2).
-		smartModel, sessionID, useLast, err = foldRoleModel(ctx, a, a.Config().Models, role, modelType, smartModel, sessionID, useLast)
+		smartModel, sessionID, useLast, err = cmdpkg.foldRoleModel(ctx, a, a.Config().Models, role, modelType, smartModel, sessionID, useLast)
 		if err != nil {
 			return err
 		}
@@ -308,7 +310,7 @@ var runCmd = &cobra.Command{
 
 		prompt := strings.Join(args, " ")
 
-		prompt, err = MaybePrependStdin(prompt)
+		prompt, err = cmdpkg.MaybePrependStdin(prompt)
 		if err != nil {
 			slog.Error("Failed to read from stdin", "error", err)
 			return err
@@ -322,12 +324,12 @@ var runCmd = &cobra.Command{
 		// aggregation hints AFTER stdin read so the user's prompt
 		// content stays at the top of the model's context (attention
 		// favours the start).
-		prompt = composeUserPrompt(prompt, formatHint, agentsHint, aggregationHint)
+		prompt = runfinish.ComposeUserPrompt(prompt, formatHint, agentsHint, aggregationHint)
 
 		// Fork patch: --findings-from appends another run's review
 		// findings (verdict, review, warnings) after the user's prompt;
 		// a missing or invalid envelope aborts before the run starts.
-		prompt, err = applyFindingsFrom(prompt, findingsFrom)
+		prompt, err = runfinish.ApplyFindingsFrom(prompt, findingsFrom)
 		if err != nil {
 			return err
 		}
@@ -351,7 +353,7 @@ var runCmd = &cobra.Command{
 			SystemPrompt:                systemPrompt,
 			ReasoningEffort:             effort,
 			RoleSmart:                   roleSmart,
-			RequestedRole:               requestedRunRole(role),
+			RequestedRole:               cmdpkg.requestedRunRole(role),
 			ModelRole:                   modelType,
 			DisableSubAgents:            agentsDisable,
 			MaxAgentDepth:               &maxAgentDepth,
@@ -377,7 +379,7 @@ var runCmd = &cobra.Command{
 		// Fork patch (finalization gate): with options.finalization.enabled
 		// the terminal stdout is buffered and flushed once after the owner's
 		// finalization record seals; flag off keeps the legacy path.
-		res, runErr := runGatedNonInteractive(ctx, a.Config().Options.AgentFinalizationEnabled(),
+		res, runErr := runfinish.RunGatedNonInteractive(ctx, a.Config().Options.AgentFinalizationEnabled(),
 			a.FinalizationTerminalGate, sessionID, os.Stdout,
 			func(out io.Writer) (*app.RunResult, error) {
 				return a.RunNonInteractiveWithResult(ctx, out, prompt, overrides, hideSpinner, mode, sessionID, useLast)
@@ -387,8 +389,8 @@ var runCmd = &cobra.Command{
 		// that itself failed keeps its own error exit code, and by
 		// res != nil for defensive symmetry with the result contract.
 		if runErr == nil && res != nil {
-			if _, hit := reviewVerdictExitCode(res.ReviewVerdict, failOnReview); hit {
-				return &reviewFailError{verdict: res.ReviewVerdict, sessionID: res.SessionID}
+			if _, hit := runfinish.ReviewVerdictExitCode(res.ReviewVerdict, failOnReview); hit {
+				return &runfinish.ReviewFailError{Verdict: res.ReviewVerdict, SessionID: res.SessionID}
 			}
 		}
 		return runErr
@@ -467,7 +469,7 @@ func NewRunCmd() *cobra.Command {
 		runCmd.MarkFlagsMutuallyExclusive("system-prompt", "system-prompt-file")
 		runCmd.MarkFlagsMutuallyExclusive("stream", "json")
 	})
-	return deepFreshCmd(runCmd)
+	return cmdpkg.deepFreshCmd(runCmd)
 }
 
 // stdinReadGraceDefault bounds how long MaybePrependStdin waits for a named

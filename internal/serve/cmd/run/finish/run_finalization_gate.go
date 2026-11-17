@@ -1,4 +1,4 @@
-package cmd
+package runfinish
 
 import (
 	"context"
@@ -30,14 +30,14 @@ func (g runFinalizationHoldGate) AwaitSealed(ctx context.Context, ownerSessionID
 	return g.inner.AwaitSealed(ctx, ownerSessionID)
 }
 
-// runGatedNonInteractive resolves the finalization hold gate for one `rush
+// RunGatedNonInteractive resolves the finalization hold gate for one `rush
 // run` and delivers the run's terminal stdout through
 // runNonInteractiveAwaitingSeal. With finalizationEnabled false, a nil
 // appGate provider, or a provider that returns nil, the gate stays nil and
 // the legacy byte-for-byte path runs (run(stdout) directly, no buffering).
 // The owner is resolved after the run: the run result's session id when
 // known, else the pre-run knownSessionID.
-func runGatedNonInteractive(
+func RunGatedNonInteractive(
 	ctx context.Context,
 	finalizationEnabled bool,
 	appGate func() session.FinalizationTerminalGate,

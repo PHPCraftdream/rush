@@ -2,7 +2,7 @@
 // create the git worktree, chdir the run into it, default the session id
 // to the slug, install the stream mirror, and flush the mirrored
 // stdout/stderr into the main checkout's .rush/stdin at the end.
-package cmd
+package run
 
 import (
 	"context"
@@ -37,7 +37,7 @@ func validateRunWorktreeFlags(cmd *cobra.Command, slug, base, branch string) err
 			"the run uses the data directory resolved from inside the " +
 			"worktree (the shared <main>/.rush)")
 	}
-	return validateWorktreeSlug(slug)
+	return cmdpkg.validateWorktreeSlug(slug)
 }
 
 // validateMirrorSessionID rejects session ids that could escape the
@@ -64,7 +64,7 @@ type runWorktree struct {
 	sessionID    string
 	mainRoot     string
 	worktreePath string
-	mirror       *streamMirror
+	mirror       *cmdpkg.streamMirror
 	prevCwd      string
 }
 
@@ -78,11 +78,11 @@ func prepareRunWorktree(
 	if err != nil {
 		return nil, fmt.Errorf("resolve current directory: %w", err)
 	}
-	mainRoot, err := mainCheckoutRoot(ctx, cwd)
+	mainRoot, err := cmdpkg.mainCheckoutRoot(ctx, cwd)
 	if err != nil {
 		return nil, err
 	}
-	entries, err := listGitWorktrees(ctx, mainRoot)
+	entries, err := cmdpkg.listGitWorktrees(ctx, mainRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -90,13 +90,13 @@ func prepareRunWorktree(
 	if wantBranch == "" {
 		wantBranch = slug
 	}
-	plan, err := planWorktree(entries, mainRoot, slug, wantBranch,
+	plan, err := cmdpkg.planWorktree(entries, mainRoot, slug, wantBranch,
 		func(p string) bool {
 			_, err := os.Stat(p)
 			return err == nil
 		},
 		func(b string) bool {
-			ok, err := localBranchExists(ctx, mainRoot, b)
+			ok, err := cmdpkg.localBranchExists(ctx, mainRoot, b)
 			return err == nil && ok
 		})
 	if err != nil {
@@ -104,20 +104,20 @@ func prepareRunWorktree(
 	}
 
 	switch plan.Kind {
-	case worktreePlanReuse:
+	case cmdpkg.worktreePlanReuse:
 		fmt.Fprintf(os.Stderr, "reusing worktree %s (branch %s)\n",
 			plan.Path, plan.Branch)
-	case worktreePlanCreate:
+	case cmdpkg.worktreePlanCreate:
 		baseRef := base
 		if baseRef == "" {
 			baseRef = "HEAD"
 		}
-		if _, err := gitIn(ctx, mainRoot, "worktree", "add", "-q",
+		if _, err := cmdpkg.gitIn(ctx, mainRoot, "worktree", "add", "-q",
 			"-b", plan.Branch, plan.Path, baseRef); err != nil {
 			return nil, err
 		}
-	case worktreePlanCreateExistingBranch:
-		if _, err := gitIn(ctx, mainRoot, "worktree", "add", "-q",
+	case cmdpkg.worktreePlanCreateExistingBranch:
+		if _, err := cmdpkg.gitIn(ctx, mainRoot, "worktree", "add", "-q",
 			plan.Path, plan.Branch); err != nil {
 			return nil, err
 		}
@@ -128,12 +128,12 @@ func prepareRunWorktree(
 		}
 	}
 
-	ignored, err := isGitIgnored(ctx, mainRoot, plan.Path)
+	ignored, err := cmdpkg.isGitIgnored(ctx, mainRoot, plan.Path)
 	if err == nil && !ignored {
 		fmt.Fprintf(os.Stderr, "warning: %s is not ignored by git — "+
 			"add %q to .gitignore to keep worktrees out of git status\n",
-			filepath.Join(mainRoot, worktreeDirName)+string(os.PathSeparator),
-			worktreeDirName+"/")
+			filepath.Join(mainRoot, cmdpkg.worktreeDirName)+string(os.PathSeparator),
+			cmdpkg.worktreeDirName+"/")
 	}
 
 	prevCwd := cwd
@@ -147,7 +147,7 @@ func prepareRunWorktree(
 		_ = os.Chdir(prevCwd)
 		return nil, err
 	}
-	mirror, err := startStreamMirror()
+	mirror, err := cmdpkg.startStreamMirror()
 	if err != nil {
 		// A mirror failure must not leave the cwd changed.
 		_ = os.Chdir(prevCwd)

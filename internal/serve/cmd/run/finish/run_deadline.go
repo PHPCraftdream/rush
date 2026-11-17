@@ -1,4 +1,4 @@
-package cmd
+package runfinish
 
 import (
 	"context"
@@ -9,11 +9,11 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 )
 
-// hardKillGrace is how long a `rush run` may take to exit after its deadline
+// HardKillGrace is how long a `rush run` may take to exit after its deadline
 // before the process is force-killed.
-const hardKillGrace = 60 * time.Second
+const HardKillGrace = 60 * time.Second
 
-// installRunDeadline arms the wall-clock guards of one `rush run` and returns
+// InstallRunDeadline arms the wall-clock guards of one `rush run` and returns
 // the context the run must use plus a stop func (call it on every return).
 //
 // The deadline is timeoutDur (--timeout) or, when that is not set, defaultCap
@@ -29,7 +29,7 @@ const hardKillGrace = 60 * time.Second
 // The cap is not re-armed on progress: nothing observable from outside the loop
 // tells a healthy wait from a wedged process, so a wait longer than the cap
 // needs an explicit --timeout.
-func installRunDeadline(ctx context.Context, timeoutDur, defaultCap, grace time.Duration, stderr io.Writer, exit func(int)) (context.Context, func()) {
+func InstallRunDeadline(ctx context.Context, timeoutDur, defaultCap, grace time.Duration, stderr io.Writer, exit func(int)) (context.Context, func()) {
 	deadline, isCap := timeoutDur, false
 	if deadline <= 0 {
 		deadline, isCap = defaultCap, true

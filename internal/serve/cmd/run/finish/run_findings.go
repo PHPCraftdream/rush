@@ -3,7 +3,7 @@
 // and loaded via envelope.go) and formats its review findings so the
 // model explicitly knows what a previous review concluded.
 
-package cmd
+package runfinish
 
 import (
 	"fmt"
@@ -46,20 +46,20 @@ func formatFindingsBlock(env *app.RunResult) string {
 	return b.String()
 }
 
-// applyFindingsFrom appends the findings block from an envelope to the
+// ApplyFindingsFrom appends the findings block from an envelope to the
 // prompt. An empty ref means the flag was not passed and the prompt is
 // returned unchanged: `rush run` behaves exactly as before. A missing
 // or invalid envelope returns an error BEFORE the run starts, so a bad
 // reference never wastes a live turn.
-func applyFindingsFrom(prompt, ref string) (string, error) {
+func ApplyFindingsFrom(prompt, ref string) (string, error) {
 	if ref == "" {
 		return prompt, nil
 	}
-	path, err := resolveEnvelopePath(ref)
+	path, err := cmdpkg.resolveEnvelopePath(ref)
 	if err != nil {
 		return "", err
 	}
-	_, env, _, err := loadEnvelope(path)
+	_, env, _, err := cmdpkg.loadEnvelope(path)
 	if err != nil {
 		return "", err
 	}

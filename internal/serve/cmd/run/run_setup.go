@@ -1,4 +1,4 @@
-package cmd
+package run
 
 import (
 	"os"
@@ -8,9 +8,9 @@ import (
 )
 
 func setupRunApp(cmd *cobra.Command, asJSON bool, sessionID string) (*app.App, error) {
-	appOpts := mcpAppOptions(cmd)
+	appOpts := cmdpkg.mcpAppOptions(cmd)
 	if asJSON {
 		appOpts = append(appOpts, app.WithBatchFaultJSONOutput(os.Stdout, sessionID))
 	}
-	return setupAppWithOptions(cmd, appOpts)
+	return cmdpkg.setupAppWithOptions(cmd, appOpts)
 }

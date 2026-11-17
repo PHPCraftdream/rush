@@ -1,4 +1,4 @@
-package cmd
+package run
 
 // runLongHelp and runExample hold the "rush run" help text, sectioned.
 
