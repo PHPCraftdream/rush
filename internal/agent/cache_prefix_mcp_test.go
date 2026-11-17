@@ -5,7 +5,6 @@ import (
 	"iter"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -76,7 +75,7 @@ func TestWithMCPInstructionsSortsByMapKeyAcrossAllOrders(t *testing.T) {
 	var checkPermutations func(int)
 	checkPermutations = func(at int) {
 		if at == len(entries) {
-			got := promptcache.WithMCPInstructions(prompt, cfg, mcpInstructionStates(entries))
+			got := withMCPInstructions(prompt, cfg, mcpInstructionStates(entries))
 			require.Equal(t, want, got, "entry order %q", order)
 			return
 		}
@@ -97,7 +96,7 @@ func TestWithMCPInstructionsReflectsCurrentTextConfigurationAndState(t *testing.
 	oldClient := newMCPInstructionClient(t, "old text")
 	const prompt = "unchanged prompt"
 	assemble := func(state mcp.State, client *mcp.ClientSession) string {
-		return promptcache.WithMCPInstructions(prompt, cfg, mcpInstructionStates([]namedMCPInstructionState{{
+		return withMCPInstructions(prompt, cfg, mcpInstructionStates([]namedMCPInstructionState{{
 			name:   "mutable",
 			server: mcp.ClientInfo{Name: "mutable", State: state, Client: client},
 		}}))
@@ -114,12 +113,12 @@ func TestWithMCPInstructionsReflectsCurrentTextConfigurationAndState(t *testing.
 	require.Equal(t, "unchanged prompt\n\n<mcp-instructions>\nupdated text\n\n\n</mcp-instructions>", assemble(mcp.StateConnected, oldClient), "reconfigured assembly")
 	require.True(t, cfg.AddMCP("empty", config.MCPConfig{}), "configure empty-instruction MCP")
 	emptyClient := newMCPInstructionClient(t, "")
-	got := promptcache.WithMCPInstructions(prompt, cfg, mcpInstructionStates([]namedMCPInstructionState{{
+	got := withMCPInstructions(prompt, cfg, mcpInstructionStates([]namedMCPInstructionState{{
 		name:   "empty",
 		server: mcp.ClientInfo{Name: "empty", State: mcp.StateConnected, Client: emptyClient},
 	}}))
 	require.Equal(t, prompt, got, "empty instruction must preserve original prompt")
-	require.Equal(t, prompt, promptcache.WithMCPInstructions(prompt, cfg, mcpInstructionStates(nil)), "no-output assembly")
+	require.Equal(t, prompt, withMCPInstructions(prompt, cfg, mcpInstructionStates(nil)), "no-output assembly")
 }
 
 func TestWithTurnMCPInstructionsRecoveryContinuationKeepsPinnedPrompt(t *testing.T) {
@@ -132,6 +131,6 @@ func TestWithTurnMCPInstructionsRecoveryContinuationKeepsPinnedPrompt(t *testing
 	}})
 	const pinned = "pinned prompt\n\n<mcp-instructions>\nfirst attempt\n\n\n</mcp-instructions>"
 
-	require.Equal(t, pinned, promptcache.WithTurnMCPInstructions(pinned, true, cfg, states), "recovery must not append a second instruction block")
-	require.Equal(t, "fresh\n\n<mcp-instructions>\nlive text\n\n\n</mcp-instructions>", promptcache.WithTurnMCPInstructions("fresh", false, cfg, states), "a normal turn still appends")
+	require.Equal(t, pinned, withTurnMCPInstructions(pinned, true, cfg, states), "recovery must not append a second instruction block")
+	require.Equal(t, "fresh\n\n<mcp-instructions>\nlive text\n\n\n</mcp-instructions>", withTurnMCPInstructions("fresh", false, cfg, states), "a normal turn still appends")
 }

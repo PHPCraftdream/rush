@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
 )
@@ -53,15 +52,15 @@ func TestCachePrefix_FinalAdmittedBatchToolsCanonical(t *testing.T) {
 		require.Equal(t, forward[i].Info(), reverse[i].Info())
 	}
 	messages := []fantasy.Message{fantasy.NewSystemMessage("stable prefix")}
-	first := promptcache.PreparedCacheDiagnostic(messages, withProviderOptionsOnLast(forward, cacheOpts()))
-	second := promptcache.PreparedCacheDiagnostic(messages, withProviderOptionsOnLast(reverse, cacheOpts()))
+	first := preparedCacheDiagnostic(messages, withProviderOptionsOnLast(forward, cacheOpts()))
+	second := preparedCacheDiagnostic(messages, withProviderOptionsOnLast(reverse, cacheOpts()))
 	require.Equal(t, first, second, "the fingerprint must describe the final marked schema, including controls")
 	for _, tool := range forward {
 		require.Empty(t, tool.ProviderOptions(), "diagnostics and markers must not mutate the pinned tools")
 	}
 	narrowed := build([]string{"view"})
 	require.Equal(t, []string{"batch_add", "batch_run", "view"}, pinnedToolNames(narrowed))
-	require.NotEqual(t, first.ToolsFingerprint, promptcache.PreparedCacheDiagnostic(messages, narrowed).ToolsFingerprint, "authority changes must change the observed schema")
+	require.NotEqual(t, first.ToolsFingerprint, preparedCacheDiagnostic(messages, narrowed).ToolsFingerprint, "authority changes must change the observed schema")
 }
 
 func TestCachePrefix_PrepareStepDoesNotMutateRetainedMessagesOrPinnedTools(t *testing.T) {
@@ -85,8 +84,8 @@ func TestCachePrefix_PrepareStepDoesNotMutateRetainedMessagesOrPinnedTools(t *te
 	require.Empty(t, ts.call.Tools[1].ProviderOptions())
 	require.NotEmpty(t, prepared.Tools[1].ProviderOptions())
 	require.Equal(t, "prefix pinned to this call", prepared.Messages[0].Content[0].(fantasy.TextPart).Text)
-	wantDiagnostic := promptcache.PreparedCacheDiagnostic(prepared.Messages, prepared.Tools)
-	require.Equal(t, wantDiagnostic, promptcache.PreparedCacheDiagnostic(ts.stepMessages, ts.stepTools))
+	wantDiagnostic := preparedCacheDiagnostic(prepared.Messages, prepared.Tools)
+	require.Equal(t, wantDiagnostic, preparedCacheDiagnostic(ts.stepMessages, ts.stepTools))
 	require.Equal(t, wantDiagnostic, ts.cacheDiagnostic, "the diagnostic must be captured after all step assembly")
 	output.Reset()
 	_, err = ts.applyStepUsage(fantasy.StepResult{Response: fantasy.Response{Usage: fantasy.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}}})
@@ -114,19 +113,19 @@ func TestCacheDiagnostic_MapPermutationsPreserveArraysAndSemantics(t *testing.T)
 	first := mkTool(map[string]any{"z": map[string]any{"enum": []string{"first", "second"}, "type": "string"}, "a": map[string]any{"type": "number"}}, []string{"z", "a"})
 	permuted := mkTool(map[string]any{"a": map[string]any{"type": "number"}, "z": map[string]any{"type": "string", "enum": []string{"first", "second"}}}, []string{"z", "a"})
 	messages := []fantasy.Message{fantasy.NewSystemMessage("system-secret"), fantasy.NewUserMessage("request-secret")}
-	baseline := promptcache.PreparedCacheDiagnostic(messages, []fantasy.AgentTool{first})
-	require.Equal(t, baseline, promptcache.PreparedCacheDiagnostic(messages, []fantasy.AgentTool{permuted}))
+	baseline := preparedCacheDiagnostic(messages, []fantasy.AgentTool{first})
+	require.Equal(t, baseline, preparedCacheDiagnostic(messages, []fantasy.AgentTool{permuted}))
 	reorderedArray := mkTool(map[string]any{"a": map[string]any{"type": "number"}, "z": map[string]any{"type": "string", "enum": []string{"second", "first"}}}, []string{"z", "a"})
-	require.NotEqual(t, baseline.ToolsFingerprint, promptcache.PreparedCacheDiagnostic(messages, []fantasy.AgentTool{reorderedArray}).ToolsFingerprint)
+	require.NotEqual(t, baseline.ToolsFingerprint, preparedCacheDiagnostic(messages, []fantasy.AgentTool{reorderedArray}).ToolsFingerprint)
 	changedSchema := mkTool(map[string]any{"a": map[string]any{"type": "boolean"}, "z": map[string]any{"type": "string", "enum": []string{"first", "second"}}}, []string{"z", "a"})
-	require.NotEqual(t, baseline.ToolsFingerprint, promptcache.PreparedCacheDiagnostic(messages, []fantasy.AgentTool{changedSchema}).ToolsFingerprint)
+	require.NotEqual(t, baseline.ToolsFingerprint, preparedCacheDiagnostic(messages, []fantasy.AgentTool{changedSchema}).ToolsFingerprint)
 	changedRequired := mkTool(first.Info().Parameters, []string{"z"})
-	require.NotEqual(t, baseline.ToolsFingerprint, promptcache.PreparedCacheDiagnostic(messages, []fantasy.AgentTool{changedRequired}).ToolsFingerprint)
+	require.NotEqual(t, baseline.ToolsFingerprint, preparedCacheDiagnostic(messages, []fantasy.AgentTool{changedRequired}).ToolsFingerprint)
 	require.Equal(t, []string{"z", "a"}, first.Info().Required)
 	changedHistory := []fantasy.Message{messages[0], fantasy.NewUserMessage("different request")}
-	require.Equal(t, baseline.PrefixFingerprint, promptcache.PreparedCacheDiagnostic(changedHistory, []fantasy.AgentTool{first}).PrefixFingerprint)
+	require.Equal(t, baseline.PrefixFingerprint, preparedCacheDiagnostic(changedHistory, []fantasy.AgentTool{first}).PrefixFingerprint)
 	changedPrefix := []fantasy.Message{fantasy.NewSystemMessage("different system"), messages[1]}
-	require.NotEqual(t, baseline.PrefixFingerprint, promptcache.PreparedCacheDiagnostic(changedPrefix, []fantasy.AgentTool{first}).PrefixFingerprint)
+	require.NotEqual(t, baseline.PrefixFingerprint, preparedCacheDiagnostic(changedPrefix, []fantasy.AgentTool{first}).PrefixFingerprint)
 	require.Greater(t, baseline.MessageBytes, baseline.PrefixBytes)
 }
 
@@ -139,7 +138,7 @@ func TestCacheDiagnostic_AmbiguousZeroAndContentFreeLog(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	messages := []fantasy.Message{fantasy.NewSystemMessage("system-secret"), fantasy.NewUserMessage("arguments-secret")}
-	ts := &turnStream{cacheDiagnostic: promptcache.PreparedCacheDiagnostic(messages, nil), cachePreparedAt: time.Now()}
+	ts := &turnStream{cacheDiagnostic: preparedCacheDiagnostic(messages, nil), cachePreparedAt: time.Now()}
 	ts.logCacheStepUsage(fantasy.Usage{}, false, nil)
 	var row map[string]any
 	require.NoError(t, json.Unmarshal(output.Bytes(), &row))

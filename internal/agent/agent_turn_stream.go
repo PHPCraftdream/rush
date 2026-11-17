@@ -15,7 +15,6 @@ import (
 	"charm.land/fantasy/providers/openai"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -194,7 +193,7 @@ type turnStream struct {
 	stepMessages []fantasy.Message
 	stepTools    []fantasy.AgentTool
 	// Sequential PrepareStep/OnStepFinish state; never read by tickers.
-	cacheDiagnostic      promptcache.CachePreparedDiagnostic
+	cacheDiagnostic      cachePreparedDiagnostic
 	cachePreparedAt      time.Time
 	cachePrepareDuration time.Duration
 	// toolReceipts is the per-step receipt sink installed by

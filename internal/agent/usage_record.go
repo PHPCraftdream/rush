@@ -5,7 +5,6 @@ import (
 	"log/slog"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -27,12 +26,12 @@ import (
 // The type-name list cannot carry openai-compat: the same fantasy provider
 // serves cache-silent local endpoints too. Those cases are covered by
 // providerID (the configured rush.json provider ID, e.g. "zai") checked
-// against promptcache.IsCacheReporterProviderID (runtime/policy/promptcache).
+// against cacheReporterProviderIDs (cache_profile.go).
 func providerCacheSupport(provider, providerID string, usage fantasy.Usage) message.CacheSupport {
 	if usage.CacheReadTokens > 0 || usage.CacheCreationTokens > 0 {
 		return message.CacheSupportNative
 	}
-	if cacheProfileFor(provider).knownCacheReporter || promptcache.IsCacheReporterProviderID(providerID) {
+	if cacheProfileFor(provider).knownCacheReporter || cacheReporterProviderIDs[providerID] {
 		return message.CacheSupportNative
 	}
 	return message.CacheSupportNone
