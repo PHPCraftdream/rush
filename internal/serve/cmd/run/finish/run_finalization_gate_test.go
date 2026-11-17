@@ -1,8 +1,12 @@
-package cmd
+package runfinish
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"io"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/app"
@@ -10,7 +14,69 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The hold gate must force buffering even when the inner gate would allow,
+type fakeRunTerminalGate struct {
+	allow    bool
+	sealed   <-chan struct{}
+	awaitErr error
+
+	allowCalls atomic.Int32
+	awaitCalls atomic.Int32
+
+	mu          sync.Mutex
+	awaitOwners []string
+
+	entered   chan struct{}
+	enterOnce sync.Once
+}
+
+func (g *fakeRunTerminalGate) awaitEntered() <-chan struct{} {
+	if g.entered == nil {
+		g.entered = make(chan struct{})
+	}
+	return g.entered
+}
+
+func (g *fakeRunTerminalGate) awaitedOwners() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]string(nil), g.awaitOwners...)
+}
+
+func (g *fakeRunTerminalGate) AllowTerminal(context.Context, string) bool {
+	g.allowCalls.Add(1)
+	return g.allow
+}
+
+func (g *fakeRunTerminalGate) AwaitSealed(ctx context.Context, owner string) error {
+	g.awaitCalls.Add(1)
+	g.mu.Lock()
+	g.awaitOwners = append(g.awaitOwners, owner)
+	g.mu.Unlock()
+	g.enterOnce.Do(func() {
+		if g.entered != nil {
+			close(g.entered)
+		}
+	})
+	if g.sealed != nil {
+		select {
+		case <-g.sealed:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return g.awaitErr
+}
+
+type recordingWriter struct {
+	buf    bytes.Buffer
+	writes int
+}
+
+func (w *recordingWriter) Write(p []byte) (int, error) {
+	w.writes++
+	return w.buf.Write(p)
+}
+
 // and must delegate AwaitSealed verbatim; a nil inner gate releases.
 func TestRunFinalizationHoldGateAlwaysRefusesAndDelegatesAwait(t *testing.T) {
 	t.Parallel()
@@ -48,7 +114,7 @@ func TestRunGatedNonInteractiveFlagOffKeepsLegacyPathWithoutGate(t *testing.T) {
 		return &app.RunResult{SessionID: "s1"}, nil
 	}
 
-	res, err := runGatedNonInteractive(t.Context(), false, provider, "", rec, run)
+	res, err := RunGatedNonInteractive(t.Context(), false, provider, "", rec, run)
 
 	require.NoError(t, err)
 	require.NotNil(t, res)
@@ -71,7 +137,7 @@ func TestRunGatedNonInteractiveFlagOnNilAppGateKeepsLegacyPath(t *testing.T) {
 		return &app.RunResult{SessionID: "s2"}, nil
 	}
 
-	res, err := runGatedNonInteractive(t.Context(), true, func() session.FinalizationTerminalGate { return nil }, "", rec, run)
+	res, err := RunGatedNonInteractive(t.Context(), true, func() session.FinalizationTerminalGate { return nil }, "", rec, run)
 
 	require.NoError(t, err)
 	require.NotNil(t, res)
@@ -107,7 +173,7 @@ func TestRunGatedNonInteractiveFlagOnBuffersUntilSealedAndUsesRunResultOwner(t *
 	}
 	finished := make(chan outcome, 1)
 	go func() {
-		res, err := runGatedNonInteractive(t.Context(), true, provider, "", rec, run)
+		res, err := RunGatedNonInteractive(t.Context(), true, provider, "", rec, run)
 		finished <- outcome{res: res, err: err}
 	}()
 
@@ -146,7 +212,7 @@ func TestRunGatedNonInteractiveFlagOnGateErrorPrintsNothing(t *testing.T) {
 		return &app.RunResult{SessionID: "own"}, nil
 	}
 
-	res, err := runGatedNonInteractive(t.Context(), true, func() session.FinalizationTerminalGate { return inner }, "", rec, run)
+	res, err := RunGatedNonInteractive(t.Context(), true, func() session.FinalizationTerminalGate { return inner }, "", rec, run)
 
 	var refusal *finalizationGateRefusal
 	require.ErrorAs(t, err, &refusal)

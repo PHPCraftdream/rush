@@ -2,7 +2,7 @@
 // containment, path comparison, plan decisions, and the git helpers
 // against real temporary repositories. Each group names the mutant its
 // revert-check kills.
-package cmd
+package wtree
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 )
 
 // wtTestGitRun runs one git command in dir and fails the test on error.
-// Named distinctly from config's gitRun because package cmd may grow its
+// Named distinctly from config's gitRun because package wtree may grow its
 // own helpers.
 func wtTestGitRun(t *testing.T, dir string, args ...string) string {
 	t.Helper()
@@ -48,13 +48,13 @@ func makeWorktreeTestRepo(t *testing.T) string {
 
 func TestValidateWorktreeSlug(t *testing.T) {
 	t.Parallel()
-	// Revert-check: weaken validateWorktreeSlug and separators or
+	// Revert-check: weaken ValidateWorktreeSlug and separators or
 	// reserved device names would reach the filesystem as paths.
 	valid := []string{"task-a", "s46xx", "a1.b_c-d"}
 	for _, slug := range valid {
 		t.Run("valid/"+slug, func(t *testing.T) {
 			t.Parallel()
-			require.NoError(t, validateWorktreeSlug(slug))
+			require.NoError(t, ValidateWorktreeSlug(slug))
 		})
 	}
 	invalid := []struct {
@@ -80,7 +80,7 @@ func TestValidateWorktreeSlug(t *testing.T) {
 	for _, tc := range invalid {
 		t.Run("invalid/"+tc.slug, func(t *testing.T) {
 			t.Parallel()
-			err := validateWorktreeSlug(tc.slug)
+			err := ValidateWorktreeSlug(tc.slug)
 			require.Error(t, err)
 			require.True(t,
 				strings.Contains(err.Error(), tc.slug) ||
@@ -97,10 +97,10 @@ func TestWorktreeTargetPath(t *testing.T) {
 	main := filepath.Join(string(filepath.Separator), "repo")
 	got, err := worktreeTargetPath(main, "task-a")
 	require.NoError(t, err)
-	want := filepath.Join(main, worktreeDirName, "task-a")
+	want := filepath.Join(main, WorktreeDirName, "task-a")
 	require.Equal(t, want, got)
 	require.True(t, strings.HasPrefix(got,
-		filepath.Join(main, worktreeDirName)+string(filepath.Separator)))
+		filepath.Join(main, WorktreeDirName)+string(filepath.Separator)))
 
 	_, err = worktreeTargetPath(main, "..")
 	require.Error(t, err)
@@ -128,43 +128,43 @@ func TestSameWorktreePath(t *testing.T) {
 func TestPlanWorktree(t *testing.T) {
 	t.Parallel()
 	// Revert-check: swap the create/reuse/mismatch branches in
-	// planWorktree and existing worktrees get clobbered or duplicated.
-	entries := []worktreeEntry{{Path: "/main/worktrees/wt", Branch: "old"}}
+	// PlanWorktree and existing worktrees get clobbered or duplicated.
+	entries := []WorktreeEntry{{Path: "/main/worktrees/wt", Branch: "old"}}
 	if runtime.GOOS == "windows" {
 		entries[0].Path = `D:\main\worktrees\wt`
 	}
 	main := entries[0].Path[:strings.LastIndex(
-		filepath.FromSlash(entries[0].Path), string(filepath.Separator)+worktreeDirName)]
+		filepath.FromSlash(entries[0].Path), string(filepath.Separator)+WorktreeDirName)]
 
 	t.Run("create new branch", func(t *testing.T) {
 		t.Parallel()
-		plan, err := planWorktree(nil, main, "slug", "feat",
+		plan, err := PlanWorktree(nil, main, "slug", "feat",
 			func(string) bool { return false }, func(string) bool { return false })
 		require.NoError(t, err)
-		require.Equal(t, worktreePlanCreate, plan.Kind)
+		require.Equal(t, WorktreePlanCreate, plan.Kind)
 		require.Equal(t, "feat", plan.Branch)
 	})
 
 	t.Run("create existing branch", func(t *testing.T) {
 		t.Parallel()
-		plan, err := planWorktree(nil, main, "slug", "feat",
+		plan, err := PlanWorktree(nil, main, "slug", "feat",
 			func(string) bool { return false }, func(string) bool { return true })
 		require.NoError(t, err)
-		require.Equal(t, worktreePlanCreateExistingBranch, plan.Kind)
+		require.Equal(t, WorktreePlanCreateExistingBranch, plan.Kind)
 	})
 
 	t.Run("reuse", func(t *testing.T) {
 		t.Parallel()
-		plan, err := planWorktree(entries, main, "wt", "old",
+		plan, err := PlanWorktree(entries, main, "wt", "old",
 			func(string) bool { return true }, func(string) bool { return true })
 		require.NoError(t, err)
-		require.Equal(t, worktreePlanReuse, plan.Kind)
+		require.Equal(t, WorktreePlanReuse, plan.Kind)
 		require.Equal(t, entries[0], plan.Entry)
 	})
 
 	t.Run("branch mismatch error", func(t *testing.T) {
 		t.Parallel()
-		_, err := planWorktree(entries, main, "wt", "want",
+		_, err := PlanWorktree(entries, main, "wt", "want",
 			func(string) bool { return true }, func(string) bool { return false })
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "old")
@@ -174,8 +174,8 @@ func TestPlanWorktree(t *testing.T) {
 
 	t.Run("detached error", func(t *testing.T) {
 		t.Parallel()
-		detached := []worktreeEntry{{Path: entries[0].Path, Detached: true}}
-		_, err := planWorktree(detached, main, "wt", "want",
+		detached := []WorktreeEntry{{Path: entries[0].Path, Detached: true}}
+		_, err := PlanWorktree(detached, main, "wt", "want",
 			func(string) bool { return true }, func(string) bool { return false })
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "detached")
@@ -183,7 +183,7 @@ func TestPlanWorktree(t *testing.T) {
 
 	t.Run("path occupied error", func(t *testing.T) {
 		t.Parallel()
-		_, err := planWorktree(nil, main, "slug", "feat",
+		_, err := PlanWorktree(nil, main, "slug", "feat",
 			func(string) bool { return true }, func(string) bool { return false })
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "refusing to overwrite")
@@ -196,7 +196,7 @@ func TestPlanWorktreeRemoval(t *testing.T) {
 	// planWorktreeRemoval and a poisoned registration could be deleted
 	// outside <main>/worktrees.
 	main := "/main"
-	entries := []worktreeEntry{
+	entries := []WorktreeEntry{
 		{Path: "/main/worktrees/wt", Branch: "feat"},
 		{Path: "/main/worktrees/dt", Detached: true},
 	}
@@ -228,20 +228,20 @@ func TestListGitWorktreesAndMainRoot(t *testing.T) {
 	root := makeWorktreeTestRepo(t)
 	ctx := context.Background()
 
-	mainRoot, err := mainCheckoutRoot(ctx, root)
+	mainRoot, err := MainCheckoutRoot(ctx, root)
 	require.NoError(t, err)
 	require.Equal(t, root, mainRoot)
 
 	sub := filepath.Join(root, "subdir")
 	require.NoError(t, os.MkdirAll(sub, 0o755))
-	mainRoot, err = mainCheckoutRoot(ctx, sub)
+	mainRoot, err = MainCheckoutRoot(ctx, sub)
 	require.NoError(t, err)
 	require.Equal(t, root, mainRoot)
 
 	wtPath := filepath.Join(filepath.Dir(root), "wt")
 	wtTestGitRun(t, root, "worktree", "add", "-q", wtPath, "-b", "feature")
 
-	entries, err := listGitWorktrees(ctx, root)
+	entries, err := ListGitWorktrees(ctx, root)
 	require.NoError(t, err)
 	require.Len(t, entries, 2)
 	require.Equal(t, root, entries[0].Path)
@@ -260,7 +260,7 @@ func TestMainCheckoutRootFromLinkedWorktree(t *testing.T) {
 	wtPath := filepath.Join(filepath.Dir(root), "wt")
 	wtTestGitRun(t, root, "worktree", "add", "-q", wtPath, "-b", "feature")
 
-	got, err := mainCheckoutRoot(context.Background(), wtPath)
+	got, err := MainCheckoutRoot(context.Background(), wtPath)
 	require.NoError(t, err)
 	require.Equal(t, root, got)
 }
@@ -274,17 +274,17 @@ func TestIsGitIgnored(t *testing.T) {
 	root := makeWorktreeTestRepo(t)
 	ctx := context.Background()
 
-	ignored, err := isGitIgnored(ctx, root, filepath.Join(root, worktreeDirName, "x"))
+	ignored, err := IsGitIgnored(ctx, root, filepath.Join(root, WorktreeDirName, "x"))
 	require.NoError(t, err)
 	require.False(t, ignored)
 
 	require.NoError(t, os.WriteFile(filepath.Join(root, ".gitignore"),
-		[]byte(worktreeDirName+"/\n"), 0o644))
-	ignored, err = isGitIgnored(ctx, root, filepath.Join(root, worktreeDirName, "x"))
+		[]byte(WorktreeDirName+"/\n"), 0o644))
+	ignored, err = IsGitIgnored(ctx, root, filepath.Join(root, WorktreeDirName, "x"))
 	require.NoError(t, err)
 	require.True(t, ignored)
 
-	_, err = isGitIgnored(ctx, t.TempDir(), filepath.Join(root, "x"))
+	_, err = IsGitIgnored(ctx, t.TempDir(), filepath.Join(root, "x"))
 	require.Error(t, err)
 }
 
@@ -297,11 +297,11 @@ func TestLocalBranchExistsAndRemoveBranch(t *testing.T) {
 	ctx := context.Background()
 	wtTestGitRun(t, root, "branch", "feature") // Points at main HEAD, merged.
 
-	exists, err := localBranchExists(ctx, root, "feature")
+	exists, err := LocalBranchExists(ctx, root, "feature")
 	require.NoError(t, err)
 	require.True(t, exists)
 
-	exists, err = localBranchExists(ctx, root, "missing")
+	exists, err = LocalBranchExists(ctx, root, "missing")
 	require.NoError(t, err)
 	require.False(t, exists)
 
@@ -317,7 +317,7 @@ func TestLocalBranchExistsAndRemoveBranch(t *testing.T) {
 	wtTestGitRun(t, root, "checkout", "-q", defBranch)
 	require.Error(t, removeGitBranch(ctx, root, "feature", false))
 	require.NoError(t, removeGitBranch(ctx, root, "feature", true))
-	exists, err = localBranchExists(ctx, root, "feature")
+	exists, err = LocalBranchExists(ctx, root, "feature")
 	require.NoError(t, err)
 	require.False(t, exists)
 }
@@ -336,7 +336,7 @@ func TestRemoveGitWorktree(t *testing.T) {
 	require.NoError(t, removeGitWorktree(ctx, root, wtPath, false, logf))
 	_, err := os.Stat(wtPath)
 	require.True(t, os.IsNotExist(err))
-	entries, err := listGitWorktrees(ctx, root)
+	entries, err := ListGitWorktrees(ctx, root)
 	require.NoError(t, err)
 	for _, entry := range entries {
 		require.False(t, sameWorktreePath(entry.Path, wtPath))
@@ -366,7 +366,7 @@ func TestRemoveGitWorktree_RespectsForce(t *testing.T) {
 	require.Contains(t, err.Error(), "--force")
 	_, statErr := os.Stat(wtPath)
 	require.NoError(t, statErr, "dirty worktree directory must still exist")
-	entries, err := listGitWorktrees(ctx, root)
+	entries, err := ListGitWorktrees(ctx, root)
 	require.NoError(t, err)
 	listed := false
 	for _, entry := range entries {

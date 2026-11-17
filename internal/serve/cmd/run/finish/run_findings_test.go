@@ -2,7 +2,7 @@
 // (run_findings.go). Revert-check comments state which product change
 // each test catches.
 
-package cmd
+package runfinish
 
 import (
 	"os"
@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -57,7 +58,7 @@ func TestFormatFindingsBlockEmpty(t *testing.T) {
 // flag — byte equality of the prompt.
 func TestApplyFindingsFromNoFlag(t *testing.T) {
 	t.Parallel()
-	got, err := applyFindingsFrom("my prompt", "")
+	got, err := ApplyFindingsFrom("my prompt", "")
 	require.NoError(t, err)
 	assert.Equal(t, "my prompt", got)
 }
@@ -67,8 +68,8 @@ func TestApplyFindingsFromNoFlag(t *testing.T) {
 func TestApplyFindingsFromAppends(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "env.out")
-	require.NoError(t, os.WriteFile(path, []byte(cyrEnv), 0o644))
-	got, err := applyFindingsFrom("my prompt", path)
+	require.NoError(t, os.WriteFile(path, []byte(cmdtest.CyrillicEnvelope), 0o644))
+	got, err := ApplyFindingsFrom("my prompt", path)
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(got, "my prompt\n\n"+findingsBlockTitle))
 	assert.Contains(t, got, "Замечаний нет, изменения точны.")
@@ -76,10 +77,10 @@ func TestApplyFindingsFromAppends(t *testing.T) {
 }
 
 // Revert-check: fail-before-run-start — a bad reference returns an
-// error before any run begins (applyFindingsFrom is pure filesystem;
+// error before any run begins (ApplyFindingsFrom is pure filesystem;
 // nothing here touches a session, database or network).
 func TestApplyFindingsFromBadRef(t *testing.T) {
 	t.Parallel()
-	_, err := applyFindingsFrom("p", filepath.Join(t.TempDir(), "nope.out"))
+	_, err := ApplyFindingsFrom("p", filepath.Join(t.TempDir(), "nope.out"))
 	require.Error(t, err)
 }

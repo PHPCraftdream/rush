@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -94,7 +96,7 @@ func TestGeminiInit_SlashCommandSkipsWithoutSentinel(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(commandPath), 0o755))
 	require.NoError(t, os.WriteFile(commandPath, []byte("someone else's file"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runGeminiInitInDir(t, dir)
 	})
 
@@ -126,7 +128,7 @@ func TestGeminiDel_RefusesSlashCommandWithoutSentinel(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(commandPath), 0o755))
 	require.NoError(t, os.WriteFile(commandPath, []byte("not ours"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runGeminiDelInDir(t, dir)
 	})
 
@@ -143,7 +145,7 @@ func TestGeminiDel_IdempotentOnSecondRun(t *testing.T) {
 	runGeminiInitInDir(t, dir)
 
 	runGeminiDelInDir(t, dir)
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runGeminiDelInDir(t, dir)
 	})
 	// Second run is a no-op: nothing left to remove, no errors raised.
@@ -184,7 +186,7 @@ func TestGeminiDel_RemovesLegacyPrerenameInstall(t *testing.T) {
 	require.NoError(t, os.WriteFile(foreignCrushPath, []byte(foreignContent), 0o644))
 
 	// Run gemini-del
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		require.NoError(t, runGeminiDel(dir))
 	})
 

@@ -1,4 +1,4 @@
-package cmd
+package run
 
 import (
 	"testing"
@@ -12,10 +12,11 @@ import (
 // on runCmd (runCmd.Flags().Bool/StringSlice in run.go's init), Lookup
 // returns a non-nil flag and Parse succeeds, so both assertions fail.
 func TestRunPermissionFlagsRemoved(t *testing.T) {
+	cmd := NewRunCmd()
 	for _, name := range []string{"restrict-run", "allow-bash", "allow-tool"} {
-		require.Nil(t, runCmd.Flags().Lookup(name),
+		require.Nil(t, cmd.Flags().Lookup(name),
 			"rush run flag --%s was removed; re-registering it must fail this test", name)
-		err := runCmd.Flags().Parse([]string{"--" + name})
+		err := cmd.Flags().Parse([]string{"--" + name})
 		require.Error(t, err, "passing --%s to rush run must be rejected", name)
 		require.ErrorContains(t, err, "unknown flag: --"+name,
 			"--%s must be rejected as an unknown cobra flag", name)
@@ -31,7 +32,7 @@ func TestRunPermissionFlagsRemoved(t *testing.T) {
 func TestRunHelpOffersConfigNotPermissionFlags(t *testing.T) {
 	t.Parallel()
 
-	long := runCmd.Long
+	long := NewRunCmd().Long
 	require.NotContains(t, long, "--restrict-run")
 	require.NotContains(t, long, "--allow-bash")
 	require.NotContains(t, long, "--allow-tool")

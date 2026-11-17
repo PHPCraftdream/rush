@@ -1,7 +1,7 @@
 // Command-level tests for `rush worktree remove` and `rush worktree
 // list` against real temporary git repositories. Each test names the
 // product regression its Revert-check catches.
-package cmd
+package wtree
 
 import (
 	"bytes"
@@ -30,7 +30,7 @@ func wtRegisterCwdFlag(t *testing.T, cmd *cobra.Command, mainRoot string) {
 // on branch <slug>, as `rush run --worktree` would.
 func wtAddWorktree(t *testing.T, main, slug string) string {
 	t.Helper()
-	wt := filepath.Join(main, worktreeDirName, slug)
+	wt := filepath.Join(main, WorktreeDirName, slug)
 	wtTestGitRun(t, main, "worktree", "add", "-b", slug, wt)
 	return wt
 }
@@ -80,7 +80,7 @@ func TestWorktreeRemoveHappyPath(t *testing.T) {
 	_, statErr := os.Stat(wt)
 	require.True(t, os.IsNotExist(statErr), "worktree dir must be gone")
 	require.False(t, wtWorktreeRegistered(t, main, wt))
-	exists, err := localBranchExists(context.Background(), main, "task-a")
+	exists, err := LocalBranchExists(context.Background(), main, "task-a")
 	require.NoError(t, err)
 	require.False(t, exists, "merged branch must be deleted")
 }
@@ -96,7 +96,7 @@ func TestWorktreeRemoveKeepBranch(t *testing.T) {
 	require.Contains(t, out, "keeping branch task-a")
 	_, statErr := os.Stat(wt)
 	require.True(t, os.IsNotExist(statErr))
-	exists, err := localBranchExists(context.Background(), main, "task-a")
+	exists, err := LocalBranchExists(context.Background(), main, "task-a")
 	require.NoError(t, err)
 	require.True(t, exists)
 }
@@ -122,7 +122,7 @@ func TestWorktreeRemoveUnmergedBranchKeptWithoutForce(t *testing.T) {
 	require.Contains(t, out, "removed worktree task-a")
 	_, statErr := os.Stat(wt)
 	require.True(t, os.IsNotExist(statErr))
-	exists, err := localBranchExists(context.Background(), main, "task-a")
+	exists, err := LocalBranchExists(context.Background(), main, "task-a")
 	require.NoError(t, err)
 	require.True(t, exists, "unmerged branch must be kept without --force")
 }
@@ -135,7 +135,7 @@ func TestWorktreeRemoveUnmergedBranchForceDeletes(t *testing.T) {
 	wtCommitInWorktree(t, wt)
 	_, err := wtRunRemove(t, main, "task-a", map[string]string{"force": "true"})
 	require.NoError(t, err)
-	exists, err := localBranchExists(context.Background(), main, "task-a")
+	exists, err := LocalBranchExists(context.Background(), main, "task-a")
 	require.NoError(t, err)
 	require.False(t, exists, "--force must delete the unmerged branch")
 }

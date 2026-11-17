@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
@@ -43,7 +45,7 @@ func TestSessionsKillFreeTurnLockPreservesLiveBatchQueue(t *testing.T) {
 				stopPurgeCmdContext(t, cmd)
 				bounded := false
 				var commandErr error
-				stderr := captureStderr(t, func() {
+				stderr := cmdtest.CaptureStderr(t, func() {
 					commandErr = sessionsKillCmdRunWithBatchNote(cmd, []string{sess.ID}, func(ctx context.Context, _ string, id string) batchKillScopeState {
 						_, bounded = ctx.Deadline()
 						require.Equal(t, sess.ID, id)

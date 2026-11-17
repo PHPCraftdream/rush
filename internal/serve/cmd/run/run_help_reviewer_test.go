@@ -1,4 +1,4 @@
-package cmd
+package run
 
 // `rush run --help` is the operator's only in-terminal documentation of the
 // reviewer pass, and it is prose: no compiler, schema or wire check keeps it
@@ -23,13 +23,16 @@ package cmd
 // characters) together on a single wire line.
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
 func TestRunHelp_DocumentsReviewerVerdictAndReadOnly(t *testing.T) {
-	long := oneLine(runCmd.Long)
+	long := oneLine(NewRunCmd().Long)
 	require.Contains(t, long, "review_verdict")
 	require.Contains(t, long, "read-only")
 	require.Contains(t, long, "unverified")
@@ -39,12 +42,12 @@ func TestRunHelp_DocumentsReviewerVerdictAndReadOnly(t *testing.T) {
 }
 
 // TestRunHelp_ExitCodePhraseSurvivesWrapping pins the help text the way an
-// operator actually sees it: cobra (and then the terminal) re-wrap Long to the
+// operator actually sees it: cobra (and then the terminal) re-wraps Long to the
 // terminal width, so a phrase that straddles a source line break can be split
 // again on the wire even though oneLine(L) — which collapses every newline —
 // sees it whole. This therefore asserts on the RAW text at the line break,
 // keeping the verdict-does-not-affect-exit-code fact on one wire line.
 func TestRunHelp_ExitCodePhraseSurvivesWrapping(t *testing.T) {
-	require.Contains(t, runCmd.Long, "the exit code is\n                      not changed by it",
+	require.Contains(t, NewRunCmd().Long, "the exit code is\n                      not changed by it",
 		"the sentence must be wrapped so the phrase stays contiguous on the wire; cobra re-wraps Long to the terminal width, so a phrase split across two source lines can be split again on the wire")
 }

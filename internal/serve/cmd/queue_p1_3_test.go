@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/queue"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/stretchr/testify/assert"
@@ -161,7 +163,7 @@ func TestQueueRunCmdRun_CorruptChildStdout_MarksTaskFailedNotDone(t *testing.T) 
 	require.NoError(t, queueRunCmd.Flags().Set("max-tasks", "0"))
 	queueRunCmd.SetContext(context.Background())
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runErr := queueRunCmd.RunE(queueRunCmd, nil)
 		// stop-on-fail is false, so the command itself should not error even
 		// though the one task inside it failed.

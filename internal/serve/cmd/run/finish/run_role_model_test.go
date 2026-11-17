@@ -1,4 +1,4 @@
-package cmd
+package runfinish
 
 // Tests for foldRoleModel (task #1060, plan D2): `rush run --role worker` /
 // `--role reviewer` validates against the configured role slot only — a
@@ -15,6 +15,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -33,7 +34,7 @@ var roleTestModels = map[config.SelectedModelType]config.SelectedModel{
 // makes the worker case return no error.
 func TestFoldRoleModel_SessionPinDoesNotReplaceConfigSlot(t *testing.T) {
 	t.Parallel()
-	conn, q := newTestDB(t)
+	conn, q := cmdtest.NewTestDB(t)
 	s := session.NewService(q, conn)
 	ctx := context.Background()
 	sess, err := s.Create(ctx, "pinned")
@@ -43,9 +44,9 @@ func TestFoldRoleModel_SessionPinDoesNotReplaceConfigSlot(t *testing.T) {
 		&session.ModelSlotUpdate{Provider: "pin-prov", Model: "pin-reviewer"}))
 	a := &app.App{Sessions: s}
 
-	_, _, _, err = foldRoleModel(ctx, a, nil, "worker", config.SelectedModelTypeWorker, "", sess.ID, false)
+	_, _, _, err = FoldRoleModel(ctx, a, nil, "worker", config.SelectedModelTypeWorker, "", sess.ID, false)
 	require.ErrorContains(t, err, "no worker model configured")
-	_, _, _, err = foldRoleModel(ctx, a, nil, "reviewer", config.SelectedModelTypeReviewer, "", sess.ID, false)
+	_, _, _, err = FoldRoleModel(ctx, a, nil, "reviewer", config.SelectedModelTypeReviewer, "", sess.ID, false)
 	require.ErrorContains(t, err, "no reviewer model configured")
 }
 
@@ -69,7 +70,7 @@ func (l lastPinnedService) GetLast(ctx context.Context) (session.Session, error)
 // returns the caller's ("", true) pair, failing the resolved-id assertion.
 func TestFoldRoleModel_ContinueResolvesLastSessionBeforeFold(t *testing.T) {
 	t.Parallel()
-	conn, q := newTestDB(t)
+	conn, q := cmdtest.NewTestDB(t)
 	s := session.NewService(q, conn)
 	ctx := context.Background()
 
@@ -85,29 +86,29 @@ func TestFoldRoleModel_ContinueResolvesLastSessionBeforeFold(t *testing.T) {
 		&session.ModelSlotUpdate{Provider: "last-prov", Model: "last-reviewer"}))
 	a := &app.App{Sessions: lastPinnedService{Service: s, lastID: last.ID}}
 
-	got, resolved, useLast, err := foldRoleModel(ctx, a, roleTestModels, "worker", config.SelectedModelTypeWorker, "", "", true)
+	got, resolved, useLast, err := FoldRoleModel(ctx, a, roleTestModels, "worker", config.SelectedModelTypeWorker, "", "", true)
 	require.NoError(t, err)
 	require.Equal(t, "", got, "the fold no longer copies the model (D2); resolution is per turn in the coordinator")
 	require.Equal(t, last.ID, resolved, "the resolved session is handed on so the run does not resolve it again")
 	require.False(t, useLast)
 
-	got, _, _, err = foldRoleModel(ctx, a, roleTestModels, "reviewer", config.SelectedModelTypeReviewer, "", "", true)
+	got, _, _, err = FoldRoleModel(ctx, a, roleTestModels, "reviewer", config.SelectedModelTypeReviewer, "", "", true)
 	require.NoError(t, err)
 	require.Equal(t, "", got, "the fold no longer copies the model (D2); resolution is per turn in the coordinator")
 
-	got, resolved, useLast, err = foldRoleModel(ctx, a, roleTestModels, "worker", config.SelectedModelTypeWorker, "", older.ID, true)
+	got, resolved, useLast, err = FoldRoleModel(ctx, a, roleTestModels, "worker", config.SelectedModelTypeWorker, "", older.ID, true)
 	require.NoError(t, err)
 	require.Equal(t, "", got, "the fold no longer copies the model (D2); resolution is per turn in the coordinator")
 	require.Equal(t, older.ID, resolved)
 	require.True(t, useLast, "an explicit id resolves nothing: the flags come back as given")
 
-	got, resolved, useLast, err = foldRoleModel(ctx, a, roleTestModels, "worker", config.SelectedModelTypeWorker, "explicit/model", "", true)
+	got, resolved, useLast, err = FoldRoleModel(ctx, a, roleTestModels, "worker", config.SelectedModelTypeWorker, "explicit/model", "", true)
 	require.NoError(t, err)
 	require.Equal(t, "explicit/model", got, "an explicit --model is never overridden")
 	require.Empty(t, resolved)
 	require.True(t, useLast)
 
-	got, _, _, err = foldRoleModel(ctx, a, roleTestModels, "smart", config.SelectedModelTypeSmart, "", "", true)
+	got, _, _, err = FoldRoleModel(ctx, a, roleTestModels, "smart", config.SelectedModelTypeSmart, "", "", true)
 	require.NoError(t, err)
 	require.Equal(t, "", got, "--role smart never folds")
 }
@@ -136,7 +137,7 @@ func (b *bumpingLastService) GetLast(ctx context.Context) (session.Session, erro
 // run then resolves GetLast itself) turns the id and flag assertions red.
 func TestFoldRoleModel_ResolvedLastSessionIsHandedOn(t *testing.T) {
 	t.Parallel()
-	conn, q := newTestDB(t)
+	conn, q := cmdtest.NewTestDB(t)
 	s := session.NewService(q, conn)
 	ctx := context.Background()
 
@@ -151,7 +152,7 @@ func TestFoldRoleModel_ResolvedLastSessionIsHandedOn(t *testing.T) {
 	svc := &bumpingLastService{Service: s, ids: []string{a1.ID, b1.ID}}
 	a := &app.App{Sessions: svc}
 
-	model, sessionID, useLast, err := foldRoleModel(ctx, a, roleTestModels, "worker", config.SelectedModelTypeWorker, "", "", true)
+	model, sessionID, useLast, err := FoldRoleModel(ctx, a, roleTestModels, "worker", config.SelectedModelTypeWorker, "", "", true)
 
 	require.NoError(t, err)
 	require.Equal(t, "", model, "the fold no longer copies the model (D2); resolution is per turn in the coordinator")
@@ -166,18 +167,18 @@ func TestFoldRoleModel_ResolvedLastSessionIsHandedOn(t *testing.T) {
 // TestFoldRoleModel_SessionPinDoesNotReplaceConfigSlot.
 func TestFoldRoleModel_NoFoldLeavesSmartEmpty(t *testing.T) {
 	t.Parallel()
-	conn, q := newTestDB(t)
+	conn, q := cmdtest.NewTestDB(t)
 	s := session.NewService(q, conn)
 	a := &app.App{Sessions: s}
 	ctx := context.Background()
 
-	got, resolved, useLast, err := foldRoleModel(ctx, a, roleTestModels, "worker", config.SelectedModelTypeWorker, "explicit/model", "", true)
+	got, resolved, useLast, err := FoldRoleModel(ctx, a, roleTestModels, "worker", config.SelectedModelTypeWorker, "explicit/model", "", true)
 	require.NoError(t, err)
 	require.Equal(t, "explicit/model", got, "an explicit --model is returned unchanged")
 	require.Empty(t, resolved)
 	require.True(t, useLast)
 
-	got, resolved, useLast, err = foldRoleModel(ctx, a, roleTestModels, "smart", config.SelectedModelTypeSmart, "", "", true)
+	got, resolved, useLast, err = FoldRoleModel(ctx, a, roleTestModels, "smart", config.SelectedModelTypeSmart, "", "", true)
 	require.NoError(t, err)
 	require.Equal(t, "", got, "--role smart never folds")
 	require.Empty(t, resolved)

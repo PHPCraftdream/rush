@@ -32,6 +32,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -83,7 +85,7 @@ func TestSessionsLocks_ReadOnlyByDefault_StaleLockNotPruned(t *testing.T) {
 	requireProbeReportsDeadLock(t, sessionID,
 		"precondition: lock must be provably dead for the --prune gate to be the only barrier")
 
-	stdout, stderr := captureStdoutAndStderr(t, func() {
+	stdout, stderr := cmdtest.CaptureStdoutAndStderr(t, func() {
 		require.NoError(t, sessionsLocksCmd.RunE(sessionsLocksCmd, nil))
 	})
 	t.Logf("sessions locks stdout:\n%s", stdout)
@@ -158,7 +160,7 @@ func TestSessionsReap_LiveOSLockStaleRecordedPID_NotRemoved(t *testing.T) {
 	old := time.Now().Add(-time.Minute)
 	require.NoError(t, os.Chtimes(lockPath, old, old))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil))
 	})
 	t.Logf("sessions reap stderr:\n%s", stderr)
@@ -248,7 +250,7 @@ func TestSessionsReset_ForceLeavesLockFileInPlace(t *testing.T) {
 	a.Shutdown()
 
 	require.NoError(t, resetSessionCmdFlags().Flags().Set("force", "true"))
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		require.NoError(t, sessionsResetCmd.RunE(sessionsResetCmd, []string{sess.ID}))
 	})
 	t.Logf("reset --force stderr:\n%s", stderr)
@@ -352,7 +354,7 @@ func TestSessionsReap_YoungLockNotProbedOrRemoved(t *testing.T) {
 	// file is young. Deliberately NOT backdated — youth is the whole point.
 	require.NoError(t, os.WriteFile(lockPath, nil, 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil))
 	})
 	t.Logf("sessions reap stderr:\n%s", stderr)

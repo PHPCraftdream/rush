@@ -1,4 +1,4 @@
-package cmd
+package runfinish
 
 import (
 	"bytes"
@@ -14,9 +14,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeRunTerminalGate is an in-memory gate stub: it counts calls and can
+// finalizationTestRunTerminalGate is an in-memory gate stub: it counts calls and can
 // block AwaitSealed on a channel until the test releases it.
-type fakeRunTerminalGate struct {
+type finalizationTestRunTerminalGate struct {
 	allow    bool
 	sealed   <-chan struct{}
 	awaitErr error
@@ -32,7 +32,7 @@ type fakeRunTerminalGate struct {
 }
 
 // awaitEntered returns a channel closed the first time AwaitSealed starts.
-func (g *fakeRunTerminalGate) awaitEntered() <-chan struct{} {
+func (g *finalizationTestRunTerminalGate) awaitEntered() <-chan struct{} {
 	if g.entered == nil {
 		g.entered = make(chan struct{})
 	}
@@ -40,14 +40,14 @@ func (g *fakeRunTerminalGate) awaitEntered() <-chan struct{} {
 }
 
 // awaitedOwners returns every owner passed to AwaitSealed, in order.
-func (g *fakeRunTerminalGate) awaitedOwners() []string {
+func (g *finalizationTestRunTerminalGate) awaitedOwners() []string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return append([]string(nil), g.awaitOwners...)
 }
 
 // AllowTerminal counts the call and returns the configured verdict.
-func (g *fakeRunTerminalGate) AllowTerminal(context.Context, string) bool {
+func (g *finalizationTestRunTerminalGate) AllowTerminal(context.Context, string) bool {
 	g.allowCalls.Add(1)
 	return g.allow
 }
@@ -55,7 +55,7 @@ func (g *fakeRunTerminalGate) AllowTerminal(context.Context, string) bool {
 // AwaitSealed counts the call, records the owner, signals entry, waits for
 // the sealed channel or ctx, then returns the configured error (nil by
 // default).
-func (g *fakeRunTerminalGate) AwaitSealed(ctx context.Context, owner string) error {
+func (g *finalizationTestRunTerminalGate) AwaitSealed(ctx context.Context, owner string) error {
 	g.awaitCalls.Add(1)
 	g.mu.Lock()
 	g.awaitOwners = append(g.awaitOwners, owner)
@@ -75,14 +75,14 @@ func (g *fakeRunTerminalGate) AwaitSealed(ctx context.Context, owner string) err
 	return g.awaitErr
 }
 
-// recordingWriter counts writes into an in-memory buffer.
-type recordingWriter struct {
+// finalizationTestRecordingWriter counts writes into an in-memory buffer.
+type finalizationTestRecordingWriter struct {
 	buf    bytes.Buffer
 	writes int
 }
 
 // Write forwards to the buffer and counts the call.
-func (w *recordingWriter) Write(p []byte) (int, error) {
+func (w *finalizationTestRecordingWriter) Write(p []byte) (int, error) {
 	w.writes++
 	return w.buf.Write(p)
 }
@@ -93,7 +93,7 @@ func TestRunNonInteractiveAwaitingSealInertGateDeliversLegacyOutput(t *testing.T
 	t.Parallel()
 
 	gate := session.DefaultFinalizationTerminalGate()
-	rec := &recordingWriter{}
+	rec := &finalizationTestRecordingWriter{}
 	var gotWriter io.Writer
 	runs := 0
 	run := func(out io.Writer) (*app.RunResult, error) {
@@ -111,7 +111,7 @@ func TestRunNonInteractiveAwaitingSealInertGateDeliversLegacyOutput(t *testing.T
 	require.NoError(t, err)
 	require.NotNil(t, res)
 	require.Equal(t, "s1", res.SessionID)
-	require.Same(t, rec, gotWriter.(*recordingWriter))
+	require.Same(t, rec, gotWriter.(*finalizationTestRecordingWriter))
 	require.Equal(t, "FINAL\n", rec.buf.String())
 	require.Equal(t, 1, runs)
 }
@@ -121,11 +121,11 @@ func TestRunNonInteractiveAwaitingSealInertGateDeliversLegacyOutput(t *testing.T
 func TestRunNonInteractiveAwaitingSealAllowingStubSkipsAwait(t *testing.T) {
 	t.Parallel()
 
-	gate := &fakeRunTerminalGate{
+	gate := &finalizationTestRunTerminalGate{
 		allow:    true,
 		awaitErr: errors.New("await must not run on the fast path"),
 	}
-	rec := &recordingWriter{}
+	rec := &finalizationTestRecordingWriter{}
 	run := func(out io.Writer) (*app.RunResult, error) {
 		_, err := out.Write([]byte("FINAL\n"))
 		require.NoError(t, err)
@@ -148,8 +148,8 @@ func TestRunNonInteractiveAwaitingSealHoldsOutputUntilSealed(t *testing.T) {
 	t.Parallel()
 
 	sealed := make(chan struct{})
-	gate := &fakeRunTerminalGate{allow: false, sealed: sealed}
-	rec := &recordingWriter{}
+	gate := &finalizationTestRunTerminalGate{allow: false, sealed: sealed}
+	rec := &finalizationTestRecordingWriter{}
 	runDone := make(chan struct{})
 	finished := make(chan error, 1)
 	var res *app.RunResult
@@ -191,8 +191,8 @@ func TestRunNonInteractiveAwaitingSealRefusesDeliveryWhenAwaitFails(t *testing.T
 	t.Parallel()
 
 	errStore := errors.New("store read failed")
-	gate := &fakeRunTerminalGate{allow: false, awaitErr: errStore}
-	rec := &recordingWriter{}
+	gate := &finalizationTestRunTerminalGate{allow: false, awaitErr: errStore}
+	rec := &finalizationTestRecordingWriter{}
 	run := func(out io.Writer) (*app.RunResult, error) {
 		_, err := out.Write([]byte("FINAL"))
 		require.NoError(t, err)
@@ -219,8 +219,8 @@ func TestRunNonInteractiveAwaitingSealCanceledContextWhileWaiting(t *testing.T) 
 	t.Parallel()
 
 	sealed := make(chan struct{})
-	gate := &fakeRunTerminalGate{allow: false, sealed: sealed}
-	rec := &recordingWriter{}
+	gate := &finalizationTestRunTerminalGate{allow: false, sealed: sealed}
+	rec := &finalizationTestRecordingWriter{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	run := func(out io.Writer) (*app.RunResult, error) {
@@ -249,8 +249,8 @@ func TestRunNonInteractiveAwaitingSealRunErrorPassthroughAfterSeal(t *testing.T)
 	errRun := errors.New("run failed")
 	sealed := make(chan struct{})
 	close(sealed)
-	gate := &fakeRunTerminalGate{allow: false, sealed: sealed}
-	rec := &recordingWriter{}
+	gate := &finalizationTestRunTerminalGate{allow: false, sealed: sealed}
+	rec := &finalizationTestRecordingWriter{}
 	run := func(out io.Writer) (*app.RunResult, error) {
 		_, err := out.Write([]byte("PARTIAL"))
 		require.NoError(t, err)

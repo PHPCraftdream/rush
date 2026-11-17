@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -92,7 +94,7 @@ func TestQwenInit_SlashCommandSkipsWithoutSentinel(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(slashPath), 0o755))
 	require.NoError(t, os.WriteFile(slashPath, []byte("someone else's file"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runQwenInitInDir(t, dir)
 	})
 
@@ -124,7 +126,7 @@ func TestQwenDel_RefusesSlashCommandWithoutSentinel(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(slashPath), 0o755))
 	require.NoError(t, os.WriteFile(slashPath, []byte("not ours"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runQwenDelInDir(t, dir)
 	})
 
@@ -141,7 +143,7 @@ func TestQwenDel_IdempotentOnSecondRun(t *testing.T) {
 	runQwenInitInDir(t, dir)
 
 	runQwenDelInDir(t, dir)
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runQwenDelInDir(t, dir)
 	})
 	// Second run is a no-op: nothing left to remove, no errors raised.
@@ -182,7 +184,7 @@ func TestQwenDel_RemovesLegacyPrerenameInstall(t *testing.T) {
 	require.NoError(t, os.WriteFile(foreignCrushPath, []byte(foreignContent), 0o644))
 
 	// Run qwen-del
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		require.NoError(t, runQwenDel(dir))
 	})
 

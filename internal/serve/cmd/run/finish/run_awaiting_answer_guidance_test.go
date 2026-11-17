@@ -1,4 +1,4 @@
-package cmd
+package runfinish
 
 import (
 	"fmt"
@@ -35,7 +35,7 @@ func TestAwaitingAnswerResumeGuidancePassesRunRoleValidation(t *testing.T) {
 			}
 			require.Equal(t, "sess-123", flags["--session"])
 			require.Equal(t, role, flags["--role"])
-			_, err = validateRunRole(flags["--role"])
+			_, err = ValidateRunRole(flags["--role"])
 			require.NoError(t, err, "printed resume role must pass actual run validation")
 			require.Equal(t, []string{"<your answer>"}, prompt)
 		})

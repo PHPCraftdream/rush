@@ -20,6 +20,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -160,7 +162,7 @@ func TestPurgeQueuedWorkAfterStop_RemovesQueuedWork(t *testing.T) {
 	mergeMsgID, interruptMsgID := seedQueuedWorkForStop(t, a, sess.ID)
 	a.Shutdown()
 
-	captureStderr(t, func() {
+	cmdtest.CaptureStderr(t, func() {
 		purgeQueuedWorkAfterStop(sessionsCancelCmd, sess.ID)
 	})
 
@@ -180,7 +182,7 @@ func TestSessionsReset_ForcePurgesQueuedWork(t *testing.T) {
 	require.NoError(t, resetSessionCmdFlags().Flags().Set("force", "true"))
 	ensureRootFlagStandIns(sessionsResetCmd, dataDir)
 	stopPurgeCmdContext(t, sessionsResetCmd)
-	captureStderr(t, func() {
+	cmdtest.CaptureStderr(t, func() {
 		require.NoError(t, sessionsResetCmd.RunE(sessionsResetCmd, []string{sess.ID}))
 	})
 
@@ -197,7 +199,7 @@ func TestSessionsCancel_PurgesQueuedWork(t *testing.T) {
 	mergeMsgID, interruptMsgID := seedQueuedWorkForStop(t, a, sess.ID)
 	a.Shutdown()
 
-	captureStderr(t, func() {
+	cmdtest.CaptureStderr(t, func() {
 		require.NoError(t, sessionsCancelCmd.RunE(sessionsCancelCmd, []string{sess.ID}))
 	})
 

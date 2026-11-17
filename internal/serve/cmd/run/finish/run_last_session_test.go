@@ -1,4 +1,4 @@
-package cmd
+package runfinish
 
 // R4C-3: `rush run --continue` continues "the most recently updated top-level
 // session". GetLastSession had no top-level filter, so a delegated worker's
@@ -12,6 +12,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -27,7 +28,7 @@ import (
 // empty and the resolved id is the child's.
 func TestFoldRoleModel_ContinueNeverResolvesAChildSession(t *testing.T) {
 	t.Parallel()
-	conn, q := newTestDB(t)
+	conn, q := cmdtest.NewTestDB(t)
 	s := session.NewService(q, conn)
 	ctx := context.Background()
 
@@ -57,7 +58,7 @@ func TestFoldRoleModel_ContinueNeverResolvesAChildSession(t *testing.T) {
 		{"worker", config.SelectedModelTypeWorker, ""},
 		{"reviewer", config.SelectedModelTypeReviewer, ""},
 	} {
-		model, resolved, useLast, err := foldRoleModel(ctx, a, roleTestModels, tc.role, tc.typ, "", "", true)
+		model, resolved, useLast, err := FoldRoleModel(ctx, a, roleTestModels, tc.role, tc.typ, "", "", true)
 		require.NoError(t, err, tc.role)
 		require.Equal(t, tc.want, model, tc.role)
 		require.Equal(t, root.ID, resolved, tc.role)

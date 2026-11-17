@@ -1,4 +1,4 @@
-package cmd
+package runfinish
 
 import (
 	"bytes"
@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/stretchr/testify/require"
@@ -42,46 +44,14 @@ func (b *lockedBuf) String() string {
 	return b.buf.String()
 }
 
-// exitRecorder records os.Exit calls without exiting.
-type exitRecorder struct {
-	mu    sync.Mutex
-	codes []int
-	first chan struct{}
-	once  sync.Once
-}
-
-func newExitRecorder() *exitRecorder { return &exitRecorder{first: make(chan struct{})} }
-
-func (r *exitRecorder) exit(code int) {
-	r.mu.Lock()
-	r.codes = append(r.codes, code)
-	r.mu.Unlock()
-	r.once.Do(func() { close(r.first) })
-}
-
-func (r *exitRecorder) calls() []int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]int(nil), r.codes...)
-}
-
-func awaitClosed(t *testing.T, ch <-chan struct{}, what string) {
-	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(30 * time.Second):
-		t.Fatalf("timed out waiting for %s", what)
-	}
-}
-
-// Revert-check: installRunDeadline's WithTimeoutCause pins the typed default cap and RunTimeoutCause.Error wording.
+// Revert-check: InstallRunDeadline's WithTimeoutCause pins the typed default cap and RunTimeoutCause.Error wording.
 func TestInstallRunDeadline_DefaultCapIsAGracefulDeadline(t *testing.T) {
 	t.Parallel()
-	stderr, rec := newLockedBuf(), newExitRecorder()
-	ctx, stop := installRunDeadline(context.Background(), 0, 30*time.Millisecond, time.Hour, stderr, rec.exit)
+	stderr, rec := newLockedBuf(), cmdtest.NewExitRecorder()
+	ctx, stop := InstallRunDeadline(context.Background(), 0, 30*time.Millisecond, time.Hour, stderr, rec.Exit)
 
 	defer stop()
-	awaitClosed(t, ctx.Done(), "the default cap to end the run's context")
+	cmdtest.AwaitClosed(t, ctx.Done(), "the default cap to end the run's context")
 	require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
 	require.ErrorIs(t, context.Cause(ctx), agent.ErrRunDefaultCap, "the cap tags its deadline so a cut-off turn names it (R7C-5)")
 	var cause *agent.RunTimeoutCause
@@ -90,13 +60,13 @@ func TestInstallRunDeadline_DefaultCapIsAGracefulDeadline(t *testing.T) {
 	require.True(t, cause.DefaultCap)
 	require.EqualError(t, cause, "run timeout 30ms exceeded (source: default cap (RUSH_RUN_DEFAULT_HARD_TIMEOUT; no --timeout set); pass --timeout to change the cap)")
 	require.Empty(t, stderr.String(), "only the command handler renders graceful timeouts")
-	require.Empty(t, rec.calls(), "the cap is graceful: nothing is force-killed at the deadline")
+	require.Empty(t, rec.Calls(), "the cap is graceful: nothing is force-killed at the deadline")
 
 	stop()
-	require.Empty(t, rec.calls())
+	require.Empty(t, rec.Calls())
 }
 
-// Revert-check: installRunDeadline preserves earlier parent deadline/cancel without an owned timeout marker.
+// Revert-check: InstallRunDeadline preserves earlier parent deadline/cancel without an owned timeout marker.
 func TestInstallRunDeadline_ParentEndsEarlier(t *testing.T) {
 	for _, mode := range []string{"default-cap", "explicit"} {
 		for _, ending := range []string{"deadline", "cancel"} {
@@ -115,20 +85,20 @@ func TestInstallRunDeadline_ParentEndsEarlier(t *testing.T) {
 				if mode == "explicit" {
 					timeout = time.Hour
 				}
-				stderr, rec := newLockedBuf(), newExitRecorder()
-				ctx, stop := installRunDeadline(parent, timeout, time.Hour, time.Hour, stderr, rec.exit)
+				stderr, rec := newLockedBuf(), cmdtest.NewExitRecorder()
+				ctx, stop := InstallRunDeadline(parent, timeout, time.Hour, time.Hour, stderr, rec.Exit)
 				defer stop()
 				if ending == "cancel" {
 					cancel()
 				}
-				awaitClosed(t, ctx.Done(), "the parent to end the run's context")
+				cmdtest.AwaitClosed(t, ctx.Done(), "the parent to end the run's context")
 				require.ErrorIs(t, ctx.Err(), wantErr)
 				require.ErrorIs(t, context.Cause(ctx), wantErr)
 				var cause *agent.RunTimeoutCause
 				require.False(t, errors.As(context.Cause(ctx), &cause))
 				require.NotErrorIs(t, context.Cause(ctx), agent.ErrRunDefaultCap)
 				require.Empty(t, stderr.String())
-				require.Empty(t, rec.calls())
+				require.Empty(t, rec.Calls())
 			})
 		}
 	}
@@ -139,12 +109,12 @@ func TestInstallRunDeadline_ParentEndsEarlier(t *testing.T) {
 // Revert-check: dropping the exit(124) call makes the wait time out.
 func TestInstallRunDeadline_HardKillOnlyPastTheGrace(t *testing.T) {
 	t.Parallel()
-	stderr, rec := newLockedBuf(), newExitRecorder()
-	ctx, stop := installRunDeadline(context.Background(), 0, 10*time.Millisecond, 10*time.Millisecond, stderr, rec.exit)
+	stderr, rec := newLockedBuf(), cmdtest.NewExitRecorder()
+	ctx, stop := InstallRunDeadline(context.Background(), 0, 10*time.Millisecond, 10*time.Millisecond, stderr, rec.Exit)
 	defer stop()
 
-	awaitClosed(t, rec.first, "the hard kill past the grace")
-	require.Equal(t, []int{124}, rec.calls())
+	cmdtest.AwaitClosed(t, rec.First, "the hard kill past the grace")
+	require.Equal(t, []int{124}, rec.Calls())
 	require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded, "the graceful deadline had ended the context first")
 	require.Contains(t, stderr.String(), "default cap of 10ms + 10ms grace")
 	require.Contains(t, stderr.String(), "force-killing")
@@ -166,10 +136,10 @@ func TestInstallRunDeadline_HardKillWaitsForTimeoutCause(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
 	wrapped := &enteredDoneContext{Context: ctx, entered: make(chan struct{})}
-	stderr, rec := newLockedBuf(), newExitRecorder()
+	stderr, rec := newLockedBuf(), cmdtest.NewExitRecorder()
 	callbackDone := make(chan struct{})
 	go func() {
-		hardKillCallback(wrapped, 0, 0, false, stderr, rec.exit)()
+		hardKillCallback(wrapped, 0, 0, false, stderr, rec.Exit)()
 		close(callbackDone)
 	}()
 	select {
@@ -178,10 +148,10 @@ func TestInstallRunDeadline_HardKillWaitsForTimeoutCause(t *testing.T) {
 		require.FailNow(t, "hard-kill callback returned before deadline cancellation")
 	}
 	require.Nil(t, context.Cause(ctx))
-	require.Empty(t, rec.calls())
+	require.Empty(t, rec.Calls())
 	cancel(&agent.RunTimeoutCause{Duration: time.Second, Source: "test"})
-	awaitClosed(t, callbackDone, "hard-kill callback completion")
-	require.Equal(t, []int{124}, rec.calls())
+	cmdtest.AwaitClosed(t, callbackDone, "hard-kill callback completion")
+	require.Equal(t, []int{124}, rec.Calls())
 	require.Contains(t, stderr.String(), "force-killing")
 }
 
@@ -192,26 +162,26 @@ func TestInstallRunDeadline_HardKillWaitsForTimeoutCause(t *testing.T) {
 // text assertions; dropping the deadline fails the first wait.
 func TestInstallRunDeadline_TimeoutFlagUnchanged(t *testing.T) {
 	t.Parallel()
-	stderr, rec := newLockedBuf(), newExitRecorder()
-	ctx, stop := installRunDeadline(context.Background(), 10*time.Millisecond, time.Hour, 10*time.Millisecond, stderr, rec.exit)
+	stderr, rec := newLockedBuf(), cmdtest.NewExitRecorder()
+	ctx, stop := InstallRunDeadline(context.Background(), 10*time.Millisecond, time.Hour, 10*time.Millisecond, stderr, rec.Exit)
 	defer stop()
 
-	awaitClosed(t, ctx.Done(), "the --timeout deadline")
+	cmdtest.AwaitClosed(t, ctx.Done(), "the --timeout deadline")
 	require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
 	require.NotErrorIs(t, context.Cause(ctx), agent.ErrRunDefaultCap, "an explicit --timeout is not the default cap")
 	var cause *agent.RunTimeoutCause
 	require.ErrorAs(t, context.Cause(ctx), &cause)
 	require.EqualError(t, cause, "run timeout 10ms exceeded (source: --timeout)")
-	awaitClosed(t, rec.first, "the --timeout hard kill")
-	require.Equal(t, []int{124}, rec.calls())
+	cmdtest.AwaitClosed(t, rec.First, "the --timeout hard kill")
+	require.Equal(t, []int{124}, rec.Calls())
 	out := stderr.String()
 	require.Contains(t, out, "timeout 10ms + 10ms grace")
 	require.False(t, strings.Contains(out, "default wall-clock cap"), "no cap notice under --timeout: %q", out)
 
-	quietErr, quietRec := newLockedBuf(), newExitRecorder()
-	_, quietStop := installRunDeadline(context.Background(), 0, 10*time.Millisecond, 10*time.Millisecond, quietErr, quietRec.exit)
+	quietErr, quietRec := newLockedBuf(), cmdtest.NewExitRecorder()
+	_, quietStop := InstallRunDeadline(context.Background(), 0, 10*time.Millisecond, 10*time.Millisecond, quietErr, quietRec.Exit)
 	quietStop()
 	time.Sleep(60 * time.Millisecond) // longer than cap + grace: nothing may fire after stop
-	require.Empty(t, quietRec.calls())
+	require.Empty(t, quietRec.Calls())
 	require.Empty(t, quietErr.String())
 }
