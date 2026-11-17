@@ -23,11 +23,11 @@ import (
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
-	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 )
 
 // isolateConfigEnvForTests — byte-copy of sessions_reset_test.go's helper.

@@ -22,9 +22,10 @@ import (
 	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 	"github.com/spf13/cobra"
-	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 )
 
 var sessionsLocksCmd = &cobra.Command{
@@ -527,7 +528,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string, setup func(*cobra.Co
 				pulse = lockPulseStatus(pulseSec)
 				stale = pulse == "offline"
 				if act.SubAgentActive {
-					subAgentLabel = cliout.Short(session.HashID(act.DeepestSessionID))
+					subAgentLabel = cliout.Short(coresession.HashID(act.DeepestSessionID))
 				}
 			}
 		}

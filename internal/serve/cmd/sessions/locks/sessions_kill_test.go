@@ -17,10 +17,9 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 )
 
 // TestReadLockPID_FromCLI covers the parser used by sessions kill /

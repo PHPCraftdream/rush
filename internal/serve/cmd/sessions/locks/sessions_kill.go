@@ -13,10 +13,9 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
-	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/spf13/cobra"
-	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	sessioncgroup "github.com/PHPCraftdream/rush/internal/session/proc/sessioncgroup"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	"github.com/spf13/cobra"
 )
 
 var sessionsKillCmd = &cobra.Command{

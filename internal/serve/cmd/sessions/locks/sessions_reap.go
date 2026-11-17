@@ -15,9 +15,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
-	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/spf13/cobra"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	"github.com/spf13/cobra"
 )
 
 var sessionsReapCmd = &cobra.Command{
