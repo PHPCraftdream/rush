@@ -12,18 +12,18 @@ agent_codex_recovery.go	sessionAgent.recoverCodexContext	agentrun	recovery_metho
 agent_codex_recovery_cleanup.go	sessionAgent.checkRecoverySummaryInput	agentrun	recovery_methods.go	
 agent_codex_recovery_cleanup.go	sessionAgent.accountRecoverySummary	agentrun	recovery_methods.go	
 agent_codex_recovery_cleanup.go	sessionAgent.checkRecoverySummaryCost	agentrun	recovery_methods.go	
-agent_compaction.go	sessionAgent.Summarize	turnstep	turn_budget.go	turnstep.turnBudget
+agent_compaction.go	sessionAgent.Summarize	turnstep	turn_budget.go	turnstep.turnBudget	mailbox
 agent_compaction.go	sessionAgent.SummarizeNow	turnstep	turn_budget.go	turnstep.turnBudget
 agent_compaction.go	sessionAgent.summarize	turnstep	turn_budget.go	turnstep.turnBudget
 agent_compaction.go	sessionAgent.runSummarize	turnstep	turn_budget.go	turnstep.turnBudget
 agent_compaction.go	sessionAgent.requeueSummarizeSnapshot	turnstep	turn_budget.go	turnstep.turnBudget
 agent_compaction.go	sessionAgent.SummarizeQueued	turnstep	turn_budget.go	turnstep.turnBudget
 agent_compaction.go	sessionAgent.testBuildSummarizeSnapshot	agentrun	turnstep_methods.go	
-agent_compaction.go	sessionAgent.TakeSummarizeQueue	turnstep	turn_budget.go	turnstep.turnBudget
+agent_compaction.go	sessionAgent.TakeSummarizeQueue	turnstep	turn_budget.go	turnstep.turnBudget	mailbox
 agent_compaction.go	sessionAgent.CancelQueuedSummarize	turnstep	turn_budget.go	turnstep.turnBudget
 agent_compaction.go	sessionAgent.runSummarizeBody	turnstep	turn_budget.go	turnstep.turnBudget
-agent_compaction_silent.go	sessionAgent.runSummarizeSilent	provauth	recovery_component.go	provauth.recoveryComponent
-agent_compaction_silent.go	sessionAgent.runSummarizeSilentForRecovery	provauth	recovery_component.go	provauth.recoveryComponent
+agent_compaction_silent.go	sessionAgent.runSummarizeSilent	agentrun	recovery_methods.go	
+agent_compaction_silent.go	sessionAgent.runSummarizeSilentForRecovery	agentrun	recovery_methods.go	
 agent_drain.go	coordinator.drainCallFor	coord	drain_glue.go	
 agent_drain.go	coordinator.freshenDrainClient	coord	drain_glue.go	
 agent_drain_decision.go	sessionAgent.decideDrainTurn	agentrun	drain_methods.go	
@@ -39,18 +39,18 @@ agent_ownership.go	sessionAgent.drainOrReleaseMerged	mailbox	ownership.go	mailbo
 agent_ownership.go	sessionAgent.abandonOwnershipWithHandoff	mailbox	ownership.go	mailbox.sessionOwnership
 agent_ownership.go	sessionAgent.restartOrphaned	mailbox	ownership.go	mailbox.sessionOwnership
 agent_ownership.go	sessionAgent.restartOrphanedWithRetry	mailbox	ownership.go	mailbox.sessionOwnership
-agent_prompt.go	sessionAgent.getCacheControlOptions	sessionprompt	agent_prompt_component.go	sessionprompt.sessionPromptComponent
-agent_prompt.go	sessionAgent.createUserMessage	sessionprompt	agent_prompt_component.go	sessionprompt.sessionPromptComponent
-agent_prompt.go	sessionAgent.preparePrompt	sessionprompt	agent_prompt_component.go	sessionprompt.sessionPromptComponent
-agent_prompt.go	sessionAgent.getSessionMessages	sessionprompt	agent_prompt_component.go	sessionprompt.sessionPromptComponent
-agent_prompt.go	sessionAgent.convertToToolResult	sessionprompt	agent_prompt_component.go	sessionprompt.sessionPromptComponent
-agent_prompt.go	sessionAgent.workaroundProviderMediaLimitations	sessionprompt	agent_prompt_component.go	sessionprompt.sessionPromptComponent
+agent_prompt.go	sessionAgent.getCacheControlOptions	agentrun	prompt_methods.go	
+agent_prompt.go	sessionAgent.createUserMessage	agentrun	prompt_methods.go	
+agent_prompt.go	sessionAgent.preparePrompt	agentrun	prompt_methods.go		turnstep
+agent_prompt.go	sessionAgent.getSessionMessages	agentrun	prompt_methods.go		turnstep
+agent_prompt.go	sessionAgent.convertToToolResult	agentrun	prompt_methods.go	
+agent_prompt.go	sessionAgent.workaroundProviderMediaLimitations	agentrun	prompt_methods.go	
 agent_title.go	sessionAgent.generateTitle	agentrun	turnstep_methods.go	
 agent_tool.go	coordinator.agentTool	coord	tool_glue.go	
 agent_turn_helpers.go	sessionAgent.drainDueInjects	turnstep	turn_budget.go	turnstep.turnBudget
 agent_turn_helpers.go	sessionAgent.handleWatchdogFire	turnstep	turn_budget.go	turnstep.turnBudget
-agent_usage.go	sessionAgent.openrouterCost	agentrun	usage_methods.go	
-agent_usage.go	sessionAgent.updateSessionUsage	agentrun	usage_methods.go	
+agent_usage.go	sessionAgent.openrouterCost	agentrun	usage_methods.go		turnstep
+agent_usage.go	sessionAgent.updateSessionUsage	agentrun	usage_methods.go		turnstep
 agentic_fetch_tool.go	coordinator.agenticFetchTool	coord	tool_glue.go	
 await_tasks_era.go	coordinator.armAwait	coord	drain_glue.go	
 batch_cli_runtime.go	BatchInstall.SubmitCLI	batchassemble	cli_methods.go	
@@ -73,16 +73,16 @@ batch_held_question_route.go	coordinator.batchHeldQuestionResumeHint	coord	batch
 batch_question_rebuild.go	coordinator.rebuiltChildQuestionState	coord	batch_glue.go	
 batch_rehome_coord_runtime.go	coordinator.foreignLiveDriver	coord	batch_glue.go	
 batch_rehome_coord_runtime.go	coordinator.sessionNoticeStore	coord	batch_glue.go	
-batch_rehome_runtime.go	coordinator.clearSleepAll	coord	batch_glue.go	
+batch_rehome_runtime.go	coordinator.clearSleepAll	coord	batch_glue.go		agentrun
 batch_rehome_runtime.go	coordinator.cancelAwaitTimer	coord	batch_glue.go	
 batch_rehome_runtime.go	coordinator.bgShellRowCancelled	coord	batch_glue.go	
-batch_supervision_arming.go	batchDeliveryImpl.psvArmSupervision	batchflow	supervision_glue.go	
+batch_supervision_arming.go	batchDeliveryImpl.psvArmSupervision	batchinst	supervision_glue.go	
 batch_worker_hints.go	batchDriverHints.subscribe	batchinst	hints_glue.go	
 bgshell_claim.go	coordinator.notifyOnBackgroundJobDone	coord	subagent_glue.go	
 cache_diagnostics.go	turnStream.logCacheStepUsage	agentrun	cache_methods.go	
 cli_active_work.go	coordinator.CLIActiveWork	coord	cli_glue.go	
 cli_active_work.go	coordinator.cliActiveWorkBatch	coord	cli_glue.go	
-cli_active_work.go	coordinator.batchActiveAfterQuestionPause	coord	cli_glue.go	
+cli_active_work.go	coordinator.batchActiveAfterQuestionPause	coord	cli_glue.go		agentrun
 cli_active_work.go	coordinator.batchCommittedQuestionChildren	coord	cli_glue.go	
 coordinator_background.go	coordinator.notifyAsyncCompletion	coord	subagent_glue.go	
 coordinator_background.go	coordinator.notifyBackgroundJobDone	coord	subagent_glue.go	
@@ -92,7 +92,7 @@ coordinator_background.go	coordinator.delegatedChildDriven	coord	subagent_glue.g
 coordinator_bgshell_cap.go	coordinator.persistBGShellCompletion	coord	subagent_glue.go	
 coordinator_bgshell_cap.go	coordinator.pruneBGShellOverCap	coord	subagent_glue.go	
 coordinator_bgshell_cap.go	coordinator.bgShellOverCapCount	coord	subagent_glue.go	
-coordinator_drain_policy.go	coordinator.arbiterVerdict	coord	drain_glue.go	
+coordinator_drain_policy.go	coordinator.arbiterVerdict	coord	drain_glue.go		agentrun
 coordinator_drain_policy.go	coordinator.drainPolicy	coord	drain_glue.go	
 coordinator_drain_policy.go	coordinator.drainPermitted	coord	drain_glue.go	
 coordinator_drain_policy.go	coordinator.drainDecision	coord	drain_glue.go	
@@ -110,7 +110,7 @@ coordinator_models.go	coordinator.resolveSessionSystemPrompt	coord	modelkit_glue
 coordinator_models_build.go	coordinator.buildAgentModels	coord	modelkit_glue.go	
 coordinator_models_build.go	coordinator.buildAgentModelsFromCfg	coord	modelkit_glue.go	
 coordinator_models_build.go	coordinator.buildRoleContractModels	coord	modelkit_glue.go	
-coordinator_models_build.go	coordinator.buildModelsFromCfg	coord	modelkit_glue.go	
+coordinator_models_build.go	coordinator.buildModelsFromCfg	coord	modelkit_glue.go		agentrun
 coordinator_models_build.go	coordinator.Model	coord	modelkit_glue.go	
 coordinator_models_build.go	coordinator.UpdateModels	coord	modelkit_glue.go	
 coordinator_models_build.go	coordinator.clearModelCache	coord	modelkit_glue.go	
@@ -143,7 +143,7 @@ coordinator_providers_auth.go	coordinator.refreshExpiredToken	coord	modelkit_glu
 coordinator_providers_auth.go	coordinator.rebuildOnCurrentCredentials	coord	modelkit_glue.go	
 coordinator_providers_auth.go	coordinator.publishReauthenticate	coord	modelkit_glue.go	
 coordinator_providers_auth.go	coordinator.refreshAfterUnauthorized	coord	modelkit_glue.go	
-coordinator_providers_auth.go	coordinator.checkLivePeakHours	coord	modelkit_glue.go	
+coordinator_providers_auth.go	coordinator.checkLivePeakHours	coord	modelkit_glue.go		agentrun
 coordinator_providers_auth.go	coordinator.runWithUnauthorizedRetry	coord	modelkit_glue.go	
 coordinator_providers_auth.go	coordinator.retryAfterUnauthorized	coord	modelkit_glue.go	
 coordinator_providers_auth.go	coordinator.isUnauthorized	modelkit	providers_component.go	modelkit.providerComponent
@@ -157,7 +157,7 @@ coordinator_rate_limit.go	coordinator.notifyRateLimitWait	coord	modelkit_glue.go
 coordinator_rate_limit.go	coordinator.notifyRateLimitWaitContext	coord	modelkit_glue.go	
 coordinator_reaction_chain.go	coordinator.reactionChainCount	coord	drain_glue.go	
 coordinator_reaction_chain.go	coordinator.chainGuardMarker	coord	drain_glue.go	
-coordinator_reaction_chain.go	coordinator.reactionChainHasClaim	coord	drain_glue.go	
+coordinator_reaction_chain.go	coordinator.reactionChainHasClaim	coord	drain_glue.go		agentrun
 coordinator_reaction_source.go	coordinator.ClaimExternalDriver	coord	drain_glue.go	
 coordinator_reaction_source.go	coordinator.ReleaseExternalDriver	coord	drain_glue.go	
 coordinator_reaction_source.go	coordinator.ReactionDebtExists	coord	drain_glue.go	
@@ -206,18 +206,18 @@ coordinator_tools.go	coordinator.buildPolicyTools	coord	modelkit_glue.go
 coordinator_tools.go	coordinator.sharedBuildScopeFor	coord	modelkit_glue.go	
 coordinator_turn_hold.go	coordinator.HoldAutomaticTurns	coord	turn_glue.go	
 coordinator_turn_hold.go	coordinator.automaticTurnsHeld	coord	turn_glue.go	
-coordinator_wake.go	coordinator.wakeSession	wakectl	wake_component.go	wakectl.wakeComponent
-coordinator_wake.go	coordinator.handleDrainBuildError	wakectl	wake_component.go	wakectl.wakeComponent
-coordinator_wake_cli.go	coordinator.openOnceWakeSchedules	wakectl	wake_component.go	wakectl.wakeComponent
-coordinator_wake_cli.go	coordinator.HasOpenOnceWakeSchedule	wakectl	wake_component.go	wakectl.wakeComponent
-coordinator_wake_cli.go	coordinator.CancelLoopWakeSchedules	wakectl	wake_component.go	wakectl.wakeComponent
-coordinator_wake_tools.go	coordinator.wakeSchedulerFor	wakectl	wake_component.go	wakectl.wakeComponent
-coordinator_wake_tools.go	coordinator.ScheduleWakeOnceDelay	wakectl	wake_component.go	wakectl.wakeComponent
-coordinator_wake_tools.go	coordinator.ScheduleWakeOnceAt	wakectl	wake_component.go	wakectl.wakeComponent
-coordinator_wake_tools.go	coordinator.ScheduleWakeLoop	wakectl	wake_component.go	wakectl.wakeComponent
-coordinator_wake_tools.go	coordinator.ListWakeSchedules	wakectl	wake_component.go	wakectl.wakeComponent
-coordinator_wake_tools.go	coordinator.CancelWakeSchedule	wakectl	wake_component.go	wakectl.wakeComponent
-coordinator_wake_tools.go	coordinator.wrapWakeCreateError	wakectl	wake_component.go	wakectl.wakeComponent
+coordinator_wake.go	coordinator.wakeSession	coord	wake_component.go	
+coordinator_wake.go	coordinator.handleDrainBuildError	coord	wake_component.go	
+coordinator_wake_cli.go	coordinator.openOnceWakeSchedules	coord	wake_component.go	
+coordinator_wake_cli.go	coordinator.HasOpenOnceWakeSchedule	coord	wake_component.go	
+coordinator_wake_cli.go	coordinator.CancelLoopWakeSchedules	coord	wake_component.go	
+coordinator_wake_tools.go	coordinator.wakeSchedulerFor	coord	wake_component.go	
+coordinator_wake_tools.go	coordinator.ScheduleWakeOnceDelay	coord	wake_component.go	
+coordinator_wake_tools.go	coordinator.ScheduleWakeOnceAt	coord	wake_component.go	
+coordinator_wake_tools.go	coordinator.ScheduleWakeLoop	coord	wake_component.go	
+coordinator_wake_tools.go	coordinator.ListWakeSchedules	coord	wake_component.go	
+coordinator_wake_tools.go	coordinator.CancelWakeSchedule	coord	wake_component.go	
+coordinator_wake_tools.go	coordinator.wrapWakeCreateError	coord	wake_component.go	
 default_job_timeout.go	coordinator.resolveBackgroundJobDefaultTimeout	coord	subagent_glue.go	
 delegation_question.go	coordinator.childAwaitingQuestionSummary	coord	delegation_glue.go	
 delegation_question.go	coordinator.childParentSession	coord	delegation_glue.go	
@@ -230,19 +230,19 @@ disk_provider_continuation.go	coordinator.PrepareContinuation	coord	batch_glue.g
 disk_provider_continuation.go	coordinator.guardTurnDiskFence	coord	batch_glue.go	
 drain_attempt.go	sessionAgent.newDrainAttempt	agentrun	drain_methods.go	
 drain_attempt.go	sessionAgent.closeDrainAttempt	agentrun	drain_methods.go	
-drain_attempt.go	coordinator.accountDrainAttempt	coord	drain_glue.go	
+drain_attempt.go	coordinator.accountDrainAttempt	coord	drain_glue.go		agentrun
 drain_attempt.go	coordinator.executeAccountVerdict	coord	drain_glue.go	
 drain_attempt.go	coordinator.drainAttemptTerminal	coord	drain_glue.go	
-drain_attempt.go	coordinator.noteDrainRefused	coord	drain_glue.go	
-drain_attempt.go	coordinator.noteTurnFailed	coord	drain_glue.go	
+drain_attempt.go	coordinator.noteDrainRefused	coord	drain_glue.go		agentrun
+drain_attempt.go	coordinator.noteTurnFailed	coord	drain_glue.go		agentrun
 drain_attempt.go	sessionAgent.noteRefusal	agentrun	drain_methods.go	
 drain_attempt.go	sessionAgent.afterTurn	agentrun	drain_methods.go	
 drain_attempt.go	coordinator.paceUnreacted	coord	drain_glue.go	
 drain_attempt.go	coordinator.drainRefused	coord	drain_glue.go	
-finalization_batch_root_owner_reader.go	batchRootLeaseStore.ownerForRoot	batchflow	lease_glue.go	
+finalization_batch_root_owner_reader.go	batchRootLeaseStore.ownerForRoot	batchinst	lease_glue.go	
 finalization_call_context.go	sessionAgent.restoreFinalizationCallContext	agentrun	finalization_methods.go	
 finalization_candidate.go	finalizationGate.resumeCandidateSerial	batchinst	finalization_gate_methods.go	
-finalization_driver_binding.go	subAgentDriverRegistry.bindFinalizationIdentity	subagents	driver_finalization_glue.go	
+finalization_driver_binding.go	subAgentDriverRegistry.bindFinalizationIdentity	coord	subagent_glue.go		agentrun
 finalization_driver_binding.go	sessionAgent.bindFinalizationDriverCall	agentrun	finalization_methods.go	
 finalization_execution.go	turnStream.beginFinalizationStep	agentrun	finalization_methods.go	
 finalization_execution.go	turnStream.markFinalizationStep	agentrun	finalization_methods.go	
@@ -261,29 +261,29 @@ inline_window.go	coordinator.setInlineWindowForTest	coord	batch_glue.go
 mcp_output_access.go	coordinator.mcpOutputAccess	coord	modelkit_glue.go	
 oauth_token_source.go	coordinator.withOAuthBearerClient	coord	provider_glue.go	
 peak_hours_request_gate.go	coordinator.withPeakHoursRequestGate	coord	usage_glue.go	
-queued_call_scope.go	sessionAgent.armQueuedBuildRetention	agentrun	tool_methods.go	
-session_wake_dispatch.go	coordinator.WakeSession	wakectl	wake_component.go	wakectl.wakeComponent
-supervision.go	coordinator.resolveSupervisionConfig	watchdog	supervision.go	watchdog.supervisionRegistry
-supervision.go	coordinator.noteWorkStarted	watchdog	supervision.go	watchdog.supervisionRegistry
-supervision.go	coordinator.recordProgress	watchdog	supervision.go	watchdog.supervisionRegistry
-supervision.go	coordinator.pushDeadlineOnTurnEnd	watchdog	supervision.go	watchdog.supervisionRegistry
-supervision.go	coordinator.clearSupervisionIfPresent	watchdog	supervision.go	watchdog.supervisionRegistry
-supervision.go	coordinator.supervisionWorkOpen	watchdog	supervision.go	watchdog.supervisionRegistry
-supervision.go	coordinator.handleSupervisionDeadline	watchdog	supervision.go	watchdog.supervisionRegistry
-supervision.go	coordinator.buildSupervisionSummaryAt	watchdog	supervision.go	watchdog.supervisionRegistry
-supervision.go	coordinator.onSessionIdleHook	watchdog	supervision.go	watchdog.supervisionRegistry
-supervision.go	coordinator.admitCallback	watchdog	supervision.go	watchdog.supervisionRegistry
-supervision.go	coordinator.callbackContextLocked	watchdog	supervision.go	watchdog.supervisionRegistry
-supervision.go	coordinator.afterRelease	watchdog	supervision.go	watchdog.supervisionRegistry
-supervision.go	coordinator.afterReleaseContext	watchdog	supervision.go	watchdog.supervisionRegistry
-supervision.go	coordinator.releaseChildDriverIfScopeClosed	watchdog	supervision.go	watchdog.supervisionRegistry
+queued_call_scope.go	sessionAgent.armQueuedBuildRetention	agentrun	queue_scope_glue.go		mailbox
+session_wake_dispatch.go	coordinator.WakeSession	coord	wake_component.go	
+supervision.go	coordinator.resolveSupervisionConfig	coord	supervision_glue.go	
+supervision.go	coordinator.noteWorkStarted	coord	supervision_glue.go	
+supervision.go	coordinator.recordProgress	coord	supervision_glue.go		agentrun
+supervision.go	coordinator.pushDeadlineOnTurnEnd	coord	supervision_glue.go		agentrun
+supervision.go	coordinator.clearSupervisionIfPresent	coord	supervision_glue.go	
+supervision.go	coordinator.supervisionWorkOpen	coord	supervision_glue.go	
+supervision.go	coordinator.handleSupervisionDeadline	coord	supervision_glue.go	
+supervision.go	coordinator.buildSupervisionSummaryAt	coord	supervision_glue.go	
+supervision.go	coordinator.onSessionIdleHook	coord	supervision_glue.go	
+supervision.go	coordinator.admitCallback	coord	supervision_glue.go	
+supervision.go	coordinator.callbackContextLocked	coord	supervision_glue.go	
+supervision.go	coordinator.afterRelease	coord	supervision_glue.go	
+supervision.go	coordinator.afterReleaseContext	coord	supervision_glue.go	
+supervision.go	coordinator.releaseChildDriverIfScopeClosed	coord	supervision_glue.go	
 tool_suggest.go	sessionAgent.augmentUnknownToolResult	agentrun	tool_methods.go	
 turn_arbiter.go	coordinator.readTurnFacts	coord	drain_glue.go	
 turn_stall_policy.go	sessionAgent.stallAbortClosure	agentrun	drain_methods.go	
-usage_record.go	sessionAgent.recordMessageUsage	agentrun	usage_methods.go	
-wake_scheduler.go	coordinator.SetWakeScheduleStore	wakectl	wake_component.go	wakectl.wakeComponent
-wake_scheduler.go	coordinator.StopWakeScheduler	wakectl	wake_component.go	wakectl.wakeComponent
-wake_scheduler.go	coordinator.WakeSchedulerNotify	wakectl	wake_component.go	wakectl.wakeComponent
+usage_record.go	sessionAgent.recordMessageUsage	agentrun	usage_methods.go		turnstep
+wake_scheduler.go	coordinator.SetWakeScheduleStore	coord	wake_component.go	
+wake_scheduler.go	coordinator.StopWakeScheduler	coord	wake_component.go	
+wake_scheduler.go	coordinator.WakeSchedulerNotify	coord	wake_component.go	
 coordinator.go	cachedModelPair	modelkit	cache_contract.go	
 cache_diagnostics.go	observedCacheReadTokens	agentrun	cache_methods.go	
 provider_limit.go	providerLimitClass	usage	quota_limits.go	
@@ -380,3 +380,229 @@ batch_install_adapters.go	batchStoreChildBind	batchassemble	install_helpers.go
 batch_install_adapters.go	BatchInstall.BindFinalizationResultGate	batchassemble	install_methods.go	
 batch_install_adapters.go	BatchInstall.DrainDiskBindings	batchassemble	install_methods.go	
 batch_install_adapters.go	BatchInstall.BuildRunner	batchassemble	install_methods.go	
+# --- decided seams round 1: split-file decl moves (owner down / contract up) ---
+batch_exec_generic.go	batchControlTarget	batchinst	invocation.go	
+batch_invocation.go	batchDiskProviderFrom	batchinst	invocation.go	
+finalization_queue_call.go	enqueueFinalizationCall	mailbox	finalization_enqueue.go	
+coordinator_providers_network.go	redactNetworkURLs	modelkit	providers_leaf.go	
+coordinator_providers.go	getProviderOptions	modelkit	providers_leaf.go	
+agent_tool.go	AgentToolName	modelkit	tool_names.go	
+coordinator_tools.go	workerToolNames	modelkit	tool_names.go	
+turn_effort.go	turnSmartReasoningEffort	provauth	reasoning_effort.go	
+agent_compaction.go	summaryPrompt	provauth	summary_budget.go	
+agent_compaction.go	summaryCommitMaxDuration	provauth	summary_budget.go	
+agent_compaction.go	buildSummaryPrompt	provauth	summary_budget.go	
+agent_compaction.go	summaryCompletionTokens	provauth	summary_budget.go	
+agent_compaction.go	ErrSummarizeQueued	batchcontract	summarize_contract.go	
+agent_context_budget.go	effectiveMaxOutputTokens	provauth	summary_budget.go	
+agent_context_budget.go	modelInputBudget	provauth	summary_budget.go	
+agent_context_budget.go	preparedInputTokenCount	provauth	summary_budget.go	
+agent_ownership.go	notifyActivity	provauth	notify.go	
+agent_ownership.go	notifyWatchdog	provauth	notify.go	
+coordinator_run.go	streamStalledFinishTitle	watchdog	stream_titles.go	
+coordinator_run.go	streamStallRetryBaseBackoff	modelkit	retry_backoff.go	
+coordinator_recheck.go	recheckPassIntervalNS	drainctl	drain_pacing.go	
+coordinator.go	maxConsecutiveAutoResumes	drainctl	drain_pacing.go	
+agent.go	streamIdleTimeoutDefault	drainctl	drain_pacing.go	
+coordinator_background.go	FormatAsyncCompletion	batchinst	notice_glue.go	
+agent_turn_step.go	chainNeutralTools	turnstep	context_limits.go	
+agent.go	largeContextWindowThreshold	provauth	context_limits.go	
+agent.go	largeContextWindowBuffer	provauth	context_limits.go	
+agent.go	largeContextHeadroomDivisor	provauth	context_limits.go	
+agent.go	smallContextWindowRatio	provauth	context_limits.go	
+agent.go	unreportedCharsPerToken	provauth	context_limits.go	
+agent.go	turnConfig	turnstep	context_limits.go	
+delegation_depth.go	MaxAgentDepthFrom	batchcontract	delegation_contract.go	
+delegation_depth.go	DefaultAgentDepth	batchcontract	delegation_contract.go	
+delegation_depth.go	MaxAgentDepthForResume	batchcontract	delegation_contract.go	
+delegation_depth.go	WithAgentDepth	batchcontract	delegation_contract.go	
+delegation_role_models.go	requestedRoleSlot	batchcontract	delegation_contract.go	
+delegation_role.go	validateAgentRoleInput	batchcontract	delegation_contract.go	
+coordinator_reaction_source.go	CLIScopeState	batchcontract	reaction_scope.go	
+coordinator_reaction_source.go	DrainOwed	batchcontract	reaction_scope.go	
+coordinator_reaction_source.go	DrainPaced	batchcontract	reaction_scope.go	
+credentials.go	callCredentialsFrom	batchcontract	credentials.go	
+credentials.go	withCallCredentials	batchcontract	credentials.go	
+batch_question_global_context.go	globalQuestionContext	batchflow	question_global_context.go	
+agentic_fetch_policy.go	buildPrivateFetchTools	batchassemble	fetch_ingress_adapter.go	
+agentic_fetch_policy.go	privateFetchIngressKey	batchassemble	fetch_ingress_adapter.go	
+agentic_fetch_policy.go	withPrivateFetchIngress	batchassemble	fetch_ingress_adapter.go	
+agentic_fetch_policy.go	privateFetchIngressFor	batchassemble	fetch_ingress_adapter.go	
+agentic_fetch_policy.go	armPrivateFetchIngress	batchassemble	fetch_ingress_adapter.go	
+agentic_fetch_policy.go	privateFetchIngressTool	batchinst	ingress_impl.go	
+# --- decided seams round 1: port_owner (6-column) rows ---
+coordinator.go	coordinator	coord	coordinator_core.go		agentrun
+agent.go	sessionAgent	agentrun	agent_core.go		mailbox
+mailbox.go	mailbox	mailbox	mailbox_core.go		turnstep
+batch_credentials_escrow.go	batchCredentialLeaf	batchinst	escrow_seam.go		toolwrap
+batch_child_tool_scope.go	pctCapturedAgentTool	batchinst	tool_seam.go		toolwrap
+turn_progress_guard.go	progressGuardTool	turnstep	progress_guard_seam.go		toolwrap
+# --- decided seams round 2: wildcard (whole-file retarget; explicit rows win) ---
+agentic_fetch_policy.go	*	batchinst	ingress_impl.go	
+# --- decided seams round 2: contract seeds -> batchcontract ---
+coordinator_reaction_source.go	DrainState	batchcontract	reaction_scope.go	
+credentials.go	callCredentialsContextKey	batchcontract	credentials.go	
+delegation_depth.go	persistedAgentDepthContextKey	batchcontract	delegation_contract.go	
+heartbeat_ctx.go	hbSourceSessionOverride	batchcontract	heartbeat_contract.go		callbeat
+heartbeat_ctx.go	hbSourceSlotLive	batchcontract	heartbeat_contract.go	
+# --- round 2: modelkit-leaf decls down from coord ---
+coordinator_providers.go	configureAnthropicAuthHeaders	modelkit	providers_leaf.go	
+coordinator_providers.go	copilotResponsesModels	modelkit	providers_leaf.go	
+coordinator_providers.go	zai53ModelIDs	modelkit	providers_leaf.go	
+coordinator_providers.go	effectiveReasoningEffort	modelkit	providers_leaf.go	
+coordinator_providers.go	fantasyAcceptsReasoningEffort	modelkit	providers_leaf.go	
+coordinator_providers_network.go	copilotBaseTransport	modelkit	providers_leaf.go	
+coordinator_providers_network.go	networkURLPattern	modelkit	providers_leaf.go	
+coordinator_providers_network.go	trailingPunctuation	modelkit	providers_leaf.go	
+coordinator_providers_network.go	redactNetworkError	modelkit	providers_leaf.go	
+coordinator_responses_ws.go	responsesWSReplayForbidden	modelkit	providers_leaf.go	
+# --- round 2: drainctl policy decls down from coord ---
+coordinator_retry_classify.go	classifyProviderError	drainctl	drain_glue.go	
+coordinator_retry_classify.go	isProviderClassifiable	drainctl	drain_glue.go	
+coordinator_retry_classify.go	classTerminal	drainctl	drain_glue.go	
+coordinator_drain_policy.go	drainVerdict	drainctl	drain_glue.go	
+coordinator_reaction_chain.go	reactionChainReason	drainctl	drain_glue.go	
+coordinator_reaction_chain.go	ReactionChainLimit	drainctl	drain_glue.go	
+# --- round 2: watchdog supervision config family down ---
+supervision.go	SupervisionConfig	coord	supervision.go	
+supervision.go	DefaultSupervisionConfig	coord	supervision.go	
+supervision.go	growInterval	watchdog	supervision.go	
+supervision.go	supervisionIntervalNS	coord	supervision.go	
+supervision.go	supervisionMinIntervalFloor	coord	supervision.go	
+supervision.go	supervisionState	coord	supervision.go	
+timeout_stop.go	WatchdogResumeGuidance	watchdog	stream_titles.go	
+supervision.go	supervisionRegistry	coord	supervision_glue.go		watchdog
+# --- round 2: mailbox seeds ---
+agent_ownership.go	promptHash	mailbox	ownership.go	
+# --- round 2: usage/promptcache ---
+cache_profile.go	cacheProfile	provauth	cache_profile_component.go	
+cache_profile.go	cacheProfileFor	provauth	cache_profile_component.go	
+# --- round 2: provauth seeds ---
+agent_prompt.go	sessionHeaders	provauth	prompt_headers.go	
+usage_fallback.go	approxTokenCount	provauth	token_math.go	
+usage_normalize.go	normalizeProviderUsage	provauth	token_math.go	
+agent_context_budget.go	contextInputBudget	provauth	summary_budget.go	
+agent_context_budget.go	serializedToolResult	provauth	summary_budget.go	
+agent_usage.go	updateSessionTokenCounters	provauth	usage_counters.go	
+agent_usage.go	addStepUsageTokens	provauth	usage_counters.go	
+agent_codex_recovery_cleanup.go	cleanupUncommittedSummary	provauth	recovery_component.go	
+agent_codex_recovery_cleanup.go	recoveryInputCapacity	provauth	recovery_component.go	
+agent_codex_recovery_cleanup.go	recoverySummarySystemMessages	provauth	recovery_component.go	
+agent_ownership.go	activityNotifyContextKey	provauth	notify.go	
+agent_ownership.go	watchdogBumpContextKey	provauth	notify.go	
+# --- round 2: turnstep seeds from step_progress.go ---
+step_progress.go	readCoverage	turnstep	step_progress.go	
+step_progress.go	readSpan	turnstep	step_progress.go	
+step_progress.go	readSpans	turnstep	step_progress.go	
+step_progress.go	namedSpan	turnstep	step_progress.go	
+step_progress.go	stepCallAct	turnstep	step_progress.go	
+step_progress.go	stepCallClass	turnstep	step_progress.go	
+step_progress.go	stepCallNeutral	turnstep	step_progress.go	
+step_progress.go	stepCallNoWrite	turnstep	step_progress.go	
+step_progress.go	stepCallRead	turnstep	step_progress.go	
+step_progress.go	stepCallRefused	turnstep	step_progress.go	
+step_progress.go	progressGuardMetadata	turnstep	step_progress.go	
+step_progress.go	isWaitOnlyCall	turnstep	step_progress.go	
+# --- round 2: toolwrap/clibridge ---
+batch_install_tools.go	batchIngressTool	toolwrap	wrappers.go	
+cli_tool_bridge.go	pinnedInvoke	batchcontract	invoke_contract.go	
+# --- round 2: sessionprompt seed ---
+supervision.go	noticeKindSupervision	sessionprompt	notice_kinds.go	
+# --- round 2: batchflow seeds down from coord ---
+coordinator_agent_inject_batch.go	batchQuestionMarkerDepth	batchinst	marker_glue.go	
+# --- round 2: batchinst seeds down from agentrun ---
+agent_notice_pull.go	buildBatchNoticeMessageParams	batchinst	notice_glue.go	
+agent_turn_stream.go	toolReceiptContextKey	agentrun	receipt_glue.go		batchinst
+agent_turn_stream.go	toolResultReceiptSink	agentrun	receipt_glue.go		batchinst
+agent_turn_stream.go	toolResultReceipt	agentrun	receipt_glue.go	
+# --- round 2: colocation fixes -> owner = receiver type owner ---
+finalization_root_bind.go	finalizationWiring.bindRootFinalization	agentrun	finalization_methods.go	
+agent_turn_stream.go	toolResultReceiptSink.add	agentrun	receipt_glue.go		batchassemble
+agent_turn_stream.go	toolResultReceiptSink.take	agentrun	receipt_glue.go	
+# --- round 3: batchinst-held question/cancel decls ---
+batch_held_question_route.go	BatchHeldQuestionRoute	batchinst	held_glue.go	
+batch_held_question_route.go	batchActionableHeldQuestionRoutes	batchinst	held_glue.go	
+batch_cancel.go	batchCancelOutcome	batchinst	cancel_glue.go	
+batch_cancel.go	cancelBatchCall	batchinst	cancel_glue.go	
+# --- round 3: colocation method rows (moved receivers) ---
+batch_install_tools.go	batchIngressTool.ensurePinned	toolwrap	wrappers.go	
+batch_install_tools.go	batchIngressTool.holdConstruction	toolwrap	wrappers.go	
+batch_install_tools.go	batchIngressTool.holdPinned	toolwrap	wrappers.go	
+batch_install_tools.go	batchIngressTool.Run	toolwrap	wrappers.go	
+agentic_fetch_policy.go	privateFetchIngressTool.restrictedRunWrapped	batchinst	ingress_impl.go	
+agentic_fetch_policy.go	privateFetchIngressTool.Run	batchinst	ingress_impl.go	
+# --- round 3: agentrun seeds from coord glue files ---
+coordinator_drain_policy.go	unreadablePolicyInput	agentrun	drain_methods.go	
+coordinator_drain_policy.go	drainDeferred	agentrun	drain_methods.go	
+coordinator_drain_policy.go	drainAllow	agentrun	drain_methods.go	
+coordinator_drain_policy.go	drainVerdictOf	agentrun	drain_methods.go	
+cancel_flag.go	clearCancelRequest	agentrun	cancel_methods.go	
+timeout_stop.go	runTimeoutFinishText	agentrun	timeout_methods.go	
+finalization_wiring.go	finalizationWiring	agentrun	finalization_methods.go	
+finalization_wiring.go	finalizationWiring.startExecution	agentrun	finalization_methods.go	
+finalization_wiring.go	finalizationWiring.finalizeTurn	agentrun	finalization_methods.go	
+coordinator_turn_admission.go	turnAdmission	agentrun	admission_methods.go	
+coordinator_turn_admission.go	turnAdmissionFrom	agentrun	admission_methods.go	
+coordinator_turn_admission.go	withoutTurnAdmission	agentrun	admission_methods.go	
+coordinator_turn_admission.go	turnAdmission.markQueued	agentrun	admission_methods.go	
+# --- round 3: drainctl policy decls (second half) ---
+coordinator_retry_classify.go	classRateLimit	drainctl	drain_glue.go	
+coordinator_retry_classify.go	classTransient	drainctl	drain_glue.go	
+coordinator_retry_classify.go	retryClass	drainctl	drain_glue.go	
+coordinator_drain_policy.go	drainVerdictKind	drainctl	drain_glue.go	
+# --- round 3: usage/promptcache split ---
+cache_profile.go	cacheProfiles	provauth	cache_profile.go	
+# --- round 4: agentrun seeds from coord ---
+coordinator_agent_control.go	coordinator.drainCredentialBoundary	coord	drain_glue.go		agentrun
+coordinator_drain_policy.go	drainPaced	agentrun	drain_methods.go	
+coordinator_drain_policy.go	drainStuck	agentrun	drain_methods.go	
+credentials.go	coordinator.buildCredentialModel	coord	drain_glue.go		agentrun
+coordinator.go	coordinator.suspendAutoResume	coord	coordinator_core.go		agentrun
+coordinator_turn_admission.go	turnAdmissionCtxKey	agentrun	admission_methods.go	
+coordinator_turn_admission.go	turnAdmission.wasQueued	agentrun	admission_methods.go	
+timeout_stop.go	ErrRunDefaultCap	agentrun	timeout_methods.go	
+batch_scope_recovery.go	recoverBatchScopeDeadCandidates	agentrun	recovery_scope_glue.go	
+batch_cutover_facts.go	unknownBatchCutoverFacts	agentrun	batch_facts_glue.go	
+batch_cutover_facts.go	coordinatorBatchCutoverFacts	agentrun	batch_facts_glue.go	
+finalization_wiring.go	finalizationWiring.newExecution	agentrun	finalization_methods.go	
+finalization_wiring.go	finalizationWiring.scopeFacts	agentrun	finalization_methods.go	
+finalization_wiring.go	finalizationWiring.readFacts	agentrun	finalization_methods.go	
+finalization_wiring.go	finalizationWiring.bindScopeHook	agentrun	finalization_methods.go	
+finalization_wiring.go	finalizationWiring.rootAgent	agentrun	finalization_methods.go	
+agent.go	sessionAgent.diskCapsRef	agentrun	agent_core.go		mailbox
+batch_cancel.go	batchCancelControlTimeout	batchinst	cancel_glue.go	
+coordinator_providers.go	anthropicHeaderValue	modelkit	providers_leaf.go	
+coordinator_providers.go	setAnthropicHeader	modelkit	providers_leaf.go	
+coordinator_providers_network.go	redactedNetworkError	modelkit	providers_leaf.go	
+batch_cutover_facts_node.go	batchNodeStateLive	batchinst	facts_glue.go	
+batch_cutover_facts_node.go	batchQuestionMarkerChild	batchinst	facts_glue.go	
+batch_cutover_facts_node.go	errBatchFactsUnavailable	batchcontract	cutover_contract.go	
+batch_cutover_facts_node.go	parseBatchQuestionMarker	batchinst	facts_glue.go	
+# --- round 5 ---
+batch_install_ingress.go	invokeBatchWithCallContext	batchinst	ingress_glue.go	
+agent_ownership.go	withActivityNotify	provauth	notify.go	
+agent_ownership.go	withWatchdogBump	provauth	notify.go	
+agent_ownership.go	*	agentrun	ownership_glue.go	
+batch_scope_recovery.go	*	agentrun	recovery_scope_glue.go	
+reaction_write_cutover.go	batchCutoverReactionStore	drainctl	drain_glue.go	
+inline_window.go	inlineWindow	batchinst	inline_glue.go	
+inline_window.go	inlineWindowDisabledFor	batchinst	inline_glue.go	
+batch_cutover_facts_node.go	coordinatorBatchCutoverFactsBindings	batchcontract	cutover_contract.go
+agentic_fetch_tool.go	*	toolwrap	wrappers.go	
+disk_provider_durable.go	ErrDiskProviderUnavailable	batchcontract	durable_contract.go	
+disk_provider_capability.go	*	batchcontract	capability_contract.go	
+disk_provider_binding.go	*	batchcontract	capability_contract.go	
+# --- round 4: ingress contract -> batchcontract ---
+batch_install_ingress.go	BatchWorkIngress	batchinst	ingress_glue.go	
+batch_install_ingress.go	batchCoordinatorBinding	batchinst	ingress_glue.go	
+batch_install_ingress.go	batchWorkIngress	batchinst	ingress_glue.go	
+batch_install_ingress.go	BatchAgentDeps	batchinst	ingress_glue.go	
+batch_install_ingress.go	BatchLeafRegistry	batchinst	ingress_glue.go	
+batch_install_ingress.go	BatchModelControl	batchinst	ingress_glue.go	
+batch_install_ingress.go	BatchMCPCapabilityResolver	batchinst	ingress_glue.go	
+batch_install_ingress.go	batchPinnedInvoke	batchinst	ingress_glue.go	
+batch_install_ingress.go	NewBatchWorkIngress	batchinst	ingress_glue.go	
+batch_install_ingress.go	NewBatchWorkIngressWithDiskBindings	batchinst	ingress_glue.go	
+batch_install_ingress.go	errBatchWorkIngressDeps	batchinst	ingress_glue.go	
+# --- round 4: cutover facts contract -> batchcontract ---
+batch_cutover_facts.go	*	batchcontract	cutover_contract.go	
