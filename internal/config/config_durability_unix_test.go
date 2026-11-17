@@ -44,7 +44,7 @@ func TestMCPParentSyncFailureReconcilesSnapshotButReturnsUncertainty(t *testing.
 	require.Equal(t, "http://new.example", got.URL)
 	_, diskFingerprint, readErr := readStableConfigFile(global)
 	require.NoError(t, readErr)
-	require.Equal(t, diskFingerprint, store.loadSnapshot().snapshots[normalizeDiscoveryPath(global)].fingerprint)
+	require.Equal(t, diskFingerprint, store.loadSnapshot().snapshots[normalizeDiscoveryPath(global)].Fingerprint())
 
 	// The caller received an uncertainty and must not blindly retry the add:
 	// the visible committed state is already authoritative for the next

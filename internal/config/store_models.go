@@ -11,6 +11,8 @@ import (
 	"maps"
 	"os"
 	"slices"
+
+	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 )
 
 // ReadModelsAtScope reads the per-scope `models.smart` / `models.fast` entries
@@ -48,7 +50,7 @@ func (s *ConfigStore) ReadAllModelsAtScope(scope Scope) (map[SelectedModelType]*
 	// migration. ReadConfigDocumentLight selects the active slot and decodes
 	// Ktav to JSON-shaped bytes; JSON documents come back byte-identical.
 	// An os.IsNotExist still means "the slot has no document".
-	data, rerr := ReadConfigDocumentLight(path)
+	data, rerr := slots.ReadConfigDocumentLight(path)
 	if rerr != nil {
 		if os.IsNotExist(rerr) {
 			return map[SelectedModelType]*SelectedModel{}, nil

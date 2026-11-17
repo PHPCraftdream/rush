@@ -12,6 +12,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 )
 
 // RuntimeOverrides holds per-session settings that are never persisted to
@@ -43,7 +44,7 @@ type storeSnapshot struct {
 	knownProviders     []catwalk.Provider
 	loadedPaths        []string // config files that were successfully loaded
 	trackedConfigPaths []string // unique, normalized config file paths
-	snapshots          map[string]fileSnapshot
+	snapshots          map[string]docread.FileSnapshot
 	workspacePath      string // .rush/rush.json (recomputed on every reload)
 	overrides          RuntimeOverrides
 
@@ -243,7 +244,7 @@ type ConfigStore struct {
 	// initialLoadFingerprints points at Load's private expected-input map while
 	// provider/model setup is allowed to perform self-healing writes. It is
 	// read and updated only while diskWriteMu is held.
-	initialLoadFingerprints map[string]reloadFileFingerprint
+	initialLoadFingerprints map[string]docread.Fingerprint
 
 	// reloadAfterDiskRead is a white-box test seam. It is called after the
 	// candidate has read the rush config files and before it is published.
@@ -309,7 +310,7 @@ type InitialSnapshot struct {
 	LoadedPaths         []string
 	WorkspacePath       string
 	// configPaths and externalPaths are the candidate input path sets
-	// (lookupConfigCandidates / mcpJSONCandidatePaths results) captured by
+	// (docread.LookupConfigCandidateGroups / mcpJSONCandidatePaths results) captured by
 	// the caller; publish re-verifies them against initialLoadFingerprints.
 	ConfigPaths   []string
 	ExternalPaths []string
@@ -369,7 +370,7 @@ func NewStore(workingDir, globalDataPath string, dataDirSource DataDirSource, sh
 // loadOnce and loadOnce returns it, so nothing outside this call can
 // possibly be reloading THIS store concurrently while both locks are
 // held.
-func (s *ConfigStore) InitialLoad(fingerprints map[string]reloadFileFingerprint, build func(publish func(*InitialSnapshot) error) error) error {
+func (s *ConfigStore) InitialLoad(fingerprints map[string]docread.Fingerprint, build func(publish func(*InitialSnapshot) error) error) error {
 	s.reloadMu.Lock()
 	defer s.reloadMu.Unlock()
 	s.publishMu.Lock()
@@ -392,9 +393,10 @@ func (s *ConfigStore) publishInitialSnapshot(initial *InitialSnapshot) error {
 	if candidateInputsChanged(s.workingDir, initial.ConfigPaths, initial.ExternalPaths, s.initialLoadFingerprints) {
 		return errReloadDiskChanged
 	}
-	stalenessPaths := configAndMCPStalenessPaths(lookupConfigCandidates(s.workingDir), s.workingDir)
+	configCandidateGroups := docread.LookupConfigCandidateGroups(s.workingDir)
+	stalenessPaths := docread.ConfigAndMCPStalenessPaths(append(configCandidateGroups.Global, configCandidateGroups.Project...), s.workingDir)
 	stalenessPaths = append(stalenessPaths, initial.WorkspacePath, s.globalDataPath)
-	trackedPaths, snapshots := reloadStalenessState(stalenessPaths, s.initialLoadFingerprints)
+	trackedPaths, snapshots := docread.ReloadStalenessState(stalenessPaths, s.initialLoadFingerprints)
 	s.snap.Store(&storeSnapshot{
 		config:              initial.Config,
 		resolver:            initial.Resolver,

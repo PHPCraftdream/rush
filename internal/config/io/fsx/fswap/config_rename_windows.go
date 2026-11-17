@@ -1,0 +1,270 @@
+//go:build windows
+
+package fswap
+
+import (
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+
+	"github.com/PHPCraftdream/rush/internal/config/io/cfghooks"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
+)
+
+type WindowsFileRenameInfo struct {
+	Flags          uint32
+	RootDirectory  windows.Handle
+	FileNameLength uint32
+	FileName       [1]uint16
+}
+
+func RenameConfigTempHandle(source *os.File, sourcePath string, parent *os.File, destination string, replace bool, expected docread.Fingerprint, expectedOwner int, enforceOwner bool, discoveryPath string) error {
+	// Keep the old seam for existing deterministic tests. Production has no
+	// MoveFileEx hook and therefore always takes the handle-based path below.
+	moveFileEx := cfghooks.Snapshot().MoveFileEx
+	if moveFileEx != nil {
+		from, err := windows.UTF16PtrFromString(sourcePath)
+		if err != nil {
+			return err
+		}
+		to, err := windows.UTF16PtrFromString(filepath.Join(filepath.Dir(sourcePath), destination))
+		if err != nil {
+			return err
+		}
+		flags := uint32(windows.MOVEFILE_WRITE_THROUGH)
+		if replace {
+			flags |= windows.MOVEFILE_REPLACE_EXISTING
+		}
+		return moveFileEx(from, to, flags)
+	}
+
+	name, err := windows.UTF16FromString(destination)
+	if err != nil {
+		return err
+	}
+	name = name[:len(name)-1]
+	headerSize := int(unsafe.Offsetof(WindowsFileRenameInfo{}.FileName))
+	buffer := make([]byte, headerSize+len(name)*2)
+	info := (*WindowsFileRenameInfo)(unsafe.Pointer(&buffer[0]))
+	info.Flags = windows.FILE_RENAME_POSIX_SEMANTICS
+	if replace {
+		info.Flags = windows.FILE_RENAME_REPLACE_IF_EXISTS
+		info.Flags |= windows.FILE_RENAME_POSIX_SEMANTICS
+	}
+	// Resolve the relative destination against the already-open parent handle.
+	// This is the publication boundary: a later pathname substitution cannot
+	// redirect the rename to a replacement directory.
+	info.RootDirectory = windows.Handle(parent.Fd())
+	info.FileNameLength = uint32(len(name) * 2)
+	for i, value := range name {
+		binary.LittleEndian.PutUint16(buffer[headerSize+i*2:], value)
+	}
+
+	setInfo := func(class uint32, payload []byte) error {
+		hook := cfghooks.Snapshot().SetFileInformation
+		if hook != nil {
+			return hook(uintptr(source.Fd()), class, &payload[0], uint32(len(payload)))
+		}
+		return windows.SetFileInformationByHandle(windows.Handle(source.Fd()), class, &payload[0], uint32(len(payload)))
+	}
+	for attempt := 0; ; attempt++ {
+		err = setInfo(windows.FileRenameInfoEx, buffer)
+		if err == nil || (err != windows.ERROR_INVALID_PARAMETER && err != windows.ERROR_INVALID_FUNCTION && err != windows.ERROR_NOT_SUPPORTED) {
+			if err == nil {
+				return nil
+			}
+			if attempt+1 >= windowsRenameRetryAttempts || !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+				return err
+			}
+			if retryErr := waitAndVerifyWindowsRenameRetry(source, sourcePath, parent, destination, replace, expected, expectedOwner, enforceOwner, discoveryPath, attempt); retryErr != nil {
+				return errors.Join(err, retryErr)
+			}
+			continue
+		}
+		legacyBuffer := append([]byte(nil), buffer...)
+		legacyInfo := (*WindowsFileRenameInfo)(unsafe.Pointer(&legacyBuffer[0]))
+		if replace {
+			legacyInfo.Flags = 1
+		} else {
+			legacyInfo.Flags = 0
+		}
+		if retryErr := verifyWindowsRenameRetryState(source, sourcePath, parent, destination, replace, expected, expectedOwner, enforceOwner, discoveryPath); retryErr != nil {
+			return errors.Join(err, retryErr)
+		}
+		err = setInfo(windows.FileRenameInfo, legacyBuffer)
+		if err == nil || !isUnsupportedRenameError(err) || hasSetFileInformationHook() {
+			if err == nil {
+				return nil
+			}
+			if !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+				return err
+			}
+			if attempt+1 >= windowsRenameRetryAttempts {
+				return err
+			}
+			if retryErr := waitAndVerifyWindowsRenameRetry(source, sourcePath, parent, destination, replace, expected, expectedOwner, enforceOwner, discoveryPath, attempt); retryErr != nil {
+				return errors.Join(err, retryErr)
+			}
+			continue
+		}
+		if retryErr := verifyWindowsRenameRetryState(source, sourcePath, parent, destination, replace, expected, expectedOwner, enforceOwner, discoveryPath); retryErr != nil {
+			return errors.Join(err, retryErr)
+		}
+		var status windows.IO_STATUS_BLOCK
+		err = windows.NtSetInformationFile(
+			windows.Handle(source.Fd()),
+			&status,
+			&legacyBuffer[0],
+			uint32(len(legacyBuffer)),
+			windows.FileRenameInformation,
+		)
+		if err == nil {
+			return nil
+		}
+		// NtSetInformationFile reports NTSTATUS, not a Win32 errno: a reader
+		// holding the destination open yields STATUS_ACCESS_DENIED here.
+		if (!errors.Is(err, windows.ERROR_ACCESS_DENIED) && !errors.Is(err, windows.STATUS_ACCESS_DENIED)) || attempt+1 >= windowsRenameRetryAttempts {
+			return err
+		}
+		if retryErr := waitAndVerifyWindowsRenameRetry(source, sourcePath, parent, destination, replace, expected, expectedOwner, enforceOwner, discoveryPath, attempt); retryErr != nil {
+			return errors.Join(err, retryErr)
+		}
+	}
+}
+
+const windowsRenameRetryAttempts = 32
+
+func waitAndVerifyWindowsRenameRetry(source *os.File, sourcePath string, parent *os.File, destination string, replace bool, expected docread.Fingerprint, expectedOwner int, enforceOwner bool, discoveryPath string, attempt int) error {
+	delay := time.Duration(attempt+1) * 2 * time.Millisecond
+	if delay > 50*time.Millisecond {
+		delay = 50 * time.Millisecond
+	}
+	time.Sleep(delay)
+	return verifyWindowsRenameRetryState(source, sourcePath, parent, destination, replace, expected, expectedOwner, enforceOwner, discoveryPath)
+}
+
+func verifyWindowsRenameRetryState(source *os.File, sourcePath string, parent *os.File, destination string, replace bool, expected docread.Fingerprint, expectedOwner int, enforceOwner bool, discoveryPath string) error {
+	// Validate after backoff while the publication handle remains pinned.
+	stagedIdentity := fileid.FileIdentityOfOpened(source, nil)
+	if !stagedIdentity.Valid {
+		return fileid.ErrConfigCommitVerification()
+	}
+	if expected.ParentIdentity.Valid && fileid.FileIdentityOfOpened(parent, nil) != expected.ParentIdentity {
+		return fileid.ErrConfigCommitVerification()
+	}
+	if expected.ParentDiscovery != ([32]byte{}) && docread.ConfigDiscoveryFingerprint(filepath.Dir(discoveryPath)) != expected.ParentDiscovery {
+		return fileid.ErrConfigCommitVerification()
+	}
+	staged, err := fileid.OpenWindowsConfigEntryAt(parent, filepath.Base(sourcePath))
+	if err != nil {
+		return fileid.ErrConfigCommitVerification()
+	}
+	defer staged.Close()
+	stagedInfo, err := staged.Stat()
+	if err != nil || stagedInfo.IsDir() {
+		return fileid.ErrConfigCommitVerification()
+	}
+	stagedHandleInfo, err := fileid.WindowsFileInformation(staged)
+	if err != nil || stagedHandleInfo.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 || fileid.FileIdentityOfOpened(staged, stagedInfo) != stagedIdentity {
+		return fileid.ErrConfigCommitVerification()
+	}
+
+	target, err := fileid.OpenWindowsConfigEntryAt(parent, filepath.Base(destination))
+	if err == nil {
+		defer target.Close()
+	}
+	if !replace {
+		if fileid.IsWindowsEntryNotFound(err) || os.IsNotExist(err) {
+			return nil
+		}
+		return fileid.ErrConfigCommitVerification()
+	}
+	if err != nil {
+		return fileid.ErrConfigCommitVerification()
+	}
+	targetInfo, err := target.Stat()
+	if err != nil || targetInfo.IsDir() {
+		return fileid.ErrConfigCommitVerification()
+	}
+	targetHandleInfo, err := fileid.WindowsFileInformation(target)
+	if err != nil || targetHandleInfo.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return fileid.ErrConfigCommitVerification()
+	}
+	targetData, targetFingerprint, err := docread.ReadStableConfigHandle(target, expectedOwner, enforceOwner)
+	if err != nil || !expected.Exists || !expected.Identity.Valid || targetFingerprint.Exists != expected.Exists ||
+		targetFingerprint.Size != expected.Size || targetFingerprint.ModTime != expected.ModTime ||
+		targetFingerprint.Digest != expected.Digest || targetFingerprint.Owner != expected.Owner ||
+		targetFingerprint.Nlink != expected.Nlink || targetFingerprint.Identity != expected.Identity ||
+		!docread.SameBytesFingerprint(targetData, expected.Digest) {
+		return fileid.ErrConfigCommitVerification()
+	}
+	if expected.Discovery != ([32]byte{}) && docread.ConfigDiscoveryFingerprint(discoveryPath) != expected.Discovery {
+		return fileid.ErrConfigCommitVerification()
+	}
+	return nil
+}
+
+func isUnsupportedRenameError(err error) bool {
+	return err == windows.ERROR_INVALID_PARAMETER || err == windows.ERROR_INVALID_FUNCTION || err == windows.ERROR_NOT_SUPPORTED
+}
+
+func hasSetFileInformationHook() bool {
+	hook := cfghooks.Snapshot().SetFileInformation
+	return hook != nil
+}
+
+// renameConfigTemp uses MoveFileEx directly so the expected-absent case is a
+// true no-replace operation. os.Rename on Windows is intentionally not used:
+// its implementation requests replacement semantics.
+func RenameConfigTemp(source, destination string, replace bool) error {
+	apiSource, err := fileid.WindowsConfigAPIPath(source)
+	if err != nil {
+		return fmt.Errorf("encode temporary config path: %w", err)
+	}
+	apiDestination, err := fileid.WindowsConfigAPIPath(destination)
+	if err != nil {
+		return fmt.Errorf("encode config path: %w", err)
+	}
+	from, err := windows.UTF16PtrFromString(apiSource)
+	if err != nil {
+		return fmt.Errorf("encode temporary config path: %w", err)
+	}
+	to, err := windows.UTF16PtrFromString(apiDestination)
+	if err != nil {
+		return fmt.Errorf("encode config path: %w", err)
+	}
+	flags := uint32(windows.MOVEFILE_WRITE_THROUGH)
+	if replace {
+		flags |= windows.MOVEFILE_REPLACE_EXISTING
+	}
+	for attempt := 0; ; attempt++ {
+		moveFileEx := cfghooks.Snapshot().MoveFileEx
+		if moveFileEx != nil {
+			err = moveFileEx(from, to, flags)
+		} else {
+			err = windows.MoveFileEx(from, to, flags)
+		}
+		if err == nil || !replace || !errors.Is(err, windows.ERROR_ACCESS_DENIED) || attempt == 7 {
+			return err
+		}
+		// Do not retry an access error after the source has disappeared. That
+		// is the observable signature of a publication whose WRITE_THROUGH
+		// result was lost; retrying would replace the original error with a
+		// misleading second failure and discard the durability signal.
+		if _, statErr := os.Stat(source); os.IsNotExist(statErr) {
+			return err
+		}
+		// A cooperating writer can still be completing its pre-lock handle
+		// close because target resolution deliberately precedes lock acquire.
+		// Give that short-lived reader time to release FILE_SHARE_DELETE before
+		// treating the replacement as a real access failure.
+		time.Sleep(2 * time.Millisecond)
+	}
+}

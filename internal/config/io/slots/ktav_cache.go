@@ -1,0 +1,80 @@
+// Ktav-capable provider/model-catalog cache layer: Rush-owned LOCAL cache
+// files (providers.json, hyper.json, model-catalog-<id>.json) follow the
+// same two-generation naming as config documents — an active <name>.ktav
+// sibling and a retained <name>.json original. Remote Catwalk/Hyper
+// protocol bodies stay JSON in both directions.
+package slots
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
+)
+
+// readCacheDocument reads the active generation of a Rush-owned cache slot
+// named by its LEGACY JSON path and returns JSON-shaped bytes. A present
+// .ktav sibling always wins: it is decoded through ktavcodec and its
+// JSON-shaped bytes are returned, and a coexisting legacy .json file is
+// reported once per file with a paths-only warning. An invalid Ktav file is
+// an error for the slot — it must never silently fall back to the stale
+// JSON copy. When only the retained <name>.json.bak backup exists, the
+// backup is never restored: the read reports exactly like a missing cache
+// file. When neither generation exists the legacy path's not-exist error is
+// returned unchanged.
+func readCacheDocument(legacyJSON string) ([]byte, error) {
+	ktav := docread.KtavSiblingOf(legacyJSON)
+	if _, statErr := os.Stat(ktav); statErr == nil || !docread.KtavEntryAbsentErr(statErr) {
+		raw, err := os.ReadFile(ktav)
+		if err != nil {
+			return nil, err
+		}
+		tree, err := ktavcodec.DecodeKtav(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Ktav in provider cache file %s: %w", ktav, err)
+		}
+		jsonBytes, err := ktavcodec.ToJSON(tree)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Ktav in provider cache file %s: %w", ktav, err)
+		}
+		if _, jsonErr := os.Stat(legacyJSON); jsonErr == nil {
+			docread.WarnBothFormatsOnce("cache", ktav, legacyJSON)
+		}
+		return jsonBytes, nil
+	}
+	return os.ReadFile(legacyJSON)
+}
+
+// writeCacheDocument writes JSON-shaped cache bytes in the gate-selected
+// format. The caller supplies its historical JSON writer so that with the
+// gate off BOTH the bytes AND the write mechanics are unchanged per call
+// site (os.WriteFile where os.WriteFile was used before,
+// cfgcommit.AtomicWriteFile where it was used before). With the gate on the
+// bytes are converted strictly to Ktav and the <name>.ktav sibling is published
+// through the same atomic stage+rename helper the config documents use; the
+// legacy JSON file is deliberately left alone because reads always prefer
+// the Ktav sibling, so a stale JSON copy can never win.
+func writeCacheDocument(legacyJSON string, jsonBytes []byte, perm os.FileMode, writeJSON func(path string, data []byte, perm os.FileMode) error) error {
+	if !NewConfigFileIsKtav() {
+		return writeJSON(legacyJSON, jsonBytes, perm)
+	}
+	ktavBytes, err := ktavcodec.ConvertJSONToKtav(jsonBytes)
+	if err != nil {
+		return fmt.Errorf("failed to convert provider cache to Ktav: %w", err)
+	}
+	return cfgcommit.AtomicWriteFile(docread.KtavSiblingOf(legacyJSON), ktavBytes, perm)
+}
+
+// ReadCacheDocument reads the active generation of a Rush-owned cache slot
+// named by its legacy JSON path. Exported wrapper over readCacheDocument.
+func ReadCacheDocument(legacyJSON string) ([]byte, error) {
+	return readCacheDocument(legacyJSON)
+}
+
+// WriteCacheDocument writes JSON-shaped cache bytes in the gate-selected
+// format. Exported wrapper over writeCacheDocument.
+func WriteCacheDocument(legacyJSON string, jsonBytes []byte, perm os.FileMode, writeJSON func(path string, data []byte, perm os.FileMode) error) error {
+	return writeCacheDocument(legacyJSON, jsonBytes, perm, writeJSON)
+}

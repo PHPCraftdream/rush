@@ -75,17 +75,16 @@ func TestMigrateLegacyConfigFile_Success(t *testing.T) {
 	legacy := ktavSeedLegacy(t, dir)
 
 	var seenSteps []string
-	prevHook := ktavMigrationStepHook
-	ktavMigrationStepHook = func(step string) error {
+	_, restoreHook := setKtavMigrationStepHookForTest(func(step string) error {
 		seenSteps = append(seenSteps, step)
 		if step == "after-record" {
 			// The record must exist while the transaction is running.
 			require.FileExists(t, filepath.Join(dir, "rush.json.ktav-migration"))
 		}
 		return nil
-	}
+	})
 	err := migrateLegacyConfigFile(context.Background(), legacy, dir)
-	ktavMigrationStepHook = prevHook
+	restoreHook()
 	require.NoError(t, err)
 	require.Contains(t, seenSteps, "after-record", "the record must be created during the transaction")
 
@@ -263,15 +262,14 @@ func TestMigrateLegacyConfigFile_CrashBoundariesRecovers(t *testing.T) {
 			original, err := os.ReadFile(legacy)
 			require.NoError(t, err)
 
-			previousHook := ktavMigrationStepHook
-			ktavMigrationStepHook = func(step string) error {
+			_, restoreHook := setKtavMigrationStepHookForTest(func(step string) error {
 				if step == tc.step {
 					return errKtavMigrationCrashInjected
 				}
 				return nil
-			}
+			})
 			migrationErr := migrateLegacyConfigFile(context.Background(), legacy, dir)
-			ktavMigrationStepHook = previousHook
+			restoreHook()
 			require.ErrorIs(t, migrationErr, errKtavMigrationCrashInjected)
 
 			if tc.step == "during-staging" {
@@ -330,8 +328,7 @@ func TestMigrateLegacyConfigFile_SourceChangedBeforeArchival(t *testing.T) {
 	legacy := ktavSeedLegacy(t, dir)
 	rewritten := `{"providers":{"p":{"api_key":"CHANGED-AFTER-PUBLISH"}}}`
 
-	prevHook := ktavMigrationStepHook
-	ktavMigrationStepHook = func(step string) error {
+	_, restoreHook := setKtavMigrationStepHookForTest(func(step string) error {
 		if step == "after-publish" {
 			if writeErr := os.WriteFile(legacy, []byte(rewritten), 0o600); writeErr != nil {
 				return writeErr
@@ -339,9 +336,9 @@ func TestMigrateLegacyConfigFile_SourceChangedBeforeArchival(t *testing.T) {
 			return nil
 		}
 		return nil
-	}
+	})
 	err := migrateLegacyConfigFile(context.Background(), legacy, dir)
-	ktavMigrationStepHook = prevHook
+	restoreHook()
 	require.ErrorIs(t, err, errKtavMigrationConflict)
 
 	// Recovery must refuse to archive the CHANGED generation.
@@ -386,15 +383,14 @@ func TestMigrateLegacyConfigFile_ForgedRecordFailsClosed(t *testing.T) {
 	t.Run("wrong destination party", func(t *testing.T) {
 		dir := t.TempDir()
 		legacy := ktavSeedLegacy(t, dir)
-		prevHook := ktavMigrationStepHook
-		ktavMigrationStepHook = func(step string) error {
+		_, restoreHook := setKtavMigrationStepHookForTest(func(step string) error {
 			if step == "after-record" {
 				return errKtavMigrationCrashInjected
 			}
 			return nil
-		}
+		})
 		err := migrateLegacyConfigFile(context.Background(), legacy, dir)
-		ktavMigrationStepHook = prevHook
+		restoreHook()
 		require.ErrorIs(t, err, errKtavMigrationCrashInjected)
 		recordPath := migrationRecordPathFor(legacy)
 		var record map[string]any
@@ -415,15 +411,14 @@ func TestMigrateLegacyConfigFile_ForgedRecordFailsClosed(t *testing.T) {
 	t.Run("tampered staged digest", func(t *testing.T) {
 		dir := t.TempDir()
 		legacy := ktavSeedLegacy(t, dir)
-		previousHook := ktavMigrationStepHook
-		ktavMigrationStepHook = func(step string) error {
+		_, restoreHook := setKtavMigrationStepHookForTest(func(step string) error {
 			if step == "after-archive" {
 				return errKtavMigrationCrashInjected
 			}
 			return nil
-		}
+		})
 		err := migrateLegacyConfigFile(context.Background(), legacy, dir)
-		ktavMigrationStepHook = previousHook
+		restoreHook()
 		require.ErrorIs(t, err, errKtavMigrationCrashInjected)
 		recordPath := migrationRecordPathFor(legacy)
 		var record map[string]any
@@ -444,15 +439,14 @@ func TestMigrateLegacyConfigFile_ForgedRecordFailsClosed(t *testing.T) {
 	t.Run("foreign owner rejected on open", func(t *testing.T) {
 		dir := t.TempDir()
 		legacy := ktavSeedLegacy(t, dir)
-		previousHook := ktavMigrationStepHook
-		ktavMigrationStepHook = func(step string) error {
+		_, restoreHook := setKtavMigrationStepHookForTest(func(step string) error {
 			if step == "after-record" {
 				return errKtavMigrationCrashInjected
 			}
 			return nil
-		}
+		})
 		migrationErr := migrateLegacyConfigFile(context.Background(), legacy, dir)
-		ktavMigrationStepHook = previousHook
+		restoreHook()
 		require.ErrorIs(t, migrationErr, errKtavMigrationCrashInjected)
 		recordPath := migrationRecordPathFor(legacy)
 		owner, enforce, err := ownerPolicyForMigration(legacy, dir)
@@ -493,15 +487,14 @@ func TestKtavStartupResumesInterruptedTransaction(t *testing.T) {
 	// write-back can mutate the published Ktav during Load.
 	legacy := ktavSeedLoadLegacy(t, dir)
 
-	prevHook := ktavMigrationStepHook
-	ktavMigrationStepHook = func(step string) error {
+	_, restoreHook := setKtavMigrationStepHookForTest(func(step string) error {
 		if step == "after-publish" {
 			return errKtavMigrationCrashInjected
 		}
 		return nil
-	}
+	})
 	_ = migrateLegacyConfigFile(context.Background(), legacy, dir)
-	ktavMigrationStepHook = prevHook
+	restoreHook()
 	require.FileExists(t, filepath.Join(dir, "rush.json.ktav-migration"))
 
 	ktavLoadMigrationTestConfig(t, dir, false)
@@ -515,20 +508,18 @@ func TestKtavMigrateWorkspaceIfNeededResumesRecord(t *testing.T) {
 	dir := t.TempDir()
 	legacy := ktavSeedLegacy(t, dir)
 
-	prevHook := ktavMigrationStepHook
-	ktavMigrationStepHook = func(step string) error {
+	_, restoreHook := setKtavMigrationStepHookForTest(func(step string) error {
 		if step == "after-record" {
 			return errKtavMigrationCrashInjected
 		}
 		return nil
-	}
+	})
 	_ = migrateLegacyConfigFile(context.Background(), legacy, dir)
-	ktavMigrationStepHook = prevHook
+	restoreHook()
 	require.FileExists(t, filepath.Join(dir, "rush.json.ktav-migration"))
 
-	savedGate := ktavAutoMigrate
-	ktavAutoMigrate = false
-	t.Cleanup(func() { ktavAutoMigrate = savedGate })
+	restoreGate := SetKtavAutoMigrateForTest(false)
+	t.Cleanup(restoreGate)
 	require.NoError(t, ktavMigrateWorkspaceIfNeeded(context.Background(), dir, dir))
 	ktavAssertMigrated(t, dir)
 }
@@ -541,15 +532,14 @@ func TestMigrateLegacyConfigFile_NoSecretsInDiagnostics(t *testing.T) {
 	legacy := ktavSeedLegacy(t, dir)
 	// Force a conflict: the JSON changes between publication and the
 	// archival check.
-	prevHook := ktavMigrationStepHook
-	ktavMigrationStepHook = func(step string) error {
+	_, restoreHook := setKtavMigrationStepHookForTest(func(step string) error {
 		if step == "after-publish" {
 			return os.WriteFile(legacy, []byte(`{"x":1}`), 0o600)
 		}
 		return nil
-	}
+	})
 	err := migrateLegacyConfigFile(context.Background(), legacy, dir)
-	ktavMigrationStepHook = prevHook
+	restoreHook()
 	require.ErrorIs(t, err, errKtavMigrationConflict)
 	require.NotContains(t, err.Error(), ktavTestSecret)
 
@@ -589,15 +579,14 @@ func TestKtavMigrateStartupSlotsRespectsGate(t *testing.T) {
 	dir := t.TempDir()
 	legacy := ktavSeedLegacy(t, dir)
 
-	savedGate := ktavAutoMigrate
-	t.Cleanup(func() { ktavAutoMigrate = savedGate })
+	restoreGate := SetKtavAutoMigrateForTest(false)
+	t.Cleanup(restoreGate)
 
-	ktavAutoMigrate = false
 	require.NoError(t, ktavMigrateStartupSlots(context.Background(), dir))
 	require.FileExists(t, legacy)
 	require.NoFileExists(t, filepath.Join(dir, "rush.ktav"))
 
-	ktavAutoMigrate = true
+	SetKtavAutoMigrateForTest(true)
 	require.NoError(t, ktavMigrateStartupSlots(context.Background(), dir))
 	ktavAssertMigrated(t, dir)
 }
@@ -616,9 +605,8 @@ func TestKtavMigrationBudgetIsSharedAndBounded(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(globalJSON), 0o700))
 	writeTestFile(t, globalJSON, `{"options":{"debug":true}}`)
 
-	savedBudget := ktavMigrationBudget
-	ktavMigrationBudget = 60 * time.Millisecond
-	t.Cleanup(func() { ktavMigrationBudget = savedBudget })
+	_, restoreBudget := setKtavMigrationBudgetForTest(60 * time.Millisecond)
+	t.Cleanup(restoreBudget)
 	var deadlines []time.Time
 	configTestHooks.Lock()
 	previousAcquire := configTestHooks.acquireConfigLock
@@ -657,15 +645,14 @@ func TestKtavMigrationRecordHasNoConfigValues(t *testing.T) {
 	ktavIsolateGlobals(t)
 	dir := t.TempDir()
 	legacy := ktavSeedLegacy(t, dir)
-	prevHook := ktavMigrationStepHook
-	ktavMigrationStepHook = func(step string) error {
+	_, restoreHook := setKtavMigrationStepHookForTest(func(step string) error {
 		if step == "after-record" {
 			return errKtavMigrationCrashInjected
 		}
 		return nil
-	}
+	})
 	err := migrateLegacyConfigFile(context.Background(), legacy, dir)
-	ktavMigrationStepHook = prevHook
+	restoreHook()
 	require.ErrorIs(t, err, errKtavMigrationCrashInjected)
 
 	record, readErr := os.ReadFile(filepath.Join(dir, "rush.json.ktav-migration"))

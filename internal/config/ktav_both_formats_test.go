@@ -21,7 +21,6 @@ func setupBothFormats(t *testing.T) (string, string, string) {
 	ktav := filepath.Join(dir, "rush.ktav")
 	writeTestFile(t, legacy, `{"options":{"debug":true}}`)
 	require.NoError(t, os.WriteFile(ktav, testKtavBytes(t, `{"options":{"debug":false}}`), 0o600))
-	resetBothFormatsWarnings()
 	return dir, ktav, legacy
 }
 

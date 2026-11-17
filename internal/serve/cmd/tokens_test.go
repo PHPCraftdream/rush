@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -22,7 +24,7 @@ import (
 
 func TestParseTokenExpiry(t *testing.T) {
 	tokenTestEnv(t, t.TempDir())
-	now := mustParseTime(t, "2026-11-01T00:00:00Z")
+	now := cmdtest.MustParseTime(t, "2026-11-01T00:00:00Z")
 	got, err := parseTokenExpiry("30d", now)
 	if err != nil || got == nil || !got.Equal(now.Add(30*24*60*60*1e9)) {
 		t.Fatalf("30d expiry = %v, %v", got, err)
@@ -36,15 +38,6 @@ func TestParseTokenExpiry(t *testing.T) {
 	if _, err := parseTokenExpiry("0s", now); err == nil {
 		t.Fatal("non-future expiry accepted")
 	}
-}
-
-func mustParseTime(t *testing.T, value string) time.Time {
-	t.Helper()
-	v, err := time.Parse(time.RFC3339, value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return v
 }
 
 var tokenTestInvocation atomic.Uint64
@@ -241,9 +234,9 @@ func TestTokensCommandRegisteredOnRoot(t *testing.T) {
 
 func TestParseTokenExpiryRFC3339(t *testing.T) {
 	tokenTestEnv(t, t.TempDir())
-	now := mustParseTime(t, "2026-11-01T00:00:00Z")
+	now := cmdtest.MustParseTime(t, "2026-11-01T00:00:00Z")
 	got, err := parseTokenExpiry("2026-12-01T12:30:00+02:00", now)
-	want := mustParseTime(t, "2026-12-01T10:30:00Z")
+	want := cmdtest.MustParseTime(t, "2026-12-01T10:30:00Z")
 	if err != nil || got == nil || !got.Equal(want) {
 		t.Fatalf("RFC3339 expiry = %v, %v; want %v", got, err, want)
 	}

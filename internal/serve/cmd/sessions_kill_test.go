@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -476,7 +478,7 @@ func TestSessionsKillCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	_, wrongStatErr := os.Stat(wrongPath)
 	require.True(t, os.IsNotExist(wrongStatErr))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runErr := sessionsKillCmd.RunE(sessionsKillCmd, []string{sessionID})
 		require.NoError(t, runErr)
 	})
@@ -567,7 +569,7 @@ func TestSessionsKillAndReset_RelativeDataDirResolveConsistently(t *testing.T) {
 	require.NoError(t, sessionsKillCmd.Flags().Set("wait", "2s"))
 	sessionsKillCmd.SetContext(context.Background())
 
-	killStderr := captureStderr(t, func() {
+	killStderr := cmdtest.CaptureStderr(t, func() {
 		runErr := sessionsKillCmd.RunE(sessionsKillCmd, []string{sessionID})
 		require.NoError(t, runErr)
 	})

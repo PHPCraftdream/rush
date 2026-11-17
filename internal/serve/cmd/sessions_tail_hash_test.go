@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -28,7 +30,7 @@ func runTail(t *testing.T, ctx context.Context, dataDir, arg string, follow bool
 	require.NoError(t, sessionsTailCmd.Flags().Set("format", "text"))
 	require.NoError(t, sessionsTailCmd.Flags().Set("with-subagents", "false"))
 	sessionsTailCmd.SetContext(ctx)
-	stdout, _ = captureStdoutAndStderr(t, func() { err = sessionsTailCmd.RunE(sessionsTailCmd, []string{arg}) })
+	stdout, _ = cmdtest.CaptureStdoutAndStderr(t, func() { err = sessionsTailCmd.RunE(sessionsTailCmd, []string{arg}) })
 	return stdout, err
 }
 

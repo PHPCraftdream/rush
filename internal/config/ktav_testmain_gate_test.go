@@ -28,13 +28,13 @@ import "testing"
 // variables initialize in declaration order within the package, but this
 // file deliberately captures the value at its own var-init time, which is
 // guaranteed to run before any init() function in the package.
-var ktavShippedDefault = ktavAutoMigrate
+var ktavShippedDefault = KtavAutoMigrateEnabled()
 
 func init() {
 	// Legacy-JSON fixture world for this package's tests only; see the
 	// comment block above. The shipped default stays true and is pinned by
 	// TestKtavAutoMigrateEnabled via ktavShippedDefault.
-	ktavAutoMigrate = false
+	SetKtavAutoMigrateForTest(false)
 }
 
 // enableKtavAutoMigrateForTest turns the Ktav auto-migration gate ON for the
@@ -42,7 +42,6 @@ func init() {
 // t.Parallel: the flag is package-global.
 func enableKtavAutoMigrateForTest(t *testing.T) {
 	t.Helper()
-	prev := ktavAutoMigrate
-	ktavAutoMigrate = true
-	t.Cleanup(func() { ktavAutoMigrate = prev })
+	restore := SetKtavAutoMigrateForTest(true)
+	t.Cleanup(restore)
 }

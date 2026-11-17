@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 )
 
 // PeakHoursEntryForScope returns the peak_hours entry a SINGLE scope's
@@ -20,23 +23,23 @@ func (s *ConfigStore) PeakHoursEntryForScope(scope Scope, providerID string) (*P
 	if err != nil {
 		return nil, err
 	}
-	// Mirror the write path's target resolution (writeTargetSlot then
+	// Mirror the write path's target resolution (slots.WriteTargetSlot then
 	// resolveConfigWriteTarget) WITHOUT acquiring the inter-process lock:
 	// this helper is read-only and tolerates a torn concurrent write
 	// exactly like any other unlocked reader.
-	selected := writeTargetSlot(path)
+	selected := slots.WriteTargetSlot(path)
 	target, err := s.resolveConfigWriteTarget(selected)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve config file %q: %w", path, err)
 	}
-	raw, _, err := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+	raw, _, err := docread.ReadStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
-	doc, err := decodeSettingsDocument(target.selectedPath, raw, target.expected)
+	doc, err := docread.DecodeSettingsDocument(target.selectedPath, raw, target.expected)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +48,7 @@ func (s *ConfigStore) PeakHoursEntryForScope(scope Scope, providerID string) (*P
 			PeakHours json.RawMessage `json:"peak_hours"`
 		} `json:"providers"`
 	}
-	if err := json.Unmarshal(doc.jsonBytes, &probe); err != nil {
+	if err := json.Unmarshal(doc.JSONBytes, &probe); err != nil {
 		return nil, fmt.Errorf("failed to decode config file: %w", err)
 	}
 	entry, ok := probe.Providers[providerID]

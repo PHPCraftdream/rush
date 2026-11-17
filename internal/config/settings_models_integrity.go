@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 )
 
 // anySettingsLockExists reports whether any settings lock file is present.
@@ -11,7 +13,7 @@ import (
 func (s *ConfigStore) anySettingsLockExists() bool {
 	sources := []settingsLockSource{
 		// The process-global data config AND the store's own global path:
-		// readSettingsDocument selects the active slot for either spelling,
+		// docread.ReadSettingsDocument selects the active slot for either spelling,
 		// so a lock living only in rush.ktav is seen through both.
 		{path: GlobalConfigData(), global: true},
 		{path: s.globalDataPath, global: true},
@@ -21,7 +23,7 @@ func (s *ConfigStore) anySettingsLockExists() bool {
 		{path: canonicalGlobalDataPath(), global: true},
 		{path: s.loadSnapshot().workspacePath},
 		{path: naturalWorkspaceSettingsPath(s.workingDir)},
-		{path: readSlotOf(filepath.Join(s.workingDir, "rush.json"))},
+		{path: docread.ReadSlotOf(filepath.Join(s.workingDir, "rush.json"))},
 	}
 	globals, locals, err := collectSettingsSourceHashes(sources)
 	if err != nil {
@@ -41,7 +43,7 @@ func (s *ConfigStore) verifyModelsIntegrityAtLoad() {
 		if path == "" {
 			continue
 		}
-		data, _, err := readStableConfigFile(path)
+		data, _, err := docread.ReadStableConfigFile(path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -49,14 +51,14 @@ func (s *ConfigStore) verifyModelsIntegrityAtLoad() {
 			mismatch = true
 			break
 		}
-		doc, err := decodeSettingsDocument(path, data, reloadFileFingerprint{})
+		doc, err := docread.DecodeSettingsDocument(path, data, docread.Fingerprint{})
 		if err != nil {
 			// An undecodable document fails closed: it counts as a
 			// mismatch, never as an absent models field.
 			mismatch = true
 			break
 		}
-		if modelsIntegrityOf(doc.jsonBytes, s.anySettingsLockExists()) != nil {
+		if modelsIntegrityOf(doc.JSONBytes, s.anySettingsLockExists()) != nil {
 			mismatch = true
 			break
 		}

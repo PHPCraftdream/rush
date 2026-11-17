@@ -13,6 +13,8 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/slotmigrate"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
 
@@ -92,7 +94,7 @@ func Load(workingDir, dataDir string, debug bool, opts ...LoadOption) (*ConfigSt
 	}
 	var lastErr error
 	// ONE shared migration deadline for every slot and every load attempt.
-	ktavCtx, ktavCancel := context.WithTimeout(context.Background(), ktavMigrationBudget)
+	ktavCtx, ktavCancel := context.WithTimeout(context.Background(), slotmigrate.KtavMigrationBudget())
 	defer ktavCancel()
 	for attempt := 0; attempt < reloadMaxAttempts; attempt++ {
 		store, err := loadOnce(ktavCtx, workingDir, dataDir, debug, options.cliModels, options.discoveryProviders)
@@ -104,21 +106,22 @@ func Load(workingDir, dataDir string, debug bool, opts ...LoadOption) (*ConfigSt
 		}
 		lastErr = err
 	}
-	return nil, fmt.Errorf("%w after %d attempts: %v", ErrConfigReloadUnstable, reloadMaxAttempts, lastErr)
+	return nil, fmt.Errorf("%w after %d attempts: %v", docread.ErrConfigReloadUnstable, reloadMaxAttempts, lastErr)
 }
 
 func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, cliModels func() []catalog.LocalCLIModel, discoveryProviders map[string]bool) (*ConfigStore, error) {
-	if err := checkAuthoritativeBackupOnly(workingDir); err != nil {
+	if err := docread.CheckAuthoritativeBackupOnly(workingDir); err != nil {
 		return nil, err
 	}
 	// Migrate initial discovery sources before constructing the candidate
 	// snapshot. Gated by ktavAutoMigrate (false in this change).
-	if err := ktavMigrateStartupSlots(ktavCtx, workingDir); err != nil {
+	if err := slotmigrate.KtavMigrateStartupSlots(ktavCtx, workingDir); err != nil {
 		return nil, err
 	}
 	// Read every deterministic candidate, including absent paths. This closes
 	// the create-after-discovery gap for project and workspace configuration.
-	configPaths := lookupConfigCandidates(workingDir)
+	groups := docread.LookupConfigCandidateGroups(workingDir)
+	configPaths := append(groups.Global, groups.Project...)
 
 	cfg, loadedPaths, fingerprints, configDocuments, err := loadConfigCandidateStableForWorkingDir(configPaths, workingDir)
 	if err != nil {
@@ -140,18 +143,18 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 	sharedDataDir := dataDirIsSharedOfLinkedWorktree(workingDir, dataDirResolved, dataDirSource)
 	datadir.SetWorkspaceHome(!sharedDataDir)
 
-	globalDataPath := normalizeReloadPath(selectConfigSlot(GlobalConfigData()))
-	workspaceDiscoveryPath := normalizeDiscoveryPath(workspaceConfigPath(cfg.Options.DataDirectory))
-	workspacePath := normalizeReloadPath(workspaceDiscoveryPath)
-	if err := checkBackupOnlySlot(filepath.Join(cfg.Options.DataDirectory, appName+".json")); err != nil {
+	globalDataPath := docread.NormalizeReloadPath(docread.SelectConfigSlot(GlobalConfigData()))
+	workspaceDiscoveryPath := docread.NormalizeDiscoveryPath(docread.WorkspaceConfigPath(cfg.Options.DataDirectory))
+	workspacePath := docread.NormalizeReloadPath(workspaceDiscoveryPath)
+	if err := docread.CheckBackupOnlySlot(filepath.Join(cfg.Options.DataDirectory, appName+".json")); err != nil {
 		return nil, err
 	}
-	if err := ktavMigrateWorkspaceIfNeeded(ktavCtx, workingDir, cfg.Options.DataDirectory); err != nil {
+	if err := slotmigrate.KtavMigrateWorkspaceIfNeeded(ktavCtx, workingDir, cfg.Options.DataDirectory); err != nil {
 		return nil, err
 	}
-	if fileExists(ktavSiblingOf(filepath.Join(cfg.Options.DataDirectory, appName+".json"))) {
-		workspaceDiscoveryPath = normalizeDiscoveryPath(workspaceConfigPath(cfg.Options.DataDirectory))
-		workspacePath = normalizeReloadPath(workspaceDiscoveryPath)
+	if docread.FileExists(docread.KtavSiblingOf(filepath.Join(cfg.Options.DataDirectory, appName+".json"))) {
+		workspaceDiscoveryPath = docread.NormalizeDiscoveryPath(docread.WorkspaceConfigPath(cfg.Options.DataDirectory))
+		workspacePath = docread.NormalizeReloadPath(workspaceDiscoveryPath)
 	}
 	// KTAV-4b (plan 4.2): convert legacy OAuth recovery journals for the
 	// slots the recovery workers are about to use, strictly BEFORE any
@@ -160,7 +163,7 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 	// ktavAutoMigrate; failures defer with a warning and the JSON journal
 	// stays active. Library mode (sdk.ModeLibrary) never reaches Load, so
 	// it never runs any of this.
-	ktavMigrateOAuthJournalsAtStartup(ktavCtx, []string{
+	slotmigrate.KtavMigrateOAuthJournalsAtStartup(ktavCtx, []string{
 		GlobalConfigData(),
 		filepath.Join(cfg.Options.DataDirectory, appName+".json"),
 	}, workingDir)
@@ -170,34 +173,34 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 	}
 
 	// Load workspace config last so it has highest priority.
-	if !pathAlreadyLoaded(loadedPaths, workspacePath) && workingDir != "" {
-		expectedOwner, enforceOwner, ownerErr := configOwnerForWorkingDir(workingDir)
+	if !docread.PathAlreadyLoaded(loadedPaths, workspacePath) && workingDir != "" {
+		expectedOwner, enforceOwner, ownerErr := docread.ConfigOwnerForWorkingDir(workingDir)
 		if ownerErr != nil {
 			return nil, fmt.Errorf("failed to determine workspace config owner: %w", ownerErr)
 		}
-		wsData, fingerprint, readErr := readStableConfigFileOwned(workspaceDiscoveryPath, expectedOwner, enforceOwner)
+		wsData, fingerprint, readErr := docread.ReadStableConfigFileOwned(workspaceDiscoveryPath, expectedOwner, enforceOwner)
 		if readErr == nil {
 			var decodeErr error
-			wsData, decodeErr = decodeConfigDocument(workspaceDiscoveryPath, wsData)
+			wsData, decodeErr = docread.DecodeConfigDocument(workspaceDiscoveryPath, wsData)
 			if decodeErr != nil {
 				return nil, fmt.Errorf("failed to decode workspace config %s: %w", workspacePath, decodeErr)
 			}
 		}
 		if readErr == nil {
 			fingerprints[workspaceDiscoveryPath] = fingerprint
-			configDocuments = append(configDocuments, stableConfigDocument{
-				path: workspaceDiscoveryPath, data: wsData,
-				fingerprint: fingerprint, present: fingerprint.exists,
-				aliases: []stableConfigAlias{{path: workspaceDiscoveryPath, fingerprint: fingerprint}},
+			configDocuments = append(configDocuments, docread.StableConfigDocument{
+				Path: workspaceDiscoveryPath, Data: wsData,
+				Fingerprint: fingerprint, Present: fingerprint.Exists,
+				Aliases: []docread.StableConfigAlias{{Path: workspaceDiscoveryPath, Fingerprint: fingerprint}},
 			})
 		} else if !os.IsNotExist(readErr) {
 			return nil, fmt.Errorf("failed to read workspace config %s: %w", workspacePath, readErr)
 		}
 		if readErr != nil {
 			fingerprints[workspaceDiscoveryPath] = fingerprint
-			configDocuments = append(configDocuments, stableConfigDocument{
-				path:    workspaceDiscoveryPath,
-				aliases: []stableConfigAlias{{path: workspaceDiscoveryPath, fingerprint: fingerprint}},
+			configDocuments = append(configDocuments, docread.StableConfigDocument{
+				Path:    workspaceDiscoveryPath,
+				Aliases: []docread.StableConfigAlias{{Path: workspaceDiscoveryPath, Fingerprint: fingerprint}},
 			})
 		}
 		if readErr == nil && len(wsData) > 0 {
@@ -212,7 +215,7 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 			dataDir := cfg.Options.DataDirectory
 			*cfg = *merged
 			setDefaults(cfg, workingDir, dataDir)
-			loadedPaths = append(loadedPaths, normalizeReloadPath(workspacePath))
+			loadedPaths = append(loadedPaths, docread.NormalizeReloadPath(workspacePath))
 		}
 	}
 	// store is constructed with a placeholder snapshot only because
@@ -232,15 +235,15 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 	// Load MCP servers from .mcp.json files (Claude Code format) and merge
 	// them into the config. Servers defined in rush.json take precedence;
 	// the disabled state for external servers is read from rush's own config.
-	externalPaths := mcpJSONCandidatePaths(workingDir)
-	externalDocuments, _, err := loadExternalMCPDocumentsStableForWorkingDir(externalPaths, fingerprints, workingDir)
+	externalPaths := docread.McpJSONCandidatePaths(workingDir)
+	externalDocuments, _, err := docread.LoadExternalMCPDocumentsStableForWorkingDir(externalPaths, fingerprints, workingDir)
 	if err != nil {
 		if errors.Is(err, errStableReadUnstable) {
 			return nil, err
 		}
 		return nil, fmt.Errorf("failed to load external MCP config: %w", err)
 	}
-	mergeExternalMCPServersFromDocuments(cfg, configDocuments, externalDocuments)
+	docread.MergeExternalMCPServersFromDocuments(cfg, configDocuments, externalDocuments)
 	if candidateInputsChanged(workingDir, configPaths, externalPaths, fingerprints) {
 		return nil, errReloadDiskChanged
 	}
@@ -367,7 +370,8 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 // data_directory override either — the two resolutions are equivalent
 // for this field, not an approximation.
 func ResolveDataDirectory(workingDir, dataDir string) (string, error) {
-	configPaths := lookupConfigCandidates(workingDir)
+	groups := docread.LookupConfigCandidateGroups(workingDir)
+	configPaths := append(groups.Global, groups.Project...)
 
 	cfg, _, err := loadFromConfigPaths(configPaths)
 	if err != nil {

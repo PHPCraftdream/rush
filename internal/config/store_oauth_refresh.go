@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 )
 
@@ -67,7 +70,7 @@ func (s *ConfigStore) codexRefreshAlreadyCurrent(ctx context.Context, scope Scop
 	record, predecessor := s.codexOAuthAuthorityRecord(path, provider)
 	if record == nil {
 		// Equal-live callers leave all WAL retries to locked recovery.
-		record, _ = readOAuthJournalWithRetry(ctx, selectOAuthJournalPath(path, provider, false))
+		record, _ = readOAuthJournalWithRetry(ctx, slots.SelectOAuthJournalPath(path, provider, false))
 	}
 	if ctx.Err() != nil {
 		return false
@@ -77,11 +80,11 @@ func (s *ConfigStore) codexRefreshAlreadyCurrent(ctx context.Context, scope Scop
 }
 
 // Snapshot ownership without consuming the recovery reader's retry attempts.
-func (s *ConfigStore) codexOAuthAuthorityRecord(path, provider string) (*oauthJournalRecord, *oauth.Token) {
+func (s *ConfigStore) codexOAuthAuthorityRecord(path, provider string) (*docread.OAuthJournalRecord, *oauth.Token) {
 	s.publishMu.Lock()
-	entry := s.oauthOutbox[oauthOutboxKey{normalizeReloadPath(path), provider}]
+	entry := s.oauthOutbox[oauthOutboxKey{docread.NormalizeReloadPath(path), provider}]
 	pending, hasPending := s.pendingOAuth[provider]
-	var record *oauthJournalRecord
+	var record *docread.OAuthJournalRecord
 	if entry != nil {
 		copyRecord := entry.record
 		record = &copyRecord
@@ -131,7 +134,7 @@ func (s *ConfigStore) adoptCodexDiskAuthority(ctx context.Context, path, provide
 	}
 	if record == nil {
 		// Consult WAL only for a disk publication, preserving bounded read retries.
-		journal, journalErr := readOAuthJournalWithRetry(ctx, selectOAuthJournalPath(path, provider, false))
+		journal, journalErr := readOAuthJournalWithRetry(ctx, slots.SelectOAuthJournalPath(path, provider, false))
 		if err := ctx.Err(); err != nil {
 			return true, err
 		}
@@ -212,12 +215,12 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 	if err := lockCtx.Err(); err != nil {
 		return err
 	}
-	lock, err := acquireConfigFileLock(lockCtx, lockPath)
+	lock, err := cfgcommit.AcquireConfigFileLock(lockCtx, lockPath)
 	if err != nil {
 		return fmt.Errorf("lock Codex OAuth refresh: %w", err)
 	}
 	defer func() {
-		if err := releaseConfigFileLock(lockPath, lock); err != nil {
+		if err := cfgcommit.ReleaseConfigFileLock(lockPath, lock); err != nil {
 			slog.Error("Failed to release Codex OAuth refresh lock", "failure", "storage")
 		}
 	}()
@@ -297,7 +300,7 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 		return err
 	}
 	// Install ownership before publication or I/O; failed CAS cannot lose rotation.
-	record := &oauthJournalRecord{PredecessorRefreshTokenSHA256: oauthRotationDigest(pc.OAuthToken, refreshed), Token: refreshed}
+	record := &docread.OAuthJournalRecord{PredecessorRefreshTokenSHA256: oauthRotationDigest(pc.OAuthToken, refreshed), Token: refreshed}
 	known, _ := s.codexOAuthAuthorityRecord(path, pc.ID)
 	if known == nil {
 		known = pending
@@ -308,7 +311,7 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 	}
 	entry := s.installOAuthOutbox(path, scope, pc.ID, record)
 	applyErr := s.applyOAuthTokenWithPending(pc.ID, pc.OAuthToken, entry.record.Token, true)
-	journalPath := selectOAuthJournalPath(path, pc.ID, true)
+	journalPath := slots.SelectOAuthJournalPath(path, pc.ID, true)
 	if err := writeOAuthJournalUntilDurable(ctx, journalPath, &entry.record); err == nil {
 		s.clearOAuthOutbox(path, pc.ID, entry)
 	} else {
@@ -406,11 +409,11 @@ func (s *ConfigStore) withCodexConfigWriteLock(ctx context.Context, path string,
 	if err := verifyConfigWriteTarget(pinned); err != nil {
 		return err
 	}
-	lock, err := acquireConfigFileLock(writeCtx, target.lockPath)
+	lock, err := cfgcommit.AcquireConfigFileLock(writeCtx, target.lockPath)
 	if err != nil {
 		return err
 	}
-	defer releaseConfigFileLock(target.lockPath, lock)
+	defer cfgcommit.ReleaseConfigFileLock(target.lockPath, lock)
 	if err := writeCtx.Err(); err != nil {
 		return err
 	}

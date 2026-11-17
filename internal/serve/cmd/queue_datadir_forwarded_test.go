@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -99,7 +101,7 @@ func TestQueueRunCmdRun_ForwardsDataDirToSpawnedChild(t *testing.T) {
 	}
 	t.Cleanup(func() { queueTaskExecOverride = nil })
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runErr := queueRunCmd.RunE(queueRunCmd, nil)
 		require.NoError(t, runErr)
 	})

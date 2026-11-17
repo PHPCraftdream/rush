@@ -4,6 +4,8 @@ import "github.com/spf13/cobra"
 
 var (
 	rootCmd        *cobra.Command
+	runCmd         *cobra.Command
+	worktreeCmd    *cobra.Command
 	executeForTest func()
 )
 
@@ -11,10 +13,10 @@ func Execute() { executeForTest() }
 
 func InstallRootForTest(root *cobra.Command, execute func()) {
 	templates := []*cobra.Command{
-		lockCmd, unlockCmd, runCmd, dirsCmd, projectsCmd, updateProvidersCmd,
+		lockCmd, unlockCmd, dirsCmd, projectsCmd, updateProvidersCmd,
 		logsCmd, schemaCmd, psCmd, loginCmd, statsCmd, tokensCmd, apiCmd,
 		sessionsCmd, serveCmd, modelsCmd, pingCmd, pingFastCmd, migrateCmd,
-		queueCmd, batchCmd, providersCmd, worktreeCmd, mcpCmd, claudeInitCmd,
+		queueCmd, batchCmd, providersCmd, mcpCmd, claudeInitCmd,
 		claudeDelCmd, cliRefreshCmd, codexInitCmd, codexDelCmd, geminiInitCmd,
 		geminiDelCmd, grokInitCmd, grokDelCmd, ompInitCmd, ompDelCmd,
 		opencodeInitCmd, opencodeDelCmd, qwenInitCmd, qwenDelCmd, resultCmd,
@@ -29,6 +31,8 @@ func InstallRootForTest(root *cobra.Command, execute func()) {
 		}
 	}
 	root.AddCommand(templates...)
+	runCmd, _, _ = root.Find([]string{"run"})
+	worktreeCmd, _, _ = root.Find([]string{"worktree"})
 	rootCmd = root
 	executeForTest = execute
 }

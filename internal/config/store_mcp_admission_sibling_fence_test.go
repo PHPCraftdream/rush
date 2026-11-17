@@ -37,7 +37,7 @@ func TestMCPMutationFenceIgnoresAbsentKtavSibling(t *testing.T) {
 	siblingSnapshot, ok := snap.snapshots[sibling]
 	require.True(t, ok, "precondition: the absent Ktav sibling must have a snapshot")
 	require.False(t, siblingSnapshot.Exists)
-	require.NotEqual(t, reloadFileFingerprint{}, siblingSnapshot.fingerprint,
+	require.NotEqual(t, reloadFileFingerprint{}, siblingSnapshot.Fingerprint(),
 		"precondition: the absent fingerprint must be non-zero for the fence to consult it")
 
 	result, err := store.PersistMCPConfigResult(ScopeGlobal, "sibling-fence",

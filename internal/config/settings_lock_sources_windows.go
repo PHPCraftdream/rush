@@ -5,6 +5,7 @@ package config
 import (
 	"path/filepath"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"golang.org/x/sys/windows"
 )
 
@@ -13,8 +14,8 @@ func platformCanonicalGlobalDataPath() string {
 	if err != nil || localAppData == "" {
 		return ""
 	}
-	// readSlotOf selects the active sibling of the logical slot, so a lock
+	// docread.ReadSlotOf selects the active sibling of the logical slot, so a lock
 	// stored only in the canonical rush.ktav is visible to protection
 	// probes. An already-selected .ktav path passes through unchanged.
-	return readSlotOf(filepath.Join(localAppData, "rush", "rush.json"))
+	return docread.ReadSlotOf(filepath.Join(localAppData, "rush", "rush.json"))
 }

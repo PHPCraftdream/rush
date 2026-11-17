@@ -18,6 +18,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	journal "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/journal"
 	out "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/run"
+	wtree "github.com/PHPCraftdream/rush/internal/serve/cmd/run/wtree"
 	"github.com/PHPCraftdream/rush/internal/serve/server"
 	rushweb "github.com/PHPCraftdream/rush/web"
 	"github.com/atotto/clipboard"
@@ -223,7 +225,7 @@ authenticate — it is never transmitted as part of the URL.
 	root.AddCommand(
 		cmdpkg.NewLockCmd(),
 		cmdpkg.NewUnlockCmd(),
-		cmdpkg.NewRunCmd(),
+		run.NewRunCmd(),
 		cmdpkg.NewDirsCmd(),
 		cmdpkg.NewProjectsCmd(),
 		cmdpkg.NewUpdateProvidersCmd(),
@@ -243,7 +245,7 @@ authenticate — it is never transmitted as part of the URL.
 		cmdpkg.NewQueueCmd(),
 		cmdpkg.NewBatchCmd(),
 		cmdpkg.NewProvidersCmd(),
-		cmdpkg.NewWorktreeCmd(),
+		wtree.NewWorktreeCmd(),
 		cmdpkg.NewMcpCmd(),
 		cmdpkg.NewClaudeInitCmd(),
 		cmdpkg.NewClaudeDelCmd(),

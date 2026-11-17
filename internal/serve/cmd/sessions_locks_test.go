@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
@@ -24,7 +26,7 @@ import (
 )
 
 // captureStdout runs f while capturing os.Stdout output. Mirrors
-// claude_init_test.go's captureStderr / models_use_test.go's inline
+// claude_init_test.go's cmdtest.CaptureStderr / models_use_test.go's inline
 // stdout-pipe pattern, factored out here since sessionsLocksCmdRun writes
 // its table (and --json output) to os.Stdout, not os.Stderr.
 func captureStdout(t *testing.T, f func()) string {
@@ -361,7 +363,7 @@ func TestSessionsLocksCmdRun_RemoveFailureAfterProvablyDead_Surfaced(t *testing.
 	require.NoError(t, err)
 	defer blocker.Close()
 
-	stdout, stderr := captureStdoutAndStderr(t, func() {
+	stdout, stderr := cmdtest.CaptureStdoutAndStderr(t, func() {
 		runErr := sessionsLocksCmd.RunE(sessionsLocksCmd, nil)
 		require.NoError(t, runErr)
 	})
@@ -462,7 +464,7 @@ func TestSessionsLocksCmdRun_ConcurrentDeleteBeforeRemove_ENOENTIsSuccess(t *tes
 	}
 	t.Cleanup(func() { preAutoDeleteRemoveHook = origHook })
 
-	stdout, stderr := captureStdoutAndStderr(t, func() {
+	stdout, stderr := cmdtest.CaptureStdoutAndStderr(t, func() {
 		runErr := sessionsLocksCmd.RunE(sessionsLocksCmd, nil)
 		require.NoError(t, runErr)
 	})
@@ -536,7 +538,7 @@ func TestSessionsLocksCmdRun_AutoDeleteRemovesStaleLock(t *testing.T) {
 	requireProbeReportsDeadLock(t, sessionID,
 		"precondition: probe must report the holder provably dead before this test's race scenario is meaningful")
 
-	stdout, stderr := captureStdoutAndStderr(t, func() {
+	stdout, stderr := cmdtest.CaptureStdoutAndStderr(t, func() {
 		runErr := sessionsLocksCmd.RunE(sessionsLocksCmd, nil)
 		require.NoError(t, runErr)
 	})
@@ -558,46 +560,11 @@ func TestSessionsLocksCmdRun_AutoDeleteRemovesStaleLock(t *testing.T) {
 	require.True(t, os.IsNotExist(statErr), "lock file must be gone after auto-delete")
 }
 
-// captureStdoutAndStderr runs f while capturing both os.Stdout and
-// os.Stderr, mirroring captureStdout/captureStderr individually. Needed
+// cmdtest.CaptureStdoutAndStderr runs f while capturing both os.Stdout and
+// os.Stderr, mirroring captureStdout/cmdtest.CaptureStderr individually. Needed
 // here because the fix under test writes to BOTH streams in one invocation
 // (the warning to stderr, the listing to stdout) and both must be asserted
 // on from the same run.
-func captureStdoutAndStderr(t *testing.T, f func()) (stdout string, stderr string) {
-	t.Helper()
-	oldOut, oldErr := os.Stdout, os.Stderr
-
-	outR, outW, err := os.Pipe()
-	require.NoError(t, err)
-	errR, errW, err := os.Pipe()
-	require.NoError(t, err)
-
-	os.Stdout = outW
-	os.Stderr = errW
-	defer func() {
-		os.Stdout = oldOut
-		os.Stderr = oldErr
-	}()
-
-	var outBuf, errBuf bytes.Buffer
-	doneOut := make(chan struct{})
-	doneErr := make(chan struct{})
-	go func() {
-		_, _ = io.Copy(&outBuf, outR)
-		close(doneOut)
-	}()
-	go func() {
-		_, _ = io.Copy(&errBuf, errR)
-		close(doneErr)
-	}()
-
-	f()
-	_ = outW.Close()
-	_ = errW.Close()
-	<-doneOut
-	<-doneErr
-	return outBuf.String(), errBuf.String()
-}
 
 // TestSessionsLocksCmdRun_ReadsPIDViaSidecarFallback is the regression test
 // for task #231 finding 2: sessionsLocksCmdRun read the PID column via a raw

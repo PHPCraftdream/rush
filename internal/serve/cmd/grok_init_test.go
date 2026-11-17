@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -90,7 +92,7 @@ func TestGrokInit_SlashCommandSkipsWithoutSentinel(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(skillPath), 0o755))
 	require.NoError(t, os.WriteFile(skillPath, []byte("someone else's file"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runGrokInitInDir(t, dir)
 	})
 
@@ -126,7 +128,7 @@ func TestGrokDel_RefusesSlashCommandWithoutSentinel(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(skillPath), 0o755))
 	require.NoError(t, os.WriteFile(skillPath, []byte("not ours"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runGrokDelInDir(t, dir)
 	})
 
@@ -143,7 +145,7 @@ func TestGrokDel_IdempotentOnSecondRun(t *testing.T) {
 	runGrokInitInDir(t, dir)
 
 	runGrokDelInDir(t, dir)
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runGrokDelInDir(t, dir)
 	})
 	// Second run is a no-op: nothing left to remove, no errors raised.
@@ -189,7 +191,7 @@ func TestGrokDel_RemovesLegacyPrerenameInstall(t *testing.T) {
 	require.NoError(t, os.WriteFile(foreignCrushPath, []byte(foreignContent), 0o644))
 
 	// Run grok-del
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		require.NoError(t, runGrokDel(dir))
 	})
 

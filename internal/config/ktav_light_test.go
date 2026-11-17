@@ -114,11 +114,11 @@ func TestSetKtavAutoMigrateForTest(t *testing.T) {
 	// parallel: the helper mutates the shared ktavAutoMigrate global.
 	enableKtavAutoMigrateForTest(t)
 	ktavLightIsolateEnv(t)
-	require.True(t, ktavAutoMigrate, "KTAV-4: auto-migrate is the default")
+	require.True(t, KtavAutoMigrateEnabled(), "KTAV-4: auto-migrate is the default")
 	restore := SetKtavAutoMigrateForTest(false)
-	require.False(t, ktavAutoMigrate)
+	require.False(t, KtavAutoMigrateEnabled())
 	restore()
-	require.True(t, ktavAutoMigrate)
+	require.True(t, KtavAutoMigrateEnabled())
 }
 
 func TestKtavAutoMigrateEnabled(t *testing.T) {

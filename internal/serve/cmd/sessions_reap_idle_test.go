@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -62,7 +64,7 @@ func TestSessionsReap_IdleOlderThanThresholdRemoved(t *testing.T) {
 	freshReleased := reapIdleWriteLock(t, dataDir, "released-young")
 	ageLock(t, freshReleased, 2*time.Minute)
 
-	_, stderr := captureStdoutAndStderr(t, func() {
+	_, stderr := cmdtest.CaptureStdoutAndStderr(t, func() {
 		require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil))
 	})
 
@@ -87,7 +89,7 @@ func TestSessionsReap_IdleDryRunShowsWithoutTouching(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, sessionsReapCmd.Flags().Set("dry-run", "true"))
-	_, stderr := captureStdoutAndStderr(t, func() {
+	_, stderr := cmdtest.CaptureStdoutAndStderr(t, func() {
 		require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil))
 	})
 
@@ -111,7 +113,7 @@ func TestSessionsReap_IdleBelowThresholdKept(t *testing.T) {
 	path := reapIdleWriteLock(t, dataDir, "idle-young")
 	ageLock(t, path, 6*24*time.Hour)
 
-	_, stderr := captureStdoutAndStderr(t, func() {
+	_, stderr := cmdtest.CaptureStdoutAndStderr(t, func() {
 		require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil))
 	})
 
@@ -131,7 +133,7 @@ func TestSessionsReap_IdleOlderThanZeroDisables(t *testing.T) {
 	require.NoError(t, sessionsReapCmd.Flags().Set("idle-older-than", "0"))
 	t.Cleanup(func() { _ = sessionsReapCmd.Flags().Set("idle-older-than", "168h") })
 
-	_, stderr := captureStdoutAndStderr(t, func() {
+	_, stderr := cmdtest.CaptureStdoutAndStderr(t, func() {
 		require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil))
 	})
 
@@ -153,7 +155,7 @@ func TestSessionsReap_IdleButOSLockHeldKept(t *testing.T) {
 	path := filepath.Join(dataDir, "locks", "session-idle-held.lock")
 	ageLock(t, path, 8*24*time.Hour) // Chtimes works under a range lock
 
-	_, stderr := captureStdoutAndStderr(t, func() {
+	_, stderr := cmdtest.CaptureStdoutAndStderr(t, func() {
 		require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil))
 	})
 
@@ -209,7 +211,7 @@ func TestSessionsReap_IdentityReplacedAfterProbe_Skipped(t *testing.T) {
 	}
 	t.Cleanup(func() { reapPreIdentitySeam = nil })
 
-	_, stderr := captureStdoutAndStderr(t, func() {
+	_, stderr := cmdtest.CaptureStdoutAndStderr(t, func() {
 		require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil))
 	})
 

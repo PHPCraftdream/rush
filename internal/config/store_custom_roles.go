@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 )
 
 // configFieldRemoval is internal to typed atomic set-and-remove operations.
@@ -77,13 +79,13 @@ func (s *ConfigStore) CustomRolesForScope(scope Scope) (map[string]CustomRole, e
 	if err != nil {
 		return nil, err
 	}
-	doc, err := readSettingsDocument(path)
+	doc, err := docread.ReadSettingsDocument(path)
 	if os.IsNotExist(err) {
 		return map[string]CustomRole{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	_, roles, err := stripCustomRoleOverlays([][]byte{doc.jsonBytes})
+	_, roles, err := stripCustomRoleOverlays([][]byte{doc.JSONBytes})
 	return roles, err
 }

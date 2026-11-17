@@ -421,9 +421,8 @@ func TestOAuthKtavJournalDiscoveryFromKtavConfigPath(t *testing.T) {
 
 	// Gate-off write through the production selector: the record lands on
 	// the legacy plain-JSON name and no Ktav journal appears.
-	savedGate := ktavAutoMigrate
-	t.Cleanup(func() { ktavAutoMigrate = savedGate })
-	ktavAutoMigrate = false
+	restoreGate := SetKtavAutoMigrateForTest(false)
+	t.Cleanup(restoreGate)
 	dirOff, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
 	configOff := filepath.Join(dirOff, "rush.ktav")
@@ -439,7 +438,7 @@ func TestOAuthKtavJournalDiscoveryFromKtavConfigPath(t *testing.T) {
 	require.True(t, os.IsNotExist(statErr), "a gated-off write must not create a Ktav journal")
 
 	// Gate-on write through the production selector: the bytes are Ktav.
-	ktavAutoMigrate = true
+	SetKtavAutoMigrateForTest(true)
 	dirOn, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
 	configOn := filepath.Join(dirOn, "rush.ktav")
@@ -645,11 +644,9 @@ func TestOAuthKtavGatedJournalWriteSpelling(t *testing.T) {
 		ExpiresIn:    3600,
 		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
 	}}
-	savedGate := ktavAutoMigrate
-	t.Cleanup(func() { ktavAutoMigrate = savedGate })
+	restoreGate := SetKtavAutoMigrateForTest(true)
+	t.Cleanup(restoreGate)
 
-	// Gate on: the write creates the Ktav journal spelling.
-	ktavAutoMigrate = true
 	dirOn, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
 	configOn := filepath.Join(dirOn, "rush.json")
@@ -668,7 +665,7 @@ func TestOAuthKtavGatedJournalWriteSpelling(t *testing.T) {
 	require.Equal(t, record, &decoded)
 
 	// Default gate off: the write targets the legacy plain-JSON name.
-	ktavAutoMigrate = false
+	SetKtavAutoMigrateForTest(false)
 	dirOff, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
 	configOff := filepath.Join(dirOff, "rush.json")

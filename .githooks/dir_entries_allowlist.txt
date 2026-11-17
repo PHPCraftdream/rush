@@ -21,7 +21,8 @@ internal/agent/tools/mcp 19
 internal/app 52
 # internal/serve/cmd 165 -> 167: +2 for internal/serve/cmd/queue and internal/serve/cmd/notification
 # moved in (stage C). The count falls with the package split (stage D2).
-internal/serve/cmd 155
+# 136 guard-verified rc0 on 2026-11-17 (M1 scan pass; value unchanged).
+internal/serve/cmd 133
 # internal/config 120 -> 123: +1 internal/config/catalog (provider reference data, sprint 0 wave 1);
 # +2 internal/config/discover and internal/config/oauth moved in (stage C).
 # The count falls with the package split (stage D2).
@@ -30,7 +31,10 @@ internal/serve/cmd 155
 # 124 -> 129: +7 files candidates, stabledocs, fingerprints, normalize, mcpdocs, oauthjournal and
 # config_file_identity, -2 files mcp_json and mcp_revisions, from the 0b-3.2 seam lane (S2; deliberate,
 # temporary; only down from here).
-internal/config 105
+# D2-4: 5 non-test Go files leave the root (apitoken 2, apiremote 1, listeners 1, copilot 1),
+# reducing its dir-entry count by 5. Root Go total falls 244 -> 233 (-11): 12 files moved/deleted,
+# offset by the new root api_remotes_integration_test.go (+1).
+internal/config 62
 internal/config/discover 13
 internal/session/heartbeat 10
 internal/session/jobbatch 21

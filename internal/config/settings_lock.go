@@ -17,6 +17,9 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -31,9 +34,9 @@ func (e *ErrSettingsLockUnrecognized) Error() string { return ErrSettingsLocked.
 func (e *ErrSettingsLockUnrecognized) Unwrap() error { return ErrSettingsLocked }
 
 func newUnrecognizedSettingsLock(path string) *ErrSettingsLockUnrecognized {
-	absolute, err := filepath.Abs(readSlotOf(path))
+	absolute, err := filepath.Abs(docread.ReadSlotOf(path))
 	if err != nil {
-		absolute = filepath.Clean(readSlotOf(path))
+		absolute = filepath.Clean(docread.ReadSlotOf(path))
 	}
 	return &ErrSettingsLockUnrecognized{Path: absolute}
 }
@@ -164,25 +167,25 @@ func processPassword() string {
 
 // CheckPasswordAgainstDisk checks only the global file because the workspace is unknown before Init.
 func CheckPasswordAgainstDisk(password string) error {
-	// The global path is a logical slot: readSettingsDocument selects the
+	// The global path is a logical slot: docread.ReadSettingsDocument selects the
 	// active file (rush.ktav when present), fails closed on a backup-only
 	// slot, and decodes through the settings-document layer — the same
 	// discipline as freshSettingsHash. A literal read of the legacy name
 	// would miss a global rush.ktav entirely, and a backup-only slot would
 	// silently read as unlocked.
-	doc, err := readSettingsDocument(GlobalConfigData())
+	doc, err := docread.ReadSettingsDocument(GlobalConfigData())
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return ErrSettingsLocked
 	}
-	hash := settingsHash(doc.jsonBytes)
+	hash := settingsHash(doc.JSONBytes)
 	if hash == "" {
 		return nil
 	}
 	if _, _, _, ok := parseSettingsPasswordHash(hash); !ok {
-		return newUnrecognizedSettingsLock(doc.path)
+		return newUnrecognizedSettingsLock(doc.Path)
 	}
 	if !VerifyPassword(password, hash) {
 		return ErrWrongPassword
@@ -192,7 +195,7 @@ func CheckPasswordAgainstDisk(password string) error {
 
 // canonicalGlobalDataPath() and naturalWorkspaceSettingsPath() select their
 // own slots; the raw legacy joins below are slot-selected by
-// readSettingsDocument inside freshSettingsHash.
+// docread.ReadSettingsDocument inside freshSettingsHash.
 func SettingsWriteAllowed(workspaceDir string) error {
 	process := processPassword()
 	globals, locals, err := collectSettingsSourceHashes([]settingsLockSource{
@@ -271,20 +274,20 @@ func freshSettingsHash(path string) (string, error) {
 	if path == "" {
 		return "", nil
 	}
-	// readSettingsDocument slot-selects ANY input spelling and fails closed
+	// docread.ReadSettingsDocument slot-selects ANY input spelling and fails closed
 	// on a backup-only slot (a protection source whose logical location
 	// holds only a retained backup must never read as "no lock"), so an
 	// os.IsNotExist here means neither spelling of the slot exists.
-	doc, err := readSettingsDocument(path)
+	doc, err := docread.ReadSettingsDocument(path)
 	if os.IsNotExist(err) {
 		return "", nil
 	}
 	if err != nil {
 		return "", err
 	}
-	if hash := settingsHash(doc.jsonBytes); hash != "" {
+	if hash := settingsHash(doc.JSONBytes); hash != "" {
 		if _, _, _, ok := parseSettingsPasswordHash(hash); !ok {
-			return "", newUnrecognizedSettingsLock(doc.path)
+			return "", newUnrecognizedSettingsLock(doc.Path)
 		}
 		return hash, nil
 	}
@@ -349,11 +352,11 @@ func readSettingsHash(candidate, path string, data []byte) (string, error) {
 		return "", nil
 	}
 	// Same fail-closed discipline as freshSettingsHash (slot selection and
-	// the backup-only rule live inside readSettingsDocument): this guard is
+	// the backup-only rule live inside docread.ReadSettingsDocument): this guard is
 	// the write-path source reader (checkExternalSettingsSources,
 	// lockHashesForTarget) and must never read a backup-only slot as
 	// "no lock".
-	if normalizeReloadPath(candidate) == normalizeReloadPath(path) {
+	if docread.NormalizeReloadPath(candidate) == docread.NormalizeReloadPath(path) {
 		hash := settingsHash(data)
 		if hash != "" {
 			if _, _, _, ok := parseSettingsPasswordHash(hash); !ok {
@@ -362,17 +365,17 @@ func readSettingsHash(candidate, path string, data []byte) (string, error) {
 		}
 		return hash, nil
 	}
-	doc, err := readSettingsDocument(candidate)
+	doc, err := docread.ReadSettingsDocument(candidate)
 	if os.IsNotExist(err) {
 		return "", nil
 	}
 	if err != nil {
 		return "", err
 	}
-	hash := settingsHash(doc.jsonBytes)
+	hash := settingsHash(doc.JSONBytes)
 	if hash != "" {
 		if _, _, _, ok := parseSettingsPasswordHash(hash); !ok {
-			return "", newUnrecognizedSettingsLock(doc.path)
+			return "", newUnrecognizedSettingsLock(doc.Path)
 		}
 	}
 	return hash, nil
@@ -400,13 +403,13 @@ func (s *ConfigStore) lockHashesForTarget(path string, data []byte) ([]string, [
 		if err != nil {
 			return nil, nil, err
 		}
-		if normalizeReloadPath(source.path) == normalizeReloadPath(path) {
+		if docread.NormalizeReloadPath(source.path) == docread.NormalizeReloadPath(path) {
 			continue
 		}
-		if source.kind == "global" && normalizeReloadPath(source.path) == normalizeReloadPath(canonical) && normalizeReloadPath(source.path) != normalizeReloadPath(s.globalDataPath) && normalizeReloadPath(path) == normalizeReloadPath(s.globalDataPath) {
+		if source.kind == "global" && docread.NormalizeReloadPath(source.path) == docread.NormalizeReloadPath(canonical) && docread.NormalizeReloadPath(source.path) != docread.NormalizeReloadPath(s.globalDataPath) && docread.NormalizeReloadPath(path) == docread.NormalizeReloadPath(s.globalDataPath) {
 			continue
 		}
-		if source.kind == "local" && workspace != "" && natural != "" && normalizeReloadPath(source.path) == normalizeReloadPath(natural) && normalizeReloadPath(natural) != normalizeReloadPath(workspace) && pathWithinDirectory(filepath.Dir(workspace), path) {
+		if source.kind == "local" && workspace != "" && natural != "" && docread.NormalizeReloadPath(source.path) == docread.NormalizeReloadPath(natural) && docread.NormalizeReloadPath(natural) != docread.NormalizeReloadPath(workspace) && pathWithinDirectory(filepath.Dir(workspace), path) {
 			continue
 		}
 		if hash == "" {
@@ -429,7 +432,7 @@ func (s *ConfigStore) LockSettings(scope Scope, password string) error {
 	if err != nil {
 		return err
 	}
-	path = writeTargetSlot(path)
+	path = slots.WriteTargetSlot(path)
 	refusedBy := ""
 	err = s.writeSettingsLockRaw(path, func(data []byte) (string, error) {
 		if err := s.checkExternalSettingsSources(path, data); err != nil {
@@ -450,7 +453,7 @@ func (s *ConfigStore) UnlockSettings(scope Scope, password string) error {
 	if err != nil {
 		return err
 	}
-	path = writeTargetSlot(path)
+	path = slots.WriteTargetSlot(path)
 	refusedBy := ""
 	err = s.writeSettingsLockRaw(path, func(data []byte) (string, error) {
 		globals, locals, hashErr := s.lockHashesForTarget(path, data)
@@ -469,7 +472,7 @@ func (s *ConfigStore) UnlockSettings(scope Scope, password string) error {
 		}
 		process := processPassword()
 		checks := globals
-		if len(checks) == 0 && !(normalizeReloadPath(path) == normalizeReloadPath(s.globalDataPath) && hash != "") {
+		if len(checks) == 0 && !(docread.NormalizeReloadPath(path) == docread.NormalizeReloadPath(s.globalDataPath) && hash != "") {
 			checks = locals
 		}
 		for _, sourceHash := range checks {
@@ -488,41 +491,41 @@ func (s *ConfigStore) UnlockSettings(scope Scope, password string) error {
 func (s *ConfigStore) writeSettingsLockRaw(path string, mutate func(data []byte) (string, error)) error {
 	var committedErr error
 	err := s.withConfigWriteLock(path, func(target configWriteTarget) error {
-		raw, expected, readErr := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
-		var doc settingsDocument
+		raw, expected, readErr := docread.ReadStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+		var doc docread.SettingsDocument
 		if readErr != nil {
 			if os.IsNotExist(readErr) {
-				doc = settingsDocument{jsonBytes: []byte("{}"), format: settingsDocumentFormatOf(target.selectedPath)}
+				doc = docread.SettingsDocument{JSONBytes: []byte("{}"), Format: docread.SettingsDocumentFormatOf(target.selectedPath)}
 			} else {
 				return ErrSettingsLocked
 			}
 		} else {
 			var decodeErr error
-			doc, decodeErr = decodeSettingsDocument(target.selectedPath, raw, expected)
+			doc, decodeErr = docread.DecodeSettingsDocument(target.selectedPath, raw, expected)
 			if decodeErr != nil {
 				return decodeErr
 			}
 		}
-		newJSON, err := mutate(doc.jsonBytes)
+		newJSON, err := mutate(doc.JSONBytes)
 		if err != nil {
 			return err
 		}
 		if err := os.MkdirAll(filepath.Dir(target.path), 0o755); err != nil {
 			return fmt.Errorf("failed to create config directory %q: %w", path, err)
 		}
-		written, err := encodeSettingsDocument([]byte(newJSON), doc.format)
+		written, err := docread.EncodeSettingsDocument([]byte(newJSON), doc.Format)
 		if err != nil {
 			return err
 		}
-		if !expected.exists {
-			_, expected, err = readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+		if !expected.Exists {
+			_, expected, err = docread.ReadStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
 			if err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("failed to verify config file before write: %w", err)
 			}
 		}
-		_, commitErr := commitConfigFile(target.selectedPath, target.path, written, 0o600, expected, target.owner, target.enforce)
+		_, commitErr := cfgcommit.CommitConfigFile(target.selectedPath, target.path, written, 0o600, expected, target.owner, target.enforce)
 		if commitErr != nil {
-			if outcome, ok := CommitOutcomeFromError(commitErr); ok && outcome.Committed {
+			if outcome, ok := cfgcommit.CommitOutcomeFromError(commitErr); ok && outcome.Committed {
 				s.noteInitialLoadWriteLocked(path, written)
 				committedErr = commitErr
 				return nil
@@ -606,7 +609,7 @@ func slogConfigReloadWarning(path string, err error) {
 
 // settingsScopeForPath classifies a write target for audit events.
 func (s *ConfigStore) settingsScopeForPath(path string) string {
-	if normalizeReloadPath(path) == normalizeReloadPath(s.globalDataPath) {
+	if docread.NormalizeReloadPath(path) == docread.NormalizeReloadPath(s.globalDataPath) {
 		return "global"
 	}
 	return "workspace"
