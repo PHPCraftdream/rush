@@ -31,7 +31,7 @@ func batchReaderTestDBs(t *testing.T) (ctx context.Context, w, r *sql.DB) {
 	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(r)) })
 	// batch_nodes.owner_session_id references sessions(id); seed the owner
 	// through the writer like the other BatchStore fixtures.
-	require.NoError(t, seedSessionn(ctx, db.New(w), "owner"))
+	require.NoError(t, seedSession(ctx, db.New(w), "owner"))
 	return ctx, w, r
 }
 

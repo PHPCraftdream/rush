@@ -50,7 +50,7 @@ func TestBatchAPIHeldQuestionsLifecycleAndFences(t *testing.T) {
 	s, conn, ctx := batchStoreTestDB(t)
 	const owner = "owner"
 	const child = "owner-child-q"
-	require.NoError(t, seedSessionn(ctx, db.New(conn), child))
+	require.NoError(t, seedSession(ctx, db.New(conn), child))
 
 	node := batchAPIHeldSeed(t, s, ctx, owner, "call-api-1", 7)
 	batchAPIHeldPublish(t, s, ctx, owner, node, child, 7, 1)

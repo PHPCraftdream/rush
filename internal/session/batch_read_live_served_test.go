@@ -34,8 +34,8 @@ func batchServedTestEnv(t *testing.T) (*BatchStore, *sql.DB, *sql.DB, context.Co
 	conn, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(conn)) })
-	require.NoError(t, seedSessionn(ctx, db.New(conn), "owner"))
-	require.NoError(t, seedSessionn(ctx, db.New(conn), "owner2"))
+	require.NoError(t, seedSession(ctx, db.New(conn), "owner"))
+	require.NoError(t, seedSession(ctx, db.New(conn), "owner2"))
 	// An independent handle: it can commit between the served read's
 	// statements even while the writer connection holds the read transaction.
 	raw, err := sql.Open("sqlite", storepath.DataDirPath(dataDir, storepath.ActiveFilename)+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")

@@ -73,9 +73,9 @@ func (f finalizationHostDriverHoldsFacts) FinalizationPhysicalHoldsTx(ctx contex
 			ErrFinalizationPhysicalHoldsUnreadable, hostID, probeErr)
 	}
 	switch status {
-	case HostStatusDead:
+	case sessionhosts.HostStatusDead:
 		return 0, nil
-	case HostStatusAlive:
+	case sessionhosts.HostStatusAlive:
 		return 1, nil
 	default:
 		return 0, fmt.Errorf("%w: host %s liveness is undecidable",

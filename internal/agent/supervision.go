@@ -25,7 +25,6 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
-	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 )
 
 // noticeKindSupervision tags a supervision tick's persisted message

@@ -31,10 +31,9 @@ import (
 
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
-	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
-	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 )
 
 // SessionNoticeStore is the job-table-independent session-notice pull/
@@ -128,7 +127,7 @@ func (s *SessionNoticeStore) SetHostNotDeadFunc(f func(ownHostID, hostID string)
 }
 
 // HostID returns the wired own-host id (or "" before wiring).
-func (s *SessionNoticeStore) sessionhosts.HostID() string { return s.hostIDF() }
+func (s *SessionNoticeStore) HostID() string { return s.hostIDF() }
 
 func (s *SessionNoticeStore) readQuerier() *db.Queries {
 	if q := s.readQ.Load(); q != nil {
@@ -273,12 +272,12 @@ func (s *SessionNoticeStore) pullOneSessionNotice(ctx context.Context, messages 
 // pull (the row stays pending); only "the work is gone" voids.
 func (s *SessionNoticeStore) sessionNoticeVoidCondition(ctx context.Context, q *db.Queries, owner, ownHostID string, row db.SessionNotice) (bool, error) {
 	switch row.Kind {
-	case NoticeKindWakeOnly, NoticeKindChildQuestion:
+	case sessionnotice.NoticeKindWakeOnly, sessionnotice.NoticeKindChildQuestion:
 		if !row.JobToolCallID.Valid {
 			return false, nil
 		}
 		return s.boundNoticeGone(ctx, q, owner, row.JobToolCallID.String)
-	case NoticeKindSupervision:
+	case sessionnotice.NoticeKindSupervision:
 		// Same A15/R2A-9 rule as the legacy arm, over batch root rows: a
 		// live root on a provably dead host is not open scope; a voided
 		// delivery is not open scope either.
@@ -420,7 +419,7 @@ func (s *SessionNoticeStore) PendingChildQuestions(ctx context.Context, owner st
 	}
 	out := make([]sessionnotice.ChildQuestion, 0, len(rows))
 	for _, row := range rows {
-		if row.Kind != NoticeKindChildQuestion {
+		if row.Kind != sessionnotice.NoticeKindChildQuestion {
 			continue
 		}
 		var q sessionnotice.ChildQuestion

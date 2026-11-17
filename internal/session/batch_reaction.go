@@ -10,10 +10,9 @@ import (
 
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
-	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
-	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 )
 
 // BatchDebtNodeRef fences a delivery, not a provider-reusable tool call.
@@ -370,7 +369,7 @@ func (s *BatchStore) batchReactionAccount(ctx context.Context, owner string, sna
 	}
 	if count > 0 && marker != nil {
 		now := time.Now().Unix()
-		_, err = q.InsertSessionNotice(ctx, db.InsertSessionNoticeParams{Owner: owner, Kind: NoticeKindWakeFailed, Text: *marker, CreatedAt: now, UpdatedAt: now})
+		_, err = q.InsertSessionNotice(ctx, db.InsertSessionNoticeParams{Owner: owner, Kind: sessionnotice.NoticeKindWakeFailed, Text: *marker, CreatedAt: now, UpdatedAt: now})
 		if err != nil {
 			return 0, err
 		}

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 )
 
 // BatchAPIRoot is one root batch of an API service session.
@@ -70,7 +70,7 @@ type BatchAPIHeldQuestion struct {
 func (s *BatchStore) BatchAPIHeldQuestions(ctx context.Context, owner string) ([]BatchAPIHeldQuestion, error) {
 	rows, err := s.writer.QueryContext(ctx,
 		`SELECT text FROM session_notices WHERE owner = ?1 AND kind = ?2 AND delivery IN ('pending','done') AND wake = 1 ORDER BY id`,
-		owner, NoticeKindChildQuestion)
+		owner, sessionnotice.NoticeKindChildQuestion)
 	if err != nil {
 		return nil, err
 	}

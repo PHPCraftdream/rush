@@ -56,7 +56,7 @@ func TestAgentFinalizationRetireStaleActiveIsIdempotentAndScopedToSession(t *tes
 	env := newFinalizationSeamEnv(t)
 	_, err := env.svc.BindAgentFinalization(env.ctx, session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "a", Generation: 1})
 	require.NoError(t, err)
-	require.NoError(t, seedSessionn(env.ctx, db.New(env.conn), "other-owner"))
+	require.NoError(t, seedSession(env.ctx, db.New(env.conn), "other-owner"))
 	_, err = env.svc.BindAgentFinalization(env.ctx, session.AgentFinalizationIdentity{SessionID: "other-owner", LogicalCallID: "b", Generation: 1})
 	require.NoError(t, err)
 	retired, err := env.store.RetireStaleActive(env.ctx, "owner", "x")

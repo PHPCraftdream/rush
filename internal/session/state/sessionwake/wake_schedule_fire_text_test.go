@@ -5,15 +5,15 @@
 // "occurrence N of {max_runs_or_infinity}" bound and the next-occurrence
 // line. Revert-check: restoring the pre-4c loop template (without
 // "of <max_runs>") fails the loop case below.
-package sessionwake
+package sessionwake_test
+
 import (
 	"context"
 	"testing"
 	"time"
 
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
-
-	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 func wakeNoticeTexts(t *testing.T, f *wakeFx) []string {
@@ -22,7 +22,7 @@ func wakeNoticeTexts(t *testing.T, f *wakeFx) []string {
 	require.NoError(t, err)
 	texts := make([]string, 0, len(rows))
 	for _, r := range rows {
-		if r.Kind == NoticeKindWakeFired {
+		if r.Kind == sessionwake.NoticeKindWakeFired {
 			texts = append(texts, r.Text)
 		}
 	}
@@ -34,17 +34,17 @@ func TestWakeFiredNoticeTexts(t *testing.T) {
 	f := newWakeFx(t)
 	ctx := context.Background()
 
-	once := f.create(WakeKindOnce, f.base.Add(time.Minute), nil)
-	_, err := f.wake.ClaimDue(ctx, "w", f.base.Add(time.Minute), 10, WakeLeaseTTL)
+	once := f.create(sessionwake.WakeKindOnce, f.base.Add(time.Minute), nil)
+	_, err := f.wake.ClaimDue(ctx, "w", f.base.Add(time.Minute), 10, sessionwake.WakeLeaseTTL)
 	require.NoError(t, err)
 	fire, err := f.wake.FireOccurrence(ctx, once.ID, "w", f.base.Add(time.Minute))
 	require.NoError(t, err)
 	require.True(t, fire.Fired)
 
-	loop := f.create(WakeKindLoop, f.base.Add(300*time.Second), func(p *CreateWakeScheduleParams) {
+	loop := f.create(sessionwake.WakeKindLoop, f.base.Add(300*time.Second), func(p *CreateWakeScheduleParams) {
 		p.MaxRuns = 10
 	})
-	_, err = f.wake.ClaimDue(ctx, "w", f.base.Add(300*time.Second), 10, WakeLeaseTTL)
+	_, err = f.wake.ClaimDue(ctx, "w", f.base.Add(300*time.Second), 10, sessionwake.WakeLeaseTTL)
 	require.NoError(t, err)
 	fire, err = f.wake.FireOccurrence(ctx, loop.ID, "w", f.base.Add(300*time.Second))
 	require.NoError(t, err)
@@ -67,8 +67,8 @@ func TestWakeFiredNoticeTexts_LoopUnbounded(t *testing.T) {
 	t.Parallel()
 	f := newWakeFx(t)
 	ctx := context.Background()
-	loop := f.create(WakeKindLoop, f.base.Add(300*time.Second), nil)
-	_, err := f.wake.ClaimDue(ctx, "w", f.base.Add(300*time.Second), 10, WakeLeaseTTL)
+	loop := f.create(sessionwake.WakeKindLoop, f.base.Add(300*time.Second), nil)
+	_, err := f.wake.ClaimDue(ctx, "w", f.base.Add(300*time.Second), 10, sessionwake.WakeLeaseTTL)
 	require.NoError(t, err)
 	fire, err := f.wake.FireOccurrence(ctx, loop.ID, "w", f.base.Add(300*time.Second))
 	require.NoError(t, err)

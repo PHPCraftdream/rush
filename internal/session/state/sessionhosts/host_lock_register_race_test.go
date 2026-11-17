@@ -14,7 +14,6 @@ import (
 	"testing"
 
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
-	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
 )
 

@@ -6,6 +6,7 @@
 // async_jobs query in these paths errors ("no such table: async_jobs"), which
 // is what makes these tests real.
 package sessionhosts
+
 import (
 	"context"
 	"database/sql"
@@ -146,7 +147,7 @@ func TestWakeScheduleOnJobsLessDB(t *testing.T) {
 	// Claim the due occurrence (lease won by "test-scheduler"): the claim
 	// time must be at/after next_run_at (now+1m) for the due scan to see it.
 	claimAt := now.Add(time.Minute)
-	claimed, err := store.ClaimDue(ctx, "test-scheduler", claimAt, 1, WakeLeaseTTL)
+	claimed, err := store.ClaimDue(ctx, "test-scheduler", claimAt, 1, sessionwake.WakeLeaseTTL)
 	require.NoError(t, err)
 	require.Len(t, claimed, 1)
 	require.Equal(t, sched.ID, claimed[0].ID)
@@ -162,9 +163,9 @@ func TestWakeScheduleOnJobsLessDB(t *testing.T) {
 	var kind, owner string
 	err = conn.QueryRowContext(ctx,
 		`SELECT kind, owner FROM session_notices WHERE owner = ? AND kind = ?`,
-		"wake-owner", NoticeKindWakeFired).Scan(&kind, &owner)
+		"wake-owner", sessionwake.NoticeKindWakeFired).Scan(&kind, &owner)
 	require.NoError(t, err)
-	require.Equal(t, NoticeKindWakeFired, kind)
+	require.Equal(t, sessionwake.NoticeKindWakeFired, kind)
 	require.Equal(t, "wake-owner", owner)
 
 	// The schedule is terminal now.

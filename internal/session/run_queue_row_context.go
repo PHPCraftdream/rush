@@ -8,7 +8,6 @@ package session
 
 import (
 	"context"
-	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // runQueueRowIDContextKey carries the leased run-queue entry's id.

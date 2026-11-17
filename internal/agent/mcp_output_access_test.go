@@ -14,6 +14,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	mcpoutput "github.com/PHPCraftdream/rush/internal/session/state/mcpoutput"
 	modelmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"

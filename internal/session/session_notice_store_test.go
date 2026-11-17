@@ -121,7 +121,7 @@ func seedBatchRoot(t *testing.T, ctx context.Context, conn *sql.DB, hostID, root
 func TestSessionNoticeStore_PullUnboundNoticeDelivers(t *testing.T) {
 	t.Parallel()
 	store, _, q, ctx := newNoticeTestStore(t)
-	require.NoError(t, seedSessionn(ctx, q, "owner-notice"))
+	require.NoError(t, seedSession(ctx, q, "owner-notice"))
 	require.NoError(t, store.InsertSessionNotice(ctx, "owner-notice", NoticeKindWakeOnly, "wake up", true, ""))
 
 	messages := message.NewService(q)
@@ -183,7 +183,7 @@ func TestSessionNoticeStore_BoundNoticeVoidRules(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			store, conn, q, ctx := newNoticeTestStore(t)
-			require.NoError(t, seedSessionn(ctx, q, "owner-notice"))
+			require.NoError(t, seedSession(ctx, q, "owner-notice"))
 			tc.seed(t, ctx, conn, "call-bound-1")
 
 			require.NoError(t, store.InsertSessionNotice(ctx, "owner-notice",
@@ -231,7 +231,7 @@ func TestSessionNoticeStore_SupervisionArmUsesBatchRoots(t *testing.T) {
 	t.Parallel()
 	build := func(t *testing.T) (*SessionNoticeStore, *db.Queries, context.Context) {
 		store, _, q, ctx := newNoticeTestStore(t)
-		require.NoError(t, seedSessionn(ctx, q, "owner-notice"))
+		require.NoError(t, seedSession(ctx, q, "owner-notice"))
 		require.NoError(t, store.InsertSessionNotice(ctx, "owner-notice", NoticeKindSupervision, "still working", true, ""))
 		return store, q, ctx
 	}
@@ -326,7 +326,7 @@ func NoticeDelivery(t *testing.T, q *db.Queries, owner string, delivery string, 
 func TestSessionNoticeStore_BatchDebtRows(t *testing.T) {
 	t.Parallel()
 	store, conn, q, ctx := newNoticeTestStore(t)
-	require.NoError(t, seedSessionn(ctx, q, "owner"))
+	require.NoError(t, seedSession(ctx, q, "owner"))
 	bs := NewBatchStore(conn)
 	snap := batchStoreTestReserve(t, bs, ctx)
 	root := snap.Root.RootID
@@ -418,7 +418,7 @@ func TestSessionNoticeStore_BatchDebtRows(t *testing.T) {
 func TestSessionNoticeStore_InsertAndListRoundTrip(t *testing.T) {
 	t.Parallel()
 	store, _, q, ctx := newNoticeTestStore(t)
-	require.NoError(t, seedSessionn(ctx, q, "owner-notice"))
+	require.NoError(t, seedSession(ctx, q, "owner-notice"))
 
 	id1, err := store.InsertSessionNoticeReturningID(ctx, "owner-notice", NoticeKindSupervision, "s", true, "call-1")
 	require.NoError(t, err)
@@ -458,7 +458,7 @@ func TestSessionNoticeStore_InsertAndListRoundTrip(t *testing.T) {
 func TestSessionNoticeStore_PendingChildQuestionsOverBatchRoots(t *testing.T) {
 	t.Parallel()
 	store, conn, q, ctx := newNoticeTestStore(t)
-	require.NoError(t, seedSessionn(ctx, q, "owner-notice"))
+	require.NoError(t, seedSession(ctx, q, "owner-notice"))
 	seedBatchRoot(t, ctx, conn, "", "root-live", "call-live", "running", "pending")
 	seedBatchRoot(t, ctx, conn, "", "root-dead", "call-dead", "completed", "done")
 
@@ -522,7 +522,7 @@ func TestSessionNoticeStore_PendingChildQuestionsOverBatchRoots(t *testing.T) {
 func TestSessionNoticeStore_BatchPublishQuestionEndToEnd(t *testing.T) {
 	t.Parallel()
 	store, conn, q, ctx := newNoticeTestStore(t)
-	require.NoError(t, seedSessionn(ctx, q, "owner"))
+	require.NoError(t, seedSession(ctx, q, "owner"))
 	bs := NewBatchStore(conn)
 
 	p := batchStoreTestReservation()

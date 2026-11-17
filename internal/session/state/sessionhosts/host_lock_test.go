@@ -1,4 +1,5 @@
-package sessionhosts
+package sessionhosts_test
+
 import (
 	"context"
 	"database/sql"
@@ -7,7 +8,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/session"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,11 +33,13 @@ func setupHostLockDB(t *testing.T) (context.Context, *db.Queries) {
 // nodeStore routes a *db.Queries through the retained hostNodeStore adapter
 // (host_store.go) onto AsyncHostStore: *db.Queries itself no longer satisfies
 // the interface (its legacy async_jobs host methods were deleted), so every
-// RegisterHost/Close call in these tests must go through the adapter.
-func nodeStore(q *db.Queries) AsyncHostStore { return hostNodeStore{q: q} }
+// sessionhosts.RegisterHost/Close call in these tests must go through the adapter.
+func nodeStore(q *db.Queries) sessionhosts.AsyncHostStore {
+	return sessionhosts.AsyncHostStoreFromConn(q)
+}
 
 // failingStore's RegisterAsyncHost always fails -- used to prove
-// RegisterHost releases the lock it already won before returning
+// sessionhosts.RegisterHost releases the lock it already won before returning
 // the DB error (doc sec.3.6: a failed registration must never leak a held
 // lock).
 type failingStore struct{}
@@ -59,11 +64,11 @@ func TestRegisterHost_LazyRegistration(t *testing.T) {
 	ctx, q := setupHostLockDB(t)
 	dataDir := t.TempDir()
 
-	h, err := RegisterHost(ctx, dataDir, 4242, "cli", nodeStore(q))
+	h, err := sessionhosts.RegisterHost(ctx, dataDir, 4242, "cli", nodeStore(q))
 	require.NoError(t, err)
 	require.NotNil(t, h)
 	assert.NotEmpty(t, h.ID)
-	assert.True(t, IsOwnHostID(h.ID), "the registering process must mark its own host id")
+	assert.True(t, sessionhosts.IsOwnHostID(h.ID), "the registering process must mark its own host id")
 
 	row, err := q.GetAsyncHostRow(ctx, h.ID)
 	require.NoError(t, err, "RegisterAsyncHost must have inserted a display-only row")
@@ -73,26 +78,26 @@ func TestRegisterHost_LazyRegistration(t *testing.T) {
 	// The lock is genuinely held: a second attempt to lock the exact same
 	// path (a different open file description, same process -- flock/
 	// LockFileEx both correctly conflict here) must contend.
-	_, err = sessionlock.TryAcquireFileLock(HostLockPath(dataDir, h.ID))
+	_, err = sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(dataDir, h.ID))
 	require.Error(t, err)
 	var contended *sessionlock.ErrLockContended
 	assert.True(t, errors.As(err, &contended))
 
 	require.NoError(t, h.Close(ctx, nodeStore(q)))
-	unmarkOwnHostID(h.ID) // test cleanup; Close already does this in production
+	sessionhosts.UnmarkOwnHostIDForTest(h.ID) // test cleanup; Close already does this in production
 }
 
 func TestRegisterHost_DBFailureReleasesLock(t *testing.T) {
 	dataDir := t.TempDir()
 
-	_, err := RegisterHost(context.Background(), dataDir, 1, "cli", failingStore{})
+	_, err := sessionhosts.RegisterHost(context.Background(), dataDir, 1, "cli", failingStore{})
 	require.Error(t, err)
 
-	entries, err := os.ReadDir(HostsDir(dataDir))
+	entries, err := os.ReadDir(sessionhosts.HostsDir(dataDir))
 	require.NoError(t, err)
 	require.Len(t, entries, 1, "the lock file is created before the DB insert is attempted")
 
-	lockPath := filepath.Join(HostsDir(dataDir), entries[0].Name())
+	lockPath := filepath.Join(sessionhosts.HostsDir(dataDir), entries[0].Name())
 	lock, err := sessionlock.TryAcquireFileLock(lockPath)
 	require.NoError(t, err, "a failed registration must release its lock, not leak it")
 	require.NoError(t, lock.Release())
@@ -100,7 +105,7 @@ func TestRegisterHost_DBFailureReleasesLock(t *testing.T) {
 
 func TestRegisterHost_FailsWhenLockCannotBeAcquired(t *testing.T) {
 	base := t.TempDir()
-	// dataDir names a PLAIN FILE, not a directory: HostLockPath's parent
+	// dataDir names a PLAIN FILE, not a directory: sessionhosts.HostLockPath's parent
 	// (dataDir/hosts) can never be created under it, so
 	// TryAcquireFileLock's os.MkdirAll fails deterministically -- the
 	// general "the lock file cannot even be created" case doc sec.3.6
@@ -112,46 +117,46 @@ func TestRegisterHost_FailsWhenLockCannotBeAcquired(t *testing.T) {
 	require.NoError(t, os.WriteFile(dataDir, []byte("x"), 0o644))
 
 	spy := &spyStore{}
-	_, err := RegisterHost(context.Background(), dataDir, 1, "cli", spy)
+	_, err := sessionhosts.RegisterHost(context.Background(), dataDir, 1, "cli", spy)
 	require.Error(t, err)
 	assert.False(t, spy.called, "the DB row must never be inserted when the lock could not be acquired")
 }
 
 func TestProbeHostLock_DeadViaENOENT(t *testing.T) {
 	dataDir := t.TempDir()
-	status, lock, err := ProbeHostLock(HostLockPath(dataDir, "never-existed"))
+	status, lock, err := sessionhosts.ProbeHostLock(sessionhosts.HostLockPath(dataDir, "never-existed"))
 	require.NoError(t, err)
-	assert.Equal(t, HostStatusDead, status)
+	assert.Equal(t, sessionhosts.HostStatusDead, status)
 	assert.Nil(t, lock)
 }
 
 func TestProbeHostLock_DeadViaWonLock(t *testing.T) {
 	dataDir := t.TempDir()
-	lockPath := HostLockPath(dataDir, "host-a")
+	lockPath := sessionhosts.HostLockPath(dataDir, "host-a")
 
 	// Create the file, then release -- it exists on disk but nobody holds it.
 	seed, err := sessionlock.TryAcquireFileLock(lockPath)
 	require.NoError(t, err)
 	require.NoError(t, seed.Release())
 
-	status, lock, err := ProbeHostLock(lockPath)
+	status, lock, err := sessionhosts.ProbeHostLock(lockPath)
 	require.NoError(t, err)
-	assert.Equal(t, HostStatusDead, status)
+	assert.Equal(t, sessionhosts.HostStatusDead, status)
 	require.NotNil(t, lock, "winning the lock on an existing-but-unheld file must return the won lock")
 	require.NoError(t, lock.Release())
 }
 
 func TestProbeHostLock_Alive(t *testing.T) {
 	dataDir := t.TempDir()
-	lockPath := HostLockPath(dataDir, "host-b")
+	lockPath := sessionhosts.HostLockPath(dataDir, "host-b")
 
 	holder, err := sessionlock.TryAcquireFileLock(lockPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = holder.Release() })
 
-	status, lock, err := ProbeHostLock(lockPath)
+	status, lock, err := sessionhosts.ProbeHostLock(lockPath)
 	require.NoError(t, err)
-	assert.Equal(t, HostStatusAlive, status)
+	assert.Equal(t, sessionhosts.HostStatusAlive, status)
 	assert.Nil(t, lock)
 }
 
@@ -160,16 +165,16 @@ func TestProbeHostLock_Unknown(t *testing.T) {
 	// A path that exists but is a DIRECTORY, not a lock file: A14 switched
 	// the probe to open O_RDONLY (see that fix's own doc), under which
 	// POSIX's open() on a directory SUCCEEDS (unlike O_RDWR, which EISDIRs
-	// immediately) -- so ProbeHostLock's explicit post-open directory check
+	// immediately) -- so sessionhosts.ProbeHostLock's explicit post-open directory check
 	// is what produces "unknown" here now, not the open() call itself. Same
 	// classification either way: doc sec.3.6's "some other error" case, never
 	// dead.
-	lockPath := HostLockPath(dataDir, "host-c")
+	lockPath := sessionhosts.HostLockPath(dataDir, "host-c")
 	require.NoError(t, os.MkdirAll(lockPath, 0o755))
 
-	status, lock, err := ProbeHostLock(lockPath)
+	status, lock, err := sessionhosts.ProbeHostLock(lockPath)
 	require.Error(t, err)
-	assert.Equal(t, HostStatusUnknown, status)
+	assert.Equal(t, sessionhosts.HostStatusUnknown, status)
 	assert.Nil(t, lock)
 }
 
@@ -178,14 +183,14 @@ func TestProbeHostLock_Unknown(t *testing.T) {
 // permission for this process (e.g. 0444, or owned by a different uid in a
 // shared data dir) must still be probeable, never EACCES-forever-Unknown.
 //
-// REVERT CHECK: temporarily reverted ProbeHostLock's open call to O_RDWR
+// REVERT CHECK: temporarily reverted sessionhosts.ProbeHostLock's open call to O_RDWR
 // (host_lock.go). On this OS this test's `require.NoError(t, err, ...)`
 // FAILED (permission denied opening the read-only file), proving the
 // assertion actually distinguishes the two open modes. Restored O_RDONLY;
 // re-ran, passed.
 func TestProbeHostLock_ReadOnlyFilePermissionsStillProbed(t *testing.T) {
 	dataDir := t.TempDir()
-	lockPath := HostLockPath(dataDir, "host-readonly")
+	lockPath := sessionhosts.HostLockPath(dataDir, "host-readonly")
 	seed, err := sessionlock.TryAcquireFileLock(lockPath)
 	require.NoError(t, err)
 	require.NoError(t, seed.Release())
@@ -193,9 +198,9 @@ func TestProbeHostLock_ReadOnlyFilePermissionsStillProbed(t *testing.T) {
 	require.NoError(t, os.Chmod(lockPath, 0o444))
 	t.Cleanup(func() { _ = os.Chmod(lockPath, 0o644) })
 
-	status, lock, err := ProbeHostLock(lockPath)
+	status, lock, err := sessionhosts.ProbeHostLock(lockPath)
 	require.NoError(t, err, "A14: a read-only lock file must still be probeable, not EACCES")
-	assert.Equal(t, HostStatusDead, status)
+	assert.Equal(t, sessionhosts.HostStatusDead, status)
 	if lock != nil {
 		_ = lock.Release()
 	}
@@ -205,23 +210,23 @@ func TestProbeHost_RefusesOwnHostID(t *testing.T) {
 	ctx, q := setupHostLockDB(t)
 	dataDir := t.TempDir()
 
-	h, err := RegisterHost(ctx, dataDir, 1, "cli", nodeStore(q))
+	h, err := sessionhosts.RegisterHost(ctx, dataDir, 1, "cli", nodeStore(q))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = h.Close(ctx, nodeStore(q)) })
 
-	status, lock, err := ProbeHost(dataDir, h.ID)
-	assert.Equal(t, HostStatusUnknown, status)
+	status, lock, err := sessionhosts.ProbeHost(dataDir, h.ID)
+	assert.Equal(t, sessionhosts.HostStatusUnknown, status)
 	assert.Nil(t, lock)
-	assert.ErrorIs(t, err, ErrProbeOwnHost)
+	assert.ErrorIs(t, err, sessionhosts.ErrProbeOwnHost)
 }
 
 func TestHostIdentity_CloseDeletesFileWhenNoRows(t *testing.T) {
 	ctx, q := setupHostLockDB(t)
 	dataDir := t.TempDir()
 
-	h, err := RegisterHost(ctx, dataDir, 1, "cli", nodeStore(q))
+	h, err := sessionhosts.RegisterHost(ctx, dataDir, 1, "cli", nodeStore(q))
 	require.NoError(t, err)
-	lockPath := HostLockPath(dataDir, h.ID)
+	lockPath := sessionhosts.HostLockPath(dataDir, h.ID)
 
 	require.NoError(t, h.Close(ctx, nodeStore(q)))
 
@@ -233,25 +238,25 @@ func TestHostIdentity_CloseDeletesFileWhenNoRows(t *testing.T) {
 
 	_, statErr := os.Stat(lockPath)
 	assert.True(t, errors.Is(statErr, os.ErrNotExist), "Close must delete the lock file when no rows remain")
-	assert.False(t, IsOwnHostID(h.ID), "Close must un-mark the host id")
+	assert.False(t, sessionhosts.IsOwnHostID(h.ID), "Close must un-mark the host id")
 }
 
 func TestHostIdentity_CloseKeepsFileWhenRowsExist(t *testing.T) {
-	conn, q, _, ctx := newHostTestDB(t)
+	conn, q, _, ctx := sessionhosts.newHostTestDB(t)
 	dataDir := t.TempDir()
 
-	h, err := RegisterHost(ctx, dataDir, 1, "cli", nodeStore(q))
+	h, err := sessionhosts.RegisterHost(ctx, dataDir, 1, "cli", nodeStore(q))
 	require.NoError(t, err)
-	lockPath := HostLockPath(dataDir, h.ID)
+	lockPath := sessionhosts.HostLockPath(dataDir, h.ID)
 
 	require.NoError(t, seedSession(ctx, q, "owner-1"))
 	// A live batch_nodes row owned by this host keeps the host row and lock
 	// file alive across Close (the DeleteAsyncHostIfNoNodes guard).
-	_, err = NewBatchStore(conn).Reserve(ctx, BatchReservation{
+	_, err = session.NewBatchStore(conn).Reserve(ctx, session.BatchReservation{
 		Owner: "owner-1", Host: h.ID, RunnerID: "runner", ToolCallID: "call-1", InputHash: "hash", Sequence: 1,
-		Root: BatchReservationNode{
+		Root: session.BatchReservationNode{
 			Values:   db.ReserveBatchNodeParams{Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true}, State: "pending", ControlState: "none"},
-			Children: []BatchReservationNode{{Values: db.ReserveBatchNodeParams{Kind: "task", TaskKind: sql.NullString{String: "test", Valid: true}, State: "pending", ControlState: "none"}}},
+			Children: []session.BatchReservationNode{{Values: db.ReserveBatchNodeParams{Kind: "task", TaskKind: sql.NullString{String: "test", Valid: true}, State: "pending", ControlState: "none"}}},
 		},
 	})
 	require.NoError(t, err)
@@ -265,9 +270,9 @@ func TestHostIdentity_CloseKeepsFileWhenRowsExist(t *testing.T) {
 	require.NoError(t, statErr, "the lock file must survive Close when rows remain")
 
 	// The OS lock itself must still be released (only the file/row survive).
-	status, lock, err := ProbeHostLock(lockPath)
+	status, lock, err := sessionhosts.ProbeHostLock(lockPath)
 	require.NoError(t, err)
-	assert.Equal(t, HostStatusDead, status, "Close must release the OS lock even when the row/file survive")
+	assert.Equal(t, sessionhosts.HostStatusDead, status, "Close must release the OS lock even when the row/file survive")
 	if lock != nil {
 		require.NoError(t, lock.Release())
 	}
@@ -275,7 +280,7 @@ func TestHostIdentity_CloseKeepsFileWhenRowsExist(t *testing.T) {
 
 func TestRemoveDeadHostFile_DeletesAfterIdentityVerified(t *testing.T) {
 	dataDir := t.TempDir()
-	lockPath := HostLockPath(dataDir, "dead-host")
+	lockPath := sessionhosts.HostLockPath(dataDir, "dead-host")
 
 	// Simulate a crashed host: acquire then release without deleting --
 	// same on-disk state a killed process leaves (the lock file exists,
@@ -284,12 +289,12 @@ func TestRemoveDeadHostFile_DeletesAfterIdentityVerified(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, seed.Release())
 
-	status, lock, err := ProbeHostLock(lockPath)
+	status, lock, err := sessionhosts.ProbeHostLock(lockPath)
 	require.NoError(t, err)
-	require.Equal(t, HostStatusDead, status)
+	require.Equal(t, sessionhosts.HostStatusDead, status)
 	require.NotNil(t, lock)
 
-	require.NoError(t, RemoveDeadHostFile(lockPath, lock))
+	require.NoError(t, sessionhosts.RemoveDeadHostFile(lockPath, lock))
 
 	_, statErr := os.Stat(lockPath)
 	assert.True(t, errors.Is(statErr, os.ErrNotExist), "a verified-dead host's file must be removed")
@@ -297,18 +302,18 @@ func TestRemoveDeadHostFile_DeletesAfterIdentityVerified(t *testing.T) {
 
 func TestRemoveDeadHostFile_LosesIdentityRaceSafely(t *testing.T) {
 	dataDir := t.TempDir()
-	lockPath := HostLockPath(dataDir, "dead-host-2")
-	otherPath := HostLockPath(dataDir, "some-other-host")
+	lockPath := sessionhosts.HostLockPath(dataDir, "dead-host-2")
+	otherPath := sessionhosts.HostLockPath(dataDir, "some-other-host")
 
 	// "held" stands in for the lock this process won at probe time, but by
-	// the time RemoveDeadHostFile runs, lockPath's inode has changed under
+	// the time sessionhosts.RemoveDeadHostFile runs, lockPath's inode has changed under
 	// it -- modeled here by pointing held at a DIFFERENT real file rather
 	// than reproducing OS-specific delete-while-open timing: on Windows,
 	// deleting/recreating lockPath while this process still holds it open
 	// is impossible without FILE_SHARE_DELETE (confirmed empirically: it
 	// fails the test's own os.Remove with a sharing violation), so a
 	// same-process repro of the literal race is platform-dependent. The
-	// SameFile comparison RemoveDeadHostFile performs is exercised exactly
+	// SameFile comparison sessionhosts.RemoveDeadHostFile performs is exercised exactly
 	// the same way either way: held's fd identity vs. a fresh stat of
 	// lockPath.
 	held, err := sessionlock.TryAcquireFileLock(otherPath)
@@ -316,23 +321,23 @@ func TestRemoveDeadHostFile_LosesIdentityRaceSafely(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(lockPath, []byte("new owner"), 0o644))
 
-	require.NoError(t, RemoveDeadHostFile(lockPath, held), "losing the identity race must not be reported as an error")
+	require.NoError(t, sessionhosts.RemoveDeadHostFile(lockPath, held), "losing the identity race must not be reported as an error")
 
 	content, err := os.ReadFile(lockPath)
-	require.NoError(t, err, "the NEW file at the path must survive -- RemoveDeadHostFile must not delete it")
+	require.NoError(t, err, "the NEW file at the path must survive -- sessionhosts.RemoveDeadHostFile must not delete it")
 	assert.Equal(t, "new owner", string(content))
 }
 
 func TestProbeHostLockShared_AliveDoesNotDisturbHolder(t *testing.T) {
 	dataDir := t.TempDir()
-	lockPath := HostLockPath(dataDir, "host-shared-alive")
+	lockPath := sessionhosts.HostLockPath(dataDir, "host-shared-alive")
 
 	holder, err := sessionlock.TryAcquireFileLock(lockPath)
 	require.NoError(t, err)
 
-	status, err := ProbeHostLockShared(lockPath)
+	status, err := sessionhosts.ProbeHostLockShared(lockPath)
 	require.NoError(t, err)
-	assert.Equal(t, HostStatusAlive, status)
+	assert.Equal(t, sessionhosts.HostStatusAlive, status)
 
 	// The probe must not have disturbed the holder: a fresh exclusive
 	// attempt while the holder is still live must still contend exactly as
@@ -357,67 +362,67 @@ func TestProbeHostLockShared_AliveDoesNotDisturbHolder(t *testing.T) {
 // against the held shared lock and misreport Alive.
 func TestProbeHostLockShared_CoexistsWithAnotherSharedHolder(t *testing.T) {
 	dataDir := t.TempDir()
-	lockPath := HostLockPath(dataDir, "host-shared-coexist")
-	require.NoError(t, os.MkdirAll(HostsDir(dataDir), 0o755))
+	lockPath := sessionhosts.HostLockPath(dataDir, "host-shared-coexist")
+	require.NoError(t, os.MkdirAll(sessionhosts.HostsDir(dataDir), 0o755))
 
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = f.Close() })
 	require.NoError(t, sessionlock.TryLockFileShared(f), "hold our OWN shared lock throughout the probe")
 
-	status, err := ProbeHostLockShared(lockPath)
+	status, err := sessionhosts.ProbeHostLockShared(lockPath)
 	require.NoError(t, err)
-	assert.Equal(t, HostStatusDead, status, "a shared probe must coexist with another shared lock holder, not contend with it")
+	assert.Equal(t, sessionhosts.HostStatusDead, status, "a shared probe must coexist with another shared lock holder, not contend with it")
 }
 
 func TestProbeHostLockShared_DeadReleasedLockIsReusable(t *testing.T) {
 	dataDir := t.TempDir()
-	lockPath := HostLockPath(dataDir, "host-shared-dead")
+	lockPath := sessionhosts.HostLockPath(dataDir, "host-shared-dead")
 
 	seed, err := sessionlock.TryAcquireFileLock(lockPath)
 	require.NoError(t, err)
 	require.NoError(t, seed.Release())
 
-	status, err := ProbeHostLockShared(lockPath)
+	status, err := sessionhosts.ProbeHostLockShared(lockPath)
 	require.NoError(t, err)
-	assert.Equal(t, HostStatusDead, status)
+	assert.Equal(t, sessionhosts.HostStatusDead, status)
 
 	// The shared probe must have released its own lock before returning --
 	// an exclusive acquire must succeed immediately, with no lock handed
 	// back from the probe to get in the way.
 	lock, err := sessionlock.TryAcquireFileLock(lockPath)
-	require.NoError(t, err, "ProbeHostLockShared must release the shared lock it won before returning")
+	require.NoError(t, err, "sessionhosts.ProbeHostLockShared must release the shared lock it won before returning")
 	require.NoError(t, lock.Release())
 }
 
 func TestProbeHostLockShared_DeadViaENOENT(t *testing.T) {
 	dataDir := t.TempDir()
-	status, err := ProbeHostLockShared(HostLockPath(dataDir, "never-existed"))
+	status, err := sessionhosts.ProbeHostLockShared(sessionhosts.HostLockPath(dataDir, "never-existed"))
 	require.NoError(t, err)
-	assert.Equal(t, HostStatusDead, status)
+	assert.Equal(t, sessionhosts.HostStatusDead, status)
 }
 
 func TestProbeHostLockShared_Unknown(t *testing.T) {
 	dataDir := t.TempDir()
-	lockPath := HostLockPath(dataDir, "host-shared-c")
+	lockPath := sessionhosts.HostLockPath(dataDir, "host-shared-c")
 	require.NoError(t, os.MkdirAll(lockPath, 0o755))
 
-	status, err := ProbeHostLockShared(lockPath)
+	status, err := sessionhosts.ProbeHostLockShared(lockPath)
 	require.Error(t, err)
-	assert.Equal(t, HostStatusUnknown, status)
+	assert.Equal(t, sessionhosts.HostStatusUnknown, status)
 }
 
 func TestProbeHostShared_RefusesOwnHostID(t *testing.T) {
 	ctx, q := setupHostLockDB(t)
 	dataDir := t.TempDir()
 
-	h, err := RegisterHost(ctx, dataDir, 1, "cli", nodeStore(q))
+	h, err := sessionhosts.RegisterHost(ctx, dataDir, 1, "cli", nodeStore(q))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = h.Close(ctx, nodeStore(q)) })
 
-	status, err := ProbeHostShared(dataDir, h.ID)
-	assert.Equal(t, HostStatusUnknown, status)
-	assert.ErrorIs(t, err, ErrProbeOwnHost)
+	status, err := sessionhosts.ProbeHostShared(dataDir, h.ID)
+	assert.Equal(t, sessionhosts.HostStatusUnknown, status)
+	assert.ErrorIs(t, err, sessionhosts.ErrProbeOwnHost)
 }
 
 // seedSession inserts a minimal sessions row so async_jobs.owner_session_id

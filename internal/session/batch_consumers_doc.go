@@ -211,7 +211,6 @@ package session
 
 import (
 	"errors"
-	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // ErrBatchResetRefused is the sentinel wrapped by every reset refusal: the

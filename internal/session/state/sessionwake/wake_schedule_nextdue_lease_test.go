@@ -10,14 +10,14 @@
 // next_run_at of the leased row (the busy-spin window) instead of its
 // lease expiry.
 
-package sessionwake
+package sessionwake_test
+
 import (
 	"testing"
 	"time"
 
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
-
-	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // A9-12, three phases: a live lease defers the row's due moment to the
@@ -31,8 +31,8 @@ func TestWakeScheduleStore_NextDueAimsAtClaimableMoment(t *testing.T) {
 
 	// Phase 1: the only schedule is due and leased by a worker that has
 	// not fired yet (5-minute TTL). NextDue must report the lease expiry.
-	rowA := f.create(WakeKindOnce, due, nil)
-	claimed, err := f.wake.ClaimDue(f.ctx, "worker-a", due, 10, WakeLeaseTTL)
+	rowA := f.create(sessionwake.WakeKindOnce, due, nil)
+	claimed, err := f.wake.ClaimDue(f.ctx, "worker-a", due, 10, sessionwake.WakeLeaseTTL)
 	require.NoError(t, err)
 	require.Len(t, claimed, 1)
 	require.Equal(t, rowA.ID, claimed[0].ID)
@@ -46,7 +46,7 @@ func TestWakeScheduleStore_NextDueAimsAtClaimableMoment(t *testing.T) {
 	// Phase 2: an unclaimed schedule with an earlier next_run_at must
 	// still dominate the timer (the fix must not delay free rows).
 	early := due.Add(-30 * time.Second)
-	rowB := f.create(WakeKindOnce, early, nil)
+	rowB := f.create(sessionwake.WakeKindOnce, early, nil)
 	next, err = f.wake.NextDue(f.ctx)
 	require.NoError(t, err)
 	require.NotNil(t, next)

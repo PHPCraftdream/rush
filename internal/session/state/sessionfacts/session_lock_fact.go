@@ -8,6 +8,7 @@
 // the cmd readers use this fact through the classifier.
 
 package sessionfacts
+
 import (
 	"os"
 	"path/filepath"
@@ -15,7 +16,6 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
-	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 )
 

@@ -17,10 +17,10 @@ import (
 
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 
-	"github.com/PHPCraftdream/rush/internal/store/db"
-	"github.com/PHPCraftdream/rush/internal/store/message"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
+	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
 
@@ -67,7 +67,7 @@ func (f *wsFx) serviceLinked(workspaceRoot, workDir string) session.Service {
 
 // seedSession inserts a top-level session bound to workspaceRoot with an
 // explicit updated_at, so ownership-sensitive ordering is deterministic.
-func (f *wsFx) sessionhosts.seedSession(id, workspaceRoot string, updatedAt int64) db.Session {
+func (f *wsFx) seedSession(id, workspaceRoot string, updatedAt int64) db.Session {
 	f.t.Helper()
 	_, err := f.q.CreateSession(f.ctx, db.CreateSessionParams{
 		ID:            id,

@@ -218,7 +218,7 @@ type commitHookNodeRow struct {
 	Ordinal, RootSequence, ProjectionSequence          int64
 	Envelope, EnvelopeRef, ChildSession, NoticeOrdinal string
 	NoticeSelected, Wake                               int64
-	Delivery, RunnerID, HostID                         s                         string
+	Delivery, RunnerID, HostID                         string
 }
 
 func commitHookReadNode(t *testing.T, conn *sql.DB, node string) commitHookNodeRow {

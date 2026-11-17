@@ -15,7 +15,7 @@ import (
 
 	sqlitedriver "modernc.org/sqlite"
 
-	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 )
 
 // DefaultBatchTimeoutCheckinPageSize bounds one scan page: the scanner is
@@ -62,7 +62,7 @@ WHERE n.kind = 'task'
   AND NOT EXISTS (SELECT 1 FROM batch_timeout_checkins c
                   WHERE c.root_id = n.root_id AND c.node_id = n.node_id
                     AND c.host_id = n.host_id AND c.token = n.token
-                    AND c.kind = '` + NoticeKindWakeOnly + `')
+                    AND c.kind = '` + sessionnotice.NoticeKindWakeOnly + `')
   AND (n.created_at, n.node_id) > (?, ?)
 ORDER BY n.created_at, n.node_id
 LIMIT ?`
@@ -181,7 +181,7 @@ type batchTimeoutCheckinRow struct {
 	NodeID         string
 	RootID         string
 	OwnerSessionID string
-	HostID         s         string
+	HostID         string
 	Token          int64
 	Payload        []byte
 	RootToolCallID sql.NullString
@@ -344,7 +344,7 @@ func (s *BatchTimeoutCheckin) checkinRow(ctx context.Context, now time.Time, row
 	// violation here means this exact incarnation already checked in.
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO batch_timeout_checkins (root_id, node_id, host_id, token, kind, owner_session_id, created_at) VALUES (?,?,?,?,?,?,?)`,
-		row.RootID, row.NodeID, row.HostID, row.Token, NoticeKindWakeOnly, row.OwnerSessionID, now.Unix()); err != nil {
+		row.RootID, row.NodeID, row.HostID, row.Token, sessionnotice.NoticeKindWakeOnly, row.OwnerSessionID, now.Unix()); err != nil {
 		if isSQLiteUniqueConstraint(err) {
 			return false, nil
 		}
@@ -356,7 +356,7 @@ func (s *BatchTimeoutCheckin) checkinRow(ctx context.Context, now time.Time, row
 	// it does not stop work.
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO session_notices (owner, kind, text, wake, delivery, job_tool_call_id, created_at, updated_at) VALUES (?,?,?,1,'pending',?,?,?)`,
-		row.OwnerSessionID, NoticeKindWakeOnly, text, rootToolCallID.String, now.Unix(), now.Unix()); err != nil {
+		row.OwnerSessionID, sessionnotice.NoticeKindWakeOnly, text, rootToolCallID.String, now.Unix(), now.Unix()); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {

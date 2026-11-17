@@ -51,7 +51,7 @@ func TestBatchReadHeldTerminationAndDeliveryIndependent(t *testing.T) {
 func TestBatchReadRealSharedHostProbeAndTerminalLinks(t *testing.T) {
 	t.Parallel()
 	s, conn, ctx := batchStoreTestDB(t)
-	require.NoError(t, seedSessionn(ctx, db.New(conn), "child"))
+	require.NoError(t, seedSession(ctx, db.New(conn), "child"))
 	snap := batchReadTestReserve(t, s, ctx, "owner", "delegate", "child")
 	batchReadTestReserve(t, s, ctx, "child", "own", "")
 	dir := t.TempDir()

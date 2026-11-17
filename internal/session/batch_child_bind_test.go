@@ -28,7 +28,7 @@ func batchBindFixture(t *testing.T) (*BatchStore, *sql.DB, string, string, strin
 	conn, err := db.Connect(ctx, dir)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(conn)) })
-	require.NoError(t, seedSessionn(ctx, db.New(conn), "owner"))
+	require.NoError(t, seedSession(ctx, db.New(conn), "owner"))
 
 	p := batchStoreTestReservation()
 	p.RunnerID = "runner"
@@ -39,7 +39,7 @@ func batchBindFixture(t *testing.T) (*BatchStore, *sql.DB, string, string, strin
 	_, err = conn.ExecContext(ctx, "UPDATE batch_nodes SET state = 'starting' WHERE node_id = ?", taskNode)
 	require.NoError(t, err)
 
-	require.NoError(t, seedSessionn(ctx, db.New(conn), "owner-child"))
+	require.NoError(t, seedSession(ctx, db.New(conn), "owner-child"))
 	_, err = conn.ExecContext(ctx, "UPDATE sessions SET parent_session_id = 'owner' WHERE id = 'owner-child'")
 	require.NoError(t, err)
 	return s, conn, dir, taskNode, r.Snapshot.Root.RootID
@@ -193,8 +193,8 @@ func TestBatchBindChildSessionNegativeTwins(t *testing.T) {
 		{
 			name: "child parented elsewhere",
 			mutate: func(t *testing.T, conn *sql.DB, root, taskNode string) {
-				require.NoError(t, seedSessionn(ctx, db.New(conn), "other-parent"))
-				require.NoError(t, seedSessionn(ctx, db.New(conn), "foreign-child"))
+				require.NoError(t, seedSession(ctx, db.New(conn), "other-parent"))
+				require.NoError(t, seedSession(ctx, db.New(conn), "foreign-child"))
 				_, e := conn.ExecContext(ctx, "UPDATE sessions SET parent_session_id = 'other-parent' WHERE id = 'foreign-child'")
 				require.NoError(t, e)
 			},
@@ -238,7 +238,7 @@ func TestBatchBindChildSessionConflict(t *testing.T) {
 	t.Parallel()
 	s, conn, _, taskNode, root := batchBindFixture(t)
 	ctx := context.Background()
-	require.NoError(t, seedSessionn(ctx, db.New(conn), "owner-child-b"))
+	require.NoError(t, seedSession(ctx, db.New(conn), "owner-child-b"))
 	_, err := conn.ExecContext(ctx, "UPDATE sessions SET parent_session_id = 'owner' WHERE id = 'owner-child-b'")
 	require.NoError(t, err)
 

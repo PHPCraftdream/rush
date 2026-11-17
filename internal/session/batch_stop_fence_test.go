@@ -185,7 +185,7 @@ func TestBatchStopFence_OwnerHostRootAndRunnerMismatches(t *testing.T) {
 	for _, tc := range []string{"owner", "host", "root", "runner"} {
 		t.Run(tc, func(t *testing.T) {
 			s, conn, ctx := batchStoreTestDB(t)
-			require.NoError(t, seedSessionn(ctx, db.New(conn), "other-owner"))
+			require.NoError(t, seedSession(ctx, db.New(conn), "other-owner"))
 			primary := batchStoreTestReserve(t, s, ctx)
 			otherOwner, err := s.Reserve(ctx, psfTestReservation("other-owner", "host", primary.Root.RunnerID, "other-call"))
 			require.NoError(t, err)

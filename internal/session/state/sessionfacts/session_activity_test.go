@@ -1,11 +1,12 @@
 package sessionfacts
+
 import (
 	"os"
 	"testing"
 	"time"
 
-	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +32,7 @@ import (
 //     (CrashedPID assert) fails.
 func TestClassifySessionActivity(t *testing.T) {
 	t.Parallel()
-	liveDriver := &sessionhosts.SessionDriver{SessionID: "s", sessionhosts.HostID: "h", PID: 4242, Status: HostStatusAlive}
+	liveDriver := &sessionhosts.SessionDriver{SessionID: "s", HostID: "h", PID: 4242, Status: sessionhosts.HostStatusAlive}
 
 	tests := []struct {
 		name       string

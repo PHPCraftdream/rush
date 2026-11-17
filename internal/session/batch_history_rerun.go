@@ -37,7 +37,6 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
-	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // BatchRerunVoidedNode is one root incarnation the reconciliation voided, as
@@ -46,7 +45,7 @@ import (
 type BatchRerunVoidedNode struct {
 	RootID, NodeID, ToolCallID string
 	State                      string
-	ChildSessionID, HostID     s     string
+	ChildSessionID, HostID     string
 }
 
 // ErrRerunTargetGone means the target message was already deleted (e.g. by a

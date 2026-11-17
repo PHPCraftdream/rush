@@ -11,7 +11,7 @@ package session
 //	func (s *BatchStore) BatchRecoverPass(ctx context.Context, probe BatchHostProbe, limits BatchRecoveryLimits, cursor BatchRecoveryCursor) (BatchRecoveryOutcome, BatchRecoveryCursor, bool, error)
 //	func (s *BatchStore) RecoverHostsOnce(ctx context.Context, probe BatchHostProbe, hosts []string, maxRoots int) (BatchRecoveryOutcome, bool, error)
 //
-// Semantics shared with BatchRecoverDeadHost: only (HostStatusDead, nil probe
+// Semantics shared with BatchRecoverDeadHost: only (sessionhosts.HostStatusDead, nil probe
 // error) permits recovery; Unknown/Alive/own host write nothing; each root
 // commits separately through the per-root writer-election transaction.
 // BatchRecoverPass returns done=true only when the whole candidate set has
@@ -29,8 +29,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/PHPCraftdream/rush/internal/store/db"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 const (
@@ -118,7 +118,7 @@ func (s *BatchStore) batchRecoveryRootsForHost(ctx context.Context, host string,
 // per-root transaction (writer election, interrupt/notice/control semantics)
 // that BatchRecoverDeadHost uses. A root that is no longer a recovery
 // candidate, an empty or own host, or any probe verdict other than
-// (HostStatusDead, nil) writes nothing; an unknown root id is a no-op, not an
+// (sessionhosts.HostStatusDead, nil) writes nothing; an unknown root id is a no-op, not an
 // error.
 func (s *BatchStore) BatchRecoverRoot(ctx context.Context, rootID string, probe BatchHostProbe) (BatchRecoveryOutcome, error) {
 	var out BatchRecoveryOutcome
@@ -139,7 +139,7 @@ func (s *BatchStore) BatchRecoverRoot(ctx context.Context, rootID string, probe 
 		return out, nil
 	}
 	status, perr := probe(root.HostID)
-	if status != HostStatusDead || perr != nil {
+	if status != sessionhosts.HostStatusDead || perr != nil {
 		return out, perr
 	}
 	return s.batchRecoverRoot(ctx, root)
@@ -191,7 +191,7 @@ func (s *BatchStore) BatchRecoverPass(ctx context.Context, probe BatchHostProbe,
 					errs = append(errs, fmt.Errorf("probe host %s: %w", root.HostID, perr))
 				}
 			}
-			if verdict.status != HostStatusDead || verdict.err != nil {
+			if verdict.status != sessionhosts.HostStatusDead || verdict.err != nil {
 				processed = root.RootID
 				continue
 			}
@@ -247,7 +247,7 @@ func (s *BatchStore) RecoverHostsOnce(ctx context.Context, probe BatchHostProbe,
 			return total, true, errors.Join(errs...)
 		}
 		status, perr := probe(host)
-		if status != HostStatusDead || perr != nil {
+		if status != sessionhosts.HostStatusDead || perr != nil {
 			if perr != nil {
 				errs = append(errs, fmt.Errorf("probe host %s: %w", host, perr))
 			}

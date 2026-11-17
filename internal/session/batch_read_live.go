@@ -8,8 +8,8 @@ import (
 	"sort"
 	"sync/atomic"
 
-	"github.com/PHPCraftdream/rush/internal/store/db"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 const (
@@ -206,7 +206,7 @@ func batchLiveReplay(owner string, rows map[string][]db.BatchNode, failures map[
 					continue
 				}
 				st := statusOf(n.HostID)
-				if st == HostStatusUnknown {
+				if st == sessionhosts.HostStatusUnknown {
 					v.Complete = false
 					if depth == 0 {
 						v.OwnComplete = false

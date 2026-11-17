@@ -71,7 +71,7 @@ func (l *batchSQLLog) shouldIntercept(query string) bool {
 type batchSQLEmptyRows struct{}
 
 func (batchSQLEmptyRows) Columns() []string              { return nil }
-func (batchSQLEmptyRows) sessionhosts.Close() error                   { return nil }
+func (batchSQLEmptyRows) Close() error                   { return nil }
 func (batchSQLEmptyRows) Next(dest []driver.Value) error { return io.EOF }
 
 func (l *batchSQLLog) snapshot() []batchSQLLogEntry {

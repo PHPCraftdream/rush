@@ -16,7 +16,7 @@ func TestBatchStopRootFenceSurvivesAnsweredRequest(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			s, conn, ctx := batchStoreTestDB(t)
-			require.NoError(t, seedSessionn(ctx, db.New(conn), "other-owner"))
+			require.NoError(t, seedSession(ctx, db.New(conn), "other-owner"))
 			snap := batchStoreTestReserve(t, s, ctx)
 			otherSpec := batchStoreTestReservation()
 			otherSpec.Owner = "other-owner"

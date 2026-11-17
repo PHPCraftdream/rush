@@ -121,7 +121,7 @@ func TestHostStore_CloseKeepsHostRowWhenNodesExist(t *testing.T) {
 	id, err := store.EnsureHost(ctx)
 	require.NoError(t, err)
 
-	require.NoError(t, seedSessionn(ctx, q, "owner-bn"))
+	require.NoError(t, seedSession(ctx, q, "owner-bn"))
 	_, err = conn.ExecContext(ctx, `
 		INSERT INTO batch_nodes (
 			node_id, root_id, owner_session_id, host_id, ordinal, kind, mode,
@@ -205,7 +205,7 @@ func TestHostStore_CloseKeepLockKeepsRowAndFile(t *testing.T) {
 	// delete the directory (Windows refuses to delete open files).
 	t.Cleanup(func() {
 		releaseRetainedHostLocksForTestt()
-		unmarkOwnHostIDD(id)
+		sessionhosts.UnmarkOwnHostIDForTest(id)
 	})
 
 	require.Empty(t, store.HostID(),
@@ -214,7 +214,7 @@ func TestHostStore_CloseKeepLockKeepsRowAndFile(t *testing.T) {
 	require.NoError(t, err, "the async_hosts row must survive sessionhosts.CloseKeepLock")
 	lockPath := sessionhosts.HostLockPath(dataDir, id)
 	require.FileExists(t, lockPath)
-	require.True(t, IsOwnHostIDD(id), "the own-host-id marking must survive sessionhosts.CloseKeepLock")
+	require.True(t, sessionhosts.IsOwnHostID(id), "the own-host-id marking must survive sessionhosts.CloseKeepLock")
 
 	// Kernel-attested proof the lock is actually still held. No test-side
 	// reference to the lock is kept: without the package-level pin the
@@ -247,7 +247,7 @@ func TestHostStore_SimulateCrashForTest(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, store.SimulateCrashForTest())
 
-	require.False(t, IsOwnHostIDD(id))
+	require.False(t, sessionhosts.IsOwnHostID(id))
 	_, err = q.GetAsyncHostRow(ctx, id)
 	require.NoError(t, err, "the async_hosts row must survive a simulated crash")
 

@@ -24,7 +24,7 @@ func batchTimeoutCheckinStores(t *testing.T) (*BatchStore, *sql.DB, context.Cont
 	a, err := db.Connect(ctx, dir)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(a)) })
-	require.NoError(t, seedSessionn(ctx, db.New(a), "owner"))
+	require.NoError(t, seedSession(ctx, db.New(a), "owner"))
 	b, err := sql.Open("sqlite", filepath.ToSlash(storepath.DataDirPath(dir, storepath.ActiveFilename))+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	require.NoError(t, err)
 	b.SetMaxOpenConns(1)

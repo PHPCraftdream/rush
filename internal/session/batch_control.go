@@ -9,8 +9,8 @@ import (
 
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 
-	"github.com/PHPCraftdream/rush/internal/store/db"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/google/uuid"
 )
 
@@ -63,10 +63,10 @@ func (s *BatchStore) BatchRequestStop(ctx context.Context, t BatchControlTarget,
 		return empty, errors.Join(ErrBatchControlUnknownHost, err)
 	}
 	switch status {
-	case HostStatusDead:
+	case sessionhosts.HostStatusDead:
 		_, err = s.BatchRecoverDeadHost(ctx, t.Host, probe)
 		return empty, errors.Join(ErrBatchControlStale, err)
-	case HostStatusAlive:
+	case sessionhosts.HostStatusAlive:
 	default:
 		return empty, ErrBatchControlUnknownHost
 	}

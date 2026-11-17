@@ -42,7 +42,7 @@ func newBatchResetFx(t *testing.T) *batchResetFx {
 	// reset's writer lock (batchOutboxTwoStores pattern).
 	conn, err := db.Connect(ctx, dir)
 	require.NoError(t, err)
-	require.NoError(t, seedSessionn(ctx, db.New(conn), batchResetOwner))
+	require.NoError(t, seedSession(ctx, db.New(conn), batchResetOwner))
 	require.NoError(t, db.ReleaseConn(conn))
 	open := func() *sql.DB {
 		// Same shape as the production writer DSN (connect.go): BEGIN

@@ -26,7 +26,7 @@ func r9Stores(t *testing.T) (*BatchStore, *BatchStore, *sql.DB, string, context.
 	a, err := db.Connect(ctx, dir)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(a)) })
-	require.NoError(t, seedSessionn(ctx, db.New(a), "owner"))
+	require.NoError(t, seedSession(ctx, db.New(a), "owner"))
 	b, err := sql.Open("sqlite", filepath.ToSlash(storepath.DataDirPath(dir, storepath.ActiveFilename))+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	require.NoError(t, err)
 	b.SetMaxOpenConns(1)
@@ -135,8 +135,8 @@ func TestR9RecoveryUnknownAliveOwnNoChanges(t *testing.T) {
 				require.NoError(t, e)
 				defer lock.Release()
 			case "own":
-				markOwnHostIDD("host")
-				defer sessionhosts.unmarkOwnHostID("host")
+				sessionhosts.MarkOwnHostIDForTest("host")
+				defer sessionhosts.UnmarkOwnHostIDForTest("host")
 			}
 			out, err := a.BatchRecoverDeadHost(ctx, "host", BatchSharedHostProbe(dir))
 			if status == "unknown" {

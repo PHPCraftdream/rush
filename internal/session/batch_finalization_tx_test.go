@@ -117,7 +117,7 @@ func TestBatchWriterRejectsChangedManagedAncestryAfterAdmission(t *testing.T) {
 		t.Run(change, func(t *testing.T) {
 			env := finalizationAncestorEnv(t)
 			if change == "new_parent" {
-				require.NoError(t, seedSessionn(env.ctx, db.New(env.conn), "new-parent"))
+				require.NoError(t, seedSession(env.ctx, db.New(env.conn), "new-parent"))
 				other := env.id
 				other.Owner = "new-parent"
 				require.NoError(t, NewBatchCommitHook(env.store, other)(env.ctx, admissionSubmit("external-parent", "external-ref", 3)))

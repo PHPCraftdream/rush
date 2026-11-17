@@ -7,8 +7,6 @@ package session
 import (
 	"context"
 	"sync"
-
-	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // admissionEntry is the shared record one admitted execution publishes for

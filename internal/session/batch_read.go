@@ -6,8 +6,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/store/db"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 // BatchLiveSource is the read-only sqlc boundary. Each call reads one consistent
@@ -29,7 +29,7 @@ type BatchLiveReader struct {
 	TxStarter BatchLiveTxStarter
 	DataDir   string
 	IsOwnHost func(string) bool
-	ProbeHost f func(string, string) (sessionhosts.HostLockStatus, error)
+	ProbeHost func(string, string) (sessionhosts.HostLockStatus, error)
 }
 
 // NewBatchLiveReader binds the shared, non-acquiring host probe.
@@ -87,7 +87,7 @@ type BatchLiveNode struct {
 	Ordinal                                                                 int64
 	State, Cause                                                            string
 	Notify                                                                  sql.NullString
-	HostID                                                                  s                                                                  string
+	HostID                                                                  string
 	HostStatus                                                              sessionhosts.HostLockStatus
 	StartedAt                                                               time.Time
 	Counts                                                                  BatchLiveCounts
@@ -107,20 +107,20 @@ func batchReadTerminal(state string) bool {
 
 func (r *BatchLiveReader) hostStatus(host string) sessionhosts.HostLockStatus {
 	if host == "" || r == nil {
-		return HostStatusUnknown
+		return sessionhosts.HostStatusUnknown
 	}
 	if r.IsOwnHost != nil && r.IsOwnHost(host) {
-		return HostStatusAlive
+		return sessionhosts.HostStatusAlive
 	}
 	if r.ProbeHost == nil || r.DataDir == "" {
-		return HostStatusUnknown
+		return sessionhosts.HostStatusUnknown
 	}
 	st, err := r.ProbeHost(r.DataDir, host)
 	if err != nil {
-		return HostStatusUnknown
+		return sessionhosts.HostStatusUnknown
 	}
-	if st != HostStatusAlive && st != HostStatusDead {
-		return HostStatusUnknown
+	if st != sessionhosts.HostStatusAlive && st != sessionhosts.HostStatusDead {
+		return sessionhosts.HostStatusUnknown
 	}
 	return st
 }

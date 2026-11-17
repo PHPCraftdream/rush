@@ -3,8 +3,8 @@ package session
 import (
 	"context"
 
-	"github.com/PHPCraftdream/rush/internal/store/db"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 // BatchLevelResult contains the addressed node, ordinal-sorted direct children,
@@ -88,7 +88,7 @@ func (r *BatchLiveReader) batchLevelRows(ref BatchLiveRef, nodeID string, rows [
 			st = r.hostStatus(n.HostID)
 			hosts[n.HostID] = st
 		}
-		if st == HostStatusUnknown {
+		if st == sessionhosts.HostStatusUnknown {
 			v.Complete = false
 		}
 		fact := batchLiveFact(n, root.ToolCallID.String, depth, st)

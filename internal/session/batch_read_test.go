@@ -99,7 +99,7 @@ func TestBatchReadScopeDistinctionsCyclesAndChunks(t *testing.T) {
 	s, conn, ctx := batchStoreTestDB(t)
 	q := db.New(conn)
 	for _, owner := range []string{"child", "grandchild", "unlinked"} {
-		require.NoError(t, seedSessionn(ctx, q, owner))
+		require.NoError(t, seedSession(ctx, q, owner))
 	}
 	a := batchReadTestReserve(t, s, ctx, "owner", "a", "child")
 	batchReadTestReserve(t, s, ctx, "child", "b", "grandchild")
@@ -244,7 +244,7 @@ func TestBatchReadChunkBoundariesAndSelectiveFailure(t *testing.T) {
 	// Real roots on both sides of the boundary pin fact retention as well as
 	// completeness; other owners intentionally have no work.
 	for _, i := range []int{0, 499, 500} {
-		require.NoError(t, seedSessionn(ctx, db.New(conn), owners[i]))
+		require.NoError(t, seedSession(ctx, db.New(conn), owners[i]))
 		batchReadTestReserve(t, s, ctx, owners[i], "call", "")
 	}
 	r := batchReadTestReader(t, conn)
@@ -295,7 +295,7 @@ func TestBatchReadDepthTruncation(t *testing.T) {
 	s, conn, ctx := batchStoreTestDB(t)
 	for i := 0; i < batchReadDepth+2; i++ {
 		owner := fmt.Sprintf("s%d", i)
-		require.NoError(t, seedSessionn(ctx, db.New(conn), owner))
+		require.NoError(t, seedSession(ctx, db.New(conn), owner))
 		child := fmt.Sprintf("s%d", i+1)
 		batchReadTestReserve(t, s, ctx, owner, "call", child)
 	}

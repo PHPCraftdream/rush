@@ -328,7 +328,7 @@ func TestBatchOutboxFailureMarkerRollbackAndReactionRollback(t *testing.T) {
 
 func TestBatchOutboxWakeZeroAndNoticeOwnerFence(t *testing.T) {
 	s, conn, ctx := batchStoreTestDB(t)
-	require.NoError(t, seedSessionn(ctx, db.New(conn), "other"))
+	require.NoError(t, seedSession(ctx, db.New(conn), "other"))
 	snap := batchOutboxReserve(t, s, ctx, 1)
 	m := message.NewService(db.New(conn))
 	batchOutboxSettle(t, s, ctx, snap, 2, snap.Root.RootID)

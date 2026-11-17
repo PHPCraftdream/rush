@@ -148,8 +148,8 @@ func TestBatchRecoveryPassVerdictsAndProbeOnce(t *testing.T) {
 		})
 	}
 	t.Run("own-host", func(t *testing.T) {
-		markOwnHostIDD("host")
-		defer sessionhosts.unmarkOwnHostID("host")
+		sessionhosts.MarkOwnHostIDForTest("host")
+		defer sessionhosts.UnmarkOwnHostIDForTest("host")
 		probes := 0
 		out, _, _, err := a.BatchRecoverPass(ctx, func(host string) (sessionhosts.HostLockStatus, error) {
 			probes++
@@ -171,8 +171,8 @@ func TestRecoverHostsOnceBudgetAndCompletion(t *testing.T) {
 		r9Announce(t, conn, ctx, snap.Root.RootID)
 		budgetDeadHost(t, dir, host)
 	}
-	markOwnHostIDD("own-host")
-	defer sessionhosts.unmarkOwnHostID("own-host")
+	sessionhosts.MarkOwnHostIDForTest("own-host")
+	defer sessionhosts.UnmarkOwnHostIDForTest("own-host")
 	out, more, err := a.RecoverHostsOnce(ctx, BatchSharedHostProbe(dir), hosts, 2)
 	require.NoError(t, err)
 	require.True(t, more, "budget exhaustion must report more remaining")

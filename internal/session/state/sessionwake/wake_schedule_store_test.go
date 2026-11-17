@@ -1,9 +1,10 @@
-// WakeScheduleStore coverage (stage 4a): claim/lease CAS, exactly-once
+// sessionwake.WakeScheduleStore coverage (stage 4a): claim/lease CAS, exactly-once
 // firing, loop advancement from the scheduled time (no catch-up), the
 // 20-active limit, idempotent owner-checked cancel, session-delete cascade
 // and `sessions reset` cancellation. All time is injected; no sleeps.
 
-package sessionwake
+package sessionwake_test
+
 import (
 	"context"
 	"database/sql"
@@ -13,10 +14,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/session"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
-	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
-	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/stretchr/testify/require"
 )
 
@@ -29,7 +31,7 @@ const wakeTestOwner = "wake-owner"
 type wakeFx struct {
 	t        *testing.T
 	sqlDB    *sql.DB
-	wake     *WakeScheduleStore
+	wake     *sessionwake.WakeScheduleStore
 	q        *db.Queries
 	messages message.Service
 	ctx      context.Context
@@ -44,15 +46,15 @@ func newWakeFx(t *testing.T) *wakeFx {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)) })
 	q := db.New(conn)
-	require.NoError(t, sessionhosts.seedSession(ctx, q, wakeTestOwner))
+	require.NoError(t, seedSession(ctx, q, wakeTestOwner))
 	return &wakeFx{
-		t: t, sqlDB: conn, wake: NewWakeScheduleStore(conn),
+		t: t, sqlDB: conn, wake: sessionwake.NewWakeScheduleStore(conn),
 		q: q, messages: message.NewService(q),
 		ctx: ctx, base: time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC),
 	}
 }
 
-// sessionNoticeParams is the minimal build callback for PullSessionNotices
+// sessionNoticeParams is the minimal build callback for sessionwake.PullSessionNotices
 // used by the surviving session-notice/batch tests (re-declared here after
 // the legacy notice_pull_test.go was removed; the real ones live behind the
 // agent package boundary these tests exercise from the other side).
@@ -74,10 +76,10 @@ func countMessages(t *testing.T, q *db.Queries, ctx context.Context, sessionID s
 	return n
 }
 
-func (f *wakeFx) create(kind WakeKind, runAt time.Time, mut func(*CreateWakeScheduleParams)) db.WakeSchedule {
+func (f *wakeFx) create(kind sessionwake.WakeKind, runAt time.Time, mut func(*sessionwake.CreateWakeScheduleParams)) db.WakeSchedule {
 	f.t.Helper()
-	p := CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: kind, Message: "check on it", RunAt: runAt}
-	if kind == WakeKindLoop {
+	p := sessionwake.CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: kind, Message: "check on it", RunAt: runAt}
+	if kind == sessionwake.WakeKindLoop {
 		p.Every = 300 * time.Second
 	}
 	if mut != nil {
@@ -110,18 +112,18 @@ func TestWakeScheduleStore_CreateValidation(t *testing.T) {
 	later := f.base.Add(time.Minute)
 	cases := []struct {
 		name string
-		p    CreateWakeScheduleParams
+		p    sessionwake.CreateWakeScheduleParams
 	}{
-		{"no owner", CreateWakeScheduleParams{Kind: WakeKindOnce, Message: "m", RunAt: later}},
-		{"empty message", CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: WakeKindOnce, RunAt: later}},
-		{"long message", CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: WakeKindOnce, Message: string(make([]rune, MaxWakeMessageLength+1)), RunAt: later}},
-		{"once too soon", CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: WakeKindOnce, Message: "m", RunAt: f.base.Add(time.Second)}},
-		{"once in the past", CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: WakeKindOnce, Message: "m", RunAt: f.base.Add(-time.Minute)}},
-		{"once over horizon", CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: WakeKindOnce, Message: "m", RunAt: f.base.Add(MaxWakeHorizon + time.Hour)}},
-		{"loop interval too tight", CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: WakeKindLoop, Message: "m", RunAt: later, Every: time.Minute}},
-		{"loop max_runs too big", CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: WakeKindLoop, Message: "m", RunAt: later, Every: 300 * time.Second, MaxRuns: MaxLoopRuns + 1}},
-		{"loop until in the past", CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: WakeKindLoop, Message: "m", RunAt: later, Every: 300 * time.Second, Until: &f.base}},
-		{"unknown kind", CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: WakeKind("cron"), Message: "m", RunAt: later}},
+		{"no owner", sessionwake.CreateWakeScheduleParams{Kind: sessionwake.WakeKindOnce, Message: "m", RunAt: later}},
+		{"empty message", sessionwake.CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: sessionwake.WakeKindOnce, RunAt: later}},
+		{"long message", sessionwake.CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: sessionwake.WakeKindOnce, Message: string(make([]rune, sessionwake.MaxWakeMessageLength+1)), RunAt: later}},
+		{"once too soon", sessionwake.CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: sessionwake.WakeKindOnce, Message: "m", RunAt: f.base.Add(time.Second)}},
+		{"once in the past", sessionwake.CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: sessionwake.WakeKindOnce, Message: "m", RunAt: f.base.Add(-time.Minute)}},
+		{"once over horizon", sessionwake.CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: sessionwake.WakeKindOnce, Message: "m", RunAt: f.base.Add(sessionwake.MaxWakeHorizon + time.Hour)}},
+		{"loop interval too tight", sessionwake.CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: sessionwake.WakeKindLoop, Message: "m", RunAt: later, Every: time.Minute}},
+		{"loop max_runs too big", sessionwake.CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: sessionwake.WakeKindLoop, Message: "m", RunAt: later, Every: 300 * time.Second, MaxRuns: sessionwake.MaxLoopRuns + 1}},
+		{"loop until in the past", sessionwake.CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: sessionwake.WakeKindLoop, Message: "m", RunAt: later, Every: 300 * time.Second, Until: &f.base}},
+		{"unknown kind", sessionwake.CreateWakeScheduleParams{Owner: wakeTestOwner, Kind: sessionwake.WakeKind("cron"), Message: "m", RunAt: later}},
 	}
 	for _, tc := range cases {
 		_, err := f.wake.CreateSchedule(f.ctx, tc.p, f.base)
@@ -134,20 +136,20 @@ func TestWakeScheduleStore_LimitTwentyActive(t *testing.T) {
 	t.Parallel()
 	f := newWakeFx(t)
 	var firstID string
-	for i := 0; i < MaxActiveWakeSchedulesPerSession; i++ {
-		row := f.create(WakeKindOnce, f.base.Add(time.Duration(i+1)*time.Minute), nil)
+	for i := 0; i < sessionwake.MaxActiveWakeSchedulesPerSession; i++ {
+		row := f.create(sessionwake.WakeKindOnce, f.base.Add(time.Duration(i+1)*time.Minute), nil)
 		if i == 0 {
 			firstID = row.ID
 		}
 	}
-	_, err := f.wake.CreateSchedule(f.ctx, CreateWakeScheduleParams{
-		Owner: wakeTestOwner, Kind: WakeKindOnce, Message: "m", RunAt: f.base.Add(time.Hour),
+	_, err := f.wake.CreateSchedule(f.ctx, sessionwake.CreateWakeScheduleParams{
+		Owner: wakeTestOwner, Kind: sessionwake.WakeKindOnce, Message: "m", RunAt: f.base.Add(time.Hour),
 	}, f.base)
-	require.ErrorIs(t, err, ErrWakeScheduleLimit)
+	require.ErrorIs(t, err, sessionwake.ErrWakeScheduleLimit)
 
 	require.NoError(t, f.wake.CancelSchedule(f.ctx, wakeTestOwner, firstID, f.base))
-	_, err = f.wake.CreateSchedule(f.ctx, CreateWakeScheduleParams{
-		Owner: wakeTestOwner, Kind: WakeKindOnce, Message: "m", RunAt: f.base.Add(time.Hour),
+	_, err = f.wake.CreateSchedule(f.ctx, sessionwake.CreateWakeScheduleParams{
+		Owner: wakeTestOwner, Kind: sessionwake.WakeKindOnce, Message: "m", RunAt: f.base.Add(time.Hour),
 	}, f.base)
 	require.NoError(t, err, "a cancelled schedule frees a slot")
 }
@@ -157,14 +159,14 @@ func TestWakeScheduleStore_LimitTwentyActive(t *testing.T) {
 //
 // REVERT CHECK: removing the `state='active'` guard from
 // CompleteOnceWakeSchedule (or firing outside the CAS) lets the replayed
-// FireOccurrence insert a second wake_fired notice; the count assertion
+// sessionwake.FireOccurrence insert a second wake_fired notice; the count assertion
 // below fails.
 func TestWakeScheduleStore_OnceFiresExactlyOnce(t *testing.T) {
 	t.Parallel()
 	f := newWakeFx(t)
 	due := f.base.Add(time.Minute)
-	row := f.create(WakeKindOnce, due, nil)
-	claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", due, 10, WakeLeaseTTL)
+	row := f.create(sessionwake.WakeKindOnce, due, nil)
+	claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", due, 10, sessionwake.WakeLeaseTTL)
 	require.NoError(t, err)
 	require.Len(t, claimed, 1)
 
@@ -189,25 +191,25 @@ func TestWakeScheduleStore_LeaseExpiryHandsRowToAnotherClaimant(t *testing.T) {
 	t.Parallel()
 	f := newWakeFx(t)
 	due := f.base.Add(time.Minute)
-	f.create(WakeKindOnce, due, nil)
+	f.create(sessionwake.WakeKindOnce, due, nil)
 
-	claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", due, 10, WakeLeaseTTL)
+	claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", due, 10, sessionwake.WakeLeaseTTL)
 	require.NoError(t, err)
 	require.Len(t, claimed, 1)
 
-	again, err := f.wake.ClaimDue(f.ctx, "worker-2", due, 10, WakeLeaseTTL)
+	again, err := f.wake.ClaimDue(f.ctx, "worker-2", due, 10, sessionwake.WakeLeaseTTL)
 	require.NoError(t, err)
 	require.Empty(t, again, "a live lease must exclude another claimant")
 
-	n, err := f.wake.RecoverExpiredLeases(f.ctx, due.Add(WakeLeaseTTL-time.Second))
+	n, err := f.wake.RecoverExpiredLeases(f.ctx, due.Add(sessionwake.WakeLeaseTTL-time.Second))
 	require.NoError(t, err)
 	require.EqualValues(t, 0, n, "the lease has not expired yet")
 
-	n, err = f.wake.RecoverExpiredLeases(f.ctx, due.Add(WakeLeaseTTL+time.Second))
+	n, err = f.wake.RecoverExpiredLeases(f.ctx, due.Add(sessionwake.WakeLeaseTTL+time.Second))
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n)
 
-	taken, err := f.wake.ClaimDue(f.ctx, "worker-2", due.Add(WakeLeaseTTL+time.Second), 10, WakeLeaseTTL)
+	taken, err := f.wake.ClaimDue(f.ctx, "worker-2", due.Add(sessionwake.WakeLeaseTTL+time.Second), 10, sessionwake.WakeLeaseTTL)
 	require.NoError(t, err)
 	require.Len(t, taken, 1, "the expired lease's row goes to the next claimant")
 	require.Equal(t, "worker-2", taken[0].LeaseOwner.String)
@@ -220,7 +222,7 @@ func TestWakeScheduleStore_ConcurrentClaimAndFireIsExactlyOnce(t *testing.T) {
 	t.Parallel()
 	f := newWakeFx(t)
 	due := f.base.Add(time.Minute)
-	row := f.create(WakeKindLoop, due, nil)
+	row := f.create(sessionwake.WakeKindLoop, due, nil)
 
 	const workers = 8
 	var wg sync.WaitGroup
@@ -230,7 +232,7 @@ func TestWakeScheduleStore_ConcurrentClaimAndFireIsExactlyOnce(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			owner := "worker-" + strconv.Itoa(i)
-			claimed, err := f.wake.ClaimDue(f.ctx, owner, due, 10, WakeLeaseTTL)
+			claimed, err := f.wake.ClaimDue(f.ctx, owner, due, 10, sessionwake.WakeLeaseTTL)
 			if err != nil {
 				return
 			}
@@ -257,11 +259,11 @@ func TestWakeScheduleStore_LoopOrderAndMaxRuns(t *testing.T) {
 	t.Parallel()
 	f := newWakeFx(t)
 	start := f.base.Add(time.Minute)
-	row := f.create(WakeKindLoop, start, func(p *CreateWakeScheduleParams) { p.MaxRuns = 3 })
+	row := f.create(sessionwake.WakeKindLoop, start, func(p *sessionwake.CreateWakeScheduleParams) { p.MaxRuns = 3 })
 
 	now := start
 	for i := 1; i <= 3; i++ {
-		claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", now, 10, WakeLeaseTTL)
+		claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", now, 10, sessionwake.WakeLeaseTTL)
 		require.NoError(t, err)
 		require.Len(t, claimed, 1, "fire %d", i)
 		fire, err := f.wake.FireOccurrence(f.ctx, row.ID, "worker-1", now)
@@ -290,11 +292,11 @@ func TestWakeScheduleStore_LoopUntilFinishes(t *testing.T) {
 	f := newWakeFx(t)
 	start := f.base.Add(time.Minute)
 	until := start.Add(400 * time.Second) // after fire 1, before boundary 2
-	row := f.create(WakeKindLoop, start, func(p *CreateWakeScheduleParams) { p.Until = &until })
+	row := f.create(sessionwake.WakeKindLoop, start, func(p *sessionwake.CreateWakeScheduleParams) { p.Until = &until })
 
 	// Fire 1 advances (next=start+300 is still inside until=start+400);
 	// fire 2 finishes because the NEXT boundary (start+600) crosses until.
-	claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", start, 10, WakeLeaseTTL)
+	claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", start, 10, sessionwake.WakeLeaseTTL)
 	require.NoError(t, err)
 	require.Len(t, claimed, 1)
 	fire, err := f.wake.FireOccurrence(f.ctx, row.ID, "worker-1", start)
@@ -302,7 +304,7 @@ func TestWakeScheduleStore_LoopUntilFinishes(t *testing.T) {
 	require.True(t, fire.Fired)
 	require.False(t, fire.Done, "the next boundary (start+300) is inside until (start+400)")
 
-	claimed, err = f.wake.ClaimDue(f.ctx, "worker-1", *fire.NextRun, 10, WakeLeaseTTL)
+	claimed, err = f.wake.ClaimDue(f.ctx, "worker-1", *fire.NextRun, 10, sessionwake.WakeLeaseTTL)
 	require.NoError(t, err)
 	require.Len(t, claimed, 1)
 	fire, err = f.wake.FireOccurrence(f.ctx, row.ID, "worker-1", *fire.NextRun)
@@ -322,10 +324,10 @@ func TestWakeScheduleStore_LoopSkipsMissedIntervals(t *testing.T) {
 	t.Parallel()
 	f := newWakeFx(t)
 	start := f.base.Add(time.Minute)
-	row := f.create(WakeKindLoop, start, nil)
+	row := f.create(sessionwake.WakeKindLoop, start, nil)
 
 	after := start.Add(30000 * time.Second) // 100 intervals missed
-	claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", after, 10, WakeLeaseTTL)
+	claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", after, 10, sessionwake.WakeLeaseTTL)
 	require.NoError(t, err)
 	require.Len(t, claimed, 1)
 	fire, err := f.wake.FireOccurrence(f.ctx, row.ID, "worker-1", after)
@@ -336,7 +338,7 @@ func TestWakeScheduleStore_LoopSkipsMissedIntervals(t *testing.T) {
 	skipped := int64(30000/300) + 1
 	require.Equal(t, start.Add(time.Duration(skipped)*300*time.Second).Unix(), fire.NextRun.Unix())
 
-	nothing, err := f.wake.ClaimDue(f.ctx, "worker-1", after, 10, WakeLeaseTTL)
+	nothing, err := f.wake.ClaimDue(f.ctx, "worker-1", after, 10, sessionwake.WakeLeaseTTL)
 	require.NoError(t, err)
 	require.Empty(t, nothing, "no catch-up: one firing per downtime, then the grid")
 
@@ -352,13 +354,13 @@ func TestWakeScheduleStore_CancelIdempotentAndOwned(t *testing.T) {
 	t.Parallel()
 	f := newWakeFx(t)
 	due := f.base.Add(time.Minute)
-	row := f.create(WakeKindOnce, due, nil)
+	row := f.create(sessionwake.WakeKindOnce, due, nil)
 
 	require.NoError(t, f.wake.CancelSchedule(f.ctx, wakeTestOwner, row.ID, f.base))
 	require.NoError(t, f.wake.CancelSchedule(f.ctx, wakeTestOwner, row.ID, f.base), "second cancel is a no-op")
-	require.ErrorIs(t, f.wake.CancelSchedule(f.ctx, "other-session", row.ID, f.base), ErrWakeScheduleNotOwned)
+	require.ErrorIs(t, f.wake.CancelSchedule(f.ctx, "other-session", row.ID, f.base), sessionwake.ErrWakeScheduleNotOwned)
 
-	claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", due, 10, WakeLeaseTTL)
+	claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", due, 10, sessionwake.WakeLeaseTTL)
 	require.NoError(t, err)
 	require.Empty(t, claimed, "a cancelled schedule is never claimed")
 	fire, err := f.wake.FireOccurrence(f.ctx, row.ID, "worker-1", due)
@@ -371,17 +373,17 @@ func TestWakeScheduleStore_CancelIdempotentAndOwned(t *testing.T) {
 	require.EqualValues(t, 0, f.noticeCount())
 }
 
-// CancelScheduleReport answers from the CAS itself: true only for the call
+// sessionwake.CancelScheduleReport answers from the CAS itself: true only for the call
 // that moved an active row, false for a schedule that already fired or was
 // cancelled between the caller's look and the cancel (SCHED-5).
 func TestWakeScheduleStore_CancelReportIsTheCAS(t *testing.T) {
 	t.Parallel()
 	f := newWakeFx(t)
 	due := f.base.Add(time.Minute)
-	fired := f.create(WakeKindOnce, due, nil)
-	live := f.create(WakeKindOnce, f.base.Add(time.Hour), nil)
+	fired := f.create(sessionwake.WakeKindOnce, due, nil)
+	live := f.create(sessionwake.WakeKindOnce, f.base.Add(time.Hour), nil)
 
-	claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", due, 10, WakeLeaseTTL)
+	claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", due, 10, sessionwake.WakeLeaseTTL)
 	require.NoError(t, err)
 	require.Len(t, claimed, 1)
 	fire, err := f.wake.FireOccurrence(f.ctx, fired.ID, "worker-1", due)
@@ -400,7 +402,7 @@ func TestWakeScheduleStore_CancelReportIsTheCAS(t *testing.T) {
 	require.False(t, cancelled, "the second cancel moves nothing")
 
 	_, err = f.wake.CancelScheduleReport(f.ctx, "other-session", live.ID, due)
-	require.ErrorIs(t, err, ErrWakeScheduleNotOwned)
+	require.ErrorIs(t, err, sessionwake.ErrWakeScheduleNotOwned)
 	cancelled, err = f.wake.CancelScheduleReport(f.ctx, wakeTestOwner, "wake_missing", due)
 	require.NoError(t, err)
 	require.False(t, cancelled)
@@ -412,12 +414,12 @@ func TestWakeScheduleStore_CancelUnknownAndClaimLimit(t *testing.T) {
 	f := newWakeFx(t)
 	require.NoError(t, f.wake.CancelSchedule(f.ctx, wakeTestOwner, "wake_missing", f.base))
 
-	f.create(WakeKindOnce, f.base.Add(time.Minute), nil)
-	f.create(WakeKindOnce, f.base.Add(2*time.Minute), nil)
-	claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", f.base.Add(time.Hour), 1, WakeLeaseTTL)
+	f.create(sessionwake.WakeKindOnce, f.base.Add(time.Minute), nil)
+	f.create(sessionwake.WakeKindOnce, f.base.Add(2*time.Minute), nil)
+	claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", f.base.Add(time.Hour), 1, sessionwake.WakeLeaseTTL)
 	require.NoError(t, err)
 	require.Len(t, claimed, 1, "the claim honours its limit")
-	claimed, err = f.wake.ClaimDue(f.ctx, "worker-2", f.base.Add(time.Hour), 10, WakeLeaseTTL)
+	claimed, err = f.wake.ClaimDue(f.ctx, "worker-2", f.base.Add(time.Hour), 10, sessionwake.WakeLeaseTTL)
 	require.NoError(t, err)
 	require.Len(t, claimed, 1, "the second claimant gets the disjoint remainder")
 }
@@ -426,7 +428,7 @@ func TestWakeScheduleStore_CancelUnknownAndClaimLimit(t *testing.T) {
 func TestWakeScheduleStore_SessionDeleteCascades(t *testing.T) {
 	t.Parallel()
 	f := newWakeFx(t)
-	row := f.create(WakeKindLoop, f.base.Add(time.Minute), nil)
+	row := f.create(sessionwake.WakeKindLoop, f.base.Add(time.Minute), nil)
 
 	require.NoError(t, f.q.DeleteSession(f.ctx, wakeTestOwner))
 	_, err := f.get(row.ID)
@@ -438,13 +440,13 @@ func TestWakeScheduleStore_SessionDeleteCascades(t *testing.T) {
 func TestWakeScheduleStore_ResetCancelsActive(t *testing.T) {
 	t.Parallel()
 	f := newWakeFx(t)
-	active := f.create(WakeKindLoop, f.base.Add(10*time.Minute), nil)
-	done := f.create(WakeKindOnce, f.base.Add(2*time.Minute), nil)
+	active := f.create(sessionwake.WakeKindLoop, f.base.Add(10*time.Minute), nil)
+	done := f.create(sessionwake.WakeKindOnce, f.base.Add(2*time.Minute), nil)
 	fire, err := f.wake.FireOccurrence(f.ctx, done.ID, "", f.base.Add(2*time.Minute))
 	require.NoError(t, err)
 	require.False(t, fire.Fired, "firing without a lease is a no-op; finish the row via claim+fire")
 
-	claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", f.base.Add(2*time.Minute), 10, WakeLeaseTTL)
+	claimed, err := f.wake.ClaimDue(f.ctx, "worker-1", f.base.Add(2*time.Minute), 10, sessionwake.WakeLeaseTTL)
 	require.NoError(t, err)
 	require.Len(t, claimed, 1)
 	_, err = f.wake.FireOccurrence(f.ctx, done.ID, "worker-1", f.base.Add(2*time.Minute))
@@ -473,7 +475,7 @@ func TestWakeScheduleMigration_IdempotentOnExistingData(t *testing.T) {
 	conn, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)
 	q := db.New(conn)
-	require.NoError(t, sessionhosts.seedSession(ctx, q, "wake-mig"))
+	require.NoError(t, seedSession(ctx, q, "wake-mig"))
 	require.NoError(t, conn.Close())
 	require.NoError(t, db.Release(dataDir))
 

@@ -33,7 +33,7 @@ func newBatchRerunFx(t *testing.T) *batchRerunFx {
 	conn, err := db.Connect(ctx, t.TempDir())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(conn)) })
-	require.NoError(t, seedSessionn(ctx, db.New(conn), batchRerunOwner))
+	require.NoError(t, seedSession(ctx, db.New(conn), batchRerunOwner))
 	return &batchRerunFx{t: t, store: NewBatchStore(conn), conn: conn, ctx: ctx, messages: message.NewService(db.New(conn)), seq: 1}
 }
 
