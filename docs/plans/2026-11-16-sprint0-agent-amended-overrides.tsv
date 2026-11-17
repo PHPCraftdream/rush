@@ -206,7 +206,7 @@ coordinator_tools.go	coordinator.buildPolicyTools	coord	modelkit_glue.go
 coordinator_tools.go	coordinator.sharedBuildScopeFor	coord	modelkit_glue.go	
 coordinator_turn_hold.go	coordinator.HoldAutomaticTurns	coord	turn_glue.go	
 coordinator_turn_hold.go	coordinator.automaticTurnsHeld	coord	turn_glue.go	
-coordinator_wake.go	coordinator.wakeSession	coord	wake_component.go	
+coordinator_wake.go	coordinator.wakeSession	coord	wake_component.go		watchdog
 coordinator_wake.go	coordinator.handleDrainBuildError	coord	wake_component.go	
 coordinator_wake_cli.go	coordinator.openOnceWakeSchedules	coord	wake_component.go	
 coordinator_wake_cli.go	coordinator.HasOpenOnceWakeSchedule	coord	wake_component.go	
@@ -239,7 +239,7 @@ drain_attempt.go	sessionAgent.noteRefusal	agentrun	drain_methods.go
 drain_attempt.go	sessionAgent.afterTurn	agentrun	drain_methods.go	
 drain_attempt.go	coordinator.paceUnreacted	coord	drain_glue.go	
 drain_attempt.go	coordinator.drainRefused	coord	drain_glue.go	
-finalization_batch_root_owner_reader.go	batchRootLeaseStore.ownerForRoot	batchinst	lease_glue.go	
+finalization_batch_root_owner_reader.go	batchRootLeaseStore.ownerForRoot	batchflow	lease.go	
 finalization_call_context.go	sessionAgent.restoreFinalizationCallContext	agentrun	finalization_methods.go	
 finalization_candidate.go	finalizationGate.resumeCandidateSerial	batchinst	finalization_gate_methods.go	
 finalization_driver_binding.go	subAgentDriverRegistry.bindFinalizationIdentity	coord	subagent_glue.go		agentrun
@@ -431,8 +431,8 @@ agentic_fetch_policy.go	privateFetchIngressFor	batchassemble	fetch_ingress_adapt
 agentic_fetch_policy.go	armPrivateFetchIngress	batchassemble	fetch_ingress_adapter.go	
 agentic_fetch_policy.go	privateFetchIngressTool	toolwrap	toolwrap/wrappers.go	
 # --- decided seams round 1: port_owner (6-column) rows ---
-coordinator.go	coordinator	coord	coordinator_core.go		agentrun
-agent.go	sessionAgent	agentrun	agent_core.go		mailbox
+coordinator.go	coordinator	coord	coordinator_core.go	
+agent.go	sessionAgent	agentrun	agent_core.go	
 mailbox.go	mailbox	mailbox	mailbox_core.go		turnstep
 batch_credentials_escrow.go	batchCredentialLeaf	batchinst	escrow_seam.go		toolwrap
 batch_child_tool_scope.go	pctCapturedAgentTool	batchinst	tool_seam.go		toolwrap
@@ -474,7 +474,6 @@ supervision.go	supervisionIntervalNS	coord	supervision.go
 supervision.go	supervisionMinIntervalFloor	coord	supervision.go	
 supervision.go	supervisionState	coord	supervision.go	
 timeout_stop.go	WatchdogResumeGuidance	watchdog	stream_titles.go	
-supervision.go	supervisionRegistry	coord	supervision_glue.go		watchdog
 # --- round 2: mailbox seeds ---
 agent_ownership.go	promptHash	mailbox	ownership.go	
 # --- round 2: usage/promptcache ---
@@ -603,7 +602,7 @@ batch_install_ingress.go	BatchWorkIngress	batchcontract	batchcontract/ports.go
 batch_install_ingress.go	batchCoordinatorBinding	coord	coord/batch_glue.go		toolwrap
 batch_install_ingress.go	batchWorkIngress	batchinst	ingress_glue.go	
 batch_install_ingress.go	BatchAgentDeps	batchinst	ingress_glue.go	
-batch_install_ingress.go	BatchLeafRegistry	batchinst	ingress_glue.go	
+batch_install_ingress.go	BatchLeafRegistry	batchcontract	registry_contract.go	
 batch_install_ingress.go	BatchModelControl	batchinst	ingress_glue.go	
 batch_install_ingress.go	BatchMCPCapabilityResolver	batchinst	ingress_glue.go	
 batch_install_ingress.go	batchPinnedInvoke	batchinst	ingress_glue.go	
@@ -655,3 +654,34 @@ cli_tool_bridge.go	cliToolBridge.Tools	batchinst	batchinst/cli_tool_bridge.go
 cli_tool_bridge.go	cliToolBridge.Call	batchinst	batchinst/cli_tool_bridge.go	
 batch_install_ingress.go	batchCoordinatorBinding	coord	coord/batch_glue.go		batchinst
 batch_install_ingress.go	coordinatorBatchBindingFor	coord	coord/batch_glue.go	
+# --- FINAL DESIGN / LAST PASS: ownership intent only; bodies and state ports remain execution work ---
+# EX-0B decision: modelkit owns provider/model/cache component-private implementations (including cache key/LRU and private pair type); coord retains cfg, sessions, currentAgent, readyWg, lifecycle/autonomy state. Cache get/set/clear and model assembly that combine coordinator coordination remain *coordinator glue; inject narrow dependencies and same-point operations through modelkit-owned ports, not a coordinator-state bundle. No broad coordinator/sessionAgent port_owner seam. modelCacheMu/modelCacheEpoch must be encapsulated with modelkit cache state; member extraction is not representable independently in this symbol projection.
+coordinator.go	modelPairCache	modelkit	cache_contract.go	
+coordinator_model_cache.go	modelPairCacheKey	modelkit	model_cache.go	
+coordinator_model_cache.go	boundedModelPairCacheEntry	modelkit	model_cache.go	
+coordinator_model_cache.go	boundedModelPairCache	modelkit	model_cache.go	
+coordinator_model_cache.go	newBoundedModelPairCache	modelkit	model_cache.go	
+coordinator_model_cache.go	boundedModelPairCache.get	modelkit	model_cache.go	
+coordinator_model_cache.go	boundedModelPairCache.set	modelkit	model_cache.go	
+coordinator_model_cache.go	boundedModelPairCache.clear	modelkit	model_cache.go	
+coordinator_model_cache.go	boundedModelPairCache.Len	modelkit	model_cache.go	
+coordinator_model_cache.go	legacyModelPairCacheKey	modelkit	model_cache.go	
+# EX-0H decision: turnstep.turnBudget owns summarizeQueue and compaction-local state. agentrun retains admission/runWg and lifecycle/timeout configuration; supply try-admit and matching Done as same-time operations (retain defer/Done), plus immutable per-operation timeout options evaluated at the old reads. No runWg export or copied mutable timeout fields. Preserve lazy evaluation, queue/lock order, and existing mailbox interactions. Existing method retarget rows are proposals, not completed ports.
+# Batch decision: batchcontract owns transport/validation and narrow structural capabilities only. BatchInvocation.roleConfig (*config.Config; batch_invocation.go:135-136) is an implementation snapshot/provider, not portable transport; move it to execution-side options in implementation. BatchLeafRegistry is a lower-owned structural interface, not an alias of mutable policyLeafRegistry. Lease state/map remain batchflow; batchassemble.newBatchInstall injects ingress/delivery/lease implementations. Keep process globals private to existing owners and evaluate providers at their former call point.
+# BatchLeafRegistry is deliberately reconciled in place at the round-4 declaration row above; do not add a duplicate override. The target is the new lower-owned structural contract, not the current alias declaration body.
+batch_root_lease.go	BatchRootLeaseStore	batchcontract	lease_contract.go	
+batch_root_lease.go	batchRootIdentity	batchflow	lease.go	
+batch_root_lease.go	batchRootLeaseStore	batchflow	lease.go	
+batch_root_lease.go	newBatchRootLeaseStore	batchflow	lease.go	
+batch_root_lease.go	NewBatchRootLeaseStore	batchflow	lease.go	
+batch_root_lease.go	batchRootLeaseStore.key	batchflow	lease.go	
+batch_root_lease.go	batchRootLeaseStore.acquire	batchflow	lease.go	
+batch_root_lease.go	batchRootLeaseStore.adopt	batchflow	lease.go	
+batch_root_lease.go	batchRootLeaseStore.release	batchflow	lease.go	
+batch_root_lease.go	batchRootLeaseStore.forget	batchflow	lease.go	
+batch_root_lease.go	batchRootLeaseStore.matches	batchflow	lease.go	
+# Preserve lease settlement ordering: batch_root_lease.go:98-112 adopt watcher does release -> forget -> optional release callback. Current alias/pointer API must become a narrow interface with adapter methods during execution; symbol projection cannot represent field type/signature edits.
+# EX-0N decision: retain the current privateFetchIngressTool and methods with their current wrapping owner toolwrap (agentic_fetch_policy.go:113-134; existing rows 432,535-536); avoid gratuitous reversal. PolicyLeafTool() fantasy.AgentTool is a narrow capability to define/consume in toolwrap for the roleContractsFromTool switch only (policy_leaf.go:164-201, especially concrete cases 188-195). It does NOT replace policyLeafExecution's separate recognized-wrapper-copying behavior (policy_leaf.go:212-245), and no TSV row claims that method is implemented.
+# Watchdog decision: narrow wake callback/port supplied by coord; the exact port_owner on coordinator.wakeSession covers only watchdog use of that operation. Preserve supervision.go:550 wake before :566 releaseChildDriverIfScopeClosed. Do not tag coordinator/sessionAgent/supervisionRegistry with broad port_owner to hide field dependencies. Checkpoint broad type seams are assumptions, not proof of state ports/body changes.
+# symgraph projection is ownership-only: declarations/receiver tokens/port_owner are mapped, bodies are not rewritten, and struct-member state extraction is not represented. Existing port_owner attribution creates self-edges for seam uses; report/count these separately from genuine inter-owner dependencies. Residual dependencies/SCCs are expected and acceptable; no cycle-removal claim is made.
+
