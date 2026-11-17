@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 
+	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -42,7 +44,7 @@ func newAPICmd() *cobra.Command {
 
 func rejectAPITokenArguments(cmd *cobra.Command, args []string) error {
 	refuse := func() error {
-		return &exitCodeError{code: 2, err: errors.New("token-looking input refused; rotate the token")}
+		return cliout.NewExitCodeError(2, errors.New("token-looking input refused; rotate the token"))
 	}
 	for _, arg := range args {
 		if config.LooksLikeAPIToken(arg) {
@@ -66,15 +68,23 @@ func apiFlagString(cmd *cobra.Command, name string) string {
 	return strings.TrimSpace(value)
 }
 
-// apiTokenArgumentGuard is called by the root pre-run (a subcommand must not
-// set its own PersistentPreRunE: cobra would run only the nearest one and skip
-// the journal and password checks). It refuses token-shaped arguments and flag
-// values for every command of the `rush api` group.
-func apiTokenArgumentGuard(cmd *cobra.Command, args []string) error {
+// APITokenArgumentGuard is called by the cli root pre-run (a subcommand must
+// not set its own PersistentPreRunE: cobra would run only the nearest one and
+// skip the journal and password checks). It refuses token-shaped arguments and
+// flag values for every command of the `rush api` group. root is the live
+// tree root passed by cli.NewRootCmd (lane K2 crossing, design §3.4: the
+// former rootCmd package global no longer exists).
+func APITokenArgumentGuard(root *cobra.Command, cmd *cobra.Command, args []string) error {
 	for c := cmd; c != nil; c = c.Parent() {
-		if c.Name() == "api" && (c.Parent() == nil || c.Parent() == rootCmd) {
+		if c.Name() == "api" && (c.Parent() == nil || c.Parent() == root) {
 			return rejectAPITokenArguments(cmd, args)
 		}
 	}
 	return nil
+}
+
+// NewAPICmd returns the rush apiCmd command (former root.go registration; lane K2 of
+// the sprint0 cmd split replaced rootCmd.AddCommand with constructors).
+func NewAPICmd() *cobra.Command {
+	return newAPICmd()
 }

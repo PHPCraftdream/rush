@@ -144,10 +144,3 @@ rush models state
 		return nil
 	},
 }
-
-func init() {
-	modelsUnsetCmd.Flags().Bool("global", false, "Target the global config (default when neither --global nor --local is given)")
-	modelsUnsetCmd.Flags().Bool("local", false, "Target the workspace config (./.rush/rush.json)")
-	modelsUnsetCmd.MarkFlagsMutuallyExclusive("global", "local")
-	modelsCmd.AddCommand(modelsUnsetCmd)
-}

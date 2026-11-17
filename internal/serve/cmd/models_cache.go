@@ -35,8 +35,3 @@ rush models cache clear zai`,
 		return nil
 	},
 }
-
-func init() {
-	modelsCacheCmd.AddCommand(modelsCacheClearCmd)
-	modelsCmd.AddCommand(modelsCacheCmd)
-}

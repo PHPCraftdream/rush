@@ -93,8 +93,8 @@ unchanged.
 It is either `""` (ordinary writes) or the fixed token `"ui"` (trusted-UI
 writes, via `settingsAuditSource` in `internal/config/settings_authority.go`).
 It never carries secrets, credentials, or user identifiers. The CLI audit sink
-(registered with `config.SetSettingsAuditSink` in `internal/serve/cmd/root.go`,
-function `setSettingsAudit`) records the `source` label alongside `scope` and
+(registered with `config.SetSettingsAuditSink` in `internal/serve/cmd/cli/cmdkit/appopen.go`,
+function `SetSettingsAudit`) records the `source` label alongside `scope` and
 `outcome`.
 
 ## 6. Guarantees against bypass windows

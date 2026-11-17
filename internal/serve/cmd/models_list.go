@@ -249,9 +249,3 @@ func joinLevels(ls []string) string {
 	}
 	return out
 }
-
-func init() {
-	modelsListCmd.Flags().Bool("json", false, "Emit a structured JSON object instead of human-readable text")
-	modelsListCmd.Flags().Bool("refresh", false, "Force a network refresh of provider data before listing (default: read cache/embedded only, no network)")
-	modelsCmd.AddCommand(modelsListCmd)
-}

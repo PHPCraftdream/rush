@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/spf13/cobra"
@@ -74,9 +75,23 @@ var unlockCmd = &cobra.Command{
 	},
 }
 
-func init() {
-	for _, c := range []*cobra.Command{lockCmd, unlockCmd} {
-		c.Flags().Bool("global", false, "Use global settings")
-		c.Flags().Bool("local", false, "Use workspace settings")
-	}
+// NewLockCmd returns the rush lock command (registering lock/unlock flags
+// exactly once; former package init body, lane K2 of the sprint0 cmd split
+// removed package init registration).
+var newLockCmdOnce sync.Once
+
+func NewLockCmd() *cobra.Command {
+	newLockCmdOnce.Do(func() {
+		for _, c := range []*cobra.Command{lockCmd, unlockCmd} {
+			c.Flags().Bool("global", false, "Use global settings")
+			c.Flags().Bool("local", false, "Use workspace settings")
+		}
+	})
+	return deepFreshCmd(lockCmd)
+}
+
+// NewUnlockCmd returns the rush unlock command.
+func NewUnlockCmd() *cobra.Command {
+	NewLockCmd()
+	return deepFreshCmd(unlockCmd)
 }

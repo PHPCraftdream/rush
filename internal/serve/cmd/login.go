@@ -11,6 +11,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
+
+	cliproc "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
 
 	"charm.land/lipgloss/v2"
 	hyperp "github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
@@ -23,15 +26,6 @@ import (
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
 )
-
-func init() {
-	// Fork merge note (origin/main 2026-05-16 / 303b153b): upstream added
-	// --force so re-running login on an already-authenticated provider
-	// reports the existing token instead of starting a new device-auth dance.
-	// Useful UX, kept verbatim.
-	loginCmd.Flags().BoolP("force", "f", false, "Force re-authentication even if already logged in")
-	loginCmd.Flags().Bool("device", false, "Use device-code authentication instead of browser login")
-}
 
 var loginCmd = &cobra.Command{
 	Aliases: []string{"auth"},
@@ -244,7 +238,7 @@ func loginOpenAICodex(cfg *config.ConfigStore, force, device bool) error {
 		return nil
 	}
 
-	ctx, cancel := commandSignalContext(context.Background(), os.Interrupt)
+	ctx, cancel := cliproc.CommandSignalContext(context.Background(), os.Interrupt)
 	defer cancel()
 	// Ctrl-C in the link controls cancels the login exactly like SIGINT.
 	ctx, interrupt := context.WithCancel(ctx)
@@ -292,7 +286,7 @@ func loginOpenAICodex(cfg *config.ConfigStore, force, device bool) error {
 }
 
 func getLoginContext() context.Context {
-	ctx, cancel := commandSignalContext(context.Background(), cancelSignals...)
+	ctx, cancel := cliproc.CommandSignalContext(context.Background(), cliproc.CancelSignals()...)
 	go func() {
 		<-ctx.Done()
 		cancel()
@@ -303,4 +297,19 @@ func getLoginContext() context.Context {
 
 func waitEnter() {
 	_, _ = fmt.Scanln()
+}
+
+// NewLoginCmd returns a fresh login command tree from the registered template.
+var newLoginCmdOnce sync.Once
+
+func NewLoginCmd() *cobra.Command {
+	newLoginCmdOnce.Do(func() {
+		// Fork merge note (origin/main 2026-05-16 / 303b153b): upstream added
+		// --force so re-running login on an already-authenticated provider
+		// reports the existing token instead of starting a new device-auth dance.
+		// Useful UX, kept verbatim.
+		loginCmd.Flags().BoolP("force", "f", false, "Force re-authentication even if already logged in")
+		loginCmd.Flags().Bool("device", false, "Use device-code authentication instead of browser login")
+	})
+	return deepFreshCmd(loginCmd)
 }

@@ -174,9 +174,3 @@ func parseAge(s string) (time.Duration, error) {
 	}
 	return d, nil
 }
-
-func init() {
-	sessionsPurgeCmd.Flags().Bool("dry-run", false, "Print what would be deleted without deleting")
-	sessionsPurgeCmd.Flags().Bool("yes", false, "Skip the confirmation prompt")
-	sessionsPurgeCmd.Flags().String("matching", "", "Only delete sessions whose ID matches this glob (e.g. 'garnet-sql-*')")
-}

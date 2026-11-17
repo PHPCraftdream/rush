@@ -56,15 +56,6 @@ rush sessions inject 8a3f0c -m "continue" --json
 	RunE: sessionsInjectCmdRun,
 }
 
-func init() {
-	sessionsInjectCmd.Flags().StringP("message", "m", "", "Message text to inject (mutually exclusive with --file)")
-	sessionsInjectCmd.Flags().StringP("file", "f", "", "Read message text from this file (mutually exclusive with --message)")
-	sessionsInjectCmd.Flags().Bool("interrupt", false, "Cancel the current turn and restart it with this message")
-	sessionsInjectCmd.Flags().Bool("json", false, "Emit a structured JSON result")
-
-	sessionsCmd.AddCommand(sessionsInjectCmd)
-}
-
 // injectResult is the wire shape of `rush sessions inject --json`.
 type injectResult struct {
 	SessionID string `json:"session_id"`

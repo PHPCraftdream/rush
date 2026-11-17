@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/spf13/cobra"
 )
@@ -129,8 +130,16 @@ func installGeminiCommands(commandsDir string) error {
 	return nil
 }
 
-func init() {
-	geminiInitCmd.Flags().Bool("global", false, "Install into ~/.gemini/commands/ (available in every project). Default when neither --global nor --local is given.")
-	geminiInitCmd.Flags().Bool("local", false, "Install into the current project's .gemini/commands/ instead of ~/.gemini/commands/.")
-	rootCmd.AddCommand(geminiInitCmd)
+// NewGeminiInitCmd returns the rush geminiInitCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newGeminiInitCmdOnce sync.Once
+
+func NewGeminiInitCmd() *cobra.Command {
+	newGeminiInitCmdOnce.Do(func() {
+		geminiInitCmd.Flags().Bool("global", false, "Install into ~/.gemini/commands/ (available in every project). Default when neither --global nor --local is given.")
+		geminiInitCmd.Flags().Bool("local", false, "Install into the current project's .gemini/commands/ instead of ~/.gemini/commands/.")
+	})
+	return deepFreshCmd(geminiInitCmd)
 }

@@ -9,13 +9,17 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/log/v2"
+	"github.com/charmbracelet/x/term"
+	"github.com/spf13/cobra"
+
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
+	cliproc "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
 	"github.com/PHPCraftdream/rush/internal/store/message"
-	"github.com/spf13/cobra"
 )
 
 var runCmd = &cobra.Command{
@@ -237,9 +241,9 @@ var runCmd = &cobra.Command{
 
 		// A closed stdout pipe fails the exit flush instead of killing the run
 		// (hook and Shutdown still run, R8C-7).
-		defer keepBrokenPipeAsError()()
+		defer cliproc.KeepBrokenPipeAsError()()
 
-		ctx, cancel := commandSignalContext(context.Background(), cancelSignals...)
+		ctx, cancel := cliproc.CommandSignalContext(context.Background(), cliproc.CancelSignals()...)
 		defer cancel()
 
 		// Both run deadlines carry their owned cause through graceful cleanup.
@@ -391,68 +395,329 @@ var runCmd = &cobra.Command{
 	},
 }
 
-func init() {
-	// A failed/incomplete run returns an error to drive a non-zero exit code
-	// (see app.RunNonInteractive / runIncompleteError). That is a runtime
-	// outcome, not a usage mistake — don't dump the (very long) help text on
-	// it. The concise error still prints to stderr.
-	runCmd.SilenceUsage = true
-	runCmd.Flags().BoolP("quiet", "q", false, "Hide spinner")
-	runCmd.Flags().BoolP("verbose", "v", false, "Show logs")
-	runCmd.Flags().String("role", "", "REQUIRED. Built-in model slot smart|fast|worker|reviewer, or an exact configured custom role name.")
-	runCmd.Flags().String("effort", "", "Reasoning effort for this turn: low|medium|high. Applies to whichever slot --role picked. Not persisted by rush run.")
-	runCmd.Flags().Bool("stream", false, "Stream every assistant token to stdout. Default is terse: tool-call names on stderr + final answer on stdout.")
-	runCmd.Flags().Bool("json", false, "Emit one JSON object on stdout summarising the run (session_id, final_text, tool_calls, usage, duration, exit_reason). Mutually exclusive with --stream.")
-	runCmd.Flags().String("timeout", "0", "Abort the whole run after this total wall-clock duration (e.g. 30s, 5m, 900 — plain number = seconds), including active work and waits. On deadline Rush requests graceful cancellation; if the process remains alive 60s later, the hard backstop force-exits it. Default 0 means no explicit deadline, but a 6h total default cap still applies; streaming progress does not reset it. RUSH_RUN_DEFAULT_HARD_TIMEOUT overrides that cap. See --idle-timeout for the separate inactivity backstop.")
-	runCmd.Flags().String("idle-timeout", "15m", "End the run if the agent produces no activity (no streamed output, no tool call/result) for this long — a stuck tool call still counts as activity and is bounded separately. Terminal: unlike a provider stall on other rush entry points, this never silently retries. e.g. 5m, 900, 0 to disable. Default 15m.")
-	runCmd.Flags().Duration("stall-timeout", 30*60*time.Second, "Abort a turn that has made no durable progress (tool call/result, step finish, checkpoint) for this long (turn-stall abort policy). Default 30m; 0 disables the abort.")
-	runCmd.Flags().StringP("model", "m", "", "Model to use. Accepts 'model' or 'provider/model' to disambiguate models with the same name across providers")
-	runCmd.Flags().String("fast-model", "", "Fast model to use. If not provided, uses the default fast model for the provider")
-	runCmd.Flags().StringP("session", "s", "", "Session ID to continue OR create. If a session with this id exists it is continued; otherwise a new one is created with this id. Accepts a hash prefix for existing sessions only.")
-	runCmd.Flags().String("findings-from", "", "Append a 'Findings from previous review' block (review verdict, review text, warnings) read from another run's envelope to this run's prompt. Value: a session id (resolves <main-checkout>/.rush/stdin/<id>.out, the file 'rush run --worktree' writes; see 'rush result') or a path to an envelope file. Missing or invalid envelope fails the run BEFORE it starts. Example: rush run --role smart --session fix-2 --findings-from fix-1 \"fix every finding\"")
-	runCmd.Flags().Bool("fail-on-review", false, "Exit with code 3 when this run's automatic reviewer verdict is \"fail\". pass and pass_with_notes stay 0; a run with no reviewer pass keeps 0; a run that itself failed keeps its own exit code (1/124). The stdout envelope is unchanged — only the process exit code is affected. Read the review afterwards with 'rush result <session> --review'.")
-	runCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
-	runCmd.Flags().String("system-prompt", "", "Override the session's system prompt with this string (persisted on the session)")
-	runCmd.Flags().String("system-prompt-file", "", "Read the system prompt from this file (mutually exclusive with --system-prompt)")
-	// Fork patch (orchestrator UX): per-turn output-shape and sub-agent
-	// policy. Neither persists on the session.
-	runCmd.Flags().String("format", "", "Per-turn output-shape hint appended to the user prompt. Presets: 'json' (final answer must be a single JSON value, no fences, no prose) | 'json-schema:<file>' (json + conform to this schema) | '@<file>' (use file contents verbatim as the hint) | any other text (used as a freeform 'Output format:' instruction). With --json or --format json, the envelope's final_text is also post-processed to strip ```json fences and prose preamble; the original is preserved in assistant_notes.")
-	runCmd.Flags().String("agents", "", "Sub-agent dispatch policy for this run. Default (unset) = NO sub-agents: the `agent`/`agentic_fetch` tools are removed from the toolset for this non-interactive process (no UI to surface sub-agent work; a nested run burns tokens out of view). 'single' (same — explicit) | 'agent-allow' (opt in: tools present, model decides) | 'with-agents' (opt in + nudge the model to fan out). NOT an absolute guarantee: if --role smart is used AND a Worker model is configured, the `agent` tool is restored regardless of 'single' — a configured Worker always means orchestrator mode. `agentic_fetch` stays stripped either way.")
-	runCmd.Flags().Int("max-agent-depth", 2, "Maximum remaining agent delegation edges (0..32). Default 2.")
-	runCmd.Flags().String("aggregation", "", "How sub-agent fan-out output reaches the orchestrator. 'summary' (default — parent composes a wrap-up, sub-agent detail lives in DB only) | 'concat' (prompt-nudge: parent includes each sub-agent reply verbatim in final_text) | 'attach' (collect each sub-agent's last assistant text into envelope.sub_agent_outputs; final_text becomes a brief wrap-up). An always-on reduction-loss warning fires regardless when parent collapses sub-agent outputs to <40% of their combined size.")
-	// Fork patch: batch 8 — timeout extension flags.
-	runCmd.Flags().Bool("timeout-extends-on-progress", false, "Reset the per-turn stream watchdog deadline every time streaming progress occurs. Does not extend the total --timeout/default-cap run deadline. Default: false (static watchdog deadline).")
-	runCmd.Flags().String("timeout-hard-cap", "0", "Maximum wall-clock time the stream watchdog allows even with --timeout-extends-on-progress (e.g. 30s, 5m, 900 — plain number = seconds); watchdog-only, separate from the total run deadline. Default: 0 (no cap).")
-	// Fork patch: batch 24 — on-finish hook.
-	runCmd.Flags().String("on-finish", "", "Shell command to execute after the run completes. Environment variables: RUSH_SESSION_ID, RUSH_EXIT_REASON, RUSH_COST_USD, RUSH_TOKENS, RUSH_DURATION_SEC. Hook errors are printed to stderr but don't affect exit code.")
-	// Fork patch: batch 30 — runaway protection.
-	runCmd.Flags().String("max-cost", "", "Abort the run if total cost (USD) exceeds this value. e.g. 0.50, 2.00")
-	runCmd.Flags().String("max-tokens", "", "Abort the run if total prompt+completion tokens exceed this value. e.g. 100k, 1M, 500000")
-	// Fork patch: MCP servers default to OFF in CLI mode (see mcpAppOptions
-	// in root.go) unless mcp.<id>.enabled_in_cli=true; this is the one-off
-	// escape hatch for a run that needs a server rush would otherwise skip.
-	runCmd.Flags().Bool("all-mcp", false, `Force-start every configured, non-disabled MCP server for this run, ignoring each server's enabled_in_cli setting. Does not affect interactive TUI/web sessions, which always start every non-disabled server regardless of this flag.`)
-	// Fork patch (peak-hours bypass): --allow-peak-hours skips the per-provider
-	// peak_hours refusal for THIS invocation only. There is intentionally NO
-	// config-level "always allow" equivalent — the whole point is a conscious
-	// one-off override.
-	//
-	// WARNING: this flag must NEVER be added by an orchestrating agent on its
-	// own initiative. Only pass --allow-peak-hours when a human operator has
-	// explicitly asked, in this specific request, to override peak hours. An
-	// agent that adds this flag without an explicit human instruction is
-	// violating the operator's intent.
-	runCmd.Flags().Bool("allow-peak-hours", false, `Bypass the per-provider peak_hours refusal for this single invocation only. WARNING: this flag must NEVER be added by an orchestrating agent on its own initiative — only pass it when a human operator has explicitly asked, in this specific request, to override peak hours. An agent that adds this flag without an explicit human instruction is violating the operator's intent. There is no persistent config-level equivalent; the override is conscious and one-off by design.`)
-	runCmd.Flags().Bool("no-supervision", false, "Disable the periodic root-session supervision check-in for this run (default on, fires after 5m of chat silence while background jobs/delegations are still open; never fires with no open work or mid-turn).")
-	runCmd.Flags().String("supervision-interval", "", "Override the supervision check-in's initial/reset silence interval (e.g. 10m, 600 — plain number = seconds). Empty = config's supervision_interval_minutes or the built-in 5m default.")
-	runCmd.Flags().String("job-timeout", "", "Default terminate_and_wake deadline for background bash/run_command jobs that pass no explicit timeout (e.g. 2m, 90s — plain number = seconds). Empty = off (config's background_job_default_timeout_seconds can also set it; a per-call timeout always wins).")
-	// Fork patch (worktree delegation): run inside an isolated git
-	// worktree created/reused under the main checkout's worktrees/
-	// directory. See run_worktree.go.
-	runCmd.Flags().String("worktree", "", "Resolve or create the git worktree <main>/worktrees/<slug> and run this invocation with cwd inside it. The slug is a single path segment ([a-z0-9][a-z0-9._-]*). Reuses a registered worktree whose branch matches; refuses a path occupied by anything else or a branch mismatch (pass --branch to match). Defaults --session to the slug and mirrors stdout/stderr into <main>/.rush/stdin/<session>.{out,err}. Incompatible with --cwd and --data-dir. Manage with `rush worktree list` / `rush worktree remove <slug>`.")
-	runCmd.Flags().String("base", "", "With --worktree: the ref the worktree's branch is created from (default: the main checkout's HEAD). Ignored when the branch already exists. Requires --worktree.")
-	runCmd.Flags().String("branch", "", "With --worktree: the branch the worktree uses, created when missing (default: the slug). Required to match when reusing a worktree that sits on a different branch. Requires --worktree.")
-	runCmd.MarkFlagsMutuallyExclusive("session", "continue")
-	runCmd.MarkFlagsMutuallyExclusive("system-prompt", "system-prompt-file")
-	runCmd.MarkFlagsMutuallyExclusive("stream", "json")
+// NewRunCmd returns the rush runCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newRunCmdOnce sync.Once
+
+func NewRunCmd() *cobra.Command {
+	newRunCmdOnce.Do(func() {
+		// A failed/incomplete run returns an error to drive a non-zero exit code
+		// (see app.RunNonInteractive / runIncompleteError). That is a runtime
+		// outcome, not a usage mistake — don't dump the (very long) help text on
+		// it. The concise error still prints to stderr.
+		runCmd.SilenceUsage = true
+		runCmd.Flags().BoolP("quiet", "q", false, "Hide spinner")
+		runCmd.Flags().BoolP("verbose", "v", false, "Show logs")
+		runCmd.Flags().String("role", "", "REQUIRED. Built-in model slot smart|fast|worker|reviewer, or an exact configured custom role name.")
+		runCmd.Flags().String("effort", "", "Reasoning effort for this turn: low|medium|high. Applies to whichever slot --role picked. Not persisted by rush run.")
+		runCmd.Flags().Bool("stream", false, "Stream every assistant token to stdout. Default is terse: tool-call names on stderr + final answer on stdout.")
+		runCmd.Flags().Bool("json", false, "Emit one JSON object on stdout summarising the run (session_id, final_text, tool_calls, usage, duration, exit_reason). Mutually exclusive with --stream.")
+		runCmd.Flags().String("timeout", "0", "Abort the whole run after this total wall-clock duration (e.g. 30s, 5m, 900 — plain number = seconds), including active work and waits. On deadline Rush requests graceful cancellation; if the process remains alive 60s later, the hard backstop force-exits it. Default 0 means no explicit deadline, but a 6h total default cap still applies; streaming progress does not reset it. RUSH_RUN_DEFAULT_HARD_TIMEOUT overrides that cap. See --idle-timeout for the separate inactivity backstop.")
+		runCmd.Flags().String("idle-timeout", "15m", "End the run if the agent produces no activity (no streamed output, no tool call/result) for this long — a stuck tool call still counts as activity and is bounded separately. Terminal: unlike a provider stall on other rush entry points, this never silently retries. e.g. 5m, 900, 0 to disable. Default 15m.")
+		runCmd.Flags().Duration("stall-timeout", 30*60*time.Second, "Abort a turn that has made no durable progress (tool call/result, step finish, checkpoint) for this long (turn-stall abort policy). Default 30m; 0 disables the abort.")
+		runCmd.Flags().StringP("model", "m", "", "Model to use. Accepts 'model' or 'provider/model' to disambiguate models with the same name across providers")
+		runCmd.Flags().String("fast-model", "", "Fast model to use. If not provided, uses the default fast model for the provider")
+		runCmd.Flags().StringP("session", "s", "", "Session ID to continue OR create. If a session with this id exists it is continued; otherwise a new one is created with this id. Accepts a hash prefix for existing sessions only.")
+		runCmd.Flags().String("findings-from", "", "Append a 'Findings from previous review' block (review verdict, review text, warnings) read from another run's envelope to this run's prompt. Value: a session id (resolves <main-checkout>/.rush/stdin/<id>.out, the file 'rush run --worktree' writes; see 'rush result') or a path to an envelope file. Missing or invalid envelope fails the run BEFORE it starts. Example: rush run --role smart --session fix-2 --findings-from fix-1 \"fix every finding\"")
+		runCmd.Flags().Bool("fail-on-review", false, "Exit with code 3 when this run's automatic reviewer verdict is \"fail\". pass and pass_with_notes stay 0; a run with no reviewer pass keeps 0; a run that itself failed keeps its own exit code (1/124). The stdout envelope is unchanged — only the process exit code is affected. Read the review afterwards with 'rush result <session> --review'.")
+		runCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
+		runCmd.Flags().String("system-prompt", "", "Override the session's system prompt with this string (persisted on the session)")
+		runCmd.Flags().String("system-prompt-file", "", "Read the system prompt from this file (mutually exclusive with --system-prompt)")
+		// Fork patch (orchestrator UX): per-turn output-shape and sub-agent
+		// policy. Neither persists on the session.
+		runCmd.Flags().String("format", "", "Per-turn output-shape hint appended to the user prompt. Presets: 'json' (final answer must be a single JSON value, no fences, no prose) | 'json-schema:<file>' (json + conform to this schema) | '@<file>' (use file contents verbatim as the hint) | any other text (used as a freeform 'Output format:' instruction). With --json or --format json, the envelope's final_text is also post-processed to strip ```json fences and prose preamble; the original is preserved in assistant_notes.")
+		runCmd.Flags().String("agents", "", "Sub-agent dispatch policy for this run. Default (unset) = NO sub-agents: the `agent`/`agentic_fetch` tools are removed from the toolset for this non-interactive process (no UI to surface sub-agent work; a nested run burns tokens out of view). 'single' (same — explicit) | 'agent-allow' (opt in: tools present, model decides) | 'with-agents' (opt in + nudge the model to fan out). NOT an absolute guarantee: if --role smart is used AND a Worker model is configured, the `agent` tool is restored regardless of 'single' — a configured Worker always means orchestrator mode. `agentic_fetch` stays stripped either way.")
+		runCmd.Flags().Int("max-agent-depth", 2, "Maximum remaining agent delegation edges (0..32). Default 2.")
+		runCmd.Flags().String("aggregation", "", "How sub-agent fan-out output reaches the orchestrator. 'summary' (default — parent composes a wrap-up, sub-agent detail lives in DB only) | 'concat' (prompt-nudge: parent includes each sub-agent reply verbatim in final_text) | 'attach' (collect each sub-agent's last assistant text into envelope.sub_agent_outputs; final_text becomes a brief wrap-up). An always-on reduction-loss warning fires regardless when parent collapses sub-agent outputs to <40% of their combined size.")
+		// Fork patch: batch 8 — timeout extension flags.
+		runCmd.Flags().Bool("timeout-extends-on-progress", false, "Reset the per-turn stream watchdog deadline every time streaming progress occurs. Does not extend the total --timeout/default-cap run deadline. Default: false (static watchdog deadline).")
+		runCmd.Flags().String("timeout-hard-cap", "0", "Maximum wall-clock time the stream watchdog allows even with --timeout-extends-on-progress (e.g. 30s, 5m, 900 — plain number = seconds); watchdog-only, separate from the total run deadline. Default: 0 (no cap).")
+		// Fork patch: batch 24 — on-finish hook.
+		runCmd.Flags().String("on-finish", "", "Shell command to execute after the run completes. Environment variables: RUSH_SESSION_ID, RUSH_EXIT_REASON, RUSH_COST_USD, RUSH_TOKENS, RUSH_DURATION_SEC. Hook errors are printed to stderr but don't affect exit code.")
+		// Fork patch: batch 30 — runaway protection.
+		runCmd.Flags().String("max-cost", "", "Abort the run if total cost (USD) exceeds this value. e.g. 0.50, 2.00")
+		runCmd.Flags().String("max-tokens", "", "Abort the run if total prompt+completion tokens exceed this value. e.g. 100k, 1M, 500000")
+		// Fork patch: MCP servers default to OFF in CLI mode (see mcpAppOptions
+		// in root.go) unless mcp.<id>.enabled_in_cli=true; this is the one-off
+		// escape hatch for a run that needs a server rush would otherwise skip.
+		runCmd.Flags().Bool("all-mcp", false, `Force-start every configured, non-disabled MCP server for this run, ignoring each server's enabled_in_cli setting. Does not affect interactive TUI/web sessions, which always start every non-disabled server regardless of this flag.`)
+		// Fork patch (peak-hours bypass): --allow-peak-hours skips the per-provider
+		// peak_hours refusal for THIS invocation only. There is intentionally NO
+		// config-level "always allow" equivalent — the whole point is a conscious
+		// one-off override.
+		//
+		// WARNING: this flag must NEVER be added by an orchestrating agent on its
+		// own initiative. Only pass --allow-peak-hours when a human operator has
+		// explicitly asked, in this specific request, to override peak hours. An
+		// agent that adds this flag without an explicit human instruction is
+		// violating the operator's intent.
+		runCmd.Flags().Bool("allow-peak-hours", false, `Bypass the per-provider peak_hours refusal for this single invocation only. WARNING: this flag must NEVER be added by an orchestrating agent on its own initiative — only pass it when a human operator has explicitly asked, in this specific request, to override peak hours. An agent that adds this flag without an explicit human instruction is violating the operator's intent. There is no persistent config-level equivalent; the override is conscious and one-off by design.`)
+		runCmd.Flags().Bool("no-supervision", false, "Disable the periodic root-session supervision check-in for this run (default on, fires after 5m of chat silence while background jobs/delegations are still open; never fires with no open work or mid-turn).")
+		runCmd.Flags().String("supervision-interval", "", "Override the supervision check-in's initial/reset silence interval (e.g. 10m, 600 — plain number = seconds). Empty = config's supervision_interval_minutes or the built-in 5m default.")
+		runCmd.Flags().String("job-timeout", "", "Default terminate_and_wake deadline for background bash/run_command jobs that pass no explicit timeout (e.g. 2m, 90s — plain number = seconds). Empty = off (config's background_job_default_timeout_seconds can also set it; a per-call timeout always wins).")
+		// Fork patch (worktree delegation): run inside an isolated git
+		// worktree created/reused under the main checkout's worktrees/
+		// directory. See run_worktree.go.
+		runCmd.Flags().String("worktree", "", "Resolve or create the git worktree <main>/worktrees/<slug> and run this invocation with cwd inside it. The slug is a single path segment ([a-z0-9][a-z0-9._-]*). Reuses a registered worktree whose branch matches; refuses a path occupied by anything else or a branch mismatch (pass --branch to match). Defaults --session to the slug and mirrors stdout/stderr into <main>/.rush/stdin/<session>.{out,err}. Incompatible with --cwd and --data-dir. Manage with `rush worktree list` / `rush worktree remove <slug>`.")
+		runCmd.Flags().String("base", "", "With --worktree: the ref the worktree's branch is created from (default: the main checkout's HEAD). Ignored when the branch already exists. Requires --worktree.")
+		runCmd.Flags().String("branch", "", "With --worktree: the branch the worktree uses, created when missing (default: the slug). Required to match when reusing a worktree that sits on a different branch. Requires --worktree.")
+		runCmd.MarkFlagsMutuallyExclusive("session", "continue")
+		runCmd.MarkFlagsMutuallyExclusive("system-prompt", "system-prompt-file")
+		runCmd.MarkFlagsMutuallyExclusive("stream", "json")
+	})
+	return deepFreshCmd(runCmd)
+}
+
+// stdinReadGraceDefault bounds how long MaybePrependStdin waits for a named
+// pipe to produce data before giving up on it. A `< file` redirect (regular
+// file) is always fully available immediately and is read directly with
+// no bound. A `|` pipe, though, can be connected to a writer that never
+// sends anything and never closes — observed in practice when a
+// background shell job's stdin fd is left open but unused (e.g. a
+// launcher that runs `rush run "$(...)"` without an explicit `< file`
+// redirect, so the process's stdin resolves to a dangling pipe instead of
+// a closed/empty one). io.ReadAll would then block forever: this happens
+// BEFORE --timeout's context deadline is even wired up, and without an
+// explicit --timeout the hard-kill backstop defaults to 6h — so rush
+// would sit doing nothing, invisible to `sessions list` (no session row
+// exists yet), for hours. rush must never hang like that regardless of
+// how it was invoked.
+//
+// It is a const (not a mutable package var) so tests inject a shorter grace
+// via the parameterized maybePrependStdin below instead of mutating shared
+// state — a mutable package var here would be the same
+// test-isolation footgun already eliminated elsewhere in this session
+// (internal/agent/agent.go's sessionPreambleMaxDuration /
+// titleGenerationMaxDuration): fine only as long as no test using it ever
+// gains t.Parallel(), and silently racy the moment one does.
+const stdinReadGraceDefault = 3 * time.Second
+
+// stdinChunkResult is one Read() result from the pipe-reading goroutine in
+// maybePrependStdin: either some data, an error (io.EOF or otherwise), or
+// both (a legal final io.Reader result).
+type stdinChunkResult struct {
+	data []byte
+	err  error
+}
+
+// drainPendingChunk does one non-blocking receive on chunkCh, returning
+// (chunk, true) if something was ready, or (zero value, false) if the
+// channel was genuinely empty at the moment of the check. Used by
+// maybePrependStdin's timeout branch to catch a chunk that raced in at
+// almost the exact instant the idle timer fired, so that boundary case
+// doesn't silently drop real data — see the "Boundary race" comment at its
+// call site for the full rationale.
+func drainPendingChunk(chunkCh <-chan stdinChunkResult) (stdinChunkResult, bool) {
+	select {
+	case chunk := <-chunkCh:
+		return chunk, true
+	default:
+		return stdinChunkResult{}, false
+	}
+}
+
+// MaybePrependStdin is the public entry point used by run.go. It always
+// applies stdinReadGraceDefault as the idle-timeout bound for `|` pipes; see
+// maybePrependStdin for the actual logic and stdinReadGraceDefault's doc
+// comment for why the grace duration is threaded through as a parameter
+// rather than read from a package var.
+func MaybePrependStdin(prompt string) (string, error) {
+	return maybePrependStdin(prompt, stdinReadGraceDefault)
+}
+
+// maybePrependStdin implements MaybePrependStdin with the idle-timeout grace
+// duration passed explicitly, so tests can use a short grace without
+// mutating shared package state.
+func maybePrependStdin(prompt string, grace time.Duration) (string, error) {
+	if term.IsTerminal(os.Stdin.Fd()) {
+		return prompt, nil
+	}
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return prompt, err
+	}
+	switch {
+	case fi.Mode().IsRegular():
+		// `< file`: fully available immediately, no risk of blocking.
+		bts, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return prompt, err
+		}
+		return string(bts) + "\n\n" + prompt, nil
+	case fi.Mode()&os.ModeNamedPipe != 0:
+		// `|` (or an inherited pipe fd from a background launcher): read in
+		// chunks and race EACH chunk against an IDLE timeout of grace,
+		// resetting the clock every time a new chunk arrives. This bounds
+		// the total time maybePrependStdin can block to "grace since the
+		// last byte seen", no matter how long the producer has already been
+		// streaming — as opposed to a bound on only the first byte, which
+		// left a producer that writes once and then goes silent forever (no
+		// EOF, no more data, no close) able to hang this call indefinitely.
+		// The reader goroutine is intentionally leaked if the producer truly
+		// never sends anything and never closes — Go can't cancel a blocked
+		// pipe Read — but that's a single goroutine for the life of the
+		// process, not a hang of maybePrependStdin/rush run itself.
+		//
+		// This replaces two earlier, each individually broken, versions of
+		// this fix:
+		//  1. Racing io.ReadAll of the WHOLE stream against grace: a
+		//     producer that wrote data but hadn't closed the pipe within the
+		//     grace window caused the timeout branch to fire and silently
+		//     discard everything already buffered, while logging a
+		//     misleading "produced no data".
+		//  2. Bounding only the FIRST read, then reading to EOF with no
+		//     further timeout: a producer that sent one chunk and then fell
+		//     silent forever (without closing) hung forever, since nothing
+		//     bounded the *rest* of the read.
+		//
+		// DELIBERATE TRADEOFF, not an accidental gap: when the idle timeout
+		// fires (or a non-EOF read error occurs) after SOME data was already
+		// read, this function proceeds with that partial data rather than
+		// treating it as an error. The alternative — discarding partial data
+		// or failing the call — was tried first (see broken version 1 above)
+		// and is worse: it throws away real input the producer did manage to
+		// send. But a truncated stdin can silently look like complete stdin
+		// to whatever consumes the returned prompt (typically fed straight
+		// to a model), so any partial-data return path below appends an
+		// explicit, model-readable marker noting the input may be
+		// incomplete — see the "may be truncated" note in the timeout and
+		// non-EOF-error branches. The clean-EOF path (chunk.err == io.EOF)
+		// never gets this marker: that data is complete, not a truncation.
+		//
+		// Capture os.Stdin into a local BEFORE spawning the goroutine: the
+		// goroutine reads it lazily (whenever the scheduler runs it), so
+		// reading the live package-level os.Stdin from inside the goroutine
+		// would race any later reassignment of that variable — caught by
+		// -race via this exact test's own withStdin(t, ...) helper
+		// reassigning os.Stdin in t.Cleanup while a prior test's leaked
+		// goroutine was still reading it.
+		stdin := os.Stdin
+		chunkCh := make(chan stdinChunkResult, 1)
+		go func() {
+			buf := make([]byte, 32*1024)
+			for {
+				n, err := stdin.Read(buf)
+				if n == 0 && err == nil {
+					// Spurious wakeup per the io.Reader contract: not EOF, not
+					// data, not an idle producer — just retry.
+					continue
+				}
+				var data []byte
+				if n > 0 {
+					data = make([]byte, n)
+					copy(data, buf[:n])
+				}
+				chunkCh <- stdinChunkResult{data: data, err: err}
+				if err != nil {
+					// EOF, or a genuine non-EOF error: either way the goroutine
+					// is done — the last chunk (if any) already went out above.
+					return
+				}
+			}
+		}()
+		var sb strings.Builder
+		// handleChunk processes one received stdinChunkResult against the
+		// in-progress sb buffer. It returns (result, done):
+		//  - done == true means the caller should return result immediately.
+		//  - done == false means "more to come, keep looping" (chunk.err ==
+		//    nil); result is meaningless in that case.
+		// Shared by both the main chunk<-chunkCh case and the boundary-race
+		// drain in the timeout branch below, so the two call sites can never
+		// drift out of sync on how an EOF/error/more-data chunk is handled.
+		handleChunk := func(chunk stdinChunkResult) (result string, done bool) {
+			sb.Write(chunk.data)
+			switch chunk.err {
+			case nil:
+				// More to come — caller should keep looping, which
+				// implicitly resets the idle timer.
+				return "", false
+			case io.EOF:
+				if sb.Len() == 0 {
+					return prompt, true
+				}
+				// Clean EOF: this is complete data, not a truncation — no
+				// truncation marker.
+				return sb.String() + "\n\n" + prompt, true
+			default:
+				// n>0 with a non-EOF error is a legal io.Reader result:
+				// don't lose the bytes already collected, and don't fail
+				// the whole call over it — log and return what we have,
+				// same as a clean EOF, but marked as possibly-truncated
+				// since a read error is not proof the stream was complete.
+				slog.Warn(
+					"stdin pipe read failed after receiving some data — proceeding with what was read",
+					"error", chunk.err,
+					"bytes", sb.Len(),
+				)
+				if sb.Len() == 0 {
+					return prompt, true
+				}
+				readErrReason := fmt.Sprintf("a read error occurred (%v)", chunk.err)
+				return sb.String() + stdinTruncationNote(readErrReason, sb.Len()) + "\n\n" + prompt, true
+			}
+		}
+		for {
+			select {
+			case chunk := <-chunkCh:
+				if result, done := handleChunk(chunk); done {
+					return result, nil
+				}
+				continue
+			case <-time.After(grace):
+				// Boundary race: a chunk may have become ready on chunkCh at
+				// almost the exact same instant the timer did — select picks
+				// pseudo-randomly between simultaneously-ready cases, so
+				// without this check a chunk that arrived right at the
+				// deadline could be silently dropped even though the
+				// producer was not actually idle. One non-blocking check is
+				// enough: chunkCh is capacity-1 buffered and only one send
+				// happens per loop iteration.
+				if chunk, ok := drainPendingChunk(chunkCh); ok {
+					if result, done := handleChunk(chunk); done {
+						return result, nil
+					}
+					continue // got real data just in time — not idle, keep looping
+				}
+				// Genuinely idle — no chunk raced in.
+				if sb.Len() == 0 {
+					slog.Warn(
+						"stdin is a pipe that produced no data within the grace window — proceeding without it",
+						"grace", grace,
+					)
+					return prompt, nil
+				}
+				slog.Warn(
+					"stdin pipe went idle after receiving some data — proceeding with partial data",
+					"bytes", sb.Len(),
+					"grace", grace,
+				)
+				idleReason := fmt.Sprintf("the producer went idle for over %s", grace)
+				return sb.String() + stdinTruncationNote(idleReason, sb.Len()) + "\n\n" + prompt, nil
+			}
+		}
+	default:
+		return prompt, nil
+	}
+}
+
+// stdinTruncationNote returns a marker appended to partial stdin content
+// returned on a non-clean-EOF path (idle timeout or a non-EOF read error
+// after some data was already read). It exists so the model that receives
+// the resulting prompt — not just a human tailing stderr, which `rush run`
+// invocations typically don't have watched — can tell the stdin section may
+// be an arbitrary mid-stream cut rather than complete input, and reason
+// accordingly instead of silently trusting truncated data as whole.
+//
+// reason must describe WHY the read stopped short (e.g. "the producer went
+// idle for over 3s" or "a read error occurred (<err>)") — the two call
+// sites (idle timeout, non-EOF read error) have different, non-interchangeable
+// causes, so the caller supplies the accurate wording rather than this
+// function assuming idleness.
+func stdinTruncationNote(reason string, bytesRead int) string {
+	return fmt.Sprintf(
+		"\n\n[NOTE: stdin input may be truncated — %s after %d bytes and was not fully read]",
+		reason, bytesRead,
+	)
 }

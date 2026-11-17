@@ -2,6 +2,8 @@
 package cmd
 
 import (
+	"sync"
+
 	"github.com/spf13/cobra"
 )
 
@@ -20,8 +22,16 @@ func runOMPDel(cmd *cobra.Command, _ []string) error {
 	return removeMarkdownCommands(dir)
 }
 
-func init() {
-	ompDelCmd.Flags().Bool("global", false, "Remove globally (default).")
-	ompDelCmd.Flags().Bool("local", false, "Remove from the current project's .omp/commands/.")
-	rootCmd.AddCommand(ompDelCmd)
+// NewOmpDelCmd returns the rush ompDelCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newOmpDelCmdOnce sync.Once
+
+func NewOmpDelCmd() *cobra.Command {
+	newOmpDelCmdOnce.Do(func() {
+		ompDelCmd.Flags().Bool("global", false, "Remove globally (default).")
+		ompDelCmd.Flags().Bool("local", false, "Remove from the current project's .omp/commands/.")
+	})
+	return deepFreshCmd(ompDelCmd)
 }

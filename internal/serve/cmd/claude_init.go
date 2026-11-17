@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 	"github.com/spf13/cobra"
@@ -347,8 +348,16 @@ func claudeWcrushCommandContent() string {
 	return claudeSlashCommandSentinel + "\n" + claudeWcrushCommandTemplate
 }
 
-func init() {
-	claudeInitCmd.Flags().Bool("global", false, "Install into ~/.claude/commands/ (available in every project). Default when neither --global nor --local is given.")
-	claudeInitCmd.Flags().Bool("local", false, "Install into the current project's .claude/commands/ instead of ~/.claude/commands/.")
-	rootCmd.AddCommand(claudeInitCmd)
+// NewClaudeInitCmd returns the rush claudeInitCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newClaudeInitCmdOnce sync.Once
+
+func NewClaudeInitCmd() *cobra.Command {
+	newClaudeInitCmdOnce.Do(func() {
+		claudeInitCmd.Flags().Bool("global", false, "Install into ~/.claude/commands/ (available in every project). Default when neither --global nor --local is given.")
+		claudeInitCmd.Flags().Bool("local", false, "Install into the current project's .claude/commands/ instead of ~/.claude/commands/.")
+	})
+	return deepFreshCmd(claudeInitCmd)
 }

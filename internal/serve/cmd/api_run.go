@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+
 	"github.com/PHPCraftdream/rush/internal/serve/client/apiclient"
 	"github.com/spf13/cobra"
 )
@@ -54,7 +56,7 @@ func newAPIRunCmd() *cobra.Command {
 				if paused.Run != nil {
 					apiPrintRunPermissionHint(cmd, client, ctx, paused.Run)
 				}
-				return &exitCodeError{code: 6, err: err}
+				return cliout.NewExitCodeError(6, err)
 			}
 			return apiClientError(err)
 		}
@@ -93,7 +95,7 @@ func streamAPIRun(cmd *cobra.Command, ctx context.Context, client *apiclient.Cli
 			return interruptedAPIError()
 		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return &exitCodeError{code: 5, err: ctx.Err()}
+			return cliout.NewExitCodeError(5, ctx.Err())
 		}
 		return apiClientError(ctx.Err())
 	}
@@ -189,9 +191,9 @@ func apiRunStateExit(run *apiclient.Run) error {
 	case "succeeded":
 		return nil
 	case "awaiting_answer":
-		return &exitCodeError{code: 6, err: fmt.Errorf("run paused awaiting a human decision: %s", run.ID)}
+		return cliout.NewExitCodeError(6, fmt.Errorf("run paused awaiting a human decision: %s", run.ID))
 	case "failed", "cancelled":
-		return &exitCodeError{code: 1, err: fmt.Errorf("run %s", run.State)}
+		return cliout.NewExitCodeError(1, fmt.Errorf("run %s", run.State))
 	default:
 		return fmt.Errorf("run is not terminal: %s", run.State)
 	}

@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"os"
+	"sync"
 
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/table"
@@ -73,6 +74,12 @@ rush projects --json
 	},
 }
 
-func init() {
-	projectsCmd.Flags().Bool("json", false, "Output as JSON")
+// NewProjectsCmd returns a fresh projects command from the registered template.
+var newProjectsCmdOnce sync.Once
+
+func NewProjectsCmd() *cobra.Command {
+	newProjectsCmdOnce.Do(func() {
+		projectsCmd.Flags().Bool("json", false, "Output as JSON")
+	})
+	return deepFreshCmd(projectsCmd)
 }

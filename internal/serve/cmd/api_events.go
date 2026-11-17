@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"time"
 
+	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+
 	"github.com/PHPCraftdream/rush/internal/serve/client/apiclient"
 	"github.com/spf13/cobra"
 )
@@ -84,7 +86,7 @@ func newAPIEventsCmd() *cobra.Command {
 					return interruptedAPIError()
 				}
 				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-					return &exitCodeError{code: 5, err: ctx.Err()}
+					return cliout.NewExitCodeError(5, ctx.Err())
 				}
 				return apiClientError(ctx.Err())
 			}

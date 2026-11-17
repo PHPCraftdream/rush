@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"text/tabwriter"
 
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -73,17 +74,6 @@ var worktreeListCmd = &cobra.Command{
 		"the id of a session whose lock is held right now, or \"-\" when " +
 		"no live run was detected (a finished session is not listed); " +
 		"PATH is the worktree's absolute path.",
-}
-
-func init() {
-	worktreeRemoveCmd.Flags().Bool("keep-branch", false,
-		"Keep the branch after removing the worktree")
-	worktreeRemoveCmd.Flags().Bool("force", false,
-		"Remove a worktree with uncommitted or untracked changes and "+
-			"delete the branch even when unmerged (a live session lock "+
-			"still refuses removal)")
-	worktreeCmd.AddCommand(worktreeRemoveCmd, worktreeListCmd)
-	rootCmd.AddCommand(worktreeCmd)
 }
 
 // runWorktreeRemove implements `rush worktree remove <slug>`.
@@ -348,4 +338,23 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", slug, branch, session, entry.Path)
 	}
 	return writer.Flush()
+}
+
+// NewWorktreeCmd returns the rush worktreeCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newWorktreeCmdOnce sync.Once
+
+func NewWorktreeCmd() *cobra.Command {
+	newWorktreeCmdOnce.Do(func() {
+		worktreeRemoveCmd.Flags().Bool("keep-branch", false,
+			"Keep the branch after removing the worktree")
+		worktreeRemoveCmd.Flags().Bool("force", false,
+			"Remove a worktree with uncommitted or untracked changes and "+
+				"delete the branch even when unmerged (a live session lock "+
+				"still refuses removal)")
+		worktreeCmd.AddCommand(worktreeRemoveCmd, worktreeListCmd)
+	})
+	return deepFreshCmd(worktreeCmd)
 }

@@ -134,13 +134,6 @@ rush sessions audit 7f3a91c2
 	RunE: sessionsAuditCmdRun,
 }
 
-func init() {
-	sessionsAuditCmd.Flags().Bool("all", false, "Audit every session in the database (otherwise pass a session id or a prefix of one)")
-	sessionsAuditCmd.Flags().String("since", "", "Only analyse messages newer than this: Go duration (30m, 24h), day suffix (7d), or a bare integer read as days; with --all, sessions with no message in the window are not scanned")
-	sessionsAuditCmd.Flags().Bool("worktrees", false, "Scan linked worktrees' databases (read-only)")
-	sessionsAuditCmd.Flags().Bool("json", false, "Emit one JSON object per scanned database instead of text")
-}
-
 func sessionsAuditCmdRun(cmd *cobra.Command, args []string) error {
 	all, _ := cmd.Flags().GetBool("all")
 	worktrees, _ := cmd.Flags().GetBool("worktrees")

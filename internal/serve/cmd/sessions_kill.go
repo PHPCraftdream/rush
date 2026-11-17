@@ -856,13 +856,6 @@ func removeLockWithRetry(path string, wait time.Duration) error {
 	return lastErr
 }
 
-func age(info os.FileInfo) int {
-	if info == nil {
-		return 0
-	}
-	return int(time.Since(info.ModTime()).Seconds())
-}
-
 // sanitiseSessionIDForFilename mirrors session.sanitiseSessionID (package-private)
 // so the lock-file path resolves the same way the lock acquirer wrote it.
 func sanitiseSessionIDForFilename(id string) string {
@@ -879,9 +872,4 @@ func sanitiseSessionIDForFilename(id string) string {
 		" ", "_",
 	)
 	return r.Replace(id)
-}
-
-func init() {
-	sessionsKillCmd.Flags().Bool("keep-lock", false, "Kill the process but do not delete the lock file")
-	sessionsKillCmd.Flags().Duration("wait", 5*time.Second, "How long to wait for the PID to die and the OS to release the lock handle")
 }

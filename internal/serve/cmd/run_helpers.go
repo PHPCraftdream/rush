@@ -1,48 +1,11 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/PHPCraftdream/rush/internal/session"
 )
-
-// resolveSessionID resolves a session by exact UUID or hash prefix.
-func resolveSessionID(ctx context.Context, svc session.Service, id string) (session.Session, error) {
-	if s, err := svc.Get(ctx, id); err == nil {
-		return s, nil
-	}
-
-	sessions, err := svc.List(ctx)
-	if err != nil {
-		return session.Session{}, err
-	}
-
-	var matches []session.Session
-	for _, s := range sessions {
-		hash := session.HashID(s.ID)
-		if hash == id || strings.HasPrefix(hash, id) {
-			matches = append(matches, s)
-		}
-	}
-
-	if len(matches) == 0 {
-		return session.Session{}, fmt.Errorf("session not found: %s", id)
-	}
-	if len(matches) == 1 {
-		return matches[0], nil
-	}
-
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "session ID '%s' is ambiguous. Matches:\n\n", id)
-	for _, s := range matches {
-		fmt.Fprintf(&sb, "  %s  %s\n", session.HashID(s.ID), s.Title)
-	}
-	return session.Session{}, fmt.Errorf("%s", sb.String())
-}
 
 // parseDurationFlexible parses a duration string that can be a plain integer
 // (interpreted as seconds) or a Go duration string (e.g. "30s", "5m", "1h").

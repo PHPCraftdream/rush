@@ -35,6 +35,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	clijournal "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/journal"
+
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/diag/audit"
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
@@ -54,7 +56,7 @@ func journalTestEnv(t *testing.T) string {
 	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 	ensureAuditDirFunc()
 	resetCommandJournalForTests()
-	t.Cleanup(func() { audit.SetDirFunc(journalAuditDir) })
+	t.Cleanup(func() { audit.SetDirFunc(clijournal.JournalAuditDir) })
 	return dataDir
 }
 
@@ -130,7 +132,7 @@ func TestJournalFailedCommand(t *testing.T) {
 	require.Equal(t, "command_end", end["kind"])
 	require.Equal(t, float64(1), end["exit"])
 	require.Equal(t, "an argument must not be empty", end["err"])
-	require.LessOrEqual(t, utf8.RuneCountInString(end["err"].(string)), journalErrMaxRunes)
+	require.LessOrEqual(t, utf8.RuneCountInString(end["err"].(string)), 200 /* journalErrMaxRunes (cli/cmdkit/journal) */)
 }
 
 func TestJournalTokenExitCodes(t *testing.T) {
@@ -266,9 +268,9 @@ func TestJournalNonDispatchPaths(t *testing.T) {
 func TestExitWithAudit(t *testing.T) {
 	journalTestEnv(t)
 	recorder := newExitRecorder()
-	oldExit := exitFunc
-	exitFunc = recorder.exit
-	t.Cleanup(func() { exitFunc = oldExit })
+	oldExit := clijournal.ExitFunc()
+	clijournal.SetExitFunc(recorder.exit)
+	t.Cleanup(func() { clijournal.SetExitFunc(oldExit) })
 
 	journalCommandStart(logsPathCmd, nil)
 	exitWithAudit(7)
@@ -281,23 +283,6 @@ func TestExitWithAudit(t *testing.T) {
 	require.Equal(t, "command_start", recs[0]["kind"])
 	require.Equal(t, "command_end", recs[1]["kind"])
 	require.Equal(t, float64(7), recs[1]["exit"])
-}
-
-func TestJournalPanicEnd(t *testing.T) {
-	journalTestEnv(t)
-	journalCommandStart(logsPathCmd, nil)
-	func() {
-		defer func() { require.Equal(t, "boom-value", recover()) }()
-		defer recoverAndLogPanic()
-		panic("boom-value")
-	}()
-
-	recs := journalRecords(t)
-	require.Len(t, recs, 2)
-	end := recs[1]
-	require.Equal(t, "command_end", end["kind"])
-	require.Equal(t, float64(2), end["exit"])
-	require.Equal(t, "panic", end["err"])
 }
 
 func TestJournalCompletionSilent(t *testing.T) {
@@ -470,21 +455,6 @@ func TestJournalCanary(t *testing.T) {
 		"the canary set that reached the journal must be exactly the allowlist set")
 }
 
-func TestJournalAllowlistDenyListIntersection(t *testing.T) {
-	deny := map[string]bool{
-		"password": true, "api-key": true, "system-prompt": true,
-		"system-prompt-file": true, "on-finish": true, "message": true,
-		"prompt": true, "env": true, "header": true, "url": true,
-		"arg": true, "command": true, "base-url": true, "json-body": true,
-	}
-	for name := range journalFlagValueAllowlist {
-		require.False(t, deny[name], "allowlisted flag %q is in the hard deny list", name)
-	}
-	require.False(t, journalFlagValueAllowlist["password"])
-	require.False(t, journalFlagValueAllowlist["json"],
-		"json must stay out of the typed allowlist: providers patch --json carries a literal body")
-}
-
 func TestJournalRecordCapsAndWriteErrors(t *testing.T) {
 	dir := journalTestEnv(t)
 
@@ -522,18 +492,18 @@ func TestJournalRecordCapsAndWriteErrors(t *testing.T) {
 	args, ok := recs[len(recs)-1]["args"].([]any)
 	require.True(t, ok)
 	require.Len(t, args, 1)
-	require.LessOrEqual(t, utf8.RuneCountInString(args[0].(string)), journalPosMaxRunes)
+	require.LessOrEqual(t, utf8.RuneCountInString(args[0].(string)), 120 /* journalPosMaxRunes (cli/cmdkit/journal) */)
 
 	// Write failures are swallowed: unwritable dir, command still exits.
 	before := len(journalRecords(t))
 	blockedParent := filepath.Join(dir, "blocked-parent")
 	require.NoError(t, os.WriteFile(blockedParent, []byte("file"), 0o600))
 	recorder := newExitRecorder()
-	oldExit := exitFunc
-	exitFunc = recorder.exit
+	oldExit := clijournal.ExitFunc()
+	clijournal.SetExitFunc(recorder.exit)
 	t.Cleanup(func() {
-		exitFunc = oldExit
-		audit.SetDirFunc(journalAuditDir)
+		clijournal.SetExitFunc(oldExit)
+		audit.SetDirFunc(clijournal.JournalAuditDir)
 	})
 	resetCommandJournalForTests()
 	require.NotPanics(t, func() {
@@ -544,6 +514,34 @@ func TestJournalRecordCapsAndWriteErrors(t *testing.T) {
 	})
 	awaitClosed(t, recorder.first, "exitWithAudit under an unwritable audit dir")
 	require.Equal(t, []int{3}, recorder.calls())
-	audit.SetDirFunc(journalAuditDir)
+	audit.SetDirFunc(clijournal.JournalAuditDir)
 	require.Len(t, journalRecords(t), before, "a failed audit write must leave no record")
+}
+
+func TestJournalFallbackWritesWithoutPriorResolver(t *testing.T) {
+	journalTestEnv(t)
+	oldExit := clijournal.ExitFunc()
+	clijournal.SetExitFunc(func(int) {})
+	t.Cleanup(func() {
+		clijournal.SetExitFunc(oldExit)
+		clijournal.ResetSettingsAuditOnceForTests()
+		ensureAuditDirFunc()
+	})
+	cases := []struct {
+		name string
+		want int
+		run  func()
+	}{
+		{"finalize-help", 2, func() { finalizeCommandJournal([]string{"--help"}, nil) }},
+		{"exit-before-prerun", 1, func() { exitWithAudit(3) }},
+		{"panic", 1, journalEndForPanic},
+	}
+	for _, tc := range cases {
+		resetCommandJournalForTests()
+		before := len(journalRecords(t))
+		audit.SetDirFunc(nil)
+		clijournal.ResetSettingsAuditOnceForTests()
+		tc.run()
+		require.Len(t, journalRecords(t), before+tc.want, tc.name)
+	}
 }
