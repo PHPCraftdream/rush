@@ -5,10 +5,10 @@ package config
 import (
 	"os"
 
-	"github.com/PHPCraftdream/rush/internal/config/io/casefold"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
-	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
-	"github.com/PHPCraftdream/rush/internal/config/io/fswap"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/casefold"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fswap"
 )
 
 // io layer: fileid. Windows-only seam.

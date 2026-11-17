@@ -22,9 +22,9 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/domains/peak"
-	"github.com/PHPCraftdream/rush/internal/config/io/casefold"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
-	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/casefold"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	envresolve "github.com/PHPCraftdream/rush/internal/config/model/envresolve"
 	cfgmerge "github.com/PHPCraftdream/rush/internal/config/model/merge"

@@ -8,7 +8,7 @@ import (
 	"slices"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
-	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 )
 

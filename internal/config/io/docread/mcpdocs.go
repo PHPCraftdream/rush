@@ -11,7 +11,7 @@ import (
 	"slices"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
-	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
 )

@@ -5,8 +5,8 @@ package config
 import (
 	"os"
 
-	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
-	"github.com/PHPCraftdream/rush/internal/config/io/fswap"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fswap"
 )
 
 // io layer: fswap. Unix-only seam; RenameConfigTempAt has no windows build.

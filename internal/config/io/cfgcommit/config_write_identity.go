@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/PHPCraftdream/rush/internal/config/io/casefold"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
-	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/casefold"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 )
 
 // configWriteTargetDedupKey identifies the physical object protected by a
@@ -105,4 +105,13 @@ func NewConfigWriteTarget(path, selectedPath, lockPath string, expected docread.
 		owner:        owner,
 		enforce:      enforce,
 	}
+}
+
+type configWriteTarget struct {
+	path         string
+	selectedPath string
+	lockPath     string
+	expected     docread.Fingerprint
+	owner        int
+	enforce      bool
 }

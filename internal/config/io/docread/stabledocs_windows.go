@@ -7,7 +7,7 @@ import (
 	"crypto/sha256"
 	"os"
 
-	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 	"golang.org/x/sys/windows"
 )
 

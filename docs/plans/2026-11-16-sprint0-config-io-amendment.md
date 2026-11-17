@@ -2464,3 +2464,24 @@ The original IO script’s line 59 is `func must(e error)`, not a graph assignme
 
 Appendix A supersedes the earlier reserved-for-appendix placeholder; all requested tables are present.
 
+
+## L1 layout correction (2026-11-16)
+
+The dir-entries guard `.githooks/check_dir_entries.sh` (at most 7 elements per code directory) failed on `io` (8 subpackages) and `io/cfgcommit` (9 files). The layout is therefore amended structurally with no allowlist entries, before L2, while import paths are young.
+
+```
+internal/config/io/
+  cfghooks/
+  fsx/                      low-level filesystem primitives
+    fileid/
+    casefold/
+    fswap/
+  docread/
+  cfgcommit/
+  slotmigrate/
+  slots/
+```
+
+`cfgcommit` merged its untagged files `config_commit_test_seam.go` into `atomicwrite.go` and `targets.go` into `config_write_identity.go` (pure in-package merges, declaration-identical); the seven remaining `cfgcommit` files are listed.
+
+The dependency graph edges are unchanged; only import paths gained the `fsx` segment (`io/fsx/fileid`, `io/fsx/casefold`, `io/fsx/fswap`); the re-runnable rewrite script lives at `D:/dev/go/crush/.rush/tmp/sprint0/config-io-relayout.py`.

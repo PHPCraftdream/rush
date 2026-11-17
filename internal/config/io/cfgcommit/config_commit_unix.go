@@ -12,8 +12,8 @@ import (
 	"path/filepath"
 
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
-	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
-	"github.com/PHPCraftdream/rush/internal/config/io/fswap"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fswap"
 	"golang.org/x/sys/unix"
 )
 

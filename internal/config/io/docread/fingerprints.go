@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/PHPCraftdream/rush/internal/config/io/casefold"
-	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/casefold"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 )
 
 // SameBytesFingerprint reports whether data matches the supplied content digest.

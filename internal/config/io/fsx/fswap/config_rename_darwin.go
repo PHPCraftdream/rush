@@ -8,7 +8,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/PHPCraftdream/rush/internal/config/io/cfghooks"
-	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 )
 
 // Darwin exposes an atomic no-replace rename through renameatx_np. Passing the

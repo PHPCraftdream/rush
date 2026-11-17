@@ -12,7 +12,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/io/cfghooks"
-	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 )
 
 // StableConfigDocument is the exact byte document used to build a candidate.

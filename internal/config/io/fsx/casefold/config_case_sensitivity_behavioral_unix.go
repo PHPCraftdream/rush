@@ -7,7 +7,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 )
 
 func DirectoryCaseSensitivityByEntries(dir string) ConfigCaseSensitivity {

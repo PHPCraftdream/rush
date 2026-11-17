@@ -10,8 +10,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config/io/cfghooks"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
-	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
-	"github.com/PHPCraftdream/rush/internal/config/io/fswap"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fswap"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 )
 
@@ -369,4 +369,8 @@ func stageConfigFile(path string, data []byte, perm os.FileMode) (string, error)
 // that will consume it directly in a later pass: root).
 func CloneCommitOutcome(outcome *CommitOutcome, reconciled bool) *CommitOutcome {
 	return cloneCommitOutcome(outcome, reconciled)
+}
+
+func SetBeforeConfigCommitForTest(hook func()) func() {
+	return cfghooks.SetBeforeCommitCheckForTest(hook)
 }

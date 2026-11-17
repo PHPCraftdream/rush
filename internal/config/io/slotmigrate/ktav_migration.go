@@ -19,7 +19,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/cfghooks"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
-	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 )

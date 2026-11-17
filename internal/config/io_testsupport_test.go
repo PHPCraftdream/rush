@@ -5,9 +5,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/config/io/casefold"
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
-	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/casefold"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 	"github.com/PHPCraftdream/rush/internal/config/io/slotmigrate"
 	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 )

@@ -17,7 +17,7 @@ import (
 	"sync/atomic"
 
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
-	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 )
 
 // MCPAdmissionGuard is the final source validation boundary for a runtime

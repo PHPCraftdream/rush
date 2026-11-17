@@ -15,7 +15,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config/io/cfghooks"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
-	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 )
 
 type WindowsFileRenameInfo struct {

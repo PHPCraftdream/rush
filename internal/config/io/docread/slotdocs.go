@@ -16,7 +16,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
-	"github.com/PHPCraftdream/rush/internal/config/io/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
