@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
 )
@@ -376,11 +377,11 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 			return guardErr
 		}
 		audit.event = ev
-		committed, commitErr := commitConfigFile(record.selectedPath, record.commitPath, physicalData, 0o600, record.expectation, owner, enforce)
+		committed, commitErr := cfgcommit.CommitConfigFile(record.selectedPath, record.commitPath, physicalData, 0o600, record.expectation, owner, enforce)
 		commitReturnedNil := commitErr == nil
 		if commitReturnedNil {
 			s.diskWriteGeneration++
-		} else if outcome, ok := CommitOutcomeFromError(commitErr); ok && (outcome.Committed || outcome.MaybeCommitted) {
+		} else if outcome, ok := cfgcommit.CommitOutcomeFromError(commitErr); ok && (outcome.Committed || outcome.MaybeCommitted) {
 			s.diskWriteGeneration++
 		}
 		if commitErr != nil {
@@ -396,14 +397,14 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 				committed = reconciled
 				if fingerprintErr := s.applyCommittedMCPFingerprint(files, record, committed); fingerprintErr != nil {
 					cause := commitErr
-					if outcome, outcomeOK := CommitOutcomeFromError(commitErr); outcomeOK {
-						cause = cloneCommitOutcome(outcome, false)
+					if outcome, outcomeOK := cfgcommit.CommitOutcomeFromError(commitErr); outcomeOK {
+						cause = cfgcommit.CloneCommitOutcome(outcome, false)
 					}
 					return &mcpCommitUncertainError{cause: errors.Join(cause, fingerprintErr)}
 				}
 				record.expectation = committed
-				if outcome, outcomeOK := CommitOutcomeFromError(commitErr); outcomeOK {
-					commitErr = cloneCommitOutcome(outcome, true)
+				if outcome, outcomeOK := cfgcommit.CommitOutcomeFromError(commitErr); outcomeOK {
+					commitErr = cfgcommit.CloneCommitOutcome(outcome, true)
 				}
 				return &mcpCommitUncertainError{cause: commitErr}
 			}
@@ -412,7 +413,7 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 				// read proves that the requested bytes are present. Preserve the
 				// public outcome and upgrade its reconciliation status so every
 				// caller observes one authoritative status source.
-				if outcome, outcomeOK := CommitOutcomeFromError(commitErr); outcomeOK && outcome.Reconciled &&
+				if outcome, outcomeOK := cfgcommit.CommitOutcomeFromError(commitErr); outcomeOK && outcome.Reconciled &&
 					!errors.Is(outcome, errConfigCommitDurabilityUncertain) {
 					commitErr = nil
 				} else {
@@ -423,14 +424,14 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 					committed = reconciled
 					if fingerprintErr := s.applyCommittedMCPFingerprint(files, record, committed); fingerprintErr != nil {
 						cause := commitErr
-						if outcome, outcomeOK := CommitOutcomeFromError(commitErr); outcomeOK {
-							cause = cloneCommitOutcome(outcome, false)
+						if outcome, outcomeOK := cfgcommit.CommitOutcomeFromError(commitErr); outcomeOK {
+							cause = cfgcommit.CloneCommitOutcome(outcome, false)
 						}
 						return &mcpCommitUncertainError{cause: errors.Join(cause, fingerprintErr)}
 					}
 					record.expectation = committed
-					if outcome, outcomeOK := CommitOutcomeFromError(commitErr); outcomeOK {
-						commitErr = cloneCommitOutcome(outcome, true)
+					if outcome, outcomeOK := cfgcommit.CommitOutcomeFromError(commitErr); outcomeOK {
+						commitErr = cfgcommit.CloneCommitOutcome(outcome, true)
 					}
 					return &mcpCommitUncertainError{cause: commitErr}
 				}
@@ -442,10 +443,10 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 			}
 		}
 		if commitReturnedNil {
-			runConfigAfterMCPCommitHook(record.commitPath)
+			cfgcommit.RunConfigAfterMCPCommitHook(record.commitPath)
 		}
 		if fingerprintErr := s.applyCommittedMCPFingerprint(files, record, committed); fingerprintErr != nil {
-			outcome := newCommitOutcome(record.commitPath, true, false,
+			outcome := cfgcommit.NewCommitOutcome(record.commitPath, true, false,
 				errConfigCommitCommitted, errConfigCommitUncertain, fingerprintErr)
 			return &mcpCommitUncertainError{cause: outcome}
 		}
@@ -459,7 +460,7 @@ func (s *ConfigStore) reconcileMCPCommit(record *mcpFileRecord, physicalData []b
 	if err != nil {
 		return docread.Fingerprint{}, false
 	}
-	runConfigBeforeMCPReconcileHook(record.selectedPath, physicalData)
+	cfgcommit.RunConfigBeforeMCPReconcileHook(record.selectedPath, physicalData)
 	data, fingerprint, err := docread.ReadStableConfigFileOwned(record.selectedPath, owner, enforce)
 	if err != nil || !docread.SameBytesFingerprint(data, sha256.Sum256(physicalData)) {
 		return docread.Fingerprint{}, false
@@ -810,7 +811,7 @@ func configEquivalentMissingMCPInput(path, selected string, expected, actual doc
 		return false
 	}
 	if filepath.Dir(path) != filepath.Dir(selected) ||
-		!configEquivalentLeafNames(filepath.Dir(path), filepath.Base(path), filepath.Base(selected)) {
+		!cfgcommit.ConfigEquivalentLeafNames(filepath.Dir(path), filepath.Base(path), filepath.Base(selected)) {
 		return false
 	}
 	return true

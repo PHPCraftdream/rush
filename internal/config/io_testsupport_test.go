@@ -6,10 +6,12 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/fsx/casefold"
 	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 	"github.com/PHPCraftdream/rush/internal/config/io/slotmigrate"
 	"github.com/PHPCraftdream/rush/internal/config/io/slots"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 )
 
 // Test-only forwarders preserving the root package's historical unexported
@@ -135,6 +137,39 @@ func configCaseSensitivityFromMetadata(filesystemInsensitive, filesystemSensitiv
 func configWriteTargetDedupKeyWithCaseFold(target configWriteTarget, caseFold func(string, string) (string, bool)) string {
 	ct := cfgcommit.NewConfigWriteTarget(target.path, target.selectedPath, target.lockPath, target.expected, target.owner, target.enforce)
 	return cfgcommit.ConfigWriteTargetDedupKeyWithCaseFold(ct, caseFold)
+}
+
+// test-only forwarder; io layer: cfgcommit.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	return cfgcommit.AtomicWriteFile(path, data, perm)
+}
+
+// test-only forwarder; io layer: cfgcommit.
+func syncConfigParentOnDisk(path string) error { return cfgcommit.SyncConfigParentOnDisk(path) }
+
+// test-only forwarder; io layer: cfgcommit.
+func acquireConfigFileLock(ctx context.Context, path string) (*filelock.FileLock, error) {
+	return cfgcommit.AcquireConfigFileLock(ctx, path)
+}
+
+// test-only forwarder; io layer: cfgcommit.
+func releaseConfigFileLock(path string, lock *filelock.FileLock) error {
+	return cfgcommit.ReleaseConfigFileLock(path, lock)
+}
+
+// test-only forwarder; io layer: cfgcommit.
+func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.FileMode, expected docread.Fingerprint, expectedOwner int, enforceOwner bool, migrationHooks ...func(string) error) (docread.Fingerprint, error) {
+	return cfgcommit.CommitConfigFile(selectedPath, commitPath, data, perm, expected, expectedOwner, enforceOwner, migrationHooks...)
+}
+
+// test-only forwarder; io layer: cfgcommit.
+func CommitOutcomeFromError(err error) (*cfgcommit.CommitOutcome, bool) {
+	return cfgcommit.CommitOutcomeFromError(err)
+}
+
+// test-only forwarder; io layer: cfgcommit.
+func configDirectoryIsCaseInsensitive(dir string) bool {
+	return cfgcommit.ConfigDirectoryIsCaseInsensitive(dir)
 }
 
 // io layer: casefold.

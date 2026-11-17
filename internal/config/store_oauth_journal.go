@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 )
 
@@ -26,7 +27,7 @@ var (
 	oauthJournalReadWait     = waitCodexRefresh
 	oauthJournalReadBackoffs = []time.Duration{200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond}
 	oauthJournalReadFile     = os.ReadFile
-	oauthJournalAtomicWrite  = atomicWriteFile
+	oauthJournalAtomicWrite  = cfgcommit.AtomicWriteFile
 	oauthJournalRetryWait    = waitCodexRefresh
 	// Serial tests shrink the future synchronous write budget before workers start.
 	oauthJournalWriteBudget = 5 * time.Second
@@ -104,17 +105,7 @@ func readOAuthJournal(path string) (*oauthJournalRecord, error) {
 		logOAuthJournalFailure(path, "read", "Failed to read OAuth journal")
 		return nil, errOAuthJournalRead
 	}
-	jsonBytes, decodeErr := docread.DecodeConfigDocument(path, data)
-	if decodeErr != nil {
-		logOAuthJournalFailure(path, "invalid", "Failed to read OAuth journal")
-		return nil, errOAuthJournalInvalid
-	}
-	var record oauthJournalRecord
-	if json.Unmarshal(jsonBytes, &record) != nil || !docread.ValidOAuthJournal(&record) {
-		logOAuthJournalFailure(path, "invalid", "Failed to read OAuth journal")
-		return nil, errOAuthJournalInvalid
-	}
-	return &record, nil
+	return docread.ParseOAuthJournal(path, data)
 }
 
 // Bounded leader retries hand remaining durability work to the store outbox.
@@ -270,7 +261,7 @@ func removeOAuthJournal(path, configPath, providerID string, record *oauthJourna
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return errOAuthJournalDisk
 	}
-	if syncConfigParent(filepath.Dir(path)) != nil {
+	if cfgcommit.SyncConfigParent(filepath.Dir(path)) != nil {
 		return errOAuthJournalDisk
 	}
 	return nil

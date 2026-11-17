@@ -11,11 +11,6 @@ import (
 )
 
 // io layer: fswap.
-func RenameConfigTempAt(oldDirFD int, oldName string, newDirFD int, newName string, replace bool) (bool, error) {
-	return fswap.RenameConfigTempAt(oldDirFD, oldName, newDirFD, newName, replace)
-}
-
-// io layer: fswap.
 func recoverConfigTempAlias(parent *os.File, base string, expected docread.Fingerprint, enforceOwner bool, expectedOwner int) (docread.Fingerprint, error) {
 	return fswap.RecoverConfigTempAlias(parent, base, expected, enforceOwner, expectedOwner)
 }

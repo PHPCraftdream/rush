@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 )
@@ -213,12 +214,12 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 	if err := lockCtx.Err(); err != nil {
 		return err
 	}
-	lock, err := acquireConfigFileLock(lockCtx, lockPath)
+	lock, err := cfgcommit.AcquireConfigFileLock(lockCtx, lockPath)
 	if err != nil {
 		return fmt.Errorf("lock Codex OAuth refresh: %w", err)
 	}
 	defer func() {
-		if err := releaseConfigFileLock(lockPath, lock); err != nil {
+		if err := cfgcommit.ReleaseConfigFileLock(lockPath, lock); err != nil {
 			slog.Error("Failed to release Codex OAuth refresh lock", "failure", "storage")
 		}
 	}()
@@ -407,11 +408,11 @@ func (s *ConfigStore) withCodexConfigWriteLock(ctx context.Context, path string,
 	if err := verifyConfigWriteTarget(pinned); err != nil {
 		return err
 	}
-	lock, err := acquireConfigFileLock(writeCtx, target.lockPath)
+	lock, err := cfgcommit.AcquireConfigFileLock(writeCtx, target.lockPath)
 	if err != nil {
 		return err
 	}
-	defer releaseConfigFileLock(target.lockPath, lock)
+	defer cfgcommit.ReleaseConfigFileLock(target.lockPath, lock)
 	if err := writeCtx.Err(); err != nil {
 		return err
 	}

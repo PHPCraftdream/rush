@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 )
@@ -178,7 +179,7 @@ func (e *mcpCommitUncertainError) Unwrap() []error {
 }
 
 func mcpCommitWasReconciled(err error) bool {
-	outcome, ok := CommitOutcomeFromError(err)
+	outcome, ok := cfgcommit.CommitOutcomeFromError(err)
 	return ok && outcome.Committed && outcome.Reconciled
 }
 
@@ -229,7 +230,7 @@ func (s *ConfigStore) WithCurrentMCPMutation(result MCPMutationResult, fn func()
 // WithCurrentMCPAdmission validates an immutable MCP admission snapshot and
 // runs fn while the config snapshot and disk inputs remain pinned.
 func (s *ConfigStore) WithCurrentMCPAdmission(snapshot MCPAdmissionSnapshot, name string, fn func(MCPAdmissionGuard) error) error {
-	ctx, cancel := configContextWithTimeout(context.Background(), configWriteLockTimeout)
+	ctx, cancel := cfgcommit.ConfigContextWithTimeout(context.Background(), configWriteLockTimeout)
 	defer cancel()
 	return s.WithCurrentMCPAdmissionContext(ctx, snapshot, name, fn)
 }

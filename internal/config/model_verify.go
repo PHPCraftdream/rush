@@ -174,7 +174,7 @@ func writeConfirmedModels(provider string, entry ConfirmedModels) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return writeCacheDocument(path, data, 0o600, atomicWriteFile)
+	return writeCacheDocument(path, data, 0o600, cfgcommit.AtomicWriteFile)
 }
 
 func readConfirmedModels(provider, endpoint, identity string) []catwalk.Model {

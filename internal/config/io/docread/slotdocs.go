@@ -4,6 +4,7 @@ package docread
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,7 +15,10 @@ import (
 	"sync"
 	"syscall"
 
+	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
+
+	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
@@ -592,3 +596,62 @@ func ErrKtavMigrationConflict() error { return errKtavMigrationConflict }
 
 // ErrKtavMigrationRecord returns docread's single migration-record sentinel identity.
 func ErrKtavMigrationRecord() error { return errKtavMigrationRecord }
+
+// errOAuthJournalRead reports a journal that exists but cannot be read from
+// disk; readers treat it as transient and retry with backoff.
+var errOAuthJournalRead = errors.New("OAuth journal cannot be read")
+
+// ErrOAuthJournalRead returns docread's single journal-read sentinel identity.
+func ErrOAuthJournalRead() error { return errOAuthJournalRead }
+
+// OAuthRefreshLockPath mirrors config.oauthRefreshLockPath: the SAME
+// legacy-anchored refresh sidecar lock the recovery worker uses.
+func OAuthRefreshLockPath(path, providerID string) string {
+	digest := sha256.Sum256([]byte(providerID))
+	return fmt.Sprintf("%s.oauth-refresh-%x.lock", NormalizeReloadPath(ConfigWriteLockAnchor(path)), digest[:8])
+}
+
+// ParseOAuthJournal decodes and validates raw journal bytes read from path.
+// Unreadable or corrupt journals are kept: any decode or validation failure
+// reports ErrOAuthJournalInvalid.
+func ParseOAuthJournal(path string, data []byte) (*OAuthJournalRecord, error) {
+	jsonBytes, decodeErr := DecodeConfigDocument(path, data)
+	if decodeErr != nil {
+		return nil, ErrOAuthJournalInvalid()
+	}
+	var record OAuthJournalRecord
+	if json.Unmarshal(jsonBytes, &record) != nil || !ValidOAuthJournal(&record) {
+		return nil, ErrOAuthJournalInvalid()
+	}
+	return &record, nil
+}
+
+// ReadOAuthJournal mirrors config.readOAuthJournal: missing journals are
+// normal; unreadable or corrupt journals are kept.
+func ReadOAuthJournal(path string) (*OAuthJournalRecord, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, ErrOAuthJournalRead()
+	}
+	return ParseOAuthJournal(path, data)
+}
+
+// OAuthProviderInfo carries only the fields the artifact migrator needs.
+type OAuthProviderInfo struct {
+	ID       string
+	Rotating bool
+}
+
+// OAuthProviderDescriptors mirrors config.oauthProviderDescriptors. Keep in
+// sync: copilot reuses its credential; Hyper's rotation contract is unknown —
+// treated as non-rotating.
+func OAuthProviderDescriptors() []OAuthProviderInfo {
+	return []OAuthProviderInfo{
+		{ID: "openai-codex", Rotating: true},
+		{ID: string(catwalk.InferenceProviderCopilot), Rotating: false},
+		{ID: catalog.HyperName, Rotating: false},
+	}
+}

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -521,9 +522,9 @@ func (s *ConfigStore) writeSettingsLockRaw(path string, mutate func(data []byte)
 				return fmt.Errorf("failed to verify config file before write: %w", err)
 			}
 		}
-		_, commitErr := commitConfigFile(target.selectedPath, target.path, written, 0o600, expected, target.owner, target.enforce)
+		_, commitErr := cfgcommit.CommitConfigFile(target.selectedPath, target.path, written, 0o600, expected, target.owner, target.enforce)
 		if commitErr != nil {
-			if outcome, ok := CommitOutcomeFromError(commitErr); ok && outcome.Committed {
+			if outcome, ok := cfgcommit.CommitOutcomeFromError(commitErr); ok && outcome.Committed {
 				s.noteInitialLoadWriteLocked(path, written)
 				committedErr = commitErr
 				return nil

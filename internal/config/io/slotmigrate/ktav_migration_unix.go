@@ -11,6 +11,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fswap"
 	"golang.org/x/sys/unix"
 )
 
@@ -66,7 +67,7 @@ func archiveKtavBackup(ctx context.Context, sourcePath, backupPath string, expec
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	published, err := cfgcommit.RenameConfigTempAt(parentFD, filepath.Base(sourcePath), parentFD, backupBase, false)
+	published, err := fswap.RenameConfigTempAt(parentFD, filepath.Base(sourcePath), parentFD, backupBase, false)
 	if err != nil {
 		if published {
 			// The archival happened even though the API reported an error;

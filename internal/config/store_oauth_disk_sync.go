@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 )
 
@@ -176,7 +177,7 @@ func (s *ConfigStore) drainOAuthOutboxOnStop() {
 			return
 		}
 		lockPath := oauthRefreshLockPath(key.path, key.provider)
-		lock, err := acquireConfigFileLock(ctx, lockPath)
+		lock, err := cfgcommit.AcquireConfigFileLock(ctx, lockPath)
 		if err != nil {
 			logOAuthJournalFailure(key.path, "drain", "OAuth outbox drain could not take the refresh sidecar")
 			continue
@@ -184,7 +185,7 @@ func (s *ConfigStore) drainOAuthOutboxOnStop() {
 		if err := s.flushOAuthOutbox(ctx, key.path, key.provider); err != nil {
 			logOAuthJournalFailure(key.path, "drain", "OAuth outbox drain flush failed")
 		}
-		releaseConfigFileLock(lockPath, lock)
+		cfgcommit.ReleaseConfigFileLock(lockPath, lock)
 	}
 }
 

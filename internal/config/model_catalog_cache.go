@@ -84,7 +84,7 @@ func cachedProviderModels(ctx context.Context, provider, endpoint, identity stri
 		err = os.MkdirAll(filepath.Dir(path), 0o700)
 	}
 	if err == nil {
-		err = writeCacheDocument(path, data, 0o600, atomicWriteFile)
+		err = writeCacheDocument(path, data, 0o600, cfgcommit.AtomicWriteFile)
 	}
 	if err != nil {
 		slog.Warn("Failed to cache model catalog", "provider", provider, "error", err)

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/tidwall/gjson"
 )
 
@@ -318,7 +319,7 @@ func WriteAPIRemoteTokenFile(name string, token []byte) (string, error) {
 		}
 	}
 	path := filepath.Join(dir, name+".token")
-	if err := atomicWriteFile(path, token, 0o600); err != nil {
+	if err := cfgcommit.AtomicWriteFile(path, token, 0o600); err != nil {
 		return "", err
 	}
 	return path, nil

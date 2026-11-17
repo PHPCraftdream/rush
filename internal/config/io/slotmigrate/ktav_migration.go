@@ -24,6 +24,31 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 )
 
+// ktavOAuthJournalReadBackoffs bound the retries on journal I/O; they mirror
+// config's oauthJournalReadBackoffs.
+var ktavOAuthJournalReadBackoffs = []time.Duration{200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond}
+
+// readOAuthJournalWithRetry mirrors config.readOAuthJournalWithRetry: only
+// journal I/O receives bounded, context-cancelable retries.
+func readOAuthJournalWithRetry(ctx context.Context, path string) (*docread.OAuthJournalRecord, error) {
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		record, err := docread.ReadOAuthJournal(path)
+		if !errors.Is(err, docread.ErrOAuthJournalRead()) || attempt >= len(ktavOAuthJournalReadBackoffs) {
+			return record, err
+		}
+		wait := time.NewTimer(ktavOAuthJournalReadBackoffs[attempt])
+		select {
+		case <-ctx.Done():
+			wait.Stop()
+			return nil, ctx.Err()
+		case <-wait.C:
+		}
+	}
+}
+
 // acquireConfigFileLock mirrors cfgcommit's hook-overridable lock acquisition.
 func acquireConfigFileLock(ctx context.Context, path string) (*filelock.FileLock, error) {
 	if hook := cfghooks.Snapshot().AcquireConfigLock; hook != nil {

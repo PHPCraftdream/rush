@@ -6,69 +6,21 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
-	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 	"github.com/PHPCraftdream/rush/internal/config/io/slotmigrate"
 	"github.com/PHPCraftdream/rush/internal/config/io/slots"
-	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 )
 
-// Forwarders that keep the root package's unexported names compiling while
-// the implementation lives in the io packages. Each forwarder is temporary:
-// the io layer named in its comment will consume its callers directly in a
-// later pass and delete the forwarder.
-
-// io layer: cfgcommit.
-func syncConfigParent(path string) error { return cfgcommit.SyncConfigParent(path) }
-
-// io layer: cfgcommit.
-func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
-	return cfgcommit.AtomicWriteFile(path, data, perm)
-}
-
-// io layer: cfgcommit.
-func syncConfigParentOnDisk(path string) error { return cfgcommit.SyncConfigParentOnDisk(path) }
-
-// io layer: cfgcommit.
-func acquireConfigFileLock(ctx context.Context, path string) (*filelock.FileLock, error) {
-	return cfgcommit.AcquireConfigFileLock(ctx, path)
-}
-
-// io layer: cfgcommit.
-func releaseConfigFileLock(path string, lock *filelock.FileLock) error {
-	return cfgcommit.ReleaseConfigFileLock(path, lock)
-}
-
-// io layer: cfgcommit.
-func configContextWithTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	return cfgcommit.ConfigContextWithTimeout(parent, timeout)
-}
-
-// io layer: cfgcommit.
-func runConfigAfterMCPCommitHook(path string) { cfgcommit.RunConfigAfterMCPCommitHook(path) }
-
-// io layer: cfgcommit.
-func runConfigBeforeMCPReconcileHook(path string, data []byte) {
-	cfgcommit.RunConfigBeforeMCPReconcileHook(path, data)
-}
-
-// io layer: cfgcommit.
-func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.FileMode, expected docread.Fingerprint, expectedOwner int, enforceOwner bool, migrationHooks ...func(string) error) (docread.Fingerprint, error) {
-	return cfgcommit.CommitConfigFile(selectedPath, commitPath, data, perm, expected, expectedOwner, enforceOwner, migrationHooks...)
-}
-
-// io layer: cfgcommit.
-func newCommitOutcome(path string, committed, reconciled bool, causes ...error) error {
-	return cfgcommit.NewCommitOutcome(path, committed, reconciled, causes...)
-}
+// Remaining production forwarders that keep the root package's unexported
+// names compiling while the implementation lives in the io packages: the
+// sentinel vars, the CommitOutcome alias, the configWriteTarget dedup-key
+// converters, the slots forwarders, the slotmigrate forwarders, and the
+// exported serve/cmd wrappers. All cfgcommit/fileid function forwarders are
+// gone; slots + slotmigrate forwarder callers are consumed directly in a
+// later pass.
 
 // io layer: cfgcommit.
 type CommitOutcome = cfgcommit.CommitOutcome
-
-// io layer: cfgcommit.
-func CommitOutcomeFromError(err error) (*CommitOutcome, bool) {
-	return cfgcommit.CommitOutcomeFromError(err)
-}
 
 // io layer: cfgcommit (vars preserve single sentinel error identity).
 var (
@@ -80,16 +32,6 @@ var (
 
 // io layer: fileid (var preserves single error identity).
 var errConfigCommitVerification = fileid.ErrConfigCommitVerification()
-
-// io layer: cfgcommit.
-func configEquivalentLeafNames(dir, left, right string) bool {
-	return cfgcommit.ConfigEquivalentLeafNames(dir, left, right)
-}
-
-// io layer: cfgcommit.
-func configDirectoryIsCaseInsensitive(dir string) bool {
-	return cfgcommit.ConfigDirectoryIsCaseInsensitive(dir)
-}
 
 // configWriteTargetDedupKey converts the root configWriteTarget into the
 // cfgcommit target and delegates. io layer: cfgcommit.
@@ -171,14 +113,4 @@ func ktavMigrationBudget() time.Duration { return slotmigrate.KtavMigrationBudge
 // io layer: slotmigrate.
 func migrateLegacyConfigFile(ctx context.Context, legacy, workingDir string) error {
 	return slotmigrate.MigrateLegacyConfigFile(ctx, legacy, workingDir)
-}
-
-// io layer: cfgcommit.
-func SetBeforeConfigCommitForTest(hook func()) func() {
-	return cfgcommit.SetBeforeConfigCommitForTest(hook)
-}
-
-// io layer: cfgcommit.
-func cloneCommitOutcome(outcome *CommitOutcome, reconciled bool) *CommitOutcome {
-	return cfgcommit.CloneCommitOutcome(outcome, reconciled)
 }

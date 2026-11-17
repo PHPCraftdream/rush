@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 )
@@ -171,13 +172,13 @@ func (files *mcpLockedFiles) validateMutableTopology() error {
 // Both writable files are locked even when only one is mutated; this makes
 // origin/existence/target checks one cross-process linearization point.
 func (s *ConfigStore) withMCPWriteLocks(fn func(*mcpLockedFiles) error) error {
-	ctx, cancel := configContextWithTimeout(context.Background(), configWriteLockTimeout)
+	ctx, cancel := cfgcommit.ConfigContextWithTimeout(context.Background(), configWriteLockTimeout)
 	defer cancel()
 	return s.withMCPLocks(ctx, fn)
 }
 
 func (s *ConfigStore) withMCPAdmissionLocks(fn func(*mcpLockedFiles) error) error {
-	ctx, cancel := configContextWithTimeout(context.Background(), configWriteLockTimeout)
+	ctx, cancel := cfgcommit.ConfigContextWithTimeout(context.Background(), configWriteLockTimeout)
 	defer cancel()
 	return s.withMCPAdmissionLocksContext(ctx, fn)
 }
@@ -300,7 +301,7 @@ func (s *ConfigStore) withMCPLocksUsingCaseSensitivity(
 		return err
 	}
 	for _, group := range groups {
-		lock, lockErr := acquireConfigFileLock(ctx, group.lockPath)
+		lock, lockErr := cfgcommit.AcquireConfigFileLock(ctx, group.lockPath)
 		if lockErr != nil {
 			return fmt.Errorf("failed to lock config file %q: %w", group.lockPath, lockErr)
 		}

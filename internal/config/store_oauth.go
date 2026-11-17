@@ -21,6 +21,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/codex"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/copilot"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/hyper"
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/tidwall/gjson"
@@ -332,7 +333,7 @@ func (s *ConfigStore) refreshLegacyOAuthLeader(ctx context.Context, scope Scope,
 		return fmt.Errorf("provider %s credentials changed during OAuth refresh", providerID)
 	}
 	if err != nil {
-		outcome, ok := CommitOutcomeFromError(err)
+		outcome, ok := cfgcommit.CommitOutcomeFromError(err)
 		if !ok || !outcome.Committed {
 			return fmt.Errorf("failed to persist refreshed token: %w", err)
 		}
@@ -430,9 +431,9 @@ func (s *ConfigStore) setOAuthTokenIfCurrentWithLock(scope Scope, providerID str
 		if encErr != nil {
 			return encErr
 		}
-		_, commitErr := commitConfigFile(target.selectedPath, target.path, written, 0o600, doc.RawFingerprint, target.owner, target.enforce)
+		_, commitErr := cfgcommit.CommitConfigFile(target.selectedPath, target.path, written, 0o600, doc.RawFingerprint, target.owner, target.enforce)
 		if commitErr != nil {
-			if outcome, ok := CommitOutcomeFromError(commitErr); ok && outcome.Committed {
+			if outcome, ok := cfgcommit.CommitOutcomeFromError(commitErr); ok && outcome.Committed {
 				s.noteInitialLoadWriteLocked(path, written)
 				committedErr = commitErr
 				return nil

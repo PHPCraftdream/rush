@@ -6,10 +6,11 @@ import (
 	"errors"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 )
 
-var oauthJournalConfigSyncParent = syncConfigParent
+var oauthJournalConfigSyncParent = cfgcommit.SyncConfigParent
 
 type oauthJournalRecord = docread.OAuthJournalRecord
 

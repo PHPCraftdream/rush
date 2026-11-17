@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 )
@@ -138,7 +139,7 @@ func verifyOAuthOutboxJournal(path string, record *docread.OAuthJournalRecord) e
 		return errOAuthJournalDisk
 	}
 	info, err := file.Stat()
-	if err != nil || file.Sync() != nil || file.Close() != nil || syncConfigParent(filepath.Dir(path)) != nil {
+	if err != nil || file.Sync() != nil || file.Close() != nil || cfgcommit.SyncConfigParent(filepath.Dir(path)) != nil {
 		return errOAuthJournalDisk
 	}
 	after, err := os.ReadFile(path)

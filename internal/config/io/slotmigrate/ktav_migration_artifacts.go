@@ -416,14 +416,14 @@ func ktavMigrateOAuthJournalsAtStartup(ctx context.Context, configSlots []string
 		if canonical == "" {
 			continue
 		}
-		for _, descriptor := range ktavOAuthProviderDescriptors() {
-			if !descriptor.rotating {
+		for _, descriptor := range docread.OAuthProviderDescriptors() {
+			if !descriptor.Rotating {
 				continue
 			}
-			legacy := docread.OAuthJournalLegacyPath(canonical, descriptor.id)
-			if err := ktavMigrateOAuthJournal(ctx, canonical, descriptor.id, workingDir); err != nil {
-				if errors.Is(err, docread.ErrKtavMigrationConflict()) && docread.KtavEntryExists(docread.OAuthJournalKtavPath(canonical, descriptor.id)) && docread.KtavEntryExists(legacy) {
-					docread.WarnKtavArtifactConflictOnce(docread.OAuthJournalKtavPath(canonical, descriptor.id), legacy, err.Error())
+			legacy := docread.OAuthJournalLegacyPath(canonical, descriptor.ID)
+			if err := ktavMigrateOAuthJournal(ctx, canonical, descriptor.ID, workingDir); err != nil {
+				if errors.Is(err, docread.ErrKtavMigrationConflict()) && docread.KtavEntryExists(docread.OAuthJournalKtavPath(canonical, descriptor.ID)) && docread.KtavEntryExists(legacy) {
+					docread.WarnKtavArtifactConflictOnce(docread.OAuthJournalKtavPath(canonical, descriptor.ID), legacy, err.Error())
 				} else {
 					docread.WarnMigrationDeferredOnce(legacy, err.Error())
 				}
@@ -469,7 +469,7 @@ func ktavMigrateOAuthJournal(ctx context.Context, configPath, providerID, workin
 		// and nothing to convert — never an error.
 		return nil
 	}
-	if err := migrateKtavArtifactToWithLock(ctx, legacy, dest, workingDir, oauthRefreshLockPath(configPath, providerID), ktavValidateOAuthJournalBytes); err != nil {
+	if err := migrateKtavArtifactToWithLock(ctx, legacy, dest, workingDir, docread.OAuthRefreshLockPath(configPath, providerID), ktavValidateOAuthJournalBytes); err != nil {
 		return err
 	}
 	backup := docread.BackupPathFor(legacy)

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 	"github.com/tidwall/gjson"
@@ -260,7 +261,7 @@ func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, f
 	}
 
 	waitStart := time.Now()
-	lock, err := acquireConfigFileLock(ctx, target.lockPath)
+	lock, err := cfgcommit.AcquireConfigFileLock(ctx, target.lockPath)
 	if wait := time.Since(waitStart); wait >= configWriteLockStallLogThreshold {
 		// Diagnosability (see configWriteLockStallLogThreshold): without
 		// this, a contended or wedged sidecar lock just looks like "rush
@@ -279,11 +280,11 @@ func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, f
 	if selected != target.selectedPath {
 		updated, resolveErr := s.resolveConfigWriteTarget(selected)
 		if resolveErr != nil {
-			_ = releaseConfigFileLock(target.lockPath, lock)
+			_ = cfgcommit.ReleaseConfigFileLock(target.lockPath, lock)
 			return fmt.Errorf("failed to resolve config file %q after locking: %w", path, resolveErr)
 		}
 		if updated.lockPath != target.lockPath {
-			_ = releaseConfigFileLock(target.lockPath, lock)
+			_ = cfgcommit.ReleaseConfigFileLock(target.lockPath, lock)
 			return fmt.Errorf("config write lock anchor changed for %q", path)
 		}
 		target = updated
@@ -295,23 +296,23 @@ func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, f
 	legacy := docread.LegacySlotOf(target.selectedPath)
 	if docread.KtavEntryExists(docread.MigrationRecordPathFor(legacy)) {
 		if err := RunKtavMigrationStateLocked(ctx, legacy, s.workingDir); err != nil {
-			_ = releaseConfigFileLock(target.lockPath, lock)
+			_ = cfgcommit.ReleaseConfigFileLock(target.lockPath, lock)
 			return fmt.Errorf("failed to recover config migration for %q: %w", path, err)
 		}
 		selected = slots.WriteTargetSlot(path)
 		updated, resolveErr := s.resolveConfigWriteTarget(selected)
 		if resolveErr != nil {
-			_ = releaseConfigFileLock(target.lockPath, lock)
+			_ = cfgcommit.ReleaseConfigFileLock(target.lockPath, lock)
 			return fmt.Errorf("failed to resolve config file %q after recovery: %w", path, resolveErr)
 		}
 		if updated.lockPath != target.lockPath {
-			_ = releaseConfigFileLock(target.lockPath, lock)
+			_ = cfgcommit.ReleaseConfigFileLock(target.lockPath, lock)
 			return fmt.Errorf("config write lock anchor changed for %q after recovery", path)
 		}
 		target = updated
 	}
 	if err := verifyConfigWriteTarget(target); err != nil {
-		_ = releaseConfigFileLock(target.lockPath, lock)
+		_ = cfgcommit.ReleaseConfigFileLock(target.lockPath, lock)
 		return fmt.Errorf("failed to verify config file %q: %w", path, err)
 	}
 	// Deliberately NOT calling os.Remove on the sidecar after Release: the
@@ -329,7 +330,7 @@ func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, f
 	// old one is still locked — reintroducing exactly the split-brain this
 	// lock exists to prevent. Leaving a handful of empty *.lock sidecars
 	// next to rush.json is a one-time, bounded cost; deleting them is not.
-	defer releaseConfigFileLock(target.lockPath, lock)
+	defer cfgcommit.ReleaseConfigFileLock(target.lockPath, lock)
 	if err := fn(target); err != nil {
 		return err
 	}
@@ -495,9 +496,9 @@ func (s *ConfigStore) setConfigFieldsAuthority(scope Scope, kv map[string]any, a
 				return fmt.Errorf("failed to verify config file before write: %w", err)
 			}
 		}
-		_, commitErr := commitConfigFile(target.selectedPath, target.path, written, 0o600, expected, target.owner, target.enforce)
+		_, commitErr := cfgcommit.CommitConfigFile(target.selectedPath, target.path, written, 0o600, expected, target.owner, target.enforce)
 		if commitErr != nil {
-			if outcome, ok := CommitOutcomeFromError(commitErr); ok && outcome.Committed {
+			if outcome, ok := cfgcommit.CommitOutcomeFromError(commitErr); ok && outcome.Committed {
 				s.noteInitialLoadWriteLocked(path, written)
 				committedErr = commitErr
 				return nil
@@ -580,7 +581,7 @@ func (s *ConfigStore) RemoveConfigFieldWithAuthority(scope Scope, key string, au
 	ctx, cancel := context.WithTimeout(context.Background(), configWriteLockTimeout)
 	defer cancel()
 	if err := s.removeConfigFieldAt(ctx, path, key, true, authority); err != nil {
-		if outcome, ok := CommitOutcomeFromError(err); ok && outcome.Committed {
+		if outcome, ok := cfgcommit.CommitOutcomeFromError(err); ok && outcome.Committed {
 			if reloadErr := s.autoReloadAfterWrite(context.Background()); reloadErr != nil {
 				slog.Warn("Config field removal committed but in-memory reconciliation was incomplete", "path", path, "error", reloadErr)
 				return errors.Join(err, reloadErr)
@@ -681,9 +682,9 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string,
 		if err != nil {
 			return err
 		}
-		_, commitErr := commitConfigFile(target.selectedPath, target.path, written, 0o600, expected, target.owner, target.enforce)
+		_, commitErr := cfgcommit.CommitConfigFile(target.selectedPath, target.path, written, 0o600, expected, target.owner, target.enforce)
 		if commitErr != nil {
-			if outcome, ok := CommitOutcomeFromError(commitErr); ok && outcome.Committed {
+			if outcome, ok := cfgcommit.CommitOutcomeFromError(commitErr); ok && outcome.Committed {
 				s.noteInitialLoadWriteLocked(path, written)
 				committedErr = commitErr
 				return nil
@@ -745,7 +746,7 @@ func (s *ConfigStore) removeConfigFieldBestEffort(scope Scope, key string) {
 		return
 	}
 
-	ctx, cancel := configContextWithTimeout(context.Background(), internalConfigWriteLockTimeout)
+	ctx, cancel := cfgcommit.ConfigContextWithTimeout(context.Background(), internalConfigWriteLockTimeout)
 	defer cancel()
 	if err := s.removeConfigFieldAt(ctx, path, key, false, SettingsAuthorityGuarded); err != nil {
 		if errors.Is(err, ErrSettingsLocked) {
