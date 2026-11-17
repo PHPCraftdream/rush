@@ -36,7 +36,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -285,12 +285,12 @@ func TestSessionsReset_ForceHoldsLockDuringDBReset(t *testing.T) {
 	// and immediately released. Capture the returned lock (and defer-release
 	// it) so a reverted/buggy run that SUCCEEDS here does not leak a held lock
 	// and block the temp-dir cleanup.
-	contendedLK, err2 := session.TryAcquireSessionLock(dataDir, sessionID)
+	contendedLK, err2 := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	if contendedLK != nil {
 		defer contendedLK.Release()
 	}
 	require.Error(t, err2, "a second acquirer must be blocked while reset --force holds the lock")
-	var busyErr *session.SessionLockBusyError
+	var busyErr *sessionlock.SessionLockBusyError
 	require.ErrorAs(t, err2, &busyErr, "contention must be reported as a busy error, not some other failure")
 
 	require.NoError(t, lk.Release())
@@ -301,7 +301,7 @@ func TestSessionsReset_ForceHoldsLockDuringDBReset(t *testing.T) {
 	// for that cleanup, and the assertion below does not depend on its timing.
 	// After release, the session is free again (the empty lock file remains,
 	// harmless — but acquisition must succeed).
-	lk2, err3 := session.TryAcquireSessionLock(dataDir, sessionID)
+	lk2, err3 := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, err3, "after reset --force releases, the session must be acquirable again")
 	_ = lk2.Release()
 }

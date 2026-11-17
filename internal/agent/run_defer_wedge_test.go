@@ -6,7 +6,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -46,7 +46,7 @@ func TestRun_OSLockAcquisitionFailure_DoesNotPermanentlyWedgeMailbox(t *testing.
 	// Hold the OS-level session lock externally, standing in for a
 	// different process/holder — forces Run's own TryAcquireSessionLock to
 	// fail, driving it into the pre-loop bail-out path.
-	externalHolder, err := session.TryAcquireSessionLock(dataDir, sess.ID)
+	externalHolder, err := sessionlock.TryAcquireSessionLock(dataDir, sess.ID)
 	require.NoError(t, err)
 
 	srv := singleTurnSSEServer(nil)

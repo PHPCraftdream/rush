@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -694,7 +694,7 @@ func (ts *turnStream) applyStepUsage(stepResult fantasy.StepResult) (session.Ses
 	}
 	costDelta := ts.a.updateSessionUsage(ts.smartModel, &updatedSession, usage, ts.a.openrouterCost(stepResult.ProviderMetadata))
 	// Heartbeat usage: one add per accounted step, executing model identity (design pt. 4).
-	addHeartbeatUsage(ts.genCtx, ts.smartModel.Model.Provider(), ts.smartModel.Model.Model(), usage, costDelta)
+	callbeat.AddHeartbeatUsage(ts.genCtx, ts.smartModel.Model.Provider(), ts.smartModel.Model.Model(), usage, costDelta)
 	if costDelta != 0 {
 		if _, costErr := ts.a.sessions.IncrementCost(ts.ctx, updatedSession.ID, costDelta); costErr != nil {
 			return session.Session{}, costErr

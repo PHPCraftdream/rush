@@ -24,6 +24,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -160,7 +161,7 @@ func TestRun_ForeignSessionIsRefusedBeforeAnyTurnAndLeavesNoLock(t *testing.T) {
 	// the deferred abandonOwnershipWithHandoff, exactly as a turn would), so
 	// the session's real owner never finds a stale lock file. This is what
 	// "no side effects" means now that the guard runs behind the lock.
-	lk, lockErr := session.TryAcquireSessionLock(dataDir, wsForeignSession)
+	lk, lockErr := sessionlock.TryAcquireSessionLock(dataDir, wsForeignSession)
 	require.NoError(t, lockErr, "a refused call must leave no session lock behind: %v", lockErr)
 	require.NoError(t, lk.Release())
 }
@@ -319,8 +320,8 @@ func TestRun_LinkedProcessRefusesForeignAndLegacyRows(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("timed out waiting for Run to reach the preamble's Get")
 		}
-		_, lockErr := session.TryAcquireSessionLock(dataDir, wsForeignSession)
-		var busyErr *session.SessionLockBusyError
+		_, lockErr := sessionlock.TryAcquireSessionLock(dataDir, wsForeignSession)
+		var busyErr *sessionlock.SessionLockBusyError
 		require.Error(t, lockErr)
 		require.True(t, errors.As(lockErr, &busyErr),
 			"the run that got past the guard holds the session lock: got %v", lockErr)
@@ -370,8 +371,8 @@ func TestRun_LegacySessionIsDrivenPastTheGuard(t *testing.T) {
 
 	// Blocked inside the preamble's Get, i.e. demonstrably past the guard and
 	// past the lock -- and therefore holding that lock.
-	_, lockErr := session.TryAcquireSessionLock(dataDir, wsForeignSession)
-	var busyErr *session.SessionLockBusyError
+	_, lockErr := sessionlock.TryAcquireSessionLock(dataDir, wsForeignSession)
+	var busyErr *sessionlock.SessionLockBusyError
 	require.Error(t, lockErr)
 	require.True(t, errors.As(lockErr, &busyErr),
 		"the run that got past the guard holds the session lock: got %v", lockErr)

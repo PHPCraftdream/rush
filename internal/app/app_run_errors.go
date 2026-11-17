@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	sqlitedriver "modernc.org/sqlite"
 )
@@ -188,7 +188,7 @@ func isPeakHoursStop(err error) bool {
 // sentence an operator can act on: who holds it, why a second `rush run`
 // cannot attach, and the inject command that can.
 func sessionBusyGuidance(sessionID string, err error) string {
-	var busyErr *session.SessionLockBusyError
+	var busyErr *sessionlock.SessionLockBusyError
 	holder := ""
 	switch {
 	case errors.As(err, &busyErr):
@@ -257,6 +257,6 @@ func cancelledRunError(runErr error, finalReason, finalErrTitle, finalErrDetails
 // holds the session: a lock held by another process (a web tab's human turn,
 // `sessions inject`) or an in-process owner. Such a turn ran nothing.
 func turnRefusedByOwner(err error) bool {
-	var busy *session.SessionLockBusyError
+	var busy *sessionlock.SessionLockBusyError
 	return errors.As(err, &busy) || errors.Is(err, agent.ErrSessionBusy)
 }

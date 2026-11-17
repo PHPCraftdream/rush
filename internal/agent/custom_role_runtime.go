@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -146,7 +148,7 @@ func currentOrSnapshotRoleModel(cfg *config.Config, contract *session.RoleContra
 		return config.SelectedModel{}, "", fmt.Errorf("%w: provider %q for custom role %q", ErrAgentRoleUnconfigured, definition.Provider, contract.Name)
 	}
 	// The caller pins cfg for this request; durable tool ceilings stay unchanged.
-	return cloneSelectedModel(definition.SelectedModel), hbSourceSlotLive, nil
+	return cloneSelectedModel(definition.SelectedModel), callbeat.HbSourceSlotLive, nil
 }
 
 func cloneRoleContractFromCallOptions(opts *CallOptions) *session.RoleContract {

@@ -14,7 +14,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -148,7 +148,7 @@ func TestSessionsReap_IdleButOSLockHeldKept(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "data")
 	reapIdleSetup(t, dataDir)
 
-	probe, err := session.TryHoldSessionLockShared(dataDir, "idle-held")
+	probe, err := sessionlock.TryHoldSessionLockShared(dataDir, "idle-held")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = probe.Release() })
 

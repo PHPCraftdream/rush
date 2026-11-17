@@ -19,7 +19,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -121,7 +121,7 @@ func TestRetryClassifiers_AttemptScopedEvidence(t *testing.T) {
 		coord, sid, _ := appendAssistant(t, env, partialStalledParts("partial answer"))
 		// Constructed per internal/session/lock.go's SessionLockBusyError
 		// shape; runOwned wraps it as `session %q is already in use: %w`.
-		lockBusy := &session.SessionLockBusyError{Path: "/data/locks/" + sid, HolderPID: 424242}
+		lockBusy := &sessionlock.SessionLockBusyError{Path: "/data/locks/" + sid, HolderPID: 424242}
 		lockErr := fmt.Errorf("session %q is already in use: %w", sid, lockBusy)
 		_, ok := coord.shouldContinueTurn(t.Context(), sid, lockErr, "" /* the refused attempt wrote no assistant row */)
 		assert.False(t, ok, "an OS session-lock refusal means no attempt ran — nothing to resume")

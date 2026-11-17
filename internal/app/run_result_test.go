@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -355,7 +355,7 @@ func TestSessionBusyGuidance(t *testing.T) {
 	assert.Contains(t, queued, "this rush process")
 	assert.Contains(t, queued, "rush sessions inject s1 -m <message>")
 
-	locked := sessionBusyGuidance("s2", fmt.Errorf("outer: %w", &session.SessionLockBusyError{HolderPID: 1234, Path: "lock"}))
+	locked := sessionBusyGuidance("s2", fmt.Errorf("outer: %w", &sessionlock.SessionLockBusyError{HolderPID: 1234, Path: "lock"}))
 	assert.Contains(t, locked, "rush process PID 1234")
 	assert.Contains(t, locked, "rush run --session s2")
 

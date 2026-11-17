@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/google/uuid"
 )
@@ -95,10 +96,10 @@ var (
 // next GC; the lock must live until the process exits.
 var (
 	retainedHostMu    sync.Mutex
-	retainedHostLocks []*FileLock
+	retainedHostLocks []*sessionlock.FileLock
 )
 
-func retainHostLockUntilExit(l *FileLock) {
+func retainHostLockUntilExit(l *sessionlock.FileLock) {
 	if l == nil {
 		return
 	}
@@ -165,7 +166,7 @@ var ErrProbeOwnHost = errors.New("host lock: refusing to probe this process's ow
 //     failure.
 //   - HostStatusUnknown: some other error. No lock returned; err carries
 //     the cause. Rows owned by this host must NOT be treated as reapable.
-func ProbeHostLock(lockPath string) (HostLockStatus, *FileLock, error) {
+func ProbeHostLock(lockPath string) (HostLockStatus, *sessionlock.FileLock, error) {
 	// A14: opened read-only -- flock/LockFileEx work on a read-only handle,
 	// and a 0644 lock file in a shared data dir (owned by another uid/process)
 	// would otherwise give EACCES on O_RDWR and report HostStatusUnknown
@@ -186,9 +187,9 @@ func ProbeHostLock(lockPath string) (HostLockStatus, *FileLock, error) {
 		_ = f.Close()
 		return HostStatusUnknown, nil, fmt.Errorf("host lock probe: %s is a directory", lockPath)
 	}
-	if err := tryLockFile(f); err != nil {
+	if err := sessionlock.TryLockFile(f); err != nil {
 		_ = f.Close()
-		if isLockContentionError(err) {
+		if sessionlock.IsLockContentionError(err) {
 			return HostStatusAlive, nil, nil
 		}
 		return HostStatusUnknown, nil, fmt.Errorf("host lock probe: lock %s: %w", lockPath, err)
@@ -199,7 +200,7 @@ func ProbeHostLock(lockPath string) (HostLockStatus, *FileLock, error) {
 // ProbeHost is ProbeHostLock scoped to dataDir/hostID, with the doc sec.3.6
 // self-probe guard: refuses (HostStatusUnknown, ErrProbeOwnHost) for any
 // host id this process itself registered.
-func ProbeHost(dataDir, hostID string) (HostLockStatus, *FileLock, error) {
+func ProbeHost(dataDir, hostID string) (HostLockStatus, *sessionlock.FileLock, error) {
 	if IsOwnHostID(hostID) {
 		return HostStatusUnknown, nil, ErrProbeOwnHost
 	}
@@ -266,7 +267,7 @@ type HostIdentity struct {
 	ID      string
 	DataDir string
 
-	lock *FileLock
+	lock *sessionlock.FileLock
 }
 
 // ErrHostLockUnavailable is RegisterHost's typed refusal for the ONE failure
@@ -302,15 +303,15 @@ var registerHostAfterCreateSeam func(lockPath string)
 // every remover unlinks only while holding the lock (RemoveDeadHostFile), so
 // a file held-and-verified here can no longer be unlinked. Losing the lock
 // race itself is *ErrLockContended.
-func acquireFreshHostLock(lockPath string) (*FileLock, error) {
-	f, err := openLockFile(lockPath)
+func acquireFreshHostLock(lockPath string) (*sessionlock.FileLock, error) {
+	f, err := sessionlock.OpenLockFile(lockPath)
 	if err != nil {
 		return nil, err
 	}
 	if registerHostAfterCreateSeam != nil {
 		registerHostAfterCreateSeam(lockPath)
 	}
-	lock, err := classifyAndLock(f, lockPath)
+	lock, err := sessionlock.ClassifyAndLock(f, lockPath)
 	if err != nil {
 		return nil, err
 	}
@@ -348,7 +349,7 @@ func RegisterHost(ctx context.Context, dataDir string, pid int, label string, st
 	var (
 		id       string
 		lockPath string
-		lock     *FileLock
+		lock     *sessionlock.FileLock
 		err      error
 	)
 	for attempt := 0; attempt < registerHostAttempts; attempt++ {
@@ -358,12 +359,12 @@ func RegisterHost(ctx context.Context, dataDir string, pid int, label string, st
 		if err == nil {
 			break
 		}
-		if !isContentionError(err) && !errors.Is(err, errHostLockReplaced) {
+		if !sessionlock.IsContentionError(err) && !errors.Is(err, errHostLockReplaced) {
 			break
 		}
 	}
 	if err != nil {
-		if isContentionError(err) || errors.Is(err, errHostLockReplaced) {
+		if sessionlock.IsContentionError(err) || errors.Is(err, errHostLockReplaced) {
 			return nil, fmt.Errorf("host lock: register: no stable lock file after %d attempts (last %s): %w",
 				registerHostAttempts, lockPath, err)
 		}
@@ -441,7 +442,7 @@ var removeDeadHostFileBeforeRemoveSeam func(lockPath string)
 // (no FILE_SHARE_DELETE), so it closes first (doc sec.3.6: "на Windows —
 // закрыть, затем удалить"); there a registrant's open handle makes the remove
 // fail with a sharing violation instead, leaving its file intact.
-func RemoveDeadHostFile(lockPath string, held *FileLock) error {
+func RemoveDeadHostFile(lockPath string, held *sessionlock.FileLock) error {
 	if held == nil {
 		return fmt.Errorf("host lock: RemoveDeadHostFile: nil lock")
 	}

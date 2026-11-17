@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -31,13 +31,13 @@ func writeReleasedLeftoverLock(t *testing.T, dataDir, sessionID string) {
 	t.Helper()
 	dir := filepath.Join(dataDir, "locks")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
-	path := session.SessionLockPath(dataDir, sessionID)
+	path := sessionlock.SessionLockPath(dataDir, sessionID)
 	require.NoError(t, os.WriteFile(path, []byte{}, 0o644))
 	now := time.Now()
 	require.NoError(t, os.Chtimes(path, now, now))
 	// Precondition, not the mechanism: prove this state grants the probe
 	// through the very primitive the fix uses.
-	probe, err := session.TryHoldSessionLockShared(dataDir, sessionID)
+	probe, err := sessionlock.TryHoldSessionLockShared(dataDir, sessionID)
 	require.NoError(t, err, "forged leftover must grant the shared probe (no kernel holder)")
 	require.NoError(t, probe.Release())
 }
@@ -133,7 +133,7 @@ func TestHandleRerunMessage_ProbeReleasedBeforeHandoff(t *testing.T) {
 		// exclusive acquire on the session lock must succeed: the probe is
 		// gone. Release it immediately so the handler's handoff (and the
 		// negative-control rerun below) proceed normally.
-		lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
+		lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 		if err != nil {
 			seamErr = err
 			return

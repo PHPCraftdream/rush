@@ -21,7 +21,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	hub "github.com/PHPCraftdream/rush/internal/serve/server/hub"
 	wire "github.com/PHPCraftdream/rush/internal/serve/server/wire"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/google/uuid"
@@ -50,7 +50,7 @@ var rerunPreHandoffSeam func()
 
 // HoldExternalSilenceProof exposes the lock-probe seam to remaining server
 // API callers while the WS package migration is completed.
-func HoldExternalSilenceProof(a *appPkg.App, sessionID string) (*session.SharedLockProbe, bool, string) {
+func HoldExternalSilenceProof(a *appPkg.App, sessionID string) (*sessionlock.SharedLockProbe, bool, string) {
 	return holdExternalSilenceProof(a, sessionID)
 }
 
@@ -109,7 +109,7 @@ func HoldExternalSilenceProof(a *appPkg.App, sessionID string) (*session.SharedL
 // setDefaults, and a hand-built &config.Config{Options: &config.Options{}}
 // panics inside app.New before returning), so the config-level guard is
 // pinned at the FromConfig seam instead.
-func holdExternalSilenceProof(a *appPkg.App, sessionID string) (probe *session.SharedLockProbe, refuse bool, message string) {
+func holdExternalSilenceProof(a *appPkg.App, sessionID string) (probe *sessionlock.SharedLockProbe, refuse bool, message string) {
 	if a == nil || a.Store() == nil {
 		return nil, true, "cannot verify external session ownership (no config store) — please retry"
 	}
@@ -121,15 +121,15 @@ func holdExternalSilenceProof(a *appPkg.App, sessionID string) (probe *session.S
 // rules. Split out (task #622, third review) so tests can reach the
 // nil-config / nil-Options / empty-DataDirectory guard directly — see the
 // wrapper's doc for why it cannot be driven through a real App.
-func holdExternalSilenceProofFromConfig(cfg *config.Config, sessionID string) (*session.SharedLockProbe, bool, string) {
+func holdExternalSilenceProofFromConfig(cfg *config.Config, sessionID string) (*sessionlock.SharedLockProbe, bool, string) {
 	if cfg == nil || cfg.Options == nil || cfg.Options.DataDirectory == "" {
 		return nil, true, "cannot verify external session ownership (data directory unresolvable) — please retry"
 	}
-	probe, err := session.TryHoldSessionLockShared(cfg.Options.DataDirectory, sessionID)
+	probe, err := sessionlock.TryHoldSessionLockShared(cfg.Options.DataDirectory, sessionID)
 	if err == nil {
 		return probe, false, ""
 	}
-	var busyErr *session.SessionLockBusyError
+	var busyErr *sessionlock.SessionLockBusyError
 	if errors.As(err, &busyErr) {
 		if busyErr.HolderPID != 0 {
 			return nil, true, fmt.Sprintf("session is owned by another process (PID %d) — wait for it to finish and retry", busyErr.HolderPID)

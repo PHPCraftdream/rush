@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -183,7 +184,7 @@ func TestSessionActivityBatch_BindingTests(t *testing.T) {
 // mtime by age (0 keeps it fresh) -- freshness must not matter (D10).
 func writeLockRecord(t *testing.T, dataDir, sessionID, pid string, age time.Duration) error {
 	t.Helper()
-	path := session.SessionLockPath(dataDir, sessionID)
+	path := sessionlock.SessionLockPath(dataDir, sessionID)
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 	if err := os.WriteFile(path, []byte(pid), 0o644); err != nil {
 		return err

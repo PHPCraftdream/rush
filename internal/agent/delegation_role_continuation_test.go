@@ -3,6 +3,8 @@ package agent
 import (
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
@@ -27,7 +29,7 @@ func TestRequestedRoleContinuationRefreshesModelWithoutChangingAuthority(t *test
 	require.NoError(t, err)
 	require.Equal(t, "worker-model", got.SmartModel.ModelCfg.Model)
 	require.Equal(t, RequestedModelRole("worker"), got.RequestedModelRole)
-	require.Equal(t, hbSourceSlotLive, got.RequestedModelSource)
+	require.Equal(t, callbeat.HbSourceSlotLive, got.RequestedModelSource)
 	require.Same(t, opts, got.CallOptions)
 	require.Equal(t, before, *opts)
 	require.Equal(t, original.Tools, got.Tools)

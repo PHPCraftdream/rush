@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
@@ -40,7 +42,7 @@ func TestRoleFieldsOnOtherToolsAreNotAgentControl(t *testing.T) {
 func TestRequestedRoleDurableRoundTripDoesNotReplacePolicyRole(t *testing.T) {
 	t.Parallel()
 	original := SessionAgentCall{
-		SessionID: "child", RequestedModelRole: "reviewer", RequestedModelSource: hbSourceSessionOverride,
+		SessionID: "child", RequestedModelRole: "reviewer", RequestedModelSource: callbeat.HbSourceSessionOverride,
 		MaxCost:     9,
 		CallOptions: &CallOptions{ModelRole: config.SelectedModelTypeFast, DisableSubAgents: true, MaxAgentDepth: 1, AgentDepthSet: true, MaxCost: 9},
 	}

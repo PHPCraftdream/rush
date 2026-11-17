@@ -14,7 +14,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -268,7 +268,7 @@ func TestRun_QueueDrain_DoesNotDeadlockOnOwnSessionLock(t *testing.T) {
 		require.NoError(t, r.err,
 			"Run must not fail with a session-lock error when draining a queued message — "+
 				"a SessionLockBusyError here means the old recursive-Run() self-deadlock regressed")
-		var busyErr *session.SessionLockBusyError
+		var busyErr *sessionlock.SessionLockBusyError
 		assert.False(t, errors.As(r.err, &busyErr), "must not be a SessionLockBusyError")
 	case <-time.After(15 * time.Second):
 		t.Fatal("Run did not return within 15s — possible deadlock draining the queued message")
@@ -287,7 +287,7 @@ func TestRun_QueueDrain_DoesNotDeadlockOnOwnSessionLock(t *testing.T) {
 
 	// Session lock must be fully released now that Run() has returned:
 	// prove it by acquiring it fresh from outside.
-	lk, err := session.TryAcquireSessionLock(dataDir, sess.ID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sess.ID)
 	require.NoError(t, err, "expected the session lock to be released after Run() finished draining the queue")
 	require.NoError(t, lk.Release())
 }

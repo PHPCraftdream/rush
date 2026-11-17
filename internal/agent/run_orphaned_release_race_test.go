@@ -10,6 +10,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -90,7 +91,7 @@ func TestSessionAgent_RestartOrphaned_RunsUnderFreshLock_NotUnprotected(t *testi
 	sa := agentIface.(*sessionAgent)
 
 	// Precondition: nothing holds the session's OS lock yet.
-	precheck, err := session.TryAcquireSessionLock(dataDir, sess.ID)
+	precheck, err := sessionlock.TryAcquireSessionLock(dataDir, sess.ID)
 	require.NoError(t, err)
 	require.NoError(t, precheck.Release())
 
@@ -132,7 +133,7 @@ func TestSessionAgent_RestartOrphaned_RunsUnderFreshLock_NotUnprotected(t *testi
 	// provably in flight, a DIRECT second acquisition of the SAME session's
 	// OS lock must FAIL — proving the restart is running under its OWN
 	// freshly-acquired lock, not unprotected.
-	_, lockErr := session.TryAcquireSessionLock(dataDir, sess.ID)
+	_, lockErr := sessionlock.TryAcquireSessionLock(dataDir, sess.ID)
 	require.Error(t, lockErr, "the restarted orphaned call must hold its OWN freshly-acquired OS lock while its "+
 		"turn is in flight — if it ran unprotected instead, this acquisition would spuriously succeed, exactly "+
 		"the #297 class of double-owner bug reached from a different angle")
@@ -141,7 +142,7 @@ func TestSessionAgent_RestartOrphaned_RunsUnderFreshLock_NotUnprotected(t *testi
 
 	// Let the detached goroutine finish and release its lock.
 	require.Eventually(t, func() bool {
-		lk2, err := session.TryAcquireSessionLock(dataDir, sess.ID)
+		lk2, err := sessionlock.TryAcquireSessionLock(dataDir, sess.ID)
 		if err != nil {
 			return false
 		}
@@ -223,7 +224,7 @@ func TestMailbox_DrainOrReleaseFinal_ThenAgentRestartsOrphaned_FullPath(t *testi
 	mb.current = generation{id: 1, cancel: func() {}}
 	mb.mu.Unlock()
 
-	lk, err := session.TryAcquireSessionLock(dataDir, sess.ID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sess.ID)
 	require.NoError(t, err)
 
 	// A release callback that lands the race INSIDE the release() window
@@ -276,13 +277,13 @@ func TestMailbox_DrainOrReleaseFinal_ThenAgentRestartsOrphaned_FullPath(t *testi
 		t.Fatal("the orphaned call was never restarted")
 	}
 
-	_, lockErr := session.TryAcquireSessionLock(dataDir, sess.ID)
+	_, lockErr := sessionlock.TryAcquireSessionLock(dataDir, sess.ID)
 	require.Error(t, lockErr, "the restarted orphaned call must hold its own freshly-acquired OS lock while its "+
 		"turn is in flight")
 	proceedOnce.Do(func() { close(restartProceed) })
 
 	require.Eventually(t, func() bool {
-		lk2, err := session.TryAcquireSessionLock(dataDir, sess.ID)
+		lk2, err := sessionlock.TryAcquireSessionLock(dataDir, sess.ID)
 		if err != nil {
 			return false
 		}

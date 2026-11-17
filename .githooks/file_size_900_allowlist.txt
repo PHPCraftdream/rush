@@ -18,7 +18,7 @@ internal/agent/agent_turn_step.go 932
 internal/agent/batch_cutover_await_test.go 990
 internal/agent/batch_install_adapters.go 959
 internal/agent/coordinator_interrupt.go 958
-internal/agent/coordinator_providers.go 939
+# 939 -> removed 2026-11-17: EX-0B pass B1 moved provider bodies to providers_component.go; coordinator_providers.go now 792.
 internal/agent/coordinator_run.go 998
 internal/agent/coordinator_test.go 901
 internal/agent/coordinator_tool_pinning_test.go 995
@@ -38,7 +38,5 @@ internal/config/store_mcp_transaction.go 923
 internal/serve/cmd/migrate.go 929
 internal/serve/cmd/migrate_test.go 954
 internal/serve/cmd/providers_peak_hours.go 958
-internal/session/childgroup_registry_unix.go 976
-internal/session/lock.go 976
-# 985 -> 986: +1 import line (run/sessiontest, lane SM4: the local limitParallel copy moved out); the file is cut by the session lanes MV/EX.
-internal/session/lock_test.go 986
+# MV2 retires the moved lock and childgroup 900-line exemptions. The test-only lock file remains over the ceiling.
+internal/session/proc/sessionlock/lock_test.go 986

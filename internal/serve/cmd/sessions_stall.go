@@ -15,6 +15,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -39,7 +40,7 @@ var readOnlyToolNames = map[string]bool{
 // lockPulseAge returns the age of the session lock heartbeat file's mtime,
 // the same PULSE_AGE signal `sessions locks` computes.
 func lockPulseAge(dataDir, sessionID string, now time.Time) (time.Duration, bool) {
-	st, err := os.Stat(session.SessionLockPath(dataDir, sessionID))
+	st, err := os.Stat(sessionlock.SessionLockPath(dataDir, sessionID))
 	if err != nil {
 		return 0, false
 	}

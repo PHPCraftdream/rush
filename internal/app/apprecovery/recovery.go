@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -251,7 +251,7 @@ func recoverSessionInterruptedTurn(ctx context.Context, p RecoverParams, cand me
 	// regardless of whether it's a sub-agent. A live child's lock protects
 	// it exactly like a live top-level session.
 	if dataDir != "" {
-		st := session.InspectSessionLock(dataDir, cand.SessionID, session.LockStaleDuration)
+		st := sessionlock.InspectSessionLock(dataDir, cand.SessionID, sessionlock.LockStaleDuration)
 		// Fail CLOSED on "could not check": if the lock file's
 		// existence could not be determined at all (permission
 		// denied, I/O error, unreachable path component, ...),

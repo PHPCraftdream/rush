@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
@@ -98,7 +98,7 @@ func TestRunLoop_TodoNudgeRefusedByLockKeepsTheAnswer(t *testing.T) {
 		{Content: "deploy after the answer", Status: coresession.TodoStatusPending},
 	}, nil))
 	h.afterFirstTurn(func() {
-		foreign, err := session.TryAcquireSessionLock(h.dataDir, h.sessionID)
+		foreign, err := sessionlock.TryAcquireSessionLock(h.dataDir, h.sessionID)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = foreign.Release() })
 	})

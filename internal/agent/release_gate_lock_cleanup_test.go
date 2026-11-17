@@ -15,7 +15,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy/providers/openaicompat"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -112,8 +112,8 @@ func TestReleaseGate_1_MetadataCleanupBlockedForever(t *testing.T) {
 		Messages:     messages,
 		IsYolo:       true,
 		SystemPrompt: "You are a test assistant.",
-		LockOptions: []session.LockOption{
-			session.WithClearHolderMetadataFn(func(path string, expectedGeneration string) {
+		LockOptions: []sessionlock.LockOption{
+			sessionlock.WithClearHolderMetadataFn(func(path string, expectedGeneration string) {
 				cleanupStarted.Store(true)
 				// PERMANENTLY BLOCK
 				select {
@@ -164,10 +164,10 @@ func TestReleaseGate_1_MetadataCleanupBlockedForever(t *testing.T) {
 		"Cleanup goroutine should have started (this proves Release() was called)")
 
 	// CRITICAL VERIFICATION 2: OS lock should be available even though cleanup is blocked.
-	var lk2 *session.SessionLock
+	var lk2 *sessionlock.SessionLock
 	require.Eventually(t, func() bool {
 		var err error
-		lk2, err = session.TryAcquireSessionLock(tmpDir, sessionID)
+		lk2, err = sessionlock.TryAcquireSessionLock(tmpDir, sessionID)
 		return err == nil && lk2 != nil
 	}, 30*time.Second, 10*time.Millisecond,
 		"OS lock should be acquirable even though cleanup is blocked")

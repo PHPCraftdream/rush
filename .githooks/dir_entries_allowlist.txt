@@ -8,7 +8,10 @@
 #
 # When you split a directory: delete its line here. An element count
 # may never go up.
-internal/agent 251
+# 251 -> 252: +1 EX-0A adds wake_component.go (wakeComponent retarget, D1 §3.5).
+# 252 -> 253: +1 providers_component.go (EX-0B pass B1, providerComponent retarget, D1 §3.5).
+# The count falls when the DM coordination phase consolidates (D1 §2.4, entries deleted at consolidation). Only down from here.
+internal/agent 247
 # internal/agent/tools 80 -> 81: +1 for internal/agent/tools/hooks moved in (stage C).
 # The count falls with the package split (stage D2).
 internal/agent/tools 81
@@ -40,9 +43,7 @@ internal/session/heartbeat 10
 internal/session/jobbatch 21
 internal/session/jobbatch/lab 24
 internal/serve/server 46
-# 125 -> 126: +1 internal/session/run (run/sessiontest: shared test fixtures, lane SM4 of the session design, S8);
-# run/ holds the run components after lane EX7, the row falls with the session cut (FIN).
-internal/session 89
+internal/session 78
 # MV1 adds the moved service subtree as live temporary debt. MV3/EX splits the batch/run satellites out;
 # per docs/plans/2026-11-15-sprint0-split-session.md §2.2, service drops to 4 elements.
 internal/session/service 40

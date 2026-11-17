@@ -53,7 +53,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessioncgroup "github.com/PHPCraftdream/rush/internal/session/proc/sessioncgroup"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -78,11 +79,11 @@ func TestHelperSweepTestNewOwner(t *testing.T) {
 		fmt.Println("FAILED missing-env")
 		os.Exit(2)
 	}
-	var lk *session.SessionLock
+	var lk *sessionlock.SessionLock
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		var err error
-		lk, err = session.TryAcquireSessionLock(dataDir, sessionID)
+		lk, err = sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 		if err == nil {
 			break
 		}
@@ -190,7 +191,7 @@ func TestHelperCrashTestLockHold(t *testing.T) {
 		fmt.Println("FAILED missing-env")
 		os.Exit(2)
 	}
-	lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	if err != nil {
 		fmt.Printf("FAILED %v\n", err)
 		os.Exit(1)
@@ -307,8 +308,8 @@ func TestProbeThenKillHolder_CapturesVictimGenerationWhileHolderAlive(t *testing
 	holder := spawnKillTestLockHolder(t, dataDir, sessionID, false)
 	require.True(t, procinfo.IsProcessAlive(holder.pid))
 
-	lockPath := session.SessionLockPath(dataDir, sessionID)
-	oldGeneration := session.ReadLockGeneration(lockPath)
+	lockPath := sessionlock.SessionLockPath(dataDir, sessionID)
+	oldGeneration := sessionlock.ReadLockGeneration(lockPath)
 	require.NotEmpty(t, oldGeneration, "a live holder's lock must carry a generation token")
 
 	// A brand-new owner, spinning to acquire the session the instant the
@@ -331,7 +332,7 @@ func TestProbeThenKillHolder_CapturesVictimGenerationWhileHolderAlive(t *testing
 	// was held until then), and while the holder is still an unreaped
 	// zombie — i.e. forceKillHolder has NOT returned yet.
 	require.Eventually(t, func() bool {
-		g := session.ReadLockGeneration(lockPath)
+		g := sessionlock.ReadLockGeneration(lockPath)
 		return g != "" && g != oldGeneration
 	}, 10*time.Second, 10*time.Millisecond,
 		"the new owner should acquire the session and stamp its own generation while the killed holder is still an unreaped zombie")
@@ -353,7 +354,7 @@ func TestProbeThenKillHolder_CapturesVictimGenerationWhileHolderAlive(t *testing
 	// Prove the window really was occupied: at the moment
 	// probeThenKillHolder returned, the lock on disk belonged to the NEW
 	// owner under the NEW generation.
-	currentGeneration := session.ReadLockGeneration(lockPath)
+	currentGeneration := sessionlock.ReadLockGeneration(lockPath)
 	require.NotEqual(t, oldGeneration, currentGeneration,
 		"precondition: the new owner's generation must be what a post-kill read would see")
 
@@ -392,20 +393,20 @@ func TestAcquireSessionLockForReset_SweepsOnlyAfterReacquire(t *testing.T) {
 	holder := spawnKillTestLockHolder(t, dataDir, sessionID, false)
 	require.True(t, procinfo.IsProcessAlive(holder.pid))
 
-	lockPath := session.SessionLockPath(dataDir, sessionID)
-	oldGeneration := session.ReadLockGeneration(lockPath)
+	lockPath := sessionlock.SessionLockPath(dataDir, sessionID)
+	oldGeneration := sessionlock.ReadLockGeneration(lockPath)
 	require.NotEmpty(t, oldGeneration)
 
 	// A live process-group leader registered under the VICTIM's
 	// generation — exactly what the dead holder's sweep would target.
 	leader := spawnSweepGroupLeader(t)
-	session.RegisterChildGroup(dataDir, sessionID, leader.Process.Pid, oldGeneration)
+	sessioncgroup.RegisterChildGroup(dataDir, sessionID, leader.Process.Pid, oldGeneration)
 
 	newOwner := spawnSweepTestNewOwner(t, dataDir, sessionID)
 	defer newOwner.stop(t)
 
 	type result struct {
-		lk  *session.SessionLock
+		lk  *sessionlock.SessionLock
 		kr  killResult
 		err error
 	}
@@ -419,7 +420,7 @@ func TestAcquireSessionLockForReset_SweepsOnlyAfterReacquire(t *testing.T) {
 	// still an unreaped zombie (so forceKillHolder cannot have returned
 	// yet and the re-acquire has not been attempted).
 	require.Eventually(t, func() bool {
-		g := session.ReadLockGeneration(lockPath)
+		g := sessionlock.ReadLockGeneration(lockPath)
 		return g != "" && g != oldGeneration
 	}, 10*time.Second, 10*time.Millisecond,
 		"the new owner should acquire the session in the kill-to-reacquire window")
@@ -483,12 +484,12 @@ func TestSweepChildGroupsUnderOwnLock_BusyLockRefusesAndRetains(t *testing.T) {
 	holder := spawnKillTestLockHolder(t, dataDir, sessionID, false)
 	require.True(t, procinfo.IsProcessAlive(holder.pid))
 
-	lockPath := session.SessionLockPath(dataDir, sessionID)
-	generation := session.ReadLockGeneration(lockPath)
+	lockPath := sessionlock.SessionLockPath(dataDir, sessionID)
+	generation := sessionlock.ReadLockGeneration(lockPath)
 	require.NotEmpty(t, generation)
 
 	leader := spawnSweepGroupLeader(t)
-	session.RegisterChildGroup(dataDir, sessionID, leader.Process.Pid, generation)
+	sessioncgroup.RegisterChildGroup(dataDir, sessionID, leader.Process.Pid, generation)
 
 	// The holder (someone else) holds the session lock right now.
 	var sb strings.Builder
@@ -515,7 +516,7 @@ func TestSweepChildGroupsUnderOwnLock_BusyLockRefusesAndRetains(t *testing.T) {
 	// contention against it (see waitForLockMetadataSettled).
 	holder.stop(t)
 	require.Eventually(t, func() bool {
-		lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
+		lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 		if err != nil {
 			return false
 		}
@@ -569,8 +570,8 @@ func TestProbeThenKillHolder_OrphanedGenerationCapturedBeforeProbeAcquire(t *tes
 	const sessionID = "orphan-gen-capture-id"
 
 	holder := spawnCrashTestLockHolder(t, dataDir, sessionID)
-	lockPath := session.SessionLockPath(dataDir, sessionID)
-	crashedGeneration := session.ReadLockGeneration(lockPath)
+	lockPath := sessionlock.SessionLockPath(dataDir, sessionID)
+	crashedGeneration := sessionlock.ReadLockGeneration(lockPath)
 	require.NotEmpty(t, crashedGeneration, "a live holder's lock must carry a generation token")
 
 	// Crash it: SIGKILL with no stdin/Release path at all. The generation
@@ -585,7 +586,7 @@ func TestProbeThenKillHolder_OrphanedGenerationCapturedBeforeProbeAcquire(t *tes
 	// TryAcquireSessionLock inside the probe below is the authoritative
 	// check, this just avoids a flaky race against kernel lock teardown.
 	require.Eventually(t, func() bool {
-		lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
+		lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 		if err != nil {
 			return false
 		}
@@ -598,7 +599,7 @@ func TestProbeThenKillHolder_OrphanedGenerationCapturedBeforeProbeAcquire(t *tes
 	// generation so the real assertion below observes a fresh, untouched
 	// sidecar exactly like a real "sessions kill" invocation would.
 	holder2 := spawnCrashTestLockHolder(t, dataDir, sessionID)
-	crashedGeneration = session.ReadLockGeneration(lockPath)
+	crashedGeneration = sessionlock.ReadLockGeneration(lockPath)
 	require.NotEmpty(t, crashedGeneration)
 	crashKill(t, holder2)
 	require.Eventually(t, func() bool {
@@ -642,12 +643,12 @@ func TestSessionsKillCmdRun_SweepsOrphanedGroupAfterCrash(t *testing.T) {
 	const sessionID = "orphan-sweep-e2e-id"
 
 	holder := spawnCrashTestLockHolder(t, dataDir, sessionID)
-	lockPath := session.SessionLockPath(dataDir, sessionID)
-	generation := session.ReadLockGeneration(lockPath)
+	lockPath := sessionlock.SessionLockPath(dataDir, sessionID)
+	generation := sessionlock.ReadLockGeneration(lockPath)
 	require.NotEmpty(t, generation)
 
 	leader := spawnSweepGroupLeader(t)
-	session.RegisterChildGroup(dataDir, sessionID, leader.Process.Pid, generation)
+	sessioncgroup.RegisterChildGroup(dataDir, sessionID, leader.Process.Pid, generation)
 
 	crashKill(t, holder)
 	require.Eventually(t, func() bool {
@@ -712,12 +713,12 @@ func TestAcquireSessionLockForReset_SweepsOrphanedGroupAfterCrash(t *testing.T) 
 	const sessionID = "reset-orphan-sweep-id"
 
 	holder := spawnCrashTestLockHolder(t, dataDir, sessionID)
-	lockPath := session.SessionLockPath(dataDir, sessionID)
-	generation := session.ReadLockGeneration(lockPath)
+	lockPath := sessionlock.SessionLockPath(dataDir, sessionID)
+	generation := sessionlock.ReadLockGeneration(lockPath)
 	require.NotEmpty(t, generation)
 
 	leader := spawnSweepGroupLeader(t)
-	session.RegisterChildGroup(dataDir, sessionID, leader.Process.Pid, generation)
+	sessioncgroup.RegisterChildGroup(dataDir, sessionID, leader.Process.Pid, generation)
 
 	crashKill(t, holder)
 	require.Eventually(t, func() bool {

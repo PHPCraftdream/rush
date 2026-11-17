@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -34,13 +34,13 @@ func TestRunNonInteractive_FirstTurnLockBusy_LeavesSessionStateUntouched(t *test
 	require.NoError(t, application.Sessions.SetBudget(ctx, sessionID, 1.5, 200, 300))
 	require.NoError(t, application.Sessions.SetEndedReason(ctx, sessionID, "previous-run"))
 
-	foreignLock, err := session.TryAcquireSessionLock(dataDir, sessionID)
+	foreignLock, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = foreignLock.Release() })
 
 	_, err = application.RunNonInteractiveWithResult(ctx, io.Discard, "hello",
 		RunOverrides{Origin: message.OriginCLI}, true, RunModeJSON, sessionID, false)
-	var lockBusy *session.SessionLockBusyError
+	var lockBusy *sessionlock.SessionLockBusyError
 	require.ErrorAs(t, err, &lockBusy, "the refusal must surface as the real SessionLockBusyError")
 
 	cancelled, err := application.Sessions.IsCancelRequested(ctx, sessionID)

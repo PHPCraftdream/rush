@@ -10,7 +10,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
@@ -34,7 +34,7 @@ func TestSessionsKillFreeTurnLockPreservesLiveBatchQueue(t *testing.T) {
 				require.NoError(t, err)
 				mergeID, interruptID := seedQueuedWorkForStop(t, a, sess.ID)
 				a.Shutdown()
-				lockPath := session.SessionLockPath(dataDir, sess.ID)
+				lockPath := sessionlock.SessionLockPath(dataDir, sess.ID)
 				require.NoError(t, os.MkdirAll(filepath.Dir(lockPath), 0o700))
 				if hasLock {
 					require.NoError(t, os.WriteFile(lockPath, nil, 0o600))

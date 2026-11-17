@@ -13,13 +13,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -184,12 +186,12 @@ func (a *sessionAgent) runSummarize(ctx context.Context, genCtx context.Context,
 	// Manual compaction runs outside any Run() call, so the OS lock is not
 	// already held. Acquiring it here prevents another process from starting
 	// a concurrent Run() that would race with the compaction's DB writes.
-	var lk *session.SessionLock
+	var lk *sessionlock.SessionLock
 	if a.dataDir != "" {
 		var lockErr error
-		lk, lockErr = session.TryAcquireSessionLockWithOptions(a.dataDir, sessionID, a.lockOptions...)
+		lk, lockErr = sessionlock.TryAcquireSessionLockWithOptions(a.dataDir, sessionID, a.lockOptions...)
 		if lockErr != nil {
-			var busyErr *session.SessionLockBusyError
+			var busyErr *sessionlock.SessionLockBusyError
 			if errors.As(lockErr, &busyErr) {
 				slog.Warn(
 					"agent.runSummarize: rejected — session locked by another process",
@@ -371,8 +373,8 @@ func (a *sessionAgent) CancelQueuedSummarize(sessionID string) {
 // auto-summarize).
 func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, smartModel Model, systemPromptPrefix string) error {
 	// Heartbeat attribution: summary runs on the smart slot (design pt. 1).
-	role, source := hbInherited(ctx)
-	ctx = withHeartbeat(ctx, sessionID, heartbeat.PurposeSummary, role, source)
+	role, source := callbeat.HbInherited(ctx)
+	ctx = callbeat.WithHeartbeat(ctx, sessionID, heartbeat.PurposeSummary, role, source)
 	currentSession, err := a.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
@@ -552,7 +554,7 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 	totalUsage := normalizeProviderUsage(smartModel.Model.Provider(), resp.TotalUsage)
 	costDelta := a.updateSessionUsage(smartModel, &freshSession, totalUsage, openrouterCost)
 	// Heartbeat usage: one add per accounted compaction (design pt. 4).
-	addHeartbeatUsage(ctx, smartModel.Model.Provider(), smartModel.Model.Model(), totalUsage, costDelta)
+	callbeat.AddHeartbeatUsage(ctx, smartModel.Model.Provider(), smartModel.Model.Model(), totalUsage, costDelta)
 	if costDelta != 0 {
 		if _, costErr := a.sessions.IncrementCost(commitCtx, freshSession.ID, costDelta); costErr != nil {
 			return costErr

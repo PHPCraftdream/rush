@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/spf13/cobra"
 )
 
@@ -167,7 +167,7 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 		}
 		age := now.Sub(info.ModTime())
 		sessionID := strings.TrimSuffix(strings.TrimPrefix(entry.Name(), "session-"), ".lock")
-		pid := session.ReadLockPID(path)
+		pid := sessionlock.ReadLockPID(path)
 		item := reapItem{Path: path, PID: pid, AgeSec: int(age.Seconds())}
 
 		// Too young to judge — skip without even probing.
@@ -282,7 +282,7 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 				_ = lk.Release()
 			}
 		default:
-			var busyErr *session.SessionLockBusyError
+			var busyErr *sessionlock.SessionLockBusyError
 			if errors.As(probeErr, &busyErr) {
 				item.Action = "skip-alive"
 			} else {
@@ -336,7 +336,7 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 				}
 				lk, err := acquireReapProbe(dataDir, strings.TrimSuffix(strings.TrimPrefix(filepath.Base(it.Path), "session-"), ".lock"))
 				if err != nil {
-					var busyErr *session.SessionLockBusyError
+					var busyErr *sessionlock.SessionLockBusyError
 					if errors.As(err, &busyErr) {
 						fmt.Fprintf(os.Stderr, "kept   live lock %s (OS lock held, age %ds)\n", filepath.Base(it.Path), it.AgeSec)
 					} else {
@@ -437,22 +437,22 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func acquireReapProbe(dataDir, sessionID string) (*session.SessionLock, error) {
+func acquireReapProbe(dataDir, sessionID string) (*sessionlock.SessionLock, error) {
 	// A probe is not the session owner. On Unix, Release may run metadata
 	// cleanup after reap unlinks the path, so suppress it to protect a new
 	// owner at that path. Windows must retain normal cleanup: skipped/failed
 	// removals rely on Release to clear the holder metadata as before.
 	if runtime.GOOS == "windows" {
-		return session.TryAcquireSessionLock(dataDir, sessionID)
+		return sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	}
 	return acquireUnixReapProbe(dataDir, sessionID)
 }
 
 // acquireUnixReapProbe keeps the Unix probe's no-cleanup policy independent
 // of the host OS so its production behavior can be exercised on Windows too.
-func acquireUnixReapProbe(dataDir, sessionID string) (*session.SessionLock, error) {
-	return session.TryAcquireSessionLockWithOptions(dataDir, sessionID,
-		session.WithClearHolderMetadataFn(func(string, string) {}),
+func acquireUnixReapProbe(dataDir, sessionID string) (*sessionlock.SessionLock, error) {
+	return sessionlock.TryAcquireSessionLockWithOptions(dataDir, sessionID,
+		sessionlock.WithClearHolderMetadataFn(func(string, string) {}),
 	)
 }
 

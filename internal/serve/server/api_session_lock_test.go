@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 )
 
 // The production adapter reports a session as busy while another process holds
@@ -21,7 +21,7 @@ func TestAPIAppWriteStoreHonoursRealSessionLock(t *testing.T) {
 	if store.SessionBusy(item.ID) {
 		t.Fatal("idle session reported busy")
 	}
-	lock, err := session.TryAcquireSessionLock(dataDir, item.ID)
+	lock, err := sessionlock.TryAcquireSessionLock(dataDir, item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

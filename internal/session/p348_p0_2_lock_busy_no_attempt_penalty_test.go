@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
@@ -53,7 +54,7 @@ func (c *busyThenSuccessCoordinator) Run(ctx context.Context, callData core.Sess
 	c.callTimes = append(c.callTimes, time.Now())
 	c.mu.Unlock()
 	if n <= c.busyUntilCall {
-		return nil, &session.SessionLockBusyError{Path: "test-lock-path", HolderPID: 12345}
+		return nil, &sessionlock.SessionLockBusyError{Path: "test-lock-path", HolderPID: 12345}
 	}
 	var result any = "ok"
 	return &result, nil

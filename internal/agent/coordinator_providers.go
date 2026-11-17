@@ -14,7 +14,6 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
-	"os"
 	"slices"
 	"strings"
 
@@ -32,13 +31,12 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	mcp "github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/discover"
-	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/copilot"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/event"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
-	openaisdk "github.com/charmbracelet/openai-go/option"
 	"github.com/qjebbs/go-jsons"
 )
 
@@ -108,7 +106,6 @@ func fantasyAcceptsReasoningEffort(effort string) bool {
 
 func getProviderOptions(sessionID string, model Model, providerCfg config.ProviderConfig) fantasy.ProviderOptions {
 	options := fantasy.ProviderOptions{}
-
 	cfgOpts := []byte("{}")
 	providerCfgOpts := []byte("{}")
 	catwalkOpts := []byte("{}")
@@ -585,190 +582,46 @@ func configureAnthropicAuthHeaders(headers map[string]string, apiKey, providerID
 }
 
 func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map[string]string, providerID string, httpClient *http.Client) (fantasy.Provider, error) {
-	var opts []anthropic.Option
-	headers = configureAnthropicAuthHeaders(headers, apiKey, providerID)
-
-	if apiKey != "" &&
-		!strings.HasPrefix(apiKey, "Bearer ") &&
-		providerID != string(catwalk.InferenceProviderMiniMax) &&
-		providerID != string(catwalk.InferenceProviderMiniMaxChina) {
-		// X-Api-Key header.
-		opts = append(opts, anthropic.WithAPIKey(apiKey))
-	}
-
-	if len(headers) > 0 {
-		opts = append(opts, anthropic.WithHeaders(headers))
-	}
-
-	if baseURL != "" {
-		opts = append(opts, anthropic.WithBaseURL(baseURL))
-	}
-
-	opts = append(opts, anthropic.WithHTTPClient(withoutEmptyAuthHeaders(httpClient)))
-	return anthropic.New(opts...)
+	return newProviderComponent(c).buildAnthropicProvider(baseURL, apiKey, headers, providerID, httpClient)
 }
 
 func (c *coordinator) buildOpenaiProvider(baseURL, apiKey string, headers map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
-	opts := []openai.Option{
-		openai.WithAPIKey(apiKey),
-		openai.WithUseResponsesAPI(),
-	}
-	if httpClient != nil {
-		opts = append(opts, openai.WithHTTPClient(httpClient))
-	}
-	if len(headers) > 0 {
-		opts = append(opts, openai.WithHeaders(headers))
-	}
-	if baseURL != "" {
-		opts = append(opts, openai.WithBaseURL(baseURL))
-	}
-	return openai.New(opts...)
+	return newProviderComponent(c).buildOpenaiProvider(baseURL, apiKey, headers, httpClient)
 }
 
-func (c *coordinator) buildOpenrouterProvider(_ string, apiKey string, headers map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
-	opts := []openrouter.Option{
-		openrouter.WithAPIKey(apiKey),
-	}
-	if httpClient != nil {
-		opts = append(opts, openrouter.WithHTTPClient(httpClient))
-	}
-	if len(headers) > 0 {
-		opts = append(opts, openrouter.WithHeaders(headers))
-	}
-	return openrouter.New(opts...)
+func (c *coordinator) buildOpenrouterProvider(baseURL string, apiKey string, headers map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
+	return newProviderComponent(c).buildOpenrouterProvider(baseURL, apiKey, headers, httpClient)
 }
 
-func (c *coordinator) buildVercelProvider(_ string, apiKey string, headers map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
-	opts := []vercel.Option{
-		vercel.WithAPIKey(apiKey),
-	}
-	if httpClient != nil {
-		opts = append(opts, vercel.WithHTTPClient(httpClient))
-	}
-	if len(headers) > 0 {
-		opts = append(opts, vercel.WithHeaders(headers))
-	}
-	return vercel.New(opts...)
+func (c *coordinator) buildVercelProvider(baseURL string, apiKey string, headers map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
+	return newProviderComponent(c).buildVercelProvider(baseURL, apiKey, headers, httpClient)
 }
 
 // buildOpenaiCompatProvider takes the SAME pinned cfg snapshot (F6) the
 // caller resolved providerCfg from: its Options.Debug flag shapes the
 // Copilot transport and must not come from a separately-timed live read.
 func (c *coordinator) buildOpenaiCompatProvider(cfg *config.Config, baseURL, apiKey string, headers map[string]string, extraBody map[string]any, providerID string, isSubAgent bool, httpClient *http.Client) (fantasy.Provider, error) {
-	opts := []openaicompat.Option{
-		openaicompat.WithBaseURL(baseURL),
-		openaicompat.WithAPIKey(apiKey),
-	}
-
-	// Set HTTP client based on provider and debug mode. Copilot builds its
-	// own initiator-transport client, layered on top of the resolved
-	// network transport; everything else uses the resolved client as-is.
-	switch providerID {
-	case string(catwalk.InferenceProviderCopilot):
-		opts = append(
-			opts,
-			openaicompat.WithUseResponsesAPI(),
-			openaicompat.WithResponsesAPIFunc(func(modelID string) bool {
-				return copilotResponsesModels[modelID]
-			}),
-		)
-		opts = append(opts, openaicompat.WithHTTPClient(copilot.NewClientWithTransport(
-			isSubAgent, cfg.Options.Debug, copilotBaseTransport(httpClient))))
-	default:
-		if httpClient != nil {
-			opts = append(opts, openaicompat.WithHTTPClient(httpClient))
-		}
-	}
-
-	if len(headers) > 0 {
-		opts = append(opts, openaicompat.WithHeaders(headers))
-	}
-
-	for extraKey, extraValue := range extraBody {
-		opts = append(opts, openaicompat.WithSDKOptions(openaisdk.WithJSONSet(extraKey, extraValue)))
-	}
-
-	return openaicompat.New(opts...)
+	return newProviderComponent(c).buildOpenaiCompatProvider(cfg, baseURL, apiKey, headers, extraBody, providerID, isSubAgent, httpClient)
 }
 
 func (c *coordinator) buildAzureProvider(baseURL, apiKey string, headers map[string]string, options map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
-	opts := []azure.Option{
-		azure.WithBaseURL(baseURL),
-		azure.WithAPIKey(apiKey),
-		azure.WithUseResponsesAPI(),
-	}
-	if httpClient != nil {
-		opts = append(opts, azure.WithHTTPClient(httpClient))
-	}
-	if options == nil {
-		options = make(map[string]string)
-	}
-	if apiVersion, ok := options["apiVersion"]; ok {
-		opts = append(opts, azure.WithAPIVersion(apiVersion))
-	}
-	if len(headers) > 0 {
-		opts = append(opts, azure.WithHeaders(headers))
-	}
-
-	return azure.New(opts...)
+	return newProviderComponent(c).buildAzureProvider(baseURL, apiKey, headers, options, httpClient)
 }
 
 func (c *coordinator) buildBedrockProvider(apiKey string, headers map[string]string, httpClient *http.Client, allowAmbientAuth bool) (fantasy.Provider, error) {
-	var opts []bedrock.Option
-	if httpClient != nil {
-		opts = append(opts, bedrock.WithHTTPClient(httpClient))
-	}
-	if len(headers) > 0 {
-		opts = append(opts, bedrock.WithHeaders(headers))
-	}
-	switch {
-	case apiKey != "":
-		opts = append(opts, bedrock.WithAPIKey(apiKey))
-	case apiKey == "" && allowAmbientAuth && os.Getenv("AWS_BEARER_TOKEN_BEDROCK") != "":
-		opts = append(opts, bedrock.WithAPIKey(os.Getenv("AWS_BEARER_TOKEN_BEDROCK")))
-	default:
-		// Skip, let the SDK do authentication.
-	}
-	return bedrock.New(opts...)
+	return newProviderComponent(c).buildBedrockProvider(apiKey, headers, httpClient, allowAmbientAuth)
 }
 
 func (c *coordinator) buildGoogleProvider(baseURL, apiKey string, headers map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
-	opts := []google.Option{
-		google.WithBaseURL(baseURL),
-		google.WithGeminiAPIKey(apiKey),
-	}
-	if httpClient != nil {
-		opts = append(opts, google.WithHTTPClient(httpClient))
-	}
-	if len(headers) > 0 {
-		opts = append(opts, google.WithHeaders(headers))
-	}
-	return google.New(opts...)
+	return newProviderComponent(c).buildGoogleProvider(baseURL, apiKey, headers, httpClient)
 }
 
 func (c *coordinator) buildGoogleVertexProvider(headers map[string]string, options map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
-	opts := []google.Option{}
-	if httpClient != nil {
-		opts = append(opts, google.WithHTTPClient(httpClient))
-	}
-	if len(headers) > 0 {
-		opts = append(opts, google.WithHeaders(headers))
-	}
-
-	project := options["project"]
-	location := options["location"]
-
-	opts = append(opts, google.WithVertex(project, location))
-
-	return google.New(opts...)
+	return newProviderComponent(c).buildGoogleVertexProvider(headers, options, httpClient)
 }
 
 func (c *coordinator) isAnthropicThinking(model config.SelectedModel) bool {
-	if model.Think {
-		return true
-	}
-	opts, err := anthropic.ParseOptions(model.ProviderOptions)
-	return err == nil && opts.Thinking != nil
+	return newProviderComponent(c).isAnthropicThinking(model)
 }
 
 // buildProvider takes the pinned cfg snapshot (F6) the caller resolved
@@ -808,7 +661,7 @@ func (c *coordinator) buildProviderWithValuesAndAuth(cfg *config.Config, provide
 	if err != nil {
 		return nil, err
 	}
-	return c.withPeakHoursRequestGate(NewHeartbeatProvider(p), providerCfg), nil
+	return c.withPeakHoursRequestGate(callbeat.NewHeartbeatProvider(p), providerCfg), nil
 }
 
 func (c *coordinator) buildProviderWithValuesInner(cfg *config.Config, providerCfg config.ProviderConfig, model config.SelectedModel, isSubAgent bool, apiKey, baseURL string, allowAmbientAuth bool) (fantasy.Provider, error) {

@@ -22,7 +22,7 @@ import (
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -98,7 +98,7 @@ func TestRunNonInteractive_FirstTurnSessionLockBusy_FailsFast(t *testing.T) {
 		t.Error("provider must never be called: the session lock refusal must be caught before any turn runs")
 	})
 
-	foreignLock, err := session.TryAcquireSessionLock(dataDir, sessionID)
+	foreignLock, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = foreignLock.Release() })
 
@@ -108,7 +108,7 @@ func TestRunNonInteractive_FirstTurnSessionLockBusy_FailsFast(t *testing.T) {
 	elapsed := time.Since(start)
 
 	require.Error(t, err, "a busy session must surface as an error, not succeed silently")
-	var lockBusy *session.SessionLockBusyError
+	var lockBusy *sessionlock.SessionLockBusyError
 	require.ErrorAs(t, err, &lockBusy, "the error must be (wrap) the real SessionLockBusyError")
 	require.Less(t, elapsed, cliLockBusyRetryOverallLimit/2,
 		"the FIRST turn must fail fast, never retry for the Drain-context overall budget")

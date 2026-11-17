@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,7 +30,7 @@ func TestAdmissionRefusedRelease_NoImmediateRelaunch_ThenTickRecovers(t *testing
 	f := newAttemptFixture(t, "admission-refused", attemptFixtureOpts{})
 	launches := f.countRuns()
 	f.seedDebt(ctx, "call-1", true)
-	foreignLock, err := session.TryAcquireSessionLock(f.env.workingDir, f.sessID)
+	foreignLock, err := sessionlock.TryAcquireSessionLock(f.env.workingDir, f.sessID)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = foreignLock.Release() })
 

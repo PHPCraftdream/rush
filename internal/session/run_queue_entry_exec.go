@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
@@ -768,7 +769,7 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *session.Run
 	// counting it would let a few turns' worth of routine contention
 	// silently delete accepted user work once attempts exhausts (found in
 	// the final @oh review of tasks #337-349 — P0-2).
-	var busyErr *SessionLockBusyError
+	var busyErr *sessionlock.SessionLockBusyError
 	if errors.As(err, &busyErr) {
 		if nackErr := p.cfg.Sessions.NackRunQueueEntryNoAttemptPenalty(dbCtx, leased.ID, p.cfg.PumpInstanceID, err.Error()); nackErr != nil {
 			slog.Error("run_queue_pump: no-penalty nack failed", "id", leased.ID, "err", nackErr, "instance_id", p.cfg.PumpInstanceID)

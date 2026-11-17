@@ -21,6 +21,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db/dbconn"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
@@ -424,7 +425,7 @@ func compactLiveSessionLocks(dataDir string) ([]string, error) {
 			continue
 		}
 		id := trimAffixes(entry.Name(), "session-", ".lock")
-		state := session.InspectSessionLock(dataDir, id, session.LockStaleDuration)
+		state := sessionlock.InspectSessionLock(dataDir, id, sessionlock.LockStaleDuration)
 		if state.StatErr != nil {
 			offenders = append(offenders, fmt.Sprintf("%s (stat error: %v)", id, state.StatErr))
 			continue
