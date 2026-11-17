@@ -1,4 +1,5 @@
 package sessionhosts
+
 // R3A-1 (docs/reviews/2026-09-30-async-phase4-round3.md): only a data dir that
 // cannot host an OS lock file degrades the driver marker to "unavailable".
 // A database or context error while registering the host must fail the claim.

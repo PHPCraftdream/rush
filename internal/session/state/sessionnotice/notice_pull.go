@@ -6,6 +6,7 @@
 // package boundary (package agent does not import internal/db anywhere,
 // and this keeps it that way).
 package sessionnotice
+
 import (
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )

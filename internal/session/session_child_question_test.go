@@ -8,10 +8,9 @@ import (
 
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 
-	"github.com/PHPCraftdream/rush/internal/store/db"
 	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
-	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
 

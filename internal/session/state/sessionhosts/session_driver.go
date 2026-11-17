@@ -9,6 +9,7 @@
 // Every write here is a single-statement CAS on the shared writer connection:
 // no transaction, no file IO inside a transaction.
 package sessionhosts
+
 import (
 	"context"
 	"database/sql"

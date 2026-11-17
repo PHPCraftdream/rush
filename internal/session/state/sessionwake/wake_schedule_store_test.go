@@ -91,7 +91,7 @@ func (f *wakeFx) create(kind sessionwake.WakeKind, runAt time.Time, mut func(*se
 }
 
 func (f *wakeFx) get(id string) (db.WakeSchedule, error) {
-	return f.wake.q.GetWakeSchedule(f.ctx, id)
+	return f.wake.QueriesForTest().GetWakeSchedule(f.ctx, id)
 }
 
 func (f *wakeFx) noticeCount() int {
@@ -99,7 +99,7 @@ func (f *wakeFx) noticeCount() int {
 	require.NoError(f.t, err)
 	n := 0
 	for _, r := range rows {
-		if r.Kind == NoticeKindWakeFired {
+		if r.Kind == sessionwake.NoticeKindWakeFired {
 			n++
 		}
 	}
@@ -454,7 +454,7 @@ func TestWakeScheduleStore_ResetCancelsActive(t *testing.T) {
 
 	// `sessions reset` is the batch reset in the final world: it cancels
 	// every ACTIVE wake schedule of the owner inside the reset transaction.
-	out, err := NewBatchStore(f.sqlDB).BatchResetOwnerHistory(f.ctx, f.messages, wakeTestOwner)
+	out, err := session.NewBatchStore(f.sqlDB).BatchResetOwnerHistory(f.ctx, f.messages, wakeTestOwner)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, out.SchedulesCancelled, "only the active one")
 

@@ -11,6 +11,7 @@
 // claim. async_hosts rows stay display-only bookkeeping throughout -- no FK
 // from work rows, no timestamp used for liveness.
 package sessionhosts
+
 import (
 	"context"
 	"errors"

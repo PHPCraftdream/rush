@@ -15,8 +15,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"modernc.org/sqlite"
-
-	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 type batchSQLLogEntry struct {

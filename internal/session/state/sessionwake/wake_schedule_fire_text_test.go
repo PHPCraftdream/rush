@@ -41,7 +41,7 @@ func TestWakeFiredNoticeTexts(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, fire.Fired)
 
-	loop := f.create(sessionwake.WakeKindLoop, f.base.Add(300*time.Second), func(p *CreateWakeScheduleParams) {
+	loop := f.create(sessionwake.WakeKindLoop, f.base.Add(300*time.Second), func(p *sessionwake.CreateWakeScheduleParams) {
 		p.MaxRuns = 10
 	})
 	_, err = f.wake.ClaimDue(ctx, "w", f.base.Add(300*time.Second), 10, sessionwake.WakeLeaseTTL)

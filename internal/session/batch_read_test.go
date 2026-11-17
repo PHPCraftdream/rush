@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/store/db"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
 
@@ -84,7 +84,9 @@ func TestBatchReadStatesAndHostFacts(t *testing.T) {
 		require.Equal(t, st, live.Own[0].HostStatus)
 		require.Equal(t, 1, probes, "one shared host probe across root and tasks")
 	}
-	r.ProbeHost = func(string, string) (sessionhosts.HostLockStatus, error) { return HostStatusDead, errors.New("probe failed") }
+	r.ProbeHost = func(string, string) (sessionhosts.HostLockStatus, error) {
+		return HostStatusDead, errors.New("probe failed")
+	}
 	require.False(t, r.BatchLiveForOwner(ctx, "owner").Complete)
 	r.IsOwnHost = func(string) bool { return true }
 	r.ProbeHost = func(string, string) (sessionhosts.HostLockStatus, error) {

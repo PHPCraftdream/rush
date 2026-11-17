@@ -8,8 +8,6 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
-	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
-	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
 )
 

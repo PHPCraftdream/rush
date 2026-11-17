@@ -4,6 +4,7 @@
 // for the same lease loses the CAS and the transaction rolls back, so
 // schedule_id#occurrence can never yield two notices.
 package sessionwake
+
 import (
 	"context"
 	"database/sql"

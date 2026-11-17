@@ -9,6 +9,7 @@
 //   - "delete host if no jobs" became "delete host if no LIVE batch_nodes
 //     rows" (state in the live set) via db.Queries.DeleteAsyncHostIfNoNodes.
 package sessionhosts
+
 import (
 	"context"
 	"database/sql"

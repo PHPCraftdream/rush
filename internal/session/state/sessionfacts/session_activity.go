@@ -22,6 +22,7 @@
 // with an end_turn finish from a previous turn.
 
 package sessionfacts
+
 import (
 	"fmt"
 	"sort"

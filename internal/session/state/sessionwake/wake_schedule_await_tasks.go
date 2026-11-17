@@ -1,9 +1,9 @@
 package sessionwake
+
 import (
 	"context"
 	"strings"
 	"time"
-
 )
 
 // AwaitTasksMaxWaitPrefix identifies internal await_tasks timers, not model

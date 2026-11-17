@@ -35,7 +35,7 @@ func setupHostLockDB(t *testing.T) (context.Context, *db.Queries) {
 // the interface (its legacy async_jobs host methods were deleted), so every
 // sessionhosts.RegisterHost/Close call in these tests must go through the adapter.
 func nodeStore(q *db.Queries) sessionhosts.AsyncHostStore {
-	return sessionhosts.AsyncHostStoreFromConn(q)
+	return sessionhosts.AsyncHostStoreFromQueries(q)
 }
 
 // failingStore's RegisterAsyncHost always fails -- used to prove
@@ -242,7 +242,7 @@ func TestHostIdentity_CloseDeletesFileWhenNoRows(t *testing.T) {
 }
 
 func TestHostIdentity_CloseKeepsFileWhenRowsExist(t *testing.T) {
-	conn, q, _, ctx := sessionhosts.newHostTestDB(t)
+	conn, q, _, ctx := newHostTestDB(t)
 	dataDir := t.TempDir()
 
 	h, err := sessionhosts.RegisterHost(ctx, dataDir, 1, "cli", nodeStore(q))

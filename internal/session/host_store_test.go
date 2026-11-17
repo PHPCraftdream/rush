@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/store/db"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
 
@@ -204,7 +204,7 @@ func TestHostStore_CloseKeepLockKeepsRowAndFile(t *testing.T) {
 	// release it and drop the own-id marking so t.TempDir()'s cleanup can
 	// delete the directory (Windows refuses to delete open files).
 	t.Cleanup(func() {
-		releaseRetainedHostLocksForTestt()
+		sessionhosts.ReleaseRetainedHostLocksForTest()
 		sessionhosts.UnmarkOwnHostIDForTest(id)
 	})
 

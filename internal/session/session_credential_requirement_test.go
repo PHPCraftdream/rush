@@ -8,7 +8,6 @@ import (
 	"time"
 
 	session "github.com/PHPCraftdream/rush/internal/session/service"
-	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

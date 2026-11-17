@@ -4,6 +4,7 @@
 // any sibling store's host in this test process are alive without probing
 // (IsOwnHostID); SimulateCrashForTest makes a store's host provably dead.
 package sessionhosts
+
 import (
 	"context"
 	"database/sql"

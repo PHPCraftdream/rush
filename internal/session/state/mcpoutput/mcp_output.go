@@ -1,4 +1,5 @@
 package mcpoutput
+
 import (
 	"context"
 	"database/sql"
@@ -7,7 +8,6 @@ import (
 	"io"
 
 	"github.com/google/uuid"
-
 )
 
 // Retained-text logical-byte quotas, not physical SQLite/RSS or provider limits.

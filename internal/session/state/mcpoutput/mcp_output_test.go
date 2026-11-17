@@ -1,4 +1,5 @@
 package mcpoutput
+
 import (
 	"context"
 	"database/sql"

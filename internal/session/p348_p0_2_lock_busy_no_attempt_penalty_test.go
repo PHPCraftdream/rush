@@ -31,7 +31,6 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
-	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	core "github.com/PHPCraftdream/rush/internal/session/service"

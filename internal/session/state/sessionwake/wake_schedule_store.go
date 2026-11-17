@@ -5,6 +5,7 @@
 // mutation is a lease-keyed CAS, so two concurrent schedulers can never
 // double-fire an occurrence (SCHED-1/SCHED-2 in docs/async-invariants.md).
 package sessionwake
+
 import (
 	"context"
 	"database/sql"

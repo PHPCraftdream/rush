@@ -1,4 +1,5 @@
 package sessionhosts
+
 // R2A-1 (docs/reviews/2026-09-30-async-phase4-round2.md): a host that is
 // still registering must never lose its lock file to a reaper. Registration
 // is create-then-lock; a reaper that wins the lock on the fresh file in
