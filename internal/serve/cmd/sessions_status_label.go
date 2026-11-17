@@ -8,12 +8,12 @@ package cmd
 
 import (
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 )
 
 const endedReasonPeakHours = sesskit.EndedReasonPeakHours
 
-func sessionStatusLabel(v session.ActivityVerdict, recordedEnd string) string {
+func sessionStatusLabel(v sessionfacts.ActivityVerdict, recordedEnd string) string {
 	return sesskit.SessionStatusLabel(v, recordedEnd)
 }
 

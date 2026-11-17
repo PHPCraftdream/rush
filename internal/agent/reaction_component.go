@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // ReactionChainLimit is N: the number of consecutive no-progress links after
@@ -135,9 +136,9 @@ type ReactionDebtSource interface {
 	// first (so no OTHER process starts a reaction turn for it -- see
 	// drainPolicy), then the in-memory one wakeSession hints against.
 	// A session already driven by another live loop is refused with
-	// *session.ErrSessionDrivenElsewhere and nothing is set. The ONLY
+	// *sessionhosts.ErrSessionDrivenElsewhere and nothing is set. The ONLY
 	// degraded outcome is a data dir that cannot host an OS lock file
-	// (session.ErrDriverMarkerUnavailable = the lock file cannot be created or
+	// (sessionhosts.ErrDriverMarkerUnavailable = the lock file cannot be created or
 	// locked): a Warn, and the in-memory marker alone is set. Any other
 	// failure -- a database error registering the host (SQLITE_BUSY/FULL), a
 	// cancelled ctx, a failed marker write -- is returned and nothing is set:
@@ -180,7 +181,7 @@ type ReactionDebtSource interface {
 func (w *drainComponent) ClaimExternalDriver(ctx context.Context, sessionID string) error {
 	if store := w.host.driverMarkerStore(); store != nil {
 		if err := store.ClaimSessionDriver(ctx, sessionID); err != nil {
-			if !errors.Is(err, session.ErrDriverMarkerUnavailable) {
+			if !errors.Is(err, sessionhosts.ErrDriverMarkerUnavailable) {
 				return err
 			}
 			slog.Warn("external driver: durable marker unavailable; other processes cannot see this loop",

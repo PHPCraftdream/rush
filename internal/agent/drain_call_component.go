@@ -13,6 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 )
 
 // newDrainCall is the SINGLE constructor for a Drain call: the only place
@@ -182,7 +183,7 @@ func (a *sessionAgent) pullPendingNoticesForStep(ctx context.Context, sessionID 
 // the history message's params. The row's own text is already the final,
 // formatted wording (built once, at insert time, by supervision.go/
 // work_ledger_timeout.go/coordinator_background.go) -- no second formatter.
-func buildSessionNoticeMessageParams(row session.SessionNoticeRow) message.CreateMessageParams {
+func buildSessionNoticeMessageParams(row sessionnotice.SessionNoticeRow) message.CreateMessageParams {
 	kind := row.Kind
 	if kind == session.NoticeKindBGShellDone {
 		// Preserve today's exact behavior for this one kind: BackgroundJobNotice

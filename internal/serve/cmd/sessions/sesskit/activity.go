@@ -11,6 +11,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 )
 
 // CallTreeActivity is the ONE underlying signal this fork plumbs through
@@ -176,7 +177,7 @@ func CallTreeActivityFresherThan(ctx context.Context, a *app.App, rootID string,
 
 // KindIsLive reports whether a verdict Kind means the session's scope is
 // open -- the one liveness question the locks/reap/prune paths ask.
-func KindIsLive(k session.ActivityKind) bool {
+func KindIsLive(k sessionfacts.ActivityKind) bool {
 	switch k {
 	case session.ActivityInTurn, session.ActivityBetweenTurns, session.ActivityDelegating:
 		return true

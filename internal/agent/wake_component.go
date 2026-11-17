@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/google/uuid"
 )
 
@@ -148,7 +148,7 @@ func (w *wakeComponent) openOnceWakeSchedules(ctx context.Context, sessionID str
 	}
 	var once []db.WakeSchedule
 	for _, row := range rows {
-		if row.Kind == string(session.WakeKindOnce) && row.State == "active" {
+		if row.Kind == string(sessionwake.WakeKindOnce) && row.State == "active" {
 			once = append(once, row)
 		}
 	}
@@ -175,7 +175,7 @@ func (w *wakeComponent) CancelLoopWakeSchedules(ctx context.Context, sessionID s
 	n := 0
 	now := time.Now()
 	for _, row := range rows {
-		if row.Kind != string(session.WakeKindLoop) || row.State != "active" {
+		if row.Kind != string(sessionwake.WakeKindLoop) || row.State != "active" {
 			continue
 		}
 		if err := scheduler.store.CancelSchedule(ctx, sessionID, row.ID, now); err != nil {
@@ -209,7 +209,7 @@ func (w *wakeComponent) ScheduleWakeOnceDelay(ctx context.Context, sessionID str
 		return tools.WakeScheduleView{}, err
 	}
 	now := scheduler.now()
-	row, err := scheduler.store.CreateSchedule(ctx, session.CreateWakeScheduleParams{Owner: sessionID, Kind: session.WakeKindOnce, Message: message, RunAt: now.Add(time.Duration(delaySeconds) * time.Second)}, now)
+	row, err := scheduler.store.CreateSchedule(ctx, sessionwake.CreateWakeScheduleParams{Owner: sessionID, Kind: sessionwake.WakeKindOnce, Message: message, RunAt: now.Add(time.Duration(delaySeconds) * time.Second)}, now)
 	if err != nil {
 		return tools.WakeScheduleView{}, w.wrapWakeCreateError(err)
 	}
@@ -233,7 +233,7 @@ func (w *wakeComponent) ScheduleWakeOnceAt(ctx context.Context, sessionID, at, m
 	if err := checkWakeTimestamp(parsed, now, "at"); err != nil {
 		return tools.WakeScheduleView{}, err
 	}
-	row, err := scheduler.store.CreateSchedule(ctx, session.CreateWakeScheduleParams{Owner: sessionID, Kind: session.WakeKindOnce, Message: message, RunAt: parsed}, now)
+	row, err := scheduler.store.CreateSchedule(ctx, sessionwake.CreateWakeScheduleParams{Owner: sessionID, Kind: sessionwake.WakeKindOnce, Message: message, RunAt: parsed}, now)
 	if err != nil {
 		return tools.WakeScheduleView{}, w.wrapWakeCreateError(err)
 	}
@@ -246,7 +246,7 @@ func (w *wakeComponent) ScheduleWakeLoop(ctx context.Context, sessionID string, 
 	if err != nil {
 		return tools.WakeScheduleView{}, err
 	}
-	if everySeconds*int64(time.Second) < int64(session.MinLoopInterval) {
+	if everySeconds*int64(time.Second) < int64(sessionwake.MinLoopInterval) {
 		return tools.WakeScheduleView{}, errors.New("every_seconds must be at least 300 (5 minutes); a tighter loop would wake you more often than the system's own supervision tick and is rarely what you want — use wakein for a single near-term check instead")
 	}
 	if err := validateWakeMessage(message); err != nil {
@@ -256,12 +256,12 @@ func (w *wakeComponent) ScheduleWakeLoop(ctx context.Context, sessionID string, 
 		if *maxRuns <= 0 {
 			return tools.WakeScheduleView{}, errors.New("max_runs must be positive")
 		}
-		if *maxRuns > session.MaxLoopRuns {
-			return tools.WakeScheduleView{}, fmt.Errorf("max_runs exceeds the limit (%d); use wake_cancel to stop the loop manually instead of an enormous max_runs", session.MaxLoopRuns)
+		if *maxRuns > sessionwake.MaxLoopRuns {
+			return tools.WakeScheduleView{}, fmt.Errorf("max_runs exceeds the limit (%d); use wake_cancel to stop the loop manually instead of an enormous max_runs", sessionwake.MaxLoopRuns)
 		}
 	}
 	now := scheduler.now()
-	params := session.CreateWakeScheduleParams{Owner: sessionID, Kind: session.WakeKindLoop, Message: message, RunAt: now.Add(time.Duration(everySeconds) * time.Second), Every: time.Duration(everySeconds) * time.Second}
+	params := sessionwake.CreateWakeScheduleParams{Owner: sessionID, Kind: sessionwake.WakeKindLoop, Message: message, RunAt: now.Add(time.Duration(everySeconds) * time.Second), Every: time.Duration(everySeconds) * time.Second}
 	if maxRuns != nil {
 		params.MaxRuns = int(*maxRuns)
 	}
@@ -314,7 +314,7 @@ func (w *wakeComponent) CancelWakeSchedule(ctx context.Context, sessionID, sched
 	}
 	notFound := fmt.Errorf("schedule %s not found (never existed, already fired, already cancelled, or belongs to another session)", scheduleID)
 	cancelled, err := scheduler.store.CancelScheduleReport(ctx, sessionID, scheduleID, scheduler.now())
-	if errors.Is(err, session.ErrWakeScheduleNotOwned) {
+	if errors.Is(err, sessionwake.ErrWakeScheduleNotOwned) {
 		return "", notFound
 	}
 	if err != nil {
@@ -328,7 +328,7 @@ func (w *wakeComponent) CancelWakeSchedule(ctx context.Context, sessionID, sched
 }
 
 func (w *wakeComponent) wrapWakeCreateError(err error) error {
-	if errors.Is(err, session.ErrWakeScheduleLimit) {
+	if errors.Is(err, sessionwake.ErrWakeScheduleLimit) {
 		return errors.New("maximum number of active schedules (20) reached for this session; cancel one with wake_cancel or wait for a one-shot wake to fire")
 	}
 	return err
@@ -344,10 +344,10 @@ func wakeScheduleView(row db.WakeSchedule) tools.WakeScheduleView {
 		u := time.Unix(row.UntilAt.Int64, 0).UTC().Format(time.RFC3339)
 		view.Until = &u
 	}
-	switch session.WakeKind(row.Kind) {
-	case session.WakeKindOnce:
+	switch sessionwake.WakeKind(row.Kind) {
+	case sessionwake.WakeKindOnce:
 		view.FiresAt = time.Unix(row.NextRunAt, 0).UTC().Format(time.RFC3339)
-	case session.WakeKindLoop:
+	case sessionwake.WakeKindLoop:
 		view.EverySeconds = row.EveryMs / 1000
 		view.NextFireAt = time.Unix(row.NextRunAt, 0).UTC().Format(time.RFC3339)
 		view.Occurrence = row.Occurrence
@@ -359,7 +359,7 @@ func (w *wakeComponent) WakeSession(ctx context.Context, owner string, fact bool
 	return w.wakeSession(ctx, owner, fact)
 }
 
-func (w *wakeComponent) SetWakeScheduleStore(store *session.WakeScheduleStore) {
+func (w *wakeComponent) SetWakeScheduleStore(store *sessionwake.WakeScheduleStore) {
 	if w.host.wakeCoordinatorIsNil() || store == nil || w.host.wakeScheduler() != nil {
 		return
 	}

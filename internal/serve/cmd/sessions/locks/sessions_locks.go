@@ -22,6 +22,7 @@ import (
 	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 	"github.com/spf13/cobra"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 )
@@ -364,11 +365,11 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string, setup func(*cobra.Co
 		}
 	}
 	callTreeActivities := sesskit.ComputeCallTreeActivityBatch(cmd.Context(), a, activityIDs)
-	liveVerdict := func(stem string) (session.ActivityVerdict, bool) {
+	liveVerdict := func(stem string) (sessionfacts.ActivityVerdict, bool) {
 		if actErr != nil {
-			return session.ActivityVerdict{}, false
+			return sessionfacts.ActivityVerdict{}, false
 		}
-		var live session.ActivityVerdict
+		var live sessionfacts.ActivityVerdict
 		found := false
 		for _, id := range stemIDs[stem] {
 			v := acts.ByID[id].Verdict
@@ -684,7 +685,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string, setup func(*cobra.Co
 // "ping"/"stopping" for 10-20 s -- as if its process were exiting. Between
 // turns or delegating is always "between-turns"; an in-turn holder keeps its
 // heartbeat pulse, except "offline", which the verdict proves wrong.
-func verdictPulse(pulse string, v session.ActivityVerdict) (label string, betweenTurns bool) {
+func verdictPulse(pulse string, v sessionfacts.ActivityVerdict) (label string, betweenTurns bool) {
 	if v.Kind == session.ActivityInTurn {
 		if pulse == "offline" {
 			return "alive", false
@@ -725,9 +726,9 @@ func resolveLocksFilterStem(ctx context.Context, a *app.App, arg string) (string
 	sess, err := cmdkit.ResolveSessionID(ctx, a.Sessions, arg)
 	switch {
 	case err == nil:
-		return session.SessionLockStem(sess.ID), nil
+		return sessionfacts.SessionLockStem(sess.ID), nil
 	case strings.HasPrefix(err.Error(), "session not found"):
-		return session.SessionLockStem(arg), nil
+		return sessionfacts.SessionLockStem(arg), nil
 	default:
 		return "", err
 	}

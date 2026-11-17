@@ -5,6 +5,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 )
 
 // endedReasonPeakHours is the ended_reason a provider peak-hours pause
@@ -23,7 +25,7 @@ const EndedReasonPeakHours = "peak_hours"
 // exact "sessions list said running while sessions status reported a
 // recorded exit" mismatch this file exists to close. Passing "" (the old
 // verdict-only shape) keeps the plain word.
-func SessionStatusLabel(v session.ActivityVerdict, recordedEnd string) string {
+func SessionStatusLabel(v sessionfacts.ActivityVerdict, recordedEnd string) string {
 	switch v.Kind {
 	case session.ActivityInTurn, session.ActivityBetweenTurns:
 		return AnnotateRecordedEnd("running", recordedEnd)
@@ -84,7 +86,7 @@ func KnownEndedReason(reason string) bool {
 }
 
 type PendingChildQuestionReader interface {
-	PendingChildQuestions(context.Context, string) ([]session.ChildQuestion, error)
+	PendingChildQuestions(context.Context, string) ([]sessionnotice.ChildQuestion, error)
 }
 
 func SessionQuestionReaderForApp(a *app.App) PendingChildQuestionReader {
@@ -106,8 +108,8 @@ func SessionQuestionReaderForApp(a *app.App) PendingChildQuestionReader {
 // pending child_question notices re-classify its verdict (read-only; a
 // failed notice read leaves the plain verdict) and become the
 // "(awaiting answer)" annotation plus the JSON wire fields.
-func ListStatusesWithAwaiting(ctx context.Context, store PendingChildQuestionReader, activities app.SessionActivityBatchResult, ids []string) (map[string]string, map[string]session.ChildQuestion) {
-	questionsByRoot := map[string][]session.ChildQuestion{}
+func ListStatusesWithAwaiting(ctx context.Context, store PendingChildQuestionReader, activities app.SessionActivityBatchResult, ids []string) (map[string]string, map[string]sessionnotice.ChildQuestion) {
+	questionsByRoot := map[string][]sessionnotice.ChildQuestion{}
 	if store != nil {
 		for _, id := range ids {
 			if qs, err := store.PendingChildQuestions(ctx, id); err == nil && len(qs) > 0 {
@@ -116,13 +118,13 @@ func ListStatusesWithAwaiting(ctx context.Context, store PendingChildQuestionRea
 		}
 	}
 	statusByID := make(map[string]string, len(ids))
-	awaitingByID := make(map[string]session.ChildQuestion, len(questionsByRoot))
+	awaitingByID := make(map[string]sessionnotice.ChildQuestion, len(questionsByRoot))
 	for id, act := range activities.ByID {
 		v := act.Verdict
 		if qs := questionsByRoot[id]; len(qs) > 0 {
 			f := act.Facts
 			f.ChildQuestions = qs
-			v = session.ClassifySessionActivity(f)
+			v = sessionfacts.ClassifySessionActivity(f)
 			awaitingByID[id] = qs[0]
 		}
 		st := SessionStatusLabel(v, act.Facts.EndedReason)
