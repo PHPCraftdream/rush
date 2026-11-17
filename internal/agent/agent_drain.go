@@ -20,7 +20,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
-
 // drainCallFor builds sessionID's Drain call. Slot-derived child drivers
 // resolve their live role slot per new automatic turn; explicit/non-slot
 // drivers keep the frozen model. Root sessions resolve their own pins as usual.
@@ -214,7 +213,6 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 	transferred = true
 	return call, prep, nil
 }
-
 
 // freshenDrainClient brings a delegated child's Drain call onto the current
 // refreshable credentials (an OAuth token or an API-key template). The child's

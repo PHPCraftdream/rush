@@ -15,9 +15,9 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
-	"testing"
 	"strings"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"charm.land/fantasy"
@@ -66,17 +66,23 @@ func (h coordinatorDrainHost) arbiter() *arbiter      { return &h.coordinator.ar
 func (h coordinatorDrainHost) driverHints() *batchDriverHints {
 	return h.coordinator.driverHints
 }
+
 func (h coordinatorDrainHost) sessionNoticeStore() *session.SessionNoticeStore {
 	return h.coordinator.sessionNoticeStore()
 }
+
 func (h coordinatorDrainHost) driverMarkerStore() BatchDriverClaimer {
 	return h.coordinator.driverMarkerStore()
 }
+
 func (h coordinatorDrainHost) sessionsService() coresession.Service { return h.coordinator.sessions }
-func (h coordinatorDrainHost) persistentMode() bool                 { return h.coordinator.persistentMode.Load() }
+
+func (h coordinatorDrainHost) persistentMode() bool { return h.coordinator.persistentMode.Load() }
+
 func (h coordinatorDrainHost) backgroundPendingCompletions(sessionID string) bool {
 	return h.coordinator.background != nil && h.coordinator.background.PendingCompletionsOwned(sessionID) > 0
 }
+
 func (h coordinatorDrainHost) openOnceWakeSchedules(ctx context.Context, sessionID string) ([]db.WakeSchedule, error) {
 	return h.coordinator.openOnceWakeSchedules(ctx, sessionID)
 }
@@ -84,21 +90,33 @@ func (h coordinatorDrainHost) startRecheckTicker() { h.coordinator.StartRecheckT
 func (h coordinatorDrainHost) batchCutoverFacts() BatchCutoverFacts {
 	return coordinatorBatchCutoverFacts(h.coordinator)
 }
+
 func (h coordinatorDrainHost) batchCutoverReactionStore() *session.BatchStore {
 	return batchCutoverReactionStore(h.coordinator)
 }
+
 func (h coordinatorDrainHost) readTurnFactsBatch(ctx context.Context, facts BatchCutoverFacts, sessionID string, f TurnFacts) (TurnFacts, error) {
 	return h.coordinator.readTurnFactsBatch(ctx, facts, sessionID, f)
 }
+
 func (h coordinatorDrainHost) recoverBatchScopeDeadCandidates(ctx context.Context, sessionID string) {
 	recoverBatchScopeDeadCandidates(ctx, h.coordinator, sessionID)
 }
-func (h coordinatorDrainHost) clearSleepAll(sessionID string)   { h.coordinator.clearSleepAll(sessionID) }
-func (h coordinatorDrainHost) addToRecheckSet(sessionID string) { h.coordinator.addToRecheckSet(sessionID) }
-func (h coordinatorDrainHost) isUnauthorized(err error) bool    { return h.coordinator.isUnauthorized(err) }
+
+func (h coordinatorDrainHost) clearSleepAll(sessionID string) { h.coordinator.clearSleepAll(sessionID) }
+
+func (h coordinatorDrainHost) addToRecheckSet(sessionID string) {
+	h.coordinator.addToRecheckSet(sessionID)
+}
+
+func (h coordinatorDrainHost) isUnauthorized(err error) bool {
+	return h.coordinator.isUnauthorized(err)
+}
+
 func (h coordinatorDrainHost) refreshAfterUnauthorized(ctx context.Context, providerID string) bool {
 	return h.coordinator.refreshAfterUnauthorized(ctx, providerID)
 }
+
 func (h coordinatorDrainHost) publishReauthenticate(providerID string) {
 	h.coordinator.publishReauthenticate(providerID)
 }

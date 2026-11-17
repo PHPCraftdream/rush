@@ -87,6 +87,7 @@ func applyDrainModelOptions(call SessionAgentCall, model Model) SessionAgentCall
 	call.PresencePenalty = model.ModelCfg.PresencePenalty
 	return call
 }
+
 // reminderBeforeTail moves preparePrompt's trailing todo reminder in front
 // of the last k messages -- the notices a Drain turn's own turn-start pull
 // appended -- so they stay the final user messages the provider sees (a
@@ -117,6 +118,7 @@ func isTodoReminder(m fantasy.Message) bool {
 	part, ok := fantasy.AsMessagePart[fantasy.TextPart](m.Content[0])
 	return ok && strings.HasPrefix(part.Text, "<system_reminder>")
 }
+
 // turn: the affected row simply stays pending and is retried on the next
 // pull (this turn's own step boundary, or a later turn).
 func (a *sessionAgent) pullPendingNotices(ctx context.Context, sessionID string) (pulled []message.Message) {
@@ -240,6 +242,7 @@ func buildBatchNoticeMessageParams(row session.BatchNoticeRow) message.CreateMes
 		Origin:              origin,
 	}
 }
+
 // to clear.
 func clearCancelRequest(ctx context.Context, sessions coresession.Service, sessionID string) {
 	if sessions == nil || sessionID == "" {
@@ -251,6 +254,7 @@ func clearCancelRequest(ctx context.Context, sessions coresession.Service, sessi
 		slog.Warn("could not clear the cancel-requested flag", "session_id", sessionID, "err", err)
 	}
 }
+
 // the session, so two processes can never write one session's messages.
 func ForeignWorkspaceError(sess coresession.Session) error {
 	msg := fmt.Sprintf(

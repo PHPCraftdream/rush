@@ -73,6 +73,7 @@ func (w *drainComponent) chainGuardMarker(ctx context.Context, sessionID string)
 func (w *drainComponent) reactionChainHasClaim(sessionID, claim string) bool {
 	return w.host.arbiter().chainHasClaim(sessionID, claim)
 }
+
 // DrainState is the launch verdict for a session's pending-inclusive reaction
 // debt (drainPermitted): policy first, then the per-session launch gate.
 type DrainState uint8

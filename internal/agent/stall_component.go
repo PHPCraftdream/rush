@@ -311,7 +311,6 @@ func stallDumpPrefix(sessionID string) string {
 	return "stall-" + id + "-"
 }
 
-
 // This file is the abort layer of the turn-stall policy (chunk 2). The
 // sampler (turn_stall_clock.go) only warns and dumps; the policy installed
 // here acts on a fire: provider phases get the stuck request cancelled and
