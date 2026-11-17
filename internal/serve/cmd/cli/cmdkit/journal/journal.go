@@ -48,6 +48,11 @@ func SetExitFunc(f func(int)) { exitFunc = f }
 // ExitFunc returns the current process-exit indirection (test seam).
 func ExitFunc() func(int) { return exitFunc }
 
+// ResetSettingsAuditOnceForTests re-arms the audit-resolver install once
+// (test seam; the moved fallback-resolver scenario re-points audit's dir
+// func at nil and expects the lazy install to fire again).
+func ResetSettingsAuditOnceForTests() { settingsAuditOnce = sync.Once{} }
+
 // LockCommandJournalForTests holds the journal mutex so a helper process
 // spawn window writes no end record (test seam).
 func LockCommandJournalForTests() { commandJournal.mu.Lock() }

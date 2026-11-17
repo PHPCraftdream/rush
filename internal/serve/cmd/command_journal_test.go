@@ -517,3 +517,31 @@ func TestJournalRecordCapsAndWriteErrors(t *testing.T) {
 	audit.SetDirFunc(clijournal.JournalAuditDir)
 	require.Len(t, journalRecords(t), before, "a failed audit write must leave no record")
 }
+
+func TestJournalFallbackWritesWithoutPriorResolver(t *testing.T) {
+	journalTestEnv(t)
+	oldExit := clijournal.ExitFunc()
+	clijournal.SetExitFunc(func(int) {})
+	t.Cleanup(func() {
+		clijournal.SetExitFunc(oldExit)
+		clijournal.ResetSettingsAuditOnceForTests()
+		ensureAuditDirFunc()
+	})
+	cases := []struct {
+		name string
+		want int
+		run  func()
+	}{
+		{"finalize-help", 2, func() { finalizeCommandJournal([]string{"--help"}, nil) }},
+		{"exit-before-prerun", 1, func() { exitWithAudit(3) }},
+		{"panic", 1, journalEndForPanic},
+	}
+	for _, tc := range cases {
+		resetCommandJournalForTests()
+		before := len(journalRecords(t))
+		audit.SetDirFunc(nil)
+		clijournal.ResetSettingsAuditOnceForTests()
+		tc.run()
+		require.Len(t, journalRecords(t), before+tc.want, tc.name)
+	}
+}

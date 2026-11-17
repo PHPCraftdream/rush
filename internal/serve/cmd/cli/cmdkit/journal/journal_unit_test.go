@@ -1,20 +1,18 @@
 // Unit tests of the command-journal internals moved from
 // internal/serve/cmd's command_journal_fallback_test.go (lane K1): they poke
-// commandJournal/exitFunc/settingsAuditOnce and the allowlists directly, so
+// commandJournal and the allowlists directly, so
 // they live in package clijournal. The e2e tests dispatching through the
-// command tree stay in internal/serve/cmd.
+// command tree stay in internal/serve/cmd; the fallback-resolver scenario
+// moved back to internal/serve/cmd's command_journal_test.go because all
+// its cases dispatch through the installed root.
 package clijournal
 
 import (
-	"encoding/json"
 	"errors"
-	"os"
 	"strings"
-	"sync"
 	"testing"
 	"unicode/utf8"
 
-	"github.com/PHPCraftdream/rush/internal/kit/diag/audit"
 	"github.com/stretchr/testify/require"
 )
 
@@ -59,70 +57,6 @@ func TestJournalErrTextFirstLineAndTruncation(t *testing.T) {
 	require.True(t, strings.HasSuffix(got, "…"))
 	require.NotContains(t, got, "more")
 	require.Empty(t, journalErrText(nil))
-}
-
-// journalTestEnv isolates the global data dirs, points the audit resolver at
-// them and resets the per-process journal state (copy of the cmd helper,
-// minus the rushlog pin which is a cmd concern).
-func journalTestEnv(t *testing.T) string {
-	t.Helper()
-	dataDir := t.TempDir()
-	t.Setenv("RUSH_GLOBAL_DATA", dataDir)
-	t.Setenv("RUSH_GLOBAL_CONFIG", t.TempDir())
-	ensureAuditDirFunc()
-	resetCommandJournalForTests()
-	t.Cleanup(func() { audit.SetDirFunc(journalAuditDir) })
-	return dataDir
-}
-
-// journalRecords returns every journalled record as decoded JSON maps.
-func journalRecords(t *testing.T) []map[string]any {
-	t.Helper()
-	paths, err := audit.Files()
-	require.NoError(t, err)
-	var recs []map[string]any
-	for _, p := range paths {
-		bts, err := os.ReadFile(p)
-		require.NoError(t, err)
-		for _, line := range strings.Split(string(bts), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			var rec map[string]any
-			require.NoError(t, json.Unmarshal([]byte(line), &rec))
-			recs = append(recs, rec)
-		}
-	}
-	return recs
-}
-
-func TestJournalFallbackWritesWithoutPriorResolver(t *testing.T) {
-	journalTestEnv(t)
-	oldExit := exitFunc
-	exitFunc = func(int) {}
-	t.Cleanup(func() {
-		exitFunc = oldExit
-		settingsAuditOnce = sync.Once{}
-		ensureAuditDirFunc()
-	})
-	cases := []struct {
-		name string
-		want int
-		run  func()
-	}{
-		{"finalize-help", 2, func() { finalizeCommandJournal([]string{"--help"}, nil) }},
-		{"exit-before-prerun", 1, func() { ExitWithAudit(3) }},
-		{"panic", 1, JournalEndForPanic},
-	}
-	for _, tc := range cases {
-		resetCommandJournalForTests()
-		before := len(journalRecords(t))
-		audit.SetDirFunc(nil)
-		settingsAuditOnce = sync.Once{}
-		tc.run()
-		require.Len(t, journalRecords(t), before+tc.want, tc.name)
-	}
 }
 
 func TestJournalAllowlistDenyListIntersection(t *testing.T) {
