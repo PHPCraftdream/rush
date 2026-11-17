@@ -37,6 +37,13 @@ func installCfgSeams() {
 	cmdkit.UseCommandLoadOptions(commandLoadOptions)
 }
 
+// init installs the seam for the whole process. Commands that moved out of this
+// package (run, sessions fork/cost/diff/grep/tree) call cmdkit directly and
+// never pass through the setup wrappers below, so installing it only there left
+// them with a nil option builder: every `rush run` died on a nil dereference in
+// cmdkit.InitCommandConfig.
+func init() { installCfgSeams() }
+
 // ---- cli/cmdkit (package cmdkit) ----
 
 func setupApp(cmd *cobra.Command) (*app.App, error) {

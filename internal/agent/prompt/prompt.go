@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"text/template"
 	"time"
 
@@ -35,26 +34,6 @@ type Prompt struct {
 	now        func() time.Time
 	platform   string
 	workingDir string
-
-	// gitSnaps holds the last git status snapshot per working directory; see
-	// gitStatusSnapshot. gitStatusFn is a test seam (nil means getGitStatus).
-	gitMu       sync.Mutex
-	gitSnaps    map[string]gitSnapshot
-	gitStatusFn func(ctx context.Context, dir string) (string, error)
-}
-
-// gitSnapshotTTL bounds how long one git status snapshot is reused. The
-// system prompt is rebuilt at every turn start, and the snapshot sits before
-// the skills, the project context and the whole conversation: any change in it
-// moves the provider's prompt-cache prefix and every later token is re-read at
-// full price. Agents edit their worktree between turns, so a live status broke
-// the cache on almost every turn start. The prompt labels the block a
-// "snapshot", so reusing it for hours loses nothing a turn could rely on.
-const gitSnapshotTTL = 6 * time.Hour
-
-type gitSnapshot struct {
-	at  time.Time
-	val string
 }
 
 type PromptDat struct {
@@ -275,7 +254,7 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 	}
 	if isGit {
 		var err error
-		data.GitStatus, err = p.gitStatusSnapshot(ctx, store.WorkingDir())
+		data.GitStatus, err = getGitStatus(ctx, store.WorkingDir())
 		if err != nil {
 			return PromptDat{}, err
 		}
@@ -306,30 +285,6 @@ func formatTokenCount(n int64) string {
 	default:
 		return fmt.Sprintf("%d tokens", n)
 	}
-}
-
-// gitStatusSnapshot returns the git status block for dir, reusing the previous
-// one for gitSnapshotTTL. A failed read is returned and not cached.
-func (p *Prompt) gitStatusSnapshot(ctx context.Context, dir string) (string, error) {
-	p.gitMu.Lock()
-	defer p.gitMu.Unlock()
-	now := p.now()
-	if s, ok := p.gitSnaps[dir]; ok && now.Sub(s.at) < gitSnapshotTTL {
-		return s.val, nil
-	}
-	read := p.gitStatusFn
-	if read == nil {
-		read = getGitStatus
-	}
-	val, err := read(ctx, dir)
-	if err != nil {
-		return "", err
-	}
-	if p.gitSnaps == nil {
-		p.gitSnaps = make(map[string]gitSnapshot)
-	}
-	p.gitSnaps[dir] = gitSnapshot{at: now, val: val}
-	return val, nil
 }
 
 func isGitRepo(dir string) bool {

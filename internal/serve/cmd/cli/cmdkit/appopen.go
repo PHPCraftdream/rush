@@ -31,6 +31,10 @@ func UseCommandLoadOptions(f func(*cobra.Command) []config.LoadOption) {
 	commandLoadOptions = f
 }
 
+// LoadOptionsInstalled reports whether the cmd package installed the option
+// builder; InitCommandConfig cannot run without it.
+func LoadOptionsInstalled() bool { return commandLoadOptions != nil }
+
 // guarded by the write path itself. Same refusal shape as the pre-run check.
 func CheckAppPassword(cmd *cobra.Command, store *config.ConfigStore) error {
 	password, _ := cmd.Flags().GetString("password")
