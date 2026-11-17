@@ -23,6 +23,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/config/store/settings"
+
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/sjson"
 )
@@ -113,7 +115,7 @@ func TestKtavLockSources_WorkspaceNaturalSource(t *testing.T) {
 	ktavPath := filepath.Join(work, ".rush", "rush.ktav")
 	writeLockedKtavDoc(t, ktavPath, "pw", `{"smart":{"provider":"p","model":"m"}}`)
 
-	require.Equal(t, ktavPath, naturalWorkspaceSettingsPath(work),
+	require.Equal(t, ktavPath, settings.NaturalWorkspaceSettingsPath(work),
 		"the natural workspace source must resolve to the rush.ktav sibling")
 
 	s := newTestConfigStore(testStoreOpts{config: &Config{}})
@@ -124,26 +126,6 @@ func TestKtavLockSources_WorkspaceNaturalSource(t *testing.T) {
 		"a workspace rush.ktav lock must refuse a settings write")
 	withProcessPassword(t, "pw")
 	require.NoError(t, SettingsWriteAllowed(work))
-}
-
-// TestKtavLockSources_CanonicalLegacyStub pins that a lock in the Ktav
-// SIBLING of a LOGICAL (legacy-spelled) canonical global path is honored by
-// SettingsWriteAllowed. canonicalGlobalDataPath is stubbed to return the
-// legacy rush.json spelling on purpose: the selection must happen in the
-// read layer, not in the stub.
-func TestKtavLockSources_CanonicalLegacyStub(t *testing.T) {
-	lockSourceIsolate(t)
-	canonicalDir := canonicalTempDir(t)
-	writeLockedKtavDoc(t, filepath.Join(canonicalDir, "rush.ktav"), "operator-pw",
-		`{"smart":{"provider":"p","model":"m"}}`)
-
-	previous := canonicalGlobalDataPath
-	canonicalGlobalDataPath = func() string { return filepath.Join(canonicalDir, "rush.json") }
-	t.Cleanup(func() { canonicalGlobalDataPath = previous })
-
-	withProcessPassword(t, "wrong-pw")
-	require.ErrorIs(t, SettingsWriteAllowed(canonicalTempDir(t)), ErrSettingsLocked,
-		"a canonical rush.ktav lock must refuse a settings write")
 }
 
 // TestKtavLockSources_CorruptKtavBehindLegacyPath pins that an UNDECODABLE

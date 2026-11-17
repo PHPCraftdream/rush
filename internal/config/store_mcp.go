@@ -257,8 +257,8 @@ func (s *ConfigStore) PersistMCPFields(scope Scope, name string, fields map[stri
 		auditErr = nil
 	}
 	if audit.event != nil {
-		finalizeSettingsEvent(audit.event, audit.refusedBy, auditErr)
-		emitSettingsEvent(*audit.event)
+		settingsFinalizeEvent(audit.event, audit.refusedBy, auditErr)
+		settingsEmitEvent(*audit.event)
 	}
 	if err != nil {
 		return err
@@ -330,8 +330,8 @@ func (s *ConfigStore) PersistMCPFieldsExact(scope Scope, name string, fields map
 		auditErr = nil
 	}
 	if audit.event != nil {
-		finalizeSettingsEvent(audit.event, audit.refusedBy, auditErr)
-		emitSettingsEvent(*audit.event)
+		settingsFinalizeEvent(audit.event, audit.refusedBy, auditErr)
+		settingsEmitEvent(*audit.event)
 	}
 	return err
 }

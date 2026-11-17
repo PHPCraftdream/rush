@@ -390,7 +390,7 @@ func prevModelsSelections(prev *storeSnapshot) map[SelectedModelType]SelectedMod
 // the candidate's stable bytes for the global-data and workspace paths.
 // A warning is logged once per distinct offending fingerprint.
 func reloadModelsIntegrityMismatch(s *ConfigStore, docs []stableConfigDocument) bool {
-	lockExists := s.anySettingsLockExists()
+	lockExists := s.settings.AnyLockExists()
 	mismatch := false
 	for _, path := range []string{s.globalDataPath, s.loadSnapshot().workspacePath} {
 		if path == "" {

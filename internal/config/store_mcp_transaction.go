@@ -14,6 +14,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/slots"
+	"github.com/PHPCraftdream/rush/internal/config/store/settings"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
 )
 
@@ -86,8 +87,8 @@ func (s *ConfigStore) mutatePendingRemoveMCPWithAuthority(scope Scope, name stri
 		auditErr = nil
 	}
 	if audit.event != nil {
-		finalizeSettingsEvent(audit.event, audit.refusedBy, auditErr)
-		emitSettingsEvent(*audit.event)
+		settingsFinalizeEvent(audit.event, audit.refusedBy, auditErr)
+		settingsEmitEvent(*audit.event)
 	}
 	if err != nil && !mcpCommitWasReconciled(err) {
 		return MCPMutationResult{}, err
@@ -152,8 +153,8 @@ func (s *ConfigStore) mutateMCPEnableRollbackWithAuthority(scope Scope, name str
 		auditErr = nil
 	}
 	if audit.event != nil {
-		finalizeSettingsEvent(audit.event, audit.refusedBy, auditErr)
-		emitSettingsEvent(*audit.event)
+		settingsFinalizeEvent(audit.event, audit.refusedBy, auditErr)
+		settingsEmitEvent(*audit.event)
 	}
 	if err != nil && !mcpCommitWasReconciled(err) {
 		return MCPMutationResult{}, err
@@ -288,8 +289,8 @@ func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, 
 		auditErr = nil
 	}
 	if audit.event != nil {
-		finalizeSettingsEvent(audit.event, audit.refusedBy, auditErr)
-		emitSettingsEvent(*audit.event)
+		settingsFinalizeEvent(audit.event, audit.refusedBy, auditErr)
+		settingsEmitEvent(*audit.event)
 	}
 	if err != nil && !mcpCommitWasReconciled(err) {
 		return MCPMutationResult{}, err
@@ -369,8 +370,8 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 			return fmt.Errorf("failed to determine config owner: %w", err)
 		}
 		keys := []string{mcpContainerName(record.commitPath)}
-		ev := &SettingsEvent{Scope: s.settingsScopeForPath(record.commitPath), Path: record.commitPath, Keys: keys, Source: settingsAuditSource(authority)}
-		refusedBy, guardErr := s.guardSettingsWriteForAuthority(record.commitPath, record.data, keys, authority)
+		ev := &SettingsEvent{Scope: s.settings.ScopeForPath(record.commitPath), Path: record.commitPath, Keys: keys, Source: settings.SettingsAuditSource(authority)}
+		refusedBy, guardErr := s.settings.GuardWrite(record.commitPath, record.data, keys, authority)
 		if guardErr != nil {
 			audit.event = ev
 			audit.refusedBy = refusedBy

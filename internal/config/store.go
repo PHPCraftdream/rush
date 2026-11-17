@@ -13,6 +13,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/store/settings"
 )
 
 // RuntimeOverrides holds per-session settings that are never persisted to
@@ -265,6 +266,11 @@ type ConfigStore struct {
 	// and publication.
 	reloadBeforePublish func()
 
+	// settings is the settings facade over this store. Constructors install
+	// it eagerly; zero-value stores fall back to an ephemeral instance
+	// built on demand (see settingsStore).
+	settings *settings.Store
+
 	// reloadBeforeFinalInputCheck is a white-box seam before final disk I/O.
 	reloadBeforeFinalInputCheck func()
 }
@@ -335,6 +341,7 @@ func NewStore(workingDir, globalDataPath string, dataDirSource DataDirSource, sh
 		cliModels:          cliModels,
 		discoveryProviders: discoveryProviders,
 	}
+	s.settings = s.settingsStore()
 	if seed != nil {
 		s.snap.Store(&storeSnapshot{
 			config:           seed.Config,
@@ -785,6 +792,7 @@ func NewTestStore(cfg *Config, loadedPaths ...string) *ConfigStore {
 // application-loaded store without disk I/O.
 func NewTestStoreWithResolver(cfg *Config, resolver VariableResolver, loadedPaths ...string) *ConfigStore {
 	s := &ConfigStore{}
+	s.settings = s.settingsStore()
 	s.snap.Store(&storeSnapshot{
 		config:           cfg,
 		resolver:         resolver,
@@ -809,6 +817,7 @@ func NewTestStoreWithResolver(cfg *Config, resolver VariableResolver, loadedPath
 // store.WorkingDir()).
 func NewLibraryStore(cfg *Config, workingDir string) *ConfigStore {
 	s := &ConfigStore{workingDir: workingDir}
+	s.settings = s.settingsStore()
 	s.snap.Store(&storeSnapshot{
 		config:           cfg,
 		resolver:         IdentityResolver(),
@@ -840,6 +849,7 @@ type testStoreOpts struct {
 // snapshot), everything else goes into the initial storeSnapshot.
 func newTestConfigStore(opts testStoreOpts) *ConfigStore {
 	s := &ConfigStore{globalDataPath: opts.globalDataPath}
+	s.settings = s.settingsStore()
 	s.snap.Store(&storeSnapshot{
 		config:           opts.config,
 		workspacePath:    opts.workspacePath,
