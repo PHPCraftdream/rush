@@ -9,6 +9,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -156,7 +157,7 @@ func TestFinalizationQueuedCallsTxCountsOrphanedContinuation(t *testing.T) {
 func TestFinalizationQueuedCallsTxSeparatesOwners(t *testing.T) {
 	fixture := finalizationSeamQueuedCallFixture(t)
 	finalizationSeamEnqueueQueuedCall(t, fixture, "queued-facts")
-	require.NoError(t, seedSession(fixture.ctx, db.New(fixture.env.conn), "other"))
+	require.NoError(t, seedSessionn(fixture.ctx, db.New(fixture.env.conn), "other"))
 	finalizationFactsInsertQueuePair(t, fixture.env.conn, "other", "other-rq")
 	finalizationFactsInsertOrphanContinuation(t, fixture.env.conn, "other", "other-cont")
 	require.Equal(t, 1, finalizationFactsQueuedCount(t, fixture.env.conn, fixture.data.SessionID))

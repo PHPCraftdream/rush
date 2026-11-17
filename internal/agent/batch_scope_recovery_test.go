@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -25,7 +26,7 @@ import (
 func batchScopeRecoveryFixture(t *testing.T, deadHost string) (*coordinator, *sql.DB, string) {
 	t.Helper()
 	conn, dataDir := batchFixtureConn(t)
-	lk, err := sessionlock.TryAcquireFileLock(session.HostLockPath(dataDir, deadHost))
+	lk, err := sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(dataDir, deadHost))
 	require.NoError(t, err)
 	require.NoError(t, lk.Release())
 	c := newBatchRuntimeCoordinator()
@@ -165,7 +166,7 @@ func TestBatchScopeRecovery_NegativeVerdictsWriteNothing(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
 		conn, dataDir := batchFixtureConn(t)
-		holder, err := sessionlock.TryAcquireFileLock(session.HostLockPath(dataDir, "scope-alive-host"))
+		holder, err := sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(dataDir, "scope-alive-host"))
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = holder.Release() })
 		c := newBatchRuntimeCoordinator()
@@ -183,8 +184,8 @@ func TestBatchScopeRecovery_NegativeVerdictsWriteNothing(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
 		conn, dataDir := batchFixtureConn(t)
-		require.NoError(t, os.MkdirAll(session.HostLockPath(dataDir, "scope-unknown-host"), 0o755))
-		probeStatus, probeErr := session.ProbeHostShared(dataDir, "scope-unknown-host")
+		require.NoError(t, os.MkdirAll(sessionhosts.HostLockPath(dataDir, "scope-unknown-host"), 0o755))
+		probeStatus, probeErr := sessionhosts.ProbeHostShared(dataDir, "scope-unknown-host")
 		require.Equal(t, session.HostStatusUnknown, probeStatus)
 		require.Error(t, probeErr)
 		c := newBatchRuntimeCoordinator()
@@ -217,12 +218,12 @@ func TestBatchScopeRecovery_NegativeVerdictsWriteNothing(t *testing.T) {
 		// guarantee is asserted on the store primitive here.
 		ctx := context.Background()
 		_, conn, dataDir := batchScopeRecoveryFixture(t, "scope-err-host")
-		lk, err := sessionlock.TryAcquireFileLock(session.HostLockPath(dataDir, "scope-err-host"))
+		lk, err := sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(dataDir, "scope-err-host"))
 		require.NoError(t, err)
 		require.NoError(t, lk.Release())
 		root, _ := b1SeedBatchRootOnHost(t, conn, "sess-err", "call-err", "scope-err-host", "running")
 
-		probe := func(string) (session.HostLockStatus, error) {
+		probe := func(string) (sessionhosts.HostLockStatus, error) {
 			return session.HostStatusDead, errors.New("probe failure")
 		}
 		out, _, err := session.NewBatchStore(conn).RecoverHostsOnce(ctx, probe, []string{"scope-err-host"}, 1)
@@ -243,9 +244,9 @@ func TestBatchScopeRecovery_DeadHostMissingLock(t *testing.T) {
 	conn, dataDir := batchFixtureConn(t)
 	c := newBatchRuntimeCoordinator()
 	bindBatchNodeFacts(t, c, conn, dataDir)
-	_, err := os.Stat(session.HostLockPath(dataDir, "scope-missing-lock"))
+	_, err := os.Stat(sessionhosts.HostLockPath(dataDir, "scope-missing-lock"))
 	require.ErrorIs(t, err, os.ErrNotExist)
-	probeStatus, probeErr := session.ProbeHostShared(dataDir, "scope-missing-lock")
+	probeStatus, probeErr := sessionhosts.ProbeHostShared(dataDir, "scope-missing-lock")
 	require.Equal(t, session.HostStatusDead, probeStatus)
 	require.NoError(t, probeErr)
 	root, _ := b1SeedBatchRootOnHost(t, conn, "sess-missing", "call-missing", "scope-missing-lock", "running")
@@ -297,7 +298,7 @@ func TestBatchScopeRecovery_PreambleHookRecoversBeforePull(t *testing.T) {
 func TestBatchScopeRecovery_OffModeInert(t *testing.T) {
 	ctx := context.Background()
 	conn, dataDir := batchFixtureConn(t)
-	lk, err := sessionlock.TryAcquireFileLock(session.HostLockPath(dataDir, "scope-off-dead"))
+	lk, err := sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(dataDir, "scope-off-dead"))
 	require.NoError(t, err)
 	require.NoError(t, lk.Release())
 	// NO facts binding: an unbound coordinator has no node source, so the

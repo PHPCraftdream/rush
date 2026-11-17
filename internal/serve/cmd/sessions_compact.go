@@ -20,6 +20,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db/dbconn"
@@ -382,7 +383,7 @@ func compactSpaceRefusal(probeErr error, need int64, free uint64, total uint64) 
 // shared, non-acquiring probe: Alive and Unknown both refuse — an
 // unverifiable host could be mid-write.
 func compactLiveHosts(dataDir string) ([]string, error) {
-	entries, err := os.ReadDir(session.HostsDir(dataDir))
+	entries, err := os.ReadDir(sessionhosts.HostsDir(dataDir))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -394,8 +395,8 @@ func compactLiveHosts(dataDir string) ([]string, error) {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".lock" {
 			continue
 		}
-		path := filepath.Join(session.HostsDir(dataDir), entry.Name())
-		status, err := session.ProbeHostLockShared(path)
+		path := filepath.Join(sessionhosts.HostsDir(dataDir), entry.Name())
+		status, err := sessionhosts.ProbeHostLockShared(path)
 		if err != nil {
 			offenders = append(offenders, fmt.Sprintf("%s (probe error: %v)", entry.Name(), err))
 			continue

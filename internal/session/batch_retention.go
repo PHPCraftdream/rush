@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // BatchSettleCLIWakeDebt settles wake debt after the CLI has delivered the

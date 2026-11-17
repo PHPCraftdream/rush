@@ -8,8 +8,7 @@
 //     job-table concern -- HostStore.EnsureHost does not sweep.
 //   - "delete host if no jobs" became "delete host if no LIVE batch_nodes
 //     rows" (state in the live set) via db.Queries.DeleteAsyncHostIfNoNodes.
-package session
-
+package sessionhosts
 import (
 	"context"
 	"database/sql"

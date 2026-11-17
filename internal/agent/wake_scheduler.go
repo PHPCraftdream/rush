@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/google/uuid"
 )
 
@@ -40,7 +41,7 @@ const wakeSchedulerClaimBatch = 50
 // wake is the delivery callback (production: coordinator.wakeSession in a
 // goroutine, so a long Drain turn never stalls the timer loop).
 type wakeScheduler struct {
-	store *session.WakeScheduleStore
+	store *sessionwake.WakeScheduleStore
 	// leaseOwner identifies this scheduler instance in wake_schedules'
 	// lease columns; unique per Start so a dead worker's leases expire
 	// (SCHED-2) instead of being silently reused.
@@ -73,7 +74,7 @@ type WakeScheduleController interface {
 	// SetWakeScheduleStore hands the coordinator the durable wake-schedule
 	// store and starts the stage-4b worker over it. nil (or a second call)
 	// is a no-op.
-	SetWakeScheduleStore(store *session.WakeScheduleStore)
+	SetWakeScheduleStore(store *sessionwake.WakeScheduleStore)
 	// StopWakeScheduler terminates the worker; safe to call repeatedly
 	// and on a coordinator that never got a store.
 	StopWakeScheduler()
@@ -85,7 +86,7 @@ type WakeScheduleController interface {
 // session_notices row is delivered by (supervision, wake_only timeouts,
 // async completions); detached so a long Drain turn never stalls the timer
 // loop.
-func (c *coordinator) SetWakeScheduleStore(store *session.WakeScheduleStore) {
+func (c *coordinator) SetWakeScheduleStore(store *sessionwake.WakeScheduleStore) {
 	if c == nil || store == nil || c.wakeScheduler != nil {
 		return
 	}
@@ -119,7 +120,7 @@ func (c *coordinator) WakeSchedulerNotify() {
 	c.wakeScheduler.Notify()
 }
 
-func newWakeScheduler(store *session.WakeScheduleStore, leaseOwner string, wake func(ctx context.Context, sessionID string)) *wakeScheduler {
+func newWakeScheduler(store *sessionwake.WakeScheduleStore, leaseOwner string, wake func(ctx context.Context, sessionID string)) *wakeScheduler {
 	dispatchCtx, dispatchCancel := context.WithCancel(context.Background())
 	return &wakeScheduler{
 		store:          store,

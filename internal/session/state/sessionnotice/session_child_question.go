@@ -4,12 +4,12 @@
 // surface that cannot reach the coordinator's in-memory ledger (sessions
 // why/list, the web live-work panel) goes through: parse the notice's
 // canonical frame once, here, so no consumer re-parses the text.
-package session
-
+package sessionnotice
 import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
 )
 
 // ChildQuestionDisplayMaxLen caps the question text any surface quotes

@@ -10,6 +10,7 @@ import (
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -20,7 +21,7 @@ func batchStoreTestDB(t *testing.T) (*BatchStore, *sql.DB, context.Context) {
 	conn, err := db.Connect(ctx, t.TempDir())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(conn)) })
-	require.NoError(t, seedSession(ctx, db.New(conn), "owner"))
+	require.NoError(t, seedSessionn(ctx, db.New(conn), "owner"))
 	return NewBatchStore(conn), conn, ctx
 }
 func batchStoreTestString(s string) sql.NullString { return sql.NullString{String: s, Valid: true} }
@@ -188,7 +189,7 @@ func TestBatchAddReservationsAndStaleIdentity(t *testing.T) {
 func batchStoreTestCrossRoot(t *testing.T) (*BatchStore, context.Context, BatchSnapshot, BatchSnapshot, BatchProjection) {
 	t.Helper()
 	s, conn, ctx := batchStoreTestDB(t)
-	require.NoError(t, seedSession(ctx, db.New(conn), "other-owner"))
+	require.NoError(t, seedSessionn(ctx, db.New(conn), "other-owner"))
 	a := batchStoreTestReserve(t, s, ctx)
 	r := batchStoreTestReservation()
 	r.Owner, r.Sequence = "other-owner", 4

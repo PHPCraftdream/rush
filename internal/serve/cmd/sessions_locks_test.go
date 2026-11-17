@@ -16,6 +16,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -789,12 +790,12 @@ func TestSessionsLocksCmdRun_TopLevelActivityOverridesStaleHeartbeat(t *testing.
 // its heartbeat pulse except "offline", which the verdict proves wrong.
 func TestVerdictPulse(t *testing.T) {
 	t.Parallel()
-	between := session.ActivityVerdict{Kind: session.ActivityBetweenTurns}
-	delegating := session.ActivityVerdict{Kind: session.ActivityDelegating}
-	inTurn := session.ActivityVerdict{Kind: session.ActivityInTurn}
+	between := sessionfacts.ActivityVerdict{Kind: session.ActivityBetweenTurns}
+	delegating := sessionfacts.ActivityVerdict{Kind: session.ActivityDelegating}
+	inTurn := sessionfacts.ActivityVerdict{Kind: session.ActivityInTurn}
 	for _, tc := range []struct {
 		pulse   string
-		v       session.ActivityVerdict
+		v       sessionfacts.ActivityVerdict
 		label   string
 		between bool
 	}{

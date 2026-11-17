@@ -5,8 +5,7 @@
 // meaningful on any base that still creates the table). Any accidental
 // async_jobs query in these paths errors ("no such table: async_jobs"), which
 // is what makes these tests real.
-package session
-
+package sessionhosts
 import (
 	"context"
 	"database/sql"
@@ -14,6 +13,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 )
 
 // TestHostStore_ClaimSessionDriverInsertsMarker proves claim is idempotent
@@ -132,10 +133,10 @@ func TestWakeScheduleOnJobsLessDB(t *testing.T) {
 	require.NoError(t, seedSession(ctx, q, "wake-owner"))
 	now := time.Now().UTC()
 
-	store := NewWakeScheduleStore(conn)
-	sched, err := store.CreateSchedule(ctx, CreateWakeScheduleParams{
+	store := sessionwake.NewWakeScheduleStore(conn)
+	sched, err := store.CreateSchedule(ctx, sessionwake.CreateWakeScheduleParams{
 		Owner:   "wake-owner",
-		Kind:    WakeKindOnce,
+		Kind:    sessionwake.WakeKindOnce,
 		Message: "wake up",
 		RunAt:   now.Add(time.Minute), // >= MinWakeOnceDelay in the future
 	}, now)

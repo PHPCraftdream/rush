@@ -19,6 +19,7 @@ import (
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -67,7 +68,7 @@ func TestLiveWorkAfterRecovery_ShowsInterruptedRoot(t *testing.T) {
 
 	host := "livework-dead-host"
 	dataDir := a.Config().Options.DataDirectory
-	lk, err := sessionlock.TryAcquireFileLock(session.HostLockPath(dataDir, host))
+	lk, err := sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(dataDir, host))
 	require.NoError(t, err)
 	require.NoError(t, lk.Release())
 

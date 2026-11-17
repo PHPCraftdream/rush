@@ -7,9 +7,8 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/session"
-	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,9 +17,9 @@ func TestCredentialedRootSurvivesRestartDrainRefused(t *testing.T) {
 	// branch lets the restarted coordinator resolve the configured probe model.
 	f := newAttemptFixture(t, "credentialed-restart-drain", attemptFixtureOpts{noIdle: true, noDriver: true})
 	f.withOAuthProvider("probe")
-	wakeStore := session.NewWakeScheduleStore(f.env.conn)
-	_, err := wakeStore.CreateSchedule(context.Background(), session.CreateWakeScheduleParams{
-		Owner: f.sessID, Kind: session.WakeKindOnce, Message: "preexisting follow-up", RunAt: time.Now().Add(time.Hour),
+	wakeStore := sessionwake.NewWakeScheduleStore(f.env.conn)
+	_, err := wakeStore.CreateSchedule(context.Background(), sessionwake.CreateWakeScheduleParams{
+		Owner: f.sessID, Kind: sessionwake.WakeKindOnce, Message: "preexisting follow-up", RunAt: time.Now().Add(time.Hour),
 	}, time.Now())
 	require.NoError(t, err)
 	store := coresession.NewService(db.New(f.env.conn), f.env.conn).(coresession.SessionCredentialRequirementStore)

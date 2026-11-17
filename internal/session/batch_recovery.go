@@ -10,14 +10,15 @@ import (
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // BatchHostProbe is a three-way, dead-only authority. Host UUIDs never revive.
-type BatchHostProbe func(string) (HostLockStatus, error)
+type BatchHostProbe func(string) (sessionhosts.HostLockStatus, error)
 
 // BatchSharedHostProbe adapts the real hermetic OS shared-lock probe.
 func BatchSharedHostProbe(dataDir string) BatchHostProbe {
-	return func(host string) (HostLockStatus, error) { return ProbeHostShared(dataDir, host) }
+	return func(host string) (sessionhosts.HostLockStatus, error) { return sessionhosts.ProbeHostShared(dataDir, host) }
 }
 
 type BatchRecoveryOutcome struct{ Interrupted, DeletedRoots, Notices, Controls int64 }
@@ -28,7 +29,7 @@ type BatchRecoveryOutcome struct{ Interrupted, DeletedRoots, Notices, Controls i
 // Each root commits separately; failures are returned without blocking other roots.
 func (s *BatchStore) BatchRecoverDeadHost(ctx context.Context, host string, probe BatchHostProbe) (BatchRecoveryOutcome, error) {
 	var total BatchRecoveryOutcome
-	if host == "" || IsOwnHostID(host) {
+	if host == "" || sessionhosts.IsOwnHostID(host) {
 		return total, nil
 	}
 	if probe == nil {

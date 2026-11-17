@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 )
 
 var _ tools.WakeControl = (*coordinator)(nil)
@@ -48,10 +48,10 @@ func validateWakeMessage(message string) error {
 	if n == 0 {
 		return errors.New("message is required")
 	}
-	if n > session.MaxWakeMessageLength {
+	if n > sessionwake.MaxWakeMessageLength {
 		return fmt.Errorf(
 			"message exceeds %d characters (%d); shorten it — this becomes part of the next turn's context, not a task payload",
-			session.MaxWakeMessageLength, n,
+			sessionwake.MaxWakeMessageLength, n,
 		)
 	}
 	return nil
@@ -92,11 +92,11 @@ func checkWakeTimestamp(t time.Time, now time.Time, field string) error {
 			field, t.Format(time.RFC3339), now.Format(time.RFC3339),
 		)
 	}
-	if t.Sub(now) > session.MaxWakeHorizon {
+	if t.Sub(now) > sessionwake.MaxWakeHorizon {
 		return fmt.Errorf("%s is implausibly far in the future", field)
 	}
-	if t.Sub(now) < session.MinWakeOnceDelay {
-		return fmt.Errorf("%s is too soon (schedule at least %s ahead); use wakein for a short delay", field, session.MinWakeOnceDelay)
+	if t.Sub(now) < sessionwake.MinWakeOnceDelay {
+		return fmt.Errorf("%s is too soon (schedule at least %s ahead); use wakein for a short delay", field, sessionwake.MinWakeOnceDelay)
 	}
 	return nil
 }
@@ -115,8 +115,8 @@ func (c *coordinator) ScheduleWakeOnceDelay(ctx context.Context, sessionID strin
 		return tools.WakeScheduleView{}, err
 	}
 	now := sched.now()
-	row, err := sched.store.CreateSchedule(ctx, session.CreateWakeScheduleParams{
-		Owner: sessionID, Kind: session.WakeKindOnce, Message: message,
+	row, err := sched.store.CreateSchedule(ctx, sessionwake.CreateWakeScheduleParams{
+		Owner: sessionID, Kind: sessionwake.WakeKindOnce, Message: message,
 		RunAt: now.Add(time.Duration(delaySeconds) * time.Second),
 	}, now)
 	if err != nil {
@@ -143,8 +143,8 @@ func (c *coordinator) ScheduleWakeOnceAt(ctx context.Context, sessionID, at, mes
 	if err := checkWakeTimestamp(parsed, now, "at"); err != nil {
 		return tools.WakeScheduleView{}, err
 	}
-	row, err := sched.store.CreateSchedule(ctx, session.CreateWakeScheduleParams{
-		Owner: sessionID, Kind: session.WakeKindOnce, Message: message, RunAt: parsed,
+	row, err := sched.store.CreateSchedule(ctx, sessionwake.CreateWakeScheduleParams{
+		Owner: sessionID, Kind: sessionwake.WakeKindOnce, Message: message, RunAt: parsed,
 	}, now)
 	if err != nil {
 		return tools.WakeScheduleView{}, c.wrapWakeCreateError(err)
@@ -159,7 +159,7 @@ func (c *coordinator) ScheduleWakeLoop(ctx context.Context, sessionID string, ev
 	if err != nil {
 		return tools.WakeScheduleView{}, err
 	}
-	if everySeconds*int64(time.Second) < int64(session.MinLoopInterval) {
+	if everySeconds*int64(time.Second) < int64(sessionwake.MinLoopInterval) {
 		return tools.WakeScheduleView{}, errors.New(
 			"every_seconds must be at least 300 (5 minutes); a tighter loop would wake you more often than the system's own supervision tick and is rarely what you want — use wakein for a single near-term check instead",
 		)
@@ -171,15 +171,15 @@ func (c *coordinator) ScheduleWakeLoop(ctx context.Context, sessionID string, ev
 		if *maxRuns <= 0 {
 			return tools.WakeScheduleView{}, errors.New("max_runs must be positive")
 		}
-		if *maxRuns > session.MaxLoopRuns {
+		if *maxRuns > sessionwake.MaxLoopRuns {
 			return tools.WakeScheduleView{}, fmt.Errorf(
-				"max_runs exceeds the limit (%d); use wake_cancel to stop the loop manually instead of an enormous max_runs", session.MaxLoopRuns,
+				"max_runs exceeds the limit (%d); use wake_cancel to stop the loop manually instead of an enormous max_runs", sessionwake.MaxLoopRuns,
 			)
 		}
 	}
 	now := sched.now()
-	params := session.CreateWakeScheduleParams{
-		Owner: sessionID, Kind: session.WakeKindLoop, Message: message,
+	params := sessionwake.CreateWakeScheduleParams{
+		Owner: sessionID, Kind: sessionwake.WakeKindLoop, Message: message,
 		RunAt: now.Add(time.Duration(everySeconds) * time.Second),
 		Every: time.Duration(everySeconds) * time.Second,
 	}
@@ -251,7 +251,7 @@ func (c *coordinator) CancelWakeSchedule(ctx context.Context, sessionID, schedul
 	// The report is the CAS's own outcome: a schedule that fired between a
 	// look and the cancel is "not found", never a disguised success.
 	cancelled, err := sched.store.CancelScheduleReport(ctx, sessionID, scheduleID, sched.now())
-	if errors.Is(err, session.ErrWakeScheduleNotOwned) {
+	if errors.Is(err, sessionwake.ErrWakeScheduleNotOwned) {
 		return "", notFound
 	}
 	if err != nil {
@@ -269,7 +269,7 @@ func (c *coordinator) CancelWakeSchedule(ctx context.Context, sessionID, schedul
 // id in context, so a foreign-owner error here is an internal invariant
 // breach and surfaces raw).
 func (c *coordinator) wrapWakeCreateError(err error) error {
-	if errors.Is(err, session.ErrWakeScheduleLimit) {
+	if errors.Is(err, sessionwake.ErrWakeScheduleLimit) {
 		return errors.New(
 			"maximum number of active schedules (20) reached for this session; cancel one with wake_cancel or wait for a one-shot wake to fire",
 		)
@@ -294,10 +294,10 @@ func wakeScheduleView(row db.WakeSchedule) tools.WakeScheduleView {
 		u := time.Unix(row.UntilAt.Int64, 0).UTC().Format(time.RFC3339)
 		view.Until = &u
 	}
-	switch session.WakeKind(row.Kind) {
-	case session.WakeKindOnce:
+	switch sessionwake.WakeKind(row.Kind) {
+	case sessionwake.WakeKindOnce:
 		view.FiresAt = time.Unix(row.NextRunAt, 0).UTC().Format(time.RFC3339)
-	case session.WakeKindLoop:
+	case sessionwake.WakeKindLoop:
 		view.EverySeconds = row.EveryMs / 1000
 		view.NextFireAt = time.Unix(row.NextRunAt, 0).UTC().Format(time.RFC3339)
 		view.Occurrence = row.Occurrence

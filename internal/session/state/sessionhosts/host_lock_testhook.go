@@ -1,5 +1,4 @@
-package session
-
+package sessionhosts
 // ReleaseRetainedHostLocksForTest releases every host lock a forced shutdown
 // pinned (CloseKeepLock) and forgets the given own-host ids, so a test that
 // exercised the forced path can clean up its data dir. Test-only.

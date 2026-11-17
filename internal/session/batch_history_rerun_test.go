@@ -12,6 +12,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,7 +33,7 @@ func newBatchRerunFx(t *testing.T) *batchRerunFx {
 	conn, err := db.Connect(ctx, t.TempDir())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(conn)) })
-	require.NoError(t, seedSession(ctx, db.New(conn), batchRerunOwner))
+	require.NoError(t, seedSessionn(ctx, db.New(conn), batchRerunOwner))
 	return &batchRerunFx{t: t, store: NewBatchStore(conn), conn: conn, ctx: ctx, messages: message.NewService(db.New(conn)), seq: 1}
 }
 
@@ -242,7 +243,7 @@ func TestBatchRerunNewIncarnationFencedFromLateOldIncarnation(t *testing.T) {
 	require.ErrorIs(t, err, ErrBatchAnnouncementLost)
 
 	// A late STOP of the old incarnation targets the terminal root only.
-	_, err = f.store.BatchRequestStop(f.ctx, BatchControlTarget{Owner: batchRerunOwner, Host: "host", Root: old.Root.RootID, Node: old.Nodes[1].NodeID}, func(string) (HostLockStatus, error) { return HostStatusAlive, nil })
+	_, err = f.store.BatchRequestStop(f.ctx, BatchControlTarget{Owner: batchRerunOwner, Host: "host", Root: old.Root.RootID, Node: old.Nodes[1].NodeID}, func(string) (sessionhosts.HostLockStatus, error) { return HostStatusAlive, nil })
 	require.ErrorIs(t, err, ErrBatchControlStale)
 	controls, err := f.store.PendingControls(f.ctx, batchRerunOwner, "host", re.Root.RootID)
 	require.NoError(t, err)

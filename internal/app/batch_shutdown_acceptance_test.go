@@ -72,6 +72,7 @@ import (
 	jobbatch "github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -506,7 +507,7 @@ func TestShutdownForcedPreservesHostLockWriterAndProvider(t *testing.T) {
 	// Lock FILES can be released, so still drop the pinned handle in cleanup;
 	// the data-dir file itself stays locked (retained writer) and is
 	// intentionally left behind — see the forced dataDir branch above.
-	t.Cleanup(func() { session.ReleaseRetainedHostLocksForTest(h.hostID) })
+	t.Cleanup(func() { sessionhosts.ReleaseRetainedHostLocksForTest(h.hostID) })
 	h.provider.arm() // block INSIDE the provider WriteFile
 
 	runDone := make(chan struct{})
@@ -585,7 +586,7 @@ func TestShutdownForcedPreservesHostLockWriterAndProvider(t *testing.T) {
 	}
 }
 
-func probeHostInChild(t *testing.T, dataDir, hostID string) session.HostLockStatus {
+func probeHostInChild(t *testing.T, dataDir, hostID string) sessionhosts.HostLockStatus {
 	t.Helper()
 	// The bounded context is the mechanism that bounds the helper: if the
 	// subprocess probe hangs, CombinedOutput returns when the context fires.
@@ -634,7 +635,7 @@ func TestShutdownBlockedPhysicalDisposePreservesResources(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Errorf("physical Dispose did not finish after gate release")
 		}
-		session.ReleaseRetainedHostLocksForTest(h.hostID)
+		sessionhosts.ReleaseRetainedHostLocksForTest(h.hostID)
 	})
 	res, err := h.executeRun()
 	require.NoError(t, err)
@@ -682,7 +683,7 @@ func TestShutdownBlockedPhysicalDisposePreservesResources(t *testing.T) {
 // i.e. releaseAll (host release, fence recheck, writer release) had not run.
 //
 // Bounded by construction: every mid-drain observation is a SINGLE event
-// check (ONE writer ping, ONE session.ProbeHostLockShared call — the
+// check (ONE writer ping, ONE sessionhosts.ProbeHostLockShared call — the
 // unguarded lock-level shared probe, internal/session/host_lock.go:243) — no
 // fixed sleeps, no subprocess probes inside the drain window — so the whole
 // observation sequence cannot approach BatchDrainTimeout = 5s
@@ -759,7 +760,7 @@ func TestShutdownGracefulWaitsForInFlightWorkBeforeRelease(t *testing.T) {
 	// Phase 1 — STILL HELD, before any gate release: single event checks, no
 	// fixed sleep and no loop — the ordering guarantee comes from Phase 3, not
 	// from spinning. ONE writer ping plus ONE shared-lock probe
-	// (session.ProbeHostLockShared, internal/session/host_lock.go:243 — the
+	// (sessionhosts.ProbeHostLockShared, internal/session/host_lock.go:243 — the
 	// UNGUARDED lock-level probe: it takes a SHARED, non-blocking OS lock on
 	// the host lock file WITHOUT acquiring it; unlike ProbeHostShared it has
 	// no self-guard, so probing the app's OWN host id from this process is
@@ -769,7 +770,7 @@ func TestShutdownGracefulWaitsForInFlightWorkBeforeRelease(t *testing.T) {
 	// out yet.
 	require.NoError(t, h.app.DB().PingContext(context.Background()),
 		"while work is in flight the drain must not release the DB writer")
-	st1, serr1 := session.ProbeHostLockShared(session.HostLockPath(h.dataDir, h.hostID))
+	st1, serr1 := sessionhosts.ProbeHostLockShared(sessionhosts.HostLockPath(h.dataDir, h.hostID))
 	require.NoError(t, serr1)
 	require.Equal(t, session.HostStatusAlive, st1,
 		"while work is in flight the drain must not release the OS host lock")
@@ -795,7 +796,7 @@ func TestShutdownGracefulWaitsForInFlightWorkBeforeRelease(t *testing.T) {
 	// flips to Dead, failing both asserts.
 	require.NoError(t, h.app.DB().PingContext(context.Background()),
 		"resources are released only AFTER the gated Dispose ran")
-	st3, serr3 := session.ProbeHostLockShared(session.HostLockPath(h.dataDir, h.hostID))
+	st3, serr3 := sessionhosts.ProbeHostLockShared(sessionhosts.HostLockPath(h.dataDir, h.hostID))
 	require.NoError(t, serr3)
 	require.Equal(t, session.HostStatusAlive, st3,
 		"the host lock is released only AFTER the gated Dispose ran")
@@ -887,7 +888,7 @@ func TestShutdownHostProbeHelper(t *testing.T) {
 	if os.Getenv("RUSH_SHUTDOWN_HOST_PROBE") != "1" {
 		t.Skip("subprocess helper")
 	}
-	status, err := session.ProbeHostShared(os.Getenv("RUSH_SHUTDOWN_DATA_DIR"), os.Getenv("RUSH_SHUTDOWN_HOST_ID"))
+	status, err := sessionhosts.ProbeHostShared(os.Getenv("RUSH_SHUTDOWN_DATA_DIR"), os.Getenv("RUSH_SHUTDOWN_HOST_ID"))
 	require.NoError(t, err)
 	fmt.Fprintln(os.Stdout, status.String())
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,7 +28,7 @@ func TestExplainWhyBatchPreservesClassifierWithoutBatchWork(t *testing.T) {
 	var out bytes.Buffer
 	require.NoError(t, explainSessionStatus(ctx, a, dataDir, sessID, &out))
 	require.Equal(t, "status: batch live", strings.SplitN(out.String(), "\n", 2)[0])
-	open, err := session.OpenOnceWakeSchedules(ctx, wake, sessID)
+	open, err := sessionwake.OpenOnceWakeSchedules(ctx, wake, sessID)
 	require.NoError(t, err)
 	require.Len(t, open, 1, "the batch verdict must not consume the open once schedule")
 }

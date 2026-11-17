@@ -12,6 +12,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
 )
 
@@ -216,7 +218,7 @@ type commitHookNodeRow struct {
 	Ordinal, RootSequence, ProjectionSequence          int64
 	Envelope, EnvelopeRef, ChildSession, NoticeOrdinal string
 	NoticeSelected, Wake                               int64
-	Delivery, RunnerID, HostID                         string
+	Delivery, RunnerID, HostID                         s                         string
 }
 
 func commitHookReadNode(t *testing.T, conn *sql.DB, node string) commitHookNodeRow {
@@ -347,7 +349,7 @@ func TestBatchCommitAddAppendsInsideProject(t *testing.T) {
 	require.Equal(t, int64(2), added.Ordinal, "appended at the accepted parent ordinal")
 	require.Equal(t, env.id.Runner, added.RunnerID)
 	require.Equal(t, int64(1), commitHookCount(t, env.conn, "SELECT count(*) FROM batch_nodes WHERE node_id = root_id"),
-		"Add must not create a second root")
+		"Add must not sessionwake.create a second root")
 	require.Equal(t, int64(1), commitHookCount(t, env.conn,
 		"SELECT count(*) FROM batch_nodes WHERE node_id = 'r.2' AND parent_id = 'r' AND root_id = 'r'"))
 }

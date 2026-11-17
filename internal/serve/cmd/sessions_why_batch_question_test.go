@@ -4,7 +4,7 @@ package cmd
 // written by the REAL producer API (session.BatchStore.BatchPublishQuestion)
 // with job_tool_call_id NULL and a marker-first frame, so the per-root bound
 // query never sees it and the render goes through the fillBatchQuestionFromPending
-// path (sessions_batch_read.go:497-516, session.ParseBatchChildQuestionNotice).
+// path (sessions_batch_read.go:497-516, sessionnotice.ParseBatchChildQuestionNotice).
 // The BOUND legacy-shaped variant is covered by
 // TestExplainSessionStatus_AwaitingAnswerNamesQuestion.
 //
@@ -19,6 +19,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/stretchr/testify/require"
 )
 

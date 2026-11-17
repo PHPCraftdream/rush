@@ -10,6 +10,7 @@ import (
 	"log/slog"
 
 	session "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (DrainResult, error) {

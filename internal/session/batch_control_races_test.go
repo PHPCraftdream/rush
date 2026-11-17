@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -14,7 +15,7 @@ func TestR9ControlTerminalRaces(t *testing.T) {
 			a, b, _, _, ctx := r9Stores(t)
 			snap := batchStoreTestReserve(t, a, ctx)
 			target := BatchControlTarget{"owner", "host", snap.Root.RootID, snap.Nodes[1].NodeID}
-			r, err := b.BatchRequestStop(ctx, target, func(string) (HostLockStatus, error) { return HostStatusAlive, nil })
+			r, err := b.BatchRequestStop(ctx, target, func(string) (sessionhosts.HostLockStatus, error) { return HostStatusAlive, nil })
 			require.NoError(t, err)
 			id := target.Node
 			code := "terminal"
@@ -27,7 +28,7 @@ func TestR9ControlTerminalRaces(t *testing.T) {
 			require.NoError(t, a.Project(ctx, BatchProjection{Host: "host", Sequence: 9, Roots: []BatchRootProjection{{Owner: "owner", Root: target.Root, Updates: []db.ProjectBatchNodeParams{batchStoreTestUpdate(id, "completed")}}}}))
 			before, err := a.Read(ctx, "owner", target.Root)
 			require.NoError(t, err)
-			_, err = b.BatchRequestStop(ctx, target, func(string) (HostLockStatus, error) { return HostStatusAlive, nil })
+			_, err = b.BatchRequestStop(ctx, target, func(string) (sessionhosts.HostLockStatus, error) { return HostStatusAlive, nil })
 			require.ErrorIs(t, err, rejection)
 			pump := NewBatchControlPump(a, "host", func(context.Context, db.BatchControlRequest) (BatchControlAccepted, error) {
 				t.Fatal("terminal callback")
@@ -54,7 +55,7 @@ func TestR9UnknownNilNoWrites(t *testing.T) {
 	a, b, _, _, ctx := r9Stores(t)
 	snap := batchStoreTestReserve(t, a, ctx)
 	target := BatchControlTarget{"owner", "host", snap.Root.RootID, snap.Nodes[1].NodeID}
-	unknown := func(string) (HostLockStatus, error) { return HostStatusUnknown, nil }
+	unknown := func(string) (sessionhosts.HostLockStatus, error) { return HostStatusUnknown, nil }
 	out, err := a.BatchRecoverDeadHost(ctx, "host", unknown)
 	require.NoError(t, err)
 	require.Equal(t, BatchRecoveryOutcome{}, out)
@@ -75,7 +76,7 @@ func TestR9DeadTerminalPendingControls(t *testing.T) {
 			snap := batchStoreTestReserve(t, a, ctx)
 			r9Announce(t, conn, ctx, snap.Root.RootID)
 			target := BatchControlTarget{"owner", "host", snap.Root.RootID, snap.Nodes[1].NodeID}
-			r, err := b.BatchRequestStop(ctx, target, func(string) (HostLockStatus, error) { return HostStatusAlive, nil })
+			r, err := b.BatchRequestStop(ctx, target, func(string) (sessionhosts.HostLockStatus, error) { return HostStatusAlive, nil })
 			require.NoError(t, err)
 			if terminal {
 				_, err = conn.ExecContext(ctx, "UPDATE batch_nodes SET state='completed',updated_at=1")

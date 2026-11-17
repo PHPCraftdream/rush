@@ -8,13 +8,13 @@ import (
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/serve/server/hub"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	wire "github.com/PHPCraftdream/rush/internal/serve/server/wire"
-	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 // Wake-schedule snapshot + cancel handlers (stage 5b): the server half of
 // the web panel's Schedules tab. Reads and writes go through
-// session.WakeScheduleStore over this App's DB handle — the same durable
+// sessionwake.WakeScheduleStore over this App's DB handle — the same durable
 // wake_schedules table the stage-4b scheduler worker claims from, so a
 // snapshot is correct no matter which process created or fired the
 // schedules. Only the REQUESTED session's rows are ever read (isolation:
@@ -24,11 +24,11 @@ import (
 // is stateless over the pool, so a per-call handle is safe; nil (with a
 // logged warning at the caller) means this App has no DB, which no
 // reachable server does.
-func wakeScheduleStoreFor(a *appPkg.App) *session.WakeScheduleStore {
+func wakeScheduleStoreFor(a *appPkg.App) *sessionwake.WakeScheduleStore {
 	if a == nil || a.DB == nil || a.DB() == nil {
 		return nil
 	}
-	return session.NewWakeScheduleStore(a.DB())
+	return sessionwake.NewWakeScheduleStore(a.DB())
 }
 
 // notifyWakeScheduler prods the stage-4b scheduler worker to recompute its
@@ -126,7 +126,7 @@ func handleCancelWakeSchedule(ctx context.Context, a *appPkg.App, c *hub.Client,
 // buildSessionWakeSchedules reads the owner's wake_schedules rows (ANY
 // state — the panel shows done/cancelled history too) into the wire shape.
 // Message text is truncated with the shared title budget.
-func buildSessionWakeSchedules(ctx context.Context, store *session.WakeScheduleStore, sessionID string) (wire.SessionWakeSchedulesPayload, error) {
+func buildSessionWakeSchedules(ctx context.Context, store *sessionwake.WakeScheduleStore, sessionID string) (wire.SessionWakeSchedulesPayload, error) {
 	rows, err := store.ListSchedules(ctx, sessionID)
 	if err != nil {
 		return wire.SessionWakeSchedulesPayload{}, err

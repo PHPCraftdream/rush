@@ -10,6 +10,9 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
 )
 
@@ -141,7 +144,7 @@ func TestBatchResolveQuestionNoopDoesNotAdmitAndMatchedMutationDoes(t *testing.T
 	for _, authority := range authorities {
 		state, snapshotErr := session.NewAgentFinalizationStore(env.conn).Snapshot(ctx, authority.Identity)
 		require.NoError(t, snapshotErr)
-		require.Zero(t, state.Revision, "missing question marker must not create synthetic work")
+		require.Zero(t, state.Revision, "missing question marker must not sessionwake.create synthetic work")
 	}
 	marker := "[batch-question node=child-root.1 token=1 sequence=1 depth=1 child=grandchild]\n"
 	require.NoError(t, env.store.BatchPublishQuestion(ctx, "child", "child-root.1", 1, marker, marker+"question"))
@@ -174,7 +177,7 @@ func TestSessionNoticePullAdmitsOnlyProductiveDelivery(t *testing.T) {
 		BEGIN SELECT RAISE(ABORT, 'notice pull missing ancestor tickets'); END`)
 	require.NoError(t, err)
 	messages := message.NewService(db.New(env.conn))
-	build := func(SessionNoticeRow) message.CreateMessageParams {
+	build := func(sessionnotice.SessionNoticeRow) message.CreateMessageParams {
 		return message.CreateMessageParams{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "notice"}}}
 	}
 	pulled, err := store.PullSessionNotices(ctx, messages, "grandchild", build)

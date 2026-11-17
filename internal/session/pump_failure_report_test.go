@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 func TestPumpFailureReportCarriesTimelineAndPumpState(t *testing.T) {

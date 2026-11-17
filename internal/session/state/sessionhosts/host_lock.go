@@ -10,8 +10,7 @@
 // deletion paths); a store's ensure path wires it lazily into the first
 // claim. async_hosts rows stay display-only bookkeeping throughout -- no FK
 // from work rows, no timestamp used for liveness.
-package session
-
+package sessionhosts
 import (
 	"context"
 	"errors"

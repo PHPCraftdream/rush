@@ -30,6 +30,7 @@ import (
 	"fmt"
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 const (
@@ -51,7 +52,7 @@ type BatchRecoveryLimits struct {
 }
 
 type batchHostVerdict struct {
-	status HostLockStatus
+	status sessionhosts.HostLockStatus
 	err    error
 }
 
@@ -134,7 +135,7 @@ func (s *BatchStore) BatchRecoverRoot(ctx context.Context, rootID string, probe 
 	if err != nil {
 		return out, err
 	}
-	if root.HostID == "" || IsOwnHostID(root.HostID) {
+	if root.HostID == "" || sessionhosts.IsOwnHostID(root.HostID) {
 		return out, nil
 	}
 	status, perr := probe(root.HostID)
@@ -177,7 +178,7 @@ func (s *BatchStore) BatchRecoverPass(ctx context.Context, probe BatchHostProbe,
 			return total, BatchRecoveryCursorStart, true, errors.Join(errs...)
 		}
 		for _, root := range page {
-			if root.HostID == "" || IsOwnHostID(root.HostID) {
+			if root.HostID == "" || sessionhosts.IsOwnHostID(root.HostID) {
 				processed = root.RootID
 				continue
 			}
@@ -237,7 +238,7 @@ func (s *BatchStore) RecoverHostsOnce(ctx context.Context, probe BatchHostProbe,
 	seen := make(map[string]bool, len(hosts))
 	var errs []error
 	for _, host := range hosts {
-		if host == "" || IsOwnHostID(host) || seen[host] {
+		if host == "" || sessionhosts.IsOwnHostID(host) || seen[host] {
 			continue
 		}
 		seen[host] = true

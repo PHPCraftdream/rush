@@ -1,5 +1,5 @@
 // R12-F chunk C tests: the host identity and
-// teardown are independent of the async_jobs table (session.HostStore), the
+// teardown are independent of the async_jobs table (sessionhosts.HostStore), the
 // shutdown drain completes, a REAL cross-process locked-host fault recovers,
 // and the readers (drivers, wait heartbeat) use batch_nodes plus the
 // shared lock probe.
@@ -30,6 +30,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/stretchr/testify/require"
 )
 
@@ -74,13 +76,13 @@ func TestBatchHostStore_TeardownWithoutAsyncJobsTable(t *testing.T) {
 	// open, flocked file. A file already unlinked by the graceful Close is
 	// simply absent from the glob. Release each acquired lock so later
 	// cleanups see no new handles.
-	entries, rerr := os.ReadDir(session.HostsDir(app.dataDir))
+	entries, rerr := os.ReadDir(sessionhosts.HostsDir(app.dataDir))
 	require.NoError(t, rerr)
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".lock" {
 			continue
 		}
-		lk, aerr := filelock.TryAcquireFileLock(session.HostLockPath(app.dataDir, strings.TrimSuffix(e.Name(), ".lock")))
+		lk, aerr := filelock.TryAcquireFileLock(sessionhosts.HostLockPath(app.dataDir, strings.TrimSuffix(e.Name(), ".lock")))
 		require.NoError(t, aerr, "hosts/%s must be re-acquirable after shutdown (a failure means a host lock handle leaked)", e.Name())
 		if lk != nil {
 			require.NoError(t, lk.Release())
@@ -145,8 +147,8 @@ func TestBatchHostLockSubprocessHelper(t *testing.T) {
 	// pool is ref-counted per data dir and os.Exit skips defers, so every
 	// exit path below releases explicitly before exiting.
 	defer func() { _ = db.Release(dataDir) }()
-	h, err := session.RegisterHost(ctx, dataDir, os.Getpid(), "r12f-helper",
-		session.AsyncHostStoreFromConn(conn))
+	h, err := sessionhosts.RegisterHost(ctx, dataDir, os.Getpid(), "r12f-helper",
+		sessionhosts.AsyncHostStoreFromConn(conn))
 	if err != nil {
 		_ = db.Release(dataDir)
 		os.Exit(4)
@@ -159,7 +161,7 @@ func TestBatchHostLockSubprocessHelper(t *testing.T) {
 	// Mirror production's lock-path derivation (HostIdentity exposes only ID
 	// and DataDir; the lock handle is unexported, so derive it from the
 	// data dir) and record the file's identity AFTER registration.
-	lockPath := session.HostLockPath(dataDir, h.ID)
+	lockPath := sessionhosts.HostLockPath(dataDir, h.ID)
 	record := h.ID + "\n" +
 		"pid=" + strconv.Itoa(os.Getpid()) + "\n" +
 		"path=" + lockPath + "\n" +
@@ -333,7 +335,7 @@ func sameHostIdentity(registered, current string) string {
 // EXCLUSIVE ProbeHostLock whose won lock is Released immediately so the test
 // state is not corrupted.
 func lockedHostFaultDiagnostics(ctx context.Context, cmd *exec.Cmd, hw *helperWaitResult, rec helperRecord, tl hostProbeTimeline, helperStdout, helperStderr *helperOutputBuffer, dataDir, hostID string) string {
-	lockPath := session.HostLockPath(dataDir, hostID)
+	lockPath := sessionhosts.HostLockPath(dataDir, hostID)
 	if rec.Path != "" {
 		lockPath = rec.Path
 	}
@@ -372,7 +374,7 @@ func lockedHostFaultDiagnostics(ctx context.Context, cmd *exec.Cmd, hw *helperWa
 	canonical, cerr := filepath.EvalSymlinks(lockPath)
 	report += fmt.Sprintf("path spellings: literal %q, canonical %q (eval err %v), differ: %v\n",
 		lockPath, canonical, cerr, cerr == nil && canonical != lockPath)
-	stX, lockX, errX := session.ProbeHostLock(lockPath)
+	stX, lockX, errX := sessionhosts.ProbeHostLock(lockPath)
 	report += fmt.Sprintf("exclusive ProbeHostLock %v after start: verdict %v, lock won %v, err %v; helper alive=%v\n",
 		time.Since(tl.start), stX, lockX != nil, errX, !hw.snapshot().done)
 	if lockX != nil {
@@ -536,7 +538,7 @@ func TestBatchHostStore_LockedHostFaultThenRecovery(t *testing.T) {
 	// The locked-host fault, probed for real: the parent cannot win the
 	// lock while the helper lives.
 	tl.firstProbe = time.Now()
-	st, err := session.ProbeHostShared(dataDir, hostID)
+	st, err := sessionhosts.ProbeHostShared(dataDir, hostID)
 	require.NoError(t, err)
 	if st != session.HostStatusAlive {
 		t.Fatalf("helper does not hold the real host lock: shared probe verdict %v\n%s",
@@ -546,7 +548,7 @@ func TestBatchHostStore_LockedHostFaultThenRecovery(t *testing.T) {
 	// Crash: kill -9 equivalent. The OS lock dies with the process.
 	require.NoError(t, cmd.Process.Kill())
 	<-hw.doneCh
-	st, err = session.ProbeHostShared(dataDir, hostID)
+	st, err = sessionhosts.ProbeHostShared(dataDir, hostID)
 	require.NoError(t, err)
 	require.Equal(t, session.HostStatusDead, st, "crashed host is provably dead")
 
@@ -657,12 +659,12 @@ func TestLiveSessionDrivers_LockProbe(t *testing.T) {
 	// store again. The App's Shutdown cleanup (harness) releases the own
 	// host identity through the drain gate.
 	require.NoError(t, h.app.batchHostStore().ClaimSessionDriver(ctx, sess.ID))
-	siblingStore := session.NewHostStore(h.app.DB(), h.dataDir, 6161, "sibling")
+	siblingStore := sessionhosts.NewHostStore(h.app.DB(), h.dataDir, 6161, "sibling")
 	t.Cleanup(func() { _ = siblingStore.Close(context.Background()) })
 	sibling, err := h.app.Sessions.Create(ctx, "flagon-sibling")
 	require.NoError(t, err)
 	require.NoError(t, siblingStore.ClaimSessionDriver(ctx, sibling.ID))
-	deadStore := session.NewHostStore(h.app.DB(), h.dataDir, 4242, "dead")
+	deadStore := sessionhosts.NewHostStore(h.app.DB(), h.dataDir, 4242, "dead")
 	dead, err := h.app.Sessions.Create(ctx, "flagon-dead")
 	require.NoError(t, err)
 	require.NoError(t, deadStore.ClaimSessionDriver(ctx, dead.ID))
@@ -730,22 +732,22 @@ func TestBatchNoticeStore_Wired(t *testing.T) {
 	require.False(t, a.batchNoticeStore() == nil)
 
 	// A crashed foreign host is provably not alive for the notice keeper.
-	deadStore := session.NewHostStore(a.DB(), a.dataDir, 4242, "dead")
+	deadStore := sessionhosts.NewHostStore(a.DB(), a.dataDir, 4242, "dead")
 	t.Cleanup(func() { _ = deadStore.Close(context.Background()) })
 	deadHost, err := deadStore.EnsureHost(context.Background())
 	require.NoError(t, err)
 	require.NoError(t, deadStore.SimulateCrashForTest())
 	// The verdicts are observable through the shared probe the wiring uses.
-	st, err := session.ProbeHostShared(a.dataDir, deadHost)
+	st, err := sessionhosts.ProbeHostShared(a.dataDir, deadHost)
 	require.NoError(t, err)
 	require.Equal(t, session.HostStatusDead, st)
-	_, ownErr := session.ProbeHostShared(a.dataDir, hostID)
-	require.ErrorIs(t, ownErr, session.ErrProbeOwnHost, "own host id is never probed")
+	_, ownErr := sessionhosts.ProbeHostShared(a.dataDir, hostID)
+	require.ErrorIs(t, ownErr, sessionhosts.ErrProbeOwnHost, "own host id is never probed")
 }
 
 // noticeWiredParams is the pull build callback: the same shape as the
 // session package's sessionNoticeParams (notice_pull_test.go).
-func noticeWiredParams(row session.SessionNoticeRow) message.CreateMessageParams {
+func noticeWiredParams(row sessionnotice.SessionNoticeRow) message.CreateMessageParams {
 	return message.CreateMessageParams{
 		Role:                message.User,
 		Parts:               []message.ContentPart{message.TextContent{Text: row.Text}},
@@ -786,18 +788,18 @@ func TestBatchNoticeStore_PullVerdictsThroughWiring(t *testing.T) {
 
 	// A LIVE foreign host: holds its OS lock for the whole test (Close only
 	// in cleanup, no SimulateCrashForTest).
-	liveStore := session.NewHostStore(a.DB(), a.dataDir, 6161, "live-foreign")
+	liveStore := sessionhosts.NewHostStore(a.DB(), a.dataDir, 6161, "live-foreign")
 	t.Cleanup(func() { _ = liveStore.Close(context.Background()) })
 	liveHost, err := liveStore.EnsureHost(ctx)
 	require.NoError(t, err)
 	// A DEAD foreign host: crash-released lock, provably dead through the
 	// probe the wiring uses.
-	deadStore := session.NewHostStore(a.DB(), a.dataDir, 4242, "dead-foreign")
+	deadStore := sessionhosts.NewHostStore(a.DB(), a.dataDir, 4242, "dead-foreign")
 	t.Cleanup(func() { _ = deadStore.Close(context.Background()) })
 	deadHost, err := deadStore.EnsureHost(ctx)
 	require.NoError(t, err)
 	require.NoError(t, deadStore.SimulateCrashForTest())
-	st, err := session.ProbeHostShared(a.dataDir, deadHost)
+	st, err := sessionhosts.ProbeHostShared(a.dataDir, deadHost)
 	require.NoError(t, err)
 	require.Equal(t, session.HostStatusDead, st, "fixture: the dead foreign host is provably dead")
 
@@ -817,7 +819,7 @@ func TestBatchNoticeStore_PullVerdictsThroughWiring(t *testing.T) {
 	seed("wired-owner-dead", "root-wired-dead", deadHost)
 	seed("wired-owner-own", "root-wired-own", hostID)
 
-	pull := func(owner string) []session.PulledNotice {
+	pull := func(owner string) []sessionnotice.PulledNotice {
 		pulled, err := ns.PullSessionNotices(ctx, message.NewService(q), owner, noticeWiredParams)
 		require.NoError(t, err)
 		return pulled

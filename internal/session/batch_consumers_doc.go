@@ -209,7 +209,10 @@ package session
 // disposal matching is by tool_call_id equality — same weakness as the old
 // repoint logic, recorded, not fixed here.
 
-import "errors"
+import (
+	"errors"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+)
 
 // ErrBatchResetRefused is the sentinel wrapped by every reset refusal: the
 // owner still owns a nonterminal root and nothing was written.

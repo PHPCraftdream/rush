@@ -10,6 +10,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -67,7 +68,7 @@ func TestBatchHistorySnapshotShapeAndInjectableHostVerdict(t *testing.T) {
 	require.NoError(t, err)
 	r := batchReadTestReader(t, conn)
 	verdict := HostStatusAlive
-	r.ProbeHost = func(string, string) (HostLockStatus, error) { return verdict, nil }
+	r.ProbeHost = func(string, string) (sessionhosts.HostLockStatus, error) { return verdict, nil }
 
 	got, err := s.BatchHistorySnapshot(ctx, r, "owner", snap.Root.RootID)
 	require.NoError(t, err)

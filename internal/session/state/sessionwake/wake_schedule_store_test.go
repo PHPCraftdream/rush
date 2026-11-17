@@ -3,8 +3,7 @@
 // 20-active limit, idempotent owner-checked cancel, session-delete cascade
 // and `sessions reset` cancellation. All time is injected; no sleeps.
 
-package session
-
+package sessionwake
 import (
 	"context"
 	"database/sql"
@@ -16,6 +15,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,7 +44,7 @@ func newWakeFx(t *testing.T) *wakeFx {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)) })
 	q := db.New(conn)
-	require.NoError(t, seedSession(ctx, q, wakeTestOwner))
+	require.NoError(t, sessionhosts.seedSession(ctx, q, wakeTestOwner))
 	return &wakeFx{
 		t: t, sqlDB: conn, wake: NewWakeScheduleStore(conn),
 		q: q, messages: message.NewService(q),
@@ -55,7 +56,7 @@ func newWakeFx(t *testing.T) *wakeFx {
 // used by the surviving session-notice/batch tests (re-declared here after
 // the legacy notice_pull_test.go was removed; the real ones live behind the
 // agent package boundary these tests exercise from the other side).
-func sessionNoticeParams(row SessionNoticeRow) message.CreateMessageParams {
+func sessionNoticeParams(row sessionnotice.SessionNoticeRow) message.CreateMessageParams {
 	return message.CreateMessageParams{
 		Role:                message.User,
 		Parts:               []message.ContentPart{message.TextContent{Text: row.Text}},
@@ -472,7 +473,7 @@ func TestWakeScheduleMigration_IdempotentOnExistingData(t *testing.T) {
 	conn, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)
 	q := db.New(conn)
-	require.NoError(t, seedSession(ctx, q, "wake-mig"))
+	require.NoError(t, sessionhosts.seedSession(ctx, q, "wake-mig"))
 	require.NoError(t, conn.Close())
 	require.NoError(t, db.Release(dataDir))
 

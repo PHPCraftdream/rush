@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -102,7 +103,7 @@ func batchMaintenanceNoticeStats(t *testing.T, conn *sql.DB, rootID string) (int
 func TestBatchMaintenance_StartupPassRecoversOnceWakeZero(t *testing.T) {
 	a, conn, dataDir := newBatchMaintenanceApp(t)
 	root := seedBatchMaintenanceRoot(t, a, conn, "sess-maint", "call-maint", "maint-dead-host", "running")
-	lk, err := sessionlock.TryAcquireFileLock(session.HostLockPath(dataDir, "maint-dead-host"))
+	lk, err := sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(dataDir, "maint-dead-host"))
 	require.NoError(t, err)
 	require.NoError(t, lk.Release())
 
@@ -131,7 +132,7 @@ func TestBatchMaintenance_PeriodicPassAdvancesCursorAndConverges(t *testing.T) {
 	t.Cleanup(func() { batchMaintenancePageSize = oldPage })
 
 	a, conn, dataDir := newBatchMaintenanceApp(t)
-	lk, err := sessionlock.TryAcquireFileLock(session.HostLockPath(dataDir, "maint-cursor-dead"))
+	lk, err := sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(dataDir, "maint-cursor-dead"))
 	require.NoError(t, err)
 	require.NoError(t, lk.Release())
 	var roots []string

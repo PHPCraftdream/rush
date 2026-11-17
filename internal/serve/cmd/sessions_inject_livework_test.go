@@ -13,8 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
+
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // runInject runs the real `sessions inject` RunE against dataDir.
@@ -45,7 +46,7 @@ func TestSessionsInjectCmdRun_LiveLoopBetweenTurnsIsRunning(t *testing.T) {
 	require.NoError(t, err)
 	ageLock(t, releasedLock(t, dataDir, driven.ID), 2*time.Minute)
 	ageLock(t, releasedLock(t, dataDir, lone.ID), 2*time.Minute)
-	driverHost := session.NewHostStore(a.DB(), dataDir, os.Getpid(), "inject-driver-fixture")
+	driverHost := sessionhosts.NewHostStore(a.DB(), dataDir, os.Getpid(), "inject-driver-fixture")
 	driverHostID, err := driverHost.EnsureHost(ctx)
 	require.NoError(t, err)
 	require.NoError(t, driverHost.ClaimSessionDriver(ctx, driven.ID))
@@ -58,7 +59,7 @@ func TestSessionsInjectCmdRun_LiveLoopBetweenTurnsIsRunning(t *testing.T) {
 	driverHost.CloseKeepLock()
 	// The pinned lock file stays open for the process lifetime; release it at
 	// test end so the data dir can be removed on Windows.
-	t.Cleanup(func() { session.ReleaseRetainedHostLocksForTest(driverHostID) })
+	t.Cleanup(func() { sessionhosts.ReleaseRetainedHostLocksForTest(driverHostID) })
 	a.Shutdown()
 
 	decode := func(out string) injectResult {

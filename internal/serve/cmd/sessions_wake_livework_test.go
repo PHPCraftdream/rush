@@ -15,6 +15,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,12 +23,12 @@ import (
 // session whose last assistant message finished cleanly and one ACTIVE once
 // schedule due in the given delay -- the "run ended its turn, the timer
 // holds it" shape.
-func wakeWhyFixture(t *testing.T, in time.Duration) (*app.App, *session.WakeScheduleStore, string, string) {
+func wakeWhyFixture(t *testing.T, in time.Duration) (*app.App, *sessionwake.WakeScheduleStore, string, string) {
 	t.Helper()
 	conn, q := newSessionFactsTestDB(t)
 	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
-	wake := session.NewWakeScheduleStore(conn)
+	wake := sessionwake.NewWakeScheduleStore(conn)
 
 	sess, err := s.Create(context.Background(), "waiting on timer")
 	require.NoError(t, err)
@@ -39,8 +40,8 @@ func wakeWhyFixture(t *testing.T, in time.Duration) (*app.App, *session.WakeSche
 	assistant.AddFinish(message.FinishReasonEndTurn, "", "")
 	require.NoError(t, m.Update(context.Background(), assistant))
 
-	row, err := wake.CreateSchedule(context.Background(), session.CreateWakeScheduleParams{
-		Owner: sess.ID, Kind: session.WakeKindOnce, Message: "timer", RunAt: time.Now().Add(in),
+	row, err := wake.CreateSchedule(context.Background(), sessionwake.CreateWakeScheduleParams{
+		Owner: sess.ID, Kind: sessionwake.WakeKindOnce, Message: "timer", RunAt: time.Now().Add(in),
 	}, time.Now())
 	require.NoError(t, err)
 
@@ -68,7 +69,7 @@ func TestExplainSessionStatus_LoopScheduleIsNotLiveWork(t *testing.T) {
 	conn, q := newSessionFactsTestDB(t)
 	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
-	wake := session.NewWakeScheduleStore(conn)
+	wake := sessionwake.NewWakeScheduleStore(conn)
 	sess, err := s.Create(context.Background(), "loop done")
 	require.NoError(t, err)
 	assistant, err := m.Create(context.Background(), sess.ID, message.CreateMessageParams{
@@ -78,8 +79,8 @@ func TestExplainSessionStatus_LoopScheduleIsNotLiveWork(t *testing.T) {
 	require.NoError(t, err)
 	assistant.AddFinish(message.FinishReasonEndTurn, "", "")
 	require.NoError(t, m.Update(context.Background(), assistant))
-	_, err = wake.CreateSchedule(context.Background(), session.CreateWakeScheduleParams{
-		Owner: sess.ID, Kind: session.WakeKindLoop, Message: "tick",
+	_, err = wake.CreateSchedule(context.Background(), sessionwake.CreateWakeScheduleParams{
+		Owner: sess.ID, Kind: sessionwake.WakeKindLoop, Message: "tick",
 		RunAt: time.Now().Add(time.Hour), Every: 5 * time.Minute,
 	}, time.Now())
 	require.NoError(t, err)
@@ -112,15 +113,15 @@ func TestSessionActivity_OpenOnceScheduleIsBetweenTurns(t *testing.T) {
 // `sessions cancel` cannot orphan a run on its timer.
 func TestCancelWakeSchedules_CancelsActive(t *testing.T) {
 	a, wake, sessionID, _ := wakeWhyFixture(t, time.Hour)
-	_, err := wake.CreateSchedule(context.Background(), session.CreateWakeScheduleParams{
-		Owner: sessionID, Kind: session.WakeKindLoop, Message: "tick",
+	_, err := wake.CreateSchedule(context.Background(), sessionwake.CreateWakeScheduleParams{
+		Owner: sessionID, Kind: sessionwake.WakeKindLoop, Message: "tick",
 		RunAt: time.Now().Add(time.Hour), Every: 5 * time.Minute,
 	}, time.Now())
 	require.NoError(t, err)
 
 	n := cancelWakeSchedules(context.Background(), a, sessionID)
 	require.EqualValues(t, 2, n)
-	open, err := session.OpenOnceWakeSchedules(context.Background(), wake, sessionID)
+	open, err := sessionwake.OpenOnceWakeSchedules(context.Background(), wake, sessionID)
 	require.NoError(t, err)
 	require.Empty(t, open)
 	active, err := wake.CountActive(context.Background(), sessionID)

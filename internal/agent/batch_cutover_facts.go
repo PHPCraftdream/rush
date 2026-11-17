@@ -14,6 +14,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 )
 
 // BatchLiveScopeEntry is one owner's live-work scope answer.
@@ -90,21 +91,21 @@ type BatchCutoverFacts interface {
 	// PullBatchNotices delivers selected batch completion notices into
 	// history (production BatchPullNotices) and returns them with empty
 	// claim ids (batch nodes carry no async claim identity).
-	PullBatchNotices(ctx context.Context, messages message.Service, owner string) ([]session.PulledNotice, error)
+	PullBatchNotices(ctx context.Context, messages message.Service, owner string) ([]sessionnotice.PulledNotice, error)
 	// PullPendingSessionNotices delivers EVERY pending session notice
 	// (markers included, wake=0 rows like the wake_failed marker) WITHOUT
 	// the legacy async_jobs void validation: a supervision check-in voids
 	// only when the owner's batch live scope is closed; wake_only and
 	// child_question rows (job_tool_call_id NULL in batch mode) deliver.
-	PullPendingSessionNotices(ctx context.Context, messages message.Service, owner string, build func(session.SessionNoticeRow) message.CreateMessageParams) ([]session.PulledNotice, error)
+	PullPendingSessionNotices(ctx context.Context, messages message.Service, owner string, build func(sessionnotice.SessionNoticeRow) message.CreateMessageParams) ([]sessionnotice.PulledNotice, error)
 	// HeldQuestions lists pending child-question debt rows (fenced per
 	// incarnation).
-	HeldQuestions(ctx context.Context, owner string) ([]session.PendingNoticeDebt, error)
+	HeldQuestions(ctx context.Context, owner string) ([]sessionnotice.PendingNoticeDebt, error)
 	// LiveHeldQuestions lists pending child_question notices whose marker
 	// names a LIVE batch node incarnation of owner (row exists, state
 	// live, token matches the marker). Unparseable or stale-bound notices
 	// are NOT counted; a failed read is conservative (1 + err).
-	LiveHeldQuestions(ctx context.Context, owner string) ([]session.PendingNoticeDebt, error)
+	LiveHeldQuestions(ctx context.Context, owner string) ([]sessionnotice.PendingNoticeDebt, error)
 }
 
 // ErrBatchFactsSourceUnavailable marks a permanently unavailable batch
@@ -182,20 +183,20 @@ func (unknownBatchCutoverFacts) DebtToolCallIDs(context.Context, session.BatchDe
 	return nil
 }
 
-func (unknownBatchCutoverFacts) PullBatchNotices(context.Context, message.Service, string) ([]session.PulledNotice, error) {
+func (unknownBatchCutoverFacts) PullBatchNotices(context.Context, message.Service, string) ([]sessionnotice.PulledNotice, error) {
 	return nil, nil
 }
 
-func (unknownBatchCutoverFacts) PullPendingSessionNotices(context.Context, message.Service, string, func(session.SessionNoticeRow) message.CreateMessageParams) ([]session.PulledNotice, error) {
+func (unknownBatchCutoverFacts) PullPendingSessionNotices(context.Context, message.Service, string, func(sessionnotice.SessionNoticeRow) message.CreateMessageParams) ([]sessionnotice.PulledNotice, error) {
 	return nil, nil
 }
 
-func (unknownBatchCutoverFacts) HeldQuestions(context.Context, string) ([]session.PendingNoticeDebt, error) {
+func (unknownBatchCutoverFacts) HeldQuestions(context.Context, string) ([]sessionnotice.PendingNoticeDebt, error) {
 	return nil, errBatchFactsUnavailable
 }
 
-func (unknownBatchCutoverFacts) LiveHeldQuestions(context.Context, string) ([]session.PendingNoticeDebt, error) {
-	return []session.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, errBatchFactsUnavailable
+func (unknownBatchCutoverFacts) LiveHeldQuestions(context.Context, string) ([]sessionnotice.PendingNoticeDebt, error) {
+	return []sessionnotice.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, errBatchFactsUnavailable
 }
 
 // coordinatorBatchCutoverFactsBindings maps a *coordinator onto its

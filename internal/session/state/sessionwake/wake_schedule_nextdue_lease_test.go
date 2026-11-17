@@ -10,13 +10,14 @@
 // next_run_at of the leased row (the busy-spin window) instead of its
 // lease expiry.
 
-package session
-
+package sessionwake
 import (
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // A9-12, three phases: a live lease defers the row's due moment to the

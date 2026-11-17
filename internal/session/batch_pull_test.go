@@ -13,6 +13,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
 )
 
@@ -83,7 +85,7 @@ func batchOutboxTwoStores(t *testing.T) (*BatchStore, *BatchStore, context.Conte
 	ctx := context.Background()
 	conn, err := db.Connect(ctx, dir)
 	require.NoError(t, err)
-	require.NoError(t, seedSession(ctx, db.New(conn), "owner"))
+	require.NoError(t, seedSessionn(ctx, db.New(conn), "owner"))
 	require.NoError(t, db.ReleaseConn(conn))
 	open := func() *BatchStore {
 		// _txlock=immediate mirrors db.openDB: a deferred tx whose first
@@ -230,11 +232,11 @@ func TestBatchOutboxFailedAckRetainsControllableReservation(t *testing.T) {
 	require.Equal(t, snap.Root.RootID, again.Snapshot.Root.RootID)
 	_, err = s.CreateControl(ctx, "owner", "host", snap.Root.RootID, snap.Nodes[1].NodeID)
 	require.NoError(t, err)
-	require.EqualValues(t, 0, countMessages(t, db.New(s.writer), ctx, "owner"))
+	require.EqualValues(t, 0, sessionwake.countMessages(t, db.New(s.writer), ctx, "owner"))
 	batchOutboxAck(t, s, ctx, m, snap.Root.RootID)
 	_, err = s.BatchAnnounceStarted(ctx, m, "owner", snap.Root.RootID, batchOutboxText("duplicate"))
 	require.ErrorIs(t, err, ErrBatchAnnouncementLost)
-	require.EqualValues(t, 1, countMessages(t, db.New(s.writer), ctx, "owner"))
+	require.EqualValues(t, 1, sessionwake.countMessages(t, db.New(s.writer), ctx, "owner"))
 }
 
 func TestBatchOutboxInlineAckPullRaceNoDuplicate(t *testing.T) {
@@ -317,7 +319,7 @@ func TestBatchOutboxInlineEligibilityAndRollback(t *testing.T) {
 			require.NoError(t, e)
 			require.Zero(t, got.Root.Announced)
 			require.False(t, got.Root.NoticeMessageID.Valid)
-			require.EqualValues(t, 0, countMessages(t, db.New(conn), ctx, "owner"))
+			require.EqualValues(t, 0, sessionwake.countMessages(t, db.New(conn), ctx, "owner"))
 			ann, err := s.BatchAnnounceInlineResult(ctx, m, "owner", snap.Root.RootID, batchOutboxText("result"))
 			if tc.name == "one-item" {
 				require.NoError(t, err)
@@ -338,7 +340,7 @@ func TestBatchOutboxInlineEligibilityAndRollback(t *testing.T) {
 				debt, e := s.BatchReactionDebtExists(ctx, "owner")
 				require.NoError(t, e)
 				require.False(t, debt)
-				require.EqualValues(t, 1, countMessages(t, db.New(conn), ctx, "owner"))
+				require.EqualValues(t, 1, sessionwake.countMessages(t, db.New(conn), ctx, "owner"))
 			} else {
 				require.ErrorIs(t, err, ErrBatchAnnouncementLost)
 			}
@@ -427,7 +429,7 @@ func TestBatchOutboxLateIdentityFailureRollsBackHistory(t *testing.T) {
 			require.NoError(t, err)
 			before, err := s.Read(ctx, "owner", snap.Root.RootID)
 			require.NoError(t, err)
-			count := countMessages(t, db.New(conn), ctx, "owner")
+			count := sessionwake.countMessages(t, db.New(conn), ctx, "owner")
 			switch operation {
 			case "pull":
 				_, _, err = s.batchPullOneNotice(ctx, m, "owner", snap.Root.RootID, snap.Root.RootID, batchOutboxParams)
@@ -440,7 +442,7 @@ func TestBatchOutboxLateIdentityFailureRollsBackHistory(t *testing.T) {
 			after, err := s.Read(ctx, "owner", snap.Root.RootID)
 			require.NoError(t, err)
 			require.Equal(t, before, after)
-			require.Equal(t, count, countMessages(t, db.New(conn), ctx, "owner"))
+			require.Equal(t, count, sessionwake.countMessages(t, db.New(conn), ctx, "owner"))
 		})
 	}
 }

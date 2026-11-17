@@ -5,8 +5,7 @@
 // batch outbox (batch_pull.go); the raw generated db rows never cross this
 // package boundary (package agent does not import internal/db anywhere,
 // and this keeps it that way).
-package session
-
+package sessionnotice
 import (
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )

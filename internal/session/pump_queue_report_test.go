@@ -10,6 +10,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 func pumpQueueSnapshot(svc session.Service, id string) string {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -190,7 +191,7 @@ func TestStoreCandidateTxRejectsOlderCheckpointGenerationWithoutRecording(t *tes
 
 func TestStoreCandidateTxRefusesCancelledAndForeignMessage(t *testing.T) {
 	e := newCandidateEnv(t)
-	require.NoError(t, seedSession(t.Context(), db.New(e.conn), "foreign"))
+	require.NoError(t, seedSessionn(t.Context(), db.New(e.conn), "foreign"))
 	foreign, err := e.messages.Create(t.Context(), "foreign", message.CreateMessageParams{Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: "x"}}})
 	require.NoError(t, err)
 	require.NoError(t, foreign.MarkFinalizationCandidate(e.step(0, 1)))

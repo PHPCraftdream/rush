@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 )

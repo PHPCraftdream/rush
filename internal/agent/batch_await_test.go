@@ -10,6 +10,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/stretchr/testify/require"
 )
 
@@ -80,7 +82,7 @@ func newBatchAwaitHarness(t *testing.T, roots ...db.BatchNode) *batchAwaitHarnes
 	}
 	h.rd = session.NewBatchLiveReader(h.src, t.TempDir())
 	h.rd.IsOwnHost = func(string) bool { return false }
-	h.rd.ProbeHost = func(string, string) (session.HostLockStatus, error) {
+	h.rd.ProbeHost = func(string, string) (sessionhosts.HostLockStatus, error) {
 		return session.HostStatusAlive, nil
 	}
 	return h
@@ -527,7 +529,7 @@ func TestBatchArbiterFactsCompletionOnly(t *testing.T) {
 	liveRoots := session.BatchLiveResult{Complete: true, Tree: []session.BatchLiveNode{{
 		Ref: session.BatchLiveRef{OwnerSessionID: "s1", RootID: "r1"}, State: "running",
 	}}}
-	completion := session.BatchPendingDebt{Notices: []session.PendingNoticeDebt{{ID: 1, Kind: "task"}}}
+	completion := session.BatchPendingDebt{Notices: []sessionnotice.PendingNoticeDebt{{ID: 1, Kind: "task"}}}
 	f, err := ReadBatchArbiterFacts(ctx, batchArbDeps(liveRoots, completion, nil))
 	require.NoError(t, err)
 	require.True(t, f.CompletionOnly, "selected completion notices are completion-class")
@@ -535,7 +537,7 @@ func TestBatchArbiterFactsCompletionOnly(t *testing.T) {
 	f, err = ReadBatchArbiterFacts(ctx, batchArbDeps(session.BatchLiveResult{Complete: true}, completion, nil))
 	require.NoError(t, err)
 	require.False(t, f.SleepHolds(true, BatchSleepBreakers{}), "no live roots, no deferral")
-	question := session.BatchPendingDebt{Notices: []session.PendingNoticeDebt{{ID: 2, Kind: "child_question"}}}
+	question := session.BatchPendingDebt{Notices: []sessionnotice.PendingNoticeDebt{{ID: 2, Kind: "child_question"}}}
 	f, err = ReadBatchArbiterFacts(ctx, batchArbDeps(liveRoots, question, nil))
 	require.NoError(t, err)
 	require.False(t, f.CompletionOnly, "child_question is not completion-class")

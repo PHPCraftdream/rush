@@ -35,17 +35,18 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
 func batchFixtureLiveReader(conn *sql.DB, dataDir string) *session.BatchLiveReader {
 	live := session.NewBatchLiveReader(db.New(conn), dataDir)
 	live.TxStarter = conn
-	live.ProbeHost = func(dir, host string) (session.HostLockStatus, error) {
+	live.ProbeHost = func(dir, host string) (sessionhosts.HostLockStatus, error) {
 		if host == "fixture-host" {
 			return session.HostStatusAlive, nil
 		}
-		return session.ProbeHostShared(dir, host)
+		return sessionhosts.ProbeHostShared(dir, host)
 	}
 	return live
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 var ErrBatchToolResultIdentity = errors.New("batch tool result: invalid delivery identity")
@@ -46,7 +47,7 @@ func pdcUpdateTx(ctx context.Context, q *db.Queries, tx *sql.Tx, messages messag
 
 // BatchToolResultIdentity fences one consumed root incarnation.
 type BatchToolResultIdentity struct {
-	Owner, RootID, NodeID, HostID, RunnerID, ToolCallID string
+	Owner, RootID, NodeID, HostID,, RunnerID, ToolCallID string
 }
 
 // BatchConsumeToolResult atomically persists the actual tool message and consumes

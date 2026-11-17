@@ -11,6 +11,7 @@ import (
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/serve/server/hub"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	wire "github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -369,7 +370,7 @@ func buildSessionLiveWorkFromBatch(ctx context.Context, a *appPkg.App, cache *hu
 	roots = append(roots, historyRoots...)
 	roots = capBatchRoots(roots)
 
-	var pendingQuestions func(context.Context, *appPkg.App, []string) (map[string]session.ChildQuestion, bool)
+	var pendingQuestions func(context.Context, *appPkg.App, []string) (map[string]sessionnotice.ChildQuestion, bool)
 	if seams.PendingQuestions == nil {
 		pendingQuestions = batchPendingQuestions
 	} else {
@@ -608,7 +609,7 @@ func capBatchRoots(metas []batchRootMeta) []batchRootMeta {
 // executing task child the agent family launched on (m.askNodeID, the
 // production question identity per batch_exec_agent.go's Launch.ID); the
 // root's node id stays the last-resort fallback for legacy root-keyed rows.
-func batchRootItem(m batchRootMeta, titles map[hub.TitleKey]string, questions map[string]session.ChildQuestion) wire.LiveWorkItemWire {
+func batchRootItem(m batchRootMeta, titles map[hub.TitleKey]string, questions map[string]sessionnotice.ChildQuestion) wire.LiveWorkItemWire {
 	root := m.root
 	key := hub.TitleKey{Owner: root.OwnerSessionID, ToolCallID: root.ToolCallID.String, InputHash: root.InputHash.String}
 	item := wire.LiveWorkItemWire{
@@ -655,12 +656,12 @@ func batchRootItem(m batchRootMeta, titles map[hub.TitleKey]string, questions ma
 // leaves 'pending' with reacted=1 only via the pull CAS to 'done'. The
 // Reacted != 0 skip is defensive: a pending+reacted row is schema-valid and
 // must never badge — its question was already answered.
-func batchPendingQuestions(ctx context.Context, a *appPkg.App, visited []string) (map[string]session.ChildQuestion, bool) {
+func batchPendingQuestions(ctx context.Context, a *appPkg.App, visited []string) (map[string]sessionnotice.ChildQuestion, bool) {
 	return readBatchPendingQuestions(ctx, a, visited)
 }
 
-func readBatchPendingQuestions(ctx context.Context, a *appPkg.App, visited []string) (map[string]session.ChildQuestion, bool) {
-	questions := map[string]session.ChildQuestion{}
+func readBatchPendingQuestions(ctx context.Context, a *appPkg.App, visited []string) (map[string]sessionnotice.ChildQuestion, bool) {
+	questions := map[string]sessionnotice.ChildQuestion{}
 	if a == nil || a.DB == nil {
 		return questions, false
 	}
@@ -681,11 +682,11 @@ func readBatchPendingQuestions(ctx context.Context, a *appPkg.App, visited []str
 				continue
 			}
 			// Real batch questions first: marker frame, keyed by node id.
-			if cq, parsed := session.ParseBatchChildQuestionNotice(row.Text); parsed {
+			if cq, parsed := sessionnotice.ParseBatchChildQuestionNotice(row.Text); parsed {
 				questions[cq.NodeID] = cq
 				continue
 			}
-			cq, parsed := session.ParseChildQuestionNotice(row.Text, row.JobToolCallID.String)
+			cq, parsed := sessionnotice.ParseChildQuestionNotice(row.Text, row.JobToolCallID.String)
 			if parsed {
 				questions[cq.DelegationToolCallID] = cq
 			}

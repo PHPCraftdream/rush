@@ -14,6 +14,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 )
 
 // nodeBatchCutoverFacts is constructed by the installer over one BatchStore,
@@ -236,7 +237,7 @@ func (n nodeBatchCutoverFacts) AttemptRows(ctx context.Context, owner string, sn
 		}
 	}
 	for _, ref := range snap.Notices {
-		count, err := n.store.BatchReactionMaxWakeAttempts(ctx, owner, session.BatchDebtSnapshot{Owner: owner, Notices: []session.DebtNoticeRef{ref}})
+		count, err := n.store.BatchReactionMaxWakeAttempts(ctx, owner, session.BatchDebtSnapshot{Owner: owner, Notices: []sessionnotice.DebtNoticeRef{ref}})
 		if err != nil {
 			return out, err
 		}
@@ -300,17 +301,17 @@ func (n nodeBatchCutoverFacts) DebtToolCallIDs(ctx context.Context, snap session
 	return ids
 }
 
-func (n nodeBatchCutoverFacts) HeldQuestions(ctx context.Context, owner string) ([]session.PendingNoticeDebt, error) {
+func (n nodeBatchCutoverFacts) HeldQuestions(ctx context.Context, owner string) ([]sessionnotice.PendingNoticeDebt, error) {
 	if n.store == nil {
-		return []session.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, errBatchFactsUnavailable
+		return []sessionnotice.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, errBatchFactsUnavailable
 	}
 	rows, err := n.store.BatchReactionPendingInclusiveDebtRows(ctx, owner)
 	if err != nil {
 		// Unknown debt: a held question may exist (conservative for sleep
 		// breakers), surfaced through the error.
-		return []session.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, err
+		return []sessionnotice.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, err
 	}
-	var out []session.PendingNoticeDebt
+	var out []sessionnotice.PendingNoticeDebt
 	for _, notice := range rows.Notices {
 		if notice.Kind == session.NoticeKindChildQuestion {
 			out = append(out, notice)
@@ -325,9 +326,9 @@ func (n nodeBatchCutoverFacts) HeldQuestions(ctx context.Context, owner string) 
 // carry the production marker header, and the named batch_nodes row must
 // exist for this owner with a live state and the marker's exact token
 // (incarnation fence). Notices without a parseable marker are NOT counted.
-func (n nodeBatchCutoverFacts) LiveHeldQuestions(ctx context.Context, owner string) ([]session.PendingNoticeDebt, error) {
+func (n nodeBatchCutoverFacts) LiveHeldQuestions(ctx context.Context, owner string) ([]sessionnotice.PendingNoticeDebt, error) {
 	if n.writer == nil {
-		return []session.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, errBatchFactsUnavailable
+		return []sessionnotice.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, errBatchFactsUnavailable
 	}
 	rows, err := n.writer.QueryContext(ctx,
 		// The retained-debt predicate (BatchOutboxDebtNotices, batch_outbox.sql):
@@ -336,7 +337,7 @@ func (n nodeBatchCutoverFacts) LiveHeldQuestions(ctx context.Context, owner stri
 		`SELECT id, text FROM session_notices WHERE owner = ?1 AND kind = ?2 AND delivery IN ('pending','done') AND wake = 1 AND reacted = 0 ORDER BY id`,
 		owner, session.NoticeKindChildQuestion)
 	if err != nil {
-		return []session.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, err
+		return []sessionnotice.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, err
 	}
 	defer rows.Close()
 	type heldRow struct {
@@ -347,14 +348,14 @@ func (n nodeBatchCutoverFacts) LiveHeldQuestions(ctx context.Context, owner stri
 	for rows.Next() {
 		var r heldRow
 		if err := rows.Scan(&r.id, &r.text); err != nil {
-			return []session.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, err
+			return []sessionnotice.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, err
 		}
 		pending = append(pending, r)
 	}
 	if err := rows.Err(); err != nil {
-		return []session.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, err
+		return []sessionnotice.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, err
 	}
-	var out []session.PendingNoticeDebt
+	var out []sessionnotice.PendingNoticeDebt
 	for _, r := range pending {
 		node, token, ok := parseBatchQuestionMarker(r.text)
 		if !ok {
@@ -368,7 +369,7 @@ func (n nodeBatchCutoverFacts) LiveHeldQuestions(ctx context.Context, owner stri
 		if err != nil || !batchNodeStateLive(state) || rowToken != token {
 			continue
 		}
-		out = append(out, session.PendingNoticeDebt{ID: r.id, Kind: session.NoticeKindChildQuestion, NodeID: node, ChildSessionID: batchQuestionMarkerChild(r.text)})
+		out = append(out, sessionnotice.PendingNoticeDebt{ID: r.id, Kind: session.NoticeKindChildQuestion, NodeID: node, ChildSessionID: batchQuestionMarkerChild(r.text)})
 	}
 	return out, nil
 }
@@ -443,7 +444,7 @@ func batchQuestionMarkerChild(text string) string {
 	return ""
 }
 
-func (n nodeBatchCutoverFacts) PullBatchNotices(ctx context.Context, messages message.Service, owner string) ([]session.PulledNotice, error) {
+func (n nodeBatchCutoverFacts) PullBatchNotices(ctx context.Context, messages message.Service, owner string) ([]sessionnotice.PulledNotice, error) {
 	if n.store == nil {
 		return nil, errBatchFactsUnavailable
 	}
@@ -451,10 +452,10 @@ func (n nodeBatchCutoverFacts) PullBatchNotices(ctx context.Context, messages me
 	if err != nil {
 		return nil, err
 	}
-	out := make([]session.PulledNotice, 0, len(pulled))
+	out := make([]sessionnotice.PulledNotice, 0, len(pulled))
 	for _, p := range pulled {
 		// Batch nodes carry no async claim identity: the claim stays "".
-		out = append(out, session.PulledNotice{Message: p.Message, Wake: p.Wake})
+		out = append(out, sessionnotice.PulledNotice{Message: p.Message, Wake: p.Wake})
 	}
 	return out, nil
 }
@@ -468,7 +469,7 @@ func (n nodeBatchCutoverFacts) PullBatchNotices(ctx context.Context, messages me
 // shape mirrors AsyncJobStore.pullOneSessionNotice. The live-scope read runs
 // only when a pending supervision row is present; a pull with nothing
 // pending never reads batch_nodes.
-func (n nodeBatchCutoverFacts) PullPendingSessionNotices(ctx context.Context, messages message.Service, owner string, build func(session.SessionNoticeRow) message.CreateMessageParams) ([]session.PulledNotice, error) {
+func (n nodeBatchCutoverFacts) PullPendingSessionNotices(ctx context.Context, messages message.Service, owner string, build func(sessionnotice.SessionNoticeRow) message.CreateMessageParams) ([]sessionnotice.PulledNotice, error) {
 	if n.writer == nil {
 		return nil, errBatchFactsUnavailable
 	}
@@ -490,7 +491,7 @@ func (n nodeBatchCutoverFacts) PullPendingSessionNotices(ctx context.Context, me
 	type pendingRow struct {
 		id       int64
 		wake     int64
-		kindText session.SessionNoticeRow
+		kindText sessionnotice.SessionNoticeRow
 	}
 	var pending []pendingRow
 	defer rows.Close()
@@ -517,7 +518,7 @@ func (n nodeBatchCutoverFacts) PullPendingSessionNotices(ctx context.Context, me
 			break
 		}
 	}
-	var out []session.PulledNotice
+	var out []sessionnotice.PulledNotice
 	for _, r := range pending {
 		msg, pulled, err := n.pullOneSessionNotice(ctx, messages, owner, r.id, r.kindText, build, openScope)
 		if err != nil {
@@ -525,14 +526,14 @@ func (n nodeBatchCutoverFacts) PullPendingSessionNotices(ctx context.Context, me
 			continue
 		}
 		if pulled {
-			out = append(out, session.PulledNotice{Message: msg, Wake: r.wake == 1})
+			out = append(out, sessionnotice.PulledNotice{Message: msg, Wake: r.wake == 1})
 		}
 	}
 	return out, nil
 }
 
 // pullOneSessionNotice is one row's CAS/void/deliver transaction.
-func (n nodeBatchCutoverFacts) pullOneSessionNotice(ctx context.Context, messages message.Service, owner string, id int64, row session.SessionNoticeRow, build func(session.SessionNoticeRow) message.CreateMessageParams, openScope bool) (message.Message, bool, error) {
+func (n nodeBatchCutoverFacts) pullOneSessionNotice(ctx context.Context, messages message.Service, owner string, id int64, row sessionnotice.SessionNoticeRow, build func(sessionnotice.SessionNoticeRow) message.CreateMessageParams, openScope bool) (message.Message, bool, error) {
 	tx, err := n.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return message.Message{}, false, err

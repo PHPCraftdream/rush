@@ -10,6 +10,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // Batch fact readers for the app layer's activity
@@ -110,15 +111,15 @@ func BatchCutoverLiveWork(p BatchCLIParams, ctx context.Context, ids []string) m
 // registered as this process's own is Alive by definition (the shared
 // probe refuses to answer it with ErrProbeOwnHost); foreign hosts keep
 // the conservative probe verdict.
-func BatchCutoverHostLiveness(p BatchCLIParams) func(string) session.HostLockStatus {
-	return func(hostID string) session.HostLockStatus {
+func BatchCutoverHostLiveness(p BatchCLIParams) func(string) sessionhosts.HostLockStatus {
+	return func(hostID string) sessionhosts.HostLockStatus {
 		if hostID == "" || p.DataDir() == "" {
 			return session.HostStatusUnknown
 		}
-		if session.IsOwnHostID(hostID) {
+		if sessionhosts.IsOwnHostID(hostID) {
 			return session.HostStatusAlive
 		}
-		st, err := session.ProbeHostShared(p.DataDir(), hostID)
+		st, err := sessionhosts.ProbeHostShared(p.DataDir(), hostID)
 		if err != nil {
 			return session.HostStatusUnknown
 		}
@@ -235,7 +236,7 @@ type Owner struct{ _ byte }
 
 // Host-identity and session-notice plumbing
 // (package R12-F chunk C): the App's host lifecycle lives in
-// session.HostStore, and the job-independent session-notice machinery in
+// sessionhosts.HostStore, and the job-independent session-notice machinery in
 // session.SessionNoticeStore, so registration, teardown and the notice
 // surfaces never query the async_jobs table.
 
@@ -243,7 +244,7 @@ type Owner struct{ _ byte }
 // (app.go) does not hold the field, so the store lives in this
 // package-level map keyed by the App pointer; the entry is created once at
 // the install and lives as long as the App.
-var batchHostStores sync.Map // *Owner -> *session.HostStore
+var batchHostStores sync.Map // *Owner -> *sessionhosts.HostStore
 
 // batchNoticeStores memoizes each App's SessionNoticeStore.
 var batchNoticeStores sync.Map // *Owner -> *session.SessionNoticeStore
@@ -252,22 +253,22 @@ var batchNoticeStores sync.Map // *Owner -> *session.SessionNoticeStore
 // use over the writer pool (same pool choice as BatchCLIStore). Nil without
 // a database or data dir (the configless-App rule): callers treat nil as
 // "no host identity", never panic.
-func BatchHostStore(p BatchCLIParams) *session.HostStore {
+func BatchHostStore(p BatchCLIParams) *sessionhosts.HostStore {
 	if p.DataDir == nil || p.DataDir() == "" {
 		return nil
 	}
 	if s, ok := batchHostStores.Load(p.Owner()); ok {
-		return s.(*session.HostStore)
+		return s.(*sessionhosts.HostStore)
 	}
 	writer := CutoverWriter(p)
 	if writer == nil {
 		return nil
 	}
-	s := session.NewHostStore(writer, p.DataDir(), os.Getpid(), "app")
+	s := sessionhosts.NewHostStore(writer, p.DataDir(), os.Getpid(), "app")
 	actual, loaded := batchHostStores.LoadOrStore(p.Owner(), s)
 	if loaded {
 		// A concurrent caller won: one store per App.
-		return actual.(*session.HostStore)
+		return actual.(*sessionhosts.HostStore)
 	}
 	return s
 }
@@ -346,7 +347,7 @@ func BatchNoticeStore(p BatchCLIParams) *session.SessionNoticeStore {
 			}
 			// Fail-open on an unreadable probe (alive-or-unknown keeps the
 			// notice), exactly like the legacy store's HostNotDead.
-			st, err := session.ProbeHostShared(p.DataDir(), host)
+			st, err := sessionhosts.ProbeHostShared(p.DataDir(), host)
 			return err != nil || st != session.HostStatusDead
 		})
 	}

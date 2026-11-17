@@ -8,6 +8,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
 )
 
@@ -164,7 +166,7 @@ func TestPdcConsumeToolResultInvalidIdentity(t *testing.T) {
 		_, _, err := s.BatchConsumeToolResult(ctx, m, tc.owner, tc.identity, tc.params)
 		require.ErrorIs(t, err, ErrBatchToolResultIdentity, tc.name)
 	}
-	require.EqualValues(t, 0, countMessages(t, db.New(conn), ctx, "owner"), "no message row may exist")
+	require.EqualValues(t, 0, sessionwake.countMessages(t, db.New(conn), ctx, "owner"), "no message row may exist")
 	after, err := s.Read(ctx, "owner", snap.Root.RootID)
 	require.NoError(t, err)
 	require.Equal(t, before, after, "root unchanged by refused consumes")
@@ -186,7 +188,7 @@ func TestPdcConsumeToolResultTriggerRollback(t *testing.T) {
 
 	_, _, err = s.BatchConsumeToolResult(ctx, m, "owner", pdcConsumeIdentity(snap.Root.RootID), pdcToolResultParams("rolled-back"))
 	require.Error(t, err, "the aborted consume must surface the tx error")
-	require.EqualValues(t, 0, countMessages(t, db.New(conn), ctx, "owner"), "the rolled-back message must be absent")
+	require.EqualValues(t, 0, sessionwake.countMessages(t, db.New(conn), ctx, "owner"), "the rolled-back message must be absent")
 
 	got, err := s.Read(ctx, "owner", snap.Root.RootID)
 	require.NoError(t, err)

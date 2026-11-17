@@ -13,6 +13,7 @@ import (
 
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // Start begins the pump goroutine. Safe to call multiple times (idempotent).

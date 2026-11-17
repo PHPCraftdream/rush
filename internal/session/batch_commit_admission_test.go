@@ -10,6 +10,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -96,7 +97,7 @@ func TestBatchCommitAdmissionCollectsEveryProjectionOwnerBeforeWriter(t *testing
 	env := newCommitHookEnv(t)
 	require.NoError(t, env.adapter()(env.ctx, admissionSubmit("r", "call-r", 1)))
 	require.NoError(t, env.adapter()(env.ctx, admissionSubmit("s", "call-s", 2)))
-	require.NoError(t, seedSession(env.ctx, db.New(env.conn), "another-owner"))
+	require.NoError(t, seedSessionn(env.ctx, db.New(env.conn), "another-owner"))
 	other := env.id
 	other.Owner = "another-owner"
 	require.NoError(t, NewBatchCommitHook(env.store, other)(env.ctx, admissionSubmit("q", "call-q", 3)))

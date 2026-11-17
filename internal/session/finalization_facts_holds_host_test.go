@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -14,12 +15,12 @@ import (
 // its probe verdict from alive to dead. The host is dropped from the
 // process-wide own-id registry, so every probe of it takes the
 // cross-process shared-probe path exactly as another process's host would.
-func registerForeignLiveHostHandle(t *testing.T, ctx context.Context, q *db.Queries, dataDir string) *HostIdentity {
+func registerForeignLiveHostHandle(t *testing.T, ctx context.Context, q *db.Queries, dataDir string) *sessionhosts.HostIdentity {
 	t.Helper()
-	h, err := RegisterHost(ctx, dataDir, 4321, "foreign", nodeStore(q))
+	h, err := sessionhosts.RegisterHost(ctx, dataDir, 4321, "foreign", nodeStoree(q))
 	require.NoError(t, err)
-	unmarkOwnHostID(h.ID)
-	t.Cleanup(func() { _ = h.Close(ctx, nodeStore(q)) })
+	unmarkOwnHostIDD(h.ID)
+	t.Cleanup(func() { _ = h.Close(ctx, nodeStoree(q)) })
 	return h
 }
 
@@ -27,7 +28,7 @@ func registerForeignLiveHostHandle(t *testing.T, ctx context.Context, q *db.Quer
 // single-connection pool and reads the facts through it, rolling back so
 // the pooled connection is always freed. Transactions on one store are
 // never held concurrently.
-func readHostHoldsInTx(t *testing.T, st *HostStore, facts FinalizationPhysicalHoldsFacts, owner string) (int, error) {
+func readHostHoldsInTx(t *testing.T, st *sessionhosts.HostStore, facts FinalizationPhysicalHoldsFacts, owner string) (int, error) {
 	t.Helper()
 	tx, err := st.sqlDB.BeginTx(t.Context(), nil)
 	require.NoError(t, err)
@@ -49,7 +50,7 @@ func readHostHoldsInTx(t *testing.T, st *HostStore, facts FinalizationPhysicalHo
 // cannot attest (the directory leg fails on err == nil).
 func TestFinalizationHostDriverHoldsFactsMatrix(t *testing.T) {
 	t.Parallel()
-	stores, q, ctx, dataDir := nStores(t, 2, "none", "own", "foreign-live", "unknown")
+	stores, q, ctx, dataDir := sessionhosts.nStores(t, 2, "none", "own", "foreign-live", "unknown")
 	reader := NewFinalizationHostDriverHoldsFacts(dataDir)
 
 	n, err := readHostHoldsInTx(t, stores[0], reader, "none")
@@ -76,14 +77,14 @@ func TestFinalizationHostDriverHoldsFactsMatrix(t *testing.T) {
 
 	// The same row stops being a hold once the foreign host's lock is
 	// released and the file removed: the probe reads dead.
-	require.NoError(t, h.Close(ctx, nodeStore(q)))
+	require.NoError(t, h.Close(ctx, nodeStoree(q)))
 	n, err = readHostHoldsInTx(t, stores[0], reader, "foreign-live")
 	require.NoError(t, err)
 	require.Zero(t, n, "the row of a provably dead host is no hold")
 
 	// A directory at the lock path: the probe cannot decide, the facts
 	// must refuse instead of guessing.
-	require.NoError(t, os.MkdirAll(HostLockPath(dataDir, "unknown-host"), 0o755))
+	require.NoError(t, os.MkdirAll(sessionhosts.HostLockPath(dataDir, "unknown-host"), 0o755))
 	_, err = q.InsertSessionDriver(ctx, db.InsertSessionDriverParams{
 		SessionID: "unknown", HostID: "unknown-host", Pid: 4242, ClaimedAt: 1,
 	})
@@ -101,7 +102,7 @@ func TestFinalizationHostDriverHoldsFactsMatrix(t *testing.T) {
 // seal a session whose driver row it never observed.
 func TestFinalizationHostDriverHoldsFactsRequiresTransaction(t *testing.T) {
 	t.Parallel()
-	_, _, _, dataDir := nStores(t, 1, "owner")
+	_, _, _, dataDir := sessionhosts.nStores(t, 1, "owner")
 	reader := NewFinalizationHostDriverHoldsFacts(dataDir)
 	n, err := reader.FinalizationPhysicalHoldsTx(t.Context(), nil, "owner")
 	require.Error(t, err)
@@ -116,7 +117,7 @@ func TestFinalizationHostDriverHoldsFactsRequiresTransaction(t *testing.T) {
 // scope-less read into a spurious reader failure.
 func TestFinalizationHostDriverHoldsFactsEmptyOwnerIsZero(t *testing.T) {
 	t.Parallel()
-	stores, _, _, dataDir := nStores(t, 1, "owner")
+	stores, _, _, dataDir := sessionhosts.nStores(t, 1, "owner")
 	reader := NewFinalizationHostDriverHoldsFacts(dataDir)
 	tx, err := stores[0].sqlDB.BeginTx(t.Context(), nil)
 	require.NoError(t, err)
@@ -133,7 +134,7 @@ func TestFinalizationHostDriverHoldsFactsEmptyOwnerIsZero(t *testing.T) {
 // transaction whose owner already cancelled.
 func TestFinalizationHostDriverHoldsFactsRespectsCanceledContext(t *testing.T) {
 	t.Parallel()
-	stores, _, _, dataDir := nStores(t, 1, "owner")
+	stores, _, _, dataDir := sessionhosts.nStores(t, 1, "owner")
 	reader := NewFinalizationHostDriverHoldsFacts(dataDir)
 	tx, err := stores[0].sqlDB.BeginTx(t.Context(), nil)
 	require.NoError(t, err)

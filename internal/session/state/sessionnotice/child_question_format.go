@@ -1,5 +1,4 @@
-package session
-
+package sessionnotice
 // Question-stop finish framing shared by agent producers and session recovery.
 const (
 	AwaitingAnswerStoppedTitle = "Stopped: agent asked a question and is awaiting an answer"

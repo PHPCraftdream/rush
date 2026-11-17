@@ -12,6 +12,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,7 +21,7 @@ func TestBatchDescendantsLiveUsesTxDispatch(t *testing.T) {
 	counting := &batchPullCountingTxStarter{DB: env.conn}
 	live := session.NewBatchLiveReader(env.q, t.TempDir())
 	live.IsOwnHost = func(string) bool { return false }
-	live.ProbeHost = func(string, string) (session.HostLockStatus, error) { return session.HostStatusAlive, nil }
+	live.ProbeHost = func(string, string) (sessionhosts.HostLockStatus, error) { return session.HostStatusAlive, nil }
 	live.TxStarter = counting
 	deps := CoordinatorBatchAgentDepsWithLive(live)
 	// No live root: closed scope, still exactly one dispatch.

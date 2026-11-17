@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,10 +29,10 @@ func TestLiveSessionDrivers_OwnSiblingAndDeadHosts(t *testing.T) {
 	own, sibling, dead, none := mk("own"), mk("sibling"), mk("dead"), mk("none")
 
 	require.NoError(t, h.app.BatchHostStore().ClaimSessionDriver(ctx, own))
-	siblingStore := session.NewHostStore(h.app.DB(), h.dataDir, 5151, "sibling")
+	siblingStore := sessionhosts.NewHostStore(h.app.DB(), h.dataDir, 5151, "sibling")
 	t.Cleanup(func() { _ = siblingStore.Close(context.Background()) })
 	require.NoError(t, siblingStore.ClaimSessionDriver(ctx, sibling))
-	deadStore := session.NewHostStore(h.app.DB(), h.dataDir, 4242, "dead")
+	deadStore := sessionhosts.NewHostStore(h.app.DB(), h.dataDir, 4242, "dead")
 	require.NoError(t, deadStore.ClaimSessionDriver(ctx, dead))
 	require.NoError(t, deadStore.SimulateCrashForTest())
 

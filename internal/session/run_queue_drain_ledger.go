@@ -10,6 +10,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // DrainResult is the session-scoped outcome of one DrainSessionNow call —

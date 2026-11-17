@@ -9,6 +9,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // cliOpenWorkNamed bounds how many running rows one heartbeat line names.
@@ -84,12 +85,12 @@ func (l *cliLoop) describeOpenWorkBatch(schedule []string, generic string) strin
 // flag-independent), "host <id> (<status>)" when no row is readable. The
 // reader's probe verdict is re-probed only if it could not decide. Display
 // only; a host-read failure never changes the verdict.
-func describeBatchHost(ctx context.Context, q *db.Queries, dataDir, hostID string, st session.HostLockStatus) string {
-	if session.IsOwnHostID(hostID) {
+func describeBatchHost(ctx context.Context, q *db.Queries, dataDir, hostID string, st sessionhosts.HostLockStatus) string {
+	if sessionhosts.IsOwnHostID(hostID) {
 		return "this process"
 	}
 	if st == session.HostStatusUnknown && dataDir != "" {
-		if s, err := session.ProbeHostShared(dataDir, hostID); err == nil {
+		if s, err := sessionhosts.ProbeHostShared(dataDir, hostID); err == nil {
 			st = s
 		}
 	}

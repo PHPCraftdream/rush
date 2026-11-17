@@ -9,6 +9,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -86,7 +87,7 @@ func TestBatchCommitAuthorityRequiresExactBoundIdentity(t *testing.T) {
 			env := newCommitHookEnv(t)
 			service := finalizationCommitService(env)
 			if field == "session" {
-				require.NoError(t, seedSession(env.ctx, db.New(env.conn), "other-owner"))
+				require.NoError(t, seedSessionn(env.ctx, db.New(env.conn), "other-owner"))
 			}
 			exact := session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "call", Generation: 1, NodeID: "r.1", NodeToken: 1}
 			authority, err := service.BindAgentFinalization(t.Context(), exact)
@@ -200,7 +201,7 @@ func TestBatchCommitAuthorityRejectsForeignServiceAndMismatchedWriter(t *testing
 	otherService := session.NewService(db.New(env.conn), env.conn).(session.AgentFinalizationService)
 	_, err := otherService.WithAgentFinalizationAuthorities(env.id, authority)
 	require.Error(t, err)
-	require.NoError(t, seedSession(env.ctx, db.New(env.conn), "other-owner"))
+	require.NoError(t, seedSessionn(env.ctx, db.New(env.conn), "other-owner"))
 	foreignAuthority, err := otherService.BindAgentFinalization(t.Context(), session.AgentFinalizationIdentity{SessionID: "other-owner", LogicalCallID: "foreign", Generation: 1})
 	require.NoError(t, err)
 	_, err = service.WithAgentFinalizationAuthorities(env.id, foreignAuthority)
@@ -229,8 +230,8 @@ func TestBatchCommitAuthorityPreservesTrulyUnboundLegacyOwner(t *testing.T) {
 
 func TestBatchCommitAuthoritySetIsRunnerWideCeilingAndOrdersOwnerTickets(t *testing.T) {
 	env := newCommitHookEnv(t)
-	require.NoError(t, seedSession(env.ctx, db.New(env.conn), "z-owner"))
-	require.NoError(t, seedSession(env.ctx, db.New(env.conn), "x-owner"))
+	require.NoError(t, seedSessionn(env.ctx, db.New(env.conn), "z-owner"))
+	require.NoError(t, seedSessionn(env.ctx, db.New(env.conn), "x-owner"))
 	service := finalizationCommitService(env)
 	require.NoError(t, NewBatchCommitHook(env.store, env.id)(env.ctx, admissionSubmit("r", "call-r", 1)))
 	require.NoError(t, NewBatchCommitHook(env.store, env.id)(env.ctx, admissionSubmit("s", "call-s", 2)))
@@ -383,7 +384,7 @@ func TestBatchCommitAuthorityPartialAdmissionFailureSurfacesCleanupFailure(t *te
 	env := newCommitHookEnv(t)
 	service := finalizationCommitService(env)
 	require.NoError(t, NewBatchCommitHook(env.store, env.id)(env.ctx, admissionSubmit("r", "call-r", 1)))
-	require.NoError(t, seedSession(env.ctx, db.New(env.conn), "z-owner"))
+	require.NoError(t, seedSessionn(env.ctx, db.New(env.conn), "z-owner"))
 	zIdentity := env.id
 	zIdentity.Owner = "z-owner"
 	require.NoError(t, NewBatchCommitHook(env.store, zIdentity)(env.ctx, admissionSubmit("z", "call-z", 2)))
@@ -424,7 +425,7 @@ func TestBatchCommitAuthorityPartialAdmissionCleanupSucceeds(t *testing.T) {
 	env := newCommitHookEnv(t)
 	service := finalizationCommitService(env)
 	require.NoError(t, NewBatchCommitHook(env.store, env.id)(env.ctx, admissionSubmit("r", "call-r", 1)))
-	require.NoError(t, seedSession(env.ctx, db.New(env.conn), "z-owner"))
+	require.NoError(t, seedSessionn(env.ctx, db.New(env.conn), "z-owner"))
 	zIdentity := env.id
 	zIdentity.Owner = "z-owner"
 	require.NoError(t, NewBatchCommitHook(env.store, zIdentity)(env.ctx, admissionSubmit("z", "call-z", 2)))

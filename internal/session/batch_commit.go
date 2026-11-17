@@ -14,6 +14,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // ErrBatchValueOverflow rejects uint64 Token/Sequence values at or above 2^63:

@@ -1,5 +1,4 @@
-package session
-
+package sessionhosts
 import (
 	"context"
 	"database/sql"

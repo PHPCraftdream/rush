@@ -14,18 +14,17 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
-	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	mcpoutput "github.com/PHPCraftdream/rush/internal/session/state/mcpoutput"
 	modelmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
 
 type mcpOutputTestSessions struct {
 	coresession.Service
-	store *session.MCPOutputStore
+	store *mcpoutput.MCPOutputStore
 }
 
-func (s mcpOutputTestSessions) MCPOutputStore() *session.MCPOutputStore { return s.store }
+func (s mcpOutputTestSessions) MCPOutputStore() *mcpoutput.MCPOutputStore { return s.store }
 
 func TestMCPOutputFinalAssemblyControlsRetentionAndRetrievalAuthority(t *testing.T) {
 	isolateAllGlobalConfigPaths(t)
@@ -64,7 +63,7 @@ func TestMCPOutputFinalAssemblyControlsRetentionAndRetrievalAuthority(t *testing
 		}
 		return tx.Commit()
 	}
-	coord.sessions = mcpOutputTestSessions{Service: env.sessions, store: session.NewMCPOutputStore(transaction, transaction)}
+	coord.sessions = mcpOutputTestSessions{Service: env.sessions, store: mcpoutput.NewMCPOutputStore(transaction, transaction)}
 	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "session")
 	build := func(allowMCP bool, allowResource bool, scoped bool) map[string]fantasy.AgentTool {
 		t.Helper()

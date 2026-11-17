@@ -1,5 +1,4 @@
-package session
-
+package sessionnotice
 import (
 	"testing"
 

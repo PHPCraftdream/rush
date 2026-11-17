@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
+
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 )
 
 func TestAwaitTimerEraRejectsLateInstall(t *testing.T) {
@@ -19,10 +20,10 @@ func TestAwaitTimerEraRejectsLateInstall(t *testing.T) {
 			c.wakeScheduler.now = fx.now
 			ctx, cancel := context.WithCancel(fx.ctx)
 			defer cancel()
-			model, err := fx.store.CreateSchedule(fx.ctx, session.CreateWakeScheduleParams{Owner: "owner", Kind: session.WakeKindOnce, Message: "model timer", RunAt: fx.now().Add(time.Hour)}, fx.now())
+			model, err := fx.store.CreateSchedule(fx.ctx, sessionwake.CreateWakeScheduleParams{Owner: "owner", Kind: sessionwake.WakeKindOnce, Message: "model timer", RunAt: fx.now().Add(time.Hour)}, fx.now())
 			require.NoError(t, err)
 			create := func() (string, error) {
-				v, err := c.ScheduleWakeOnceDelay(fx.ctx, "owner", 3600, session.AwaitTasksMaxWaitPrefix)
+				v, err := c.ScheduleWakeOnceDelay(fx.ctx, "owner", 3600, sessionwake.AwaitTasksMaxWaitPrefix)
 				trace.addf("timer created: id=%s err=%v", v.ScheduleID, err)
 				return v.ScheduleID, err
 			}
@@ -81,7 +82,7 @@ func TestAwaitTimerEraReplacesOldTimer(t *testing.T) {
 	c := &coordinator{wakeScheduler: newWakeScheduler(fx.store, "test", nil)}
 	c.wakeScheduler.now = fx.now
 	create := func() (string, error) {
-		v, err := c.ScheduleWakeOnceDelay(fx.ctx, "owner", 3600, session.AwaitTasksMaxWaitPrefix)
+		v, err := c.ScheduleWakeOnceDelay(fx.ctx, "owner", 3600, sessionwake.AwaitTasksMaxWaitPrefix)
 		trace.addf("create id=%s err=%v", v.ScheduleID, err)
 		return v.ScheduleID, err
 	}
@@ -108,7 +109,7 @@ func TestAwaitTimerEraOldFailureCannotClearNewSleep(t *testing.T) {
 	_, err := c.armAwait(fx.ctx, "owner", true, func() (string, error) {
 		var err error
 		current, err = c.armAwait(fx.ctx, "owner", true, func() (string, error) {
-			v, err := c.ScheduleWakeOnceDelay(fx.ctx, "owner", 3600, session.AwaitTasksMaxWaitPrefix)
+			v, err := c.ScheduleWakeOnceDelay(fx.ctx, "owner", 3600, sessionwake.AwaitTasksMaxWaitPrefix)
 			return v.ScheduleID, err
 		})
 		if err != nil {

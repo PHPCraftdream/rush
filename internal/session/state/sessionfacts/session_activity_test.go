@@ -1,11 +1,12 @@
-package session
-
+package sessionfacts
 import (
 	"os"
 	"testing"
 	"time"
 
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,7 +31,7 @@ import (
 //     (CrashedPID assert) fails.
 func TestClassifySessionActivity(t *testing.T) {
 	t.Parallel()
-	liveDriver := &SessionDriver{SessionID: "s", HostID: "h", PID: 4242, Status: HostStatusAlive}
+	liveDriver := &sessionhosts.SessionDriver{SessionID: "s", sessionhosts.HostID: "h", PID: 4242, Status: HostStatusAlive}
 
 	tests := []struct {
 		name       string
@@ -239,7 +240,7 @@ func TestClassifySessionActivity(t *testing.T) {
 			facts: ActivityFacts{
 				SessionID: "s",
 				Lock:      LockFact{Kind: LockReleased},
-				OpenSchedules: []OpenWakeSchedule{
+				OpenSchedules: []sessionwake.OpenWakeSchedule{
 					{ID: "wake_1", NextRunAt: time.Unix(1700000000, 0).UTC()},
 				},
 			},
@@ -286,7 +287,7 @@ func TestClassifySessionActivity_Description(t *testing.T) {
 	next := time.Now().Add(4 * time.Minute).Truncate(time.Second)
 	v := ClassifySessionActivity(ActivityFacts{
 		SessionID:      "s",
-		Driver:         &SessionDriver{SessionID: "s", PID: 4242},
+		Driver:         &sessionhosts.SessionDriver{SessionID: "s", PID: 4242},
 		DriverOwes:     true,
 		OwnRunningJobs: 2,
 	})
@@ -297,14 +298,14 @@ func TestClassifySessionActivity_Description(t *testing.T) {
 
 	v = ClassifySessionActivity(ActivityFacts{
 		SessionID:     "s",
-		OpenSchedules: []OpenWakeSchedule{{ID: "wake_9", NextRunAt: next}},
+		OpenSchedules: []sessionwake.OpenWakeSchedule{{ID: "wake_9", NextRunAt: next}},
 	})
 	require.Contains(t, v.Description, "wake schedule wake_9")
 
 	v = ClassifySessionActivity(ActivityFacts{
 		SessionID: "s",
 		Lock:      LockFact{Kind: LockDead, PID: 999999},
-		Driver:    &SessionDriver{SessionID: "s", PID: 4242},
+		Driver:    &sessionhosts.SessionDriver{SessionID: "s", PID: 4242},
 	})
 	require.Equal(t, ActivityBetweenTurns, v.Kind)
 	require.Contains(t, v.Description, "dead PID 999999")

@@ -23,6 +23,7 @@ import (
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 )
 
 // batchRootFact is one root incarnation's read-side summary: identity, the
@@ -213,7 +214,7 @@ func reduceBatchSessionFacts(ctx context.Context, reader *session.BatchLiveReade
 							f.HasQuestion = true
 							// The notice text embeds the canonical question frame;
 							// parse it once here so every surface can quote it.
-							if q, ok := session.ParseChildQuestionNotice(n.Text, rf.ToolCallID); ok {
+							if q, ok := sessionnotice.ParseChildQuestionNotice(n.Text, rf.ToolCallID); ok {
 								rf.QuestionChildID = q.ChildSessionID
 								rf.QuestionText = q.Question
 							}
@@ -537,7 +538,7 @@ func fillBatchQuestionFromPending(ctx context.Context, q *db.Queries, owner stri
 		if row.Kind != session.NoticeKindChildQuestion || row.JobToolCallID.Valid {
 			continue
 		}
-		if cq, ok := session.ParseBatchChildQuestionNotice(row.Text); ok {
+		if cq, ok := sessionnotice.ParseBatchChildQuestionNotice(row.Text); ok {
 			f.QuestionChildID = cq.ChildSessionID
 			f.QuestionText = cq.Question
 			return

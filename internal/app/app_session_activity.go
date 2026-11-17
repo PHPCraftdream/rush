@@ -28,12 +28,15 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 )
 
 // SessionActivity pairs one session's facts with their verdict.
 type SessionActivity struct {
-	Facts   session.ActivityFacts
-	Verdict session.ActivityVerdict
+	Facts   sessionfacts.ActivityFacts
+	Verdict sessionfacts.ActivityVerdict
 }
 
 // SessionActivityBatchResult is the batch reader's answer: the per-id
@@ -42,7 +45,7 @@ type SessionActivity struct {
 // need stem -> real ids to never rebuild their own mapping.
 type SessionActivityBatchResult struct {
 	ByID map[string]SessionActivity
-	// LockStems maps session.SessionLockStem(id) to the requested ids that
+	// LockStems maps sessionfacts.SessionLockStem(id) to the requested ids that
 	// sanitise to it.
 	LockStems map[string][]string
 }
@@ -68,7 +71,7 @@ func (app *App) SessionActivityBatch(ctx context.Context, ids []string) (Session
 		return out, nil
 	}
 	for _, id := range ids {
-		stem := session.SessionLockStem(id)
+		stem := sessionfacts.SessionLockStem(id)
 		out.LockStems[stem] = append(out.LockStems[stem], id)
 	}
 
@@ -80,7 +83,7 @@ func (app *App) SessionActivityBatch(ctx context.Context, ids []string) (Session
 	// The debt, live-work facts come ONLY from batch node state
 	// (app_batch_cutover_facts.go); host liveness is the shared lock probe.
 	hostLiveness := app.batchCutoverHostLiveness()
-	liveDrivers := map[string]session.SessionDriver{}
+	liveDrivers := map[string]sessionhosts.SessionDriver{}
 	deadDrivers := map[string]bool{}
 	driversFailed := false
 	if app.activityConn() != nil {
@@ -103,9 +106,9 @@ func (app *App) SessionActivityBatch(ctx context.Context, ids []string) (Session
 	deadRows := map[string]int{}
 
 	// Fact kind 5: open once wake schedules, one statement.
-	schedules, wakeErr := map[string][]session.OpenWakeSchedule{}, error(nil)
+	schedules, wakeErr := map[string][]sessionwake.OpenWakeSchedule{}, error(nil)
 	if app.WakeScheduleStore() != nil {
-		schedules, wakeErr = session.OpenOnceWakeSchedulesForOwners(ctx, app.WakeScheduleStore(), ids)
+		schedules, wakeErr = sessionwake.OpenOnceWakeSchedulesForOwners(ctx, app.WakeScheduleStore(), ids)
 	}
 
 	// Fact kind 6: ended reasons, one statement over the requested ids --
@@ -120,7 +123,7 @@ func (app *App) SessionActivityBatch(ctx context.Context, ids []string) (Session
 	}
 
 	for _, id := range ids {
-		f := session.ActivityFacts{SessionID: id}
+		f := sessionfacts.ActivityFacts{SessionID: id}
 		if d, ok := liveDrivers[id]; ok {
 			f.Driver = &d
 		}
@@ -156,9 +159,9 @@ func (app *App) SessionActivityBatch(ctx context.Context, ids []string) (Session
 		default:
 			f.EndedReason = ends[id]
 		}
-		f.Lock = session.InspectSessionLockFact(app.dataDir, id)
+		f.Lock = sessionfacts.InspectSessionLockFact(app.dataDir, id)
 
-		v := session.ClassifySessionActivity(f)
+		v := sessionfacts.ClassifySessionActivity(f)
 		out.ByID[id] = SessionActivity{Facts: f, Verdict: v}
 	}
 	return out, nil
@@ -168,8 +171,8 @@ func (app *App) SessionActivityBatch(ctx context.Context, ids []string) (Session
 // session id) and dead-host markers, deciding each distinct
 // host's liveness once. The liveness predicate is injected: the shared
 // host probe.
-func (app *App) sessionDriverFacts(ctx context.Context, ids []string, hostLiveness func(string) session.HostLockStatus) (live map[string]session.SessionDriver, dead map[string]bool, err error) {
-	live = map[string]session.SessionDriver{}
+func (app *App) sessionDriverFacts(ctx context.Context, ids []string, hostLiveness func(string) sessionhosts.HostLockStatus) (live map[string]sessionhosts.SessionDriver, dead map[string]bool, err error) {
+	live = map[string]sessionhosts.SessionDriver{}
 	dead = map[string]bool{}
 	conn := app.activityConn()
 	if conn == nil {
@@ -179,8 +182,8 @@ func (app *App) sessionDriverFacts(ctx context.Context, ids []string, hostLivene
 	if err != nil {
 		return live, dead, fmt.Errorf("session activity: driver markers: %w", err)
 	}
-	hostStatus := make(map[string]session.HostLockStatus)
-	statusOf := func(hostID string) session.HostLockStatus {
+	hostStatus := make(map[string]sessionhosts.HostLockStatus)
+	statusOf := func(hostID string) sessionhosts.HostLockStatus {
 		if st, ok := hostStatus[hostID]; ok {
 			return st
 		}
@@ -196,7 +199,7 @@ func (app *App) sessionDriverFacts(ctx context.Context, ids []string, hostLivene
 			dead[row.SessionID] = true
 			continue
 		}
-		live[row.SessionID] = session.SessionDriver{
+		live[row.SessionID] = sessionhosts.SessionDriver{
 			SessionID: row.SessionID, HostID: row.HostID,
 			PID: int64(row.Pid), Status: statusOf(row.HostID),
 		}

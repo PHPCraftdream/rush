@@ -18,6 +18,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/spf13/cobra"
@@ -339,11 +340,11 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 	callTreeActivities := computeCallTreeActivityBatch(cmd.Context(), a, activityIDs)
-	liveVerdict := func(stem string) (session.ActivityVerdict, bool) {
+	liveVerdict := func(stem string) (sessionfacts.ActivityVerdict, bool) {
 		if actErr != nil {
-			return session.ActivityVerdict{}, false
+			return sessionfacts.ActivityVerdict{}, false
 		}
-		var live session.ActivityVerdict
+		var live sessionfacts.ActivityVerdict
 		found := false
 		for _, id := range stemIDs[stem] {
 			v := acts.ByID[id].Verdict
@@ -659,7 +660,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 // "ping"/"stopping" for 10-20 s -- as if its process were exiting. Between
 // turns or delegating is always "between-turns"; an in-turn holder keeps its
 // heartbeat pulse, except "offline", which the verdict proves wrong.
-func verdictPulse(pulse string, v session.ActivityVerdict) (label string, betweenTurns bool) {
+func verdictPulse(pulse string, v sessionfacts.ActivityVerdict) (label string, betweenTurns bool) {
 	if v.Kind == session.ActivityInTurn {
 		if pulse == "offline" {
 			return "alive", false
@@ -671,7 +672,7 @@ func verdictPulse(pulse string, v session.ActivityVerdict) (label string, betwee
 
 // kindIsLive reports whether a verdict Kind means the session's scope is
 // open -- the one liveness question the locks/reap/prune paths ask.
-func kindIsLive(k session.ActivityKind) bool {
+func kindIsLive(k sessionfacts.ActivityKind) bool {
 	switch k {
 	case session.ActivityInTurn, session.ActivityBetweenTurns, session.ActivityDelegating:
 		return true
@@ -710,9 +711,9 @@ func resolveLocksFilterStem(ctx context.Context, a *app.App, arg string) (string
 	sess, err := resolveSessionID(ctx, a.Sessions, arg)
 	switch {
 	case err == nil:
-		return session.SessionLockStem(sess.ID), nil
+		return sessionfacts.SessionLockStem(sess.ID), nil
 	case strings.HasPrefix(err.Error(), "session not found"):
-		return session.SessionLockStem(arg), nil
+		return sessionfacts.SessionLockStem(arg), nil
 	default:
 		return "", err
 	}

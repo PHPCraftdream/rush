@@ -8,6 +8,7 @@ import (
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -57,8 +58,8 @@ func TestQuestionStopFormatRecoverDeadHost(t *testing.T) {
 	// dead-host question scenario).
 	const host = "question-format-dead-host"
 	root, _ := b1SeedBatchRootOnHost(t, conn, "question-parent", "question-format-job", host, "running")
-	_, _, err = session.NewBatchStore(conn).RecoverHostsOnce(ctx, func(string) (session.HostLockStatus, error) {
-		return session.ProbeHostShared(dataDir, host)
+	_, _, err = session.NewBatchStore(conn).RecoverHostsOnce(ctx, func(string) (sessionhosts.HostLockStatus, error) {
+		return sessionhosts.ProbeHostShared(dataDir, host)
 	}, []string{host}, 8)
 	require.NoError(t, err)
 	var state, outcome string

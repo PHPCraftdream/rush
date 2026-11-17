@@ -17,6 +17,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/spf13/cobra"
 )
 
@@ -82,7 +84,7 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		ids := idsOf(sessions)
 		batchFacts := batchRuntimeFacts(cmd.Context(), a, a.Config().Options.DataDirectory, ids)
 		var statusByID map[string]string
-		var awaitingByID map[string]session.ChildQuestion
+		var awaitingByID map[string]sessionnotice.ChildQuestion
 		activities, actErr := a.SessionActivityBatch(cmd.Context(), ids)
 		if actErr != nil {
 			return fmt.Errorf("failed to classify sessions: %w", actErr)
@@ -167,7 +169,7 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 }
 
 type pendingChildQuestionReader interface {
-	PendingChildQuestions(context.Context, string) ([]session.ChildQuestion, error)
+	PendingChildQuestions(context.Context, string) ([]sessionnotice.ChildQuestion, error)
 }
 
 func sessionQuestionReaderForApp(a *app.App) pendingChildQuestionReader {
@@ -189,8 +191,8 @@ func sessionQuestionReaderForApp(a *app.App) pendingChildQuestionReader {
 // pending child_question notices re-classify its verdict (read-only; a
 // failed notice read leaves the plain verdict) and become the
 // "(awaiting answer)" annotation plus the JSON wire fields.
-func listStatusesWithAwaiting(ctx context.Context, store pendingChildQuestionReader, activities app.SessionActivityBatchResult, ids []string) (map[string]string, map[string]session.ChildQuestion) {
-	questionsByRoot := map[string][]session.ChildQuestion{}
+func listStatusesWithAwaiting(ctx context.Context, store pendingChildQuestionReader, activities app.SessionActivityBatchResult, ids []string) (map[string]string, map[string]sessionnotice.ChildQuestion) {
+	questionsByRoot := map[string][]sessionnotice.ChildQuestion{}
 	if store != nil {
 		for _, id := range ids {
 			if qs, err := store.PendingChildQuestions(ctx, id); err == nil && len(qs) > 0 {
@@ -199,13 +201,13 @@ func listStatusesWithAwaiting(ctx context.Context, store pendingChildQuestionRea
 		}
 	}
 	statusByID := make(map[string]string, len(ids))
-	awaitingByID := make(map[string]session.ChildQuestion, len(questionsByRoot))
+	awaitingByID := make(map[string]sessionnotice.ChildQuestion, len(questionsByRoot))
 	for id, act := range activities.ByID {
 		v := act.Verdict
 		if qs := questionsByRoot[id]; len(qs) > 0 {
 			f := act.Facts
 			f.ChildQuestions = qs
-			v = session.ClassifySessionActivity(f)
+			v = sessionfacts.ClassifySessionActivity(f)
 			awaitingByID[id] = qs[0]
 		}
 		st := sessionStatusLabel(v, act.Facts.EndedReason)
@@ -233,7 +235,7 @@ func idsOf(sessions []coresession.Session) []string {
 // from. The verdict-only shape carries no recorded end: callers holding the
 // facts call sessionStatusLabel directly, so a live session's recorded exit
 // is annotated instead of hidden (FIX-STATUS (a)).
-func listStatus(v session.ActivityVerdict) string {
+func listStatus(v sessionfacts.ActivityVerdict) string {
 	return sessionStatusLabel(v, "")
 }
 

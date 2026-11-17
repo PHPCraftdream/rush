@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,7 +32,7 @@ func TestBatchMigrationSeedAndReadBack(t *testing.T) {
 	conn, err := db.Connect(ctx, t.TempDir())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(conn)) })
-	require.NoError(t, seedSession(ctx, db.New(conn), "owner"))
+	require.NoError(t, seedSessionn(ctx, db.New(conn), "owner"))
 
 	res, err := NewBatchStore(conn).Reserve(ctx, batchStoreTestReservation())
 	require.NoError(t, err)

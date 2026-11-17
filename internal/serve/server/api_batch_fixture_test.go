@@ -20,8 +20,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -111,7 +111,7 @@ func newBatchFixtureWith(t *testing.T, provider http.HandlerFunc, adjust func(*L
 	conn, err := db.Connect(context.Background(), dataDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.ReleaseAll(dataDir) })
-	t.Cleanup(func() { session.ReleaseRetainedHostLocksForTest() })
+	t.Cleanup(func() { sessionhosts.ReleaseRetainedHostLocksForTest() })
 	application, err := appPkg.New(context.Background(), conn, cfg)
 	require.NoError(t, err)
 	t.Cleanup(application.Shutdown)

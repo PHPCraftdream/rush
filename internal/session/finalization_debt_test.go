@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // finalizationFlipNotice forces one session_notices row's columns directly

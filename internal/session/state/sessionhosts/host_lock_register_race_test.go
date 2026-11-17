@@ -1,5 +1,4 @@
-package session
-
+package sessionhosts
 // R2A-1 (docs/reviews/2026-09-30-async-phase4-round2.md): a host that is
 // still registering must never lose its lock file to a reaper. Registration
 // is create-then-lock; a reaper that wins the lock on the fresh file in
@@ -15,6 +14,7 @@ import (
 	"testing"
 
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
 )
 
@@ -60,7 +60,7 @@ func TestRegisterHost_ReaperHoldsLockInCreateWindow_RetriesUnderNewID(t *testing
 	if held != nil {
 		require.NoError(t, held.Release())
 	}
-	require.NoError(t, err, "losing the create-to-lock race must cost a retry, not the registration")
+	require.NoError(t, err, "losing the sessionwake.create-to-lock race must cost a retry, not the registration")
 	t.Cleanup(func() { _ = h.Close(ctx, nodeStore(q)) })
 
 	require.NotEmpty(t, firstPath)
@@ -84,7 +84,7 @@ func TestRegisterHost_ReaperHoldsLockInCreateWindow_RetriesUnderNewID(t *testing
 // ENOENT = dead) and the ProbeHostShared assertion failed.
 func TestRegisterHost_ReaperUnlinksFreshFile_RegistrantDoesNotKeepUnlinkedInode(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("an open lock file cannot be unlinked on Windows; the create-to-lock unlink window does not exist")
+		t.Skip("an open lock file cannot be unlinked on Windows; the sessionwake.create-to-lock unlink window does not exist")
 	}
 	ctx, q := setupHostLockDB(t)
 	dataDir := t.TempDir()

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -50,7 +51,7 @@ func TestBatchResetSessionHistory_RecoversDeadHostBeforeRefusal(t *testing.T) {
 	sess, err := a.Sessions.CreateWithID(ctx, "reset-batch-rec", "rec")
 	require.NoError(t, err)
 
-	lk, err := sessionlock.TryAcquireFileLock(session.HostLockPath(a.DataDirectory(), "reset-dead-host"))
+	lk, err := sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(a.DataDirectory(), "reset-dead-host"))
 	require.NoError(t, err)
 	require.NoError(t, lk.Release())
 

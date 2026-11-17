@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // BatchLiveSource is the read-only sqlc boundary. Each call reads one consistent
@@ -28,12 +29,12 @@ type BatchLiveReader struct {
 	TxStarter BatchLiveTxStarter
 	DataDir   string
 	IsOwnHost func(string) bool
-	ProbeHost func(string, string) (HostLockStatus, error)
+	ProbeHost f func(string, string) (sessionhosts.HostLockStatus, error)
 }
 
 // NewBatchLiveReader binds the shared, non-acquiring host probe.
 func NewBatchLiveReader(source BatchLiveSource, dataDir string) *BatchLiveReader {
-	return &BatchLiveReader{Source: source, DataDir: dataDir, IsOwnHost: IsOwnHostID, ProbeHost: ProbeHostShared}
+	return &BatchLiveReader{Source: source, DataDir: dataDir, IsOwnHost: sessionhosts.IsOwnHostID, ProbeHost: sessionhosts.ProbeHostShared}
 }
 
 // BatchLiveRef identifies one immutable execution incarnation, not a tool call.
@@ -86,13 +87,13 @@ type BatchLiveNode struct {
 	Ordinal                                                                 int64
 	State, Cause                                                            string
 	Notify                                                                  sql.NullString
-	HostID                                                                  string
-	HostStatus                                                              HostLockStatus
+	HostID                                                                  s                                                                  string
+	HostStatus                                                              sessionhosts.HostLockStatus
 	StartedAt                                                               time.Time
 	Counts                                                                  BatchLiveCounts
 }
 
-func batchLiveFact(n db.BatchNode, call string, depth int, status HostLockStatus) BatchLiveNode {
+func batchLiveFact(n db.BatchNode, call string, depth int, status sessionhosts.HostLockStatus) BatchLiveNode {
 	return BatchLiveNode{Ref: BatchLiveRef{n.OwnerSessionID, n.RootID}, NodeID: n.NodeID, ParentID: n.ParentID.String, SessionID: n.OwnerSessionID, ToolCallID: call, Kind: n.Kind, TaskKind: n.TaskKind.String, ChildSessionID: n.ChildSessionID.String, Depth: depth, Ordinal: n.Ordinal, State: n.State, Cause: n.Cause, Notify: n.Notify, HostID: n.HostID, HostStatus: status, StartedAt: time.Unix(n.CreatedAt, 0)}
 }
 
@@ -104,7 +105,7 @@ func batchReadTerminal(state string) bool {
 	return false
 }
 
-func (r *BatchLiveReader) hostStatus(host string) HostLockStatus {
+func (r *BatchLiveReader) hostStatus(host string) sessionhosts.HostLockStatus {
 	if host == "" || r == nil {
 		return HostStatusUnknown
 	}

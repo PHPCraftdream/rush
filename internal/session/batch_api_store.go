@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // BatchAPIRoot is one root batch of an API service session.

@@ -3,7 +3,7 @@
 // sec.5): an ACTIVE once schedule is open work that holds `rush run` open,
 // an ACTIVE loop schedule is not -- the CLI loop cancels the session's
 // loop schedules when its scope closes with nothing else open. Storage
-// reads/writes stay in session.WakeScheduleStore (SCHED-05); this file only
+// reads/writes stay in sessionwake.WakeScheduleStore (SCHED-05); this file only
 // filters and cancels through it.
 package agent
 
@@ -11,8 +11,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 )
 
 // LoopWakeCanceler is the optional interface the CLI loop asserts its
@@ -37,7 +37,7 @@ func (c *coordinator) openOnceWakeSchedules(ctx context.Context, sessionID strin
 	}
 	var once []db.WakeSchedule
 	for _, row := range rows {
-		if row.Kind == string(session.WakeKindOnce) && row.State == "active" {
+		if row.Kind == string(sessionwake.WakeKindOnce) && row.State == "active" {
 			once = append(once, row)
 		}
 	}
@@ -71,7 +71,7 @@ func (c *coordinator) CancelLoopWakeSchedules(ctx context.Context, sessionID str
 	n := 0
 	now := time.Now()
 	for _, row := range rows {
-		if row.Kind != string(session.WakeKindLoop) || row.State != "active" {
+		if row.Kind != string(sessionwake.WakeKindLoop) || row.State != "active" {
 			continue
 		}
 		if err := c.wakeScheduler.store.CancelSchedule(ctx, sessionID, row.ID, now); err != nil {

@@ -8,6 +8,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/stretchr/testify/require"
 )
 
@@ -326,7 +328,7 @@ func TestBatchOutboxFailureMarkerRollbackAndReactionRollback(t *testing.T) {
 
 func TestBatchOutboxWakeZeroAndNoticeOwnerFence(t *testing.T) {
 	s, conn, ctx := batchStoreTestDB(t)
-	require.NoError(t, seedSession(ctx, db.New(conn), "other"))
+	require.NoError(t, seedSessionn(ctx, db.New(conn), "other"))
 	snap := batchOutboxReserve(t, s, ctx, 1)
 	m := message.NewService(db.New(conn))
 	batchOutboxSettle(t, s, ctx, snap, 2, snap.Root.RootID)
@@ -336,7 +338,7 @@ func TestBatchOutboxWakeZeroAndNoticeOwnerFence(t *testing.T) {
 	require.NoError(t, err)
 	_, err = conn.ExecContext(ctx, "UPDATE session_notices SET delivery='done',notice_message_id='other-message' WHERE id=?", n.ID)
 	require.NoError(t, err)
-	forged := BatchDebtSnapshot{Owner: "owner", Notices: []DebtNoticeRef{{ID: n.ID, NoticeMessageID: "other-message"}}}
+	forged := BatchDebtSnapshot{Owner: "owner", Notices: []sessionnotice.DebtNoticeRef{{ID: n.ID, NoticeMessageID: "other-message"}}}
 	require.NoError(t, s.BatchReactionIncrementWakeAttempts(ctx, "owner", forged))
 	count, err := s.BatchReactionSettleReactedFailedWithMarker(ctx, "owner", forged, "forged")
 	require.NoError(t, err)

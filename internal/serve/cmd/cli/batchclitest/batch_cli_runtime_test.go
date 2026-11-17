@@ -14,6 +14,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -235,7 +236,7 @@ func seedLiveBatchCLIProcessFixture(t *testing.T) batchCLIAcceptanceFixture {
 	dir := t.TempDir()
 	conn, err := db.Connect(ctx, dir)
 	require.NoError(t, err)
-	store := session.NewHostStore(conn, dir, os.Getpid(), "batch-cli-runtime-acceptance")
+	store := sessionhosts.NewHostStore(conn, dir, os.Getpid(), "batch-cli-runtime-acceptance")
 	t.Cleanup(func() {
 		if err := store.Close(context.Background()); err != nil {
 			t.Errorf("close subprocess fixture store: %v", err)

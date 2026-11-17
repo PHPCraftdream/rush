@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 type BatchCLIIdentity struct{ Owner, Root, Host, Runner, State string }

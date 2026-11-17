@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -40,7 +41,7 @@ func batchReadTestReader(t *testing.T, conn *sql.DB) *BatchLiveReader {
 	t.Helper()
 	r := NewBatchLiveReader(db.New(conn), t.TempDir())
 	r.IsOwnHost = func(string) bool { return false }
-	r.ProbeHost = func(string, string) (HostLockStatus, error) { return HostStatusAlive, nil }
+	r.ProbeHost = func(string, string) (sessionhosts.HostLockStatus, error) { return HostStatusAlive, nil }
 	return r
 }
 
@@ -74,19 +75,19 @@ func TestBatchReadStatesAndHostFacts(t *testing.T) {
 	}
 	// Return to a nonterminal projection for independent host facts.
 	require.NoError(t, s.Project(ctx, BatchProjection{Host: "host", Sequence: 20, Roots: []BatchRootProjection{{Owner: "owner", Root: ref.RootID, Updates: []db.ProjectBatchNodeParams{batchStoreTestUpdate(ref.RootID, "cancelling")}}}}))
-	for _, st := range []HostLockStatus{HostStatusAlive, HostStatusDead, HostStatusUnknown} {
+	for _, st := range []sessionhosts.HostLockStatus{HostStatusAlive, HostStatusDead, HostStatusUnknown} {
 		probes := 0
-		r.ProbeHost = func(string, string) (HostLockStatus, error) { probes++; return st, nil }
+		r.ProbeHost = func(string, string) (sessionhosts.HostLockStatus, error) { probes++; return st, nil }
 		live := r.BatchLiveForOwner(ctx, "owner")
 		require.True(t, live.HasLive())
 		require.Equal(t, st != HostStatusUnknown, live.Complete)
 		require.Equal(t, st, live.Own[0].HostStatus)
 		require.Equal(t, 1, probes, "one shared host probe across root and tasks")
 	}
-	r.ProbeHost = func(string, string) (HostLockStatus, error) { return HostStatusDead, errors.New("probe failed") }
+	r.ProbeHost = func(string, string) (sessionhosts.HostLockStatus, error) { return HostStatusDead, errors.New("probe failed") }
 	require.False(t, r.BatchLiveForOwner(ctx, "owner").Complete)
 	r.IsOwnHost = func(string) bool { return true }
-	r.ProbeHost = func(string, string) (HostLockStatus, error) {
+	r.ProbeHost = func(string, string) (sessionhosts.HostLockStatus, error) {
 		t.Fatal("own host probed")
 		return HostStatusUnknown, nil
 	}
@@ -98,7 +99,7 @@ func TestBatchReadScopeDistinctionsCyclesAndChunks(t *testing.T) {
 	s, conn, ctx := batchStoreTestDB(t)
 	q := db.New(conn)
 	for _, owner := range []string{"child", "grandchild", "unlinked"} {
-		require.NoError(t, seedSession(ctx, q, owner))
+		require.NoError(t, seedSessionn(ctx, q, owner))
 	}
 	a := batchReadTestReserve(t, s, ctx, "owner", "a", "child")
 	batchReadTestReserve(t, s, ctx, "child", "b", "grandchild")
@@ -120,7 +121,7 @@ func TestBatchReadScopeDistinctionsCyclesAndChunks(t *testing.T) {
 	source := &batchReadTestSource{BatchLiveSource: q}
 	r.Source = source
 	probes := 0
-	r.ProbeHost = func(string, string) (HostLockStatus, error) { probes++; return HostStatusDead, nil }
+	r.ProbeHost = func(string, string) (sessionhosts.HostLockStatus, error) { probes++; return HostStatusDead, nil }
 	got := r.BatchLiveForSessions(ctx, []string{"owner", "child", "idle", "owner", ""})
 	require.Len(t, got, 3)
 	require.Len(t, got["owner"].Own, 1)
@@ -243,7 +244,7 @@ func TestBatchReadChunkBoundariesAndSelectiveFailure(t *testing.T) {
 	// Real roots on both sides of the boundary pin fact retention as well as
 	// completeness; other owners intentionally have no work.
 	for _, i := range []int{0, 499, 500} {
-		require.NoError(t, seedSession(ctx, db.New(conn), owners[i]))
+		require.NoError(t, seedSessionn(ctx, db.New(conn), owners[i]))
 		batchReadTestReserve(t, s, ctx, owners[i], "call", "")
 	}
 	r := batchReadTestReader(t, conn)
@@ -294,7 +295,7 @@ func TestBatchReadDepthTruncation(t *testing.T) {
 	s, conn, ctx := batchStoreTestDB(t)
 	for i := 0; i < batchReadDepth+2; i++ {
 		owner := fmt.Sprintf("s%d", i)
-		require.NoError(t, seedSession(ctx, db.New(conn), owner))
+		require.NoError(t, seedSessionn(ctx, db.New(conn), owner))
 		child := fmt.Sprintf("s%d", i+1)
 		batchReadTestReserve(t, s, ctx, owner, "call", child)
 	}

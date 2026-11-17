@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // BatchLevelResult contains the addressed node, ordinal-sorted direct children,
@@ -47,7 +48,7 @@ func (r *BatchLiveReader) batchLevelRows(ref BatchLiveRef, nodeID string, rows [
 	v.Complete = true
 	byID := make(map[string]db.BatchNode)
 	children := make(map[string][]string)
-	hosts := make(map[string]HostLockStatus)
+	hosts := make(map[string]sessionhosts.HostLockStatus)
 	for _, n := range rows {
 		if n.OwnerSessionID != ref.OwnerSessionID || n.RootID != ref.RootID {
 			v.Complete = false

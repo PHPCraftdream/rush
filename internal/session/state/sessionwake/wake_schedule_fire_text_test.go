@@ -5,14 +5,15 @@
 // "occurrence N of {max_runs_or_infinity}" bound and the next-occurrence
 // line. Revert-check: restoring the pre-4c loop template (without
 // "of <max_runs>") fails the loop case below.
-package session
-
+package sessionwake
 import (
 	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 func wakeNoticeTexts(t *testing.T, f *wakeFx) []string {

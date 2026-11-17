@@ -4,8 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
+
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 )
 
 func TestAwaitTasksMaxWaitArbiterIndependent(t *testing.T) {
@@ -30,8 +31,8 @@ func TestAwaitTasksMaxWaitClearTerminalQuiet(t *testing.T) {
 	c.wakeScheduler.now = fx.now
 	for _, state := range []string{"active", "done", "cancelled"} {
 		t.Run(state, func(t *testing.T) {
-			row, err := fx.store.CreateSchedule(fx.ctx, session.CreateWakeScheduleParams{
-				Owner: "owner", Kind: session.WakeKindOnce, Message: session.AwaitTasksMaxWaitPrefix,
+			row, err := fx.store.CreateSchedule(fx.ctx, sessionwake.CreateWakeScheduleParams{
+				Owner: "owner", Kind: sessionwake.WakeKindOnce, Message: sessionwake.AwaitTasksMaxWaitPrefix,
 				RunAt: fx.now().Add(time.Hour),
 			}, fx.now())
 			require.NoError(t, err)
@@ -55,21 +56,21 @@ func TestAwaitTasksMaxWaitSweepSelective(t *testing.T) {
 	now := fx.now()
 	type scenario struct {
 		owner, message, state string
-		kind                  session.WakeKind
+		kind                  sessionwake.WakeKind
 	}
 	cases := []scenario{
-		{"owner", session.AwaitTasksMaxWaitPrefix + " old", "active", session.WakeKindOnce},
-		{"other", session.AwaitTasksMaxWaitPrefix + " foreign", "active", session.WakeKindOnce},
-		{"owner", "model-owned timer", "active", session.WakeKindOnce},
-		{"owner", "x" + session.AwaitTasksMaxWaitPrefix, "active", session.WakeKindOnce},
-		{"owner", session.AwaitTasksMaxWaitPrefix, "active", session.WakeKindLoop},
-		{"owner", session.AwaitTasksMaxWaitPrefix, "done", session.WakeKindOnce},
-		{"owner", session.AwaitTasksMaxWaitPrefix, "cancelled", session.WakeKindOnce},
+		{"owner", sessionwake.AwaitTasksMaxWaitPrefix + " old", "active", sessionwake.WakeKindOnce},
+		{"other", sessionwake.AwaitTasksMaxWaitPrefix + " foreign", "active", sessionwake.WakeKindOnce},
+		{"owner", "model-owned timer", "active", sessionwake.WakeKindOnce},
+		{"owner", "x" + sessionwake.AwaitTasksMaxWaitPrefix, "active", sessionwake.WakeKindOnce},
+		{"owner", sessionwake.AwaitTasksMaxWaitPrefix, "active", sessionwake.WakeKindLoop},
+		{"owner", sessionwake.AwaitTasksMaxWaitPrefix, "done", sessionwake.WakeKindOnce},
+		{"owner", sessionwake.AwaitTasksMaxWaitPrefix, "cancelled", sessionwake.WakeKindOnce},
 	}
 	ids := make([]string, 0, len(cases))
 	for _, tc := range cases {
-		p := session.CreateWakeScheduleParams{Owner: tc.owner, Kind: tc.kind, Message: tc.message, RunAt: now.Add(time.Hour)}
-		if tc.kind == session.WakeKindLoop {
+		p := sessionwake.CreateWakeScheduleParams{Owner: tc.owner, Kind: tc.kind, Message: tc.message, RunAt: now.Add(time.Hour)}
+		if tc.kind == sessionwake.WakeKindLoop {
 			p.Every = 300 * time.Second
 		}
 		row, err := fx.store.CreateSchedule(fx.ctx, p, now)

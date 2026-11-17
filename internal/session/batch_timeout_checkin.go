@@ -14,6 +14,8 @@ import (
 	"time"
 
 	sqlitedriver "modernc.org/sqlite"
+
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // DefaultBatchTimeoutCheckinPageSize bounds one scan page: the scanner is
@@ -179,7 +181,7 @@ type batchTimeoutCheckinRow struct {
 	NodeID         string
 	RootID         string
 	OwnerSessionID string
-	HostID         string
+	HostID         s         string
 	Token          int64
 	Payload        []byte
 	RootToolCallID sql.NullString

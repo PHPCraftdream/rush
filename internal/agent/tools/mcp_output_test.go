@@ -20,8 +20,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	mcpoutput "github.com/PHPCraftdream/rush/internal/session/state/mcpoutput"
 	modelmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
@@ -47,7 +47,7 @@ func (p *mcpOutputRestrictedPermissions) AuthorizeRestrictedDispatch(ctx context
 	return true, false
 }
 
-func mcpOutputToolStore(t *testing.T) (*session.MCPOutputStore, *sql.DB) {
+func mcpOutputToolStore(t *testing.T) (*mcpoutput.MCPOutputStore, *sql.DB) {
 	t.Helper()
 	t.Setenv("RUSH_GLOBAL_DATA", t.TempDir())
 	t.Setenv("RUSH_GLOBAL_CONFIG", t.TempDir())
@@ -67,7 +67,7 @@ func mcpOutputToolStore(t *testing.T) (*session.MCPOutputStore, *sql.DB) {
 		}
 		return tx.Commit()
 	}
-	return session.NewMCPOutputStore(transaction, transaction), conn
+	return mcpoutput.NewMCPOutputStore(transaction, transaction), conn
 }
 
 func TestMCPOutputPreviewMatchesBashPolicyAndBoundsLargeFragments(t *testing.T) {
@@ -235,7 +235,7 @@ func TestMCPOutputActualToolAdmissionDurableReplayAndPermissionFloors(t *testing
 	require.NoError(t, conn.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM mcp_outputs`).Scan(&artifacts))
 	require.Equal(t, 2, artifacts)
 	refuseTransaction := func(context.Context, string, func(*sql.Tx) error) error { return errors.New("finalized") }
-	access.Store = session.NewMCPOutputStore(refuseTransaction, refuseTransaction)
+	access.Store = mcpoutput.NewMCPOutputStore(refuseTransaction, refuseTransaction)
 	failure, err := tool.Run(ctx, fantasy.ToolCall{ID: "retention-failed", Name: tool.Name(), Input: `{}`})
 	traceResponse("retention-failed", failure.Content)
 	require.NoError(t, err, "retention-failure Run response content: %q", failure.Content)
@@ -286,13 +286,13 @@ func TestMCPOutputActualToolAdmissionDurableReplayAndPermissionFloors(t *testing
 func TestMCPOutputRetentionFailureIsExplicitAfterExecution(t *testing.T) {
 	store, _ := mcpOutputToolStore(t)
 	refuseTransaction := func(context.Context, string, func(*sql.Tx) error) error { return errors.New("finalized") }
-	failed := session.NewMCPOutputStore(refuseTransaction, refuseTransaction)
+	failed := mcpoutput.NewMCPOutputStore(refuseTransaction, refuseTransaction)
 	ctx := context.WithValue(t.Context(), SessionIDContextKey, "output-session")
 	for _, candidate := range []MCPOutputStore{store, failed} {
 		access := &MCPOutputAccess{Store: candidate, Allowed: map[string]bool{"mcp_output_source": true}}
 		source := strings.Repeat("chunk", MaxOutputLength)
 		if candidate == store {
-			source = strings.Repeat("q", session.MCPOutputLimit+1)
+			source = strings.Repeat("q", mcpoutput.MCPOutputLimit+1)
 		}
 		text, err := access.admit(ctx, "output", "mcp_output_source", "failure", func(w io.Writer) error { _, err := io.WriteString(w, source); return err }, false)
 		require.Error(t, err)

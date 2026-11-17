@@ -18,6 +18,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 )
@@ -27,7 +29,7 @@ import (
 // delivery.
 type schedFx struct {
 	t     *testing.T
-	store *session.WakeScheduleStore
+	store *sessionwake.WakeScheduleStore
 	q     *db.Queries
 	conn  *sql.DB
 	ctx   context.Context
@@ -53,7 +55,7 @@ func newSchedFx(t *testing.T) *schedFx {
 
 	fx := &schedFx{
 		t:      t,
-		store:  session.NewWakeScheduleStore(conn),
+		store:  sessionwake.NewWakeScheduleStore(conn),
 		q:      db.New(conn),
 		conn:   conn,
 		ctx:    ctx,
@@ -120,8 +122,8 @@ func (fx *schedFx) fire(d time.Duration) {
 	c <- time.Now()
 }
 
-func (fx *schedFx) createOnce(owner string, delay time.Duration) session.CreateWakeScheduleParams {
-	return session.CreateWakeScheduleParams{Owner: owner, Kind: session.WakeKindOnce, Message: "check it", RunAt: fx.now().Add(delay)}
+func (fx *schedFx) createOnce(owner string, delay time.Duration) sessionwake.CreateWakeScheduleParams {
+	return sessionwake.CreateWakeScheduleParams{Owner: owner, Kind: sessionwake.WakeKindOnce, Message: "check it", RunAt: fx.now().Add(delay)}
 }
 
 // insertLoop writes a loop schedule directly, bypassing CreateSchedule's
@@ -299,8 +301,8 @@ func TestWakeScheduler_OverdueAfterDowntimeFiresOnceNoCatchUp(t *testing.T) {
 	s := fx.start("w1")
 
 	start := fx.now()
-	row, err := fx.store.CreateSchedule(fx.ctx, session.CreateWakeScheduleParams{
-		Owner: "sess-1", Kind: session.WakeKindLoop, Message: "tick",
+	row, err := fx.store.CreateSchedule(fx.ctx, sessionwake.CreateWakeScheduleParams{
+		Owner: "sess-1", Kind: sessionwake.WakeKindLoop, Message: "tick",
 		RunAt: start.Add(300 * time.Second), Every: 300 * time.Second,
 	}, start)
 	require.NoError(t, err)
@@ -542,8 +544,8 @@ func TestCoordinatorHasOpenOnceWakeSchedule(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, ok, "a cancelled once schedule holds nothing")
 
-	_, err = fx.store.CreateSchedule(fx.ctx, session.CreateWakeScheduleParams{
-		Owner: "sess-1", Kind: session.WakeKindLoop, Message: "tick",
+	_, err = fx.store.CreateSchedule(fx.ctx, sessionwake.CreateWakeScheduleParams{
+		Owner: "sess-1", Kind: sessionwake.WakeKindLoop, Message: "tick",
 		RunAt: fx.now().Add(300 * time.Second), Every: 300 * time.Second,
 	}, fx.now())
 	require.NoError(t, err)
@@ -557,7 +559,7 @@ func TestCoordinatorHasOpenOnceWakeSchedule(t *testing.T) {
 // BackgroundJobNotice/AutoResumed marking every other wake=1 session
 // notice uses, and not collapsed by the supervision history filter.
 func TestWakeFiredNoticeIsNotAHumanMessage(t *testing.T) {
-	params := buildSessionNoticeMessageParams(session.SessionNoticeRow{
+	params := buildSessionNoticeMessageParams(sessionnotice.SessionNoticeRow{
 		ID: 1, Kind: session.NoticeKindWakeFired, Text: "Wake wake_x fired (scheduled for ...): check it",
 	})
 	require.True(t, params.BackgroundJobNotice, "must render as a notice, not a human message")

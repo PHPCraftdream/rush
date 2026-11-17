@@ -1,5 +1,4 @@
-package session
-
+package sessionhosts
 // R3A T1 (docs/reviews/2026-09-30-async-phase4-round3.md): DUR-5's "a remover
 // unlinks only while holding the lock" is the POSIX ordering
 // unlinkBeforeUnlock=true in RemoveDeadHostFile. Nothing else pins it: flip the

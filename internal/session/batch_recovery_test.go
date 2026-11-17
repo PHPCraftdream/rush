@@ -11,6 +11,7 @@ import (
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
@@ -25,7 +26,7 @@ func r9Stores(t *testing.T) (*BatchStore, *BatchStore, *sql.DB, string, context.
 	a, err := db.Connect(ctx, dir)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(a)) })
-	require.NoError(t, seedSession(ctx, db.New(a), "owner"))
+	require.NoError(t, seedSessionn(ctx, db.New(a), "owner"))
 	b, err := sql.Open("sqlite", filepath.ToSlash(storepath.DataDirPath(dir, storepath.ActiveFilename))+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	require.NoError(t, err)
 	b.SetMaxOpenConns(1)
@@ -55,7 +56,7 @@ func TestR9RecoveryConcurrentAllStates(t *testing.T) {
 	r9Announce(t, conn, ctx, snap.Root.RootID)
 	c, err := a.CreateControl(ctx, "owner", "host", snap.Root.RootID, snap.Nodes[1].NodeID)
 	require.NoError(t, err)
-	lock, err := sessionlock.TryAcquireFileLock(HostLockPath(dir, "host"))
+	lock, err := sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(dir, "host"))
 	require.NoError(t, err)
 	require.NoError(t, lock.Release())
 	const n = 8
@@ -128,14 +129,14 @@ func TestR9RecoveryUnknownAliveOwnNoChanges(t *testing.T) {
 			require.NoError(t, err)
 			switch status {
 			case "unknown":
-				require.NoError(t, os.MkdirAll(HostLockPath(dir, "host"), 0o755))
+				require.NoError(t, os.MkdirAll(sessionhosts.HostLockPath(dir, "host"), 0o755))
 			case "alive":
-				lock, e := sessionlock.TryAcquireFileLock(HostLockPath(dir, "host"))
+				lock, e := sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(dir, "host"))
 				require.NoError(t, e)
 				defer lock.Release()
 			case "own":
-				markOwnHostID("host")
-				defer unmarkOwnHostID("host")
+				markOwnHostIDD("host")
+				defer sessionhosts.unmarkOwnHostID("host")
 			}
 			out, err := a.BatchRecoverDeadHost(ctx, "host", BatchSharedHostProbe(dir))
 			if status == "unknown" {
@@ -171,7 +172,7 @@ func TestR9RecoveryPreservesUnannouncedCLIUntilRetention(t *testing.T) {
 	var pending int
 	require.NoError(t, conn.QueryRowContext(ctx, `SELECT count(*) FROM batch_nodes WHERE root_id=? AND notice_selected=1 AND delivery='pending'`, root).Scan(&pending))
 	require.Equal(t, 1, pending)
-	lock, err := sessionlock.TryAcquireFileLock(HostLockPath(dir, "host"))
+	lock, err := sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(dir, "host"))
 	require.NoError(t, err)
 	require.NoError(t, lock.Release())
 
@@ -203,7 +204,7 @@ func TestR9RecoveryInterruptsLiveUnannouncedCLI(t *testing.T) {
 	// A live root carries no notice yet: notice_state admits only terminal states.
 	_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET state='running' WHERE root_id=?`, root)
 	require.NoError(t, err)
-	lock, err := sessionlock.TryAcquireFileLock(HostLockPath(dir, "host"))
+	lock, err := sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(dir, "host"))
 	require.NoError(t, err)
 	require.NoError(t, lock.Release())
 

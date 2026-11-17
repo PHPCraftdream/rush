@@ -13,6 +13,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -80,7 +81,7 @@ func pdcRunBatchAnnounceScenario(t *testing.T, cachedMessageWrite bool) ([]strin
 	conn, err := db.Connect(ctx, t.TempDir())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(conn)) })
-	require.NoError(t, seedSession(ctx, db.New(conn), "owner"))
+	require.NoError(t, seedSessionn(ctx, db.New(conn), "owner"))
 	s := NewBatchStore(conn)
 	snap := pdaEquivSettleOne(t, ctx, s, conn)
 	require.NoError(t, db.PdaBatchEnsure(ctx, conn))
@@ -132,7 +133,7 @@ func TestPdbBatchTxBindCallCount(t *testing.T) {
 	conn, err := db.Connect(ctx, t.TempDir())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(conn)) })
-	require.NoError(t, seedSession(ctx, db.New(conn), "owner"))
+	require.NoError(t, seedSessionn(ctx, db.New(conn), "owner"))
 	s := NewBatchStore(conn)
 	st := pdaEquivReserve(t, ctx, s)
 	require.NoError(t, db.PdaBatchEnsure(ctx, conn))

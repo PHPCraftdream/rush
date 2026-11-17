@@ -8,6 +8,8 @@ import (
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
 )
 
@@ -49,7 +51,7 @@ func TestAgentFinalizationDurableTicketsFenceSealAcrossStoreInstances(t *testing
 	require.EqualValues(t, 1, held.Revision)
 	retried, err := producer.Admit(ctx, id, "mutation-1")
 	require.NoError(t, err)
-	require.Equal(t, held, retried, "an admission retry does not create another physical hold")
+	require.Equal(t, held, retried, "an admission retry does not sessionwake.create another physical hold")
 	require.ErrorIs(t, sealFinalizationForTest(ctx, conn, owner, id, held.Revision), session.ErrAgentFinalizationChanged,
 		"matching revision is insufficient while a persisted mutation is in flight")
 	require.NoError(t, producer.Release(ctx, id, "mutation-1"))

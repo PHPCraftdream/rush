@@ -4,8 +4,7 @@
 // lifecycle only: the worker/timer that polls ClaimDue is stage 4b. Every
 // mutation is a lease-keyed CAS, so two concurrent schedulers can never
 // double-fire an occurrence (SCHED-1/SCHED-2 in docs/async-invariants.md).
-package session
-
+package sessionwake
 import (
 	"context"
 	"database/sql"
@@ -15,7 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	session "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/google/uuid"
@@ -61,7 +60,7 @@ var ErrWakeScheduleNotOwned = errors.New("wake schedule does not belong to this 
 // WS-1 (#1142 step C): the store also carries the workspace of the process
 // it was created in, and scopes BOTH of its scheduler-facing reads
 // (ClaimDue's ListDueWakeSchedules and NextDueWakeScheduleAt) by the same
-// ownership predicate as session.Owns. Filtering only the claim would spin
+// ownership predicate as coresession.Owns. Filtering only the claim would spin
 // the scheduler forever: NextDue would keep returning a due moment that can
 // never be claimed.
 type WakeScheduleStore struct {
@@ -97,7 +96,7 @@ func NewWakeScheduleStoreWithWorkspace(conn *sql.DB, workspaceRoot string, workD
 // on which schedules are theirs. The home flag is the constructor value, not
 // a re-derivation from the root.
 func (s *WakeScheduleStore) ownsArgs() (workspaceRoot string, home int64) {
-	return s.workspaceRoot, session.HomeFlag(s.home)
+	return s.workspaceRoot, coresession.HomeFlag(s.home)
 }
 
 // CreateWakeScheduleParams is CreateSchedule's input. RunAt is the first

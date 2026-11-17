@@ -20,13 +20,14 @@ import (
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
 // newRunDriverTestApp is newWhyDescendantTestApp with the App's DB handle
 // wired (the driver-marker reader reads through it) and a HostStore the
 // driver marker is claimed through.
-func newRunDriverTestApp(t *testing.T) (a *app.App, s coresession.Service, m message.Service, store *session.HostStore, dataDir string) {
+func newRunDriverTestApp(t *testing.T) (a *app.App, s coresession.Service, m message.Service, store *sessionhosts.HostStore, dataDir string) {
 	t.Helper()
 	dataDir = t.TempDir()
 	ctx := context.Background()
@@ -36,7 +37,7 @@ func newRunDriverTestApp(t *testing.T) (a *app.App, s coresession.Service, m mes
 	q := db.New(conn)
 	s = coresession.NewService(q, conn)
 	m = message.NewService(q)
-	store = session.NewHostStore(conn, dataDir, 4321, "rush-run")
+	store = sessionhosts.NewHostStore(conn, dataDir, 4321, "rush-run")
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
 	a = &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	a.SetDataDirForTest(dataDir)
@@ -134,7 +135,7 @@ func TestExplainSessionStatus_DeadHostRunDriverIsCrashed(t *testing.T) {
 	sess, err := s.Create(ctx, "driver crashed")
 	require.NoError(t, err)
 	addFinishedAssistant(t, m, sess.ID, message.FinishReasonEndTurn)
-	dead := session.NewHostStore(conn, dataDir, 4242, "dead-loop")
+	dead := sessionhosts.NewHostStore(conn, dataDir, 4242, "dead-loop")
 	require.NoError(t, dead.ClaimSessionDriver(ctx, sess.ID))
 	require.NoError(t, dead.SimulateCrashForTest())
 
@@ -173,7 +174,7 @@ func TestListStatus_DriverShapes(t *testing.T) {
 	conn, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Release(dataDir) })
-	dead := session.NewHostStore(conn, dataDir, 4242, "dead")
+	dead := sessionhosts.NewHostStore(conn, dataDir, 4242, "dead")
 	require.NoError(t, dead.ClaimSessionDriver(ctx, deadHost.ID))
 	require.NoError(t, dead.SimulateCrashForTest())
 
@@ -218,14 +219,14 @@ func TestSessionsListCmdRun_LiveRunDriverIsRunningNotDone(t *testing.T) {
 	assistant.AddFinish(message.FinishReasonEndTurn, "", "")
 	require.NoError(t, a.Messages.Update(ctx, assistant))
 
-	driverHost := session.NewHostStore(a.DB(), dataDir, os.Getpid(), "list-run-driver-fixture")
+	driverHost := sessionhosts.NewHostStore(a.DB(), dataDir, os.Getpid(), "list-run-driver-fixture")
 	driverHostID, err := driverHost.EnsureHost(ctx)
 	require.NoError(t, err)
 	require.NoError(t, driverHost.ClaimSessionDriver(ctx, parent.ID))
 	// A12 pattern: pin the host lock and keep the driver marker across the
 	// seed App's Shutdown.
 	driverHost.CloseKeepLock()
-	t.Cleanup(func() { session.ReleaseRetainedHostLocksForTest(driverHostID) })
+	t.Cleanup(func() { sessionhosts.ReleaseRetainedHostLocksForTest(driverHostID) })
 	a.Shutdown()
 
 	runList := func() string {

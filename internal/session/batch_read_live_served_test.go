@@ -15,6 +15,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,8 +34,8 @@ func batchServedTestEnv(t *testing.T) (*BatchStore, *sql.DB, *sql.DB, context.Co
 	conn, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(conn)) })
-	require.NoError(t, seedSession(ctx, db.New(conn), "owner"))
-	require.NoError(t, seedSession(ctx, db.New(conn), "owner2"))
+	require.NoError(t, seedSessionn(ctx, db.New(conn), "owner"))
+	require.NoError(t, seedSessionn(ctx, db.New(conn), "owner2"))
 	// An independent handle: it can commit between the served read's
 	// statements even while the writer connection holds the read transaction.
 	raw, err := sql.Open("sqlite", storepath.DataDirPath(dataDir, storepath.ActiveFilename)+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
@@ -199,7 +200,7 @@ func TestBatchHotStatementsPlanWithoutScans(t *testing.T) {
 	batchReserveForOwner(t, s, ctx, "owner", "plan-root")
 	reader := NewBatchLiveReader(db.New(logDB), dataDir)
 	reader.IsOwnHost = func(string) bool { return false }
-	reader.ProbeHost = func(string, string) (HostLockStatus, error) { return HostStatusAlive, nil }
+	reader.ProbeHost = func(string, string) (sessionhosts.HostLockStatus, error) { return HostStatusAlive, nil }
 	reader.TxStarter = logDB
 	live := reader.BatchLiveForOwner(ctx, "owner")
 	require.True(t, live.Complete)

@@ -18,6 +18,9 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
 )
 
@@ -118,11 +121,11 @@ func seedBatchRoot(t *testing.T, ctx context.Context, conn *sql.DB, hostID, root
 func TestSessionNoticeStore_PullUnboundNoticeDelivers(t *testing.T) {
 	t.Parallel()
 	store, _, q, ctx := newNoticeTestStore(t)
-	require.NoError(t, seedSession(ctx, q, "owner-notice"))
+	require.NoError(t, seedSessionn(ctx, q, "owner-notice"))
 	require.NoError(t, store.InsertSessionNotice(ctx, "owner-notice", NoticeKindWakeOnly, "wake up", true, ""))
 
 	messages := message.NewService(q)
-	pulled, err := store.PullSessionNotices(ctx, messages, "owner-notice", sessionNoticeParams)
+	pulled, err := store.PullSessionNotices(ctx, messages, "owner-notice", sessionwake.sessionNoticeParams)
 	require.NoError(t, err)
 	require.Len(t, pulled, 1)
 	require.True(t, pulled[0].Wake)
@@ -133,7 +136,7 @@ func TestSessionNoticeStore_PullUnboundNoticeDelivers(t *testing.T) {
 	require.Equal(t, "done", notice[0].Delivery)
 	require.Equal(t, pulled[0].Message.ID, notice[0].NoticeMessageID.String)
 
-	again, err := store.PullSessionNotices(ctx, messages, "owner-notice", sessionNoticeParams)
+	again, err := store.PullSessionNotices(ctx, messages, "owner-notice", sessionwake.sessionNoticeParams)
 	require.NoError(t, err)
 	require.Empty(t, again)
 }
@@ -180,13 +183,13 @@ func TestSessionNoticeStore_BoundNoticeVoidRules(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			store, conn, q, ctx := newNoticeTestStore(t)
-			require.NoError(t, seedSession(ctx, q, "owner-notice"))
+			require.NoError(t, seedSessionn(ctx, q, "owner-notice"))
 			tc.seed(t, ctx, conn, "call-bound-1")
 
 			require.NoError(t, store.InsertSessionNotice(ctx, "owner-notice",
 				NoticeKindChildQuestion, "SUB-AGENT QUESTION (session child-1): proceed?", false, "call-bound-1"))
 
-			pulled, err := store.PullSessionNotices(ctx, message.NewService(q), "owner-notice", sessionNoticeParams)
+			pulled, err := store.PullSessionNotices(ctx, message.NewService(q), "owner-notice", sessionwake.sessionNoticeParams)
 			require.NoError(t, err)
 			if tc.wantDelivered {
 				require.Len(t, pulled, 1, "a live root must keep the notice")
@@ -228,7 +231,7 @@ func TestSessionNoticeStore_SupervisionArmUsesBatchRoots(t *testing.T) {
 	t.Parallel()
 	build := func(t *testing.T) (*SessionNoticeStore, *db.Queries, context.Context) {
 		store, _, q, ctx := newNoticeTestStore(t)
-		require.NoError(t, seedSession(ctx, q, "owner-notice"))
+		require.NoError(t, seedSessionn(ctx, q, "owner-notice"))
 		require.NoError(t, store.InsertSessionNotice(ctx, "owner-notice", NoticeKindSupervision, "still working", true, ""))
 		return store, q, ctx
 	}
@@ -237,7 +240,7 @@ func TestSessionNoticeStore_SupervisionArmUsesBatchRoots(t *testing.T) {
 	store, q, ctx := build(t)
 	seedBatchRoot(t, ctx, store.sqlDB, "h-other", "root-sup", "call-sup", "running", "pending")
 	store.SetHostNotDeadFunc(func(own, other string) bool { return other == "h-other" })
-	pulled, err := store.PullSessionNotices(ctx, message.NewService(q), "owner-notice", sessionNoticeParams)
+	pulled, err := store.PullSessionNotices(ctx, message.NewService(q), "owner-notice", sessionwake.sessionNoticeParams)
 	require.NoError(t, err)
 	require.Len(t, pulled, 1, "a live root on a not-dead host keeps the supervision notice")
 	NoticeDelivery(t, q, "owner-notice", "done")
@@ -246,7 +249,7 @@ func TestSessionNoticeStore_SupervisionArmUsesBatchRoots(t *testing.T) {
 	store2, q2, ctx2 := build(t)
 	seedBatchRoot(t, ctx2, store2.sqlDB, "h-other", "root-sup", "call-sup", "running", "pending")
 	store2.SetHostNotDeadFunc(func(own, other string) bool { return false })
-	pulled2, err := store2.PullSessionNotices(ctx2, message.NewService(q2), "owner-notice", sessionNoticeParams)
+	pulled2, err := store2.PullSessionNotices(ctx2, message.NewService(q2), "owner-notice", sessionwake.sessionNoticeParams)
 	require.NoError(t, err)
 	require.Empty(t, pulled2, "a live root on a provably dead host voids the supervision notice")
 	NoticeDelivery(t, q2, "owner-notice", "void", "the void rule must have returned true: a swallowed error would leave the row pending")
@@ -255,7 +258,7 @@ func TestSessionNoticeStore_SupervisionArmUsesBatchRoots(t *testing.T) {
 	store3, q3, ctx3 := build(t)
 	seedBatchRoot(t, ctx3, store3.sqlDB, "h-other", "root-sup", "call-sup", "running", "void")
 	store3.SetHostNotDeadFunc(func(own, other string) bool { return true })
-	pulled3, err := store3.PullSessionNotices(ctx3, message.NewService(q3), "owner-notice", sessionNoticeParams)
+	pulled3, err := store3.PullSessionNotices(ctx3, message.NewService(q3), "owner-notice", sessionwake.sessionNoticeParams)
 	require.NoError(t, err)
 	require.Empty(t, pulled3, "a void-delivery root is not open scope")
 	NoticeDelivery(t, q3, "owner-notice", "void")
@@ -323,7 +326,7 @@ func NoticeDelivery(t *testing.T, q *db.Queries, owner string, delivery string, 
 func TestSessionNoticeStore_BatchDebtRows(t *testing.T) {
 	t.Parallel()
 	store, conn, q, ctx := newNoticeTestStore(t)
-	require.NoError(t, seedSession(ctx, q, "owner"))
+	require.NoError(t, seedSessionn(ctx, q, "owner"))
 	bs := NewBatchStore(conn)
 	snap := batchStoreTestReserve(t, bs, ctx)
 	root := snap.Root.RootID
@@ -415,7 +418,7 @@ func TestSessionNoticeStore_BatchDebtRows(t *testing.T) {
 func TestSessionNoticeStore_InsertAndListRoundTrip(t *testing.T) {
 	t.Parallel()
 	store, _, q, ctx := newNoticeTestStore(t)
-	require.NoError(t, seedSession(ctx, q, "owner-notice"))
+	require.NoError(t, seedSessionn(ctx, q, "owner-notice"))
 
 	id1, err := store.InsertSessionNoticeReturningID(ctx, "owner-notice", NoticeKindSupervision, "s", true, "call-1")
 	require.NoError(t, err)
@@ -455,7 +458,7 @@ func TestSessionNoticeStore_InsertAndListRoundTrip(t *testing.T) {
 func TestSessionNoticeStore_PendingChildQuestionsOverBatchRoots(t *testing.T) {
 	t.Parallel()
 	store, conn, q, ctx := newNoticeTestStore(t)
-	require.NoError(t, seedSession(ctx, q, "owner-notice"))
+	require.NoError(t, seedSessionn(ctx, q, "owner-notice"))
 	seedBatchRoot(t, ctx, conn, "", "root-live", "call-live", "running", "pending")
 	seedBatchRoot(t, ctx, conn, "", "root-dead", "call-dead", "completed", "done")
 
@@ -472,7 +475,7 @@ func TestSessionNoticeStore_PendingChildQuestionsOverBatchRoots(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, qs, 2, "the batch question and the live-root legacy notice surface; the terminal-root one is dropped")
 
-	var batch, legacy ChildQuestion
+	var batch, legacy sessionnotice.ChildQuestion
 	for _, row := range qs {
 		if row.NodeID == "root.1" {
 			batch = row
@@ -519,7 +522,7 @@ func TestSessionNoticeStore_PendingChildQuestionsOverBatchRoots(t *testing.T) {
 func TestSessionNoticeStore_BatchPublishQuestionEndToEnd(t *testing.T) {
 	t.Parallel()
 	store, conn, q, ctx := newNoticeTestStore(t)
-	require.NoError(t, seedSession(ctx, q, "owner"))
+	require.NoError(t, seedSessionn(ctx, q, "owner"))
 	bs := NewBatchStore(conn)
 
 	p := batchStoreTestReservation()
@@ -573,7 +576,7 @@ func TestParseBatchChildQuestionNotice_ProducerFrameFormat(t *testing.T) {
 	text := marker + "SUB-AGENT QUESTION: " + "line one\nline two" +
 		"\nAnswer with inject_agent for this existing batch node; do not resume the delegation as a new generation."
 
-	got, ok := ParseBatchChildQuestionNotice(text)
+	got, ok := sessionnotice.ParseBatchChildQuestionNotice(text)
 	require.True(t, ok)
 	require.Equal(t, "root.1", got.NodeID)
 	require.Equal(t, "child-9", got.ChildSessionID)

@@ -21,12 +21,15 @@
 // (release wipes the PID and the .pid sidecar), so it stays a crash even
 // with an end_turn finish from a previous turn.
 
-package session
-
+package sessionfacts
 import (
 	"fmt"
 	"sort"
 	"strings"
+
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 )
 
 // ActivityKind is the verdict of ClassifySessionActivity.
@@ -104,7 +107,7 @@ type ActivityFacts struct {
 	Lock      LockFact
 	// Driver is the session's live `rush run` loop marker (a session_drivers
 	// row whose host is alive or unknown), nil when none.
-	Driver *SessionDriver
+	Driver *sessionhosts.SessionDriver
 	// DriverOwes: durable reaction debt is open for this session. It keeps
 	// the session live ONLY together with a live driver (decision 6): a
 	// drain that failed and was then killed leaves debt behind, and that
@@ -121,14 +124,14 @@ type ActivityFacts struct {
 	// LiveDelegations alone.
 	LiveDescendantSessionIDs []string
 	// OpenSchedules: the session's open once wake schedules.
-	OpenSchedules []OpenWakeSchedule
+	OpenSchedules []sessionwake.OpenWakeSchedule
 	// ChildQuestions: the session's pending child_question notices (#1158)
 	// -- held delegations whose child paused on a question. Purely additive
 	// to the facts: readers that do not read notices leave it nil and the
 	// verdict is exactly what it was before. Display data: it never makes a
 	// live session out of a dead one (the held delegation row already
 	// does), it only names WHAT the wait is.
-	ChildQuestions []ChildQuestion
+	ChildQuestions []sessionnotice.ChildQuestion
 	// DeadHostDriver: a session_drivers row names a provably dead host (a
 	// crash fact: the loop died before its marker was purged).
 	DeadHostDriver bool

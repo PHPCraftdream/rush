@@ -3,8 +3,7 @@
 // notice row. The insert/debt methods of the legacy store were deleted at
 // the H4 cutover; the retained batch operations live in batch_reaction.go
 // and session_notice_store.go.
-package session
-
+package sessionnotice
 // PendingNoticeDebt is one notice row of a pending-inclusive debt: its id
 // (AUTOINCREMENT, never reused) and kind.
 type PendingNoticeDebt struct {

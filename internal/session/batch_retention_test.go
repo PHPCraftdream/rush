@@ -9,6 +9,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -67,7 +68,7 @@ func TestR9RetentionWholeRootsDebtLiveDelegation(t *testing.T) {
 				}
 				_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET notice_selected=1,notice_kind='task',notice_state='completed',notice_cause='',notice_sequence=1,notice_ordinal=0,delivery='pending',wake=1,notice_message_id=? WHERE node_id=?`, history.ID, snap.Nodes[2].NodeID)
 			case "child-live", "child-debt", "child-notice":
-				require.NoError(t, seedSession(ctx, db.New(conn), "child"))
+				require.NoError(t, seedSessionn(ctx, db.New(conn), "child"))
 				_, err = conn.ExecContext(ctx, "UPDATE batch_nodes SET child_session_id='child' WHERE node_id=?", snap.Nodes[1].NodeID)
 				require.NoError(t, err)
 				if scenario == "child-notice" {

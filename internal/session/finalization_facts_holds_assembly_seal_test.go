@@ -8,6 +8,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,7 +24,7 @@ func newHostHoldsSealEnv(t *testing.T) (candidateEnv, string) {
 	conn, err := db.Connect(ctx, dataDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(conn)) })
-	require.NoError(t, seedSession(ctx, db.New(conn), "owner"))
+	require.NoError(t, seedSessionn(ctx, db.New(conn), "owner"))
 	conn.SetMaxOpenConns(1)
 	messages := message.NewService(db.New(conn))
 	store := session.NewAgentFinalizationStore(conn)
@@ -67,16 +68,16 @@ func TestTrySealHostDriverHoldsRefusalThenSeal(t *testing.T) {
 	// A genuinely foreign live host drives the owner session: its lock is
 	// really held by this test process, but the host is not marked as this
 	// process's own, so the facts must take the shared-probe path.
-	h, err := RegisterHost(ctx, dataDir, 4321, "foreign", nodeStore(q))
+	h, err := sessionhosts.RegisterHost(ctx, dataDir, 4321, "foreign", nodeStoree(q))
 	require.NoError(t, err)
-	unmarkOwnHostID(h.ID)
-	t.Cleanup(func() { _ = h.Close(ctx, nodeStore(q)) })
+	unmarkOwnHostIDD(h.ID)
+	t.Cleanup(func() { _ = h.Close(ctx, nodeStoree(q)) })
 	n, err := q.InsertSessionDriver(ctx, db.InsertSessionDriverParams{
 		SessionID: e.id.SessionID, HostID: h.ID, Pid: 4321, ClaimedAt: 1,
 	})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n)
-	require.False(t, IsOwnHostID(h.ID),
+	require.False(t, IsOwnHostIDD(h.ID),
 		"precondition: the own-host exemption must not answer for this host")
 
 	_, presented := sealStoredCandidate(t, e, 0, 1)
@@ -92,7 +93,7 @@ func TestTrySealHostDriverHoldsRefusalThenSeal(t *testing.T) {
 	// Leg 2: the foreign host closes, its lock file disappears, the same
 	// marker row now reads dead through the same reader, and the seal
 	// commits atomically.
-	require.NoError(t, h.Close(ctx, nodeStore(q)))
+	require.NoError(t, h.Close(ctx, nodeStoree(q)))
 	outcome, err = e.store.TrySeal(t.Context(), e.id, presented, e.sealWriter(t), reader)
 	require.NoError(t, err)
 	require.True(t, outcome.Sealed)

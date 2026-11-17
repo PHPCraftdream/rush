@@ -22,11 +22,10 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
-	"github.com/PHPCraftdream/rush/internal/session"
-	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/dbconn"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -161,8 +160,8 @@ func TestSessionsCompactCmdRun_LiveHostLockRefuses(t *testing.T) {
 
 	bloatCompactDBConn(t, seed.DB(), 2<<20)
 
-	require.NoError(t, os.MkdirAll(session.HostsDir(dataDir), 0o755))
-	holder, err := filelock.TryAcquireFileLock(session.HostLockPath(dataDir, "compact-live-host"))
+	require.NoError(t, os.MkdirAll(sessionhosts.HostsDir(dataDir), 0o755))
+	holder, err := filelock.TryAcquireFileLock(sessionhosts.HostLockPath(dataDir, "compact-live-host"))
 	require.NoError(t, err)
 	defer holder.Release()
 

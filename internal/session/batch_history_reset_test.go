@@ -17,6 +17,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -41,7 +42,7 @@ func newBatchResetFx(t *testing.T) *batchResetFx {
 	// reset's writer lock (batchOutboxTwoStores pattern).
 	conn, err := db.Connect(ctx, dir)
 	require.NoError(t, err)
-	require.NoError(t, seedSession(ctx, db.New(conn), batchResetOwner))
+	require.NoError(t, seedSessionn(ctx, db.New(conn), batchResetOwner))
 	require.NoError(t, db.ReleaseConn(conn))
 	open := func() *sql.DB {
 		// Same shape as the production writer DSN (connect.go): BEGIN

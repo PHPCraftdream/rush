@@ -9,6 +9,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,8 +18,8 @@ func finalizationAncestorEnv(t *testing.T) *commitHookEnv {
 	t.Setenv("RUSH_GLOBAL_DATA", t.TempDir())
 	t.Setenv("RUSH_GLOBAL_CONFIG", t.TempDir())
 	env := newCommitHookEnv(t)
-	require.NoError(t, seedSession(env.ctx, db.New(env.conn), "child"))
-	require.NoError(t, seedSession(env.ctx, db.New(env.conn), "grandchild"))
+	require.NoError(t, seedSessionn(env.ctx, db.New(env.conn), "child"))
+	require.NoError(t, seedSessionn(env.ctx, db.New(env.conn), "grandchild"))
 	require.NoError(t, env.adapter()(env.ctx, admissionSubmit("parent-root", "parent-ref", 1)))
 	result, err := env.conn.ExecContext(env.ctx, `UPDATE batch_nodes SET child_session_id='child' WHERE node_id='parent-root.1'`)
 	require.NoError(t, err)
@@ -120,7 +121,7 @@ func TestBatchCommitDoesNotTreatSessionForkAsManagedAncestor(t *testing.T) {
 	t.Setenv("RUSH_GLOBAL_DATA", t.TempDir())
 	t.Setenv("RUSH_GLOBAL_CONFIG", t.TempDir())
 	env := newCommitHookEnv(t)
-	require.NoError(t, seedSession(env.ctx, db.New(env.conn), "fork"))
+	require.NoError(t, seedSessionn(env.ctx, db.New(env.conn), "fork"))
 	_, err := env.conn.ExecContext(env.ctx, `UPDATE sessions SET parent_session_id='owner' WHERE id='fork'`)
 	require.NoError(t, err)
 	api := finalizationCommitService(env)

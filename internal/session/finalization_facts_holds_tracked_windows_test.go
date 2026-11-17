@@ -9,6 +9,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/proctrack"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 

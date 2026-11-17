@@ -8,6 +8,7 @@ package cmd
 
 import (
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 )
 
 // endedReasonPeakHours is the ended_reason a provider peak-hours pause
@@ -26,7 +27,7 @@ const endedReasonPeakHours = "peak_hours"
 // exact "sessions list said running while sessions status reported a
 // recorded exit" mismatch this file exists to close. Passing "" (the old
 // verdict-only shape) keeps the plain word.
-func sessionStatusLabel(v session.ActivityVerdict, recordedEnd string) string {
+func sessionStatusLabel(v sessionfacts.ActivityVerdict, recordedEnd string) string {
 	switch v.Kind {
 	case session.ActivityInTurn, session.ActivityBetweenTurns:
 		return annotateRecordedEnd("running", recordedEnd)
