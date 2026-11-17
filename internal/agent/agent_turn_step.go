@@ -11,6 +11,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -64,7 +65,6 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	// step N is initialPrompt + step responses, which does NOT carry
 	// forward whatever a PREVIOUS step's PrepareStep spliced in.
 	var stepSplices []fantasy.Message
-
 	for _, inj := range ts.a.drainDueInjects(ts.call.SessionID, ts.genID, ts.historyIDs) {
 		stepSplices = append(stepSplices, inj.ToAIMessage()...)
 	}
@@ -203,7 +203,7 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	}
 
 	if slog.Default().Enabled(callContext, slog.LevelDebug) {
-		ts.cacheDiagnostic = preparedCacheDiagnostic(prepared.Messages, prepared.Tools)
+		ts.cacheDiagnostic = promptcache.PreparedCacheDiagnostic(prepared.Messages, prepared.Tools)
 	}
 	ts.cachePreparedAt = time.Now()
 	ts.cachePrepareDuration = ts.cachePreparedAt.Sub(prepareStarted)
