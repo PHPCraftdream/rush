@@ -6,166 +6,16 @@ package agent
 
 import (
 	"context"
-	"fmt"
-	"log/slog"
-	"net/http"
-	"path/filepath"
-	"slices"
-	"strings"
 	"sync"
-	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
-	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
-	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/agent/tools/hooks"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 )
 
 func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, agent config.Agent, isSubAgent bool) (SessionAgent, error) {
-	// ONE snapshot for the entire build: models, prompt, and tools. Before
-	// this (task #576/P1-3), models came from buildAgentModels' own
-	// Snapshot() while the provider options/system-prompt-prefix/Options
-	// fields below and buildTools' many reads each took a fresh, separately
-	// timed c.cfg.Config(). A reload landing anywhere in between could hand
-	// back an agent whose model, prompt (WorkerAvailable) and toolset
-	// (worker tool layering, hooks, grep/ls options, attribution, skills
-	// paths) disagreed with each other -- an internally inconsistent agent
-	// built across two config generations. Threading this one cfg through
-	// closes that gap for all of the above; only explicitly-declared live
-	// *policy* reads remain, plus MCP tools,
-	// which are deliberately NOT pinned -- see the MCP block in buildTools
-	// for why.
-	cfg, _ := c.cfg.Snapshot()
-
-	smart, fast, err := c.buildAgentModelsFromCfg(ctx, cfg, isSubAgent)
-	if err != nil {
-		return nil, err
-	}
-
-	var smartProviderCfg config.ProviderConfig
-	if creds := callCredentialsFrom(ctx); creds != nil {
-		if cred, ok := creds.Credential(smart.ModelCfg.Provider); ok {
-			smartProviderCfg = credentialProviderConfig(cred)
-		}
-	} else {
-		smartProviderCfg, _ = cfg.Providers.Get(smart.ModelCfg.Provider)
-	}
-	opts := cfg.Options
-	var streamIdleTimeout time.Duration
-	if opts != nil && opts.StreamIdleTimeoutSeconds > 0 {
-		streamIdleTimeout = time.Duration(opts.StreamIdleTimeoutSeconds) * time.Second
-	}
-	// Never-freeze backstop: bound the watchdog's tool-pause.
-	var toolMaxDuration time.Duration
-	if opts != nil && opts.StreamToolTimeoutSeconds > 0 {
-		toolMaxDuration = time.Duration(opts.StreamToolTimeoutSeconds) * time.Second
-	}
-	// Fork patch: batch 8 — mid-stream checkpoint interval.
-	var checkpointInterval time.Duration
-	if opts != nil {
-		switch {
-		case opts.CheckpointIntervalSeconds > 0:
-			checkpointInterval = time.Duration(opts.CheckpointIntervalSeconds) * time.Second
-		case opts.CheckpointIntervalSeconds == -1:
-			checkpointInterval = 0 // explicitly disabled
-		default:
-			checkpointInterval = defaultCheckpointInterval
-		}
-	}
-	// DisableAutoSummarize/DataDirectory must also tolerate a nil Options —
-	// the streamIdle/toolMax/checkpointInterval reads above already do.
-	var disableAutoSummarize bool
-	var dataDirectory string
-	if opts != nil {
-		disableAutoSummarize = opts.DisableAutoSummarize
-		dataDirectory = opts.DataDirectory
-	}
-	// R3-4: the turn-level activation of per-call restricted-run policies
-	// needs the optional permission extension. Nil-safe like c.permissions
-	// everywhere else in this function (bare test-fixture coordinators).
-	var runAllowlists permission.SessionRunAllowlistManager
-	if c.permissions != nil {
-		if mgr, ok := c.permissions.(permission.SessionRunAllowlistManager); ok {
-			runAllowlists = mgr
-		}
-	}
-	result := NewSessionAgent(SessionAgentOptions{
-		// R12-H2b §2.4: the agent's durable enqueue producer holds
-		// row-keyed Continuation owners through the coordinator's
-		// capability manager (nil on bare fixtures, same as diskCaps).
-		diskCaps:             c.diskCaps,
-		SmartModel:           smart,
-		FastModel:            fast,
-		SystemPromptPrefix:   smartProviderCfg.SystemPromptPrefix,
-		SystemPrompt:         "",
-		IsSubAgent:           isSubAgent,
-		DisableAutoSummarize: disableAutoSummarize,
-		// permissions can be nil on bare test-fixture coordinators; treat
-		// that as fail-closed (not YOLO) rather than panicking.
-		IsYolo:            c.permissions != nil && c.permissions.SkipRequests(),
-		Sessions:          c.sessions,
-		Messages:          c.messages,
-		Tools:             nil,
-		Config:            c.cfg,
-		Notify:            c.notify,
-		StreamIdleTimeout: streamIdleTimeout,
-		ToolMaxDuration:   toolMaxDuration,
-		DataDirectory:     dataDirectory,
-		RunAllowlists:     runAllowlists,
-		Coord:             c,
-		// Phase 3's by-construction release trigger (sessionAgent.
-		// onSessionIdle's doc, docs/plans/2026-09-28-async-phase3-spec.md
-		// orchestrator decision item 1) PLUS supervision's turn-end deadline
-		// push (supervision.go's onSessionIdleHook) -- wired identically for
-		// the root agent and every delegated child driver, since buildAgent
-		// builds both; both callees are no-ops for a session with nothing to
-		// react to.
-		OnSessionIdle:      c.onSessionIdleHook,
-		RestrictedRuns:     restrictedRunAuthorizer(c.permissions),
-		CheckpointInterval: checkpointInterval, // Fork patch: batch 8
-	})
-
-	// R1-1: resolve the per-call worker-active predicate SYNCHRONOUSLY,
-	// before the async build goroutines below are registered — the value
-	// they see is fixed at UpdateModels/buildAgent call time, never a lazy
-	// read of shared state from inside an already-running goroutine (the
-	// hooks/runner.go sync-capture pattern). With a CallOptions-carrying
-	// context the value is this call's own ModelRole; without one it is
-	// the legacy shared field, read here under its mutex rather than
-	// later on a goroutine.
-	workerActive := c.workerSubAgentActiveForCall(ctx, cfg)
-
-	gate := readyGateFor(ctx, &c.readyWg)
-	gate.Go(func() error {
-		// Orchestrator block only ever applies to the top-level coder prompt
-		// (isSubAgent false) — a sub-agent renders task.md.tpl via
-		// taskPrompt, which doesn't reference WorkerAvailable, but guarding
-		// on !isSubAgent here keeps this call's intent explicit rather than
-		// relying on the template to ignore the field.
-		// Same pinned cfg as the models above and buildTools below — see
-		// this function's opening comment.
-		systemPrompt, err := prompt.Build(ctx, smart.Model.Provider(), smart.Model.Model(), c.cfg, cfg, !isSubAgent && workerActive)
-		if err != nil {
-			return err
-		}
-		result.SetSystemPrompt(systemPrompt)
-		return nil
-	})
-
-	gate.Go(func() error {
-		tools, err := c.buildTools(ctx, cfg, agent, isSubAgent)
-		if err != nil {
-			return err
-		}
-		result.SetTools(tools)
-		return nil
-	})
-
-	return result, nil
+	return newToolsComponent(c).buildAgent(ctx, prompt, agent, isSubAgent)
 }
 
 // workerToolNames are added on top of the sub-agent's existing (read-only)
@@ -233,47 +83,14 @@ var orchestratorStrippedToolNames = []string{"edit", "multiedit", "write"}
 // the prompt/model chosen for the SAME call instead of with the shared
 // activeModelRole field.
 func (c *coordinator) buildToolsAgentConfigForCall(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) config.Agent {
-	if remaining, err := MaxAgentDepthFrom(ctx); err != nil || remaining == 0 {
-		stripped := make([]string, 0, len(agent.AllowedTools))
-		for _, name := range agent.AllowedTools {
-			if name != AgentToolName && name != tools.AgenticFetchToolName {
-				stripped = append(stripped, name)
-			}
-		}
-		agent.AllowedTools = stripped
-	}
-	if !c.workerSubAgentActiveForCall(ctx, cfg) {
-		return agent
-	}
-	if isSubAgent {
-		allowed := make([]string, len(agent.AllowedTools), len(agent.AllowedTools)+len(workerToolNames))
-		copy(allowed, agent.AllowedTools)
-		for _, name := range workerLayeredToolNames() {
-			if !slices.Contains(allowed, name) {
-				allowed = append(allowed, name)
-			}
-		}
-		agent.AllowedTools = allowed
-		return agent
-	}
-
-	// Top-level coder (buildAgent is only ever called with isSubAgent=false
-	// for the coder agent): strip the orchestrator's direct edit tools.
-	allowed := make([]string, 0, len(agent.AllowedTools))
-	for _, name := range agent.AllowedTools {
-		if !slices.Contains(orchestratorStrippedToolNames, name) {
-			allowed = append(allowed, name)
-		}
-	}
-	agent.AllowedTools = allowed
-	return agent
+	return newToolsComponent(c).buildToolsAgentConfigForCall(ctx, cfg, agent, isSubAgent)
 }
 
 // buildToolsAgentConfig is the legacy, context-less form of
 // buildToolsAgentConfigForCall, kept for direct tests: it behaves exactly
 // like a caller whose context carries no CallOptions.
 func (c *coordinator) buildToolsAgentConfig(cfg *config.Config, agent config.Agent, isSubAgent bool) config.Agent {
-	return c.buildToolsAgentConfigForCall(context.Background(), cfg, agent, isSubAgent)
+	return newToolsComponent(c).buildToolsAgentConfig(cfg, agent, isSubAgent)
 }
 
 // applyCallDisableSubAgents implements the per-call `--agents single`
@@ -293,39 +110,7 @@ func (c *coordinator) buildToolsAgentConfig(cfg *config.Config, agent config.Age
 // there, so only agentic_fetch stays stripped. A context without
 // CallOptions (legacy callers) changes nothing.
 func (c *coordinator) applyCallDisableSubAgents(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) config.Agent {
-	opts := callOptionsFrom(ctx)
-	if remaining, err := MaxAgentDepthFrom(ctx); err != nil || remaining == 0 {
-		stripped := make([]string, 0, len(agent.AllowedTools))
-		for _, name := range agent.AllowedTools {
-			if name != AgentToolName && name != tools.AgenticFetchToolName {
-				stripped = append(stripped, name)
-			}
-		}
-		agent.AllowedTools = stripped
-		return agent
-	}
-	if opts == nil || !opts.DisableSubAgents || isSubAgent {
-		return agent
-	}
-
-	bypass := opts.ModelRole == config.SelectedModelTypeSmart
-	if bypass {
-		workerModelCfg, ok := cfg.Models[config.SelectedModelTypeWorker]
-		bypass = ok && workerModelCfg.Model != ""
-	}
-
-	stripped := make([]string, 0, len(agent.AllowedTools))
-	for _, name := range agent.AllowedTools {
-		if name == tools.AgenticFetchToolName {
-			continue
-		}
-		if name == AgentToolName && !bypass {
-			continue
-		}
-		stripped = append(stripped, name)
-	}
-	agent.AllowedTools = stripped
-	return agent
+	return newToolsComponent(c).applyCallDisableSubAgents(ctx, cfg, agent, isSubAgent)
 }
 
 // folderScopeLegacyFileTools are the single-target file tools a scoped
@@ -387,47 +172,7 @@ func withoutFolderScopeTools(agent config.Agent) config.Agent {
 // agent delegation tool and so on -- are untouched: the scope narrows
 // the filesystem surface, not the conversation.
 func (c *coordinator) applyCallFolderScope(ctx context.Context, agent config.Agent) config.Agent {
-	opts := callOptionsFrom(ctx)
-	if opts == nil || opts.FolderScope == nil {
-		// No scope: fs_* would be built with the zero scope and deny every
-		// path, so the model burns turns on refusals. Hide them.
-		return withoutFolderScopeTools(agent)
-	}
-	scope := *opts.FolderScope
-
-	commandTools := folderScopeCommandToolSet()
-	stripped := make([]string, 0, len(agent.AllowedTools))
-	for _, name := range agent.AllowedTools {
-		if _, ok := folderScopeLegacyFileTools[name]; ok {
-			continue
-		}
-		if _, ok := folderScopeEscapeHatchTools[name]; ok {
-			continue
-		}
-		if _, ok := commandTools[name]; ok && !scope.KeepsCommandTools() {
-			continue
-		}
-		if _, ok := folderScopeOpForTool[name]; ok {
-			// Re-decided by the Grants pass below; never fall through.
-			continue
-		}
-		if name == tools.FSWriteToolName {
-			// create OR overwrite, decided below.
-			continue
-		}
-		stripped = append(stripped, name)
-	}
-	for toolName, op := range folderScopeOpForTool {
-		if scope.Grants(op) {
-			stripped = append(stripped, toolName)
-		}
-	}
-	if scope.Grants(permission.FileOpCreate) || scope.Grants(permission.FileOpOverwrite) {
-		stripped = append(stripped, tools.FSWriteToolName)
-	}
-	agent.AllowedTools = stripped
-	agent.AllowedMCP = map[string][]string{}
-	return agent
+	return newToolsComponent(c).applyCallFolderScope(ctx, agent)
 }
 
 // noRealWorkspaceForbiddenTools are the tools that can never be offered
@@ -497,24 +242,7 @@ var noRealWorkspaceScopedFSTools = map[string]struct{}{
 // custom provider keeps the scoped family usable (the README's
 // opt-in), nil or the real OSDisk strips it alongside the rest.
 func (c *coordinator) applyNoRealWorkspaceToolFloor(cfg *config.Config, agent config.Agent, disk tools.DiskProvider) config.Agent {
-	if cfg == nil || cfg.Options == nil || !cfg.Options.NoRealWorkspace {
-		return agent
-	}
-	customDisk := tools.IsCustomDiskProvider(disk)
-	stripped := make([]string, 0, len(agent.AllowedTools))
-	for _, name := range agent.AllowedTools {
-		if _, ok := noRealWorkspaceForbiddenTools[name]; ok {
-			continue
-		}
-		if !customDisk {
-			if _, ok := noRealWorkspaceScopedFSTools[name]; ok {
-				continue
-			}
-		}
-		stripped = append(stripped, name)
-	}
-	agent.AllowedTools = stripped
-	return agent
+	return newToolsComponent(c).applyNoRealWorkspaceToolFloor(cfg, agent, disk)
 }
 
 // rejectScopedCallOnCLIProvider refuses a folder-scoped call whose
@@ -525,16 +253,7 @@ func (c *coordinator) applyNoRealWorkspaceToolFloor(cfg *config.Config, agent co
 // hard error so it fires BEFORE any provider traffic or subprocess spawn.
 // Unscoped calls and non-CLI providers pass untouched.
 func (c *coordinator) rejectScopedCallOnCLIProvider(ctx context.Context, role string, providerCfg config.ProviderConfig) error {
-	opts := callOptionsFrom(ctx)
-	if opts == nil || opts.FolderScope == nil {
-		return nil
-	}
-	if providerCfg.Type != cliprovider.ProviderType {
-		return nil
-	}
-	return fmt.Errorf(
-		"folder-scoped call cannot run on the %s role's CLI provider %q (type %q): the subprocess's file tools cannot see the folder scope",
-		role, providerCfg.ID, cliprovider.ProviderType)
+	return newToolsComponent(c).rejectScopedCallOnCLIProvider(ctx, role, providerCfg)
 }
 
 // nestedAgentToolWarnOnce rate-limits the task #1050 nested-delegation
@@ -576,280 +295,15 @@ var nestedAgentToolWarnOnce sync.Once
 // with SetTools; only UpdateModels (which strips CallOptions from its ctx
 // first) may publish a global toolset.
 func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) ([]fantasy.AgentTool, error) {
-	if opts := callOptionsFrom(ctx); opts != nil && callBuildScopeFrom(ctx) == nil {
-		EnsureCallBuildScope(opts)
-		defer opts.BuildScope.Close()
-	}
-	built, err := c.buildPolicyTools(ctx, cfg, agent, isSubAgent)
-	return built.tools, err
+	return newToolsComponent(c).buildTools(ctx, cfg, agent, isSubAgent)
 }
 
 func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) (policyToolBuild, error) {
-	if opts := callOptionsFrom(ctx); opts != nil {
-		if opts.RoleContract != nil {
-			ctx = WithParentRoleConfigSnapshot(ctx, cfg)
-		}
-	}
-	agent = c.applyCallDisableSubAgents(ctx, cfg, agent, isSubAgent)
-	agent = c.buildToolsAgentConfigForCall(ctx, cfg, agent, isSubAgent)
-	agent = c.applyCallFolderScope(ctx, agent)
-	agent = applyCallReviewerReadOnly(ctx, agent, isSubAgent)
-
-	// The scope and disk provider the fs_* tools constructed below are
-	// built with: THIS call's FolderScope/DiskProvider, or their zero
-	// values for a call with no CallOptions (or a CallOptions that sets
-	// neither). The zero scope grants nothing, so the constructions
-	// themselves are inert; which fs_* tools reach the returned slice is
-	// decided by agent.AllowedTools membership -- applyCallFolderScope
-	// for a scoped call, the config defaults for an unscoped one. The
-	// zero (nil) disk provider means each constructor normalises to the
-	// real filesystem (diskOrOS) -- see CallOptions.DiskProvider's doc
-	// comment for why it is deliberately not part of that same
-	// zero-scope-denies-everything story.
-	var scope permission.FolderScope
-	var disk tools.DiskProvider
-	if callOpts := callOptionsFrom(ctx); callOpts != nil {
-		if callOpts.FolderScope != nil {
-			scope = *callOpts.FolderScope
-		}
-		disk = callOpts.DiskProvider
-	}
-
-	// R14-1 (P0, SDK review round 14): final capability floor. Must run
-	// LAST -- after worker layering and the folder-scope re-adds above
-	// -- so the disabled-tools list is a floor no layering can punch
-	// through (see applyNoRealWorkspaceToolFloor's doc).
-	agent = c.applyNoRealWorkspaceToolFloor(cfg, agent, disk)
-	agent = applyBatchQuestionRouteFloor(ctx, agent)
-
-	// SSRF guard escape hatch (Options.AllowPrivateNetworkFetch, off by
-	// default): when enabled, every model-facing HTTP tool below gets an
-	// explicit allowPrivate=true client instead of letting its own nil
-	// fallback build the guarded default. See ssrf_guard.go.
-	//
-	// Options can be nil on bare test fixtures; every Options read below
-	// tolerates that.
-	var allowPrivateNetworkFetch bool
-	var attribution *config.Attribution
-	var skillsPaths []string
-	var logFile string
-	if cfg.Options != nil {
-		allowPrivateNetworkFetch = cfg.Options.AllowPrivateNetworkFetch
-		attribution = cfg.Options.Attribution
-		skillsPaths = cfg.Options.SkillsPaths
-		if cfg.Options.DataDirectory != "" {
-			logFile = filepath.Join(cfg.Options.DataDirectory, "logs", "rush.log")
-		}
-	}
-	fetchClient := func(timeout time.Duration) *http.Client {
-		if !allowPrivateNetworkFetch {
-			return nil
-		}
-		return tools.NewSSRFGuardedClient(timeout, true)
-	}
-
-	outputAccess := c.mcpOutputAccess()
-	var allTools []fantasy.AgentTool
-	if slices.Contains(agent.AllowedTools, AgentToolName) {
-		if isSubAgent {
-			// Recursion guard (task #1050): this build is for the task
-			// agent itself -- the only isSubAgent=true build in production
-			// (see agent_tool.go's c.buildAgent call). Handing it the
-			// "agent" tool would let c.agentTool build a fresh copy of the
-			// same task agent, whose buildTools would see AgentToolName
-			// again and recurse forever, each level registering two more
-			// goroutines on the shared c.readyWg that every run entry point
-			// blocks on via readyWg.Wait(). Deny unconditionally, no matter
-			// what AllowedTools says.
-			nestedAgentToolWarnOnce.Do(func() {
-				slog.Warn("task agent AllowedTools includes the agent tool; denying it to prevent nested delegation recursion", "agent", agent.Name)
-			})
-		} else {
-			agentTool, err := c.agentTool(ctx)
-			if err != nil {
-				return policyToolBuild{}, err
-			}
-			allTools = append(allTools, agentTool)
-		}
-	}
-
-	if slices.Contains(agent.AllowedTools, tools.AgenticFetchToolName) {
-		agenticFetchTool, err := c.agenticFetchTool(ctx, fetchClient(30*time.Second))
-		if err != nil {
-			return policyToolBuild{}, err
-		}
-		allTools = append(allTools, agenticFetchTool)
-	}
-
-	// Get the model name for the agent
-	modelID := ""
-	if modelCfg, ok := cfg.Models[agent.Model]; ok {
-		if model := cfg.GetModel(modelCfg.Provider, modelCfg.Model); model != nil {
-			modelID = model.ID
-		}
-	}
-
-	// Build hook runner if PreToolUse hooks are configured.
-	var hookRunner *hooks.Runner
-	if preToolHooks := cfg.Hooks[hooks.EventPreToolUse]; len(preToolHooks) > 0 {
-		hookRunner = hooks.NewRunner(preToolHooks, c.cfg.WorkingDir(), c.cfg.WorkingDir())
-	}
-
-	// Background-job completion notification. When a bash command
-	// auto-backgrounds and later finishes, notifyBackgroundJobDone persists a
-	// bg_shell_done session_notices row (wake=1); the owning session's next
-	// turn pulls it into history (a running turn at a step boundary). A turn
-	// is started for it by the web process (AutoResumeOnJobDone, at most
-	// maxConsecutiveAutoResumes per human message) or by a `rush run` loop's
-	// own reaction turn (the same policy: with AutoResumeOnJobDone off a
-	// bg-shell-only notice waits for the next natural turn; the loop has no
-	// cap). Kill-switch defaults to ON. A `rush run` process registers this
-	// callback too, so the row can also appear while its loop waits.
-	opts := cfg.Options
-	notifyDone := opts == nil || opts.NotifyOnBackgroundJobDone == nil || *opts.NotifyOnBackgroundJobDone
-	backgroundManager := c.background
-	if backgroundManager == nil {
-		backgroundManager = shell.NewBackgroundShellManager()
-	}
-	var onBgDone func(string, *shell.BackgroundShell)
-	if notifyDone {
-		onBgDone = func(sessionID string, sh *shell.BackgroundShell) {
-			c.notifyBackgroundJobDone(sessionID, sh)
-		}
-	}
-
-	allTools = append(
-		allTools,
-		tools.NewAskQuestionTool(),
-		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), attribution, modelID, onBgDone, backgroundManager),
-		tools.NewRushInfoTool(c.cfg, c.allSkills, c.activeSkills, c.skillTracker),
-		tools.NewInspectAgentTool(c),
-		tools.NewInjectAgentTool(c),
-		tools.NewStopAgentTool(c),
-		tools.NewWakeinTool(c),
-		tools.NewAwaitTasksTool(c),
-		tools.NewWakeonTool(c),
-		tools.NewWakeLoopTool(c),
-		tools.NewWakeListTool(c),
-		tools.NewWakeCancelTool(c),
-		tools.NewDownloadTool(c.permissions, c.cfg.WorkingDir(), fetchClient(5*time.Minute)),
-		tools.NewEditTool(c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
-		tools.NewMultiEditTool(c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
-		tools.NewFetchTool(c.permissions, c.cfg.WorkingDir(), fetchClient(30*time.Second)),
-		tools.NewGitReadTool(c.cfg.WorkingDir()),
-		tools.NewGlobTool(c.cfg.WorkingDir(), c.permissions),
-		tools.NewGrepTool(c.cfg.WorkingDir(), cfg.Tools.Grep, c.permissions),
-		tools.NewLsTool(c.permissions, c.cfg.WorkingDir(), cfg.Tools.Ls),
-		tools.NewReadDelegationTranscriptTool(c.sessions, c.messages),
-		tools.NewRunCommandTool(c.permissions, c.cfg.WorkingDir()),
-		tools.NewSourcegraphTool(fetchClient(30*time.Second)),
-		tools.NewTodosTool(c.sessions),
-		tools.NewViewTool(c.permissions, c.filetracker, c.skillTracker, c.cfg.WorkingDir(), skillsPaths...),
-		tools.NewWriteTool(c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
-
-		// Scoped, batch-capable fs_* family, constructed with THIS
-		// call's scope (see the extraction above; the zero value denies
-		// everything) and THIS call's disk provider (nil normalises to
-		// the real disk inside each constructor). NewFSGrepTool takes
-		// workingDir first and scope second; the other seven take scope
-		// first. Every constructor's LAST parameter is the DiskProvider
-		// precisely because of that reversed-order outlier: a trailing
-		// parameter needs no per-constructor special case.
-		tools.NewFSListTool(scope, c.cfg.WorkingDir(), cfg.Tools.Ls, disk),
-		tools.NewFSFindTool(scope, c.cfg.WorkingDir(), disk),
-		tools.NewFSReadTool(scope, c.filetracker, c.cfg.WorkingDir(), disk),
-		tools.NewFSGrepTool(c.cfg.WorkingDir(), scope, cfg.Tools.Grep, disk),
-		tools.NewFSWriteTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir(), disk),
-		tools.NewFSReplaceTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir(), disk),
-		tools.NewFSWriteLinesTool(scope, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir(), disk),
-		tools.NewFSDeleteTool(scope, c.permissions, c.cfg.WorkingDir(), disk),
-	)
-
-	// R15-1 (P0, SDK review round 15): rush_logs reads a real host
-	// file -- Options.DataDirectory's logs/rush.log. With no data
-	// directory (an ephemeral SDK session) there is no log file to
-	// read, and falling back to the RELATIVE logs/rush.log would
-	// resolve against the host process's own working directory, so
-	// the tool is simply not constructed or offered at all.
-	if logFile != "" {
-		allTools = append(allTools, tools.NewRushLogsTool(logFile))
-	}
-
-	// cfg.MCP presence is pinned config data (any MCP server configured at
-	// all, enabled or not), unlike the tool set itself below -- see this
-	// function's doc comment.
-	if len(cfg.MCP) > 0 {
-		allTools = append(
-			allTools,
-			tools.NewListMCPResourcesTool(c.cfg, c.permissions, c.mcpOwner),
-			tools.NewReadMCPResourceTool(c.cfg, c.permissions, c.mcpOwner, outputAccess),
-		)
-	}
-
-	filteredTools := make([]fantasy.AgentTool, 0, len(allTools))
-	for _, tool := range allTools {
-		if slices.Contains(agent.AllowedTools, tool.Info().Name) {
-			filteredTools = append(filteredTools, tool)
-		}
-	}
-
-	allowedControls := batchControlAvailability(filteredTools, agent.AllowedTools)
-	allowedControls = filterRoleToolNames(ctx, allowedControls)
-	{
-		if bind := coordinatorBatchBindingFor(c); bind != nil && bind.controls != nil {
-			for _, name := range allowedControls {
-				if name == tools.AwaitTasksToolName {
-					for i, tool := range filteredTools {
-						if tool.Info().Name == name {
-							filteredTools[i] = tools.NewBatchAwaitTasksTool(c)
-						}
-					}
-					continue
-				}
-				filteredTools = append(filteredTools, newBatchControlPlaceholder(name))
-			}
-		}
-	}
-
-	// GetMCPTools reads the live MCP tool registry; apply the configured MCP allowlist below.
-	for _, tool := range tools.GetMCPTools(c.permissions, c.cfg, c.cfg.WorkingDir(), c.mcpOwner, outputAccess) {
-		if agent.AllowedMCP == nil {
-			// No MCP restrictions
-			filteredTools = append(filteredTools, tool)
-			continue
-		}
-		if len(agent.AllowedMCP) == 0 {
-			// No MCPs allowed
-			slog.Debug("No MCPs allowed", "tool", tool.Name(), "agent", agent.Name)
-			break
-		}
-
-		for mcp, tools := range agent.AllowedMCP {
-			if mcp != tool.MCP() {
-				continue
-			}
-			if len(tools) == 0 || slices.Contains(tools, tool.MCPToolName()) {
-				filteredTools = append(filteredTools, tool)
-				break
-			}
-			slog.Debug("MCP not allowed", "tool", tool.Name(), "agent", agent.Name)
-		}
-	}
-	filteredTools = filterRoleContractTools(ctx, filteredTools)
-	admitMCPOutputSources(outputAccess, filteredTools)
-	slices.SortFunc(filteredTools, func(a, b fantasy.AgentTool) int {
-		return strings.Compare(a.Info().Name, b.Info().Name)
-	})
-	return c.finishToolAssembly(ctx, filteredTools, hookRunner, isSubAgent, allowedControls, cfg)
+	return newToolsComponent(c).buildPolicyTools(ctx, cfg, agent, isSubAgent)
 }
 
 // sharedBuildScopeFor lazily creates the coordinator-level build scope for
 // tool assemblies without trusted call state (the shared session toolset).
 func (c *coordinator) sharedBuildScopeFor() *buildResourceScope {
-	c.sharedBuildScopeMu.Lock()
-	defer c.sharedBuildScopeMu.Unlock()
-	if c.sharedBuildScope == nil {
-		c.sharedBuildScope = newBuildResourceScope()
-	}
-	return c.sharedBuildScope
+	return newToolsComponent(c).sharedBuildScopeFor()
 }

@@ -3,8 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
-	"log/slog"
 
 	"charm.land/fantasy"
 
@@ -100,50 +98,7 @@ var pinCallToolsReadyGateSeam func(*readyGate)
 // (nil, nil) — log-only — preserving the pre-R6-3 "fall back to the shared
 // toolset" behavior for callers that never asked for a distinct one.
 func (c *coordinator) pinCallTools(ctx context.Context, cfg *config.Config) ([]fantasy.AgentTool, error) {
-	required := scopedCallToolsRequired(ctx)
-	fail := func(err error) ([]fantasy.AgentTool, error) {
-		// R12-H2a round 2: a failure AFTER buildTools has already pinned
-		// construction owners into the call's build scope (the empty-
-		// toolset refusal, the ready-gate drain error) must not leak
-		// them. Only the CALL's own scope is closed: callBuildScopeFrom
-		// returns nil for bare contexts, so the coordinator's shared
-		// scope is never touched here.
-		if scope := callBuildScopeFrom(ctx); scope != nil {
-			scope.Close()
-		}
-		slog.Warn("Coordinator: failed to build per-call tools", "err", err, "distinct_toolset_required", required)
-		if required {
-			// Wrap both: callers match the cause (e.g. ErrDiskProviderNotDurable).
-			return nil, fmt.Errorf("%w: %w", ErrScopedCallToolsUnavailable, err)
-		}
-		return nil, nil
-	}
-
-	agentCfg, ok := cfg.Agents[config.AgentCoder]
-	if !ok {
-		return fail(errCoderAgentNotConfigured)
-	}
-	buildGate := &readyGate{}
-	ctx = withReadyGate(ctx, buildGate)
-	tools, err := c.buildTools(ctx, cfg, agentCfg, false)
-	if err != nil {
-		_ = buildGate.Wait()
-		return fail(err)
-	}
-	if pinCallToolsReadyGateSeam != nil {
-		pinCallToolsReadyGateSeam(buildGate)
-	}
-	if required && len(tools) == 0 && !roleToolsConstrained(ctx) {
-		_ = buildGate.Wait()
-		return fail(errors.New("per-call toolset is empty"))
-	}
-	// The toolset embeds a freshly built sub-agent (buildTools -> agentTool
-	// -> buildAgent), whose prompt/tool builds run asynchronously. Drain the
-	// local build group before the turn uses this per-call toolset.
-	if waitErr := buildGate.Wait(); waitErr != nil {
-		return fail(waitErr)
-	}
-	return tools, nil
+	return newModelsComponent(c).pinCallTools(ctx, cfg)
 }
 
 // withoutCallOptions returns ctx with any per-call CallOptions removed, so
