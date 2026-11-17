@@ -13,12 +13,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 )
 
 // Bounds on the evidence a finding carries. A command is cut at 110 bytes

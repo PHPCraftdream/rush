@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/locks"
+	sesslocks "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/locks"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
