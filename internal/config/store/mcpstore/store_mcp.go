@@ -4,10 +4,18 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"path/filepath"
 	"slices"
+	"strings"
+	"sync"
 
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
+	"github.com/PHPCraftdream/rush/internal/config/model/envresolve"
 	"github.com/PHPCraftdream/rush/internal/config/store/settings"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
 )
 
 var (
@@ -421,3 +429,326 @@ func settingsFinalizeEvent(ev *settings.SettingsEvent, refusedBy string, err err
 }
 
 func settingsEmitEvent(ev settings.SettingsEvent) { settings.EmitSettingsEvent(ev) }
+
+// Uncertainty fences and per-path owner policy (moved from mcpstore.go to keep the directory at 7 files).
+// mcpUncertaintyState tracks per-name fence versions raised by uncertain
+// commits (moved from internal/config/mcp_uncertainty.go unchanged except
+// the receiver).
+type mcpUncertaintyState struct {
+	mu       sync.RWMutex
+	next     uint64
+	versions map[string]uint64
+}
+
+// MarkMCPUncertain raises the fail-closed fence for name and returns its
+// version. A subsequent successful reload of this exact store clears it.
+func (s *Store) MarkMCPUncertain(name string) uint64 {
+	if s == nil {
+		return 0
+	}
+	s.mcpUncertainty.mu.Lock()
+	defer s.mcpUncertainty.mu.Unlock()
+	if s.mcpUncertainty.versions == nil {
+		s.mcpUncertainty.versions = make(map[string]uint64)
+	}
+	s.mcpUncertainty.next++
+	s.mcpUncertainty.versions[name] = s.mcpUncertainty.next
+	return s.mcpUncertainty.next
+}
+
+// MCPUncertaintyVersion reports the current fence version for name.
+func (s *Store) MCPUncertaintyVersion(name string) (uint64, bool) {
+	if s == nil {
+		return 0, false
+	}
+	s.mcpUncertainty.mu.RLock()
+	version, ok := s.mcpUncertainty.versions[name]
+	s.mcpUncertainty.mu.RUnlock()
+	return version, ok
+}
+
+// MCPUncertaintyVersions returns a snapshot of the requested fences. With no
+// names it returns every fence.
+func (s *Store) MCPUncertaintyVersions(names ...string) map[string]uint64 {
+	result := make(map[string]uint64)
+	if s == nil {
+		return result
+	}
+	s.mcpUncertainty.mu.RLock()
+	defer s.mcpUncertainty.mu.RUnlock()
+	if len(names) == 0 {
+		for name, version := range s.mcpUncertainty.versions {
+			result[name] = version
+		}
+		return result
+	}
+	for _, name := range names {
+		if version, ok := s.mcpUncertainty.versions[name]; ok {
+			result[name] = version
+		}
+	}
+	return result
+}
+
+// ClearUncertainty clears only fences observed before the reload began
+// (root back-call from store_reload.go; was clearMCPUncertainty).
+// Fences raised while a reload is in flight remain for the next reconciliation.
+func (s *Store) ClearUncertainty(expected map[string]uint64) {
+	if s == nil {
+		return
+	}
+	s.mcpUncertainty.mu.Lock()
+	for name, version := range expected {
+		if current, ok := s.mcpUncertainty.versions[name]; ok && current == version {
+			delete(s.mcpUncertainty.versions, name)
+		}
+	}
+	s.mcpUncertainty.mu.Unlock()
+}
+
+// OwnerPolicyFor resolves the trust policy for one config path (root
+// back-call from store_write.go resolveConfigWriteTarget; was
+// mcpOwnerPolicy; the workingDirOwnerOnce/owner/err tail moved behind
+// Port.WorkingDirOwner).
+func (s *Store) OwnerPolicyFor(path string) (int, bool, error) {
+	if strings.EqualFold(filepath.Base(path), ".mcp.json") {
+		if strings.EqualFold(
+			docread.NormalizeDiscoveryPath(path),
+			docread.NormalizeDiscoveryPath(filepath.Join(home.Dir(), ".claude", ".mcp.json")),
+		) {
+			return fileid.HomeConfigOwner(), true, nil
+		}
+		owner, hasWorkingDir, err := s.port.WorkingDirOwner()
+		if err != nil {
+			return 0, false, err
+		}
+		return owner, hasWorkingDir, nil
+	}
+	canonical := docread.NormalizeReloadPath(path)
+	if systemPath := s.systemConfigPathValue(); systemPath != "" && canonical == docread.NormalizeReloadPath(systemPath) {
+		return fileid.SystemConfigOwner(), true, nil
+	}
+	if docread.MatchesLogicalSlot(canonical, datadir.GlobalConfig()) || docread.MatchesLogicalSlot(canonical, s.port.GlobalDataPath()) {
+		return fileid.HomeConfigOwner(), true, nil
+	}
+	if canonical == docread.NormalizeReloadPath(filepath.Join(home.Dir(), ".claude", ".mcp.json")) {
+		return fileid.HomeConfigOwner(), true, nil
+	}
+	owner, hasWorkingDir, err := s.port.WorkingDirOwner()
+	if err != nil {
+		return 0, false, err
+	}
+	return owner, hasWorkingDir, nil
+}
+
+// mcpOwnerPolicy is the component-internal name for OwnerPolicyFor, kept so
+// moved method bodies stay byte-identical.
+func (s *Store) mcpOwnerPolicy(path string) (int, bool, error) { return s.OwnerPolicyFor(path) }
+
+// Moved from mcpstore.go (file deleted to keep the directory at 7 files).
+// Model contracts re-exported from cfgmodel (same alias pattern as the root
+// facade).
+type (
+	Config                 = cfgmodel.Config
+	MCPConfig              = cfgmodel.MCPConfig
+	MCPs                   = cfgmodel.MCPs
+	MCPOrigin              = cfgmodel.MCPOrigin
+	Scope                  = cfgmodel.Scope
+	SettingsWriteAuthority = cfgmodel.SettingsWriteAuthority
+	VariableResolver       = envresolve.VariableResolver
+
+	// io aliases (moved with the store files they served).
+	fileSnapshot          = docread.FileSnapshot
+	stableConfigDocument  = docread.StableConfigDocument
+	reloadFileFingerprint = docread.Fingerprint
+)
+
+// Constants re-exported from cfgmodel.
+const (
+	DockerMCPName              = cfgmodel.DockerMCPName
+	MCPHttp                    = cfgmodel.MCPHttp
+	MCPOriginExternal          = cfgmodel.MCPOriginExternal
+	MCPOriginGlobal            = cfgmodel.MCPOriginGlobal
+	MCPOriginProject           = cfgmodel.MCPOriginProject
+	MCPOriginSystem            = cfgmodel.MCPOriginSystem
+	MCPOriginWorkspace         = cfgmodel.MCPOriginWorkspace
+	MCPSourceExternal          = cfgmodel.MCPSourceExternal
+	MCPStdio                   = cfgmodel.MCPStdio
+	ScopeGlobal                = cfgmodel.ScopeGlobal
+	ScopeWorkspace             = cfgmodel.ScopeWorkspace
+	SettingsAuthorityGuarded   = cfgmodel.SettingsAuthorityGuarded
+	SettingsAuthorityTrustedUI = cfgmodel.SettingsAuthorityTrustedUI
+)
+
+// MCPView is one published store snapshot as seen by the MCP component.
+type MCPView interface {
+	Config() *cfgmodel.Config
+	MCPRevisions() map[string]uint64
+	MCPInputs() map[string][32]byte
+	Resolver() envresolve.VariableResolver
+	ResolverRevision() uint64
+	Snapshots() map[string]docread.FileSnapshot
+	WorkspacePath() string
+	Generation() uint64
+}
+
+// MutationScope is handed to PublishMutation callbacks with publishMu held:
+// Current reads the snapshot under the lock, Publish clones it, replaces the
+// given fields, and publishes the next generation.
+type MutationScope interface {
+	Current() MCPView
+	Publish(next MCPNext)
+}
+
+// MCPNext carries the snapshot fields an MCP mutation replaces; every field
+// left nil/false is carried over from the current snapshot.
+type MCPNext struct {
+	Config          *cfgmodel.Config
+	MCPRevisions    map[string]uint64
+	MCPInputs       map[string][32]byte
+	ResolverDynamic bool
+	Snapshots       map[string]docread.FileSnapshot
+}
+
+// mutationNext returns the empty replacement set for one publish.
+func mutationNext() MCPNext { return MCPNext{} }
+
+// LockTarget is one resolved physical config write destination as seen by
+// the MCP lock machinery. The core port converts it to/from its private
+// configWriteTarget.
+type LockTarget struct {
+	Path         string
+	SelectedPath string
+	LockPath     string
+	Expected     docread.Fingerprint
+	Owner        int
+	Enforce      bool
+}
+
+// DiskWriter is the write-path seam handed to DiskWrite callbacks with
+// diskWriteMu held.
+type DiskWriter interface {
+	// ResolveWriteTargets pins the physical spelling and sidecar for each
+	// path (and runs the resolve-target hook) before the locks are taken.
+	ResolveWriteTargets(paths []string) ([]LockTarget, error)
+	// VerifyTargetBindingAfterLock rereads the destination after the
+	// sidecar lock is acquired.
+	VerifyTargetBindingAfterLock(target LockTarget) error
+	// VerifyTargetBinding confirms the pre-lock selection still matches the
+	// post-lock reread (readErr carries the read failure, if any).
+	VerifyTargetBinding(target LockTarget, actual docread.Fingerprint, readErr error) error
+}
+
+// Port exposes exactly the core ConfigStore primitives the MCP component
+// needs. It never lets mcpstore import the root config package.
+type Port interface {
+	// ViewSnap samples the published snapshot exactly once per callback.
+	ViewSnap(fn func(MCPView) error) error
+	// PublishMutation runs fn with publishMu held.
+	PublishMutation(fn func(MutationScope) error) error
+	// MutateConfig applies a copy-on-write config mutation under publishMu.
+	MutateConfig(mutate func(*cfgmodel.Config))
+	// ScopePath resolves the logical slot to its physical path.
+	ScopePath(scope cfgmodel.Scope) (string, error)
+	GlobalDataPath() string
+	WorkingDir() string
+	// SystemConfigPath returns the (possibly overridden) system config path.
+	SystemConfigPath() string
+	// WorkingDirOwner computes (once) the working-directory config owner and
+	// reports whether a working directory is set.
+	WorkingDirOwner() (owner int, hasWorkingDir bool, err error)
+	// DiskWrite runs fn with diskWriteMu held.
+	DiskWrite(fn func(DiskWriter) error) error
+	// NoteInitialLoadWrite requires diskWriteMu to be held and may be called
+	// only from inside a WithFileWriteLock callback. It must not call
+	// PublishMutation or re-enter DiskWrite.
+	NoteInitialLoadWrite(path string, data []byte)
+	// SettingsGuard returns the settings component's write guard.
+	SettingsGuard() *settings.Store
+	// CommitDiskWrite fences reloads: bumps the disk write generation after
+	// a committed config write. The caller must already hold diskWriteMu
+	// (i.e. run inside DiskWrite).
+	CommitDiskWrite()
+}
+
+// Store is the MCP persistence component over one core store port.
+type Store struct {
+	port Port
+
+	// mcpUncertainty owns uncertainty raised by a durable MCP mutation. The
+	// state is deliberately outside the replaceable config snapshot so
+	// reloads cannot lose it before their successful publication boundary.
+	mcpUncertainty mcpUncertaintyState
+}
+
+// NewStore builds the MCP component over the given core port.
+func NewStore(p Port) *Store { return &Store{port: p} }
+
+// MCPAdmissionSnapshot captures the MCP definition and resolver revisions
+// from one immutable store snapshot.
+type MCPAdmissionSnapshot struct {
+	Config           *Config
+	Resolver         VariableResolver
+	MCPConfig        MCPConfig
+	Exists           bool
+	MCPInput         [32]byte
+	HasMCPInput      bool
+	MCPRevision      uint64
+	ResolverRevision uint64
+	Generation       uint64
+}
+
+// SnapshotMCPAdmission captures the MCP definition and resolver revisions
+// from one immutable store snapshot.
+func (s *Store) SnapshotMCPAdmission(name string) MCPAdmissionSnapshot {
+	var result MCPAdmissionSnapshot
+	_ = s.port.ViewSnap(func(view MCPView) error {
+		config := view.Config()
+		result = MCPAdmissionSnapshot{
+			Config:           config,
+			Resolver:         view.Resolver(),
+			MCPRevision:      view.MCPRevisions()[name],
+			ResolverRevision: view.ResolverRevision(),
+			Generation:       view.Generation(),
+		}
+		result.MCPInput, result.HasMCPInput = view.MCPInputs()[name]
+		if config != nil {
+			result.MCPConfig, result.Exists = config.MCP[name]
+			if result.Exists {
+				result.MCPConfig = cloneMCPConfig(result.MCPConfig)
+			}
+		}
+		return nil
+	})
+	return result
+}
+
+// currentMCPInputs reads the published MCP input fingerprints.
+func (s *Store) currentMCPInputs() map[string][32]byte {
+	var inputs map[string][32]byte
+	_ = s.port.ViewSnap(func(view MCPView) error {
+		inputs = view.MCPInputs()
+		return nil
+	})
+	return inputs
+}
+
+// currentGeneration reads the published snapshot generation.
+func (s *Store) currentGeneration() uint64 {
+	var generation uint64
+	_ = s.port.ViewSnap(func(view MCPView) error {
+		generation = view.Generation()
+		return nil
+	})
+	return generation
+}
+
+// workspacePathValue reads the published workspace path.
+func (s *Store) workspacePathValue() string {
+	var path string
+	_ = s.port.ViewSnap(func(view MCPView) error {
+		path = view.WorkspacePath()
+		return nil
+	})
+	return path
+}

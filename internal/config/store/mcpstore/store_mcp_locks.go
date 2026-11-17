@@ -7,8 +7,10 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -378,4 +380,142 @@ func (s *Store) WithMCPLocksUsingCaseSensitivity(
 		}
 		return fn(files)
 	})
+}
+
+// Moved from mcpstore.go (file deleted to keep the directory at 7 files).
+// UpdateMCP applies a copy-on-write mutation to one MCP server configuration.
+// It never mutates a published Config or any of its nested MCP maps.
+func (s *Store) UpdateMCP(name string, mutate func(*MCPConfig)) (MCPConfig, bool) {
+	var updated MCPConfig
+	var ok bool
+	_ = s.port.PublishMutation(func(scope MutationScope) error {
+		cur := scope.Current()
+		config := cur.Config()
+		if config == nil || config.MCP == nil {
+			return nil
+		}
+		current, exists := config.MCP[name]
+		if !exists {
+			return nil
+		}
+		updated = cloneMCPConfig(current)
+		mutate(&updated)
+		next := mutationNext()
+		cfgCopy := *config
+		cfgCopy.MCP = maps.Clone(config.MCP)
+		cfgCopy.MCP[name] = cloneMCPConfig(updated)
+		next.Config = &cfgCopy
+		next.MCPRevisions = mcpRevisionDiff(cur.MCPRevisions(), config, &cfgCopy, cur.MCPInputs(), next.MCPInputs, name)
+		next.ResolverDynamic = configHasDynamicMCPResolution(&cfgCopy)
+		scope.Publish(next)
+		ok = true
+		return nil
+	})
+	return updated, ok
+}
+
+// SetMCPDisabled updates one MCP server's disabled flag through the
+// copy-on-write publication path and returns the detached new value.
+func (s *Store) SetMCPDisabled(name string, disabled bool) (MCPConfig, bool) {
+	return s.UpdateMCP(name, func(m *MCPConfig) { m.Disabled = disabled })
+}
+
+// AddMCP publishes a new MCP server configuration if name is unused.
+func (s *Store) AddMCP(name string, mcpConfig MCPConfig) bool {
+	var added bool
+	_ = s.port.PublishMutation(func(scope MutationScope) error {
+		cur := scope.Current()
+		config := cur.Config()
+		if config == nil {
+			return nil
+		}
+		if _, exists := config.MCP[name]; exists {
+			return nil
+		}
+		next := mutationNext()
+		cfgCopy := *config
+		cfgCopy.MCP = maps.Clone(config.MCP)
+		if cfgCopy.MCP == nil {
+			cfgCopy.MCP = make(MCPs)
+		}
+		cfgCopy.MCP[name] = cloneMCPConfig(mcpConfig)
+		next.Config = &cfgCopy
+		next.MCPRevisions = mcpRevisionDiff(cur.MCPRevisions(), config, &cfgCopy, cur.MCPInputs(), next.MCPInputs)
+		next.ResolverDynamic = configHasDynamicMCPResolution(&cfgCopy)
+		scope.Publish(next)
+		added = true
+		return nil
+	})
+	return added
+}
+
+// RemoveMCP removes one MCP server and returns its detached configuration.
+func (s *Store) RemoveMCP(name string) (MCPConfig, bool) {
+	var removed MCPConfig
+	var ok bool
+	_ = s.port.PublishMutation(func(scope MutationScope) error {
+		cur := scope.Current()
+		config := cur.Config()
+		if config == nil {
+			return nil
+		}
+		current, exists := config.MCP[name]
+		if !exists {
+			return nil
+		}
+		next := mutationNext()
+		cfgCopy := *config
+		cfgCopy.MCP = maps.Clone(config.MCP)
+		delete(cfgCopy.MCP, name)
+		next.Config = &cfgCopy
+		next.MCPRevisions = mcpRevisionDiff(cur.MCPRevisions(), config, &cfgCopy, cur.MCPInputs(), next.MCPInputs)
+		next.ResolverDynamic = configHasDynamicMCPResolution(&cfgCopy)
+		scope.Publish(next)
+		removed = cloneMCPConfig(current)
+		ok = true
+		return nil
+	})
+	return removed, ok
+}
+
+// RemoveMCPIfCurrent removes name only when the in-memory snapshot still has
+// the expected config at the expected MCP revision.
+func (s *Store) RemoveMCPIfCurrent(name string, expected MCPConfig, revision uint64) (MCPConfig, bool) {
+	var removed MCPConfig
+	var ok bool
+	_ = s.port.PublishMutation(func(scope MutationScope) error {
+		cur := scope.Current()
+		config := cur.Config()
+		if config == nil || revision != 0 && cur.MCPRevisions()[name] != revision {
+			return nil
+		}
+		current, exists := config.MCP[name]
+		if !exists || !reflect.DeepEqual(current, expected) {
+			return nil
+		}
+		next := mutationNext()
+		cfgCopy := *config
+		cfgCopy.MCP = maps.Clone(config.MCP)
+		delete(cfgCopy.MCP, name)
+		next.Config = &cfgCopy
+		next.MCPRevisions = mcpRevisionDiff(cur.MCPRevisions(), config, &cfgCopy, cur.MCPInputs(), next.MCPInputs)
+		next.ResolverDynamic = configHasDynamicMCPResolution(&cfgCopy)
+		scope.Publish(next)
+		removed = cloneMCPConfig(current)
+		ok = true
+		return nil
+	})
+	return removed, ok
+}
+
+// cloneMCPConfig is a byte-identical local copy of the root helper
+// (internal/config/store.go cloneMCPConfig) that moved with the MCP
+// component; the root keeps its own copy for MCPConfig.
+func cloneMCPConfig(m MCPConfig) MCPConfig {
+	m.Env = maps.Clone(m.Env)
+	m.Args = slices.Clone(m.Args)
+	m.DisabledTools = slices.Clone(m.DisabledTools)
+	m.EnabledTools = slices.Clone(m.EnabledTools)
+	m.Headers = maps.Clone(m.Headers)
+	return m
 }

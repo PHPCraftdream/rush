@@ -34,6 +34,7 @@ internal/serve/cmd 167
 # reducing its dir-entry count by 5. Root Go total falls 244 -> 233 (-11): 12 files moved/deleted,
 # offset by the new root api_remotes_integration_test.go (+1).
 internal/config 52
+# 62 -> 52: X2 mcpstore extraction (S6.2) moved 6 MCP store files into the new store/mcpstore package and merged the forwarders into store_api.go (net -6 files; recount 52).
 internal/config/discover 13
 internal/session/heartbeat 10
 internal/session/jobbatch 21

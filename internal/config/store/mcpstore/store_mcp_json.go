@@ -7,9 +7,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
+
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 )
 
 type mcpRoot struct {
@@ -667,4 +673,114 @@ func mcpJSONSkipSpace(data []byte, pos int) int {
 		}
 	}
 	return pos
+}
+
+// Moved from mcpstore.go (file deleted to keep the directory at 7 files).
+// systemConfigPathValue returns the effective system config path (was
+// systemConfigPathValue on ConfigStore; the override field moved behind
+// Port.SystemConfigPath).
+func (s *Store) systemConfigPathValue() string {
+	if override := s.port.SystemConfigPath(); override != "" {
+		return override
+	}
+	return datadir.SystemConfig()
+}
+
+// mcpRevisionDiff, mcpNames and mcpConfig are byte-identical local copies of
+// the root helpers (internal/config/mcpdocs_policy.go:62,110 and
+// store_reload.go:435) still needed to advance revisions on publish (closure
+// copies; the root keeps the originals for reload).
+func mcpRevisionDiff(current map[string]uint64, previous, next *Config, previousInputs, nextInputs map[string][32]byte, force ...string) map[string]uint64 {
+	result := maps.Clone(current)
+	if result == nil {
+		result = make(map[string]uint64)
+	}
+	names := make(map[string]struct{})
+	for name := range mcpNames(previous) {
+		names[name] = struct{}{}
+	}
+	for name := range mcpNames(next) {
+		names[name] = struct{}{}
+	}
+	for name := range previousInputs {
+		names[name] = struct{}{}
+	}
+	for name := range nextInputs {
+		names[name] = struct{}{}
+	}
+	for _, name := range force {
+		if name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	forced := make(map[string]struct{}, len(force))
+	for _, name := range force {
+		forced[name] = struct{}{}
+	}
+	for name := range names {
+		previousConfig, previousExists := mcpConfig(previous, name)
+		nextConfig, nextExists := mcpConfig(next, name)
+		previousInput, previousHasInput := previousInputs[name]
+		nextInput, nextHasInput := nextInputs[name]
+		if _, ok := forced[name]; ok || previousExists != nextExists ||
+			previousExists && !reflect.DeepEqual(previousConfig, nextConfig) ||
+			previousHasInput != nextHasInput ||
+			previousHasInput && nextHasInput && previousInput != nextInput {
+			result[name]++
+		}
+	}
+	return result
+}
+
+func mcpNames(cfg *Config) map[string]cfgmodel.MCPConfig {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.MCP
+}
+
+func mcpConfig(cfg *Config, name string) (MCPConfig, bool) {
+	if cfg == nil {
+		return MCPConfig{}, false
+	}
+	value, ok := cfg.MCP[name]
+	return value, ok
+}
+
+// configHasDynamicMCPResolution, mcpConfigHasDynamicResolution and
+// hasCommandSubstitution are byte-identical local copies of the root
+// closures (internal/config/cfgmodel_locals.go:167-204) needed by the
+// publish path.
+func configHasDynamicMCPResolution(cfg *Config) bool {
+	if cfg == nil {
+		return false
+	}
+	for _, m := range cfg.MCP {
+		if mcpConfigHasDynamicResolution(m) {
+			return true
+		}
+	}
+	return false
+}
+
+func mcpConfigHasDynamicResolution(m MCPConfig) bool {
+	if shell.HasCommandSubstitution(m.Command) || shell.HasCommandSubstitution(m.URL) {
+		return true
+	}
+	for _, value := range m.Env {
+		if shell.HasCommandSubstitution(value) {
+			return true
+		}
+	}
+	for _, value := range m.Args {
+		if shell.HasCommandSubstitution(value) {
+			return true
+		}
+	}
+	for _, value := range m.Headers {
+		if shell.HasCommandSubstitution(value) {
+			return true
+		}
+	}
+	return false
 }
