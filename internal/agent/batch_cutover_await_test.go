@@ -28,7 +28,6 @@ import (
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
-	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -203,7 +202,7 @@ func newCutoverEnvDeps(t *testing.T, limits jobbatch.Limits, wrapExecutor func(j
 	})
 	live := session.NewBatchLiveReader(db.New(conn), t.TempDir())
 	live.IsOwnHost = func(string) bool { return false }
-	live.ProbeHost = func(string, string) (sessionhosts.HostLockStatus, error) {
+	live.ProbeHost = func(string, string) (session.HostLockStatus, error) {
 		return session.HostStatusAlive, nil
 	}
 	return &cutoverEnv{

@@ -16,10 +16,10 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/PHPCraftdream/rush/internal/store/db"
-	"github.com/PHPCraftdream/rush/internal/store/message"
 	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
+	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 )

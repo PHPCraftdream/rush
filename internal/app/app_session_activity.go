@@ -27,10 +27,10 @@ import (
 	"fmt"
 
 	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/PHPCraftdream/rush/internal/store/db"
 	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 // SessionActivity pairs one session's facts with their verdict.

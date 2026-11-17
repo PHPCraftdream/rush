@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
-	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
 )

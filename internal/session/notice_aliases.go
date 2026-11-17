@@ -59,3 +59,6 @@ const (
 	LockReleased         = sessionfacts.LockReleased
 	LockDead             = sessionfacts.LockDead
 )
+
+// HostLockStatus keeps its root-package name for external callers.
+type HostLockStatus = sessionhosts.HostLockStatus

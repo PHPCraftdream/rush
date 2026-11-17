@@ -20,8 +20,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
-	"github.com/PHPCraftdream/rush/internal/store/message"
 	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
 

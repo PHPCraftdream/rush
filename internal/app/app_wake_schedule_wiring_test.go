@@ -22,8 +22,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
-	"github.com/PHPCraftdream/rush/internal/store/db"
 	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
 

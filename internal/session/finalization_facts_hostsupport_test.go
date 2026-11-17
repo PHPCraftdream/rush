@@ -57,3 +57,21 @@ func nStores(t *testing.T, n int, sessionIDs ...string) (stores []*sessionhosts.
 
 // seedSession already exists in this package (session_testkit_test.go); the
 // copied nStores calls it as it did in the sessionhosts package.
+
+// seedSession and countMessages: copied byte-for-byte from sessionhosts (host_lock_test.go)
+// and sessionwake tests so the batch tests need no cross-package helpers.
+func seedSession(ctx context.Context, q *db.Queries, id string) error {
+	_, err := q.CreateSession(ctx, db.CreateSessionParams{ID: id, Title: id})
+	return err
+}
+
+// countMessages is the read-side helper the wake-schedule tests (now in
+// package sessionwake_test) also carry; copied byte-for-byte so the batch
+// pull tests keep their message-count assertions without crossing the
+// package boundary.
+func countMessages(t *testing.T, q *db.Queries, ctx context.Context, sessionID string) int64 {
+	t.Helper()
+	n, err := q.CountMessagesBySession(ctx, sessionID)
+	require.NoError(t, err)
+	return n
+}

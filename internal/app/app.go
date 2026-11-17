@@ -23,11 +23,11 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/filetracker"
 	"github.com/PHPCraftdream/rush/internal/store/history"
 	"github.com/PHPCraftdream/rush/internal/store/message"
-	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 )
 
 // coordinatorAdapterImpl wraps agent.Coordinator to satisfy session.Coordinator,

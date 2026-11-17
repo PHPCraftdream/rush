@@ -13,8 +13,8 @@ import (
 	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/PHPCraftdream/rush/internal/store/message"
 	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // BatchLiveScopeEntry is one owner's live-work scope answer.

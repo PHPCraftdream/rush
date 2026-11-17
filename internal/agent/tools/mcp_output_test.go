@@ -20,8 +20,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/store/db"
 	mcpoutput "github.com/PHPCraftdream/rush/internal/session/state/mcpoutput"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 	modelmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
