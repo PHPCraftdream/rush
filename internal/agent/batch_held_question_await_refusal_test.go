@@ -21,6 +21,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -373,7 +374,7 @@ func TestHeldQuestionIncidentChain(t *testing.T) {
 	require.NoError(t, ierr)
 	live := session.NewBatchLiveReader(db.New(env.conn), t.TempDir())
 	live.IsOwnHost = func(string) bool { return false }
-	live.ProbeHost = func(string, string) (session.HostLockStatus, error) {
+	live.ProbeHost = func(string, string) (sessionhosts.HostLockStatus, error) {
 		return session.HostStatusAlive, nil
 	}
 	require.NoError(t, BindCoordinatorBatchControls(coord, ingress, nil, live))
@@ -588,7 +589,7 @@ func TestWorkerAwaitRefusesOnRealHeldChild(t *testing.T) {
 	require.NoError(t, ierr)
 	live := session.NewBatchLiveReader(db.New(env.conn), t.TempDir())
 	live.IsOwnHost = func(string) bool { return false }
-	live.ProbeHost = func(string, string) (session.HostLockStatus, error) {
+	live.ProbeHost = func(string, string) (sessionhosts.HostLockStatus, error) {
 		return session.HostStatusAlive, nil
 	}
 	require.NoError(t, BindCoordinatorBatchControls(coord, ingress, nil, live))

@@ -8,6 +8,8 @@ import (
 
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -26,16 +28,16 @@ func noticeText(childID, question string) string {
 func TestParseChildQuestionNotice(t *testing.T) {
 	t.Parallel()
 
-	q, ok := ParseChildQuestionNotice(noticeText("child-1", "ship\nor hold?"), "delegate-1")
+	q, ok := sessionnotice.ParseChildQuestionNotice(noticeText("child-1", "ship\nor hold?"), "delegate-1")
 	require.True(t, ok)
 	require.Equal(t, "child-1", q.ChildSessionID)
 	require.Equal(t, "delegate-1", q.DelegationToolCallID)
 	require.Equal(t, "QUESTION: ship or hold?", q.Question)
 	require.Equal(t, int64(0), q.NoticeID)
 
-	_, ok = ParseChildQuestionNotice("no frame here", "delegate-1")
+	_, ok = sessionnotice.ParseChildQuestionNotice("no frame here", "delegate-1")
 	require.False(t, ok)
-	_, ok = ParseChildQuestionNotice("SUB-AGENT QUESTION (session ): empty", "j")
+	_, ok = sessionnotice.ParseChildQuestionNotice("SUB-AGENT QUESTION (session ): empty", "j")
 	require.False(t, ok)
 }
 
@@ -44,9 +46,9 @@ func TestParseChildQuestionNotice(t *testing.T) {
 func TestOneLineQuestionCapsByRunes(t *testing.T) {
 	t.Parallel()
 
-	long := strings.Repeat("ж", ChildQuestionDisplayMaxLen+10)
-	got := OneLineQuestion(long)
-	require.LessOrEqual(t, len([]rune(got)), ChildQuestionDisplayMaxLen+1)
+	long := strings.Repeat("ж", sessionnotice.ChildQuestionDisplayMaxLen+10)
+	got := sessionnotice.OneLineQuestion(long)
+	require.LessOrEqual(t, len([]rune(got)), sessionnotice.ChildQuestionDisplayMaxLen+1)
 	require.True(t, strings.HasSuffix(got, "…"))
 }
 
@@ -104,19 +106,19 @@ func TestPendingChildQuestions(t *testing.T) {
 func TestClassifySessionActivity_ChildQuestionsAdditive(t *testing.T) {
 	t.Parallel()
 
-	base := ActivityFacts{LiveDelegations: 2}
-	before := ClassifySessionActivity(base)
+	base := sessionfacts.ActivityFacts{LiveDelegations: 2}
+	before := sessionfacts.ClassifySessionActivity(base)
 
 	withQ := base
-	withQ.ChildQuestions = []ChildQuestion{{
+	withQ.ChildQuestions = []sessionnotice.ChildQuestion{{
 		ChildSessionID: "child-9", DelegationToolCallID: "delegate-9", Question: "left or right?",
 	}}
-	after := ClassifySessionActivity(withQ)
+	after := sessionfacts.ClassifySessionActivity(withQ)
 
 	require.Equal(t, before.Kind, after.Kind, "display data must not change the Kind")
 	require.Equal(t, before.PID, after.PID)
-	require.Contains(t, after.WaitingOn, WaitAnswer)
-	require.NotContains(t, before.WaitingOn, WaitAnswer)
+	require.Contains(t, after.WaitingOn, sessionfacts.WaitAnswer)
+	require.NotContains(t, before.WaitingOn, sessionfacts.WaitAnswer)
 	require.Contains(t, after.Description, "waiting for your answer: child child-9 asked: left or right?")
 	require.NotContains(t, before.Description, "waiting for your answer")
 }

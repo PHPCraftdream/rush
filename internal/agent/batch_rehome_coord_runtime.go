@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // batchDriverHints is ONE struct per coordinator aggregating the per-session
@@ -182,7 +183,7 @@ func (c *coordinator) foreignLiveDriver(ctx context.Context, owner string) (bool
 	if c == nil {
 		return false, nil
 	}
-	hs, ok := c.batchDriverClaimer.(*session.HostStore)
+	hs, ok := c.batchDriverClaimer.(*sessionhosts.HostStore)
 	if !ok || hs == nil {
 		return false, nil
 	}

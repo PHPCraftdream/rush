@@ -21,6 +21,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/text/format"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/charmbracelet/x/term"
 	"github.com/google/uuid"
@@ -619,7 +620,7 @@ type RunEnv struct {
 	// Pump is the run-queue pump, constructed late in New.
 	Pump func() *session.RunQueuePump
 	// WakeStore is the wake-schedule store; tests can wire it after New.
-	WakeStore func() *session.WakeScheduleStore
+	WakeStore func() *sessionwake.WakeScheduleStore
 	// DB is the nilable underlying SQLite connection (nil in library mode).
 	DB func() *sql.DB
 	// DataDir is the on-disk data directory ("" in library mode).

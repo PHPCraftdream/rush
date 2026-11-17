@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -115,6 +116,20 @@ func seedBatchRoot(t *testing.T, ctx context.Context, conn *sql.DB, hostID, root
 // CASes pending->done in tx, creates the message in the SAME tx, commits ->
 // first assertion: len(pulled)==1; second: session_notices.delivery='done';
 // third: one message row; fourth: second pull is empty (delivery filter).
+
+// sessionNoticeParams is the minimal build callback for sessionwake.PullSessionNotices
+// used by the surviving session-notice/batch tests (re-declared here after
+// the legacy notice_pull_test.go was removed; the real ones live behind the
+// agent package boundary these tests exercise from the other side).
+func sessionNoticeParams(row sessionnotice.SessionNoticeRow) message.CreateMessageParams {
+	return message.CreateMessageParams{
+		Role:                message.User,
+		Parts:               []message.ContentPart{message.TextContent{Text: row.Text}},
+		BackgroundJobNotice: true,
+		NoticeKind:          row.Kind,
+	}
+}
+
 func TestSessionNoticeStore_PullUnboundNoticeDelivers(t *testing.T) {
 	t.Parallel()
 	store, _, q, ctx := newNoticeTestStore(t)
@@ -472,7 +487,7 @@ func TestSessionNoticeStore_PendingChildQuestionsOverBatchRoots(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, qs, 2, "the batch question and the live-root legacy notice surface; the terminal-root one is dropped")
 
-	var batch, legacy ChildQuestion
+	var batch, legacy sessionnotice.ChildQuestion
 	for _, row := range qs {
 		if row.NodeID == "root.1" {
 			batch = row
@@ -573,7 +588,7 @@ func TestParseBatchChildQuestionNotice_ProducerFrameFormat(t *testing.T) {
 	text := marker + "SUB-AGENT QUESTION: " + "line one\nline two" +
 		"\nAnswer with inject_agent for this existing batch node; do not resume the delegation as a new generation."
 
-	got, ok := ParseBatchChildQuestionNotice(text)
+	got, ok := sessionnotice.ParseBatchChildQuestionNotice(text)
 	require.True(t, ok)
 	require.Equal(t, "root.1", got.NodeID)
 	require.Equal(t, "child-9", got.ChildSessionID)

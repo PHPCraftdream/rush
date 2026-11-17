@@ -436,7 +436,7 @@ func (c *coordinator) buildSupervisionSummaryAt(now time.Time, rootSessionID str
 	}
 	// #1157 on batch facts: LiveHeldQuestions is the pending child_question
 	// debt bound to a LIVE node incarnation (conservative fail-safe: 1 +
-	// err). Its rows carry only id+kind (session.PendingNoticeDebt), no
+	// err). Its rows carry only id+kind (sessionnotice.PendingNoticeDebt), no
 	// question text, so the count clause stands alone -- the question
 	// itself reaches the parent through the pulled notice. A settled or
 	// stale-incarnation question is NOT counted (it can no longer be

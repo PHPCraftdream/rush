@@ -10,6 +10,7 @@ import (
 	"time"
 
 	session "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 )
 
 // BatchPublishQuestion durably publishes one held batch question. The node's
@@ -53,8 +54,8 @@ func (s *BatchStore) BatchPublishQuestion(ctx context.Context, owner, node strin
 	res, err := tx.ExecContext(ctx, `INSERT INTO session_notices (owner, kind, text, wake, delivery, job_tool_call_id, created_at, updated_at)
 SELECT ?, ?, ?, 1, 'pending', NULL, ?, ?
 WHERE NOT EXISTS (SELECT 1 FROM session_notices WHERE owner = ? AND kind = ? AND substr(text, 1, length(?)) = ?)`,
-		owner, NoticeKindChildQuestion, text, time.Now().Unix(), time.Now().Unix(),
-		owner, NoticeKindChildQuestion, marker, marker)
+		owner, sessionnotice.NoticeKindChildQuestion, text, time.Now().Unix(), time.Now().Unix(),
+		owner, sessionnotice.NoticeKindChildQuestion, marker, marker)
 	if err != nil {
 		return fmt.Errorf("batch store: question insert: %w", err)
 	}
@@ -112,7 +113,7 @@ WHERE n.node_id = ? AND n.owner_session_id = ?`,
 func batchQuestionDuplicate(ctx context.Context, q batchQuestionRower, owner, marker string) (bool, error) {
 	var duplicate bool
 	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM session_notices WHERE owner = ? AND kind = ? AND substr(text, 1, length(?)) = ?)`,
-		owner, NoticeKindChildQuestion, marker, marker).Scan(&duplicate)
+		owner, sessionnotice.NoticeKindChildQuestion, marker, marker).Scan(&duplicate)
 	return duplicate, err
 }
 
@@ -239,7 +240,7 @@ func (s *BatchStore) BatchResolveChildQuestions(ctx context.Context, owner, node
 	if len(stale) > 0 {
 		placeholders := make([]string, len(stale))
 		args := make([]any, 0, len(stale)+3)
-		args = append(args, time.Now().Unix(), NoticeKindChildQuestion)
+		args = append(args, time.Now().Unix(), sessionnotice.NoticeKindChildQuestion)
 		for i, id := range stale {
 			placeholders[i] = fmt.Sprintf("?%d", i+3)
 			args = append(args, id)
@@ -273,7 +274,7 @@ type batchQuestionQuerier interface {
 func batchMatchingChildQuestionIDs(ctx context.Context, q batchQuestionQuerier, owner, node, child string, token, sequence int64) ([]int64, error) {
 	rows, err := q.QueryContext(ctx,
 		`SELECT id, text FROM session_notices WHERE owner = ? AND kind = ? AND delivery IN ('pending','done') AND wake = 1 ORDER BY id`,
-		owner, NoticeKindChildQuestion)
+		owner, sessionnotice.NoticeKindChildQuestion)
 	if err != nil {
 		return nil, fmt.Errorf("batch store: question resolve list: %w", err)
 	}
@@ -312,7 +313,7 @@ func batchMatchingChildQuestionIDs(ctx context.Context, q batchQuestionQuerier, 
 func batchRerunVoidChildQuestionsOfVoidRoots(ctx context.Context, tx *sql.Tx, owner string, now int64) error {
 	rows, err := tx.QueryContext(ctx,
 		`SELECT id, text FROM session_notices WHERE owner = ? AND kind = ? AND delivery IN ('pending','done')`,
-		owner, NoticeKindChildQuestion)
+		owner, sessionnotice.NoticeKindChildQuestion)
 	if err != nil {
 		return fmt.Errorf("batch rerun: list child questions: %w", err)
 	}
@@ -347,7 +348,7 @@ WHERE n.node_id = ? AND n.owner_session_id = ? AND n.token = ? AND r.delivery = 
 	for _, id := range stale {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE session_notices SET delivery = 'void', wake = 0, updated_at = ? WHERE id = ? AND kind = ?`,
-			now, id, NoticeKindChildQuestion); err != nil {
+			now, id, sessionnotice.NoticeKindChildQuestion); err != nil {
 			return fmt.Errorf("batch rerun: void child question: %w", err)
 		}
 	}

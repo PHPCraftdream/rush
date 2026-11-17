@@ -20,6 +20,7 @@ import (
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/google/uuid"
 )
 
@@ -504,8 +505,8 @@ func (s *apiBatchService) precheckResume(ctx context.Context, owner string, spec
 // refuses to probe them), other hosts are probed through their lock files.
 func (s *apiBatchService) hostProbe() session.BatchHostProbe {
 	shared := session.BatchSharedHostProbe(s.app.DataDirectory())
-	return func(host string) (session.HostLockStatus, error) {
-		if session.IsOwnHostID(host) {
+	return func(host string) (sessionhosts.HostLockStatus, error) {
+		if sessionhosts.IsOwnHostID(host) {
 			return session.HostStatusAlive, nil
 		}
 		return shared(host)

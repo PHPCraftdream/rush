@@ -49,7 +49,7 @@ func TestAgentFinalizationDurableTicketsFenceSealAcrossStoreInstances(t *testing
 	require.EqualValues(t, 1, held.Revision)
 	retried, err := producer.Admit(ctx, id, "mutation-1")
 	require.NoError(t, err)
-	require.Equal(t, held, retried, "an admission retry does not create another physical hold")
+	require.Equal(t, held, retried, "an admission retry does not sessionwake.create another physical hold")
 	require.ErrorIs(t, sealFinalizationForTest(ctx, conn, owner, id, held.Revision), session.ErrAgentFinalizationChanged,
 		"matching revision is insufficient while a persisted mutation is in flight")
 	require.NoError(t, producer.Release(ctx, id, "mutation-1"))

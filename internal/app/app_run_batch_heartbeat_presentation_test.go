@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -65,7 +65,7 @@ func TestBatchHeartbeatPresentation_MultiTaskRootKeepsStructuralLabel(t *testing
 func TestBatchHeartbeatPresentation_ForeignHostShowsRetainedPID(t *testing.T) {
 	h := pt2PresentationHarness(t)
 	ctx := context.Background()
-	foreign, err := filelock.TryAcquireFileLock(session.HostLockPath(h.dataDir, "pt2-peer"))
+	foreign, err := filelock.TryAcquireFileLock(sessionhosts.HostLockPath(h.dataDir, "pt2-peer"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = foreign.Release() })
 	_, err = db.New(h.app.DB()).RegisterAsyncHostRow(ctx, db.RegisterAsyncHostRowParams{ID: "pt2-peer", Pid: 4242, Label: "peer", StartedAt: 1700000000})

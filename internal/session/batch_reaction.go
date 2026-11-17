@@ -10,6 +10,7 @@ import (
 
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -21,7 +22,7 @@ type (
 	BatchDebtSnapshot struct {
 		Owner   string
 		Nodes   []BatchDebtNodeRef
-		Notices []DebtNoticeRef
+		Notices []sessionnotice.DebtNoticeRef
 	}
 )
 
@@ -30,7 +31,7 @@ func (d BatchDebtSnapshot) Empty() bool { return len(d.Nodes) == 0 && len(d.Noti
 // BatchPendingDebt names pending-inclusive selected-node and retained debt.
 type BatchPendingDebt struct {
 	Nodes   []BatchDebtNodeRef
-	Notices []PendingNoticeDebt
+	Notices []sessionnotice.PendingNoticeDebt
 }
 
 // batchOutboxDebtNodesVoidAware mirrors the canonical BatchOutboxDebtNodes
@@ -168,7 +169,7 @@ func batchDebtSnapshot(ctx context.Context, dbtx db.DBTX, owner string, visible 
 	}
 	for _, n := range notices {
 		if !visible || n.Delivery == "done" {
-			snap.Notices = append(snap.Notices, DebtNoticeRef{ID: n.ID, NoticeMessageID: n.NoticeMessageID.String})
+			snap.Notices = append(snap.Notices, sessionnotice.DebtNoticeRef{ID: n.ID, NoticeMessageID: n.NoticeMessageID.String})
 		}
 	}
 	return snap, nil
@@ -241,7 +242,7 @@ func batchReactionPendingInclusiveDebtRows(ctx context.Context, dbtx db.DBTX, ow
 		out.Nodes = append(out.Nodes, n.ref)
 	}
 	for _, n := range notices {
-		out.Notices = append(out.Notices, PendingNoticeDebt{ID: n.ID, Kind: n.Kind})
+		out.Notices = append(out.Notices, sessionnotice.PendingNoticeDebt{ID: n.ID, Kind: n.Kind})
 	}
 	return out, nil
 }
@@ -368,7 +369,7 @@ func (s *BatchStore) batchReactionAccount(ctx context.Context, owner string, sna
 	}
 	if count > 0 && marker != nil {
 		now := time.Now().Unix()
-		_, err = q.InsertSessionNotice(ctx, db.InsertSessionNoticeParams{Owner: owner, Kind: NoticeKindWakeFailed, Text: *marker, CreatedAt: now, UpdatedAt: now})
+		_, err = q.InsertSessionNotice(ctx, db.InsertSessionNoticeParams{Owner: owner, Kind: sessionnotice.NoticeKindWakeFailed, Text: *marker, CreatedAt: now, UpdatedAt: now})
 		if err != nil {
 			return 0, err
 		}
@@ -413,7 +414,7 @@ func (s *BatchStore) BatchReactionMaxWakeAttempts(ctx context.Context, owner str
 	for _, n := range current.Nodes {
 		liveNodes[n] = true
 	}
-	liveNotices := make(map[DebtNoticeRef]bool)
+	liveNotices := make(map[sessionnotice.DebtNoticeRef]bool)
 	for _, n := range current.Notices {
 		liveNotices[n] = true
 	}

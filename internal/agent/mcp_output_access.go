@@ -3,7 +3,7 @@ package agent
 import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/session"
+	mcpoutput "github.com/PHPCraftdream/rush/internal/session/state/mcpoutput"
 )
 
 // Activation requires the finalization-aware session service adapter. The base
@@ -14,7 +14,7 @@ func (c *coordinator) mcpOutputAccess() *tools.MCPOutputAccess {
 		Allowed: make(map[string]bool), Permissions: c.permissions, WorkingDir: c.cfg.WorkingDir(),
 	}
 	if provider, ok := c.sessions.(interface {
-		MCPOutputStore() *session.MCPOutputStore
+		MCPOutputStore() *mcpoutput.MCPOutputStore
 	}); ok {
 		if store := provider.MCPOutputStore(); store != nil {
 			access.Store = store

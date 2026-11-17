@@ -23,6 +23,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/filetracker"
 	"github.com/PHPCraftdream/rush/internal/store/history"
@@ -111,7 +112,7 @@ type App struct {
 	// (internal/agent/wake_scheduler.go is the worker over it), built below
 	// and handed to the coordinator in InitCoderAgent. Nil under
 	// SkipAgentSetup or when dataDir=="".
-	wakeScheduleStore *session.WakeScheduleStore
+	wakeScheduleStore *sessionwake.WakeScheduleStore
 
 	// batchRuntime is the R11F app-owned batch runtime owner. Nil unless
 	// the App installed the batch runtime at New (SkipAgentSetup and
@@ -442,7 +443,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	// started by InitCoderAgent's SetWakeScheduleStore (a config-only App
 	// never needs the timer).
 	if !o.skipAgentSetup && dataDir != "" {
-		app.wakeScheduleStore = session.NewWakeScheduleStoreWithWorkspace(conn, workspaceRoot, workingDir, home)
+		app.wakeScheduleStore = sessionwake.NewWakeScheduleStoreWithWorkspace(conn, workspaceRoot, workingDir, home)
 	} else if !o.skipAgentSetup && dataDir == "" {
 		// Ephemeral library-mode App (sdk.ModeLibrary with no WorkingDir):
 		// no persisted batch install runs here, hence no

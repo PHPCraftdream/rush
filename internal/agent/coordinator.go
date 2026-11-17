@@ -112,7 +112,7 @@ type coordinator struct {
 	subAgentDrivers *subAgentDriverRegistry
 
 	// batchDriverClaimer is the durable session-driver-marker store
-	// (session.HostStore): claim/release AND the foreign-driver read go
+	// (sessionhosts.HostStore): claim/release AND the foreign-driver read go
 	// through it. See batch_cutover_driver.go / batch_rehome_coord_runtime.go.
 	batchDriverClaimer BatchDriverClaimer
 

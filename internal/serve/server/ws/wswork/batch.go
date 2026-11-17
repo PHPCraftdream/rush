@@ -9,6 +9,8 @@ import (
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/serve/server/hub"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	wire "github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -155,11 +157,11 @@ func defaultBatchDataDir(a *appPkg.App) string {
 	return a.Config().Options.DataDirectory
 }
 
-func defaultBatchProbeHost(dataDir, host string) session.HostLockStatus {
+func defaultBatchProbeHost(dataDir, host string) sessionhosts.HostLockStatus {
 	if dataDir == "" || host == "" {
 		return session.HostStatusUnknown
 	}
-	st, err := session.ProbeHostShared(dataDir, host)
+	st, err := sessionhosts.ProbeHostShared(dataDir, host)
 	if err != nil || (st != session.HostStatusAlive && st != session.HostStatusDead) {
 		return session.HostStatusUnknown
 	}
@@ -169,14 +171,14 @@ func defaultBatchProbeHost(dataDir, host string) session.HostLockStatus {
 type Seams struct {
 	SourceFor        func() func(*appPkg.App) BatchNodeSource
 	DataDir          func() func(*appPkg.App) string
-	ProbeHost        func() func(string, string) session.HostLockStatus
+	ProbeHost        func() func(string, string) sessionhosts.HostLockStatus
 	IsOwnHost        func() func(string) bool
-	PendingQuestions func() func(context.Context, *appPkg.App, []string) (map[string]session.ChildQuestion, bool)
+	PendingQuestions func() func(context.Context, *appPkg.App, []string) (map[string]sessionnotice.ChildQuestion, bool)
 	AddForWeb        func() func(context.Context, *appPkg.App, string, string, []jobbatch.Spec) error
 }
 
 // batchHostString maps a probe verdict to the wire's host vocabulary.
-func batchHostString(st session.HostLockStatus) string {
+func batchHostString(st sessionhosts.HostLockStatus) string {
 	switch st {
 	case session.HostStatusAlive:
 		return "alive"
@@ -273,8 +275,8 @@ func buildBatchWorkSnapshotWith(ctx context.Context, a *appPkg.App, sessionID st
 		}
 	}
 	dataDir := dataDirFor(a)
-	statusOf := func(host string) session.HostLockStatus {
-		isOwnHost := session.IsOwnHostID
+	statusOf := func(host string) sessionhosts.HostLockStatus {
+		isOwnHost := sessionhosts.IsOwnHostID
 		if seams.IsOwnHost != nil {
 			if provider := seams.IsOwnHost(); provider != nil {
 				isOwnHost = provider
@@ -560,7 +562,7 @@ func (c *batchCountsWire) add(n db.BatchNode) {
 	}
 }
 
-func heldQuestion(q session.ChildQuestion, held bool) string {
+func heldQuestion(q sessionnotice.ChildQuestion, held bool) string {
 	if held {
 		return q.Question
 	}
@@ -743,8 +745,8 @@ func batchControlAdd(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire
 
 func batchControlHostProbe(dataDir string) session.BatchHostProbe {
 	shared := session.BatchSharedHostProbe(dataDir)
-	return func(host string) (session.HostLockStatus, error) {
-		if session.IsOwnHostID(host) {
+	return func(host string) (sessionhosts.HostLockStatus, error) {
+		if sessionhosts.IsOwnHostID(host) {
 			return session.HostStatusAlive, nil
 		}
 		return shared(host)

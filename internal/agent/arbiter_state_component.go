@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 )
 
 // arbiterState is one session's launch-decision state. gate.RetryAt zero
@@ -242,7 +243,7 @@ func (a *arbiter) claimAutoResumeSlot(sid string, rowID int64, eligible bool) bo
 
 // pruneOverCapLocked drops over-cap ids that are no longer debt. notices must
 // be the COMPLETE notice debt. Caller holds a.mu.
-func (a *arbiter) pruneOverCapLocked(sid string, notices []session.PendingNoticeDebt) {
+func (a *arbiter) pruneOverCapLocked(sid string, notices []sessionnotice.PendingNoticeDebt) {
 	s := a.bySession[sid]
 	if s == nil || len(s.overCap) == 0 {
 		return
@@ -262,7 +263,7 @@ func (a *arbiter) pruneOverCapLocked(sid string, notices []session.PendingNotice
 }
 
 // pruneOverCap is the best-effort prune at a completion's arrival.
-func (a *arbiter) pruneOverCap(sid string, notices []session.PendingNoticeDebt) {
+func (a *arbiter) pruneOverCap(sid string, notices []sessionnotice.PendingNoticeDebt) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.pruneOverCapLocked(sid, notices)

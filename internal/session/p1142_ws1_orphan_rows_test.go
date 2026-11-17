@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -52,8 +53,8 @@ func (f *wsFx) relaxForeignKeys() {
 // sessions row.
 func (f *wsFx) orphanWakeSchedule(owner string, runAt, base time.Time) db.WakeSchedule {
 	f.t.Helper()
-	row, err := NewWakeScheduleStore(f.conn).CreateSchedule(f.ctx, CreateWakeScheduleParams{
-		Owner: owner, Kind: WakeKindOnce, Message: "orphan", RunAt: runAt,
+	row, err := sessionwake.NewWakeScheduleStore(f.conn).CreateSchedule(f.ctx, sessionwake.CreateWakeScheduleParams{
+		Owner: owner, Kind: sessionwake.WakeKindOnce, Message: "orphan", RunAt: runAt,
 	}, base)
 	require.NoError(f.t, err)
 	return row
@@ -113,8 +114,8 @@ func TestWS1_OrphanRows_HomeSeesLinkedDoesNot(t *testing.T) {
 	f.orphanRunQueueEntry("rq-own", "queue-own", base.Unix())
 	f.orphanRunQueueEntry("rq-foreign", "queue-foreign", base.Unix())
 
-	homeWake := NewWakeScheduleStore(f.conn)                                  // workspace "" = home
-	linkedWake := NewWakeScheduleStoreWithWorkspace(f.conn, wsOwn, "", false) // shared-from-linked
+	homeWake := sessionwake.NewWakeScheduleStore(f.conn)                                  // workspace "" = home
+	linkedWake := sessionwake.NewWakeScheduleStoreWithWorkspace(f.conn, wsOwn, "", false) // shared-from-linked
 	require.NotEmpty(t, orphanWake.ID)
 	require.NotEmpty(t, foreignWake.ID)
 	require.NotEmpty(t, ownWake.ID)
@@ -126,7 +127,7 @@ func TestWS1_OrphanRows_HomeSeesLinkedDoesNot(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, nextHome, "a home process must still see an orphaned owner's schedule")
 	require.True(t, nextHome.Equal(orphanDue),
-		"home NextDue must be the orphaned row's due time, got %v", nextHome)
+		"home sessionwake.NextDue must be the orphaned row's due time, got %v", nextHome)
 
 	// A linked worktree process sees only its own row: neither the foreign
 	// schedule nor the orphaned one (which it has no session to fire).
@@ -134,7 +135,7 @@ func TestWS1_OrphanRows_HomeSeesLinkedDoesNot(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, nextLinked)
 	require.True(t, nextLinked.Equal(ownDue),
-		"a linked process's NextDue must be its own due time, got %v", nextLinked)
+		"a linked process's sessionwake.NextDue must be its own due time, got %v", nextLinked)
 
 	// --- wake: ClaimDue ------------------------------------------------
 	claimAt := base.Add(3 * time.Hour)

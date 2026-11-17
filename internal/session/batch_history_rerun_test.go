@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"testing"
 
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -242,7 +243,7 @@ func TestBatchRerunNewIncarnationFencedFromLateOldIncarnation(t *testing.T) {
 	require.ErrorIs(t, err, ErrBatchAnnouncementLost)
 
 	// A late STOP of the old incarnation targets the terminal root only.
-	_, err = f.store.BatchRequestStop(f.ctx, BatchControlTarget{Owner: batchRerunOwner, Host: "host", Root: old.Root.RootID, Node: old.Nodes[1].NodeID}, func(string) (HostLockStatus, error) { return HostStatusAlive, nil })
+	_, err = f.store.BatchRequestStop(f.ctx, BatchControlTarget{Owner: batchRerunOwner, Host: "host", Root: old.Root.RootID, Node: old.Nodes[1].NodeID}, func(string) (sessionhosts.HostLockStatus, error) { return HostStatusAlive, nil })
 	require.ErrorIs(t, err, ErrBatchControlStale)
 	controls, err := f.store.PendingControls(f.ctx, batchRerunOwner, "host", re.Root.RootID)
 	require.NoError(t, err)

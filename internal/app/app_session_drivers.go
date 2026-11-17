@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // LiveSessionDrivers is the cross-process reader of the durable driver marker
@@ -27,7 +28,7 @@ import (
 // The statement is a plain read here rather than a store method because the
 // session store exposes only the per-session ForeignLiveDriver, which also
 // hides this process's own host's marker.
-func (app *App) LiveSessionDrivers(ctx context.Context) (map[string]session.SessionDriver, error) {
+func (app *App) LiveSessionDrivers(ctx context.Context) (map[string]sessionhosts.SessionDriver, error) {
 	liveness := app.batchCutoverHostLiveness()
 	conn := app.readDB
 	if conn == nil && app.DB != nil {
@@ -41,10 +42,10 @@ func (app *App) LiveSessionDrivers(ctx context.Context) (map[string]session.Sess
 		return nil, fmt.Errorf("session drivers: read: %w", err)
 	}
 	defer rows.Close()
-	status := make(map[string]session.HostLockStatus)
-	live := make(map[string]session.SessionDriver)
+	status := make(map[string]sessionhosts.HostLockStatus)
+	live := make(map[string]sessionhosts.SessionDriver)
 	for rows.Next() {
-		var d session.SessionDriver
+		var d sessionhosts.SessionDriver
 		if err := rows.Scan(&d.SessionID, &d.HostID, &d.PID); err != nil {
 			return nil, fmt.Errorf("session drivers: scan: %w", err)
 		}

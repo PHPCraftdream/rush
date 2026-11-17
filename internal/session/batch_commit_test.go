@@ -347,7 +347,7 @@ func TestBatchCommitAddAppendsInsideProject(t *testing.T) {
 	require.Equal(t, int64(2), added.Ordinal, "appended at the accepted parent ordinal")
 	require.Equal(t, env.id.Runner, added.RunnerID)
 	require.Equal(t, int64(1), commitHookCount(t, env.conn, "SELECT count(*) FROM batch_nodes WHERE node_id = root_id"),
-		"Add must not create a second root")
+		"Add must not sessionwake.create a second root")
 	require.Equal(t, int64(1), commitHookCount(t, env.conn,
 		"SELECT count(*) FROM batch_nodes WHERE node_id = 'r.2' AND parent_id = 'r' AND root_id = 'r'"))
 }

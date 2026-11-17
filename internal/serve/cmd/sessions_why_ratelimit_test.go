@@ -12,6 +12,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -74,7 +75,7 @@ func TestWhyRateLimitLineNegativeRenderer(t *testing.T) {
 				heartbeat.Shutdown(time.Second)
 			}
 			var buf bytes.Buffer
-			printStallHeader(context.Background(), nil, t.TempDir(), id, "running", session.LockFact{}, &buf)
+			printStallHeader(context.Background(), nil, t.TempDir(), id, "running", sessionfacts.LockFact{}, &buf)
 			require.NotContains(t, buf.String(), "rate limit:")
 		})
 	}
@@ -83,7 +84,7 @@ func TestWhyRateLimitLineNegativeRenderer(t *testing.T) {
 func TestWhyRateLimitLineMissingPulse(t *testing.T) {
 	seedRateLimitEntry(t, "no-pulse", time.Date(2099, time.January, 1, 12, 0, 0, 0, time.UTC))
 	var buf bytes.Buffer
-	lock := session.LockFact{Kind: session.LockHeld}
+	lock := sessionfacts.LockFact{Kind: session.LockHeld}
 	stalled := printStallHeader(context.Background(), nil, t.TempDir(), "no-pulse", "running", lock, &buf)
 	require.False(t, stalled)
 	require.Contains(t, buf.String(), "rate limit: waiting for provider rate limit until")
@@ -93,7 +94,7 @@ func TestWhyRateLimitLineRunningStaleLock(t *testing.T) {
 	a, dataDir, id := seedStallFixture(t, 11*time.Minute)
 	seedRateLimitEntry(t, id, time.Date(2099, time.January, 1, 12, 0, 0, 0, time.UTC))
 	var buf bytes.Buffer
-	stalled := printStallHeader(context.Background(), a, dataDir, id, "running (stale lock)", session.LockFact{Kind: session.LockHeld}, &buf)
+	stalled := printStallHeader(context.Background(), a, dataDir, id, "running (stale lock)", sessionfacts.LockFact{Kind: session.LockHeld}, &buf)
 	require.False(t, stalled)
 	require.Contains(t, buf.String(), "status: running (stale lock)")
 	require.Contains(t, buf.String(), "rate limit: waiting for provider rate limit until")
@@ -103,7 +104,7 @@ func TestWhyRateLimitLineStalledHeldPulse(t *testing.T) {
 	a, dataDir, id := seedStallFixture(t, 11*time.Minute)
 	seedRateLimitEntry(t, id, time.Date(2099, time.January, 1, 12, 0, 0, 0, time.UTC))
 	var buf bytes.Buffer
-	stalled := printStallHeader(context.Background(), a, dataDir, id, "running", session.LockFact{Kind: session.LockHeld}, &buf)
+	stalled := printStallHeader(context.Background(), a, dataDir, id, "running", sessionfacts.LockFact{Kind: session.LockHeld}, &buf)
 	require.True(t, stalled)
 	require.Contains(t, buf.String(), "STALLED")
 	require.Contains(t, buf.String(), "rate limit: waiting for provider rate limit until")

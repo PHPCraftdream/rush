@@ -13,6 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -105,7 +106,7 @@ func TestCLIQuotaBusyHeldChildQuestion(t *testing.T) {
 	require.Equal(t, pending.SessionID, held[0].ChildSessionID)
 	var text string
 	require.NoError(t, application.DB().QueryRowContext(ctx, `SELECT text FROM session_notices WHERE id = ? AND owner = ?`, held[0].ID, sessionID).Scan(&text))
-	questionNotice, ok := session.ParseBatchChildQuestionNotice(text)
+	questionNotice, ok := sessionnotice.ParseBatchChildQuestionNotice(text)
 	require.True(t, ok)
 	require.Equal(t, held[0].NodeID, questionNotice.NodeID)
 	require.Equal(t, held[0].ChildSessionID, questionNotice.ChildSessionID)

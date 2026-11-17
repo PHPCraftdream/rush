@@ -23,6 +23,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/stretchr/testify/require"
 )
 
@@ -67,7 +69,7 @@ func (f *fakeBatchSource) BatchLevelNodes(_ context.Context, arg db.BatchLevelNo
 }
 
 // withBatchSeams swaps the production seams for fakes and restores them.
-func withBatchSeams(t *testing.T, src batchNodeSource, probe func(dataDir, host string) session.HostLockStatus, own func(string) bool) {
+func withBatchSeams(t *testing.T, src batchNodeSource, probe func(dataDir, host string) sessionhosts.HostLockStatus, own func(string) bool) {
 	t.Helper()
 	oldSrc, oldDir, oldProbe, oldOwn, oldQuestions := batchSourceFor, batchDataDir, batchProbeHost, batchIsOwnHost, batchPendingQuestionsFor
 	batchSourceFor = func(*app.App) batchNodeSource { return src }
@@ -76,15 +78,15 @@ func withBatchSeams(t *testing.T, src batchNodeSource, probe func(dataDir, host 
 	if own != nil {
 		batchIsOwnHost = own
 	}
-	batchPendingQuestionsFor = func(context.Context, *app.App, []string) (map[string]session.ChildQuestion, bool) {
-		return map[string]session.ChildQuestion{}, true
+	batchPendingQuestionsFor = func(context.Context, *app.App, []string) (map[string]sessionnotice.ChildQuestion, bool) {
+		return map[string]sessionnotice.ChildQuestion{}, true
 	}
 	t.Cleanup(func() {
 		batchSourceFor, batchDataDir, batchProbeHost, batchIsOwnHost, batchPendingQuestionsFor = oldSrc, oldDir, oldProbe, oldOwn, oldQuestions
 	})
 }
 
-func probeAlive(_ string, _ string) session.HostLockStatus { return session.HostStatusAlive }
+func probeAlive(_ string, _ string) sessionhosts.HostLockStatus { return session.HostStatusAlive }
 
 func batchNode(nodeID, rootID, owner, state, toolCall string, ordinal int64) db.BatchNode {
 	n := db.BatchNode{
@@ -113,8 +115,8 @@ func TestBatchWorkSnapshot_GoldenShape(t *testing.T) {
 	mid := batchNode("r1-b", "r1", "s1", "running", "tc-b1", 1)
 	withBatchSeams(t, &fakeBatchSource{rows: []db.BatchNode{root, child, mid}}, probeAlive, nil)
 	oldQuestions := batchPendingQuestionsFor
-	batchPendingQuestionsFor = func(context.Context, *app.App, []string) (map[string]session.ChildQuestion, bool) {
-		return map[string]session.ChildQuestion{"r1": {Question: "Continue?"}}, true
+	batchPendingQuestionsFor = func(context.Context, *app.App, []string) (map[string]sessionnotice.ChildQuestion, bool) {
+		return map[string]sessionnotice.ChildQuestion{"r1": {Question: "Continue?"}}, true
 	}
 	t.Cleanup(func() { batchPendingQuestionsFor = oldQuestions })
 
@@ -176,7 +178,7 @@ func TestBatchWorkSnapshot_UnknownHostIsConservative(t *testing.T) {
 	root := batchNode("r1", "r1", "s1", "running", "tc-root", 0)
 	root.HostID = "host-mystery"
 	withBatchSeams(t, &fakeBatchSource{rows: []db.BatchNode{root}},
-		func(_, _ string) session.HostLockStatus { return session.HostStatusUnknown }, nil)
+		func(_, _ string) sessionhosts.HostLockStatus { return session.HostStatusUnknown }, nil)
 
 	snap := buildBatchWorkSnapshot(t.Context(), nil, "s1")
 	require.False(t, snap.Complete, "an unknown host must keep the scope incomplete")

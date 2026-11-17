@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,7 +30,7 @@ func TestCLIScope_RecoversDeadHostRowBeforeAnswering(t *testing.T) {
 
 	// Fabricate the dead host: a lock file that exists but is not held --
 	// exactly what a crashed process leaves behind.
-	seed, err := filelock.TryAcquireFileLock(session.HostLockPath(dataDir, "dead-host-x"))
+	seed, err := filelock.TryAcquireFileLock(sessionhosts.HostLockPath(dataDir, "dead-host-x"))
 	require.NoError(t, err)
 	require.NoError(t, seed.Release())
 
@@ -66,7 +66,7 @@ func TestCLIScope_LiveHostRunningRowKeepsScopeOpen(t *testing.T) {
 	conn, dataDir := batchFixtureConn(t)
 
 	// A live host holds its lock for the whole test.
-	holder, err := filelock.TryAcquireFileLock(session.HostLockPath(dataDir, "live-host-x"))
+	holder, err := filelock.TryAcquireFileLock(sessionhosts.HostLockPath(dataDir, "live-host-x"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = holder.Release() })
 

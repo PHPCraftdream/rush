@@ -17,6 +17,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -363,7 +364,7 @@ func (app *App) batchFinishedWork(ctx context.Context, sessionID string) ([]appb
 	return appbatch.BatchFinishedWork(app.batchCLIParams(), ctx, sessionID)
 }
 
-func (app *App) batchHostStore() *session.HostStore {
+func (app *App) batchHostStore() *sessionhosts.HostStore {
 	return appbatch.BatchHostStore(app.batchCLIParams())
 }
 
@@ -387,7 +388,7 @@ func (app *App) batchCutoverStoresForget() {
 	appbatch.BatchCutoverStoresForget(app.batchCLIParams())
 }
 
-func (app *App) batchCutoverHostLiveness() func(string) session.HostLockStatus {
+func (app *App) batchCutoverHostLiveness() func(string) sessionhosts.HostLockStatus {
 	return appbatch.BatchCutoverHostLiveness(app.batchCLIParams())
 }
 

@@ -20,18 +20,20 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
 
 // batchSeedHost is the shared seed substrate: it registers the host identity
-// the batch reservation needs with this live test process (session.HostStore
+// the batch reservation needs with this live test process (sessionhosts.HostStore
 // over the app's DB), so the live reader proves liveness via the own-host
 // registry. Returns the host and a BatchStore over the app's DB.
 func batchSeedHost(t *testing.T, a *app.App) (string, *session.BatchStore) {
 	t.Helper()
-	store := session.NewHostStore(a.DB(), a.DataDirectory(), os.Getpid(), "batch-seed-fixture")
+	store := sessionhosts.NewHostStore(a.DB(), a.DataDirectory(), os.Getpid(), "batch-seed-fixture")
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
 	host, err := store.EnsureHost(context.Background())
 	require.NoError(t, err)
@@ -167,7 +169,7 @@ func TestListStatus_OwnJobShapes(t *testing.T) {
 		"own running batch work is classifier running")
 	require.Equal(t, "running", listStatus(acts.ByID[deadPID.ID].Verdict), "D1: the live work outranks the dead PID")
 	require.Equal(t, "delegating", listStatus(acts.ByID[withJob.ID].Verdict), "D2: the delegation is the Kind, the job a wait")
-	require.Contains(t, acts.ByID[withJob.ID].Verdict.WaitingOn, session.WaitTasks)
+	require.Contains(t, acts.ByID[withJob.ID].Verdict.WaitingOn, sessionfacts.WaitTasks)
 }
 
 // TestSessionsListCmdRun_OwnRunningJobIsRunningNotDone drives the real

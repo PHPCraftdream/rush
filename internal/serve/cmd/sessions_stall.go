@@ -17,6 +17,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -123,7 +124,7 @@ func lastMessageAgeForWhy(ctx context.Context, a *app.App, sessionID string, now
 // is stale past stallPulseThreshold while the holder PID is alive -- a
 // STALLED header line replacing the plain `status: running` line. Returns
 // true when the STALLED line replaced the status line.
-func printStallHeader(ctx context.Context, a *app.App, dataDir, sessionID, status string, lock session.LockFact, out io.Writer) bool {
+func printStallHeader(ctx context.Context, a *app.App, dataDir, sessionID, status string, lock sessionfacts.LockFact, out io.Writer) bool {
 	now := time.Now()
 	defer func() {
 		if line := rateLimitLineForWhy(sessionID, now); line != "" {
