@@ -23,7 +23,10 @@ import (
 	journal "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/journal"
 	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 	proc "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
-	session "github.com/PHPCraftdream/rush/internal/session/service"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
+	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/spf13/cobra"
 )
 
@@ -68,7 +71,7 @@ func ResolveCwd(cmd *cobra.Command) (string, error) { return cmdkit.ResolveCwd(c
 
 func applyGlobalDir(flagValue string) { cmdkit.ApplyGlobalDir(flagValue) }
 
-func resolveSessionID(ctx context.Context, svc session.Service, id string) (session.Session, error) {
+func resolveSessionID(ctx context.Context, svc core.Service, id string) (core.Session, error) {
 	return cmdkit.ResolveSessionID(ctx, svc, id)
 }
 
@@ -185,3 +188,41 @@ func isServeInvocation(args []string) bool {
 func isTokensInvocation(args []string) bool {
 	return cliout.IsInvocation(args, "tokens")
 }
+
+// ---- sessions/sesskit ----
+
+func sessionBudget(ctx context.Context, svc core.Service, s core.Session) float64 {
+	return sesskit.SessionBudget(ctx, svc, s)
+}
+
+func sessionBudgets(ctx context.Context, svc core.Service, sessions []core.Session) map[string]float64 {
+	return sesskit.SessionBudgets(ctx, svc, sessions)
+}
+
+func orderBySubtreeActivity(ctx context.Context, svc core.Service, sessions []core.Session) {
+	sesskit.OrderBySubtreeActivity(ctx, svc, sessions)
+}
+
+func formatInt64(n int64) string { return sesskit.FormatInt64(n) }
+
+type callTreeActivity = sesskit.CallTreeActivity
+
+func computeCallTreeActivity(ctx context.Context, a *app.App, rootID string) callTreeActivity {
+	return sesskit.ComputeCallTreeActivity(ctx, a, rootID)
+}
+
+func computeCallTreeActivityBatch(ctx context.Context, a *app.App, rootIDs []string) map[string]callTreeActivity {
+	return sesskit.ComputeCallTreeActivityBatch(ctx, a, rootIDs)
+}
+
+func latestMessageUnix(m message.Message) int64 { return sesskit.LatestMessageUnix(m) }
+
+func callTreeActivityFresherThan(ctx context.Context, a *app.App, rootID string, baselineUnix int64) (callTreeActivity, bool) {
+	return sesskit.CallTreeActivityFresherThan(ctx, a, rootID, baselineUnix)
+}
+
+func subAgentActivityNote(ctx context.Context, a *app.App, rootID string, baselineUnix int64, now time.Time) string {
+	return sesskit.SubAgentActivityNote(ctx, a, rootID, baselineUnix, now)
+}
+
+func kindIsLive(k session.ActivityKind) bool { return sesskit.KindIsLive(k) }

@@ -1,4 +1,4 @@
-package cmd
+package sessscan
 
 import (
 	"encoding/json"
@@ -6,8 +6,13 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
+	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/spf13/cobra"
@@ -46,7 +51,25 @@ rush sessions grep "refactor" --role assistant
 rush sessions grep "TODO" --json | jq '.excerpt'
   `,
 	Args: cobra.ExactArgs(1),
-	RunE: sessionsGrepCmdRun,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return sessionsGrepCmdRun(cmd, args, cmdkit.SetupApp)
+	},
+}
+
+var sessionsGrepFlagsOnce sync.Once
+
+func NewSessionsGrepCmd(setup func(*cobra.Command) (*app.App, error)) *cobra.Command {
+	sessionsGrepFlagsOnce.Do(func() {
+		sessionsGrepCmd.Flags().IntP("n", "n", 3, "Number of context lines around each match")
+		sessionsGrepCmd.Flags().String("session", "", "Search only within this session (id or hash prefix)")
+		sessionsGrepCmd.Flags().String("role", "", "Filter by message role: assistant|user")
+		sessionsGrepCmd.Flags().Bool("json", false, "Emit one JSON object per match")
+	})
+	cmd := cmdkit.DeepFreshCmd(sessionsGrepCmd)
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		return sessionsGrepCmdRun(cmd, args, setup)
+	}
+	return cmd
 }
 
 type grepMatch struct {
@@ -58,7 +81,7 @@ type grepMatch struct {
 	Excerpt      string `json:"excerpt"`
 }
 
-func sessionsGrepCmdRun(cmd *cobra.Command, args []string) error {
+func sessionsGrepCmdRun(cmd *cobra.Command, args []string, setup func(*cobra.Command) (*app.App, error)) error {
 	pattern := args[0]
 	n, _ := cmd.Flags().GetInt("n")
 	sessionFilter, _ := cmd.Flags().GetString("session")
@@ -69,7 +92,7 @@ func sessionsGrepCmdRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--role: invalid value %q (allowed: assistant|user)", roleFilter)
 	}
 
-	a, err := setupApp(cmd)
+	a, err := setup(cmd)
 	if err != nil {
 		return err
 	}
@@ -90,7 +113,7 @@ func sessionsGrepCmdRun(cmd *cobra.Command, args []string) error {
 
 	// If a specific session is requested, resolve it.
 	if sessionFilter != "" {
-		sess, err := resolveSessionID(ctx, a.Sessions, sessionFilter)
+		sess, err := cmdkit.ResolveSessionID(ctx, a.Sessions, sessionFilter)
 		if err != nil {
 			return err
 		}
@@ -144,9 +167,9 @@ func sessionsGrepCmdRun(cmd *cobra.Command, args []string) error {
 					})
 				} else {
 					ts := time.Unix(sess.UpdatedAt, 0).Format("2006-01-02 15:04")
-					fmt.Fprintf(os.Stdout, "\n=== session: %s (%s) ===\n", truncate(sess.Title, 40), ts)
+					fmt.Fprintf(os.Stdout, "\n=== session: %s (%s) ===\n", cliout.Truncate(sess.Title, 40), ts)
 					msgTS := time.Unix(msg.CreatedAt, 0).Format("2006-01-02 15:04:05")
-					ago := formatAgo(now.Sub(time.Unix(msg.CreatedAt, 0)))
+					ago := sesskit.FormatAgo(now.Sub(time.Unix(msg.CreatedAt, 0)))
 					fmt.Fprintf(os.Stdout, "[%s] [%s] (%s, %s)\n", msg.ID, msg.Role, msgTS, ago)
 					fmt.Fprintf(os.Stdout, "%s\n", excerpt)
 				}

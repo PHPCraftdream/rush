@@ -1,4 +1,4 @@
-package cmd
+package sesscost
 
 // Grouping and rendering of the `sessions cost` table. No database, no App:
 // these are the facts the command hands over, so a regression here is a
