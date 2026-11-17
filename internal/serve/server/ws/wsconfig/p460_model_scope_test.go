@@ -1,0 +1,140 @@
+package wsconfig
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/stretchr/testify/require"
+)
+
+// Task #460 — regression tests for the "switching a model inside one session
+// changes the model system-wide" bug.
+//
+// Model defaults cascade system -> folder -> session. The system level lives
+// in the global rush.json (config.ScopeGlobal), the folder level in the
+// workspace rush.json (config.ScopeWorkspace), and the session level in the
+// sessions DB row. Only three writers may touch the system/folder levels:
+// `rush models use`, the explicit scoped WS commands, and config's own
+// first-run bootstrap/self-heal in load.go. Nothing driven by ordinary chat
+// activity may.
+//
+// The bug: handleTrackModelUsage called
+// store.UpdatePreferredModel(config.ScopeGlobal, ...), which writes
+// models.<type> into the global rush.json. Two paths reached it —
+// ModelSelector.onSelect (an explicit per-session pick) and, far worse,
+// web/src/useWS.ts's message_created subscriber, which fires on EVERY
+// assistant message. So the system-wide default silently drifted to whichever
+// model the most recently active session happened to run.
+//
+// REVERT CHECK: swap RecordRecentModel back to UpdatePreferredModel in
+// handleTrackModelUsage and TestTrackModelUsage_DoesNotChangeGlobalDefault
+// fails on its "global default unchanged" assertion.
+
+// globalLargeState captures the system-level smart-model default from both
+// places it can live: the published in-memory snapshot every reader sees, and
+// the global rush.json on disk that survives a restart. A leak into either
+// one is a bug, so both are compared.
+type globalSmartState struct {
+	live   config.SelectedModel
+	onDisk *config.SelectedModel
+}
+
+func captureGlobalSmart(t *testing.T, store *config.ConfigStore) globalSmartState {
+	t.Helper()
+	onDisk, err := store.ReadAllModelsAtScope(config.ScopeGlobal)
+	require.NoError(t, err)
+	return globalSmartState{
+		live:   store.Config().Models[config.SelectedModelTypeSmart],
+		onDisk: onDisk[config.SelectedModelTypeSmart],
+	}
+}
+
+// requireGlobalLargeUnchanged asserts the system-level default did not move.
+//
+// Deliberately a before/after delta rather than a comparison against a seeded
+// literal: config.Load self-heals a selected model that names a provider the
+// machine cannot actually serve (internal/config/load.go:919-934 rewrites
+// models.smart via updatePreferredModelLocked), so seeding a synthetic
+// "seed-provider" and expecting it to survive asserts the wrong thing and
+// fails for a reason unrelated to this bug. Comparing the state before and
+// after the handler runs tests exactly the property we care about — the
+// handler didn't touch it — whatever the machine's real default happens to be.
+func requireGlobalSmartUnchanged(t *testing.T, store *config.ConfigStore, before globalSmartState) {
+	t.Helper()
+	after := captureGlobalSmart(t, store)
+
+	require.Equal(t, before.live, after.live,
+		"the effective system-wide smart model changed — a session-scoped action leaked into global config")
+
+	switch before.onDisk {
+	case nil:
+		require.Nil(t, after.onDisk,
+			"models.smart was written into the global rush.json by an action that must not touch it")
+	default:
+		require.NotNil(t, after.onDisk, "models.smart vanished from the global rush.json")
+		require.Equal(t, *before.onDisk, *after.onDisk,
+			"the global rush.json's models.smart was rewritten")
+	}
+}
+
+// TestTrackModelUsage_DoesNotChangeGlobalDefault pins the direct fix: the
+// track_model_usage command records recency and nothing else.
+func TestTrackModelUsage_DoesNotChangeGlobalDefault(t *testing.T) {
+	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
+	store := a.Store()
+	before := captureGlobalSmart(t, store)
+
+	tracked := config.SelectedModel{Provider: "other-provider", Model: "other-smart-model"}
+	// Non-vacuous: if the model we track were already the default, the
+	// assertion below would hold even with the bug present.
+	require.NotEqual(t, before.live.Provider+"/"+before.live.Model, tracked.Provider+"/"+tracked.Model)
+
+	payload, err := json.Marshal(TrackModelUsagePayload{
+		ModelType: string(config.SelectedModelTypeSmart),
+		Provider:  tracked.Provider,
+		Model:     tracked.Model,
+	})
+	require.NoError(t, err)
+
+	handleTrackModelUsage(a, newTestClient(), WSMessage{ID: "corr-1", Type: CmdTrackModelUsage, Payload: payload})
+
+	requireGlobalSmartUnchanged(t, store, before)
+
+	// ...but the recency list, which is what this command is actually for,
+	// must have picked the model up. Without this the "fix" could trivially
+	// be a no-op handler and still pass the assertion above.
+	require.Contains(t, store.Config().RecentModels[config.SelectedModelTypeSmart], tracked,
+		"track_model_usage no longer records recency")
+}
+
+// TestSetSessionModels_DoesNotChangeGlobalDefault covers the user-visible
+// path end to end: picking a model for one session must move that session's
+// own row and leave the system level alone.
+func TestSetSessionModels_DoesNotChangeGlobalDefault(t *testing.T) {
+	ctx := t.Context()
+	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
+	store := a.Store()
+	before := captureGlobalSmart(t, store)
+
+	sess, err := a.Sessions.Create(ctx, "p460-session-scope")
+	require.NoError(t, err)
+	require.Empty(t, sess.SmartModelID, "a fresh session must start with no override, so it inherits")
+
+	payload, err := json.Marshal(SetSessionModelsPayload{
+		SessionID:  sess.ID,
+		SmartModel: &ModelOverrideWire{Provider: "session-provider", Model: "session-smart-model"},
+	})
+	require.NoError(t, err)
+
+	handleSetSessionModels(ctx, a, newTestClient(), WSMessage{ID: "corr-2", Type: CmdSetSessionModels, Payload: payload})
+
+	// The session override landed...
+	updated, err := a.Sessions.Get(ctx, sess.ID)
+	require.NoError(t, err)
+	require.Equal(t, "session-provider", updated.SmartModelProvider)
+	require.Equal(t, "session-smart-model", updated.SmartModelID)
+
+	// ...and the system level did not move.
+	requireGlobalSmartUnchanged(t, store, before)
+}
