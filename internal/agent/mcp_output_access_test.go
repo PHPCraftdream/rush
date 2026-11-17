@@ -15,12 +15,13 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	modelmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
 
 type mcpOutputTestSessions struct {
-	session.Service
+	coresession.Service
 	store *session.MCPOutputStore
 }
 

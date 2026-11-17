@@ -35,6 +35,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/dbtest"
 	"github.com/stretchr/testify/require"
@@ -43,7 +44,7 @@ import (
 
 // setupTestSessionWithDB creates a test session, service, and sql.DB for testing.
 // Returns (Session, Service, *sql.DB) so tests can perform direct SQL manipulation.
-func setupTestSessionWithDB(t *testing.T, title string) (*session.Session, session.Service, *sql.DB) {
+func setupTestSessionWithDB(t *testing.T, title string) (*core.Session, core.Service, *sql.DB) {
 	t.Helper()
 
 	// Use file-based database in temp dir to avoid connection pool issues with :memory:
@@ -200,7 +201,7 @@ func setupTestSessionWithDB(t *testing.T, title string) (*session.Session, sessi
 
 	// Create service
 	dbq := db.New(sqlDB)
-	svc := session.NewService(dbq, sqlDB)
+	svc := core.NewService(dbq, sqlDB)
 
 	// Create a test session
 	sess, err := svc.Create(context.Background(), title)
@@ -234,7 +235,7 @@ func newContextAwareCoordinator() *contextAwareCoordinator {
 // Run blocks until either:
 // 1. The blockCh is closed (normal completion), or
 // 2. ctx.Done() fires (cancellation)
-func (c *contextAwareCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *contextAwareCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.entryCount.Add(1)
 
 	c.mu.Lock()
@@ -487,7 +488,7 @@ func TestP1_2_ContextCanceledIsObservedInCoordinator(t *testing.T) {
 	// Start coordinator.Run in a goroutine
 	runErrCh := make(chan error, 1)
 	go func() {
-		_, err := coord.Run(ctx, session.SessionAgentCallData{})
+		_, err := coord.Run(ctx, core.SessionAgentCallData{})
 		runErrCh <- err
 	}()
 

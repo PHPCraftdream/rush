@@ -9,7 +9,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openrouter"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // unpricedModels holds the models already warned about: one warning per
@@ -79,7 +79,7 @@ func (a *sessionAgent) openrouterCost(metadata fantasy.ProviderMetadata) *float6
 // parameter (drives session.EstimatedUsage marker — a TUI widget we do not
 // ship, see CHANGELOG.fork.md Section 2) and their eventTokensUsed publish
 // (no consumer in our WebSocket fan-out).
-func (a *sessionAgent) updateSessionUsage(model Model, session *session.Session, usage fantasy.Usage, overrideCost *float64) float64 {
+func (a *sessionAgent) updateSessionUsage(model Model, session *core.Session, usage fantasy.Usage, overrideCost *float64) float64 {
 	modelConfig := model.CatwalkCfg
 	cost := modelConfig.CostPer1MInCached/1e6*float64(usage.CacheCreationTokens) +
 		modelConfig.CostPer1MOutCached/1e6*float64(usage.CacheReadTokens) +
@@ -133,7 +133,7 @@ func addStepUsageTokens(total int64, usage fantasy.Usage) int64 {
 // PromptTokens drives the auto-summarization trigger (the remaining-context
 // checks against CatwalkCfg.ContextWindow), so understating it delays
 // compaction and risks running the context window over instead of sliding it.
-func updateSessionTokenCounters(session *session.Session, usage fantasy.Usage) {
+func updateSessionTokenCounters(session *core.Session, usage fantasy.Usage) {
 	if usage.OutputTokens != 0 {
 		session.CompletionTokens = usage.OutputTokens
 	}

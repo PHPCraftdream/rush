@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // FinalizationTerminalGate is a re-export alias of the internal/session

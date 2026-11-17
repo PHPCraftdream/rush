@@ -16,6 +16,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/assert"
@@ -712,7 +713,7 @@ func TestSessionsLocksCmdRun_TopLevelActivityOverridesStaleHeartbeat(t *testing.
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Release(dataDir) })
 	q := db.New(conn)
-	sessionSvc := session.NewService(q, conn)
+	sessionSvc := coresession.NewService(q, conn)
 	messageSvc := message.NewService(q)
 
 	sess, err := sessionSvc.Create(ctx, "top-level-activity")

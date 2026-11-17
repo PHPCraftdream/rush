@@ -12,6 +12,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -262,7 +263,7 @@ type batchStoreDoneSource struct {
 	poll time.Duration
 	// finalizationGate, when non-nil, withholds completion reads until the
 	// owner's finalization record leaves its active phases (W1a wires it).
-	finalizationGate session.FinalizationTerminalGate
+	finalizationGate coresession.FinalizationTerminalGate
 }
 
 var _ batchDoneSource = (*batchStoreDoneSource)(nil)
@@ -288,7 +289,7 @@ func (d *batchStoreDoneSource) AwaitDone(ctx context.Context, owner string, root
 	if d.finalizationGate != nil {
 		// Gated durable wait: hold until the owner's record leaves the active
 		// phases, then read once; no busy poll under the gate.
-		e, ok, err := session.FinalizationAwaitGatedBatchResult(ctx, d.finalizationGate, owner, string(root), d.readEnvelope)
+		e, ok, err := coresession.FinalizationAwaitGatedBatchResult(ctx, d.finalizationGate, owner, string(root), d.readEnvelope)
 		if err != nil || !ok {
 			return fantasy.ToolResponse{}, ok, callerCancelOr(ctx, err)
 		}
@@ -326,7 +327,7 @@ func (d *batchStoreDoneSource) AwaitDone(ctx context.Context, owner string, root
 // When the finalization gate is set, the read is withheld until the owner's
 // finalization record seals.
 func (d *batchStoreDoneSource) LoadDone(ctx context.Context, owner string, root jobbatch.ID) (fantasy.ToolResponse, bool, error) {
-	e, ok, err := session.FinalizationGatedBatchResult(ctx, d.finalizationGate, owner, string(root), d.readEnvelope)
+	e, ok, err := coresession.FinalizationGatedBatchResult(ctx, d.finalizationGate, owner, string(root), d.readEnvelope)
 	if err != nil || !ok {
 		return fantasy.ToolResponse{}, ok, err
 	}
@@ -340,7 +341,7 @@ func (d *batchStoreDoneSource) LoadDone(ctx context.Context, owner string, root 
 // envelopeResult projects one persisted completion envelope into the
 // executor response: the full ToolResponse from Details when present, else
 // the honest projection from the stored summary and outcome state.
-func (d *batchStoreDoneSource) envelopeResult(e session.BatchDeliveryEnvelope) (fantasy.ToolResponse, error) {
+func (d *batchStoreDoneSource) envelopeResult(e coresession.BatchDeliveryEnvelope) (fantasy.ToolResponse, error) {
 	if len(e.Details) > 0 {
 		var resp fantasy.ToolResponse
 		if err := json.Unmarshal(e.Details, &resp); err != nil {
@@ -354,9 +355,9 @@ func (d *batchStoreDoneSource) envelopeResult(e session.BatchDeliveryEnvelope) (
 	return resp, nil
 }
 
-// readEnvelope matches session.FinalizationBatchResultRead so the
+// readEnvelope matches coresession.FinalizationBatchResultRead so the
 // finalization gate helpers can wrap the plain completion read.
-func (d *batchStoreDoneSource) readEnvelope(ctx context.Context, owner, root string) (session.BatchDeliveryEnvelope, bool, error) {
+func (d *batchStoreDoneSource) readEnvelope(ctx context.Context, owner, root string) (coresession.BatchDeliveryEnvelope, bool, error) {
 	return d.store.BatchDeliveryOneItemCompletion(ctx, owner, root)
 }
 
@@ -573,7 +574,7 @@ func newBatchExecutorFamilies(agentDeps batchAgentDeps) map[string]batchLeafFami
 // store or engine calls; only InstallBatchRuntime does.
 type BatchInstallDeps struct {
 	// Host, RunnerID and Owner are the commit-hook identity: one Runner, one
-	// owner session (session.BatchCommitIdentity contract).
+	// owner session (coresession.BatchCommitIdentity contract).
 	Host, RunnerID, Owner string
 	// Profile is the R11A closed capacity profile.
 	Profile *BatchProfile
@@ -622,8 +623,8 @@ type BatchInstallDeps struct {
 	// on; it lets the commit hook admit batch commits for the bound owner
 	// without the submitting call's context. Nil keeps the exact legacy
 	// behavior.
-	FinalizationAuthorityFor func(string) *session.AgentFinalizationAuthority
-	Sessions                 session.Service
+	FinalizationAuthorityFor func(string) *coresession.AgentFinalizationAuthority
+	Sessions                 coresession.Service
 	DiskBindings             *DiskProviderRegistry
 }
 
@@ -678,7 +679,7 @@ type BatchInstall struct {
 	Done         batchDoneSource
 	Elector      batchElector
 	NoticePull   batchNoticePull
-	Sessions     session.Service
+	Sessions     coresession.Service
 	CLIPump      *session.BatchControlPump
 	DiskBindings *DiskProviderRegistry
 	// RootLeases is the per-root capability identity store the model control
@@ -692,7 +693,7 @@ type BatchInstall struct {
 // BindFinalizationResultGate installs the terminal gate that withholds batch
 // result reads until the owner's finalization record seals. Nil gate keeps
 // the ungated legacy reads; only the durable done source is affected.
-func (i *BatchInstall) BindFinalizationResultGate(gate session.FinalizationTerminalGate) {
+func (i *BatchInstall) BindFinalizationResultGate(gate coresession.FinalizationTerminalGate) {
 	if i == nil {
 		return
 	}
@@ -856,11 +857,11 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 	}
 	// R11F P1-1: the commit hook reserves every Submit under the INVOKING
 	// session (OwnerFor); the fixed Owner stays the dormant default.
-	commitIdentity := session.BatchCommitIdentity{
+	commitIdentity := coresession.BatchCommitIdentity{
 		Host: deps.Host, Runner: deps.RunnerID, Owner: owner, OwnerFor: batchCommitOwnerFor,
 		AuthorityFor: deps.FinalizationAuthorityFor,
 	}
-	if authorityService, ok := deps.Sessions.(session.AgentFinalizationService); ok {
+	if authorityService, ok := deps.Sessions.(coresession.AgentFinalizationService); ok {
 		commitIdentity, err = authorityService.WithAgentFinalizationAuthorities(commitIdentity)
 		if err != nil {
 			return nil, fmt.Errorf("batch install: finalization authority: %w", err)

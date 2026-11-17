@@ -14,6 +14,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
@@ -27,7 +28,7 @@ type installedBatchModelControl struct {
 	delivery           batchModelDelivery
 	store              *session.BatchStore
 	live               *session.BatchLiveReader
-	sessions           session.Service
+	sessions           coresession.Service
 	host, runnerID     string
 	profile            *BatchProfile
 	resolver           batchMCPCapabilityResolver
@@ -40,7 +41,7 @@ var batchModelRunFallbackMu sync.Mutex
 
 var _ BatchModelControl = (*installedBatchModelControl)(nil)
 
-func NewInstalledBatchModelControl(runner batchModelRunner, delivery batchModelDelivery, store *session.BatchStore, live *session.BatchLiveReader, sessions session.Service, host, runnerID string, profile *BatchProfile, resolver batchMCPCapabilityResolver, leases ...*batchRootLeaseStore) BatchModelControl {
+func NewInstalledBatchModelControl(runner batchModelRunner, delivery batchModelDelivery, store *session.BatchStore, live *session.BatchLiveReader, sessions coresession.Service, host, runnerID string, profile *BatchProfile, resolver batchMCPCapabilityResolver, leases ...*batchRootLeaseStore) BatchModelControl {
 	control := &installedBatchModelControl{runner: runner, delivery: delivery, store: store, live: live, sessions: sessions, host: host, runnerID: runnerID, profile: profile, resolver: resolver, runMu: &sync.Mutex{}, maxDepth: batchDefaultMaxDepth, maxNodes: batchDefaultMaxNodes}
 	if adapter, ok := runner.(interface{ OutputCache() *batchOutputCache }); ok {
 		control.outputCache = adapter.OutputCache()

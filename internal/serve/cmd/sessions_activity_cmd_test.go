@@ -26,6 +26,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -84,7 +85,7 @@ func newActivityCmdApp(t *testing.T) (*app.App, string, *session.HostStore) {
 	require.NoError(t, err)
 	q := db.New(conn)
 	a := &app.App{
-		Sessions: session.NewService(q, conn),
+		Sessions: coresession.NewService(q, conn),
 		Messages: message.NewService(q),
 		DB:       func() *sql.DB { return conn },
 	}
@@ -100,7 +101,7 @@ func TestSessionsActivity_OneTableEveryCommand(t *testing.T) {
 	ctx := context.Background()
 	a, dataDir, store := newActivityCmdApp(t)
 
-	mk := func(name string) session.Session {
+	mk := func(name string) coresession.Session {
 		sess, err := a.Sessions.Create(ctx, name)
 		require.NoError(t, err)
 		return sess

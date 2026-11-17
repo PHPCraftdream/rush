@@ -12,6 +12,7 @@ import (
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -145,9 +146,9 @@ func newAttachmentsTestApp(t *testing.T, workingDir, dataDir string) *appPkg.App
 // buffered on the client's send channel. handleListSessions may also emit
 // agent_busy / summarize_queued corrections when a coordinator is
 // configured, so the replies are filtered by type.
-func drainSessionsListReplies(t *testing.T, client *Client) [][]session.Session {
+func drainSessionsListReplies(t *testing.T, client *Client) [][]core.Session {
 	t.Helper()
-	var out [][]session.Session
+	var out [][]core.Session
 	for {
 		select {
 		case raw := <-client.SendChan():
@@ -156,7 +157,7 @@ func drainSessionsListReplies(t *testing.T, client *Client) [][]session.Session 
 			if env.Type != EventSessionsList {
 				continue
 			}
-			var sessions []session.Session
+			var sessions []core.Session
 			require.NoError(t, json.Unmarshal(env.Payload, &sessions))
 			out = append(out, sessions)
 		case <-time.After(100 * time.Millisecond):
@@ -166,7 +167,7 @@ func drainSessionsListReplies(t *testing.T, client *Client) [][]session.Session 
 }
 
 // findSessionRow returns the row for sessionID from a sessions_list reply.
-func findSessionRow(t *testing.T, sessions []session.Session, sessionID string) session.Session {
+func findSessionRow(t *testing.T, sessions []core.Session, sessionID string) core.Session {
 	t.Helper()
 	for _, s := range sessions {
 		if s.ID == sessionID {
@@ -174,7 +175,7 @@ func findSessionRow(t *testing.T, sessions []session.Session, sessionID string) 
 		}
 	}
 	t.Fatalf("session %s missing from the sessions_list reply", sessionID)
-	return session.Session{}
+	return core.Session{}
 }
 
 // blockingCoordinator is referenced by the package-local coordinator mocks;

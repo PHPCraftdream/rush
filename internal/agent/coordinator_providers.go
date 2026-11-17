@@ -37,7 +37,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/discover"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/copilot"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/event"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	openaisdk "github.com/charmbracelet/openai-go/option"
 	"github.com/qjebbs/go-jsons"
 )

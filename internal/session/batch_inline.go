@@ -6,6 +6,8 @@ import (
 	"errors"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -44,10 +46,10 @@ func (s *BatchStore) BatchAnnounceInlineResult(ctx context.Context, messages mes
 		return BatchInlineAnnouncement{}, err
 	}
 	id := sql.NullString{String: msg.ID, Valid: true}
-	if err = batchRequireRow(q.BatchOutboxAnnounce(ctx, db.BatchOutboxAnnounceParams{Owner: owner, RootID: root, MessageID: id, UpdatedAt: time.Now().Unix()})); err != nil {
+	if err = session.BatchRequireRow(q.BatchOutboxAnnounce(ctx, db.BatchOutboxAnnounceParams{Owner: owner, RootID: root, MessageID: id, UpdatedAt: time.Now().Unix()})); err != nil {
 		return BatchInlineAnnouncement{}, err
 	}
-	if err = batchRequireRow(q.BatchOutboxNameMessage(ctx, db.BatchOutboxNameMessageParams{Owner: owner, RootID: root, NodeID: root, MessageID: id, UpdatedAt: time.Now().Unix()})); err != nil {
+	if err = session.BatchRequireRow(q.BatchOutboxNameMessage(ctx, db.BatchOutboxNameMessageParams{Owner: owner, RootID: root, NodeID: root, MessageID: id, UpdatedAt: time.Now().Unix()})); err != nil {
 		return BatchInlineAnnouncement{}, err
 	}
 	if err = tx.Commit(); err != nil {

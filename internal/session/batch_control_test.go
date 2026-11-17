@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -144,7 +146,7 @@ func TestR9ControlWaitTimeoutAndCommitProof(t *testing.T) {
 		return BatchControlAccepted{Code: "accepted"}, nil
 	})
 	_, err = pump.Pump(ctx, "owner", target.Root)
-	require.ErrorIs(t, err, ErrBatchProjectionConflict)
+	require.ErrorIs(t, err, session.ErrBatchProjectionConflict)
 	got, err := a.BatchReadControl(ctx, target, r.RequestID)
 	require.NoError(t, err)
 	require.Equal(t, r, got)

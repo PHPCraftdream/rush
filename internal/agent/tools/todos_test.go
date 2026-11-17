@@ -3,7 +3,7 @@ package tools
 import (
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // helpers

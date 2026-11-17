@@ -8,3 +8,5 @@
 # removed.
 hyper 2
 lab 2
+# MV1's core service intentionally remains package "session" per the split-session design API; only EX component splits will remove the duplicate.
+session 2

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -30,7 +31,7 @@ func TestQuestionStopFormatRecoverDeadHost(t *testing.T) {
 	ctx := context.Background()
 	conn, dataDir := batchFixtureConn(t)
 	q := db.New(conn)
-	sessions := session.NewService(q, conn)
+	sessions := coresession.NewService(q, conn)
 	child, err := sessions.Create(ctx, "question child")
 	require.NoError(t, err)
 

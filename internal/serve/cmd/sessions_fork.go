@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 var sessionsForkCmd = &cobra.Command{
@@ -43,7 +43,7 @@ rush sessions fork my-session-id --session new-id --title "My Fork"
 		ctx := cmd.Context()
 
 		// resolveSessionID supports hash-prefix lookup, which
-		// session.Service.ForkSessionTx does not — resolve the exact source
+		// core.Service.ForkSessionTx does not — resolve the exact source
 		// ID here, then ForkSessionTx re-reads it inside the transaction for
 		// a consistent snapshot.
 		source, err := resolveSessionID(ctx, a.Sessions, args[0])
@@ -67,13 +67,13 @@ rush sessions fork my-session-id --session new-id --title "My Fork"
 }
 
 // forkOptions carries the CLI-specific fork knobs (--at / --session / --title
-// / --child) that session.Service.ForkSession's zero-value defaults do not
+// / --child) that core.Service.ForkSession's zero-value defaults do not
 // cover: ForkSession always copies every message into a brand-new top-level
 // session with a server-generated UUID and a fixed title fallback, which is
 // exactly right for the web fork button but too narrow for this command's
 // --at truncation, caller-chosen ID, and --child parent linkage.
-// forkSessionCLI maps these onto session.ForkOptions and calls the shared
-// session.Service.ForkSessionTx.
+// forkSessionCLI maps these onto core.ForkOptions and calls the shared
+// core.Service.ForkSessionTx.
 type forkOptions struct {
 	atN     int
 	newID   string
@@ -82,7 +82,7 @@ type forkOptions struct {
 }
 
 // forkSessionCLI performs the CLI fork's create-session-then-copy-messages
-// operation by delegating to session.Service.ForkSessionTx — the single
+// operation by delegating to core.Service.ForkSessionTx — the single
 // transactional fork implementation shared with the web fork button
 // (internal/session/session.go). This used to talk to db.Queries directly
 // with its own copy of the transaction, but that duplicated implementation
@@ -93,19 +93,19 @@ type forkOptions struct {
 // including partway through the message copy loop, rolls back the new
 // session row and every message copied so far) without re-implementing it.
 //
-// session.Service.ForkSessionTx deliberately does not publish a
+// core.Service.ForkSessionTx deliberately does not publish a
 // pubsub.CreatedEvent — this CLI invocation runs in its own process, so a
 // pubsub.Broker subscriber here would never be observed by whichever process
 // is actually serving the web UI or another `rush run`.
-func forkSessionCLI(ctx context.Context, svc session.Service, srcID string, opts forkOptions) (fork session.Session, copiedCount int, err error) {
-	fork, copiedCount, err = svc.ForkSessionTx(ctx, srcID, session.ForkOptions{
+func forkSessionCLI(ctx context.Context, svc core.Service, srcID string, opts forkOptions) (fork core.Session, copiedCount int, err error) {
+	fork, copiedCount, err = svc.ForkSessionTx(ctx, srcID, core.ForkOptions{
 		NewID:     opts.newID,
 		Title:     opts.title,
 		ParentID:  parentIDFor(opts, srcID),
 		LimitMsgs: opts.atN,
 	})
 	if err != nil {
-		return session.Session{}, 0, err
+		return core.Session{}, 0, err
 	}
 	return fork, copiedCount, nil
 }

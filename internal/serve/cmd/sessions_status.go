@@ -26,6 +26,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/spf13/cobra"
 )
 
@@ -462,7 +463,7 @@ func sessionsStatusLastTool(ctx context.Context, a *app.App, sessionID string, n
 // cycle in the data must terminate. A level read error aborts the walk
 // with the error so the caller can report what it knows instead of a
 // fabricated count.
-func sessionsStatusSubSessionTotal(ctx context.Context, svc session.Service, rootID string) (int, error) {
+func sessionsStatusSubSessionTotal(ctx context.Context, svc coresession.Service, rootID string) (int, error) {
 	const maxDepth = 16
 	total := 0
 	seen := map[string]bool{rootID: true}
@@ -523,7 +524,7 @@ func intOrUnknown(p *int) string {
 // to w. It takes an io.Writer so tests can drive it without cobra or a
 // captured stdout.
 func renderSessionsStatusReport(w io.Writer, rep sessionStatusReport) {
-	fmt.Fprintf(w, "session: %s (hash %s)\n", rep.SessionID, short(session.HashID(rep.SessionID)))
+	fmt.Fprintf(w, "session: %s (hash %s)\n", rep.SessionID, short(coresession.HashID(rep.SessionID)))
 	fmt.Fprintf(w, "phase: %s\n", rep.Phase)
 	fmt.Fprintf(w, "process: %s — %s\n", aliveWord(rep.Process.Alive), rep.Process.Evidence)
 	if rep.Process.DriverPID != nil {

@@ -8,7 +8,7 @@ import (
 	"context"
 	"sort"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // sessionBudget returns the session's subtree budget (own + delegation

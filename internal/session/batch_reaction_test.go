@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"testing"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -215,7 +217,7 @@ func TestBatchOutboxStaleSnapshotFencesAndMaxAttempts(t *testing.T) {
 			}
 			count, e := s.BatchReactionSettleReactedFailedWithMarker(ctx, "owner", stale, "must not insert")
 			if field == "owner" {
-				require.ErrorIs(t, e, ErrBatchProjectionConflict)
+				require.ErrorIs(t, e, session.ErrBatchProjectionConflict)
 			} else {
 				require.NoError(t, e)
 			}

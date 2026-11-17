@@ -16,6 +16,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -76,7 +77,7 @@ func TestReleaseGate_1_MetadataCleanupBlockedForever(t *testing.T) {
 	conn, err := db.Connect(t.Context(), tmpDir)
 	require.NoError(t, err)
 	q := db.New(conn)
-	sessions := session.NewService(q, conn)
+	sessions := coresession.NewService(q, conn)
 	messages := message.NewService(q)
 
 	// Create the session.

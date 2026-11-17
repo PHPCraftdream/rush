@@ -6,6 +6,8 @@ import (
 	"errors"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -41,7 +43,7 @@ func (s *BatchStore) BatchAnnounceStarted(ctx context.Context, messages message.
 	if err != nil {
 		return message.Message{}, err
 	}
-	if err = batchRequireRow(q.BatchOutboxSetAnnouncementMessage(ctx, db.BatchOutboxSetAnnouncementMessageParams{Owner: owner, RootID: root, MessageID: sql.NullString{String: msg.ID, Valid: true}, UpdatedAt: time.Now().Unix()})); err != nil {
+	if err = session.BatchRequireRow(q.BatchOutboxSetAnnouncementMessage(ctx, db.BatchOutboxSetAnnouncementMessageParams{Owner: owner, RootID: root, MessageID: sql.NullString{String: msg.ID, Valid: true}, UpdatedAt: time.Now().Unix()})); err != nil {
 		return message.Message{}, err
 	}
 	if err = tx.Commit(); err != nil {

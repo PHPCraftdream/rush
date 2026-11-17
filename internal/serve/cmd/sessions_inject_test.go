@@ -9,6 +9,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -17,7 +18,7 @@ func TestSessionsInject_Success(t *testing.T) {
 	t.Parallel()
 
 	conn, q := newTestDB(t)
-	s := session.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 
 	sess, err := s.Create(context.Background(), "inject target")
@@ -77,7 +78,7 @@ func TestSessionsInject_SessionNotFound(t *testing.T) {
 	t.Parallel()
 
 	conn, q := newTestDB(t)
-	s := session.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 
 	_, _, err := doInject(context.Background(), s, m, "does-not-exist", "hi", false)
@@ -89,7 +90,7 @@ func TestSessionsInject_InterruptFlag(t *testing.T) {
 	t.Parallel()
 
 	conn, q := newTestDB(t)
-	s := session.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 
 	sess, err := s.Create(context.Background(), "interrupt target")

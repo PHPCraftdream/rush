@@ -21,7 +21,7 @@ import (
 	"charm.land/fantasy/providers/anthropic"
 
 	"github.com/PHPCraftdream/rush/internal/kit/text/stringext"
-	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -47,7 +47,7 @@ func (a *sessionAgent) getCacheControlOptions() fantasy.ProviderOptions {
 // We use the session hash instead of the raw UUID so the header value
 // is deterministic and opaque.
 func sessionHeaders(sessionID string) map[string]string {
-	hash := session.HashID(sessionID)
+	hash := core.HashID(sessionID)
 	return map[string]string{
 		"x-session-id":       hash,
 		"x-session-affinity": hash,
@@ -143,7 +143,7 @@ func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentC
 	return msg, nil
 }
 
-func (a *sessionAgent) preparePrompt(msgs []message.Message, todos []session.Todo, targetFamily string, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart) {
+func (a *sessionAgent) preparePrompt(msgs []message.Message, todos []core.Todo, targetFamily string, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart) {
 	var history []fantasy.Message
 	var reminderMsg fantasy.Message
 	hasReminder := false
@@ -327,7 +327,7 @@ func syntheticToolResultsForOrphanedCalls(m message.Message, knownToolResultIDs 
 	}, true
 }
 
-func (a *sessionAgent) getSessionMessages(ctx context.Context, session session.Session) ([]message.Message, error) {
+func (a *sessionAgent) getSessionMessages(ctx context.Context, session core.Session) ([]message.Message, error) {
 	msgs, err := a.messages.List(ctx, session.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list messages: %w", err)

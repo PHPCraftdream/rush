@@ -29,6 +29,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -40,7 +41,7 @@ type foreignWorkspaceCoordinator struct {
 	calls atomic.Int64
 }
 
-func (c *foreignWorkspaceCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *foreignWorkspaceCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
 	return nil, fmt.Errorf("run refused in this workspace: %w", session.ErrForeignWorkspace)
 }
@@ -49,15 +50,15 @@ func (c *foreignWorkspaceCoordinator) Run(ctx context.Context, callData session.
 // mid-flight is briefly 'leased' and invisible to the pending scan, and
 // GetRunQueueEntry reports the leased state, so polling (rather than one read)
 // is the only race-free way to observe a settled outcome.
-func awaitPendingRunQueueRow(t *testing.T, svc session.Service, id string) *session.RunQueueEntry {
+func awaitPendingRunQueueRow(t *testing.T, svc core.Service, id string) *core.RunQueueEntry {
 	t.Helper()
-	var got *session.RunQueueEntry
+	var got *core.RunQueueEntry
 	require.Eventually(t, func() bool {
 		e, err := svc.GetRunQueueEntry(context.Background(), id)
 		if err != nil || e == nil {
 			return false
 		}
-		if e.Status != session.RunQueueStatusPending {
+		if e.Status != core.RunQueueStatusPending {
 			return false
 		}
 		got = e
@@ -143,7 +144,7 @@ func TestWS1_Pump_ForeignWorkspace_NackWithoutAttemptPenalty(t *testing.T) {
 	pump.Stop()
 
 	entry := awaitPendingRunQueueRow(t, svc, entryID)
-	require.Equal(t, session.RunQueueStatusPending, entry.Status)
+	require.Equal(t, core.RunQueueStatusPending, entry.Status)
 	require.Zero(t, entry.Attempts, "nack without attempt penalty: attempts must stay 0 across many ticks")
 	require.NotEmpty(t, entry.LastError, "a release always records its reason on the row")
 	require.True(t,
@@ -180,7 +181,7 @@ func newBlockingForeignCoordinator() *blockingForeignCoordinator {
 	}
 }
 
-func (c *blockingForeignCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *blockingForeignCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	if c.calls.Add(1) == 1 {
 		return nil, fmt.Errorf("run refused in this workspace: %w", session.ErrForeignWorkspace)
 	}
@@ -245,7 +246,7 @@ func TestWS1_Pump_ForeignWorkspace_NoPenaltyIsTheWrite(t *testing.T) {
 	entry, err := svc.GetRunQueueEntry(ctx, entryID)
 	require.NoError(t, err)
 	require.NotNil(t, entry)
-	require.Equal(t, session.RunQueueStatusLeased, entry.Status,
+	require.Equal(t, core.RunQueueStatusLeased, entry.Status,
 		"the pump must have re-leased the released row for its retry")
 	require.Zero(t, entry.Attempts,
 		"the foreign-workspace refusal must NOT increment attempts (one ordinary nack would leave 1)")

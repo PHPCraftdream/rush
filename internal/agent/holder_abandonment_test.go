@@ -13,13 +13,13 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
 // consumedInjectSessions stubs the pending_injects delete as "another
 // detached consumer already won ownership" (sql.ErrNoRows).
-type consumedInjectSessions struct{ session.Service }
+type consumedInjectSessions struct{ core.Service }
 
 func (s *consumedInjectSessions) DeleteInterruptInject(context.Context, string) error {
 	return sql.ErrNoRows
@@ -52,7 +52,7 @@ func TestStartDetachedRun_AlreadyConsumedInjectReleasesHolder(t *testing.T) {
 		InjectID:        "inj-1",
 		Prompt:          "p",
 		CallOptions:     &CallOptions{DiskBindingID: bindingID, DiskProvider: provider},
-		DiskRequirement: &session.SessionExecutionRequirement{BindingID: bindingID},
+		DiskRequirement: &core.SessionExecutionRequirement{BindingID: bindingID},
 	}
 	err = coord.startDetachedRun(context.Background(), call)
 	require.NoError(t, err, "the loser must not fail the caller; it just must not leak")
@@ -63,7 +63,7 @@ func TestStartDetachedRun_AlreadyConsumedInjectReleasesHolder(t *testing.T) {
 
 // outboxFallbackSessions stubs the primary durable enqueue as unavailable,
 // forcing restartOrphanedWithRetry onto its orphan-outbox fallback.
-type outboxFallbackSessions struct{ session.Service }
+type outboxFallbackSessions struct{ core.Service }
 
 func (s *outboxFallbackSessions) EnqueueRunQueueEntry(context.Context, string, string, []byte) error {
 	return errors.New("primary queue unavailable")
@@ -101,7 +101,7 @@ func TestRestartOrphanedWithRetry_SoleOwnerOutboxTransferKeepsBinding(t *testing
 		LogicalCallID:   "orphan-1",
 		Prompt:          "recover",
 		CallOptions:     &CallOptions{DiskBindingID: bindingID, DiskProvider: provider},
-		DiskRequirement: &session.SessionExecutionRequirement{BindingID: bindingID},
+		DiskRequirement: &core.SessionExecutionRequirement{BindingID: bindingID},
 	}
 	err = sa.restartOrphanedWithRetry([]SessionAgentCall{call})
 	require.Error(t, err, "the primary enqueue failure is still surfaced")

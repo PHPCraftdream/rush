@@ -10,6 +10,7 @@ import (
 	agent "github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -142,7 +143,7 @@ func (m *mockCoordinatorForShutdown) ResetAutoResumeCounter(sessionID string) {
 	panic("unexpected: Shutdown does not call ResetAutoResumeCounter")
 }
 
-func (m *mockCoordinatorForShutdown) RebuildSessionAgentCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
+func (m *mockCoordinatorForShutdown) RebuildSessionAgentCall(ctx context.Context, rowID string, data coresession.SessionAgentCallData) (agent.SessionAgentCall, error) {
 	panic("unexpected: Shutdown does not call RebuildSessionAgentCall")
 }
 

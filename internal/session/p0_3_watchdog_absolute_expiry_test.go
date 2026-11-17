@@ -52,11 +52,12 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 )
 
-// delayedRenewalService wraps session.Service so that:
+// delayedRenewalService wraps core.Service so that:
 //   - renewal attempt #1 is delayed by a fixed duration BEFORE forwarding to
 //     the real DB call, so it still succeeds (ok=true) but takes
 //     artificially long to return — simulating a slow-but-successful
@@ -74,7 +75,7 @@ import (
 // behind before the watchdog's window has a chance to matter — the bug
 // would never be observable from outside the process.
 type delayedRenewalService struct {
-	session.Service
+	core.Service
 	mu                sync.Mutex
 	delayOnAttemptNum int64 // delay exactly this renewal attempt (1-indexed); 0 = never
 	delay             time.Duration

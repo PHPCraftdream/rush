@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -40,20 +42,20 @@ func TestBatchCommitAdmitsManagedAncestorsBeforeWriter(t *testing.T) {
 	parent := finalizationCommitAuthority(t, api, "owner", "parent-call", 1)
 	child := finalizationCommitAuthority(t, api, "child", "child-call", 1)
 	grandchild := finalizationCommitAuthority(t, api, "grandchild", "grandchild-call", 1)
-	finalizationCommitFailureDiagnostics(t, env, parent.identity, child.identity, grandchild.identity)
+	finalizationCommitFailureDiagnostics(t, env, parent.Identity, child.Identity, grandchild.Identity)
 	identity := env.id
 	identity.Owner = "grandchild"
 	identity, err := api.WithAgentFinalizationAuthorities(identity)
 	require.NoError(t, err)
-	ctx, err := WithAgentFinalizationContext(env.ctx, parent, child, grandchild)
+	ctx, err := session.WithAgentFinalizationContext(env.ctx, parent, child, grandchild)
 	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	env.conn.SetMaxOpenConns(1)
 	identity.AdmitOwners = func(ctx context.Context, _ jobbatch.Transition, owners []string) (func() error, error) {
 		require.Equal(t, []string{"child", "grandchild", "owner"}, owners)
-		for _, authority := range []*AgentFinalizationAuthority{parent, child, grandchild} {
-			record, err := NewAgentFinalizationStore(env.conn).Snapshot(ctx, authority.identity)
+		for _, authority := range []*session.AgentFinalizationAuthority{parent, child, grandchild} {
+			record, err := session.NewAgentFinalizationStore(env.conn).Snapshot(ctx, authority.Identity)
 			require.NoError(t, err)
 			require.EqualValues(t, 1, record.OpenTickets, "every ancestor ticket precedes writer I/O")
 		}
@@ -64,8 +66,8 @@ func TestBatchCommitAdmitsManagedAncestorsBeforeWriter(t *testing.T) {
 		}, nil
 	}
 	require.NoError(t, NewBatchCommitHook(env.store, identity)(ctx, admissionSubmit("new-root", "new-ref", 3)))
-	for _, authority := range []*AgentFinalizationAuthority{parent, child, grandchild} {
-		record, err := NewAgentFinalizationStore(env.conn).Snapshot(ctx, authority.identity)
+	for _, authority := range []*session.AgentFinalizationAuthority{parent, child, grandchild} {
+		record, err := session.NewAgentFinalizationStore(env.conn).Snapshot(ctx, authority.Identity)
 		require.NoError(t, err)
 		require.Zero(t, record.OpenTickets)
 		require.EqualValues(t, 2, record.Revision)
@@ -79,12 +81,12 @@ func TestBatchCommitMissingOrAcceptedManagedAncestorCannotBecomeLegacy(t *testin
 			api := finalizationCommitService(env)
 			parent := finalizationCommitAuthority(t, api, "owner", "parent-call", 1)
 			child := finalizationCommitAuthority(t, api, "grandchild", "grandchild-call", 1)
-			finalizationCommitFailureDiagnostics(t, env, parent.identity, child.identity)
+			finalizationCommitFailureDiagnostics(t, env, parent.Identity, child.Identity)
 			identity := env.id
 			identity.Owner = "grandchild"
-			authorities := []*AgentFinalizationAuthority{child}
+			authorities := []*session.AgentFinalizationAuthority{child}
 			if accepted {
-				require.NoError(t, sealFinalizationForTest(env.ctx, env.conn, NewAgentFinalizationStore(env.conn), parent.identity, 0))
+				require.NoError(t, sealFinalizationForTest(env.ctx, env.conn, session.NewAgentFinalizationStore(env.conn), parent.Identity, 0))
 				authorities = append(authorities, parent)
 			}
 			identity, err := api.WithAgentFinalizationAuthorities(identity, authorities...)
@@ -92,7 +94,7 @@ func TestBatchCommitMissingOrAcceptedManagedAncestorCannotBecomeLegacy(t *testin
 			err = NewBatchCommitHook(env.store, identity)(env.ctx, admissionSubmit("new-root", "new-ref", 3))
 			require.Error(t, err)
 			require.Zero(t, commitHookCount(t, env.conn, `SELECT count(*) FROM batch_nodes WHERE root_id='new-root'`))
-			record, err := NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, child.identity)
+			record, err := session.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, child.Identity)
 			require.NoError(t, err)
 			require.Zero(t, record.OpenTickets, "partial multi-owner admission releases on failure")
 		})
@@ -109,7 +111,7 @@ func TestBatchCommitAncestorTraversalRejectsCycleBeforeTickets(t *testing.T) {
 	identity, err := api.WithAgentFinalizationAuthorities(env.id, parent, child)
 	require.NoError(t, err)
 	err = NewBatchCommitHook(env.store, identity)(env.ctx, admissionSubmit("new-root", "new-ref", 3))
-	require.ErrorIs(t, err, ErrAgentFinalizationChanged)
+	require.ErrorIs(t, err, session.ErrAgentFinalizationChanged)
 	require.Zero(t, commitHookCount(t, env.conn, `SELECT count(*) FROM session_agent_finalization_tickets`))
 	require.Zero(t, commitHookCount(t, env.conn, `SELECT count(*) FROM batch_nodes WHERE root_id='new-root'`))
 }
@@ -123,7 +125,7 @@ func TestBatchCommitDoesNotTreatSessionForkAsManagedAncestor(t *testing.T) {
 	require.NoError(t, err)
 	api := finalizationCommitService(env)
 	parent := finalizationCommitAuthority(t, api, "owner", "parent-call", 1)
-	require.NoError(t, sealFinalizationForTest(env.ctx, env.conn, NewAgentFinalizationStore(env.conn), parent.identity, 0))
+	require.NoError(t, sealFinalizationForTest(env.ctx, env.conn, session.NewAgentFinalizationStore(env.conn), parent.Identity, 0))
 	identity := env.id
 	identity.Owner = "fork"
 	identity, err = api.WithAgentFinalizationAuthorities(identity)
@@ -141,7 +143,7 @@ func TestBatchCommitAncestorTicketsReleaseAfterRollbackOrCancelledOwner(t *testi
 			parent := finalizationCommitAuthority(t, api, "owner", "parent-call", 1)
 			child := finalizationCommitAuthority(t, api, "child", "child-call", 1)
 			grandchild := finalizationCommitAuthority(t, api, "grandchild", "grandchild-call", 1)
-			finalizationCommitFailureDiagnostics(t, env, parent.identity, child.identity, grandchild.identity)
+			finalizationCommitFailureDiagnostics(t, env, parent.Identity, child.Identity, grandchild.Identity)
 			identity := env.id
 			identity.Owner = "grandchild"
 			identity, err := api.WithAgentFinalizationAuthorities(identity, parent, child, grandchild)
@@ -160,8 +162,8 @@ func TestBatchCommitAncestorTicketsReleaseAfterRollbackOrCancelledOwner(t *testi
 				require.ErrorContains(t, err, "ancestor writer rollback")
 			}
 			require.Zero(t, commitHookCount(t, env.conn, `SELECT count(*) FROM batch_nodes WHERE root_id='new-root'`))
-			for _, authority := range []*AgentFinalizationAuthority{parent, child, grandchild} {
-				record, err := NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, authority.identity)
+			for _, authority := range []*session.AgentFinalizationAuthority{parent, child, grandchild} {
+				record, err := session.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, authority.Identity)
 				require.NoError(t, err)
 				require.Zero(t, record.OpenTickets)
 			}
@@ -175,15 +177,15 @@ func TestFinalizationContextRejectsReplacementAndForeignService(t *testing.T) {
 	env := newCommitHookEnv(t)
 	api := finalizationCommitService(env)
 	authority := finalizationCommitAuthority(t, api, "owner", "call", 1)
-	ctx, err := WithAgentFinalizationContext(env.ctx, authority)
+	ctx, err := session.WithAgentFinalizationContext(env.ctx, authority)
 	require.NoError(t, err)
-	ctx, err = WithAgentFinalizationContext(ctx, authority)
+	ctx, err = session.WithAgentFinalizationContext(ctx, authority)
 	require.NoError(t, err, "same capability inheritance is idempotent")
-	_, err = WithAgentFinalizationContext(ctx, &AgentFinalizationAuthority{
-		service:  authority.service,
-		identity: AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "replacement", Generation: 2},
+	_, err = session.WithAgentFinalizationContext(ctx, &session.AgentFinalizationAuthority{
+		Service:  authority.Service,
+		Identity: session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "replacement", Generation: 2},
 	})
-	require.ErrorIs(t, err, ErrAgentFinalizationChanged)
+	require.ErrorIs(t, err, session.ErrAgentFinalizationChanged)
 	otherService := finalizationCommitService(env)
 	identity, err := otherService.WithAgentFinalizationAuthorities(env.id)
 	require.NoError(t, err)
@@ -201,10 +203,10 @@ func TestFinalizationParentEdgesQueryUsesChildSessionIndex(t *testing.T) {
 	var plan string
 	t.Cleanup(func() {
 		if t.Failed() {
-			t.Logf("query:\n%s\nplan:\n%s", finalizationParentEdgesQuery, plan)
+			t.Logf("query:\n%s\nplan:\n%s", session.FinalizationParentEdgesQuery, plan)
 		}
 	})
-	rows, err := conn.QueryContext(ctx, "EXPLAIN QUERY PLAN "+finalizationParentEdgesQuery, "child-session")
+	rows, err := conn.QueryContext(ctx, "EXPLAIN QUERY PLAN "+session.FinalizationParentEdgesQuery, "child-session")
 	require.NoError(t, err)
 	defer rows.Close()
 	for rows.Next() {

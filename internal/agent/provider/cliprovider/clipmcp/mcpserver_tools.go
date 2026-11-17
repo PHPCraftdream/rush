@@ -20,7 +20,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"

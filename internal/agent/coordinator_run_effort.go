@@ -1,6 +1,6 @@
 package agent
 
-import "github.com/PHPCraftdream/rush/internal/session"
+import session "github.com/PHPCraftdream/rush/internal/session/service"
 
 // inheritSessionEffort fills an override slot's empty reasoning effort from
 // the session's durable effort, but only when the slot names the session's

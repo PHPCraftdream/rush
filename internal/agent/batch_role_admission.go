@@ -10,8 +10,8 @@ import (
 	"slices"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 type batchRoleAdmissionContextKey struct{}

@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -67,8 +69,8 @@ func finalizationDebtNodeSealEnv(t *testing.T) candidateEnv {
 	_, conn, ctx := batchStoreTestDB(t)
 	finalizationSeedNodeDebt(t, conn, ctx, "owner", "call")
 	messages := message.NewService(db.New(conn))
-	store := NewAgentFinalizationStore(conn)
-	id := AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "logical", Generation: 1}
+	store := session.NewAgentFinalizationStore(conn)
+	id := session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "logical", Generation: 1}
 	require.NoError(t, store.Bind(ctx, id))
 	writer, ok := messages.(message.FinalizationWriter)
 	require.True(t, ok)
@@ -231,7 +233,7 @@ func TestFinalizationSealRefusesNodeDebtUntilSettled(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, outcome.Sealed, "an open node debt must refuse the seal")
 	require.False(t, outcome.Accepted)
-	require.Equal(t, AgentFinalizationSealReactionDebt, outcome.Reason)
+	require.Equal(t, session.AgentFinalizationSealReactionDebt, outcome.Reason)
 	settled, err := store.SettleFinalizationDebts(t.Context(), e.id.SessionID)
 	require.NoError(t, err)
 	require.Equal(t, 1, settled, "exactly the one seeded node debt settles")
@@ -247,7 +249,7 @@ func TestFinalizationSealRefusesNodeDebtUntilSettled(t *testing.T) {
 // transaction; it records the debt counter before and after the injection
 // and the rows the injection touched.
 type finalizationNodeDebtLateReader struct {
-	inner     AgentFinalizationScopeReader
+	inner     session.AgentFinalizationScopeReader
 	owner     string
 	root      string
 	child     string
@@ -256,17 +258,17 @@ type finalizationNodeDebtLateReader struct {
 	selected  int64
 }
 
-var _ AgentFinalizationScopeReader = (*finalizationNodeDebtLateReader)(nil)
+var _ session.AgentFinalizationScopeReader = (*finalizationNodeDebtLateReader)(nil)
 
 // FinalizationSealScopeFacts reads the wrapped facts, selects the prepared
 // terminal child's notice inside the passed transaction with the field
 // wiring batchProjectRoot uses (RootID/HostID/OwnerSessionID/RunnerID, the
 // projection sequence as notice_sequence), and re-reads the facts so the
 // seal decides on the late node debt too.
-func (r *finalizationNodeDebtLateReader) FinalizationSealScopeFacts(ctx context.Context, tx *sql.Tx) (AgentFinalizationScopeFacts, error) {
+func (r *finalizationNodeDebtLateReader) FinalizationSealScopeFacts(ctx context.Context, tx *sql.Tx) (session.AgentFinalizationScopeFacts, error) {
 	facts, err := r.inner.FinalizationSealScopeFacts(ctx, tx)
 	if err != nil {
-		return AgentFinalizationScopeFacts{}, err
+		return session.AgentFinalizationScopeFacts{}, err
 	}
 	r.firstRead = facts.ReactionDebt
 	notice := batchStoreTestNotice(r.child)
@@ -275,12 +277,12 @@ func (r *finalizationNodeDebtLateReader) FinalizationSealScopeFacts(ctx context.
 	notice.UpdatedAt = time.Now().Unix()
 	selected, err := db.New(tx).SelectBatchNodeNotice(ctx, notice)
 	if err != nil {
-		return AgentFinalizationScopeFacts{}, err
+		return session.AgentFinalizationScopeFacts{}, err
 	}
 	r.selected = selected
 	late, err := r.inner.FinalizationSealScopeFacts(ctx, tx)
 	if err != nil {
-		return AgentFinalizationScopeFacts{}, err
+		return session.AgentFinalizationScopeFacts{}, err
 	}
 	r.lateRead = late.ReactionDebt
 	return late, nil
@@ -308,8 +310,8 @@ func TestFinalizationSealSeesNodeDebtProducedWhileSealing(t *testing.T) {
 		}},
 	}))
 	messages := message.NewService(db.New(conn))
-	store := NewAgentFinalizationStore(conn)
-	id := AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "logical", Generation: 1}
+	store := session.NewAgentFinalizationStore(conn)
+	id := session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "logical", Generation: 1}
 	require.NoError(t, store.Bind(ctx, id))
 	writer, ok := messages.(message.FinalizationWriter)
 	require.True(t, ok)
@@ -327,7 +329,7 @@ func TestFinalizationSealSeesNodeDebtProducedWhileSealing(t *testing.T) {
 	outcome, err := e.store.TrySeal(t.Context(), e.id, presented, e.sealWriter(t), late)
 	require.NoError(t, err)
 	require.False(t, outcome.Sealed, "a node debt produced while sealing must refuse the seal")
-	require.Equal(t, AgentFinalizationSealReactionDebt, outcome.Reason)
+	require.Equal(t, session.AgentFinalizationSealReactionDebt, outcome.Reason)
 	require.Equal(t, 1, late.firstRead, "one seeded node debt before the injection")
 	require.Equal(t, 2, late.lateRead, "the reader must observe the notice it selected")
 	require.EqualValues(t, 1, late.selected, "the injection must select exactly the prepared child")

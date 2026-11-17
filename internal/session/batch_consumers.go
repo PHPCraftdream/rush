@@ -29,7 +29,7 @@ type BatchOwnerDeleteOutcome struct {
 // remainder). D-R10c-1: mirrors the old code's observed behavior — the
 // deletion refuses NOTHING, not even a live nonterminal root; a live Runner
 // writing after the commit loses its rows and fails Project with
-// ErrBatchProjectionConflict (containment by failure, never a synthesized
+// session.ErrBatchProjectionConflict (containment by failure, never a synthesized
 // settlement). Contrast BatchResetOwnerHistory, which refuses live roots:
 // reset is a user-facing clean-slate operation, deletion is disposal of a
 // session that is going away regardless. DeletedEvents publish only after

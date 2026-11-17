@@ -13,6 +13,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -24,7 +25,7 @@ import (
 func wakeWhyFixture(t *testing.T, in time.Duration) (*app.App, *session.WakeScheduleStore, string, string) {
 	t.Helper()
 	conn, q := newSessionFactsTestDB(t)
-	s := session.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 	wake := session.NewWakeScheduleStore(conn)
 
@@ -65,7 +66,7 @@ func TestExplainSessionStatus_OpenWakeScheduleHoldsSessionOpen(t *testing.T) {
 // loop schedules at close, so they are not live work).
 func TestExplainSessionStatus_LoopScheduleIsNotLiveWork(t *testing.T) {
 	conn, q := newSessionFactsTestDB(t)
-	s := session.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 	wake := session.NewWakeScheduleStore(conn)
 	sess, err := s.Create(context.Background(), "loop done")

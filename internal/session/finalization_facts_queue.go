@@ -36,7 +36,7 @@ func NewFinalizationQueuedCallsFacts() FinalizationQueuedCallsFacts {
 // facts, never an error (seam contract §5.1). A nil tx is a broken reader
 // and returns an error, never 0. The status literals in the SQL are the same
 // hardcoded strings as the sqlc reference query; SQL string literals cannot
-// reference the Go constants RunQueueStatusPending/RunQueueStatusLeased.
+// reference the Go constants session.RunQueueStatusPending/session.RunQueueStatusLeased.
 func (finalizationQueuedCallsFacts) FinalizationQueuedCallsTx(ctx context.Context, tx *sql.Tx, ownerSessionID string) (int, error) {
 	if tx == nil {
 		return 0, fmt.Errorf("finalization queued calls facts require a transaction")

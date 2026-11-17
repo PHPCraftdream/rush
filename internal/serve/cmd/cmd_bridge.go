@@ -23,7 +23,7 @@ import (
 	journal "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/journal"
 	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 	proc "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/spf13/cobra"
 )
 

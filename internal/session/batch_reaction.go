@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -277,7 +279,7 @@ func (s *BatchStore) BatchReactionDebtOwners(ctx context.Context, owners []strin
 // It updates history and both debt tables atomically, publishing after commit.
 func (s *BatchStore) BatchReactionMarkReactedWithMessageUpdate(ctx context.Context, messages message.Service, owner string, msg message.Message) error {
 	if msg.SessionID != owner {
-		return ErrBatchProjectionConflict
+		return session.ErrBatchProjectionConflict
 	}
 	// See batch_tool_result.go: prepare before the tx holds the pool's only
 	// connection.
@@ -303,7 +305,7 @@ func (s *BatchStore) BatchReactionMarkReactedWithMessageUpdate(ctx context.Conte
 		return err
 	}
 	if persisted.SessionID != owner {
-		return ErrBatchProjectionConflict
+		return session.ErrBatchProjectionConflict
 	}
 	publish, err := pdcUpdateTx(ctx, q, tx, messages, msg)
 	if err != nil {
@@ -329,7 +331,7 @@ func (s *BatchStore) BatchReactionMarkReactedWithMessageUpdate(ctx context.Conte
 
 func batchReactionAccountSnapshot(ctx context.Context, q *db.Queries, owner string, snap BatchDebtSnapshot, increment, failed int64) (int64, error) {
 	if snap.Owner != owner {
-		return 0, ErrBatchProjectionConflict
+		return 0, session.ErrBatchProjectionConflict
 	}
 	var total int64
 	now := time.Now().Unix()
@@ -394,7 +396,7 @@ func (s *BatchStore) BatchReactionMaxWakeAttempts(ctx context.Context, owner str
 		return 0, nil
 	}
 	if snap.Owner != owner {
-		return 0, ErrBatchProjectionConflict
+		return 0, session.ErrBatchProjectionConflict
 	}
 	tx, err := s.writer.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {

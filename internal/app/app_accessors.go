@@ -19,6 +19,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -99,7 +100,7 @@ func (app *App) runEnv() RunEnv {
 	return RunEnv{
 		WorkspaceRoot:         app.workspaceRoot,
 		Config:                app.config,
-		Sessions:              func() session.Service { return app.Sessions },
+		Sessions:              func() coresession.Service { return app.Sessions },
 		Messages:              func() message.Service { return app.Messages },
 		Coord:                 func() agent.Coordinator { return app.AgentCoordinator },
 		Perms:                 func() permission.Service { return app.Permissions },

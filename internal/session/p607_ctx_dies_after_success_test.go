@@ -45,6 +45,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -59,7 +60,7 @@ type successThenCancelCoordinator struct {
 	cancel context.CancelFunc
 }
 
-func (c *successThenCancelCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *successThenCancelCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.calls++
 	if c.calls == 1 {
 		c.cancel()
@@ -117,7 +118,7 @@ func TestDrainSessionNow_CtxDiesAfterOneSuccess_NeverReportsCleanSuccess(t *test
 	// Row B must remain durably pending, untouched -- it was never leased.
 	pending, err := svc.ListPendingRunQueueEntries(context.Background())
 	require.NoError(t, err)
-	var sessionPending []session.RunQueueEntry
+	var sessionPending []core.RunQueueEntry
 	for _, e := range pending {
 		if e.SessionID == sess.ID {
 			sessionPending = append(sessionPending, e)

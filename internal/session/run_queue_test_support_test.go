@@ -10,6 +10,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/dbtest"
 	"github.com/stretchr/testify/require"
@@ -18,7 +19,7 @@ import (
 // Helper: mock coordinator for testing
 type mockCoordinator struct{}
 
-func (m *mockCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (m *mockCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	return nil, nil
 }
 
@@ -61,7 +62,7 @@ func stopPumpLoggingForcedShutdown(t *testing.T, pump *session.RunQueuePump) {
 }
 
 // Helper: setup a test session and service
-func setupTestSession(t *testing.T, title string) (*session.Session, session.Service) {
+func setupTestSession(t *testing.T, title string) (*core.Session, core.Service) {
 	// Use file-based database in temp dir to avoid connection pool issues with :memory:
 	// Each connection to :memory: creates a separate database; when sql.Open recycles
 	// a connection (e.g., after ErrBadConn from context cancellation), data is lost.
@@ -232,7 +233,7 @@ func setupTestSession(t *testing.T, title string) (*session.Session, session.Ser
 
 	// Create queries and service
 	queries := db.New(sqlDB)
-	svc := session.NewService(queries, sqlDB)
+	svc := core.NewService(queries, sqlDB)
 
 	// Create a session
 	sess, err := svc.Create(context.Background(), title)
@@ -244,7 +245,7 @@ func setupTestSession(t *testing.T, title string) (*session.Session, session.Ser
 // enqueueTwoRows enqueues durable rows A and B (FIFO -- A leases first) for
 // a single fresh session and returns everything a test needs to drive and
 // assert on the scenario.
-func enqueueTwoRows(t *testing.T, name string, sessions session.Service, sessionID string) {
+func enqueueTwoRows(t *testing.T, name string, sessions core.Service, sessionID string) {
 	t.Helper()
 	callDataA, err := json.Marshal(map[string]any{"SessionID": sessionID, "Prompt": "row-A"})
 	require.NoError(t, err)
@@ -275,7 +276,7 @@ func newGatedCoordinator() *gatedCoordinator {
 	}
 }
 
-func (c *gatedCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *gatedCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
 	session.RecordExecutionAssistantIdentity(ctx, c.identity)
 	for _, id := range c.identities {
@@ -341,7 +342,7 @@ type twoRowFailThenSucceedCoordinator struct {
 	firstFn func() (*any, error)
 }
 
-func (c *twoRowFailThenSucceedCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *twoRowFailThenSucceedCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.calls++
 	if c.calls == 1 {
 		return c.firstFn()
@@ -372,7 +373,7 @@ func newSequentialGatedCoordinator(n int) *sequentialGatedCoordinator {
 	return c
 }
 
-func (c *sequentialGatedCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *sequentialGatedCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	idx := c.calls
 	c.calls++
 	select {

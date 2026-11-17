@@ -216,7 +216,7 @@ fi
 out="$(bash "$guard" 2>&1)"
 status=$?
 expect_status "case 8: unmocked guard run on the real repository exits 0" 0 "$status"
-expect_output_contains "case 8: summary reports the seeded allowlist size" "$out" "2 allowlisted collision(s)"
+expect_output_contains "case 8: summary reports the seeded allowlist size" "$out" "3 allowlisted collision(s)"
 
 if [ "$failures" -gt 0 ]; then
 	printf 'check_pkg_names_selftest: %d failure(s)\n' "$failures"

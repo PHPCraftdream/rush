@@ -22,6 +22,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -96,7 +97,7 @@ func TestSessionDrainPolicy_ReleasedDelegationChildOfAnyKind_Refused(t *testing.
 			require.NoError(t, err)
 			child, err := env.sessions.CreateTaskSession(ctx, "task-call-1", parent.ID, "child")
 			require.NoError(t, err)
-			fork, _, err := env.sessions.ForkSessionTx(ctx, parent.ID, session.ForkOptions{
+			fork, _, err := env.sessions.ForkSessionTx(ctx, parent.ID, coresession.ForkOptions{
 				NewID: "forked-child", ParentID: parent.ID,
 			})
 			require.NoError(t, err)
@@ -116,7 +117,7 @@ func TestSessionDrainPolicy_ReleasedDelegationChildOfAnyKind_Refused(t *testing.
 
 // TestSessionDrainPolicy_ForkedChildWithParentSet_UsesWebPolicy is the item
 // 8 fix's regression guard: `sessions fork --child` sets ParentSessionID for
-// a purpose entirely unrelated to delegation (session.ForkOptions.ParentID)
+// a purpose entirely unrelated to delegation (coresession.ForkOptions.ParentID)
 // -- no async_jobs row ever names the fork as anyone's ChildSessionID. Such
 // a session must NOT be swept into the delegation-child refusal.
 //
@@ -133,7 +134,7 @@ func TestSessionDrainPolicy_ForkedChildWithParentSet_UsesWebPolicy(t *testing.T)
 
 	src, err := env.sessions.Create(ctx, "fork-source")
 	require.NoError(t, err)
-	fork, _, err := env.sessions.ForkSessionTx(ctx, src.ID, session.ForkOptions{
+	fork, _, err := env.sessions.ForkSessionTx(ctx, src.ID, coresession.ForkOptions{
 		NewID: "forked-child", ParentID: src.ID,
 	})
 	require.NoError(t, err)

@@ -9,8 +9,8 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 const batchModelOutputLimit = 16 << 10

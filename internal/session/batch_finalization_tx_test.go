@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -75,11 +77,11 @@ func TestBatchWriterRejectsScopeBoundAfterLegacyAdmission(t *testing.T) {
 				case <-ctx.Done():
 					t.Fatal("admission barrier not reached")
 				}
-				bound := AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "late-bind", Generation: 1}
+				bound := session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "late-bind", Generation: 1}
 				_, err = finalizationCommitService(env).BindAgentFinalization(ctx, bound)
 				require.NoError(t, err, "independent service binds between legacy observation and writer")
 				if accepted {
-					require.NoError(t, sealFinalizationForTest(ctx, env.conn, NewAgentFinalizationStore(env.conn), bound, 0))
+					require.NoError(t, sealFinalizationForTest(ctx, env.conn, session.NewAgentFinalizationStore(env.conn), bound, 0))
 				}
 				finalizationCommitFailureDiagnostics(t, env, bound)
 				close(resume)
@@ -88,14 +90,14 @@ func TestBatchWriterRejectsScopeBoundAfterLegacyAdmission(t *testing.T) {
 				case <-ctx.Done():
 					t.Fatal("writer did not resolve")
 				}
-				require.ErrorIs(t, err, ErrAgentFinalizationChanged)
+				require.ErrorIs(t, err, session.ErrAgentFinalizationChanged)
 				select {
 				case <-released:
 				default:
 					t.Fatal("admission release missing after transaction refusal")
 				}
 				assertFinalizationWriterUnchanged(t, env)
-				state, err := NewAgentFinalizationStore(env.conn).Snapshot(ctx, bound)
+				state, err := session.NewAgentFinalizationStore(env.conn).Snapshot(ctx, bound)
 				require.NoError(t, err)
 				require.Zero(t, state.Revision)
 				require.Zero(t, state.OpenTickets)
@@ -127,7 +129,7 @@ func TestBatchWriterRejectsChangedManagedAncestryAfterAdmission(t *testing.T) {
 			identity.Owner = "grandchild"
 			identity, err := api.WithAgentFinalizationAuthorities(identity, parent, child, grandchild)
 			require.NoError(t, err)
-			finalizationCommitFailureDiagnostics(t, env, parent.identity, child.identity, grandchild.identity)
+			finalizationCommitFailureDiagnostics(t, env, parent.Identity, child.Identity, grandchild.Identity)
 			identity.AdmitOwners = func(ctx context.Context, _ jobbatch.Transition, _ []string) (func() error, error) {
 				var err error
 				switch change {
@@ -141,11 +143,11 @@ func TestBatchWriterRejectsChangedManagedAncestryAfterAdmission(t *testing.T) {
 				return func() error { return nil }, err
 			}
 			err = NewBatchCommitHook(env.store, identity)(env.ctx, admissionSubmit("new-root", "new-ref", 4))
-			require.ErrorIs(t, err, ErrAgentFinalizationChanged)
+			require.ErrorIs(t, err, session.ErrAgentFinalizationChanged)
 			require.Zero(t, commitHookCount(t, env.conn, `SELECT count(*) FROM batch_nodes WHERE root_id='new-root'`))
 			require.Zero(t, commitHookCount(t, env.conn, `SELECT count(*) FROM batch_runner_checkpoints WHERE sequence>=4`))
-			for _, authority := range []*AgentFinalizationAuthority{parent, child, grandchild} {
-				record, err := NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, authority.identity)
+			for _, authority := range []*session.AgentFinalizationAuthority{parent, child, grandchild} {
+				record, err := session.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, authority.Identity)
 				require.NoError(t, err)
 				require.Zero(t, record.OpenTickets)
 				require.EqualValues(t, 2, record.Revision)
@@ -160,8 +162,8 @@ func TestBatchWriterRejectsIncarnationReplacementAfterAdmission(t *testing.T) {
 	old := finalizationCommitAuthority(t, api, "owner", "old-call", 1)
 	identity, err := api.WithAgentFinalizationAuthorities(env.id, old)
 	require.NoError(t, err)
-	next := AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "new-call", Generation: 2}
-	finalizationCommitFailureDiagnostics(t, env, old.identity, next)
+	next := session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "new-call", Generation: 2}
+	finalizationCommitFailureDiagnostics(t, env, old.Identity, next)
 	identity.AdmitOwners = func(ctx context.Context, _ jobbatch.Transition, _ []string) (func() error, error) {
 		_, err := env.conn.ExecContext(ctx, `UPDATE session_agent_finalizations SET phase='failed' WHERE session_id='owner' AND logical_call_id='old-call'`)
 		if err == nil {
@@ -170,13 +172,13 @@ func TestBatchWriterRejectsIncarnationReplacementAfterAdmission(t *testing.T) {
 		return func() error { return nil }, err
 	}
 	err = NewBatchCommitHook(env.store, identity)(env.ctx, admissionSubmit("new-root", "new-ref", 2))
-	require.ErrorIs(t, err, ErrAgentFinalizationChanged)
+	require.ErrorIs(t, err, session.ErrAgentFinalizationChanged)
 	assertFinalizationWriterUnchanged(t, env)
-	oldState, err := NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, old.identity)
+	oldState, err := session.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, old.Identity)
 	require.NoError(t, err)
 	require.Zero(t, oldState.OpenTickets)
 	require.EqualValues(t, 2, oldState.Revision)
-	nextState, err := NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, next)
+	nextState, err := session.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, next)
 	require.NoError(t, err)
 	require.Zero(t, nextState.OpenTickets)
 	require.Zero(t, nextState.Revision)
@@ -188,25 +190,25 @@ func TestBatchWriterRequiresItsExactUnreleasedTicket(t *testing.T) {
 	authority := finalizationCommitAuthority(t, api, "owner", "call", 1)
 	identity, err := api.WithAgentFinalizationAuthorities(env.id, authority)
 	require.NoError(t, err)
-	store := NewAgentFinalizationStore(env.conn)
+	store := session.NewAgentFinalizationStore(env.conn)
 	identity.AdmitOwners = func(ctx context.Context, _ jobbatch.Transition, _ []string) (func() error, error) {
 		var ticket string
 		err := env.conn.QueryRowContext(ctx, `SELECT ticket_id FROM session_agent_finalization_tickets WHERE released=0`).Scan(&ticket)
 		if err == nil {
-			err = store.Release(ctx, authority.identity, ticket)
+			err = store.Release(ctx, authority.Identity, ticket)
 		}
 		if err == nil {
-			_, err = store.Admit(ctx, authority.identity, "unrelated-ticket")
+			_, err = store.Admit(ctx, authority.Identity, "unrelated-ticket")
 		}
 		return func() error { return nil }, err
 	}
 	err = NewBatchCommitHook(env.store, identity)(env.ctx, admissionSubmit("new-root", "new-ref", 2))
-	require.ErrorIs(t, err, ErrAgentFinalizationChanged, "another open ticket is not this transition's admission")
+	require.ErrorIs(t, err, session.ErrAgentFinalizationChanged, "another open ticket is not this transition's admission")
 	assertFinalizationWriterUnchanged(t, env)
-	state, err := store.Snapshot(env.ctx, authority.identity)
+	state, err := store.Snapshot(env.ctx, authority.Identity)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, state.OpenTickets)
-	require.NoError(t, store.Release(env.ctx, authority.identity, "unrelated-ticket"))
+	require.NoError(t, store.Release(env.ctx, authority.Identity, "unrelated-ticket"))
 }
 
 func TestBatchWriterChecksPersistedCancellationAfterAdmission(t *testing.T) {
@@ -215,7 +217,7 @@ func TestBatchWriterChecksPersistedCancellationAfterAdmission(t *testing.T) {
 	authority := finalizationCommitAuthority(t, api, "owner", "call", 1)
 	identity, err := api.WithAgentFinalizationAuthorities(env.id, authority)
 	require.NoError(t, err)
-	finalizationCommitFailureDiagnostics(t, env, authority.identity)
+	finalizationCommitFailureDiagnostics(t, env, authority.Identity)
 	identity.AdmitOwners = func(ctx context.Context, _ jobbatch.Transition, _ []string) (func() error, error) {
 		_, err := env.conn.ExecContext(ctx, `UPDATE sessions SET cancel_requested=1 WHERE id='owner'`)
 		return func() error { return nil }, err
@@ -224,7 +226,7 @@ func TestBatchWriterChecksPersistedCancellationAfterAdmission(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	require.NoError(t, env.ctx.Err(), "the transaction must check durable cancellation, not just its context")
 	assertFinalizationWriterUnchanged(t, env)
-	state, err := NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, authority.identity)
+	state, err := session.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, authority.Identity)
 	require.NoError(t, err)
 	require.Zero(t, state.OpenTickets)
 	require.EqualValues(t, 2, state.Revision)
@@ -235,20 +237,20 @@ func TestDirectBatchWriterCannotBypassBoundScope(t *testing.T) {
 	require.NoError(t, env.adapter()(env.ctx, admissionSubmit("existing", "existing-ref", 1)))
 	api := finalizationCommitService(env)
 	authority := finalizationCommitAuthority(t, api, "owner", "call", 1)
-	finalizationCommitFailureDiagnostics(t, env, authority.identity)
+	finalizationCommitFailureDiagnostics(t, env, authority.Identity)
 	root, err := batchSpecNode(jobbatch.OneItem(jobbatch.TaskSpec{Kind: "controlled"}))
 	require.NoError(t, err)
 	_, err = env.store.ReserveIdentity(env.ctx, BatchReservation{
 		Owner: "owner", Host: env.id.Host, RunnerID: env.id.Runner, RootID: "new-root", ToolCallID: "new-ref", InputHash: "hash", Sequence: 2, Root: root,
 	})
-	require.ErrorIs(t, err, ErrAgentFinalizationChanged)
+	require.ErrorIs(t, err, session.ErrAgentFinalizationChanged)
 	err = env.store.Project(env.ctx, BatchProjection{
 		Host: env.id.Host, RunnerID: env.id.Runner, Sequence: 2,
 		Roots: []BatchRootProjection{{Owner: "owner", Root: "existing"}},
 	})
-	require.ErrorIs(t, err, ErrAgentFinalizationChanged)
+	require.ErrorIs(t, err, session.ErrAgentFinalizationChanged)
 	assertFinalizationWriterUnchanged(t, env)
-	state, err := NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, authority.identity)
+	state, err := session.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, authority.Identity)
 	require.NoError(t, err)
 	require.Zero(t, state.OpenTickets)
 	require.Zero(t, state.Revision)

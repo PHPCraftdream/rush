@@ -24,7 +24,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/config"
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 

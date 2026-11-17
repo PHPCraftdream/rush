@@ -13,7 +13,7 @@ import (
 // conflict and rolls the whole root back -- dead-host recovery would never
 // succeed for a real root.
 // Revert-check: dropping RunnerID from the AdvanceBatchRootSequenceParams in
-// batch_recovery.go makes BatchRecoverRoot return ErrBatchProjectionConflict
+// batch_recovery.go makes BatchRecoverRoot return session.ErrBatchProjectionConflict
 // and Interrupted stay zero.
 func TestBatchRecoverRootWithRunnerIDInterrupts(t *testing.T) {
 	a, _, conn, dir, ctx := r9Stores(t)

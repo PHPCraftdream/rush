@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -171,7 +173,7 @@ func (s *BatchStore) BatchPullNotices(ctx context.Context, messages message.Serv
 	for _, row := range rows {
 		pulled, ok, err := s.batchPullOneNotice(ctx, messages, owner, row.RootID, row.NodeID, build)
 		if err != nil {
-			if errors.Is(err, ErrAgentFinalizationChanged) {
+			if errors.Is(err, session.ErrAgentFinalizationChanged) {
 				return nil, err
 			}
 			slog.Warn("Batch notice pull failed; row stays pending", "owner", owner, "node", row.NodeID, "err", err)
@@ -185,8 +187,8 @@ func (s *BatchStore) BatchPullNotices(ctx context.Context, messages message.Serv
 }
 
 func (s *BatchStore) batchPullOneNotice(ctx context.Context, messages message.Service, owner, root, node string, build func(BatchNoticeRow) message.CreateMessageParams) (pulled BatchPulledNotice, ok bool, retErr error) {
-	scoped := finalizationScoped(ctx)
-	var admission *batchFinalizationAdmission
+	scoped := session.FinalizationScoped(ctx)
+	var admission *session.BatchFinalizationAdmission
 	if scoped {
 		// Only a row still pending is a productive delivery; anything else is
 		// the legacy no-op and must not mint a finalization revision.
@@ -205,9 +207,9 @@ func (s *BatchStore) batchPullOneNotice(ctx context.Context, messages message.Se
 			return BatchPulledNotice{}, false, nil
 		}
 		var release func() error
-		release, admission, err = admitFinalizationMutation(ctx, s.writer, owner)
+		release, admission, err = session.AdmitFinalizationMutation(ctx, s.writer, owner)
 		if release != nil {
-			defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
+			defer func() { retErr = session.BatchCommitReleaseError(retErr, release()) }()
 		}
 		if err != nil {
 			return BatchPulledNotice{}, false, err
@@ -223,7 +225,7 @@ func (s *BatchStore) batchPullOneNotice(ctx context.Context, messages message.Se
 		return BatchPulledNotice{}, false, err
 	}
 	defer tx.Rollback()
-	if err := validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
+	if err := session.ValidateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
 		return BatchPulledNotice{}, false, err
 	}
 	q := db.PdaBatchTxQueries(ctx, s.writer, tx)
@@ -258,10 +260,10 @@ func (s *BatchStore) batchPullOneNotice(ctx context.Context, messages message.Se
 	if err != nil {
 		return BatchPulledNotice{}, false, err
 	}
-	if err = batchRequireRow(q.BatchOutboxNameMessage(ctx, db.BatchOutboxNameMessageParams{Owner: owner, RootID: root, NodeID: node, MessageID: sql.NullString{String: msg.ID, Valid: true}, UpdatedAt: time.Now().Unix()})); err != nil {
+	if err = session.BatchRequireRow(q.BatchOutboxNameMessage(ctx, db.BatchOutboxNameMessageParams{Owner: owner, RootID: root, NodeID: node, MessageID: sql.NullString{String: msg.ID, Valid: true}, UpdatedAt: time.Now().Unix()})); err != nil {
 		return BatchPulledNotice{}, false, err
 	}
-	if err = validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
+	if err = session.ValidateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
 		return BatchPulledNotice{}, false, err
 	}
 	if err = tx.Commit(); err != nil {

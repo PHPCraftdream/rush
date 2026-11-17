@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // cliTodoNudgeLimit bounds how many unfinished-todos reminders the loop may

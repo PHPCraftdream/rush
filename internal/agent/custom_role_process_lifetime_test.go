@@ -18,7 +18,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/filetracker"
 	"github.com/PHPCraftdream/rush/internal/store/history"

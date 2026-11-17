@@ -21,6 +21,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -317,7 +318,7 @@ type sessionAgent struct {
 	admitMu sync.Mutex
 
 	isSubAgent           bool
-	sessions             session.Service
+	sessions             coresession.Service
 	messages             message.Service
 	disableAutoSummarize bool
 	isYolo               bool

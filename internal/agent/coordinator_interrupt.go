@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/google/uuid"
 )
@@ -295,7 +295,7 @@ func (c *coordinator) startInterruptTicker(ctx context.Context, sessionID string
 // handleInterruptTick performs one poll of the interrupt-inject queue. It
 // returns fired=true when it consumed an interrupt row and issued a
 // cancel+requeue (the caller then stops ticking). Extracted from the ticker
-// goroutine so it can be unit-tested directly with a real session.Service and
+// goroutine so it can be unit-tested directly with a real core.Service and
 // message.Service, without a live provider. It is a no-op returning
 // (false, nil) when no interrupt row is pending.
 //
@@ -596,7 +596,7 @@ func interruptAndReplaceSnapshot(currentAgent SessionAgent, sessionID string, ca
 
 func (c *coordinator) handleActiveNonDurableInterrupt(
 	ctx context.Context,
-	pi *session.PendingInject,
+	pi *core.PendingInject,
 	msg message.Message,
 	active SessionAgentCall,
 	token activeCallToken,
@@ -892,7 +892,7 @@ func (c *coordinator) recreatePendingInjectRow(originalCtx context.Context, call
 			"inject_id", call.InjectID, "message_id", call.ExistingMessageID, "err", getErr)
 		return fmt.Errorf("could not get message for recreation: %w", getErr)
 	}
-	inject := session.PendingInject{
+	inject := core.PendingInject{
 		ID:        uuid.New().String(), // Generate new ID to avoid UNIQUE constraint
 		SessionID: call.SessionID,
 		MessageID: call.ExistingMessageID,
@@ -914,7 +914,7 @@ func (c *coordinator) recreatePendingInjectRow(originalCtx context.Context, call
 // snapshot was rejected. Retaining its ID and creation time makes a retry
 // idempotent and preserves FIFO ordering; a competing consumer is detected by
 // DeleteInterruptInject returning sql.ErrNoRows before this function runs.
-func (c *coordinator) restorePendingInjectRow(originalCtx context.Context, pi *session.PendingInject) error {
+func (c *coordinator) restorePendingInjectRow(originalCtx context.Context, pi *core.PendingInject) error {
 	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(originalCtx), 10*time.Second)
 	defer cancel()
 	if err := c.sessions.CreatePendingInject(recoveryCtx, *pi); err != nil {
@@ -926,7 +926,7 @@ func (c *coordinator) restorePendingInjectRow(originalCtx context.Context, pi *s
 // reconcileInterruptInjectEnqueue uses a bounded recovery context because the
 // ticker's context can be canceled immediately after a generation loses the
 // delivery race. The candidate and source row must still be reconciled then.
-func (c *coordinator) reconcileInterruptInjectEnqueue(originalCtx context.Context, pi session.PendingInject, idempotencyKey string) error {
+func (c *coordinator) reconcileInterruptInjectEnqueue(originalCtx context.Context, pi core.PendingInject, idempotencyKey string) error {
 	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(originalCtx), 10*time.Second)
 	defer cancel()
 	if err := c.sessions.ReconcileInterruptInjectEnqueue(recoveryCtx, pi, idempotencyKey); err != nil {

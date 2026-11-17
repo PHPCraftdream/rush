@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // AlreadyAttempted is a marker interface for terminal failures.
@@ -23,7 +25,7 @@ type AlreadyAttempted interface {
 }
 
 // processEntry attempts to lease and execute a single run queue entry.
-func (p *RunQueuePump) processEntry(ctx context.Context, entry *RunQueueEntry) {
+func (p *RunQueuePump) processEntry(ctx context.Context, entry *session.RunQueueEntry) {
 	// Reserve the session before touching the durable row at all. Refuses
 	// ANY entry for a session this pump instance is already executing for —
 	// see the inFlight field's doc for why (self-inflicted lease-expiry
@@ -74,7 +76,7 @@ func (p *RunQueuePump) processEntry(ctx context.Context, entry *RunQueueEntry) {
 	}()
 
 	// Refuse to lease a pending entry for a session this pump instance
-	// backed off from after an ErrCallQueuedNotExecuted outcome — see the
+	// backed off from after an session.ErrCallQueuedNotExecuted outcome — see the
 	// busyBackoffUntil field's doc. Without this, the entry (immediately
 	// visible again as 'pending', by design — no attempt penalty) would be
 	// re-leased and re-dispatched on the very next tick, appending another
@@ -257,7 +259,7 @@ func (p *RunQueuePump) processEntry(ctx context.Context, entry *RunQueueEntry) {
 // no way to later supersede an observed failure with a same-row retry
 // success instead of stranding it under a synthetic, unclearable key (task
 // #613/F4).
-func (p *RunQueuePump) executeEntry(ctx context.Context, leased *RunQueueEntry, releaseSession func(outcome admissionOutcome), admission *admissionEntry) {
+func (p *RunQueuePump) executeEntry(ctx context.Context, leased *session.RunQueueEntry, releaseSession func(outcome admissionOutcome), admission *admissionEntry) {
 	defer p.workerWg.Done()
 
 	// Release the semaphore slot when execution completes (P1-4).

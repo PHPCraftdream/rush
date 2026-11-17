@@ -38,6 +38,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/dbtest"
 	"github.com/stretchr/testify/require"
@@ -64,7 +65,7 @@ func newBoundedPoolTestCoordinator() *boundedPoolTestCoordinator {
 }
 
 // Run blocks until blockCh is closed, then returns success.
-func (c *boundedPoolTestCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *boundedPoolTestCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	current := c.inFlight.Add(1)
 	c.inFlightMu.Lock()
 	if current > c.maxInFlight.Load() {
@@ -183,7 +184,7 @@ func TestP1_4_BoundedWorkerPoolRespectsLimit(t *testing.T) {
 	require.NoError(t, dbtest.ApplyFinalizationFencingSchema(context.Background(), conn))
 
 	dbq := db.New(conn)
-	svc := session.NewService(dbq, conn)
+	svc := core.NewService(dbq, conn)
 
 	// Create sessions and enqueue one entry per session
 	for i := 0; i < numSessions; i++ {

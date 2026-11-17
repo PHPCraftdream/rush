@@ -25,7 +25,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -75,7 +75,7 @@ func TestHandleListSessions_LiveWorkAnnotationIsBatched(t *testing.T) {
 	client := newClient(hub, nil)
 	client.ResizeSendChan(512)
 	hub.Register(client)
-	list := func() []session.Session {
+	list := func() []core.Session {
 		handleListSessions(ctx, a, client, WSMessage{ID: "req", Type: CmdListSessions})
 		replies := drainSessionsListReplies(t, client)
 		require.NotEmpty(t, replies)

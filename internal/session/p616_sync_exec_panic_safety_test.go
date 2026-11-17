@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,7 +26,7 @@ import (
 // runAgentTurnRecovered doc for real-world panic sources on this call path).
 type panickingCoordinatorForDrain struct{}
 
-func (p *panickingCoordinatorForDrain) Run(ctx context.Context, call session.SessionAgentCallData) (*any, error) {
+func (p *panickingCoordinatorForDrain) Run(ctx context.Context, call core.SessionAgentCallData) (*any, error) {
 	panic("simulated executeEntrySync panic")
 }
 
@@ -147,7 +148,7 @@ func TestDrainSessionNow_SyncExecutionPanic_AdmissionReleasedForFollowUpCall(t *
 	current, err := svc.GetRunQueueEntry(context.Background(), "drain-now-sync-panic-admission-1")
 	require.NoError(t, err)
 	require.NotNil(t, current, "the panicking call never wrote an outcome -- the row must still exist")
-	require.Equal(t, session.RunQueueStatusLeased, current.Status, "the panicking call's lease is orphaned, not consumed")
+	require.Equal(t, core.RunQueueStatusLeased, current.Status, "the panicking call's lease is orphaned, not consumed")
 
 	followUpDone := make(chan struct{})
 	var followUpResult session.DrainResult

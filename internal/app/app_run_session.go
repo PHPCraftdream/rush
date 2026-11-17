@@ -7,7 +7,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/app/appbatch"
-	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // processHome is ProcessHome's free helper. It takes the *App itself
@@ -31,7 +31,7 @@ func processHome(app *App) bool {
 // session.ErrForeignWorkspace wrapper live in agent.ForeignWorkspaceError:
 // runOwned's guard refuses with the same sentence for every non-CLI entry
 // point, and one builder keeps those two unable to drift.
-func refuseForeign(sess session.Session) error {
+func refuseForeign(sess core.Session) error {
 	return agent.ForeignWorkspaceError(sess)
 }
 
@@ -40,20 +40,20 @@ func refuseForeign(sess session.Session) error {
 // process -- the explicit home flag from config.WorkspaceHome(), never a
 // derivation from the workspace root (which is non-empty for every git
 // checkout and would otherwise refuse the whole pre-WS-1 history).
-func owns(sess session.Session, workspaceRoot string, home bool) bool {
-	return session.Owns(sess.WorkspaceRoot, workspaceRoot, home)
+func owns(sess core.Session, workspaceRoot string, home bool) bool {
+	return core.Owns(sess.WorkspaceRoot, workspaceRoot, home)
 }
 
 // resolveSession resolves which session to use for a non-interactive run
 // If continueSessionID is set, it looks up that session by ID
 // If useLast is set, it returns the most recently updated top-level session
 // Otherwise, it creates a new session
-func resolveSession(env RunEnv, ctx context.Context, continueSessionID string, useLast bool) (session.Session, error) {
+func resolveSession(env RunEnv, ctx context.Context, continueSessionID string, useLast bool) (core.Session, error) {
 	origin := agent.CallOriginFrom(ctx)
 	switch {
 	case continueSessionID != "":
 		if env.Sessions().IsAgentToolSession(continueSessionID) {
-			return session.Session{}, fmt.Errorf("cannot continue an agent tool session: %s", continueSessionID)
+			return core.Session{}, fmt.Errorf("cannot continue an agent tool session: %s", continueSessionID)
 		}
 		sess, err := env.Sessions().Get(ctx, continueSessionID)
 		if err == nil {
@@ -62,12 +62,12 @@ func resolveSession(env RunEnv, ctx context.Context, continueSessionID string, u
 		// Get-or-create semantics: --session <id> with an unknown id creates
 		// a brand-new top-level session with that exact id. Lets CI / scripts
 		// pick a deterministic key (e.g. an issue number) and re-run idempotently.
-		var created session.Session
+		var created core.Session
 		var createErr error
-		if oc, ok := env.Sessions().(session.OriginCreator); ok {
+		if oc, ok := env.Sessions().(core.OriginCreator); ok {
 			created, createErr = oc.CreateWithIDAndOrigin(ctx, continueSessionID, continueSessionID, origin)
 		} else {
-			// Test fakes implementing session.Service without the
+			// Test fakes implementing core.Service without the
 			// OriginCreator seam keep the legacy behaviour.
 			created, createErr = env.Sessions().CreateWithID(ctx, continueSessionID, continueSessionID)
 		}
@@ -126,17 +126,17 @@ func resolveSession(env RunEnv, ctx context.Context, continueSessionID string, u
 			// original wrapped error below rather than hiding the
 			// surprise.
 		}
-		return session.Session{}, fmt.Errorf("session %q not found and could not be created: %w", continueSessionID, createErr)
+		return core.Session{}, fmt.Errorf("session %q not found and could not be created: %w", continueSessionID, createErr)
 
 	case useLast:
 		sess, err := env.Sessions().GetLast(ctx)
 		if err != nil {
-			return session.Session{}, fmt.Errorf("no sessions found to continue")
+			return core.Session{}, fmt.Errorf("no sessions found to continue")
 		}
 		return sess, nil
 
 	default:
-		if oc, ok := env.Sessions().(session.OriginCreator); ok {
+		if oc, ok := env.Sessions().(core.OriginCreator); ok {
 			return oc.CreateWithOrigin(ctx, agent.DefaultSessionName, origin)
 		}
 		return env.Sessions().Create(ctx, agent.DefaultSessionName)
@@ -147,7 +147,7 @@ func resolveSession(env RunEnv, ctx context.Context, continueSessionID string, u
 // Drain iteration (drainTurn) continues the session its first turn already
 // resolved and claimed: it is read back as is, without the "cannot continue a
 // child session" refusal, which guards only what an operator may start.
-func resolveRunSession(env RunEnv, ctx context.Context, drainTurn bool, continueSessionID string, useLast bool) (session.Session, error) {
+func resolveRunSession(env RunEnv, ctx context.Context, drainTurn bool, continueSessionID string, useLast bool) (core.Session, error) {
 	if drainTurn && continueSessionID != "" {
 		return env.Sessions().Get(ctx, continueSessionID)
 	}

@@ -14,8 +14,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 

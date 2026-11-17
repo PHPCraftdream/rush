@@ -3,6 +3,8 @@ package session
 import (
 	"testing"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -11,10 +13,10 @@ func TestBatchCommitAdmissionAuthorityForAdmitsBoundOwner(t *testing.T) {
 	env := newCommitHookEnv(t)
 	service := finalizationCommitService(env)
 	authority := finalizationCommitAuthority(t, service, "owner", "lookup-call", 1)
-	finalizationCommitFailureDiagnostics(t, env, authority.identity)
+	finalizationCommitFailureDiagnostics(t, env, authority.Identity)
 	identity, err := service.WithAgentFinalizationAuthorities(env.id)
 	require.NoError(t, err)
-	identity.AuthorityFor = func(owner string) *AgentFinalizationAuthority {
+	identity.AuthorityFor = func(owner string) *session.AgentFinalizationAuthority {
 		if owner == "owner" {
 			return authority
 		}
@@ -32,10 +34,10 @@ func TestBatchCommitAdmissionAuthorityForNilLookupRefusesBoundOwner(t *testing.T
 	env := newCommitHookEnv(t)
 	service := finalizationCommitService(env)
 	authority := finalizationCommitAuthority(t, service, "owner", "lookup-call", 1)
-	finalizationCommitFailureDiagnostics(t, env, authority.identity)
+	finalizationCommitFailureDiagnostics(t, env, authority.Identity)
 	identity, err := service.WithAgentFinalizationAuthorities(env.id)
 	require.NoError(t, err)
-	identity.AuthorityFor = func(string) *AgentFinalizationAuthority { return nil }
+	identity.AuthorityFor = func(string) *session.AgentFinalizationAuthority { return nil }
 	err = NewBatchCommitHook(env.store, identity)(env.ctx, admissionSubmit("r", "call-r", 1))
 	require.ErrorContains(t, err, "explicit authority required for owner")
 	require.Zero(t, commitHookCount(t, env.conn, `SELECT count(*) FROM batch_nodes`))
@@ -47,14 +49,14 @@ func TestBatchCommitAdmissionAuthorityForForeignServiceConflicts(t *testing.T) {
 	// The second database is a separate store; batchStoreTestDB already seeds
 	// the "owner" session in it, so the foreign authority binds there.
 	_, otherConn, _ := batchStoreTestDB(t)
-	otherService := NewService(db.New(otherConn), otherConn).(AgentFinalizationService)
+	otherService := session.NewService(db.New(otherConn), otherConn).(session.AgentFinalizationService)
 	foreignAuthority, err := otherService.BindAgentFinalization(env.ctx,
-		AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "foreign-call", Generation: 1})
+		session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "foreign-call", Generation: 1})
 	require.NoError(t, err)
 	service := finalizationCommitService(env)
 	identity, err := service.WithAgentFinalizationAuthorities(env.id)
 	require.NoError(t, err)
-	identity.AuthorityFor = func(owner string) *AgentFinalizationAuthority {
+	identity.AuthorityFor = func(owner string) *session.AgentFinalizationAuthority {
 		if owner == "owner" {
 			return foreignAuthority
 		}
@@ -70,7 +72,7 @@ func TestBatchCommitAdmissionAuthorityForNilKeepsLegacyRefusal(t *testing.T) {
 	env := newCommitHookEnv(t)
 	service := finalizationCommitService(env)
 	authority := finalizationCommitAuthority(t, service, "owner", "lookup-call", 1)
-	finalizationCommitFailureDiagnostics(t, env, authority.identity)
+	finalizationCommitFailureDiagnostics(t, env, authority.Identity)
 	identity, err := service.WithAgentFinalizationAuthorities(env.id)
 	require.NoError(t, err)
 	require.Nil(t, identity.AuthorityFor, "the zero value keeps the lookup nil")

@@ -29,7 +29,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // subAgentDriver is a frozen snapshot of the SessionAgentCall shape
@@ -42,7 +42,7 @@ type subAgentDriver struct {
 	agent SessionAgent
 	call  SessionAgentCall
 	// Frozen at delegation; wakes never bind or infer replacement capabilities.
-	FinalizationAuthorities session.AgentFinalizationContext
+	FinalizationAuthorities core.AgentFinalizationContext
 	pctReleases             []func() // pct: retained child construction refs released at confirmed closure.
 	// parentSessionID is the delegating session that originally armed this
 	// child's restricted-run allowlist baseline (runSubAgent's

@@ -16,6 +16,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -699,7 +700,7 @@ func testInterruptBeforeFirstGeneration(t *testing.T, rejectReplacement bool) {
 	case runErr := <-runDone:
 		if rejectReplacement {
 			var alreadyAttempted session.AlreadyAttempted
-			require.ErrorIs(t, runErr, session.ErrCallQueuedNotExecuted)
+			require.ErrorIs(t, runErr, coresession.ErrCallQueuedNotExecuted)
 			require.False(t, errors.As(runErr, &alreadyAttempted))
 			require.Contains(t, runErr.Error(), "deterministic provider rejection")
 			promptsMu.Lock()

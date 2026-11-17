@@ -15,6 +15,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/google/uuid"
 )
@@ -95,7 +97,7 @@ func NewWakeScheduleStoreWithWorkspace(conn *sql.DB, workspaceRoot string, workD
 // on which schedules are theirs. The home flag is the constructor value, not
 // a re-derivation from the root.
 func (s *WakeScheduleStore) ownsArgs() (workspaceRoot string, home int64) {
-	return s.workspaceRoot, homeFlag(s.home)
+	return s.workspaceRoot, session.HomeFlag(s.home)
 }
 
 // CreateWakeScheduleParams is CreateSchedule's input. RunAt is the first

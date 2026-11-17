@@ -4,7 +4,7 @@ import (
 	"context"
 	"slices"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 func (c *coordinator) restoreFinalizationQueuedCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (session.AgentFinalizationContext, error) {

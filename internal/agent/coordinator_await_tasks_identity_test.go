@@ -7,6 +7,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -29,7 +30,7 @@ func TestAwaitTasksDispatchUsesDurableIdentity(t *testing.T) {
 			parent := batchEnv.sessionID
 			child := "await-batch-child"
 			if fork {
-				childRow, _, forkErr := c.sessions.ForkSessionTx(ctx, parent, session.ForkOptions{NewID: child, ParentID: parent})
+				childRow, _, forkErr := c.sessions.ForkSessionTx(ctx, parent, coresession.ForkOptions{NewID: child, ParentID: parent})
 				require.NoError(t, forkErr)
 				child = childRow.ID
 			} else {

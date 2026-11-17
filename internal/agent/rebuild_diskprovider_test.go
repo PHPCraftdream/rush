@@ -13,7 +13,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,7 +33,7 @@ func TestRebuildSessionAgentCall_RefusesRowMarkedHostDiskProvider(t *testing.T) 
 	env := testEnv(t)
 	coord := newRoleModelTestCoordinator(t, env, false)
 
-	data := session.SessionAgentCallData{
+	data := core.SessionAgentCallData{
 		SessionID:        "disk-provider-rebuild-refusal",
 		LogicalCallID:    "logical-1",
 		Prompt:           "hello",
@@ -65,7 +65,7 @@ func TestRebuildSessionAgentCall_RebuildsPlainRowsWithoutHostDiskProvider(t *tes
 	env := testEnv(t)
 	coord := newRoleModelTestCoordinator(t, env, false)
 
-	data := session.SessionAgentCallData{
+	data := core.SessionAgentCallData{
 		SessionID:     newRebuildFixtureSession(t, coord, "disk-provider-rebuild-control"),
 		LogicalCallID: "logical-2",
 		Prompt:        "hello",
@@ -97,7 +97,7 @@ func TestSessionAgentCallDataHostDiskProviderJSONRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(raw), `"HostDiskProvider":true`)
 
-	var decoded session.SessionAgentCallData
+	var decoded core.SessionAgentCallData
 	require.NoError(t, json.Unmarshal(raw, &decoded))
 	require.True(t, decoded.HostDiskProvider,
 		"the marker must survive the JSON boundary")
@@ -139,12 +139,12 @@ func TestRebuildSessionAgentCall_RowWithEnvelopeAndHostMarker_Rebuilds(t *testin
 	require.NoError(t, err)
 	coord.diskCaps = caps
 
-	data := session.SessionAgentCallData{
+	data := core.SessionAgentCallData{
 		SessionID:        newRebuildFixtureSession(t, coord, "disk-provider-rebuild-envelope"),
 		LogicalCallID:    "logical-envelope-1",
 		Prompt:           "hello",
 		HostDiskProvider: true,
-		DiskRequirement:  &session.SessionExecutionRequirement{BindingID: bindingID},
+		DiskRequirement:  &core.SessionExecutionRequirement{BindingID: bindingID},
 	}
 
 	call, err := coord.RebuildSessionAgentCall(t.Context(), "row-envelope-1", data)

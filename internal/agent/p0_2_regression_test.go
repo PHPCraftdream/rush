@@ -15,6 +15,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -139,7 +140,7 @@ func TestP0_2_RetryExhaustion_QueuesCall(t *testing.T) {
 	require.Equal(t, sessionID, pendingEntries[0].SessionID)
 
 	// Verify the queued call data contains the expected prompt.
-	var callData session.SessionAgentCallData
+	var callData coresession.SessionAgentCallData
 	err = json.Unmarshal([]byte(pendingEntries[0].CallData), &callData)
 	require.NoError(t, err)
 	require.Equal(t, "orphaned call", callData.Prompt, "queued call should contain correct prompt")
@@ -150,7 +151,7 @@ func TestP0_2_RetryExhaustion_QueuesCall(t *testing.T) {
 	// 2. Releasing the OS lock so the pump can acquire it
 	// 3. Waiting for the call to execute
 
-	// Create a mock coordinator that adapts session.SessionAgentCallData to agent.SessionAgentCall
+	// Create a mock coordinator that adapts coresession.SessionAgentCallData to agent.SessionAgentCall
 	// and executes it through the sessionAgent.
 	mockCoord := &pumpTestCoordinator{
 		sessionAgent: sessionAgent,
@@ -214,7 +215,7 @@ func TestP0_2_RetryExhaustion_QueuesCall(t *testing.T) {
 		"orphaned call's content should appear in message history after execution")
 }
 
-// pumpTestCoordinator adapts session.SessionAgentCallData to agent.SessionAgentCall
+// pumpTestCoordinator adapts coresession.SessionAgentCallData to agent.SessionAgentCall
 // and executes it through the sessionAgent for testing.
 type pumpTestCoordinator struct {
 	sessionAgent    *sessionAgent
@@ -222,7 +223,7 @@ type pumpTestCoordinator struct {
 	onQueueResolved func(*fantasy.AgentResult, error)
 }
 
-func (p *pumpTestCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (p *pumpTestCoordinator) Run(ctx context.Context, callData coresession.SessionAgentCallData) (*any, error) {
 	// Convert SessionAgentCallData back to SessionAgentCall using the existing conversion function
 	call, err := FromSessionAgentCallData(callData)
 	if err != nil {

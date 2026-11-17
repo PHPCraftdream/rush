@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // NewFinalizationBindScopeHook builds the driver-start BindScope hook (lane

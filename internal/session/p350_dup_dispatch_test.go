@@ -52,7 +52,7 @@ package session_test
 //     silently extended out from under it. Closes path 2: a still-running
 //     execution's lease can no longer expire underneath it under normal
 //     scheduling.
-//  3. session.ErrCallQueuedNotExecuted is returned by
+//  3. core.ErrCallQueuedNotExecuted is returned by
 //     coordinatorAdapterImpl.Run when the underlying call returns (nil,
 //     nil) — i.e. queued into a genuinely EXTERNAL live owner the inFlight
 //     guard has no visibility into. executeEntry treats this specially: no
@@ -89,6 +89,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -131,7 +132,7 @@ func (c *concurrencyTrackingCoordinator) release() {
 	}
 }
 
-func (c *concurrencyTrackingCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *concurrencyTrackingCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
 
 	c.mu.Lock()
@@ -253,9 +254,9 @@ type queuedNotExecutedCoordinator struct {
 	calls atomic.Int64
 }
 
-func (c *queuedNotExecutedCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *queuedNotExecutedCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
-	return nil, session.ErrCallQueuedNotExecuted
+	return nil, core.ErrCallQueuedNotExecuted
 }
 
 // TestReleaseGate_P350_QueuedNotExecutedNeitherAcksNorSpamRetries proves
@@ -378,7 +379,7 @@ type slowCoordinator struct {
 	runCtx  atomic.Pointer[context.Context] // the ctx of the (first) call in flight
 }
 
-func (c *slowCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *slowCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.runCtx.CompareAndSwap(nil, &ctx)
 	c.calls.Add(1)
 	<-c.release
@@ -507,10 +508,10 @@ type queuedNotExecutedThenSuccessCoordinator struct {
 	calls         atomic.Int64
 }
 
-func (c *queuedNotExecutedThenSuccessCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *queuedNotExecutedThenSuccessCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	n := c.calls.Add(1)
 	if n <= c.busyUntilCall {
-		return nil, session.ErrCallQueuedNotExecuted
+		return nil, core.ErrCallQueuedNotExecuted
 	}
 	var result any = "ok"
 	return &result, nil
@@ -652,7 +653,7 @@ func TestReleaseGate_P350_QueuedNotExecutedBacksOffWithoutAttemptPenalty(t *test
 // pump writes busyBackoffUntil (run_queue_entry_exec.go:705-707) and BEFORE
 // the in-flight admission slot is released (run_queue_admission.go:351).
 type postNackAdvancingService struct {
-	session.Service
+	core.Service
 	clk *fakePumpClock
 	ttl time.Duration
 }

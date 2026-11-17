@@ -6,6 +6,8 @@ import (
 	"errors"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
@@ -60,7 +62,7 @@ func (s *BatchStore) BatchStopOwners(ctx context.Context, owners []string) ([]Ba
 					return nil, affectedErr
 				}
 				if n != 1 {
-					return nil, ErrBatchProjectionConflict
+					return nil, session.ErrBatchProjectionConflict
 				}
 				runnerID, status = root.RunnerID, "pending"
 			} else if err != nil {
@@ -107,9 +109,9 @@ func (s *BatchStore) BatchAnswerOwnerStop(ctx context.Context, target BatchStopO
 		return tx.Commit()
 	}
 	if root.RootSequence <= 0 {
-		return ErrBatchProjectionConflict
+		return session.ErrBatchProjectionConflict
 	}
-	if err = batchRequireRow(q.AnswerBatchControlRequest(ctx, db.AnswerBatchControlRequestParams{RequestID: target.RequestID, OwnerSessionID: target.Owner, HostID: target.Host, RootID: target.Root, NodeID: target.Node, RunnerID: target.RunnerID, AnswerCode: "accepted", AnswerSequence: sql.NullInt64{Int64: root.RootSequence, Valid: true}, AnsweredAt: sql.NullInt64{Int64: time.Now().Unix(), Valid: true}})); err != nil {
+	if err = session.BatchRequireRow(q.AnswerBatchControlRequest(ctx, db.AnswerBatchControlRequestParams{RequestID: target.RequestID, OwnerSessionID: target.Owner, HostID: target.Host, RootID: target.Root, NodeID: target.Node, RunnerID: target.RunnerID, AnswerCode: "accepted", AnswerSequence: sql.NullInt64{Int64: root.RootSequence, Valid: true}, AnsweredAt: sql.NullInt64{Int64: time.Now().Unix(), Valid: true}})); err != nil {
 		return err
 	}
 	return tx.Commit()

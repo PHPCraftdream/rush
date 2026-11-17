@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -60,7 +62,7 @@ type finalizationNotifyStubRead struct {
 	mu        sync.Mutex
 	owners    []string
 	roots     []string
-	envelope  BatchDeliveryEnvelope
+	envelope  session.BatchDeliveryEnvelope
 	ok        bool
 	err       error
 	callsSeen int
@@ -68,7 +70,7 @@ type finalizationNotifyStubRead struct {
 
 func (r *finalizationNotifyStubRead) read(
 	_ context.Context, owner, root string,
-) (BatchDeliveryEnvelope, bool, error) {
+) (session.BatchDeliveryEnvelope, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.owners = append(r.owners, owner)
@@ -98,7 +100,7 @@ func TestFinalizationTerminalFinishReasonTable(t *testing.T) {
 		{"weird", false},
 	}
 	for _, tc := range cases {
-		require.Equal(t, tc.want, FinalizationTerminalFinishReason(tc.reason),
+		require.Equal(t, tc.want, session.FinalizationTerminalFinishReason(tc.reason),
 			"reason %q", tc.reason)
 	}
 }
@@ -112,39 +114,39 @@ func TestFinalizationTerminalMessageRecognizesOnlyTerminalAssistantFinish(t *tes
 		ID: "m1", Role: message.Assistant, SessionID: "s",
 		Parts: []message.ContentPart{finish(message.FinishReasonEndTurn, false)},
 	}
-	require.True(t, FinalizationTerminalMessage(terminal))
+	require.True(t, session.FinalizationTerminalMessage(terminal))
 	midStep := terminal
 	midStep.Parts = []message.ContentPart{finish(message.FinishReasonToolUse, false)}
-	require.False(t, FinalizationTerminalMessage(midStep))
+	require.False(t, session.FinalizationTerminalMessage(midStep))
 	unknown := terminal
 	unknown.Parts = []message.ContentPart{finish(message.FinishReasonUnknown, false)}
-	require.False(t, FinalizationTerminalMessage(unknown))
+	require.False(t, session.FinalizationTerminalMessage(unknown))
 	checkpoint := terminal
 	checkpoint.Parts = []message.ContentPart{finish(message.FinishReasonEndTurn, true)}
-	require.False(t, FinalizationTerminalMessage(checkpoint))
+	require.False(t, session.FinalizationTerminalMessage(checkpoint))
 	noFinish := message.Message{ID: "m2", Role: message.Assistant, SessionID: "s"}
-	require.False(t, FinalizationTerminalMessage(noFinish))
+	require.False(t, session.FinalizationTerminalMessage(noFinish))
 	user := terminal
 	user.Role = message.User
-	require.False(t, FinalizationTerminalMessage(user))
+	require.False(t, session.FinalizationTerminalMessage(user))
 }
 
 func TestFinalizationSessionEndedDetectsEndedReason(t *testing.T) {
 	t.Parallel()
-	require.True(t, FinalizationSessionEnded(Session{EndedReason: "end_turn"}))
-	require.False(t, FinalizationSessionEnded(Session{ID: "s"}))
+	require.True(t, session.FinalizationSessionEnded(session.Session{EndedReason: "end_turn"}))
+	require.False(t, session.FinalizationSessionEnded(session.Session{ID: "s"}))
 }
 
 func TestFinalizationGatedBatchResultWithoutGatePassesThrough(t *testing.T) {
 	t.Parallel()
 	stub := &finalizationNotifyStubRead{
-		envelope: BatchDeliveryEnvelope{State: "failed", Code: "x"}, ok: true,
+		envelope: session.BatchDeliveryEnvelope{State: "failed", Code: "x"}, ok: true,
 	}
-	envelope, ok, err := FinalizationGatedBatchResult(
+	envelope, ok, err := session.FinalizationGatedBatchResult(
 		t.Context(), nil, "owner", "root", stub.read)
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.Equal(t, BatchDeliveryEnvelope{State: "failed", Code: "x"}, envelope)
+	require.Equal(t, session.BatchDeliveryEnvelope{State: "failed", Code: "x"}, envelope)
 	require.Equal(t, []string{"owner"}, stub.owners)
 	require.Equal(t, []string{"root"}, stub.roots)
 }
@@ -155,9 +157,9 @@ func TestFinalizationGatedBatchResultWithholdsWhileRecordActive(t *testing.T) {
 	gate.activate("owner")
 	stub := &finalizationNotifyStubRead{
 		ok:       true,
-		envelope: BatchDeliveryEnvelope{State: "failed", Code: "exec_failed"},
+		envelope: session.BatchDeliveryEnvelope{State: "failed", Code: "exec_failed"},
 	}
-	envelope, ok, err := FinalizationGatedBatchResult(
+	envelope, ok, err := session.FinalizationGatedBatchResult(
 		t.Context(), gate, "owner", "root", stub.read)
 	require.NoError(t, err)
 	require.False(t, ok)
@@ -168,9 +170,9 @@ func TestFinalizationGatedBatchResultWithholdsWhileRecordActive(t *testing.T) {
 func TestFinalizationGatedBatchResultDeliversAfterRelease(t *testing.T) {
 	t.Parallel()
 	gate := newFinalizationNotifyGateStub()
-	want := BatchDeliveryEnvelope{State: "failed", Code: "exec_failed", Ref: "n#2"}
+	want := session.BatchDeliveryEnvelope{State: "failed", Code: "exec_failed", Ref: "n#2"}
 	stub := &finalizationNotifyStubRead{ok: true, envelope: want}
-	envelope, ok, err := FinalizationGatedBatchResult(
+	envelope, ok, err := session.FinalizationGatedBatchResult(
 		t.Context(), gate, "owner", "root", stub.read)
 	require.NoError(t, err)
 	require.True(t, ok)
@@ -186,9 +188,9 @@ func TestFinalizationGatedBatchResultFailsClosedOnGateReadError(t *testing.T) {
 	gate.failAllow = true
 	stub := &finalizationNotifyStubRead{
 		ok:       true,
-		envelope: BatchDeliveryEnvelope{State: "failed", Code: "exec_failed"},
+		envelope: session.BatchDeliveryEnvelope{State: "failed", Code: "exec_failed"},
 	}
-	envelope, ok, err := FinalizationGatedBatchResult(
+	envelope, ok, err := session.FinalizationGatedBatchResult(
 		t.Context(), gate, "owner", "root", stub.read)
 	require.NoError(t, err)
 	require.False(t, ok)
@@ -203,9 +205,9 @@ func TestFinalizationGatedBatchResultCancelledContextFailsClosed(t *testing.T) {
 	cancel()
 	stub := &finalizationNotifyStubRead{
 		ok:       true,
-		envelope: BatchDeliveryEnvelope{State: "failed", Code: "x"},
+		envelope: session.BatchDeliveryEnvelope{State: "failed", Code: "x"},
 	}
-	envelope, ok, err := FinalizationGatedBatchResult(
+	envelope, ok, err := session.FinalizationGatedBatchResult(
 		ctx, gate, "owner", "root", stub.read)
 	require.ErrorIs(t, err, context.Canceled)
 	require.False(t, ok)
@@ -215,10 +217,10 @@ func TestFinalizationGatedBatchResultCancelledContextFailsClosed(t *testing.T) {
 
 func TestFinalizationGatedBatchResultNilReadIsError(t *testing.T) {
 	t.Parallel()
-	for _, gate := range []FinalizationTerminalGate{nil, newFinalizationNotifyGateStub()} {
-		envelope, ok, err := FinalizationGatedBatchResult(
+	for _, gate := range []session.FinalizationTerminalGate{nil, newFinalizationNotifyGateStub()} {
+		envelope, ok, err := session.FinalizationGatedBatchResult(
 			t.Context(), gate, "owner", "root", nil)
-		require.ErrorIs(t, err, ErrFinalizationBatchResultReadMissing)
+		require.ErrorIs(t, err, session.ErrFinalizationBatchResultReadMissing)
 		require.False(t, ok)
 		require.Empty(t, envelope)
 	}
@@ -231,9 +233,9 @@ func TestFinalizationAwaitGatedBatchResultReturnsGateErrorWithoutRead(t *testing
 	gate.awaitErr = errors.New("stub store failure")
 	stub := &finalizationNotifyStubRead{
 		ok:       true,
-		envelope: BatchDeliveryEnvelope{State: "failed", Code: "x"},
+		envelope: session.BatchDeliveryEnvelope{State: "failed", Code: "x"},
 	}
-	envelope, ok, err := FinalizationAwaitGatedBatchResult(
+	envelope, ok, err := session.FinalizationAwaitGatedBatchResult(
 		t.Context(), gate, "owner", "root", stub.read)
 	require.EqualError(t, err, "stub store failure")
 	require.False(t, ok)
@@ -247,9 +249,9 @@ func TestFinalizationAwaitGatedBatchResultCancelledContextReturnsError(t *testin
 	cancel()
 	stub := &finalizationNotifyStubRead{
 		ok:       true,
-		envelope: BatchDeliveryEnvelope{State: "failed", Code: "x"},
+		envelope: session.BatchDeliveryEnvelope{State: "failed", Code: "x"},
 	}
-	envelope, ok, err := FinalizationAwaitGatedBatchResult(
+	envelope, ok, err := session.FinalizationAwaitGatedBatchResult(
 		ctx, newFinalizationNotifyGateStub(), "owner", "root", stub.read)
 	require.ErrorIs(t, err, context.Canceled)
 	require.False(t, ok)
@@ -277,14 +279,14 @@ func TestFinalizationGatedBatchResultWithholdsRealActiveRecord(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, "failed", envelope.State)
-	gate := NewPollingFinalizationTerminalGate(env.store, time.Millisecond)
-	envelope, ok, err = FinalizationGatedBatchResult(
+	gate := session.NewPollingFinalizationTerminalGate(env.store, time.Millisecond)
+	envelope, ok, err = session.FinalizationGatedBatchResult(
 		bctx, gate, "owner", root, bs.BatchDeliveryOneItemCompletion)
 	require.NoError(t, err)
 	require.False(t, ok, "a deliverable completion must be withheld while active")
 	require.Empty(t, envelope)
 	finalizationSeamSetPhase(t, env, "owner", "accepted")
-	envelope, ok, err = FinalizationGatedBatchResult(
+	envelope, ok, err = session.FinalizationGatedBatchResult(
 		bctx, gate, "owner", root, bs.BatchDeliveryOneItemCompletion)
 	require.NoError(t, err)
 	require.True(t, ok)
@@ -308,9 +310,9 @@ func TestFinalizationAwaitGatedBatchResultBlocksUntilSealedThenDelivers(t *testi
 				`{"state":"failed","code":"exec_failed","summary":"boom"}`),
 			ResponseEnvelopeRef: batchStoreTestString(child + "#2"),
 		})
-	gate := NewPollingFinalizationTerminalGate(env.store, time.Millisecond)
+	gate := session.NewPollingFinalizationTerminalGate(env.store, time.Millisecond)
 	type result struct {
-		envelope BatchDeliveryEnvelope
+		envelope session.BatchDeliveryEnvelope
 		ok       bool
 		err      error
 	}
@@ -318,7 +320,7 @@ func TestFinalizationAwaitGatedBatchResultBlocksUntilSealedThenDelivers(t *testi
 	awakeCtx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	t.Cleanup(cancel)
 	go func() {
-		envelope, ok, err := FinalizationAwaitGatedBatchResult(
+		envelope, ok, err := session.FinalizationAwaitGatedBatchResult(
 			awakeCtx, gate, "owner", root, bs.BatchDeliveryOneItemCompletion)
 		done <- result{envelope, ok, err}
 	}()

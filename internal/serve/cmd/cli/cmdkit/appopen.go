@@ -14,7 +14,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/diag/audit"
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
 	journal "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/journal"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/spf13/cobra"
 )

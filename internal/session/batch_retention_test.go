@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"testing"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -111,7 +113,7 @@ func TestR9RetentionWholeRootsDebtLiveDelegation(t *testing.T) {
 // debt must not keep the row forever: it expires with age like a settled root.
 func TestR9RetentionUnannouncedCLIDebtExpiresWithAge(t *testing.T) {
 	a, _, conn, _, ctx := r9Stores(t)
-	runner, executor, runCtx := commitHookRunner(t, NewBatchCommitHook(a, BatchCommitIdentity{Host: "host", Runner: "runner", Owner: "owner"}))
+	runner, executor, runCtx := commitHookRunner(t, NewBatchCommitHook(a, session.BatchCommitIdentity{Host: "host", Runner: "runner", Owner: "owner"}))
 	batch := commitHookSubmit(t, runCtx, runner, "cli-retention", jobbatch.OneItem(jobbatch.TaskSpec{Kind: "retention"}), "batch-cli:retention")
 	attempt := commitHookAccept(t, runCtx, runner, executor, nil)
 	commitHookFinish(t, runCtx, runner, attempt, jobbatch.Result{State: jobbatch.StateCompleted})

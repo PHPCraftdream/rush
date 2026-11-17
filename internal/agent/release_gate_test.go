@@ -19,16 +19,16 @@ package agent
 import (
 	"context"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
-// p0338PumpCoordinator adapts session.SessionAgentCallData to agent.SessionAgentCall
+// p0338PumpCoordinator adapts core.SessionAgentCallData to agent.SessionAgentCall
 // and executes it through the exported agent.SessionAgent interface.
 type p0338PumpCoordinator struct {
 	sessionAgent SessionAgent
 }
 
-func (p *p0338PumpCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (p *p0338PumpCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	call, err := FromSessionAgentCallData(callData)
 	if err != nil {
 		return nil, err

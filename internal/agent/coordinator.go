@@ -38,6 +38,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/filetracker"
 	"github.com/PHPCraftdream/rush/internal/store/history"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -103,7 +104,7 @@ const maxConsecutiveAutoResumes = 5
 
 type coordinator struct {
 	cfg         *config.ConfigStore
-	sessions    session.Service
+	sessions    coresession.Service
 	messages    message.Service
 	permissions permission.Service
 	history     history.Service
@@ -162,10 +163,10 @@ type coordinator struct {
 	// execReqs is the durable session-execution-fence store (R12-H2b);
 	// nil means no fence can exist (bare fixtures), which reads as "no
 	// requirement" in PrepareContinuation.
-	execReqs session.SessionExecutionRequirementStore
+	execReqs coresession.SessionExecutionRequirementStore
 	// credentialReqs durably records the secret-free credential boundary;
 	// nil retains the in-process marker only.
-	credentialReqs session.SessionCredentialRequirementStore
+	credentialReqs coresession.SessionCredentialRequirementStore
 
 	// wakeScheduler is the stage-4b durable wake-schedule worker (one timer
 	// goroutine over WakeScheduleStore.NextDue), wired via
@@ -332,8 +333,8 @@ type BatchRuntimeCapabilities struct {
 
 // SessionExecutionCapabilities carries the optional durable execution/credential requirement stores (same bundle rules).
 type SessionExecutionCapabilities struct {
-	ExecReqs session.SessionExecutionRequirementStore
-	CredReqs session.SessionCredentialRequirementStore
+	ExecReqs coresession.SessionExecutionRequirementStore
+	CredReqs coresession.SessionCredentialRequirementStore
 }
 
 // NewCoordinator wires the agent coordinator. Async work is batch-only: the
@@ -346,7 +347,7 @@ type SessionExecutionCapabilities struct {
 func NewCoordinator(
 	ctx context.Context,
 	cfg *config.ConfigStore,
-	sessions session.Service,
+	sessions coresession.Service,
 	messages message.Service,
 	permissions permission.Service,
 	history history.Service,

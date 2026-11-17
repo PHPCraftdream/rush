@@ -488,7 +488,7 @@ func (l *rowLedger) verdictOnCtxDone(ctx context.Context) (DrainResult, error) {
 // cleared, WITHOUT learning what that worker's execution actually produced.
 // "Admission cleared" was silently read as "a continuation completed here",
 // which is true for only one of (at least) five real outcomes -- the row
-// returned to pending by ErrCallQueuedNotExecuted/SessionLockBusyError, a
+// returned to pending by session.ErrCallQueuedNotExecuted/SessionLockBusyError, a
 // terminal AlreadyAttempted failure, a failed Ack leaving the row leased, a
 // lost lease handed to a new owner, or a genuine committed success -- and
 // RunNonInteractive (internal/app/app_run.go) converts a fully-clean result

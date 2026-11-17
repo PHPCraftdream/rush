@@ -11,6 +11,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -113,7 +114,7 @@ func TestRun_SubAgentChildSession_RejectsWhenLockHeldByAnotherProcess(t *testing
 	// regression.
 }
 
-// blockingGetSessionService is a minimal session.Service fake used only to
+// blockingGetSessionService is a minimal coresession.Service fake used only to
 // pin down the exact instant Run() gets past the lock-acquisition code
 // (agent.go ~510-543): its Get closes entered (once, on first call) before
 // blocking until the test signals it to proceed via unblock. entered is
@@ -125,7 +126,7 @@ func TestRun_SubAgentChildSession_RejectsWhenLockHeldByAnotherProcess(t *testing
 // session.TryAcquireSessionLock in a loop from a second goroutine, which
 // intermittently won the race for the still-free lock before Run's own
 // goroutine got scheduled, starving Run's real attempt and producing a
-// flaky false "Run was rejected"). Every other session.Service method is
+// flaky false "Run was rejected"). Every other coresession.Service method is
 // unreachable from Run before Get, so embedding the nil interface for the
 // rest is safe: they're never called.
 //
@@ -135,16 +136,16 @@ func TestRun_SubAgentChildSession_RejectsWhenLockHeldByAnotherProcess(t *testing
 // Both block on unblock and both fail with the same error, so the second read
 // costs the test nothing but must not double-close `entered`.
 type blockingGetSessionService struct {
-	session.Service
+	coresession.Service
 	entered     chan struct{}
 	enteredOnce sync.Once
 	unblock     chan struct{}
 }
 
-func (b *blockingGetSessionService) Get(ctx context.Context, id string) (session.Session, error) {
+func (b *blockingGetSessionService) Get(ctx context.Context, id string) (coresession.Session, error) {
 	b.enteredOnce.Do(func() { close(b.entered) })
 	<-b.unblock
-	return session.Session{}, errors.New("blockingGetSessionService: Get intentionally fails after unblocking")
+	return coresession.Session{}, errors.New("blockingGetSessionService: Get intentionally fails after unblocking")
 }
 
 // TestRun_SubAgentChildSession_ProceedsPastLockWhenFree is the inverse of

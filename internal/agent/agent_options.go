@@ -10,6 +10,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -21,7 +22,7 @@ type SessionAgentOptions struct {
 	IsSubAgent           bool
 	DisableAutoSummarize bool
 	IsYolo               bool
-	Sessions             session.Service
+	Sessions             coresession.Service
 	Messages             message.Service
 	Tools                []fantasy.AgentTool
 	// Coord is the owning coordinator (batch facts, reaction store, notice

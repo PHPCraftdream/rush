@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

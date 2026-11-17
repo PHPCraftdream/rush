@@ -17,6 +17,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/serve/server/ws/wswork"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -31,7 +32,7 @@ func holdExternalSilenceProof(a *appPkg.App, sessionID string) (*session.SharedL
 	return wsapi.HoldExternalSilenceProof(a, sessionID)
 }
 
-func appOwnsSession(a *appPkg.App, sess session.Session) bool {
+func appOwnsSession(a *appPkg.App, sess core.Session) bool {
 	return wsapi.AppOwnsSession(a, sess)
 }
 

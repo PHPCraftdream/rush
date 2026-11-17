@@ -1,0 +1,639 @@
+package session
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
+	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/message"
+	"github.com/zeebo/xxh3"
+)
+
+type TodoStatus string
+
+const (
+	TodoStatusPending    TodoStatus = "pending"
+	TodoStatusInProgress TodoStatus = "in_progress"
+	TodoStatusCompleted  TodoStatus = "completed"
+)
+
+// HashID returns the XXH3 hash of a session ID (UUID) as a hex string.
+func HashID(id string) string {
+	h := xxh3.New()
+	h.WriteString(id)
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+type Todo struct {
+	Content    string     `json:"content"`
+	Status     TodoStatus `json:"status"`
+	ActiveForm string     `json:"active_form"`
+}
+
+// HasIncompleteTodos returns true if there are any non-completed todos.
+func HasIncompleteTodos(todos []Todo) bool {
+	for _, todo := range todos {
+		if todo.Status != TodoStatusCompleted {
+			return true
+		}
+	}
+	return false
+}
+
+type Session struct {
+	ID              string
+	ParentSessionID string
+	Title           string
+	// Origin marks the entry channel the session was created through
+	// (cli / web / sdk). Empty = unspecified: legacy rows, tests, and
+	// internal sessions (title generation, agent-tool sub-sessions).
+	Origin           message.Origin
+	MessageCount     int64
+	PromptTokens     int64
+	CompletionTokens int64
+	SummaryMessageID string
+	// OwnCost is the node's OWN spend (cost_self): only this session's
+	// turns, compaction, title and keep-alive. It only ever grows.
+	// "Including children" is Service.SubtreeBudget, never a row field
+	// (#1130).
+	OwnCost   float64
+	CostBase  float64 // budget base frozen by the last `sessions reset`
+	Todos     []Todo
+	CreatedAt int64
+	UpdatedAt int64
+
+	SmartModelProvider        string
+	SmartModelID              string
+	SmartModelReasoningEffort string // "low", "medium", "high", or "max"
+	FastModelProvider         string
+	FastModelID               string
+	FastModelReasoningEffort  string // "low", "medium", "high", or "max"
+
+	// Worker/reviewer overrides — empty means "inherit the folder/system
+	// default", same convention as the smart/fast fields above. Unlike
+	// smart/fast, most sessions never set these: worker/reviewer are
+	// optional sub-agent model slots (task #466).
+	WorkerModelProvider          string
+	WorkerModelID                string
+	WorkerModelReasoningEffort   string
+	ReviewerModelProvider        string
+	ReviewerModelID              string
+	ReviewerModelReasoningEffort string
+
+	SystemPrompt    string
+	YoloEnabled     bool
+	CancelRequested bool // Snapshot of the row when read; use IsCancelRequested() for a live check.
+
+	// DeletedTodos holds the Content strings of todos that the operator
+	// explicitly removed via the UI. mergeTodos uses this set as a tombstone
+	// filter so the model cannot resurrect them during multi-step turns.
+	DeletedTodos []string
+
+	// Fork patch (operator UX): persisted from --max-cost / --max-tokens /
+	// --timeout at run start so sessions show/locks can display budget.
+	EndedReason      string  // exit reason the last `rush run` recorded; "" while running or never run
+	BudgetMaxCost    float64 // --max-cost value, 0 if unlimited
+	BudgetMaxTokens  int64   // --max-tokens value, 0 if unlimited
+	BudgetTimeoutSec int64   // --timeout in seconds, 0 if unlimited
+
+	// WorkspaceRoot is the canonical root of the checkout this session was
+	// created in (WS-1, #1142 step C). Only the process whose workspace matches
+	// may run the session; '' is a legacy row created before the binding
+	// existed, owned by home processes only. Exposed on the web session payload
+	// as workspace_root (snake_case matches internal/db) for UI audit; ownership
+	// itself is decided in the agent/app/queue layers, never by the client.
+	WorkspaceRoot string `json:"workspace_root"`
+	// GitBranch is the branch HEAD pointed at when the row was created, read
+	// from <git-dir>/HEAD without spawning git (detached HEAD, no git, or a
+	// read failure all give ''). Audit only: it never participates in
+	// ownership. Exposed on the web session payload as git_branch.
+	GitBranch string `json:"git_branch"`
+
+	// Wire-only fields filled by the web server when sending Session over WS;
+	// NOT persisted to SQLite. Together they answer "is this session being
+	// driven by another live process right now?" so the web UI can render
+	// foreign sessions read-only with a "Followed: PID N" banner.
+	OwnedExternal bool `json:",omitempty"` // a different live process holds the lock
+	OwnedByPID    int  `json:",omitempty"` // PID of the lock holder, 0 if free / stale
+
+	// HasLiveDescendantWork reports that at least one DESCENDANT session
+	// (a sub-agent this session delegated to) is named by a live batch
+	// delegation root (running, host not provably dead), so this session is
+	// NOT finished even though its own lock is gone — cross-process
+	// "delegating", the same derivation `sessions list` applies through
+	// the session-activity classifier. Wire-only, filled by the web server's
+	// session list. Complements
+	// OwnedExternal: that one is about THIS session's lock, this one about
+	// work happening below it.
+	HasLiveDescendantWork bool `json:",omitempty"`
+	// LiveDescendantIDs lists the descendant sessions named by those live
+	// delegation roots, so the UI can name the sub-agent it is waiting on.
+	// Wire-only.
+	LiveDescendantIDs []string `json:",omitempty"`
+	// HasLiveOwnWork reports that this session is NOT finished although it
+	// holds no lock of its own: it owns a running plain background job
+	// (bash/run_command) on a host not provably dead, OR a live `rush run`
+	// driver marker (a loop waiting between turns) covers it. It does not
+	// imply that a job exists. The counterpart of HasLiveDescendantWork for
+	// the session's own work rather than a sub-agent's. Wire-only, filled by
+	// the web server's session list; the same derivation as `sessions list`'s
+	// "running" promotion (batch live-work reads, App.LiveSessionDrivers).
+	HasLiveOwnWork bool `json:",omitempty"`
+}
+
+// ModelSlotUpdate is an explicit provider/model pair for one session model
+// slot (large or small), passed to Service.UpdateModels. See UpdateModels'
+// doc comment for the nil-vs-non-nil semantics.
+type ModelSlotUpdate struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+type Service interface {
+	pubsub.Subscriber[Session]
+	pubsub.Shutdowner
+	Create(ctx context.Context, title string) (Session, error)
+	// CreateWithID creates a top-level session with a caller-chosen ID. Used
+	// by `rush run --session <id>` to make CLI/CI invocations idempotent:
+	// the same ID across runs continues the same conversation. Returns an
+	// error if a row with that ID already exists (UNIQUE constraint).
+	CreateWithID(ctx context.Context, id, title string) (Session, error)
+	CreateTitleSession(ctx context.Context, parentSessionID string) (Session, error)
+	CreateTaskSession(ctx context.Context, toolCallID, parentSessionID, title string) (Session, error)
+	Get(ctx context.Context, id string) (Session, error)
+	GetLast(ctx context.Context) (Session, error)
+	List(ctx context.Context) ([]Session, error)
+	// ListAll returns every session including children (no parent_session_id
+	// filter). Used by sessions gc for garbage collection.
+	ListAll(ctx context.Context) ([]Session, error)
+	// ListSubSessions returns every session whose parent_session_id
+	// equals the argument, ordered oldest-first. Used by the
+	// --aggregation=attach path and the reduction-loss warning to
+	// gather a parent run's sub-agent fan-out outputs after Run()
+	// returns.
+	ListSubSessions(ctx context.Context, parentSessionID string) ([]Session, error)
+	// GetCallTreeActivity returns the freshest message activity anywhere in
+	// rootID's call tree (rootID itself plus every descendant reachable via
+	// parent_session_id) in ONE recursive-CTE query, instead of a
+	// per-node Messages.List + ListSubSessions walk. ok is false when the
+	// tree has no messages at all (nothing to report).
+	GetCallTreeActivity(ctx context.Context, rootID string) (activity CallTreeActivity, ok bool, err error)
+	// GetCallTreeActivityBatch is the batch form of GetCallTreeActivity: it
+	// computes the freshest call-tree activity for EVERY id in rootIDs,
+	// chunking the root list internally so a single batch can never exceed
+	// SQLite's variable-parameter limit (callTreeActivityBatchChunkSize roots
+	// per underlying query). Used by `sessions list`, which otherwise walked
+	// the whole descendant tree of every running session individually. The
+	// returned map is keyed by root session ID; roots with no activity in
+	// their tree are simply absent from the map.
+	GetCallTreeActivityBatch(ctx context.Context, rootIDs []string) (map[string]CallTreeActivity, error)
+	SetUsage(ctx context.Context, sessionID string, promptTokens, completionTokens int64) error
+	SetSummaryAndUsage(ctx context.Context, sessionID, summaryMessageID string, promptTokens, completionTokens int64) error
+	SetTodos(ctx context.Context, sessionID string, todos []Todo, deletedTodos []string) error
+	// IncrementCost atomically adds delta to the session's OWN cost
+	// (cost_self) via an additive SQL UPDATE (#1130). It is the ONLY writer
+	// of cost_self: the column never decreases. Race-free under fan-out and
+	// across processes that share a session ID. Returns the refreshed
+	// snapshot.
+	//
+	// Semantics for delta = 0: the implementation short-circuits to a
+	// plain Get, so IncrementCost(id, 0) is a "verify the session exists and
+	// grab its current snapshot" call without the cost of an UPDATE. Pass a
+	// non-zero delta only when you actually want to charge. A negative delta
+	// is an error: per-node cost is monotonic, `sessions reset` freezes a
+	// budget via ResetCostBase instead.
+	IncrementCost(ctx context.Context, sessionID string, delta float64) (Session, error)
+	// IncrementCostIfUnderMax is IncrementCost's budget-guarded sibling
+	// (task #782, K-2): the charge and the maxCost check happen in ONE
+	// immediate transaction — the SUBTREE BUDGET (sum of cost_self over the
+	// node's delegation subtree minus its cost_base, #1130) is read inside
+	// the same write transaction that applies the charge, so two concurrent
+	// callers racing to charge cannot both pass the check and jointly
+	// overshoot max_cost. Returns ok=false (no charge applied) when the
+	// budget + delta would meet or exceed maxCost; the caller must treat
+	// that exactly like a pre-charge budget-cap skip. maxCost <= 0 is
+	// treated as "unlimited" and always charges (delta == 0 still
+	// short-circuits to a plain Get, same as IncrementCost).
+	IncrementCostIfUnderMax(ctx context.Context, sessionID string, delta, maxCost float64) (sess Session, ok bool, err error)
+	// SubtreeBudget returns the node's run-cost budget: sum of cost_self
+	// over its delegation subtree minus its cost_base, clamped at 0
+	// (#1130). This is the only "cost including children" there is: it is
+	// computed at read time, never transferred between rows.
+	SubtreeBudget(ctx context.Context, sessionID string) (float64, error)
+	// SubtreeSpent returns the raw subtree sum (without the base), the
+	// quantity run-cost WINDOWS are differenced over (`rush run`'s
+	// start-of-run mark vs its exit, RUSH_COST_USD).
+	SubtreeSpent(ctx context.Context, sessionID string) (float64, error)
+	// SubtreeUpdatedAt returns max(updated_at) over the node's delegation
+	// subtree: how `--continue`, `sessions list` ordering and
+	// `sessions cost --since` see a busy child WITHOUT the child writing
+	// its parent's updated_at.
+	SubtreeUpdatedAt(ctx context.Context, sessionID string) (int64, error)
+	// ResetCostBase freezes the node's budget: one UPDATE setting
+	// cost_base = subtree_spent. cost_self is never touched, so the reset
+	// cannot break the monotonic ledger, and a reset mid-run leaves the
+	// run's spend window (raw subtree difference) intact.
+	ResetCostBase(ctx context.Context, sessionID string) error
+	UpdateModels(ctx context.Context, sessionID string, smart, fast *ModelSlotUpdate) error
+	UpdateReasoningEffort(ctx context.Context, sessionID, smartEffort, fastEffort string) error
+	UpdateSmartReasoningEffort(ctx context.Context, sessionID, effort string) error
+	UpdateFastReasoningEffort(ctx context.Context, sessionID, effort string) error
+	UpdateWorkerReasoningEffort(ctx context.Context, sessionID, effort string) error
+	UpdateReviewerReasoningEffort(ctx context.Context, sessionID, effort string) error
+	// UpdateWorkerReviewerModels and UpdateWorkerReviewerReasoningEffort are
+	// UpdateModels/UpdateReasoningEffort's siblings for the optional
+	// worker/reviewer slots (task #466).
+	UpdateWorkerReviewerModels(ctx context.Context, sessionID string, worker, reviewer *ModelSlotUpdate) error
+	UpdateWorkerReviewerReasoningEffort(ctx context.Context, sessionID, workerEffort, reviewerEffort string) error
+	UpdateSystemPrompt(ctx context.Context, sessionID, prompt string) error
+	Rename(ctx context.Context, id string, title string) error
+	Delete(ctx context.Context, id string) error
+	// ForkSession clones srcID into a brand-new session in a single DB
+	// transaction: it creates a fresh session row and copies the source's
+	// models, system prompt, todos, and every message. A failure at any
+	// point rolls back the whole clone so no half-built fork is left for a
+	// client to see; the caller receives the error instead. If title is
+	// empty it defaults to "<src title> fork". Returns the committed fork.
+	//
+	// ForkSession is a thin wrapper around ForkSessionTx with the web fork
+	// button's defaults (server-generated UUID, top-level session, every
+	// message copied). Callers that need --at truncation, a caller-chosen
+	// ID, or parent linkage (e.g. `rush sessions fork`) should call
+	// ForkSessionTx directly instead of duplicating the transaction.
+	ForkSession(ctx context.Context, srcID, title string) (Session, error)
+	// ForkSessionTx is the single transactional fork implementation shared
+	// by every fork entry point (web fork button, `rush sessions fork`).
+	// It clones srcID into a brand-new session in one DB transaction: a
+	// fresh session row copying the source's models, system prompt,
+	// reasoning effort, and todos/deleted_todos, plus the first o.LimitMsgs
+	// messages verbatim (all messages when o.LimitMsgs is 0). A failure at
+	// any point rolls back the whole clone, so no half-built fork is ever
+	// visible. Returns the committed fork and the number of messages copied.
+	//
+	// ForkOptions fields default as follows when left zero-valued:
+	//   - NewID: a fresh uuid.New().String()
+	//   - Title: "<src title> fork"
+	//   - ParentID: "" (top-level session, no parent)
+	//   - LimitMsgs: 0 means "copy every message"; otherwise it truncates to
+	//     the first LimitMsgs messages (1-indexed) and the call fails if
+	//     LimitMsgs is out of the range 1..len(source messages). An empty
+	//     source (zero messages) is always a valid fork target as long as
+	//     LimitMsgs is left at 0 — the range check is skipped in that case.
+	//
+	// Unlike ForkSession, ForkSessionTx does not publish a pubsub.CreatedEvent
+	// after commit: some callers (e.g. the CLI) run in a separate process
+	// from the one that will observe the fork, so publishing would be a
+	// silent no-op there. Callers that need the event (the web path) publish
+	// it themselves after this returns successfully.
+	ForkSessionTx(ctx context.Context, srcID string, o ForkOptions) (Session, int, error)
+
+	// CancelRequested flag: cross-process cancel signal.
+	RequestCancel(ctx context.Context, sessionID string) error
+	IsCancelRequested(ctx context.Context, sessionID string) (bool, error)
+	ClearCancelRequest(ctx context.Context, sessionID string) error
+
+	// Fork patch: ended_reason + budget persistence for operator UX.
+	SetEndedReason(ctx context.Context, sessionID, reason string) error
+	SetBudget(ctx context.Context, sessionID string, maxCost float64, maxTokens, timeoutSec int64) error
+
+	// Cross-process message inject (foundation for `rush sessions inject`).
+	// CreatePendingInject enqueues a signal row asking whichever process is
+	// currently running the session to splice messageID into its live prompt.
+	// DrainPendingInjects is called from PrepareStep to consume those rows.
+	CreatePendingInject(ctx context.Context, inject PendingInject) error
+	DrainPendingInjects(ctx context.Context, sessionID string) ([]PendingInject, bool, error)
+	// PeekInterruptInject reads the OLDEST interrupt=true pending_injects row
+	// for sessionID WITHOUT deleting it. Used by handleInterruptTick to read
+	// the message reference before building call data, so it can call
+	// ConsumeInterruptInjectAndEnqueue atomically.
+	//
+	// Returns (nil, nil) when no interrupt row is pending.
+	PeekInterruptInject(ctx context.Context, sessionID string) (*PendingInject, error)
+	// ConsumeInterruptInjectAndEnqueue atomically consumes the pending inject
+	// row identified by injectID (as read via PeekInterruptInject) and
+	// enqueues it to the run queue in a single transaction. Matching on the
+	// specific injectID (not "the oldest row") avoids silently consuming a
+	// different row than the one callData was built from when a session has
+	// more than one pending interrupt row.
+	//
+	// Returns (nil, nil) when injectID no longer refers to a pending row.
+	// Returns (pi, nil) when the row was successfully consumed and enqueued.
+	// Returns error on failure — the transaction is rolled back, so the row
+	// remains for retry.
+	ConsumeInterruptInjectAndEnqueue(ctx context.Context, sessionID, injectID, idempotencyKey string, callData []byte) (*PendingInject, error)
+	// ReconcileInterruptInjectEnqueue atomically removes the replacement row
+	// for this attempt, identified by its per-attempt idempotencyKey, and
+	// restores the exact interrupt row. It is idempotent: a missing
+	// replacement is already reconciled and must not restore the source again.
+	ReconcileInterruptInjectEnqueue(ctx context.Context, inject PendingInject, idempotencyKey string) error
+	// DeleteInterruptInject removes a specific pending inject row by ID.
+	// Used by detached interrupt runs to delete the durable pending row AFTER
+	// they have confirmed execution (acquired OS lock). P0-2 fix. It returns
+	// sql.ErrNoRows when another consumer already removed the row.
+	DeleteInterruptInject(ctx context.Context, injectID string) error
+
+	// Agent tool session management
+	CreateAgentToolSessionID(messageID, toolCallID string) string
+	ParseAgentToolSessionID(sessionID string) (messageID string, toolCallID string, ok bool)
+	IsAgentToolSession(sessionID string) bool
+
+	// Durable run queue for orphaned/detached calls (task #340)
+	EnqueueRunQueueEntry(ctx context.Context, idempotencyKey, sessionID string, callData []byte) error
+	LeaseRunQueueEntry(ctx context.Context, sessionID, leasedBy string, leaseTTL time.Duration) (*RunQueueEntry, error)
+	// RenewRunQueueLease extends id's lease expiry, but ONLY if it is still
+	// leased by leasedBy — a lease already reassigned to a different owner
+	// (this owner lost the race to a prior CleanupExpiredLeases recovery) is
+	// never silently extended. Returns false (no error) when the renewal
+	// did not apply for that reason; the caller must treat false as "this
+	// execution no longer owns the row" rather than retry the renewal.
+	RenewRunQueueLease(ctx context.Context, id, leasedBy string, newExpiresAt int64) (bool, error)
+	// AckRunQueueEntry, NackRunQueueEntry, NackRunQueueEntryNoAttemptPenalty,
+	// and TerminalFailRunQueueEntry all take leasedBy and only affect the
+	// row if it is CURRENTLY still leased by that same value — found by the
+	// fifth @oh review pass over #337-349: without this, an executor that
+	// lost its lease to a CleanupExpiredLeases recovery (rare now that
+	// executeEntry renews its lease for the duration of a real turn, but not
+	// impossible under a pathological scheduling stall) could otherwise
+	// mutate/delete a row a DIFFERENT, currently-live executor now owns.
+	AckRunQueueEntry(ctx context.Context, id, leasedBy string) (string, error)
+	NackRunQueueEntry(ctx context.Context, id, leasedBy, lastError string) error
+	NackRunQueueEntryNoAttemptPenalty(ctx context.Context, id, leasedBy, lastError string) error
+	TerminalFailRunQueueEntry(ctx context.Context, id, leasedBy string) error
+	ListPendingRunQueueEntries(ctx context.Context) ([]RunQueueEntry, error)
+	ListStaleLeasedRunQueueEntries(ctx context.Context, beforeTime int64) ([]RunQueueEntry, error)
+	CleanupExpiredLeases(ctx context.Context, beforeTime int64) error
+	// GetRunQueueEntry looks up a single entry by ID, regardless of status.
+	// Returns (nil, nil) if the row no longer exists (acked/deleted), unlike
+	// most Get* methods on this interface which propagate sql.ErrNoRows --
+	// mirrors GetOrphanOutboxEntry's convention, chosen for the same reason:
+	// DrainSessionNow (run_queue_drain_session.go) uses this to distinguish
+	// "genuinely gone" from "still leased by someone else" for a row it no
+	// longer holds a lease on, and both are valid, error-free outcomes.
+	GetRunQueueEntry(ctx context.Context, id string) (*RunQueueEntry, error)
+	// HasOutstandingRunQueueEntriesForSession reports whether sessionID has
+	// ANY durable run-queue row left, in EITHER status ('pending' or
+	// 'leased') -- not just 'pending'. Added for task #610: the pending-only
+	// GetOldestPendingRunQueueEntryForSession lookup that DrainSessionNow's
+	// terminal path used to infer "queue empty" from is blind to a row
+	// currently leased by a DIFFERENT owner (another process, or another
+	// pump instance racing this one) -- that row is durable, outstanding,
+	// and its outcome is unknown to this call, yet the pending-only check
+	// cannot see it at all. This is an explicit query, not an inference from
+	// a failed lease attempt, precisely so DrainSessionNow's terminal
+	// DrainComplete decision does not depend on absence-of-evidence from a
+	// query that was never scoped to answer "is the queue empty" in the
+	// first place.
+	HasOutstandingRunQueueEntriesForSession(ctx context.Context, sessionID string) (bool, error)
+	// PurgeQueuedWorkForSession removes every durable queued-work row of
+	// sessionID (run queue, pending injects, orphan-call outbox) in one
+	// transaction. Used by the operator stop commands (kill / cancel /
+	// reset --force) after — and only after — the session's holder is
+	// stopped, so the next process's RunQueuePump cannot resurrect the
+	// stopped session from a row the dead holder left behind. Returns the
+	// per-table deletion counts.
+	PurgeQueuedWorkForSession(ctx context.Context, sessionID string) (PurgedQueuedWork, error)
+
+	// Orphan call outbox (P0-3 fix): durable fallback when main run queue enqueue fails
+	WriteToOrphanOutbox(ctx context.Context, id, sessionID string, callData []byte) error
+	ListPendingOrphanOutboxEntries(ctx context.Context) ([]db.OrphanCallOutbox, error)
+	// DrainOrphanOutboxEntry atomically moves an entry from orphan_call_outbox to
+	// session_run_queue in a single database transaction. This eliminates the
+	// vulnerable 'processing' state that could leave entries stranded after crashes.
+	// Returns true if the entry was successfully drained (moved to main queue),
+	// false if the entry was already drained by another pump or not in pending state.
+	DrainOrphanOutboxEntry(ctx context.Context, id string) (bool, error)
+	GetOrphanOutboxEntry(ctx context.Context, id string) (*db.OrphanCallOutbox, error)
+	// RecordOrphanOutboxFailure counts one failed drain attempt against an
+	// entry and quarantines it at max_attempts. Separate from the atomic
+	// drain transaction on purpose -- see its implementation.
+	RecordOrphanOutboxFailure(ctx context.Context, id, lastError string) (OrphanOutboxFailureOutcome, error)
+
+	// --- MV1 temporary surface (see lane report): finalization/credential
+	// methods used by root-side integration tests; these move to their
+	// EX4/EX6/MV5 owners and off this interface at those lanes.
+	BindAgentFinalization(ctx context.Context, identity AgentFinalizationIdentity) (*AgentFinalizationAuthority, error)
+	WithAgentFinalizationAuthorities(identity BatchCommitIdentity, authorities ...*AgentFinalizationAuthority) (BatchCommitIdentity, error)
+	RestoreAgentFinalizationQueue(ctx context.Context, rowID string, data SessionAgentCallData) (AgentFinalizationContext, error)
+	PrepareAgentFinalizationQueue(ctx context.Context, rowID string, data SessionAgentCallData) (*AgentFinalizationQueuePreparation, error)
+	StoreSessionCredentialRequirement(ctx context.Context, sessionID string) error
+	HasSessionCredentialRequirement(ctx context.Context, sessionID string) (bool, error)
+}
+
+// WriterPoolStats reports the writer pool statistics of the store-backed
+// Service; ok is false for any other implementation (run-queue pump
+// deadline diagnostics).
+func WriterPoolStats(svc Service) (st sql.DBStats, ok bool) {
+	s, isSvc := svc.(*service)
+	if !isSvc || s.DB == nil {
+		return sql.DBStats{}, false
+	}
+	return s.DB.Stats(), true
+}
+
+type service struct {
+	*pubsub.Broker[Session]
+	DB *sql.DB
+	q  *db.Queries
+
+	// workspaceRoot is the canonical checkout root of the process this
+	// service belongs to (WS-1, #1142 step C): every session it creates is
+	// bound to it, and every ownership-filtered read (GetLast, run-queue
+	// scan, wake claim/next-due) resolves through Owns against it. It may be
+	// empty (a working directory outside any git tree) without changing what
+	// the process is: home/not-home is the SEPARATE home flag below.
+	workspaceRoot string
+	// workDir is the directory the git branch stamped on created sessions is
+	// read from (<git-dir>/HEAD, no git subprocess). Empty means "no branch
+	// information".
+	workDir string
+	// home is the explicit "this process owns its own data directory" flag
+	// (config.WorkspaceHome() in production; false only for a linked worktree on the shared data directory, SD-D #1143): it —
+	// not the workspace root — decides whether the legacy unbound ('') rows
+	// are this process's to drive.
+	home bool
+
+	// readDB/qRead back the standalone, read-only hot paths (List, ListAll,
+	// ListSubSessions, Get, GetLast, PeekInterruptInject, GetCallTreeActivity(Batch)) that don't
+	// need read-your-own-write consistency with a subsequent write in the
+	// same call. When a caller doesn't provide a separate reader (the
+	// common NewService constructor, used by every test and by anything
+	// that intentionally wants single-connection semantics against
+	// :memory: databases), these simply alias db/q, so routing to them is
+	// a no-op fallback to today's serialized behavior.
+	//
+	// Everything else (writes, transactions, and reads inside a
+	// transaction like ForkSessionTx's GetSessionByID) intentionally keeps
+	// using db/q — the single writer connection — so this split never
+	// changes write semantics or read-after-write guarantees for anything
+	// but the named standalone read paths.
+	readDB *sql.DB
+	qRead  *db.Queries
+}
+
+// CallTreeActivity is the freshest message activity found anywhere in a
+// session's call tree (the session itself plus every descendant sub-agent
+// session reachable via parent_session_id), as computed by the
+// GetCallTreeActivity / GetCallTreeActivityBatch recursive-CTE queries.
+type CallTreeActivity struct {
+	// SessionID is the descendant (or root) session the activity belongs
+	// to — i.e. which node in the tree produced LatestUnix.
+	SessionID string
+	// Role is the role of the freshest message ("assistant" / "tool" /
+	// "user").
+	Role string
+	// LatestUnix is the newest message activity timestamp (max of
+	// created_at / updated_at) across the whole tree.
+	LatestUnix int64
+}
+
+func (s service) fromDBItem(item db.Session) Session {
+	todos, err := unmarshalTodos(item.Todos.String)
+	if err != nil {
+		slog.Error("Failed to unmarshal todos", "session_id", item.ID, "error", err)
+	}
+	deletedTodos, err := unmarshalDeletedTodos(item.DeletedTodos)
+	if err != nil {
+		slog.Error("Failed to unmarshal deleted_todos", "session_id", item.ID, "error", err)
+	}
+	return Session{
+		ID:               item.ID,
+		ParentSessionID:  item.ParentSessionID.String,
+		Title:            item.Title,
+		Origin:           message.Origin(item.Origin),
+		MessageCount:     item.MessageCount,
+		PromptTokens:     item.PromptTokens,
+		CompletionTokens: item.CompletionTokens,
+		SummaryMessageID: item.SummaryMessageID.String,
+		OwnCost:          item.CostSelf,
+		CostBase:         item.CostBase,
+		Todos:            todos,
+		DeletedTodos:     deletedTodos,
+		CreatedAt:        item.CreatedAt,
+		UpdatedAt:        item.UpdatedAt,
+
+		SmartModelProvider:        item.SmartModelProvider.String,
+		SmartModelID:              item.SmartModelID.String,
+		SmartModelReasoningEffort: item.SmartModelReasoningEffort.String,
+		FastModelProvider:         item.FastModelProvider.String,
+		FastModelID:               item.FastModelID.String,
+		FastModelReasoningEffort:  item.FastModelReasoningEffort.String,
+
+		WorkerModelProvider:          item.WorkerModelProvider.String,
+		WorkerModelID:                item.WorkerModelID.String,
+		WorkerModelReasoningEffort:   item.WorkerModelReasoningEffort.String,
+		ReviewerModelProvider:        item.ReviewerModelProvider.String,
+		ReviewerModelID:              item.ReviewerModelID.String,
+		ReviewerModelReasoningEffort: item.ReviewerModelReasoningEffort.String,
+
+		SystemPrompt:    item.SystemPrompt,
+		YoloEnabled:     item.YoloEnabled != 0,
+		CancelRequested: item.CancelRequested != 0,
+
+		EndedReason:      item.EndedReason,
+		BudgetMaxCost:    item.BudgetMaxCost,
+		BudgetMaxTokens:  item.BudgetMaxTokens,
+		BudgetTimeoutSec: item.BudgetTimeoutSec,
+
+		WorkspaceRoot: item.WorkspaceRoot,
+		GitBranch:     item.GitBranch,
+	}
+}
+
+func marshalTodos(todos []Todo) (string, error) {
+	if len(todos) == 0 {
+		return "", nil
+	}
+	data, err := json.Marshal(todos)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func unmarshalTodos(data string) ([]Todo, error) {
+	if data == "" {
+		return []Todo{}, nil
+	}
+	var todos []Todo
+	if err := json.Unmarshal([]byte(data), &todos); err != nil {
+		return []Todo{}, err
+	}
+	return todos, nil
+}
+
+func marshalDeletedTodos(contents []string) (string, error) {
+	if len(contents) == 0 {
+		return "[]", nil
+	}
+	data, err := json.Marshal(contents)
+	if err != nil {
+		return "[]", err
+	}
+	return string(data), nil
+}
+
+func unmarshalDeletedTodos(data string) ([]string, error) {
+	if data == "" || data == "[]" {
+		return []string{}, nil
+	}
+	var contents []string
+	if err := json.Unmarshal([]byte(data), &contents); err != nil {
+		return []string{}, err
+	}
+	return contents, nil
+}
+
+func NewService(q *db.Queries, conn *sql.DB) Service {
+	return NewServiceWithWorkspace(q, conn, nil, nil, "", "", true)
+}
+
+// NewServiceWithWorkspace is NewService bound to a workspace (#1142 step C,
+// invariant WS-1): workspaceRoot is the process's canonical checkout root and
+// workDir the directory the branch of every created session is read from
+// ("" = no branch information). home is the SEPARATE "owns its own data
+// directory" flag (config.WorkspaceHome() in production): it, not the
+// workspace root, decides whether legacy unbound (”) rows are drivable here.
+// Every session the service creates is filled with workspaceRoot/workDir in
+// createWithOrigin, and every ownership-filtered read is scoped by Owns.
+func NewServiceWithWorkspace(q *db.Queries, conn *sql.DB, qRead *db.Queries, readConn *sql.DB, workspaceRoot string, workDir string, home bool) Service {
+	broker := pubsub.NewBroker[Session]()
+	svc := &service{
+		Broker:        broker,
+		DB:            conn,
+		q:             q,
+		readDB:        conn,
+		qRead:         q,
+		workspaceRoot: workspaceRoot,
+		workDir:       workDir,
+		home:          home,
+	}
+	if qRead != nil && readConn != nil {
+		svc.qRead = qRead
+		svc.readDB = readConn
+	}
+	return svc
+}
+
+// NewServiceWithReader is NewService plus a separate read-only connection
+// (readConn/qRead) for the standalone hot read paths documented on the
+// service struct. Production wiring (internal/app.New) uses this with
+// db.ConnectRead's WAL-mode read-only pool so heavy reads (call-tree CTEs,
+// `sessions list`/`grep`) run concurrently with the single writer connection
+// instead of queuing behind it. Every other caller (tests, and anything
+// against a :memory: database where a genuinely separate reader either
+// can't see the writer's data or isn't worth the complexity) should keep
+// using plain NewService, which makes readDB/qRead alias the writer and so
+// behaves exactly as it did before this split.
+func NewServiceWithReader(q *db.Queries, conn *sql.DB, qRead *db.Queries, readConn *sql.DB) Service {
+	svc := NewService(q, conn).(*service)
+	if qRead != nil && readConn != nil {
+		svc.qRead = qRead
+		svc.readDB = readConn
+	}
+	return svc
+}

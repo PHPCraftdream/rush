@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -49,16 +51,16 @@ func newWsFx(t *testing.T) *wsFx {
 // home=true -- today's git-checkout process: it owns its own data directory
 // (config.WorkspaceHome() is true until SD-D #1143), so legacy ” rows are
 // its to drive even though its root is non-empty.
-func (f *wsFx) service(workspaceRoot, workDir string) Service {
-	return NewServiceWithWorkspace(f.q, f.conn, f.q, f.conn, workspaceRoot, workDir, true)
+func (f *wsFx) service(workspaceRoot, workDir string) session.Service {
+	return session.NewServiceWithWorkspace(f.q, f.conn, f.q, f.conn, workspaceRoot, workDir, true)
 }
 
 // serviceLinked is service with home=false: the shared-from-linked process
 // SD-D (#1143) will introduce -- a workspace of its own, but NOT the owner
 // of the data directory, so legacy ” rows are not its to drive. The
-// ownership-filter tests use it to keep exercising that half of Owns.
-func (f *wsFx) serviceLinked(workspaceRoot, workDir string) Service {
-	return NewServiceWithWorkspace(f.q, f.conn, f.q, f.conn, workspaceRoot, workDir, false)
+// ownership-filter tests use it to keep exercising that half of session.Owns.
+func (f *wsFx) serviceLinked(workspaceRoot, workDir string) session.Service {
+	return session.NewServiceWithWorkspace(f.q, f.conn, f.q, f.conn, workspaceRoot, workDir, false)
 }
 
 // seedSession inserts a top-level session bound to workspaceRoot with an
@@ -113,7 +115,7 @@ func TestOwns(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, Owns(tc.sess, tc.proc, tc.home))
+			require.Equal(t, tc.want, session.Owns(tc.sess, tc.proc, tc.home))
 		})
 	}
 }
@@ -134,9 +136,9 @@ func TestWorkspaceBinding_AllCreationPaths(t *testing.T) {
 	require.NoError(t, err)
 	withID, err := svc.CreateWithID(f.ctx, "run-cli-id", "cli id")
 	require.NoError(t, err)
-	withOrigin, err := svc.(OriginCreator).CreateWithOrigin(f.ctx, "web", message.OriginWeb)
+	withOrigin, err := svc.(session.OriginCreator).CreateWithOrigin(f.ctx, "web", message.OriginWeb)
 	require.NoError(t, err)
-	withIDOrigin, err := svc.(OriginCreator).CreateWithIDAndOrigin(f.ctx, "web-id", "web id", message.OriginWeb)
+	withIDOrigin, err := svc.(session.OriginCreator).CreateWithIDAndOrigin(f.ctx, "web-id", "web id", message.OriginWeb)
 	require.NoError(t, err)
 	title, err := svc.CreateTitleSession(f.ctx, created.ID)
 	require.NoError(t, err)
@@ -176,7 +178,7 @@ func TestWorkspaceBinding_AllCreationPaths(t *testing.T) {
 	// source belongs to a different (foreign) one -- `sessions fork` is the
 	// only supported way to continue a history in another checkout.
 	f.seedSession("src-foreign", wsForeign, 100)
-	fork, copied, err := svc.ForkSessionTx(f.ctx, "src-foreign", ForkOptions{NewID: "fork-mine", Title: "forked"})
+	fork, copied, err := svc.ForkSessionTx(f.ctx, "src-foreign", session.ForkOptions{NewID: "fork-mine", Title: "forked"})
 	require.NoError(t, err)
 	require.Equal(t, 0, copied, "the seeded foreign source has no messages")
 	require.Equal(t, wsOwn, fork.WorkspaceRoot, "fork must take the forking service's workspace, not the source's")
@@ -350,7 +352,7 @@ func TestWakeScheduleOwnershipFilter(t *testing.T) {
 // history: --continue found nothing and the pump skipped legacy rows.
 //
 // Revert-check (mutant A, service half): in session_workspace.go's ownsArgs
-// restore `homeFlag(s.workspaceRoot == "")` (the service ignores its home
+// restore `session.HomeFlag(s.workspaceRoot == "")` (the service ignores its home
 // field) and regenerate nothing -- both sub-tests fail: GetLast errors with
 // "no sessions found" (the legacy row is the only one seeded) and the pump
 // scan comes back empty.
@@ -383,7 +385,7 @@ func TestP1142_LegacyDrivenByGitCheckoutProcess(t *testing.T) {
 // while NextDue kept reporting the moment -- the P0 spin, one checkout wide.
 //
 // Revert-check (mutant A, store half): in wake_schedule_store.go's ownsArgs
-// restore `homeFlag(s.workspaceRoot == "")` -- NextDue reports the due time
+// restore `session.HomeFlag(s.workspaceRoot == "")` -- NextDue reports the due time
 // but ClaimDue returns zero rows (the assertion below at require.Len fails
 // first with "0 rows claimed").
 func TestP1142_LegacyWakeClaimedByGitCheckoutProcess(t *testing.T) {

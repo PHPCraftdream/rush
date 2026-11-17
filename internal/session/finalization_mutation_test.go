@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -17,8 +19,8 @@ func TestSessionNoticeInsertionAdmitsManagedAncestors(t *testing.T) {
 			parent := finalizationCommitAuthority(t, api, "owner", "parent-call", 1)
 			child := finalizationCommitAuthority(t, api, "child", "child-call", 1)
 			grandchild := finalizationCommitAuthority(t, api, "grandchild", "grandchild-call", 1)
-			finalizationCommitFailureDiagnostics(t, env, parent.identity, child.identity, grandchild.identity)
-			ctx, err := WithAgentFinalizationContext(env.ctx, parent, child, grandchild)
+			finalizationCommitFailureDiagnostics(t, env, parent.Identity, child.Identity, grandchild.Identity)
+			ctx, err := session.WithAgentFinalizationContext(env.ctx, parent, child, grandchild)
 			require.NoError(t, err)
 			_, err = env.conn.ExecContext(ctx, `CREATE TRIGGER notice_requires_ancestor_tickets BEFORE INSERT ON session_notices
 				WHEN (SELECT count(*) FROM session_agent_finalization_tickets WHERE released=0)<>3
@@ -39,8 +41,8 @@ func TestSessionNoticeInsertionAdmitsManagedAncestors(t *testing.T) {
 				require.Positive(t, id)
 				require.EqualValues(t, 1, commitHookCount(t, env.conn, `SELECT count(*) FROM session_notices WHERE owner='grandchild' AND text='completion'`))
 			}
-			for _, authority := range []*AgentFinalizationAuthority{parent, child, grandchild} {
-				state, err := NewAgentFinalizationStore(env.conn).Snapshot(ctx, authority.identity)
+			for _, authority := range []*session.AgentFinalizationAuthority{parent, child, grandchild} {
+				state, err := session.NewAgentFinalizationStore(env.conn).Snapshot(ctx, authority.Identity)
 				require.NoError(t, err)
 				require.Zero(t, state.OpenTickets)
 				require.EqualValues(t, 2, state.Revision)
@@ -55,30 +57,30 @@ func TestSessionNoticeInsertionDoesNotDowngradeKnownScope(t *testing.T) {
 			env := finalizationWriterEnv(t)
 			api := finalizationCommitService(env)
 			authority := finalizationCommitAuthority(t, api, "owner", "call", 1)
-			finalizationCommitFailureDiagnostics(t, env, authority.identity)
+			finalizationCommitFailureDiagnostics(t, env, authority.Identity)
 			ctx := env.ctx
 			var err error
 			if state != "missing" {
-				ctx, err = WithAgentFinalizationContext(ctx, authority)
+				ctx, err = session.WithAgentFinalizationContext(ctx, authority)
 				require.NoError(t, err)
 			}
 			switch state {
 			case "accepted":
-				require.NoError(t, sealFinalizationForTest(ctx, env.conn, NewAgentFinalizationStore(env.conn), authority.identity, 0))
+				require.NoError(t, sealFinalizationForTest(ctx, env.conn, session.NewAgentFinalizationStore(env.conn), authority.Identity, 0))
 			case "cancelled":
 				_, err = env.conn.ExecContext(ctx, `UPDATE sessions SET cancel_requested=1 WHERE id='owner'`)
 				require.NoError(t, err)
 			case "stale":
 				_, err = env.conn.ExecContext(ctx, `UPDATE session_agent_finalizations SET phase='failed' WHERE session_id='owner'`)
 				require.NoError(t, err)
-				_, err = api.BindAgentFinalization(ctx, AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "replacement", Generation: 2})
+				_, err = api.BindAgentFinalization(ctx, session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "replacement", Generation: 2})
 				require.NoError(t, err)
 			}
 			err = NewSessionNoticeStore(env.conn).InsertSessionNotice(ctx, "owner", NoticeKindWakeOnly, "must not insert", true, "")
 			if state == "cancelled" {
 				require.ErrorIs(t, err, context.Canceled)
 			} else {
-				require.ErrorIs(t, err, ErrAgentFinalizationChanged)
+				require.ErrorIs(t, err, session.ErrAgentFinalizationChanged)
 			}
 			require.Zero(t, commitHookCount(t, env.conn, `SELECT count(*) FROM session_notices`))
 			require.Zero(t, commitHookCount(t, env.conn, `SELECT count(*) FROM session_agent_finalization_tickets WHERE released=0`))
@@ -94,19 +96,19 @@ func TestChildBindAdmitsOwnerAndChildBeforeWriter(t *testing.T) {
 			store, conn, dir, node, root := batchBindFixture(t)
 			conn.SetMaxOpenConns(1)
 			ctx := t.Context()
-			api := NewService(db.New(conn), conn).(AgentFinalizationService)
+			api := session.NewService(db.New(conn), conn).(session.AgentFinalizationService)
 			owner := finalizationCommitAuthority(t, api, "owner", "owner-call", 1)
 			child := finalizationCommitAuthority(t, api, "owner-child", "child-call", 1)
 			env := &commitHookEnv{t: t, store: store, conn: conn, ctx: ctx}
-			finalizationCommitFailureDiagnostics(t, env, owner.identity, child.identity)
-			authorities := []*AgentFinalizationAuthority{owner, child}
+			finalizationCommitFailureDiagnostics(t, env, owner.Identity, child.Identity)
+			authorities := []*session.AgentFinalizationAuthority{owner, child}
 			switch outcome {
 			case "missing_child":
-				authorities = []*AgentFinalizationAuthority{owner}
+				authorities = []*session.AgentFinalizationAuthority{owner}
 			case "missing_owner":
-				authorities = []*AgentFinalizationAuthority{child}
+				authorities = []*session.AgentFinalizationAuthority{child}
 			}
-			ctx, err := WithAgentFinalizationContext(ctx, authorities...)
+			ctx, err := session.WithAgentFinalizationContext(ctx, authorities...)
 			require.NoError(t, err)
 			_, err = conn.ExecContext(ctx, `CREATE TRIGGER child_bind_requires_tickets BEFORE UPDATE OF child_session_id ON batch_nodes
 				WHEN (SELECT count(*) FROM session_agent_finalization_tickets WHERE released=0)<>2
@@ -136,8 +138,8 @@ func TestChildBindAdmitsOwnerAndChildBeforeWriter(t *testing.T) {
 				}
 				require.False(t, batchBindReadLink(t, dir, node).Valid)
 			}
-			for _, authority := range []*AgentFinalizationAuthority{owner, child} {
-				state, err := NewAgentFinalizationStore(conn).Snapshot(ctx, authority.identity)
+			for _, authority := range []*session.AgentFinalizationAuthority{owner, child} {
+				state, err := session.NewAgentFinalizationStore(conn).Snapshot(ctx, authority.Identity)
 				require.NoError(t, err)
 				require.Zero(t, state.OpenTickets)
 				if outcome == "commit" || outcome == "rollback" {

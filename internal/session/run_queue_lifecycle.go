@@ -12,6 +12,7 @@ import (
 	"time"
 
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // Start begins the pump goroutine. Safe to call multiple times (idempotent).
@@ -267,8 +268,7 @@ func (p *RunQueuePump) diagnoseTickDeadline(err error) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		return
 	}
-	if s, ok := p.cfg.Sessions.(*service); ok && s.db != nil {
-		st := s.db.Stats()
+	if st, ok := session.WriterPoolStats(p.cfg.Sessions); ok {
 		slog.Warn("run_queue_pump: tick deadline, writer pool", "in_use", st.InUse, "idle", st.Idle,
 			"wait_count", st.WaitCount, "wait_duration", st.WaitDuration, "instance_id", p.cfg.PumpInstanceID)
 	}

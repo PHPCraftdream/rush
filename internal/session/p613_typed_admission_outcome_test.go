@@ -40,10 +40,11 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
-// exhaustedLeaseService wraps a real session.Service so that leasing ONE
+// exhaustedLeaseService wraps a real core.Service so that leasing ONE
 // specific row (by idempotency-key-derived ID, captured after enqueue)
 // returns it with Attempts already at RunQueueMaxAttempts — deterministically
 // forcing processEntry's/DrainSessionNow's attempts-exhausted terminal-fail
@@ -68,14 +69,14 @@ import (
 // prove nothing about the wait path (see this file's own scenario-1
 // revision note).
 type exhaustedLeaseService struct {
-	session.Service
+	core.Service
 	victimID    string
 	termFailErr error
 	leaseGate   chan struct{}
 	leaseEnter  chan struct{}
 }
 
-func (s *exhaustedLeaseService) LeaseRunQueueEntry(ctx context.Context, sessionID, leasedBy string, leaseTTL time.Duration) (*session.RunQueueEntry, error) {
+func (s *exhaustedLeaseService) LeaseRunQueueEntry(ctx context.Context, sessionID, leasedBy string, leaseTTL time.Duration) (*core.RunQueueEntry, error) {
 	entry, err := s.Service.LeaseRunQueueEntry(ctx, sessionID, leasedBy, leaseTTL)
 	if err != nil || entry == nil {
 		return entry, err
@@ -103,7 +104,7 @@ func (s *exhaustedLeaseService) LeaseRunQueueEntry(ctx context.Context, sessionI
 // override, the background tick would lease and genuinely EXECUTE the
 // victim row instead of terminal-failing it without ever calling
 // Coordinator.Run, which is the exact scenario under test.
-func (s *exhaustedLeaseService) ListPendingRunQueueEntries(ctx context.Context) ([]session.RunQueueEntry, error) {
+func (s *exhaustedLeaseService) ListPendingRunQueueEntries(ctx context.Context) ([]core.RunQueueEntry, error) {
 	entries, err := s.Service.ListPendingRunQueueEntries(ctx)
 	if err != nil {
 		return entries, err
@@ -126,7 +127,7 @@ func (s *exhaustedLeaseService) TerminalFailRunQueueEntry(ctx context.Context, i
 // enqueueRowsAndCaptureIDs enqueues rows A and B (FIFO) for sessionID and
 // returns row A's durable ID, captured unambiguously before either row is
 // touched by anything else.
-func enqueueRowsAndCaptureIDs(t *testing.T, name string, sessions session.Service, sessionID string) (rowAID string) {
+func enqueueRowsAndCaptureIDs(t *testing.T, name string, sessions core.Service, sessionID string) (rowAID string) {
 	t.Helper()
 	callDataA, err := json.Marshal(map[string]any{"SessionID": sessionID, "Prompt": "row-A"})
 	require.NoError(t, err)

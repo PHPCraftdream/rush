@@ -14,6 +14,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -95,7 +96,7 @@ func languageModelFromServer(t *testing.T, srv *httptest.Server) fantasy.Languag
 // ContextWindow so the model config is realistic (irrelevant to
 // runSummarizeCore itself, which never checks ContextWindow — that's
 // runTurn's shouldSummarize gate, exercised separately in test C).
-func newSummarizeCoreTestAgent(t *testing.T) (*sessionAgent, session.Session) {
+func newSummarizeCoreTestAgent(t *testing.T) (*sessionAgent, coresession.Session) {
 	t.Helper()
 	env := testEnv(t)
 

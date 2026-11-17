@@ -38,7 +38,10 @@ internal/session/jobbatch/lab 24
 internal/serve/server 46
 # 125 -> 126: +1 internal/session/run (run/sessiontest: shared test fixtures, lane SM4 of the session design, S8);
 # run/ holds the run components after lane EX7, the row falls with the session cut (FIN).
-internal/session 126
+internal/session 89
+# MV1 adds the moved service subtree as live temporary debt. MV3/EX splits the batch/run satellites out;
+# per docs/plans/2026-11-15-sprint0-split-session.md §2.2, service drops to 4 elements.
+internal/session/service 40
 internal/kit/sys/shell 17
 # internal/config/domains/datadir 9: born with 9 elements (lane D2-4 cluster 1: datadir, global_dir, global_testguard,
 # globalpaths, worktreehome, load_skills, systemconfig_unix/windows (an OS pair) and export); falls to <= 7 when the

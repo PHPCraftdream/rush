@@ -17,6 +17,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -342,7 +343,7 @@ func TestSessionsCompact_BatchLiveRootRefuses(t *testing.T) {
 	_, stderr, runErr := run(t, "--force")
 	require.ErrorContains(t, runErr, "refusing to compact")
 	require.ErrorContains(t, runErr, "live or unknown batch work")
-	require.ErrorContains(t, runErr, short(session.HashID(sess.ID)), "the refusal names the session's hash prefix")
+	require.ErrorContains(t, runErr, short(coresession.HashID(sess.ID)), "the refusal names the session's hash prefix")
 	require.ErrorContains(t, runErr, f.rootID[:8], "the reason names the offending root's short id")
 	require.NotContains(t, stderr, "batch gate: LIVE", "a real run refuses before printing gate lines")
 

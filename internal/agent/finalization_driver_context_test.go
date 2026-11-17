@@ -8,6 +8,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -15,10 +16,10 @@ import (
 type finalizationDriverFixture struct {
 	conn       *sql.DB
 	ctx        context.Context
-	api        session.AgentFinalizationService
-	parent     session.AgentFinalizationIdentity
-	child      session.AgentFinalizationIdentity
-	capability session.AgentFinalizationContext
+	api        coresession.AgentFinalizationService
+	parent     coresession.AgentFinalizationIdentity
+	child      coresession.AgentFinalizationIdentity
+	capability coresession.AgentFinalizationContext
 }
 
 func newFinalizationDriverFixture(t *testing.T) finalizationDriverFixture {
@@ -31,31 +32,31 @@ func newFinalizationDriverFixture(t *testing.T) finalizationDriverFixture {
 	require.NoError(t, err)
 	_, err = queries.CreateSession(ctx, db.CreateSessionParams{ID: "child", Title: "child", ParentSessionID: sql.NullString{String: "owner", Valid: true}})
 	require.NoError(t, err)
-	err = session.NewBatchCommitHook(store, session.BatchCommitIdentity{Host: "host", Runner: "runner", Owner: "owner"})(ctx, jobbatch.Transition{
+	err = session.NewBatchCommitHook(store, coresession.BatchCommitIdentity{Host: "host", Runner: "runner", Owner: "owner"})(ctx, jobbatch.Transition{
 		Sequence: 1, Event: jobbatch.Event{Type: jobbatch.EventSubmit, Root: "delegation", Ref: "ref", Spec: jobbatch.OneItem(jobbatch.TaskSpec{Kind: "controlled"})},
 	})
 	require.NoError(t, err)
 	_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET child_session_id='child', token=1 WHERE node_id='delegation.1'`)
 	require.NoError(t, err)
-	api := session.NewService(queries, conn).(session.AgentFinalizationService)
-	parent := session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "parent-call", Generation: 1}
-	child := session.AgentFinalizationIdentity{SessionID: "child", LogicalCallID: "child-call", Generation: 1, NodeID: "delegation.1", NodeToken: 1}
+	api := coresession.NewService(queries, conn).(coresession.AgentFinalizationService)
+	parent := coresession.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "parent-call", Generation: 1}
+	child := coresession.AgentFinalizationIdentity{SessionID: "child", LogicalCallID: "child-call", Generation: 1, NodeID: "delegation.1", NodeToken: 1}
 	parentAuthority, err := api.BindAgentFinalization(ctx, parent)
 	require.NoError(t, err)
 	childAuthority, err := api.BindAgentFinalization(ctx, child)
 	require.NoError(t, err)
-	ctx, err = session.WithAgentFinalizationContext(ctx, parentAuthority, childAuthority)
+	ctx, err = coresession.WithAgentFinalizationContext(ctx, parentAuthority, childAuthority)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		if !t.Failed() {
 			return
 		}
-		for _, identity := range []session.AgentFinalizationIdentity{parent, child} {
-			state, err := session.NewAgentFinalizationStore(conn).Snapshot(context.Background(), identity)
+		for _, identity := range []coresession.AgentFinalizationIdentity{parent, child} {
+			state, err := coresession.NewAgentFinalizationStore(conn).Snapshot(context.Background(), identity)
 			t.Logf("driver authority identity=%+v state=%+v error=%v", identity, state, err)
 		}
 	})
-	return finalizationDriverFixture{conn: conn, ctx: ctx, api: api, parent: parent, child: child, capability: session.CaptureAgentFinalizationContext(ctx)}
+	return finalizationDriverFixture{conn: conn, ctx: ctx, api: api, parent: parent, child: child, capability: coresession.CaptureAgentFinalizationContext(ctx)}
 }
 
 func TestDriverWakePreservesAuthorityAndImmutableCallPolicy(t *testing.T) {
@@ -88,8 +89,8 @@ func TestDriverWakePreservesAuthorityAndImmutableCallPolicy(t *testing.T) {
 	require.NoError(t, err)
 	err = session.NewSessionNoticeStore(fixture.conn).InsertSessionNotice(ctx, "child", session.NoticeKindWakeOnly, "completion", true, "")
 	require.NoError(t, err, "background wake must carry both child and managed-parent authority")
-	for _, identity := range []session.AgentFinalizationIdentity{fixture.parent, fixture.child} {
-		state, err := session.NewAgentFinalizationStore(fixture.conn).Snapshot(ctx, identity)
+	for _, identity := range []coresession.AgentFinalizationIdentity{fixture.parent, fixture.child} {
+		state, err := coresession.NewAgentFinalizationStore(fixture.conn).Snapshot(ctx, identity)
 		require.NoError(t, err)
 		require.EqualValues(t, 2, state.Revision)
 		require.Zero(t, state.OpenTickets)
@@ -110,13 +111,13 @@ func TestDriverWakeCannotRebindReplacementOrWidenLogicalCall(t *testing.T) {
 				next.LogicalCallID, next.Generation = "replacement", 2
 				authority, err := fixture.api.BindAgentFinalization(ctx, next)
 				require.NoError(t, err)
-				ctx, err = session.WithAgentFinalizationContext(ctx, authority)
+				ctx, err = coresession.WithAgentFinalizationContext(ctx, authority)
 				require.NoError(t, err)
 			} else {
 				wake.LogicalCallID = "different-call"
 			}
 			_, err := (&sessionAgent{}).restoreFinalizationCallContext(ctx, &wake)
-			require.ErrorIs(t, err, session.ErrAgentFinalizationChanged)
+			require.ErrorIs(t, err, coresession.ErrAgentFinalizationChanged)
 			var notices int64
 			require.NoError(t, fixture.conn.QueryRowContext(ctx, `SELECT count(*) FROM session_notices`).Scan(&notices))
 			require.Zero(t, notices)
@@ -134,7 +135,7 @@ func TestRunRefusesStaleCarriedAuthorityBeforePreamble(t *testing.T) {
 				defer tx.Rollback()
 				_, err = tx.ExecContext(fixture.ctx, `UPDATE session_agent_finalizations SET candidate_message_id='candidate', candidate_hash='hash', candidate_serial=1 WHERE session_id='child'`)
 				require.NoError(t, err)
-				require.NoError(t, session.NewAgentFinalizationStore(fixture.conn).SealTx(fixture.ctx, tx, fixture.child, session.AgentFinalizationCandidate{MessageID: "candidate", Hash: "hash", Serial: 1}))
+				require.NoError(t, coresession.NewAgentFinalizationStore(fixture.conn).SealTx(fixture.ctx, tx, fixture.child, coresession.AgentFinalizationCandidate{MessageID: "candidate", Hash: "hash", Serial: 1}))
 				require.NoError(t, tx.Commit())
 			} else {
 				_, err := fixture.conn.ExecContext(fixture.ctx, `UPDATE session_agent_finalizations SET phase='failed' WHERE session_id='child'`)
@@ -143,7 +144,7 @@ func TestRunRefusesStaleCarriedAuthorityBeforePreamble(t *testing.T) {
 			agent := &sessionAgent{}
 			call := (subAgentDriver{call: SessionAgentCall{SessionID: "child", LogicalCallID: "child-call"}, FinalizationAuthorities: fixture.capability}).callFor("")
 			_, err := agent.Run(context.Background(), call)
-			require.ErrorIs(t, err, session.ErrAgentFinalizationChanged, "stale authority is refused before even empty-prompt validation")
+			require.ErrorIs(t, err, coresession.ErrAgentFinalizationChanged, "stale authority is refused before even empty-prompt validation")
 			_, err = agent.Run(context.Background(), SessionAgentCall{SessionID: "child"})
 			require.ErrorIs(t, err, ErrEmptyPrompt, "unbound legacy entry preserves its existing refusal")
 		})

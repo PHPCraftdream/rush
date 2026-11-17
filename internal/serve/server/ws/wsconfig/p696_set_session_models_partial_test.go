@@ -25,7 +25,7 @@ import (
 	"testing"
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 

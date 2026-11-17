@@ -18,7 +18,7 @@ import (
 	hub "github.com/PHPCraftdream/rush/internal/serve/server/hub"
 	wirePkg "github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	wsapi "github.com/PHPCraftdream/rush/internal/serve/server/ws/wsapi"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // Field-group names reported in SetSessionModelsResult (task #696): one

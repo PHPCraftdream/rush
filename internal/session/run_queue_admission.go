@@ -142,7 +142,7 @@ const (
 	outcomeTerminalDeleted
 
 	// outcomeBusy means a genuinely different, live owner holds the session
-	// right now (ErrCallQueuedNotExecuted / SessionLockBusyError). No row
+	// right now (session.ErrCallQueuedNotExecuted / SessionLockBusyError). No row
 	// was touched by THIS caller. Kept distinct from outcomeNoRowTouched
 	// only insofar as classifyBackgroundOutcome's stopNow semantics depend
 	// on it — see that function's own doc.

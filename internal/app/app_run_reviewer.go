@@ -24,6 +24,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -38,7 +39,7 @@ type executeRunLoop struct {
 	// Immutable for the whole invocation (both phases).
 	env            RunEnv
 	host           LoopHost
-	sess           session.Session
+	sess           coresession.Session
 	ctx            context.Context
 	mode           RunMode
 	captureResult  bool
