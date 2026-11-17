@@ -117,4 +117,3 @@ func hbFindEntry(t *testing.T, entries []heartbeat.Entry, session string) *heart
 	t.Fatalf("no heartbeat entry for session %q in %d entries", session, len(entries))
 	return nil
 }
-
