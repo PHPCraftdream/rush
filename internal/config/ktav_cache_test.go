@@ -41,9 +41,8 @@ func isolateCacheTestEnv(t *testing.T) string {
 // setKtavAutoMigrateForCacheTest flips the gate and restores it on cleanup.
 func setKtavAutoMigrateForCacheTest(t *testing.T, on bool) {
 	t.Helper()
-	saved := ktavAutoMigrate
-	ktavAutoMigrate = on
-	t.Cleanup(func() { ktavAutoMigrate = saved })
+	restore := SetKtavAutoMigrateForTest(on)
+	t.Cleanup(restore)
 }
 
 func TestCacheKtavReadPrecedence(t *testing.T) {

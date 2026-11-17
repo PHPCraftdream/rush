@@ -11,6 +11,9 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
 )
 
@@ -35,7 +38,7 @@ func (s *ConfigStore) mutatePendingRemoveMCPWithAuthority(scope Scope, name stri
 	if err != nil {
 		return MCPMutationResult{}, err
 	}
-	path = normalizeReloadPath(path)
+	path = docread.NormalizeReloadPath(path)
 	var result MCPMutationResult
 	var audit settingsWriteAudit
 	s.publishMu.Lock()
@@ -101,7 +104,7 @@ func (s *ConfigStore) mutateMCPEnableRollbackWithAuthority(scope Scope, name str
 	if err != nil {
 		return MCPMutationResult{}, err
 	}
-	path = normalizeReloadPath(path)
+	path = docread.NormalizeReloadPath(path)
 	var result MCPMutationResult
 	var audit settingsWriteAudit
 	s.publishMu.Lock()
@@ -185,17 +188,17 @@ func (s *ConfigStore) mcpEnableRollbackTokenMatches(before mcpEvaluation, scope 
 	return len(token.committedFingerprints) > 0
 }
 
-func mcpEvaluationFingerprint(fingerprints map[string]reloadFileFingerprint, path string) (reloadFileFingerprint, bool) {
+func mcpEvaluationFingerprint(fingerprints map[string]docread.Fingerprint, path string) (docread.Fingerprint, bool) {
 	if fingerprint, ok := fingerprints[path]; ok {
 		return fingerprint, true
 	}
-	discovery := normalizeDiscoveryPath(path)
+	discovery := docread.NormalizeDiscoveryPath(path)
 	for candidate, fingerprint := range fingerprints {
-		if normalizeDiscoveryPath(candidate) == discovery {
+		if docread.NormalizeDiscoveryPath(candidate) == discovery {
 			return fingerprint, true
 		}
 	}
-	return reloadFileFingerprint{}, false
+	return docread.Fingerprint{}, false
 }
 
 // mutateMCPWithMode is the shared MCP transaction core; authority carries
@@ -205,7 +208,7 @@ func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, 
 	if err != nil {
 		return MCPMutationResult{}, err
 	}
-	path = normalizeReloadPath(path)
+	path = docread.NormalizeReloadPath(path)
 	var result MCPMutationResult
 	var audit settingsWriteAudit
 	s.publishMu.Lock()
@@ -333,8 +336,7 @@ func (s *ConfigStore) prepareMCPFileMutation(files *mcpLockedFiles, path, operat
 }
 
 // writeMCPFileChanges commits every changed transaction record; authority
-// carries the per-call trusted-UI exception into the settings-lock guard
-// and the audit event's Source label.
+// carries the per-call trusted-UI exception into the settings-lock guard and the audit event's Source label.
 func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settingsWriteAudit, authority SettingsWriteAuthority) error {
 	for key, changed := range files.changed {
 		if !changed {
@@ -348,19 +350,19 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 		// commit bytes are encoded for the target slot's format: Ktav for a
 		// rush.ktav target, byte-identical JSON for everything else. The
 		// commit expectation stays the ORIGINAL raw fingerprint.
-		physicalData, encodeErr := encodeSettingsDocument(record.data, settingsDocumentFormatOf(record.selectedPath))
+		physicalData, encodeErr := docread.EncodeSettingsDocument(record.data, docread.SettingsDocumentFormatOf(record.selectedPath))
 		if encodeErr != nil {
 			return fmt.Errorf("failed to encode config file %s: %w", record.selectedPath, encodeErr)
 		}
-		if !record.expectation.exists {
+		if !record.expectation.Exists {
 			parentPath := filepath.Dir(record.commitPath)
-			if currentParent := configDiscoveryFingerprint(filepath.Dir(record.selectedPath)); currentParent != record.expectation.parentDiscovery {
+			if currentParent := docread.ConfigDiscoveryFingerprint(filepath.Dir(record.selectedPath)); currentParent != record.expectation.ParentDiscovery {
 				return fmt.Errorf("%w: config parent changed", ErrMCPStale)
 			}
 			if err := os.MkdirAll(parentPath, 0o755); err != nil {
 				return err
 			}
-			record.expectation.parentDiscovery = configDiscoveryFingerprint(filepath.Dir(record.selectedPath))
+			record.expectation.ParentDiscovery = docread.ConfigDiscoveryFingerprint(filepath.Dir(record.selectedPath))
 		}
 		owner, enforce, err := s.mcpOwnerPolicy(record.selectedPath)
 		if err != nil {
@@ -375,11 +377,11 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 			return guardErr
 		}
 		audit.event = ev
-		committed, commitErr := commitConfigFile(record.selectedPath, record.commitPath, physicalData, 0o600, record.expectation, owner, enforce)
+		committed, commitErr := cfgcommit.CommitConfigFile(record.selectedPath, record.commitPath, physicalData, 0o600, record.expectation, owner, enforce)
 		commitReturnedNil := commitErr == nil
 		if commitReturnedNil {
 			s.diskWriteGeneration++
-		} else if outcome, ok := CommitOutcomeFromError(commitErr); ok && (outcome.Committed || outcome.MaybeCommitted) {
+		} else if outcome, ok := cfgcommit.CommitOutcomeFromError(commitErr); ok && (outcome.Committed || outcome.MaybeCommitted) {
 			s.diskWriteGeneration++
 		}
 		if commitErr != nil {
@@ -395,14 +397,14 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 				committed = reconciled
 				if fingerprintErr := s.applyCommittedMCPFingerprint(files, record, committed); fingerprintErr != nil {
 					cause := commitErr
-					if outcome, outcomeOK := CommitOutcomeFromError(commitErr); outcomeOK {
-						cause = cloneCommitOutcome(outcome, false)
+					if outcome, outcomeOK := cfgcommit.CommitOutcomeFromError(commitErr); outcomeOK {
+						cause = cfgcommit.CloneCommitOutcome(outcome, false)
 					}
 					return &mcpCommitUncertainError{cause: errors.Join(cause, fingerprintErr)}
 				}
 				record.expectation = committed
-				if outcome, outcomeOK := CommitOutcomeFromError(commitErr); outcomeOK {
-					commitErr = cloneCommitOutcome(outcome, true)
+				if outcome, outcomeOK := cfgcommit.CommitOutcomeFromError(commitErr); outcomeOK {
+					commitErr = cfgcommit.CloneCommitOutcome(outcome, true)
 				}
 				return &mcpCommitUncertainError{cause: commitErr}
 			}
@@ -411,7 +413,7 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 				// read proves that the requested bytes are present. Preserve the
 				// public outcome and upgrade its reconciliation status so every
 				// caller observes one authoritative status source.
-				if outcome, outcomeOK := CommitOutcomeFromError(commitErr); outcomeOK && outcome.Reconciled &&
+				if outcome, outcomeOK := cfgcommit.CommitOutcomeFromError(commitErr); outcomeOK && outcome.Reconciled &&
 					!errors.Is(outcome, errConfigCommitDurabilityUncertain) {
 					commitErr = nil
 				} else {
@@ -422,14 +424,14 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 					committed = reconciled
 					if fingerprintErr := s.applyCommittedMCPFingerprint(files, record, committed); fingerprintErr != nil {
 						cause := commitErr
-						if outcome, outcomeOK := CommitOutcomeFromError(commitErr); outcomeOK {
-							cause = cloneCommitOutcome(outcome, false)
+						if outcome, outcomeOK := cfgcommit.CommitOutcomeFromError(commitErr); outcomeOK {
+							cause = cfgcommit.CloneCommitOutcome(outcome, false)
 						}
 						return &mcpCommitUncertainError{cause: errors.Join(cause, fingerprintErr)}
 					}
 					record.expectation = committed
-					if outcome, outcomeOK := CommitOutcomeFromError(commitErr); outcomeOK {
-						commitErr = cloneCommitOutcome(outcome, true)
+					if outcome, outcomeOK := cfgcommit.CommitOutcomeFromError(commitErr); outcomeOK {
+						commitErr = cfgcommit.CloneCommitOutcome(outcome, true)
 					}
 					return &mcpCommitUncertainError{cause: commitErr}
 				}
@@ -441,10 +443,10 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 			}
 		}
 		if commitReturnedNil {
-			runConfigAfterMCPCommitHook(record.commitPath)
+			cfgcommit.RunConfigAfterMCPCommitHook(record.commitPath)
 		}
 		if fingerprintErr := s.applyCommittedMCPFingerprint(files, record, committed); fingerprintErr != nil {
-			outcome := newCommitOutcome(record.commitPath, true, false,
+			outcome := cfgcommit.NewCommitOutcome(record.commitPath, true, false,
 				errConfigCommitCommitted, errConfigCommitUncertain, fingerprintErr)
 			return &mcpCommitUncertainError{cause: outcome}
 		}
@@ -453,26 +455,26 @@ func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settings
 	return nil
 }
 
-func (s *ConfigStore) reconcileMCPCommit(record *mcpFileRecord, physicalData []byte) (reloadFileFingerprint, bool) {
+func (s *ConfigStore) reconcileMCPCommit(record *mcpFileRecord, physicalData []byte) (docread.Fingerprint, bool) {
 	owner, enforce, err := s.mcpOwnerPolicy(record.selectedPath)
 	if err != nil {
-		return reloadFileFingerprint{}, false
+		return docread.Fingerprint{}, false
 	}
-	runConfigBeforeMCPReconcileHook(record.selectedPath, physicalData)
-	data, fingerprint, err := readStableConfigFileOwned(record.selectedPath, owner, enforce)
-	if err != nil || !sameBytesFingerprint(data, sha256.Sum256(physicalData)) {
-		return reloadFileFingerprint{}, false
+	cfgcommit.RunConfigBeforeMCPReconcileHook(record.selectedPath, physicalData)
+	data, fingerprint, err := docread.ReadStableConfigFileOwned(record.selectedPath, owner, enforce)
+	if err != nil || !docread.SameBytesFingerprint(data, sha256.Sum256(physicalData)) {
+		return docread.Fingerprint{}, false
 	}
 	return fingerprint, true
 }
 
-func (s *ConfigStore) applyCommittedMCPFingerprint(files *mcpLockedFiles, record *mcpFileRecord, committed reloadFileFingerprint) error {
+func (s *ConfigStore) applyCommittedMCPFingerprint(files *mcpLockedFiles, record *mcpFileRecord, committed docread.Fingerprint) error {
 	paths := make(map[string]struct{}, len(record.aliases)+2)
 	for alias := range record.aliases {
-		paths[normalizeDiscoveryPath(alias)] = struct{}{}
+		paths[docread.NormalizeDiscoveryPath(alias)] = struct{}{}
 	}
-	paths[normalizeDiscoveryPath(record.selectedPath)] = struct{}{}
-	paths[normalizeDiscoveryPath(record.commitPath)] = struct{}{}
+	paths[docread.NormalizeDiscoveryPath(record.selectedPath)] = struct{}{}
+	paths[docread.NormalizeDiscoveryPath(record.commitPath)] = struct{}{}
 	delete(paths, "")
 
 	for path := range paths {
@@ -480,12 +482,12 @@ func (s *ConfigStore) applyCommittedMCPFingerprint(files *mcpLockedFiles, record
 		if ownerErr != nil {
 			return fmt.Errorf("%w: failed to determine config owner for %s: %w", errConfigCommitUncertain, path, ownerErr)
 		}
-		_, fingerprint, readErr := readStableConfigFileOwned(path, expectedOwner, enforceOwner)
+		_, fingerprint, readErr := docread.ReadStableConfigFileOwned(path, expectedOwner, enforceOwner)
 		if readErr != nil && !os.IsNotExist(readErr) {
 			return fmt.Errorf("%w: failed to reread committed config spelling %s: %w", errConfigCommitUncertain, path, readErr)
 		}
-		if fingerprint.exists != committed.exists || committed.exists &&
-			(fingerprint.digest != committed.digest || committed.identity.valid && fingerprint.identity != committed.identity) {
+		if fingerprint.Exists != committed.Exists || committed.Exists &&
+			(fingerprint.Digest != committed.Digest || committed.Identity.Valid && fingerprint.Identity != committed.Identity) {
 			return fmt.Errorf("%w: committed config spelling %s does not match the published file", errConfigCommitUncertain, path)
 		}
 		files.fingerprints[path] = fingerprint
@@ -495,11 +497,11 @@ func (s *ConfigStore) applyCommittedMCPFingerprint(files *mcpLockedFiles, record
 
 func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, error) {
 	paths := s.orderedMCPPaths()
-	externalPaths := uniqueMCPPaths(mcpJSONCandidatePaths(s.workingDir))
+	externalPaths := uniqueMCPPaths(docread.McpJSONCandidatePaths(s.workingDir))
 	input := make([][]byte, 0, len(paths))
-	fingerprints := make(map[string]reloadFileFingerprint, len(paths)+len(externalPaths))
+	fingerprints := make(map[string]docread.Fingerprint, len(paths)+len(externalPaths))
 	origins := make(map[string]MCPOrigin)
-	rushDocuments := make([]stableConfigDocument, 0, len(paths))
+	rushDocuments := make([]docread.StableConfigDocument, 0, len(paths))
 	seenRushRecords := make(map[string]struct{}, len(paths))
 	for _, path := range paths {
 		data, present, err := s.mcpPathData(files, path)
@@ -508,8 +510,8 @@ func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, er
 		}
 		fingerprint := files.mcpFingerprint(path)
 		fingerprints[path] = fingerprint
-		rushDocuments = append(rushDocuments, stableConfigDocument{
-			path: path, data: data, fingerprint: fingerprint, present: present,
+		rushDocuments = append(rushDocuments, docread.StableConfigDocument{
+			Path: path, Data: data, Fingerprint: fingerprint, Present: present,
 		})
 		if present {
 			record := files.mcpRecord(path)
@@ -547,7 +549,7 @@ func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, er
 	for name := range origins {
 		rushDefined[name] = struct{}{}
 	}
-	externalDocuments := make([]stableConfigDocument, 0, len(externalPaths))
+	externalDocuments := make([]docread.StableConfigDocument, 0, len(externalPaths))
 	seenExternalRecords := make(map[string]struct{}, len(externalPaths))
 	for _, path := range externalPaths {
 		data, present, err := s.mcpPathData(files, path)
@@ -556,7 +558,7 @@ func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, er
 		}
 		fingerprint := files.mcpFingerprint(path)
 		fingerprints[path] = fingerprint
-		document := stableConfigDocument{path: path, data: data, fingerprint: fingerprint, present: present}
+		document := docread.StableConfigDocument{Path: path, Data: data, Fingerprint: fingerprint, Present: present}
 		externalDocuments = append(externalDocuments, document)
 		if !present {
 			continue
@@ -567,7 +569,7 @@ func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, er
 			}
 			seenExternalRecords[record.key] = struct{}{}
 		}
-		external, err := loadMCPJSONBytes(data)
+		external, err := docread.LoadMCPJSONBytes(data)
 		if err != nil {
 			return mcpEvaluation{}, err
 		}
@@ -577,7 +579,7 @@ func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, er
 			}
 			ext.Disabled = externalOverlayValue(rushDocuments, name, ext.Disabled)
 			cfg.MCP[name] = ext
-			origin := MCPOrigin{Kind: MCPOriginExternal, Path: normalizeReloadPath(path), Scope: ScopeGlobal, Writable: false}
+			origin := MCPOrigin{Kind: MCPOriginExternal, Path: docread.NormalizeReloadPath(path), Scope: ScopeGlobal, Writable: false}
 			if current, ok := origins[name]; !ok || mcpOriginPriority(origin) >= mcpOriginPriority(current) {
 				origins[name] = origin
 			}
@@ -592,7 +594,7 @@ func (s *ConfigStore) evaluateMCPFiles(files *mcpLockedFiles) (mcpEvaluation, er
 func (s *ConfigStore) orderedMCPPaths() []string {
 	paths := make([]string, 0, 8)
 	appendSafe := func(path string, owner int) {
-		if eligible := eligibleConfigCandidate(path, owner); eligible != "" {
+		if eligible := docread.EligibleConfigCandidate(path, owner); eligible != "" {
 			paths = append(paths, eligible)
 		}
 	}
@@ -600,18 +602,17 @@ func (s *ConfigStore) orderedMCPPaths() []string {
 		appendSafe(systemPath, systemConfigOwner())
 	}
 	// One logical slot is one document: the selected spelling, exactly as
-	// lookupConfigCandidates and the loader resolve it. The fixed legacy
+	// docread.LookupConfigCandidates and the loader resolve it. The fixed legacy
 	// spelling would add the rush.json kept beside a migrated rush.ktav as a
-	// second document and make every input fingerprint differ from the
-	// loaded snapshot's.
-	appendSafe(ActiveConfigFileName(GlobalConfig()), homeConfigOwner())
+	// second document and make every input fingerprint differ from the loaded snapshot's.
+	appendSafe(slots.ActiveConfigFileName(GlobalConfig()), homeConfigOwner())
 	appendSafe(s.globalDataPath, homeConfigOwner())
-	// lookupConfigCandidates applies the same global/project owner policy;
+	// docread.LookupConfigCandidates applies the same global/project owner policy;
 	// retain its discovery spelling so mcpPathData can bind the alias to the
 	// opened file identity.
-	paths = append(paths, lookupConfigCandidates(s.workingDir)...)
+	paths = append(paths, docread.LookupConfigCandidates(s.workingDir)...)
 	if workspacePath := s.configPathOrEmpty(ScopeWorkspace); workspacePath != "" {
-		if owner, enforce, err := configOwnerForWorkingDir(s.workingDir); err == nil && (!enforce || eligibleConfigCandidate(workspacePath, owner) != "") {
+		if owner, enforce, err := docread.ConfigOwnerForWorkingDir(s.workingDir); err == nil && (!enforce || docread.EligibleConfigCandidate(workspacePath, owner) != "") {
 			paths = append(paths, workspacePath)
 		}
 	}
@@ -626,22 +627,22 @@ func (s *ConfigStore) systemConfigPathValue() string {
 }
 
 func (s *ConfigStore) mcpPathData(files *mcpLockedFiles, path string) ([]byte, bool, error) {
-	key := normalizeDiscoveryPath(path)
+	key := docread.NormalizeDiscoveryPath(path)
 	if record := files.mcpRecord(key); record != nil {
 		fingerprint, ok := files.fingerprints[key]
 		if !ok {
-			fingerprint = rebindReloadFingerprintPath(path, record.expectation)
+			fingerprint = docread.RebindReloadFingerprintPath(path, record.expectation)
 			files.fingerprints[key] = fingerprint
 		}
 		files.data[key] = record.data
-		files.present[key] = fingerprint.exists
-		return record.data, fingerprint.exists, nil
+		files.present[key] = fingerprint.Exists
+		return record.data, fingerprint.Exists, nil
 	}
 	expectedOwner, enforceOwner, ownerErr := s.mcpOwnerPolicy(path)
 	if ownerErr != nil {
 		return nil, false, ownerErr
 	}
-	data, fingerprint, err := readStableConfigFileOwned(path, expectedOwner, enforceOwner)
+	data, fingerprint, err := docread.ReadStableConfigFileOwned(path, expectedOwner, enforceOwner)
 	if err != nil {
 		if os.IsNotExist(err) {
 			files.bindMCPPath(path, nil, false, fingerprint)
@@ -655,25 +656,25 @@ func (s *ConfigStore) mcpPathData(files *mcpLockedFiles, path string) ([]byte, b
 	// Rush documents may be Ktav on disk: decode to JSON-shaped bytes for
 	// the semantic work while the fingerprint stays bound to the RAW bytes.
 	// A decode failure is an error, never "no servers".
-	data, decodeErr := decodeConfigDocument(path, data)
+	data, decodeErr := docread.DecodeConfigDocument(path, data)
 	if decodeErr != nil {
 		return nil, false, decodeErr
 	}
-	record := files.bindMCPPath(path, data, fingerprint.exists, fingerprint)
-	return record.data, fingerprint.exists, nil
+	record := files.bindMCPPath(path, data, fingerprint.Exists, fingerprint)
+	return record.data, fingerprint.Exists, nil
 }
 
 func (s *ConfigStore) mcpOwnerPolicy(path string) (int, bool, error) {
 	if strings.EqualFold(filepath.Base(path), ".mcp.json") {
 		if strings.EqualFold(
-			normalizeDiscoveryPath(path),
-			normalizeDiscoveryPath(filepath.Join(home.Dir(), ".claude", ".mcp.json")),
+			docread.NormalizeDiscoveryPath(path),
+			docread.NormalizeDiscoveryPath(filepath.Join(home.Dir(), ".claude", ".mcp.json")),
 		) {
 			return homeConfigOwner(), true, nil
 		}
 		s.workingDirOwnerOnce.Do(func() {
 			var enforce bool
-			s.workingDirOwner, enforce, s.workingDirOwnerErr = configOwnerForWorkingDir(s.workingDir)
+			s.workingDirOwner, enforce, s.workingDirOwnerErr = docread.ConfigOwnerForWorkingDir(s.workingDir)
 			_ = enforce
 		})
 		if s.workingDirOwnerErr != nil {
@@ -681,19 +682,19 @@ func (s *ConfigStore) mcpOwnerPolicy(path string) (int, bool, error) {
 		}
 		return s.workingDirOwner, s.workingDir != "", nil
 	}
-	canonical := normalizeReloadPath(path)
-	if systemPath := s.systemConfigPathValue(); systemPath != "" && canonical == normalizeReloadPath(systemPath) {
+	canonical := docread.NormalizeReloadPath(path)
+	if systemPath := s.systemConfigPathValue(); systemPath != "" && canonical == docread.NormalizeReloadPath(systemPath) {
 		return systemConfigOwner(), true, nil
 	}
-	if matchesLogicalSlot(canonical, GlobalConfig()) || matchesLogicalSlot(canonical, s.globalDataPath) {
+	if docread.MatchesLogicalSlot(canonical, GlobalConfig()) || docread.MatchesLogicalSlot(canonical, s.globalDataPath) {
 		return homeConfigOwner(), true, nil
 	}
-	if canonical == normalizeReloadPath(filepath.Join(home.Dir(), ".claude", ".mcp.json")) {
+	if canonical == docread.NormalizeReloadPath(filepath.Join(home.Dir(), ".claude", ".mcp.json")) {
 		return homeConfigOwner(), true, nil
 	}
 	s.workingDirOwnerOnce.Do(func() {
 		var enforce bool
-		s.workingDirOwner, enforce, s.workingDirOwnerErr = configOwnerForWorkingDir(s.workingDir)
+		s.workingDirOwner, enforce, s.workingDirOwnerErr = docread.ConfigOwnerForWorkingDir(s.workingDir)
 		_ = enforce
 	})
 	if s.workingDirOwnerErr != nil {
@@ -703,10 +704,10 @@ func (s *ConfigStore) mcpOwnerPolicy(path string) (int, bool, error) {
 }
 
 func entryOrigins(origins map[string]MCPOrigin, path, workspacePath, globalPath, systemPath string, data []byte) {
-	path = normalizeReloadPath(path)
-	workspacePath = normalizeReloadPath(workspacePath)
-	globalPath = normalizeReloadPath(globalPath)
-	systemPath = normalizeReloadPath(systemPath)
+	path = docread.NormalizeReloadPath(path)
+	workspacePath = docread.NormalizeReloadPath(workspacePath)
+	globalPath = docread.NormalizeReloadPath(globalPath)
+	systemPath = docread.NormalizeReloadPath(systemPath)
 	var root struct {
 		MCP map[string]json.RawMessage `json:"mcp"`
 	}
@@ -715,21 +716,21 @@ func entryOrigins(origins map[string]MCPOrigin, path, workspacePath, globalPath,
 	}
 	for name, raw := range root.MCP {
 		var entry map[string]json.RawMessage
-		if json.Unmarshal(raw, &entry) != nil || isMCPDisabledOnlyEntry(entry, true) {
+		if json.Unmarshal(raw, &entry) != nil || docread.IsMCPDisabledOnlyEntry(entry, true) {
 			continue
 		}
 		origin := MCPOrigin{Kind: MCPOriginProject, Path: path, Scope: ScopeGlobal, Writable: false}
-		// matchesLogicalSlot treats the legacy JSON spelling and its Ktav
+		// docread.MatchesLogicalSlot treats the legacy JSON spelling and its Ktav
 		// sibling as one logical slot: a mid-session migration renames
 		// rush.json to rush.ktav while globalDataPath still anchors the
 		// legacy name, and the slot must stay writable through either
 		// spelling.
 		switch {
-		case matchesLogicalSlot(path, workspacePath):
+		case docread.MatchesLogicalSlot(path, workspacePath):
 			origin.Kind, origin.Scope, origin.Writable = MCPOriginWorkspace, ScopeWorkspace, true
-		case matchesLogicalSlot(path, globalPath):
+		case docread.MatchesLogicalSlot(path, globalPath):
 			origin.Kind, origin.Scope, origin.Writable = MCPOriginGlobal, ScopeGlobal, true
-		case matchesLogicalSlot(path, systemPath):
+		case docread.MatchesLogicalSlot(path, systemPath):
 			origin.Kind = MCPOriginSystem
 		}
 		if current, ok := origins[name]; !ok || mcpOriginPriority(origin) >= mcpOriginPriority(current) {
@@ -755,13 +756,13 @@ func mcpOriginPriority(origin MCPOrigin) int {
 	}
 }
 
-func externalOverlayValue(documents []stableConfigDocument, name string, fallback bool) bool {
+func externalOverlayValue(documents []docread.StableConfigDocument, name string, fallback bool) bool {
 	for _, document := range documents {
-		if !document.present {
+		if !document.Present {
 			continue
 		}
-		entry, ok := mcpEntryFromJSON(document.data, name)
-		if !isMCPDisabledOnlyEntry(entry, ok) {
+		entry, ok := docread.McpEntryFromJSON(document.Data, name)
+		if !docread.IsMCPDisabledOnlyEntry(entry, ok) {
 			continue
 		}
 		var disabled bool
@@ -777,16 +778,16 @@ func afterValue(eval mcpEvaluation, name string) (bool, MCPConfig, MCPOrigin) {
 	return ok, cloneMCPConfig(cfg), eval.origins[name]
 }
 
-func (s *ConfigStore) verifyMCPReadOnlyInputs(expected map[string]reloadFileFingerprint, selected string) error {
+func (s *ConfigStore) verifyMCPReadOnlyInputs(expected map[string]docread.Fingerprint, selected string) error {
 	for path, fingerprint := range expected {
-		if normalizeReloadPath(path) == normalizeReloadPath(selected) {
+		if docread.NormalizeReloadPath(path) == docread.NormalizeReloadPath(selected) {
 			continue
 		}
 		expectedOwner, enforceOwner, ownerErr := s.mcpOwnerPolicy(path)
 		if ownerErr != nil {
 			return fmt.Errorf("%w: %s", ErrMCPStale, path)
 		}
-		_, actual, err := readStableConfigFileOwned(path, expectedOwner, enforceOwner)
+		_, actual, err := docread.ReadStableConfigFileOwned(path, expectedOwner, enforceOwner)
 		missing := os.IsNotExist(err)
 		if missing {
 			// A missing candidate still carries its discovery-chain fingerprint.
@@ -802,14 +803,14 @@ func (s *ConfigStore) verifyMCPReadOnlyInputs(expected map[string]reloadFileFing
 	return nil
 }
 
-func configEquivalentMissingMCPInput(path, selected string, expected, actual reloadFileFingerprint) bool {
-	if expected.exists || actual.exists || !expected.parentIdentity.valid ||
-		expected.parentIdentity != actual.parentIdentity ||
-		expected.parentDiscovery != actual.parentDiscovery {
+func configEquivalentMissingMCPInput(path, selected string, expected, actual docread.Fingerprint) bool {
+	if expected.Exists || actual.Exists || !expected.ParentIdentity.Valid ||
+		expected.ParentIdentity != actual.ParentIdentity ||
+		expected.ParentDiscovery != actual.ParentDiscovery {
 		return false
 	}
 	if filepath.Dir(path) != filepath.Dir(selected) ||
-		!configEquivalentLeafNames(filepath.Dir(path), filepath.Base(path), filepath.Base(selected)) {
+		!cfgcommit.ConfigEquivalentLeafNames(filepath.Dir(path), filepath.Base(path), filepath.Base(selected)) {
 		return false
 	}
 	return true
@@ -870,11 +871,11 @@ func (s *ConfigStore) publishMCPMutationLocked(result MCPMutationResult) {
 		}
 		for path, fallback := range result.committedFingerprints {
 			for key, snapshot := range next.snapshots {
-				if normalizeReloadPath(key) != normalizeReloadPath(path) {
+				if docread.NormalizeReloadPath(key) != docread.NormalizeReloadPath(path) {
 					continue
 				}
 				fingerprint := fallback
-				if current, err := readReloadFingerprint(key); err == nil {
+				if current, err := docread.ReadReloadFingerprint(key); err == nil {
 					fingerprint = current
 				}
 				updateMCPCommittedSnapshot(&snapshot, key, fingerprint)
@@ -885,13 +886,8 @@ func (s *ConfigStore) publishMCPMutationLocked(result MCPMutationResult) {
 	s.publishLocked(next)
 }
 
-func updateMCPCommittedSnapshot(snapshot *fileSnapshot, key string, fingerprint reloadFileFingerprint) {
-	snapshot.Path = key
-	snapshot.Exists = fingerprint.exists
-	snapshot.Size = fingerprint.size
-	snapshot.ModTime = fingerprint.modTime
-	snapshot.ContentHash = fingerprint.digest
-	snapshot.fingerprint = fingerprint
+func updateMCPCommittedSnapshot(snapshot *fileSnapshot, key string, fingerprint docread.Fingerprint) {
+	*snapshot = docread.NewFileSnapshot(key, fingerprint)
 }
 
 func (s *ConfigStore) configPathOrEmpty(scope Scope) string {
@@ -908,7 +904,7 @@ func uniqueMCPPaths(paths []string) []string {
 		if path == "" {
 			continue
 		}
-		identity := normalizeDiscoveryPath(path)
+		identity := docread.NormalizeDiscoveryPath(path)
 		if _, ok := seen[identity]; ok {
 			continue
 		}
@@ -918,10 +914,10 @@ func uniqueMCPPaths(paths []string) []string {
 	return result
 }
 
-func dataFingerprint(path string, data []byte) reloadFileFingerprint {
+func dataFingerprint(path string, data []byte) docread.Fingerprint {
 	digest := sha256.Sum256(data)
-	if fingerprint, err := readReloadFingerprint(path); err == nil && fingerprint.exists && fingerprint.digest == digest {
+	if fingerprint, err := docread.ReadReloadFingerprint(path); err == nil && fingerprint.Exists && fingerprint.Digest == digest {
 		return fingerprint
 	}
-	return reloadFileFingerprint{exists: true, size: int64(len(data)), digest: digest, nlink: 1}
+	return docread.Fingerprint{Exists: true, Size: int64(len(data)), Digest: digest, Nlink: 1}
 }

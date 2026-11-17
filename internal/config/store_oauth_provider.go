@@ -8,6 +8,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 )
 
 type oauthProviderDescriptor struct {
@@ -113,11 +114,11 @@ func (s *ConfigStore) refreshLegacyOAuthToken(ctx context.Context, scope Scope, 
 		return err
 	}
 	lockPath := oauthRefreshLockPath(path, pc.ID)
-	lock, err := acquireConfigFileLock(waitCtx, lockPath)
+	lock, err := cfgcommit.AcquireConfigFileLock(waitCtx, lockPath)
 	if err != nil {
 		return fmt.Errorf("lock OAuth refresh: %w", err)
 	}
-	defer releaseConfigFileLock(lockPath, lock)
+	defer cfgcommit.ReleaseConfigFileLock(lockPath, lock)
 	if err := ctx.Err(); err != nil {
 		return err
 	}

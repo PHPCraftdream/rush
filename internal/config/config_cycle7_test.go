@@ -136,9 +136,9 @@ func TestCycle7FingerprintUsesExactCandidateBytesAcrossABA(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, a, current)
 	require.False(t, reloadFingerprintsChanged(map[string]reloadFileFingerprint{canonicalPath: currentFingerprint}))
-	require.NotEqual(t, sha256.Sum256(b), fingerprint.digest)
+	require.NotEqual(t, sha256.Sum256(b), fingerprint.Digest)
 	candidateB := fingerprint
-	candidateB.digest = sha256.Sum256(b)
+	candidateB.Digest = sha256.Sum256(b)
 	require.True(t, reloadFingerprintsChanged(map[string]reloadFileFingerprint{canonicalPath: candidateB}))
 }
 

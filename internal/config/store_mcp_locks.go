@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 )
 
@@ -19,7 +21,7 @@ type mcpLockedFiles struct {
 	data         map[string][]byte
 	present      map[string]bool
 	changed      map[string]bool
-	fingerprints map[string]reloadFileFingerprint
+	fingerprints map[string]docread.Fingerprint
 	pathRecords  map[string]string
 	targetKeys   map[string]string
 	records      map[string]*mcpFileRecord
@@ -34,7 +36,7 @@ type mcpFileRecord struct {
 	data         []byte
 	identity     configFileIdentity
 	selectedPath string
-	expectation  reloadFileFingerprint
+	expectation  docread.Fingerprint
 	aliases      map[string]struct{}
 }
 
@@ -47,24 +49,24 @@ var ErrMCPHardLinkTopology = errors.New("MCP config has unsupported hard-link al
 type mcpEvaluation struct {
 	configs      map[string]MCPConfig
 	origins      map[string]MCPOrigin
-	fingerprints map[string]reloadFileFingerprint
+	fingerprints map[string]docread.Fingerprint
 	mcpInputs    map[string][sha256.Size]byte
 }
 
-func mcpRecordKey(path string, fingerprint reloadFileFingerprint) string {
-	if fingerprint.exists && fingerprint.identity.valid {
-		return fmt.Sprintf("identity:%d:%d", fingerprint.identity.device, fingerprint.identity.inode)
+func mcpRecordKey(path string, fingerprint docread.Fingerprint) string {
+	if fingerprint.Exists && fingerprint.Identity.Valid {
+		return fmt.Sprintf("identity:%s", fingerprint.Identity.FingerprintString())
 	}
-	if fingerprint.discovery != ([sha256.Size]byte{}) {
-		return fmt.Sprintf("discovery:%x", fingerprint.discovery)
+	if fingerprint.Discovery != ([sha256.Size]byte{}) {
+		return fmt.Sprintf("discovery:%x", fingerprint.Discovery)
 	}
-	return "path:" + normalizeDiscoveryPath(path)
+	return "path:" + docread.NormalizeDiscoveryPath(path)
 }
 
-func (files *mcpLockedFiles) bindMCPPath(path string, data []byte, present bool, fingerprint reloadFileFingerprint) *mcpFileRecord {
-	discoveryPath := normalizeDiscoveryPath(path)
+func (files *mcpLockedFiles) bindMCPPath(path string, data []byte, present bool, fingerprint docread.Fingerprint) *mcpFileRecord {
+	discoveryPath := docread.NormalizeDiscoveryPath(path)
 	key := mcpRecordKey(discoveryPath, fingerprint)
-	if !fingerprint.exists {
+	if !fingerprint.Exists {
 		if targetKey := files.targetKeys[discoveryPath]; targetKey != "" {
 			key = "target:" + targetKey
 		}
@@ -72,37 +74,37 @@ func (files *mcpLockedFiles) bindMCPPath(path string, data []byte, present bool,
 	record, ok := files.records[key]
 	if !ok {
 		record = &mcpFileRecord{
-			key: key, commitPath: normalizeReloadPath(discoveryPath), data: data,
-			identity: fingerprint.identity, expectation: fingerprint,
+			key: key, commitPath: docread.NormalizeReloadPath(discoveryPath), data: data,
+			identity: fingerprint.Identity, expectation: fingerprint,
 			aliases: make(map[string]struct{}),
 		}
 		files.records[key] = record
 	}
-	if present && !record.expectation.exists {
+	if present && !record.expectation.Exists {
 		record.expectation = fingerprint
-		record.identity = fingerprint.identity
-		record.commitPath = normalizeReloadPath(discoveryPath)
+		record.identity = fingerprint.Identity
+		record.commitPath = docread.NormalizeReloadPath(discoveryPath)
 	}
 	record.aliases[discoveryPath] = struct{}{}
 	files.pathRecords[discoveryPath] = key
-	if canonical := normalizeReloadPath(discoveryPath); canonical != "" {
+	if canonical := docread.NormalizeReloadPath(discoveryPath); canonical != "" {
 		files.pathRecords[canonical] = key
 	}
 	files.data[discoveryPath] = record.data
 	files.present[discoveryPath] = present
 	files.fingerprints[discoveryPath] = fingerprint
-	if canonical := normalizeReloadPath(discoveryPath); canonical != "" {
+	if canonical := docread.NormalizeReloadPath(discoveryPath); canonical != "" {
 		files.data[canonical] = record.data
 	}
 	return record
 }
 
 func (files *mcpLockedFiles) mcpRecord(path string) *mcpFileRecord {
-	key := normalizeDiscoveryPath(path)
+	key := docread.NormalizeDiscoveryPath(path)
 	if recordKey, ok := files.pathRecords[key]; ok {
 		return files.records[recordKey]
 	}
-	if canonical := normalizeReloadPath(path); canonical != "" {
+	if canonical := docread.NormalizeReloadPath(path); canonical != "" {
 		if recordKey, ok := files.pathRecords[canonical]; ok {
 			return files.records[recordKey]
 		}
@@ -114,17 +116,17 @@ func (files *mcpLockedFiles) mcpData(path string) []byte {
 	if record := files.mcpRecord(path); record != nil {
 		return record.data
 	}
-	return files.data[normalizeDiscoveryPath(path)]
+	return files.data[docread.NormalizeDiscoveryPath(path)]
 }
 
-func (files *mcpLockedFiles) mcpFingerprint(path string) reloadFileFingerprint {
-	if fingerprint, ok := files.fingerprints[normalizeDiscoveryPath(path)]; ok {
+func (files *mcpLockedFiles) mcpFingerprint(path string) docread.Fingerprint {
+	if fingerprint, ok := files.fingerprints[docread.NormalizeDiscoveryPath(path)]; ok {
 		return fingerprint
 	}
 	if record := files.mcpRecord(path); record != nil {
 		return record.expectation
 	}
-	return reloadFileFingerprint{}
+	return docread.Fingerprint{}
 }
 
 func (files *mcpLockedFiles) setMCPData(path string, data []byte) error {
@@ -133,7 +135,7 @@ func (files *mcpLockedFiles) setMCPData(path string, data []byte) error {
 		return fmt.Errorf("MCP transaction path %q was not opened", path)
 	}
 	record.data = data
-	record.selectedPath = normalizeDiscoveryPath(path)
+	record.selectedPath = docread.NormalizeDiscoveryPath(path)
 	if expectation, ok := files.fingerprints[record.selectedPath]; ok {
 		record.expectation = expectation
 	} else {
@@ -153,11 +155,11 @@ func (files *mcpLockedFiles) setMCPData(path string, data []byte) error {
 
 func (files *mcpLockedFiles) validateMutableTopology() error {
 	for _, record := range files.records {
-		if !record.expectation.exists || len(record.aliases) < 2 {
+		if !record.expectation.Exists || len(record.aliases) < 2 {
 			continue
 		}
 		for alias := range record.aliases {
-			if normalizeReloadPath(alias) != record.commitPath {
+			if docread.NormalizeReloadPath(alias) != record.commitPath {
 				return fmt.Errorf("%w: %s and %s", ErrMCPHardLinkTopology, record.commitPath, alias)
 			}
 		}
@@ -170,13 +172,13 @@ func (files *mcpLockedFiles) validateMutableTopology() error {
 // Both writable files are locked even when only one is mutated; this makes
 // origin/existence/target checks one cross-process linearization point.
 func (s *ConfigStore) withMCPWriteLocks(fn func(*mcpLockedFiles) error) error {
-	ctx, cancel := configContextWithTimeout(context.Background(), configWriteLockTimeout)
+	ctx, cancel := cfgcommit.ConfigContextWithTimeout(context.Background(), configWriteLockTimeout)
 	defer cancel()
 	return s.withMCPLocks(ctx, fn)
 }
 
 func (s *ConfigStore) withMCPAdmissionLocks(fn func(*mcpLockedFiles) error) error {
-	ctx, cancel := configContextWithTimeout(context.Background(), configWriteLockTimeout)
+	ctx, cancel := cfgcommit.ConfigContextWithTimeout(context.Background(), configWriteLockTimeout)
 	defer cancel()
 	return s.withMCPAdmissionLocksContext(ctx, fn)
 }
@@ -205,8 +207,8 @@ func configMCPAdmissionLockGroups(
 	caseDecisions := make(map[configFileIdentity]configCaseSensitivity, len(targets))
 	for _, target := range targets {
 		sensitivity := configCaseSensitivityUnknown
-		parent := target.expected.parentIdentity
-		if parent.valid {
+		parent := target.expected.ParentIdentity
+		if parent.Valid {
 			var ok bool
 			sensitivity, ok = caseDecisions[parent]
 			if !ok {
@@ -270,9 +272,9 @@ func (s *ConfigStore) withMCPLocksUsingCaseSensitivity(
 	if err != nil {
 		return err
 	}
-	paths = append(paths, normalizeDiscoveryPath(globalPath))
+	paths = append(paths, docread.NormalizeDiscoveryPath(globalPath))
 	if workspacePath, workspaceErr := s.configPath(ScopeWorkspace); workspaceErr == nil {
-		paths = append(paths, normalizeDiscoveryPath(workspacePath))
+		paths = append(paths, docread.NormalizeDiscoveryPath(workspacePath))
 	}
 	slices.Sort(paths)
 	paths = slices.Compact(paths)
@@ -299,7 +301,7 @@ func (s *ConfigStore) withMCPLocksUsingCaseSensitivity(
 		return err
 	}
 	for _, group := range groups {
-		lock, lockErr := acquireConfigFileLock(ctx, group.lockPath)
+		lock, lockErr := cfgcommit.AcquireConfigFileLock(ctx, group.lockPath)
 		if lockErr != nil {
 			return fmt.Errorf("failed to lock config file %q: %w", group.lockPath, lockErr)
 		}
@@ -315,7 +317,7 @@ func (s *ConfigStore) withMCPLocksUsingCaseSensitivity(
 	}
 	files := &mcpLockedFiles{
 		data: make(map[string][]byte, len(paths)), present: make(map[string]bool, len(paths)),
-		changed: make(map[string]bool), fingerprints: make(map[string]reloadFileFingerprint, len(paths)),
+		changed: make(map[string]bool), fingerprints: make(map[string]docread.Fingerprint, len(paths)),
 		pathRecords: make(map[string]string, len(paths)), targetKeys: make(map[string]string, len(paths)),
 		records: make(map[string]*mcpFileRecord, len(paths)),
 	}
@@ -324,9 +326,9 @@ func (s *ConfigStore) withMCPLocksUsingCaseSensitivity(
 		if ownerErr != nil {
 			return ownerErr
 		}
-		data, fingerprint, readErr := readStableConfigFileOwned(path, expectedOwner, enforceOwner)
-		target := targetBySelectedPath[normalizeDiscoveryPath(path)]
-		files.targetKeys[normalizeDiscoveryPath(path)] = targetKeyBySelectedPath[target.selectedPath]
+		data, fingerprint, readErr := docread.ReadStableConfigFileOwned(path, expectedOwner, enforceOwner)
+		target := targetBySelectedPath[docread.NormalizeDiscoveryPath(path)]
+		files.targetKeys[docread.NormalizeDiscoveryPath(path)] = targetKeyBySelectedPath[target.selectedPath]
 		if readErr != nil {
 			if os.IsNotExist(readErr) {
 				if err := verifyConfigTargetBinding(target, fingerprint, readErr); err != nil {
@@ -344,7 +346,7 @@ func (s *ConfigStore) withMCPLocksUsingCaseSensitivity(
 		// layer before binding: record.data is always JSON-shaped, the
 		// fingerprint stays bound to the RAW bytes as read off disk. A
 		// decode failure aborts the transaction; it is never "no servers".
-		decoded, decodeErr := decodeConfigDocument(path, data)
+		decoded, decodeErr := docread.DecodeConfigDocument(path, data)
 		if decodeErr != nil {
 			return decodeErr
 		}

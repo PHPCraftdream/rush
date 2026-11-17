@@ -2,15 +2,16 @@ package config
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
-	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"reflect"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 )
 
@@ -29,8 +30,7 @@ var (
 )
 
 func oauthRefreshLockPath(path, provider string) string {
-	digest := sha256.Sum256([]byte(provider))
-	return fmt.Sprintf("%s.oauth-refresh-%x.lock", normalizeReloadPath(configWriteLockAnchor(path)), digest[:8])
+	return docread.OAuthRefreshLockPath(path, provider)
 }
 
 // Cleanup also cancels and joins the OAuth disk sync worker.
@@ -71,7 +71,7 @@ func (s *ConfigStore) startOAuthJournalWorker(scope Scope, provider string) {
 }
 
 // Caller holds the refresh sidecar, never publishMu or diskWriteMu.
-func (s *ConfigStore) recoverCodexOAuthJournal(ctx context.Context, scope Scope, provider string) (*oauth.Token, *oauthJournalRecord, error) {
+func (s *ConfigStore) recoverCodexOAuthJournal(ctx context.Context, scope Scope, provider string) (*oauth.Token, *docread.OAuthJournalRecord, error) {
 	if oauthJournalRecoveryHook != nil {
 		oauthJournalRecoveryHook()
 	}
@@ -79,7 +79,7 @@ func (s *ConfigStore) recoverCodexOAuthJournal(ctx context.Context, scope Scope,
 	if err != nil {
 		return nil, nil, err
 	}
-	journalPath := selectOAuthJournalPath(path, provider, false)
+	journalPath := slots.SelectOAuthJournalPath(path, provider, false)
 	if entry := s.oauthOutboxCurrent(path, provider); entry != nil {
 		settled, settleErr := s.settleOAuthOutbox(ctx, path, provider, entry)
 		if settled {
@@ -232,14 +232,14 @@ func (s *ConfigStore) withOAuthJournalRecoveryWriteLock(parent context.Context, 
 		}
 	}
 	defer s.diskWriteMu.Unlock()
-	canonical := normalizeReloadPath(path)
-	lockAnchor := normalizeReloadPath(configWriteLockAnchor(canonical))
-	lock, err := acquireConfigFileLock(ctx, lockAnchor+".lock")
+	canonical := docread.NormalizeReloadPath(path)
+	lockAnchor := docread.NormalizeReloadPath(docread.ConfigWriteLockAnchor(canonical))
+	lock, err := cfgcommit.AcquireConfigFileLock(ctx, lockAnchor+".lock")
 	if err != nil {
 		return err
 	}
-	defer releaseConfigFileLock(lockAnchor+".lock", lock)
-	if normalizeReloadPath(path) != canonical {
+	defer cfgcommit.ReleaseConfigFileLock(lockAnchor+".lock", lock)
+	if docread.NormalizeReloadPath(path) != canonical {
 		return errOAuthJournalDisk
 	}
 	return fn()
@@ -256,16 +256,16 @@ func (s *ConfigStore) recoverOAuthJournalsAtLoad() {
 				continue
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), codexRefreshLockWait)
-			record, readErr := readOAuthJournalWithRetry(ctx, selectOAuthJournalPath(path, descriptor.id, false))
+			record, readErr := readOAuthJournalWithRetry(ctx, slots.SelectOAuthJournalPath(path, descriptor.id, false))
 			if readErr == nil && record == nil {
 				cancel()
 				continue
 			}
 			lockPath := oauthRefreshLockPath(path, descriptor.id)
-			lock, err := acquireConfigFileLock(ctx, lockPath)
+			lock, err := cfgcommit.AcquireConfigFileLock(ctx, lockPath)
 			if err == nil {
 				_, record, recoveryErr := s.recoverCodexOAuthJournal(ctx, scope, descriptor.id)
-				_ = releaseConfigFileLock(lockPath, lock)
+				_ = cfgcommit.ReleaseConfigFileLock(lockPath, lock)
 				if record != nil || recoveryErr != nil {
 					s.startOAuthJournalWorker(scope, descriptor.id)
 				}
@@ -350,18 +350,18 @@ func (s *ConfigStore) oauthJournalWorkerAttempt(ctx context.Context, scope Scope
 	}
 	lockCtx, cancel := context.WithTimeout(ctx, codexRefreshLockWait)
 	lockPath := oauthRefreshLockPath(path, provider)
-	lock, err := acquireConfigFileLock(lockCtx, lockPath)
+	lock, err := cfgcommit.AcquireConfigFileLock(lockCtx, lockPath)
 	cancel()
 	if err != nil {
 		return false, err
 	}
 	// One journal attempt precedes all general config locks and persistence.
 	if err := s.flushOAuthOutbox(ctx, path, provider); err != nil {
-		_ = releaseConfigFileLock(lockPath, lock)
+		_ = cfgcommit.ReleaseConfigFileLock(lockPath, lock)
 		return false, err
 	}
 	_, record, recoveryErr := s.recoverCodexOAuthJournal(ctx, scope, provider)
-	_ = releaseConfigFileLock(lockPath, lock)
+	_ = cfgcommit.ReleaseConfigFileLock(lockPath, lock)
 	if record == nil {
 		return recoveryErr == nil, recoveryErr
 	}
@@ -383,7 +383,7 @@ func (s *ConfigStore) oauthJournalWorkerAttempt(ctx context.Context, scope Scope
 	}
 	var committed bool
 	err = s.withCodexConfigWriteLock(ctx, path, pinned, func(target configWriteTarget) error {
-		latest, journalErr := readOAuthJournalWithRetry(ctx, selectOAuthJournalPath(path, provider, false))
+		latest, journalErr := readOAuthJournalWithRetry(ctx, slots.SelectOAuthJournalPath(path, provider, false))
 		if journalErr != nil {
 			return journalErr
 		}

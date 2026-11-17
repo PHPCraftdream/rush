@@ -31,11 +31,10 @@ internal/agent/tools/view.go 957
 internal/app/app_run_async.go 980
 internal/app/app_run_reviewer.go 978
 internal/app/app_run_reviewer_evidence.go 908
-internal/config/apitoken_store_test.go 969
 # 915 -> 916: +1 import line (envresolve) from the D2-1 move of the shell variable resolver; deliberate, only down from here.
 internal/config/load_providers.go 916
-internal/config/store_config_disk_sync_test.go 991
-internal/config/store_mcp_transaction.go 927
+internal/config/store_config_disk_sync_test.go 987
+internal/config/store_mcp_transaction.go 923
 internal/serve/cmd/migrate.go 929
 internal/serve/cmd/migrate_test.go 954
 internal/serve/cmd/providers_peak_hours.go 958

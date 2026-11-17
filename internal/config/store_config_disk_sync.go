@@ -17,6 +17,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 )
 
 var (
@@ -209,7 +211,7 @@ func (s *ConfigStore) syncConfigFromDisk(ctx context.Context, st *configDiskSync
 	// project boundary change) is itself a change: it must trigger a reload
 	// by itself even when every previously tracked file is byte-identical,
 	// because the digest gate only examines the OLD tracked paths.
-	drift := forced && !sameReloadPathSet(configDiskSyncCandidatePaths(s, sn), sn.trackedConfigPaths)
+	drift := forced && !docread.SameReloadPathSet(configDiskSyncCandidatePaths(s, sn), sn.trackedConfigPaths)
 	if !drift && !forced && st.settled && !statChanged && st.gen == sn.generation {
 		return result, nil
 	}
@@ -287,13 +289,13 @@ func (s *ConfigStore) ConfigDiskSyncRunning() bool {
 // configDiskSyncCandidatePaths rebuilds the current config candidate path
 // set, for the forced tick's drift check against the tracked set.
 func configDiskSyncCandidatePaths(s *ConfigStore, sn *storeSnapshot) []string {
-	paths := lookupConfigCandidates(s.workingDir)
-	paths = append(paths, mcpJSONCandidatePaths(s.workingDir)...)
+	paths := docread.LookupConfigCandidates(s.workingDir)
+	paths = append(paths, docread.McpJSONCandidatePaths(s.workingDir)...)
 	paths = append(paths, sn.workspacePath, s.globalDataPath)
 	// Both spellings of each logical slot, so the tracked set (built the
 	// same way) never drifts spuriously and slot-selection flips stay
 	// visible on natural ticks.
-	return expandConfigSlotSiblings(paths)
+	return docread.ExpandConfigSlotSiblings(paths)
 }
 
 // configDiskSyncDigestsMatch compares every tracked path's current content
@@ -301,12 +303,12 @@ func configDiskSyncCandidatePaths(s *ConfigStore, sn *storeSnapshot) []string {
 // only (metadata-only changes do not trigger a reload).
 func configDiskSyncDigestsMatch(sn *storeSnapshot) bool {
 	for _, path := range sn.trackedConfigPaths {
-		fingerprint, err := readReloadFingerprint(path)
+		fingerprint, err := docread.ReadReloadFingerprint(path)
 		if err != nil {
 			return false
 		}
 		snapshot, ok := sn.snapshots[path]
-		if !ok || fingerprint.exists != snapshot.Exists || fingerprint.digest != snapshot.fingerprint.digest {
+		if !ok || fingerprint.Exists != snapshot.Exists || fingerprint.Digest != snapshot.Fingerprint().Digest {
 			return false
 		}
 	}
@@ -318,24 +320,24 @@ func configDiskSyncDigestsMatch(sn *storeSnapshot) bool {
 // cover the candidate set, not just the previously tracked paths: a drift
 // reload failing on a newly eligible file must retry once that file is
 // fixed, and fixing it changes no previously tracked digest. Paths are
-// normalized with normalizeDiscoveryPath (the same normalization the
+// normalized with docread.NormalizeDiscoveryPath (the same normalization the
 // tracked set is keyed by) and sorted, so the key is stable across ticks.
 func configDiskSyncDigestKey(s *ConfigStore, sn *storeSnapshot) string {
 	candidates := slices.Clone(configDiskSyncCandidatePaths(s, sn))
 	for i, path := range candidates {
-		candidates[i] = normalizeDiscoveryPath(path)
+		candidates[i] = docread.NormalizeDiscoveryPath(path)
 	}
 	slices.Sort(candidates)
 	candidates = slices.Compact(candidates)
 	var key strings.Builder
 	for _, path := range candidates {
-		fingerprint, err := readReloadFingerprint(path)
+		fingerprint, err := docread.ReadReloadFingerprint(path)
 		if err != nil {
 			key.WriteString(path + "\x00err\x00")
 			continue
 		}
-		if fingerprint.exists {
-			key.WriteString(path + "\x001\x00" + hex.EncodeToString(fingerprint.digest[:]) + "\x00")
+		if fingerprint.Exists {
+			key.WriteString(path + "\x001\x00" + hex.EncodeToString(fingerprint.Digest[:]) + "\x00")
 		} else {
 			key.WriteString(path + "\x000\x00")
 		}

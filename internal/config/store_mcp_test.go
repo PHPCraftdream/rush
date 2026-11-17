@@ -119,7 +119,7 @@ func TestApplyCommittedMCPFingerprintRereadsEverySpelling(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, physicalAfter, files.fingerprints[physical])
 	require.Equal(t, aliasAfter, files.fingerprints[alias])
-	require.NotEqual(t, physicalAfter.discovery, aliasAfter.discovery)
+	require.NotEqual(t, physicalAfter.Discovery, aliasAfter.Discovery)
 }
 
 func TestMCPPathDataUsesNormalizedDiscoveryKeys(t *testing.T) {

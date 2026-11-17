@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -57,10 +56,6 @@ func captureDebugSlogOutput(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
-func resetBothFormatsWarnings() {
-	ktavBothFormatsWarned = sync.Map{}
-}
-
 func indexOfPath(paths []string, needle string) int {
 	for i, p := range paths {
 		if p == needle {
@@ -88,7 +83,6 @@ func TestKtavSlotSelectionMatrix(t *testing.T) {
 		dir := t.TempDir()
 		writeTestFile(t, filepath.Join(dir, "rush.json"), jsonBody)
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "rush.ktav"), testKtavBytes(t, ktavBody), 0o600))
-		resetBothFormatsWarnings()
 		logs := captureDebugSlogOutput(t)
 		stamp := time.Unix(1_700_000_000, 0)
 		require.NoError(t, os.Chtimes(filepath.Join(dir, "rush.json"), stamp, stamp))
@@ -286,10 +280,10 @@ func TestKtavFingerprintIsRawBytes(t *testing.T) {
 	_, _, fingerprints, _, err := loadConfigCandidateStable([]string{ktavPath})
 	require.NoError(t, err)
 	fp := fingerprints[ktavPath]
-	require.True(t, fp.exists)
-	require.Equal(t, sha256.Sum256(raw), fp.digest)
-	require.Equal(t, int64(len(raw)), fp.size)
-	require.NotEqual(t, fp.digest, sha256.Sum256(mustDecodeTestKtav(t, raw)))
+	require.True(t, fp.Exists)
+	require.Equal(t, sha256.Sum256(raw), fp.Digest)
+	require.Equal(t, int64(len(raw)), fp.Size)
+	require.NotEqual(t, fp.Digest, sha256.Sum256(mustDecodeTestKtav(t, raw)))
 }
 
 func TestKtavWorkspacePathPrefersKtav(t *testing.T) {

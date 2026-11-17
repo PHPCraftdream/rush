@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const (
@@ -196,11 +197,73 @@ func ValidateCustomRoleSelection(cfg *Config, role CustomRole) error {
 	return nil
 }
 
-// The four model-integrity primitives below move verbatim from the root
-// models_integrity.go (D2-1); the remaining integrity code stays in the
-// root package until D2-5.
 // Constant mixed into the cache revision hash; the name is deliberately generic.
 const hashSalt = "7c1f4e9a2b8d6350af02c4e8b19d5736"
+
+// CacheRevKey is the settings field containing the model-integrity signature.
+const CacheRevKey = "cache_rev"
+
+// ApplyModelsIntegrity signs built-in models and custom role definitions.
+func ApplyModelsIntegrity(doc string) (string, error) {
+	canonical, present, err := CanonicalModelsAndRolesJSON([]byte(doc))
+	if err != nil {
+		return "", fmt.Errorf("failed to canonicalize model settings: %w", err)
+	}
+	if present {
+		return sjson.Set(doc, CacheRevKey, modelsIntegritySignature(canonical))
+	}
+	return sjson.Delete(doc, CacheRevKey)
+}
+
+// TouchesModelsKey includes custom roles in the model-integrity boundary.
+func TouchesModelsKey(keys []string) bool {
+	for _, key := range keys {
+		if component := settingsKeyFirstComponent(key); component == "models" || strings.EqualFold(component, "roles") {
+			return true
+		}
+	}
+	return false
+}
+
+// ModelsIntegrityOf checks one config document's JSON-shaped bytes against the
+// models-integrity rule: a models block must carry a valid cache_rev
+// signature. A models block with no cache_rev at all is a legacy file,
+// accepted only when no settings lock exists. data unreadable (nil or
+// garbage) fails closed. Reload reuses this on the candidate's stable
+// bytes, so a hand-edited models block never reaches a running process.
+//
+// data is the decoded JSON for .ktav documents (decodeConfigDocument ->
+// ktavcodec.DecodeKtav + ToJSON), so no extra number normalization is
+// needed before canonicalModelsJSON: the codec re-tokenizes every float
+// through strconv.FormatFloat('g', -1, 64) and integers through
+// strconv.FormatInt, and ToJSON emits those normalized lexemes, so a
+// cache_rev computed over Ktav-normalized values at migration time
+// verifies here unchanged.
+func ModelsIntegrityOf(data []byte, lockExists bool) error {
+	canonical, present, err := CanonicalModelsAndRolesJSON(data)
+	if err != nil {
+		return ErrModelsEditedDirectly
+	}
+	if !present {
+		return nil
+	}
+	rev := gjson.GetBytes(data, CacheRevKey)
+	if !rev.Exists() {
+		// Genuinely absent: legacy file. Accepted only when unlocked.
+		if lockExists {
+			return ErrModelsEditedDirectly
+		}
+		return nil
+	}
+	// Present but not a valid signature string: a mismatch, locked or not.
+	if rev.Type != gjson.String || rev.String() == "" {
+		return ErrModelsEditedDirectly
+	}
+	if rev.String() != modelsIntegritySignature(canonical) {
+		return ErrModelsEditedDirectly
+	}
+	return nil
+}
 
 var ErrModelsEditedDirectly = errors.New("models cannot be changed by editing the settings file directly; they can only be changed with the rush models commands (ask the user if that is refused)")
 
@@ -245,6 +308,53 @@ func canonicalModelsJSON(raw string) (canonical string, present bool, err error)
 		return "", false, err
 	}
 	return string(encoded), true, nil
+}
+
+// CanonicalModelsAndRolesJSON canonicalizes the models and custom-roles
+// payload bound into cache_rev signatures. Existing model-only documents
+// keep their exact v1 signature payload; role-aware payloads also bind
+// tools presence, preventing unsigned widening.
+func CanonicalModelsAndRolesJSON(data []byte) (string, bool, error) {
+	models, modelsPresent, err := canonicalModelsJSON(gjson.GetBytes(data, "models").Raw)
+	if err != nil {
+		return "", false, err
+	}
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(data, &document); err != nil {
+		return "", false, err
+	}
+	rawRoles, rolesPresent, err := CustomRolesDocumentField(document)
+	if err != nil {
+		return "", false, err
+	}
+	if !rolesPresent {
+		return models, modelsPresent, nil
+	}
+	roles, err := DecodeCustomRoles(rawRoles)
+	if err != nil {
+		return "", false, err
+	}
+	if len(roles) == 0 {
+		return models, modelsPresent, nil
+	}
+	canonicalRoles, _, err := canonicalModelsJSON(string(rawRoles))
+	if err != nil {
+		return "", false, err
+	}
+	payload := map[string]json.RawMessage{"roles": json.RawMessage(canonicalRoles)}
+	if modelsPresent {
+		payload["models"] = json.RawMessage(models)
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", false, err
+	}
+	return "roles-v1|" + string(encoded), true, nil
+}
+
+// ModelsIntegritySignature hashes the canonicalized models value.
+func ModelsIntegritySignature(canonical string) string {
+	return modelsIntegritySignature(canonical)
 }
 
 // modelsIntegritySignature hashes the canonicalized models value.

@@ -36,11 +36,11 @@ func TestConfigAliasChainFingerprintIgnoresRegularLeafMode(t *testing.T) {
 }
 
 func TestConfigWriteTargetDedupKeyUsesExistingFileIdentity(t *testing.T) {
-	identity := configFileIdentity{device: 11, inode: 22, valid: true}
-	left := configWriteTarget{expected: reloadFileFingerprint{exists: true, identity: identity}}
-	right := configWriteTarget{expected: reloadFileFingerprint{exists: true, identity: identity}}
+	identity := configFileIdentity{Device: 11, Inode: 22, Valid: true}
+	left := configWriteTarget{expected: reloadFileFingerprint{Exists: true, Identity: identity}}
+	right := configWriteTarget{expected: reloadFileFingerprint{Exists: true, Identity: identity}}
 	different := configWriteTarget{expected: reloadFileFingerprint{
-		exists: true, identity: configFileIdentity{device: 11, inode: 23, valid: true},
+		Exists: true, Identity: configFileIdentity{Device: 11, Inode: 23, Valid: true},
 	}}
 
 	require.Equal(t, configWriteTargetDedupKey(left), configWriteTargetDedupKey(right))
@@ -55,7 +55,7 @@ func TestConfigWriteTargetDedupKeyUsesExistingSidecarIdentity(t *testing.T) {
 	target := configWriteTarget{
 		path: filepath.Join(root, "rush.json"), lockPath: lockPath,
 		selectedPath: filepath.Join(root, "rush.json"),
-		expected:     reloadFileFingerprint{parentIdentity: parent},
+		expected:     reloadFileFingerprint{ParentIdentity: parent},
 	}
 	key := configWriteTargetDedupKey(target)
 	require.Contains(t, key, "sidecar:")
@@ -65,12 +65,12 @@ func TestConfigWriteTargetMissingLeafCaseCapability(t *testing.T) {
 	root := t.TempDir()
 	before := directoryEntryNames(t, root)
 	parent := configParentIdentity(filepath.Join(root, "first.json"))
-	if !parent.valid {
+	if !parent.Valid {
 		t.Skip("parent identity unavailable")
 	}
 	left := configWriteTarget{
 		path: filepath.Join(root, "Rush.json"), selectedPath: filepath.Join(root, "Rush.json"),
-		expected: reloadFileFingerprint{parentIdentity: parent},
+		expected: reloadFileFingerprint{ParentIdentity: parent},
 	}
 	right := left
 	right.path = filepath.Join(root, "rush.json")
@@ -121,12 +121,12 @@ func TestConfigFreeBSDCaseSensitivityMetadata(t *testing.T) {
 }
 
 func TestConfigBehavioralCaseSensitivityProbe(t *testing.T) {
-	identity := configFileIdentity{device: 7, inode: 11, valid: true}
-	directory := configFileIdentity{device: 3, inode: 5, valid: true}
+	identity := configFileIdentity{Device: 7, Inode: 11, Valid: true}
+	directory := configFileIdentity{Device: 3, Inode: 5, Valid: true}
 	snapshot := func(entries ...configCaseDirectoryEntry) configCaseDirectorySnapshot {
-		return configCaseDirectorySnapshot{identity: directory, entries: entries}
+		return configCaseDirectorySnapshot{Identity: directory, Entries: entries}
 	}
-	entry := configCaseDirectoryEntry{name: "Rush.json", identity: identity}
+	entry := configCaseDirectoryEntry{Name: "Rush.json", Identity: identity}
 	stable := []configCaseDirectorySnapshot{snapshot(entry), snapshot(entry), snapshot(entry)}
 
 	t.Run("one entry resolves alternate", func(t *testing.T) {
@@ -157,7 +157,7 @@ func TestConfigBehavioralCaseSensitivityProbe(t *testing.T) {
 
 	t.Run("no ASCII probe is unknown", func(t *testing.T) {
 		nonASCII := stable
-		nonASCII[0] = snapshot(configCaseDirectoryEntry{name: "конфиг", identity: identity})
+		nonASCII[0] = snapshot(configCaseDirectoryEntry{Name: "конфиг", Identity: identity})
 		nonASCII[1] = nonASCII[0]
 		nonASCII[2] = nonASCII[0]
 		got := configCaseSensitivityFromDirectorySnapshots("/config", func() (configCaseDirectorySnapshot, error) {
@@ -169,7 +169,7 @@ func TestConfigBehavioralCaseSensitivityProbe(t *testing.T) {
 	})
 
 	t.Run("case variant hardlinks are ambiguous", func(t *testing.T) {
-		variant := configCaseDirectoryEntry{name: "rush.json", identity: identity}
+		variant := configCaseDirectoryEntry{Name: "rush.json", Identity: identity}
 		ambiguous := []configCaseDirectorySnapshot{snapshot(entry, variant), snapshot(entry, variant), snapshot(entry, variant)}
 		reads := 0
 		got := configCaseSensitivityFromDirectorySnapshots("/config", func() (configCaseDirectorySnapshot, error) {
@@ -192,7 +192,7 @@ func TestConfigBehavioralCaseSensitivityProbe(t *testing.T) {
 	})
 
 	t.Run("probe exposes a raced variant", func(t *testing.T) {
-		variant := configCaseDirectoryEntry{name: "rush.json", identity: identity}
+		variant := configCaseDirectoryEntry{Name: "rush.json", Identity: identity}
 		raced := false
 		probe := func(string) (configFileIdentity, error) {
 			raced = true
@@ -209,7 +209,7 @@ func TestConfigBehavioralCaseSensitivityProbe(t *testing.T) {
 
 	t.Run("probe observes post-probe ABA metadata", func(t *testing.T) {
 		changed := snapshot(entry)
-		changed.modTime = 1
+		changed.ModTime = 1
 		probed := false
 		got := configCaseSensitivityFromDirectorySnapshots("/config", func() (configCaseDirectorySnapshot, error) {
 			if probed {
@@ -225,7 +225,7 @@ func TestConfigBehavioralCaseSensitivityProbe(t *testing.T) {
 
 	t.Run("probe observes directory metadata race", func(t *testing.T) {
 		changed := snapshot(entry)
-		changed.modTime = 1
+		changed.ModTime = 1
 		reads := []configCaseDirectorySnapshot{snapshot(entry), changed, snapshot(entry)}
 		read := 0
 		got := configCaseSensitivityFromDirectorySnapshots("/config", func() (configCaseDirectorySnapshot, error) {
@@ -264,11 +264,11 @@ func TestConfigCaseDirectoryProbeBudget(t *testing.T) {
 func TestConfigWriteTargetMissingLeafUsesInjectedCaseDecision(t *testing.T) {
 	root := t.TempDir()
 	parent := configParentIdentity(filepath.Join(root, "first.json"))
-	require.True(t, parent.valid)
+	require.True(t, parent.Valid)
 	left := configWriteTarget{
 		path: filepath.Join(root, "Rush.json"), lockPath: filepath.Join(root, "Rush.json.lock"),
 		selectedPath: filepath.Join(root, "Rush.json"),
-		expected:     reloadFileFingerprint{parentIdentity: parent},
+		expected:     reloadFileFingerprint{ParentIdentity: parent},
 	}
 	right := left
 	right.path = filepath.Join(root, "rush.json")
@@ -309,7 +309,7 @@ func TestConfigCaseVariantHardlinksDoNotProveCaseInsensitivity(t *testing.T) {
 	}
 	left := configWriteTarget{
 		path: filepath.Join(root, "Rush.json"), lockPath: filepath.Join(root, "Rush.json.lock"),
-		expected: reloadFileFingerprint{parentIdentity: configParentIdentity(filepath.Join(root, "Rush.json"))},
+		expected: reloadFileFingerprint{ParentIdentity: configParentIdentity(filepath.Join(root, "Rush.json"))},
 	}
 	right := left
 	right.path = filepath.Join(root, "rush.json")
@@ -490,10 +490,10 @@ func TestMCPAdmissionUsesInjectedCaseDecisionForMissingAliases(t *testing.T) {
 func TestMCPAdmissionPinsCaseSensitivityPerParent(t *testing.T) {
 	root := t.TempDir()
 	parent := configParentIdentity(filepath.Join(root, "Rush.json"))
-	require.True(t, parent.valid)
+	require.True(t, parent.Valid)
 	targets := []configWriteTarget{
-		{path: filepath.Join(root, "Rush.json"), lockPath: filepath.Join(root, "Rush.json.lock"), selectedPath: filepath.Join(root, "Rush.json"), expected: reloadFileFingerprint{parentIdentity: parent}},
-		{path: filepath.Join(root, "rush.json"), lockPath: filepath.Join(root, "rush.json.lock"), selectedPath: filepath.Join(root, "rush.json"), expected: reloadFileFingerprint{parentIdentity: parent}},
+		{path: filepath.Join(root, "Rush.json"), lockPath: filepath.Join(root, "Rush.json.lock"), selectedPath: filepath.Join(root, "Rush.json"), expected: reloadFileFingerprint{ParentIdentity: parent}},
+		{path: filepath.Join(root, "rush.json"), lockPath: filepath.Join(root, "rush.json.lock"), selectedPath: filepath.Join(root, "rush.json"), expected: reloadFileFingerprint{ParentIdentity: parent}},
 	}
 	calls := 0
 	detector := func(string) configCaseSensitivity {
@@ -508,8 +508,8 @@ func TestMCPAdmissionPinsCaseSensitivityPerParent(t *testing.T) {
 	require.Equal(t, 1, calls)
 
 	distinctTargets := []configWriteTarget{
-		{path: filepath.Join(root, "one", "Rush.json"), lockPath: filepath.Join(root, "one", "Rush.json.lock"), selectedPath: filepath.Join(root, "one", "Rush.json"), expected: reloadFileFingerprint{parentIdentity: configFileIdentity{device: 9, inode: 1, valid: true}}},
-		{path: filepath.Join(root, "two", "rush.json"), lockPath: filepath.Join(root, "two", "rush.json.lock"), selectedPath: filepath.Join(root, "two", "rush.json"), expected: reloadFileFingerprint{parentIdentity: configFileIdentity{device: 9, inode: 2, valid: true}}},
+		{path: filepath.Join(root, "one", "Rush.json"), lockPath: filepath.Join(root, "one", "Rush.json.lock"), selectedPath: filepath.Join(root, "one", "Rush.json"), expected: reloadFileFingerprint{ParentIdentity: configFileIdentity{Device: 9, Inode: 1, Valid: true}}},
+		{path: filepath.Join(root, "two", "rush.json"), lockPath: filepath.Join(root, "two", "rush.json.lock"), selectedPath: filepath.Join(root, "two", "rush.json"), expected: reloadFileFingerprint{ParentIdentity: configFileIdentity{Device: 9, Inode: 2, Valid: true}}},
 	}
 	calls = 0
 	groups, _, _ = configMCPAdmissionLockGroups(distinctTargets, detector)
