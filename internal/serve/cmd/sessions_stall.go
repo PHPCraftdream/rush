@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
@@ -21,8 +22,10 @@ import (
 
 // stallPulseThreshold is the heartbeat age past which a live-holder session
 // is reported as STALLED (task context: a turn hung with tools in flight
-// while `sessions why` kept saying "running").
-const stallPulseThreshold = 10 * time.Minute
+// while `sessions why` kept saying "running"). The constant now lives in
+// sesskit (shared with the moved sesslocks locks view); this alias keeps the
+// root stall code unchanged.
+const stallPulseThreshold = sesskit.StallPulseThreshold
 
 // readOnlyToolNames is the local allowlist of clearly read-only tools whose
 // arguments may be printed verbatim in stall output; every other tool
