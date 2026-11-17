@@ -10,7 +10,6 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
-	"github.com/PHPCraftdream/rush/internal/session"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
