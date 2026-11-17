@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
@@ -363,7 +365,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	ctx = context.WithValue(ctx, cliprovider.ReasoningEffortContextKey, turnSmartReasoningEffort(smartModel))
 	// Heartbeat attribution: root run entry or inherited sub-agent root (design pt. 1/2).
 	hb := heartbeat.FromContext(ctx)
-	ctx = withHeartbeat(ctx, call.SessionID, heartbeat.PurposeTurn, hbTurnRole(call, hb), hbTurnSource(ctx, hb))
+	ctx = callbeat.WithHeartbeat(ctx, call.SessionID, heartbeat.PurposeTurn, callbeat.HbTurnRole(call, hb), callbeat.HbTurnSource(ctx, hb))
 	// Compose this turn's activity-notify callback with any ancestor's (see
 	// withActivityNotify) BEFORE deriving genCtx, so every fantasy stream
 	// callback below — via bumpActivity -> notifyActivity(genCtx) — records

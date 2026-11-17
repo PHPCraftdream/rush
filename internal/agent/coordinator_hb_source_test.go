@@ -11,13 +11,15 @@ package agent
 //	  resolved.smartSource/fastSource assignment in
 //	  resolveSessionModelsInternal: the labels regress to empty.
 //	TestRunInternal_SourceReachesProviderCtx — delete the
-//	  `ctx = withModelSource(ctx, pinned.smartSource, pinned.fastSource)`
+//	  `ctx = callbeat.WithModelSource(ctx, pinned.smartSource, pinned.fastSource)`
 //	  attach in runInternal: the provider ctx source regresses to
 //	  slot@start.
 import (
 	"context"
 	"sync"
 	"testing"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
@@ -29,7 +31,7 @@ import (
 )
 
 // TestCoordinatorResolve_SessionOverrideSourceLabels pins that a session
-// row override is reported as hbSourceSessionOverride on a web turn's
+// row override is reported as callbeat.HbSourceSessionOverride on a web turn's
 // snapshot.
 func TestCoordinatorResolve_SessionOverrideSourceLabels(t *testing.T) {
 	hbIsolateEnv(t)
@@ -47,12 +49,12 @@ func TestCoordinatorResolve_SessionOverrideSourceLabels(t *testing.T) {
 	webCtx := WithCallOptions(t.Context(), &CallOptions{WebTurnOptIn: true})
 	pinned, err := coord.resolveSessionModels(webCtx, sess.ID)
 	require.NoError(t, err)
-	require.Equal(t, hbSourceSessionOverride, pinned.smartSource)
-	require.Equal(t, hbSourceSlotStart, pinned.fastSource)
+	require.Equal(t, callbeat.HbSourceSessionOverride, pinned.smartSource)
+	require.Equal(t, callbeat.HbSourceSlotStart, pinned.fastSource)
 
 	pinned, err = coord.resolveSessionModels(t.Context(), sess.ID)
 	require.NoError(t, err)
-	require.Equal(t, hbSourceSlotStart, pinned.smartSource, "a non-web run ignores the session row")
+	require.Equal(t, callbeat.HbSourceSlotStart, pinned.smartSource, "a non-web run ignores the session row")
 }
 
 // hbSourceCaptureAgent wraps a SessionAgent and records the ctx each Run
@@ -105,7 +107,7 @@ func TestRunInternal_SourceReachesProviderCtx(t *testing.T) {
 	pinned := &resolvedOverrides{
 		smart:       smart,
 		fast:        fast,
-		smartSource: hbSourceSessionOverride,
+		smartSource: callbeat.HbSourceSessionOverride,
 		providerCfg: providerCfg,
 	}
 	ctx := WithCallOptions(t.Context(), &CallOptions{AllowPeakHours: true})
@@ -113,20 +115,20 @@ func TestRunInternal_SourceReachesProviderCtx(t *testing.T) {
 	require.NoError(t, err)
 
 	require.GreaterOrEqual(t, smart.Model.(*hbCtxModel).calls(), 1)
-	hbAssertCtx(t, smart.Model.(*hbCtxModel).lastCtx(), sess.ID, sess.ID, "smart", hbSourceSessionOverride, heartbeat.PurposeTurn)
+	hbAssertCtx(t, smart.Model.(*hbCtxModel).lastCtx(), sess.ID, sess.ID, "smart", callbeat.HbSourceSessionOverride, heartbeat.PurposeTurn)
 }
 
 // TestApplyModelOverrides_PerCallSourceLabels: an explicit per-call model
 // is labelled per-call, an untouched slot slot@start.
-// Revert check: hbOverrideSource instead of hbCallSource (or no assignment)
+// Revert check: callbeat.HbOverrideSource instead of callbeat.HbCallSource (or no assignment)
 // in applyModelOverrides.
 func TestApplyModelOverrides_PerCallSourceLabels(t *testing.T) {
 	hbIsolateEnv(t)
 	coord, _ := newCallOptionsTestCoordinator(t)
 	pinned, err := coord.applyModelOverrides(t.Context(), "", &ModelOverride{Provider: "test-peak", Model: "test-model"}, nil)
 	require.NoError(t, err)
-	require.Equal(t, hbSourcePerCall, pinned.smartSource)
-	require.Equal(t, hbSourceSlotStart, pinned.fastSource)
+	require.Equal(t, callbeat.HbSourcePerCall, pinned.smartSource)
+	require.Equal(t, callbeat.HbSourceSlotStart, pinned.fastSource)
 }
 
 // TestResolveCredentialsModels_SourceLabels: credential-set models are
@@ -149,8 +151,8 @@ func TestResolveCredentialsModels_SourceLabels(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.Equal(t, hbSourcePerCall, both.smartSource)
-	require.Equal(t, hbSourcePerCall, both.fastSource)
+	require.Equal(t, callbeat.HbSourcePerCall, both.smartSource)
+	require.Equal(t, callbeat.HbSourcePerCall, both.fastSource)
 
 	fallback, err := coord.resolveCredentialsModels(t.Context(), sess.ID, &CredentialSet{
 		Credentials:                 []Credential{cred},
@@ -158,6 +160,6 @@ func TestResolveCredentialsModels_SourceLabels(t *testing.T) {
 		AllowConfiguredRoleFallback: true,
 	})
 	require.NoError(t, err)
-	require.Equal(t, hbSourcePerCall, fallback.smartSource)
-	require.Equal(t, hbSourceSlotStart, fallback.fastSource)
+	require.Equal(t, callbeat.HbSourcePerCall, fallback.smartSource)
+	require.Equal(t, callbeat.HbSourceSlotStart, fallback.fastSource)
 }

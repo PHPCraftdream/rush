@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
@@ -56,7 +58,7 @@ func TestRequestedRoleDispatchChangesModelNotCallPolicy(t *testing.T) {
 		got := calls[len(calls)-1]
 		require.Equal(t, role, got.RequestedModelRole)
 		require.Equal(t, string(role)+"-model", got.SmartModel.ModelCfg.Model)
-		require.Equal(t, hbSourceSlotLive, got.RequestedModelSource)
+		require.Equal(t, callbeat.HbSourceSlotLive, got.RequestedModelSource)
 		require.EqualValues(t, 100+i, got.MaxOutputTokens)
 		require.Equal(t, 1, got.CallOptions.MaxAgentDepth)
 		if i > 0 {
@@ -131,7 +133,7 @@ func TestBuiltinRoleResumeUsesSlotModelUnderCustomParentCeiling(t *testing.T) {
 	for i, got := range calls {
 		require.Equal(t, RequestedModelRole("reviewer"), got.RequestedModelRole, "call %d", i)
 		require.Equal(t, "reviewer-model", got.SmartModel.ModelCfg.Model, "call %d", i)
-		require.Equal(t, hbSourceSlotLive, got.RequestedModelSource, "call %d", i)
+		require.Equal(t, callbeat.HbSourceSlotLive, got.RequestedModelSource, "call %d", i)
 		require.EqualValues(t, 103, got.MaxOutputTokens, "call %d", i)
 		require.True(t, stored.Equal(got.RoleContract), "call %d keeps the stored contract", i)
 		require.Equal(t, "reviewer", got.RoleContract.Name, "call %d", i)

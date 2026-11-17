@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -263,7 +265,7 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 	resolved := &resolvedOverrides{credentials: creds}
 	resolved.persistSmartModel, resolved.persistFastModel = sessionModelPersistenceFrom(ctx)
 	if customContract != nil {
-		resolved.smartSource = hbSourceSessionOverride
+		resolved.smartSource = callbeat.HbSourceSessionOverride
 	}
 	if base != nil {
 		resolved.smart = base.smart
@@ -287,7 +289,7 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 			return nil, err
 		}
 		resolved.smart = smart
-		resolved.smartSource = hbSourcePerCall
+		resolved.smartSource = callbeat.HbSourcePerCall
 		resolved.providerCfg = providerCfg
 		if err := c.rejectScopedCallOnCLIProvider(ctx, "smart", providerCfg); err != nil {
 			return nil, err
@@ -313,7 +315,7 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 			return nil, err
 		}
 		resolved.fast = fast
-		resolved.fastSource = hbSourcePerCall
+		resolved.fastSource = callbeat.HbSourcePerCall
 	}
 	var workerProviderCfg config.ProviderConfig
 	var workerConfigured bool
@@ -354,7 +356,7 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 		}
 		resolved.smart = model
 		resolved.providerCfg = providerCfg
-		resolved.smartSource = hbSourceSessionOverride
+		resolved.smartSource = callbeat.HbSourceSessionOverride
 		resolved.promptPrefix = providerCfg.SystemPromptPrefix
 	}
 

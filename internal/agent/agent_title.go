@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
@@ -206,7 +208,7 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 	}
 	// Heartbeat attribution: the title slot is the fast model (design pt. 1).
 	hb := heartbeat.FromContext(ctx)
-	ctx = withHeartbeat(ctx, sessionID, heartbeat.PurposeTitle, "fast", hbFastSource(ctx, hb))
+	ctx = callbeat.WithHeartbeat(ctx, sessionID, heartbeat.PurposeTitle, "fast", callbeat.HbFastSource(ctx, hb))
 
 	// Ensure the session always gets a title even if every path below
 	// fails or the context is cancelled before we finish. WithoutCancel so
@@ -420,7 +422,7 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 		cost = 0
 	}
 	// Heartbeat usage: the model that actually answered (design pt. 4).
-	addHeartbeatUsage(ctx, model.Model.Provider(), model.Model.Model(), usage, cost)
+	callbeat.AddHeartbeatUsage(ctx, model.Model.Provider(), model.Model.Model(), usage, cost)
 
 	// Rename and cost-accrual are intentionally two separate atomic calls,
 	// not a single combined update. Title generation is a small side LLM

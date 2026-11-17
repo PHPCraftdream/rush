@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
 
@@ -370,8 +372,8 @@ func (a *sessionAgent) CancelQueuedSummarize(sessionID string) {
 // auto-summarize).
 func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, smartModel Model, systemPromptPrefix string) error {
 	// Heartbeat attribution: summary runs on the smart slot (design pt. 1).
-	role, source := hbInherited(ctx)
-	ctx = withHeartbeat(ctx, sessionID, heartbeat.PurposeSummary, role, source)
+	role, source := callbeat.HbInherited(ctx)
+	ctx = callbeat.WithHeartbeat(ctx, sessionID, heartbeat.PurposeSummary, role, source)
 	currentSession, err := a.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
@@ -551,7 +553,7 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 	totalUsage := normalizeProviderUsage(smartModel.Model.Provider(), resp.TotalUsage)
 	costDelta := a.updateSessionUsage(smartModel, &freshSession, totalUsage, openrouterCost)
 	// Heartbeat usage: one add per accounted compaction (design pt. 4).
-	addHeartbeatUsage(ctx, smartModel.Model.Provider(), smartModel.Model.Model(), totalUsage, costDelta)
+	callbeat.AddHeartbeatUsage(ctx, smartModel.Model.Provider(), smartModel.Model.Model(), totalUsage, costDelta)
 	if costDelta != 0 {
 		if _, costErr := a.sessions.IncrementCost(commitCtx, freshSession.ID, costDelta); costErr != nil {
 			return costErr

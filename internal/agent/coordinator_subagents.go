@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
@@ -322,7 +324,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// per-call credentials exist to prevent. A build failure is a hard
 	// error for the same reason: falling through to `model` would run
 	// tenant work on the shared config.
-	hbSource := hbSourceSlotStart
+	hbSource := callbeat.HbSourceSlotStart
 	var credProviderCfg *config.ProviderConfig
 	var callCreds *CredentialSet
 	if explicitRoleModel != nil {
@@ -347,7 +349,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			}
 			model = credModel
 			credProviderCfg = &provCfg
-			hbSource = hbSourcePerCall
+			hbSource = callbeat.HbSourcePerCall
 		}
 	}
 
@@ -368,14 +370,14 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			slog.Error("runSubAgent: failed to resolve session worker override, falling back to default", "sessionID", params.SessionID, "err", err)
 		} else if override != nil {
 			model = *override
-			hbSource = hbSourceSessionOverride
+			hbSource = callbeat.HbSourceSessionOverride
 		}
 	}
 	// The refresh is best-effort; preserve the selected role for future turns.
 	var dispatchSlotRole config.SelectedModelType
 	if requestedRole != "" && !requestedRole.Builtin() {
 		dispatchSlotRole = ""
-	} else if requestedRole == "" && params.slotModel && callCreds == nil && hbSource != hbSourceSessionOverride {
+	} else if requestedRole == "" && params.slotModel && callCreds == nil && hbSource != callbeat.HbSourceSessionOverride {
 		dispatchSlotRole = config.SelectedModelTypeSmart
 		if role := callModelRole(ctx); role == "" || role == config.SelectedModelTypeSmart {
 			if c.workerSubAgentActiveForCall(ctx, cfg) {
@@ -384,7 +386,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		}
 		if refreshed, ok := c.refreshSubAgentSlotModel(ctx, cfg, dispatchSlotRole, model); ok {
 			model = refreshed
-			hbSource = hbSourceSlotLive
+			hbSource = callbeat.HbSourceSlotLive
 		}
 	}
 	maxTokens := model.CatwalkCfg.DefaultMaxTokens
@@ -432,7 +434,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		return nil
 	}
 
-	if callCreds == nil && explicitRoleModel == nil && childRoleContract == nil && hbSource != hbSourceSessionOverride {
+	if callCreds == nil && explicitRoleModel == nil && childRoleContract == nil && hbSource != callbeat.HbSourceSessionOverride {
 		if err := c.refreshOAuth2Token(ctx, providerCfg); err != nil {
 			slog.Error("Failed to refresh OAuth2 token before sub-agent run. Proceeding with existing token.", "error", err)
 		} else if err := rebuildCall(); err != nil {
@@ -575,7 +577,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// that gap; every remaining line of this function is unchanged.
 	// Heartbeat attribution: delegation boundary re-parents onto the child
 	// session; root inherited from the dispatching turn (design pt. 2).
-	ctx = inheritHeartbeat(ctx, session.ID, "worker", hbSource)
+	ctx = callbeat.InheritHeartbeat(ctx, session.ID, "worker", hbSource)
 	run := func() (*fantasy.AgentResult, error) {
 		runOptions := *childCallOptions
 		runOptions.MaxAgentDepth = childRemaining

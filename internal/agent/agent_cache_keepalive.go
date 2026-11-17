@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
@@ -206,7 +208,7 @@ func (a *sessionAgent) fireCacheKeepAliveHB(hb heartbeat.Context, sessionID stri
 	if hb.SessionID != "" || hb.RootSessionID != "" {
 		ctx = heartbeat.WithContext(ctx, hb)
 	}
-	ctx = withHeartbeat(ctx, sessionID, heartbeat.PurposeKeepalive, hb.Role, hb.Source)
+	ctx = callbeat.WithHeartbeat(ctx, sessionID, heartbeat.PurposeKeepalive, hb.Role, hb.Source)
 
 	a.cacheKeepAliveMu.Lock()
 	current, ok := a.cacheKeepAlive.Get(sessionID)
@@ -444,7 +446,7 @@ func (a *sessionAgent) recordCacheKeepAliveCost(ctx context.Context, sessionID s
 		cost = 0
 	}
 	// Heartbeat usage: recorded even when the DB charge is skipped at cost 0 (design pt. 4).
-	addHeartbeatUsage(ctx, model.Model.Provider(), model.Model.Model(), usage, cost)
+	callbeat.AddHeartbeatUsage(ctx, model.Model.Provider(), model.Model.Model(), usage, cost)
 	if cost == 0 {
 		return true
 	}

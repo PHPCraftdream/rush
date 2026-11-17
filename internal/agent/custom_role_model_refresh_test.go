@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -48,7 +50,7 @@ func TestCustomRoleModelResolveUsesPinnedConfigWithoutChangingAuthority(t *testi
 			require.Equal(t, "low", selected.ReasoningEffort)
 			require.False(t, selected.Think)
 			require.EqualValues(t, 99, selected.MaxTokens)
-			require.Equal(t, hbSourceSlotLive, source)
+			require.Equal(t, callbeat.HbSourceSlotLive, source)
 			require.Equal(t, 0.25, *selected.Temperature)
 			*selected.Temperature = 0.75
 			selected.ProviderOptions["nested"].(map[string]any)["mode"] = "mutated"
@@ -161,7 +163,7 @@ func TestCustomRoleDiskRefreshPinsResolvedModelPromptAndTools(t *testing.T) {
 	require.Equal(t, "smart-provider|before-refresh|before-refresh", before.systemPrompt)
 
 	// Finish a build pinned before publication while the store already exposes new config.
-	finished, err := coord.finishCustomRoleResolveSnapshot(ctx, pinned, before.smart, model, hbSourceSlotLive, false)
+	finished, err := coord.finishCustomRoleResolveSnapshot(ctx, pinned, before.smart, model, callbeat.HbSourceSlotLive, false)
 	require.NoError(t, err)
 	require.Equal(t, "smart-provider|before-refresh|before-refresh", finished.systemPrompt)
 	require.True(t, contract.Equal(callOptionsFrom(ctx).RoleContract))

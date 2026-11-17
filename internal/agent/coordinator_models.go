@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -243,11 +245,11 @@ func (c *coordinator) resolveSessionModelsInternal(ctx context.Context, sessionI
 		fast:  fastModel,
 	}
 	if customContract != nil {
-		resolved.smartSource = hbSourceSessionOverride
-		resolved.fastSource = hbSourceSlotLive
+		resolved.smartSource = callbeat.HbSourceSessionOverride
+		resolved.fastSource = callbeat.HbSourceSlotLive
 	} else {
-		resolved.smartSource = hbOverrideSource(smartOverride != nil)
-		resolved.fastSource = hbOverrideSource(fastOverride != nil)
+		resolved.smartSource = callbeat.HbOverrideSource(smartOverride != nil)
+		resolved.fastSource = callbeat.HbOverrideSource(fastOverride != nil)
 		if roleSource != "" {
 			resolved.smartSource = roleSource
 		}
@@ -446,8 +448,8 @@ func (c *coordinator) applyModelOverrides(ctx context.Context, sessionID string,
 	}
 
 	resolved := &resolvedOverrides{smart: smartModel, fast: fastModel}
-	resolved.smartSource = hbCallSource(smart != nil)
-	resolved.fastSource = hbCallSource(fast != nil)
+	resolved.smartSource = callbeat.HbCallSource(smart != nil)
+	resolved.fastSource = callbeat.HbCallSource(fast != nil)
 	if roleSource != "" {
 		resolved.smartSource = roleSource
 	}

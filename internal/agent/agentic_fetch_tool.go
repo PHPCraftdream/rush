@@ -9,6 +9,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
@@ -171,7 +173,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 
 			// Heartbeat attribution: fetch's real call-point role is fast, its
 			// model is an explicit per-call build (design pt. 1/3).
-			childCtx = withHeartbeat(childCtx, validationResult.SessionID, heartbeat.PurposeFetch, "fast", hbSourcePerCall)
+			childCtx = callbeat.WithHeartbeat(childCtx, validationResult.SessionID, heartbeat.PurposeFetch, "fast", callbeat.HbSourcePerCall)
 
 			promptOpts := []prompt.Option{
 				prompt.WithWorkingDir(tmpDir),

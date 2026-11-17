@@ -22,6 +22,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -458,7 +459,7 @@ func buildPingProvider(ctx context.Context, store *config.ConfigStore, providerC
 	if err != nil {
 		return nil, err
 	}
-	return rushagent.NewHeartbeatProvider(p), nil
+	return callbeat.NewHeartbeatProvider(p), nil
 }
 
 // buildPingProviderRaw constructs a provider for the ping request.
