@@ -12,10 +12,9 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/spf13/cobra"
-	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 )
 
 var sessionsResetCmd = &cobra.Command{

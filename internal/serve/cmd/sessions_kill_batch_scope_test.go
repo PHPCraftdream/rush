@@ -10,14 +10,13 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
-	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 )
 
 // Scope read внедрён; OS-probe, очередь и pending injects — настоящие.

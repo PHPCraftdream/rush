@@ -14,10 +14,9 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 )
 
 // reapIdleSetup isolates the config env, chdirs into a temp workDir, points

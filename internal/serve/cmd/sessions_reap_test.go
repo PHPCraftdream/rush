@@ -11,9 +11,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
 
-	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/stretchr/testify/require"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	"github.com/stretchr/testify/require"
 )
 
 // TestSessionsReapCmdRun_HonorsConfiguredDataDir is the regression test for

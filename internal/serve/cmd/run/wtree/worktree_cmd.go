@@ -14,9 +14,8 @@ import (
 	"text/tabwriter"
 
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
-	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/spf13/cobra"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	"github.com/spf13/cobra"
 )
 
 var worktreeCmd = &cobra.Command{
