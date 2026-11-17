@@ -667,16 +667,6 @@ func verdictPulse(pulse string, v session.ActivityVerdict) (label string, betwee
 	return "between-turns", true
 }
 
-// kindIsLive reports whether a verdict Kind means the session's scope is
-// open -- the one liveness question the locks/reap/prune paths ask.
-func kindIsLive(k session.ActivityKind) bool {
-	switch k {
-	case session.ActivityInTurn, session.ActivityBetweenTurns, session.ActivityDelegating:
-		return true
-	}
-	return false
-}
-
 // stemIDsForLocks is the id universe the locks view classifies: every
 // top-level session plus every id carrying a driver marker (a deleted
 // session's marker can outlive its row until the purge sweep).

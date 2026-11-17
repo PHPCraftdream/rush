@@ -1,4 +1,4 @@
-package cmd
+package sesscost
 
 // The model a session's spend is attributed to, and whether a price for it is
 // configured at all. Both are display facts, not accounting: the money comes

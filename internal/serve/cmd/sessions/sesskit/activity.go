@@ -1,4 +1,4 @@
-package cmd
+package sesskit
 
 import (
 	"context"
@@ -7,11 +7,12 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
-// callTreeActivity is the ONE underlying signal this fork plumbs through
+// CallTreeActivity is the ONE underlying signal this fork plumbs through
 // every session-monitoring surface: "the most recent real activity
 // anywhere in this session's call tree, including inside an in-flight
 // sub-agent delegation".
@@ -31,7 +32,7 @@ import (
 // child rows, which none of the monitoring commands looked at. This helper
 // closes that gap in one place: it walks the session's whole descendant
 // tree and returns the newest message activity found anywhere in it.
-type callTreeActivity struct {
+type CallTreeActivity struct {
 	// LatestUnix is the newest message activity timestamp (max of
 	// created_at / updated_at) across the session and every descendant
 	// sub-agent session. 0 when the tree has no messages yet.
@@ -56,14 +57,14 @@ type callTreeActivity struct {
 // relative to now. Returns (0, false) when the tree has no activity at all
 // (LatestUnix == 0) so callers can distinguish "no messages yet" from
 // "active this instant".
-func (c callTreeActivity) Age(now time.Time) (time.Duration, bool) {
+func (c CallTreeActivity) Age(now time.Time) (time.Duration, bool) {
 	if c.LatestUnix == 0 {
 		return 0, false
 	}
 	return now.Sub(time.Unix(c.LatestUnix, 0)), true
 }
 
-// computeCallTreeActivity returns the freshest message activity found
+// ComputeCallTreeActivity returns the freshest message activity found
 // anywhere in rootID's call tree (rootID itself plus every descendant
 // sub-agent session reachable via parent_session_id). This is the single
 // source of truth consumed by `sessions why` / `locks` / `list` / `show` /
@@ -83,15 +84,15 @@ func (c callTreeActivity) Age(now time.Time) (time.Duration, bool) {
 // treatable in a SQLite recursive CTE and not a real risk in practice.
 //
 // Error handling: a query failure is NOT fatal and returns the zero-value
-// callTreeActivity — this is a best-effort diagnostic signal consumed by six
+// CallTreeActivity — this is a best-effort diagnostic signal consumed by six
 // different display surfaces (`sessions why`/`locks`/`list`/`show`/`watch`/
-// `last`), all of which already treat a zero-value callTreeActivity as "no
+// `last`), all of which already treat a zero-value CallTreeActivity as "no
 // activity found". Unlike the old per-node BFS, a single aggregate query
 // cannot partially fail on just one tree node — it either returns the whole
 // tree's answer or it doesn't return at all — so the failure is logged once
 // at Debug level rather than per-node.
-func computeCallTreeActivity(ctx context.Context, a *app.App, rootID string) callTreeActivity {
-	out := callTreeActivity{}
+func ComputeCallTreeActivity(ctx context.Context, a *app.App, rootID string) CallTreeActivity {
+	out := CallTreeActivity{}
 	if a == nil || rootID == "" {
 		return out
 	}
@@ -112,16 +113,16 @@ func computeCallTreeActivity(ctx context.Context, a *app.App, rootID string) cal
 	return out
 }
 
-// computeCallTreeActivityBatch is the batch form of computeCallTreeActivity:
+// ComputeCallTreeActivityBatch is the batch form of ComputeCallTreeActivity:
 // it computes the freshest call-tree activity for EVERY id in rootIDs in one
 // service call, instead of one query per root. Used by `sessions list`,
 // which otherwise walked the whole descendant tree of every running session
 // individually. Roots with no activity anywhere in their tree are simply
-// absent from the returned map (mirroring the zero-value callTreeActivity a
+// absent from the returned map (mirroring the zero-value CallTreeActivity a
 // per-root call would have produced). The underlying service chunks the root
 // list so a single batch can never exceed SQLite's parameter limit.
-func computeCallTreeActivityBatch(ctx context.Context, a *app.App, rootIDs []string) map[string]callTreeActivity {
-	out := make(map[string]callTreeActivity, len(rootIDs))
+func ComputeCallTreeActivityBatch(ctx context.Context, a *app.App, rootIDs []string) map[string]CallTreeActivity {
+	out := make(map[string]CallTreeActivity, len(rootIDs))
 	if a == nil || len(rootIDs) == 0 {
 		return out
 	}
@@ -133,7 +134,7 @@ func computeCallTreeActivityBatch(ctx context.Context, a *app.App, rootIDs []str
 	}
 
 	for rootID, act := range results {
-		out[rootID] = callTreeActivity{
+		out[rootID] = CallTreeActivity{
 			LatestUnix:       act.LatestUnix,
 			DeepestSessionID: act.SessionID,
 			SubAgentActive:   act.SessionID != rootID,
@@ -143,12 +144,12 @@ func computeCallTreeActivityBatch(ctx context.Context, a *app.App, rootIDs []str
 	return out
 }
 
-// latestMessageUnix returns the more recent of a message's created_at and
+// LatestMessageUnix returns the more recent of a message's created_at and
 // updated_at. updated_at is bumped by the update_messages_updated_at DB
 // trigger on every Update (which the agent loop calls as tool calls stream
 // in), so it is the timestamp that actually moves during an in-flight turn;
 // created_at covers freshly inserted tool-result rows.
-func latestMessageUnix(m message.Message) int64 {
+func LatestMessageUnix(m message.Message) int64 {
 	ts := m.CreatedAt
 	if m.UpdatedAt > ts {
 		ts = m.UpdatedAt
@@ -156,7 +157,7 @@ func latestMessageUnix(m message.Message) int64 {
 	return ts
 }
 
-// callTreeActivityFresherThan returns the call-tree activity for rootID only
+// CallTreeActivityFresherThan returns the call-tree activity for rootID only
 // when it is strictly newer than the given baseline unix timestamp (e.g. the
 // lock file's heartbeat mtime, or the root session's own updated_at). It is
 // the convenience the display surfaces use: they already have a coarse
@@ -164,15 +165,25 @@ func latestMessageUnix(m message.Message) int64 {
 // it when a sub-agent delegation is producing activity the coarse signal
 // can't see. Returns (activity, true) when the tree's freshest activity is
 // newer than baselineUnix, else (zero, false).
-func callTreeActivityFresherThan(ctx context.Context, a *app.App, rootID string, baselineUnix int64) (callTreeActivity, bool) {
-	act := computeCallTreeActivity(ctx, a, rootID)
+func CallTreeActivityFresherThan(ctx context.Context, a *app.App, rootID string, baselineUnix int64) (CallTreeActivity, bool) {
+	act := ComputeCallTreeActivity(ctx, a, rootID)
 	if act.LatestUnix > baselineUnix {
 		return act, true
 	}
 	return act, false
 }
 
-// subAgentActivityNote renders the one-line "…and here's the sub-agent
+// KindIsLive reports whether a verdict Kind means the session's scope is
+// open -- the one liveness question the locks/reap/prune paths ask.
+func KindIsLive(k session.ActivityKind) bool {
+	switch k {
+	case session.ActivityInTurn, session.ActivityBetweenTurns, session.ActivityDelegating:
+		return true
+	}
+	return false
+}
+
+// SubAgentActivityNote renders the one-line "…and here's the sub-agent
 // pulse" suffix shared by every surface, or "" when there is no in-flight
 // sub-agent whose activity is fresher than the baseline. Keeping the
 // wording in ONE place is deliberate: the user asked for a single signal
@@ -187,8 +198,8 @@ func callTreeActivityFresherThan(ctx context.Context, a *app.App, rootID string,
 // so an operator watching a long delegation can tell "still working" from
 // "stuck": a small, moving age means progress; an age that keeps growing
 // past the sub-agent's own stream-idle window means it has likely hung.
-func subAgentActivityNote(ctx context.Context, a *app.App, rootID string, baselineUnix int64, now time.Time) string {
-	act, fresher := callTreeActivityFresherThan(ctx, a, rootID, baselineUnix)
+func SubAgentActivityNote(ctx context.Context, a *app.App, rootID string, baselineUnix int64, now time.Time) string {
+	act, fresher := CallTreeActivityFresherThan(ctx, a, rootID, baselineUnix)
 	if !fresher || !act.SubAgentActive {
 		return ""
 	}
@@ -202,6 +213,6 @@ func subAgentActivityNote(ctx context.Context, a *app.App, rootID string, baseli
 	}
 	return fmt.Sprintf(
 		"sub-agent active: %s activity %s (session %s)",
-		role, formatDurationShort(age), short(session.HashID(act.DeepestSessionID)),
+		role, FormatDurationShort(age), cliout.Short(session.HashID(act.DeepestSessionID)),
 	)
 }

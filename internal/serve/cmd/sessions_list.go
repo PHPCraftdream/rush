@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -126,7 +127,7 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 					// must still surface, so the answer flag sits outside the
 					// roots/unknown guard (false in the common no-question
 					// case, so the omitempty wire shape is unchanged).
-					item.BatchAwaitingAnswer = bf.awaitingAnswer()
+					item.BatchAwaitingAnswer = bf.AwaitingAnswer()
 					if len(bf.Roots) > 0 || bf.Unknown {
 						item.BatchRoots = len(bf.Roots)
 						item.BatchDebt = bf.Debt
@@ -165,55 +166,14 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 	},
 }
 
-type pendingChildQuestionReader interface {
-	PendingChildQuestions(context.Context, string) ([]session.ChildQuestion, error)
-}
+type pendingChildQuestionReader = sesskit.PendingChildQuestionReader
 
 func sessionQuestionReaderForApp(a *app.App) pendingChildQuestionReader {
-	if a == nil {
-		return nil
-	}
-	if a.DB == nil {
-		return nil
-	}
-	conn := a.DB()
-	if conn == nil {
-		return nil
-	}
-	return session.NewSessionNoticeStore(conn)
+	return sesskit.SessionQuestionReaderForApp(a)
 }
 
-// listStatusesWithAwaiting maps the classifier's verdicts to the STATUS
-// column, adding the awaiting-answer substate (#1158): each listed root's
-// pending child_question notices re-classify its verdict (read-only; a
-// failed notice read leaves the plain verdict) and become the
-// "(awaiting answer)" annotation plus the JSON wire fields.
 func listStatusesWithAwaiting(ctx context.Context, store pendingChildQuestionReader, activities app.SessionActivityBatchResult, ids []string) (map[string]string, map[string]session.ChildQuestion) {
-	questionsByRoot := map[string][]session.ChildQuestion{}
-	if store != nil {
-		for _, id := range ids {
-			if qs, err := store.PendingChildQuestions(ctx, id); err == nil && len(qs) > 0 {
-				questionsByRoot[id] = qs
-			}
-		}
-	}
-	statusByID := make(map[string]string, len(ids))
-	awaitingByID := make(map[string]session.ChildQuestion, len(questionsByRoot))
-	for id, act := range activities.ByID {
-		v := act.Verdict
-		if qs := questionsByRoot[id]; len(qs) > 0 {
-			f := act.Facts
-			f.ChildQuestions = qs
-			v = session.ClassifySessionActivity(f)
-			awaitingByID[id] = qs[0]
-		}
-		st := sessionStatusLabel(v, act.Facts.EndedReason)
-		if _, ok := questionsByRoot[id]; ok && st != "" {
-			st += " (awaiting answer)"
-		}
-		statusByID[id] = st
-	}
-	return statusByID, awaitingByID
+	return sesskit.ListStatusesWithAwaiting(ctx, store, activities, ids)
 }
 
 // idsOf projects the session list to the id slice the batched

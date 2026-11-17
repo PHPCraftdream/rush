@@ -1,4 +1,4 @@
-package cmd
+package sesscost
 
 // Model resolution and price lookup for `sessions cost`. Both are display
 // facts about a session, so they are tested directly rather than through a

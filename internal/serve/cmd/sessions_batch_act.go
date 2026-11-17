@@ -12,13 +12,12 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
@@ -52,13 +51,7 @@ func batchSessionGuardReason(f batchSessionFacts) string {
 // output shape the legacy reset refusal uses, naming the offending root and
 // surfacing the cancelling = "stopped but awaiting termination" case.
 func batchResetRefusedError(sessionID string, refusal *session.BatchResetRefusal) error {
-	state := refusal.State
-	if state == "cancelling" {
-		state = "cancelling (stopped but awaiting termination)"
-	}
-	return fmt.Errorf("session %s is still being worked on (batch root %s tool call %s is %s); "+
-		"nothing was reset. Stop it first (`rush sessions cancel %s` / `rush batch stop`), then reset again",
-		sessionID, refusal.RootID, refusal.ToolCallID, state, sessionID)
+	return sesskit.BatchResetRefusedError(sessionID, refusal)
 }
 
 // resetLiveLoopRefusal is the reset's live-loop gate: the batch
@@ -67,14 +60,7 @@ func batchResetRefusedError(sessionID string, refusal *session.BatchResetRefusal
 // otherwise wipe a session a loop still drives (the R8A-3 bug). Refuses
 // under --force too.
 func resetLiveLoopRefusal(ctx context.Context, a *app.App, sessionID string) error {
-	act, actErr := a.SessionActivity(ctx, sessionID)
-	if actErr != nil {
-		return resetRefusedError(sessionID, "live-work state could not be read (fail closed)")
-	}
-	if act.Facts.Driver != nil {
-		return resetRefusedError(sessionID, "a live `rush run` loop still drives it")
-	}
-	return nil
+	return sesskit.ResetLiveLoopRefusal(ctx, a, sessionID)
 }
 
 // batchResetSessionHistory is the reset path: the R10c batch reset
@@ -85,34 +71,7 @@ func resetLiveLoopRefusal(ctx context.Context, a *app.App, sessionID string) err
 // ledger. The plain-wipe fallback
 // exists only for a configless App (nil DB).
 func batchResetSessionHistory(ctx context.Context, a *app.App, sessionID string) (session.BatchResetOutcome, error) {
-	if a.DB() == nil {
-		// No database can hold batch rows: the plain wipe is all there is.
-		if err := a.Messages.DeleteSessionMessages(ctx, sessionID); err != nil {
-			return session.BatchResetOutcome{}, fmt.Errorf("failed to reset session %s: %w", sessionID, err)
-		}
-		return session.BatchResetOutcome{}, nil
-	}
-	// H4 W2: the legacy reset's RecoverOwnerScope twin
-	// recovers dead-host roots before its refusal: a dead host's running
-	// roots become interrupted/host_lost FIRST, so the atomic refusal below
-	// judges only work a live host still holds. Best-effort: a failed
-	// recovery keeps the conservative refusal. Accepted without a budget:
-	// an explicit user command, not a hot path.
-	if _, err := session.NewBatchStore(a.DB()).BatchRecoverOwnerScope(ctx, sessionID, session.BatchSharedHostProbe(a.DataDirectory())); err != nil {
-		slog.Debug("sessions reset: batch dead-host recovery failed; refusal stays conservative", "session_id", sessionID, "err", err)
-	}
-	out, err := session.NewBatchStore(a.DB()).BatchResetOwnerHistory(ctx, a.Messages, sessionID)
-	var refusal *session.BatchResetRefusal
-	if errors.As(err, &refusal) {
-		return session.BatchResetOutcome{}, batchResetRefusedError(sessionID, refusal)
-	}
-	if errors.Is(err, session.ErrBatchResetRefused) {
-		return session.BatchResetOutcome{}, resetRefusedError(sessionID, err.Error())
-	}
-	if err != nil {
-		return session.BatchResetOutcome{}, fmt.Errorf("failed to reset session %s: %w", sessionID, err)
-	}
-	return out, nil
+	return sesskit.BatchResetSessionHistory(ctx, a, sessionID)
 }
 
 // gcDropBatchProtected removes sessions whose batch facts show live or

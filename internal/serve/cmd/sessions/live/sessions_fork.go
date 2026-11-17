@@ -1,12 +1,15 @@
-package cmd
+package sesslive
 
 import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/spf13/cobra"
 
+	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -30,40 +33,62 @@ rush sessions fork my-session-id --at 5
 rush sessions fork my-session-id --session new-id --title "My Fork"
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		atN, _ := cmd.Flags().GetInt("at")
-		newID, _ := cmd.Flags().GetString("session")
-		title, _ := cmd.Flags().GetString("title")
-		asChild, _ := cmd.Flags().GetBool("child")
-
-		a, err := setupApp(cmd)
-		if err != nil {
-			return err
-		}
-		defer a.Shutdown()
-		ctx := cmd.Context()
-
-		// resolveSessionID supports hash-prefix lookup, which
-		// session.Service.ForkSessionTx does not — resolve the exact source
-		// ID here, then ForkSessionTx re-reads it inside the transaction for
-		// a consistent snapshot.
-		source, err := resolveSessionID(ctx, a.Sessions, args[0])
-		if err != nil {
-			return err
-		}
-
-		fork, msgCount, err := forkSessionCLI(ctx, a.Sessions, source.ID, forkOptions{
-			atN:     atN,
-			newID:   newID,
-			title:   title,
-			asChild: asChild,
-		})
-		if err != nil {
-			return err
-		}
-
-		fmt.Fprintf(os.Stderr, "forked session %s -> %s (copied %d messages)\n", source.ID, fork.ID, msgCount)
-		return nil
+		return sessionsForkCmdRun(cmd, args, cmdkit.SetupApp)
 	},
+}
+
+var sessionsForkFlagsOnce sync.Once
+
+// NewSessionsForkCmd returns a fresh sessions fork command with its setup
+// dependency bound to this command instance.
+func NewSessionsForkCmd(setup func(*cobra.Command) (*app.App, error)) *cobra.Command {
+	sessionsForkFlagsOnce.Do(func() {
+		sessionsForkCmd.Flags().Int("at", 0, "Copy only the first N messages (1-indexed, default: all)")
+		sessionsForkCmd.Flags().String("session", "", "ID for the new session (default: a generated UUID)")
+		sessionsForkCmd.Flags().String("title", "", "Title for the new session")
+		sessionsForkCmd.Flags().Bool("child", false, "Set source as parent_session_id (creates a child session)")
+	})
+	cmd := cmdkit.DeepFreshCmd(sessionsForkCmd)
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		return sessionsForkCmdRun(cmd, args, setup)
+	}
+	return cmd
+}
+
+func sessionsForkCmdRun(cmd *cobra.Command, args []string, setup func(*cobra.Command) (*app.App, error)) error {
+	atN, _ := cmd.Flags().GetInt("at")
+	newID, _ := cmd.Flags().GetString("session")
+	title, _ := cmd.Flags().GetString("title")
+	asChild, _ := cmd.Flags().GetBool("child")
+
+	a, err := setup(cmd)
+	if err != nil {
+		return err
+	}
+	defer a.Shutdown()
+	ctx := cmd.Context()
+
+	// cmdkit.ResolveSessionID supports hash-prefix lookup, which
+	// session.Service.ForkSessionTx does not — resolve the exact source
+	// ID here, then ForkSessionTx re-reads it inside the transaction for
+	// a consistent snapshot.
+	source, err := cmdkit.ResolveSessionID(ctx, a.Sessions, args[0])
+	if err != nil {
+		return err
+	}
+
+	fork, msgCount, err := forkSessionCLI(ctx, a.Sessions, source.ID, forkOptions{
+		atN:     atN,
+		newID:   newID,
+		title:   title,
+		asChild: asChild,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(os.Stderr, "forked session %s -> %s (copied %d messages)\n", source.ID, fork.ID, msgCount)
+	return nil
 }
 
 // forkOptions carries the CLI-specific fork knobs (--at / --session / --title

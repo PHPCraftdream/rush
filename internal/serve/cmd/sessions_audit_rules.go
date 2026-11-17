@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 )
 
 // Bounds on the evidence a finding carries. A command is cut at 110 bytes
@@ -84,10 +86,7 @@ func auditCut(s string, max int) string {
 
 // auditPlaceholders renders "? , ? , ?" for an IN (...) clause of n ids.
 func auditPlaceholders(n int) string {
-	if n <= 0 {
-		return ""
-	}
-	return strings.Repeat("?,", n-1) + "?"
+	return sesskit.AuditPlaceholders(n)
 }
 
 // auditPartEnvelope is the on-disk shape of one content part, exactly as
@@ -122,7 +121,7 @@ const (
 // limit is build-dependent (999 on old builds, 32766 on current ones), and a
 // --all over thousands of sessions must not bet on either; 900 sits below the
 // smallest of them.
-const auditQueryChunk = 900
+const auditQueryChunk = sesskit.AuditQueryChunk
 
 // auditScanMessages reads the selected sessions' messages and folds every row
 // into tally, in chunks of auditQueryChunk ids per statement. The rows' order

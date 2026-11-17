@@ -1,4 +1,4 @@
-package cmd
+package sesslive
 
 import (
 	"context"
@@ -8,8 +8,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
+
+func TestMain(m *testing.M) { cmdtest.Main(m) }
 
 func countAllSessionsCLI(t *testing.T, ctx context.Context, sqlDB *sql.DB) int64 {
 	t.Helper()
@@ -33,7 +36,7 @@ func countMsgsForSessionCLI(t *testing.T, ctx context.Context, sqlDB *sql.DB, se
 // on top of the shared session.Service.ForkSessionTx.
 func TestForkSessionCLI_HappyPath(t *testing.T) {
 	t.Parallel()
-	conn, q := newTestDB(t)
+	conn, q := cmdtest.NewTestDB(t)
 	s := session.NewService(q, conn)
 	ctx := context.Background()
 
@@ -80,7 +83,7 @@ func TestForkSessionCLI_HappyPath(t *testing.T) {
 // messages (1-indexed).
 func TestForkSessionCLI_AtTruncation(t *testing.T) {
 	t.Parallel()
-	conn, q := newTestDB(t)
+	conn, q := cmdtest.NewTestDB(t)
 	s := session.NewService(q, conn)
 	ctx := context.Background()
 
@@ -103,7 +106,7 @@ func TestForkSessionCLI_AtTruncation(t *testing.T) {
 // rejected before any DB row is written.
 func TestForkSessionCLI_AtOutOfRange(t *testing.T) {
 	t.Parallel()
-	conn, q := newTestDB(t)
+	conn, q := cmdtest.NewTestDB(t)
 	s := session.NewService(q, conn)
 	ctx := context.Background()
 
@@ -130,7 +133,7 @@ func TestForkSessionCLI_AtOutOfRange(t *testing.T) {
 // error implying the user passed an invalid --at flag they never set.
 func TestForkSessionCLI_EmptySourceNoAt(t *testing.T) {
 	t.Parallel()
-	conn, q := newTestDB(t)
+	conn, q := cmdtest.NewTestDB(t)
 	s := session.NewService(q, conn)
 	ctx := context.Background()
 
@@ -156,7 +159,7 @@ func TestForkSessionCLI_EmptySourceNoAt(t *testing.T) {
 // equally atomic.
 func TestForkSessionCLI_MidwayFailureRollsBack(t *testing.T) {
 	t.Parallel()
-	conn, q := newTestDB(t)
+	conn, q := cmdtest.NewTestDB(t)
 	s := session.NewService(q, conn)
 	ctx := context.Background()
 

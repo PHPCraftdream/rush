@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -155,8 +156,5 @@ func finishSessionReset(cmd *cobra.Command, a *app.App, sessID string, force boo
 // atomic refusal and the live-loop gate render their "still being worked
 // on" reason through it.
 func resetRefusedError(sessionID, what string) error {
-	return fmt.Errorf("session %s is still being worked on (%s); nothing was reset. "+
-		"Stop it first (`rush sessions cancel %s`: a waiting rush run exits at its next wake; a hung one can be ended by its PID, shown by `rush sessions jobs %s`, "+
-		"or `rush sessions kill %s` while a turn holds the session lock), then reset again "+
-		"(--force only kills the process holding the session lock; it does not stop a loop between turns or running jobs)", sessionID, what, sessionID, sessionID, sessionID)
+	return sesskit.ResetRefusedError(sessionID, what)
 }

@@ -9,6 +9,9 @@ import (
 	"sync"
 	"time"
 
+	sesslive "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/live"
+	sesscost "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/report/cost"
+	sessscan "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/view/scan"
 	"github.com/spf13/cobra"
 )
 
@@ -41,6 +44,14 @@ Cleanup:     purge <age> [--matching <glob>], kill <id> (force-unlock),
 // exactly once (former package init body; lane K2 of the sprint0 cmd split
 // removed package init registration). The command object itself is a package
 // var that only this constructor mutates.
+var sessionsCostCmd = sesscost.NewSessionsCostCmd(setupApp)
+
+var sessionsDiffCmd = sessscan.NewSessionsDiffCmd(setupApp)
+
+var sessionsGrepCmd = sessscan.NewSessionsGrepCmd(setupApp)
+
+var sessionsForkCmd = sesslive.NewSessionsForkCmd(setupApp)
+
 var newSessionsCmdOnce sync.Once
 
 func NewSessionsCmd() *cobra.Command {
@@ -88,29 +99,11 @@ func NewSessionsCmd() *cobra.Command {
 		sessionsCompactCmd.Flags().Bool("json", false, "Emit a single JSON summary object instead of text")
 		sessionsCompactCmd.Flags().String("role", "worker", "Model role used for session-history compaction (smart, fast, worker, or reviewer)")
 
-		sessionsCostCmd.Flags().String("since", "", "Only include sessions updated within this duration (e.g. 7d, 24h, 30m, 3)")
-		sessionsCostCmd.Flags().String("by", "model", "Grouping: model|day|session|total")
-		sessionsCostCmd.Flags().Bool("json", false, "Emit JSON output")
-		sessionsCostCmd.Flags().Int("top", 20, "Number of sessions to show with --by session")
-
-		sessionsDiffCmd.Flags().Bool("stat", false, "Show line-change statistics per file")
-		sessionsDiffCmd.Flags().Bool("json", false, "Emit JSON output")
-
-		sessionsForkCmd.Flags().Int("at", 0, "Copy only the first N messages (1-indexed, default: all)")
-		sessionsForkCmd.Flags().String("session", "", "ID for the new session (default: a generated UUID)")
-		sessionsForkCmd.Flags().String("title", "", "Title for the new session")
-		sessionsForkCmd.Flags().Bool("child", false, "Set source as parent_session_id (creates a child session)")
-
 		sessionsGcCmd.Flags().Bool("dry-run", false, "Print what would be deleted without deleting")
 		sessionsGcCmd.Flags().String("older-than", "7d", "Delete empty sessions older than this (e.g. 7d, 24h, 30m)")
 		sessionsGcCmd.Flags().String("jobs-older-than", "", "Also purge finished, debt-free batch work older than this (e.g. 3d, 12h); empty = only the fixed 7-day retention (web server every 60s, each rush run at start and every 60s while it runs)")
 		sessionsGcCmd.Flags().Int("max-sessions", 0, "Maximum number of sessions to delete (0 = unlimited)")
 		sessionsGcCmd.Flags().Bool("json", false, "Emit one JSON object per deleted session (plus a job-count summary line with --jobs-older-than)")
-
-		sessionsGrepCmd.Flags().IntP("n", "n", 3, "Number of context lines around each match")
-		sessionsGrepCmd.Flags().String("session", "", "Search only within this session (id or hash prefix)")
-		sessionsGrepCmd.Flags().String("role", "", "Filter by message role: assistant|user")
-		sessionsGrepCmd.Flags().Bool("json", false, "Emit one JSON object per match")
 
 		sessionsInjectCmd.Flags().StringP("message", "m", "", "Message text to inject (mutually exclusive with --file)")
 		sessionsInjectCmd.Flags().StringP("file", "f", "", "Read message text from this file (mutually exclusive with --message)")
@@ -134,9 +127,6 @@ func NewSessionsCmd() *cobra.Command {
 		sessionsReapCmd.Flags().Bool("dry-run", false, "Print what would be reclaimed without removing anything")
 		sessionsReapCmd.Flags().Bool("all", false, "Legacy no-op: removal is now decided solely by the real OS-lock probe, so a lock that records a PID is reaped iff proven uncontended regardless of this flag")
 		sessionsReapCmd.Flags().String("idle-older-than", "168h", "Age threshold for reclaiming idle (PID-less) lock files, e.g. 168h, 7d, 4w; \"0\" disables idle reclaim. Default 168h (7 days)")
-
-		sessionsTreeCmd.Flags().Int("depth", 0, "Max tree depth (0 = unlimited)")
-		sessionsTreeCmd.Flags().Bool("json", false, "Emit nested JSON instead of ASCII tree")
 
 		sessionsWatchCmd.Flags().Duration("interval", time.Second, "Poll interval for new messages (e.g. 1s, 500ms, 2s)")
 	})

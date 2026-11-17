@@ -1,14 +1,18 @@
-package cmd
+package sesscost
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
-	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
+	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -79,16 +83,36 @@ rush sessions cost --json | jq '.[] | select(.cost_usd > 1.0)'
 # Only the rows whose model has no price configured
 rush sessions cost --json | jq '.[] | select(.priced == false)'
   `,
-	RunE: sessionsCostCmdRun,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return sessionsCostCmdRun(cmd, args, cmdkit.SetupApp)
+	},
 }
 
-func sessionsCostCmdRun(cmd *cobra.Command, args []string) error {
+var sessionsCostFlagsOnce sync.Once
+
+// NewSessionsCostCmd returns a fresh sessions cost command with its setup
+// dependency bound to this command instance.
+func NewSessionsCostCmd(setup func(*cobra.Command) (*app.App, error)) *cobra.Command {
+	sessionsCostFlagsOnce.Do(func() {
+		sessionsCostCmd.Flags().String("since", "", "Only include sessions updated within this duration (e.g. 7d, 24h, 30m, 3)")
+		sessionsCostCmd.Flags().String("by", "model", "Grouping: model|day|session|total")
+		sessionsCostCmd.Flags().Bool("json", false, "Emit JSON output")
+		sessionsCostCmd.Flags().Int("top", 20, "Number of sessions to show with --by session")
+	})
+	cmd := cmdkit.DeepFreshCmd(sessionsCostCmd)
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		return sessionsCostCmdRun(cmd, args, setup)
+	}
+	return cmd
+}
+
+func sessionsCostCmdRun(cmd *cobra.Command, args []string, setup func(*cobra.Command) (*app.App, error)) error {
 	sinceStr, _ := cmd.Flags().GetString("since")
 	by, _ := cmd.Flags().GetString("by")
 	asJSON, _ := cmd.Flags().GetBool("json")
 	topN, _ := cmd.Flags().GetInt("top")
 
-	a, err := setupApp(cmd)
+	a, err := setup(cmd)
 	if err != nil {
 		return err
 	}
@@ -113,7 +137,7 @@ func sessionsCostCmdRun(cmd *cobra.Command, args []string) error {
 	// busy child keeps the root visible even though the root row itself is
 	// idle, without the child ever writing the parent's updated_at.
 	if sinceStr != "" {
-		sinceDur, err := parseSinceDuration(sinceStr)
+		sinceDur, err := cmdkit.ParseSinceDuration(sinceStr)
 		if err != nil {
 			return fmt.Errorf("--since: %w", err)
 		}
@@ -140,7 +164,7 @@ func sessionsCostCmdRun(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	budgets := sessionBudgets(cmd.Context(), a.Sessions, sessions)
+	budgets := sesskit.SessionBudgets(cmd.Context(), a.Sessions, sessions)
 
 	// The model a session's spend is attributed to and whether its price is
 	// configured are read-only display facts, so they are injected rather
@@ -321,7 +345,7 @@ func costBySession(
 	fmt.Fprintln(tw, "ID\tTITLE\tTOKENS\tCOST")
 	for _, r := range rows {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
-			r.Key, truncate(r.Title, 40), formatInt64(r.Tokens), costCellText(r.Cost, r.Priced))
+			r.Key, cliout.Truncate(r.Title, 40), sesskit.FormatInt64(r.Tokens), costCellText(r.Cost, r.Priced))
 	}
 	return tw.Flush()
 }
@@ -353,23 +377,7 @@ func costTotal(
 	}
 
 	fmt.Printf("Sessions:  %d\n", total.Sessions)
-	fmt.Printf("Tokens:    %s\n", formatInt64(total.Tokens))
+	fmt.Printf("Tokens:    %s\n", sesskit.FormatInt64(total.Tokens))
 	fmt.Printf("Cost:      $%.3f%s\n", total.CostUSD, costTotalSuffix(total))
 	return nil
-}
-
-// formatInt64 formats an integer with comma separators.
-func formatInt64(n int64) string {
-	s := fmt.Sprintf("%d", n)
-	if len(s) <= 3 {
-		return s
-	}
-	var result strings.Builder
-	for i, c := range s {
-		if i > 0 && (len(s)-i)%3 == 0 {
-			result.WriteByte(',')
-		}
-		result.WriteRune(c)
-	}
-	return result.String()
 }

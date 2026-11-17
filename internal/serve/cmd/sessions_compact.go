@@ -19,6 +19,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db/dbconn"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
@@ -455,37 +456,13 @@ var (
 )
 
 func compactHint(ctx context.Context, conn *sql.DB) {
-	stats, err := dbconn.Stats(ctx, conn)
-	if err != nil {
-		return
-	}
-	free := stats.FreeBytes
-	if free < compactHintMinBytes {
-		return
-	}
-	if float64(free) < compactHintMinFraction*float64(stats.Bytes) {
-		return
-	}
-	fmt.Fprintf(os.Stderr, "session store: %s of %s is free pages; run 'rush sessions compact' to reclaim\n",
-		humanBytes(free), humanBytes(stats.Bytes))
+	sesskit.CompactHint(ctx, conn, func() int64 { return compactHintMinBytes }, func() float64 { return compactHintMinFraction })
 }
 
 func humanBytes(v int64) string {
-	switch {
-	case v >= 1<<30:
-		return fmt.Sprintf("%.1f GB", float64(v)/(1<<30))
-	case v >= 1<<20:
-		return fmt.Sprintf("%.1f MB", float64(v)/(1<<20))
-	case v >= 1024:
-		return fmt.Sprintf("%.1f KB", float64(v)/1024)
-	default:
-		return fmt.Sprintf("%d B", v)
-	}
+	return sesskit.HumanBytes(v)
 }
 
 func percentOf(part, total int64) int {
-	if total == 0 {
-		return 0
-	}
-	return int(100 * part / total)
+	return sesskit.PercentOf(part, total)
 }

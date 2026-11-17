@@ -452,6 +452,10 @@ run→models, ping→models, api→queuecmd, sesslive→queuecmd) ациклич
 приёмник не импортирует источник (проверено по описи импортов в §1.1 и спискам
 использования в §3.4).
 
+Примечание для M1: после пересмотра владельцев в §5 этот граф следует читать как
+целевую схему, а не как компиляторное подтверждение cycle-free для всех M1-рёбер.
+Остальные M1-предложения требуют проверки полных closures и импортов при реализации.
+
 ### 2.5. Публичная поверхность
 
 - Для `main.go`: пакет `cli` экспортирует те же два имени — `Execute` и
@@ -841,12 +845,41 @@ tokens_test→settings, api_args/api_process_helper→api (дерево api це
 | M5 | login (35–38), diag (39–42, 79–81), migrate (44–46), деление migrate.go | 14 | K1–K3 |
 | M6 | install (15–17, 62), targets (18–19, 30–33, 63–66, 83–84), settings (26, 34, 43, 103, 158, 159, 161), reports (71, 85, 86, 156, 157), слияния targets | 28 | K1–K3 |
 
+#### M1 ownership override: downward session-helper edges
+
+Эта таблица уточняет только владение перечисленными символами из §2.2 и заменяет для них конфликтующие назначения; владельцы остальных источников §2.2 остаются без изменения. Направление: пакеты-команды импортируют `sessions/sesskit`, а `sesskit` не импортирует своих потребителей. Планировка каталогов должна соблюдать лимит ≤7 элементов в каждом каталоге; сам лимит — задача размещения/группировки, не основание останавливать полосу. Останавливать и эскалировать следует только если перенос без изменения поведения невозможен; назвать точные блокирующие символы и ребро зависимости как witness.
+
+Добавление `sessions/sesskit/` требует соответственно сгруппировать целевое дерево `sessions/` из §2.1 так, чтобы каждый каталог оставался в пределах 7 элементов. Это корректировка размещения, не стоп-условие; остановка допустима только при доказанной необходимости изменить поведение, с точными блокирующими символами и ребром зависимости.
+
+| исходный файл / символы | пересмотренный владелец | зависимости обеих сторон / граница |
+|---|---|---|
+| `sessions_budget.go`: `sessionBudget`, `sessionBudgets`, `orderBySubtreeActivity`; извлечённый `formatInt64` из `sessions_cost.go` | `sessions/sesskit/budget.go`: `SessionBudget`, `SessionBudgets`, `OrderBySubtreeActivity`; `sessions/sesskit/format.go`: `FormatInt64` | `sesscost` и команды-сессии → `sesskit`; leaf использует `internal/session` и stdlib. Root private wrappers остаются для потребителей/тестов, пока нужны. |
+| `sessions_cost.go`, `sessions_cost_rows.go`, `sessions_cost_models.go` и их тесты: команда, строки, модели/группировка cost | `sessions/report/cost/` (`sesscost`) | `cmd`-агрегатор → `sesscost`; `sesscost` → `sesskit`, `cmdkit`, `cliout`, `app`, `session`, без импорта `cmd`. Фабрика `NewSessionsCostCmd(setup func(*cobra.Command) (*app.App, error))` получает локальный `setupApp` wrapper от `cmd`, сохраняющий установку `commandLoadOptions` через `installCfgSeams`. Результат присваивается ровно один раз локальной неэкспортированной `cmd.sessionsCostCmd`: сохраняются root-проверка указателя и флаги. Срез cost реализован; для `cost`, `sesskit` и root успешно выполнен `go test -c` (тестовые бинарии скомпилированы, тесты не запускались по требованию). Для root успешны `go build` и `go vet` на linux/darwin/windows; официальный fmt diff пуст, selfcheck завершился с rc=0. Эти прежние проверки cost не подтверждают текущий shared closure activity/facts. |
+| `sessions_locks.go`, `sessions_activity.go`, `sessions_print.go`: `kindIsLive`, call-tree activity и её freshness/note helpers, duration formatter | `sessions/sesskit/activity.go`: exported `CallTreeActivity`, compute/batch/fresher/latest/note helpers и `KindIsLive`; `sessions/sesskit/format.go`: `FormatDurationShort` | `sesslocks`, `sesslive`, `sessclean` и display consumers → `sesskit`; зависимости activity ограничены низкими `app`, `session`, `message` и `cmdkit/out`. Root private compatibility wrappers remain for staying consumers/tests. |
+| `sessions_compact.go`: `compactHint`, `humanBytes`, `percentOf` | `sessions/sesskit/maintenance.go`: `CompactHint`, `HumanBytes`, `PercentOf` | `sessclean`/команды → `sesskit`; root `compactMinReclaimBytes`, `compactHintMinBytes` и `compactHintMinFraction` остаются private. `CompactHint` получает providers-функции, сначала читает `Stats`, затем отдельно вызывает provider для каждого порога по мере проверки; сохранить этот порядок/раздельные reads. |
+| `sessions_audit_rules.go`: `auditPlaceholders`, `auditQueryChunk` | `sessions/sesskit/maintenance.go`: `AuditPlaceholders`, `AuditQueryChunk` | `sessaudit`, `sessbatch` → `sesskit`; только SQL placeholders и размер chunk, без зависимости на report-пакеты. Существующие root private wrapper/constant остаются для потребителей/тестов. |
+| `sessions_batch_audit.go` + `sessions_batch_read.go`: общий `reduceBatchSessionFacts` и shared fact/runtime/type/question closure | `sessions/sesskit/facts.go`: exported `BatchRootFact`, `BatchSessionFacts`, reducers, runtime readers, and question helpers | `sessaudit`, `sessstate`, `sessview`, `sessclean`, `sesslive` → `sesskit`; `sesskit` может зависеть от `app`, `session`, `store/db`, но не от `cmd`/потребителей; audit-specific reports остаются в `sessaudit`. `AwaitingAnswer` — exported callsite, вызывается `sessions list`; private compatibility wrappers в root сохраняют прежние имена для потребителей/тестов. |
+| `sessions_batch_act.go`, `sessions_reset.go`: `batchResetSessionHistory`, `batchResetRefusedError`, `resetRefusedError` и live-loop refusal | `sessions/sesskit/reset.go`: `BatchResetSessionHistory`, `BatchResetRefusedError`, `ResetLiveLoopRefusal`, `ResetRefusedError` | live/reset/batch-потребители → `sesskit`; зависимости ограничены низкими `app`/`session` и reset-типами, без импорта потребителей или верхнего `cmd`. Root private wrappers остаются для staying consumers/tests. |
+| `sessions_status_label.go`, `sessions_list.go`: status labels, question reader/interface, awaiting-question status mapping | `sessions/sesskit/status.go`: labels, `PendingChildQuestionReader`, `SessionQuestionReaderForApp`, `ListStatusesWithAwaiting` | `sessstate`, `sessview`, `sessscan` → `sesskit`; closure может зависеть от `app`/`session`, но не от потребителей. Root private compatibility wrappers остаются для потребителей/тестов. |
+
+| `sessions_grep.go`, `sessions_diff.go` (grep + diff): команды и их общий обход путей | `sessions/view/scan/` (`sessscan`): фабрики `NewSessionsGrepCmd(setup)` / `NewSessionsDiffCmd(setup)`; exported `ExtractFilePaths` (общий извлекатель путей файлов) | `cmd`-агрегатор → `sessscan`; `sessscan` → `sesskit`, `cmdkit`, `app`, `session`, без импорта `cmd`. Root-обёртка `ExtractFilePaths` остаётся в корне пакета `cmd` для regression-теста. Root `sessions.go` подключает фабрики; дублирующиеся регистрации флагов удалены. Срез scan компиляторно доказан (compile-only `sessscan` и root, см. статус ниже). |
+| `sessions_kill.go`: форматтер `formatAgo` (возраст) | `sessions/sesskit/format.go`: exported `FormatAgo` | `sesslocks`/display-потребители → `sesskit`; root private wrapper `formatAgo` остаётся для staying-потребителей/тестов. |
+| `sessions_tree.go` (tree): команда и рендер дерева | `sessions/view/` (`sessview`): фабрика `NewSessionsTreeCmd(setup)`, exported `TreeJSON` и `PrintTreeNode`; root aliases `treeJSON`/`printTreeNode` остаются | `cmd`-агрегатор → `sessview`; root `sessions.go` подключает фабрику. Срез tree входит в компиляторно доказанный scan/view pass. |
+
+Следующий запланированный срез по boundary-аудиту: **fork → `sesslive`** (live slice), затем **locks вложенным под live**, при этом `gcDropMaintenanceProtected` остаётся владельцем `sessclean`; `indexByID` должен переехать в `sessview` вместе с `watch`; `status`/`stall` остаются в `sessstate`; известная опасность — split hazard вокруг `liveOwnerProtection` при разрезке GC/locks.
+
+Статус scan pass (M1 SCAN PASS GREEN): pass полностью доказан компилятором — compile-only `sesskit`/`cost`/`view`/`scan`/root зелёные; для root успешны `go build` и `go vet` на linux/darwin/windows; шесть guards rc=0, fmt diff пуст, selfcheck rc=0. Тесты не запускались (запрет исполнения тестов); вся M1 ещё не завершена.
+
+Текущая реализация `sessions/sesskit/` состоит ровно из 7 production-файлов: `activity.go`, `budget.go`, `facts.go`, `format.go`, `maintenance.go`, `reset.go`, `status.go`.
+
 Сумма исходных строк полос: 13 + 4 + 48 + 16 + 24 + 19 + 14 + 28 = 166 (все не-тестовые файлы; тестовые K3 сверх счёта). Параллельность: K1 → K2 → K3 строго последовательно (общие файлы root.go и тестовые шимы); M1–M4 — один раунд до четырёх агентов (непересекающиеся списки), M5 и M6 — следующий раунд.
 
 Расписание храповика `serve/cmd` (элементы = не-тестовые файлы в корне каталога +
 код-подкаталоги; тесты, testdata и ресурсы не считаются; queue и notification в
 счёте). Числа выведены из счёта строк полос (сумма 166); в allowlist вносится
 фактическое значение после каждой полосы, направление только вниз, конец ровно 7.
+Ratchet 2026-11-17: guard завершается с rc=0 при текущем значении allowlist 136
+(guard-verified count; значение оставлено без изменения).
 
 | после | элементов serve/cmd | изменение |
 |---|---|---|
@@ -864,8 +897,8 @@ tokens_test→settings, api_args/api_process_helper→api (дерево api це
 
 1. sessions — самая тяжёлая полоса (49 файлов, 10 пакетов): скрытые
    внутрисемейные связи (например, использование хелперов sessview в sessstate)
-   вскрываются при переносе; правило эскалации: неописанная связь — стоп-полосы,
-   решение оркестратора (добавить имя в §3.4 или переместить файл).
+   вскрываются при переносе. Владельцы символов M1 уточнены в подразделе выше;
+   остальные рёбра — карта проекта, не доказательство отсутствия циклов до компиляторной проверки.
 2. Порядок регистрации: золотой тест дерева (K2) — единственная защита от
    дрейфа help/flags; он должен быть зелёным ДО первой M-полосы.
 3. cahgen/cahsync пишут `models_cah_gen.go` по зашитому пути — при переносе в

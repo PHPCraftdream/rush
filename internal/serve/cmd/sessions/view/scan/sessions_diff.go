@@ -1,4 +1,4 @@
-package cmd
+package sessscan
 
 import (
 	"context"
@@ -8,8 +8,12 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 
+	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
+	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/spf13/cobra"
 )
@@ -39,7 +43,23 @@ rush sessions diff myid-123 --stat
 rush sessions diff myid-123 --json | jq '.files[] | .path'
   `,
 	Args: cobra.ExactArgs(1),
-	RunE: sessionsDiffCmdRun,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return sessionsDiffCmdRun(cmd, args, cmdkit.SetupApp)
+	},
+}
+
+var sessionsDiffFlagsOnce sync.Once
+
+func NewSessionsDiffCmd(setup func(*cobra.Command) (*app.App, error)) *cobra.Command {
+	sessionsDiffFlagsOnce.Do(func() {
+		sessionsDiffCmd.Flags().Bool("stat", false, "Show line-change statistics per file")
+		sessionsDiffCmd.Flags().Bool("json", false, "Emit JSON output")
+	})
+	cmd := cmdkit.DeepFreshCmd(sessionsDiffCmd)
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		return sessionsDiffCmdRun(cmd, args, setup)
+	}
+	return cmd
 }
 
 // fileWritingTools are tool names that write to files.
@@ -57,17 +77,17 @@ type diffOutput struct {
 	Files     []diffFile `json:"files"`
 }
 
-func sessionsDiffCmdRun(cmd *cobra.Command, args []string) error {
+func sessionsDiffCmdRun(cmd *cobra.Command, args []string, setup func(*cobra.Command) (*app.App, error)) error {
 	showStat, _ := cmd.Flags().GetBool("stat")
 	asJSON, _ := cmd.Flags().GetBool("json")
 
-	a, err := setupApp(cmd)
+	a, err := setup(cmd)
 	if err != nil {
 		return err
 	}
 	defer a.Shutdown()
 
-	sess, err := resolveSessionID(cmd.Context(), a.Sessions, args[0])
+	sess, err := cmdkit.ResolveSessionID(cmd.Context(), a.Sessions, args[0])
 	if err != nil {
 		return err
 	}
@@ -88,7 +108,7 @@ func sessionsDiffCmdRun(cmd *cobra.Command, args []string) error {
 			if !fileWritingTools[strings.ToLower(tc.Name)] {
 				continue
 			}
-			paths := extractFilePaths(tc.Name, tc.Input)
+			paths := ExtractFilePaths(tc.Name, tc.Input)
 			for _, p := range paths {
 				fileSet[p] = true
 			}
@@ -103,7 +123,7 @@ func sessionsDiffCmdRun(cmd *cobra.Command, args []string) error {
 				Files:     []diffFile{},
 			})
 		} else {
-			fmt.Fprintf(os.Stderr, "session %s: no file-modifying tool calls found\n", truncate(sess.Title, 40))
+			fmt.Fprintf(os.Stderr, "session %s: no file-modifying tool calls found\n", cliout.Truncate(sess.Title, 40))
 		}
 		return nil
 	}
@@ -136,7 +156,7 @@ func sessionsDiffCmdRun(cmd *cobra.Command, args []string) error {
 		})
 	}
 
-	fmt.Fprintf(os.Stdout, "Files touched by session %s:\n", truncate(sess.Title, 40))
+	fmt.Fprintf(os.Stdout, "Files touched by session %s:\n", cliout.Truncate(sess.Title, 40))
 	for _, p := range paths {
 		status := gitStatus[p]
 		if status == "" {
@@ -156,7 +176,7 @@ func sessionsDiffCmdRun(cmd *cobra.Command, args []string) error {
 
 // extractFilePaths parses the JSON input of a tool call to find file_path
 // values. For multiedit, iterates the edits array.
-func extractFilePaths(toolName, input string) []string {
+func ExtractFilePaths(toolName, input string) []string {
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(input), &object); err != nil {
 		return nil

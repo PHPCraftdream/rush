@@ -1,4 +1,4 @@
-package cmd
+package sesscost
 
 // Row computation and rendering for `sessions cost`, split from the command
 // in sessions_cost.go so it can be exercised without a database: the command
@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 )
 
 // costGroup is one row of a cost table. Priced is false when no price is
@@ -95,11 +97,11 @@ func writeCostTable(w io.Writer, header string, rows []costGroup, total costTota
 	fmt.Fprintln(tw, header)
 	for _, row := range rows {
 		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\n",
-			row.Key, row.Sessions, formatInt64(row.Tokens), costCellText(row.CostUSD, row.Priced))
+			row.Key, row.Sessions, sesskit.FormatInt64(row.Tokens), costCellText(row.CostUSD, row.Priced))
 	}
 	fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", strings.Repeat("─", 53), "", "", "")
 	fmt.Fprintf(tw, "TOTAL\t%d\t%s\t%s%s\n",
-		total.Sessions, formatInt64(total.Tokens), costCellText(total.CostUSD, total.Unpriced == 0),
+		total.Sessions, sesskit.FormatInt64(total.Tokens), costCellText(total.CostUSD, total.Unpriced == 0),
 		costTotalSuffix(total))
 	return tw.Flush()
 }
