@@ -1,15 +1,12 @@
 package agent
 
 import (
-	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/kit/diag/log"
 )
 
 // resolveProviderHTTPClient builds the *http.Client this provider's

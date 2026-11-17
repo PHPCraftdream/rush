@@ -14,7 +14,6 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
-	"os"
 	"slices"
 	"strings"
 
@@ -35,10 +34,8 @@ import (
 	mcp "github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/discover"
-	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/copilot"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/event"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
-	openaisdk "github.com/charmbracelet/openai-go/option"
 	"github.com/qjebbs/go-jsons"
 )
 
@@ -592,12 +589,12 @@ func (c *coordinator) buildOpenaiProvider(baseURL, apiKey string, headers map[st
 	return newProviderComponent(c).buildOpenaiProvider(baseURL, apiKey, headers, httpClient)
 }
 
-func (c *coordinator) buildOpenrouterProvider(_ string, apiKey string, headers map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
-	return newProviderComponent(c).buildOpenrouterProvider(_, apiKey, headers, httpClient)
+func (c *coordinator) buildOpenrouterProvider(baseURL string, apiKey string, headers map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
+	return newProviderComponent(c).buildOpenrouterProvider(baseURL, apiKey, headers, httpClient)
 }
 
-func (c *coordinator) buildVercelProvider(_ string, apiKey string, headers map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
-	return newProviderComponent(c).buildVercelProvider(_, apiKey, headers, httpClient)
+func (c *coordinator) buildVercelProvider(baseURL string, apiKey string, headers map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
+	return newProviderComponent(c).buildVercelProvider(baseURL, apiKey, headers, httpClient)
 }
 
 // buildOpenaiCompatProvider takes the SAME pinned cfg snapshot (F6) the
