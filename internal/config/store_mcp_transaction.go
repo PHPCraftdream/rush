@@ -916,9 +916,8 @@ func uniqueMCPPaths(paths []string) []string {
 }
 
 func dataFingerprint(path string, data []byte) docread.Fingerprint {
-	digest := sha256.Sum256(data)
-	if fingerprint, err := docread.ReadReloadFingerprint(path); err == nil && fingerprint.Exists && fingerprint.Digest == digest {
+	if fingerprint, err := docread.ReadReloadFingerprint(path); err == nil && fingerprint.Exists && fingerprint.Digest == sha256.Sum256(data) {
 		return fingerprint
 	}
-	return docread.Fingerprint{Exists: true, Size: int64(len(data)), Digest: digest, Nlink: 1}
+	return docread.Fingerprint{Exists: true, Size: int64(len(data)), Digest: sha256.Sum256(data), Nlink: 1}
 }

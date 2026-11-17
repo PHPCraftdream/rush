@@ -65,6 +65,23 @@ func (p corePort) WithFileWriteLock(path string, fn func(settings.WriteTarget) e
 func (p corePort) ModelsIntegrity() error       { return p.store.modelsIntegrity }
 func (p corePort) SetModelsIntegrity(err error) { p.store.modelsIntegrity = err }
 
+// X1 amendment item 3: the settings-lock store delegates moved here from the
+// deleted root settings_lock.go; each forwards to the settings component
+// (s.settings).
+func (s *ConfigStore) LockState() (LockState, error) { return s.settings.LockState() }
+
+func (s *ConfigStore) SettingsLocked() (bool, error) { return s.settings.SettingsLocked() }
+
+func (s *ConfigStore) CheckProcessPassword() error { return s.settings.CheckProcessPassword() }
+
+func (s *ConfigStore) LockSettings(scope Scope, password string) error {
+	return s.settings.LockSettings(scope, password)
+}
+
+func (s *ConfigStore) UnlockSettings(scope Scope, password string) error {
+	return s.settings.UnlockSettings(scope, password)
+}
+
 // settingsStore returns the store's settings facade, constructing an
 // ephemeral one over corePort on demand for stores whose constructor did not
 // install one (e.g. zero-value test stores).

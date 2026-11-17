@@ -57,7 +57,9 @@ func collectSettingsSourceHashes(sources []settingsLockSource) ([]string, []stri
 }
 
 // NaturalWorkspaceSettingsPath resolves the workspace's natural settings slot.
-func NaturalWorkspaceSettingsPath(workingDir string) string { return naturalWorkspaceSettingsPath(workingDir) }
+func NaturalWorkspaceSettingsPath(workingDir string) string {
+	return naturalWorkspaceSettingsPath(workingDir)
+}
 
 func naturalWorkspaceSettingsPath(workingDir string) string {
 	if workingDir == "" {
