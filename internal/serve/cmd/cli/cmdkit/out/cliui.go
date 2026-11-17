@@ -3,7 +3,7 @@ package cliout
 import (
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
+	cliproc "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
 )
 
 func processStopKey(message tea.Msg) tea.Msg {

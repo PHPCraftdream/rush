@@ -87,7 +87,6 @@ rush logs summary --file a.log --file b.log --gap 30m
 	RunE: logsSummaryCmdRun,
 }
 
-
 // logEntry is one parsed log line. Fields holds every JSON field other than
 // time/level/msg/source, rendered as "key=value" and sorted, so two lines
 // that differ only in a field value are told apart reliably.

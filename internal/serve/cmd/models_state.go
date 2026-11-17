@@ -366,4 +366,3 @@ func printScopeRow(tw *stateTable, scopeName, role string, value, other *config.
 	}
 	tw.row(scopeName, role, value.Provider, value.Model, cellOr(value.ReasoningEffort), status, effortNoteText(*value))
 }
-

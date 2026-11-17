@@ -43,4 +43,3 @@ func splitModelEffort(s string) (model, effort string) {
 	}
 	return s[:at], s[at+1:]
 }
-

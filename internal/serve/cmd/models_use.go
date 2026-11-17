@@ -267,4 +267,3 @@ func effortSuffix(effort string) string {
 	}
 	return " effort=" + effort
 }
-

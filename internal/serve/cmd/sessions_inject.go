@@ -56,7 +56,6 @@ rush sessions inject 8a3f0c -m "continue" --json
 	RunE: sessionsInjectCmdRun,
 }
 
-
 // injectResult is the wire shape of `rush sessions inject --json`.
 type injectResult struct {
 	SessionID string `json:"session_id"`

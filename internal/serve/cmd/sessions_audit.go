@@ -134,7 +134,6 @@ rush sessions audit 7f3a91c2
 	RunE: sessionsAuditCmdRun,
 }
 
-
 func sessionsAuditCmdRun(cmd *cobra.Command, args []string) error {
 	all, _ := cmd.Flags().GetBool("all")
 	worktrees, _ := cmd.Flags().GetBool("worktrees")

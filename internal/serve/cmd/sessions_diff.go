@@ -263,4 +263,3 @@ func gitDiffStat(path string) string {
 	}
 	return ""
 }
-

@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
+	cliproc "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/stretchr/testify/require"

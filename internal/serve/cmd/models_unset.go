@@ -144,4 +144,3 @@ rush models state
 		return nil
 	},
 }
-

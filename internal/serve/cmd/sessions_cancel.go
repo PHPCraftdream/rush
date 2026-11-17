@@ -131,4 +131,3 @@ func sessionHasLiveWork(ctx context.Context, a *app.App, dataDir, sessionID stri
 	}
 	return kindIsLive(act.Verdict.Kind)
 }
-

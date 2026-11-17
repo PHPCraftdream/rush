@@ -93,7 +93,6 @@ echo '{"disable": true}' | rush providers patch hyper
 	},
 }
 
-
 // readPatchJSON returns the JSON bytes from --json, --json-file, or stdin.
 func readPatchJSON(cmd *cobra.Command) ([]byte, error) {
 	if literal, _ := cmd.Flags().GetString("json"); literal != "" {

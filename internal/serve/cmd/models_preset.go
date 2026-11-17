@@ -20,4 +20,3 @@ var modelsPresetCmd = &cobra.Command{
 		exitWithAudit(2)
 	},
 }
-

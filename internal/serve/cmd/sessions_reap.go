@@ -473,4 +473,3 @@ func countAction(items []reapItem, action string) int {
 	}
 	return n
 }
-

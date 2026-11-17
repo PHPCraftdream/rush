@@ -476,4 +476,3 @@ func renderEffortsForModel(arg string) (string, error) {
 
 	return b.String(), nil
 }
-

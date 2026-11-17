@@ -81,7 +81,6 @@ rush providers test ollama   # works with a local openai-compat server too
 	},
 }
 
-
 type providerPingResult struct {
 	ID          string `json:"id"`
 	Endpoint    string `json:"endpoint"`

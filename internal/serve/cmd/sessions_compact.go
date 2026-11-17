@@ -489,4 +489,3 @@ func percentOf(part, total int64) int {
 	}
 	return int(100 * part / total)
 }
-

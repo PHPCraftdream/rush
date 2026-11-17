@@ -35,4 +35,3 @@ rush models cache clear zai`,
 		return nil
 	},
 }
-

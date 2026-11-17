@@ -140,4 +140,3 @@ func printTreeNode(w *os.File, s session.Session, children map[string][]session.
 		printTreeNode(w, c, children, childPrefix, last, maxDepth, currentDepth+1)
 	}
 }
-

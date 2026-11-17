@@ -41,7 +41,6 @@ rush sessions jobs pr-42 --json
 	RunE: sessionsJobsCmdRun,
 }
 
-
 // jobsJSONItem is the --json shape: one batch root plus its derived fields
 // (held/termination verdict, debt, task counts, the awaiting-answer flag).
 type jobsJSONItem struct {

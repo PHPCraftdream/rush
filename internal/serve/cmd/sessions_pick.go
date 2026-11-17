@@ -247,4 +247,3 @@ func (m *pickerModel) View() tea.View {
 
 	return tea.NewView(b.String())
 }
-

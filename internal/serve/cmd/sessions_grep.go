@@ -204,4 +204,3 @@ func buildExcerpt(lines []string, matchIndices []int, contextLines int) string {
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }
-

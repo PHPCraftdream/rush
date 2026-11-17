@@ -80,7 +80,7 @@ func deepFreshCmdRebind(src *cobra.Command, skip map[string]bool, rebind func(fr
 func cloneFreshFlags(src, dst *pflag.FlagSet, skip map[string]bool, srcCmd, dstCmd *cobra.Command) {
 	dst.SortFlags = src.SortFlags
 	dst.ParseErrorsAllowlist = src.ParseErrorsAllowlist
-	dst.ParseErrorsWhitelist = src.ParseErrorsWhitelist
+	dst.ParseErrorsWhitelist = src.ParseErrorsWhitelist //nolint:staticcheck // pflag still reads the deprecated field while parsing
 	dst.Usage = src.Usage
 	dst.SetNormalizeFunc(src.GetNormalizeFunc())
 

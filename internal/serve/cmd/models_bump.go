@@ -202,4 +202,3 @@ func parseBumpDirection(s string) (up bool, err error) {
 		return false, fmt.Errorf("unexpected direction %q — expected up|down", s)
 	}
 }
-

@@ -66,7 +66,6 @@ rush sessions fork my-session-id --session new-id --title "My Fork"
 	},
 }
 
-
 // forkOptions carries the CLI-specific fork knobs (--at / --session / --title
 // / --child) that session.Service.ForkSession's zero-value defaults do not
 // cover: ForkSession always copies every message into a brand-new top-level

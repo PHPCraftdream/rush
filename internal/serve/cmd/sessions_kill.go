@@ -873,4 +873,3 @@ func sanitiseSessionIDForFilename(id string) string {
 	)
 	return r.Replace(id)
 }
-

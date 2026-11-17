@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 )
 
 func TestRejectAPITokenArguments(t *testing.T) {

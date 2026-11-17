@@ -165,4 +165,3 @@ rush logs path    # check size before/after
 		return nil
 	},
 }
-

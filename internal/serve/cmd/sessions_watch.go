@@ -100,7 +100,6 @@ func sessionsWatchCmdRun(cmd *cobra.Command, args []string) error {
 	return liveTailSession(ctx, a, sessionID, interval)
 }
 
-
 // liveTailSession prints every existing message in a session and then
 // polls for new messages until the session ends. See the command Long
 // description for the end-detection signals. On exit it prints a final
