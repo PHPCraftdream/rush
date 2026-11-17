@@ -1,4 +1,4 @@
-package session
+package sessionlock
 
 // Reading a lock from the outside: path derivation, the PID and generation sidecars, and the read-only inspection surface other processes use to judge whether a holder is still alive. Split out of lock.go when the 1000-line file limit landed; lock.go keeps acquisition, release and the heartbeat.
 
@@ -12,6 +12,10 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 )
+
+func SanitiseSessionID(id string) string {
+	return sanitiseSessionID(id)
+}
 
 func sanitiseSessionID(id string) string {
 	r := strings.NewReplacer(
@@ -193,14 +197,17 @@ func InspectSessionLock(dataDir, sessionID string, liveThreshold time.Duration) 
 	}
 }
 
-// pidSidecarPath returns the companion, never-locked file that carries a
+// PIDSidecarPath returns the companion, never-locked file that carries a
 // live copy of the PID/timeout normally stamped into the lock file itself.
 // See readLockFile's doc comment for why this sidecar exists.
+func PIDSidecarPath(lockPath string) string {
+	return pidSidecarPath(lockPath)
+}
+
 func pidSidecarPath(lockPath string) string {
 	return lockPath + ".pid"
 }
 
-// generationSidecarPath returns the companion file that carries a unique
 // generation token for each acquire instance. Used to prevent stale cleanup
 // goroutines from clobbering a new owner's metadata.
 func generationSidecarPath(lockPath string) string {

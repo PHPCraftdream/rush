@@ -20,7 +20,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -362,7 +362,7 @@ type sessionAgent struct {
 	// lockOptions holds session.LockOption values passed from
 	// SessionAgentOptions. Used when the agent acquires inter-process locks
 	// via session.TryAcquireSessionLockWithOptions. Primarily for tests.
-	lockOptions []session.LockOption
+	lockOptions []sessionlock.LockOption
 	// testReserveRebindSeam, when non-nil, is invoked by
 	// RunWithReservedOwnership strictly after tryAdmitRunWg succeeds and
 	// strictly before mailbox.rebindDispatcher runs — the narrow window in

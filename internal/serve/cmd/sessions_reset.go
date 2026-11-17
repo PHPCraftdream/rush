@@ -15,6 +15,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/spf13/cobra"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 )
 
 var sessionsResetCmd = &cobra.Command{
@@ -85,7 +86,7 @@ rush sessions reset pr-42 --force
 			dataDir := a.Config().Options.DataDirectory
 			lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
 			fmt.Fprintf(os.Stderr, "reset --force: acquiring session lock at %s\n", lockPath)
-			pid := session.ReadLockPID(lockPath)
+			pid := sessionlock.ReadLockPID(lockPath)
 			lk, kr, acquireErr := acquireSessionLockForReset(dataDir, sess.ID, pid, 5*time.Second)
 			if acquireErr != nil {
 				fmt.Fprint(os.Stderr, kr.Report)

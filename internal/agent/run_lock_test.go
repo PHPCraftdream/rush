@@ -10,7 +10,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -83,7 +83,7 @@ func TestRun_SubAgentChildSession_RejectsWhenLockHeldByAnotherProcess(t *testing
 	// Simulate another process already holding the lock for this child
 	// session id. Deliberately NOT released before calling Run — that's
 	// the whole point of the test.
-	externalLock, err := session.TryAcquireSessionLock(dataDir, childSessionID)
+	externalLock, err := sessionlock.TryAcquireSessionLock(dataDir, childSessionID)
 	require.NoError(t, err, "test setup: must be able to take the lock before Run ever runs")
 	t.Cleanup(func() {
 		_ = externalLock.Release()
@@ -99,7 +99,7 @@ func TestRun_SubAgentChildSession_RejectsWhenLockHeldByAnotherProcess(t *testing
 	require.Error(t, runErr, "Run must refuse to proceed into a sub-agent session another process already locked")
 	assert.Nil(t, result)
 
-	var busyErr *session.SessionLockBusyError
+	var busyErr *sessionlock.SessionLockBusyError
 	assert.True(t, errors.As(runErr, &busyErr),
 		"expected the wrapped error to satisfy errors.As(*session.SessionLockBusyError, ...) per agent.go's `fmt.Errorf(...: %%w, lockErr)`, got %v", runErr)
 	assert.True(t, strings.Contains(runErr.Error(), "already in use"),
@@ -202,8 +202,8 @@ func TestRun_SubAgentChildSession_ProceedsPastLockWhenFree(t *testing.T) {
 	// fresh external acquire attempt for the exact same child session id
 	// must fail as busy — proving Run itself (not just the underlying
 	// primitive) takes the inter-process lock for sub-agent sessions.
-	_, lockErr := session.TryAcquireSessionLock(dataDir, childSessionID)
-	var busyErr *session.SessionLockBusyError
+	_, lockErr := sessionlock.TryAcquireSessionLock(dataDir, childSessionID)
+	var busyErr *sessionlock.SessionLockBusyError
 	require.Error(t, lockErr, "expected the session lock to be held while Run is blocked inside a.sessions.Get")
 	require.True(t, errors.As(lockErr, &busyErr), "expected SessionLockBusyError, got %v", lockErr)
 
@@ -221,7 +221,7 @@ func TestRun_SubAgentChildSession_ProceedsPastLockWhenFree(t *testing.T) {
 	}
 
 	// Lock must be released now that Run has returned.
-	finalLock, err := session.TryAcquireSessionLock(dataDir, childSessionID)
+	finalLock, err := sessionlock.TryAcquireSessionLock(dataDir, childSessionID)
 	require.NoError(t, err, "expected the lock to be released after Run returned")
 	require.NoError(t, finalLock.Release())
 }

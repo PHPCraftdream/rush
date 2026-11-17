@@ -18,7 +18,7 @@ import (
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -101,7 +101,7 @@ func TestStandaloneSummarizer_BusyAdmissionAndOSLockRefuseWithoutQueueOrWrite(t 
 				_, ok := standaloneAgent.getMailbox(sessionID).beginCompact(func() {})
 				require.True(t, ok)
 			} else {
-				lock, lockErr := session.TryAcquireSessionLock(cfg.Options.DataDirectory, sessionID)
+				lock, lockErr := sessionlock.TryAcquireSessionLock(cfg.Options.DataDirectory, sessionID)
 				probe.recordState(false, false, false)
 				require.NoError(t, lockErr)
 				defer lock.Release()

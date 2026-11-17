@@ -17,6 +17,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 )
 
 // Scope read внедрён; OS-probe, очередь и pending injects — настоящие.
@@ -34,7 +35,7 @@ func TestSessionsKillFreeTurnLockPreservesLiveBatchQueue(t *testing.T) {
 				require.NoError(t, err)
 				mergeID, interruptID := seedQueuedWorkForStop(t, a, sess.ID)
 				a.Shutdown()
-				lockPath := session.SessionLockPath(dataDir, sess.ID)
+				lockPath := sessionlock.SessionLockPath(dataDir, sess.ID)
 				require.NoError(t, os.MkdirAll(filepath.Dir(lockPath), 0o700))
 				if hasLock {
 					require.NoError(t, os.WriteFile(lockPath, nil, 0o600))

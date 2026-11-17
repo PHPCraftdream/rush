@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 )
 
 // SessionLockStem is the lock-FILE stem of a real session id: ids sanitise
@@ -23,14 +24,14 @@ import (
 // (R7C-2/R8C-8). The batched activity reader returns the reverse map for
 // the requested ids so locks/reap/prune never rebuild their own.
 func SessionLockStem(sessionID string) string {
-	return sanitiseSessionID(sessionID)
+	return sessionlock.SanitiseSessionID(sessionID)
 }
 
 // InspectSessionLockFact reads one session's lock state without acquiring
 // it. No mtime is consulted: a held lock always carries a fresh .pid
 // sidecar (writePIDSidecar at acquire), so the record's content decides.
 func InspectSessionLockFact(dataDir, sessionID string) LockFact {
-	path := SessionLockPath(dataDir, sessionID)
+	path := sessionlock.SessionLockPath(dataDir, sessionID)
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return LockFact{Kind: LockAbsent}
@@ -58,7 +59,7 @@ func InspectSessionLockFact(dataDir, sessionID string) LockFact {
 // primary file. ok is false only when NEITHER file could be read -- empty
 // but readable records parse to 0 (the released shape).
 func readLockRecord(path string) (pid int, ok bool) {
-	if bts, err := os.ReadFile(pidSidecarPath(path)); err == nil {
+	if bts, err := os.ReadFile(sessionlock.PIDSidecarPath(path)); err == nil {
 		return parseLockRecord(string(bts)), true
 	}
 	bts, err := os.ReadFile(path)

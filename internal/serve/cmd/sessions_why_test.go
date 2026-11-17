@@ -14,7 +14,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -351,7 +351,7 @@ func TestExplainSessionStatus_AgedLockWithLivePIDIsRunning(t *testing.T) {
 	require.True(t, procinfo.IsProcessAlive(holder.pid), "helper process must still be alive for this test to be meaningful")
 
 	lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
-	staleTime := time.Now().Add(-(session.MaxPidFallbackAge + 5*time.Second))
+	staleTime := time.Now().Add(-(sessionlock.MaxPidFallbackAge + 5*time.Second))
 	require.NoError(t, os.Chtimes(lockPath, staleTime, staleTime),
 		"back-dating mtime: the enum must not depend on it")
 

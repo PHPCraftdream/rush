@@ -21,7 +21,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider/clipspec"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/proctrack"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessioncgroup "github.com/PHPCraftdream/rush/internal/session/proc/sessioncgroup"
 	gopty "github.com/aymanbagabas/go-pty"
 )
 
@@ -666,7 +666,7 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 	visibleCleanup := func() {
 		visibleOnce.Do(func() {
 			proctrack.UntrackProcessTree(childPid)
-			session.UnregisterChildGroup(m.dataDir, sessionID, childPid)
+			sessioncgroup.UnregisterChildGroup(m.dataDir, sessionID, childPid)
 			if geminiMCPName != "" {
 				deregisterGeminiMCP(geminiMCPName, mcpSrv.Addr())
 			}

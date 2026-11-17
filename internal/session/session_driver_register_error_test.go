@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -93,7 +94,7 @@ func TestRegisterHost_ErrorClasses(t *testing.T) {
 
 	t.Run("every_attempt_loses_to_a_peer", func(t *testing.T) {
 		stores, _, ctx, dataDir := nStores(t, 1, "s1")
-		var held []*FileLock
+		var held []*sessionlock.FileLock
 		registerHostAfterCreateSeam = func(lockPath string) {
 			if filepath.Dir(lockPath) != HostsDir(dataDir) {
 				return

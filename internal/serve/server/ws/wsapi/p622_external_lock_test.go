@@ -18,7 +18,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -30,7 +30,7 @@ import (
 // itself, regardless of what any file's bytes say.
 func holdRealExclusiveLock(t *testing.T, dataDir, sessionID string) func() {
 	t.Helper()
-	lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, err, "test must acquire the real exclusive lock")
 	return func() { require.NoError(t, lk.Release()) }
 }
@@ -373,7 +373,7 @@ func TestDeleteMessageRescuingOrphan_HeldWithoutSidecarStillRefuses(t *testing.T
 	// Strip the sidecar so the holder's identity is genuinely unreadable on
 	// Windows (the primary is unreadable while held). On POSIX the primary
 	// still reads, so the message names the PID — either way it refuses.
-	require.NoError(t, os.Remove(session.SessionLockPath(dataDir, sess.ID)+".pid"))
+	require.NoError(t, os.Remove(sessionlock.SessionLockPath(dataDir, sess.ID)+".pid"))
 	defer release()
 
 	delErr := deleteMessageRescuingOrphan(ctx, a, created.ID)

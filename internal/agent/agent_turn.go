@@ -19,8 +19,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -46,7 +46,7 @@ var runTurnToolsSnapshotSeam func()
 // — this function builds it, calls Stream, and dispatches on the result;
 // the preamble above and the tail below are deliberately NOT moved there,
 // since neither is fantasy callback state.
-func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *session.SessionLock, epoch uint64, runCancel context.CancelFunc, att *drainAttempt) (res *fantasy.AgentResult, next SessionAgentCall, hasNext bool, resErr error) {
+func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *sessionlock.SessionLock, epoch uint64, runCancel context.CancelFunc, att *drainAttempt) (res *fantasy.AgentResult, next SessionAgentCall, hasNext bool, resErr error) {
 	restoredCtx, authorityErr := a.restoreFinalizationCallContext(ctx, &call)
 	if authorityErr != nil {
 		return nil, SessionAgentCall{}, false, authorityErr

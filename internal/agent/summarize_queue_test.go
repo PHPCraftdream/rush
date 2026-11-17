@@ -13,7 +13,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/assert"
@@ -472,7 +472,7 @@ func TestRunTurn_ShouldSummarize_QueuedMessageContinuesWithoutLockDeadlock(t *te
 		logStageDiagnostics()
 	}
 	require.NoError(t, runErr, "Run must not fail with a lock error when draining a queued message after auto-summarize")
-	var busyErr *session.SessionLockBusyError
+	var busyErr *sessionlock.SessionLockBusyError
 	assert.False(t, errors.As(runErr, &busyErr), "must not be a SessionLockBusyError — that would mean the recursive-Run()-into-itself deadlock (task #195) regressed for this path")
 
 	// The queued message must have actually been processed as a real
@@ -502,7 +502,7 @@ func TestRunTurn_ShouldSummarize_QueuedMessageContinuesWithoutLockDeadlock(t *te
 	// Lock must be fully released now that Run() has returned — proves the
 	// turn loop (not a leaked recursive call) is what actually completed
 	// the queued turn.
-	lk, err := session.TryAcquireSessionLock(dataDir, sess.ID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sess.ID)
 	require.NoError(t, err, "expected the session lock to be released after Run() finished draining the shouldSummarize queue")
 	require.NoError(t, lk.Release())
 }

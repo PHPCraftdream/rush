@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,7 +26,7 @@ func budgetReserveRoot(t *testing.T, s *BatchStore, ctx context.Context, toolCal
 
 func budgetDeadHost(t *testing.T, dir, host string) {
 	t.Helper()
-	lock, err := TryAcquireFileLock(HostLockPath(dir, host))
+	lock, err := sessionlock.TryAcquireFileLock(HostLockPath(dir, host))
 	require.NoError(t, err)
 	require.NoError(t, lock.Release())
 }

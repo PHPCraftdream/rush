@@ -10,7 +10,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessioncgroup "github.com/PHPCraftdream/rush/internal/session/proc/sessioncgroup"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/spf13/cobra"
 )
 
@@ -179,7 +180,7 @@ func sessionsKillCmdRunWithBatchNote(cmd *cobra.Command, args []string, readBatc
 		return fmt.Errorf("stat lock: %w", err)
 	}
 
-	pid := session.ReadLockPID(lockPath)
+	pid := sessionlock.ReadLockPID(lockPath)
 	kr := probeThenKillHolder(dataDir, id, pid, wait)
 	fmt.Fprint(os.Stderr, kr.Report)
 
@@ -298,7 +299,7 @@ func waitForLockMetadataSettled(lockPath string, budget time.Duration) {
 	}
 	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
-		if session.ReadLockPID(lockPath) == 0 {
+		if sessionlock.ReadLockPID(lockPath) == 0 {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -440,9 +441,9 @@ func probeThenKillHolder(dataDir, sessionID string, pid int, wait time.Duration)
 	// left behind by whatever process held it last and never released
 	// cleanly -- see the ConfirmedDead branch below for why sweeping that
 	// generation now is what task #602 fixes.
-	orphanedGeneration := session.ReadLockGeneration(session.SessionLockPath(dataDir, sessionID))
+	orphanedGeneration := sessionlock.ReadLockGeneration(sessionlock.SessionLockPath(dataDir, sessionID))
 
-	lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	if err == nil {
 		// Proved nobody holds the OS lock. Whatever PID is recorded is stale.
 		_ = lk.Release()
@@ -491,7 +492,7 @@ func probeThenKillHolder(dataDir, sessionID string, pid int, wait time.Duration)
 		// check.
 		return killResult{State: holderAlreadyDead, ConfirmedDead: true, Report: sb.String(), VictimGeneration: orphanedGeneration}
 	}
-	var busyErr *session.SessionLockBusyError
+	var busyErr *sessionlock.SessionLockBusyError
 	if errors.As(err, &busyErr) {
 		// A real process holds the OS lock right now -- this IS the moment of
 		// proven contention. Capture the victim's generation token HERE,
@@ -505,7 +506,7 @@ func probeThenKillHolder(dataDir, sessionID string, pid int, wait time.Duration)
 		// new owner. Reading it now, while busyErr proves the OLD holder
 		// still owns the lock, is the only point where this value is
 		// trustworthy.
-		victimGeneration := session.ReadLockGeneration(session.SessionLockPath(dataDir, sessionID))
+		victimGeneration := sessionlock.ReadLockGeneration(sessionlock.SessionLockPath(dataDir, sessionID))
 		// Prefer the PID the probe itself identified (it reads the
 		// never-locked sidecar) but fall back to the caller-supplied one for
 		// safety.
@@ -596,7 +597,7 @@ func forceKillHolder(dataDir, sessionID string, pid int, wait time.Duration) kil
 // same way regardless of which sweep helper produced it, so an operator
 // sees identical wording from "sessions kill" and "sessions reset --force".
 // Shared by sweepChildGroupsUnderOwnLock and sweepChildGroupsWithHeldLock.
-func formatChildGroupSweepReport(sb *strings.Builder, sessionID string, result session.ChildGroupSweepResult) {
+func formatChildGroupSweepReport(sb *strings.Builder, sessionID string, result sessioncgroup.ChildGroupSweepResult) {
 	if result.Killed > 0 {
 		fmt.Fprintf(sb, "swept %d registered CLI-provider child process group(s) for session %s\n", result.Killed, sessionID)
 	}
@@ -649,7 +650,7 @@ func sweepChildGroupsUnderOwnLock(sb *strings.Builder, dataDir, sessionID, victi
 		// entirely rather than pretend there is a sweep to report.
 		return
 	}
-	lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	if err != nil {
 		// Either a new owner already holds the session (SessionLockBusyError)
 		// or the probe itself is unidentified -- either way, NOT safe to
@@ -658,7 +659,7 @@ func sweepChildGroupsUnderOwnLock(sb *strings.Builder, dataDir, sessionID, victi
 		return
 	}
 	defer lk.Release()
-	result := session.KillRegisteredChildGroups(dataDir, sessionID, victimGeneration)
+	result := sessioncgroup.KillRegisteredChildGroups(dataDir, sessionID, victimGeneration)
 	formatChildGroupSweepReport(sb, sessionID, result)
 }
 
@@ -685,11 +686,11 @@ func sweepChildGroupsUnderOwnLock(sb *strings.Builder, dataDir, sessionID, victi
 // must already hold the lock" precondition visible at every call site --
 // it is not otherwise used, since session.KillRegisteredChildGroups takes
 // dataDir/sessionID directly rather than an open lock handle.
-func sweepChildGroupsWithHeldLock(sb *strings.Builder, dataDir, sessionID, victimGeneration string, lk *session.SessionLock) {
+func sweepChildGroupsWithHeldLock(sb *strings.Builder, dataDir, sessionID, victimGeneration string, lk *sessionlock.SessionLock) {
 	if victimGeneration == "" || lk == nil {
 		return
 	}
-	result := session.KillRegisteredChildGroups(dataDir, sessionID, victimGeneration)
+	result := sessioncgroup.KillRegisteredChildGroups(dataDir, sessionID, victimGeneration)
 	formatChildGroupSweepReport(sb, sessionID, result)
 }
 
@@ -741,15 +742,15 @@ func sweepChildGroupsWithHeldLock(sb *strings.Builder, dataDir, sessionID, victi
 // already holds it across the DB-wipe critical section that follows -- so
 // the sweep below reuses sweepChildGroupsWithHeldLock (the same helper the
 // busy/killed branch already uses), no second acquire/release cycle needed.
-func acquireSessionLockForReset(dataDir, sessionID string, pid int, wait time.Duration) (*session.SessionLock, killResult, error) {
+func acquireSessionLockForReset(dataDir, sessionID string, pid int, wait time.Duration) (*sessionlock.SessionLock, killResult, error) {
 	// Read BEFORE the acquire attempt below, for the same reason
 	// probeThenKillHolder does: a successful TryAcquireSessionLock
 	// immediately overwrites the ".gen" sidecar with this call's own new
 	// generation, so any process that held the lock before this moment --
 	// including one that crashed and never got to run Release() -- has its
 	// generation token read here or not at all.
-	orphanedGeneration := session.ReadLockGeneration(session.SessionLockPath(dataDir, sessionID))
-	lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
+	orphanedGeneration := sessionlock.ReadLockGeneration(sessionlock.SessionLockPath(dataDir, sessionID))
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	if err == nil {
 		kr := killResult{State: holderAlreadyDead, ConfirmedDead: true, Report: "lock acquired; no live holder\n", VictimGeneration: orphanedGeneration}
 		// Sweep now, using the lock just acquired and about to be returned
@@ -762,7 +763,7 @@ func acquireSessionLockForReset(dataDir, sessionID string, pid int, wait time.Du
 		kr.Report += sweepReport.String()
 		return lk, kr, nil
 	}
-	var busyErr *session.SessionLockBusyError
+	var busyErr *sessionlock.SessionLockBusyError
 	if !errors.As(err, &busyErr) {
 		// Unknown probe failure — fail closed; never act without the lock.
 		return nil, killResult{State: holderProbeError, Report: fmt.Sprintf("lock probe failed (state unknown): %v\n", err)},
@@ -776,7 +777,7 @@ func acquireSessionLockForReset(dataDir, sessionID string, pid int, wait time.Du
 	// for why re-deriving this value later, after the kill, would silently
 	// target whichever generation happens to be current by then instead of
 	// the one actually being killed.
-	victimGeneration := session.ReadLockGeneration(session.SessionLockPath(dataDir, sessionID))
+	victimGeneration := sessionlock.ReadLockGeneration(sessionlock.SessionLockPath(dataDir, sessionID))
 	// A live process holds the lock. Kill it, wait for confirmed death, then
 	// acquire so we hold it through the critical section that follows.
 	livePID := busyErr.HolderPID
@@ -818,11 +819,11 @@ func acquireSessionLockForReset(dataDir, sessionID string, pid int, wait time.Du
 // (LockFileEx: the delay "depends upon available system resources"), so the
 // first attempt right after confirmed death can still lose under load. A
 // genuinely new owner just fails the same way, later.
-func reacquireAfterKill(dataDir, sessionID string, wait time.Duration) (*session.SessionLock, error) {
+func reacquireAfterKill(dataDir, sessionID string, wait time.Duration) (*sessionlock.SessionLock, error) {
 	deadline := time.Now().Add(wait)
 	for {
-		lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
-		var busyErr *session.SessionLockBusyError
+		lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
+		var busyErr *sessionlock.SessionLockBusyError
 		if err == nil || !errors.As(err, &busyErr) || !time.Now().Before(deadline) {
 			return lk, err
 		}

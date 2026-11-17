@@ -23,6 +23,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/dbconn"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
@@ -183,7 +184,7 @@ func TestSessionsCompactCmdRun_LiveSessionLockRefusesWithID(t *testing.T) {
 
 	bloatCompactDBConn(t, seed.DB(), 2<<20)
 
-	holder, err := session.TryAcquireSessionLock(dataDir, "compact-live-session")
+	holder, err := sessionlock.TryAcquireSessionLock(dataDir, "compact-live-session")
 	require.NoError(t, err)
 	defer holder.Release()
 

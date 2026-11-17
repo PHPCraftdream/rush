@@ -1,4 +1,4 @@
-package session
+package sessionlock
 
 // Task #631, redesigned round: the destructive external-ownership proof is
 // no longer byte-heuristic (mtime/PID/Released inference) but a

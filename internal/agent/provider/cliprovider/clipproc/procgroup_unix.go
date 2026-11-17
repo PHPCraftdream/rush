@@ -8,7 +8,8 @@ import (
 	"syscall"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/proctrack"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessioncgroup "github.com/PHPCraftdream/rush/internal/session/proc/sessioncgroup"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 )
 
 // TrackChildTree is the Unix counterpart of the Windows Job Object
@@ -70,9 +71,9 @@ func TrackChildTree(proc *os.Process, dataDir, sessionID string) int {
 		// best-effort augmentation). See
 		// internal/session/childgroup_registry_unix.go for the full
 		// generation-checked design and why a bare pid is not enough.
-		lockPath := session.SessionLockPath(dataDir, sessionID)
-		if generation := session.ReadLockGeneration(lockPath); generation != "" {
-			session.RegisterChildGroup(dataDir, sessionID, proc.Pid, generation)
+		lockPath := sessionlock.SessionLockPath(dataDir, sessionID)
+		if generation := sessionlock.ReadLockGeneration(lockPath); generation != "" {
+			sessioncgroup.RegisterChildGroup(dataDir, sessionID, proc.Pid, generation)
 		}
 	}
 	return proc.Pid

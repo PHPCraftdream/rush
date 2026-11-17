@@ -14,7 +14,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -158,7 +158,7 @@ func TestQueuedCallScope_AdmissionRefusalLeavesNoOwner(t *testing.T) {
 
 	sid := "s-refusal"
 	// Hold the inter-process lock first: Run's own acquisition must lose.
-	lk, err := session.TryAcquireSessionLockWithOptions(dataDir, sid)
+	lk, err := sessionlock.TryAcquireSessionLockWithOptions(dataDir, sid)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = lk.Release() })
 
@@ -539,7 +539,7 @@ func TestQueuedCallScope_FreshRunRefusalReleasesRetained(t *testing.T) {
 		a := newLockTestSessionAgent(dataDir, false)
 		a.bindDiskCaps(caps)
 		sid := "s-freshrun-refusal"
-		lk, err := session.TryAcquireSessionLockWithOptions(dataDir, sid) // held elsewhere
+		lk, err := sessionlock.TryAcquireSessionLockWithOptions(dataDir, sid) // held elsewhere
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = lk.Release() })
 		pinTestConstruction(t, caps, "reg-fresh")

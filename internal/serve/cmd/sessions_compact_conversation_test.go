@@ -17,7 +17,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/spf13/cobra"
@@ -299,7 +299,7 @@ func TestSessionsCompactConversation_LiveSessionPreservesHistory(t *testing.T) {
 	diag := newCompactFailureDiagnostics(t)
 	cmd, seed, server, requests, sess := seedSessionsCompactConversation(t, diag, true)
 	dataDir := seed.Config().Options.DataDirectory
-	lock, err := session.TryAcquireSessionLock(dataDir, sess.ID)
+	lock, err := sessionlock.TryAcquireSessionLock(dataDir, sess.ID)
 	require.NoError(t, err)
 	defer lock.Release()
 	captureCompactSessionFacts(t, diag, seed, sess, true)

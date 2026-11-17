@@ -5,7 +5,7 @@
 // races it fails on Windows with "file in use". Awaiting heartbeatExited
 // closes that race, and wrapping the release as cleanup covers failure paths.
 
-package session
+package sessionlock
 
 import (
 	"testing"

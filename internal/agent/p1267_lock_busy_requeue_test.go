@@ -16,7 +16,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -83,7 +83,7 @@ func TestP1267_LockBusyCompactionRequeuedAndRuns(t *testing.T) {
 	sessionAgent := sa.(*sessionAgent)
 
 	ctx := context.Background()
-	var otherProcLock *session.SessionLock
+	var otherProcLock *sessionlock.SessionLock
 	t.Cleanup(func() {
 		if otherProcLock != nil {
 			_ = otherProcLock.Release()
@@ -120,7 +120,7 @@ func TestP1267_LockBusyCompactionRequeuedAndRuns(t *testing.T) {
 	// Hold the OS session lock, simulating ANOTHER process owning the
 	// session. The byte-range/flock file lock blocks the in-process agent
 	// exactly as it would a foreign process.
-	otherProcLock, err = session.TryAcquireSessionLock(env.workingDir, sess.ID)
+	otherProcLock, err = sessionlock.TryAcquireSessionLock(env.workingDir, sess.ID)
 	require.NoError(t, err)
 
 	// Install after seed: this trace counts only compaction ownership releases.

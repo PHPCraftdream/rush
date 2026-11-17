@@ -18,6 +18,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -627,7 +628,7 @@ func TestSessionsLocksCmdRun_ReadsPIDViaSidecarFallback(t *testing.T) {
 
 	// Confirm session.ReadLockPID itself resolves to the sidecar value —
 	// this is the exact helper the fix wires sessionsLocksCmdRun to call.
-	require.Equal(t, sidecarPID, session.ReadLockPID(lockPath),
+	require.Equal(t, sidecarPID, sessionlock.ReadLockPID(lockPath),
 		"session.ReadLockPID must prefer the sidecar over the lock file's own content")
 
 	stdout := captureStdout(t, func() {
@@ -795,7 +796,7 @@ func TestLockHolderProvablyDead_JoinsSlowMetadataCleanup(t *testing.T) {
 
 	var cleanupFinished atomic.Bool
 	orig := lockProbeOptions
-	lockProbeOptions = []session.LockOption{session.WithClearHolderMetadataFn(func(string, string) {
+	lockProbeOptions = []sessionlock.LockOption{sessionlock.WithClearHolderMetadataFn(func(string, string) {
 		time.Sleep(300 * time.Millisecond)
 		cleanupFinished.Store(true)
 	})}

@@ -12,7 +12,7 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -503,12 +503,12 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 	// its own, which is what made the old recursive-Run() shape deadlock.
 	// The lock is released by the defer above (abandonOwnershipWithHandoff)
 	// before Run returns to avoid the HIGH-1 window.
-	var lk *session.SessionLock
+	var lk *sessionlock.SessionLock
 	if a.dataDir != "" {
 		var lockErr error
-		lk, lockErr = session.TryAcquireSessionLockWithOptions(a.dataDir, call.SessionID, a.lockOptions...)
+		lk, lockErr = sessionlock.TryAcquireSessionLockWithOptions(a.dataDir, call.SessionID, a.lockOptions...)
 		if lockErr != nil {
-			var busyErr *session.SessionLockBusyError
+			var busyErr *sessionlock.SessionLockBusyError
 			if errors.As(lockErr, &busyErr) {
 				slog.Warn(
 					"agent.Run: rejected — session locked by another process",

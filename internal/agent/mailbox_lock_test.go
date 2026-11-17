@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -47,7 +47,7 @@ func TestMailbox_DrainOrReleaseFinal_OSLockReleasedBeforeStateFlipsIdle(t *testi
 
 	t.Run("old two-step shape reproduces the gap", func(t *testing.T) {
 		const sessionID = "high-1-lock-test-old-shape"
-		lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
+		lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 		require.NoError(t, err)
 
 		mb := &mailbox{
@@ -67,20 +67,20 @@ func TestMailbox_DrainOrReleaseFinal_OSLockReleasedBeforeStateFlipsIdle(t *testi
 		// holding has NOT been released yet (step 2 hasn't run). A
 		// same-process caller relying on IsSessionBusy==false would wrongly
 		// believe the lock is free here.
-		_, lockErr := session.TryAcquireSessionLock(dataDir, sessionID)
+		_, lockErr := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 		require.Error(t, lockErr, "reproduction: with the old two-step shape, the OS lock is still held even though "+
 			"the mailbox already reports idle — this IS the HIGH-1 gap")
 
 		// Step 2 (old shape, "later"): release finally happens.
 		require.NoError(t, lk.Release())
-		lk2, err := session.TryAcquireSessionLock(dataDir, sessionID)
+		lk2, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 		require.NoError(t, err)
 		require.NoError(t, lk2.Release())
 	})
 
 	t.Run("new atomic shape has no gap", func(t *testing.T) {
 		const sessionID = "high-1-lock-test-new-shape"
-		lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
+		lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 		require.NoError(t, err)
 
 		mb := &mailbox{
@@ -99,7 +99,7 @@ func TestMailbox_DrainOrReleaseFinal_OSLockReleasedBeforeStateFlipsIdle(t *testi
 		// THE core HIGH-1 assertion: the instant drainOrReleaseFinal reports
 		// idle, the OS lock MUST already be free — no separate later step
 		// remains for a same-process caller to race against.
-		lk2, lockErr := session.TryAcquireSessionLock(dataDir, sessionID)
+		lk2, lockErr := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 		require.NoError(t, lockErr, "the OS lock must be acquirable immediately once drainOrReleaseFinal reports "+
 			"idle — IsSessionBusy()==false must mean the OS lock is really free, not just that the in-memory "+
 			"state flipped first (round 11 review, HIGH-1)")
@@ -257,7 +257,7 @@ func TestMailbox_DrainOrReleaseFinal_OrphanedWorkNeverRunsWithoutFreshOSLock(t *
 	dataDir := t.TempDir()
 	const sessionID = "p1-c-orphan-no-double-lock-test"
 
-	lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, err)
 
 	mb := &mailbox{
@@ -285,7 +285,7 @@ func TestMailbox_DrainOrReleaseFinal_OrphanedWorkNeverRunsWithoutFreshOSLock(t *
 	// THE core #297 assertion: the instant this call returns, the OS lock is
 	// genuinely free for a second acquirer — proving nothing is still
 	// running "on behalf of" the released lock.
-	lk2, lockErr := session.TryAcquireSessionLock(dataDir, sessionID)
+	lk2, lockErr := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, lockErr, "the OS lock must be immediately acquirable by a second holder once "+
 		"drainOrReleaseFinal returns — if orphaned work were instead handed back as hasNext=true/mbOwned, a real "+
 		"caller would now be running a turn for this session WHILE this second acquisition also succeeds: two "+
@@ -478,7 +478,7 @@ func TestMailbox_DrainOrReleaseFinal_SubmittedReclaimNeverReleasesLock(t *testin
 	dataDir := t.TempDir()
 	const sessionID = "high-1-lock-reclaim-test"
 
-	lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = lk.Release() })
 
@@ -509,7 +509,7 @@ func TestMailbox_DrainOrReleaseFinal_SubmittedReclaimNeverReleasesLock(t *testin
 
 	// The OS lock must still be held by THIS process — a second acquisition
 	// attempt must fail.
-	_, lockErr := session.TryAcquireSessionLock(dataDir, sessionID)
+	_, lockErr := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.Error(t, lockErr, "the OS lock must remain held across a mb.submitted reclaim")
 }
 

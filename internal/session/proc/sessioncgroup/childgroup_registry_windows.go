@@ -1,6 +1,6 @@
 //go:build windows
 
-package session
+package sessioncgroup
 
 // On Windows, cross-process CLI-child-tree teardown for sessions kill is
 // already solved by the Job Object mechanism in internal/kit/sys/proctrack
