@@ -335,8 +335,7 @@ func (s *ConfigStore) prepareMCPFileMutation(files *mcpLockedFiles, path, operat
 }
 
 // writeMCPFileChanges commits every changed transaction record; authority
-// carries the per-call trusted-UI exception into the settings-lock guard
-// and the audit event's Source label.
+// carries the per-call trusted-UI exception into the settings-lock guard and the audit event's Source label.
 func (s *ConfigStore) writeMCPFileChanges(files *mcpLockedFiles, audit *settingsWriteAudit, authority SettingsWriteAuthority) error {
 	for key, changed := range files.changed {
 		if !changed {

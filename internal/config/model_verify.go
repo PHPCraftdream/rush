@@ -13,6 +13,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/discover"
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 )
 
 var modelVerificationTimeout = 5 * time.Second

@@ -163,11 +163,6 @@ func commitConfigFile(selectedPath, commitPath string, data []byte, perm os.File
 }
 
 // test-only forwarder; io layer: cfgcommit.
-func CommitOutcomeFromError(err error) (*cfgcommit.CommitOutcome, bool) {
-	return cfgcommit.CommitOutcomeFromError(err)
-}
-
-// test-only forwarder; io layer: cfgcommit.
 func configDirectoryIsCaseInsensitive(dir string) bool {
 	return cfgcommit.ConfigDirectoryIsCaseInsensitive(dir)
 }

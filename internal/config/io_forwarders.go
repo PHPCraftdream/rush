@@ -11,13 +11,9 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 )
 
-// Remaining production forwarders that keep the root package's unexported
-// names compiling while the implementation lives in the io packages: the
-// sentinel vars, the CommitOutcome alias, the configWriteTarget dedup-key
-// converters, the slots forwarders, the slotmigrate forwarders, and the
-// exported serve/cmd wrappers. All cfgcommit/fileid function forwarders are
-// gone; slots + slotmigrate forwarder callers are consumed directly in a
-// later pass.
+// This file holds (a) the remaining temporary root forwarders (slots +
+// slotmigrate, completed in a later pass) and (b) permanent exported facade
+// API for external layers.
 
 // io layer: cfgcommit.
 type CommitOutcome = cfgcommit.CommitOutcome
@@ -100,6 +96,16 @@ func ReadConfigDocumentLight(legacyPath string) ([]byte, error) {
 
 // io layer: slots. Exported wrapper for serve/cmd production callers.
 func KtavAutoMigrateEnabled() bool { return slots.KtavAutoMigrateEnabled() }
+
+// Exported facade API for external layers (serve/cmd, agent): forwards to io/cfgcommit.
+func CommitOutcomeFromError(err error) (*CommitOutcome, bool) {
+	return cfgcommit.CommitOutcomeFromError(err)
+}
+
+// Exported facade API for external layers (serve/cmd, agent): forwards to io/cfgcommit.
+func SetBeforeConfigCommitForTest(hook func()) func() {
+	return cfgcommit.SetBeforeConfigCommitForTest(hook)
+}
 
 // io layer: slotmigrate.
 func RunKtavMigrationStateLocked(ctx context.Context, legacy, workingDir string) error {
