@@ -1,0 +1,12 @@
+func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map[string]string, providerID string, httpClient *http.Client) (fantasy.Provider, error) {
+func (c *coordinator) buildAzureProvider(baseURL, apiKey string, headers map[string]string, options map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
+func (c *coordinator) buildBedrockProvider(apiKey string, headers map[string]string, httpClient *http.Client, allowAmbientAuth bool) (fantasy.Provider, error) {
+func (c *coordinator) buildGoogleProvider(baseURL, apiKey string, headers map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
+func (c *coordinator) buildGoogleVertexProvider(headers map[string]string, options map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
+func (c *coordinator) buildOpenaiCompatProvider(cfg *config.Config, baseURL, apiKey string, headers map[string]string, extraBody map[string]any, providerID string, isSubAgent bool, httpClient *http.Client) (fantasy.Provider, error) {
+func (c *coordinator) buildOpenaiProvider(baseURL, apiKey string, headers map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
+func (c *coordinator) buildOpenrouterProvider(_ string, apiKey string, headers map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
+func (c *coordinator) buildVercelProvider(_ string, apiKey string, headers map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
+func (c *coordinator) isAnthropicThinking(model config.SelectedModel) bool {
+func (c *coordinator) isUnauthorized(err error) bool {
+func (c *coordinator) resolveProviderHTTPClient(cfg *config.Config, providerCfg config.ProviderConfig) (*http.Client, error) {

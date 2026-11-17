@@ -1,0 +1,42 @@
+func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map[string]string, providerID string, httpClient *http.Client) (fantasy.Provider, error) {
+	return newProviderComponent(c).buildAnthropicProvider(baseURL, apiKey, headers, providerID, httpClient)
+}
+
+func (c *coordinator) buildOpenaiProvider(baseURL, apiKey string, headers map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
+	return newProviderComponent(c).buildOpenaiProvider(baseURL, apiKey, headers, httpClient)
+}
+
+func (c *coordinator) buildOpenrouterProvider(_ string, apiKey string, headers map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
+	return newProviderComponent(c).buildOpenrouterProvider(_, apiKey, headers, httpClient)
+}
+
+func (c *coordinator) buildVercelProvider(_ string, apiKey string, headers map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
+	return newProviderComponent(c).buildVercelProvider(_, apiKey, headers, httpClient)
+}
+
+// buildOpenaiCompatProvider takes the SAME pinned cfg snapshot (F6) the
+// caller resolved providerCfg from: its Options.Debug flag shapes the
+// Copilot transport and must not come from a separately-timed live read.
+func (c *coordinator) buildOpenaiCompatProvider(cfg *config.Config, baseURL, apiKey string, headers map[string]string, extraBody map[string]any, providerID string, isSubAgent bool, httpClient *http.Client) (fantasy.Provider, error) {
+	return newProviderComponent(c).buildOpenaiCompatProvider(cfg, baseURL, apiKey, headers, extraBody, providerID, isSubAgent, httpClient)
+}
+
+func (c *coordinator) buildAzureProvider(baseURL, apiKey string, headers map[string]string, options map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
+	return newProviderComponent(c).buildAzureProvider(baseURL, apiKey, headers, options, httpClient)
+}
+
+func (c *coordinator) buildBedrockProvider(apiKey string, headers map[string]string, httpClient *http.Client, allowAmbientAuth bool) (fantasy.Provider, error) {
+	return newProviderComponent(c).buildBedrockProvider(apiKey, headers, httpClient, allowAmbientAuth)
+}
+
+func (c *coordinator) buildGoogleProvider(baseURL, apiKey string, headers map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
+	return newProviderComponent(c).buildGoogleProvider(baseURL, apiKey, headers, httpClient)
+}
+
+func (c *coordinator) buildGoogleVertexProvider(headers map[string]string, options map[string]string, httpClient *http.Client) (fantasy.Provider, error) {
+	return newProviderComponent(c).buildGoogleVertexProvider(headers, options, httpClient)
+}
+
+func (c *coordinator) isAnthropicThinking(model config.SelectedModel) bool {
+	return newProviderComponent(c).isAnthropicThinking(model)
+}

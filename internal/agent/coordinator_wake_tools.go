@@ -18,7 +18,6 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
 var _ tools.WakeControl = (*coordinator)(nil)
@@ -32,13 +31,28 @@ const (
 	wakeMaxDelaySeconds = int64(3155760000)
 )
 
-// wakeSchedulerFor returns the running worker and its store, or an honest
-// model-safe error when this coordinator has no wake-schedule worker.
+func (c *coordinator) ScheduleWakeOnceDelay(ctx context.Context, sessionID string, delaySeconds int64, message string) (tools.WakeScheduleView, error) {
+	return newWakeComponent(c).ScheduleWakeOnceDelay(ctx, sessionID, delaySeconds, message)
+}
+
+func (c *coordinator) ScheduleWakeOnceAt(ctx context.Context, sessionID, at, message string) (tools.WakeScheduleView, error) {
+	return newWakeComponent(c).ScheduleWakeOnceAt(ctx, sessionID, at, message)
+}
+
+func (c *coordinator) ScheduleWakeLoop(ctx context.Context, sessionID string, everySeconds int64, message string, maxRuns *int64, until *string) (tools.WakeScheduleView, error) {
+	return newWakeComponent(c).ScheduleWakeLoop(ctx, sessionID, everySeconds, message, maxRuns, until)
+}
+
+func (c *coordinator) ListWakeSchedules(ctx context.Context, sessionID string) ([]tools.WakeScheduleView, error) {
+	return newWakeComponent(c).ListWakeSchedules(ctx, sessionID)
+}
+
+func (c *coordinator) CancelWakeSchedule(ctx context.Context, sessionID, scheduleID string) (string, error) {
+	return newWakeComponent(c).CancelWakeSchedule(ctx, sessionID, scheduleID)
+}
+
 func (c *coordinator) wakeSchedulerFor() (*wakeScheduler, error) {
-	if c == nil || c.wakeScheduler == nil || c.wakeScheduler.store == nil {
-		return nil, errors.New("wake scheduler is unavailable: this session has no durable wake-schedule worker, so nothing would ever fire")
-	}
-	return c.wakeScheduler, nil
+	return newWakeComponent(c).wakeSchedulerFor()
 }
 
 // validateWakeMessage enforces §6's message rules (shared by all three
@@ -99,208 +113,4 @@ func checkWakeTimestamp(t time.Time, now time.Time, field string) error {
 		return fmt.Errorf("%s is too soon (schedule at least %s ahead); use wakein for a short delay", field, session.MinWakeOnceDelay)
 	}
 	return nil
-}
-
-// ScheduleWakeOnceDelay implements tools.WakeControl (§1.1). wakein is NOT
-// idempotent by input: two identical calls create two schedules (§1.1).
-func (c *coordinator) ScheduleWakeOnceDelay(ctx context.Context, sessionID string, delaySeconds int64, message string) (tools.WakeScheduleView, error) {
-	sched, err := c.wakeSchedulerFor()
-	if err != nil {
-		return tools.WakeScheduleView{}, err
-	}
-	if err := validateWakeDelay(delaySeconds); err != nil {
-		return tools.WakeScheduleView{}, err
-	}
-	if err := validateWakeMessage(message); err != nil {
-		return tools.WakeScheduleView{}, err
-	}
-	now := sched.now()
-	row, err := sched.store.CreateSchedule(ctx, session.CreateWakeScheduleParams{
-		Owner: sessionID, Kind: session.WakeKindOnce, Message: message,
-		RunAt: now.Add(time.Duration(delaySeconds) * time.Second),
-	}, now)
-	if err != nil {
-		return tools.WakeScheduleView{}, c.wrapWakeCreateError(err)
-	}
-	sched.Notify()
-	return wakeScheduleView(row), nil
-}
-
-// ScheduleWakeOnceAt implements tools.WakeControl (§1.2).
-func (c *coordinator) ScheduleWakeOnceAt(ctx context.Context, sessionID, at, message string) (tools.WakeScheduleView, error) {
-	sched, err := c.wakeSchedulerFor()
-	if err != nil {
-		return tools.WakeScheduleView{}, err
-	}
-	if err := validateWakeMessage(message); err != nil {
-		return tools.WakeScheduleView{}, err
-	}
-	parsed, err := parseWakeTimestamp(at, "at")
-	if err != nil {
-		return tools.WakeScheduleView{}, err
-	}
-	now := sched.now()
-	if err := checkWakeTimestamp(parsed, now, "at"); err != nil {
-		return tools.WakeScheduleView{}, err
-	}
-	row, err := sched.store.CreateSchedule(ctx, session.CreateWakeScheduleParams{
-		Owner: sessionID, Kind: session.WakeKindOnce, Message: message, RunAt: parsed,
-	}, now)
-	if err != nil {
-		return tools.WakeScheduleView{}, c.wrapWakeCreateError(err)
-	}
-	sched.Notify()
-	return wakeScheduleView(row), nil
-}
-
-// ScheduleWakeLoop implements tools.WakeControl (§1.3).
-func (c *coordinator) ScheduleWakeLoop(ctx context.Context, sessionID string, everySeconds int64, message string, maxRuns *int64, until *string) (tools.WakeScheduleView, error) {
-	sched, err := c.wakeSchedulerFor()
-	if err != nil {
-		return tools.WakeScheduleView{}, err
-	}
-	if everySeconds*int64(time.Second) < int64(session.MinLoopInterval) {
-		return tools.WakeScheduleView{}, errors.New(
-			"every_seconds must be at least 300 (5 minutes); a tighter loop would wake you more often than the system's own supervision tick and is rarely what you want — use wakein for a single near-term check instead",
-		)
-	}
-	if err := validateWakeMessage(message); err != nil {
-		return tools.WakeScheduleView{}, err
-	}
-	if maxRuns != nil {
-		if *maxRuns <= 0 {
-			return tools.WakeScheduleView{}, errors.New("max_runs must be positive")
-		}
-		if *maxRuns > session.MaxLoopRuns {
-			return tools.WakeScheduleView{}, fmt.Errorf(
-				"max_runs exceeds the limit (%d); use wake_cancel to stop the loop manually instead of an enormous max_runs", session.MaxLoopRuns,
-			)
-		}
-	}
-	now := sched.now()
-	params := session.CreateWakeScheduleParams{
-		Owner: sessionID, Kind: session.WakeKindLoop, Message: message,
-		RunAt: now.Add(time.Duration(everySeconds) * time.Second),
-		Every: time.Duration(everySeconds) * time.Second,
-	}
-	if maxRuns != nil {
-		params.MaxRuns = int(*maxRuns)
-	}
-	var untilT *time.Time
-	if until != nil {
-		parsed, err := parseWakeTimestamp(*until, "until")
-		if err != nil {
-			return tools.WakeScheduleView{}, err
-		}
-		if err := checkWakeTimestamp(parsed, now, "until"); err != nil {
-			return tools.WakeScheduleView{}, err
-		}
-		if parsed.Before(params.RunAt) {
-			return tools.WakeScheduleView{}, fmt.Errorf(
-				"until (%s) is earlier than the first scheduled firing (%s)",
-				parsed.Format(time.RFC3339), params.RunAt.Format(time.RFC3339),
-			)
-		}
-		untilT = &parsed
-		params.Until = untilT
-	}
-	row, err := sched.store.CreateSchedule(ctx, params, now)
-	if err != nil {
-		return tools.WakeScheduleView{}, c.wrapWakeCreateError(err)
-	}
-	sched.Notify()
-	return wakeScheduleView(row), nil
-}
-
-// ListWakeSchedules implements tools.WakeControl (§1.4): active schedules of
-// THIS session only (ownership, not a filter). ListWakeSchedulesForOwner
-// returns terminal rows too (they are history); wake_list reports active
-// ones only.
-func (c *coordinator) ListWakeSchedules(ctx context.Context, sessionID string) ([]tools.WakeScheduleView, error) {
-	sched, err := c.wakeSchedulerFor()
-	if err != nil {
-		return nil, err
-	}
-	rows, err := sched.store.ListSchedules(ctx, sessionID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list wake schedules: %w", err)
-	}
-	views := make([]tools.WakeScheduleView, 0, len(rows))
-	for _, row := range rows {
-		if row.State != "active" {
-			continue
-		}
-		views = append(views, wakeScheduleView(row))
-	}
-	return views, nil
-}
-
-// CancelWakeSchedule implements tools.WakeControl (§1.5). The single
-// not-found error covers never-existed, foreign, already-fired and
-// already-cancelled alike (§1.5's idempotency rule: a safe no-op with the
-// same error, never a disguised success): "cancelled" is answered only when
-// this call's own CAS moved the row (CancelScheduleReport).
-func (c *coordinator) CancelWakeSchedule(ctx context.Context, sessionID, scheduleID string) (string, error) {
-	sched, err := c.wakeSchedulerFor()
-	if err != nil {
-		return "", err
-	}
-	notFound := fmt.Errorf(
-		"schedule %s not found (never existed, already fired, already cancelled, or belongs to another session)", scheduleID,
-	)
-	// The report is the CAS's own outcome: a schedule that fired between a
-	// look and the cancel is "not found", never a disguised success.
-	cancelled, err := sched.store.CancelScheduleReport(ctx, sessionID, scheduleID, sched.now())
-	if errors.Is(err, session.ErrWakeScheduleNotOwned) {
-		return "", notFound
-	}
-	if err != nil {
-		return "", fmt.Errorf("failed to cancel wake schedule: %w", err)
-	}
-	if !cancelled {
-		return "", notFound
-	}
-	sched.Notify()
-	return fmt.Sprintf("Schedule %s cancelled.", scheduleID), nil
-}
-
-// wrapWakeCreateError maps store refusals onto the contract's model-facing
-// texts (§1.1's limit message; SCHED-04's ownership comes from the session
-// id in context, so a foreign-owner error here is an internal invariant
-// breach and surfaces raw).
-func (c *coordinator) wrapWakeCreateError(err error) error {
-	if errors.Is(err, session.ErrWakeScheduleLimit) {
-		return errors.New(
-			"maximum number of active schedules (20) reached for this session; cancel one with wake_cancel or wait for a one-shot wake to fire",
-		)
-	}
-	return err
-}
-
-// wakeScheduleView maps a store row onto the tools' JSON shape (§1). All
-// times are normalized to UTC RFC3339 so wakeon/wakein/loop entries compare
-// directly (§1.2).
-func wakeScheduleView(row db.WakeSchedule) tools.WakeScheduleView {
-	view := tools.WakeScheduleView{
-		ScheduleID: row.ID,
-		Kind:       row.Kind,
-		Message:    row.Message,
-	}
-	if row.MaxRuns.Valid {
-		mr := row.MaxRuns.Int64
-		view.MaxRuns = &mr
-	}
-	if row.UntilAt.Valid {
-		u := time.Unix(row.UntilAt.Int64, 0).UTC().Format(time.RFC3339)
-		view.Until = &u
-	}
-	switch session.WakeKind(row.Kind) {
-	case session.WakeKindOnce:
-		view.FiresAt = time.Unix(row.NextRunAt, 0).UTC().Format(time.RFC3339)
-	case session.WakeKindLoop:
-		view.EverySeconds = row.EveryMs / 1000
-		view.NextFireAt = time.Unix(row.NextRunAt, 0).UTC().Format(time.RFC3339)
-		view.Occurrence = row.Occurrence
-	}
-	return view
 }

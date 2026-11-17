@@ -232,11 +232,7 @@ func (c *coordinator) retryAfterUnauthorized(ctx context.Context, providerCfg co
 }
 
 func (c *coordinator) isUnauthorized(err error) bool {
-	if responsesWSReplayForbidden(err) {
-		return false
-	}
-	var providerErr *fantasy.ProviderError
-	return errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusUnauthorized
+	return newProviderComponent(c).isUnauthorized(err)
 }
 
 func (c *coordinator) refreshOAuth2Token(ctx context.Context, providerCfg config.ProviderConfig) error {

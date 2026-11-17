@@ -26,23 +26,7 @@ import (
 // mixed pairing that then persisted for the rest of the call. Threading
 // the caller's snapshot down makes both reads one atomic read.
 func (c *coordinator) resolveProviderHTTPClient(cfg *config.Config, providerCfg config.ProviderConfig) (*http.Client, error) {
-	resolved := nettransport.ResolveNetworkConfig(cfg.Options.Network, providerCfg.Network)
-	networkClient, err := nettransport.BuildHTTPClient(resolved)
-	if err != nil {
-		// R2-5: the inner error text can embed the raw proxy/DoH URL
-		// from config (userinfo, query secrets included); redact before
-		// this message is wrapped and persisted. Unwrap still reaches
-		// the original error so errors.Is/As classification is intact.
-		return nil, fmt.Errorf("provider %q: build network client: %w", providerCfg.ID, redactNetworkError(err))
-	}
-	if !cfg.Options.Debug {
-		return networkClient, nil
-	}
-	base := http.RoundTripper(http.DefaultTransport)
-	if networkClient != nil {
-		base = networkClient.Transport
-	}
-	return log.NewHTTPClientWithTransport(base), nil
+	return newProviderComponent(c).resolveProviderHTTPClient(cfg, providerCfg)
 }
 
 // copilotBaseTransport extracts the base round tripper from the optional
