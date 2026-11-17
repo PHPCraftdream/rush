@@ -13,7 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/assert"
@@ -93,7 +93,7 @@ func TestIsSessionFinishedFromState_LockAlive_BlocksEndedReason(t *testing.T) {
 	// Even with EndedReason set, an alive lock means the process is
 	// still doing post-finish work (cleanup, summary stream, etc).
 	// Don't print the summary block until the process actually exits.
-	sess := core.Session{ID: "s1", EndedReason: "max_cost"}
+	sess := coresession.Session{ID: "s1", EndedReason: "max_cost"}
 	done, reason := isSessionFinishedFromState(sess, nil, nil, nil, true)
 	assert.False(t, done, "lock alive must override EndedReason")
 	assert.Equal(t, "", reason)
@@ -103,7 +103,7 @@ func TestIsSessionFinishedFromState_LockAlive_BlocksFinishPart(t *testing.T) {
 	// The real-world bug this guards: tool-result rows can have
 	// Finish.Reason="stop" mid-session. An alive lock proves the
 	// process is still mid-loop, so don't terminate on that signal.
-	sess := core.Session{ID: "s1"}
+	sess := coresession.Session{ID: "s1"}
 	msg := message.Message{
 		ID:   "m1",
 		Role: message.Assistant,
@@ -117,14 +117,14 @@ func TestIsSessionFinishedFromState_LockAlive_BlocksFinishPart(t *testing.T) {
 }
 
 func TestIsSessionFinishedFromState_SignalA_EndedReason(t *testing.T) {
-	sess := core.Session{ID: "s1", EndedReason: "max_cost"}
+	sess := coresession.Session{ID: "s1", EndedReason: "max_cost"}
 	done, reason := isSessionFinishedFromState(sess, nil, nil, nil, false)
 	assert.True(t, done, "EndedReason + dead lock must terminate")
 	assert.Equal(t, "max_cost", reason)
 }
 
 func TestIsSessionFinishedFromState_SignalB_LockGoneWithMessages(t *testing.T) {
-	sess := core.Session{ID: "s1"} // no EndedReason
+	sess := coresession.Session{ID: "s1"} // no EndedReason
 	msgs := []message.Message{{ID: "m1"}}
 	done, reason := isSessionFinishedFromState(sess, nil, msgs, nil, false)
 	assert.True(t, done)
@@ -134,14 +134,14 @@ func TestIsSessionFinishedFromState_SignalB_LockGoneWithMessages(t *testing.T) {
 func TestIsSessionFinishedFromState_SignalB_LockGoneButNoMessagesYet(t *testing.T) {
 	// Race guard: lock missing + zero messages may mean the acquirer
 	// has opened but not yet written. Don't terminate.
-	sess := core.Session{ID: "s1"}
+	sess := coresession.Session{ID: "s1"}
 	done, reason := isSessionFinishedFromState(sess, nil, nil, nil, false)
 	assert.False(t, done, "lock gone but no messages yet must not terminate (race guard)")
 	assert.Equal(t, "", reason)
 }
 
 func TestIsSessionFinishedFromState_SignalC_AssistantEndTurn(t *testing.T) {
-	sess := core.Session{ID: "s1"}
+	sess := coresession.Session{ID: "s1"}
 	msg := message.Message{
 		ID:   "m1",
 		Role: message.Assistant,
@@ -155,7 +155,7 @@ func TestIsSessionFinishedFromState_SignalC_AssistantEndTurn(t *testing.T) {
 }
 
 func TestIsSessionFinishedFromState_SignalC_AssistantMaxTokens(t *testing.T) {
-	sess := core.Session{ID: "s1"}
+	sess := coresession.Session{ID: "s1"}
 	msg := message.Message{
 		ID:   "m1",
 		Role: message.Assistant,
@@ -169,7 +169,7 @@ func TestIsSessionFinishedFromState_SignalC_AssistantMaxTokens(t *testing.T) {
 }
 
 func TestIsSessionFinishedFromState_SignalC_AssistantCanceledOrError(t *testing.T) {
-	sess := core.Session{ID: "s1"}
+	sess := coresession.Session{ID: "s1"}
 	for _, r := range []message.FinishReason{
 		message.FinishReasonCanceled,
 		message.FinishReasonError,
@@ -193,7 +193,7 @@ func TestIsSessionFinishedFromState_SignalC_ToolUseDoesNotTerminate(t *testing.T
 	// process exited before completing the loop.
 	// Here we test the BEFORE-signal-(b) check: tool_use alone, with
 	// lock alive (so signal (b) is blocked), must not terminate.
-	sess := core.Session{ID: "s1"}
+	sess := coresession.Session{ID: "s1"}
 	msg := message.Message{
 		ID:   "m1",
 		Role: message.Assistant,
@@ -211,7 +211,7 @@ func TestIsSessionFinishedFromState_SignalC_UnknownReasonDoesNotTerminate(t *tes
 	// from a tool-result row, or future provider-specific values) must
 	// NOT trigger end of session — conservative default. Tested with
 	// lock alive to isolate from signal (b).
-	sess := core.Session{ID: "s1"}
+	sess := coresession.Session{ID: "s1"}
 	for _, r := range []message.FinishReason{
 		message.FinishReason("stop"), // <-- the actual real-world bug
 		message.FinishReason(""),
@@ -230,7 +230,7 @@ func TestIsSessionFinishedFromState_SignalC_UnknownReasonDoesNotTerminate(t *tes
 
 func TestIsSessionFinishedFromState_SignalC_PartialFinishIsNotEnd(t *testing.T) {
 	// Streaming agents emit Partial=true Finish parts mid-stream.
-	sess := core.Session{ID: "s1"}
+	sess := coresession.Session{ID: "s1"}
 	msg := message.Message{
 		ID:   "m1",
 		Role: message.Assistant,
@@ -248,7 +248,7 @@ func TestIsSessionFinishedFromState_SignalC_ToolMessageFinishIsIgnored(t *testin
 	// (Role=Tool) carries a Finish part with Reason="stop" because the
 	// tool subprocess exited. The watch must NOT mistake that for end of
 	// session. Tested with lock alive so signal (b) is out of the way.
-	sess := core.Session{ID: "s1"}
+	sess := coresession.Session{ID: "s1"}
 	msgs := []message.Message{
 		{
 			ID:    "m1",
@@ -273,7 +273,7 @@ func TestIsSessionFinishedFromState_SignalC_ScansBackPastToolMessages(t *testing
 	// If the latest message is a Tool but the latest ASSISTANT before
 	// it has a terminal Finish, that still counts as end of session
 	// (with lock dead). The walk-backwards logic must find it.
-	sess := core.Session{ID: "s1"}
+	sess := coresession.Session{ID: "s1"}
 	msgs := []message.Message{
 		{
 			ID:    "m1",
@@ -297,7 +297,7 @@ func TestIsSessionFinishedFromState_SignalC_ScansBackPastToolMessages(t *testing
 func TestIsSessionFinishedFromState_NoSignals(t *testing.T) {
 	// Live session: row has no EndedReason, lock alive, no Finish part
 	// yet. The loop must keep polling.
-	sess := core.Session{ID: "s1"}
+	sess := coresession.Session{ID: "s1"}
 	msg := message.Message{ID: "m1", Role: message.Assistant}
 	done, reason := isSessionFinishedFromState(sess, nil, []message.Message{msg}, nil, true)
 	assert.False(t, done)
@@ -308,7 +308,7 @@ func TestIsSessionFinishedFromState_TransientErrorsWithLiveLockDoNotTerminate(t 
 	// A DB hiccup on either Sessions.Get or Messages.List must NOT end
 	// the watch loop while the process is alive — it should keep
 	// polling and try again next tick.
-	sess := core.Session{}
+	sess := coresession.Session{}
 	done, reason := isSessionFinishedFromState(sess, errors.New("db down"), nil, errors.New("db down"), true)
 	assert.False(t, done, "transient DB errors with live lock must not terminate")
 	assert.Equal(t, "", reason)
@@ -317,7 +317,7 @@ func TestIsSessionFinishedFromState_TransientErrorsWithLiveLockDoNotTerminate(t 
 func TestIsSessionFinishedFromState_SignalAWinsOverOthers(t *testing.T) {
 	// EndedReason is the authoritative end label. When both are set
 	// (lock dead) it wins over a parallel terminal Finish part.
-	sess := core.Session{ID: "s1", EndedReason: "cancelled"}
+	sess := coresession.Session{ID: "s1", EndedReason: "cancelled"}
 	msg := message.Message{
 		ID:   "m1",
 		Role: message.Assistant,
@@ -355,7 +355,7 @@ func TestIsTerminalFinishReason(t *testing.T) {
 func TestFormatWatchSummary_Full(t *testing.T) {
 	created := time.Date(2026, 5, 26, 14, 0, 0, 0, time.UTC)
 	now := created.Add(3*time.Minute + 45*time.Second)
-	sess := core.Session{
+	sess := coresession.Session{
 		ID:               "abc-123",
 		Title:            "fix windows kill",
 		PromptTokens:     12345,
@@ -378,7 +378,7 @@ func TestFormatWatchSummary_Full(t *testing.T) {
 }
 
 func TestFormatWatchSummary_WithBudget(t *testing.T) {
-	sess := core.Session{
+	sess := coresession.Session{
 		ID:            "s1",
 		OwnCost:       0.05,
 		BudgetMaxCost: 1.0,
@@ -388,7 +388,7 @@ func TestFormatWatchSummary_WithBudget(t *testing.T) {
 }
 
 func TestFormatWatchSummary_NoTitle(t *testing.T) {
-	sess := core.Session{ID: "s1"}
+	sess := coresession.Session{ID: "s1"}
 	out := formatWatchSummary(sess, sess.OwnCost, "stop", time.Now())
 	assert.NotContains(t, out, "title:", "empty title must be omitted entirely")
 	assert.Contains(t, out, "id:       s1")
@@ -468,7 +468,7 @@ func isolatedWatchEnvForTest(t *testing.T) (a *app.App, dataDir string) {
 func TestFormatWatchSummary_NoCreatedAt(t *testing.T) {
 	// Session with CreatedAt == 0 (e.g. a synthetic / unreal session)
 	// should not panic on time.Unix and should print a 0s duration.
-	sess := core.Session{ID: "s1", CreatedAt: 0}
+	sess := coresession.Session{ID: "s1", CreatedAt: 0}
 	out := formatWatchSummary(sess, sess.OwnCost, "stop", time.Now())
 	assert.Contains(t, out, "duration: 0s")
 }

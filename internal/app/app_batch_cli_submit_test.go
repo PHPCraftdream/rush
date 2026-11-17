@@ -12,7 +12,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -22,7 +22,7 @@ func TestBatchCLISessionValidatesExistingIDs(t *testing.T) {
 	a := newFullNewApp(t)
 
 	foreignRoot := wsGitRepo(t)
-	foreignSvc := core.NewServiceWithWorkspace(db.New(a.DB()), a.DB(), nil, nil, foreignRoot, foreignRoot, false)
+	foreignSvc := coresession.NewServiceWithWorkspace(db.New(a.DB()), a.DB(), nil, nil, foreignRoot, foreignRoot, false)
 	foreign, err := foreignSvc.Create(ctx, "foreign")
 	require.NoError(t, err)
 	_, err = a.BatchCLISession(ctx, foreign.ID)

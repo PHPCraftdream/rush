@@ -8,7 +8,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -24,7 +24,7 @@ func whyAwaitingTestEnv(t *testing.T) (*app.App, *session.SessionNoticeStore, st
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Release(dataDir) })
 	q := db.New(conn)
-	s := core.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 	a := &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	a.SetDataDirForTest(dataDir)

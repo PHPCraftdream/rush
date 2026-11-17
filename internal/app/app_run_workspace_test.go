@@ -20,7 +20,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -93,7 +93,7 @@ func TestResolveSession_ForeignSessionIsRefusedBeforeAnyWrite(t *testing.T) {
 	// A session this app's own service did NOT create, bound to another
 	// checkout. A home process refuses it just as a linked one does.
 	foreignRoot := wsGitRepo(t)
-	foreignSvc := core.NewServiceWithWorkspace(q, application.DB(), nil, nil, foreignRoot, foreignRoot, false)
+	foreignSvc := coresession.NewServiceWithWorkspace(q, application.DB(), nil, nil, foreignRoot, foreignRoot, false)
 	foreign, err := foreignSvc.Create(ctx, "foreign session")
 	require.NoError(t, err)
 
@@ -129,7 +129,7 @@ func TestResolveSession_ForeignWorkspaceGoneIsReportedAsSuch(t *testing.T) {
 	q := db.New(application.DB())
 
 	gone := filepath.Join(t.TempDir(), "removed-worktree")
-	goneSvc := core.NewServiceWithWorkspace(q, application.DB(), nil, nil, gone, "", false)
+	goneSvc := coresession.NewServiceWithWorkspace(q, application.DB(), nil, nil, gone, "", false)
 	foreign, err := goneSvc.Create(ctx, "session of a removed checkout")
 	require.NoError(t, err)
 
@@ -159,7 +159,7 @@ func TestResolveSession_LegacyRowIsRefusedFromLinkedAndDrivenFromHome(t *testing
 	q := db.New(application.DB())
 
 	// A legacy row: written exactly the way every pre-WS-1 binary wrote it.
-	legacy, err := core.NewService(q, application.DB()).Create(ctx, "legacy session")
+	legacy, err := coresession.NewService(q, application.DB()).Create(ctx, "legacy session")
 	require.NoError(t, err)
 	require.Empty(t, legacy.WorkspaceRoot)
 
@@ -208,7 +208,7 @@ func TestResolveSession_UseLastContinuesLegacyFromGitCheckout(t *testing.T) {
 	// pre-WS-1 shape (workspace_root '') this git-checkout process owned
 	// before WS-1 existed. Creating it via application.Sessions would bind
 	// it to the repo root and make the test blind to the home argument.
-	legacySvc := core.NewService(db.New(application.DB()), application.DB())
+	legacySvc := coresession.NewService(db.New(application.DB()), application.DB())
 	_, err := legacySvc.Create(ctx, "pre-WS-1 history")
 	require.NoError(t, err)
 
@@ -230,7 +230,7 @@ func TestResolveSession_OwnSessionIsDrivenFromItsOwnWorkspace(t *testing.T) {
 	application, _ := wsNewApp(t, t.TempDir())
 	q := db.New(application.DB())
 
-	ownSvc := core.NewServiceWithWorkspace(q, application.DB(), nil, nil, own, own, false)
+	ownSvc := coresession.NewServiceWithWorkspace(q, application.DB(), nil, nil, own, own, false)
 	sess, err := ownSvc.Create(ctx, "own session")
 	require.NoError(t, err)
 	require.Equal(t, own, sess.WorkspaceRoot, "the service must bind what it creates")
@@ -287,7 +287,7 @@ func TestResolveSession_UseLastOnlySeesOwnSessions(t *testing.T) {
 	q := db.New(application.DB())
 
 	foreign := wsGitRepo(t)
-	foreignSvc := core.NewServiceWithWorkspace(q, application.DB(), nil, nil, foreign, foreign, false)
+	foreignSvc := coresession.NewServiceWithWorkspace(q, application.DB(), nil, nil, foreign, foreign, false)
 	_, err := foreignSvc.Create(ctx, "somebody else's session")
 	require.NoError(t, err)
 

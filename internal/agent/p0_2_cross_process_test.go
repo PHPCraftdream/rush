@@ -15,7 +15,7 @@ import (
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -23,7 +23,7 @@ import (
 var errP02CrossProcessEnqueueFailure = errors.New("p0-2 test: simulated enqueue failure")
 
 type p02CrossProcessEnqueueFailingSessions struct {
-	core.Service
+	coresession.Service
 }
 
 func (s *p02CrossProcessEnqueueFailingSessions) EnqueueRunQueueEntry(context.Context, string, string, []byte) error {
@@ -36,7 +36,7 @@ type p02CrossProcessPumpCoordinator struct {
 	prompt chan string
 }
 
-func (c *p02CrossProcessPumpCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
+func (c *p02CrossProcessPumpCoordinator) Run(ctx context.Context, callData coresession.SessionAgentCallData) (*any, error) {
 	select {
 	case c.prompt <- callData.Prompt:
 	default:
@@ -99,7 +99,7 @@ func TestP0_2_CrossProcessInterrupt_RowRecreatedOnFailure(t *testing.T) {
 		Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "interrupted message"}},
 	})
 	require.NoError(t, err)
-	inject := core.PendingInject{
+	inject := coresession.PendingInject{
 		ID: "test-inject-id-recreate-" + sess.ID, SessionID: sess.ID,
 		MessageID: msg.ID, Content: msg.FullText(), Interrupt: true,
 	}

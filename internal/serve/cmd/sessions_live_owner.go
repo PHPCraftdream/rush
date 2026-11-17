@@ -8,7 +8,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // liveOwnerProtection briefly probes the exclusive session lock, then checks
@@ -42,7 +42,7 @@ func gcDropMaintenanceProtected(ctx context.Context, a *app.App, candidates []gc
 	kept := make([]gcItem, 0, len(candidates))
 	for _, candidate := range candidates {
 		if reason := liveOwnerProtection(ctx, a, candidate.ID); reason != "" {
-			fmt.Fprintf(os.Stderr, "kept session %s (%s): %s\n", short(core.HashID(candidate.ID)), truncate(candidate.Title, 40), reason)
+			fmt.Fprintf(os.Stderr, "kept session %s (%s): %s\n", short(coresession.HashID(candidate.ID)), truncate(candidate.Title, 40), reason)
 			continue
 		}
 		kept = append(kept, candidate)

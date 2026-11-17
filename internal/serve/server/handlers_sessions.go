@@ -14,7 +14,7 @@ import (
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -32,7 +32,7 @@ func appWorkspaceRoot(a *appPkg.App) string {
 }
 
 // appOwnsSession reports whether THIS process may drive sess: the same
-// predicate app.owns runs on the run path (core.Owns), fed the process's
+// predicate app.owns runs on the run path (coresession.Owns), fed the process's
 // workspace here so a destructive web action (rerun, delete-other) never
 // touches another checkout's session in a shared data directory. A session is
 // owned when its workspace_root equals this process's root, or when it is a
@@ -40,8 +40,8 @@ func appWorkspaceRoot(a *appPkg.App) string {
 // App.ProcessHome() flag (config.WorkspaceHome(); false only for a linked worktree on the shared data directory, SD-D #1143),
 // never a derivation from the root: a git checkout has a non-empty root and
 // still owns its legacy rows today.
-func appOwnsSession(a *appPkg.App, sess core.Session) bool {
-	return core.Owns(sess.WorkspaceRoot, appWorkspaceRoot(a), a.ProcessHome())
+func appOwnsSession(a *appPkg.App, sess coresession.Session) bool {
+	return coresession.Owns(sess.WorkspaceRoot, appWorkspaceRoot(a), a.ProcessHome())
 }
 
 // foreignSessionRefusal builds the WS-1 refusal error for a session this
@@ -51,7 +51,7 @@ func appOwnsSession(a *appPkg.App, sess core.Session) bool {
 // that checkout was on, says so when that checkout has since been removed, and
 // offers `rush sessions fork <id>` as the one sanctioned way to continue the
 // history here.
-func foreignSessionRefusal(sess core.Session) error {
+func foreignSessionRefusal(sess coresession.Session) error {
 	msg := fmt.Sprintf(
 		"session %s belongs to %s (branch %s); run it there or \"rush sessions fork %s\" here",
 		sess.ID, sess.WorkspaceRoot, sess.GitBranch, sess.ID,
@@ -76,9 +76,9 @@ func handleCreateSession(ctx context.Context, a *appPkg.App, c *Client, msg WSMe
 	if title == "" {
 		title = "New Session"
 	}
-	var sess core.Session
+	var sess coresession.Session
 	var err error
-	if oc, ok := a.Sessions.(core.OriginCreator); ok {
+	if oc, ok := a.Sessions.(coresession.OriginCreator); ok {
 		sess, err = oc.CreateWithOrigin(ctx, title, message.OriginWeb)
 	} else {
 		// Test fakes without the OriginCreator seam keep the legacy path.
@@ -261,7 +261,7 @@ func externalOwnershipDataDir(a *appPkg.App) string {
 // Cost is the batch reader's fixed query set per poll (one per fact kind,
 // independent of the session count), paid only on the sessions_list reply
 // and its periodic re-poll, never on the per-event broadcast path.
-func annotateSessionActivity(ctx context.Context, a *appPkg.App, sessions []core.Session) {
+func annotateSessionActivity(ctx context.Context, a *appPkg.App, sessions []coresession.Session) {
 	if len(sessions) == 0 {
 		return
 	}
@@ -298,7 +298,7 @@ func annotateSessionActivity(ctx context.Context, a *appPkg.App, sessions []core
 // single lock reader the classifier uses (session.InspectSessionLockFact) --
 // because it runs on every broadcast session event, where the classifier's
 // DB fact queries are not paid. Rule: HELD by a live PID that is not ours.
-func AnnotateSessionExternalOwnership(a *appPkg.App, s *core.Session) {
+func AnnotateSessionExternalOwnership(a *appPkg.App, s *coresession.Session) {
 	if s == nil {
 		return
 	}
@@ -328,7 +328,7 @@ func handleListSessions(ctx context.Context, a *appPkg.App, c *Client, msg WSMes
 		return
 	}
 	if sessions == nil {
-		sessions = []core.Session{}
+		sessions = []coresession.Session{}
 	}
 	sessions = filterSessionsForPinnedClient(sessions, c)
 	annotateSessionActivity(ctx, a, sessions)
@@ -416,11 +416,11 @@ func handleUpdateTodos(ctx context.Context, a *appPkg.App, c *Client, msg WSMess
 		c.Reply(msg.ID, EventError, nil, "session not found")
 		return
 	}
-	todos := make([]core.Todo, len(p.Todos))
+	todos := make([]coresession.Todo, len(p.Todos))
 	for i, t := range p.Todos {
-		todos[i] = core.Todo{
+		todos[i] = coresession.Todo{
 			Content:    t.Content,
-			Status:     core.TodoStatus(t.Status),
+			Status:     coresession.TodoStatus(t.Status),
 			ActiveForm: t.ActiveForm,
 		}
 	}

@@ -15,7 +15,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -86,7 +86,7 @@ func TestDrainSessionNow_ColdCall_OrphanedLeasedRow_IsVisible(t *testing.T) {
 	current, err := svc.GetRunQueueEntry(ctx, "p624-orphaned-row")
 	require.NoError(t, err)
 	require.NotNil(t, current)
-	require.Equal(t, core.RunQueueStatusLeased, current.Status)
+	require.Equal(t, coresession.RunQueueStatusLeased, current.Status)
 }
 
 // TestDrainSessionNow_ColdCall_ForeignLiveOwner_ReportsOutstanding pins the
@@ -154,7 +154,7 @@ func TestDrainSessionNow_ColdCall_ForeignLiveOwner_ReportsOutstanding(t *testing
 	current, err := svc.GetRunQueueEntry(ctx, "p624-foreign-live-row")
 	require.NoError(t, err)
 	require.NotNil(t, current)
-	require.Equal(t, core.RunQueueStatusLeased, current.Status, "the live foreign owner's row must be untouched")
+	require.Equal(t, coresession.RunQueueStatusLeased, current.Status, "the live foreign owner's row must be untouched")
 }
 
 // TestDrainSessionNow_ColdCall_EmptyQueue_StillNoWork is the must-not-regress
@@ -209,7 +209,7 @@ type cancellingTerminalCoordinator struct {
 	err    error
 }
 
-func (c *cancellingTerminalCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
+func (c *cancellingTerminalCoordinator) Run(ctx context.Context, callData coresession.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
 	c.cancel()
 	return nil, c.err

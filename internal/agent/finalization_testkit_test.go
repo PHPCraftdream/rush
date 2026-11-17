@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -58,10 +58,10 @@ type finalizationDriverSeamEnv struct {
 	fakeEnv
 	ctx       context.Context
 	call      SessionAgentCall
-	identity  core.AgentFinalizationIdentity
+	identity  coresession.AgentFinalizationIdentity
 	scope     finalizationPublicationScope
 	execution *finalizationExecution
-	reader    core.AgentFinalizationScopeReader
+	reader    coresession.AgentFinalizationScopeReader
 	stub      *finalizationSeamScopeStub
 }
 
@@ -71,14 +71,14 @@ type finalizationDriverSeamEnv struct {
 func newFinalizationDriverSeamEnv(t *testing.T) finalizationDriverSeamEnv {
 	t.Helper()
 	env := finalizationDriverSeamEnv{fakeEnv: testEnv(t)}
-	env.identity = core.AgentFinalizationIdentity{SessionID: "session", LogicalCallID: "logical", Generation: 1}
-	api, ok := env.sessions.(core.AgentFinalizationService)
+	env.identity = coresession.AgentFinalizationIdentity{SessionID: "session", LogicalCallID: "logical", Generation: 1}
+	api, ok := env.sessions.(coresession.AgentFinalizationService)
 	require.True(t, ok)
 	_, err := api.BindAgentFinalization(t.Context(), env.identity)
 	require.NoError(t, err)
 	env.stub = &finalizationSeamScopeStub{}
 	env.reader = session.NewAgentFinalizationScopeReader(env.identity.SessionID, env.stub, env.stub, env.stub, env.stub)
-	env.scope = finalizationPublicationScope{store: core.NewAgentFinalizationStore(env.conn), identity: env.identity}
+	env.scope = finalizationPublicationScope{store: coresession.NewAgentFinalizationStore(env.conn), identity: env.identity}
 	env.execution = &finalizationExecution{
 		sessionID: env.identity.SessionID,
 		logicalID: env.identity.LogicalCallID,
@@ -99,8 +99,8 @@ func newFinalizationDriverSeamEnv(t *testing.T) finalizationDriverSeamEnv {
 func finalizationSeamHooks() FinalizationDriverHooks {
 	return FinalizationDriverHooks{
 		BindScope: func(context.Context, SessionAgentCall) error { return nil },
-		RecoverScope: func(context.Context, *finalizationExecution) (core.AgentFinalizationRecovery, error) {
-			return core.AgentFinalizationNoCandidate, nil
+		RecoverScope: func(context.Context, *finalizationExecution) (coresession.AgentFinalizationRecovery, error) {
+			return coresession.AgentFinalizationNoCandidate, nil
 		},
 		FinalizeTurn: func(context.Context, *turnStream) error { return nil },
 		OnCancel:     func(string) {},
@@ -112,7 +112,7 @@ func finalizationSeamHooks() FinalizationDriverHooks {
 // context, and the composite reader reports complete facts in a transaction.
 func TestFinalizationDriverSeamEnvBindsExecution(t *testing.T) {
 	env := newFinalizationDriverSeamEnv(t)
-	record, err := core.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, env.identity)
+	record, err := coresession.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, env.identity)
 	require.NoError(t, err)
 	require.Equal(t, "executing", record.Phase)
 	require.Same(t, env.execution, finalizationExecutionFor(env.ctx, env.call))

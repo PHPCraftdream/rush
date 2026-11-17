@@ -15,7 +15,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -300,7 +300,7 @@ func TestRun_QueueDrain_DoesNotDeadlockOnOwnSessionLock(t *testing.T) {
 // concurrent Run() call for the same session can be driven into that exact
 // window deterministically instead of racing goroutine scheduling.
 type blockingReserveSessionService struct {
-	core.Service
+	coresession.Service
 	entered  chan struct{}
 	unblock  chan struct{}
 	enterOne sync.Once
@@ -310,7 +310,7 @@ type blockingReserveSessionService struct {
 // of runTurn). Later calls in the same turn — e.g. OnStepFinish re-fetches
 // the session — must pass through untouched, or the whole turn would
 // deadlock on a channel that's already closed/drained.
-func (b *blockingReserveSessionService) Get(ctx context.Context, id string) (core.Session, error) {
+func (b *blockingReserveSessionService) Get(ctx context.Context, id string) (coresession.Session, error) {
 	b.enterOne.Do(func() {
 		close(b.entered)
 		<-b.unblock

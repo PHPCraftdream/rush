@@ -30,7 +30,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -133,9 +133,9 @@ func newAdmissionRaceAppOnDir(t *testing.T, handler http.HandlerFunc, dataDir st
 // fenceLoader adapts the app's session service to the fence-store seam:
 // the H2 interim adapter exposes Store/LoadSessionExecutionRequirement via
 // an interface assertion, not the wide Service interface.
-func fenceLoader(t *testing.T, application *App) core.SessionExecutionRequirementStore {
+func fenceLoader(t *testing.T, application *App) coresession.SessionExecutionRequirementStore {
 	t.Helper()
-	reqStore, ok := application.Sessions.(core.SessionExecutionRequirementStore)
+	reqStore, ok := application.Sessions.(coresession.SessionExecutionRequirementStore)
 	require.True(t, ok, "the app's session service must implement the fence store seam")
 	return reqStore
 }
@@ -174,7 +174,7 @@ func fenceLoader(t *testing.T, application *App) core.SessionExecutionRequiremen
 // call_write tool call and result, so the ids alone cannot sequence the
 // rounds — the marker identifies the continuation request; the ids only
 // identify result rounds (call_cont is matched first for the same reason).
-func runLiveProviderTurn(t *testing.T, marker string, continuationTarget func() string, holdRowID string) (*App, string, *core.SessionExecutionRequirement, *countedLeakDisk) {
+func runLiveProviderTurn(t *testing.T, marker string, continuationTarget func() string, holdRowID string) (*App, string, *coresession.SessionExecutionRequirement, *countedLeakDisk) {
 	t.Helper()
 
 	// Assigned below, once the app (and its working dir) exists; the handler
@@ -256,7 +256,7 @@ func runLiveProviderTurn(t *testing.T, marker string, continuationTarget func() 
 	}
 	var res *RunResult
 	var runErr error
-	var fence *core.SessionExecutionRequirement
+	var fence *coresession.SessionExecutionRequirement
 	// The binding id is minted DURING ExecuteRun and the fence row is
 	// persisted mid-run (under exclusive admission, before the provider turn).
 	// ExecuteRun's deferred Call-owner release prunes a binding that nothing
@@ -272,7 +272,7 @@ func runLiveProviderTurn(t *testing.T, marker string, continuationTarget func() 
 	if holdRowID != "" {
 		loader := fenceLoader(t, application) // resolved on the test goroutine
 		onFirstRequest = func() {
-			var loaded *core.SessionExecutionRequirement
+			var loaded *coresession.SessionExecutionRequirement
 			deadline := time.Now().Add(10 * time.Second)
 			for time.Now().Before(deadline) {
 				got, loadErr := loader.LoadSessionExecutionRequirement(context.Background(), sessionID)

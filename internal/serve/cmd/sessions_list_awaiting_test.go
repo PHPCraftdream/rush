@@ -8,7 +8,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -30,7 +30,7 @@ func TestListStatusesWithAwaiting_AnnotatesAndWires(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Release(dataDir) })
 	q := db.New(conn)
-	s := core.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	parent, err := s.Create(ctx, "awaiting list root")
 	require.NoError(t, err)
 	child, err := s.CreateTaskSession(ctx, "awaiting-list-child", parent.ID, "worker")
@@ -93,7 +93,7 @@ func TestListStatusesWithAwaiting_NilStoreIsPlainStatus(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Release(dataDir) })
 	q := db.New(conn)
-	s := core.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	parent, err := s.Create(ctx, "plain list root")
 	require.NoError(t, err)
 	a := &app.App{Sessions: s, DB: func() *sql.DB { return conn }}

@@ -36,7 +36,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -363,7 +363,7 @@ func (p *panicWindowCoordinator) ResetAutoResumeCounter(sessionID string) {
 	p.coordinator.ResetAutoResumeCounter(sessionID)
 }
 
-func (p *panicWindowCoordinator) RebuildSessionAgentCall(ctx context.Context, rowID string, data core.SessionAgentCallData) (agent.SessionAgentCall, error) {
+func (p *panicWindowCoordinator) RebuildSessionAgentCall(ctx context.Context, rowID string, data coresession.SessionAgentCallData) (agent.SessionAgentCall, error) {
 	return p.coordinator.RebuildSessionAgentCall(ctx, rowID, data)
 }
 

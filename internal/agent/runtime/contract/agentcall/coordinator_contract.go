@@ -12,7 +12,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -171,7 +171,7 @@ type Coordinator interface {
 	// rowID is the leased run-queue entry's durable id (R12-H2b §2.4):
 	// the rebuild releases the row-keyed Continuation holder through it.
 	// Callers without a row id pass "".
-	RebuildSessionAgentCall(ctx context.Context, rowID string, data core.SessionAgentCallData) (SessionAgentCall, error)
+	RebuildSessionAgentCall(ctx context.Context, rowID string, data coresession.SessionAgentCallData) (SessionAgentCall, error)
 	// RunSessionAgentCall executes a SessionAgentCall directly for run queue pump execution
 	// (task #340, ROUND 3 migration). This bypasses the normal buildCall path since the
 	// call is already fully reconstructed with all necessary data.

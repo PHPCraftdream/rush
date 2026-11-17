@@ -19,7 +19,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -161,7 +161,7 @@ func TestSessionsStatus_UnknownEndedReasonVerbatim(t *testing.T) {
 func TestExplainWhy_EndedPeakHoursRendersPaused(t *testing.T) {
 	t.Parallel()
 	conn, q := newSessionFactsTestDB(t)
-	s := core.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 	sess, err := s.Create(context.Background(), "peak pause")
 	require.NoError(t, err)
@@ -184,7 +184,7 @@ func TestExplainWhy_EndedPeakHoursRendersPaused(t *testing.T) {
 func TestExplainWhy_AtRestWithFinishedTurnExplainsMissingEnd(t *testing.T) {
 	t.Parallel()
 	conn, q := newSessionFactsTestDB(t)
-	s := core.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 	sess, err := s.Create(context.Background(), "idle but finished")
 	require.NoError(t, err)

@@ -17,7 +17,7 @@ import (
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/google/uuid"
@@ -156,7 +156,7 @@ func (s *apiBatchService) ensureServiceSession(ctx context.Context, tokenID stri
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
-	creator, ok := s.app.Sessions.(core.OriginCreator)
+	creator, ok := s.app.Sessions.(coresession.OriginCreator)
 	if !ok {
 		return "", errBatchUnavailable
 	}

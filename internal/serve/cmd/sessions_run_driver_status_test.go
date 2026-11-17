@@ -17,7 +17,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -26,7 +26,7 @@ import (
 // newRunDriverTestApp is newWhyDescendantTestApp with the App's DB handle
 // wired (the driver-marker reader reads through it) and a HostStore the
 // driver marker is claimed through.
-func newRunDriverTestApp(t *testing.T) (a *app.App, s core.Service, m message.Service, store *session.HostStore, dataDir string) {
+func newRunDriverTestApp(t *testing.T) (a *app.App, s coresession.Service, m message.Service, store *session.HostStore, dataDir string) {
 	t.Helper()
 	dataDir = t.TempDir()
 	ctx := context.Background()
@@ -34,7 +34,7 @@ func newRunDriverTestApp(t *testing.T) (a *app.App, s core.Service, m message.Se
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)) })
 	q := db.New(conn)
-	s = core.NewService(q, conn)
+	s = coresession.NewService(q, conn)
 	m = message.NewService(q)
 	store = session.NewHostStore(conn, dataDir, 4321, "rush-run")
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
@@ -155,13 +155,13 @@ func TestListStatus_DriverShapes(t *testing.T) {
 	t.Parallel()
 	a, s, _, store, dataDir := newRunDriverTestApp(t)
 	ctx := context.Background()
-	mk := func(title string) core.Session {
+	mk := func(title string) coresession.Session {
 		sess, err := s.Create(ctx, title)
 		require.NoError(t, err)
 		return sess
 	}
 	done, blank, deadPID, delegating, deadHost, undriven := mk("done"), mk("blank"), mk("dead-pid"), mk("delegating"), mk("dead-host"), mk("undriven")
-	for _, sess := range []core.Session{done, blank, deadPID, delegating} {
+	for _, sess := range []coresession.Session{done, blank, deadPID, delegating} {
 		require.NoError(t, store.ClaimSessionDriver(ctx, sess.ID))
 	}
 	// The dead-PID shape: a recorded PID that is not alive (D1's annotation

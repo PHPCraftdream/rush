@@ -32,7 +32,7 @@ import (
 	"os"
 
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // ForeignWorkspaceError is the typed refusal for a session this process does
@@ -42,12 +42,12 @@ import (
 // sentence from docs/plans/2026-10-01-shared-data-dir.md §1.
 //
 // It deliberately does NOT decide anything: the caller has already established
-// that the row is foreign (app.owns / core.Owns in runOwned), and the
+// that the row is foreign (app.owns / coresession.Owns in runOwned), and the
 // message only explains what to do about it. Re-pointing the row is not
 // offered on purpose -- `rush sessions fork` is the one sanctioned way to
 // continue another checkout's history here, and it copies rather than moves
 // the session, so two processes can never write one session's messages.
-func ForeignWorkspaceError(sess core.Session) error {
+func ForeignWorkspaceError(sess coresession.Session) error {
 	msg := fmt.Sprintf(
 		"session %s belongs to %s (branch %s); run it there or \"rush sessions fork %s\" here",
 		sess.ID, sess.WorkspaceRoot, sess.GitBranch, sess.ID,

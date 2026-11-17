@@ -16,7 +16,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/spf13/cobra"
 )
 
@@ -150,7 +150,7 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		for _, s := range sessions {
 			fmt.Fprintf(
 				tw, "%s\t%s\t%s\t%d\t%s\t%s\t%d\t$%.4f\n",
-				short(core.HashID(s.ID)),
+				short(coresession.HashID(s.ID)),
 				s.ID,
 				truncate(s.Title, 40),
 				s.MessageCount,
@@ -219,7 +219,7 @@ func listStatusesWithAwaiting(ctx context.Context, store pendingChildQuestionRea
 
 // idsOf projects the session list to the id slice the batched
 // classifier takes.
-func idsOf(sessions []core.Session) []string {
+func idsOf(sessions []coresession.Session) []string {
 	ids := make([]string, len(sessions))
 	for i, s := range sessions {
 		ids[i] = s.ID
@@ -245,8 +245,8 @@ func statusOrDash(s string) string {
 }
 
 // sessionListItem is the JSON shape of `rush sessions list --json`. Held
-// as a separate struct (rather than just marshalling core.Session
-// directly) so the wire-stable field names don't drift if core.Session
+// as a separate struct (rather than just marshalling coresession.Session
+// directly) so the wire-stable field names don't drift if coresession.Session
 // gains internal fields we don't want to publish.
 type sessionListItem struct {
 	ID           string  `json:"id"`
@@ -292,12 +292,12 @@ type sessionListItem struct {
 	BatchAwaitingAnswer bool `json:"batch_awaiting_answer,omitempty"`
 }
 
-// makeSessionListItem projects a core.Session into the wire-stable
+// makeSessionListItem projects a coresession.Session into the wire-stable
 // sessionListItem shape used by `rush sessions list --json`.
-func makeSessionListItem(s core.Session, costUSD float64) sessionListItem {
+func makeSessionListItem(s coresession.Session, costUSD float64) sessionListItem {
 	return sessionListItem{
 		ID:           s.ID,
-		Hash:         core.HashID(s.ID),
+		Hash:         coresession.HashID(s.ID),
 		Title:        s.Title,
 		MessageCount: s.MessageCount,
 		CreatedAt:    s.CreatedAt,

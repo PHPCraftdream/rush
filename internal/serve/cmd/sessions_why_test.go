@@ -15,7 +15,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -52,7 +52,7 @@ func TestExplainSessionStatus_AtRest_CleanFinish(t *testing.T) {
 	t.Parallel()
 
 	conn, q := newSessionFactsTestDB(t)
-	s := core.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 
 	sess, err := s.Create(context.Background(), "clean idle")
@@ -87,7 +87,7 @@ func TestExplainSessionStatus_AtRest_CleanFinish(t *testing.T) {
 // verdict is "crashed" and the reason says the holder is no longer alive.
 func TestExplainSessionStatus_Crashed_NoCleanFinish(t *testing.T) {
 	conn, q := newSessionFactsTestDB(t)
-	s := core.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 
 	sess, err := s.Create(context.Background(), "mid-turn crash")
@@ -125,7 +125,7 @@ func TestExplainSessionStatus_Crashed_NoCleanFinish(t *testing.T) {
 // the old "done (stale lock)" reclassification by finish reason is gone.
 func TestExplainSessionStatus_StaleLockCleanFinish(t *testing.T) {
 	conn, q := newSessionFactsTestDB(t)
-	s := core.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 
 	sess, err := s.Create(context.Background(), "stale lock clean exit")
@@ -165,7 +165,7 @@ func TestExplainSessionStatus_AtRest_NoAssistantMessage(t *testing.T) {
 	t.Parallel()
 
 	conn, q := newSessionFactsTestDB(t)
-	s := core.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 
 	sess, err := s.Create(context.Background(), "empty")
@@ -192,7 +192,7 @@ func TestExplainSessionStatus_AtRest_NoAssistantMessage(t *testing.T) {
 // (we use our own PID) → verdict is "running" and the heartbeat age is shown.
 func TestExplainSessionStatus_Running(t *testing.T) {
 	conn, q := newSessionFactsTestDB(t)
-	s := core.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 
 	sess, err := s.Create(context.Background(), "live run")
@@ -232,7 +232,7 @@ func TestExplainSessionStatus_Running_PIDUnreadableFreshHeartbeat(t *testing.T) 
 	t.Parallel()
 
 	conn, q := newSessionFactsTestDB(t)
-	s := core.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 
 	sess, err := s.Create(context.Background(), "live run, unreadable pid")
@@ -265,7 +265,7 @@ func TestExplainSessionStatus_PIDlessRecordIsReleased(t *testing.T) {
 	t.Parallel()
 
 	conn, q := newSessionFactsTestDB(t)
-	s := core.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 
 	sess, err := s.Create(context.Background(), "dead run, unreadable pid")
@@ -293,7 +293,7 @@ func TestExplainSessionStatus_PIDlessRecordIsReleased(t *testing.T) {
 // the output must include that error text so the operator sees the cause.
 func TestExplainSessionStatus_ErrorFinishSurfacesErrorText(t *testing.T) {
 	conn, q := newSessionFactsTestDB(t)
-	s := core.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 
 	sess, err := s.Create(context.Background(), "errored")
@@ -339,7 +339,7 @@ func TestExplainSessionStatus_AgedLockWithLivePIDIsRunning(t *testing.T) {
 	}
 
 	conn, q := newSessionFactsTestDB(t)
-	s := core.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 
 	sess, err := s.Create(context.Background(), "why-status-pid-reuse")
@@ -373,7 +373,7 @@ func TestExplainSessionStatus_AgedLockWithLivePIDIsRunning(t *testing.T) {
 // classifier only says "no longer alive" after IsProcessAlive said so).
 func TestExplainSessionStatus_DeadPIDIsCrashed(t *testing.T) {
 	conn, q := newSessionFactsTestDB(t)
-	s := core.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 
 	sess, err := s.Create(context.Background(), "why-status-pid-bound-genuinely-dead")
@@ -405,7 +405,7 @@ func TestExplainSessionStatus_DeadPIDIsCrashed(t *testing.T) {
 // the first assertion to "status: at rest".
 func TestExplainSessionStatus_StatFailureIsFailOpenInTurn(t *testing.T) {
 	conn, q := newSessionFactsTestDB(t)
-	s := core.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 
 	sess, err := s.Create(context.Background(), "stat-fail")

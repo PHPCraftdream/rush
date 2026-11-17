@@ -12,7 +12,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // fakePumpEpoch lies in the PAST, so every real-clock reading is later than
@@ -106,7 +106,7 @@ func (tk *fakePumpTicker) Stop() {
 // fakeClockService stamps every fresh lease on the fake clock (the real
 // service uses time.Now()) and counts the pump's lease-related calls.
 type fakeClockService struct {
-	core.Service
+	coresession.Service
 	clk *fakePumpClock
 
 	seen              sync.Map     // entry ids the pump leased
@@ -118,7 +118,7 @@ type fakeClockService struct {
 
 // newFakeClockService also registers a state describer for t: on an awaitPump
 // timeout the probe counters and the rows of every leased entry are printed.
-func newFakeClockService(t *testing.T, svc core.Service, clk *fakePumpClock) *fakeClockService {
+func newFakeClockService(t *testing.T, svc coresession.Service, clk *fakePumpClock) *fakeClockService {
 	s := &fakeClockService{Service: svc, clk: clk}
 	sessiontest.RegisterPumpDiag(t, s.describe)
 	return s
@@ -153,7 +153,7 @@ func (s *fakeClockService) describe() string {
 	return b.String()
 }
 
-func (s *fakeClockService) LeaseRunQueueEntry(ctx context.Context, sessionID, leasedBy string, ttl time.Duration) (*core.RunQueueEntry, error) {
+func (s *fakeClockService) LeaseRunQueueEntry(ctx context.Context, sessionID, leasedBy string, ttl time.Duration) (*coresession.RunQueueEntry, error) {
 	e, err := s.Service.LeaseRunQueueEntry(ctx, sessionID, leasedBy, ttl)
 	if err != nil || e == nil {
 		return e, err
@@ -186,7 +186,7 @@ func (s *fakeClockService) CleanupExpiredLeases(ctx context.Context, beforeTime 
 	return err
 }
 
-func pumpQueueSnapshot(svc core.Service, id string) string {
+func pumpQueueSnapshot(svc coresession.Service, id string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	began := time.Now()
@@ -201,9 +201,9 @@ func pumpQueueSnapshot(svc core.Service, id string) string {
 		e.Status, e.Attempts, e.LeasedBy, e.LeasedAt, e.LeaseExpiresAt, e.TerminalFailure)
 }
 
-func registerPumpQueueReport(t *testing.T, tl *sessiontest.TestTimeline, svc core.Service, id string) func(context.Context) (*core.RunQueueEntry, error) {
+func registerPumpQueueReport(t *testing.T, tl *sessiontest.TestTimeline, svc coresession.Service, id string) func(context.Context) (*coresession.RunQueueEntry, error) {
 	sessiontest.RegisterPumpDiag(t, func() string { return pumpQueueSnapshot(svc, id) })
-	return func(ctx context.Context) (*core.RunQueueEntry, error) {
+	return func(ctx context.Context) (*coresession.RunQueueEntry, error) {
 		began := time.Now()
 		e, err := svc.GetRunQueueEntry(ctx, id)
 		state := "absent"
@@ -222,7 +222,7 @@ type countingCoordinatorForDrain struct {
 	calls atomic.Int64
 }
 
-func (c *countingCoordinatorForDrain) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
+func (c *countingCoordinatorForDrain) Run(ctx context.Context, callData coresession.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
 	return nil, nil
 }

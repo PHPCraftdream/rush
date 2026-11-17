@@ -21,7 +21,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/filetracker"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -179,7 +179,7 @@ func TestAgenticFetchToolProductionStampArmsIngress(t *testing.T) {
 	env := newBatchInventoryEnv(t, "view", inventoryAgentDeps)
 	env.install.DiskBindings.setRegistryDrop(env.registries.Delete)
 	h := newRound2LiveHarness(t, smartSrv, fastSrv)
-	h.coord.sessions = core.NewService(db.New(env.conn), env.conn)
+	h.coord.sessions = coresession.NewService(db.New(env.conn), env.conn)
 	h.coord.messages = message.NewService(db.New(env.conn))
 	// The real view tool records reads through the coordinator's
 	// filetracker; bind it to the SAME shared store so the write does not

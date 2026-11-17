@@ -13,7 +13,7 @@ import (
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -127,7 +127,7 @@ func TestP0_338_FinalizerReachableDespiteHungCleanup(t *testing.T) {
 	// t.Cleanup runs even on failure paths, so rush.db can't block t.TempDir's
 	// RemoveAll if an assertion above bails out early.
 	t.Cleanup(func() { require.NoError(t, db.Release(tmpDir)) })
-	sessions := core.NewService(q, conn)
+	sessions := coresession.NewService(q, conn)
 	messages := message.NewService(q)
 
 	// Create the session.
@@ -309,7 +309,7 @@ func TestP0_338_FinalizerReachableDespiteHungCleanup(t *testing.T) {
 		"(proving the call was actually executed, not just queued)")
 }
 
-// p0338PumpCoordinator adapts core.SessionAgentCallData to agent.SessionAgentCall
+// p0338PumpCoordinator adapts coresession.SessionAgentCallData to agent.SessionAgentCall
 // and executes it through the exported agent.SessionAgent interface, mirroring
 // production's coordinatorAdapterImpl (internal/app/app.go) without needing the
 // unexported *coordinator/*sessionAgent types this external test package can't see.
@@ -317,7 +317,7 @@ type p0338PumpCoordinator struct {
 	sessionAgent agent.SessionAgent
 }
 
-func (p *p0338PumpCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
+func (p *p0338PumpCoordinator) Run(ctx context.Context, callData coresession.SessionAgentCallData) (*any, error) {
 	call, err := agent.FromSessionAgentCallData(callData)
 	if err != nil {
 		return nil, err

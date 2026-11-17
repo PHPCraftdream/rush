@@ -37,7 +37,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -51,7 +51,7 @@ type twoRowCoordinator struct {
 	firstFn func() (*any, error)
 }
 
-func (c *twoRowCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
+func (c *twoRowCoordinator) Run(ctx context.Context, callData coresession.SessionAgentCallData) (*any, error) {
 	c.calls++
 	if c.calls == 1 {
 		return c.firstFn()
@@ -59,13 +59,13 @@ func (c *twoRowCoordinator) Run(ctx context.Context, callData core.SessionAgentC
 	// Every call from the second onward reports busy -- simulating a
 	// different live owner having taken the session between row A and row
 	// B (or B and any further row).
-	return nil, core.ErrCallQueuedNotExecuted
+	return nil, coresession.ErrCallQueuedNotExecuted
 }
 
 // enqueueTwoRows enqueues durable rows A and B (FIFO -- A leases first) for
 // a single fresh session and returns everything a test needs to drive and
 // assert on the scenario.
-func enqueueTwoRows(t *testing.T, name string, sessions core.Service, sessionID string) {
+func enqueueTwoRows(t *testing.T, name string, sessions coresession.Service, sessionID string) {
 	t.Helper()
 	callDataA, err := json.Marshal(map[string]any{"SessionID": sessionID, "Prompt": "row-A"})
 	require.NoError(t, err)
@@ -114,7 +114,7 @@ func TestDrainSessionNow_PartialDrain_SuccessThenBusy_NeverReportsCleanSuccess(t
 	// observable" contract.
 	pending, err := svc.ListPendingRunQueueEntries(context.Background())
 	require.NoError(t, err)
-	var sessionPending []core.RunQueueEntry
+	var sessionPending []coresession.RunQueueEntry
 	for _, e := range pending {
 		if e.SessionID == sess.ID {
 			sessionPending = append(sessionPending, e)
@@ -163,7 +163,7 @@ func TestDrainSessionNow_PartialDrain_RetryableErrorThenBusy_PreservesError(t *t
 
 	pending, err := svc.ListPendingRunQueueEntries(context.Background())
 	require.NoError(t, err)
-	var sessionPending []core.RunQueueEntry
+	var sessionPending []coresession.RunQueueEntry
 	for _, e := range pending {
 		if e.SessionID == sess.ID {
 			sessionPending = append(sessionPending, e)
@@ -201,7 +201,7 @@ func TestDrainSessionNow_PartialDrain_TerminalErrorThenBusy_PreservesError(t *te
 
 	pending, err := svc.ListPendingRunQueueEntries(context.Background())
 	require.NoError(t, err)
-	var sessionPending []core.RunQueueEntry
+	var sessionPending []coresession.RunQueueEntry
 	for _, e := range pending {
 		if e.SessionID == sess.ID {
 			sessionPending = append(sessionPending, e)
@@ -212,13 +212,13 @@ func TestDrainSessionNow_PartialDrain_TerminalErrorThenBusy_PreservesError(t *te
 	require.Equal(t, int64(0), sessionPending[0].Attempts, "row B was never leased/attempted -- no attempt penalty")
 }
 
-// ackFailingServiceP588 wraps a real core.Service and fails
+// ackFailingServiceP588 wraps a real coresession.Service and fails
 // AckRunQueueEntry for exactly the first Ack it sees (row A's), so row A's
 // turn genuinely runs and commits but its terminal bookkeeping write fails
 // -- ErrTurnCommitFailed -- while leaving row B's own eventual Ack (if ever
 // reached, which it should not be in this test) untouched.
 type ackFailingServiceP588 struct {
-	core.Service
+	coresession.Service
 	ackErr    error
 	ackedOnce bool
 }

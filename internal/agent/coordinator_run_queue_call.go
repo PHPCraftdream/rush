@@ -14,7 +14,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/google/uuid"
 )
 
@@ -40,7 +40,7 @@ import (
 // rebuilt call's build scope; on ANY failure after acquisition both the prep
 // token and the row-keyed holder are released, so a refused row never leaks
 // the binding pin.
-func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string, data core.SessionAgentCallData) (SessionAgentCall, error) {
+func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string, data coresession.SessionAgentCallData) (SessionAgentCall, error) {
 	authorities, authorityErr := c.restoreFinalizationQueuedCall(ctx, rowID, data)
 	if authorityErr != nil {
 		if data.DiskRequirement != nil {
@@ -229,7 +229,7 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 	//
 	// R6-4 (P2 security review round 6): fromSessionCallOptionsSpec now
 	// refuses a non-nil spec whose Version does not match the current
-	// core.CallOptionsSpecVersion instead of partially decoding it —
+	// coresession.CallOptionsSpecVersion instead of partially decoding it —
 	// propagate that refusal here rather than swallowing it, so a row
 	// written by a newer/older binary's incompatible schema fails the
 	// whole restart closed instead of silently running with whatever

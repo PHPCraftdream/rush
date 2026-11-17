@@ -16,7 +16,7 @@ import (
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -336,13 +336,13 @@ func TestP339_NoDuplicateExecutionAfterHandoff(t *testing.T) {
 	entryID := pendingEntries[0].ID
 
 	// Verify the queued call data contains the expected prompt.
-	var callData core.SessionAgentCallData
+	var callData coresession.SessionAgentCallData
 	err = json.Unmarshal([]byte(pendingEntries[0].CallData), &callData)
 	require.NoError(t, err)
 	require.Equal(t, messageBText, callData.Prompt, "queued call should contain correct prompt")
 
 	// PHASE 2: EXECUTE VIA PUMP AND VERIFY TERMINAL FAILURE
-	// Create a mock coordinator that adapts core.SessionAgentCallData to agent.SessionAgentCall
+	// Create a mock coordinator that adapts coresession.SessionAgentCallData to agent.SessionAgentCall
 	// and executes it through the sessionAgent.
 	mockCoord := &pumpTestCoordinator{
 		sessionAgent: sessionAgent,

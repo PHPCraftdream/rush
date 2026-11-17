@@ -16,7 +16,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -33,7 +33,7 @@ func isSummaryPromptRequest(r *http.Request) bool {
 	return bytes.Contains(body, []byte("You are summarizing a conversation to preserve context"))
 }
 
-// ackObservingSessionService wraps core.Service to capture the exact
+// ackObservingSessionService wraps coresession.Service to capture the exact
 // moment AckRunQueueEntry is called, via a buffered channel. This is the
 // only race-free way to observe "the durable row was Acked": polling
 // ListPendingRunQueueEntries is NOT equivalent — a leased (in-flight) row is
@@ -42,7 +42,7 @@ func isSummaryPromptRequest(r *http.Request) bool {
 // hook on the Ack call itself proves the ordering this test needs: Ack must
 // happen strictly after the continuation's own provider call completes.
 type ackObservingSessionService struct {
-	core.Service
+	coresession.Service
 	acked chan string
 }
 

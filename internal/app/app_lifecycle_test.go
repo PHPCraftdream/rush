@@ -9,7 +9,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -22,7 +22,7 @@ type shutdownPumpCoordinator struct {
 	release  <-chan struct{}
 }
 
-func (c *shutdownPumpCoordinator) Run(ctx context.Context, _ core.SessionAgentCallData) (*any, error) {
+func (c *shutdownPumpCoordinator) Run(ctx context.Context, _ coresession.SessionAgentCallData) (*any, error) {
 	close(c.entered)
 	<-ctx.Done()
 	c.broker.Publish(pubsub.CreatedEvent, "pump terminal event")

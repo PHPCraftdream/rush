@@ -13,10 +13,11 @@
 #
 # Counts taken from docs/plans/2026-11-15-sprint0-plan.md stage A1b
 # (gate V7).
-internal/agent/agent_run.go 918
+# MV1 added one move-mandated service import line in each listed file; this is the narrow exception to the down-only ratchet.
+internal/agent/agent_run.go 919
 internal/agent/agent_turn_step.go 932
-internal/agent/batch_cutover_await_test.go 989
-internal/agent/batch_install_adapters.go 958
+internal/agent/batch_cutover_await_test.go 990
+internal/agent/batch_install_adapters.go 959
 internal/agent/coordinator_interrupt.go 958
 internal/agent/coordinator_providers.go 939
 internal/agent/coordinator_run.go 998
@@ -29,7 +30,7 @@ internal/agent/tools/mcp/state_regression_mutation_test.go 911
 internal/agent/tools/mcp/state_regression_refresh_test.go 914
 internal/agent/tools/view.go 957
 internal/app/app_run_async.go 981
-internal/app/app_run_reviewer.go 977
+internal/app/app_run_reviewer.go 978
 internal/app/app_run_reviewer_evidence.go 908
 internal/config/apitoken_store_test.go 969
 # 915 -> 916: +1 import line (envresolve) from the D2-1 move of the shell variable resolver; deliberate, only down from here.

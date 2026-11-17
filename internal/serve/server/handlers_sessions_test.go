@@ -1,7 +1,7 @@
 package server
 
 // F-3 of docs/reviews/2026-08-24-twenty-third-review-7c8a170e.md: the rename
-// broadcast is the ONLY notification a rename produces (core.Service.Rename
+// broadcast is the ONLY notification a rename produces (coresession.Service.Rename
 // publishes no pubsub event), so it must carry the external-ownership
 // annotation like every other Session that reaches a client — otherwise every
 // open tab replaces its annotated row and a foreign-held session transiently
@@ -31,7 +31,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -82,7 +82,7 @@ func TestHandleRenameSession_BroadcastCarriesExternalOwnership(t *testing.T) {
 	require.NoError(t, err)
 	handleRenameSession(ctx, a, client, WSMessage{ID: "req-1", Type: CmdRenameSession, Payload: payload})
 
-	var updated *core.Session
+	var updated *coresession.Session
 	deadline := time.Now().Add(2 * time.Second)
 	for updated == nil && time.Now().Before(deadline) {
 		select {
@@ -92,7 +92,7 @@ func TestHandleRenameSession_BroadcastCarriesExternalOwnership(t *testing.T) {
 			if env.Type != EventSessionUpdated {
 				continue
 			}
-			var s core.Session
+			var s coresession.Session
 			require.NoError(t, json.Unmarshal(env.Payload, &s))
 			updated = &s
 		case <-time.After(50 * time.Millisecond):

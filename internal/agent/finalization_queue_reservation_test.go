@@ -10,7 +10,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -47,7 +47,7 @@ type reservationQueueProbe struct {
 	lastErr     error
 }
 
-func (p *reservationQueueProbe) rebuild(ctx context.Context, rowID string, data core.SessionAgentCallData) (SessionAgentCall, error) {
+func (p *reservationQueueProbe) rebuild(ctx context.Context, rowID string, data coresession.SessionAgentCallData) (SessionAgentCall, error) {
 	p.builds.Add(1)
 	snapshot, err := p.coordinator.restoreFinalizationQueuedCall(ctx, rowID, data)
 	if err != nil {
@@ -80,7 +80,7 @@ func (p *reservationQueueProbe) run(ctx context.Context, call SessionAgentCall) 
 	return nil, &ErrCallAlreadyAttempted{Err: errors.New("unexpected provider dispatch")}
 }
 
-func (p *reservationQueueProbe) Run(ctx context.Context, data core.SessionAgentCallData) (result *any, err error) {
+func (p *reservationQueueProbe) Run(ctx context.Context, data coresession.SessionAgentCallData) (result *any, err error) {
 	defer func() {
 		if value := recover(); value != nil {
 			if !p.panicRun || value != "reservation phase panic" {
@@ -95,14 +95,14 @@ func (p *reservationQueueProbe) Run(ctx context.Context, data core.SessionAgentC
 	return nil, err
 }
 
-func reservationQueueCall(t *testing.T, fixture finalizationDriverFixture, owner core.AgentFinalizationIdentity, snapshot core.AgentFinalizationContext) core.SessionAgentCallData {
+func reservationQueueCall(t *testing.T, fixture finalizationDriverFixture, owner coresession.AgentFinalizationIdentity, snapshot coresession.AgentFinalizationContext) coresession.SessionAgentCallData {
 	t.Helper()
 	ctx, err := snapshot.Restore(context.Background())
 	require.NoError(t, err)
-	data := core.SessionAgentCallData{SessionID: owner.SessionID, LogicalCallID: owner.LogicalCallID, Prompt: "compose settled results", AutoResumed: true, FinalizationRequirement: snapshot.Requirement()}
+	data := coresession.SessionAgentCallData{SessionID: owner.SessionID, LogicalCallID: owner.LogicalCallID, Prompt: "compose settled results", AutoResumed: true, FinalizationRequirement: snapshot.Requirement()}
 	raw, err := json.Marshal(data)
 	require.NoError(t, err)
-	require.NoError(t, fixture.api.(core.Service).EnqueueRunQueueEntry(ctx, "reserved", owner.SessionID, raw))
+	require.NoError(t, fixture.api.(coresession.Service).EnqueueRunQueueEntry(ctx, "reserved", owner.SessionID, raw))
 	return data
 }
 
@@ -117,12 +117,12 @@ func TestFinalizationReservationLeaseChangeAndStopBeforeConsume(t *testing.T) {
 	for _, change := range []string{"expiry", "replacement", "cancel", "shutdown"} {
 		t.Run(change, func(t *testing.T) {
 			fixture := newFinalizationDriverFixture(t)
-			sessions := fixture.api.(core.Service)
+			sessions := fixture.api.(coresession.Service)
 			parent, err := fixture.api.BindAgentFinalization(fixture.ctx, fixture.parent)
 			require.NoError(t, err)
-			trusted, err := core.WithAgentFinalizationContext(context.Background(), parent)
+			trusted, err := coresession.WithAgentFinalizationContext(context.Background(), parent)
 			require.NoError(t, err)
-			data := reservationQueueCall(t, fixture, fixture.parent, core.CaptureAgentFinalizationContext(trusted))
+			data := reservationQueueCall(t, fixture, fixture.parent, coresession.CaptureAgentFinalizationContext(trusted))
 			real := NewSessionAgent(SessionAgentOptions{})
 			driver := &reservationBarrierAgent{SessionAgent: real}
 			coordinator := &coordinator{sessions: sessions, currentAgent: driver}
@@ -157,8 +157,8 @@ func TestFinalizationReservationLeaseChangeAndStopBeforeConsume(t *testing.T) {
 			default:
 				require.NoError(t, err)
 				require.Equal(t, session.DrainNoWork, result)
-				require.ErrorIs(t, probe.lastErr, core.ErrCallQueuedNotExecuted)
-				require.ErrorIs(t, probe.lastErr, core.ErrAgentFinalizationLeaseChanged)
+				require.ErrorIs(t, probe.lastErr, coresession.ErrCallQueuedNotExecuted)
+				require.ErrorIs(t, probe.lastErr, coresession.ErrAgentFinalizationLeaseChanged)
 			}
 			require.NoError(t, barrierErr)
 			require.Zero(t, reservationConsumed(t, fixture))
@@ -178,7 +178,7 @@ func TestFinalizationReservationPostConsumeFailureReleasesEraAndBuildScope(t *te
 	for _, failure := range []string{"panic", "cancel", "driver_replaced"} {
 		t.Run(failure, func(t *testing.T) {
 			fixture := newFinalizationDriverFixture(t)
-			sessions := fixture.api.(core.Service)
+			sessions := fixture.api.(coresession.Service)
 			data := reservationQueueCall(t, fixture, fixture.child, fixture.capability)
 			driver := NewSessionAgent(SessionAgentOptions{})
 			root := NewSessionAgent(SessionAgentOptions{})
@@ -215,13 +215,13 @@ func TestFinalizationReservationPostConsumeFailureReleasesEraAndBuildScope(t *te
 				require.Equal(t, "reservation phase panic", probe.observed)
 				require.EqualValues(t, 1, probe.runs.Load())
 			case "driver_replaced":
-				require.ErrorIs(t, probe.lastErr, core.ErrAgentFinalizationDriverUnavailable)
+				require.ErrorIs(t, probe.lastErr, coresession.ErrAgentFinalizationDriverUnavailable)
 				require.EqualValues(t, 1, probe.runs.Load())
 			case "cancel":
 				require.ErrorIs(t, probe.lastErr, context.Canceled)
 				require.Zero(t, probe.runs.Load())
 			}
-			state, err := core.NewAgentFinalizationStore(fixture.conn).Snapshot(ctx, fixture.child)
+			state, err := coresession.NewAgentFinalizationStore(fixture.conn).Snapshot(ctx, fixture.child)
 			require.NoError(t, err)
 			require.Equal(t, "executing", state.Phase)
 		})
@@ -230,7 +230,7 @@ func TestFinalizationReservationPostConsumeFailureReleasesEraAndBuildScope(t *te
 
 func TestFinalizationReservationMissingChildDriverDoesNotBurnProofOrUseRoot(t *testing.T) {
 	fixture := newFinalizationDriverFixture(t)
-	sessions := fixture.api.(core.Service)
+	sessions := fixture.api.(coresession.Service)
 	data := reservationQueueCall(t, fixture, fixture.child, fixture.capability)
 	root := NewSessionAgent(SessionAgentOptions{})
 	coordinator := &coordinator{sessions: sessions, currentAgent: root, subAgentDrivers: newSubAgentDriverRegistry()}
@@ -241,7 +241,7 @@ func TestFinalizationReservationMissingChildDriverDoesNotBurnProofOrUseRoot(t *t
 	defer cancel()
 	_, err := pump.DrainSessionNow(ctx, data.SessionID)
 	require.Error(t, err)
-	require.ErrorIs(t, probe.lastErr, core.ErrAgentFinalizationDriverUnavailable)
+	require.ErrorIs(t, probe.lastErr, coresession.ErrAgentFinalizationDriverUnavailable)
 	require.Zero(t, reservationConsumed(t, fixture))
 	require.Zero(t, probe.builds.Load())
 	require.Zero(t, probe.runs.Load())
@@ -255,6 +255,6 @@ func TestFinalizationReservationCancelledEntryDoesNotAccessStore(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	coordinator := &coordinator{}
-	_, err := coordinator.RunFinalizationQueuedCall(ctx, "untrusted", core.SessionAgentCallData{})
+	_, err := coordinator.RunFinalizationQueuedCall(ctx, "untrusted", coresession.SessionAgentCallData{})
 	require.ErrorIs(t, err, context.Canceled)
 }

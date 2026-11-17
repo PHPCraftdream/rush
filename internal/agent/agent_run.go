@@ -13,7 +13,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -420,7 +420,7 @@ func (a *sessionAgent) refuseForeignSession(ctx context.Context, sessionID strin
 		return nil
 	}
 	root, home := a.processWorkspace()
-	if core.Owns(sess.WorkspaceRoot, root, home) {
+	if coresession.Owns(sess.WorkspaceRoot, root, home) {
 		return nil
 	}
 	return ForeignWorkspaceError(sess)
@@ -729,7 +729,7 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 					err = fmt.Errorf("%w; failed to durably recover the admitted call: %v", err, durableErr)
 				}
 				if replacedDurableCallID != "" {
-					return nil, fmt.Errorf("%w: durable call %q was replaced but never executed; replacement failed: %s", core.ErrCallQueuedNotExecuted, replacedDurableCallID, err)
+					return nil, fmt.Errorf("%w: durable call %q was replaced but never executed; replacement failed: %s", coresession.ErrCallQueuedNotExecuted, replacedDurableCallID, err)
 				}
 				return nil, notAttempted(call, err)
 			}
@@ -837,7 +837,7 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 				if replacementError == "" {
 					replacementError = "replacement exited without an error"
 				}
-				return nil, fmt.Errorf("%w: durable call %q was replaced but never executed; replacement failed: %s", core.ErrCallQueuedNotExecuted, replacedDurableCallID, replacementError)
+				return nil, fmt.Errorf("%w: durable call %q was replaced but never executed; replacement failed: %s", coresession.ErrCallQueuedNotExecuted, replacedDurableCallID, replacementError)
 			}
 			return finalTurnOutcome(result, err, carriedResult, carriedErr)
 		}

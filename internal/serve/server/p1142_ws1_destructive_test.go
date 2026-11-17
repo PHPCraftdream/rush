@@ -4,7 +4,7 @@ package server
 // docs/plans/2026-10-01-shared-data-dir.md): "web: rerun" refuses a foreign
 // session before TruncateForRerun, and "web: delete other sessions" deletes
 // only rows this workspace owns. Both decisions read the process's workspace
-// through appOwnsSession (core.Owns) — the same predicate the run path
+// through appOwnsSession (coresession.Owns) — the same predicate the run path
 // applies — so in a shared data directory one checkout can never drive or wipe
 // another's sessions.
 //
@@ -23,7 +23,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -108,11 +108,11 @@ func TestHandleRerunMessage_ForeignWorkspaceRefusedHistoryIntact(t *testing.T) {
 	require.Equal(t, "none", f.jobDelivery(t), "the job must not be voided by a refused rerun")
 }
 
-// recordingDeleteSessionService wraps a real core.Service and records every
+// recordingDeleteSessionService wraps a real coresession.Service and records every
 // Delete ID, delegating everything else, so a test can prove which sessions
 // handleDeleteOtherSessions actually tried to remove.
 type recordingDeleteSessionService struct {
-	core.Service
+	coresession.Service
 	mu      sync.Mutex
 	deleted []string
 }
@@ -173,7 +173,7 @@ func TestHandleDeleteOtherSessions_SkipsForeignWorkspace(t *testing.T) {
 	// A session bound to another checkout, written straight into the shared DB
 	// the way that checkout's own process would have. A home process refuses it.
 	foreignRoot := filepath.Join(t.TempDir(), "other-checkout")
-	foreignSvc := core.NewServiceWithWorkspace(db.New(a.DB()), a.DB(), nil, nil, foreignRoot, foreignRoot, false)
+	foreignSvc := coresession.NewServiceWithWorkspace(db.New(a.DB()), a.DB(), nil, nil, foreignRoot, foreignRoot, false)
 	foreign, err := foreignSvc.Create(ctx, "another checkout's session")
 	require.NoError(t, err)
 	require.Equal(t, foreignRoot, foreign.WorkspaceRoot)
@@ -238,7 +238,7 @@ func wsGitRepo(t *testing.T) string {
 //
 // Revert-check (mutant C): in appOwnsSession
 // (internal/server/handlers_sessions.go) restore the root-derived home --
-// `core.Owns(sess.WorkspaceRoot, ws, ws == "")` -- both sub-tests fail:
+// `coresession.Owns(sess.WorkspaceRoot, ws, ws == "")` -- both sub-tests fail:
 // rerun replies EventError instead of EventResponse (truncateCalls stays 0,
 // the require.Equal(t, 1, ...) below), and delete-other's DeletedIDs comes
 // back empty (require.Len fails).
@@ -283,7 +283,7 @@ func TestWS1_LegacyRowsAreOwnedByGitCheckoutServer(t *testing.T) {
 		require.NoError(t, err)
 		// A legacy row: written by a home service over the same shared DB —
 		// the pre-WS-1 shape this app owned before WS-1 existed.
-		legacySvc := core.NewService(db.New(a.DB()), a.DB())
+		legacySvc := coresession.NewService(db.New(a.DB()), a.DB())
 		legacy, err := legacySvc.Create(ctx, "legacy row of this checkout")
 		require.NoError(t, err)
 		require.Empty(t, legacy.WorkspaceRoot, "fixture: created by a home service, pre-WS-1 shape")

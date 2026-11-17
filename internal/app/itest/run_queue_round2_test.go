@@ -14,7 +14,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/dbtest"
 	"github.com/stretchr/testify/require"
@@ -291,7 +291,7 @@ func TestRunQueue_PumpLifecycle_GracefulShutdown(t *testing.T) {
 // Helper: mock coordinator for testing
 type mockCoordinator struct{}
 
-func (m *mockCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
+func (m *mockCoordinator) Run(ctx context.Context, callData coresession.SessionAgentCallData) (*any, error) {
 	return nil, nil
 }
 
@@ -334,7 +334,7 @@ func stopPumpLoggingForcedShutdown(t *testing.T, pump *session.RunQueuePump) {
 }
 
 // Helper: setup a test session and service
-func setupTestSession(t *testing.T, title string) (*core.Session, core.Service) {
+func setupTestSession(t *testing.T, title string) (*coresession.Session, coresession.Service) {
 	// Use file-based database in temp dir to avoid connection pool issues with :memory:
 	// Each connection to :memory: creates a separate database; when sql.Open recycles
 	// a connection (e.g., after ErrBadConn from context cancellation), data is lost.
@@ -505,7 +505,7 @@ func setupTestSession(t *testing.T, title string) (*core.Session, core.Service) 
 
 	// Create queries and service
 	queries := db.New(sqlDB)
-	svc := core.NewService(queries, sqlDB)
+	svc := coresession.NewService(queries, sqlDB)
 
 	// Create a session
 	sess, err := svc.Create(context.Background(), title)

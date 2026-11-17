@@ -8,7 +8,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -23,7 +23,7 @@ func TestCredentialedRootSurvivesRestartDrainRefused(t *testing.T) {
 		Owner: f.sessID, Kind: session.WakeKindOnce, Message: "preexisting follow-up", RunAt: time.Now().Add(time.Hour),
 	}, time.Now())
 	require.NoError(t, err)
-	store := core.NewService(db.New(f.env.conn), f.env.conn).(core.SessionCredentialRequirementStore)
+	store := coresession.NewService(db.New(f.env.conn), f.env.conn).(coresession.SessionCredentialRequirementStore)
 	f.coord.credentialReqs = store
 	f.coord.currentAgent = &mockSessionAgent{runFunc: func(ctx context.Context, _ SessionAgentCall) (*fantasy.AgentResult, error) {
 		if setup := admissionSetupFrom(ctx); setup != nil {
@@ -127,7 +127,7 @@ func TestCredentialedAdmissionWithoutMarkerStoreStillRefusesInProcessDrain(t *te
 
 func TestCredentialRequirementLookupAndAncestorDriverDrain(t *testing.T) {
 	f := newAttemptFixture(t, "credentialed-ancestor-drain", attemptFixtureOpts{noIdle: true, noDriver: true})
-	store := core.NewService(db.New(f.env.conn), f.env.conn).(core.SessionCredentialRequirementStore)
+	store := coresession.NewService(db.New(f.env.conn), f.env.conn).(coresession.SessionCredentialRequirementStore)
 	parent, err := f.env.sessions.Get(context.Background(), f.sessID)
 	require.NoError(t, err)
 	child, err := f.env.sessions.CreateTaskSession(context.Background(), "credentialed-child", parent.ID, "credentialed child")
@@ -154,7 +154,7 @@ func TestCredentialRequirementLookupAndAncestorDriverDrain(t *testing.T) {
 func TestCredentialRequirementWriteFailureDoesNotMarkInMemoryRoot(t *testing.T) {
 	f := newAttemptFixture(t, "credentialed-marker-write-failure", attemptFixtureOpts{noIdle: true, noDriver: true})
 	f.withOAuthProvider("probe")
-	store := core.NewService(db.New(f.env.conn), f.env.conn).(core.SessionCredentialRequirementStore)
+	store := coresession.NewService(db.New(f.env.conn), f.env.conn).(coresession.SessionCredentialRequirementStore)
 	_, err := f.env.conn.ExecContext(context.Background(), `CREATE TRIGGER fail_credential_marker BEFORE INSERT ON session_run_queue WHEN NEW.id LIKE 'session-credential-requirement:%' BEGIN SELECT RAISE(FAIL, 'marker write failed'); END`)
 	require.NoError(t, err)
 	f.coord.credentialReqs = store
@@ -178,7 +178,7 @@ func TestCredentialRequirementWriteFailureDoesNotMarkInMemoryRoot(t *testing.T) 
 
 func TestCredentialRequirementLookupErrorsFailClosed(t *testing.T) {
 	f := newAttemptFixture(t, "credentialed-marker-read-failure", attemptFixtureOpts{noIdle: true, noDriver: true})
-	store := core.NewService(db.New(f.env.conn), f.env.conn).(core.SessionCredentialRequirementStore)
+	store := coresession.NewService(db.New(f.env.conn), f.env.conn).(coresession.SessionCredentialRequirementStore)
 	_, err := f.env.conn.ExecContext(context.Background(), `DROP TABLE session_run_queue`)
 	require.NoError(t, err)
 	f.coord.credentialReqs = store

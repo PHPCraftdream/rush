@@ -16,7 +16,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -59,7 +59,7 @@ type turnStreamConfig struct {
 	smartModel      Model
 	promptPrefix    string
 	historyIDs      map[string]struct{}
-	currentSession  core.Session
+	currentSession  coresession.Session
 	recovery        *codexRecoveryState
 	bumpActivity    func()
 	toolStarted     func()
@@ -153,7 +153,7 @@ type turnStream struct {
 	sanitizedToolCalls  map[string]bool
 	shouldSummarize     bool
 	silentCompactNeeded bool
-	currentSession      core.Session
+	currentSession      coresession.Session
 	recovery            *codexRecoveryState
 	runTotalTokens      int64
 

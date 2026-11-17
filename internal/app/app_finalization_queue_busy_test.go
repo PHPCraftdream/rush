@@ -9,19 +9,19 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/session"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
 
 type finalizationBusyCoordinator struct {
 	agent.Coordinator
-	store      core.AgentFinalizationQueueService
+	store      coresession.AgentFinalizationQueueService
 	rebuilds   int
 	dispatches int
 }
 
-func (c *finalizationBusyCoordinator) RebuildSessionAgentCall(ctx context.Context, rowID string, data core.SessionAgentCallData) (agent.SessionAgentCall, error) {
+func (c *finalizationBusyCoordinator) RebuildSessionAgentCall(ctx context.Context, rowID string, data coresession.SessionAgentCallData) (agent.SessionAgentCall, error) {
 	c.rebuilds++
 	if _, err := c.store.RestoreAgentFinalizationQueue(ctx, rowID, data); err != nil {
 		return agent.SessionAgentCall{}, &agent.ErrCallAlreadyAttempted{Err: err}
@@ -45,20 +45,20 @@ func TestFinalizationQueueBusyAppMappingRetainsConsumedFailure(t *testing.T) {
 	queries := db.New(conn)
 	_, err = queries.CreateSession(ctx, db.CreateSessionParams{ID: "owner", Title: "owner"})
 	require.NoError(t, err)
-	sessions := core.NewService(queries, conn)
-	identity := core.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "call", Generation: 1}
-	authority, err := sessions.(core.AgentFinalizationService).BindAgentFinalization(ctx, identity)
+	sessions := coresession.NewService(queries, conn)
+	identity := coresession.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "call", Generation: 1}
+	authority, err := sessions.(coresession.AgentFinalizationService).BindAgentFinalization(ctx, identity)
 	require.NoError(t, err)
-	trusted, err := core.WithAgentFinalizationContext(ctx, authority)
+	trusted, err := coresession.WithAgentFinalizationContext(ctx, authority)
 	require.NoError(t, err)
-	data := core.SessionAgentCallData{
+	data := coresession.SessionAgentCallData{
 		SessionID: "owner", LogicalCallID: "call", Prompt: "compose settled results",
-		FinalizationRequirement: core.CaptureAgentFinalizationContext(trusted).Requirement(),
+		FinalizationRequirement: coresession.CaptureAgentFinalizationContext(trusted).Requirement(),
 	}
 	raw, err := json.Marshal(data)
 	require.NoError(t, err)
 	require.NoError(t, sessions.EnqueueRunQueueEntry(trusted, "queued", "owner", raw))
-	probe := &finalizationBusyCoordinator{store: sessions.(core.AgentFinalizationQueueService)}
+	probe := &finalizationBusyCoordinator{store: sessions.(coresession.AgentFinalizationQueueService)}
 	adapter := &coordinatorAdapterImpl{app: &App{AgentCoordinator: probe}}
 	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{Sessions: sessions, Coordinator: adapter, PumpInstanceID: "pump"})
 	defer pump.Stop()
@@ -89,7 +89,7 @@ func TestFinalizationQueueBusyAppMappingRetainsConsumedFailure(t *testing.T) {
 	require.Zero(t, pending)
 	require.NoError(t, conn.QueryRowContext(ctx, `SELECT failure_code FROM session_agent_finalization_continuations WHERE row_id='queued'`).Scan(&code))
 	require.Equal(t, "continuation_busy_unknown", code, "later refusal retains the first precise failure")
-	state, err := core.NewAgentFinalizationStore(conn).Snapshot(ctx, identity)
+	state, err := coresession.NewAgentFinalizationStore(conn).Snapshot(ctx, identity)
 	require.NoError(t, err)
 	require.Equal(t, "executing", state.Phase, "unresolved is not accepted/completed")
 }

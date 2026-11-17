@@ -77,7 +77,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/filetracker"
 	"github.com/PHPCraftdream/rush/internal/store/history"
@@ -103,7 +103,7 @@ type questionProviderLeaf struct {
 	// sessions/messages are the REAL session and message services over the
 	// SAME SQLite store the batch rows live in; the child session is a real
 	// row created through the service.
-	sessions core.Service
+	sessions coresession.Service
 	messages message.Service
 
 	// workDir and the REAL fs_write service triple (permission/history/
@@ -133,7 +133,7 @@ type questionProviderLeaf struct {
 
 var _ fantasy.AgentTool = (*questionProviderLeaf)(nil)
 
-func newQuestionProviderLeaf(t *testing.T, bindingID, childSession, path1, path2, workDir string, sessions core.Service, messages message.Service, q *db.Queries, conn *sql.DB) *questionProviderLeaf {
+func newQuestionProviderLeaf(t *testing.T, bindingID, childSession, path1, path2, workDir string, sessions coresession.Service, messages message.Service, q *db.Queries, conn *sql.DB) *questionProviderLeaf {
 	return &questionProviderLeaf{
 		t: t, expectedBinding: bindingID, childSession: childSession,
 		path1: path1, path2: path2, workDir: workDir,
@@ -483,7 +483,7 @@ type questionInstall struct {
 	t           *testing.T
 	store       *session.BatchStore
 	conn        *sql.DB
-	sessions    core.Service
+	sessions    coresession.Service
 	messages    message.Service
 	install     *BatchInstall
 	leaf        *questionProviderLeaf
@@ -515,7 +515,7 @@ func newQuestionInstallWithQuestionResolver(t *testing.T, resolver batchChildQue
 	bindingID, err := bindings.RegisterProvider(fake)
 	require.NoError(t, err)
 	q := db.New(conn)
-	sessions := core.NewService(q, conn)
+	sessions := coresession.NewService(q, conn)
 	messages := message.NewService(q)
 	ownerSession := "sess-owner-q8-" + uuid.NewString()[:8]
 	ensureFixtureSession(t, conn, ownerSession)
