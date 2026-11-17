@@ -81,12 +81,6 @@ rush providers test ollama   # works with a local openai-compat server too
 	},
 }
 
-func init() {
-	providersTestCmd.Flags().Bool("json", false, "Emit a JSON object instead of human-readable lines")
-	providersTestCmd.Flags().Duration("timeout", 0, "HTTP timeout (default 1m)")
-	providersCmd.AddCommand(providersTestCmd)
-}
-
 type providerPingResult struct {
 	ID          string `json:"id"`
 	Endpoint    string `json:"endpoint"`

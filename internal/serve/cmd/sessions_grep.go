@@ -204,10 +204,3 @@ func buildExcerpt(lines []string, matchIndices []int, contextLines int) string {
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }
-
-func init() {
-	sessionsGrepCmd.Flags().IntP("n", "n", 3, "Number of context lines around each match")
-	sessionsGrepCmd.Flags().String("session", "", "Search only within this session (id or hash prefix)")
-	sessionsGrepCmd.Flags().String("role", "", "Filter by message role: assistant|user")
-	sessionsGrepCmd.Flags().Bool("json", false, "Emit one JSON object per match")
-}

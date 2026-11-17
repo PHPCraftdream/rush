@@ -24,6 +24,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
 
@@ -218,26 +219,29 @@ func seedAuditFixtureDB(t *testing.T, dataDir string) string {
 	return dbPath
 }
 
-// runAuditCmd executes the real `rush sessions audit` through the root
-// command, exactly as the CLI does, with both output streams captured.
+// runAuditCmd executes the real `rush sessions audit` command with both output streams captured.
 func runAuditCmd(t *testing.T, args ...string) (stdout, stderr string, runErr error) {
+	root := &cobra.Command{Use: "rush"}
+	root.PersistentFlags().String("data-dir", "", "")
+	root.PersistentFlags().String("cwd", "", "")
+	root.AddCommand(NewSessionsCmd())
 	t.Helper()
 
 	var out, errOut bytes.Buffer
-	rootCmd.SetOut(&out)
-	rootCmd.SetErr(&errOut)
+	root.SetOut(&out)
+	root.SetErr(&errOut)
 	resetAuditCmdFlags(t)
-	rootCmd.SetArgs(append([]string{"sessions", "audit"}, args...))
-	// rootCmd is a package-level var shared with every other test in the
-	// package; restore it so no later test sees this one's arguments.
+	root.SetArgs(append([]string{"sessions", "audit"}, args...))
+	// The command tree's flags are shared; restore their defaults so no later
+	// test inherits this invocation's values.
 	t.Cleanup(func() {
-		rootCmd.SetOut(nil)
-		rootCmd.SetErr(nil)
-		rootCmd.SetArgs(nil)
+		root.SetOut(nil)
+		root.SetErr(nil)
+		root.SetArgs(nil)
 		resetAuditCmdFlags(t)
 	})
 
-	runErr = rootCmd.Execute()
+	runErr = root.Execute()
 	return out.String(), errOut.String(), runErr
 }
 
@@ -249,13 +253,11 @@ func resetAuditCmdFlags(t *testing.T) {
 	t.Helper()
 
 	for name, zero := range map[string]string{
-		"data-dir":  "",
 		"all":       "false",
 		"json":      "false",
 		"since":     "",
 		"worktrees": "false",
 	} {
-		_ = rootCmd.PersistentFlags().Set(name, zero)
 		_ = sessionsAuditCmd.Flags().Set(name, zero)
 	}
 }

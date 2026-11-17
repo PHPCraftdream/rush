@@ -131,7 +131,3 @@ func sessionHasLiveWork(ctx context.Context, a *app.App, dataDir, sessionID stri
 	}
 	return kindIsLive(act.Verdict.Kind)
 }
-
-func init() {
-	sessionsCancelCmd.Flags().Bool("all", false, "Cancel every top-level session that has live work (idle sessions are skipped)")
-}

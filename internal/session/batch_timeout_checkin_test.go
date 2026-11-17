@@ -330,3 +330,30 @@ func TestBatchTimeoutCheckinStartStopLifecycle(t *testing.T) {
 	svc.Stop()
 	require.NoError(t, conn.PingContext(t.Context()))
 }
+
+// TestBatchTimeoutCheckinSelectUsesLiveTaskIndex pins the plan of the check-in
+// scan. As a full scan of batch_nodes (JSON-parsing every task payload, then a
+// temp B-tree sort) it grew with the store's history and missed its 1s budget
+// every 10s; the partial live-task index keeps it proportional to live work.
+func TestBatchTimeoutCheckinSelectUsesLiveTaskIndex(t *testing.T) {
+	_, conn, ctx := batchTimeoutCheckinStores(t)
+	var plan string
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("query:\n%s\nplan:\n%s", batchTimeoutCheckinSelect, plan)
+		}
+	})
+	rows, err := conn.QueryContext(ctx, "EXPLAIN QUERY PLAN "+batchTimeoutCheckinSelect, time.Now().Unix(), int64(0), "", 200)
+	require.NoError(t, err)
+	defer rows.Close()
+	for rows.Next() {
+		var id, parent, notused int64
+		var detail string
+		require.NoError(t, rows.Scan(&id, &parent, &notused, &detail))
+		plan += detail + "\n"
+	}
+	require.NoError(t, rows.Err())
+	require.Contains(t, plan, "idx_batch_nodes_live_task", "the check-in scan must search the live-task index")
+	require.NotContains(t, plan, "SCAN", "the check-in scan must not scan batch_nodes")
+	require.NotContains(t, plan, "TEMP B-TREE", "the live-task index already yields keyset order")
+}

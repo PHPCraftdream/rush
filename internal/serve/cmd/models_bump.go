@@ -202,10 +202,3 @@ func parseBumpDirection(s string) (up bool, err error) {
 		return false, fmt.Errorf("unexpected direction %q — expected up|down", s)
 	}
 }
-
-func init() {
-	modelsBumpCmd.Flags().Bool("global", false, "Target the global config (default when neither --global nor --local is given)")
-	modelsBumpCmd.Flags().Bool("local", false, "Target the workspace config (./.rush/rush.json)")
-	modelsBumpCmd.MarkFlagsMutuallyExclusive("global", "local")
-	modelsCmd.AddCommand(modelsBumpCmd)
-}

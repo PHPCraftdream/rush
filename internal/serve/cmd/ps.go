@@ -13,7 +13,10 @@ import (
 	"os/signal"
 	"slices"
 	"strings"
+	"sync"
 	"time"
+
+	cliproc "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
 
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	"github.com/spf13/cobra"
@@ -56,13 +59,6 @@ rush ps --json             # machine-readable: entries, summary, slots
 rush ps --watch            # redraw every 2s until Ctrl+C
   `,
 	RunE: psRunE,
-}
-
-func init() {
-	psCmd.Flags().Bool("watch", false, "Redraw every 2 seconds until Ctrl+C")
-	psCmd.Flags().Bool("json", false, "Emit stable machine-readable JSON")
-	psCmd.Flags().String("model", "", "Case-insensitive substring filter on provider/model")
-	psCmd.Flags().Bool("all", false, "Include stopped and stale rows")
 }
 
 // psHeartbeatDir resolves the global heartbeat directory: RUSH_HEARTBEAT_DIR
@@ -123,7 +119,7 @@ func psRunE(cmd *cobra.Command, _ []string) error {
 // Ctrl+C or the command context is done.
 func psWatchFrames(ctx context.Context, frame func() (string, error)) error {
 	sig := make(chan os.Signal, 1)
-	if !processStopInstalled.Load() {
+	if !cliproc.ProcessStopInstalled() {
 		signal.Notify(sig, os.Interrupt)
 		defer signal.Stop(sig)
 	}
@@ -511,4 +507,17 @@ func psJSONEntryFromRow(r psRow) psJSONEntry {
 		})
 	}
 	return out
+}
+
+// NewPsCmd returns a fresh ps command from the registered template.
+var newPsCmdOnce sync.Once
+
+func NewPsCmd() *cobra.Command {
+	newPsCmdOnce.Do(func() {
+		psCmd.Flags().Bool("watch", false, "Redraw every 2 seconds until Ctrl+C")
+		psCmd.Flags().Bool("json", false, "Emit stable machine-readable JSON")
+		psCmd.Flags().String("model", "", "Case-insensitive substring filter on provider/model")
+		psCmd.Flags().Bool("all", false, "Include stopped and stale rows")
+	})
+	return deepFreshCmd(psCmd)
 }

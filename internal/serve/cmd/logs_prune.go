@@ -165,9 +165,3 @@ rush logs path    # check size before/after
 		return nil
 	},
 }
-
-func init() {
-	logsPruneCmd.Flags().Int("audit-days", defaultAuditRetentionDays, "Delete audit journal files older than N days (0 = all; default 30)")
-	logsPruneCmd.Flags().Int("heartbeat-days", defaultHeartbeatRetentionDays, "Delete heartbeat snapshots older than N days (0 = disable; default 7)")
-	logsPruneCmd.Flags().Bool("json", false, "Emit one JSON object with the prune counts")
-}

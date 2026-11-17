@@ -13,6 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/PHPCraftdream/rush/internal/serve/server/wire/finalgate"
+	"github.com/PHPCraftdream/rush/internal/serve/server/ws/wsapi"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -72,11 +73,11 @@ func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub, gate sess
 				switch ev.Type {
 				case pubsub.CreatedEvent:
 					sess := ev.Payload
-					AnnotateSessionExternalOwnership(a, &sess)
+					wsapi.AnnotateSessionExternalOwnership(a, &sess)
 					h.Broadcast(EventSessionCreated, sess)
 				case pubsub.UpdatedEvent:
 					sess := ev.Payload
-					AnnotateSessionExternalOwnership(a, &sess)
+					wsapi.AnnotateSessionExternalOwnership(a, &sess)
 					h.Broadcast(EventSessionUpdated, sess)
 				case pubsub.DeletedEvent:
 					h.Broadcast(EventSessionDeleted, ev.Payload)

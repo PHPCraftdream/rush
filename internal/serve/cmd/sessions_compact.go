@@ -490,10 +490,3 @@ func percentOf(part, total int64) int {
 	}
 	return int(100 * part / total)
 }
-
-func init() {
-	sessionsCompactCmd.Flags().Bool("dry-run", false, "Print size, freelist, estimate and gate verdicts without compacting")
-	sessionsCompactCmd.Flags().Bool("force", false, "Compact despite live rush hosts or live session locks (their writers may fail with SQLITE_BUSY); never bypasses migrate.lock or a busy WAL checkpoint")
-	sessionsCompactCmd.Flags().Bool("json", false, "Emit a single JSON summary object instead of text")
-	sessionsCompactCmd.Flags().String("role", "worker", "Model role used for session-history compaction (smart, fast, worker, or reviewer)")
-}

@@ -476,7 +476,3 @@ func renderEffortsForModel(arg string) (string, error) {
 
 	return b.String(), nil
 }
-
-func init() {
-	modelsCmd.AddCommand(modelsEffortsCmd)
-}

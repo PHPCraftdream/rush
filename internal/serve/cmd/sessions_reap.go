@@ -473,9 +473,3 @@ func countAction(items []reapItem, action string) int {
 	}
 	return n
 }
-
-func init() {
-	sessionsReapCmd.Flags().Bool("dry-run", false, "Print what would be reclaimed without removing anything")
-	sessionsReapCmd.Flags().Bool("all", false, "Legacy no-op: removal is now decided solely by the real OS-lock probe, so a lock that records a PID is reaped iff proven uncontended regardless of this flag")
-	sessionsReapCmd.Flags().String("idle-older-than", "168h", "Age threshold for reclaiming idle (PID-less) lock files, e.g. 168h, 7d, 4w; \"0\" disables idle reclaim. Default 168h (7 days)")
-}

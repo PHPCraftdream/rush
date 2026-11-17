@@ -6,8 +6,13 @@ package session
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"sync/atomic"
 	"time"
+
+	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // Start begins the pump goroutine. Safe to call multiple times (idempotent).
@@ -173,6 +178,7 @@ func (p *RunQueuePump) tick() {
 	expiredBefore := p.now().Unix()
 	if err := p.cfg.Sessions.CleanupExpiredLeases(ctx, expiredBefore); err != nil {
 		logTickDBErr(err, "run_queue_pump: cleanup expired leases failed", p.cfg.PumpInstanceID)
+		p.diagnoseTickDeadline(err)
 	}
 
 	// Step 1.5: sweep expired busyBackoffUntil entries. processEntry's own
@@ -198,6 +204,7 @@ func (p *RunQueuePump) tick() {
 	pending, err := p.cfg.Sessions.ListPendingRunQueueEntries(ctx)
 	if err != nil {
 		logTickDBErr(err, "run_queue_pump: list pending failed", p.cfg.PumpInstanceID)
+		p.diagnoseTickDeadline(err)
 		return
 	}
 
@@ -244,4 +251,39 @@ func logTickDBErr(err error, msg string, instanceID string) {
 		return
 	}
 	slog.Warn(msg, "err", err, "instance_id", instanceID)
+}
+
+// tickDeadlineDumpEvery bounds the pump's deadline diagnostics to one
+// goroutine dump per process per window.
+const tickDeadlineDumpEvery = 10 * time.Minute
+
+// lastTickDeadlineDump is the UnixNano of the last pump deadline dump.
+var lastTickDeadlineDump atomic.Int64
+
+// diagnoseTickDeadline records why a tick read missed its 5s budget. Its
+// queries are index searches, so a deadline means the read waited for a
+// connection: log the writer pool's wait statistics and, at most once per
+// window, a goroutine dump that names the holder.
+func (p *RunQueuePump) diagnoseTickDeadline(err error) {
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	if st, ok := session.WriterPoolStats(p.cfg.Sessions); ok {
+		slog.Warn("run_queue_pump: tick deadline, writer pool", "in_use", st.InUse, "idle", st.Idle,
+			"wait_count", st.WaitCount, "wait_duration", st.WaitDuration, "instance_id", p.cfg.PumpInstanceID)
+	}
+	now := time.Now().UnixNano()
+	last := lastTickDeadlineDump.Load()
+	if last != 0 && now-last < int64(tickDeadlineDumpEvery) {
+		return
+	}
+	if !lastTickDeadlineDump.CompareAndSwap(last, now) {
+		return
+	}
+	stack := rushlog.CaptureGoroutineStack("run_queue_pump tick deadline: " + err.Error())
+	if path, werr := rushlog.WriteGoroutineDumpNamed(stack, "pumpstall-"); werr != nil {
+		slog.Debug("run_queue_pump: tick deadline dump not written", "err", werr)
+	} else {
+		slog.Warn("run_queue_pump: tick deadline goroutine dump", "path", path, "instance_id", p.cfg.PumpInstanceID)
+	}
 }

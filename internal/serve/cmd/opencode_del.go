@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/spf13/cobra"
 )
@@ -22,12 +23,6 @@ func runOpenCodeDel(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	return removeMarkdownCommands(dir)
-}
-
-func init() {
-	opencodeDelCmd.Flags().Bool("global", false, "Remove globally (default).")
-	opencodeDelCmd.Flags().Bool("local", false, "Remove from the current project's .opencode/commands/.")
-	rootCmd.AddCommand(opencodeDelCmd)
 }
 
 func nativeCommandDir(cmd *cobra.Command, globalPath, localPath string) (string, error) {
@@ -58,4 +53,14 @@ func removeMarkdownCommands(dir string) error {
 		}
 	}
 	return nil
+}
+
+var newOpencodeDelCmdOnce sync.Once
+
+func NewOpencodeDelCmd() *cobra.Command {
+	newOpencodeDelCmdOnce.Do(func() {
+		opencodeDelCmd.Flags().Bool("global", false, "Remove globally (default).")
+		opencodeDelCmd.Flags().Bool("local", false, "Remove from the current project's .opencode/commands/.")
+	})
+	return deepFreshCmd(opencodeDelCmd)
 }

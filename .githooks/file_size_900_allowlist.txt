@@ -13,7 +13,6 @@
 #
 # Counts taken from docs/plans/2026-11-15-sprint0-plan.md stage A1b
 # (gate V7).
-# MV1 added one move-mandated service import line in each listed file; this is the narrow exception to the down-only ratchet.
 internal/agent/agent_run.go 919
 internal/agent/agent_turn_step.go 932
 internal/agent/batch_cutover_await_test.go 990
@@ -29,7 +28,7 @@ internal/agent/tools/mcp/mutation.go 967
 internal/agent/tools/mcp/state_regression_mutation_test.go 911
 internal/agent/tools/mcp/state_regression_refresh_test.go 914
 internal/agent/tools/view.go 957
-internal/app/app_run_async.go 981
+internal/app/app_run_async.go 980
 internal/app/app_run_reviewer.go 978
 internal/app/app_run_reviewer_evidence.go 908
 internal/config/apitoken_store_test.go 969
@@ -37,11 +36,9 @@ internal/config/apitoken_store_test.go 969
 internal/config/load_providers.go 916
 internal/config/store_config_disk_sync_test.go 991
 internal/config/store_mcp_transaction.go 927
-internal/serve/cmd/migrate.go 935
+internal/serve/cmd/migrate.go 929
 internal/serve/cmd/migrate_test.go 954
-internal/serve/cmd/providers.go 973
-internal/serve/cmd/providers_peak_hours.go 985
-internal/serve/cmd/root.go 971
+internal/serve/cmd/providers_peak_hours.go 958
 internal/session/childgroup_registry_unix.go 976
 internal/session/lock.go 976
 # 985 -> 986: +1 import line (run/sessiontest, lane SM4: the local limitParallel copy moved out); the file is cut by the session lanes MV/EX.

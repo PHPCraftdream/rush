@@ -106,12 +106,6 @@ rush migrate --recursive /path/to/project
 	RunE: runMigrate,
 }
 
-func init() {
-	migrateCmd.Flags().BoolP("recursive", "r", false, "Recursively walk the directory tree")
-	migrateCmd.Flags().Bool("dry-run", false, "Report what would happen without making changes")
-	rootCmd.AddCommand(migrateCmd)
-}
-
 // runMigrate implements the migrate command logic.
 func runMigrate(cmd *cobra.Command, args []string) error {
 	recursive, _ := cmd.Flags().GetBool("recursive")

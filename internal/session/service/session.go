@@ -424,6 +424,17 @@ type Service interface {
 	HasSessionCredentialRequirement(ctx context.Context, sessionID string) (bool, error)
 }
 
+// WriterPoolStats reports the writer pool statistics of the store-backed
+// Service; ok is false for any other implementation (run-queue pump
+// deadline diagnostics).
+func WriterPoolStats(svc Service) (st sql.DBStats, ok bool) {
+	s, isSvc := svc.(*service)
+	if !isSvc || s.DB == nil {
+		return sql.DBStats{}, false
+	}
+	return s.DB.Stats(), true
+}
+
 type service struct {
 	*pubsub.Broker[Session]
 	DB *sql.DB

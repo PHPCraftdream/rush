@@ -231,6 +231,8 @@ func printCustomRoleViews(cmd *cobra.Command, views []customRoleView, single boo
 	return nil
 }
 
-func init() {
-	rootCmd.AddCommand(newRolesCmd())
+// NewRolesCmd builds the rush roles command fresh on every call (former init
+// body; lane K2 of the sprint0 cmd split removed package init registration).
+func NewRolesCmd() *cobra.Command {
+	return newRolesCmd()
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
 
@@ -14,6 +15,10 @@ import (
 // SetErr does not see its output. Cobra keeps flag values on the shared
 // command var, so audit-days is reset around every run.
 func runLogsPrune(t *testing.T, args ...string) (string, error) {
+	root := &cobra.Command{Use: "rush"}
+	root.PersistentFlags().String("data-dir", "", "")
+	root.PersistentFlags().String("cwd", "", "")
+	root.AddCommand(NewLogsCmd())
 	t.Helper()
 
 	stderrPath := filepath.Join(t.TempDir(), "stderr.txt")
@@ -22,15 +27,15 @@ func runLogsPrune(t *testing.T, args ...string) (string, error) {
 	oldStderr := os.Stderr
 	os.Stderr = capture
 	require.NoError(t, logsPruneCmd.Flags().Set("audit-days", "30"))
-	rootCmd.SetArgs(append([]string{"logs", "prune"}, args...))
+	root.SetArgs(append([]string{"logs", "prune"}, args...))
 	t.Cleanup(func() {
 		os.Stderr = oldStderr
 		_ = capture.Close()
-		rootCmd.SetArgs(nil)
+		root.SetArgs(nil)
 		require.NoError(t, logsPruneCmd.Flags().Set("audit-days", "30"))
 	})
 
-	runErr := rootCmd.Execute()
+	runErr := root.Execute()
 	_ = capture.Sync()
 	bts, readErr := os.ReadFile(stderrPath)
 	require.NoError(t, readErr)

@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -560,23 +561,31 @@ func decodeRunEnvelope(output []byte) (queueRunEnvelope, bool) {
 	return env, true
 }
 
-func init() {
-	queueAddCmd.Flags().String("session", "", "Session ID for the run (default: auto-generated from task ID)")
-	queueAddCmd.Flags().String("role", "", "Model role forwarded verbatim to the spawned `rush run --role <role>` (queue run): smart | fast | worker | reviewer (default: smart)")
-	queueAddCmd.Flags().Float64("max-cost", 0, "Abort if cost exceeds this value (USD)")
-	queueAddCmd.Flags().Int64("max-tokens", 0, "Abort if tokens exceed this value")
-	queueAddCmd.Flags().Duration("timeout", 0, "Timeout for the run (e.g. 10m)")
-	queueAddCmd.Flags().String("prompt-file", "", "Read prompt from this file instead of stdin")
+// NewQueueCmd returns the rush queueCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newQueueCmdOnce sync.Once
 
-	queueListCmd.Flags().String("status", "", "Filter by status: pending|running|done|failed|all")
-	queueListCmd.Flags().Bool("json", false, "Emit NDJSON (one object per line)")
+func NewQueueCmd() *cobra.Command {
+	newQueueCmdOnce.Do(func() {
+		queueAddCmd.Flags().String("session", "", "Session ID for the run (default: auto-generated from task ID)")
+		queueAddCmd.Flags().String("role", "", "Model role forwarded verbatim to the spawned `rush run --role <role>` (queue run): smart | fast | worker | reviewer (default: smart)")
+		queueAddCmd.Flags().Float64("max-cost", 0, "Abort if cost exceeds this value (USD)")
+		queueAddCmd.Flags().Int64("max-tokens", 0, "Abort if tokens exceed this value")
+		queueAddCmd.Flags().Duration("timeout", 0, "Timeout for the run (e.g. 10m)")
+		queueAddCmd.Flags().String("prompt-file", "", "Read prompt from this file instead of stdin")
 
-	queueRunCmd.Flags().Int("concurrent", 1, "Number of tasks to run concurrently")
-	queueRunCmd.Flags().Bool("stop-on-fail", false, "Stop processing if any task fails")
-	queueRunCmd.Flags().Int("max-tasks", 0, "Maximum number of tasks to process (0 = unlimited)")
+		queueListCmd.Flags().String("status", "", "Filter by status: pending|running|done|failed|all")
+		queueListCmd.Flags().Bool("json", false, "Emit NDJSON (one object per line)")
 
-	queueClearCmd.Flags().String("status", "", "Only clear tasks with this status")
+		queueRunCmd.Flags().Int("concurrent", 1, "Number of tasks to run concurrently")
+		queueRunCmd.Flags().Bool("stop-on-fail", false, "Stop processing if any task fails")
+		queueRunCmd.Flags().Int("max-tasks", 0, "Maximum number of tasks to process (0 = unlimited)")
 
-	queueCmd.AddCommand(queueAddCmd, queueListCmd, queueShowCmd, queueRunCmd, queueRmCmd, queueClearCmd)
-	rootCmd.AddCommand(queueCmd)
+		queueClearCmd.Flags().String("status", "", "Only clear tasks with this status")
+
+		queueCmd.AddCommand(queueAddCmd, queueListCmd, queueShowCmd, queueRunCmd, queueRmCmd, queueClearCmd)
+	})
+	return deepFreshCmd(queueCmd)
 }

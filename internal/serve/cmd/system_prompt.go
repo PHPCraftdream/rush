@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/spf13/cobra"
 )
@@ -70,7 +71,15 @@ rush run --system-prompt-file prompt.md --session "pr-42" "..."
 	},
 }
 
-func init() {
-	systemPromptCmd.Flags().StringP("session", "s", "", "Print the prompt for this session (id or hash prefix). Defaults shown if the session has no override.")
-	rootCmd.AddCommand(systemPromptCmd)
+// NewSystemPromptCmd returns the rush systemPromptCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newSystemPromptCmdOnce sync.Once
+
+func NewSystemPromptCmd() *cobra.Command {
+	newSystemPromptCmdOnce.Do(func() {
+		systemPromptCmd.Flags().StringP("session", "s", "", "Print the prompt for this session (id or hash prefix). Defaults shown if the session has no override.")
+	})
+	return deepFreshCmd(systemPromptCmd)
 }

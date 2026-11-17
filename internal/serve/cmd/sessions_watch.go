@@ -101,10 +101,6 @@ func sessionsWatchCmdRun(cmd *cobra.Command, args []string) error {
 	return liveTailSession(ctx, a, sessionID, interval)
 }
 
-func init() {
-	sessionsWatchCmd.Flags().Duration("interval", time.Second, "Poll interval for new messages (e.g. 1s, 500ms, 2s)")
-}
-
 // liveTailSession prints every existing message in a session and then
 // polls for new messages until the session ends. See the command Long
 // description for the end-detection signals. On exit it prints a final
