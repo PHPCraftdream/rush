@@ -191,9 +191,9 @@ func TestMCPDocumentEditorScalesAlternatingDuplicateMembers(t *testing.T) {
 func TestApplyMCPJSONEditsHandlesArbitraryOrderAdjacentGrowthShrinkAndAliases(t *testing.T) {
 	data := []byte("0123456789")
 	edits := []mcpJSONEdit{
-		{start: 6, end: 8, replacement: []byte("LONG")},
-		{start: 2, end: 4, replacement: data[8:10]},
-		{start: 4, end: 6},
+		{Start: 6, End: 8, Replacement: []byte("LONG")},
+		{Start: 2, End: 4, Replacement: data[8:10]},
+		{Start: 4, End: 6},
 	}
 	originalEdits := slices.Clone(edits)
 
@@ -208,16 +208,16 @@ func TestApplyMCPJSONEditsHandlesZeroAndOneEdit(t *testing.T) {
 
 	require.Equal(t, data, applyMCPJSONEdits(data))
 	require.Equal(t, []byte("aXc"), applyMCPJSONEdits(data, mcpJSONEdit{
-		start: 1, end: 2, replacement: []byte("X"),
+		Start: 1, End: 2, Replacement: []byte("X"),
 	}))
 }
 
 func TestApplyMCPJSONEditsPreservesEmptyAndCRLFBytes(t *testing.T) {
 	data := []byte("left\r\nold\r\nright")
 	got := applyMCPJSONEdits(data, mcpJSONEdit{
-		start:       len("left\r\n"),
-		end:         len("left\r\nold"),
-		replacement: []byte("new\r\nvalue"),
+		Start:       len("left\r\n"),
+		End:         len("left\r\nold"),
+		Replacement: []byte("new\r\nvalue"),
 	})
 
 	require.Equal(t, []byte("left\r\nnew\r\nvalue\r\nright"), got)
@@ -226,10 +226,10 @@ func TestApplyMCPJSONEditsPreservesEmptyAndCRLFBytes(t *testing.T) {
 func TestApplyMCPJSONEditsRejectsInvalidSpans(t *testing.T) {
 	data := []byte("012345")
 	for name, edits := range map[string][]mcpJSONEdit{
-		"negative start":   {{start: -1, end: 1}},
-		"end before start": {{start: 3, end: 2}},
-		"end beyond data":  {{start: 1, end: len(data) + 1}},
-		"overlap":          {{start: 1, end: 4}, {start: 3, end: 5}},
+		"negative start":   {{Start: -1, End: 1}},
+		"end before start": {{Start: 3, End: 2}},
+		"end beyond data":  {{Start: 1, End: len(data) + 1}},
+		"overlap":          {{Start: 1, End: 4}, {Start: 3, End: 5}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			require.Panics(t, func() {
@@ -243,7 +243,7 @@ func TestApplyMCPJSONEditsAllocationsDoNotScalePerEdit(t *testing.T) {
 	makeEdits := func(count int) []mcpJSONEdit {
 		edits := make([]mcpJSONEdit, count)
 		for index := range edits {
-			edits[index] = mcpJSONEdit{start: index * 2, end: index*2 + 1, replacement: []byte("x")}
+			edits[index] = mcpJSONEdit{Start: index * 2, End: index*2 + 1, Replacement: []byte("x")}
 		}
 		return edits
 	}
@@ -268,15 +268,15 @@ func mcpDocumentEntryKeyCount(t *testing.T, data []byte, key string) int {
 	t.Helper()
 	root, err := scanMCPJSONObject(data)
 	require.NoError(t, err)
-	containerMember := lastMCPMember(root.members, "mcp")
+	containerMember := lastMCPMember(root.Members, "mcp")
 	require.NotNil(t, containerMember)
-	_, container, err := scanMCPJSONValue(data, containerMember.valueStart)
+	_, container, err := scanMCPJSONValue(data, containerMember.ValueStart)
 	require.NoError(t, err)
 	require.NotNil(t, container)
 
 	count := 0
-	for _, member := range container.members {
-		if member.key == key {
+	for _, member := range container.Members {
+		if member.Key == key {
 			count++
 		}
 	}
@@ -415,14 +415,14 @@ func TestMCPTransactionUsesRushSchemaForPhysicalMCPBasename(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".mcp.json")
 	original := []byte(`{"mcpServers":{"sentinel":{"type":"http","url":"untouched"}}}`)
 	files := &mcpLockedFiles{
-		data:         make(map[string][]byte),
-		present:      make(map[string]bool),
-		changed:      make(map[string]bool),
-		fingerprints: make(map[string]reloadFileFingerprint),
-		pathRecords:  make(map[string]string),
-		records:      make(map[string]*mcpFileRecord),
+		Data:         make(map[string][]byte),
+		Present:      make(map[string]bool),
+		Changed:      make(map[string]bool),
+		Fingerprints: make(map[string]reloadFileFingerprint),
+		PathRecords:  make(map[string]string),
+		Records:      make(map[string]*mcpFileRecord),
 	}
-	files.bindMCPPath(path, original, true, dataFingerprint(path, original))
+	files.BindMCPPath(path, original, true, dataFingerprint(path, original))
 
 	require.NoError(t, (&ConfigStore{}).prepareMCPFileMutation(files, path, "add", "added", "added", MCPConfig{
 		Type: MCPHttp, URL: "http://added",
@@ -432,7 +432,7 @@ func TestMCPTransactionUsesRushSchemaForPhysicalMCPBasename(t *testing.T) {
 		return nil
 	}))
 
-	updated := files.mcpData(path)
+	updated := files.MCPData(path)
 	var root map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(updated, &root))
 	require.Equal(t, json.RawMessage(`{"sentinel":{"type":"http","url":"untouched"}}`), root["mcpServers"])

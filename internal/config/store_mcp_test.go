@@ -100,11 +100,11 @@ func TestApplyCommittedMCPFingerprintRereadsEverySpelling(t *testing.T) {
 	require.NoError(t, err)
 	physical := normalizeDiscoveryPath(physicalPath)
 	alias := normalizeDiscoveryPath(aliasPath)
-	files := &mcpLockedFiles{fingerprints: map[string]reloadFileFingerprint{alias: aliasBefore}}
+	files := &mcpLockedFiles{Fingerprints: map[string]reloadFileFingerprint{alias: aliasBefore}}
 	record := &mcpFileRecord{
-		selectedPath: alias,
-		commitPath:   physical,
-		aliases:      map[string]struct{}{alias: {}},
+		SelectedPath: alias,
+		CommitPath:   physical,
+		Aliases:      map[string]struct{}{alias: {}},
 	}
 	store := newTestConfigStore(testStoreOpts{})
 	require.NoError(t, os.WriteFile(physicalPath, committedData, 0o600))
@@ -117,8 +117,8 @@ func TestApplyCommittedMCPFingerprintRereadsEverySpelling(t *testing.T) {
 	require.NoError(t, err)
 	_, aliasAfter, err := readStableConfigFile(aliasPath)
 	require.NoError(t, err)
-	require.Equal(t, physicalAfter, files.fingerprints[physical])
-	require.Equal(t, aliasAfter, files.fingerprints[alias])
+	require.Equal(t, physicalAfter, files.Fingerprints[physical])
+	require.Equal(t, aliasAfter, files.Fingerprints[alias])
 	require.NotEqual(t, physicalAfter.Discovery, aliasAfter.Discovery)
 }
 
@@ -143,21 +143,21 @@ func TestMCPPathDataUsesNormalizedDiscoveryKeys(t *testing.T) {
 	require.NotEqual(t, physical, alias)
 	require.Equal(t, normalizeReloadPath(physicalPath), normalizeReloadPath(aliasPath))
 	files := &mcpLockedFiles{
-		data:         make(map[string][]byte),
-		present:      make(map[string]bool),
-		changed:      make(map[string]bool),
-		fingerprints: make(map[string]reloadFileFingerprint),
-		pathRecords:  make(map[string]string),
-		records:      make(map[string]*mcpFileRecord),
+		Data:         make(map[string][]byte),
+		Present:      make(map[string]bool),
+		Changed:      make(map[string]bool),
+		Fingerprints: make(map[string]reloadFileFingerprint),
+		PathRecords:  make(map[string]string),
+		Records:      make(map[string]*mcpFileRecord),
 	}
 
-	record := files.bindMCPPath(aliasPath, boundData, true, fingerprint)
-	require.Same(t, record, files.mcpRecord(physicalPath))
+	record := files.BindMCPPath(aliasPath, boundData, true, fingerprint)
+	require.Same(t, record, files.MCPRecord(physicalPath))
 	store := &ConfigStore{}
 	_, present, err := store.mcpPathData(files, physicalPath)
 	require.NoError(t, err)
 	require.True(t, present)
-	physicalFingerprint, ok := files.fingerprints[normalizeDiscoveryPath(physicalPath)]
+	physicalFingerprint, ok := files.Fingerprints[normalizeDiscoveryPath(physicalPath)]
 	require.True(t, ok)
 	_, expectedPhysical, err := readStableConfigFile(physicalPath)
 	require.NoError(t, err)
@@ -190,14 +190,14 @@ func TestMCPPathDataResolvesNonCanonicalPhysicalSpelling(t *testing.T) {
 	boundData, fingerprint, err := readStableConfigFile(aliasPath)
 	require.NoError(t, err)
 	files := &mcpLockedFiles{
-		data:         make(map[string][]byte),
-		present:      make(map[string]bool),
-		changed:      make(map[string]bool),
-		fingerprints: make(map[string]reloadFileFingerprint),
-		pathRecords:  make(map[string]string),
-		records:      make(map[string]*mcpFileRecord),
+		Data:         make(map[string][]byte),
+		Present:      make(map[string]bool),
+		Changed:      make(map[string]bool),
+		Fingerprints: make(map[string]reloadFileFingerprint),
+		PathRecords:  make(map[string]string),
+		Records:      make(map[string]*mcpFileRecord),
 	}
-	files.bindMCPPath(aliasPath, boundData, true, fingerprint)
+	files.BindMCPPath(aliasPath, boundData, true, fingerprint)
 	store := &ConfigStore{}
 	got, present, err := store.mcpPathData(files, physicalPath)
 	require.NoError(t, err)

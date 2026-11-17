@@ -372,7 +372,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	}(); publishErr != nil {
 		return publishErr
 	}
-	s.clearMCPUncertainty(expectedUncertainty)
+	s.mcpStore().ClearUncertainty(expectedUncertainty)
 
 	return nil
 }

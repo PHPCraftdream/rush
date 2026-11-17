@@ -193,7 +193,7 @@ type configWriteTarget struct {
 // lock before the lock is acquired. Symlink aliases consequently share one
 // sidecar rather than racing on alias.lock and target.lock independently.
 func (s *ConfigStore) resolveConfigWriteTarget(path string) (configWriteTarget, error) {
-	owner, enforce, err := s.mcpOwnerPolicy(path)
+	owner, enforce, err := s.mcpStore().OwnerPolicyFor(path)
 	if err != nil {
 		return configWriteTarget{}, err
 	}

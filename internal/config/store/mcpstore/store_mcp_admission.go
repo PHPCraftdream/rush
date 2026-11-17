@@ -1,4 +1,4 @@
-package config
+package mcpstore
 
 // The MCP admission boundary: the guard, its token lifecycle, the on-disk validation that a prepared source is still the one being published, and the currency predicates behind it. Split out of store_mcp.go when the 1000-line file limit landed; store_mcp.go keeps the Persist* mutation surface.
 
@@ -25,42 +25,45 @@ import (
 // publication. Its token is prepared while the config sidecars are held, so
 // ValidateCurrent is deliberately memory-only and safe under lifecycleMu.
 type MCPAdmissionGuard struct {
-	store *ConfigStore
-	ref   *mcpAdmissionTokenRef
+	store *Store
+	// Ref is exported for the root white-box admission tests.
+	Ref *AdmissionTokenRef
 }
 
-type mcpAdmissionTokenRef struct {
+type AdmissionTokenRef struct {
 	mu    sync.Mutex
-	token *mcpAdmissionToken
+	token *AdmissionToken
 }
 
-type mcpAdmissionToken struct {
-	store        *ConfigStore
+type AdmissionToken struct {
+	store        *Store
 	snapshot     MCPAdmissionSnapshot
 	name         string
 	fingerprints map[string]docread.Fingerprint
 	absent       map[string]docread.Fingerprint
-	handles      map[string]*os.File
-	closeOnce    sync.Once
-	closed       atomic.Bool
+	// Handles and Closed are exported for the root white-box admission tests
+	// (mcp_admission_io_test.go); the rest of the token state stays internal.
+	Handles   map[string]*os.File
+	Closed    atomic.Bool
+	closeOnce sync.Once
 }
 
-func (t *mcpAdmissionToken) close() {
+func (t *AdmissionToken) close() {
 	if t == nil {
 		return
 	}
 	t.closeOnce.Do(func() {
-		for _, file := range t.handles {
+		for _, file := range t.Handles {
 			if file != nil {
 				_ = file.Close()
 			}
 		}
-		t.handles = nil
-		t.closed.Store(true)
+		t.Handles = nil
+		t.Closed.Store(true)
 	})
 }
 
-func (r *mcpAdmissionTokenRef) current() *mcpAdmissionToken {
+func (r *AdmissionTokenRef) CurrentToken() *AdmissionToken {
 	if r == nil {
 		return nil
 	}
@@ -70,7 +73,7 @@ func (r *mcpAdmissionTokenRef) current() *mcpAdmissionToken {
 	return token
 }
 
-func (r *mcpAdmissionTokenRef) replace(token *mcpAdmissionToken) {
+func (r *AdmissionTokenRef) replace(token *AdmissionToken) {
 	if r == nil {
 		if token != nil {
 			token.close()
@@ -84,7 +87,7 @@ func (r *mcpAdmissionTokenRef) replace(token *mcpAdmissionToken) {
 	previous.close()
 }
 
-func (r *mcpAdmissionTokenRef) close() {
+func (r *AdmissionTokenRef) close() {
 	if r == nil {
 		return
 	}
@@ -99,8 +102,8 @@ func (r *mcpAdmissionTokenRef) close() {
 // closed or its in-memory generation fence is no longer current. It performs
 // no filesystem I/O and is safe while lifecycleMu is held.
 func (g MCPAdmissionGuard) ValidateCurrent() error {
-	token := g.ref.current()
-	if g.store == nil || token == nil || token.store != g.store || token.closed.Load() {
+	token := g.Ref.CurrentToken()
+	if g.store == nil || token == nil || token.store != g.store || token.Closed.Load() {
 		return ErrMCPMutationStale
 	}
 	if !g.store.mcpAdmissionSnapshotCurrent(token.snapshot, token.name) {
@@ -120,8 +123,8 @@ func (g MCPAdmissionGuard) FinalValidateCurrentContext(ctx context.Context) erro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	token := g.ref.current()
-	if g.store == nil || token == nil || token.store != g.store || token.closed.Load() {
+	token := g.Ref.CurrentToken()
+	if g.store == nil || token == nil || token.store != g.store || token.Closed.Load() {
 		return ErrMCPMutationStale
 	}
 	if !g.store.mcpAdmissionSnapshotCurrent(token.snapshot, token.name) {
@@ -154,15 +157,15 @@ func (g MCPAdmissionGuard) RevalidateCurrentContext(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	token := g.ref.current()
-	if g.store == nil || token == nil || token.store != g.store || token.closed.Load() {
+	token := g.Ref.CurrentToken()
+	if g.store == nil || token == nil || token.store != g.store || token.Closed.Load() {
 		return ErrMCPMutationStale
 	}
 	next, err := g.store.prepareMCPAdmissionToken(ctx, token.snapshot, token.name, token.fingerprints)
 	if err != nil {
 		return err
 	}
-	g.ref.replace(next)
+	g.Ref.replace(next)
 	return nil
 }
 
@@ -178,7 +181,9 @@ func (e *mcpCommitUncertainError) Unwrap() []error {
 	return []error{ErrMCPCommitUncertain, e.cause}
 }
 
-func mcpCommitWasReconciled(err error) bool {
+// MCPCommitWasReconciled is the exported form used by the root white-box
+// test forwarder (mcpCommitWasReconciled).
+func MCPCommitWasReconciled(err error) bool {
 	outcome, ok := cfgcommit.CommitOutcomeFromError(err)
 	return ok && outcome.Committed && outcome.Reconciled
 }
@@ -212,24 +217,24 @@ type MCPMutationResult struct {
 // fn is the runtime publication callback only: it must not mutate config on
 // disk or re-enter ConfigStore persistence. It may block on lifecycle locks;
 // the shared config sidecar locks stay held until it returns.
-func (s *ConfigStore) WithCurrentMCPMutation(result MCPMutationResult, fn func() error) error {
-	s.publishMu.Lock()
-	defer s.publishMu.Unlock()
-	return s.withMCPWriteLocks(func(files *mcpLockedFiles) error {
-		evaluation, err := s.evaluateMCPFiles(files)
-		if err != nil {
-			return ErrMCPMutationStale
-		}
-		if !s.mcpMutationResultCurrentLocked(result, evaluation) {
-			return ErrMCPMutationStale
-		}
-		return fn()
+func (s *Store) WithCurrentMCPMutation(result MCPMutationResult, fn func() error) error {
+	return s.port.PublishMutation(func(MutationScope) error {
+		return s.withMCPWriteLocks(func(files *LockedFiles) error {
+			evaluation, err := s.EvaluateMCPFiles(files)
+			if err != nil {
+				return ErrMCPMutationStale
+			}
+			if !s.mcpMutationResultCurrentLocked(result, evaluation) {
+				return ErrMCPMutationStale
+			}
+			return fn()
+		})
 	})
 }
 
 // WithCurrentMCPAdmission validates an immutable MCP admission snapshot and
 // runs fn while the config snapshot and disk inputs remain pinned.
-func (s *ConfigStore) WithCurrentMCPAdmission(snapshot MCPAdmissionSnapshot, name string, fn func(MCPAdmissionGuard) error) error {
+func (s *Store) WithCurrentMCPAdmission(snapshot MCPAdmissionSnapshot, name string, fn func(MCPAdmissionGuard) error) error {
 	ctx, cancel := cfgcommit.ConfigContextWithTimeout(context.Background(), configWriteLockTimeout)
 	defer cancel()
 	return s.WithCurrentMCPAdmissionContext(ctx, snapshot, name, fn)
@@ -238,62 +243,62 @@ func (s *ConfigStore) WithCurrentMCPAdmission(snapshot MCPAdmissionSnapshot, nam
 // WithCurrentMCPAdmissionContext prepares and validates the source token
 // before invoking fn. The caller context is used for every sidecar lock wait;
 // fn is the only callback that may run while the locks are held.
-func (s *ConfigStore) WithCurrentMCPAdmissionContext(ctx context.Context, snapshot MCPAdmissionSnapshot, name string, fn func(MCPAdmissionGuard) error) error {
+func (s *Store) WithCurrentMCPAdmissionContext(ctx context.Context, snapshot MCPAdmissionSnapshot, name string, fn func(MCPAdmissionGuard) error) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	s.publishMu.Lock()
-	defer s.publishMu.Unlock()
-	if err := ctx.Err(); err != nil {
+	return s.port.PublishMutation(func(MutationScope) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if s.port.WorkingDir() == "" && s.port.GlobalDataPath() == "" {
+			if !s.mcpAdmissionSnapshotCurrent(snapshot, name) {
+				return ErrMCPMutationStale
+			}
+			token := &AdmissionToken{store: s, snapshot: snapshot, name: name}
+			ref := &AdmissionTokenRef{token: token}
+			defer ref.close()
+			return fn(MCPAdmissionGuard{store: s, Ref: ref})
+		}
+		err := s.withMCPAdmissionLocksContext(ctx, func(files *LockedFiles) error {
+			if !s.mcpAdmissionSnapshotCurrent(snapshot, name) {
+				return ErrMCPMutationStale
+			}
+			evaluation, err := s.EvaluateMCPFiles(files)
+			if err != nil {
+				return ErrMCPMutationStale
+			}
+			input, hasInput := evaluation.MCPInputs[name]
+			if hasInput != snapshot.HasMCPInput || hasInput && input != snapshot.MCPInput {
+				return ErrMCPMutationStale
+			}
+			token, tokenErr := s.prepareMCPAdmissionToken(ctx, snapshot, name, evaluation.Fingerprints)
+			if tokenErr != nil {
+				return tokenErr
+			}
+			ref := &AdmissionTokenRef{token: token}
+			defer ref.close()
+			return fn(MCPAdmissionGuard{store: s, Ref: ref})
+		})
+		if errors.Is(err, ErrMCPStale) {
+			return fmt.Errorf("%w: %w", ErrMCPMutationStale, err)
+		}
 		return err
-	}
-	if s.workingDir == "" && s.globalDataPath == "" {
-		if !s.mcpAdmissionSnapshotCurrent(snapshot, name) {
-			return ErrMCPMutationStale
-		}
-		token := &mcpAdmissionToken{store: s, snapshot: snapshot, name: name}
-		ref := &mcpAdmissionTokenRef{token: token}
-		defer ref.close()
-		return fn(MCPAdmissionGuard{store: s, ref: ref})
-	}
-	err := s.withMCPAdmissionLocksContext(ctx, func(files *mcpLockedFiles) error {
-		if !s.mcpAdmissionSnapshotCurrent(snapshot, name) {
-			return ErrMCPMutationStale
-		}
-		evaluation, err := s.evaluateMCPFiles(files)
-		if err != nil {
-			return ErrMCPMutationStale
-		}
-		input, hasInput := evaluation.mcpInputs[name]
-		if hasInput != snapshot.HasMCPInput || hasInput && input != snapshot.MCPInput {
-			return ErrMCPMutationStale
-		}
-		token, tokenErr := s.prepareMCPAdmissionToken(ctx, snapshot, name, evaluation.fingerprints)
-		if tokenErr != nil {
-			return tokenErr
-		}
-		ref := &mcpAdmissionTokenRef{token: token}
-		defer ref.close()
-		return fn(MCPAdmissionGuard{store: s, ref: ref})
 	})
-	if errors.Is(err, ErrMCPStale) {
-		return fmt.Errorf("%w: %w", ErrMCPMutationStale, err)
-	}
-	return err
 }
 
-func (s *ConfigStore) prepareMCPAdmissionToken(ctx context.Context, snapshot MCPAdmissionSnapshot, name string, fingerprints map[string]docread.Fingerprint) (*mcpAdmissionToken, error) {
+func (s *Store) prepareMCPAdmissionToken(ctx context.Context, snapshot MCPAdmissionSnapshot, name string, fingerprints map[string]docread.Fingerprint) (*AdmissionToken, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	token := &mcpAdmissionToken{
+	token := &AdmissionToken{
 		store: s, snapshot: snapshot, name: name,
 		fingerprints: cloneReloadFingerprints(fingerprints),
 		absent:       make(map[string]docread.Fingerprint),
-		handles:      make(map[string]*os.File),
+		Handles:      make(map[string]*os.File),
 	}
 	for path, fingerprint := range token.fingerprints {
 		if err := ctx.Err(); err != nil {
@@ -322,7 +327,7 @@ func (s *ConfigStore) prepareMCPAdmissionToken(ctx context.Context, snapshot MCP
 			token.close()
 			return nil, err
 		}
-		file, err := openStableConfigFile(path)
+		file, err := fileid.OpenStableConfigFile(path)
 		if err != nil {
 			token.close()
 			return nil, fmt.Errorf("%w: failed to prepare MCP admission source %s: %v", ErrMCPMutationStale, path, err)
@@ -332,12 +337,12 @@ func (s *ConfigStore) prepareMCPAdmissionToken(ctx context.Context, snapshot MCP
 			token.close()
 			return nil, err
 		}
-		if err := validatePreparedAdmissionFile(ctx, path, file, fingerprint, expectedOwner, enforceOwner); err != nil {
+		if err := ValidatePreparedAdmissionFile(ctx, path, file, fingerprint, expectedOwner, enforceOwner); err != nil {
 			_ = file.Close()
 			token.close()
 			return nil, err
 		}
-		token.handles[path] = file
+		token.Handles[path] = file
 		if err := ctx.Err(); err != nil {
 			token.close()
 			return nil, err
@@ -377,12 +382,14 @@ func mcpAdmissionAbsenceFingerprint(path string) (docread.Fingerprint, error) {
 	return docread.Fingerprint{
 		Discovery:       docread.ConfigDiscoveryFingerprint(path),
 		ParentDiscovery: docread.ConfigDiscoveryFingerprint(filepath.Dir(path)),
-		ParentIdentity:  configParentIdentity(path),
+		ParentIdentity:  fileid.ConfigParentIdentity(path),
 		AliasChain:      docread.ConfigAliasChainFingerprint(path),
 	}, nil
 }
 
-func validatePreparedAdmissionFile(ctx context.Context, path string, file *os.File, expected docread.Fingerprint, expectedOwner int, enforceOwner bool) error {
+// ValidatePreparedAdmissionFile is the exported form used by the root
+// white-box admission test forwarder (validatePreparedAdmissionFile).
+func ValidatePreparedAdmissionFile(ctx context.Context, path string, file *os.File, expected docread.Fingerprint, expectedOwner int, enforceOwner bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -394,20 +401,20 @@ func validatePreparedAdmissionFile(ctx context.Context, path string, file *os.Fi
 		return err
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%w: %s", ErrMCPMutationStale, ErrConfigNonRegular)
+		return fmt.Errorf("%w: %s", ErrMCPMutationStale, fileid.ErrConfigNonRegular)
 	}
 	owner, ownerKnown := fileid.ConfigFileOwner(info)
 	if enforceOwner && (!ownerKnown || owner != expectedOwner) {
 		return ErrMCPMutationStale
 	}
-	first, err := readOpenedConfigBytes(file)
+	first, err := fileid.ReadOpenedConfigBytes(file)
 	if err != nil {
 		return ErrMCPMutationStale
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	second, err := readOpenedConfigBytes(file)
+	second, err := fileid.ReadOpenedConfigBytes(file)
 	if err != nil || !bytes.Equal(first, second) {
 		return ErrMCPMutationStale
 	}
@@ -429,11 +436,11 @@ func validatePreparedAdmissionFile(ctx context.Context, path string, file *os.Fi
 		expected.Digest != sha256.Sum256(second) ||
 		expected.Discovery != docread.ConfigDiscoveryFingerprint(path) ||
 		expected.ParentDiscovery != docread.ConfigDiscoveryFingerprint(filepath.Dir(path)) ||
-		expected.ParentIdentity != configParentIdentity(path) ||
+		expected.ParentIdentity != fileid.ConfigParentIdentity(path) ||
 		expected.AliasChain != docread.ConfigAliasChainFingerprint(path) {
 		return ErrMCPMutationStale
 	}
-	pathMatches, err := configFilePathIdentityMatches(path, file, finalInfo)
+	pathMatches, err := fileid.ConfigFilePathIdentityMatches(path, file, finalInfo)
 	if err != nil || !pathMatches {
 		return ErrMCPMutationStale
 	}
@@ -443,16 +450,22 @@ func validatePreparedAdmissionFile(ctx context.Context, path string, file *os.Fi
 	return nil
 }
 
-const mcpAdmissionVerifyBufferSize = 32 << 10
+// MCPAdmissionVerifyBufferSize is the exported form used by the root
+// white-box admission test (MCPAdmissionVerifyBufferSize).
+const MCPAdmissionVerifyBufferSize = 32 << 10
 
-type mcpAdmissionReadSeeker interface {
+// AdmissionReadSeeker is the exported form used by the root white-box
+// admission test forwarder (mcpAdmissionReadSeeker).
+type AdmissionReadSeeker interface {
 	io.Reader
 	io.Seeker
 }
 
 // verifyMCPAdmissionBytes hashes exactly the expected size and then probes for
 // one extra byte. Memory use is independent of the file size.
-func verifyMCPAdmissionBytes(ctx context.Context, file mcpAdmissionReadSeeker, expectedSize int64, expectedDigest [sha256.Size]byte) error {
+// VerifyMCPAdmissionBytes is the exported form used by the root white-box
+// admission test forwarder (verifyMCPAdmissionBytes).
+func VerifyMCPAdmissionBytes(ctx context.Context, file AdmissionReadSeeker, expectedSize int64, expectedDigest [sha256.Size]byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -466,7 +479,7 @@ func verifyMCPAdmissionBytes(ctx context.Context, file mcpAdmissionReadSeeker, e
 		return err
 	}
 	hash := sha256.New()
-	var buffer [mcpAdmissionVerifyBufferSize]byte
+	var buffer [MCPAdmissionVerifyBufferSize]byte
 	remaining := expectedSize
 	for remaining > 0 {
 		if err := ctx.Err(); err != nil {
@@ -510,7 +523,9 @@ func verifyMCPAdmissionBytes(ctx context.Context, file mcpAdmissionReadSeeker, e
 	return nil
 }
 
-func validateFinalMCPAdmissionFile(
+// ValidateFinalMCPAdmissionFile is the exported form used by the root
+// white-box admission test forwarder (validateFinalMCPAdmissionFile).
+func ValidateFinalMCPAdmissionFile(
 	ctx context.Context,
 	path string,
 	file *os.File,
@@ -533,7 +548,7 @@ func validateFinalMCPAdmissionFile(
 	}
 	if !info.Mode().IsRegular() || info.Size() != expected.Size {
 		if !info.Mode().IsRegular() {
-			return fmt.Errorf("%w: %s", ErrMCPMutationStale, ErrConfigNonRegular)
+			return fmt.Errorf("%w: %s", ErrMCPMutationStale, fileid.ErrConfigNonRegular)
 		}
 		return ErrMCPMutationStale
 	}
@@ -548,7 +563,7 @@ func validateFinalMCPAdmissionFile(
 	if expected.Nlink != 0 && fileid.FileNlinkOfOpened(file, info) != expected.Nlink {
 		return ErrMCPMutationStale
 	}
-	if err := verifyMCPAdmissionBytes(ctx, file, expected.Size, expected.Digest); err != nil {
+	if err := VerifyMCPAdmissionBytes(ctx, file, expected.Size, expected.Digest); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
@@ -570,11 +585,11 @@ func validateFinalMCPAdmissionFile(
 		expected.ModTime != finalInfo.ModTime().UnixNano() ||
 		expected.Discovery != docread.ConfigDiscoveryFingerprint(path) ||
 		expected.ParentDiscovery != docread.ConfigDiscoveryFingerprint(filepath.Dir(path)) ||
-		expected.ParentIdentity != configParentIdentity(path) ||
+		expected.ParentIdentity != fileid.ConfigParentIdentity(path) ||
 		expected.AliasChain != docread.ConfigAliasChainFingerprint(path) {
 		return ErrMCPMutationStale
 	}
-	pathMatches, err := configFilePathIdentityMatches(path, file, finalInfo)
+	pathMatches, err := fileid.ConfigFilePathIdentityMatches(path, file, finalInfo)
 	if err != nil || !pathMatches {
 		return ErrMCPMutationStale
 	}
@@ -584,7 +599,7 @@ func validateFinalMCPAdmissionFile(
 	return nil
 }
 
-func (s *ConfigStore) validateMCPAdmissionTokenContext(ctx context.Context, token *mcpAdmissionToken) error {
+func (s *Store) validateMCPAdmissionTokenContext(ctx context.Context, token *AdmissionToken) error {
 	paths := make([]string, 0, len(token.fingerprints))
 	for path := range token.fingerprints {
 		paths = append(paths, path)
@@ -594,7 +609,7 @@ func (s *ConfigStore) validateMCPAdmissionTokenContext(ctx context.Context, toke
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if token.closed.Load() {
+		if token.Closed.Load() {
 			return ErrMCPMutationStale
 		}
 		expected := token.fingerprints[path]
@@ -611,12 +626,12 @@ func (s *ConfigStore) validateMCPAdmissionTokenContext(ctx context.Context, toke
 			}
 			continue
 		}
-		file := token.handles[path]
+		file := token.Handles[path]
 		expectedOwner, enforceOwner, err := s.mcpOwnerPolicy(path)
 		if err != nil {
 			return err
 		}
-		if err := validateFinalMCPAdmissionFile(ctx, path, file, expected, expectedOwner, enforceOwner); err != nil {
+		if err := ValidateFinalMCPAdmissionFile(ctx, path, file, expected, expectedOwner, enforceOwner); err != nil {
 			return err
 		}
 	}
@@ -634,20 +649,24 @@ func cloneReloadFingerprints(source map[string]docread.Fingerprint) map[string]d
 	return result
 }
 
-func (s *ConfigStore) mcpAdmissionSnapshotCurrent(snapshot MCPAdmissionSnapshot, name string) bool {
-	current := s.loadSnapshot()
-	if current.generation < snapshot.Generation ||
-		current.mcpRevisions[name] != snapshot.MCPRevision ||
-		current.resolverRevision != snapshot.ResolverRevision ||
-		current.config == nil {
+func (s *Store) mcpAdmissionSnapshotCurrent(snapshot MCPAdmissionSnapshot, name string) bool {
+	var current MCPView
+	_ = s.port.ViewSnap(func(view MCPView) error {
+		current = view
+		return nil
+	})
+	if current.Generation() < snapshot.Generation ||
+		current.MCPRevisions()[name] != snapshot.MCPRevision ||
+		current.ResolverRevision() != snapshot.ResolverRevision ||
+		current.Config() == nil {
 		return false
 	}
-	value, exists := current.config.MCP[name]
+	value, exists := current.Config().MCP[name]
 	return exists == snapshot.Exists && (!exists || reflect.DeepEqual(value, snapshot.MCPConfig))
 }
 
-func (s *ConfigStore) mcpMutationResultCurrentLocked(result MCPMutationResult, evaluation mcpEvaluation) bool {
-	if result.Generation != 0 && s.loadSnapshot().generation != result.Generation {
+func (s *Store) mcpMutationResultCurrentLocked(result MCPMutationResult, evaluation Evaluation) bool {
+	if result.Generation != 0 && s.currentGeneration() != result.Generation {
 		return false
 	}
 
@@ -656,7 +675,7 @@ func (s *ConfigStore) mcpMutationResultCurrentLocked(result MCPMutationResult, e
 	// window that allowed another ConfigStore to replace the commit with an
 	// ABA-equivalent effective value.
 	for path, expected := range result.committedFingerprints {
-		actual, ok := mcpEvaluationFingerprint(evaluation.fingerprints, path)
+		actual, ok := mcpEvaluationFingerprint(evaluation.Fingerprints, path)
 		if !ok || actual != expected {
 			return false
 		}
@@ -665,12 +684,16 @@ func (s *ConfigStore) mcpMutationResultCurrentLocked(result MCPMutationResult, e
 	// Preserve the old staleness fence for unrelated tracked inputs too. This
 	// also supports compatibility results assembled by lifecycle adapters that
 	// predate committedFingerprints.
-	snapshot := s.loadSnapshot()
-	for path, expected := range snapshot.snapshots {
+	var snapshot MCPView
+	_ = s.port.ViewSnap(func(view MCPView) error {
+		snapshot = view
+		return nil
+	})
+	for path, expected := range snapshot.Snapshots() {
 		if expected.Fingerprint() == (docread.Fingerprint{}) {
 			continue
 		}
-		actual, ok := mcpEvaluationFingerprint(evaluation.fingerprints, path)
+		actual, ok := mcpEvaluationFingerprint(evaluation.Fingerprints, path)
 		if !ok {
 			// Slot-sibling expansion tracks BOTH spellings of every logical
 			// slot, including a sibling the MCP evaluation never reads
@@ -696,19 +719,19 @@ func (s *ConfigStore) mcpMutationResultCurrentLocked(result MCPMutationResult, e
 		}
 	}
 
-	current, exists := evaluation.configs[result.NewName]
+	current, exists := evaluation.Configs[result.NewName]
 	if exists != result.NewExists || exists && !reflect.DeepEqual(current, result.NewConfig) {
 		return false
 	}
-	if exists && result.NewOrigin != (MCPOrigin{}) && evaluation.origins[result.NewName] != result.NewOrigin {
+	if exists && result.NewOrigin != (MCPOrigin{}) && evaluation.Origins[result.NewName] != result.NewOrigin {
 		return false
 	}
 	if result.Operation == "replace" && result.OldName != result.NewName {
-		fallback, fallbackExists := evaluation.configs[result.OldName]
+		fallback, fallbackExists := evaluation.Configs[result.OldName]
 		if fallbackExists != result.FallbackExists || fallbackExists && !reflect.DeepEqual(fallback, result.FallbackConfig) {
 			return false
 		}
-		if fallbackExists && result.FallbackOrigin != (MCPOrigin{}) && evaluation.origins[result.OldName] != result.FallbackOrigin {
+		if fallbackExists && result.FallbackOrigin != (MCPOrigin{}) && evaluation.Origins[result.OldName] != result.FallbackOrigin {
 			return false
 		}
 	}
@@ -725,19 +748,19 @@ func reloadFingerprintContentEqual(expected, actual docread.Fingerprint) bool {
 	return expected == actual
 }
 
-func committedMCPFingerprints(files *mcpLockedFiles) map[string]docread.Fingerprint {
+func committedMCPFingerprints(files *LockedFiles) map[string]docread.Fingerprint {
 	result := make(map[string]docread.Fingerprint)
-	for _, record := range files.records {
-		if !files.changed[record.key] {
+	for _, record := range files.Records {
+		if !files.Changed[record.Key] {
 			continue
 		}
-		for alias := range record.aliases {
-			if fingerprint, ok := files.fingerprints[alias]; ok {
+		for alias := range record.Aliases {
+			if fingerprint, ok := files.Fingerprints[alias]; ok {
 				result[alias] = fingerprint
 			}
 		}
-		if fingerprint, ok := files.fingerprints[record.commitPath]; ok {
-			result[record.commitPath] = fingerprint
+		if fingerprint, ok := files.Fingerprints[record.CommitPath]; ok {
+			result[record.CommitPath] = fingerprint
 		}
 	}
 	return result

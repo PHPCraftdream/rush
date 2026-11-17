@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -13,6 +12,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/store/mcpstore"
 	"github.com/PHPCraftdream/rush/internal/config/store/settings"
 )
 
@@ -88,8 +88,7 @@ func (sn *storeSnapshot) clone() *storeSnapshot {
 // single snap.Store — the old snapshot, and anything still holding a
 // reference to it, is left completely untouched.
 type ConfigStore struct {
-	snap           atomic.Pointer[storeSnapshot]
-	mcpUncertainty mcpUncertaintyState
+	snap atomic.Pointer[storeSnapshot]
 
 	// workingDir and globalDataPath are set once at construction time
 	// (Load / NewTestStore) and never mutated afterwards, so they are
@@ -271,6 +270,11 @@ type ConfigStore struct {
 	// built on demand (see settingsStore).
 	settings *settings.Store
 
+	// mcp is the MCP persistence component over this store (X2). Constructors
+	// install it eagerly; zero-value stores fall back to an ephemeral
+	// instance built on demand (see mcpStore).
+	mcp *mcpstore.Store
+
 	// reloadBeforeFinalInputCheck is a white-box seam before final disk I/O.
 	reloadBeforeFinalInputCheck func()
 }
@@ -342,6 +346,7 @@ func NewStore(workingDir, globalDataPath string, dataDirSource DataDirSource, sh
 		discoveryProviders: discoveryProviders,
 	}
 	s.settings = s.settingsStore()
+	s.mcp = s.mcpStore()
 	if seed != nil {
 		s.snap.Store(&storeSnapshot{
 			config:           seed.Config,
@@ -450,39 +455,8 @@ func (s *ConfigStore) SnapshotWithResolver() (*Config, VariableResolver, uint64)
 	return sn.config, sn.resolver, sn.generation
 }
 
-// MCPAdmissionSnapshot captures the MCP definition and resolver revisions
-// from one immutable store snapshot.
-type MCPAdmissionSnapshot struct {
-	Config           *Config
-	Resolver         VariableResolver
-	MCPConfig        MCPConfig
-	Exists           bool
-	MCPInput         [32]byte
-	HasMCPInput      bool
-	MCPRevision      uint64
-	ResolverRevision uint64
-	Generation       uint64
-}
-
-func (s *ConfigStore) SnapshotMCPAdmission(name string) MCPAdmissionSnapshot {
-	sn := s.loadSnapshot()
-	result := MCPAdmissionSnapshot{
-		Config:           sn.config,
-		Resolver:         sn.resolver,
-		MCPRevision:      sn.mcpRevisions[name],
-		ResolverRevision: sn.resolverRevision,
-		Generation:       sn.generation,
-	}
-	result.MCPInput, result.HasMCPInput = sn.mcpInputs[name]
-	if sn.config != nil {
-		result.MCPConfig, result.Exists = sn.config.MCP[name]
-		if result.Exists {
-			result.MCPConfig = cloneMCPConfig(result.MCPConfig)
-		}
-	}
-	return result
-}
-
+// SnapshotWithResolverAndMCPRevisions returns the config, a copy of the MCP
+// revision map, and the resolver revision from one immutable store snapshot.
 func (s *ConfigStore) SnapshotWithResolverAndMCPRevisions() (*Config, VariableResolver, map[string]uint64, uint64) {
 	sn := s.loadSnapshot()
 	return sn.config, sn.resolver, maps.Clone(sn.mcpRevisions), sn.resolverRevision
@@ -610,110 +584,9 @@ func (s *ConfigStore) MCPConfig(name string) (MCPConfig, bool) {
 	return cloneMCPConfig(mcpConfig), true
 }
 
-// UpdateMCP applies a copy-on-write mutation to one MCP server configuration.
-// It never mutates a published Config or any of its nested MCP maps.
-func (s *ConfigStore) UpdateMCP(name string, mutate func(*MCPConfig)) (MCPConfig, bool) {
-	s.publishMu.Lock()
-	defer s.publishMu.Unlock()
-	cur := s.loadSnapshot()
-	if cur.config == nil || cur.config.MCP == nil {
-		return MCPConfig{}, false
-	}
-	current, ok := cur.config.MCP[name]
-	if !ok {
-		return MCPConfig{}, false
-	}
-	updated := cloneMCPConfig(current)
-	mutate(&updated)
-	next := cur.clone()
-	cfgCopy := *cur.config
-	cfgCopy.MCP = maps.Clone(cur.config.MCP)
-	cfgCopy.MCP[name] = cloneMCPConfig(updated)
-	next.config = &cfgCopy
-	next.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, next.config, cur.mcpInputs, next.mcpInputs, name)
-	next.resolverDynamic = configHasDynamicMCPResolution(next.config)
-	s.publishLocked(next)
-	return updated, true
-}
-
-// SetMCPDisabled updates one MCP server's disabled flag through the
-// copy-on-write publication path and returns the detached new value.
-func (s *ConfigStore) SetMCPDisabled(name string, disabled bool) (MCPConfig, bool) {
-	return s.UpdateMCP(name, func(m *MCPConfig) { m.Disabled = disabled })
-}
-
-// AddMCP publishes a new MCP server configuration if name is unused.
-func (s *ConfigStore) AddMCP(name string, mcpConfig MCPConfig) bool {
-	s.publishMu.Lock()
-	defer s.publishMu.Unlock()
-	cur := s.loadSnapshot()
-	if cur.config == nil {
-		return false
-	}
-	if _, exists := cur.config.MCP[name]; exists {
-		return false
-	}
-	next := cur.clone()
-	cfgCopy := *cur.config
-	cfgCopy.MCP = maps.Clone(cur.config.MCP)
-	if cfgCopy.MCP == nil {
-		cfgCopy.MCP = make(MCPs)
-	}
-	cfgCopy.MCP[name] = cloneMCPConfig(mcpConfig)
-	next.config = &cfgCopy
-	next.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, next.config, cur.mcpInputs, next.mcpInputs)
-	next.resolverDynamic = configHasDynamicMCPResolution(next.config)
-	s.publishLocked(next)
-	return true
-}
-
-// RemoveMCP removes one MCP server and returns its detached configuration.
-func (s *ConfigStore) RemoveMCP(name string) (MCPConfig, bool) {
-	s.publishMu.Lock()
-	defer s.publishMu.Unlock()
-	cur := s.loadSnapshot()
-	if cur.config == nil {
-		return MCPConfig{}, false
-	}
-	current, ok := cur.config.MCP[name]
-	if !ok {
-		return MCPConfig{}, false
-	}
-	next := cur.clone()
-	cfgCopy := *cur.config
-	cfgCopy.MCP = maps.Clone(cur.config.MCP)
-	delete(cfgCopy.MCP, name)
-	next.config = &cfgCopy
-	next.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, next.config, cur.mcpInputs, next.mcpInputs)
-	next.resolverDynamic = configHasDynamicMCPResolution(next.config)
-	s.publishLocked(next)
-	return cloneMCPConfig(current), true
-}
-
-// RemoveMCPIfCurrent removes name only when the in-memory snapshot still has
-// the expected config at the expected MCP revision.
-func (s *ConfigStore) RemoveMCPIfCurrent(name string, expected MCPConfig, revision uint64) (MCPConfig, bool) {
-	s.publishMu.Lock()
-	defer s.publishMu.Unlock()
-	cur := s.loadSnapshot()
-	if cur.config == nil || revision != 0 && cur.mcpRevisions[name] != revision {
-		return MCPConfig{}, false
-	}
-	current, ok := cur.config.MCP[name]
-	if !ok || !reflect.DeepEqual(current, expected) {
-		return MCPConfig{}, false
-	}
-	next := cur.clone()
-	cfgCopy := *cur.config
-	cfgCopy.MCP = maps.Clone(cur.config.MCP)
-	delete(cfgCopy.MCP, name)
-	next.config = &cfgCopy
-	next.mcpRevisions = mcpRevisionDiff(cur.mcpRevisions, cur.config, next.config, cur.mcpInputs, next.mcpInputs)
-	next.resolverDynamic = configHasDynamicMCPResolution(next.config)
-	s.publishLocked(next)
-	return cloneMCPConfig(current), true
-}
-
+// cloneMCPConfig returns a deep-enough copy of one MCP definition: every
+// nested map/slice is cloned so a detached value never aliases the
+// published snapshot.
 func cloneMCPConfig(m MCPConfig) MCPConfig {
 	m.Env = maps.Clone(m.Env)
 	m.Args = slices.Clone(m.Args)
@@ -793,6 +666,7 @@ func NewTestStore(cfg *Config, loadedPaths ...string) *ConfigStore {
 func NewTestStoreWithResolver(cfg *Config, resolver VariableResolver, loadedPaths ...string) *ConfigStore {
 	s := &ConfigStore{}
 	s.settings = s.settingsStore()
+	s.mcp = s.mcpStore()
 	s.snap.Store(&storeSnapshot{
 		config:           cfg,
 		resolver:         resolver,
@@ -818,6 +692,7 @@ func NewTestStoreWithResolver(cfg *Config, resolver VariableResolver, loadedPath
 func NewLibraryStore(cfg *Config, workingDir string) *ConfigStore {
 	s := &ConfigStore{workingDir: workingDir}
 	s.settings = s.settingsStore()
+	s.mcp = s.mcpStore()
 	s.snap.Store(&storeSnapshot{
 		config:           cfg,
 		resolver:         IdentityResolver(),
@@ -850,6 +725,7 @@ type testStoreOpts struct {
 func newTestConfigStore(opts testStoreOpts) *ConfigStore {
 	s := &ConfigStore{globalDataPath: opts.globalDataPath}
 	s.settings = s.settingsStore()
+	s.mcp = s.mcpStore()
 	s.snap.Store(&storeSnapshot{
 		config:           opts.config,
 		workspacePath:    opts.workspacePath,

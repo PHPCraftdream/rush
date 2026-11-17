@@ -19,7 +19,7 @@ internal/agent/tools/mcp 63
 internal/app 272
 # 303 -> 304: +1 internal/config/models_integrity.go from the 0b-3.1 seam lane (deliberate, temporary; only down from here).
 # 304 -> 309: the same +7/-2 files of the 0b-3.2 seam lane (deliberate, temporary; only down from here).
-internal/config 229
+internal/config 222
 internal/config/discover 27
 internal/kit/sys/shell 46
 internal/serve/cmd 390
