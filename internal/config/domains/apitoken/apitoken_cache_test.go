@@ -1,4 +1,4 @@
-package config
+package apitoken
 
 import (
 	"bytes"
@@ -8,12 +8,15 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
+	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 )
 
 func TestAPITokenRevokeWriteFailurePreservesCachedToken(t *testing.T) {
 	isolateAllGlobalConfigPaths(t)
-	t.Setenv(GlobalDirEnv, "")
-	restoreKtav := SetKtavAutoMigrateForTest(false)
+	t.Setenv(datadir.GlobalDirEnv, "")
+	restoreKtav := slots.SetKtavAutoMigrateForTest(false)
 	t.Cleanup(restoreKtav)
 	path := filepath.Join(t.TempDir(), "tokens.json")
 	store := &APITokenStore{Path: path}
@@ -49,8 +52,8 @@ func TestAPITokenRevokeWriteFailurePreservesCachedToken(t *testing.T) {
 
 func TestAPITokenConcurrentReadersAndMutations(t *testing.T) {
 	isolateAllGlobalConfigPaths(t)
-	t.Setenv(GlobalDirEnv, "")
-	restoreKtav := SetKtavAutoMigrateForTest(false)
+	t.Setenv(datadir.GlobalDirEnv, "")
+	restoreKtav := slots.SetKtavAutoMigrateForTest(false)
 	t.Cleanup(restoreKtav)
 	path := filepath.Join(t.TempDir(), "tokens.json")
 	store := &APITokenStore{Path: path}

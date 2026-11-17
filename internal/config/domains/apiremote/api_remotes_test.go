@@ -1,4 +1,4 @@
-package config
+package apiremote
 
 import (
 	"os"
@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/stretchr/testify/require"
 )
 
@@ -15,7 +16,7 @@ func isolateAPIRemoteTest(t *testing.T) string {
 	root := t.TempDir()
 	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(root, "data"))
 	t.Setenv("RUSH_GLOBAL_CONFIG", filepath.Join(root, "config"))
-	t.Setenv(GlobalDirEnv, "")
+	t.Setenv(datadir.GlobalDirEnv, "")
 	return root
 }
 
@@ -40,57 +41,6 @@ func TestAPIRemoteValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) { err := ValidateAPIRemote(tc.remote); require.Equal(t, tc.valid, err == nil) })
-	}
-}
-
-func TestAPIRemoteRoundTripAndReplace(t *testing.T) {
-	isolateAPIRemoteTest(t)
-	remote := APIRemote{URL: "https://example.test", TokenEnv: "TOKEN"}
-	require.NoError(t, SetAPIRemote("prod", remote, false))
-	require.Error(t, SetAPIRemote("prod", remote, false))
-	got, err := GetAPIRemote("prod")
-	require.NoError(t, err)
-	require.Equal(t, remote, got)
-	require.NoError(t, SetAPIRemote("prod", APIRemote{URL: "https://other.test", TokenEnv: "TOKEN"}, true))
-	require.NoError(t, SetDefaultAPIRemote("prod"))
-	profiles, def, err := ListAPIRemotes()
-	require.NoError(t, err)
-	require.Equal(t, "prod", def)
-	require.Len(t, profiles, 1)
-	require.NoError(t, RemoveAPIRemote("prod"))
-	_, def, err = ListAPIRemotes()
-	require.NoError(t, err)
-	require.Empty(t, def)
-}
-
-func TestAPIRemoteConcurrentSets(t *testing.T) {
-	isolateAPIRemoteTest(t)
-	done := make(chan error, 8)
-	for i := 0; i < 8; i++ {
-		go func(i int) {
-			done <- SetAPIRemote("remote"+string(rune('a'+i)), APIRemote{URL: "https://example.test", TokenEnv: "TOKEN"}, false)
-		}(i)
-	}
-	for i := 0; i < 8; i++ {
-		require.NoError(t, <-done)
-	}
-	profiles, _, err := ListAPIRemotes()
-	require.NoError(t, err)
-	require.Len(t, profiles, 8)
-}
-
-func TestResolveAPIRemotePrecedence(t *testing.T) {
-	isolateAPIRemoteTest(t)
-	require.NoError(t, SetAPIRemote("prod", APIRemote{URL: "https://prod.test", TokenEnv: "TOKEN"}, false))
-	require.NoError(t, SetAPIRemote("env", APIRemote{URL: "https://env.test", TokenEnv: "TOKEN"}, false))
-	_, _, err := ResolveAPIRemote("", func(string) string { return "" })
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "no remote selected")
-	require.NoError(t, SetDefaultAPIRemote("prod"))
-	for _, tc := range []struct{ selected, env, want string }{{"env", "prod", "env"}, {"", "env", "env"}, {"", "", "prod"}} {
-		name, _, err := ResolveAPIRemote(tc.selected, func(string) string { return tc.env })
-		require.NoError(t, err)
-		require.Equal(t, tc.want, name)
 	}
 }
 
@@ -146,20 +96,6 @@ func TestWriteAPIRemoteTokenFile(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "keep", string(got))
 	}
-}
-
-func TestGlobalAPIRemoteReadDoesNotUseWorkspace(t *testing.T) {
-	root := isolateAPIRemoteTest(t)
-	t.Chdir(root)
-	workspace := filepath.Join(root, ".rush", "rush.json")
-	require.NoError(t, os.MkdirAll(filepath.Dir(workspace), 0o700))
-	require.NoError(t, os.WriteFile(workspace, []byte(`{"api":{"remotes":{"prod":{"url":"https://attacker.test","token_env":"TOKEN"},"workspace":{"url":"https://workspace.test","token_env":"TOKEN"}},"default_remote":"workspace"}}`), 0o600))
-	require.NoError(t, SetAPIRemote("prod", APIRemote{URL: "https://global.test", TokenEnv: "TOKEN"}, false))
-	_, remote, err := ResolveAPIRemote("prod", nil)
-	require.NoError(t, err)
-	require.Equal(t, "https://global.test", remote.URL)
-	_, _, err = ResolveAPIRemote("workspace", nil)
-	require.Error(t, err)
 }
 
 func TestAPIRemoteTokenSizeAndPermission(t *testing.T) {

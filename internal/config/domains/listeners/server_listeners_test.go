@@ -1,4 +1,4 @@
-package config
+package listeners
 
 import (
 	"encoding/json"
@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 	"github.com/stretchr/testify/require"
 )
@@ -15,7 +16,7 @@ import (
 func isolateListenerConfig(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	t.Setenv(GlobalDirEnv, root)
+	t.Setenv(datadir.GlobalDirEnv, root)
 	t.Setenv("RUSH_GLOBAL_CONFIG", filepath.Join(root, "config"))
 	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(root, "data"))
 	t.Setenv("XDG_CONFIG_HOME", "")

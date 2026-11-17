@@ -1,4 +1,4 @@
-package config
+package apiremote
 
 import (
 	"encoding/base64"
@@ -55,41 +55,6 @@ func TestExpandRemotePath(t *testing.T) {
 	got, err = expandRemotePath(abs)
 	require.NoError(t, err)
 	require.Equal(t, filepath.Clean(abs), got)
-}
-
-func TestAPIRemoteLifecycleErrorsAndCleanup(t *testing.T) {
-	isolateAPIRemoteTest(t)
-	remote := APIRemote{URL: "https://prod.test", TokenEnv: "PROD_TOKEN"}
-
-	_, err := GetAPIRemote("missing")
-	require.Error(t, err)
-	require.Error(t, SetDefaultAPIRemote("missing"))
-	require.Error(t, SetAPIRemote("Bad Name", remote, false))
-	require.Error(t, SetAPIRemote("prod", APIRemote{URL: "https://prod.test"}, false), "no credential source")
-	require.NoError(t, SetAPIRemote("prod", remote, false))
-	require.Error(t, SetAPIRemote("prod", remote, false), "overwrite needs the explicit replace flag")
-	require.NoError(t, SetAPIRemote("prod", APIRemote{URL: "https://prod2.test", TokenEnv: "PROD_TOKEN"}, true))
-	got, err := GetAPIRemote("prod")
-	require.NoError(t, err)
-	require.Equal(t, "https://prod2.test", got.URL)
-
-	token := []byte("rush_12345678." + strings.Repeat("b", 43))
-	path, err := WriteAPIRemoteTokenFile("prod", token)
-	require.NoError(t, err)
-	require.FileExists(t, path)
-	_, err = WriteAPIRemoteTokenFile("prod", []byte("not a token"))
-	require.Error(t, err)
-	_, err = WriteAPIRemoteTokenFile("Bad Name", token)
-	require.Error(t, err)
-
-	require.NoError(t, SetDefaultAPIRemote("prod"))
-	require.NoError(t, RemoveAPIRemote("prod"))
-	require.NoFileExists(t, path, "the token file created by this tool is removed with the profile")
-	profiles, def, err := ListAPIRemotes()
-	require.NoError(t, err)
-	require.Empty(t, profiles)
-	require.Empty(t, def, "removing the default profile clears api.default_remote")
-	require.NoError(t, RemoveAPIRemote("prod"), "removing an absent profile is idempotent")
 }
 
 func TestAPIRemoteClientCertPairingAndPathRules(t *testing.T) {

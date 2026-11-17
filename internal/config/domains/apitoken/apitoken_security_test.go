@@ -1,4 +1,4 @@
-package config
+package apitoken
 
 import (
 	"bytes"
@@ -14,14 +14,17 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
+	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 )
 
 func isolateAPITokenGlobals(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	restoreKtav := SetKtavAutoMigrateForTest(false)
+	restoreKtav := slots.SetKtavAutoMigrateForTest(false)
 	t.Cleanup(restoreKtav)
-	t.Setenv(GlobalDirEnv, "")
+	t.Setenv(datadir.GlobalDirEnv, "")
 	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(root, "global-data"))
 	t.Setenv("RUSH_GLOBAL_CONFIG", filepath.Join(root, "global-config"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "xdg-config"))
@@ -149,7 +152,7 @@ func TestAPITokenSecurityProjectDirectoryIsolation(t *testing.T) {
 	if _, err := store.ListAPITokens(); err != nil {
 		t.Fatalf("project token file consulted: %v", err)
 	}
-	t.Setenv(GlobalDirEnv, globalDir) // Mirrors the --global-dir root selected by its flag handler.
+	t.Setenv(datadir.GlobalDirEnv, globalDir) // Mirrors the --global-dir root selected by its flag handler.
 	flagStore := GlobalAPITokenStore()
 	want := filepath.Join(globalDir, "data", apiTokenFileName)
 	if flagStore.Path != want {

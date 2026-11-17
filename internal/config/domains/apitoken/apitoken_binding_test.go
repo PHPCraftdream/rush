@@ -1,4 +1,4 @@
-package config
+package apitoken
 
 import (
 	"encoding/json"

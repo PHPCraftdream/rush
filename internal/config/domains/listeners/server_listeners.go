@@ -1,4 +1,4 @@
-package config
+package listeners
 
 import (
 	"encoding/json"
@@ -8,7 +8,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 	"github.com/qjebbs/go-jsons"
 )
 
@@ -141,9 +143,9 @@ func GlobalServerListenersWithSources(flags ServerListenerFlags) ([]ServerListen
 		path  string
 		owner int
 	}{
-		{systemConfigSlot(), systemConfigOwner()},
-		{GlobalConfig(), homeConfigOwner()},
-		{GlobalConfigData(), homeConfigOwner()},
+		{datadir.SystemConfigSlot(), fileid.SystemConfigOwner()},
+		{datadir.GlobalConfig(), fileid.HomeConfigOwner()},
+		{datadir.GlobalConfigData(), fileid.HomeConfigOwner()},
 	}
 	var documents []serverListenerConfigDocument
 	for _, candidate := range paths {
@@ -163,7 +165,7 @@ func GlobalServerListenersWithSources(flags ServerListenerFlags) ([]ServerListen
 			return nil, nil, fmt.Errorf("%w %s: %w", ErrListenerConfigDecode, path, err)
 		}
 		source := "global"
-		if candidate.path == systemConfigSlot() {
+		if candidate.path == datadir.SystemConfigSlot() {
 			source = "system config"
 		} else {
 			source = "global config"

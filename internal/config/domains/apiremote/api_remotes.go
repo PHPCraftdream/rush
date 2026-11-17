@@ -1,4 +1,4 @@
-package config
+package apiremote
 
 import (
 	"encoding/base64"
@@ -16,7 +16,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	"github.com/tidwall/gjson"
 )
 
@@ -106,10 +108,27 @@ func validAPIRemotePin(pin string) bool {
 	return false
 }
 
-func globalAPIRemoteStore() (*ConfigStore, error) { return Load("", "", false) }
+type GlobalConfigWriter interface {
+	SetConfigField(scope cfgmodel.Scope, key string, value any) error
+	RemoveConfigField(scope cfgmodel.Scope, key string) error
+}
+
+var globalConfigWriterFactory func() (GlobalConfigWriter, error)
+
+// SetGlobalConfigWriterFactory installs the root config adapter for mutations.
+func SetGlobalConfigWriterFactory(factory func() (GlobalConfigWriter, error)) {
+	globalConfigWriterFactory = factory
+}
+
+func globalAPIRemoteStore() (GlobalConfigWriter, error) {
+	if globalConfigWriterFactory == nil {
+		return nil, errors.New("global API remote config adapter is not configured")
+	}
+	return globalConfigWriterFactory()
+}
 
 func ListAPIRemotes() (map[string]APIRemote, string, error) {
-	data, err := os.ReadFile(GlobalConfigData())
+	data, err := os.ReadFile(datadir.GlobalConfigData())
 	if err != nil && !os.IsNotExist(err) {
 		return nil, "", err
 	}
@@ -161,7 +180,7 @@ func SetAPIRemote(name string, remote APIRemote, replace bool) error {
 	if err != nil {
 		return err
 	}
-	if err := store.SetConfigField(ScopeGlobal, "api.remotes."+name, remote); err != nil {
+	if err := store.SetConfigField(cfgmodel.ScopeGlobal, "api.remotes."+name, remote); err != nil {
 		return err
 	}
 	return nil
@@ -181,15 +200,15 @@ func RemoveAPIRemote(name string) error {
 	if err != nil {
 		return err
 	}
-	if err := store.RemoveConfigField(ScopeGlobal, "api.remotes."+name); err != nil {
+	if err := store.RemoveConfigField(cfgmodel.ScopeGlobal, "api.remotes."+name); err != nil {
 		return err
 	}
 	if defaultName == name {
-		if err := store.RemoveConfigField(ScopeGlobal, "api.default_remote"); err != nil {
+		if err := store.RemoveConfigField(cfgmodel.ScopeGlobal, "api.default_remote"); err != nil {
 			return err
 		}
 	}
-	path := filepath.Join(filepath.Dir(GlobalConfigData()), "remotes", name+".token")
+	path := filepath.Join(filepath.Dir(datadir.GlobalConfigData()), "remotes", name+".token")
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -206,7 +225,7 @@ func SetDefaultAPIRemote(name string) error {
 	if err != nil {
 		return err
 	}
-	return store.SetConfigField(ScopeGlobal, "api.default_remote", name)
+	return store.SetConfigField(cfgmodel.ScopeGlobal, "api.default_remote", name)
 }
 
 func ResolveAPIRemote(selected string, getenv func(string) string) (string, APIRemote, error) {
@@ -309,7 +328,7 @@ func WriteAPIRemoteTokenFile(name string, token []byte) (string, error) {
 		return "", errors.New("token does not match API token format")
 	}
 	// Windows does not provide Unix chmod semantics; the user profile ACL protects this file.
-	dir := filepath.Join(filepath.Dir(GlobalConfigData()), "remotes")
+	dir := filepath.Join(filepath.Dir(datadir.GlobalConfigData()), "remotes")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}

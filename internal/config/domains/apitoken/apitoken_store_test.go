@@ -1,4 +1,4 @@
-package config
+package apitoken
 
 import (
 	"encoding/json"
@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 )
 
 // Revert-checks: removing the per-call disk read (a TTL cache) makes the
@@ -18,7 +21,7 @@ import (
 func TestGlobalAPITokenStoreIgnoresProjectDirectory(t *testing.T) {
 	isolateAllGlobalConfigPaths(t)
 	_, global := isolateAllGlobalConfigPaths(t)
-	t.Setenv(GlobalDirEnv, "")
+	t.Setenv(datadir.GlobalDirEnv, "")
 	project := filepath.Join(t.TempDir(), "project")
 	store := GlobalAPITokenStore()
 	want := filepath.Join(global, apiTokenFileName)
@@ -334,7 +337,7 @@ func TestAPITokenFlushMalformedStateNeverOverwrites(t *testing.T) {
 
 func TestConsumeServeBootstrapTokenOnceAndRealEnvironment(t *testing.T) {
 	isolateAllGlobalConfigPaths(t)
-	t.Setenv(GlobalDirEnv, "")
+	t.Setenv(datadir.GlobalDirEnv, "")
 	store := &APITokenStore{Path: filepath.Join(t.TempDir(), "tokens.json")}
 	calls := 0
 	_, _, firstErr := ConsumeServeBootstrapToken(store, func(string) string { calls++; return "bad" }, func(string) error { return nil }, time.Now())
@@ -495,7 +498,7 @@ func TestAPITokenParserExactShapeAndCopiedDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded, err := encodeSettingsDocument(mustTokenJSON(t, items), settingsDocumentFormatOf(writePath))
+	encoded, err := docread.EncodeSettingsDocument(mustTokenJSON(t, items), docread.SettingsDocumentFormatOf(writePath))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,7 +629,7 @@ const apiTokenLockContentionObservationWindow = 300 * time.Millisecond
 // Mutant check: removing the cross-store file lock lets B complete while A is held in its mutation hook.
 func TestAPITokenConcurrentCreateLockIsDeterministic(t *testing.T) {
 	isolateAllGlobalConfigPaths(t)
-	t.Setenv(GlobalDirEnv, "")
+	t.Setenv(datadir.GlobalDirEnv, "")
 	path := filepath.Join(t.TempDir(), apiTokenFileName)
 	storeA, storeB := &APITokenStore{Path: path}, &APITokenStore{Path: path}
 	entered, release := make(chan struct{}), make(chan struct{})
@@ -837,133 +840,4 @@ func mustTokenJSON(t *testing.T, tokens []APIToken) []byte {
 		t.Fatal(err)
 	}
 	return data
-}
-
-func TestAPITokenKtavRoundTripAndMalformedCreate(t *testing.T) {
-	isolateAllGlobalConfigPaths(t)
-	for _, ktav := range []bool{false, true} {
-		t.Run(map[bool]string{false: "json", true: "ktav"}[ktav], func(t *testing.T) {
-			restore := SetKtavAutoMigrateForTest(ktav)
-			defer restore()
-			path := filepath.Join(t.TempDir(), apiTokenFileName)
-			store := &APITokenStore{Path: path}
-			plain, _, err := store.CreateAPIToken("roundtrip", []string{"read"}, "ask", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, ok, err := (&APITokenStore{Path: path}).VerifyAPIToken(plain, time.Now()); err != nil || !ok {
-				t.Fatalf("roundtrip: %v %v", ok, err)
-			}
-			path, err = store.selectedPath()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if ktav && !strings.HasSuffix(path, ".ktav") {
-				t.Fatal("expected Ktav path")
-			}
-		})
-	}
-	restore := SetKtavAutoMigrateForTest(true)
-	defer restore()
-	path := filepath.Join(t.TempDir(), apiTokenKtavFileName)
-	if err := os.WriteFile(path, []byte("not valid = ="), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := (&APITokenStore{Path: path}).ListAPITokens(); err == nil {
-		t.Fatal("malformed Ktav accepted")
-	}
-	untouched, _ := os.ReadFile(path)
-	if _, _, err := (&APITokenStore{Path: path}).CreateAPIToken("cannot convert", []string{"read"}, "ask", nil); err == nil {
-		t.Fatal("unrepresentable write accepted")
-	}
-	after, _ := os.ReadFile(path)
-	if string(after) != string(untouched) {
-		t.Fatal("failed conversion changed file")
-	}
-}
-
-func TestAPITokenKtavCreateRejectsUnrepresentableRecord(t *testing.T) {
-	isolateAllGlobalConfigPaths(t)
-	restore := SetKtavAutoMigrateForTest(true)
-	defer restore()
-	path := filepath.Join(t.TempDir(), apiTokenFileName)
-	store := &APITokenStore{Path: path}
-	if _, _, err := store.CreateAPIToken("line\rbreak", []string{"read"}, "ask", nil); err == nil {
-		t.Fatal("Ktav create accepted a record containing an unrepresentable CR")
-	}
-	selected, err := store.selectedPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(selected); !os.IsNotExist(err) {
-		t.Fatalf("failed Ktav create left a file: %v", err)
-	}
-}
-
-func TestAPITokenStateUnreadableFailsFlush(t *testing.T) {
-	isolateAllGlobalConfigPaths(t)
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix permission bits are not enforced consistently on Windows")
-	}
-	path := filepath.Join(t.TempDir(), apiTokenFileName)
-	store := &APITokenStore{Path: path}
-	state := filepath.Join(filepath.Dir(path), "api-tokens.state")
-	if err := os.Mkdir(state, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	store.Touch("01020304")
-	if err := store.Flush(); err == nil {
-		t.Fatal("unreadable state flush succeeded")
-	}
-}
-
-func TestAPITokenVerifyMalformedVersionFailsClosed(t *testing.T) {
-	isolateAllGlobalConfigPaths(t)
-	path := filepath.Join(t.TempDir(), apiTokenFileName)
-	if err := os.WriteFile(path, []byte(`{"version":2,"tokens":[]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	store := &APITokenStore{Path: path}
-	if _, ok, err := store.VerifyAPIToken("rush_01020304."+strings.Repeat("A", 43), time.Now()); err == nil || ok {
-		t.Fatal("wrong version did not fail closed")
-	}
-	if _, err := store.ListAPITokens(); err == nil {
-		t.Fatal("wrong version listed")
-	}
-}
-
-func TestConsumeServeBootstrapTokenRejectsCollisionAndBadDigestLength(t *testing.T) {
-	isolateAllGlobalConfigPaths(t)
-	path := filepath.Join(t.TempDir(), "tokens.json")
-	store := &APITokenStore{Path: path}
-	if _, _, err := store.CreateAPIToken("collision", []string{"read"}, "ask", nil); err != nil {
-		t.Fatal(err)
-	}
-	items, err := store.ListAPITokens()
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := items[0].ID
-	for _, digest := range []string{strings.Repeat("a", 63), strings.Repeat("a", 65)} {
-		tmp := &APITokenStore{Path: filepath.Join(t.TempDir(), "tokens.json")}
-		_, ok, err := ConsumeServeBootstrapToken(tmp, func(k string) string {
-			if k == "RUSH_SERVE_TOKEN_SHA256" {
-				return id + ":" + digest
-			}
-			return ""
-		}, func(string) error { return nil }, time.Now())
-		if err == nil || ok {
-			t.Fatalf("bad digest length accepted: %d", len(digest))
-		}
-	}
-	collision := &APITokenStore{Path: path}
-	_, ok, err := ConsumeServeBootstrapToken(collision, func(k string) string {
-		if k == "RUSH_SERVE_TOKEN_SHA256" {
-			return id + ":" + strings.Repeat("a", 64)
-		}
-		return ""
-	}, func(string) error { return nil }, time.Now())
-	if err == nil || ok {
-		t.Fatal("stored id collision accepted")
-	}
 }

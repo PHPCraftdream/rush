@@ -234,7 +234,7 @@ fi
 out="$(bash "$guard" 2>&1)"
 status=$?
 expect_status "case 8: guard run on the real repository exits 0" 0 "$status"
-expect_output_contains "case 8: reports all 30 seeded allowlist entries" "$out" "30 allowlisted over 900 lines, max 900"
+expect_output_contains "case 8: reports all 29 seeded allowlist entries" "$out" "29 allowlisted over 900 lines, max 900"
 
 if [ "$failures" -gt 0 ]; then
 	printf 'check_file_size_900_selftest: %d failure(s)\n' "$failures"

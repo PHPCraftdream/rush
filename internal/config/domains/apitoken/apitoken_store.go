@@ -1,4 +1,4 @@
-package config
+package apitoken
 
 import (
 	"context"
@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
@@ -166,7 +167,7 @@ type tokenFingerprint struct {
 }
 
 func GlobalAPITokenStore() *APITokenStore {
-	return &APITokenStore{Path: filepath.Join(filepath.Dir(GlobalConfigData()), apiTokenFileName)}
+	return &APITokenStore{Path: filepath.Join(filepath.Dir(datadir.GlobalConfigData()), apiTokenFileName)}
 }
 
 // CreateAPIToken generates and durably records a rush_<id>.<secret> credential,

@@ -20,7 +20,10 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/domains/apiremote"
+	"github.com/PHPCraftdream/rush/internal/config/domains/apitoken"
 	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
+	"github.com/PHPCraftdream/rush/internal/config/domains/listeners"
 	"github.com/PHPCraftdream/rush/internal/config/domains/peak"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/fsx/casefold"
@@ -426,3 +429,86 @@ func openStableConfigFile(path string) (*os.File, error) {
 }
 
 // Hook forwarding lives in io_forwarders.go (io/cfgcommit-backed).
+
+// D2-4 API token, remote, and listener facade.
+type (
+	APITokenStore        = apitoken.APITokenStore
+	APIToken             = apitoken.APIToken
+	APITokenBinding      = apitoken.APITokenBinding
+	APITokenPinBinding   = apitoken.APITokenPinBinding
+	APITokenBatchBinding = apitoken.APITokenBatchBinding
+	APIRemote            = apiremote.APIRemote
+	ServerListener       = listeners.ServerListener
+	ServerListenerTLS    = listeners.ServerListenerTLS
+	ServerListenerLimits = listeners.ServerListenerLimits
+	ServerListenerFlags  = listeners.ServerListenerFlags
+)
+
+var (
+	ErrInvalidAPIToken      = apitoken.ErrInvalidAPIToken
+	ErrAPITokenNotFound     = apitoken.ErrAPITokenNotFound
+	ErrListenerConfigRead   = listeners.ErrListenerConfigRead
+	ErrListenerConfigDecode = listeners.ErrListenerConfigDecode
+)
+
+func GlobalAPITokenStore() *APITokenStore { return apitoken.GlobalAPITokenStore() }
+
+func APITokenScopeAllows(have []string, need string) bool {
+	return apitoken.APITokenScopeAllows(have, need)
+}
+
+func ConsumeServeBootstrapToken(store *APITokenStore, getenv func(string) string, unsetenv func(string) error, now time.Time) (APIToken, bool, error) {
+	return apitoken.ConsumeServeBootstrapToken(store, getenv, unsetenv, now)
+}
+
+func ConsumeServeBootstrapTokenFromEnv(store *APITokenStore, now time.Time) (APIToken, bool, error) {
+	return apitoken.ConsumeServeBootstrapTokenFromEnv(store, now)
+}
+
+func CanonicalAPIWorkspace(path string) (string, error) {
+	return apitoken.CanonicalAPIWorkspace(path)
+}
+
+func APITokenHash(token string) string { return apitoken.APITokenHash(token) }
+
+func LooksLikeAPIToken(value string) bool { return apiremote.LooksLikeAPIToken(value) }
+
+func ValidateAPIRemote(remote APIRemote) error { return apiremote.ValidateAPIRemote(remote) }
+
+func ListAPIRemotes() (map[string]APIRemote, string, error) { return apiremote.ListAPIRemotes() }
+
+func GetAPIRemote(name string) (APIRemote, error) { return apiremote.GetAPIRemote(name) }
+
+func SetAPIRemote(name string, remote APIRemote, replace bool) error {
+	return apiremote.SetAPIRemote(name, remote, replace)
+}
+
+func RemoveAPIRemote(name string) error { return apiremote.RemoveAPIRemote(name) }
+
+func SetDefaultAPIRemote(name string) error { return apiremote.SetDefaultAPIRemote(name) }
+
+func ResolveAPIRemote(selected string, getenv func(string) string) (string, APIRemote, error) {
+	return apiremote.ResolveAPIRemote(selected, getenv)
+}
+
+func ReadAPIRemoteToken(remote APIRemote, getenv func(string) string) (string, error) {
+	return apiremote.ReadAPIRemoteToken(remote, getenv)
+}
+
+func WriteAPIRemoteTokenFile(name string, token []byte) (string, error) {
+	return apiremote.WriteAPIRemoteTokenFile(name, token)
+}
+
+func GlobalServerListeners(flags ServerListenerFlags) ([]ServerListener, error) {
+	return listeners.GlobalServerListeners(flags)
+}
+
+func GlobalServerListenersWithSources(flags ServerListenerFlags) ([]ServerListener, []map[string]string, error) {
+	return listeners.GlobalServerListenersWithSources(flags)
+}
+
+func init() {
+	apiremote.SetGlobalConfigWriterFactory(func() (apiremote.GlobalConfigWriter, error) {
+		return Load("", "", false)
+	})
+}
