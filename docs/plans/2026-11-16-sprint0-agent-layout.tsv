@@ -136,7 +136,7 @@ batch_scope_recovery.go	coord
 batch_profile.go	batchinst
 batch_ingress.go	batchinst
 batch_ingress_doc.go	batchinst
-batch_install_ingress.go	coord
+batch_install_ingress.go	batchinst
 batch_rehome_coord_runtime.go	batchinst
 batch_rehome_runtime.go	batchinst
 batch_install_adapters.go	batchinst

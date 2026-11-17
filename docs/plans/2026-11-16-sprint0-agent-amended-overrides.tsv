@@ -429,13 +429,16 @@ agentic_fetch_policy.go	privateFetchIngressKey	batchassemble	fetch_ingress_adapt
 agentic_fetch_policy.go	withPrivateFetchIngress	batchassemble	fetch_ingress_adapter.go	
 agentic_fetch_policy.go	privateFetchIngressFor	batchassemble	fetch_ingress_adapter.go	
 agentic_fetch_policy.go	armPrivateFetchIngress	batchassemble	fetch_ingress_adapter.go	
-agentic_fetch_policy.go	privateFetchIngressTool	batchinst	ingress_impl.go	
+agentic_fetch_policy.go	privateFetchIngressTool	toolwrap	toolwrap/wrappers.go	
 # --- decided seams round 1: port_owner (6-column) rows ---
 coordinator.go	coordinator	coord	coordinator_core.go		agentrun
 agent.go	sessionAgent	agentrun	agent_core.go		mailbox
 mailbox.go	mailbox	mailbox	mailbox_core.go		turnstep
 batch_credentials_escrow.go	batchCredentialLeaf	batchinst	escrow_seam.go		toolwrap
 batch_child_tool_scope.go	pctCapturedAgentTool	batchinst	tool_seam.go		toolwrap
+batch_child_tool_scope.go	pctCapturedAgentTool.pctRegister	batchinst	tool_seam.go	
+batch_child_tool_scope.go	pctCapturedAgentTool.pctRemove	batchinst	tool_seam.go	
+batch_child_tool_scope.go	pctCapturedAgentTool.pctClaim	batchinst	tool_seam.go	
 turn_progress_guard.go	progressGuardTool	turnstep	progress_guard_seam.go		toolwrap
 # --- decided seams round 2: wildcard (whole-file retarget; explicit rows win) ---
 agentic_fetch_policy.go	*	batchinst	ingress_impl.go	
@@ -443,7 +446,7 @@ agentic_fetch_policy.go	*	batchinst	ingress_impl.go
 coordinator_reaction_source.go	DrainState	batchcontract	reaction_scope.go	
 credentials.go	callCredentialsContextKey	batchcontract	credentials.go	
 delegation_depth.go	persistedAgentDepthContextKey	batchcontract	delegation_contract.go	
-heartbeat_ctx.go	hbSourceSessionOverride	batchcontract	heartbeat_contract.go		callbeat
+heartbeat_ctx.go	hbSourceSessionOverride	batchcontract	heartbeat_contract.go	
 heartbeat_ctx.go	hbSourceSlotLive	batchcontract	heartbeat_contract.go	
 # --- round 2: modelkit-leaf decls down from coord ---
 coordinator_providers.go	configureAnthropicAuthHeaders	modelkit	providers_leaf.go	
@@ -505,7 +508,7 @@ step_progress.go	progressGuardMetadata	turnstep	step_progress.go
 step_progress.go	isWaitOnlyCall	turnstep	step_progress.go	
 # --- round 2: toolwrap/clibridge ---
 batch_install_tools.go	batchIngressTool	toolwrap	wrappers.go	
-cli_tool_bridge.go	pinnedInvoke	batchcontract	invoke_contract.go	
+cli_tool_bridge.go	pinnedInvoke	batchcontract	batchcontract/cli_contract.go	
 # --- round 2: sessionprompt seed ---
 supervision.go	noticeKindSupervision	sessionprompt	notice_kinds.go	
 # --- round 2: batchflow seeds down from coord ---
@@ -513,12 +516,12 @@ coordinator_agent_inject_batch.go	batchQuestionMarkerDepth	batchinst	marker_glue
 # --- round 2: batchinst seeds down from agentrun ---
 agent_notice_pull.go	buildBatchNoticeMessageParams	batchinst	notice_glue.go	
 agent_turn_stream.go	toolReceiptContextKey	agentrun	receipt_glue.go		batchinst
-agent_turn_stream.go	toolResultReceiptSink	agentrun	receipt_glue.go		batchinst
-agent_turn_stream.go	toolResultReceipt	agentrun	receipt_glue.go	
+agent_turn_stream.go	toolResultReceiptSink	batchinst	receipt.go		batchassemble
+agent_turn_stream.go	toolResultReceipt	batchinst	receipt.go		batchassemble
 # --- round 2: colocation fixes -> owner = receiver type owner ---
 finalization_root_bind.go	finalizationWiring.bindRootFinalization	agentrun	finalization_methods.go	
-agent_turn_stream.go	toolResultReceiptSink.add	agentrun	receipt_glue.go		batchassemble
-agent_turn_stream.go	toolResultReceiptSink.take	agentrun	receipt_glue.go	
+agent_turn_stream.go	toolResultReceiptSink.add	batchinst	receipt.go		batchassemble
+agent_turn_stream.go	toolResultReceiptSink.take	batchinst	receipt.go	
 # --- round 3: batchinst-held question/cancel decls ---
 batch_held_question_route.go	BatchHeldQuestionRoute	batchinst	held_glue.go	
 batch_held_question_route.go	batchActionableHeldQuestionRoutes	batchinst	held_glue.go	
@@ -529,8 +532,8 @@ batch_install_tools.go	batchIngressTool.ensurePinned	toolwrap	wrappers.go
 batch_install_tools.go	batchIngressTool.holdConstruction	toolwrap	wrappers.go	
 batch_install_tools.go	batchIngressTool.holdPinned	toolwrap	wrappers.go	
 batch_install_tools.go	batchIngressTool.Run	toolwrap	wrappers.go	
-agentic_fetch_policy.go	privateFetchIngressTool.restrictedRunWrapped	batchinst	ingress_impl.go	
-agentic_fetch_policy.go	privateFetchIngressTool.Run	batchinst	ingress_impl.go	
+agentic_fetch_policy.go	privateFetchIngressTool.restrictedRunWrapped	toolwrap	toolwrap/wrappers.go	
+agentic_fetch_policy.go	privateFetchIngressTool.Run	toolwrap	toolwrap/wrappers.go	
 # --- round 3: agentrun seeds from coord glue files ---
 coordinator_drain_policy.go	unreadablePolicyInput	agentrun	drain_methods.go	
 coordinator_drain_policy.go	drainDeferred	agentrun	drain_methods.go	
@@ -574,27 +577,30 @@ batch_cancel.go	batchCancelControlTimeout	batchinst	cancel_glue.go
 coordinator_providers.go	anthropicHeaderValue	modelkit	providers_leaf.go	
 coordinator_providers.go	setAnthropicHeader	modelkit	providers_leaf.go	
 coordinator_providers_network.go	redactedNetworkError	modelkit	providers_leaf.go	
+coordinator_providers_network.go	redactedNetworkError.Error	modelkit	providers_leaf.go	
+coordinator_providers_network.go	redactedNetworkError.Unwrap	modelkit	providers_leaf.go	
 batch_cutover_facts_node.go	batchNodeStateLive	batchinst	facts_glue.go	
 batch_cutover_facts_node.go	batchQuestionMarkerChild	batchinst	facts_glue.go	
 batch_cutover_facts_node.go	errBatchFactsUnavailable	batchcontract	cutover_contract.go	
 batch_cutover_facts_node.go	parseBatchQuestionMarker	batchinst	facts_glue.go	
 # --- round 5 ---
-batch_install_ingress.go	invokeBatchWithCallContext	batchinst	ingress_glue.go	
+batch_install_ingress.go	invokeBatchWithCallContext	batchcontract	batchcontract/ports.go	
+batch_glue.go	SetCoordinatorSessionNoticeStore	coord	batch_glue.go	
 agent_ownership.go	withActivityNotify	provauth	notify.go	
 agent_ownership.go	withWatchdogBump	provauth	notify.go	
 agent_ownership.go	*	agentrun	ownership_glue.go	
 batch_scope_recovery.go	*	agentrun	recovery_scope_glue.go	
-reaction_write_cutover.go	batchCutoverReactionStore	drainctl	drain_glue.go	
+reaction_write_cutover.go	batchCutoverReactionStore	coord	drain_glue.go	
 inline_window.go	inlineWindow	batchinst	inline_glue.go	
-inline_window.go	inlineWindowDisabledFor	batchinst	inline_glue.go	
-batch_cutover_facts_node.go	coordinatorBatchCutoverFactsBindings	batchcontract	cutover_contract.go
+inline_window.go	inlineWindowDisabledFor	coord	coord/inline_glue.go	
+batch_cutover_facts.go	coordinatorBatchCutoverFactsBindings	batchcontract	cutover_contract.go	
 agentic_fetch_tool.go	*	toolwrap	wrappers.go	
 disk_provider_durable.go	ErrDiskProviderUnavailable	batchcontract	durable_contract.go	
 disk_provider_capability.go	*	batchcontract	capability_contract.go	
 disk_provider_binding.go	*	batchcontract	capability_contract.go	
 # --- round 4: ingress contract -> batchcontract ---
-batch_install_ingress.go	BatchWorkIngress	batchinst	ingress_glue.go	
-batch_install_ingress.go	batchCoordinatorBinding	batchinst	ingress_glue.go	
+batch_install_ingress.go	BatchWorkIngress	batchcontract	batchcontract/ports.go	
+batch_install_ingress.go	batchCoordinatorBinding	coord	coord/batch_glue.go		toolwrap
 batch_install_ingress.go	batchWorkIngress	batchinst	ingress_glue.go	
 batch_install_ingress.go	BatchAgentDeps	batchinst	ingress_glue.go	
 batch_install_ingress.go	BatchLeafRegistry	batchinst	ingress_glue.go	
@@ -605,4 +611,47 @@ batch_install_ingress.go	NewBatchWorkIngress	batchinst	ingress_glue.go
 batch_install_ingress.go	NewBatchWorkIngressWithDiskBindings	batchinst	ingress_glue.go	
 batch_install_ingress.go	errBatchWorkIngressDeps	batchinst	ingress_glue.go	
 # --- round 4: cutover facts contract -> batchcontract ---
+batch_cutover_facts.go	unknownBatchCutoverFacts.SelectedDebtExists	agentrun	agentrun/batch_facts_glue.go	
+batch_cutover_facts.go	unknownBatchCutoverFacts.CaptureVisibleDebt	agentrun	agentrun/batch_facts_glue.go	
+batch_cutover_facts.go	unknownBatchCutoverFacts.PendingInclusiveDebt	agentrun	agentrun/batch_facts_glue.go	
+batch_cutover_facts.go	unknownBatchCutoverFacts.PendingInclusiveDebtSummary	agentrun	agentrun/batch_facts_glue.go	
+batch_cutover_facts.go	unknownBatchCutoverFacts.ReactedFailedTexts	agentrun	agentrun/batch_facts_glue.go	
+batch_cutover_facts.go	unknownBatchCutoverFacts.LiveWorkSummary	agentrun	agentrun/batch_facts_glue.go	
+batch_cutover_facts.go	unknownBatchCutoverFacts.LiveScopeForOwners	agentrun	agentrun/batch_facts_glue.go	
+batch_cutover_facts.go	unknownBatchCutoverFacts.LiveDelegationChildOf	agentrun	agentrun/batch_facts_glue.go	
+batch_cutover_facts.go	unknownBatchCutoverFacts.DelegationChildEver	agentrun	agentrun/batch_facts_glue.go	
+batch_cutover_facts.go	unknownBatchCutoverFacts.LiveNodes	agentrun	agentrun/batch_facts_glue.go	
+batch_cutover_facts.go	unknownBatchCutoverFacts.LiveDelegationNodes	agentrun	agentrun/batch_facts_glue.go	
+batch_cutover_facts.go	unknownBatchCutoverFacts.AttemptRows	agentrun	agentrun/batch_facts_glue.go	
+batch_cutover_facts.go	unknownBatchCutoverFacts.IncrementWakeAttempts	agentrun	agentrun/batch_facts_glue.go	
+batch_cutover_facts.go	unknownBatchCutoverFacts.SettleReactedFailedWithMarker	agentrun	agentrun/batch_facts_glue.go	
+batch_cutover_facts.go	unknownBatchCutoverFacts.DebtToolCallIDs	agentrun	agentrun/batch_facts_glue.go	
+batch_cutover_facts.go	unknownBatchCutoverFacts.PullBatchNotices	agentrun	agentrun/batch_facts_glue.go	
+batch_cutover_facts.go	unknownBatchCutoverFacts.PullPendingSessionNotices	agentrun	agentrun/batch_facts_glue.go	
+batch_cutover_facts.go	unknownBatchCutoverFacts.HeldQuestions	agentrun	agentrun/batch_facts_glue.go	
+batch_cutover_facts.go	unknownBatchCutoverFacts.LiveHeldQuestions	agentrun	agentrun/batch_facts_glue.go	
 batch_cutover_facts.go	*	batchcontract	cutover_contract.go	
+# --- decided: SCC cuts r1 ---
+batch_cutover_facts_node.go	nodeBatchCutoverFacts	coord	cutover_node.go	
+batch_cutover_facts_node.go	nodeBatchCutoverFacts	coord	cutover_node.go		agentrun
+batch_cutover_facts_node.go	nodeBatchCutoverFacts	coord	cutover_node.go		drainctl
+cli_tool_bridge.go	newCLIToolBridgeForContext	batchinst	batchinst/cli_bridge_ctor.go	
+batch_rehome_drain_pace.go	drainPace	drainctl	drainctl/drain_pacing.go		batchinst
+batch_rehome_drain_pace.go	paceFreeNoTurn	drainctl	drainctl/drain_pacing.go	
+batch_rehome_drain_pace.go	pacePaidUnreacted	drainctl	drainctl/drain_pacing.go	
+# --- decided: SCC cuts r2 ---
+cli_tool_bridge.go	cliToolBridge	batchinst	batchinst/cli_tool_bridge.go	
+batch_install_ingress.go	BindCoordinatorBatchControls	batchassemble	batchassemble/install_wiring.go	
+batch_exec.go	batchLeafEnv	batchcontract	batchcontract/ports.go	
+batch_exec_agent.go	callIngress	batchcontract	batchcontract/ports.go	
+batch_install_tools.go	newBatchWorkToolBuildForContext	coord	coord/batch_wiring.go	
+batch_child_tool_scope.go	pctCapturedAgentTool.pctRegister	batchinst	tool_seam.go		toolwrap
+batch_child_tool_scope.go	pctCapturedAgentTool.pctRemove	batchinst	tool_seam.go		toolwrap
+batch_child_tool_scope.go	pctCapturedAgentTool.pctClaim	batchinst	tool_seam.go		toolwrap
+# --- receiver colocation + residual cuts ---
+batch_exec.go	batchLeafEnv.resolveLeaf	batchcontract	batchcontract/ports.go	
+batch_install_ingress.go	batchCoordinatorBinding.pin	coord	coord/batch_glue.go	
+cli_tool_bridge.go	cliToolBridge.Tools	batchinst	batchinst/cli_tool_bridge.go	
+cli_tool_bridge.go	cliToolBridge.Call	batchinst	batchinst/cli_tool_bridge.go	
+batch_install_ingress.go	batchCoordinatorBinding	coord	coord/batch_glue.go		batchinst
+batch_install_ingress.go	coordinatorBatchBindingFor	coord	coord/batch_glue.go	
