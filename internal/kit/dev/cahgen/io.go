@@ -116,15 +116,37 @@ func ValidateManifest(source []byte, hasSpecs bool) error {
 }
 
 // ValidateModule rejects import/require before evaluation, ignoring quoted prose.
-// Templates and escaped identifiers are conservatively rejected.
+// Template literals are text except for their ${...} substitutions, which are
+// scanned as code; escaped identifiers are conservatively rejected.
 func ValidateModule(source []byte) error {
 	if len(source) > MaxFile {
 		return fmt.Errorf("manifest exceeds bound")
 	}
-	for i := 0; i < len(source); {
+	_, err := scanModule(source, 0, false)
+	return err
+}
+
+// scanModule scans code from i. In nested mode it stops after the } that closes
+// the enclosing template substitution and returns the index past it.
+func scanModule(source []byte, i int, nested bool) (int, error) {
+	depth := 0
+	for i < len(source) {
 		c := source[i]
 		if c == '`' {
-			return fmt.Errorf("manifest template literals unsupported")
+			var err error
+			if i, err = scanTemplate(source, i+1); err != nil {
+				return 0, err
+			}
+			continue
+		}
+		if nested && c == '{' {
+			depth++
+		}
+		if nested && c == '}' {
+			if depth == 0 {
+				return i + 1, nil
+			}
+			depth--
 		}
 		if c == '/' && i+1 < len(source) && source[i+1] == '/' {
 			i += 2
@@ -139,7 +161,7 @@ func ValidateModule(source []byte) error {
 				i++
 			}
 			if i+1 >= len(source) {
-				return fmt.Errorf("unterminated comment")
+				return 0, fmt.Errorf("unterminated comment")
 			}
 			i += 2
 			continue
@@ -161,12 +183,12 @@ func ValidateModule(source []byte) error {
 				i++
 			}
 			if !closed {
-				return fmt.Errorf("unterminated literal")
+				return 0, fmt.Errorf("unterminated literal")
 			}
 			continue
 		}
 		if c == '\\' {
-			return fmt.Errorf("escaped identifier unsupported")
+			return 0, fmt.Errorf("escaped identifier unsupported")
 		}
 		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_' || c == '$' {
 			start := i
@@ -180,13 +202,37 @@ func ValidateModule(source []byte) error {
 			}
 			word := string(source[start:i])
 			if word == "import" || word == "require" {
-				return fmt.Errorf("manifest contains import/require")
+				return 0, fmt.Errorf("manifest contains import/require")
 			}
 			continue
 		}
 		i++
 	}
-	return nil
+	if nested {
+		return 0, fmt.Errorf("unterminated template substitution")
+	}
+	return i, nil
+}
+
+// scanTemplate scans a template literal body from i (past the opening backtick)
+// and returns the index past the closing backtick.
+func scanTemplate(source []byte, i int) (int, error) {
+	for i < len(source) {
+		switch {
+		case source[i] == '\\':
+			i += 2
+		case source[i] == '`':
+			return i + 1, nil
+		case source[i] == '$' && i+1 < len(source) && source[i+1] == '{':
+			var err error
+			if i, err = scanModule(source, i+2, true); err != nil {
+				return 0, err
+			}
+		default:
+			i++
+		}
+	}
+	return 0, fmt.Errorf("unterminated template literal")
 }
 
 // Runner is injectable: tests never execute npm, node, or provider CLIs.
