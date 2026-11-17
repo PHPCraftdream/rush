@@ -433,11 +433,52 @@ func decideAccount(f TurnFacts) Verdict {
 // at a completion's arrival (pruneBGShellOverCap, under bgArrival). An
 // unreadable input is an error: the caller fails closed.
 func (c *coordinator) readTurnFacts(ctx context.Context, sessionID string, site LaunchSite, runErrs ...error) (TurnFacts, error) {
-	f := TurnFacts{Now: c.arb.now(), Site: site, Snapshot: session.BatchDebtSnapshot{}}
+	return newDrainComponent(c).readTurnFacts(ctx, sessionID, site, runErrs...)
+}
+
+func (w *drainComponent) readTurnFacts(ctx context.Context, sessionID string, site LaunchSite, runErrs ...error) (TurnFacts, error) {
+	f := TurnFacts{Now: w.host.arbiter().now(), Site: site, Snapshot: session.BatchDebtSnapshot{}}
 	for _, err := range runErrs {
 		if errors.Is(err, session.ErrForeignWorkspace) {
 			f.Session.ForeignWorkspace = true
 		}
 	}
-	return c.readTurnFactsBatch(ctx, coordinatorBatchCutoverFacts(c), sessionID, f)
+	return w.host.readTurnFactsBatch(ctx, w.host.batchCutoverFacts(), sessionID, f)
 }
+
+// Ненулевой размер гарантирует отдельную identity для каждой установки.
+type awaitTasksEra struct{ marker byte }
+
+func (a *arbiter) beginAwait(sid string, all bool) (*awaitTasksEra, string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s := a.stateLocked(sid)
+	if s.suspended {
+		return nil, ""
+	}
+	old := s.maxWaitWakeID
+	era := &awaitTasksEra{}
+	s.awaitEra, s.sleepAll, s.maxWaitWakeID = era, all, ""
+	return era, old
+}
+
+func (a *arbiter) installAwait(sid string, era *awaitTasksEra, id string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s := a.bySession[sid]
+	if s == nil || era == nil || s.awaitEra != era || s.suspended {
+		return false
+	}
+	s.maxWaitWakeID = id
+	return true
+}
+
+func (a *arbiter) abortAwait(sid string, era *awaitTasksEra) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if s := a.bySession[sid]; s != nil && s.awaitEra == era {
+		s.awaitEra, s.sleepAll, s.maxWaitWakeID = nil, false, ""
+	}
+}
+
+var errAwaitSuperseded = errors.New("await_tasks was stopped or superseded; recheck current work before waiting again")
