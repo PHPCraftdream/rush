@@ -165,7 +165,21 @@ func TestServeWSSubprotocolOnlyOnWSPath(t *testing.T) {
 
 func TestServeWSProductionOriginAndUIHelloIntegration(t *testing.T) {
 	allowedOrigin := "http://allowed.example:8080"
-	endpoint, token, _, _ := newServeWSFixtureWithOrigins(t, 2, []string{allowedOrigin}, nil)
+	// The fixture allows two connections per token and every dial, rejected or
+	// not, holds one of those slots until its server-side handler returns, which
+	// happens after the client has already read the response. Back-to-back
+	// dials could therefore find both slots taken and be answered 429 instead of
+	// the origin verdict under test: wait for each dial's slot to be released.
+	released := make(chan struct{}, 8)
+	waitReleased := func(t *testing.T) {
+		t.Helper()
+		select {
+		case <-released:
+		case <-time.After(3 * time.Second):
+			t.Fatal("server did not release the connection slot of the previous dial")
+		}
+	}
+	endpoint, token, _, _ := newServeWSFixtureWithOrigins(t, 2, []string{allowedOrigin}, released)
 	originEndpoint, originToken := endpoint, token
 	originCases := []struct {
 		name   string
@@ -188,11 +202,13 @@ func TestServeWSProductionOriginAndUIHelloIntegration(t *testing.T) {
 					t.Fatalf("allowed origin rejected: %v (%v)", err, response)
 				}
 				conn.Close()
+				waitReleased(t)
 				return
 			}
 			if err == nil || conn != nil || response == nil || response.StatusCode != tc.status {
 				t.Fatalf("origin %q response=%v err=%v, want %d", tc.origin, response, err, tc.status)
 			}
+			waitReleased(t)
 		})
 	}
 	d := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
@@ -201,6 +217,7 @@ func TestServeWSProductionOriginAndUIHelloIntegration(t *testing.T) {
 	if err == nil || c != nil || response == nil || response.StatusCode != http.StatusForbidden {
 		t.Fatalf("unconfigured browser origin accepted: conn=%v response=%v err=%v", c, response, err)
 	}
+	waitReleased(t)
 
 	ui := New(nil, "127.0.0.1:0", nil)
 	uiEndpoint := startPolicyServer(t, ui)
