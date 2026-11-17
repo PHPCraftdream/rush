@@ -1,4 +1,4 @@
-package cmd
+package sessaudit
 
 // The suspicion rules of `rush sessions audit` (phase 2): one fixture per
 // rule, driven exactly at the threshold and one occurrence short of it, plus

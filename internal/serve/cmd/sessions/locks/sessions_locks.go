@@ -1,4 +1,4 @@
-package cmd
+package sesslocks
 
 // The `sessions locks` subcommand: list session lock files with heartbeat
 // pulse classification, plus the --prune path guarded by the
@@ -13,10 +13,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
+	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -81,7 +85,29 @@ rush sessions locks --all
 # Stream to jq for scripting
 rush sessions locks --json | jq '.session_id'
   `,
-	RunE: sessionsLocksCmdRun,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return sessionsLocksCmdRun(cmd, args, cmdkit.SetupApp)
+	},
+}
+
+// sessionsLocksFlagsOnce registers the locks flags exactly once (moved from
+// the root sessions.go once-block).
+var sessionsLocksFlagsOnce sync.Once
+
+// NewSessionsLocksCmd returns a fresh sessions locks command with its setup
+// dependency bound to this command instance.
+func NewSessionsLocksCmd(setup func(*cobra.Command) (*app.App, error)) *cobra.Command {
+	sessionsLocksFlagsOnce.Do(func() {
+		sessionsLocksCmd.Flags().Bool("json", false, "Emit NDJSON (one JSON object per line)")
+		sessionsLocksCmd.Flags().Bool("stale-only", false, "Filter to locks older than 10 minutes or for dead processes")
+		sessionsLocksCmd.Flags().Bool("prune", false, "Remove lock files proven (via a real OS-level lock probe) to have no live holder. Off by default: `sessions locks` is read-only unless this is set.")
+		sessionsLocksCmd.Flags().Bool("all", false, "Include idle lock files (no holder PID recorded, offline pulse, no live-driver evidence) that the default view collapses into a one-line summary")
+	})
+	cmd := cmdkit.DeepFreshCmd(sessionsLocksCmd)
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		return sessionsLocksCmdRun(cmd, args, setup)
+	}
+	return cmd
 }
 
 // lockPulseStatus classifies a lock file by its heartbeat mtime.
@@ -244,13 +270,13 @@ func lockIsIdle(pid int, stale, betweenTurns, stalled bool) bool {
 	return pid <= 0 && stale && !betweenTurns && !stalled
 }
 
-func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
+func sessionsLocksCmdRun(cmd *cobra.Command, args []string, setup func(*cobra.Command) (*app.App, error)) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
 	staleOnly, _ := cmd.Flags().GetBool("stale-only")
 	prune, _ := cmd.Flags().GetBool("prune")
 	showAll, _ := cmd.Flags().GetBool("all")
 
-	a, err := setupApp(cmd)
+	a, err := setup(cmd)
 	if err != nil {
 		return err
 	}
@@ -302,7 +328,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		// retry); Pulse is "between-turns", Stale false, DriverPID the loop's.
 		BetweenTurns bool `json:"between_turns,omitempty"`
 		DriverPID    int  `json:"driver_pid,omitempty"`
-		// Stalled: the heartbeat mtime is past stallPulseThreshold while a
+		// Stalled: the heartbeat mtime is past sesskit.StallPulseThreshold while a
 		// holder PID is still recorded (sessions_stall.go).
 		Stalled bool `json:"stalled,omitempty"`
 	}
@@ -336,7 +362,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
-	callTreeActivities := computeCallTreeActivityBatch(cmd.Context(), a, activityIDs)
+	callTreeActivities := sesskit.ComputeCallTreeActivityBatch(cmd.Context(), a, activityIDs)
 	liveVerdict := func(stem string) (session.ActivityVerdict, bool) {
 		if actErr != nil {
 			return session.ActivityVerdict{}, false
@@ -345,7 +371,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		found := false
 		for _, id := range stemIDs[stem] {
 			v := acts.ByID[id].Verdict
-			if kindIsLive(v.Kind) && (!found || v.PID > live.PID) {
+			if sesskit.KindIsLive(v.Kind) && (!found || v.PID > live.PID) {
 				live, found = v, true
 			}
 		}
@@ -499,7 +525,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 				pulse = lockPulseStatus(pulseSec)
 				stale = pulse == "offline"
 				if act.SubAgentActive {
-					subAgentLabel = short(session.HashID(act.DeepestSessionID))
+					subAgentLabel = cliout.Short(session.HashID(act.DeepestSessionID))
 				}
 			}
 		}
@@ -530,7 +556,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		}
 
 		// Phase 0 stall marker (sessions_stall.go): stale heartbeat, live PID.
-		stalled := !betweenTurns && pulseSec >= int64(stallPulseThreshold/time.Second) && pid > 0
+		stalled := !betweenTurns && pulseSec >= int64(sesskit.StallPulseThreshold/time.Second) && pid > 0
 
 		// Default view: collapse settled no-holder leftovers into the summary
 		// line (Part of the FIX-LOCKS change). An explicit session argument
@@ -609,7 +635,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 	for _, lock := range locks {
 		budget := "∞"
 		if lock.BudgetSec > 0 {
-			budget = formatDurationShort(time.Duration(lock.BudgetSec) * time.Second)
+			budget = sesskit.FormatDurationShort(time.Duration(lock.BudgetSec) * time.Second)
 		}
 		subAgent := "-"
 		if lock.SubAgent != "" {
@@ -625,15 +651,15 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 			}
 		}
 		if lock.Stalled {
-			pulseCell = "STALLED " + formatDurationShort(time.Duration(lock.PulseSec)*time.Second)
+			pulseCell = "STALLED " + sesskit.FormatDurationShort(time.Duration(lock.PulseSec)*time.Second)
 		}
 		fmt.Fprintf(
 			tw, "%s\t%d\t%s\t%ds ago\t%s\t%s\t%s\n",
-			truncate(lock.SessionID, 28),
+			cliout.Truncate(lock.SessionID, 28),
 			pidCell,
 			pulseCell,
 			lock.PulseSec,
-			formatDurationShort(time.Duration(lock.DurationSec)*time.Second),
+			sesskit.FormatDurationShort(time.Duration(lock.DurationSec)*time.Second),
 			budget,
 			subAgent,
 		)
@@ -695,7 +721,7 @@ func stemIDsForLocks(ctx context.Context, a *app.App) []string {
 // session was deleted can still be inspected; an ambiguous prefix is an
 // error.
 func resolveLocksFilterStem(ctx context.Context, a *app.App, arg string) (string, error) {
-	sess, err := resolveSessionID(ctx, a.Sessions, arg)
+	sess, err := cmdkit.ResolveSessionID(ctx, a.Sessions, arg)
 	switch {
 	case err == nil:
 		return session.SessionLockStem(sess.ID), nil
@@ -708,11 +734,11 @@ func resolveLocksFilterStem(ctx context.Context, a *app.App, arg string) (string
 
 // lockCallTreeActivityLookup returns the freshest activity for a lock's real
 // session IDs, or falls back to its stem when no ID is mapped.
-func lockCallTreeActivityLookup(activities map[string]callTreeActivity, ids []string, stem string, baselineUnix int64) (callTreeActivity, bool) {
+func lockCallTreeActivityLookup(activities map[string]sesskit.CallTreeActivity, ids []string, stem string, baselineUnix int64) (sesskit.CallTreeActivity, bool) {
 	if len(ids) == 0 {
 		ids = []string{stem}
 	}
-	var best callTreeActivity
+	var best sesskit.CallTreeActivity
 	found := false
 	for _, id := range ids {
 		act, ok := activities[id]

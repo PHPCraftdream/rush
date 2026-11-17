@@ -1,6 +1,6 @@
 //go:build !((darwin && (amd64 || arm64)) || (freebsd && (amd64 || arm64)) || (linux && (386 || amd64 || arm || arm64 || loong64 || ppc64le || riscv64 || s390x)) || (windows && (386 || amd64 || arm64)))
 
-package cmd
+package sessaudit
 
 // Read-only SQLite handle for `rush sessions audit` on platforms whose
 // internal/db build uses the ncruces driver. The build tag is the exact

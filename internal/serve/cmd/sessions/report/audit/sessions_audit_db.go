@@ -1,4 +1,4 @@
-package cmd
+package sessaudit
 
 // Everything the audit does to one database: open it strictly read-only,
 // verify its schema is a Rush schema, measure DB health, pick the sessions

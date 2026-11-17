@@ -1,4 +1,4 @@
-package cmd
+package sessaudit
 
 // Fixture and read-only guarantees of `rush sessions audit`.
 //
@@ -224,14 +224,14 @@ func runAuditCmd(t *testing.T, args ...string) (stdout, stderr string, runErr er
 	root := &cobra.Command{Use: "rush"}
 	root.PersistentFlags().String("data-dir", "", "")
 	root.PersistentFlags().String("cwd", "", "")
-	root.AddCommand(NewSessionsCmd())
+	root.AddCommand(NewSessionsAuditCmd())
 	t.Helper()
 
 	var out, errOut bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&errOut)
 	resetAuditCmdFlags(t)
-	root.SetArgs(append([]string{"sessions", "audit"}, args...))
+	root.SetArgs(append([]string{"audit"}, args...))
 	// The command tree's flags are shared; restore their defaults so no later
 	// test inherits this invocation's values.
 	t.Cleanup(func() {

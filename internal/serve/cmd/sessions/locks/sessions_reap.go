@@ -1,4 +1,4 @@
-package cmd
+package sesslocks
 
 import (
 	"errors"
@@ -7,9 +7,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
 
+	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -58,7 +63,30 @@ rush sessions reap --dry-run
 rush sessions reap --all      # legacy no-op
 rush sessions reap --dry-run --idle-older-than 30d
   `,
-	RunE: sessionsReapCmdRun,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return sessionsReapCmdRun(cmd, args, cmdkit.SetupApp)
+	},
+}
+
+// sessionsReapFlagsOnce registers the reap flags exactly once (moved from
+// the root sessions.go once-block).
+var sessionsReapFlagsOnce sync.Once
+
+// NewSessionsReapCmd returns a fresh sessions reap command. setup is part of
+// the uniform factory signature; the reap path is purely filesystem-based and
+// does not open an app today (kept for future symmetry with the other
+// factories). The private template's default RunE uses cmdkit.SetupApp.
+func NewSessionsReapCmd(setup func(*cobra.Command) (*app.App, error)) *cobra.Command {
+	sessionsReapFlagsOnce.Do(func() {
+		sessionsReapCmd.Flags().Bool("dry-run", false, "Print what would be reclaimed without removing anything")
+		sessionsReapCmd.Flags().Bool("all", false, "Legacy no-op: removal is now decided solely by the real OS-lock probe, so a lock that records a PID is reaped iff proven uncontended regardless of this flag")
+		sessionsReapCmd.Flags().String("idle-older-than", "168h", "Age threshold for reclaiming idle (PID-less) lock files, e.g. 168h, 7d, 4w; \"0\" disables idle reclaim. Default 168h (7 days)")
+	})
+	cmd := cmdkit.DeepFreshCmd(sessionsReapCmd)
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		return sessionsReapCmdRun(cmd, args, setup)
+	}
+	return cmd
 }
 
 // reapRemoveRetryBudget bounds how long a whole sweep may spend retrying
@@ -108,7 +136,7 @@ type reapItem struct {
 	Baseline os.FileInfo
 }
 
-func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
+func sessionsReapCmdRun(cmd *cobra.Command, args []string, setup func(*cobra.Command) (*app.App, error)) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 
 	idleRaw, _ := cmd.Flags().GetString("idle-older-than")
@@ -121,7 +149,7 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 		idleOlderThan = d
 	}
 
-	cwd, err := ResolveCwd(cmd)
+	cwd, err := cmdkit.ResolveCwd(cmd)
 	if err != nil {
 		return err
 	}
@@ -372,20 +400,20 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 			}
 			if it.Idle {
 				fmt.Fprintf(os.Stderr, "%s idle lock %s (no recorded PID, OS lock free, idle %s, over --idle-older-than %s)\n",
-					action, filepath.Base(it.Path), formatDurationShort(time.Duration(it.AgeSec)*time.Second), idleOlderThan)
+					action, filepath.Base(it.Path), sesskit.FormatDurationShort(time.Duration(it.AgeSec)*time.Second), idleOlderThan)
 			} else {
 				fmt.Fprintf(os.Stderr, "%s orphan lock %s (holder provably dead via OS lock, age %ds)\n",
 					action, filepath.Base(it.Path), it.AgeSec)
 			}
 		case "removed":
 			if it.Idle {
-				fmt.Fprintf(os.Stderr, "removed idle lock %s (no recorded PID, OS lock free, idle %s)\n", filepath.Base(it.Path), formatDurationShort(time.Duration(it.AgeSec)*time.Second))
+				fmt.Fprintf(os.Stderr, "removed idle lock %s (no recorded PID, OS lock free, idle %s)\n", filepath.Base(it.Path), sesskit.FormatDurationShort(time.Duration(it.AgeSec)*time.Second))
 			} else {
 				fmt.Fprintf(os.Stderr, "removed orphan lock %s (holder provably dead via OS lock, age %ds)\n", filepath.Base(it.Path), it.AgeSec)
 			}
 		case "remove-failed":
 			if it.Idle {
-				fmt.Fprintf(os.Stderr, "failed to remove (%v) idle lock %s (no recorded PID, OS lock free, idle %s, over --idle-older-than %s)\n", it.Err, filepath.Base(it.Path), formatDurationShort(time.Duration(it.AgeSec)*time.Second), idleOlderThan)
+				fmt.Fprintf(os.Stderr, "failed to remove (%v) idle lock %s (no recorded PID, OS lock free, idle %s, over --idle-older-than %s)\n", it.Err, filepath.Base(it.Path), sesskit.FormatDurationShort(time.Duration(it.AgeSec)*time.Second), idleOlderThan)
 			} else {
 				fmt.Fprintf(os.Stderr, "failed to remove (%v) orphan lock %s (holder provably dead via OS lock, age %ds)\n", it.Err, filepath.Base(it.Path), it.AgeSec)
 			}
@@ -394,7 +422,7 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 				filepath.Base(it.Path), it.AgeSec)
 		case "idle-candidate":
 			fmt.Fprintf(os.Stderr, "would remove idle lock %s (no recorded PID, not probed by dry-run, idle %s, over --idle-older-than %s)\n",
-				filepath.Base(it.Path), formatDurationShort(time.Duration(it.AgeSec)*time.Second), idleOlderThan)
+				filepath.Base(it.Path), sesskit.FormatDurationShort(time.Duration(it.AgeSec)*time.Second), idleOlderThan)
 		case "skip-replaced":
 			fmt.Fprintf(os.Stderr, "kept   lock %s (path no longer names the probed file; left untouched, age %ds)\n",
 				filepath.Base(it.Path), it.AgeSec)
@@ -472,4 +500,56 @@ func countAction(items []reapItem, action string) int {
 		}
 	}
 	return n
+}
+
+// parseAge is a local copy of the root cmd parseAge bridge body (root
+// sessions_purge.go): sesskit exposes no equivalent, so the moved reap
+// command keeps byte-identical --idle-older-than parsing.
+func parseAge(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty duration")
+	}
+
+	i := 0
+	for i < len(s) && (unicode.IsDigit(rune(s[i])) || s[i] == '.') {
+		i++
+	}
+	if i == 0 {
+		return 0, fmt.Errorf("invalid duration %q: missing number", s)
+	}
+	numStr, unit := s[:i], strings.ToLower(s[i:])
+
+	var n float64
+	if _, err := fmt.Sscanf(numStr, "%f", &n); err != nil {
+		return 0, fmt.Errorf("invalid number in %q: %w", s, err)
+	}
+
+	var mult time.Duration
+	switch unit {
+	case "s", "sec":
+		mult = time.Second
+	case "min":
+		mult = time.Minute
+	case "h":
+		mult = time.Hour
+	case "d":
+		mult = 24 * time.Hour
+	case "w":
+		mult = 7 * 24 * time.Hour
+	case "m", "mo", "mon":
+		mult = 30 * 24 * time.Hour
+	case "y":
+		mult = 365 * 24 * time.Hour
+	case "":
+		return 0, fmt.Errorf("invalid duration %q: missing unit (expected s/min/h/d/w/m/y)", s)
+	default:
+		return 0, fmt.Errorf("invalid duration %q: unknown unit %q", s, unit)
+	}
+
+	d := time.Duration(n * float64(mult))
+	if d <= 0 {
+		return 0, fmt.Errorf("duration must be positive, got %q", s)
+	}
+	return d, nil
 }

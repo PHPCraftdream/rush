@@ -1,4 +1,4 @@
-package cmd
+package sessaudit
 
 // Batch-side facts for `rush sessions audit` (R12-B part 3): the audit
 // counts live batch node rows through the
@@ -16,6 +16,8 @@ import (
 	"io"
 	"sort"
 
+	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 )
@@ -28,7 +30,7 @@ const auditBatchRuleBatchStatus = "counted from batch_nodes (batch runtime on)"
 // sessions' batch work: the per-session live facts (roots, debt, task
 // counts, conservative unknown) and the per-owner task state distribution.
 type auditBatchScan struct {
-	Facts       map[string]batchSessionFacts
+	Facts       map[string]sesskit.BatchSessionFacts
 	StateCounts map[string]map[string]int64
 }
 
@@ -41,7 +43,7 @@ type auditBatchScan struct {
 func auditScanBatchFacts(ctx context.Context, conn *sql.DB, dataDir string, ids []string) (*auditBatchScan, error) {
 	reader := session.NewBatchLiveReader(db.New(conn), dataDir)
 	queries := db.New(conn)
-	facts := reduceBatchSessionFacts(ctx, reader, session.NewBatchStore(conn), queries, ids)
+	facts := sesskit.ReduceBatchSessionFacts(ctx, reader, session.NewBatchStore(conn), queries, ids)
 	counts, err := auditBatchStateCounts(ctx, conn, ids)
 	if err != nil {
 		return nil, err
@@ -212,7 +214,7 @@ func (r *auditBatchReport) printText(w io.Writer) {
 		f := r.Sessions[id]
 		fmt.Fprintf(w,
 			"  batch session %s: roots %d (held %d), debt %d, tasks %d pending/%d active/%d done, unknown %t\n",
-			short(id), f.Roots, f.HeldRoots, f.Debt,
+			cliout.Short(id), f.Roots, f.HeldRoots, f.Debt,
 			f.Tasks.Pending, f.Tasks.Active, f.Tasks.Done, f.Unknown)
 	}
 }

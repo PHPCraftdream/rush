@@ -1,4 +1,4 @@
-package cmd
+package sessaudit
 
 // The anomaly rules themselves: auditDataDir calls auditFindings with the
 // open read-only handle, the schema it probed, the session ids it selected

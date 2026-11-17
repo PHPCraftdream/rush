@@ -1,4 +1,4 @@
-package cmd
+package sessaudit
 
 // The readers and normalizers the rules in sessions_audit_findings.go count
 // with: one query over the selected sessions' messages and the per-part

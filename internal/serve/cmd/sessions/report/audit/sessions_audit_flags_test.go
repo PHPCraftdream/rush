@@ -1,4 +1,4 @@
-package cmd
+package sessaudit
 
 // The flag surface of `rush sessions audit`: what each flag adds to the scan.
 // --worktrees is the only one that widens the scan beyond a single database,

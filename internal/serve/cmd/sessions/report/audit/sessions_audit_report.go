@@ -1,4 +1,4 @@
-package cmd
+package sessaudit
 
 // Rendering one or more scanned databases: the text output an operator
 // reads and the JSON a script reads. Everything goes through cmd's own
@@ -10,6 +10,7 @@ import (
 	"io"
 	"text/tabwriter"
 
+	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/spf13/cobra"
 )
@@ -119,7 +120,7 @@ func auditPrintText(w io.Writer, report auditDBReport) error {
 		// The full id, not the short one: an operator reads a row here to
 		// re-run the audit on that exact session.
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%d\n",
-			row.ID, truncate(row.Title, 40),
+			row.ID, cliout.Truncate(row.Title, 40),
 			auditFormatUnix(row.CreatedAt), auditFormatUnix(row.UpdatedAt), row.MessageCount)
 	}
 	if err := tw.Flush(); err != nil {
@@ -128,7 +129,7 @@ func auditPrintText(w io.Writer, report auditDBReport) error {
 
 	for _, finding := range report.Findings {
 		fmt.Fprintf(w, "%s: session %s — %s (x%d)\n",
-			finding.Rule, short(finding.SessionID), finding.Detail, finding.Count)
+			finding.Rule, cliout.Short(finding.SessionID), finding.Detail, finding.Count)
 	}
 	report.Batch.printText(w)
 	auditPrintSummary(w, report.Summary)

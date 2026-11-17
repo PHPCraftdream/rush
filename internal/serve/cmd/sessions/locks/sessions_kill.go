@@ -1,4 +1,4 @@
-package cmd
+package sesslocks
 
 import (
 	"errors"
@@ -6,10 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
+	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -119,14 +123,46 @@ rush sessions kill pr-42 --keep-lock     # just kill, leave the lock file
 rush sessions kill pr-42 --wait 10s      # wait up to 10s for the PID to die
   `,
 	Args: cobra.ExactArgs(1),
-	RunE: sessionsKillCmdRun,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// Dead path after wiring: nil providers short-circuit in the run fn.
+		return sessionsKillCmdRunWithBatchNote(cmd, args, nil, nil)
+	},
 }
+
+// sessionsKillFlagsOnce registers the kill flags exactly once (moved from
+// the root sessions.go once-block).
+var sessionsKillFlagsOnce sync.Once
+
+// NewSessionsKillCmd returns a fresh sessions kill command with its
+// dependencies bound to this command instance: the app setup function, the
+// purge provider (root purgeQueuedWorkAfterStop) and the batch-note reader
+// (root batchKillLiveNote). The private template's default RunE passes nil
+// providers; nil short-circuits only on that dead path.
+func NewSessionsKillCmd(setup func(*cobra.Command) (*app.App, error), purgeQueuedWork func(*cobra.Command, string), readBatchNote BatchKillNoteReader) *cobra.Command {
+	sessionsKillFlagsOnce.Do(func() {
+		sessionsKillCmd.Flags().Bool("keep-lock", false, "Kill the process but do not delete the lock file")
+		sessionsKillCmd.Flags().Duration("wait", 5*time.Second, "How long to wait for the PID to die and the OS to release the lock handle")
+	})
+	cmd := cmdkit.DeepFreshCmd(sessionsKillCmd)
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		return sessionsKillCmdRunWithBatchNote(cmd, args, purgeQueuedWork, readBatchNote)
+	}
+	return cmd
+}
+
+// errKillProvidersNotWired is returned only by the unwired dead path (the
+// private template's default RunE with nil providers).
+var errKillProvidersNotWired = errors.New("sessions kill: purge/batch-note providers are not wired")
 
 func sessionsKillCmdRun(cmd *cobra.Command, args []string) error {
-	return sessionsKillCmdRunWithBatchNote(cmd, args, batchKillLiveNote)
+	// Dead path after wiring: nil providers short-circuit in the run fn.
+	return sessionsKillCmdRunWithBatchNote(cmd, args, nil, nil)
 }
 
-func sessionsKillCmdRunWithBatchNote(cmd *cobra.Command, args []string, readBatchNote batchKillNoteReader) error {
+func sessionsKillCmdRunWithBatchNote(cmd *cobra.Command, args []string, purgeQueuedWork func(*cobra.Command, string), readBatchNote BatchKillNoteReader) error {
+	if purgeQueuedWork == nil || readBatchNote == nil {
+		return errKillProvidersNotWired
+	}
 	id := args[0]
 	keepLock, _ := cmd.Flags().GetBool("keep-lock")
 	wait, _ := cmd.Flags().GetDuration("wait")
@@ -134,7 +170,7 @@ func sessionsKillCmdRunWithBatchNote(cmd *cobra.Command, args []string, readBatc
 		wait = 5 * time.Second
 	}
 
-	cwd, err := ResolveCwd(cmd)
+	cwd, err := cmdkit.ResolveCwd(cmd)
 	if err != nil {
 		return err
 	}
@@ -159,7 +195,7 @@ func sessionsKillCmdRunWithBatchNote(cmd *cobra.Command, args []string, readBatc
 		return fmt.Errorf("failed to resolve data directory: %w", err)
 	}
 
-	lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(id)+".lock")
+	lockPath := filepath.Join(dataDir, "locks", "session-"+SanitiseSessionIDForFilename(id)+".lock")
 
 	// Rescue не должен бесконечно ждать чтения batch metadata.
 	batchNote := readBoundedBatchKillNote(cmd.Context(), dataDir, id, readBatchNote)
@@ -219,11 +255,11 @@ func sessionsKillCmdRunWithBatchNote(cmd *cobra.Command, args []string, readBatc
 	// claim — but the RunQueuePump of the next process on this DB WOULD
 	// pick them up and resurrect the killed session. Remove them now.
 	if kr.ConfirmedDead {
-		purgeQueuedWorkAfterStop(cmd, id)
+		purgeQueuedWork(cmd, id)
 	}
 
 	if keepLock {
-		fmt.Fprintf(os.Stderr, "lock file kept at %s (age %ds)\n", lockPath, age(info))
+		fmt.Fprintf(os.Stderr, "lock file kept at %s (age %ds)\n", lockPath, cliout.Age(info))
 		return nil
 	}
 
@@ -539,11 +575,11 @@ func probeThenKillHolder(dataDir, sessionID string, pid int, wait time.Duration)
 //   - probeThenKillHolder's caller (sessionsKillCmdRun) has released its own
 //     probe lock and must explicitly re-acquire a NEW one for the sweep
 //     (sweepChildGroupsUnderOwnLock).
-//   - acquireSessionLockForReset calls this, then goes on to acquire the
+//   - AcquireSessionLockForReset calls this, then goes on to acquire the
 //     lock itself and HOLD it across the caller's DB-reset critical
 //     section -- the sweep there must run using THAT already-held lock
 //     (sweepChildGroupsWithHeldLock), strictly after the re-acquire
-//     succeeds, never before (see acquireSessionLockForReset's doc comment
+//     succeeds, never before (see AcquireSessionLockForReset's doc comment
 //     for why "before" was the P0-2 defect for reset --force specifically).
 //
 // Interleaving either concern into forceKillHolder itself would make one of
@@ -554,7 +590,7 @@ func forceKillHolder(dataDir, sessionID string, pid int, wait time.Duration) kil
 	var sb strings.Builder
 	if pid <= 0 {
 		// This function is ONLY ever reached from the busy branch of
-		// probeThenKillHolder / acquireSessionLockForReset — i.e. after the OS
+		// probeThenKillHolder / AcquireSessionLockForReset — i.e. after the OS
 		// has just proven that a live holder exists. So "no usable PID" here
 		// does NOT mean "nobody is holding the lock"; it means a holder
 		// demonstrably exists and we cannot identify it. Reporting
@@ -664,13 +700,13 @@ func sweepChildGroupsUnderOwnLock(sb *strings.Builder, dataDir, sessionID, victi
 
 // sweepChildGroupsWithHeldLock is the "sessions reset --force" half of the
 // P0-2 fix. Unlike sweepChildGroupsUnderOwnLock, the caller
-// (acquireSessionLockForReset) is already holding the session OS lock by
+// (AcquireSessionLockForReset) is already holding the session OS lock by
 // the time this runs -- either because it just re-acquired it after killing
 // a live holder, or because its very first TryAcquireSessionLock attempt
 // succeeded outright (no live holder at all, e.g. the previous holder had
-// already crashed; see acquireSessionLockForReset's task #602 comment) --
+// already crashed; see AcquireSessionLockForReset's task #602 comment) --
 // that lock is what "sessions reset --force" needs held across its own
-// DB-wipe critical section anyway (see acquireSessionLockForReset doc
+// DB-wipe critical section anyway (see AcquireSessionLockForReset doc
 // comment), so this function does not acquire or release anything itself;
 // it just performs the sweep using the lock the caller already has, which
 // is exactly the same "hold the OS lock across the entire
@@ -693,7 +729,7 @@ func sweepChildGroupsWithHeldLock(sb *strings.Builder, dataDir, sessionID, victi
 	formatChildGroupSweepReport(sb, sessionID, result)
 }
 
-// acquireSessionLockForReset acquires the real OS session lock, killing the
+// AcquireSessionLockForReset acquires the real OS session lock, killing the
 // current holder first if one is alive (and confirmable). It returns the HELD
 // lock (caller MUST Release) so no concurrent rush process can grab the
 // session during a critical section that follows — in particular `sessions
@@ -741,7 +777,7 @@ func sweepChildGroupsWithHeldLock(sb *strings.Builder, dataDir, sessionID, victi
 // already holds it across the DB-wipe critical section that follows -- so
 // the sweep below reuses sweepChildGroupsWithHeldLock (the same helper the
 // busy/killed branch already uses), no second acquire/release cycle needed.
-func acquireSessionLockForReset(dataDir, sessionID string, pid int, wait time.Duration) (*session.SessionLock, killResult, error) {
+func AcquireSessionLockForReset(dataDir, sessionID string, pid int, wait time.Duration) (*session.SessionLock, killResult, error) {
 	// Read BEFORE the acquire attempt below, for the same reason
 	// probeThenKillHolder does: a successful TryAcquireSessionLock
 	// immediately overwrites the ".gen" sidecar with this call's own new
@@ -856,9 +892,9 @@ func removeLockWithRetry(path string, wait time.Duration) error {
 	return lastErr
 }
 
-// sanitiseSessionIDForFilename mirrors session.sanitiseSessionID (package-private)
+// SanitiseSessionIDForFilename mirrors session.sanitiseSessionID (package-private)
 // so the lock-file path resolves the same way the lock acquirer wrote it.
-func sanitiseSessionIDForFilename(id string) string {
+func SanitiseSessionIDForFilename(id string) string {
 	r := strings.NewReplacer(
 		"/", "_",
 		"\\", "_",

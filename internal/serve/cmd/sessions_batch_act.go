@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/locks"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -160,22 +161,22 @@ func compactBatchLiveSessions(ctx context.Context, a *app.App, dataDir string) (
 }
 
 // batchKillLiveNote разделяет физически живой/неизвестный scope и долг доставки.
-func batchKillLiveNote(ctx context.Context, dataDir, sessionID string) batchKillScopeState {
+func batchKillLiveNote(ctx context.Context, dataDir, sessionID string) sesslocks.BatchKillScopeState {
 	if _, err := os.Stat(storepath.StoreV1Path(dataDir)); err != nil {
 		if os.IsNotExist(err) {
-			return batchKillScopeState{} // Rescue не создаёт отсутствующую БД ради чтения.
+			return sesslocks.BatchKillScopeState{} // Rescue не создаёт отсутствующую БД ради чтения.
 		}
-		return batchKillScopeState{Note: fmt.Sprintf("batch store is unreadable for session %s: %v", sessionID, err), Unconfirmed: true}
+		return sesslocks.BatchKillScopeState{Note: fmt.Sprintf("batch store is unreadable for session %s: %v", sessionID, err), Unconfirmed: true}
 	}
 	conn, err := db.Connect(ctx, dataDir)
 	if err != nil {
-		return batchKillScopeState{Note: fmt.Sprintf("note: batch work for session %s could not be read (%v); treat live batch work as unknown", sessionID, err), Unconfirmed: true}
+		return sesslocks.BatchKillScopeState{Note: fmt.Sprintf("note: batch work for session %s could not be read (%v); treat live batch work as unknown", sessionID, err), Unconfirmed: true}
 	}
 	defer func() { _ = db.ReleaseConn(conn) }()
 	reader := session.NewBatchLiveReader(db.New(conn), dataDir)
 	facts := reduceBatchSessionFacts(ctx, reader, session.NewBatchStore(conn), db.New(conn), []string{sessionID})
 	f := facts[sessionID]
-	state := batchKillScopeState{Unconfirmed: f.Unknown}
+	state := sesslocks.BatchKillScopeState{Unconfirmed: f.Unknown}
 	for _, root := range f.Roots {
 		state.Unconfirmed = state.Unconfirmed || root.Held
 	}

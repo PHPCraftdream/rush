@@ -1,4 +1,4 @@
-package cmd
+package sessaudit
 
 // Regression tests for the timestamp unit of `rush sessions audit`: every
 // created_at / updated_at column of rush.db holds Unix SECONDS. The command

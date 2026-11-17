@@ -1,4 +1,4 @@
-package cmd
+package sesslocks
 
 import (
 	"context"
@@ -7,23 +7,26 @@ import (
 	"time"
 )
 
-type batchKillScopeState struct {
+// BatchKillScopeState is the batch-scope verdict the kill command's injected
+// batch-note reader returns (the root batchKillLiveNote provider).
+type BatchKillScopeState struct {
 	Note        string
 	Unconfirmed bool
 }
 
-type batchKillNoteReader func(context.Context, string, string) batchKillScopeState
+// BatchKillNoteReader is the injected provider type for batchKillLiveNote.
+type BatchKillNoteReader func(context.Context, string, string) BatchKillScopeState
 
 var errBatchKillScopeUnconfirmed = errors.New("batch scope termination is unconfirmed")
 
-func readBoundedBatchKillNote(ctx context.Context, dataDir, id string, read batchKillNoteReader) batchKillScopeState {
+func readBoundedBatchKillNote(ctx context.Context, dataDir, id string, read BatchKillNoteReader) BatchKillScopeState {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	return read(ctx, dataDir, id)
 }
 
 // Свободный turn lock не доказывает остановку независимого batch scope.
-func batchKillUnprovenError(state batchKillScopeState) error {
+func batchKillUnprovenError(state BatchKillScopeState) error {
 	if !state.Unconfirmed {
 		return nil
 	}

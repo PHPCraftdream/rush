@@ -1,4 +1,4 @@
-package cmd
+package sessaudit
 
 // The closing summary of `rush sessions audit`: the one "scanned N sessions"
 // line — and the explicit "no anomalies" of a clean scan — that every report

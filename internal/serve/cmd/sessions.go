@@ -10,6 +10,8 @@ import (
 	"time"
 
 	sesslive "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/live"
+	sesslocks "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/locks"
+	sessaudit "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/report/audit"
 	sesscost "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/report/cost"
 	sessscan "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/view/scan"
 	"github.com/spf13/cobra"
@@ -50,6 +52,19 @@ var sessionsDiffCmd = sessscan.NewSessionsDiffCmd(setupApp)
 
 var sessionsGrepCmd = sessscan.NewSessionsGrepCmd(setupApp)
 
+// Factory wiring for the moved-out audit and locks families (sessaudit /
+// sesslocks). purgeQueuedWorkAfterStop matches the
+// func(*cobra.Command, string) purge hook, and batchKillLiveNote — retyped
+// to return sesslocks.BatchKillScopeState — matches the BatchKillNoteReader
+// provider (ctx, dataDir, sessionID), so both pass through directly.
+var sessionsAuditCmd = sessaudit.NewSessionsAuditCmd()
+
+var sessionsLocksCmd = sesslocks.NewSessionsLocksCmd(setupApp)
+
+var sessionsKillCmd = sesslocks.NewSessionsKillCmd(setupApp, purgeQueuedWorkAfterStop, batchKillLiveNote)
+
+var sessionsReapCmd = sesslocks.NewSessionsReapCmd(setupApp)
+
 var sessionsForkCmd = sesslive.NewSessionsForkCmd(setupApp)
 
 var newSessionsCmdOnce sync.Once
@@ -64,11 +79,6 @@ func NewSessionsCmd() *cobra.Command {
 		sessionsShowCmd.Flags().Bool("with-messages", false, "Include all messages in the output")
 		sessionsShowCmd.Flags().Bool("full", false, "Show full message content (implies --with-messages)")
 		sessionsShowCmd.Flags().Bool("with-subagents", false, "Also render each sub-agent delegation's transcript as a demarcated block (implies --with-messages; text output)")
-
-		sessionsLocksCmd.Flags().Bool("json", false, "Emit NDJSON (one JSON object per line)")
-		sessionsLocksCmd.Flags().Bool("stale-only", false, "Filter to locks older than 10 minutes or for dead processes")
-		sessionsLocksCmd.Flags().Bool("prune", false, "Remove lock files proven (via a real OS-level lock probe) to have no live holder. Off by default: `sessions locks` is read-only unless this is set.")
-		sessionsLocksCmd.Flags().Bool("all", false, "Include idle lock files (no holder PID recorded, offline pulse, no live-driver evidence) that the default view collapses into a one-line summary")
 
 		sessionsTailCmd.Flags().Bool("follow", false, "Keep polling for new messages until session finishes")
 		sessionsTailCmd.Flags().String("from-message", "", "Resume from this message ID (skip earlier)")
@@ -86,11 +96,6 @@ func NewSessionsCmd() *cobra.Command {
 		sessionsCacheCmd.Flags().String("by", "", "Grouping for the cross-session view: model (default) or day")
 
 		sessionsCmd.AddCommand(sessionsListCmd, sessionsDeleteCmd, sessionsResetCmd, sessionsShowCmd, sessionsLocksCmd, sessionsTailCmd, sessionsLastCmd, sessionsStatusCmd, sessionsWhyCmd, sessionsGcCmd, sessionsPurgeCmd, sessionsKillCmd, sessionsReapCmd, sessionsWatchCmd, sessionsPickCmd, sessionsGrepCmd, sessionsCostCmd, sessionsCacheCmd, sessionsDiffCmd, sessionsCancelCmd, sessionsForkCmd, sessionsTreeCmd, sessionsAuditCmd, sessionsCompactCmd)
-
-		sessionsAuditCmd.Flags().Bool("all", false, "Audit every session in the database (otherwise pass a session id or a prefix of one)")
-		sessionsAuditCmd.Flags().String("since", "", "Only analyse messages newer than this: Go duration (30m, 24h), day suffix (7d), or a bare integer read as days; with --all, sessions with no message in the window are not scanned")
-		sessionsAuditCmd.Flags().Bool("worktrees", false, "Scan linked worktrees' databases (read-only)")
-		sessionsAuditCmd.Flags().Bool("json", false, "Emit one JSON object per scanned database instead of text")
 
 		sessionsCancelCmd.Flags().Bool("all", false, "Cancel every top-level session that has live work (idle sessions are skipped)")
 
@@ -115,18 +120,11 @@ func NewSessionsCmd() *cobra.Command {
 		sessionsJobsCmd.Flags().Bool("json", false, "Emit one JSON object per job")
 		sessionsCmd.AddCommand(sessionsJobsCmd)
 
-		sessionsKillCmd.Flags().Bool("keep-lock", false, "Kill the process but do not delete the lock file")
-		sessionsKillCmd.Flags().Duration("wait", 5*time.Second, "How long to wait for the PID to die and the OS to release the lock handle")
-
 		sessionsPickCmd.Flags().Bool("tail", false, "Tail --follow the selected session instead of showing last N messages")
 
 		sessionsPurgeCmd.Flags().Bool("dry-run", false, "Print what would be deleted without deleting")
 		sessionsPurgeCmd.Flags().Bool("yes", false, "Skip the confirmation prompt")
 		sessionsPurgeCmd.Flags().String("matching", "", "Only delete sessions whose ID matches this glob (e.g. 'garnet-sql-*')")
-
-		sessionsReapCmd.Flags().Bool("dry-run", false, "Print what would be reclaimed without removing anything")
-		sessionsReapCmd.Flags().Bool("all", false, "Legacy no-op: removal is now decided solely by the real OS-lock probe, so a lock that records a PID is reaped iff proven uncontended regardless of this flag")
-		sessionsReapCmd.Flags().String("idle-older-than", "168h", "Age threshold for reclaiming idle (PID-less) lock files, e.g. 168h, 7d, 4w; \"0\" disables idle reclaim. Default 168h (7 days)")
 
 		sessionsWatchCmd.Flags().Duration("interval", time.Second, "Poll interval for new messages (e.g. 1s, 500ms, 2s)")
 	})
