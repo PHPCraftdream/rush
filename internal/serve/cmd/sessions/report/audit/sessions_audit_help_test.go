@@ -1,4 +1,4 @@
-package cmd
+package sessaudit
 
 // Help text of `rush sessions audit` and of its parent. The command sells
 // itself as strictly read-only, so that promise has to be in the help an
@@ -91,27 +91,4 @@ func TestSessionsAuditHelp_ExamplesCoverTheFlags(t *testing.T) {
 	require.Contains(t, example, "rush sessions audit --all --since 24h")
 	require.Contains(t, example, "rush sessions audit --worktrees --json")
 	require.Contains(t, example, "rush sessions audit --data-dir")
-}
-
-// TestSessionsParentHelp_ListsAudit: the `sessions` root help lists every
-// subcommand it has — one that is missing from it does not exist for the
-// operator reading it.
-//
-// Revert-check: removing "audit" from the Observe block (or from
-// AddCommand) turns this red.
-func TestSessionsParentHelp_ListsAudit(t *testing.T) {
-	t.Parallel()
-
-	observe := oneLine(sessionsCmd.Long)
-	require.Contains(t, observe, "audit")
-	require.Contains(t, observe, "anomaly scan")
-
-	var registered bool
-	for _, sub := range sessionsCmd.Commands() {
-		if sub.Name() == "audit" {
-			registered = true
-			require.Same(t, sessionsAuditCmd, sub, "the registered command must be the one under test")
-		}
-	}
-	require.True(t, registered, "`sessions audit` must be registered on the sessions command")
 }

@@ -1,4 +1,4 @@
-package cmd
+package sessaudit
 
 // R12-B part 3 coverage: `rush sessions audit` counts batch facts through
 // the R10a live reader and the R10c BatchHistoryStateCounts query over its

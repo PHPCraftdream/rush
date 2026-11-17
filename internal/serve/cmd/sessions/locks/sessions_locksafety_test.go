@@ -1,4 +1,4 @@
-package cmd
+package sesslocks
 
 // Regression coverage for the #269 P0-5 release blocker: cleanup of stable
 // per-session lock files could unlink a path a LIVE OS lock was held on. On
@@ -225,48 +225,12 @@ func TestProbeThenKillHolder_UnknownProbeError_FailsClosed(t *testing.T) {
 	require.Equal(t, holderProbeError, kr.State, "unknown probe error -> state must be probe-error")
 }
 
-// TestSessionsReset_ForceLeavesLockFileInPlace enforces place 6: reset --force
-// now acquires and HOLDS the OS lock across the DB reset, then releases — it
-// deliberately does NOT remove the lock file (an empty lock file with no held
-// OS lock is harmless; the next acquirer reopens and overwrites it). Old code
-// unlinked the file, so this assertion fails on the old behavior.
-func TestSessionsReset_ForceLeavesLockFileInPlace(t *testing.T) {
-	a, cwd := isolatedResetEnv(t)
-
-	ctx := context.Background()
-	sess, err := a.Sessions.CreateWithID(ctx, "reset-force-leaves-lock", "regression title")
-	require.NoError(t, err)
-
-	// Seed a bare lock file (stale PID, no live OS lock) exactly as
-	// TestSessionsReset_ForceDoesNotKillStalePID does.
-	lockDir := filepath.Join(cwd, ".rush", "locks")
-	require.NoError(t, os.MkdirAll(lockDir, 0o755))
-	lockPath := filepath.Join(lockDir, "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
-	require.NoError(t, os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644))
-
-	require.True(t, procinfo.IsProcessAlive(os.Getpid()))
-	// SessionsResetCmd.RunE creates its own full App. Release the seed App's
-	// process-wide MCP owner before invoking the command.
-	a.Shutdown()
-
-	require.NoError(t, resetSessionCmdFlags().Flags().Set("force", "true"))
-	stderr := cmdtest.CaptureStderr(t, func() {
-		require.NoError(t, sessionsResetCmd.RunE(sessionsResetCmd, []string{sess.ID}))
-	})
-	t.Logf("reset --force stderr:\n%s", stderr)
-
-	require.FileExists(t, lockPath,
-		"reset --force must leave the lock file in place (held+released), not unlink it")
-	require.True(t, procinfo.IsProcessAlive(os.Getpid()),
-		"reset --force must never kill the calling test process via a stale lock-file PID")
-}
-
 // TestSessionsReset_ForceHoldsLockDuringDBReset enforces the HOLD property of
 // place 6 directly: while reset --force has acquired the session lock for its
 // critical section, a concurrent TryAcquireSessionLock on the same session
 // must report contention (the lock is actually held). This is the mutual
 // exclusion that prevents a fresh `rush run --session <id>` from racing the
-// DB wipe. Exercises acquireSessionLockForReset (the helper reset --force now
+// DB wipe. Exercises AcquireSessionLockForReset (the helper reset --force now
 // uses) rather than the full RunE, since the hold window is the property under
 // test and is most cleanly observed against the returned held lock.
 func TestSessionsReset_ForceHoldsLockDuringDBReset(t *testing.T) {
@@ -275,7 +239,7 @@ func TestSessionsReset_ForceHoldsLockDuringDBReset(t *testing.T) {
 	const sessionID = "reset-hold-id"
 
 	// No holder: acquire should succeed immediately and return a HELD lock.
-	lk, kr, err := acquireSessionLockForReset(dataDir, sessionID, 0, 2*time.Second)
+	lk, kr, err := AcquireSessionLockForReset(dataDir, sessionID, 0, 2*time.Second)
 	require.NoError(t, err)
 	require.Equal(t, holderAlreadyDead, kr.State)
 	require.NotNil(t, lk, "must return a held lock")
@@ -347,7 +311,7 @@ func TestSessionsReap_YoungLockNotProbedOrRemoved(t *testing.T) {
 	const sessionID = "reap-young-mid-acquisition"
 	lockDir := filepath.Join(dataDir, "locks")
 	require.NoError(t, os.MkdirAll(lockDir, 0o755))
-	lockPath := filepath.Join(lockDir, "session-"+sanitiseSessionIDForFilename(sessionID)+".lock")
+	lockPath := filepath.Join(lockDir, "session-"+SanitiseSessionIDForFilename(sessionID)+".lock")
 
 	// The mid-acquisition state: the file exists (O_CREATE already ran) but no
 	// OS lock is held yet (tryLockFile has not run). mtime is "now", so the

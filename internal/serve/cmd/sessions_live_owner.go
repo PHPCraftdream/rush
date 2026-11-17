@@ -11,7 +11,7 @@ import (
 	"os"
 
 	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/locks"
+	sesslocks "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/locks"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -19,7 +19,7 @@ import (
 // it stays because the gc command (root sessions_gc.go) still owns gcItem
 // filtering here.
 func liveOwnerProtection(ctx context.Context, a *app.App, sessionID string) string {
-	return locks.LiveOwnerProtection(ctx, a, sessionID)
+	return sesslocks.LiveOwnerProtection(ctx, a, sessionID)
 }
 
 // gcDropMaintenanceProtected keeps every session that still has live-owner
@@ -28,7 +28,7 @@ func liveOwnerProtection(ctx context.Context, a *app.App, sessionID string) stri
 func gcDropMaintenanceProtected(ctx context.Context, a *app.App, candidates []gcItem) []gcItem {
 	kept := make([]gcItem, 0, len(candidates))
 	for _, candidate := range candidates {
-		if reason := locks.LiveOwnerProtection(ctx, a, candidate.ID); reason != "" {
+		if reason := sesslocks.LiveOwnerProtection(ctx, a, candidate.ID); reason != "" {
 			fmt.Fprintf(os.Stderr, "kept session %s (%s): %s\n", short(session.HashID(candidate.ID)), truncate(candidate.Title, 40), reason)
 			continue
 		}

@@ -1,4 +1,4 @@
-package cmd
+package sessaudit
 
 // The query-plan proof of `rush sessions audit`: --since and the chunked
 // scans must rest on the production message indexes rather than full scans

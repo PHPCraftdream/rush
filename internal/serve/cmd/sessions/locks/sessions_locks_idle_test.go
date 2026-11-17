@@ -1,4 +1,4 @@
-package cmd
+package sesslocks
 
 // Tests for the FIX-LOCKS default collapse of idle lock files in
 // `sessions locks`: PID-less, stale, non-between-turns, non-stalled entries

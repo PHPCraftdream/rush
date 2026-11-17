@@ -1,4 +1,4 @@
-package cmd
+package sesslocks
 
 import (
 	"bytes"
@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -50,7 +51,7 @@ func captureStdout(t *testing.T, f func()) string {
 }
 
 func TestLockCallTreeActivityFromBatch_UsesMappedIDsAndUnknownStem(t *testing.T) {
-	activities := map[string]callTreeActivity{
+	activities := map[string]sesskit.CallTreeActivity{
 		"known-a":     {LatestUnix: 101, DeepestSessionID: "known-a"},
 		"known-b":     {LatestUnix: 103, DeepestSessionID: "child"},
 		"orphan-stem": {LatestUnix: 102, DeepestSessionID: "orphan-stem"},

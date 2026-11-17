@@ -1,4 +1,4 @@
-package cmd
+package sesslocks
 
 import (
 	"context"
@@ -66,7 +66,7 @@ func TestSessionsReapCmdRun_SurvivesTransientSharingViolation(t *testing.T) {
 	const sessionID = "sharing-violation-reap-id"
 	lockDir := filepath.Join(configuredDataDir, "locks")
 	require.NoError(t, os.MkdirAll(lockDir, 0o755))
-	lockPath := filepath.Join(lockDir, "session-"+sanitiseSessionIDForFilename(sessionID)+".lock")
+	lockPath := filepath.Join(lockDir, "session-"+SanitiseSessionIDForFilename(sessionID)+".lock")
 	// PID 999999 is guaranteed not to be a live process on any platform, and
 	// nothing holds the OS lock, so the probe will classify this as dead.
 	require.NoError(t, os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", 999999)), 0o644))
@@ -145,7 +145,7 @@ func TestSessionsReapCmdRun_RetryBudgetIsSharedAndBounded(t *testing.T) {
 	require.NoError(t, os.MkdirAll(lockDir, 0o755))
 	old := time.Now().Add(-time.Minute)
 	for _, id := range []string{"budget-lock-a", "budget-lock-b", "budget-lock-c"} {
-		lockPath := filepath.Join(lockDir, "session-"+sanitiseSessionIDForFilename(id)+".lock")
+		lockPath := filepath.Join(lockDir, "session-"+SanitiseSessionIDForFilename(id)+".lock")
 		require.NoError(t, os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", 999999)), 0o644))
 		require.NoError(t, os.Chtimes(lockPath, old, old))
 

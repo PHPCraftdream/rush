@@ -1,4 +1,4 @@
-package cmd
+package sesslocks
 
 // Tests for the FIX-LOCKS idle-reclaim path of `sessions reap`: PID-less lock
 // files older than --idle-older-than are removed with the same OS-lock probe

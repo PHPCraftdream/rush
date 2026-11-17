@@ -1,4 +1,4 @@
-package cmd
+package sesslocks
 
 import (
 	"context"
@@ -21,7 +21,7 @@ import (
 // Scope read внедрён; OS-probe, очередь и pending injects — настоящие.
 func TestSessionsKillFreeTurnLockPreservesLiveBatchQueue(t *testing.T) {
 	for _, hasLock := range []bool{false, true} {
-		for _, scope := range []batchKillScopeState{{Note: "live held batch scope", Unconfirmed: true}, {Note: "batch scope is unreadable", Unconfirmed: true}, {Note: "only completion debt remains"}, {}} {
+		for _, scope := range []BatchKillScopeState{{Note: "live held batch scope", Unconfirmed: true}, {Note: "batch scope is unreadable", Unconfirmed: true}, {Note: "only completion debt remains"}, {}} {
 			note := scope.Note
 			t.Run(fmt.Sprintf("lock=%v/note=%q", hasLock, note), func(t *testing.T) {
 				a, dataDir := stopPurgeEnv(t)
@@ -46,7 +46,7 @@ func TestSessionsKillFreeTurnLockPreservesLiveBatchQueue(t *testing.T) {
 				bounded := false
 				var commandErr error
 				stderr := cmdtest.CaptureStderr(t, func() {
-					commandErr = sessionsKillCmdRunWithBatchNote(cmd, []string{sess.ID}, func(ctx context.Context, _ string, id string) batchKillScopeState {
+					commandErr = sessionsKillCmdRunWithBatchNote(cmd, []string{sess.ID}, nil, func(ctx context.Context, _ string, id string) BatchKillScopeState {
 						_, bounded = ctx.Deadline()
 						require.Equal(t, sess.ID, id)
 						return scope
@@ -94,7 +94,7 @@ func TestSessionsKillFreeTurnLockPreservesLiveBatchQueue(t *testing.T) {
 
 func TestKillBatchScopeAbsentStoreDoesNotCreateDatabase(t *testing.T) {
 	dataDir := t.TempDir()
-	state := batchKillLiveNote(t.Context(), dataDir, "absent-session")
+	state := readBoundedBatchKillNote(t.Context(), dataDir, "absent-session", nil)
 	_, err := os.Stat(storepath.StoreV1Path(dataDir))
 	t.Cleanup(func() {
 		if t.Failed() {

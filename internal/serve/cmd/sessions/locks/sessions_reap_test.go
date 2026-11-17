@@ -1,4 +1,4 @@
-package cmd
+package sesslocks
 
 import (
 	"context"
@@ -58,7 +58,7 @@ func TestSessionsReapCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	const sessionID = "configured-datadir-reap-id"
 	lockDir := filepath.Join(configuredDataDir, "locks")
 	require.NoError(t, os.MkdirAll(lockDir, 0o755))
-	lockPath := filepath.Join(lockDir, "session-"+sanitiseSessionIDForFilename(sessionID)+".lock")
+	lockPath := filepath.Join(lockDir, "session-"+SanitiseSessionIDForFilename(sessionID)+".lock")
 	// PID 999999 is guaranteed not to be a live process on any platform.
 	require.NoError(t, os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", 999999)), 0o644))
 	// Age it past the 10s heartbeat threshold so reap treats it as eligible
@@ -69,7 +69,7 @@ func TestSessionsReapCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	// Sanity: the WRONG (pre-fix) path must not exist, so a false pass via
 	// "(no locks directory)" being silently treated as success is impossible
 	// to confuse with the real assertion below.
-	wrongPath := filepath.Join(workDir, ".rush", "locks", "session-"+sanitiseSessionIDForFilename(sessionID)+".lock")
+	wrongPath := filepath.Join(workDir, ".rush", "locks", "session-"+SanitiseSessionIDForFilename(sessionID)+".lock")
 	_, wrongStatErr := os.Stat(wrongPath)
 	require.True(t, os.IsNotExist(wrongStatErr))
 

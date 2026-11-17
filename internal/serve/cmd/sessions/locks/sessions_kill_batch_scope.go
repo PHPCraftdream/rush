@@ -19,6 +19,10 @@ type BatchKillNoteReader func(context.Context, string, string) BatchKillScopeSta
 
 var errBatchKillScopeUnconfirmed = errors.New("batch scope termination is unconfirmed")
 
+// ErrBatchKillScopeUnconfirmed exposes the sentinel to package cmd test
+// bridges (require.ErrorIs) without renaming the internal error.
+var ErrBatchKillScopeUnconfirmed = errBatchKillScopeUnconfirmed
+
 func readBoundedBatchKillNote(ctx context.Context, dataDir, id string, read BatchKillNoteReader) BatchKillScopeState {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
