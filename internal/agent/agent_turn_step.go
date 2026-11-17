@@ -65,7 +65,6 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	// step N is initialPrompt + step responses, which does NOT carry
 	// forward whatever a PREVIOUS step's PrepareStep spliced in.
 	var stepSplices []fantasy.Message
-
 	for _, inj := range ts.a.drainDueInjects(ts.call.SessionID, ts.genID, ts.historyIDs) {
 		stepSplices = append(stepSplices, inj.ToAIMessage()...)
 	}
