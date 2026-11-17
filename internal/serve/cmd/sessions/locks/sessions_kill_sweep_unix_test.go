@@ -1,6 +1,6 @@
 //go:build !windows
 
-package cmd
+package sesslocks
 
 // Caller-level regression coverage for the 2026-08-19 P0-2 fix
 // (static-follow-up review, task #591): the Unix child-group sweep must

@@ -36,9 +36,9 @@ internal/config/apitoken_store_test.go 969
 internal/config/load_providers.go 916
 internal/config/store_config_disk_sync_test.go 991
 internal/config/store_mcp_transaction.go 927
-internal/serve/cmd/migrate.go 935
+internal/serve/cmd/migrate.go 929
 internal/serve/cmd/migrate_test.go 954
-internal/serve/cmd/providers_peak_hours.go 959
+internal/serve/cmd/providers_peak_hours.go 958
 internal/session/childgroup_registry_unix.go 976
 internal/session/lock.go 976
 # 985 -> 986: +1 import line (run/sessiontest, lane SM4: the local limitParallel copy moved out); the file is cut by the session lanes MV/EX.

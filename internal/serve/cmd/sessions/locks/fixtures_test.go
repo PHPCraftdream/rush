@@ -184,3 +184,14 @@ func releasedLock(t *testing.T, dataDir, sessionID string) string {
 	backDateLock(t, path)
 	return path
 }
+
+// acquireSessionLockForReset — byte-copy shim for the root package's
+// unexported reset-path wrapper (moved here rule-18 with
+// sessions_kill_sweep_unix_test.go, which calls it directly).
+func acquireSessionLockForReset(dataDir, sessionID string, pid int, wait time.Duration) (*session.SessionLock, killResult, error) {
+	return AcquireSessionLockForReset(dataDir, sessionID, pid, wait)
+}
+
+// sanitiseSessionIDForFilename — byte-copy shim of the root package's
+// one-liner (it calls the exported sesslocks symbol here).
+func sanitiseSessionIDForFilename(id string) string { return SanitiseSessionIDForFilename(id) }

@@ -22,7 +22,7 @@ internal/app 272
 internal/config 278
 internal/config/discover 27
 internal/kit/sys/shell 46
-internal/serve/cmd 369
+internal/serve/cmd 300
 internal/serve/server 173
 internal/session 284
 internal/session/jobbatch 57
