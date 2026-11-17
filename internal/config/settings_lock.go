@@ -19,6 +19,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -431,7 +432,7 @@ func (s *ConfigStore) LockSettings(scope Scope, password string) error {
 	if err != nil {
 		return err
 	}
-	path = writeTargetSlot(path)
+	path = slots.WriteTargetSlot(path)
 	refusedBy := ""
 	err = s.writeSettingsLockRaw(path, func(data []byte) (string, error) {
 		if err := s.checkExternalSettingsSources(path, data); err != nil {
@@ -452,7 +453,7 @@ func (s *ConfigStore) UnlockSettings(scope Scope, password string) error {
 	if err != nil {
 		return err
 	}
-	path = writeTargetSlot(path)
+	path = slots.WriteTargetSlot(path)
 	refusedBy := ""
 	err = s.writeSettingsLockRaw(path, func(data []byte) (string, error) {
 		globals, locals, hashErr := s.lockHashesForTarget(path, data)

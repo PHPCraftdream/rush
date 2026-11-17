@@ -14,6 +14,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/slotmigrate"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
 
@@ -93,7 +94,7 @@ func Load(workingDir, dataDir string, debug bool, opts ...LoadOption) (*ConfigSt
 	}
 	var lastErr error
 	// ONE shared migration deadline for every slot and every load attempt.
-	ktavCtx, ktavCancel := context.WithTimeout(context.Background(), ktavMigrationBudget())
+	ktavCtx, ktavCancel := context.WithTimeout(context.Background(), slotmigrate.KtavMigrationBudget())
 	defer ktavCancel()
 	for attempt := 0; attempt < reloadMaxAttempts; attempt++ {
 		store, err := loadOnce(ktavCtx, workingDir, dataDir, debug, options.cliModels, options.discoveryProviders)
@@ -114,7 +115,7 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 	}
 	// Migrate initial discovery sources before constructing the candidate
 	// snapshot. Gated by ktavAutoMigrate (false in this change).
-	if err := ktavMigrateStartupSlots(ktavCtx, workingDir); err != nil {
+	if err := slotmigrate.KtavMigrateStartupSlots(ktavCtx, workingDir); err != nil {
 		return nil, err
 	}
 	// Read every deterministic candidate, including absent paths. This closes
@@ -148,7 +149,7 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 	if err := docread.CheckBackupOnlySlot(filepath.Join(cfg.Options.DataDirectory, appName+".json")); err != nil {
 		return nil, err
 	}
-	if err := ktavMigrateWorkspaceIfNeeded(ktavCtx, workingDir, cfg.Options.DataDirectory); err != nil {
+	if err := slotmigrate.KtavMigrateWorkspaceIfNeeded(ktavCtx, workingDir, cfg.Options.DataDirectory); err != nil {
 		return nil, err
 	}
 	if docread.FileExists(docread.KtavSiblingOf(filepath.Join(cfg.Options.DataDirectory, appName+".json"))) {
@@ -162,7 +163,7 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 	// ktavAutoMigrate; failures defer with a warning and the JSON journal
 	// stays active. Library mode (sdk.ModeLibrary) never reaches Load, so
 	// it never runs any of this.
-	ktavMigrateOAuthJournalsAtStartup(ktavCtx, []string{
+	slotmigrate.KtavMigrateOAuthJournalsAtStartup(ktavCtx, []string{
 		GlobalConfigData(),
 		filepath.Join(cfg.Options.DataDirectory, appName+".json"),
 	}, workingDir)

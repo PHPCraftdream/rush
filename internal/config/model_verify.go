@@ -14,6 +14,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/discover"
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
+	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 )
 
 var modelVerificationTimeout = 5 * time.Second
@@ -175,11 +176,11 @@ func writeConfirmedModels(provider string, entry ConfirmedModels) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return writeCacheDocument(path, data, 0o600, cfgcommit.AtomicWriteFile)
+	return slots.WriteCacheDocument(path, data, 0o600, cfgcommit.AtomicWriteFile)
 }
 
 func readConfirmedModels(provider, endpoint, identity string) []catwalk.Model {
-	data, err := readCacheDocument(confirmedModelsPath(provider))
+	data, err := slots.ReadCacheDocument(confirmedModelsPath(provider))
 	if err != nil {
 		return nil
 	}
@@ -203,7 +204,7 @@ func CachedConfirmedModels(pc ProviderConfig, providerID string, resolver Variab
 	if err != nil || endpoint == "" {
 		return nil, false
 	}
-	data, err := readCacheDocument(confirmedModelsPath(providerID))
+	data, err := slots.ReadCacheDocument(confirmedModelsPath(providerID))
 	if err != nil {
 		return nil, false
 	}
@@ -216,7 +217,7 @@ func CachedConfirmedModels(pc ProviderConfig, providerID string, resolver Variab
 }
 
 func readFreshConfirmedModels(provider, endpoint, identity string) []catwalk.Model {
-	data, err := readCacheDocument(confirmedModelsPath(provider))
+	data, err := slots.ReadCacheDocument(confirmedModelsPath(provider))
 	if err != nil {
 		return nil
 	}

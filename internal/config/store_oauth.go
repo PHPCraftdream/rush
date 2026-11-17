@@ -23,6 +23,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/hyper"
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -385,7 +386,7 @@ func (s *ConfigStore) setOAuthTokenIfCurrentWithLock(scope Scope, providerID str
 	if err := docread.CheckBackupOnlySlot(docread.LegacySlotOf(path)); err != nil {
 		return false, err
 	}
-	path = writeTargetSlot(path)
+	path = slots.WriteTargetSlot(path)
 	isCodex := rotatingOAuthProvider(providerID)
 	keys := []string{fmt.Sprintf("providers.%s.oauth", providerID)}
 	if !isCodex {

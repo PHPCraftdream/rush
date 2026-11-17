@@ -15,6 +15,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 )
 
@@ -166,7 +167,7 @@ func (s *ConfigStore) flushOAuthOutbox(ctx context.Context, path, provider strin
 		}
 		return errOAuthJournalDisk
 	}
-	journalPath := selectOAuthJournalPath(path, provider, true)
+	journalPath := slots.SelectOAuthJournalPath(path, provider, true)
 	latest, err := readOAuthJournal(journalPath)
 	if errors.Is(err, errOAuthJournalInvalid) {
 		// Owned rotation remains writable even if preservation fails.

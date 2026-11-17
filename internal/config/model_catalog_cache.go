@@ -16,6 +16,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/discover"
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 )
 
 const modelCatalogTTL = 7 * 24 * time.Hour
@@ -51,7 +52,7 @@ func visibleCatalogModels(provider string, models []catwalk.Model) []catwalk.Mod
 }
 
 func readModelCatalog(path, fingerprint string) (cachedModelCatalog, bool) {
-	data, err := readCacheDocument(path)
+	data, err := slots.ReadCacheDocument(path)
 	if err != nil {
 		return cachedModelCatalog{}, false
 	}
@@ -85,7 +86,7 @@ func cachedProviderModels(ctx context.Context, provider, endpoint, identity stri
 		err = os.MkdirAll(filepath.Dir(path), 0o700)
 	}
 	if err == nil {
-		err = writeCacheDocument(path, data, 0o600, cfgcommit.AtomicWriteFile)
+		err = slots.WriteCacheDocument(path, data, 0o600, cfgcommit.AtomicWriteFile)
 	}
 	if err != nil {
 		slog.Warn("Failed to cache model catalog", "provider", provider, "error", err)

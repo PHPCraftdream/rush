@@ -13,6 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 )
 
@@ -69,7 +70,7 @@ func (s *ConfigStore) codexRefreshAlreadyCurrent(ctx context.Context, scope Scop
 	record, predecessor := s.codexOAuthAuthorityRecord(path, provider)
 	if record == nil {
 		// Equal-live callers leave all WAL retries to locked recovery.
-		record, _ = readOAuthJournalWithRetry(ctx, selectOAuthJournalPath(path, provider, false))
+		record, _ = readOAuthJournalWithRetry(ctx, slots.SelectOAuthJournalPath(path, provider, false))
 	}
 	if ctx.Err() != nil {
 		return false
@@ -133,7 +134,7 @@ func (s *ConfigStore) adoptCodexDiskAuthority(ctx context.Context, path, provide
 	}
 	if record == nil {
 		// Consult WAL only for a disk publication, preserving bounded read retries.
-		journal, journalErr := readOAuthJournalWithRetry(ctx, selectOAuthJournalPath(path, provider, false))
+		journal, journalErr := readOAuthJournalWithRetry(ctx, slots.SelectOAuthJournalPath(path, provider, false))
 		if err := ctx.Err(); err != nil {
 			return true, err
 		}
@@ -310,7 +311,7 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 	}
 	entry := s.installOAuthOutbox(path, scope, pc.ID, record)
 	applyErr := s.applyOAuthTokenWithPending(pc.ID, pc.OAuthToken, entry.record.Token, true)
-	journalPath := selectOAuthJournalPath(path, pc.ID, true)
+	journalPath := slots.SelectOAuthJournalPath(path, pc.ID, true)
 	if err := writeOAuthJournalUntilDurable(ctx, journalPath, &entry.record); err == nil {
 		s.clearOAuthOutbox(path, pc.ID, entry)
 	} else {

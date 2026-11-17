@@ -13,6 +13,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
 )
 
@@ -603,9 +604,8 @@ func (s *ConfigStore) orderedMCPPaths() []string {
 	// One logical slot is one document: the selected spelling, exactly as
 	// docread.LookupConfigCandidates and the loader resolve it. The fixed legacy
 	// spelling would add the rush.json kept beside a migrated rush.ktav as a
-	// second document and make every input fingerprint differ from the
-	// loaded snapshot's.
-	appendSafe(ActiveConfigFileName(GlobalConfig()), homeConfigOwner())
+	// second document and make every input fingerprint differ from the loaded snapshot's.
+	appendSafe(slots.ActiveConfigFileName(GlobalConfig()), homeConfigOwner())
 	appendSafe(s.globalDataPath, homeConfigOwner())
 	// docread.LookupConfigCandidates applies the same global/project owner policy;
 	// retain its discovery spelling so mcpPathData can bind the alias to the

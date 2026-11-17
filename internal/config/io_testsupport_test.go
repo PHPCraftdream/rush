@@ -98,8 +98,56 @@ func setKtavArtifactMigrationStepHookForTest(hook func(step string) error) (func
 	return slotmigrate.SetKtavArtifactMigrationStepHookForTest(hook)
 }
 
-// io layer: slots. (SetKtavAutoMigrateForTest/KtavAutoMigrateEnabled live in
-// io_forwarders.go — production forwarders shared with root tests.)
+// test-only forwarder; io layer: slotmigrate.
+func ktavMigrateStartupSlots(ctx context.Context, workingDir string) error {
+	return slotmigrate.KtavMigrateStartupSlots(ctx, workingDir)
+}
+
+// test-only forwarder; io layer: slotmigrate.
+func ktavMigrateWorkspaceIfNeeded(ctx context.Context, workingDir, dataDir string) error {
+	return slotmigrate.KtavMigrateWorkspaceIfNeeded(ctx, workingDir, dataDir)
+}
+
+// test-only forwarder; io layer: slotmigrate.
+func ktavMigrateOAuthJournalsAtStartup(ctx context.Context, configSlots []string, workingDir string) {
+	slotmigrate.KtavMigrateOAuthJournalsAtStartup(ctx, configSlots, workingDir)
+}
+
+// test-only forwarder; io layer: slotmigrate.
+func ktavMigrateCacheArtifactsStartup(ctx context.Context, workingDir string) {
+	slotmigrate.KtavMigrateCacheArtifactsStartup(ctx, workingDir)
+}
+
+// test-only forwarder; io layer: slotmigrate.
+func ktavMigrateOAuthJournal(ctx context.Context, configPath, providerID, workingDir string) error {
+	return slotmigrate.KtavMigrateOAuthJournal(ctx, configPath, providerID, workingDir)
+}
+
+// test-only forwarder; io layer: slotmigrate.
+func migrateLegacyConfigFile(ctx context.Context, legacy, workingDir string) error {
+	return slotmigrate.MigrateLegacyConfigFile(ctx, legacy, workingDir)
+}
+
+// io layer: slots. The test seam lives here; KtavAutoMigrateEnabled remains
+// permanent exported facade API in io_forwarders.go.
+
+// test-only forwarder; io layer: slots.
+func writeTargetSlot(legacyPath string) string { return slots.WriteTargetSlot(legacyPath) }
+
+// test-only forwarder; io layer: slots.
+func readCacheDocument(legacyJSON string) ([]byte, error) {
+	return slots.ReadCacheDocument(legacyJSON)
+}
+
+// test-only forwarder; io layer: slots.
+func writeCacheDocument(legacyJSON string, jsonBytes []byte, perm os.FileMode, writeJSON func(path string, data []byte, perm os.FileMode) error) error {
+	return slots.WriteCacheDocument(legacyJSON, jsonBytes, perm, writeJSON)
+}
+
+// test-only forwarder; io layer: slots.
+func selectOAuthJournalPath(configPath, providerID string, forWrite bool) string {
+	return slots.SelectOAuthJournalPath(configPath, providerID, forWrite)
+}
 
 // io layer: fswap (unix-only seam; see io_testsupport_rename_unix_test.go).
 // io layer: fileid (windows-only seam; see io_testsupport_windows_test.go).

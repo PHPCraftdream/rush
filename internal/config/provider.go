@@ -19,6 +19,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/discover"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/charmbracelet/x/etag"
 )
@@ -287,7 +288,7 @@ func (c cache[T]) Age() (time.Duration, error) {
 
 func (c cache[T]) Get() (T, string, error) {
 	var v T
-	data, err := readCacheDocument(c.path)
+	data, err := slots.ReadCacheDocument(c.path)
 	if err != nil {
 		return v, "", fmt.Errorf("failed to read provider cache file: %w", err)
 	}
@@ -310,7 +311,7 @@ func (c cache[T]) Store(v T) error {
 		return fmt.Errorf("failed to marshal provider data: %w", err)
 	}
 
-	if err := writeCacheDocument(c.path, data, 0o644, os.WriteFile); err != nil {
+	if err := slots.WriteCacheDocument(c.path, data, 0o644, os.WriteFile); err != nil {
 		return fmt.Errorf("failed to write provider data to cache: %w", err)
 	}
 	return nil

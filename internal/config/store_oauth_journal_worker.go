@@ -11,6 +11,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 )
 
@@ -78,7 +79,7 @@ func (s *ConfigStore) recoverCodexOAuthJournal(ctx context.Context, scope Scope,
 	if err != nil {
 		return nil, nil, err
 	}
-	journalPath := selectOAuthJournalPath(path, provider, false)
+	journalPath := slots.SelectOAuthJournalPath(path, provider, false)
 	if entry := s.oauthOutboxCurrent(path, provider); entry != nil {
 		settled, settleErr := s.settleOAuthOutbox(ctx, path, provider, entry)
 		if settled {
@@ -255,7 +256,7 @@ func (s *ConfigStore) recoverOAuthJournalsAtLoad() {
 				continue
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), codexRefreshLockWait)
-			record, readErr := readOAuthJournalWithRetry(ctx, selectOAuthJournalPath(path, descriptor.id, false))
+			record, readErr := readOAuthJournalWithRetry(ctx, slots.SelectOAuthJournalPath(path, descriptor.id, false))
 			if readErr == nil && record == nil {
 				cancel()
 				continue
@@ -382,7 +383,7 @@ func (s *ConfigStore) oauthJournalWorkerAttempt(ctx context.Context, scope Scope
 	}
 	var committed bool
 	err = s.withCodexConfigWriteLock(ctx, path, pinned, func(target configWriteTarget) error {
-		latest, journalErr := readOAuthJournalWithRetry(ctx, selectOAuthJournalPath(path, provider, false))
+		latest, journalErr := readOAuthJournalWithRetry(ctx, slots.SelectOAuthJournalPath(path, provider, false))
 		if journalErr != nil {
 			return journalErr
 		}

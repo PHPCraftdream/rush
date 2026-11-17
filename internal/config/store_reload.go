@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/slotmigrate"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
 
@@ -44,7 +45,7 @@ func (s *ConfigStore) ReloadFromDisk(ctx context.Context) error {
 	}
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, ktavMigrationBudget())
+		ctx, cancel = context.WithTimeout(ctx, slotmigrate.KtavMigrationBudget())
 		defer cancel()
 	}
 	return s.reloadFromDiskUnlocked(ctx)
@@ -84,10 +85,10 @@ func (s *ConfigStore) reloadFromDiskUnlocked(ctx context.Context) error {
 func (s *ConfigStore) runReloadLocked(ctx context.Context) error {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, ktavMigrationBudget())
+		ctx, cancel = context.WithTimeout(ctx, slotmigrate.KtavMigrationBudget())
 		defer cancel()
 	}
-	if err := ktavMigrateStartupSlots(ctx, s.workingDir); err != nil {
+	if err := slotmigrate.KtavMigrateStartupSlots(ctx, s.workingDir); err != nil {
 		s.releaseReloadLock()
 		return err
 	}
@@ -97,7 +98,7 @@ func (s *ConfigStore) runReloadLocked(ctx context.Context) error {
 		dataDir = prev.config.Options.DataDirectory
 	}
 	if dataDir != "" {
-		if err := ktavMigrateWorkspaceIfNeeded(ctx, s.workingDir, dataDir); err != nil {
+		if err := slotmigrate.KtavMigrateWorkspaceIfNeeded(ctx, s.workingDir, dataDir); err != nil {
 			s.releaseReloadLock()
 			return err
 		}

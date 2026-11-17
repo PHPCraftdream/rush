@@ -16,6 +16,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/slotmigrate"
 	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -295,7 +296,7 @@ func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, f
 	// because recovery may have changed its spelling or fingerprint.
 	legacy := docread.LegacySlotOf(target.selectedPath)
 	if docread.KtavEntryExists(docread.MigrationRecordPathFor(legacy)) {
-		if err := RunKtavMigrationStateLocked(ctx, legacy, s.workingDir); err != nil {
+		if err := slotmigrate.RunKtavMigrationStateLocked(ctx, legacy, s.workingDir); err != nil {
 			_ = cfgcommit.ReleaseConfigFileLock(target.lockPath, lock)
 			return fmt.Errorf("failed to recover config migration for %q: %w", path, err)
 		}
