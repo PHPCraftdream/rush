@@ -392,12 +392,10 @@ func (s *ConfigStore) publishMCPValueAndStalenessLocked(name string, value MCPCo
 		}
 		for path, fingerprint := range committed {
 			key := docread.NormalizeDiscoveryPath(path)
-			snapshot, ok := next.snapshots[key]
-			if !ok {
+			if _, ok := next.snapshots[key]; !ok {
 				continue
 			}
-			snapshot = docread.NewFileSnapshot(key, fingerprint)
-			next.snapshots[key] = snapshot
+			next.snapshots[key] = docread.NewFileSnapshot(key, fingerprint)
 		}
 	}
 	s.publishLocked(next)
