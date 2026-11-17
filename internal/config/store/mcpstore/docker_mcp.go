@@ -1,15 +1,25 @@
-package config
+package mcpstore
 
 import (
 	"context"
 	"fmt"
 	"maps"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"golang.org/x/sync/singleflight"
 )
+
+// SetDockerMCPVersionRunnerForTest replaces the docker mcp version runner
+// for one test and restores it via t.Cleanup (X1 precedent:
+// settings.SetSettingsPasswordIterationsForTest). Test-only seam.
+func SetDockerMCPVersionRunnerForTest(t testing.TB, runner func(ctx context.Context) error) {
+	previous := dockerMCPVersionRunner
+	dockerMCPVersionRunner = runner
+	t.Cleanup(func() { dockerMCPVersionRunner = previous })
+}
 
 var dockerMCPVersionRunner = func(ctx context.Context) error {
 	cmd := platform.Command(ctx, "docker", "mcp", "version")
@@ -88,13 +98,13 @@ func DockerMCPConfig() MCPConfig {
 
 // PrepareDockerMCPConfig validates Docker MCP availability and stages the
 // Docker MCP configuration in memory.
-func (s *ConfigStore) PrepareDockerMCPConfig() (MCPConfig, error) {
+func (s *Store) PrepareDockerMCPConfig() (MCPConfig, error) {
 	if !IsDockerMCPAvailable() {
 		return MCPConfig{}, fmt.Errorf("docker mcp is not available, please ensure docker is installed and 'docker mcp version' succeeds")
 	}
 
 	mcpConfig := DockerMCPConfig()
-	s.updateConfig(func(cfgCopy *Config) {
+	s.port.MutateConfig(func(cfgCopy *Config) {
 		cfgCopy.MCP = maps.Clone(cfgCopy.MCP)
 		if cfgCopy.MCP == nil {
 			cfgCopy.MCP = make(map[string]MCPConfig)
@@ -106,7 +116,7 @@ func (s *ConfigStore) PrepareDockerMCPConfig() (MCPConfig, error) {
 
 // PersistDockerMCPConfig persists a previously prepared Docker MCP
 // configuration to the global config file.
-func (s *ConfigStore) PersistDockerMCPConfig(mcpConfig MCPConfig) error {
+func (s *Store) PersistDockerMCPConfig(mcpConfig MCPConfig) error {
 	if err := s.PersistMCPConfig(ScopeGlobal, DockerMCPName, mcpConfig); err != nil {
 		return fmt.Errorf("failed to persist docker mcp configuration: %w", err)
 	}
@@ -114,7 +124,7 @@ func (s *ConfigStore) PersistDockerMCPConfig(mcpConfig MCPConfig) error {
 }
 
 // EnableDockerMCP adds Docker MCP configuration and persists it.
-func (s *ConfigStore) EnableDockerMCP() error {
+func (s *Store) EnableDockerMCP() error {
 	mcpConfig, err := s.PrepareDockerMCPConfig()
 	if err != nil {
 		return err
@@ -126,8 +136,9 @@ func (s *ConfigStore) EnableDockerMCP() error {
 }
 
 // DisableDockerMCP removes Docker MCP configuration and persists the change.
-func (s *ConfigStore) DisableDockerMCP() error {
-	if s.Config().MCP == nil {
+func (s *Store) DisableDockerMCP() error {
+	config := s.viewConfig()
+	if config == nil || config.MCP == nil {
 		return nil
 	}
 
@@ -137,4 +148,14 @@ func (s *ConfigStore) DisableDockerMCP() error {
 	_, _ = s.RemoveMCP(DockerMCPName)
 
 	return nil
+}
+
+// viewConfig reads the published config snapshot.
+func (s *Store) viewConfig() *Config {
+	var config *Config
+	_ = s.port.ViewSnap(func(view MCPView) error {
+		config = view.Config()
+		return nil
+	})
+	return config
 }

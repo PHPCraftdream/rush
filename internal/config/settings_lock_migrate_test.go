@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/PHPCraftdream/rush/internal/config/store/settings"
 )
 
 func TestSettingsWriteAllowed(t *testing.T) {
@@ -29,9 +31,7 @@ func TestSettingsWriteAllowed(t *testing.T) {
 				canonical := filepath.Join(t.TempDir(), "canonical", "rush.json")
 				require.NoError(t, os.MkdirAll(filepath.Dir(canonical), 0o700))
 				writeSettingsWriteAllowedLock(t, canonical, "locked")
-				previous := canonicalGlobalDataPath
-				canonicalGlobalDataPath = func() string { return canonical }
-				t.Cleanup(func() { canonicalGlobalDataPath = previous })
+				settings.SetCanonicalGlobalDataPathForTest(t, canonical)
 				SetProcessPassword("")
 				require.ErrorIs(t, SettingsWriteAllowed(workspace), ErrSettingsLocked)
 				SetProcessPassword("locked")
@@ -83,9 +83,7 @@ func TestSettingsWriteAllowed(t *testing.T) {
 			_, globalDataDir := isolateAllGlobalConfigPaths(t)
 			globalData := filepath.Join(globalDataDir, "rush.json")
 			canonical := filepath.Join(t.TempDir(), "canonical", "rush.json")
-			previous := canonicalGlobalDataPath
-			canonicalGlobalDataPath = func() string { return canonical }
-			t.Cleanup(func() { canonicalGlobalDataPath = previous })
+			settings.SetCanonicalGlobalDataPathForTest(t, canonical)
 			workspace := t.TempDir()
 			SetProcessPassword("")
 			t.Cleanup(func() { SetProcessPassword("") })

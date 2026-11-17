@@ -1,10 +1,12 @@
-package config
+package settings
 
 import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 )
 
 // canonicalGlobalDataPath is the OS-resolved global settings file independent
@@ -15,8 +17,8 @@ var canonicalGlobalDataPath = func() string {
 	// global data file, so the real lock must not apply to it — and the
 	// isolated lock must not apply to the real instance. Route the
 	// canonical source into the isolated root instead of the platform path.
-	if root, ok := GlobalDir(); ok {
-		return docread.ReadSlotOf(filepath.Join(root, "data", appName+".json"))
+	if root, ok := datadir.GlobalDir(); ok {
+		return docread.ReadSlotOf(filepath.Join(root, "data", cfgmodel.AppName+".json"))
 	}
 	if testing.Testing() {
 		return ""
@@ -24,11 +26,46 @@ var canonicalGlobalDataPath = func() string {
 	return platformCanonicalGlobalDataPath()
 }
 
+type settingsLockSource struct {
+	path   string
+	global bool
+}
+
+// collectSettingsSourceHashes reads every configured lock source and preserves
+// every non-empty hash so no source can silently override another.
+func collectSettingsSourceHashes(sources []settingsLockSource) ([]string, []string, error) {
+	globals := make([]string, 0, len(sources))
+	locals := make([]string, 0, len(sources))
+	for _, source := range sources {
+		if source.path == "" {
+			continue
+		}
+		hash, err := freshSettingsHash(source.path)
+		if err != nil {
+			return nil, nil, err
+		}
+		if hash == "" {
+			continue
+		}
+		if source.global {
+			globals = append(globals, hash)
+		} else {
+			locals = append(locals, hash)
+		}
+	}
+	return globals, locals, nil
+}
+
+// NaturalWorkspaceSettingsPath resolves the workspace's natural settings slot.
+func NaturalWorkspaceSettingsPath(workingDir string) string {
+	return naturalWorkspaceSettingsPath(workingDir)
+}
+
 func naturalWorkspaceSettingsPath(workingDir string) string {
 	if workingDir == "" {
 		return ""
 	}
-	dataDir, _ := defaultDataDirForWorkspace(workingDir)
+	dataDir, _ := datadir.DefaultDataDirForWorkspace(workingDir)
 	// The natural workspace settings file is a LOGICAL slot: select the
 	// active sibling (rush.ktav when present) so a lock living only in the
 	// Ktav document is visible. docread.ReadSlotOf passes an already-selected .ktav
@@ -38,10 +75,10 @@ func naturalWorkspaceSettingsPath(workingDir string) string {
 
 // checkExternalSettingsSources checks locks in settings sources outside the
 // target being changed. All sources are read before considering authorization.
-func (s *ConfigStore) checkExternalSettingsSources(path string, data []byte) error {
-	workspace := s.loadSnapshot().workspacePath
-	natural := naturalWorkspaceSettingsPath(s.workingDir)
-	globalDataPath := s.globalDataPath
+func (s *Store) checkExternalSettingsSources(path string, data []byte) error {
+	workspace := s.workspacePath()
+	natural := naturalWorkspaceSettingsPath(s.port.WorkingDir())
+	globalDataPath := s.port.GlobalDataPath()
 	canonical := canonicalGlobalDataPath()
 	processGlobal, err := readSettingsHash(globalDataPath, path, data)
 	if err != nil {

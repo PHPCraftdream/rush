@@ -64,3 +64,8 @@ func CommitOutcomeFromError(err error) (*CommitOutcome, bool) {
 func SetBeforeConfigCommitForTest(hook func()) func() {
 	return cfgcommit.SetBeforeConfigCommitForTest(hook)
 }
+
+// io layer: slots. Exported wrapper for agent test callers.
+func SetKtavAutoMigrateForTest(on bool) func() {
+	return slots.SetKtavAutoMigrateForTest(on)
+}

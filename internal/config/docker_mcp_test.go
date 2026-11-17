@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/config/store/mcpstore"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 	"github.com/stretchr/testify/require"
 )
@@ -15,11 +16,7 @@ var errDockerUnavailable = errors.New("docker unavailable")
 
 func setDockerMCPVersionRunner(t *testing.T, runner func(context.Context) error) {
 	t.Helper()
-	orig := dockerMCPVersionRunner
-	dockerMCPVersionRunner = runner
-	t.Cleanup(func() {
-		dockerMCPVersionRunner = orig
-	})
+	mcpstore.SetDockerMCPVersionRunnerForTest(t, runner)
 }
 
 func TestIsDockerMCPEnabled(t *testing.T) {

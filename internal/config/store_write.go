@@ -18,9 +18,29 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/slotmigrate"
 	"github.com/PHPCraftdream/rush/internal/config/io/slots"
+	"github.com/PHPCraftdream/rush/internal/config/store/settings"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
+
+// componentSettingsEvent converts the root audit event to the settings
+// component's event type; the two structs carry identical fields.
+func componentSettingsEvent(ev SettingsEvent) settings.SettingsEvent {
+	return settings.SettingsEvent{Scope: ev.Scope, Path: ev.Path, Keys: ev.Keys, Models: ev.Models, Outcome: ev.Outcome, Reason: ev.Reason, Source: ev.Source}
+}
+
+// settingsFinalizeEvent routes event finalization through the settings
+// component, syncing the outcome fields back onto the root event.
+func settingsFinalizeEvent(ev *SettingsEvent, refusedBy string, err error) {
+	component := componentSettingsEvent(*ev)
+	settings.FinalizeSettingsEvent(&component, refusedBy, err)
+	ev.Outcome, ev.Reason = component.Outcome, component.Reason
+}
+
+// settingsEmitEvent routes event emission through the settings component.
+func settingsEmitEvent(ev SettingsEvent) {
+	settings.EmitSettingsEvent(componentSettingsEvent(ev))
+}
 
 // configPath returns the file path for the given scope.
 func (s *ConfigStore) configPath(scope Scope) (string, error) {
@@ -173,7 +193,7 @@ type configWriteTarget struct {
 // lock before the lock is acquired. Symlink aliases consequently share one
 // sidecar rather than racing on alias.lock and target.lock independently.
 func (s *ConfigStore) resolveConfigWriteTarget(path string) (configWriteTarget, error) {
-	owner, enforce, err := s.mcpOwnerPolicy(path)
+	owner, enforce, err := s.mcpStore().OwnerPolicyFor(path)
 	if err != nil {
 		return configWriteTarget{}, err
 	}
@@ -413,7 +433,7 @@ func (s *ConfigStore) SetConfigFieldWithAuthority(scope Scope, key string, value
 func (s *ConfigStore) setConfigFieldsAuthority(scope Scope, kv map[string]any, authority SettingsWriteAuthority) error {
 	path, err := s.configPath(scope)
 	if err != nil {
-		return fmt.Errorf("%s config path unavailable: %w", settingsScope(scope), err)
+		return fmt.Errorf("%s config path unavailable: %w", settings.SettingsScope(scope), err)
 	}
 	path = slots.WriteTargetSlot(path)
 
@@ -454,9 +474,9 @@ func (s *ConfigStore) setConfigFieldsAuthority(scope Scope, kv map[string]any, a
 			}
 		}
 		if !allRecent {
-			ev := &SettingsEvent{Scope: settingsScope(scope), Path: target.path, Keys: slices.Clone(keys), Models: selectedModelsAudit(keys, kv), Source: settingsAuditSource(authority)}
+			ev := &SettingsEvent{Scope: settings.SettingsScope(scope), Path: target.path, Keys: slices.Clone(keys), Models: settings.SelectedModelsAudit(keys, kv), Source: settings.SettingsAuditSource(authority)}
 			audit = ev
-			refusedBy, err = s.guardSettingsWriteForAuthority(target.path, doc.JSONBytes, keys, authority)
+			refusedBy, err = s.settings.GuardWrite(target.path, doc.JSONBytes, keys, authority)
 			if err != nil {
 				return err
 			}
@@ -510,14 +530,14 @@ func (s *ConfigStore) setConfigFieldsAuthority(scope Scope, kv map[string]any, a
 		return nil
 	}); err != nil {
 		if audit != nil {
-			finalizeSettingsEvent(audit, refusedBy, err)
-			emitSettingsEvent(*audit)
+			settingsFinalizeEvent(audit, refusedBy, err)
+			settingsEmitEvent(*audit)
 		}
 		return err
 	}
 	if audit != nil {
-		finalizeSettingsEvent(audit, refusedBy, committedErr)
-		emitSettingsEvent(*audit)
+		settingsFinalizeEvent(audit, refusedBy, committedErr)
+		settingsEmitEvent(*audit)
 	}
 	if committedErr != nil {
 		if reloadErr := s.autoReloadAfterWrite(context.Background()); reloadErr != nil {
@@ -576,7 +596,7 @@ func (s *ConfigStore) RemoveConfigField(scope Scope, key string) error {
 func (s *ConfigStore) RemoveConfigFieldWithAuthority(scope Scope, key string, authority SettingsWriteAuthority) error {
 	path, err := s.configPath(scope)
 	if err != nil {
-		return fmt.Errorf("%s config path unavailable: %w", settingsScope(scope), err)
+		return fmt.Errorf("%s config path unavailable: %w", settings.SettingsScope(scope), err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), configWriteLockTimeout)
@@ -612,13 +632,13 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string,
 		authority = SettingsAuthorityGuarded
 	}
 	path = slots.WriteTargetSlot(path)
-	if touchesReservedKey(key) {
+	if settings.TouchesReservedKey(key) {
 		if userInitiated {
-			ev := SettingsEvent{Scope: s.settingsScopeForPath(path), Path: path, Keys: []string{key}, Source: settingsAuditSource(authority)}
-			finalizeSettingsEvent(&ev, "", errSettingsLockKeyReserved)
-			emitSettingsEvent(ev)
+			ev := SettingsEvent{Scope: s.settings.ScopeForPath(path), Path: path, Keys: []string{key}, Source: settings.SettingsAuditSource(authority)}
+			settingsFinalizeEvent(&ev, "", settings.ErrSettingsLockKeyReserved())
+			settingsEmitEvent(ev)
 		}
-		return errSettingsLockKeyReserved
+		return settings.ErrSettingsLockKeyReserved()
 	}
 	// Skip acquiring the write lock entirely when there is no config file to
 	// edit: withConfigWriteLockCtx creates a path+".lock" sidecar (and its
@@ -654,9 +674,9 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string,
 			return err
 		}
 		if userInitiated && !strings.HasPrefix(key, "recent_models.") {
-			audit = &SettingsEvent{Scope: s.settingsScopeForPath(target.path), Path: target.path, Keys: []string{key}, Source: settingsAuditSource(authority)}
+			audit = &SettingsEvent{Scope: s.settings.ScopeForPath(target.path), Path: target.path, Keys: []string{key}, Source: settings.SettingsAuditSource(authority)}
 		}
-		refusedBy, err = s.guardSettingsWriteForAuthority(target.path, doc.JSONBytes, []string{key}, authority)
+		refusedBy, err = s.settings.GuardWrite(target.path, doc.JSONBytes, []string{key}, authority)
 		if err != nil {
 			return err
 		}
@@ -696,14 +716,14 @@ func (s *ConfigStore) removeConfigFieldAt(ctx context.Context, path, key string,
 		return nil
 	}); err != nil {
 		if audit != nil {
-			finalizeSettingsEvent(audit, refusedBy, err)
-			emitSettingsEvent(*audit)
+			settingsFinalizeEvent(audit, refusedBy, err)
+			settingsEmitEvent(*audit)
 		}
 		return err
 	}
 	if audit != nil {
-		finalizeSettingsEvent(audit, refusedBy, committedErr)
-		emitSettingsEvent(*audit)
+		settingsFinalizeEvent(audit, refusedBy, committedErr)
+		settingsEmitEvent(*audit)
 	}
 	return committedErr
 }

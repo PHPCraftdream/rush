@@ -1,3 +1,5 @@
 package config
 
-func init() { settingsPasswordIterations.Store(1000) }
+import "github.com/PHPCraftdream/rush/internal/config/store/settings"
+
+func init() { _ = settings.SetSettingsPasswordIterationsForTest(1000) }

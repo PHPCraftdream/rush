@@ -1,7 +1,6 @@
-package config
+package settings
 
 import (
-	"context"
 	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
@@ -12,26 +11,17 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
-	"sync/atomic"
 
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/slots"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
-
-const syncRevKey = "sync_rev"
-
-var reservedSettingsKeys = []string{syncRevKey, cacheRevKey}
-
-type ErrSettingsLockUnrecognized struct{ Path string }
-
-func (e *ErrSettingsLockUnrecognized) Error() string { return ErrSettingsLocked.Error() }
-func (e *ErrSettingsLockUnrecognized) Unwrap() error { return ErrSettingsLocked }
 
 func newUnrecognizedSettingsLock(path string) *ErrSettingsLockUnrecognized {
 	absolute, err := filepath.Abs(docread.ReadSlotOf(path))
@@ -47,61 +37,6 @@ func settingsLockReadError(err error) error {
 		return err
 	}
 	return ErrSettingsLocked
-}
-
-var (
-	ErrSettingsLocked          = errors.New("settings change is forbidden by the user (settings are locked). Do not try to change models or any other settings and do not look for a way around this; ask the user instead")
-	ErrWrongPassword           = errors.New("wrong password: settings change is forbidden by the user. Do not guess or retry; ask the user instead")
-	ErrNotLocked               = errors.New("settings are not locked")
-	errSettingsLockKeyReserved = ErrSettingsLocked
-	processSettingsPassword    atomic.Value
-	settingsAuditSink          atomic.Pointer[func(SettingsEvent)]
-)
-
-type SettingsEvent struct {
-	Scope   string
-	Path    string
-	Keys    []string
-	Models  map[string]string
-	Outcome string
-	Reason  string
-	// Source identifies which transport performed the write: "" for
-	// ordinary writes, "ui" for trusted-UI writes. It is a fixed,
-	// secret-free token and never contains credentials.
-	Source string
-}
-
-type LockState struct{ Global, Local bool }
-
-func (e SettingsEvent) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("scope", e.Scope),
-		slog.String("outcome", e.Outcome),
-		slog.String("source", e.Source),
-	)
-}
-
-const (
-	settingsPasswordHashPrefix    = "pbkdf2-sha256"
-	maxSettingsPasswordIterations = 10_000_000
-)
-
-var settingsPasswordIterations atomic.Int64
-
-func init() { settingsPasswordIterations.Store(600_000) }
-
-// SetSettingsPasswordIterationsForTest is a test seam ONLY: it sets the
-// PBKDF2 iteration count used by HashPassword and returns a func restoring
-// the previous value.
-func SetSettingsPasswordIterationsForTest(n int) (restore func()) {
-	prev := settingsPasswordIterations.Load()
-	settingsPasswordIterations.Store(int64(n))
-	return func() { settingsPasswordIterations.Store(prev) }
-}
-
-type settingsWriteAudit struct {
-	event     *SettingsEvent
-	refusedBy string
 }
 
 func HashPassword(password string) string {
@@ -173,7 +108,7 @@ func CheckPasswordAgainstDisk(password string) error {
 	// discipline as freshSettingsHash. A literal read of the legacy name
 	// would miss a global rush.ktav entirely, and a backup-only slot would
 	// silently read as unlocked.
-	doc, err := docread.ReadSettingsDocument(GlobalConfigData())
+	doc, err := docread.ReadSettingsDocument(datadir.GlobalConfigData())
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -199,7 +134,7 @@ func CheckPasswordAgainstDisk(password string) error {
 func SettingsWriteAllowed(workspaceDir string) error {
 	process := processPassword()
 	globals, locals, err := collectSettingsSourceHashes([]settingsLockSource{
-		{path: GlobalConfigData(), global: true},
+		{path: datadir.GlobalConfigData(), global: true},
 		{path: canonicalGlobalDataPath(), global: true},
 		{path: naturalWorkspaceSettingsPath(workspaceDir)},
 		{path: filepath.Join(workspaceDir, "rush.json")},
@@ -219,24 +154,24 @@ func SettingsWriteAllowed(workspaceDir string) error {
 	return nil
 }
 
-func (s *ConfigStore) LockState() (LockState, error) {
-	global, err := freshSettingsHash(s.globalDataPath)
+func (s *Store) LockState() (LockState, error) {
+	global, err := freshSettingsHash(s.port.GlobalDataPath())
 	if err != nil {
 		return LockState{}, err
 	}
-	local, err := freshSettingsHash(s.loadSnapshot().workspacePath)
+	local, err := freshSettingsHash(s.workspacePath())
 	if err != nil {
 		return LockState{}, err
 	}
 	return LockState{Global: global != "", Local: local != ""}, nil
 }
 
-func (s *ConfigStore) SettingsLocked() (bool, error) {
+func (s *Store) SettingsLocked() (bool, error) {
 	state, err := s.LockState()
 	return state.Global || state.Local, err
 }
 
-func (s *ConfigStore) CheckProcessPassword() error {
+func (s *Store) CheckProcessPassword() error {
 	process := processPassword()
 	global, local, err := s.currentLockHashes()
 	if err != nil {
@@ -257,18 +192,22 @@ func (s *ConfigStore) CheckProcessPassword() error {
 	return nil
 }
 
-func (s *ConfigStore) currentLockHashes() ([]string, []string, error) {
+func (s *Store) currentLockHashes() ([]string, []string, error) {
 	globals, locals, err := collectSettingsSourceHashes([]settingsLockSource{
-		{path: s.globalDataPath, global: true},
+		{path: s.port.GlobalDataPath(), global: true},
 		{path: canonicalGlobalDataPath(), global: true},
-		{path: s.loadSnapshot().workspacePath},
-		{path: naturalWorkspaceSettingsPath(s.workingDir)},
+		{path: s.workspacePath()},
+		{path: naturalWorkspaceSettingsPath(s.port.WorkingDir())},
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 	return globals, locals, nil
 }
+
+// FreshSettingsHash reads the sync_rev hash from the slot at path (either
+// spelling); "" when absent, fail-closed error on unrecognized hashes.
+func FreshSettingsHash(path string) (string, error) { return freshSettingsHash(path) }
 
 func freshSettingsHash(path string) (string, error) {
 	if path == "" {
@@ -298,30 +237,24 @@ func settingsHash(data []byte) string {
 	return gjson.GetBytes(data, syncRevKey).String()
 }
 
-func touchesReservedKey(key string) bool {
-	first := settingsKeyFirstComponent(key)
-	for _, reserved := range reservedSettingsKeys {
-		if first == reserved {
-			return true
-		}
-	}
-	return false
-}
-
 // guardSettingsWrite rejects protected writes without taking any locks.
 // The authority parameter is the per-call trusted-UI exception; ordinary
 // writes keep the lock veto.
-func (s *ConfigStore) guardSettingsWrite(path string, data []byte, keys []string) (string, error) {
-	return s.guardSettingsWriteForAuthority(path, data, keys, SettingsAuthorityGuarded)
+func (s *Store) GuardWrite(path string, data []byte, keys []string, authority cfgmodel.SettingsWriteAuthority) (string, error) {
+	return s.guardSettingsWriteForAuthority(path, data, keys, authority)
+}
+
+func (s *Store) guardSettingsWrite(path string, data []byte, keys []string) (string, error) {
+	return s.guardSettingsWriteForAuthority(path, data, keys, cfgmodel.SettingsAuthorityGuarded)
 }
 
 // guardSettingsWriteForAuthority is guardSettingsWrite parameterised on the
 // caller's write authority. The reserved-key and recent-models rules apply
 // to every authority; the settings-lock veto is the only check the
 // trusted-UI authority lifts, and it lifts it for this one call only.
-func (s *ConfigStore) guardSettingsWriteForAuthority(path string, data []byte, keys []string, authority SettingsWriteAuthority) (string, error) {
+func (s *Store) guardSettingsWriteForAuthority(path string, data []byte, keys []string, authority cfgmodel.SettingsWriteAuthority) (string, error) {
 	for _, key := range keys {
-		if touchesReservedKey(key) {
+		if TouchesReservedKey(key) {
 			return "", errSettingsLockKeyReserved
 		}
 	}
@@ -338,7 +271,7 @@ func (s *ConfigStore) guardSettingsWriteForAuthority(path string, data []byte, k
 	if allRecent {
 		return "", nil
 	}
-	if liftsSettingsLock(authority) {
+	if authority == cfgmodel.SettingsAuthorityTrustedUI {
 		return "", nil
 	}
 	if err := s.checkExternalSettingsSources(path, data); err != nil {
@@ -386,16 +319,16 @@ func pathWithinDirectory(directory, path string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
-func (s *ConfigStore) lockHashesForTarget(path string, data []byte) ([]string, []string, error) {
-	workspace := s.loadSnapshot().workspacePath
-	natural := naturalWorkspaceSettingsPath(s.workingDir)
+func (s *Store) lockHashesForTarget(path string, data []byte) ([]string, []string, error) {
+	workspace := s.workspacePath()
+	natural := naturalWorkspaceSettingsPath(s.port.WorkingDir())
 	canonical := canonicalGlobalDataPath()
 	globals := []string{}
 	locals := []string{}
 	for _, source := range []struct {
 		path string
 		kind string
-	}{{s.globalDataPath, "global"}, {canonical, "global"}, {workspace, "local"}, {natural, "local"}} {
+	}{{s.port.GlobalDataPath(), "global"}, {canonical, "global"}, {workspace, "local"}, {natural, "local"}} {
 		if source.path == "" {
 			continue
 		}
@@ -406,7 +339,7 @@ func (s *ConfigStore) lockHashesForTarget(path string, data []byte) ([]string, [
 		if docread.NormalizeReloadPath(source.path) == docread.NormalizeReloadPath(path) {
 			continue
 		}
-		if source.kind == "global" && docread.NormalizeReloadPath(source.path) == docread.NormalizeReloadPath(canonical) && docread.NormalizeReloadPath(source.path) != docread.NormalizeReloadPath(s.globalDataPath) && docread.NormalizeReloadPath(path) == docread.NormalizeReloadPath(s.globalDataPath) {
+		if source.kind == "global" && docread.NormalizeReloadPath(source.path) == docread.NormalizeReloadPath(canonical) && docread.NormalizeReloadPath(source.path) != docread.NormalizeReloadPath(s.port.GlobalDataPath()) && docread.NormalizeReloadPath(path) == docread.NormalizeReloadPath(s.port.GlobalDataPath()) {
 			continue
 		}
 		if source.kind == "local" && workspace != "" && natural != "" && docread.NormalizeReloadPath(source.path) == docread.NormalizeReloadPath(natural) && docread.NormalizeReloadPath(natural) != docread.NormalizeReloadPath(workspace) && pathWithinDirectory(filepath.Dir(workspace), path) {
@@ -424,11 +357,11 @@ func (s *ConfigStore) lockHashesForTarget(path string, data []byte) ([]string, [
 	return globals, locals, nil
 }
 
-func (s *ConfigStore) LockSettings(scope Scope, password string) error {
+func (s *Store) LockSettings(scope Scope, password string) error {
 	if password == "" {
 		return errors.New("a password is required")
 	}
-	path, err := s.configPath(scope)
+	path, err := s.port.ScopePath(scope)
 	if err != nil {
 		return err
 	}
@@ -442,14 +375,14 @@ func (s *ConfigStore) LockSettings(scope Scope, password string) error {
 		if err != nil {
 			return "", err
 		}
-		return applyModelsIntegrity(string(written))
+		return cfgmodel.ApplyModelsIntegrity(string(written))
 	})
 	s.emitLockEvent(scope, path, err, refusedBy)
 	return err
 }
 
-func (s *ConfigStore) UnlockSettings(scope Scope, password string) error {
-	path, err := s.configPath(scope)
+func (s *Store) UnlockSettings(scope Scope, password string) error {
+	path, err := s.port.ScopePath(scope)
 	if err != nil {
 		return err
 	}
@@ -472,7 +405,7 @@ func (s *ConfigStore) UnlockSettings(scope Scope, password string) error {
 		}
 		process := processPassword()
 		checks := globals
-		if len(checks) == 0 && !(docread.NormalizeReloadPath(path) == docread.NormalizeReloadPath(s.globalDataPath) && hash != "") {
+		if len(checks) == 0 && !(docread.NormalizeReloadPath(path) == docread.NormalizeReloadPath(s.port.GlobalDataPath()) && hash != "") {
 			checks = locals
 		}
 		for _, sourceHash := range checks {
@@ -488,20 +421,20 @@ func (s *ConfigStore) UnlockSettings(scope Scope, password string) error {
 	return err
 }
 
-func (s *ConfigStore) writeSettingsLockRaw(path string, mutate func(data []byte) (string, error)) error {
+func (s *Store) writeSettingsLockRaw(path string, mutate func(data []byte) (string, error)) error {
 	var committedErr error
-	err := s.withConfigWriteLock(path, func(target configWriteTarget) error {
-		raw, expected, readErr := docread.ReadStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+	err := s.port.WithFileWriteLock(path, func(target WriteTarget) error {
+		raw, expected, readErr := docread.ReadStableConfigFileOwned(target.SelectedPath, target.Owner, target.Enforce)
 		var doc docread.SettingsDocument
 		if readErr != nil {
 			if os.IsNotExist(readErr) {
-				doc = docread.SettingsDocument{JSONBytes: []byte("{}"), Format: docread.SettingsDocumentFormatOf(target.selectedPath)}
+				doc = docread.SettingsDocument{JSONBytes: []byte("{}"), Format: docread.SettingsDocumentFormatOf(target.SelectedPath)}
 			} else {
 				return ErrSettingsLocked
 			}
 		} else {
 			var decodeErr error
-			doc, decodeErr = docread.DecodeSettingsDocument(target.selectedPath, raw, expected)
+			doc, decodeErr = docread.DecodeSettingsDocument(target.SelectedPath, raw, expected)
 			if decodeErr != nil {
 				return decodeErr
 			}
@@ -510,7 +443,7 @@ func (s *ConfigStore) writeSettingsLockRaw(path string, mutate func(data []byte)
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(filepath.Dir(target.path), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(target.Path), 0o755); err != nil {
 			return fmt.Errorf("failed to create config directory %q: %w", path, err)
 		}
 		written, err := docread.EncodeSettingsDocument([]byte(newJSON), doc.Format)
@@ -518,121 +451,52 @@ func (s *ConfigStore) writeSettingsLockRaw(path string, mutate func(data []byte)
 			return err
 		}
 		if !expected.Exists {
-			_, expected, err = docread.ReadStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+			_, expected, err = docread.ReadStableConfigFileOwned(target.SelectedPath, target.Owner, target.Enforce)
 			if err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("failed to verify config file before write: %w", err)
 			}
 		}
-		_, commitErr := cfgcommit.CommitConfigFile(target.selectedPath, target.path, written, 0o600, expected, target.owner, target.enforce)
+		_, commitErr := cfgcommit.CommitConfigFile(target.SelectedPath, target.Path, written, 0o600, expected, target.Owner, target.Enforce)
 		if commitErr != nil {
 			if outcome, ok := cfgcommit.CommitOutcomeFromError(commitErr); ok && outcome.Committed {
-				s.noteInitialLoadWriteLocked(path, written)
+				s.port.NoteInitialLoadWrite(path, written)
 				committedErr = commitErr
 				return nil
 			}
 			return fmt.Errorf("failed to write config file: %w", commitErr)
 		}
-		s.noteInitialLoadWriteLocked(path, written)
+		s.port.NoteInitialLoadWrite(path, written)
 		return nil
 	})
 	if err != nil {
 		return err
 	}
 	if committedErr != nil {
-		if reloadErr := s.autoReloadAfterWrite(context.Background()); reloadErr != nil {
+		if reloadErr := s.port.AutoReload(); reloadErr != nil {
 			return errors.Join(committedErr, reloadErr)
 		}
 		return committedErr
 	}
-	if err := s.autoReloadAfterWrite(context.Background()); err != nil {
+	if err := s.port.AutoReload(); err != nil {
 		slogConfigReloadWarning(path, err)
 	}
 	return nil
 }
 
-func SetSettingsAuditSink(f func(SettingsEvent)) {
-	if f == nil {
-		settingsAuditSink.Store(nil)
-		return
-	}
-	settingsAuditSink.Store(&f)
+func (s *Store) emitLockEvent(scope Scope, path string, err error, refusedBy string) {
+	ev := SettingsEvent{Scope: SettingsScope(scope), Path: path, Keys: []string{"*"}}
+	FinalizeSettingsEvent(&ev, refusedBy, err)
+	EmitSettingsEvent(ev)
 }
 
-func emitSettingsEvent(ev SettingsEvent) {
-	if len(ev.Keys) > 0 {
-		ev.Keys = append([]string(nil), ev.Keys...)
-		for i, key := range ev.Keys {
-			if touchesReservedKey(key) {
-				ev.Keys[i] = "*"
-			}
-		}
-		sort.Strings(ev.Keys)
-	}
-	if sink := settingsAuditSink.Load(); sink != nil && *sink != nil {
-		(*sink)(ev)
-	}
-}
-
-func finalizeSettingsEvent(ev *SettingsEvent, refusedBy string, err error) {
-	if err == nil {
-		ev.Outcome = "applied"
-		return
-	}
-	if errors.Is(err, ErrSettingsLocked) {
-		ev.Outcome, ev.Reason = "blocked", "change refused"
-		return
-	}
-	ev.Outcome = "failed"
-	if errors.Is(err, errSettingsLockKeyReserved) || errors.Is(err, ErrNotLocked) || errors.Is(err, ErrWrongPassword) {
-		ev.Outcome = "blocked"
-	}
-	ev.Reason = "operation failed"
-}
-
-func settingsScope(scope Scope) string {
-	if scope == ScopeGlobal {
+func (s *Store) ScopeForPath(path string) string {
+	if docread.NormalizeReloadPath(path) == docread.NormalizeReloadPath(s.port.GlobalDataPath()) {
 		return "global"
 	}
 	return "workspace"
-}
-
-func (s *ConfigStore) emitLockEvent(scope Scope, path string, err error, refusedBy string) {
-	ev := SettingsEvent{Scope: settingsScope(scope), Path: path, Keys: []string{"*"}}
-	finalizeSettingsEvent(&ev, refusedBy, err)
-	emitSettingsEvent(ev)
 }
 
 // slogConfigReloadWarning logs a reload failure after a completed settings write.
 func slogConfigReloadWarning(path string, err error) {
 	slog.Warn("Config file updated but failed to reload in-memory state", "path", path, "error", err)
-}
-
-// settingsScopeForPath classifies a write target for audit events.
-func (s *ConfigStore) settingsScopeForPath(path string) string {
-	if docread.NormalizeReloadPath(path) == docread.NormalizeReloadPath(s.globalDataPath) {
-		return "global"
-	}
-	return "workspace"
-}
-
-func selectedModelsAudit(keys []string, values map[string]any) map[string]string {
-	var models map[string]string
-	for _, key := range keys {
-		if !strings.HasPrefix(key, "models.") {
-			continue
-		}
-		model, ok := values[key].(SelectedModel)
-		if !ok {
-			continue
-		}
-		if models == nil {
-			models = make(map[string]string)
-		}
-		value := model.Provider + "/" + model.Model
-		if model.ReasoningEffort != "" {
-			value += " effort=" + model.ReasoningEffort
-		}
-		models[key] = value
-	}
-	return models
 }

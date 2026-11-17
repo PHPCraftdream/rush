@@ -71,7 +71,7 @@ func TestMCPAdmissionTokenCleanupOnPanic(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		snapshot.MCPInput, snapshot.HasMCPInput = evaluation.mcpInputs["server"]
+		snapshot.MCPInput, snapshot.HasMCPInput = evaluation.MCPInputs["server"]
 		return nil
 	}))
 	var guard MCPAdmissionGuard
@@ -80,16 +80,16 @@ func TestMCPAdmissionTokenCleanupOnPanic(t *testing.T) {
 		defer func() { require.Equal(t, "admission panic", recover()) }()
 		require.NoError(t, store.WithCurrentMCPAdmission(snapshot, "server", func(current MCPAdmissionGuard) error {
 			guard = current
-			token = current.ref.current()
+			token = current.Ref.CurrentToken()
 			require.NoError(t, current.ValidateCurrent())
 			panic("admission panic")
 		}))
 	}()
 	require.ErrorIs(t, guard.ValidateCurrent(), ErrMCPMutationStale)
-	require.True(t, token.closed.Load())
-	require.Nil(t, token.handles)
-	if guard.ref != nil {
-		require.Nil(t, guard.ref.current())
+	require.True(t, token.Closed.Load())
+	require.Nil(t, token.Handles)
+	if guard.Ref != nil {
+		require.Nil(t, guard.Ref.CurrentToken())
 	}
 }
 
@@ -112,11 +112,11 @@ func TestMCPAdmissionRejectsAppearanceOfAbsentHigherPrioritySource(t *testing.T)
 		if err != nil {
 			return err
 		}
-		absent, ok := evaluation.fingerprints[normalizeDiscoveryPath(projectPath)]
+		absent, ok := evaluation.Fingerprints[normalizeDiscoveryPath(projectPath)]
 		require.True(t, ok)
 		require.False(t, absent.Exists)
 		snapshot = store.SnapshotMCPAdmission("server")
-		snapshot.MCPInput, snapshot.HasMCPInput = evaluation.mcpInputs["server"]
+		snapshot.MCPInput, snapshot.HasMCPInput = evaluation.MCPInputs["server"]
 		return nil
 	}))
 

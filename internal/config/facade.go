@@ -31,6 +31,7 @@ import (
 	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	envresolve "github.com/PHPCraftdream/rush/internal/config/model/envresolve"
 	cfgmerge "github.com/PHPCraftdream/rush/internal/config/model/merge"
+	"github.com/PHPCraftdream/rush/internal/config/store/settings"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
 
@@ -511,4 +512,77 @@ func init() {
 	apiremote.SetGlobalConfigWriterFactory(func() (apiremote.GlobalConfigWriter, error) {
 		return Load("", "", false)
 	})
+}
+
+// ---------------------------------------------------------------------------
+// X1 chunk 9a: settings lock component (store/settings)
+//
+// The root settings-lock implementation (settings_lock.go,
+// settings_lock_sources.go and the per-platform
+// settings_lock_sources_{windows,other}.go) moved to
+// internal/config/store/settings. Everything below re-exports its API and
+// forwards the unexported names that staying-root code and tests still
+// call. settings_lock_hashes.go remains in the root temporarily (deleted
+// next chunk) and is kept compiling by the freshSettingsHash forward.
+// ---------------------------------------------------------------------------
+
+// Sentinel errors re-exported from the settings package (vars preserve
+// single error identity).
+var (
+	ErrSettingsLocked = settings.ErrSettingsLocked
+	ErrWrongPassword  = settings.ErrWrongPassword
+	ErrNotLocked      = settings.ErrNotLocked
+)
+
+// Types re-exported from the settings package.
+type (
+	SettingsEvent               = settings.SettingsEvent
+	LockState                   = settings.LockState
+	ErrSettingsLockUnrecognized = settings.ErrSettingsLockUnrecognized
+)
+
+// errSettingsLockKeyReserved: the settings component owns the reserved-key
+// sentinel (settings.ErrSettingsLockKeyReserved()); root tests still assert
+// against the unexported name.
+var errSettingsLockKeyReserved = settings.ErrSettingsLockKeyReserved()
+
+// syncRevKey is the settings component's semantic reserved key ("sync_rev");
+// the root keeps a local literal copy (cfgmodel_locals precedent) for the
+// remaining root tests.
+const syncRevKey = "sync_rev"
+
+// settingsWriteAudit: relocated from the deleted root settings_lock.go;
+// store_mcp.go, store_mcp_transaction.go and store_write.go still use the
+// unqualified name.
+type settingsWriteAudit struct {
+	event     *SettingsEvent
+	refusedBy string
+}
+
+func HashPassword(password string) string { return settings.HashPassword(password) }
+
+func VerifyPassword(password, stored string) bool { return settings.VerifyPassword(password, stored) }
+
+func SetProcessPassword(password string) { settings.SetProcessPassword(password) }
+
+func CheckPasswordAgainstDisk(password string) error {
+	return settings.CheckPasswordAgainstDisk(password)
+}
+
+func SettingsWriteAllowed(workspaceDir string) error {
+	return settings.SettingsWriteAllowed(workspaceDir)
+}
+
+// SetSettingsAuditSink forwards the sink registration; with the SettingsEvent
+// alias, func(SettingsEvent) IS func(settings.SettingsEvent).
+func SetSettingsAuditSink(f func(SettingsEvent)) { settings.SetSettingsAuditSink(f) }
+
+func SetSettingsPasswordIterationsForTest(n int) (restore func()) {
+	return settings.SetSettingsPasswordIterationsForTest(n)
+}
+
+// freshSettingsHash forward: the retained root settings_lock_hashes.go
+// (dead after this chunk, deleted next chunk) still calls it unqualified.
+func freshSettingsHash(path string) (string, error) {
+	return settings.FreshSettingsHash(path)
 }

@@ -102,7 +102,7 @@ func TestMCPAdmissionInvokesBindingVerifierAfterSidecarAcquisition(t *testing.T)
 		if err != nil {
 			return err
 		}
-		input, ok := evaluation.mcpInputs["server"]
+		input, ok := evaluation.MCPInputs["server"]
 		snapshot.MCPInput, snapshot.HasMCPInput = input, ok
 		return nil
 	}))

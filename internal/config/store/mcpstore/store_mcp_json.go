@@ -1,4 +1,4 @@
-package config
+package mcpstore
 
 // Surgical JSON editing of an MCP config document: a hand-written scanner and member insert/remove that preserve the file's existing indentation, member order and trailing whitespace, because a config file is something a human edits too. Split out of store_mcp_transaction.go when the 1000-line file limit landed.
 
@@ -7,9 +7,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
+
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 )
 
 type mcpRoot struct {
@@ -42,28 +48,28 @@ func literalMCPEntryExists(data []byte, name string) bool {
 	return ok
 }
 
-func updateMCPFile(files *mcpLockedFiles, path, name string, mutate func(map[string]any) error) error {
-	data, err := editMCPDocumentWithKind(files.mcpData(path), mcpDocumentRush, "update", name, name, MCPConfig{}, nil, mutate)
+func UpdateMCPFile(files *LockedFiles, path, name string, mutate func(map[string]any) error) error {
+	data, err := editMCPDocumentWithKind(files.MCPData(path), mcpDocumentRush, "update", name, name, MCPConfig{}, nil, mutate)
 	if err != nil {
 		return err
 	}
-	return files.setMCPData(path, data)
+	return files.SetMCPData(path, data)
 }
 
-type mcpJSONMember struct {
-	key                  string
-	keyStart, keyEnd     int
-	valueStart, valueEnd int
+type JSONMember struct {
+	Key                  string
+	KeyStart, KeyEnd     int
+	ValueStart, ValueEnd int
 }
 
-type mcpJSONObject struct {
-	start, end int
-	members    []mcpJSONMember
+type JSONObject struct {
+	Start, End int
+	Members    []JSONMember
 }
 
-type mcpJSONEdit struct {
-	start, end  int
-	replacement []byte
+type JSONEdit struct {
+	Start, End  int
+	Replacement []byte
 }
 
 type mcpDocumentKind uint8
@@ -76,7 +82,7 @@ const (
 // editMCPDocument changes only the selected MCP container or entry. The JSON
 // decoder remains the semantic validator; the scanner supplies byte spans so
 // unrelated user formatting never passes through a whole-document encoder.
-func editMCPDocument(data []byte, path, operation, oldName, newName string, value MCPConfig, disabled *bool, mutate func(map[string]any) error) ([]byte, error) {
+func EditMCPDocument(data []byte, path, operation, oldName, newName string, value MCPConfig, disabled *bool, mutate func(map[string]any) error) ([]byte, error) {
 	return editMCPDocumentWithKind(data, mcpDocumentKindForPath(path), operation, oldName, newName, value, disabled, mutate)
 }
 
@@ -95,21 +101,21 @@ func editMCPDocumentWithKind(data []byte, kind mcpDocumentKind, operation, oldNa
 	if len(data) == 0 {
 		return newMCPDocument(containerName, operation, oldName, newName, value, disabled, mutate)
 	}
-	root, err := scanMCPJSONObject(data)
+	root, err := ScanMCPJSONObject(data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
-	containerMember := lastMCPMember(root.members, containerName)
-	var container *mcpJSONObject
-	if containerMember != nil && string(data[containerMember.valueStart:containerMember.valueEnd]) != "null" {
+	containerMember := LastMCPMember(root.Members, containerName)
+	var container *JSONObject
+	if containerMember != nil && string(data[containerMember.ValueStart:containerMember.ValueEnd]) != "null" {
 		var entries map[string]json.RawMessage
-		if err := json.Unmarshal(data[containerMember.valueStart:containerMember.valueEnd], &entries); err != nil {
+		if err := json.Unmarshal(data[containerMember.ValueStart:containerMember.ValueEnd], &entries); err != nil {
 			return nil, fmt.Errorf("failed to parse MCP config: %w", err)
 		}
 		if entries == nil {
 			entries = make(map[string]json.RawMessage)
 		}
-		_, container, err = scanMCPJSONValue(data, containerMember.valueStart)
+		_, container, err = ScanMCPJSONValue(data, containerMember.ValueStart)
 		if err != nil || container == nil {
 			return nil, fmt.Errorf("failed to parse MCP config: expected %s to be an object", containerName)
 		}
@@ -127,16 +133,16 @@ func editMCPDocumentWithKind(data []byte, kind mcpDocumentKind, operation, oldNa
 	if operation == "remove" {
 		entryName = oldName
 	}
-	var entryMember *mcpJSONMember
+	var entryMember *JSONMember
 	if container != nil {
-		entryMember = lastMCPMember(container.members, entryName)
+		entryMember = LastMCPMember(container.Members, entryName)
 	}
 
 	switch operation {
 	case "remove":
 		if container == nil {
 			if containerMember != nil {
-				return applyMCPJSONEdits(data, mcpJSONEdit{start: containerMember.valueStart, end: containerMember.valueEnd, replacement: []byte("{}")}), nil
+				return ApplyMCPJSONEdits(data, JSONEdit{Start: containerMember.ValueStart, End: containerMember.ValueEnd, Replacement: []byte("{}")}), nil
 			}
 			return addMCPContainer(data, root, containerName, []byte("{}")), nil
 		}
@@ -146,35 +152,35 @@ func editMCPDocumentWithKind(data []byte, kind mcpDocumentKind, operation, oldNa
 		return removeMCPMembers(data, *container, oldName), nil
 	case "replace":
 		if oldName != newName && container != nil {
-			if existing := lastMCPMember(container.members, newName); existing != nil {
+			if existing := LastMCPMember(container.Members, newName); existing != nil {
 				return nil, fmt.Errorf("MCP target already exists: %q", newName)
 			}
 			oldCount := 0
-			for _, member := range container.members {
-				if member.key == oldName {
+			for _, member := range container.Members {
+				if member.Key == oldName {
 					oldCount++
 				}
 			}
 			if oldCount > 1 {
 				withoutOld := removeMCPMembers(data, *container, oldName)
-				withoutRoot, scanErr := scanMCPJSONObject(withoutOld)
+				withoutRoot, scanErr := ScanMCPJSONObject(withoutOld)
 				if scanErr != nil {
 					return nil, scanErr
 				}
-				withoutMember := lastMCPMember(withoutRoot.members, containerName)
+				withoutMember := LastMCPMember(withoutRoot.Members, containerName)
 				if withoutMember == nil {
 					return nil, errors.New("MCP container disappeared during rename")
 				}
-				_, withoutContainer, scanErr := scanMCPJSONValue(withoutOld, withoutMember.valueStart)
+				_, withoutContainer, scanErr := ScanMCPJSONValue(withoutOld, withoutMember.ValueStart)
 				if scanErr != nil || withoutContainer == nil {
 					return nil, errors.New("MCP container became invalid during rename")
 				}
 				return insertMCPMember(withoutOld, *withoutContainer, newName, entryRaw), nil
 			}
-			if old := lastMCPMember(container.members, oldName); old != nil {
-				return applyMCPJSONEdits(data,
-					mcpJSONEdit{start: old.keyStart, end: old.keyEnd, replacement: mustJSONMarshal(newName)},
-					mcpJSONEdit{start: old.valueStart, end: old.valueEnd, replacement: entryRaw}), nil
+			if old := LastMCPMember(container.Members, oldName); old != nil {
+				return ApplyMCPJSONEdits(data,
+					JSONEdit{Start: old.KeyStart, End: old.KeyEnd, Replacement: mustJSONMarshal(newName)},
+					JSONEdit{Start: old.ValueStart, End: old.ValueEnd, Replacement: entryRaw}), nil
 			}
 		}
 		fallthrough
@@ -182,12 +188,12 @@ func editMCPDocumentWithKind(data []byte, kind mcpDocumentKind, operation, oldNa
 		if container == nil {
 			containerValue := newMCPContainer(entryName, entryRaw, operation == "remove")
 			if containerMember != nil {
-				return applyMCPJSONEdits(data, mcpJSONEdit{start: containerMember.valueStart, end: containerMember.valueEnd, replacement: containerValue}), nil
+				return ApplyMCPJSONEdits(data, JSONEdit{Start: containerMember.ValueStart, End: containerMember.ValueEnd, Replacement: containerValue}), nil
 			}
 			return addMCPContainer(data, root, containerName, containerValue), nil
 		}
 		if entryMember != nil {
-			return applyMCPJSONEdits(data, mcpJSONEdit{start: entryMember.valueStart, end: entryMember.valueEnd, replacement: entryRaw}), nil
+			return ApplyMCPJSONEdits(data, JSONEdit{Start: entryMember.ValueStart, End: entryMember.ValueEnd, Replacement: entryRaw}), nil
 		}
 		return insertMCPMember(data, *container, entryName, entryRaw), nil
 	default:
@@ -195,15 +201,15 @@ func editMCPDocumentWithKind(data []byte, kind mcpDocumentKind, operation, oldNa
 	}
 }
 
-func mcpMutationEntry(data []byte, container *mcpJSONObject, oldName, newName string, value MCPConfig, disabled *bool, mutate func(map[string]any) error) ([]byte, error) {
+func mcpMutationEntry(data []byte, container *JSONObject, oldName, newName string, value MCPConfig, disabled *bool, mutate func(map[string]any) error) ([]byte, error) {
 	name := newName
 	if disabled != nil || mutate != nil {
 		name = oldName
 	}
 	var raw []byte
 	if container != nil {
-		if member := lastMCPMember(container.members, name); member != nil {
-			raw = append([]byte(nil), data[member.valueStart:member.valueEnd]...)
+		if member := LastMCPMember(container.Members, name); member != nil {
+			raw = append([]byte(nil), data[member.ValueStart:member.ValueEnd]...)
 		}
 	}
 	entry := make(map[string]any)
@@ -231,7 +237,7 @@ func mcpMutationEntry(data []byte, container *mcpJSONObject, oldName, newName st
 	return json.Marshal(entry)
 }
 
-func mcpContainerName(path string) string {
+func MCPContainerName(path string) string {
 	return mcpContainerNameForKind(mcpDocumentKindForPath(path))
 }
 
@@ -284,30 +290,30 @@ func newMCPContainer(name string, entry []byte, empty bool) []byte {
 	return append(append(append([]byte{'{'}, key...), ':'), append(entry, '}')...)
 }
 
-func addMCPContainer(data []byte, root mcpJSONObject, name string, value []byte) []byte {
+func addMCPContainer(data []byte, root JSONObject, name string, value []byte) []byte {
 	return insertMCPMember(data, root, name, value)
 }
 
-func insertMCPMember(data []byte, object mcpJSONObject, name string, value []byte) []byte {
+func insertMCPMember(data []byte, object JSONObject, name string, value []byte) []byte {
 	key := mustJSONMarshal(name)
 	member := append(append(append(append([]byte(nil), key...), ':'), value...), nil...)
-	contentStart, contentEnd := object.start+1, object.end-1
+	contentStart, contentEnd := object.Start+1, object.End-1
 	layout := mcpJSONLayoutForObject(data, object)
-	if len(object.members) == 0 {
+	if len(object.Members) == 0 {
 		if layout.multiline {
 			replacement := []byte(layout.newline + layout.memberIndent + string(member) + layout.newline + layout.closingIndent)
-			return applyMCPJSONEdits(data, mcpJSONEdit{start: contentStart, end: contentEnd, replacement: replacement})
+			return ApplyMCPJSONEdits(data, JSONEdit{Start: contentStart, End: contentEnd, Replacement: replacement})
 		}
-		return applyMCPJSONEdits(data, mcpJSONEdit{start: contentStart, end: contentEnd, replacement: member})
+		return ApplyMCPJSONEdits(data, JSONEdit{Start: contentStart, End: contentEnd, Replacement: member})
 	}
 
-	last := object.members[len(object.members)-1]
-	trailing := data[last.valueEnd:contentEnd]
+	last := object.Members[len(object.Members)-1]
+	trailing := data[last.ValueEnd:contentEnd]
 	if layout.multiline {
 		replacement := append([]byte{','}, []byte(layout.newline+layout.memberIndent)...)
 		replacement = append(replacement, member...)
 		replacement = append(replacement, trailing...)
-		return applyMCPJSONEdits(data, mcpJSONEdit{start: last.valueEnd, end: contentEnd, replacement: replacement})
+		return ApplyMCPJSONEdits(data, JSONEdit{Start: last.ValueEnd, End: contentEnd, Replacement: replacement})
 	}
 	separator := []byte(",")
 	if bytes.Contains(data[contentStart:contentEnd], []byte(", ")) {
@@ -315,32 +321,32 @@ func insertMCPMember(data []byte, object mcpJSONObject, name string, value []byt
 	}
 	replacement := append(separator, member...)
 	replacement = append(replacement, trailing...)
-	return applyMCPJSONEdits(data, mcpJSONEdit{start: last.valueEnd, end: contentEnd, replacement: replacement})
+	return ApplyMCPJSONEdits(data, JSONEdit{Start: last.ValueEnd, End: contentEnd, Replacement: replacement})
 }
 
-func removeMCPMember(data []byte, object mcpJSONObject, member mcpJSONMember) []byte {
+func removeMCPMember(data []byte, object JSONObject, member JSONMember) []byte {
 	index := -1
-	for i := range object.members {
-		if object.members[i].keyStart == member.keyStart {
+	for i := range object.Members {
+		if object.Members[i].KeyStart == member.KeyStart {
 			index = i
 			break
 		}
 	}
-	if len(object.members) == 1 {
-		replacement := append([]byte(nil), data[member.valueEnd:object.end-1]...)
-		return applyMCPJSONEdits(data, mcpJSONEdit{start: object.start + 1, end: object.end - 1, replacement: replacement})
+	if len(object.Members) == 1 {
+		replacement := append([]byte(nil), data[member.ValueEnd:object.End-1]...)
+		return ApplyMCPJSONEdits(data, JSONEdit{Start: object.Start + 1, End: object.End - 1, Replacement: replacement})
 	}
-	if index < len(object.members)-1 {
-		return applyMCPJSONEdits(data, mcpJSONEdit{start: member.keyStart, end: object.members[index+1].keyStart})
+	if index < len(object.Members)-1 {
+		return ApplyMCPJSONEdits(data, JSONEdit{Start: member.KeyStart, End: object.Members[index+1].KeyStart})
 	}
-	trailing := append([]byte(nil), data[member.valueEnd:object.end-1]...)
-	return applyMCPJSONEdits(data, mcpJSONEdit{start: object.members[index-1].valueEnd, end: object.end - 1, replacement: trailing})
+	trailing := append([]byte(nil), data[member.ValueEnd:object.End-1]...)
+	return ApplyMCPJSONEdits(data, JSONEdit{Start: object.Members[index-1].ValueEnd, End: object.End - 1, Replacement: trailing})
 }
 
-func removeMCPMembers(data []byte, object mcpJSONObject, key string) []byte {
+func removeMCPMembers(data []byte, object JSONObject, key string) []byte {
 	indices := make([]int, 0, 1)
-	for index, member := range object.members {
-		if member.key == key {
+	for index, member := range object.Members {
+		if member.Key == key {
 			indices = append(indices, index)
 		}
 	}
@@ -348,15 +354,15 @@ func removeMCPMembers(data []byte, object mcpJSONObject, key string) []byte {
 		if len(indices) == 0 {
 			return data
 		}
-		return removeMCPMember(data, object, object.members[indices[0]])
+		return removeMCPMember(data, object, object.Members[indices[0]])
 	}
-	if len(indices) == len(object.members) {
-		last := object.members[len(object.members)-1]
-		replacement := append([]byte(nil), data[last.valueEnd:object.end-1]...)
-		return applyMCPJSONEdits(data, mcpJSONEdit{start: object.start + 1, end: object.end - 1, replacement: replacement})
+	if len(indices) == len(object.Members) {
+		last := object.Members[len(object.Members)-1]
+		replacement := append([]byte(nil), data[last.ValueEnd:object.End-1]...)
+		return ApplyMCPJSONEdits(data, JSONEdit{Start: object.Start + 1, End: object.End - 1, Replacement: replacement})
 	}
 
-	edits := make([]mcpJSONEdit, 0, len(indices))
+	edits := make([]JSONEdit, 0, len(indices))
 	for start := 0; start < len(indices); {
 		runStart := indices[start]
 		runEnd := runStart
@@ -364,24 +370,24 @@ func removeMCPMembers(data []byte, object mcpJSONObject, key string) []byte {
 			start++
 			runEnd = indices[start]
 		}
-		if runEnd == len(object.members)-1 {
-			previous := object.members[runStart-1]
-			trailing := append([]byte(nil), data[object.members[runEnd].valueEnd:object.end-1]...)
-			edits = append(edits, mcpJSONEdit{start: previous.valueEnd, end: object.end - 1, replacement: trailing})
+		if runEnd == len(object.Members)-1 {
+			previous := object.Members[runStart-1]
+			trailing := append([]byte(nil), data[object.Members[runEnd].ValueEnd:object.End-1]...)
+			edits = append(edits, JSONEdit{Start: previous.ValueEnd, End: object.End - 1, Replacement: trailing})
 		} else {
-			edits = append(edits, mcpJSONEdit{
-				start: object.members[runStart].keyStart,
-				end:   object.members[runEnd+1].keyStart,
+			edits = append(edits, JSONEdit{
+				Start: object.Members[runStart].KeyStart,
+				End:   object.Members[runEnd+1].KeyStart,
 			})
 		}
 		start++
 	}
-	return applyMCPJSONEdits(data, edits...)
+	return ApplyMCPJSONEdits(data, edits...)
 }
 
-func lastMCPMember(members []mcpJSONMember, key string) *mcpJSONMember {
+func LastMCPMember(members []JSONMember, key string) *JSONMember {
 	for i := len(members) - 1; i >= 0; i-- {
-		if members[i].key == key {
+		if members[i].Key == key {
 			member := members[i]
 			return &member
 		}
@@ -389,22 +395,22 @@ func lastMCPMember(members []mcpJSONMember, key string) *mcpJSONMember {
 	return nil
 }
 
-func applyMCPJSONEdits(data []byte, edits ...mcpJSONEdit) []byte {
+func ApplyMCPJSONEdits(data []byte, edits ...JSONEdit) []byte {
 	if len(edits) == 0 {
 		return append([]byte(nil), data...)
 	}
 	ordered := slices.Clone(edits)
-	slices.SortStableFunc(ordered, func(left, right mcpJSONEdit) int {
-		if left.start < right.start {
+	slices.SortStableFunc(ordered, func(left, right JSONEdit) int {
+		if left.Start < right.Start {
 			return -1
 		}
-		if left.start > right.start {
+		if left.Start > right.Start {
 			return 1
 		}
-		if left.end < right.end {
+		if left.End < right.End {
 			return -1
 		}
-		if left.end > right.end {
+		if left.End > right.End {
 			return 1
 		}
 		return 0
@@ -413,17 +419,17 @@ func applyMCPJSONEdits(data []byte, edits ...mcpJSONEdit) []byte {
 	maxInt := int(^uint(0) >> 1)
 	resultLen := len(data)
 	for index, edit := range ordered {
-		if edit.start < 0 || edit.end < 0 || edit.start > edit.end || edit.end > len(data) {
-			panic(fmt.Sprintf("invalid MCP JSON edit span %d:%d for document length %d", edit.start, edit.end, len(data)))
+		if edit.Start < 0 || edit.End < 0 || edit.Start > edit.End || edit.End > len(data) {
+			panic(fmt.Sprintf("invalid MCP JSON edit span %d:%d for document length %d", edit.Start, edit.End, len(data)))
 		}
-		if index > 0 && ordered[index-1].end > edit.start {
-			panic(fmt.Sprintf("overlapping MCP JSON edit spans %d:%d and %d:%d", ordered[index-1].start, ordered[index-1].end, edit.start, edit.end))
+		if index > 0 && ordered[index-1].End > edit.Start {
+			panic(fmt.Sprintf("overlapping MCP JSON edit spans %d:%d and %d:%d", ordered[index-1].Start, ordered[index-1].End, edit.Start, edit.End))
 		}
-		resultLen -= edit.end - edit.start
-		if len(edit.replacement) > maxInt-resultLen {
+		resultLen -= edit.End - edit.Start
+		if len(edit.Replacement) > maxInt-resultLen {
 			panic("MCP JSON edit result length overflows int")
 		}
-		resultLen += len(edit.replacement)
+		resultLen += len(edit.Replacement)
 	}
 
 	var result []byte
@@ -432,9 +438,9 @@ func applyMCPJSONEdits(data []byte, edits ...mcpJSONEdit) []byte {
 	}
 	sourceStart, destinationStart := 0, 0
 	for _, edit := range ordered {
-		destinationStart += copy(result[destinationStart:], data[sourceStart:edit.start])
-		destinationStart += copy(result[destinationStart:], edit.replacement)
-		sourceStart = edit.end
+		destinationStart += copy(result[destinationStart:], data[sourceStart:edit.Start])
+		destinationStart += copy(result[destinationStart:], edit.Replacement)
+		sourceStart = edit.End
 	}
 	copy(result[destinationStart:], data[sourceStart:])
 	return result
@@ -465,9 +471,9 @@ type mcpJSONLayout struct {
 	closingIndent string
 }
 
-func mcpJSONLayoutForObject(data []byte, object mcpJSONObject) mcpJSONLayout {
-	contentStart, contentEnd := object.start+1, object.end-1
-	if len(object.members) == 0 {
+func mcpJSONLayoutForObject(data []byte, object JSONObject) mcpJSONLayout {
+	contentStart, contentEnd := object.Start+1, object.End-1
+	if len(object.Members) == 0 {
 		gap := data[contentStart:contentEnd]
 		newline := mcpJSONNewline(gap)
 		if newline == "" {
@@ -483,12 +489,12 @@ func mcpJSONLayoutForObject(data []byte, object mcpJSONObject) mcpJSONLayout {
 		}
 	}
 
-	leading := data[contentStart:object.members[0].keyStart]
-	trailing := data[object.members[len(object.members)-1].valueEnd:contentEnd]
-	gaps := make([][]byte, 0, len(object.members)+1)
+	leading := data[contentStart:object.Members[0].KeyStart]
+	trailing := data[object.Members[len(object.Members)-1].ValueEnd:contentEnd]
+	gaps := make([][]byte, 0, len(object.Members)+1)
 	gaps = append(gaps, leading)
-	for index := 1; index < len(object.members); index++ {
-		gaps = append(gaps, data[object.members[index-1].valueEnd:object.members[index].keyStart])
+	for index := 1; index < len(object.Members); index++ {
+		gaps = append(gaps, data[object.Members[index-1].ValueEnd:object.Members[index].KeyStart])
 	}
 	gaps = append(gaps, trailing)
 
@@ -530,7 +536,7 @@ func mcpJSONWhitespaceSuffixAfterNewline(data []byte) (string, bool) {
 	return string(suffix), true
 }
 
-func mcpJSONMemberIndent(data []byte, keyStart int) string {
+func JSONMemberIndent(data []byte, keyStart int) string {
 	lineStart := bytes.LastIndexByte(data[:keyStart], '\n') + 1
 	indent := data[lineStart:keyStart]
 	for _, char := range indent {
@@ -541,31 +547,31 @@ func mcpJSONMemberIndent(data []byte, keyStart int) string {
 	return string(indent)
 }
 
-func scanMCPJSONObject(data []byte) (mcpJSONObject, error) {
-	end, object, err := scanMCPJSONValue(data, mcpJSONSkipSpace(data, 0))
+func ScanMCPJSONObject(data []byte) (JSONObject, error) {
+	end, object, err := ScanMCPJSONValue(data, mcpJSONSkipSpace(data, 0))
 	if err != nil || object == nil || mcpJSONSkipSpace(data, end) != len(data) {
 		if err != nil {
-			return mcpJSONObject{}, err
+			return JSONObject{}, err
 		}
-		return mcpJSONObject{}, errors.New("JSON root must be an object")
+		return JSONObject{}, errors.New("JSON root must be an object")
 	}
 	return *object, nil
 }
 
-func scanMCPJSONValue(data []byte, pos int) (int, *mcpJSONObject, error) {
+func ScanMCPJSONValue(data []byte, pos int) (int, *JSONObject, error) {
 	if pos >= len(data) {
 		return 0, nil, errors.New("unexpected end of JSON")
 	}
 	switch data[pos] {
 	case '{':
-		object := &mcpJSONObject{start: pos}
+		object := &JSONObject{Start: pos}
 		pos = mcpJSONSkipSpace(data, pos+1)
 		if pos == len(data) {
 			return 0, nil, errors.New("unterminated JSON object")
 		}
 		if data[pos] == '}' {
-			object.end = pos + 1
-			return object.end, object, nil
+			object.End = pos + 1
+			return object.End, object, nil
 		}
 		for {
 			keyStart := mcpJSONSkipSpace(data, pos)
@@ -578,21 +584,21 @@ func scanMCPJSONValue(data []byte, pos int) (int, *mcpJSONObject, error) {
 				return 0, nil, errors.New("JSON object member lacks colon")
 			}
 			valueStart := mcpJSONSkipSpace(data, pos+1)
-			valueEnd, _, err := scanMCPJSONValue(data, valueStart)
+			valueEnd, _, err := ScanMCPJSONValue(data, valueStart)
 			if err != nil {
 				return 0, nil, err
 			}
-			object.members = append(object.members, mcpJSONMember{
-				key: key, keyStart: keyStart, keyEnd: keyEnd,
-				valueStart: valueStart, valueEnd: valueEnd,
+			object.Members = append(object.Members, JSONMember{
+				Key: key, KeyStart: keyStart, KeyEnd: keyEnd,
+				ValueStart: valueStart, ValueEnd: valueEnd,
 			})
 			pos = mcpJSONSkipSpace(data, valueEnd)
 			if pos >= len(data) {
 				return 0, nil, errors.New("unterminated JSON object")
 			}
 			if data[pos] == '}' {
-				object.end = pos + 1
-				return object.end, object, nil
+				object.End = pos + 1
+				return object.End, object, nil
 			}
 			if data[pos] != ',' {
 				return 0, nil, errors.New("JSON object member lacks comma")
@@ -606,7 +612,7 @@ func scanMCPJSONValue(data []byte, pos int) (int, *mcpJSONObject, error) {
 		}
 		for {
 			var err error
-			pos, _, err = scanMCPJSONValue(data, mcpJSONSkipSpace(data, pos))
+			pos, _, err = ScanMCPJSONValue(data, mcpJSONSkipSpace(data, pos))
 			if err != nil {
 				return 0, nil, err
 			}
@@ -667,4 +673,114 @@ func mcpJSONSkipSpace(data []byte, pos int) int {
 		}
 	}
 	return pos
+}
+
+// Moved from mcpstore.go (file deleted to keep the directory at 7 files).
+// systemConfigPathValue returns the effective system config path (was
+// systemConfigPathValue on ConfigStore; the override field moved behind
+// Port.SystemConfigPath).
+func (s *Store) systemConfigPathValue() string {
+	if override := s.port.SystemConfigPath(); override != "" {
+		return override
+	}
+	return datadir.SystemConfig()
+}
+
+// mcpRevisionDiff, mcpNames and mcpConfig are byte-identical local copies of
+// the root helpers (internal/config/mcpdocs_policy.go:62,110 and
+// store_reload.go:435) still needed to advance revisions on publish (closure
+// copies; the root keeps the originals for reload).
+func mcpRevisionDiff(current map[string]uint64, previous, next *Config, previousInputs, nextInputs map[string][32]byte, force ...string) map[string]uint64 {
+	result := maps.Clone(current)
+	if result == nil {
+		result = make(map[string]uint64)
+	}
+	names := make(map[string]struct{})
+	for name := range mcpNames(previous) {
+		names[name] = struct{}{}
+	}
+	for name := range mcpNames(next) {
+		names[name] = struct{}{}
+	}
+	for name := range previousInputs {
+		names[name] = struct{}{}
+	}
+	for name := range nextInputs {
+		names[name] = struct{}{}
+	}
+	for _, name := range force {
+		if name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	forced := make(map[string]struct{}, len(force))
+	for _, name := range force {
+		forced[name] = struct{}{}
+	}
+	for name := range names {
+		previousConfig, previousExists := mcpConfig(previous, name)
+		nextConfig, nextExists := mcpConfig(next, name)
+		previousInput, previousHasInput := previousInputs[name]
+		nextInput, nextHasInput := nextInputs[name]
+		if _, ok := forced[name]; ok || previousExists != nextExists ||
+			previousExists && !reflect.DeepEqual(previousConfig, nextConfig) ||
+			previousHasInput != nextHasInput ||
+			previousHasInput && nextHasInput && previousInput != nextInput {
+			result[name]++
+		}
+	}
+	return result
+}
+
+func mcpNames(cfg *Config) map[string]cfgmodel.MCPConfig {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.MCP
+}
+
+func mcpConfig(cfg *Config, name string) (MCPConfig, bool) {
+	if cfg == nil {
+		return MCPConfig{}, false
+	}
+	value, ok := cfg.MCP[name]
+	return value, ok
+}
+
+// configHasDynamicMCPResolution, mcpConfigHasDynamicResolution and
+// hasCommandSubstitution are byte-identical local copies of the root
+// closures (internal/config/cfgmodel_locals.go:167-204) needed by the
+// publish path.
+func configHasDynamicMCPResolution(cfg *Config) bool {
+	if cfg == nil {
+		return false
+	}
+	for _, m := range cfg.MCP {
+		if mcpConfigHasDynamicResolution(m) {
+			return true
+		}
+	}
+	return false
+}
+
+func mcpConfigHasDynamicResolution(m MCPConfig) bool {
+	if shell.HasCommandSubstitution(m.Command) || shell.HasCommandSubstitution(m.URL) {
+		return true
+	}
+	for _, value := range m.Env {
+		if shell.HasCommandSubstitution(value) {
+			return true
+		}
+	}
+	for _, value := range m.Args {
+		if shell.HasCommandSubstitution(value) {
+			return true
+		}
+	}
+	for _, value := range m.Headers {
+		if shell.HasCommandSubstitution(value) {
+			return true
+		}
+	}
+	return false
 }
