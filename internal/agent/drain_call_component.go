@@ -1,22 +1,122 @@
-// The driver's notice pull (DUR-3, docs/plans/2026-09-28-async-phase4-
-// durable-core.md sec.3.3, step 3): the session's driver -- the turn owner,
-// holding the mailbox and the session-lock -- moves pending batch completion
-// notices and session_notices rows into history at two points: turn start
-// (runTurn, before history loads) and each step boundary of a normal turn
-// (PrepareStep, agent_turn_step.go). Compaction steps never call this.
 package agent
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"os"
+	"strings"
+	"time"
+
+	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
-// pullPendingNotices pulls every pending notice row for sessionID into
-// history (one DB transaction per row, doc sec.3.3) and reports which
-// messages were newly inserted. A pull error never fails the caller's
+// newDrainCall is the SINGLE constructor for a Drain call: the only place
+// IsDrain is ever set to true. base is either a fresh
+// SessionAgentCall{SessionID: sessionID} (a root/non-driver session) or a
+// delegated child's driver.callFor("") template (doc sec.3.4: "the child's
+// drain uses the driver's template via the single constructor"). Either
+// way, every field a call kind or notice-flag could otherwise carry forward
+// from an active call is reset HERE, not inherited: a Drain never carries
+// another call's prompt, notice kind, existing-message reference, or
+// queue/durable-persistence markers.
+func newDrainCall(base SessionAgentCall) SessionAgentCall {
+	base.IsDrain = true
+	base.DrainTurnCommitted = false
+	base.Prompt = ""
+	base.AutoResumed = true
+	base.BackgroundJobNotice = true
+	base.NoticeKind = ""
+	base.ExistingMessageID = ""
+	base.OnUserMessageCreated = nil
+	base.OnAssistantMessageCreated = nil
+	base.FromDurableQueue = false
+	base.FailIfSessionBusy = false
+	base.OnQueueResolved = nil
+	return base
+}
+
+// lastUserMessageOrigin returns the origin of the chronologically latest user
+// message. Read failures and empty history fail closed (no web preference).
+func lastUserMessageOrigin(ctx context.Context, messages message.Service, sessionID string) (message.Origin, bool) {
+	if messages == nil {
+		return message.OriginUnspecified, false
+	}
+	rows, err := messages.ListUserMessages(ctx, sessionID)
+	if err != nil {
+		slog.Warn("Drain: could not read last user-message origin; using configured models", "session_id", sessionID, "error", err)
+		return message.OriginUnspecified, false
+	}
+	if len(rows) == 0 {
+		return message.OriginUnspecified, false
+	}
+	return rows[0].Origin, true
+}
+
+// callFromActive is the single constructor for a call built from an active
+// call or a template (the `sessions inject --interrupt` replacement,
+// subAgentDriver.callFor): it keeps the source's model/sampling/policy shape
+// but resets the call kind and notice flags, which are never inherited (doc
+// sec.3.4). Without it, an operator's interrupt landing on a Drain turn
+// would itself run as a Drain -- and, with nothing wake-worthy to pull,
+// never reach the provider.
+func callFromActive(active SessionAgentCall) SessionAgentCall {
+	call := active
+	call.IsDrain = false
+	call.DrainTurnCommitted = false
+	call.AutoResumed = false
+	call.BackgroundJobNotice = false
+	call.NoticeKind = ""
+	return call
+}
+
+func applyDrainModelOptions(call SessionAgentCall, model Model) SessionAgentCall {
+	call.SmartModel = &model
+	call.MaxOutputTokens = model.CatwalkCfg.DefaultMaxTokens
+	if model.ModelCfg.MaxTokens != 0 {
+		call.MaxOutputTokens = model.ModelCfg.MaxTokens
+	}
+	call.Temperature = model.ModelCfg.Temperature
+	call.TopP = model.ModelCfg.TopP
+	call.TopK = model.ModelCfg.TopK
+	call.FrequencyPenalty = model.ModelCfg.FrequencyPenalty
+	call.PresencePenalty = model.ModelCfg.PresencePenalty
+	return call
+}
+// reminderBeforeTail moves preparePrompt's trailing todo reminder in front
+// of the last k messages -- the notices a Drain turn's own turn-start pull
+// appended -- so they stay the final user messages the provider sees (a
+// Drain has no prompt of its own to follow the reminder). No-op unless the
+// last message is that reminder and the k before it are user-role.
+func reminderBeforeTail(history []fantasy.Message, k int) []fantasy.Message {
+	n := len(history)
+	if k <= 0 || n < k+1 || !isTodoReminder(history[n-1]) {
+		return history
+	}
+	for _, m := range history[n-1-k : n-1] {
+		if m.Role != fantasy.MessageRoleUser {
+			return history
+		}
+	}
+	out := make([]fantasy.Message, 0, n)
+	out = append(out, history[:n-1-k]...)
+	out = append(out, history[n-1])
+	return append(out, history[n-1-k:n-1]...)
+}
+
+// isTodoReminder reports whether m is preparePrompt's <system_reminder>
+// todo message.
+func isTodoReminder(m fantasy.Message) bool {
+	if m.Role != fantasy.MessageRoleUser || len(m.Content) != 1 {
+		return false
+	}
+	part, ok := fantasy.AsMessagePart[fantasy.TextPart](m.Content[0])
+	return ok && strings.HasPrefix(part.Text, "<system_reminder>")
+}
 // turn: the affected row simply stays pending and is retried on the next
 // pull (this turn's own step boundary, or a later turn).
 func (a *sessionAgent) pullPendingNotices(ctx context.Context, sessionID string) (pulled []message.Message) {
@@ -139,4 +239,32 @@ func buildBatchNoticeMessageParams(row session.BatchNoticeRow) message.CreateMes
 		NoticeKind:          row.Kind,
 		Origin:              origin,
 	}
+}
+// to clear.
+func clearCancelRequest(ctx context.Context, sessions coresession.Service, sessionID string) {
+	if sessions == nil || sessionID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := sessions.ClearCancelRequest(ctx, sessionID); err != nil {
+		slog.Warn("could not clear the cancel-requested flag", "session_id", sessionID, "err", err)
+	}
+}
+// the session, so two processes can never write one session's messages.
+func ForeignWorkspaceError(sess coresession.Session) error {
+	msg := fmt.Sprintf(
+		"session %s belongs to %s (branch %s); run it there or \"rush sessions fork %s\" here",
+		sess.ID, sess.WorkspaceRoot, sess.GitBranch, sess.ID,
+	)
+	if sess.WorkspaceRoot != "" {
+		if _, err := os.Stat(sess.WorkspaceRoot); err != nil {
+			// The owning checkout is gone (`git worktree remove`): say so, or
+			// the operator goes hunting for a directory that no longer
+			// exists. A legacy row's empty root is never stat-ed -- it names no
+			// directory to be missing.
+			msg += " (workspace no longer exists)"
+		}
+	}
+	return fmt.Errorf("%s: %w", msg, session.ErrForeignWorkspace)
 }

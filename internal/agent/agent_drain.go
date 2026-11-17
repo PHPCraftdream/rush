@@ -13,9 +13,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
-
-	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -23,78 +20,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
-// newDrainCall is the SINGLE constructor for a Drain call: the only place
-// IsDrain is ever set to true. base is either a fresh
-// SessionAgentCall{SessionID: sessionID} (a root/non-driver session) or a
-// delegated child's driver.callFor("") template (doc sec.3.4: "the child's
-// drain uses the driver's template via the single constructor"). Either
-// way, every field a call kind or notice-flag could otherwise carry forward
-// from an active call is reset HERE, not inherited: a Drain never carries
-// another call's prompt, notice kind, existing-message reference, or
-// queue/durable-persistence markers.
-func newDrainCall(base SessionAgentCall) SessionAgentCall {
-	base.IsDrain = true
-	base.DrainTurnCommitted = false
-	base.Prompt = ""
-	base.AutoResumed = true
-	base.BackgroundJobNotice = true
-	base.NoticeKind = ""
-	base.ExistingMessageID = ""
-	base.OnUserMessageCreated = nil
-	base.OnAssistantMessageCreated = nil
-	base.FromDurableQueue = false
-	base.FailIfSessionBusy = false
-	base.OnQueueResolved = nil
-	return base
-}
-
-// lastUserMessageOrigin returns the origin of the chronologically latest user
-// message. Read failures and empty history fail closed (no web preference).
-func lastUserMessageOrigin(ctx context.Context, messages message.Service, sessionID string) (message.Origin, bool) {
-	if messages == nil {
-		return message.OriginUnspecified, false
-	}
-	rows, err := messages.ListUserMessages(ctx, sessionID)
-	if err != nil {
-		slog.Warn("Drain: could not read last user-message origin; using configured models", "session_id", sessionID, "error", err)
-		return message.OriginUnspecified, false
-	}
-	if len(rows) == 0 {
-		return message.OriginUnspecified, false
-	}
-	return rows[0].Origin, true
-}
-
-// callFromActive is the single constructor for a call built from an active
-// call or a template (the `sessions inject --interrupt` replacement,
-// subAgentDriver.callFor): it keeps the source's model/sampling/policy shape
-// but resets the call kind and notice flags, which are never inherited (doc
-// sec.3.4). Without it, an operator's interrupt landing on a Drain turn
-// would itself run as a Drain -- and, with nothing wake-worthy to pull,
-// never reach the provider.
-func callFromActive(active SessionAgentCall) SessionAgentCall {
-	call := active
-	call.IsDrain = false
-	call.DrainTurnCommitted = false
-	call.AutoResumed = false
-	call.BackgroundJobNotice = false
-	call.NoticeKind = ""
-	return call
-}
-
-func applyDrainModelOptions(call SessionAgentCall, model Model) SessionAgentCall {
-	call.SmartModel = &model
-	call.MaxOutputTokens = model.CatwalkCfg.DefaultMaxTokens
-	if model.ModelCfg.MaxTokens != 0 {
-		call.MaxOutputTokens = model.ModelCfg.MaxTokens
-	}
-	call.Temperature = model.ModelCfg.Temperature
-	call.TopP = model.ModelCfg.TopP
-	call.TopK = model.ModelCfg.TopK
-	call.FrequencyPenalty = model.ModelCfg.FrequencyPenalty
-	call.PresencePenalty = model.ModelCfg.PresencePenalty
-	return call
-}
 
 // drainCallFor builds sessionID's Drain call. Slot-derived child drivers
 // resolve their live role slot per new automatic turn; explicit/non-slot
@@ -290,36 +215,6 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 	return call, prep, nil
 }
 
-// reminderBeforeTail moves preparePrompt's trailing todo reminder in front
-// of the last k messages -- the notices a Drain turn's own turn-start pull
-// appended -- so they stay the final user messages the provider sees (a
-// Drain has no prompt of its own to follow the reminder). No-op unless the
-// last message is that reminder and the k before it are user-role.
-func reminderBeforeTail(history []fantasy.Message, k int) []fantasy.Message {
-	n := len(history)
-	if k <= 0 || n < k+1 || !isTodoReminder(history[n-1]) {
-		return history
-	}
-	for _, m := range history[n-1-k : n-1] {
-		if m.Role != fantasy.MessageRoleUser {
-			return history
-		}
-	}
-	out := make([]fantasy.Message, 0, n)
-	out = append(out, history[:n-1-k]...)
-	out = append(out, history[n-1])
-	return append(out, history[n-1-k:n-1]...)
-}
-
-// isTodoReminder reports whether m is preparePrompt's <system_reminder>
-// todo message.
-func isTodoReminder(m fantasy.Message) bool {
-	if m.Role != fantasy.MessageRoleUser || len(m.Content) != 1 {
-		return false
-	}
-	part, ok := fantasy.AsMessagePart[fantasy.TextPart](m.Content[0])
-	return ok && strings.HasPrefix(part.Text, "<system_reminder>")
-}
 
 // freshenDrainClient brings a delegated child's Drain call onto the current
 // refreshable credentials (an OAuth token or an API-key template). The child's

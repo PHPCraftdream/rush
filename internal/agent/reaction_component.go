@@ -1,0 +1,377 @@
+// The reaction chain guard (#1113, docs/plans/2026-10-01-reaction-chain-guard.
+// md): a session that waits on async commands by re-launching pure wait
+// commands (`sleep 90`, `echo tick`, ...) chains Drain turns that look healthy
+// -- each completion pays its own reaction debt -- while achieving nothing.
+// Re-launching the byte-identical previous async command (any command, A36)
+// is the same polling and counts as idle; a real action clears that memory.
+// The guard's COUNT and CLAIMS live in the arbiter state (R-ARB-2, one state
+// under one mutex, turn_arbiter_state.go): a successful reaction closes the
+// debt and must not reset the counter, which is exactly the event that masks
+// the chain. State dies with a human message (resetConsecutiveResume), real
+// progress, or the session; an app restart simply costs up to N more links.
+package agent
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/PHPCraftdream/rush/internal/session"
+)
+
+// ReactionChainLimit is N: the number of consecutive no-progress links after
+// which the guard defers the session's automatic turns. Exported for the CLI
+// loop's stderr/warning wording (internal/app), so the text cannot drift.
+const ReactionChainLimit = 3
+
+// reactionChainReason is the Deferred reason the guard reports.
+const reactionChainReason = "reaction chain without progress"
+
+// reactionChainMarkerText is the advisory marker inserted once when the guard
+// fires in a web-driven session.
+var reactionChainMarkerText = fmt.Sprintf(
+	"Автоматические ходы остановлены: %d подряд попытки реакции запускали только sleep/echo без какого-либо прогресса. Чтобы дождаться результата — заверши ход; чтобы подождать и проверить — сделай это одной командой вида `sleep N && <проверка>`.",
+	ReactionChainLimit)
+
+// the old link accounting moved to arb.chainLink (R-ARB-2: one state,
+// one mutex). accountDrainAttempt calls the arbiter directly.
+
+// reactionChainCount returns the current link count for sessionID.
+func (w *drainComponent) reactionChainCount(sessionID string) int {
+	return w.host.arbiter().chainLinksOf(sessionID)
+}
+
+// chainGuardMarker executes the guard's marker half (the ONLY part of the old
+// chainGuardDeferred that survives R-ARB-2 -- the guard's CONDITION is decide's
+// rule 5, computed in readTurnFacts): for a web-driven session's first hit it
+// inserts one advisory marker notice (wake=0) and logs; a CLI session's loop
+// reports the guard itself (CLIScopeState.ChainGuard), so the marker is
+// skipped there.
+func (w *drainComponent) chainGuardMarker(ctx context.Context, sessionID string) {
+	if w.host.arbiter().markChainNoticed(sessionID) {
+		return // already warned this episode
+	}
+	slog.Warn("reaction chain without progress: automatic turns for this session are deferred",
+		"session_id", sessionID, "links", w.host.arbiter().chainLinksOf(sessionID))
+	store := w.host.sessionNoticeStore()
+	if store == nil {
+		slog.Error("reaction-chain marker not persisted: no session notice store bound", "session_id", sessionID)
+		return
+	}
+	insertCtx, cancel := context.WithTimeout(context.Background(), drainAccountBudget())
+	defer cancel()
+	if err := store.InsertSessionNotice(insertCtx, sessionID, session.NoticeKindReactionChain, reactionChainMarkerText, false, ""); err != nil {
+		slog.Error("failed to persist the reaction-chain marker notice", "session_id", sessionID, "err", err)
+	}
+}
+
+// reactionChainHasClaim reports whether claim belongs to the session's
+// current idle-launch chain (pullPendingNotices uses it to keep a pulled link
+// completion from resetting the supervision backoff).
+func (w *drainComponent) reactionChainHasClaim(sessionID, claim string) bool {
+	return w.host.arbiter().chainHasClaim(sessionID, claim)
+}
+// DrainState is the launch verdict for a session's pending-inclusive reaction
+// debt (drainPermitted): policy first, then the per-session launch gate.
+type DrainState uint8
+
+const (
+	// DrainNone: no reaction debt.
+	DrainNone DrainState = iota
+	// DrainOwed: debt, and a Drain may be launched now.
+	DrainOwed
+	// DrainPaced: debt, retrying after an unreacted attempt or a refusal, or
+	// held by a rerun in progress (a temporary hold: RetryAt is zero, the tick
+	// and the release retry it; it reads as "open", never "drained"). The gate
+	// opens at CLIScopeState.RetryAt; a newer event opens it sooner after a
+	// refusal or a no-turn Drain, but NOT after a paid failure.
+	DrainPaced
+	// DrainDeferred: debt the policy will not allow a turn for (bg-shell-only
+	// with AutoResumeOnJobDone off, or with the web auto-resume cap reached for
+	// a re-check launch, a released delegation child, another live driver,
+	// Stop's suspension, a pending question).
+	DrainDeferred
+	// DrainStuck: dormant gate. Three no-turn Drains over a pull that keeps
+	// failing: a newer event or a human message reopens it. Three paid attempts
+	// whose close kept failing: only a human message (or a restart) does.
+	DrainStuck
+)
+
+// CLIScopeState is the ONE answer to "what now" for a session between turns
+// (CLIScope), read by the CLI loop and by a delegation child's release.
+type CLIScopeState struct {
+	// WorkOpen: the session has a running task row on a host not provably
+	// dead -- wait for it.
+	WorkOpen bool
+	// Drain is the launch verdict for its reaction debt.
+	Drain DrainState
+	// RetryAt is when a Paced gate reopens by itself.
+	RetryAt time.Time
+	// Reason names why the debt is Deferred/Stuck/Paced.
+	Reason string
+	// ChainGuard: the Deferred reason is the reaction chain guard (#1113) --
+	// N consecutive no-progress links -- not the auto-resume policy. The CLI
+	// loop reads this typed flag (never the Reason string) for its one
+	// stderr line and envelope warning.
+	ChainGuard bool
+	// OnceWakeOpen: the session owns an ACTIVE once (wakein/wakeon) schedule
+	// -- open work for the CLI lifetime policy (stage 5a): the run waits for
+	// it to fire, and it never pulls the wait past the run's own deadline.
+	OnceWakeOpen bool
+	// OnceWakeID / OnceWakeAt name the earliest open once schedule, for the
+	// wait heartbeat and `sessions why` (empty/zero without OnceWakeOpen).
+	OnceWakeID string
+	OnceWakeAt time.Time
+}
+
+// ReactionDebtSource is implemented by *coordinator; internal/app type-
+// asserts for it exactly like it used to for AsyncCompletionSource.
+type ReactionDebtSource interface {
+	// ClaimExternalDriver marks sessionID as externally driven for the
+	// lifetime of one `rush run` loop: the durable session_drivers marker
+	// first (so no OTHER process starts a reaction turn for it -- see
+	// drainPolicy), then the in-memory one wakeSession hints against.
+	// A session already driven by another live loop is refused with
+	// *session.ErrSessionDrivenElsewhere and nothing is set. The ONLY
+	// degraded outcome is a data dir that cannot host an OS lock file
+	// (session.ErrDriverMarkerUnavailable = the lock file cannot be created or
+	// locked): a Warn, and the in-memory marker alone is set. Any other
+	// failure -- a database error registering the host (SQLITE_BUSY/FULL), a
+	// cancelled ctx, a failed marker write -- is returned and nothing is set:
+	// the run fails before it touches the session (R3A-1).
+	ClaimExternalDriver(ctx context.Context, sessionID string) error
+	// ReleaseExternalDriver releases the durable marker once the loop exits
+	// (always), and the in-memory one for a persistent coordinator (C4).
+	ReleaseExternalDriver(ctx context.Context, sessionID string)
+	// CLIScope is the CLI loop's between-turns decision (doc sec.3.5), also
+	// read by a delegation child's release: it reads doc sec.3.4's debt
+	// predicate PENDING-INCLUSIVE (delivery IN {pending, done} -- a
+	// freshly-arrived notice is still 'pending' until a turn's own preamble
+	// pull, so VISIBLE-only would wrongly report no debt) and answers with the
+	// ONE launch predicate every Drain launch reads (policy, then the
+	// per-session launch gate): Owed/Paced/Deferred/Stuck. Running rows are
+	// read BEFORE debt: a job's terminal transition and its debt commit
+	// atomically, so "row not running" then implies its debt is already
+	// visible to the debt read that follows -- reversing the order could let
+	// the loop exit between the two.
+	CLIScope(ctx context.Context, sessionID string) (CLIScopeState, error)
+	// WaitForHint blocks until sessionID's hint counter advances, ctx is
+	// done, until (when non-zero) passes, or a bounded same-process fallback
+	// elapses. The caller must still re-derive its decision from CLIScope
+	// afterward -- a returned hint is a reason to re-check, not itself an
+	// answer.
+	WaitForHint(ctx context.Context, sessionID string, until time.Time)
+	// RunMaintenanceSweep runs the dead-host sweep and retention purge halves
+	// of the 60s host-level pass ONCE, best-effort (B12/C14 fix, part 3), at
+	// the start of a `rush run` invocation; the 60s pass ClaimExternalDriver
+	// starts repeats them (with the recheck-child/recheck-set halves) while
+	// the loop waits.
+	RunMaintenanceSweep(ctx context.Context)
+}
+
+// ClaimExternalDriver implements ReactionDebtSource: the durable claim first (a
+// refusal or a real error returns before anything is set), then the in-memory
+// marker. An unavailable durable marker (no OS-lock-capable data dir, and only
+// that) is logged and the in-memory marker alone is kept -- the pre-durable
+// behaviour; every other claim error is returned.
+func (w *drainComponent) ClaimExternalDriver(ctx context.Context, sessionID string) error {
+	if store := w.host.driverMarkerStore(); store != nil {
+		if err := store.ClaimSessionDriver(ctx, sessionID); err != nil {
+			if !errors.Is(err, session.ErrDriverMarkerUnavailable) {
+				return err
+			}
+			slog.Warn("external driver: durable marker unavailable; other processes cannot see this loop",
+				"session_id", sessionID, "err", err)
+		}
+	}
+	w.host.driverHints().claimExternalDriver(sessionID)
+	// The same 60s pass the web process runs (recheck set, parked children,
+	// maintenance): the CLI root itself is a hint-only no-op for it, but its
+	// delegated children's retries and refusals ride it. Stopped by CancelAll.
+	w.host.startRecheckTicker()
+	return nil
+}
+
+// ReleaseExternalDriver implements ReactionDebtSource.
+//
+// C4 fix (docs/reviews/2026-09-29-async-phase4-round1.md): a NON-persistent
+// coordinator (`rush run`, persistentMode never set true) keeps its root
+// hint-only for the entire life of the process instead of ever releasing
+// it. Before this fix, the CLI loop's own defer (app_run_async.go) released
+// the marker the instant runNonInteractiveWithAsyncResults returned --
+// strictly BEFORE the on-finish hook and before cmd/run.go's deferred
+// App.Shutdown() actually runs (or completes CancelAll) -- so a background
+// job finishing in that window found isExternalDriver false and started a
+// full, PAID Drain turn on context.Background() in a process that is
+// already shutting down. A one-shot CLI process has no "later web-driven
+// wake for the same session id" within its own lifetime to restore ordinary
+// routing FOR (a different process's coordinator has its own, separate
+// in-memory marker) -- so simply never releasing it here is both safe and
+// sufficient; the marker dies with the process either way.
+func (w *drainComponent) ReleaseExternalDriver(ctx context.Context, sessionID string) {
+	// The DURABLE marker is released unconditionally: it is what other
+	// processes consult, and it must not keep naming a host that stays alive
+	// until this process really exits (shutdown can take a while).
+	if store := w.host.driverMarkerStore(); store != nil {
+		if err := store.ReleaseSessionDriver(ctx, sessionID); err != nil {
+			slog.Warn("external driver: releasing the durable marker failed; Close is the backstop",
+				"session_id", sessionID, "err", err)
+		}
+	}
+	if !w.host.persistentMode() {
+		return // C4: the in-memory marker of a one-shot CLI process dies with it
+	}
+	w.host.driverHints().releaseExternalDriver(sessionID)
+}
+
+// ReactionDebtExists reads doc sec.3.4's pending-inclusive debt predicate for
+// sessionID.
+func (w *drainComponent) ReactionDebtExists(ctx context.Context, sessionID string) (bool, error) {
+	// Pending-inclusive selected-notice debt from batch reads.
+	return w.host.batchCutoverFacts().SelectedDebtExists(ctx, sessionID)
+}
+
+// reactionDebtSourceHintFallback bounds WaitForHint's wait even without a
+// hint or ctx cancellation. Hints live inside one process, so this is also
+// the CLI loop's cross-process fallback: it re-reads the DB at least this
+// often while its scope is open.
+const reactionDebtSourceHintFallback = 5 * time.Second
+
+// WaitForHint implements ReactionDebtSource.
+func (w *drainComponent) WaitForHint(ctx context.Context, sessionID string, until time.Time) {
+	since := w.host.driverHints().hintSeqOf(sessionID)
+	wait := reactionDebtSourceHintFallback
+	if !until.IsZero() {
+		wait = min(wait, max(time.Until(until), 0))
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	w.host.driverHints().waitForHint(waitCtx, sessionID, since)
+}
+
+// RunMaintenanceSweep implements ReactionDebtSource: the dead-host sweep and
+// retention purge halves of the 60s pass (doc sec.3.6/3.7), factored out of
+// RecheckPass so a `rush run` can run them once at its start.
+func (w *drainComponent) RunMaintenanceSweep(ctx context.Context) {
+	store := w.host.batchCutoverReactionStore()
+	if store == nil {
+		return
+	}
+	// Retention (doc sec.3.7): old terminal batch rows, same pass,
+	// best-effort. Dead-host recovery is scope-driven
+	// (recoverBatchScopeDeadCandidates / BatchRecoverPass), not a
+	// maintenance-table sweep.
+	if _, err := store.BatchPurgeExpired(ctx, session.BatchRetentionCutoff(time.Now())); err != nil {
+		slog.Debug("coordinator: maintenance sweep: retention purge failed", "err", err)
+	}
+}
+
+// CLIScope implements ReactionDebtSource (see the interface doc for the
+// read order and the meaning of each field).
+func (w *drainComponent) CLIScope(ctx context.Context, sessionID string) (CLIScopeState, error) {
+	// Read the shell manager's completion hold BEFORE the DB reads: released
+	// only after notifyBackgroundJobDone's notice insert commits, "hold gone"
+	// implies the debt read below sees the notice; reading it after that read
+	// would let the loop exit in the row-committed, notice-not-yet window.
+	pending := w.host.backgroundPendingCompletions(sessionID)
+	workOpen, err := w.runningWorkOpen(ctx, sessionID)
+	if err != nil {
+		return CLIScopeState{}, err
+	}
+	state := CLIScopeState{WorkOpen: workOpen}
+	// Stage 5a: an ACTIVE once schedule is open work too. Read AFTER the
+	// running rows (display fields, not a liveness factor) but BEFORE debt:
+	// it must keep the scope open even when no debt and no row exists.
+	once, err := w.host.openOnceWakeSchedules(ctx, sessionID)
+	if err != nil {
+		return CLIScopeState{}, err
+	}
+	for _, row := range once {
+		at := time.Unix(row.NextRunAt, 0).UTC()
+		if state.OnceWakeID == "" || at.Before(state.OnceWakeAt) {
+			state.OnceWakeID, state.OnceWakeAt = row.ID, at
+		}
+	}
+	state.OnceWakeOpen = len(once) > 0
+	if state.OnceWakeOpen {
+		state.WorkOpen = true
+	}
+	// A completion still in flight (its callback holds) is open work too.
+	if pending {
+		state.WorkOpen = true
+	}
+	debt, debtErr := w.host.batchCutoverFacts().SelectedDebtExists(ctx, sessionID)
+	if debtErr != nil {
+		return CLIScopeState{}, debtErr
+	}
+	if !debt {
+		return state, nil
+	}
+	v, _, err := w.arbiterVerdict(ctx, sessionID, siteCLI)
+	if err != nil {
+		// An unreadable launch input is a read error the loop retries with a
+		// pause, never a silent exit.
+		return CLIScopeState{}, err
+	}
+	dv := drainVerdictOf(v)
+	state.RetryAt, state.Reason = dv.retryAt, dv.reason
+	state.ChainGuard = dv.kind == drainDeferred && dv.reason == reactionChainReason
+	switch dv.kind {
+	case drainAllow:
+		state.Drain = DrainOwed
+	case drainPaced:
+		state.Drain = DrainPaced
+	case drainDeferred:
+		state.Drain = DrainDeferred
+	default:
+		state.Drain = DrainStuck
+	}
+	return state, nil
+}
+
+// runningWorkOpen is the running-row half of doc sec.3.5's scope predicate:
+// true iff sessionID owns a running task row on a host not provably dead.
+func (w *drainComponent) runningWorkOpen(ctx context.Context, sessionID string) (bool, error) {
+	// Phase-4 step 5 (doc sec.3.5/3.7): a scope check is also a "scope
+	// evaluation" point -- recover this owner's own dead-host rows to
+	// 'interrupted' before answering, so a row whose host just died is
+	// treated as recoverable-and-gone rather than kept "open" forever (or,
+	// once recovered, correctly reported closed if nothing else is
+	// outstanding). Best-effort: recovery never fails this call.
+	// Scope-time recovery first, then liveness from a FRESH batch live read
+	// (conservative: an unreadable read reports open). A failed or
+	// budget-exhausted recovery keeps the conservative live answer and the
+	// App's background maintenance pass completes it later.
+	w.host.recoverBatchScopeDeadCandidates(ctx, sessionID)
+	entries, scopeErr := w.host.batchCutoverFacts().LiveScopeForOwners(ctx, []string{sessionID})
+	if scopeErr != nil {
+		return false, scopeErr
+	}
+	return len(entries) > 0 && entries[0].Live, nil
+}
+
+// batchCutoverReactionStore returns the node-backed BatchStore behind c's
+// bound fact source, for the two WRITE paths the reaction sides own:
+// the step/failure reaction marker (BatchReactionMarkReactedWithMessageUpdate,
+// persistStepFinish/persistFailureFinish) and Stop's wake-zero pass
+// (BatchReactionSetWakeZeroForOwners, stopTree). nil means "not bound to
+// this coordinator, or the bound source is not the node-backed one (the
+// conservative unknown source has no store)": the callers fall back to the
+// plain message write so the finish still lands. Fact READS keep flowing
+// through the BatchCutoverFacts seam.
+func batchCutoverReactionStore(c *coordinator) *session.BatchStore {
+	if c == nil {
+		return nil
+	}
+	v, ok := coordinatorBatchCutoverFactsBindings.Load(c)
+	if !ok {
+		return nil
+	}
+	nbf, ok := v.(nodeBatchCutoverFacts)
+	if !ok || nbf.store == nil {
+		return nil
+	}
+	return nbf.store
+}
