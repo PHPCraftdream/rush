@@ -3,24 +3,24 @@
 // REVERT-CHECKS (the orchestrator runs the mutants; each test must fail on
 // exactly the listed single-line production change):
 //
-//	TestHbCtx_TurnAttributionRoot          — delete the withHeartbeat attach in
+//	TestHbCtx_TurnAttributionRoot          — delete the callbeat.WithHeartbeat attach in
 //	  runTurn (agent_turn.go): ctx reaches the provider without attribution.
-//	TestHbCtx_TurnRoleAndSource            — drop hbTurnRole's CallOptions branch or
-//	  the withModelSource attach in resolveSessionModelsInternal: role/source regress.
-//	TestHbCtx_TitleAttribution             — delete the withHeartbeat attach in
+//	TestHbCtx_TurnRoleAndSource            — drop callbeat.HbTurnRole's CallOptions branch or
+//	  the callbeat.WithModelSource attach in resolveSessionModelsInternal: role/source regress.
+//	TestHbCtx_TitleAttribution             — delete the callbeat.WithHeartbeat attach in
 //	  generateTitle (agent_title.go).
-//	TestHbCtx_SummaryAttribution           — delete the withHeartbeat attach in
+//	TestHbCtx_SummaryAttribution           — delete the callbeat.WithHeartbeat attach in
 //	  runSummarizeBody (agent_compaction.go).
-//	TestHbCtx_SilentSummaryAttribution     — delete the withHeartbeat attach in
+//	TestHbCtx_SilentSummaryAttribution     — delete the callbeat.WithHeartbeat attach in
 //	  runSummarizeSilent (agent_compaction.go).
-//	TestHbCtx_KeepaliveAttribution         — delete the withHeartbeat attach in
+//	TestHbCtx_KeepaliveAttribution         — delete the callbeat.WithHeartbeat attach in
 //	  fireCacheKeepAlive (agent_cache_keepalive.go).
 //	TestHbCtx_KeepaliveInheritsTurnRoot    — drop the heartbeat.Context field from
 //	  scheduleCacheKeepAliveFromCtx (root would self-attach to the replay).
-//	TestHbCtx_FetchPurposeSurvivesChildTurn— delete the withHeartbeat attach in
-//	  agentic_fetch_tool.go, or the purpose-preservation branch in withHeartbeat.
-//	TestHbCtx_SubAgentTwoLevelsInheritsRoot— delete the inheritHeartbeat wrap in
-//	  runSubAgent (coordinator_subagents.go) or the root-inheritance in withHeartbeat.
+//	TestHbCtx_FetchPurposeSurvivesChildTurn— delete the callbeat.WithHeartbeat attach in
+//	  agentic_fetch_tool.go, or the purpose-preservation branch in callbeat.WithHeartbeat.
+//	TestHbCtx_SubAgentTwoLevelsInheritsRoot— delete the callbeat.InheritHeartbeat wrap in
+//	  runSubAgent (coordinator_subagents.go) or the root-inheritance in callbeat.WithHeartbeat.
 //	TestHbCtx_AsyncDetachedCarriesAttribution — documents WithoutCancel value
 //	  preservation (async_tool.go path) and the uncovered wakeSession
 //	  (context.Background()) gap; no production line to break by design.
@@ -37,6 +37,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -179,7 +180,7 @@ func TestHbCtx_TurnAttributionRoot(t *testing.T) {
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, smart.Model.(*hbCtxModel).calls(), 1, "the turn must have reached the smart model")
 
-	hbAssertCtx(t, smart.Model.(*hbCtxModel).lastCtx(), sess.ID, sess.ID, "smart", hbSourceSlotStart, heartbeat.PurposeTurn)
+	hbAssertCtx(t, smart.Model.(*hbCtxModel).lastCtx(), sess.ID, sess.ID, "smart", callbeat.HbSourceSlotStart, heartbeat.PurposeTurn)
 }
 
 // TestHbCtx_TurnRoleAndSource: a per-call role and a session-override source
@@ -194,14 +195,14 @@ func TestHbCtx_TurnRoleAndSource(t *testing.T) {
 	sess, err := env.sessions.Create(t.Context(), "New Session")
 	require.NoError(t, err)
 
-	ctx := withModelSource(t.Context(), hbSourceSessionOverride, hbSourceSlotStart)
+	ctx := callbeat.WithModelSource(t.Context(), callbeat.HbSourceSessionOverride, callbeat.HbSourceSlotStart)
 	// As runInternal does: the per-call options ride both the ctx and the call.
 	opts := &CallOptions{ModelRole: config.SelectedModelTypeFast}
 	ctx = WithCallOptions(ctx, opts)
 	_, err = agent.Run(ctx, SessionAgentCall{SessionID: sess.ID, Prompt: "hello", CallOptions: opts})
 	require.NoError(t, err)
 
-	hbAssertCtx(t, smart.Model.(*hbCtxModel).lastCtx(), sess.ID, sess.ID, "fast", hbSourceSessionOverride, heartbeat.PurposeTurn)
+	hbAssertCtx(t, smart.Model.(*hbCtxModel).lastCtx(), sess.ID, sess.ID, "fast", callbeat.HbSourceSessionOverride, heartbeat.PurposeTurn)
 }
 
 // TestHbCtx_TitleAttribution: the title goroutine's provider ctx is purpose
@@ -222,7 +223,7 @@ func TestHbCtx_TitleAttribution(t *testing.T) {
 	})
 	require.GreaterOrEqual(t, fast.Model.(*hbCtxModel).calls(), 1, "the fast model must answer the title call")
 
-	hbAssertCtx(t, fast.Model.(*hbCtxModel).lastCtx(), sess.ID, sess.ID, "fast", hbSourceSlotStart, heartbeat.PurposeTitle)
+	hbAssertCtx(t, fast.Model.(*hbCtxModel).lastCtx(), sess.ID, sess.ID, "fast", callbeat.HbSourceSlotStart, heartbeat.PurposeTitle)
 }
 
 // TestHbCtx_SummaryAttribution: the manual compaction body's provider ctx is
@@ -246,7 +247,7 @@ func TestHbCtx_SummaryAttribution(t *testing.T) {
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, smart.Model.(*hbCtxModel).calls(), 1)
 
-	hbAssertCtx(t, smart.Model.(*hbCtxModel).lastCtx(), sess.ID, sess.ID, "smart", hbSourceSlotStart, heartbeat.PurposeSummary)
+	hbAssertCtx(t, smart.Model.(*hbCtxModel).lastCtx(), sess.ID, sess.ID, "smart", callbeat.HbSourceSlotStart, heartbeat.PurposeSummary)
 }
 
 // TestHbCtx_SilentSummaryAttribution: the silent sliding-window compaction is
@@ -272,7 +273,7 @@ func TestHbCtx_SilentSummaryAttribution(t *testing.T) {
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, smart.Model.(*hbCtxModel).calls(), 1)
 
-	hbAssertCtx(t, smart.Model.(*hbCtxModel).lastCtx(), sess.ID, sess.ID, "smart", hbSourceSlotStart, heartbeat.PurposeSummary)
+	hbAssertCtx(t, smart.Model.(*hbCtxModel).lastCtx(), sess.ID, sess.ID, "smart", callbeat.HbSourceSlotStart, heartbeat.PurposeSummary)
 }
 
 // hbKeepaliveEnv shrinks the keepalive seams so a replay fires in ~10ms.
@@ -310,7 +311,7 @@ func TestHbCtx_KeepaliveAttribution(t *testing.T) {
 	agent.scheduleCacheKeepAlive(sess.ID, smart, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 	hbWaitForCalls(t, smart.Model.(*hbCtxModel), 1)
 
-	hbAssertCtx(t, smart.Model.(*hbCtxModel).lastCtx(), sess.ID, sess.ID, "smart", hbSourceSlotStart, heartbeat.PurposeKeepalive)
+	hbAssertCtx(t, smart.Model.(*hbCtxModel).lastCtx(), sess.ID, sess.ID, "smart", callbeat.HbSourceSlotStart, heartbeat.PurposeKeepalive)
 }
 
 // TestHbCtx_KeepaliveInheritsTurnRoot: a replay scheduled by a turn with
@@ -328,12 +329,12 @@ func TestHbCtx_KeepaliveInheritsTurnRoot(t *testing.T) {
 
 	turnHB := heartbeat.Context{
 		SessionID: sess.ID, RootSessionID: "root-parent", AgentID: sess.ID,
-		Purpose: heartbeat.PurposeTurn, Role: "worker", Source: hbSourcePerCall,
+		Purpose: heartbeat.PurposeTurn, Role: "worker", Source: callbeat.HbSourcePerCall,
 	}
 	agent.scheduleCacheKeepAliveFromCtx(turnHB, sess.ID, smart, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 	hbWaitForCalls(t, smart.Model.(*hbCtxModel), 1)
 
-	hbAssertCtx(t, smart.Model.(*hbCtxModel).lastCtx(), sess.ID, "root-parent", "worker", hbSourcePerCall, heartbeat.PurposeKeepalive)
+	hbAssertCtx(t, smart.Model.(*hbCtxModel).lastCtx(), sess.ID, "root-parent", "worker", callbeat.HbSourcePerCall, heartbeat.PurposeKeepalive)
 }
 
 // TestHbCtx_FetchPurposeSurvivesChildTurn: a fetch call point pre-stamps
@@ -351,11 +352,11 @@ func TestHbCtx_FetchPurposeSurvivesChildTurn(t *testing.T) {
 
 	// What agentic_fetch_tool.go stamps before runSubAgent, with the parent
 	// session id the child then re-parents away from.
-	ctx := withHeartbeat(t.Context(), "parent-session", heartbeat.PurposeFetch, "fast", hbSourcePerCall)
+	ctx := callbeat.WithHeartbeat(t.Context(), "parent-session", heartbeat.PurposeFetch, "fast", callbeat.HbSourcePerCall)
 	_, err = agent.Run(ctx, SessionAgentCall{SessionID: sess.ID, Prompt: "fetch this"})
 	require.NoError(t, err)
 
-	hbAssertCtx(t, smart.Model.(*hbCtxModel).lastCtx(), sess.ID, "parent-session", "fast", hbSourcePerCall, heartbeat.PurposeFetch)
+	hbAssertCtx(t, smart.Model.(*hbCtxModel).lastCtx(), sess.ID, "parent-session", "fast", callbeat.HbSourcePerCall, heartbeat.PurposeFetch)
 }
 
 // TestHbCtx_SubAgentTwoLevelsInheritsRoot: a sub-agent two levels deep still
@@ -363,18 +364,18 @@ func TestHbCtx_FetchPurposeSurvivesChildTurn(t *testing.T) {
 func TestHbCtx_SubAgentTwoLevelsInheritsRoot(t *testing.T) {
 	hbIsolateEnv(t)
 
-	root := withHeartbeat(context.Background(), "root-session", heartbeat.PurposeTurn, "smart", hbSourceSlotStart)
-	hbAssertCtx(t, root, "root-session", "root-session", "smart", hbSourceSlotStart, heartbeat.PurposeTurn)
+	root := callbeat.WithHeartbeat(context.Background(), "root-session", heartbeat.PurposeTurn, "smart", callbeat.HbSourceSlotStart)
+	hbAssertCtx(t, root, "root-session", "root-session", "smart", callbeat.HbSourceSlotStart, heartbeat.PurposeTurn)
 
 	// Level 1: runSubAgent's delegation boundary, then the child's own turn.
-	child1 := inheritHeartbeat(root, "msg1$$call1", "worker", hbSourceSlotStart)
-	child1 = withHeartbeat(child1, "msg1$$call1", heartbeat.PurposeTurn, "worker", hbSourceSlotStart)
-	hbAssertCtx(t, child1, "msg1$$call1", "root-session", "worker", hbSourceSlotStart, heartbeat.PurposeTurn)
+	child1 := callbeat.InheritHeartbeat(root, "msg1$$call1", "worker", callbeat.HbSourceSlotStart)
+	child1 = callbeat.WithHeartbeat(child1, "msg1$$call1", heartbeat.PurposeTurn, "worker", callbeat.HbSourceSlotStart)
+	hbAssertCtx(t, child1, "msg1$$call1", "root-session", "worker", callbeat.HbSourceSlotStart, heartbeat.PurposeTurn)
 
 	// Level 2: the grandchild dispatch must inherit the TOP root, not level 1.
-	child2 := inheritHeartbeat(child1, "msg2$$call2", "worker", hbSourceSlotStart)
-	child2 = withHeartbeat(child2, "msg2$$call2", heartbeat.PurposeTurn, "worker", hbSourceSlotStart)
-	hbAssertCtx(t, child2, "msg2$$call2", "root-session", "worker", hbSourceSlotStart, heartbeat.PurposeTurn)
+	child2 := callbeat.InheritHeartbeat(child1, "msg2$$call2", "worker", callbeat.HbSourceSlotStart)
+	child2 = callbeat.WithHeartbeat(child2, "msg2$$call2", heartbeat.PurposeTurn, "worker", callbeat.HbSourceSlotStart)
+	hbAssertCtx(t, child2, "msg2$$call2", "root-session", "worker", callbeat.HbSourceSlotStart, heartbeat.PurposeTurn)
 }
 
 // TestHbCtx_AsyncDetachedCarriesAttribution documents the async path split:
@@ -384,7 +385,7 @@ func TestHbCtx_SubAgentTwoLevelsInheritsRoot(t *testing.T) {
 func TestHbCtx_AsyncDetachedCarriesAttribution(t *testing.T) {
 	hbIsolateEnv(t)
 
-	stamped := withHeartbeat(context.Background(), "child-session", heartbeat.PurposeTurn, "worker", hbSourcePerCall)
+	stamped := callbeat.WithHeartbeat(context.Background(), "child-session", heartbeat.PurposeTurn, "worker", callbeat.HbSourcePerCall)
 	detached := context.WithoutCancel(stamped)
 	hb := heartbeat.FromContext(detached)
 	assert.Equal(t, "child-session", hb.SessionID)

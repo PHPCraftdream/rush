@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
@@ -116,17 +118,17 @@ func roleSlotOverride(cfg *config.Config, sess session.Session, role config.Sele
 		return nil, "", false
 	}
 	var sel config.SelectedModel
-	source := hbSourceSlotStart
+	source := callbeat.HbSourceSlotStart
 	switch {
 	case role == config.SelectedModelTypeFast && sess.FastModelID != "":
 		sel = config.SelectedModel{Provider: sess.FastModelProvider, Model: sess.FastModelID, ReasoningEffort: sess.FastModelReasoningEffort}
-		source = hbSourceSessionOverride
+		source = callbeat.HbSourceSessionOverride
 	case role == config.SelectedModelTypeWorker && sess.WorkerModelID != "":
 		sel = config.SelectedModel{Provider: sess.WorkerModelProvider, Model: sess.WorkerModelID, ReasoningEffort: sess.WorkerModelReasoningEffort}
-		source = hbSourceSessionOverride
+		source = callbeat.HbSourceSessionOverride
 	case role == config.SelectedModelTypeReviewer && sess.ReviewerModelID != "":
 		sel = config.SelectedModel{Provider: sess.ReviewerModelProvider, Model: sess.ReviewerModelID, ReasoningEffort: sess.ReviewerModelReasoningEffort}
-		source = hbSourceSessionOverride
+		source = callbeat.HbSourceSessionOverride
 	default:
 		slot, ok := roleSlotConfigModel(cfg, role)
 		if !ok {

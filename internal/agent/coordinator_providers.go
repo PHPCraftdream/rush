@@ -31,6 +31,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	mcp "github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/discover"
@@ -105,7 +106,6 @@ func fantasyAcceptsReasoningEffort(effort string) bool {
 
 func getProviderOptions(sessionID string, model Model, providerCfg config.ProviderConfig) fantasy.ProviderOptions {
 	options := fantasy.ProviderOptions{}
-
 	cfgOpts := []byte("{}")
 	providerCfgOpts := []byte("{}")
 	catwalkOpts := []byte("{}")
@@ -661,7 +661,7 @@ func (c *coordinator) buildProviderWithValuesAndAuth(cfg *config.Config, provide
 	if err != nil {
 		return nil, err
 	}
-	return c.withPeakHoursRequestGate(NewHeartbeatProvider(p), providerCfg), nil
+	return c.withPeakHoursRequestGate(callbeat.NewHeartbeatProvider(p), providerCfg), nil
 }
 
 func (c *coordinator) buildProviderWithValuesInner(cfg *config.Config, providerCfg config.ProviderConfig, model config.SelectedModel, isSubAgent bool, apiKey, baseURL string, allowAmbientAuth bool) (fantasy.Provider, error) {

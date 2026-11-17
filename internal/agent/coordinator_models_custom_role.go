@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"github.com/PHPCraftdream/rush/internal/config"
 )
 
@@ -28,7 +30,7 @@ func (c *coordinator) finishCustomRoleResolveSnapshot(ctx context.Context, cfg *
 		smart:        smartModel,
 		fast:         fastModel,
 		smartSource:  source,
-		fastSource:   hbSourceSlotLive,
+		fastSource:   callbeat.HbSourceSlotLive,
 		providerCfg:  providerCfg,
 		promptPrefix: providerCfg.SystemPromptPrefix,
 	}

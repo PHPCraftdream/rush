@@ -1,6 +1,6 @@
 // Heartbeat decorator: records every fantasy model call in internal/heartbeat.
 
-package agent
+package callbeat
 
 import (
 	"context"

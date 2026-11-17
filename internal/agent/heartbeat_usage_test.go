@@ -3,19 +3,19 @@
 // REVERT-CHECKS (the orchestrator runs the mutants; each test must fail on
 // exactly the listed single-line production change):
 //
-//	TestHbUsage_TurnRecorded            — delete the addHeartbeatUsage call in
+//	TestHbUsage_TurnRecorded            — delete the callbeat.AddHeartbeatUsage call in
 //	  applyStepUsage (agent_turn_step.go): per-step tokens/cost go unreported.
 //	TestHbUsage_TwoTurnsSumExactlyOnce  — move the applyStepUsage add out of the
 //	  per-step path (or double it): totals drift from DB accounting.
-//	TestHbUsage_TitleRecorded           — delete the addHeartbeatUsage call in
+//	TestHbUsage_TitleRecorded           — delete the callbeat.AddHeartbeatUsage call in
 //	  generateTitle (agent_title.go).
-//	TestHbUsage_SummaryRecorded         — delete the addHeartbeatUsage call in
+//	TestHbUsage_SummaryRecorded         — delete the callbeat.AddHeartbeatUsage call in
 //	  runSummarizeBody (agent_compaction.go).
-//	TestHbUsage_SilentSummaryRecorded   — delete the addHeartbeatUsage call in
+//	TestHbUsage_SilentSummaryRecorded   — delete the callbeat.AddHeartbeatUsage call in
 //	  runSummarizeSilent (agent_compaction.go).
-//	TestHbUsage_KeepaliveRecorded       — delete the addHeartbeatUsage call in
+//	TestHbUsage_KeepaliveRecorded       — delete the callbeat.AddHeartbeatUsage call in
 //	  recordCacheKeepAliveCost (agent_cache_keepalive.go).
-//	TestHbUsage_ZeroUsageAddsNothing    — drop hbUsageNonZero's guard: an all-zero
+//	TestHbUsage_ZeroUsageAddsNothing    — drop callbeat.HbUsageNonZero's guard: an all-zero
 //	  delta creates an empty registry entry.
 package agent
 
@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/assert"
@@ -322,7 +323,7 @@ func TestHbUsage_ZeroUsageAddsNothing(t *testing.T) {
 	assert.False(t, found, "a zero usage must not create a registry entry")
 
 	// And the helper-level contract: an all-zero delta is dropped.
-	assert.False(t, hbUsageNonZero(hbUsage(fantasy.Usage{}, 0)))
-	assert.True(t, hbUsageNonZero(hbUsage(fantasy.Usage{OutputTokens: 1}, 0)))
-	assert.True(t, hbUsageNonZero(hbUsage(fantasy.Usage{}, 0.01)))
+	assert.False(t, callbeat.HbUsageNonZero(callbeat.HbUsage(fantasy.Usage{}, 0)))
+	assert.True(t, callbeat.HbUsageNonZero(callbeat.HbUsage(fantasy.Usage{OutputTokens: 1}, 0)))
+	assert.True(t, callbeat.HbUsageNonZero(callbeat.HbUsage(fantasy.Usage{}, 0.01)))
 }

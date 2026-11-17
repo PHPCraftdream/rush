@@ -1,4 +1,4 @@
-package agent
+package usage
 
 import (
 	"regexp"
@@ -15,6 +15,10 @@ var (
 	cliDateClockRe  = regexp.MustCompile(`^(?:[1-9]|1[0-2]):[0-5][0-9]$`)
 	cliClockRe      = regexp.MustCompile(`(?i)^(\d{1,2})(?::(\d{2}))?\s*(am|pm)(?:\s+\(([A-Za-z0-9_+./-]+)\))?\.?$`)
 )
+
+func ParseCLIResetText(text string, now time.Time) (time.Time, bool) {
+	return parseCLIResetText(text, now)
+}
 
 // parseCLIResetText parses failure-channel hints; callers supply a fixed now.
 func parseCLIResetText(text string, now time.Time) (time.Time, bool) {

@@ -1,10 +1,93 @@
-package agent
+package usage
 
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
+
+	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/config"
 )
+
+var errProviderPeakHours = errors.New("provider is inside its configured peak-hours window")
+
+// PeakHoursSentinel returns the stable private error-class marker for adapters.
+func PeakHoursSentinel() error { return errProviderPeakHours }
+
+type PeakHoursError struct {
+	ProviderID string
+	Start, End string // HH:MM, as configured
+	ReopensAt  time.Time
+	Message    string
+	Timezone   string
+}
+
+func (e *PeakHoursError) Error() string {
+	if e.ReopensAt.IsZero() {
+		return fmt.Sprintf(
+			"provider %s is in peak hours (%s–%s), refusing with no scheduled reopen (blocked around the clock)",
+			e.ProviderID, e.Start, e.End,
+		)
+	}
+	return fmt.Sprintf(
+		"provider %s is in peak hours (%s–%s), refusing until %s",
+		e.ProviderID, e.Start, e.End, e.ReopensAt.Format("15:04"),
+	)
+}
+
+func (e *PeakHoursError) Unwrap() error { return errProviderPeakHours }
+
+func CheckPeakHours(providerCfg config.ProviderConfig) error {
+	return checkPeakHours(providerCfg)
+}
+
+func checkPeakHours(providerCfg config.ProviderConfig) error {
+	ph := providerCfg.PeakHours
+	if ph == nil || ph.IsOff() {
+		return nil
+	}
+	now := time.Now()
+	st := ph.Status(now)
+	if !st.Blocked {
+		return nil
+	}
+	e := &PeakHoursError{
+		ProviderID: providerCfg.ID,
+		Message:    ph.EffectiveMessage(),
+		Timezone:   st.Timezone,
+	}
+	e.ReopensAt = st.ReopensAt
+	switch {
+	case ph.Legacy != nil:
+		e.Start, e.End = ph.Legacy.Start, ph.Legacy.End
+		if st.InPeak {
+			e.ReopensAt = ph.Legacy.EndTimeToday(now)
+		}
+	case st.InPeak && !st.BandStart.IsZero():
+		loc := time.Local
+		if tz, err := config.ResolvePeakTimezone(st.Timezone); err == nil && tz != nil {
+			loc = tz
+		}
+		e.Start = st.BandStart.In(loc).Format("15:04")
+		if !st.ReopensAt.IsZero() {
+			e.End = st.ReopensAt.In(loc).Format("15:04")
+		}
+	}
+	msg := "Refusing request: provider is inside its peak-hours window"
+	args := []any{"provider", providerCfg.ID, "window_start", e.Start, "window_end", e.End}
+	if !e.ReopensAt.IsZero() {
+		args = append(args,
+			"available_again", e.ReopensAt.Format("15:04"),
+			"in", time.Until(e.ReopensAt).Round(time.Minute).String(),
+		)
+	}
+	if st.Timezone != "" {
+		args = append(args, "timezone", st.Timezone)
+	}
+	slog.Warn(msg, args...)
+	return e
+}
 
 // PeakHoursGuidance returns the orchestrator-facing instruction paragraph
 // for ANY peak-hours refusal — the "refused at the start of a new
@@ -76,4 +159,22 @@ func peakHoursStoppedFinishText(err error) (msg, details string) {
 	msg = "Stopped: provider entered its peak-hours window mid-session"
 	details = fmt.Sprintf("%s\n\n%s", err.Error(), PeakHoursGuidance(err))
 	return msg, details
+}
+
+// PeakHoursStoppedFinishText is the exported seam over
+// peakHoursStoppedFinishText for adapters outside the package.
+func PeakHoursStoppedFinishText(err error) (msg, details string) {
+	return peakHoursStoppedFinishText(err)
+}
+
+func IsHardQuotaLimit(err error) bool {
+	return classifyHardProviderLimit(err, "", time.Now()) == providerLimitHard
+}
+
+func IsQuotaLimit(providerErr *fantasy.ProviderError) bool {
+	return isQuotaLimit(providerErr)
+}
+
+func isQuotaLimit(providerErr *fantasy.ProviderError) bool {
+	return classifyHardProviderLimit(providerErr, "", time.Now()) == providerLimitHard
 }

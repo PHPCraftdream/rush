@@ -1,13 +1,14 @@
 // Heartbeat attribution helpers: every consumer that reaches a provider call
 // attaches a heartbeat.Context through these, so w1251's provider wrap can
 // count requests and this package can report usage against the right root.
-package agent
+package callbeat
 
 import (
 	"context"
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 )
 
@@ -103,7 +104,7 @@ func turnPurposeOrInherited(hb heartbeat.Context) heartbeat.Purpose {
 
 // hbTurnRole resolves the main turn's slot role: the per-call CallOptions
 // role when set, else the inherited sub-agent role, else smart.
-func hbTurnRole(call SessionAgentCall, hb heartbeat.Context) string {
+func hbTurnRole(call agentcall.SessionAgentCall, hb heartbeat.Context) string {
 	if call.CallOptions != nil && call.CallOptions.ModelRole != "" {
 		return string(call.CallOptions.ModelRole)
 	}

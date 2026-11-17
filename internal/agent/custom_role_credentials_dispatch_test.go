@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openai"
@@ -99,7 +101,7 @@ func TestCustomRoleCredentialsDispatchUsesExactTenantSlotWithoutChangingPolicy(t
 	require.Equal(t, "low", resolved.smart.ModelCfg.ReasoningEffort)
 	require.EqualValues(t, 213, resolved.smart.ModelCfg.MaxTokens)
 	require.Equal(t, customRoleDispatchTenant, resolved.providerCfg.ID)
-	require.Equal(t, hbSourcePerCall, resolved.smartSource)
+	require.Equal(t, callbeat.HbSourcePerCall, resolved.smartSource)
 	require.Len(t, resolved.tools, 1)
 	require.Equal(t, "view", resolved.tools[0].Info().Name)
 
@@ -119,7 +121,7 @@ func TestCustomRoleCredentialsDispatchUsesExactTenantSlotWithoutChangingPolicy(t
 	require.Equal(t, "low", selected.Model.ModelCfg.ReasoningEffort)
 	require.EqualValues(t, 213, selected.Model.ModelCfg.MaxTokens)
 	require.Equal(t, customRoleDispatchTenant, selected.Provider.ID)
-	require.Equal(t, hbSourcePerCall, selected.Source)
+	require.Equal(t, callbeat.HbSourcePerCall, selected.Source)
 	require.Same(t, creds, selected.Credentials)
 	require.Equal(t, config.SelectedModelTypeSmart, opts.ModelRole)
 	require.Equal(t, []string{"view"}, *opts.RoleContract.Tools)
