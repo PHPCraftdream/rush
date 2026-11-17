@@ -194,18 +194,14 @@ func zaiResetStamp(text string) (start, end int, t time.Time, qualified, ok bool
 func ParseZAIResetHint(text string) (time.Time, bool) { return parseZAIResetHint(text) }
 
 func parseZAIResetHint(text string) (time.Time, bool) {
-	return parseZAIResetHintWithZone(text, func() *time.Location { return time.Local })
+	_, _, t, _, ok := zaiResetStamp(text)
+	return t, ok
 }
 
-func parseZAIResetHintWithZone(text string, displayZone func() *time.Location) (time.Time, bool) {
-	start, end, t, qualified, ok := zaiResetStamp(text)
-	if !ok || qualified {
-		return t, ok
-	}
-	localized := t.In(displayZone())
-	_ = start
-	_ = end
-	return localized, true
+// parseZAIResetHintWithZone keeps the display-zone plumbing of its callers; the
+// parsed instant stays in the provider's own zone, as before the move.
+func parseZAIResetHintWithZone(text string, _ func() *time.Location) (time.Time, bool) {
+	return parseZAIResetHint(text)
 }
 
 // LocalizeResetHint rewrites a provider's zone-less "limit will reset at
