@@ -1,4 +1,4 @@
-package cmd
+package runfinish
 
 // Role validation for `rush run --role`.
 
@@ -8,19 +8,20 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
+	modeluse "github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/models/use"
 )
 
 // validateRunRole applies the run command's required-role and vocabulary checks.
 // It is separate from boot/config loading so resume guidance can be checked
 // without starting a run.
-func validateRunRole(role string) (config.SelectedModelType, error) {
+func ValidateRunRole(role string) (config.SelectedModelType, error) {
 	if role == "" {
 		return "", fmt.Errorf("--role is required: pass --role smart, --role fast, worker, reviewer, or an exact configured custom role name")
 	}
 	if err := config.ValidateCustomRoleName(role); err == nil {
 		return "", nil
 	}
-	parsed, err := resolveModelRole(role)
+	parsed, err := modeluse.ResolveModelRole(role)
 	if err == nil {
 		return parsed, nil
 	}
@@ -31,13 +32,13 @@ func customRunRole(role string) bool {
 	if role == "" {
 		return false
 	}
-	if _, err := resolveModelRole(role); err == nil {
+	if _, err := modeluse.ResolveModelRole(role); err == nil {
 		return false
 	}
 	return config.ValidateCustomRoleName(role) == nil
 }
 
-func requestedRunRole(role string) string {
+func RequestedRunRole(role string) string {
 	if customRunRole(role) {
 		return role
 	}
@@ -58,7 +59,7 @@ func requestedRunRole(role string) string {
 // top-level one), so that id is resolved here first and returned with
 // useLast cleared so the caller passes THAT pair on (R3C-10). Without a
 // fold nothing is resolved and (sessionID, useLast) come back unchanged.
-func foldRoleModel(ctx context.Context, a *app.App, models map[config.SelectedModelType]config.SelectedModel, role string, modelType config.SelectedModelType, smartModel, sessionID string, useLast bool) (model, resolvedSessionID string, resolvedUseLast bool, err error) {
+func FoldRoleModel(ctx context.Context, a *app.App, models map[config.SelectedModelType]config.SelectedModel, role string, modelType config.SelectedModelType, smartModel, sessionID string, useLast bool) (model, resolvedSessionID string, resolvedUseLast bool, err error) {
 	if customRunRole(role) {
 		if smartModel != "" {
 			return "", sessionID, useLast, fmt.Errorf("--model cannot be combined with custom --role %q", role)

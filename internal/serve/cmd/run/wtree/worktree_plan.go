@@ -1,7 +1,7 @@
 // Pure decisions for the `rush run --worktree` feature: slug validation,
 // target path containment, and the create/reuse/remove planning that
 // callers drive with injected existence checks.
-package cmd
+package wtree
 
 import (
 	"fmt"
@@ -11,9 +11,9 @@ import (
 	"strings"
 )
 
-// worktreeDirName is the subdirectory of the main checkout holding all
+// WorktreeDirName is the subdirectory of the main checkout holding all
 // rush-managed linked worktrees.
-const worktreeDirName = "worktrees"
+const WorktreeDirName = "worktrees"
 
 // worktreeSlugRE restricts slugs to single path segments safe on every
 // platform: lowercase letters, digits, dots, underscores and hyphens,
@@ -31,12 +31,12 @@ var windowsReservedNames = map[string]bool{
 	"lpt6": true, "lpt7": true, "lpt8": true, "lpt9": true,
 }
 
-// validateWorktreeSlug rejects slugs that cannot name a directory under
+// ValidateWorktreeSlug rejects slugs that cannot name a directory under
 // <main>/worktrees: empty values, anything outside the slug regex
 // (uppercase, leading punctuation, separators, spaces), any value
 // containing "..", and Windows reserved device names with or without an
 // extension.
-func validateWorktreeSlug(slug string) error {
+func ValidateWorktreeSlug(slug string) error {
 	if slug == "" {
 		return fmt.Errorf("worktree slug must not be empty")
 	}
@@ -61,14 +61,14 @@ func validateWorktreeSlug(slug string) error {
 // the relative path escapes the worktrees directory the slug filter was
 // somehow bypassed and the request is refused.
 func worktreeTargetPath(mainRoot, slug string) (string, error) {
-	if err := validateWorktreeSlug(slug); err != nil {
+	if err := ValidateWorktreeSlug(slug); err != nil {
 		return "", err
 	}
-	target := filepath.Join(mainRoot, worktreeDirName, slug)
-	rel, err := filepath.Rel(filepath.Join(mainRoot, worktreeDirName), target)
+	target := filepath.Join(mainRoot, WorktreeDirName, slug)
+	rel, err := filepath.Rel(filepath.Join(mainRoot, WorktreeDirName), target)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("worktree target %q escapes %q",
-			target, filepath.Join(mainRoot, worktreeDirName))
+			target, filepath.Join(mainRoot, WorktreeDirName))
 	}
 	return target, nil
 }
@@ -93,28 +93,28 @@ func isWindowsHost() bool {
 type worktreePlanKind int
 
 const (
-	// worktreePlanCreate: git worktree add -b <branch> <path> <base>.
-	worktreePlanCreate worktreePlanKind = iota
-	// worktreePlanCreateExistingBranch: the branch already exists, so
+	// WorktreePlanCreate: git worktree add -b <branch> <path> <base>.
+	WorktreePlanCreate worktreePlanKind = iota
+	// WorktreePlanCreateExistingBranch: the branch already exists, so
 	// `git worktree add` runs without -b.
-	worktreePlanCreateExistingBranch
-	// worktreePlanReuse: a registered worktree already sits at the
+	WorktreePlanCreateExistingBranch
+	// WorktreePlanReuse: a registered worktree already sits at the
 	// target path and its branch matches.
-	worktreePlanReuse
+	WorktreePlanReuse
 )
 
-// worktreePlan is the decision produced by planWorktree.
+// worktreePlan is the decision produced by PlanWorktree.
 type worktreePlan struct {
 	Kind   worktreePlanKind
 	Path   string
 	Branch string
-	Entry  worktreeEntry // Set for Reuse.
+	Entry  WorktreeEntry // Set for Reuse.
 }
 
-// planWorktree decides what `rush run --worktree <slug>` must do.
+// PlanWorktree decides what `rush run --worktree <slug>` must do.
 // pathExists and branchExists are injected so this function stays pure.
-func planWorktree(
-	entries []worktreeEntry, mainRoot, slug, wantBranch string,
+func PlanWorktree(
+	entries []WorktreeEntry, mainRoot, slug, wantBranch string,
 	pathExists, branchExists func(string) bool,
 ) (worktreePlan, error) {
 	target, err := worktreeTargetPath(mainRoot, slug)
@@ -127,7 +127,7 @@ func planWorktree(
 		}
 		if entry.Branch == wantBranch {
 			return worktreePlan{
-				Kind: worktreePlanReuse, Path: target,
+				Kind: WorktreePlanReuse, Path: target,
 				Branch: wantBranch, Entry: entry,
 			}, nil
 		}
@@ -147,26 +147,26 @@ func planWorktree(
 	}
 	if branchExists(wantBranch) {
 		return worktreePlan{
-			Kind: worktreePlanCreateExistingBranch, Path: target,
+			Kind: WorktreePlanCreateExistingBranch, Path: target,
 			Branch: wantBranch,
 		}, nil
 	}
 	return worktreePlan{
-		Kind: worktreePlanCreate, Path: target,
+		Kind: WorktreePlanCreate, Path: target,
 		Branch: wantBranch,
 	}, nil
 }
 
 // removalPlan is the decision produced by planWorktreeRemoval.
 type removalPlan struct {
-	Entry  worktreeEntry
+	Entry  WorktreeEntry
 	Path   string
 	Branch string // "" when detached.
 }
 
 // planWorktreeRemoval resolves the registered worktree to remove for a
 // slug, guarding that the target really sits under <mainRoot>/worktrees.
-func planWorktreeRemoval(entries []worktreeEntry, mainRoot, slug string) (removalPlan, error) {
+func planWorktreeRemoval(entries []WorktreeEntry, mainRoot, slug string) (removalPlan, error) {
 	target, err := worktreeTargetPath(mainRoot, slug)
 	if err != nil {
 		return removalPlan{}, err
@@ -177,12 +177,12 @@ func planWorktreeRemoval(entries []worktreeEntry, mainRoot, slug string) (remova
 		}
 		// Belt and braces over the slug check: the registered path must
 		// also be contained in the worktrees directory.
-		rel, relErr := filepath.Rel(filepath.Join(mainRoot, worktreeDirName), entry.Path)
+		rel, relErr := filepath.Rel(filepath.Join(mainRoot, WorktreeDirName), entry.Path)
 		if relErr != nil || rel == ".." ||
 			strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return removalPlan{}, fmt.Errorf(
 				"registered worktree %q escapes %q",
-				entry.Path, filepath.Join(mainRoot, worktreeDirName))
+				entry.Path, filepath.Join(mainRoot, WorktreeDirName))
 		}
 		branch := entry.Branch
 		if entry.Detached {
@@ -191,5 +191,5 @@ func planWorktreeRemoval(entries []worktreeEntry, mainRoot, slug string) (remova
 		return removalPlan{Entry: entry, Path: entry.Path, Branch: branch}, nil
 	}
 	return removalPlan{}, fmt.Errorf("%s is not a rush-managed worktree under %s",
-		slug, filepath.Join(mainRoot, worktreeDirName))
+		slug, filepath.Join(mainRoot, WorktreeDirName))
 }

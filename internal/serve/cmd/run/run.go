@@ -18,7 +18,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
-	cmdpkg "github.com/PHPCraftdream/rush/internal/serve/cmd"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
+	clijournal "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/journal"
 	cliproc "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
 	runfinish "github.com/PHPCraftdream/rush/internal/serve/cmd/run/finish"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -37,7 +38,7 @@ var runCmd = &cobra.Command{
 		// drop the console so the parent shell's exit can't hard-kill us
 		// via CTRL_CLOSE_EVENT. See console_detach_windows.go — this kill
 		// is unavoidable from a ctrl handler and has hit runs mid-boot.
-		cmdpkg.maybeDetachConsole()
+		cliproc.MaybeDetachConsole()
 		var (
 			quiet, _            = cmd.Flags().GetBool("quiet")
 			verbose, _          = cmd.Flags().GetBool("verbose")
@@ -105,7 +106,7 @@ var runCmd = &cobra.Command{
 			}
 		}
 
-		modelType, err := cmdpkg.validateRunRole(role)
+		modelType, err := runfinish.ValidateRunRole(role)
 		if err != nil {
 			return err
 		}
@@ -130,7 +131,7 @@ var runCmd = &cobra.Command{
 		// hand on every invocation. Explicit flags always win — silent
 		// auto-load only fills the gap when nothing was passed.
 		if systemPrompt == "" {
-			if cwd, cwdErr := cmdpkg.ResolveCwd(cmd); cwdErr == nil {
+			if cwd, cwdErr := cmdkit.ResolveCwd(cmd); cwdErr == nil {
 				autoPath := filepath.Join(cwd, ".rush", "system-prompts", "default.md")
 				if bts, err := os.ReadFile(autoPath); err == nil && len(bts) > 0 {
 					systemPrompt = string(bts)
@@ -252,8 +253,8 @@ var runCmd = &cobra.Command{
 		// Only a process still alive past hardKillGrace is force-killed.
 		var stopDeadline func()
 		ctx, stopDeadline = runfinish.InstallRunDeadline(ctx, timeoutDur,
-			cmdpkg.resolveDefaultHardTimeout(os.Getenv("RUSH_RUN_DEFAULT_HARD_TIMEOUT")),
-			runfinish.HardKillGrace, os.Stderr, cmdpkg.exitWithAudit)
+			resolveDefaultHardTimeout(os.Getenv("RUSH_RUN_DEFAULT_HARD_TIMEOUT")),
+			runfinish.HardKillGrace, os.Stderr, clijournal.ExitWithAudit)
 		defer stopDeadline()
 
 		// Fork patch (worktree delegation): --worktree resolves or
@@ -285,7 +286,7 @@ var runCmd = &cobra.Command{
 		// resolveSession's get-or-create branch will create a session
 		// whose ID is exactly the user-supplied string.
 		if sessionID != "" {
-			if sess, err := cmdpkg.resolveSessionID(ctx, a.Sessions, sessionID); err == nil {
+			if sess, err := cmdkit.ResolveSessionID(ctx, a.Sessions, sessionID); err == nil {
 				sessionID = sess.ID
 			}
 		}
@@ -299,7 +300,7 @@ var runCmd = &cobra.Command{
 
 		// foldRoleModel validates --role and resolves --continue's session;
 		// the role model itself resolves live per turn (plan D2).
-		smartModel, sessionID, useLast, err = cmdpkg.foldRoleModel(ctx, a, a.Config().Models, role, modelType, smartModel, sessionID, useLast)
+		smartModel, sessionID, useLast, err = runfinish.FoldRoleModel(ctx, a, a.Config().Models, role, modelType, smartModel, sessionID, useLast)
 		if err != nil {
 			return err
 		}
@@ -310,7 +311,7 @@ var runCmd = &cobra.Command{
 
 		prompt := strings.Join(args, " ")
 
-		prompt, err = cmdpkg.MaybePrependStdin(prompt)
+		prompt, err = MaybePrependStdin(prompt)
 		if err != nil {
 			slog.Error("Failed to read from stdin", "error", err)
 			return err
@@ -353,7 +354,7 @@ var runCmd = &cobra.Command{
 			SystemPrompt:                systemPrompt,
 			ReasoningEffort:             effort,
 			RoleSmart:                   roleSmart,
-			RequestedRole:               cmdpkg.requestedRunRole(role),
+			RequestedRole:               runfinish.RequestedRunRole(role),
 			ModelRole:                   modelType,
 			DisableSubAgents:            agentsDisable,
 			MaxAgentDepth:               &maxAgentDepth,
@@ -469,7 +470,7 @@ func NewRunCmd() *cobra.Command {
 		runCmd.MarkFlagsMutuallyExclusive("system-prompt", "system-prompt-file")
 		runCmd.MarkFlagsMutuallyExclusive("stream", "json")
 	})
-	return cmdpkg.deepFreshCmd(runCmd)
+	return cmdkit.DeepFreshCmd(runCmd)
 }
 
 // stdinReadGraceDefault bounds how long MaybePrependStdin waits for a named

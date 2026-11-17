@@ -1,7 +1,7 @@
 // The `rush worktree` command family: removal and listing of the
 // rush-managed git worktrees that `rush run --worktree <slug>` creates
 // under the main checkout's `worktrees/` directory.
-package cmd
+package wtree
 
 import (
 	"context"
@@ -13,6 +13,7 @@ import (
 	"sync"
 	"text/tabwriter"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -83,7 +84,7 @@ func runWorktreeRemove(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("usage: rush worktree remove <slug> [--keep-branch] [--force]")
 	}
 	slug := args[0]
-	if err := validateWorktreeSlug(slug); err != nil {
+	if err := ValidateWorktreeSlug(slug); err != nil {
 		return err
 	}
 	keepBranch, _ := cmd.Flags().GetBool("keep-branch")
@@ -93,17 +94,17 @@ func runWorktreeRemove(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get current working directory: %w", err)
 	}
-	startDir, err := ResolveCwd(cmd)
+	startDir, err := cmdkit.ResolveCwd(cmd)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = os.Chdir(prevWd) }()
 
-	mainRoot, err := mainCheckoutRoot(ctx, startDir)
+	mainRoot, err := MainCheckoutRoot(ctx, startDir)
 	if err != nil {
 		return err
 	}
-	entries, err := listGitWorktrees(ctx, mainRoot)
+	entries, err := ListGitWorktrees(ctx, mainRoot)
 	if err != nil {
 		return err
 	}
@@ -265,7 +266,7 @@ func lockStems(dataDir string) ([]string, error) {
 // worktreeIsDirty reports whether `git status --porcelain` in wtPath
 // prints anything.
 func worktreeIsDirty(ctx context.Context, wtPath string) (bool, error) {
-	out, err := gitIn(ctx, wtPath, "status", "--porcelain")
+	out, err := GitIn(ctx, wtPath, "status", "--porcelain")
 	if err != nil {
 		return false, err
 	}
@@ -276,11 +277,11 @@ func worktreeIsDirty(ctx context.Context, wtPath string) (bool, error) {
 // path sits directly in <mainRoot>/worktrees, ok=false otherwise.
 func worktreeSlugOf(mainRoot, path string) (string, bool) {
 	parent := filepath.Dir(filepath.Clean(path))
-	if !sameWorktreePath(parent, filepath.Join(mainRoot, worktreeDirName)) {
+	if !sameWorktreePath(parent, filepath.Join(mainRoot, WorktreeDirName)) {
 		return "", false
 	}
 	slug := filepath.Base(filepath.Clean(path))
-	if err := validateWorktreeSlug(slug); err != nil {
+	if err := ValidateWorktreeSlug(slug); err != nil {
 		return "", false
 	}
 	return slug, true
@@ -294,23 +295,23 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get current working directory: %w", err)
 	}
-	startDir, err := ResolveCwd(cmd)
+	startDir, err := cmdkit.ResolveCwd(cmd)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = os.Chdir(prevWd) }()
 
-	mainRoot, err := mainCheckoutRoot(ctx, startDir)
+	mainRoot, err := MainCheckoutRoot(ctx, startDir)
 	if err != nil {
 		return err
 	}
-	entries, err := listGitWorktrees(ctx, mainRoot)
+	entries, err := ListGitWorktrees(ctx, mainRoot)
 	if err != nil {
 		return err
 	}
 
 	out := cmd.OutOrStdout()
-	var rows []worktreeEntry
+	var rows []WorktreeEntry
 	for _, entry := range entries {
 		if slug, ok := worktreeSlugOf(mainRoot, entry.Path); ok && slug != "" {
 			rows = append(rows, entry)
@@ -318,7 +319,7 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 	}
 	if len(rows) == 0 {
 		fmt.Fprintf(out, "no rush-managed worktrees under %s\n",
-			filepath.Join(mainRoot, worktreeDirName))
+			filepath.Join(mainRoot, WorktreeDirName))
 		return nil
 	}
 
@@ -356,5 +357,5 @@ func NewWorktreeCmd() *cobra.Command {
 				"still refuses removal)")
 		worktreeCmd.AddCommand(worktreeRemoveCmd, worktreeListCmd)
 	})
-	return deepFreshCmd(worktreeCmd)
+	return cmdkit.DeepFreshCmd(worktreeCmd)
 }

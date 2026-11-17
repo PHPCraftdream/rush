@@ -2,7 +2,7 @@
 // keep flowing to the process's original os.Stdout/os.Stderr while a
 // bounded tail is captured so finish() can flush it into the main
 // checkout's .rush/stdin.
-package cmd
+package wtree
 
 import (
 	"errors"
@@ -45,10 +45,10 @@ func (t *tailBuffer) Bytes() []byte {
 	return t.buf
 }
 
-// streamMirror is the swap state started by startStreamMirror. Writes to
+// StreamMirror is the swap state started by StartStreamMirror. Writes to
 // the tail buffers happen only from their single pump goroutine; stop()
 // reads the tails only after the pumps have exited (or timed out).
-type streamMirror struct {
+type StreamMirror struct {
 	prevStdout *os.File
 	prevStderr *os.File
 	outW       *os.File
@@ -59,13 +59,13 @@ type streamMirror struct {
 	errTail    *tailBuffer
 }
 
-// startStreamMirror replaces os.Stdout and os.Stderr with os.Pipe write
+// StartStreamMirror replaces os.Stdout and os.Stderr with os.Pipe write
 // ends and pumps each pipe into io.MultiWriter(original, tailBuffer) on
 // its own goroutine. os.Stdout and os.Stderr are *os.File vars, so
 // downstream fmt.Fprintf calls keep working unchanged. Returns an error
 // only if os.Pipe fails (any already-swapped stream is restored first).
-func startStreamMirror() (*streamMirror, error) {
-	m := &streamMirror{
+func StartStreamMirror() (*StreamMirror, error) {
+	m := &StreamMirror{
 		prevStdout: os.Stdout,
 		prevStderr: os.Stderr,
 		outDone:    make(chan struct{}),
@@ -96,7 +96,7 @@ func startStreamMirror() (*streamMirror, error) {
 // pump copies everything read from r into both the original stream and
 // the tail buffer, then closes r. Runs on its own goroutine and is the
 // only writer to tail.
-func (m *streamMirror) pump(r *os.File, orig *os.File, tail *tailBuffer, done chan struct{}) {
+func (m *StreamMirror) pump(r *os.File, orig *os.File, tail *tailBuffer, done chan struct{}) {
 	defer close(done)
 	defer r.Close()
 	_, _ = io.Copy(io.MultiWriter(orig, tail), r)
@@ -106,7 +106,7 @@ func (m *streamMirror) pump(r *os.File, orig *os.File, tail *tailBuffer, done ch
 // each pump with a 5s timeout, restores the original os.Stdout and
 // os.Stderr, and returns the two tails. The returned error is non-nil
 // when a pump did not exit in time.
-func (m *streamMirror) stop() (outTail, errTail []byte, err error) {
+func (m *StreamMirror) Stop() (outTail, errTail []byte, err error) {
 	_ = m.outW.Close()
 	_ = m.errW.Close()
 	os.Stdout = m.prevStdout

@@ -72,6 +72,12 @@ func resolveSessionID(ctx context.Context, svc session.Service, id string) (sess
 	return cmdkit.ResolveSessionID(ctx, svc, id)
 }
 
+func deepFreshCmd(src *cobra.Command) *cobra.Command { return cmdkit.DeepFreshCmd(src) }
+
+func deepFreshCmdRebind(src *cobra.Command, skip map[string]bool, rebind func(fresh *cobra.Command)) *cobra.Command {
+	return cmdkit.DeepFreshCmdRebind(src, skip, rebind)
+}
+
 func scopeFromFlags(cmd *cobra.Command, def config.Scope) (config.Scope, error) {
 	return cmdkit.ScopeFromFlags(cmd, def)
 }

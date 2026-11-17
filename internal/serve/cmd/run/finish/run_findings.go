@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 )
 
 // findingsBlockTitle heads the block appended by --findings-from.
@@ -55,11 +56,11 @@ func ApplyFindingsFrom(prompt, ref string) (string, error) {
 	if ref == "" {
 		return prompt, nil
 	}
-	path, err := cmdpkg.resolveEnvelopePath(ref)
+	path, err := cliout.ResolveEnvelopePath(ref)
 	if err != nil {
 		return "", err
 	}
-	_, env, _, err := cmdpkg.loadEnvelope(path)
+	_, env, _, err := cliout.LoadEnvelope(path)
 	if err != nil {
 		return "", err
 	}

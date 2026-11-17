@@ -1,7 +1,7 @@
 // Git plumbing for the `rush run --worktree` feature: listing worktrees,
 // resolving the main checkout root, and removing worktrees and branches
 // with the Windows-safe retry policy.
-package cmd
+package wtree
 
 import (
 	"context"
@@ -25,8 +25,8 @@ const worktreeRemoveAttempts = 5
 // short while after the owning process exits.
 const worktreeRemoveRetryDelay = 300 * time.Millisecond
 
-// worktreeEntry is one record of `git worktree list --porcelain`.
-type worktreeEntry struct {
+// WorktreeEntry is one record of `git worktree list --porcelain`.
+type WorktreeEntry struct {
 	Path     string // Absolute native-separator cleaned path.
 	Head     string // Commit sha, when present.
 	Branch   string // Short branch name (no refs/heads/ prefix); "" when detached/bare.
@@ -56,10 +56,10 @@ func stripHookGitEnv(cmd *exec.Cmd) {
 	cmd.Env = filtered
 }
 
-// gitIn runs one git command in dir, strips the hook-exported git
+// GitIn runs one git command in dir, strips the hook-exported git
 // variables from its environment, and returns the trimmed stdout. On
 // failure the error names the git arguments and includes stderr.
-func gitIn(ctx context.Context, dir string, args ...string) (string, error) {
+func GitIn(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := platform.Command(ctx, "git", args...)
 	cmd.Dir = dir
 	stripHookGitEnv(cmd)
@@ -89,19 +89,19 @@ func gitExitCode(err error) (int, bool) {
 	return exitErr.ExitCode(), true
 }
 
-// listGitWorktrees parses `git worktree list --porcelain` output.
+// ListGitWorktrees parses `git worktree list --porcelain` output.
 // Records are separated by blank lines; attribute lines are "worktree
 // <path>", "HEAD <sha>", "branch refs/heads/<name>", "detached", "bare",
 // and "locked ..." (locked lines are ignored). Git prints forward
 // slashes on Windows, so each path is converted with filepath.FromSlash,
 // made absolute relative to dir, and cleaned.
-func listGitWorktrees(ctx context.Context, dir string) ([]worktreeEntry, error) {
-	out, err := gitIn(ctx, dir, "worktree", "list", "--porcelain")
+func ListGitWorktrees(ctx context.Context, dir string) ([]WorktreeEntry, error) {
+	out, err := GitIn(ctx, dir, "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, err
 	}
-	var entries []worktreeEntry
-	var cur *worktreeEntry
+	var entries []WorktreeEntry
+	var cur *WorktreeEntry
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimRight(line, "\r")
 		if line == "" {
@@ -111,7 +111,7 @@ func listGitWorktrees(ctx context.Context, dir string) ([]worktreeEntry, error) 
 		attr, value, _ := strings.Cut(line, " ")
 		switch attr {
 		case "worktree":
-			entries = append(entries, worktreeEntry{})
+			entries = append(entries, WorktreeEntry{})
 			cur = &entries[len(entries)-1]
 			cur.Path = cleanGitPath(dir, value)
 		case "HEAD":
@@ -150,13 +150,13 @@ func cleanGitPath(dir, p string) string {
 	return filepath.Clean(filepath.FromSlash(p))
 }
 
-// mainCheckoutRoot returns the path of the main (first) worktree of the
+// MainCheckoutRoot returns the path of the main (first) worktree of the
 // repository containing startDir. `git worktree list` always reports the
 // main checkout first, so this works when rush itself runs inside a
 // linked worktree too. A bare main repository is rejected: rush needs a
 // checkout to host the worktrees directory.
-func mainCheckoutRoot(ctx context.Context, startDir string) (string, error) {
-	entries, err := listGitWorktrees(ctx, startDir)
+func MainCheckoutRoot(ctx context.Context, startDir string) (string, error) {
+	entries, err := ListGitWorktrees(ctx, startDir)
 	if err != nil {
 		return "", fmt.Errorf("not a git repository (git worktree list failed in %s): %w",
 			startDir, err)
@@ -169,11 +169,11 @@ func mainCheckoutRoot(ctx context.Context, startDir string) (string, error) {
 	return main.Path, nil
 }
 
-// isGitIgnored reports whether absPath is matched by the repository's
+// IsGitIgnored reports whether absPath is matched by the repository's
 // ignore rules, by running `git check-ignore -q -- <absPath>` with the
 // command rooted in dir. Exit 0 means ignored, exit 1 means not
 // ignored, and anything else is an error.
-func isGitIgnored(ctx context.Context, dir, absPath string) (bool, error) {
+func IsGitIgnored(ctx context.Context, dir, absPath string) (bool, error) {
 	cmd := platform.Command(ctx, "git", "check-ignore", "-q", "--", absPath)
 	cmd.Dir = dir
 	stripHookGitEnv(cmd)
@@ -190,10 +190,10 @@ func isGitIgnored(ctx context.Context, dir, absPath string) (bool, error) {
 	return false, fmt.Errorf("git check-ignore could not start: %w", err)
 }
 
-// localBranchExists reports whether refs/heads/<branch> resolves in the
+// LocalBranchExists reports whether refs/heads/<branch> resolves in the
 // repository at dir. Exit 0 means the branch exists, exit 1 means it
 // does not, and anything else is an error.
-func localBranchExists(ctx context.Context, dir, branch string) (bool, error) {
+func LocalBranchExists(ctx context.Context, dir, branch string) (bool, error) {
 	cmd := platform.Command(ctx, "git", "show-ref", "--verify", "--quiet",
 		"refs/heads/"+branch)
 	cmd.Dir = dir
@@ -220,7 +220,7 @@ func removeGitBranch(ctx context.Context, dir, branch string, force bool) error 
 	if force {
 		flag = "-D"
 	}
-	_, err := gitIn(ctx, dir, "branch", flag, branch)
+	_, err := GitIn(ctx, dir, "branch", flag, branch)
 	return err
 }
 
@@ -245,7 +245,7 @@ func removeGitWorktree(
 
 	var gitErr error
 	for attempt := 1; attempt <= worktreeRemoveAttempts; attempt++ {
-		_, err := gitIn(ctx, mainRoot, removeArgs...)
+		_, err := GitIn(ctx, mainRoot, removeArgs...)
 		if err == nil {
 			gitErr = nil
 			break
@@ -304,6 +304,6 @@ func removeGitWorktree(
 
 // gitPrune drops stale worktree registrations with `git worktree prune`.
 func gitPrune(ctx context.Context, mainRoot string) error {
-	_, err := gitIn(ctx, mainRoot, "worktree", "prune")
+	_, err := GitIn(ctx, mainRoot, "worktree", "prune")
 	return err
 }
