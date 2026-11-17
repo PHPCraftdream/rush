@@ -20,6 +20,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -127,7 +128,7 @@ func gcDropBatchProtected(a *app.App, candidates []gcItem) []gcItem {
 	kept := make([]gcItem, 0, len(candidates))
 	for _, c := range candidates {
 		if reason := batchSessionGuardReason(facts[c.ID]); reason != "" {
-			fmt.Fprintf(os.Stderr, "kept session %s (%s): %s\n", short(session.HashID(c.ID)), truncate(c.Title, 40), reason)
+			fmt.Fprintf(os.Stderr, "kept session %s (%s): %s\n", short(core.HashID(c.ID)), truncate(c.Title, 40), reason)
 			continue
 		}
 		kept = append(kept, c)
@@ -141,7 +142,7 @@ func gcDropBatchProtected(a *app.App, candidates []gcItem) []gcItem {
 // the history of finished roots before the batch retention purge is due. Once
 // retention removed the rows the next gc collects it like any empty session.
 // Ordinary sessions keep the debt-based protection of gcDropBatchProtected.
-func gcDropServiceBatchOwners(ctx context.Context, a *app.App, candidates []gcItem, all []session.Session) []gcItem {
+func gcDropServiceBatchOwners(ctx context.Context, a *app.App, candidates []gcItem, all []core.Session) []gcItem {
 	service := make(map[string]bool)
 	for _, item := range all {
 		if item.Origin == message.OriginAPIService {
@@ -158,7 +159,7 @@ func gcDropServiceBatchOwners(ctx context.Context, a *app.App, candidates []gcIt
 				if err != nil {
 					reason = "its batch rows could not be read"
 				}
-				fmt.Fprintf(os.Stderr, "kept session %s (%s): %s\n", short(session.HashID(c.ID)), truncate(c.Title, 40), reason)
+				fmt.Fprintf(os.Stderr, "kept session %s (%s): %s\n", short(core.HashID(c.ID)), truncate(c.Title, 40), reason)
 				continue
 			}
 		}
@@ -194,7 +195,7 @@ func compactBatchLiveSessions(ctx context.Context, a *app.App, dataDir string) (
 	var offenders []string
 	for _, s := range sessions {
 		if reason := batchSessionGuardReason(facts[s.ID]); reason != "" {
-			offenders = append(offenders, fmt.Sprintf("%s (%s)", short(session.HashID(s.ID)), reason))
+			offenders = append(offenders, fmt.Sprintf("%s (%s)", short(core.HashID(s.ID)), reason))
 		}
 	}
 	return offenders, nil

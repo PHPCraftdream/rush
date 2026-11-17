@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -32,7 +33,7 @@ func newBatchMaintenanceApp(t *testing.T) (*App, *sql.DB, string) {
 		DB:       func() *sql.DB { return conn },
 		dbConns:  []*sql.DB{conn},
 		dataDir:  dataDir,
-		Sessions: session.NewService(q, conn),
+		Sessions: core.NewService(q, conn),
 		Messages: message.NewService(q),
 	}, conn, dataDir
 }

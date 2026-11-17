@@ -21,6 +21,7 @@ import (
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -51,7 +52,7 @@ type runQueueJoinTestCoordinator struct {
 	execCtx chan context.Context
 }
 
-func (c *runQueueJoinTestCoordinator) Run(ctx context.Context, _ session.SessionAgentCallData) (*any, error) {
+func (c *runQueueJoinTestCoordinator) Run(ctx context.Context, _ core.SessionAgentCallData) (*any, error) {
 	c.execCtx <- ctx
 	close(c.entered)
 	<-c.unblock
@@ -59,7 +60,7 @@ func (c *runQueueJoinTestCoordinator) Run(ctx context.Context, _ session.Session
 }
 
 type runQueueJoinAckService struct {
-	session.Service
+	core.Service
 	execCtx <-chan context.Context
 	ackDone chan struct{}
 }
@@ -387,7 +388,7 @@ func TestReleaseGate_3_CrossProcessInterruptAutoResumed(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create a pending_injects row (simulating the CLI creating it).
-	inject := session.PendingInject{
+	inject := core.PendingInject{
 		ID:        "test-inject-id-release-gate-3",
 		SessionID: sess.ID,
 		MessageID: msg.ID,

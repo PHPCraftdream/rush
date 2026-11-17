@@ -18,6 +18,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/spf13/cobra"
 )
 
@@ -499,7 +500,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 				pulse = lockPulseStatus(pulseSec)
 				stale = pulse == "offline"
 				if act.SubAgentActive {
-					subAgentLabel = short(session.HashID(act.DeepestSessionID))
+					subAgentLabel = short(core.HashID(act.DeepestSessionID))
 				}
 			}
 		}

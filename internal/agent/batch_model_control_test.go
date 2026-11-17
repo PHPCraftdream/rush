@@ -13,25 +13,26 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
 
 type testBatchSessions struct {
-	session.Service
-	rows map[string]session.Session
+	core.Service
+	rows map[string]core.Session
 }
 
-func (s testBatchSessions) Get(_ context.Context, id string) (session.Session, error) {
+func (s testBatchSessions) Get(_ context.Context, id string) (core.Session, error) {
 	v, ok := s.rows[id]
 	if !ok {
-		return session.Session{}, fmt.Errorf("missing session")
+		return core.Session{}, fmt.Errorf("missing session")
 	}
 	return v, nil
 }
 
-func (s testBatchSessions) ListSubSessions(_ context.Context, parent string) ([]session.Session, error) {
-	var out []session.Session
+func (s testBatchSessions) ListSubSessions(_ context.Context, parent string) ([]core.Session, error) {
+	var out []core.Session
 	for _, v := range s.rows {
 		if v.ParentSessionID == parent {
 			out = append(out, v)
@@ -40,8 +41,8 @@ func (s testBatchSessions) ListSubSessions(_ context.Context, parent string) ([]
 	return out, nil
 }
 
-func batchTestSessions(owner string) session.Service {
-	return testBatchSessions{rows: map[string]session.Session{owner: {ID: owner}, "child": {ID: "child", ParentSessionID: owner}, "grandchild": {ID: "grandchild", ParentSessionID: "child"}, "stranger": {ID: "stranger"}}}
+func batchTestSessions(owner string) core.Service {
+	return testBatchSessions{rows: map[string]core.Session{owner: {ID: owner}, "child": {ID: "child", ParentSessionID: owner}, "grandchild": {ID: "grandchild", ParentSessionID: "child"}, "stranger": {ID: "stranger"}}}
 }
 
 func batchControlProfile(t *testing.T) *BatchProfile {
@@ -226,7 +227,7 @@ func TestInstalledModelControlNestedAddAndOwnedAncestor(t *testing.T) {
 	started := make(chan struct{}, 1)
 	gate.started = started
 	c := batchOwnedControl(t, env, batchControlProfile(t))
-	rows := map[string]session.Session{env.sessionID: {ID: env.sessionID}, "direct-child": {ID: "direct-child", ParentSessionID: env.sessionID}, "grandchild": {ID: "grandchild", ParentSessionID: "direct-child"}, "other": {ID: "other"}}
+	rows := map[string]core.Session{env.sessionID: {ID: env.sessionID}, "direct-child": {ID: "direct-child", ParentSessionID: env.sessionID}, "grandchild": {ID: "grandchild", ParentSessionID: "direct-child"}, "other": {ID: "other"}}
 	c.sessions = testBatchSessions{rows: rows}
 	reg, err := env.registries.Resolve(env.registryID)
 	require.NoError(t, err)

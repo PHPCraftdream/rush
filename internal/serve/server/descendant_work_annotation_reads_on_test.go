@@ -64,6 +64,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/stretchr/testify/require"
@@ -311,7 +312,7 @@ func TestHandleListSessions_AnnotationReadsBoundedInOwners(t *testing.T) {
 	// NewService(q, conn) with no reader aliases qRead/readDB to the writer
 	// (internal/session/session.go NewServiceWithWorkspace), so List reads
 	// ListSessions through the counting pool.
-	s := session.NewService(db.New(pool), pool)
+	s := core.NewService(db.New(pool), pool)
 	a := &app.App{Sessions: s, DB: func() *sql.DB { return pool }}
 	a.SetDataDirForTest(dataDir)
 

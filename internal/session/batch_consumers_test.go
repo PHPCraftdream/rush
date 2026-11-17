@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -138,7 +140,7 @@ func TestBatchOwnerDeleteCascade(t *testing.T) {
 	// session_notices are voided and wake schedules cancelled BY DESIGN (rows
 	// remain, mirroring VoidUndeliveredSessionNoticesForOwner /
 	// CancelAllWakeSchedulesForOwner; the session row itself goes later via
-	// session.Service.Delete's FKs).
+	// session.session.Service.Delete's FKs).
 	for _, table := range []string{"batch_nodes", "batch_control_requests", "messages"} {
 		var count int
 		require.NoError(t, conn.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&count), table)
@@ -151,7 +153,7 @@ func TestBatchOwnerDeleteCascade(t *testing.T) {
 	require.NoError(t, conn.QueryRowContext(ctx, `SELECT count(*) FROM wake_schedules WHERE state='cancelled'`).Scan(&schedules))
 	require.Equal(t, 1, schedules, "wake_schedules are cancelled in place, not deleted")
 	// A later projection of the dead incarnation is contained by conflict.
-	require.ErrorIs(t, s.Project(ctx, BatchProjection{Host: "host", Sequence: 3, Roots: []BatchRootProjection{{Owner: "owner", Root: snap.Root.RootID, Updates: []db.ProjectBatchNodeParams{batchStoreTestUpdate(snap.Nodes[1].NodeID, "completed")}}}}), ErrBatchProjectionConflict)
+	require.ErrorIs(t, s.Project(ctx, BatchProjection{Host: "host", Sequence: 3, Roots: []BatchRootProjection{{Owner: "owner", Root: snap.Root.RootID, Updates: []db.ProjectBatchNodeParams{batchStoreTestUpdate(snap.Nodes[1].NodeID, "completed")}}}}), session.ErrBatchProjectionConflict)
 }
 
 // Revert-check (mutation "disposal guard missing", m12): dropping the

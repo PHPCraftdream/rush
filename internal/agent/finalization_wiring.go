@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -27,7 +28,7 @@ type FinalizationWiringDeps struct {
 	// authority here so runner-side commits can admit without a call
 	// context. Optional for direct assembly, required by the root bind.
 	Authorities *FinalizationAuthorityRegistry
-	ResultGate  session.FinalizationTerminalGate
+	ResultGate  core.FinalizationTerminalGate
 }
 
 // finalizationWiring is the single production assembly of the finalization
@@ -37,13 +38,13 @@ type FinalizationWiringDeps struct {
 type finalizationWiring struct {
 	coord       *coordinator
 	conn        *sql.DB
-	store       *session.AgentFinalizationStore
+	store       *core.AgentFinalizationStore
 	messages    message.Service
 	noticeStore *session.SessionNoticeStore
 	dataDir     string
 	// resultGate is owned by the app-side batch gate; the wiring only carries
 	// it and never reads it.
-	resultGate  session.FinalizationTerminalGate
+	resultGate  core.FinalizationTerminalGate
 	descendants session.FinalizationDescendantsFacts
 	queued      session.FinalizationQueuedCallsFacts
 	holds       session.FinalizationPhysicalHoldsFacts
@@ -92,7 +93,7 @@ func newFinalizationWiring(deps FinalizationWiringDeps, coord *coordinator) (*fi
 	w := &finalizationWiring{
 		coord:       coord,
 		conn:        deps.Conn,
-		store:       session.NewAgentFinalizationStore(deps.Conn),
+		store:       core.NewAgentFinalizationStore(deps.Conn),
 		messages:    deps.Messages,
 		noticeStore: deps.NoticeStore,
 		dataDir:     deps.DataDir,
@@ -127,7 +128,7 @@ func newFinalizationWiring(deps FinalizationWiringDeps, coord *coordinator) (*fi
 
 // scopeFacts builds the composite scope reader bound to one owner session; the
 // interface itself carries no owner, so the owner is fixed here.
-func (w *finalizationWiring) scopeFacts(ownerSessionID string) session.AgentFinalizationScopeReader {
+func (w *finalizationWiring) scopeFacts(ownerSessionID string) core.AgentFinalizationScopeReader {
 	return session.NewAgentFinalizationScopeReader(ownerSessionID, w.descendants, w.queued, w.holds, w.debtFacts)
 }
 
@@ -135,7 +136,7 @@ func (w *finalizationWiring) scopeFacts(ownerSessionID string) session.AgentFina
 // finalizationFacts snapshot. The database runs with a single open connection,
 // so the three reads below are strictly sequential and no read runs outside a
 // transaction while one is open.
-func (w *finalizationWiring) readFacts(ctx context.Context, identity session.AgentFinalizationIdentity) (finalizationFacts, error) {
+func (w *finalizationWiring) readFacts(ctx context.Context, identity core.AgentFinalizationIdentity) (finalizationFacts, error) {
 	if w == nil || w.store == nil || w.conn == nil || w.noticeStore == nil {
 		return finalizationFacts{}, ErrFinalizationFactsUnavailable
 	}
@@ -190,7 +191,7 @@ func (w *finalizationWiring) newExecution(call SessionAgentCall) (*finalizationE
 	if requirement == nil {
 		return nil, nil
 	}
-	var identity session.AgentFinalizationIdentity
+	var identity core.AgentFinalizationIdentity
 	found := false
 	for _, candidate := range requirement.Authorities {
 		if candidate.SessionID == call.SessionID {
@@ -224,7 +225,7 @@ func (w *finalizationWiring) bindScopeHook() func(context.Context, SessionAgentC
 		}
 		agent := w.rootAgent()
 		if agent == nil {
-			return session.ErrAgentFinalizationDriverUnavailable
+			return core.ErrAgentFinalizationDriverUnavailable
 		}
 		return NewFinalizationBindScopeHook(agent)(ctx, call)
 	}

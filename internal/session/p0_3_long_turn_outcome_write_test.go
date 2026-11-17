@@ -9,11 +9,12 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
 type outcomeContextService struct {
-	session.Service
+	core.Service
 	preRun      context.Context
 	returnedAt  time.Time
 	ackCtx      context.Context
@@ -31,7 +32,7 @@ type observingCoordinator struct {
 	service *outcomeContextService
 }
 
-func (c *observingCoordinator) Run(ctx context.Context, _ session.SessionAgentCallData) (*any, error) {
+func (c *observingCoordinator) Run(ctx context.Context, _ core.SessionAgentCallData) (*any, error) {
 	c.service.preRun = ctx
 	var result any = "executed"
 	return &result, nil

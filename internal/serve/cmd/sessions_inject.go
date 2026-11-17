@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/spf13/cobra"
 )
@@ -129,7 +130,7 @@ func sessionsInjectCmdRun(cmd *cobra.Command, args []string) error {
 		enc := json.NewEncoder(os.Stdout)
 		return enc.Encode(injectResult{
 			SessionID: sess.ID,
-			Hash:      session.HashID(sess.ID),
+			Hash:      core.HashID(sess.ID),
 			MessageID: msg.ID,
 			Interrupt: interrupt,
 			Running:   running,
@@ -147,7 +148,7 @@ func sessionsInjectCmdRun(cmd *cobra.Command, args []string) error {
 			note = "; --interrupt has no running turn to cancel and applies when that turn starts"
 		}
 		fmt.Fprintf(os.Stderr, "%s session %s (%s): rush run PID %d drives it between turns; no turn is running now, so it reaches the loop's next turn (if it runs one, else the session's next run)%s\n",
-			verb, sess.ID, short(session.HashID(sess.ID)), loop.PID, note)
+			verb, sess.ID, short(core.HashID(sess.ID)), loop.PID, note)
 		return nil
 	}
 
@@ -158,9 +159,9 @@ func sessionsInjectCmdRun(cmd *cobra.Command, args []string) error {
 	case "persisted-offline":
 		fmt.Fprintf(os.Stderr, "message persisted; no process is currently running this session — it will be picked up when the session next runs\n")
 	case "queued-for-interrupt":
-		fmt.Fprintf(os.Stderr, "queued for interrupt on session %s (%s)%s\n", sess.ID, short(session.HashID(sess.ID)), waitingOn)
+		fmt.Fprintf(os.Stderr, "queued for interrupt on session %s (%s)%s\n", sess.ID, short(core.HashID(sess.ID)), waitingOn)
 	default:
-		fmt.Fprintf(os.Stderr, "injected into session %s (%s)%s\n", sess.ID, short(session.HashID(sess.ID)), waitingOn)
+		fmt.Fprintf(os.Stderr, "injected into session %s (%s)%s\n", sess.ID, short(core.HashID(sess.ID)), waitingOn)
 	}
 	return nil
 }
@@ -201,14 +202,14 @@ func resolveInjectText(inline, file string) (string, error) {
 // without a full app/config bootstrap.
 func doInject(
 	ctx context.Context,
-	sessions session.Service,
+	sessions core.Service,
 	messages message.Service,
 	idOrHash, text string,
 	interrupt bool,
-) (session.Session, message.Message, error) {
+) (core.Session, message.Message, error) {
 	sess, err := resolveSessionID(ctx, sessions, idOrHash)
 	if err != nil {
-		return session.Session{}, message.Message{}, err
+		return core.Session{}, message.Message{}, err
 	}
 
 	// Mirrors sessionAgent.createUserMessage's CreateMessageParams shape so
@@ -220,16 +221,16 @@ func doInject(
 		Parts:  []message.ContentPart{message.TextContent{Text: text}},
 	})
 	if err != nil {
-		return session.Session{}, message.Message{}, fmt.Errorf("failed to create user message: %w", err)
+		return core.Session{}, message.Message{}, fmt.Errorf("failed to create user message: %w", err)
 	}
 
-	if err := sessions.CreatePendingInject(ctx, session.PendingInject{
+	if err := sessions.CreatePendingInject(ctx, core.PendingInject{
 		SessionID: sess.ID,
 		MessageID: msg.ID,
 		Content:   text,
 		Interrupt: interrupt,
 	}); err != nil {
-		return session.Session{}, message.Message{}, fmt.Errorf("failed to queue pending inject: %w", err)
+		return core.Session{}, message.Message{}, fmt.Errorf("failed to queue pending inject: %w", err)
 	}
 	return sess, msg, nil
 }

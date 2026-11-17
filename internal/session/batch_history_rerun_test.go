@@ -139,7 +139,7 @@ func (f *batchRerunFx) reconcile(target string, tail ...string) (BatchRerunTrunc
 //	    incarnation to Voided -- the emptiness assertion fails;
 //	(h) removing the void-root skip from Project's notice selection
 //	    (round-4 contract) turns the late void-root notice into
-//	    ErrBatchProjectionConflict -- the NoError on the late projection
+//	    session.ErrBatchProjectionConflict -- the NoError on the late projection
 //	    and the unchanged-history assertions fail;
 //	(i) suppressing debt for the whole owner (or excluding live roots too)
 //	    fails the replacement-presence assertions; keying the exclusion off
@@ -183,7 +183,7 @@ func TestBatchRerunNewIncarnationFencedFromLateOldIncarnation(t *testing.T) {
 	// may rewrite them, but it can never reach the new incarnation. A late
 	// notice on the VOID root is a tolerated no-op (the round-4 contract:
 	// the void-root skip silently drops its selection); a late notice on a
-	// LIVE already-selected node is still ErrBatchProjectionConflict, pinned
+	// LIVE already-selected node is still session.ErrBatchProjectionConflict, pinned
 	// by the protected rejection tests.
 	late := BatchProjection{Host: "host", Sequence: f.nextSeq(), Roots: []BatchRootProjection{{Owner: batchRerunOwner, Root: old.Root.RootID, Updates: []db.ProjectBatchNodeParams{
 		batchStoreTestUpdate(old.Nodes[1].NodeID, "completed"),
@@ -305,7 +305,7 @@ func TestBatchRerunRependSurvivingRootVoidsVoidedRoot(t *testing.T) {
 	// `notice_message_id = NULL,` from
 	// BatchRerunRependNodesByNoticeMessageIDs): BatchOutboxNameMessage's
 	// notice_message_id IS NULL CAS then matches 0 rows forever and the pull
-	// below FAILS with ErrBatchProjectionConflict.
+	// below FAILS with session.ErrBatchProjectionConflict.
 	pulled, err := f.store.BatchPullNotices(f.ctx, f.messages, batchRerunOwner, func(row BatchNoticeRow) message.CreateMessageParams {
 		return message.CreateMessageParams{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "re:" + row.NodeID}}}
 	})

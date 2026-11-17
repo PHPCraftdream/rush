@@ -726,7 +726,7 @@ func TestCrossProcess_SubAgentChildSessionIsProtected(t *testing.T) {
 	}
 	dir := t.TempDir()
 
-	// Shaped exactly like session.Service.CreateAgentToolSessionID's output:
+	// Shaped exactly like session.session.Service.CreateAgentToolSessionID's output:
 	// fmt.Sprintf("%s$$%s", messageID, toolCallID).
 	childSessionID := "msg-parent-123$$toolcall-abc"
 

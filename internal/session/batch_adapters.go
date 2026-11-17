@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 )
@@ -189,7 +191,7 @@ func batchProbeHashDetail(live db.BatchNode, children []db.BatchNode, hash strin
 // fabricated success; Details and Ref stay empty because no executor
 // envelope exists. Accepted-execution envelopes are
 // returned unchanged by the earlier reads above.
-func (s *BatchStore) BatchDeliveryOneItemCompletion(ctx context.Context, owner, root string) (BatchDeliveryEnvelope, bool, error) {
+func (s *BatchStore) BatchDeliveryOneItemCompletion(ctx context.Context, owner, root string) (session.BatchDeliveryEnvelope, bool, error) {
 	snap, err := s.Read(ctx, owner, root)
 	if err != nil {
 		// A root row that does not exist (yet, or ever — e.g. a foreign or
@@ -204,9 +206,9 @@ func (s *BatchStore) BatchDeliveryOneItemCompletion(ctx context.Context, owner, 
 		// returns an empty slice, never sql.ErrNoRows. So errors.Is
 		// sql.ErrNoRows here unambiguously means "root row absent".
 		if errors.Is(err, sql.ErrNoRows) {
-			return BatchDeliveryEnvelope{}, false, nil
+			return session.BatchDeliveryEnvelope{}, false, nil
 		}
-		return BatchDeliveryEnvelope{}, false, err
+		return session.BatchDeliveryEnvelope{}, false, err
 	}
 	if e, ok, err := batchDeliveryEnvelopeOf(snap.Root); ok || err != nil {
 		return e, ok, err
@@ -231,13 +233,13 @@ func (s *BatchStore) BatchDeliveryOneItemCompletion(ctx context.Context, owner, 
 
 // batchDeliveryEnvelopeOf decodes one node's stored response envelope.
 // ok=false when the node has no envelope yet (or the column is empty).
-func batchDeliveryEnvelopeOf(n db.BatchNode) (BatchDeliveryEnvelope, bool, error) {
+func batchDeliveryEnvelopeOf(n db.BatchNode) (session.BatchDeliveryEnvelope, bool, error) {
 	if !n.ResponseEnvelope.Valid || n.ResponseEnvelope.String == "" {
-		return BatchDeliveryEnvelope{}, false, nil
+		return session.BatchDeliveryEnvelope{}, false, nil
 	}
-	var e BatchDeliveryEnvelope
+	var e session.BatchDeliveryEnvelope
 	if err := json.Unmarshal([]byte(n.ResponseEnvelope.String), &e); err != nil {
-		return BatchDeliveryEnvelope{}, false, err
+		return session.BatchDeliveryEnvelope{}, false, err
 	}
 	e.Ref = n.ResponseEnvelopeRef.String
 	return e, true, nil
@@ -273,7 +275,7 @@ func batchProbeStoredRegistryID(task db.BatchNode) string {
 // batchTerminalEnvelope builds the derived envelope from the primary row's
 // terminal facts, falling back to the fallback row's facts when the primary
 // carries none.
-func batchTerminalEnvelope(primary, fallback db.BatchNode) BatchDeliveryEnvelope {
+func batchTerminalEnvelope(primary, fallback db.BatchNode) session.BatchDeliveryEnvelope {
 	code := primary.OutcomeCode
 	if code == "" {
 		code = fallback.OutcomeCode
@@ -294,7 +296,7 @@ func batchTerminalEnvelope(primary, fallback db.BatchNode) BatchDeliveryEnvelope
 	if summary == "" {
 		summary = primary.State + " without executor response"
 	}
-	return BatchDeliveryEnvelope{
+	return session.BatchDeliveryEnvelope{
 		State:   primary.State,
 		Code:    code,
 		Summary: summary,
@@ -319,13 +321,13 @@ func batchTerminalEnvelope(primary, fallback db.BatchNode) BatchDeliveryEnvelope
 // summary, the fallback outcome summary, the persisted causes, the outcome
 // code itself, and finally a plain "<state> without executor response"
 // note. No executor details, no media or metadata, no fabricated success.
-func batchTerminalCompletion(root db.BatchNode, children []db.BatchNode) (BatchDeliveryEnvelope, bool, error) {
+func batchTerminalCompletion(root db.BatchNode, children []db.BatchNode) (session.BatchDeliveryEnvelope, bool, error) {
 	if !batchNodeTerminal(root) {
-		return BatchDeliveryEnvelope{}, false, nil
+		return session.BatchDeliveryEnvelope{}, false, nil
 	}
 	for _, n := range children {
 		if !batchNodeTerminal(n) {
-			return BatchDeliveryEnvelope{}, false, nil
+			return session.BatchDeliveryEnvelope{}, false, nil
 		}
 	}
 	if len(children) == 1 {

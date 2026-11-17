@@ -27,7 +27,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider/cliptool"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

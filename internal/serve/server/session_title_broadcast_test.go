@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/serve/server/wire/finalgate"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 

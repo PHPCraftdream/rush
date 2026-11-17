@@ -3,6 +3,8 @@ package session
 import (
 	"testing"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
@@ -15,7 +17,7 @@ import (
 func TestPendingInjectsFIFOOrdering(t *testing.T) {
 	t.Run("DrainPendingInjects FIFO with identical created_at", func(t *testing.T) {
 		sqlDB, q := newTestDB(t)
-		svc := NewService(q, sqlDB)
+		svc := session.NewService(q, sqlDB)
 		ctx := t.Context()
 
 		// Create a test session
@@ -63,7 +65,7 @@ func TestPendingInjectsFIFOOrdering(t *testing.T) {
 
 	t.Run("PeekInterruptInject FIFO with identical created_at", func(t *testing.T) {
 		sqlDB, q := newTestDB(t)
-		svc := NewService(q, sqlDB)
+		svc := session.NewService(q, sqlDB)
 		ctx := t.Context()
 
 		// Create a test session
@@ -101,7 +103,7 @@ func TestPendingInjectsFIFOOrdering(t *testing.T) {
 
 	t.Run("DrainPendingInjects with mix of interrupt and regular", func(t *testing.T) {
 		sqlDB, q := newTestDB(t)
-		svc := NewService(q, sqlDB)
+		svc := session.NewService(q, sqlDB)
 		ctx := t.Context()
 
 		// Create a test session

@@ -14,8 +14,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // Delivery modes of one invocation. R11D owns the elections; the ingress only

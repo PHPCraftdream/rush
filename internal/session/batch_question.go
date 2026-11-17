@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // BatchPublishQuestion durably publishes one held batch question. The node's
@@ -30,20 +32,20 @@ func (s *BatchStore) BatchPublishQuestion(ctx context.Context, owner, node strin
 	} else if duplicate {
 		return nil
 	}
-	release, admission, err := admitFinalizationMutation(ctx, s.writer, owner)
+	release, admission, err := session.AdmitFinalizationMutation(ctx, s.writer, owner)
 	if release != nil {
-		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
+		defer func() { retErr = session.BatchCommitReleaseError(retErr, release()) }()
 	}
 	if err != nil {
-		return finalizationFenceError(err)
+		return session.FinalizationFenceError(err)
 	}
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("batch store: question begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
-		return finalizationFenceError(err)
+	if err := session.ValidateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
+		return session.FinalizationFenceError(err)
 	}
 	if err := batchQuestionCheckLive(ctx, tx, owner, node, token); err != nil {
 		return err
@@ -65,8 +67,8 @@ WHERE NOT EXISTS (SELECT 1 FROM session_notices WHERE owner = ? AND kind = ? AND
 		// validated read and report success so concurrent publishers agree.
 		return tx.Commit()
 	}
-	if err := validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
-		return finalizationFenceError(err)
+	if err := session.ValidateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
+		return session.FinalizationFenceError(err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("batch store: question commit: %w", err)
@@ -215,20 +217,20 @@ func (s *BatchStore) BatchResolveChildQuestions(ctx context.Context, owner, node
 	if len(matched) == 0 {
 		return 0, nil
 	}
-	release, admission, err := admitFinalizationMutation(ctx, s.writer, owner)
+	release, admission, err := session.AdmitFinalizationMutation(ctx, s.writer, owner)
 	if release != nil {
-		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
+		defer func() { retErr = session.BatchCommitReleaseError(retErr, release()) }()
 	}
 	if err != nil {
-		return 0, finalizationFenceError(err)
+		return 0, session.FinalizationFenceError(err)
 	}
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("batch store: question resolve begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
-		return 0, finalizationFenceError(err)
+	if err := session.ValidateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
+		return 0, session.FinalizationFenceError(err)
 	}
 	stale, err := batchMatchingChildQuestionIDs(ctx, tx, owner, node, child, token, sequence)
 	if err != nil {
@@ -251,8 +253,8 @@ func (s *BatchStore) BatchResolveChildQuestions(ctx context.Context, owner, node
 		if closed, err = res.RowsAffected(); err != nil {
 			return 0, fmt.Errorf("batch store: question resolve affected: %w", err)
 		}
-		if err := validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
-			return 0, finalizationFenceError(err)
+		if err := session.ValidateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
+			return 0, session.FinalizationFenceError(err)
 		}
 	}
 	if err := tx.Commit(); err != nil {

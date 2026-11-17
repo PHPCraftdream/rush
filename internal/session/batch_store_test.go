@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -132,13 +134,13 @@ func TestBatchProjectionLateFailureRollsBackUpdatesSequenceAndOutbox(t *testing.
 	snap := batchStoreTestReserve(t, s, ctx)
 	leaf := snap.Nodes[1].NodeID
 	p := BatchProjection{Host: "host", Sequence: 9, Roots: []BatchRootProjection{{Owner: "owner", Root: snap.Root.RootID, Updates: []db.ProjectBatchNodeParams{batchStoreTestUpdate(leaf, "completed")}, Notices: []db.SelectBatchNodeNoticeParams{batchStoreTestNotice(leaf), batchStoreTestNotice("missing")}}}}
-	require.ErrorIs(t, s.Project(ctx, p), ErrBatchProjectionConflict)
+	require.ErrorIs(t, s.Project(ctx, p), session.ErrBatchProjectionConflict)
 	got, e := s.Read(ctx, "owner", snap.Root.RootID)
 	require.NoError(t, e)
 	require.Equal(t, snap, got)
 	p.Roots[0].Notices = nil
 	p.Roots[0].Updates = append(p.Roots[0].Updates, batchStoreTestUpdate("missing", "completed"))
-	require.ErrorIs(t, s.Project(ctx, p), ErrBatchProjectionConflict)
+	require.ErrorIs(t, s.Project(ctx, p), session.ErrBatchProjectionConflict)
 	got, e = s.Read(ctx, "owner", snap.Root.RootID)
 	require.NoError(t, e)
 	require.Equal(t, snap, got)
@@ -151,17 +153,17 @@ func TestBatchProjectionLateFailureRollsBackUpdatesSequenceAndOutbox(t *testing.
 	require.Equal(t, int64(1), got.Nodes[1].NoticeSelected)
 	require.Equal(t, "pending", got.Nodes[1].Delivery)
 	require.Zero(t, got.Root.Announced)
-	require.ErrorIs(t, s.Project(ctx, p), ErrBatchProjectionConflict)
+	require.ErrorIs(t, s.Project(ctx, p), session.ErrBatchProjectionConflict)
 }
 
 func TestBatchAddReservationsAndStaleIdentity(t *testing.T) {
 	s, _, ctx := batchStoreTestDB(t)
 	snap := batchStoreTestReserve(t, s, ctx)
 	p := BatchProjection{Host: "wrong", Sequence: 4, Roots: []BatchRootProjection{{Owner: "owner", Root: snap.Root.RootID, Additions: []BatchAddition{{Parent: snap.Root.NodeID, Ordinal: 3, Node: batchStoreTestTask()}}}}}
-	require.ErrorIs(t, s.Project(ctx, p), ErrBatchProjectionConflict)
+	require.ErrorIs(t, s.Project(ctx, p), session.ErrBatchProjectionConflict)
 	p.Host = "host"
 	p.Roots[0].Root = "old-root"
-	require.ErrorIs(t, s.Project(ctx, p), ErrBatchProjectionConflict)
+	require.ErrorIs(t, s.Project(ctx, p), session.ErrBatchProjectionConflict)
 	p.Roots[0].Root = snap.Root.RootID
 	p.Roots[0].Additions = append(p.Roots[0].Additions, BatchAddition{Parent: snap.Root.NodeID, Ordinal: 4, Node: batchStoreTestTask()})
 	p.Roots[0].Additions[1].Node.Values.State = "invalid"
@@ -279,7 +281,7 @@ func TestBatchCrossRootLateFailureRollback(t *testing.T) {
 			if failure == "invalid-state" {
 				require.ErrorContains(t, err, "CHECK constraint")
 			} else {
-				require.ErrorIs(t, err, ErrBatchProjectionConflict)
+				require.ErrorIs(t, err, session.ErrBatchProjectionConflict)
 			}
 			gotA, err := s.Read(ctx, "owner", a.Root.RootID)
 			require.NoError(t, err)
@@ -304,7 +306,7 @@ func TestBatchCrossRootDuplicateAndStaleSequence(t *testing.T) {
 	}
 	for _, sequence := range []int64{9, 8} {
 		p.Sequence = sequence
-		require.ErrorIs(t, s.Project(ctx, p), ErrBatchProjectionConflict)
+		require.ErrorIs(t, s.Project(ctx, p), session.ErrBatchProjectionConflict)
 		gotA, err := s.Read(ctx, "owner", a.Root.RootID)
 		require.NoError(t, err)
 		gotB, err := s.Read(ctx, "other-owner", b.Root.RootID)
@@ -328,14 +330,14 @@ func TestBatchControlsHostIncarnationAndCascades(t *testing.T) {
 	require.NoError(t, e)
 	require.Len(t, controls, 1)
 	a := db.AnswerBatchControlRequestParams{RequestID: c.RequestID, RootID: c.RootID, NodeID: c.NodeID, OwnerSessionID: c.OwnerSessionID, HostID: "wrong", AnswerCode: "accepted", AnswerSequence: sql.NullInt64{Int64: 2, Valid: true}, AnsweredAt: sql.NullInt64{Int64: time.Now().Unix(), Valid: true}}
-	require.ErrorIs(t, s.AnswerControl(ctx, a), ErrBatchProjectionConflict)
+	require.ErrorIs(t, s.AnswerControl(ctx, a), session.ErrBatchProjectionConflict)
 	a.HostID = "host"
 	a.RootID = "old"
-	require.ErrorIs(t, s.AnswerControl(ctx, a), ErrBatchProjectionConflict)
+	require.ErrorIs(t, s.AnswerControl(ctx, a), session.ErrBatchProjectionConflict)
 	a.RootID = c.RootID
 	require.NoError(t, s.AnswerControl(ctx, a))
-	require.ErrorIs(t, s.AnswerControl(ctx, a), ErrBatchProjectionConflict)
-	require.ErrorIs(t, s.DeleteRoot(ctx, "owner", "wrong", c.RootID), ErrBatchProjectionConflict)
+	require.ErrorIs(t, s.AnswerControl(ctx, a), session.ErrBatchProjectionConflict)
+	require.ErrorIs(t, s.DeleteRoot(ctx, "owner", "wrong", c.RootID), session.ErrBatchProjectionConflict)
 	require.NoError(t, s.DeleteRoot(ctx, "owner", "host", c.RootID))
 	var count int
 	require.NoError(t, conn.QueryRowContext(ctx, "SELECT count(*) FROM batch_control_requests").Scan(&count))

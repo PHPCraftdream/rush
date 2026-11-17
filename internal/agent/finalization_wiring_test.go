@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -42,7 +43,7 @@ func newFinalizationWiringAssembled(t *testing.T, env fakeEnv, stub *finalizatio
 	return &finalizationWiring{
 		coord:       &coordinator{},
 		conn:        env.conn,
-		store:       session.NewAgentFinalizationStore(env.conn),
+		store:       core.NewAgentFinalizationStore(env.conn),
 		messages:    env.messages,
 		noticeStore: session.NewSessionNoticeStore(env.conn),
 		descendants: descendants,
@@ -127,11 +128,11 @@ func TestFinalizationWiringFactoryFlagOnInstallsFullHooks(t *testing.T) {
 
 // newFinalizationFactsEnv binds "session"/"logical" and assembles a wiring
 // whose scope sources are the seam stub, so every facts field is controlled.
-func newFinalizationFactsEnv(t *testing.T) (fakeEnv, *finalizationWiring, *finalizationSeamScopeStub, session.AgentFinalizationIdentity) {
+func newFinalizationFactsEnv(t *testing.T) (fakeEnv, *finalizationWiring, *finalizationSeamScopeStub, core.AgentFinalizationIdentity) {
 	t.Helper()
 	env := testEnv(t)
-	identity := session.AgentFinalizationIdentity{SessionID: "session", LogicalCallID: "logical", Generation: 1}
-	api, ok := env.sessions.(session.AgentFinalizationService)
+	identity := core.AgentFinalizationIdentity{SessionID: "session", LogicalCallID: "logical", Generation: 1}
+	api, ok := env.sessions.(core.AgentFinalizationService)
 	require.True(t, ok)
 	_, err := api.BindAgentFinalization(t.Context(), identity)
 	require.NoError(t, err)
@@ -142,7 +143,7 @@ func newFinalizationFactsEnv(t *testing.T) (fakeEnv, *finalizationWiring, *final
 
 // readFactsMust reads facts or fails the test; never hold a transaction
 // across this call: the wiring opens and rolls back its own.
-func readFactsMust(t *testing.T, w *finalizationWiring, identity session.AgentFinalizationIdentity) finalizationFacts {
+func readFactsMust(t *testing.T, w *finalizationWiring, identity core.AgentFinalizationIdentity) finalizationFacts {
 	t.Helper()
 	facts, err := w.readFacts(t.Context(), identity)
 	require.NoError(t, err)
@@ -230,8 +231,8 @@ func TestFinalizationWiringReadFactsMapsDurableFacts(t *testing.T) {
 
 	t.Run("incomplete scope facts fail closed", func(t *testing.T) {
 		env := testEnv(t)
-		identity := session.AgentFinalizationIdentity{SessionID: "session", LogicalCallID: "logical", Generation: 1}
-		api, ok := env.sessions.(session.AgentFinalizationService)
+		identity := core.AgentFinalizationIdentity{SessionID: "session", LogicalCallID: "logical", Generation: 1}
+		api, ok := env.sessions.(core.AgentFinalizationService)
 		require.True(t, ok)
 		_, err := api.BindAgentFinalization(t.Context(), identity)
 		require.NoError(t, err)
@@ -244,7 +245,7 @@ func TestFinalizationWiringReadFactsMapsDurableFacts(t *testing.T) {
 
 	t.Run("missing durable record wraps the row error", func(t *testing.T) {
 		_, w, _, _ := newFinalizationFactsEnv(t)
-		absent := session.AgentFinalizationIdentity{SessionID: "absent", LogicalCallID: "logical", Generation: 1}
+		absent := core.AgentFinalizationIdentity{SessionID: "absent", LogicalCallID: "logical", Generation: 1}
 		_, err := w.readFacts(t.Context(), absent)
 		require.Error(t, err)
 		require.ErrorIs(t, err, sql.ErrNoRows)
@@ -252,7 +253,7 @@ func TestFinalizationWiringReadFactsMapsDurableFacts(t *testing.T) {
 
 	t.Run("empty identity is refused", func(t *testing.T) {
 		_, w, _, _ := newFinalizationFactsEnv(t)
-		_, err := w.readFacts(t.Context(), session.AgentFinalizationIdentity{})
+		_, err := w.readFacts(t.Context(), core.AgentFinalizationIdentity{})
 		require.ErrorIs(t, err, ErrFinalizationFactsUnavailable)
 	})
 }
@@ -261,17 +262,17 @@ func TestFinalizationWiringReadFactsMapsDurableFacts(t *testing.T) {
 // execution construction: only calls owning a matching authority get one.
 func TestFinalizationWiringNewExecutionIdentityAndEpoch(t *testing.T) {
 	env := testEnv(t)
-	identity := session.AgentFinalizationIdentity{SessionID: "session", LogicalCallID: "logical", Generation: 7}
-	api, ok := env.sessions.(session.AgentFinalizationService)
+	identity := core.AgentFinalizationIdentity{SessionID: "session", LogicalCallID: "logical", Generation: 7}
+	api, ok := env.sessions.(core.AgentFinalizationService)
 	require.True(t, ok)
 	authority, err := api.BindAgentFinalization(t.Context(), identity)
 	require.NoError(t, err)
-	ctx, err := session.WithAgentFinalizationContext(t.Context(), authority)
+	ctx, err := core.WithAgentFinalizationContext(t.Context(), authority)
 	require.NoError(t, err)
 	w := newFinalizationWiringAssembled(t, env, nil)
 
 	call := SessionAgentCall{SessionID: "session", LogicalCallID: "logical"}
-	call.FinalizationAuthorities = session.CaptureAgentFinalizationContext(ctx)
+	call.FinalizationAuthorities = core.CaptureAgentFinalizationContext(ctx)
 	exec, err := w.newExecution(call)
 	require.NoError(t, err)
 	require.NotNil(t, exec)
@@ -290,7 +291,7 @@ func TestFinalizationWiringNewExecutionIdentityAndEpoch(t *testing.T) {
 
 	// A descendant inheriting a foreign authority stays inert.
 	child := SessionAgentCall{SessionID: "child", LogicalCallID: "child-call"}
-	child.FinalizationAuthorities = session.CaptureAgentFinalizationContext(ctx)
+	child.FinalizationAuthorities = core.CaptureAgentFinalizationContext(ctx)
 	exec, err = w.newExecution(child)
 	require.NoError(t, err)
 	require.Nil(t, exec)
@@ -301,15 +302,15 @@ func TestFinalizationWiringNewExecutionIdentityAndEpoch(t *testing.T) {
 // that execution, and a refused bind leaves the registry untouched.
 func TestFinalizationWiringStartExecutionRegistersAndUnregisters(t *testing.T) {
 	env := testEnv(t)
-	identity := session.AgentFinalizationIdentity{SessionID: "session", LogicalCallID: "logical", Generation: 1}
-	api, ok := env.sessions.(session.AgentFinalizationService)
+	identity := core.AgentFinalizationIdentity{SessionID: "session", LogicalCallID: "logical", Generation: 1}
+	api, ok := env.sessions.(core.AgentFinalizationService)
 	require.True(t, ok)
 	authority, err := api.BindAgentFinalization(t.Context(), identity)
 	require.NoError(t, err)
-	ctx, err := session.WithAgentFinalizationContext(t.Context(), authority)
+	ctx, err := core.WithAgentFinalizationContext(t.Context(), authority)
 	require.NoError(t, err)
 	call := SessionAgentCall{SessionID: "session", LogicalCallID: "logical"}
-	call.FinalizationAuthorities = session.CaptureAgentFinalizationContext(ctx)
+	call.FinalizationAuthorities = core.CaptureAgentFinalizationContext(ctx)
 
 	coord := &coordinator{currentAgent: &sessionAgent{}}
 	w, err := newFinalizationWiring(finalizationWiringDepsOn(env), coord)
@@ -375,15 +376,15 @@ func TestFinalizationWiringIntegrationWaitSealAccepted(t *testing.T) {
 	root := batchTerminalTestReserve(t, batches, t.Context(), "session", "call-w1a-live", "hash-w1a-live")
 	notices := session.NewSessionNoticeStore(env.conn)
 	require.NoError(t, notices.InsertSessionNotice(t.Context(), "session", session.NoticeKindWakeOnly, "finalization-debt", true, ""))
-	identity := session.AgentFinalizationIdentity{SessionID: "session", LogicalCallID: "logical", Generation: 1}
-	api, ok := env.sessions.(session.AgentFinalizationService)
+	identity := core.AgentFinalizationIdentity{SessionID: "session", LogicalCallID: "logical", Generation: 1}
+	api, ok := env.sessions.(core.AgentFinalizationService)
 	require.True(t, ok)
 	authority, err := api.BindAgentFinalization(t.Context(), identity)
 	require.NoError(t, err)
-	ctx, err := session.WithAgentFinalizationContext(t.Context(), authority)
+	ctx, err := core.WithAgentFinalizationContext(t.Context(), authority)
 	require.NoError(t, err)
 	call := SessionAgentCall{SessionID: "session", LogicalCallID: "logical"}
-	call.FinalizationAuthorities = session.CaptureAgentFinalizationContext(ctx)
+	call.FinalizationAuthorities = core.CaptureAgentFinalizationContext(ctx)
 	coord := &coordinator{currentAgent: &sessionAgent{}}
 	w, err := newFinalizationWiring(finalizationWiringDepsOn(env), coord)
 	require.NoError(t, err)
@@ -450,7 +451,7 @@ func TestFinalizationWiringIntegrationWaitSealAccepted(t *testing.T) {
 	require.Equal(t, finalizationAccepted, verdict)
 	require.Equal(t, 1, publications)
 
-	record, err := session.NewAgentFinalizationStore(env.conn).Snapshot(execCtx, identity)
+	record, err := core.NewAgentFinalizationStore(env.conn).Snapshot(execCtx, identity)
 	require.NoError(t, err)
 	require.Equal(t, "accepted", record.Phase)
 	stored, err := env.messages.Get(execCtx, created.ID)
@@ -463,15 +464,15 @@ func TestFinalizationWiringIntegrationWaitSealAccepted(t *testing.T) {
 // pause: a pending child question blocks the seal without publishing.
 func TestFinalizationWiringTrySealPausesOnHeldQuestion(t *testing.T) {
 	env := testEnv(t)
-	identity := session.AgentFinalizationIdentity{SessionID: "session", LogicalCallID: "logical", Generation: 1}
-	api, ok := env.sessions.(session.AgentFinalizationService)
+	identity := core.AgentFinalizationIdentity{SessionID: "session", LogicalCallID: "logical", Generation: 1}
+	api, ok := env.sessions.(core.AgentFinalizationService)
 	require.True(t, ok)
 	authority, err := api.BindAgentFinalization(t.Context(), identity)
 	require.NoError(t, err)
-	ctx, err := session.WithAgentFinalizationContext(t.Context(), authority)
+	ctx, err := core.WithAgentFinalizationContext(t.Context(), authority)
 	require.NoError(t, err)
 	call := SessionAgentCall{SessionID: "session", LogicalCallID: "logical"}
-	call.FinalizationAuthorities = session.CaptureAgentFinalizationContext(ctx)
+	call.FinalizationAuthorities = core.CaptureAgentFinalizationContext(ctx)
 	coord := &coordinator{currentAgent: &sessionAgent{}}
 	w, err := newFinalizationWiring(finalizationWiringDepsOn(env), coord)
 	require.NoError(t, err)
@@ -526,15 +527,15 @@ func TestFinalizationWiringOnCancelUnblocksWaiter(t *testing.T) {
 	// debt that makes the facts noisy is seeded BEFORE the bind.
 	notices := session.NewSessionNoticeStore(env.conn)
 	require.NoError(t, notices.InsertSessionNotice(t.Context(), "session", session.NoticeKindWakeOnly, "finalization-debt", true, ""))
-	identity := session.AgentFinalizationIdentity{SessionID: "session", LogicalCallID: "logical", Generation: 1}
-	api, ok := env.sessions.(session.AgentFinalizationService)
+	identity := core.AgentFinalizationIdentity{SessionID: "session", LogicalCallID: "logical", Generation: 1}
+	api, ok := env.sessions.(core.AgentFinalizationService)
 	require.True(t, ok)
 	authority, err := api.BindAgentFinalization(t.Context(), identity)
 	require.NoError(t, err)
-	ctx, err := session.WithAgentFinalizationContext(t.Context(), authority)
+	ctx, err := core.WithAgentFinalizationContext(t.Context(), authority)
 	require.NoError(t, err)
 	call := SessionAgentCall{SessionID: "session", LogicalCallID: "logical"}
-	call.FinalizationAuthorities = session.CaptureAgentFinalizationContext(ctx)
+	call.FinalizationAuthorities = core.CaptureAgentFinalizationContext(ctx)
 	coord := &coordinator{currentAgent: &sessionAgent{}}
 	w, err := newFinalizationWiring(finalizationWiringDepsOn(env), coord)
 	require.NoError(t, err)

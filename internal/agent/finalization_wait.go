@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 const (
@@ -37,7 +38,7 @@ const (
 // typed refusal cause is the seal reason derived from the facts the gate saw.
 type FinalizationWaitStatus struct {
 	Phase         FinalizationWaitPhase
-	Reason        session.AgentFinalizationSealReason
+	Reason        core.AgentFinalizationSealReason
 	Descendants   int
 	Debt          int
 	PhysicalHolds int
@@ -68,22 +69,22 @@ var ErrFinalizationRecomposeLimit = errors.New("finalization recomposition limit
 
 // mapFinalizationSealReason derives the typed seal refusal cause from the
 // facts the gate observed; a held question is a pause path, not a reason.
-func mapFinalizationSealReason(f finalizationFacts) session.AgentFinalizationSealReason {
+func mapFinalizationSealReason(f finalizationFacts) core.AgentFinalizationSealReason {
 	switch {
 	case f.cancelled:
-		return session.AgentFinalizationSealCancelled
+		return core.AgentFinalizationSealCancelled
 	case !f.complete:
-		return session.AgentFinalizationSealScopeIncomplete
+		return core.AgentFinalizationSealScopeIncomplete
 	case f.descendants > 0:
-		return session.AgentFinalizationSealDescendantsActive
+		return core.AgentFinalizationSealDescendantsActive
 	case f.debt > 0:
-		return session.AgentFinalizationSealReactionDebt
+		return core.AgentFinalizationSealReactionDebt
 	case f.physicalHolds > 0:
-		return session.AgentFinalizationSealPhysicalHolds
+		return core.AgentFinalizationSealPhysicalHolds
 	case f.queuedCalls > 0:
-		return session.AgentFinalizationSealQueuedCalls
+		return core.AgentFinalizationSealQueuedCalls
 	default:
-		return session.AgentFinalizationSealNone
+		return core.AgentFinalizationSealNone
 	}
 }
 

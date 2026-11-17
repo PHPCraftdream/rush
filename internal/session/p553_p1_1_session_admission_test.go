@@ -21,6 +21,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -36,7 +37,7 @@ type concurrencyProbeCoordinator struct {
 	holdOnce atomic.Bool
 }
 
-func (c *concurrencyProbeCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *concurrencyProbeCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
 	live := c.live.Add(1)
 	for {

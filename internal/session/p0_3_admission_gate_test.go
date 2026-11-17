@@ -37,6 +37,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
@@ -47,7 +49,7 @@ import (
 // called, so its Run body only needs to satisfy the interface.
 type noopCoordinator struct{}
 
-func (noopCoordinator) Run(ctx context.Context, call SessionAgentCallData) (*any, error) {
+func (noopCoordinator) Run(ctx context.Context, call session.SessionAgentCallData) (*any, error) {
 	var result any = "should not have been called"
 	return &result, nil
 }
@@ -61,7 +63,7 @@ func TestP0_3_AdmissionGateRejectsAfterStopping(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)) })
 
 	q := db.New(conn)
-	svc := NewService(q, conn)
+	svc := session.NewService(q, conn)
 
 	sess, err := svc.Create(ctx, "p0-3-admission-gate-probe")
 	require.NoError(t, err)

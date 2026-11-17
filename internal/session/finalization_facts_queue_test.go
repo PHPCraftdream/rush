@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -59,8 +61,8 @@ func newQueuedScopeSealEnv(t *testing.T, queued bool) candidateEnv {
 		finalizationFactsInsertQueuePair(t, conn, "owner", "queued-seal")
 	}
 	messages := message.NewService(db.New(conn))
-	store := NewAgentFinalizationStore(conn)
-	id := AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "logical", Generation: 1}
+	store := session.NewAgentFinalizationStore(conn)
+	id := session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "logical", Generation: 1}
 	require.NoError(t, store.Bind(ctx, id))
 	writer, ok := messages.(message.FinalizationWriter)
 	require.True(t, ok)
@@ -117,8 +119,8 @@ func TestFinalizationQueuedCallsTxIgnoresConsumedAndAcked(t *testing.T) {
 	fixture := finalizationSeamQueuedCallFixture(t)
 	finalizationSeamEnqueueQueuedCall(t, fixture, "queued-done")
 	entry := fixture.lease(t, "facts-pump")
-	leaseCtx := withFinalizationQueueLease(fixture.ctx, entry)
-	restored := NewService(db.New(fixture.env.conn), fixture.env.conn).(AgentFinalizationQueueService)
+	leaseCtx := session.WithFinalizationQueueLease(fixture.ctx, entry)
+	restored := session.NewService(db.New(fixture.env.conn), fixture.env.conn).(session.AgentFinalizationQueueService)
 	_, err := restored.RestoreAgentFinalizationQueue(leaseCtx, entry.ID, fixture.data)
 	require.NoError(t, err)
 	require.Equal(t, 1, finalizationFactsQueuedCount(t, fixture.env.conn, fixture.data.SessionID))
@@ -174,7 +176,7 @@ func TestTrySealRefusesQueuedCallsFact(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, outcome.Sealed)
 	require.False(t, outcome.Accepted)
-	require.Equal(t, AgentFinalizationSealQueuedCalls, outcome.Reason)
+	require.Equal(t, session.AgentFinalizationSealQueuedCalls, outcome.Reason)
 }
 
 // Revert-check: a TrySeal that refuses even with zero queued facts — or one
@@ -188,7 +190,7 @@ func TestTrySealSealsWithoutQueuedCallsFact(t *testing.T) {
 	outcome, err := e.store.TrySeal(t.Context(), e.id, presented, e.sealWriter(t), reader)
 	require.NoError(t, err)
 	require.True(t, outcome.Sealed)
-	require.Equal(t, AgentFinalizationSealNone, outcome.Reason)
+	require.Equal(t, session.AgentFinalizationSealNone, outcome.Reason)
 	record, err := e.store.Snapshot(t.Context(), e.id)
 	require.NoError(t, err)
 	require.Equal(t, "accepted", record.Phase)

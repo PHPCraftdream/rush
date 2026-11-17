@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // resolveSessionID resolves a session by exact UUID or hash prefix.

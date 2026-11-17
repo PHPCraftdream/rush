@@ -11,6 +11,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/google/uuid"
@@ -23,7 +24,7 @@ import (
 // configless-App behaviour through the nil guards in the bodies.
 type BatchCLIParams struct {
 	WorkspaceRoot       string
-	Sessions            func() session.Service
+	Sessions            func() core.Service
 	Messages            func() message.Service
 	Coord               func() agent.Coordinator
 	Perms               func() permission.Service
@@ -88,23 +89,23 @@ func DataDirectory(p BatchCLIParams) string {
 	return p.DataDir()
 }
 
-func BatchCLISession(p BatchCLIParams, ctx context.Context, id string) (session.Session, error) {
+func BatchCLISession(p BatchCLIParams, ctx context.Context, id string) (core.Session, error) {
 	if id == "" {
 		return p.Sessions().Create(ctx, "rush batch")
 	}
 	if p.Sessions().IsAgentToolSession(id) {
-		return session.Session{}, fmt.Errorf("cannot continue an agent tool session: %s", id)
+		return core.Session{}, fmt.Errorf("cannot continue an agent tool session: %s", id)
 	}
 	sess, err := p.Sessions().Get(ctx, id)
 	if err != nil {
-		return session.Session{}, err
+		return core.Session{}, err
 	}
 	sess, err = ValidateResolvedSession(sess, id, p.WorkspaceRoot, p.ProcessHome())
 	if err != nil {
-		return session.Session{}, err
+		return core.Session{}, err
 	}
 	if p.Coord() != nil && p.Coord().IsSessionBusy(sess.ID) {
-		return session.Session{}, fmt.Errorf("session %q is already processing another request: %w", sess.ID, agent.ErrSessionBusy)
+		return core.Session{}, fmt.Errorf("session %q is already processing another request: %w", sess.ID, agent.ErrSessionBusy)
 	}
 	if p.DataDir() == "" {
 		return sess, nil
@@ -116,12 +117,12 @@ func BatchCLISession(p BatchCLIParams, ctx context.Context, id string) (session.
 	if err != nil {
 		var busyErr *session.SessionLockBusyError
 		if errors.As(err, &busyErr) {
-			return session.Session{}, fmt.Errorf("session %q is already processing another request (held by PID %d): %w", sess.ID, busyErr.HolderPID, agent.ErrSessionBusy)
+			return core.Session{}, fmt.Errorf("session %q is already processing another request (held by PID %d): %w", sess.ID, busyErr.HolderPID, agent.ErrSessionBusy)
 		}
-		return session.Session{}, fmt.Errorf("check session %q lock: %w", sess.ID, err)
+		return core.Session{}, fmt.Errorf("check session %q lock: %w", sess.ID, err)
 	}
 	if err := lock.Release(); err != nil {
-		return session.Session{}, fmt.Errorf("release session %q lock probe: %w", sess.ID, err)
+		return core.Session{}, fmt.Errorf("release session %q lock probe: %w", sess.ID, err)
 	}
 	return sess, nil
 }
@@ -361,19 +362,19 @@ func BatchAdd(p BatchCLIParams, ctx context.Context, root, node string, items []
 	return nil
 }
 
-func ValidateResolvedSession(sess session.Session, id, workspaceRoot string, home bool) (session.Session, error) {
+func ValidateResolvedSession(sess core.Session, id, workspaceRoot string, home bool) (core.Session, error) {
 	if sess.ParentSessionID != "" {
-		return session.Session{}, fmt.Errorf("cannot continue a child session: %s", id)
+		return core.Session{}, fmt.Errorf("cannot continue a child session: %s", id)
 	}
-	if !session.Owns(sess.WorkspaceRoot, workspaceRoot, home) {
-		return session.Session{}, agent.ForeignWorkspaceError(sess)
+	if !core.Owns(sess.WorkspaceRoot, workspaceRoot, home) {
+		return core.Session{}, agent.ForeignWorkspaceError(sess)
 	}
 	return sess, nil
 }
 
 // resolveSession resolves which session to use for a non-interactive run
-func PersistSessionExecutionIntent(ctx context.Context, sessions session.Service, sessionID string, intent SessionExecutionProviderIntent, requirement *session.SessionExecutionRequirement, customFenceEnabled bool) error {
-	reqStore, hasStore := sessions.(session.SessionExecutionRequirementStore)
+func PersistSessionExecutionIntent(ctx context.Context, sessions core.Service, sessionID string, intent SessionExecutionProviderIntent, requirement *core.SessionExecutionRequirement, customFenceEnabled bool) error {
+	reqStore, hasStore := sessions.(core.SessionExecutionRequirementStore)
 	switch intent {
 	case SessionExecutionProviderCustom:
 		if !customFenceEnabled {

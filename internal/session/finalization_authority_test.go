@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -11,30 +13,30 @@ import (
 func TestWithAgentFinalizationAuthoritiesRejectsMalformedAndConflictingSets(t *testing.T) {
 	env := newCommitHookEnv(t)
 	api := finalizationCommitService(env)
-	identity := AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "call", Generation: 1}
+	identity := session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "call", Generation: 1}
 	first, err := api.BindAgentFinalization(env.ctx, identity)
 	require.NoError(t, err)
 	_, err = api.WithAgentFinalizationAuthorities(env.id, nil)
 	require.Error(t, err)
 	_, err = api.WithAgentFinalizationAuthorities(env.id, first, first)
 	require.Error(t, err)
-	require.NoError(t, sealFinalizationForTest(env.ctx, env.conn, NewAgentFinalizationStore(env.conn), identity, 0))
-	second, err := api.BindAgentFinalization(env.ctx, AgentFinalizationIdentity{
+	require.NoError(t, sealFinalizationForTest(env.ctx, env.conn, session.NewAgentFinalizationStore(env.conn), identity, 0))
+	second, err := api.BindAgentFinalization(env.ctx, session.AgentFinalizationIdentity{
 		SessionID: identity.SessionID, LogicalCallID: identity.LogicalCallID, Generation: 2,
 	})
 	require.NoError(t, err)
 	_, err = api.WithAgentFinalizationAuthorities(env.id, first, second)
 	require.ErrorContains(t, err, "conflicting finalization authorities")
-	_, malformedErr := api.WithAgentFinalizationAuthorities(env.id, &AgentFinalizationAuthority{
-		service: first.service, identity: AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "", Generation: 1},
+	_, malformedErr := api.WithAgentFinalizationAuthorities(env.id, &session.AgentFinalizationAuthority{
+		Service: first.Service, Identity: session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "", Generation: 1},
 	})
 	require.Error(t, malformedErr)
 }
 
 func TestAgentFinalizationTicketReleaseIsIdempotentAcrossRepeatedCalls(t *testing.T) {
 	env := newCommitHookEnv(t)
-	identity := AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "release-twice", Generation: 1}
-	store := NewAgentFinalizationStore(env.conn)
+	identity := session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "release-twice", Generation: 1}
+	store := session.NewAgentFinalizationStore(env.conn)
 	require.NoError(t, store.Bind(env.ctx, identity))
 	admitted, err := store.Admit(env.ctx, identity, "same-ticket")
 	require.NoError(t, err)
@@ -53,7 +55,7 @@ func TestAgentFinalizationTicketReleaseIsIdempotentAcrossRepeatedCalls(t *testin
 func TestBatchCommitOwnerAdmissionReleaseClosureIsIdempotent(t *testing.T) {
 	env := newCommitHookEnv(t)
 	api := finalizationCommitService(env)
-	authority, err := api.BindAgentFinalization(env.ctx, AgentFinalizationIdentity{
+	authority, err := api.BindAgentFinalization(env.ctx, session.AgentFinalizationIdentity{
 		SessionID: "owner", LogicalCallID: "closure-release", Generation: 1,
 	})
 	require.NoError(t, err)
@@ -66,21 +68,21 @@ func TestBatchCommitOwnerAdmissionReleaseClosureIsIdempotent(t *testing.T) {
 			return nil
 		}, nil
 	}
-	release, _, err := admitBatchCommitOwners(env.store.writer, env.ctx, identity, admissionSubmit("r", "call-r", 1), []string{"owner", "owner"})
+	release, _, err := session.AdmitBatchCommitOwners(env.store.writer, env.ctx, identity, admissionSubmit("r", "call-r", 1), []string{"owner", "owner"})
 	require.NoError(t, err)
 	require.NotNil(t, release)
-	before, err := NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, authority.identity)
+	before, err := session.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, authority.Identity)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, before.Revision)
 	require.EqualValues(t, 1, before.OpenTickets)
 	require.EqualValues(t, 1, commitHookCount(t, env.conn, `SELECT count(*) FROM session_agent_finalization_tickets WHERE logical_call_id='closure-release'`))
 	require.NoError(t, release())
-	afterFirst, err := NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, authority.identity)
+	afterFirst, err := session.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, authority.Identity)
 	require.NoError(t, err)
 	require.EqualValues(t, 2, afterFirst.Revision)
 	require.Zero(t, afterFirst.OpenTickets)
 	require.NoError(t, release())
-	afterSecond, err := NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, authority.identity)
+	afterSecond, err := session.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, authority.Identity)
 	require.NoError(t, err)
 	require.Equal(t, afterFirst, afterSecond)
 	require.Equal(t, 1, callbackReleases)

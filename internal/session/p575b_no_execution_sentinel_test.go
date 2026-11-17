@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -61,7 +62,7 @@ const (
 	leaseGateProceedWithFreshCtx
 )
 
-// delayedRaceLeaseService wraps a real session.Service so its
+// delayedRaceLeaseService wraps a real core.Service so its
 // LeaseRunQueueEntry call can be held open on a gate before resolving in one
 // of three ways (see leaseGateAction), letting a test control exactly which
 // of processEntry's early-return paths a background dispatch takes.
@@ -75,7 +76,7 @@ const (
 // "the row is back in pending with 0 attempts" is true of BOTH branches and
 // cannot tell a test which one it actually exercised.
 type delayedRaceLeaseService struct {
-	session.Service
+	core.Service
 	// gate, if non-nil, blocks the FIRST LeaseRunQueueEntry call until an
 	// action is sent on it.
 	gate    chan leaseGateAction
@@ -104,7 +105,7 @@ func (s *delayedRaceLeaseService) sawStoppingNack() bool {
 	return false
 }
 
-func (s *delayedRaceLeaseService) LeaseRunQueueEntry(ctx context.Context, sessionID, leasedBy string, leaseTTL time.Duration) (*session.RunQueueEntry, error) {
+func (s *delayedRaceLeaseService) LeaseRunQueueEntry(ctx context.Context, sessionID, leasedBy string, leaseTTL time.Duration) (*core.RunQueueEntry, error) {
 	n := s.calls.Add(1)
 	if n == 1 && s.gate != nil {
 		select {
@@ -310,7 +311,7 @@ func TestProcessEntry_StoppingMidDispatch_DoesNotFalselyDrainAWaiter(t *testing.
 	// meaningful "the pump is shutting down" error, not a fabricated
 	// success. result must still be DrainNoWork: nothing executed across either
 	// iteration of this call.
-	require.ErrorIs(t, drainErr, session.ErrCallQueuedNotExecuted, "DrainSessionNow's own retry, after correctly falling through instead of stopping early, hits the pump's own p.stopping gate and must report that truthfully")
+	require.ErrorIs(t, drainErr, core.ErrCallQueuedNotExecuted, "DrainSessionNow's own retry, after correctly falling through instead of stopping early, hits the pump's own p.stopping gate and must report that truthfully")
 	require.Equal(t, session.DrainNoWork, result, "processEntry's p.stopping early return executed NOTHING (the lease was released via Nack, executeEntrySync was never called), and neither did DrainSessionNow's own subsequent retry (also declined due to p.stopping) -- a waiting DrainSessionNow reporting anything other than DrainNoWork here is the coordinator's exact false-success scenario, reached via the shutdown path instead of a raced lease")
 
 	// The row must have been released back to pending (Nacked, no attempt

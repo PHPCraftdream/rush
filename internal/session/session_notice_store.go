@@ -29,6 +29,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -150,7 +152,7 @@ func (s *SessionNoticeStore) PullSessionNotices(ctx context.Context, messages me
 	for _, row := range rows {
 		pulled, ok, err := s.pullOneSessionNotice(ctx, messages, owner, ownHostID, row, build)
 		if err != nil {
-			if errors.Is(err, ErrAgentFinalizationChanged) {
+			if errors.Is(err, session.ErrAgentFinalizationChanged) {
 				return nil, err
 			}
 			slog.Warn("session notice store: pull session notice failed; row stays pending",
@@ -165,8 +167,8 @@ func (s *SessionNoticeStore) PullSessionNotices(ctx context.Context, messages me
 }
 
 func (s *SessionNoticeStore) pullOneSessionNotice(ctx context.Context, messages message.Service, owner, ownHostID string, row db.SessionNotice, build func(SessionNoticeRow) message.CreateMessageParams) (pulled PulledNotice, ok bool, retErr error) {
-	scoped := finalizationScoped(ctx)
-	var admission *batchFinalizationAdmission
+	scoped := session.FinalizationScoped(ctx)
+	var admission *session.BatchFinalizationAdmission
 	if scoped {
 		// Voids and rows another leader took are not productive deliveries:
 		// only a real delivery is admitted (and mints a revision).
@@ -186,9 +188,9 @@ func (s *SessionNoticeStore) pullOneSessionNotice(ctx context.Context, messages 
 		}
 		if !void {
 			var release func() error
-			release, admission, err = admitFinalizationMutation(ctx, s.sqlDB, owner)
+			release, admission, err = session.AdmitFinalizationMutation(ctx, s.sqlDB, owner)
 			if release != nil {
-				defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
+				defer func() { retErr = session.BatchCommitReleaseError(retErr, release()) }()
 			}
 			if err != nil {
 				return PulledNotice{}, false, err
@@ -238,9 +240,9 @@ func (s *SessionNoticeStore) pullOneSessionNotice(ctx context.Context, messages 
 
 	if scoped && admission == nil {
 		// The row was a void when sampled but is a delivery now: unadmitted.
-		return PulledNotice{}, false, ErrAgentFinalizationChanged
+		return PulledNotice{}, false, session.ErrAgentFinalizationChanged
 	}
-	if err := validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
+	if err := session.ValidateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
 		return PulledNotice{}, false, err
 	}
 	params := build(SessionNoticeRow{ID: pulledRow.ID, Kind: pulledRow.Kind, Text: pulledRow.Text})
@@ -253,7 +255,7 @@ func (s *SessionNoticeStore) pullOneSessionNotice(ctx context.Context, messages 
 	}); err != nil {
 		return PulledNotice{}, false, err
 	}
-	if err := validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
+	if err := session.ValidateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
 		return PulledNotice{}, false, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -315,9 +317,9 @@ func (s *SessionNoticeStore) InsertSessionNoticeReturningID(ctx context.Context,
 }
 
 func (s *SessionNoticeStore) insertSessionNotice(ctx context.Context, owner, kind, text string, wake bool, jobToolCallID string) (row db.SessionNotice, retErr error) {
-	release, admission, err := admitFinalizationMutation(ctx, s.sqlDB, owner)
+	release, admission, err := session.AdmitFinalizationMutation(ctx, s.sqlDB, owner)
 	if release != nil {
-		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
+		defer func() { retErr = session.BatchCommitReleaseError(retErr, release()) }()
 	}
 	if err != nil {
 		return db.SessionNotice{}, err
@@ -327,7 +329,7 @@ func (s *SessionNoticeStore) insertSessionNotice(ctx context.Context, owner, kin
 		return db.SessionNotice{}, err
 	}
 	defer tx.Rollback()
-	if err := validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
+	if err := session.ValidateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
 		return db.SessionNotice{}, err
 	}
 	wakeInt := int64(0)

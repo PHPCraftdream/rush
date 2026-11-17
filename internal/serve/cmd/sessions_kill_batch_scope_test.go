@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -67,7 +68,7 @@ func TestSessionsKillFreeTurnLockPreservesLiveBatchQueue(t *testing.T) {
 				conn, err := db.Connect(ctx, dataDir)
 				require.NoError(t, err)
 				defer func() { require.NoError(t, db.ReleaseConn(conn)) }()
-				sessions := session.NewService(db.New(conn), conn)
+				sessions := core.NewService(db.New(conn), conn)
 				pending, err := sessions.PeekInterruptInject(ctx, sess.ID)
 				require.NoError(t, err)
 				queued, err := sessions.HasOutstandingRunQueueEntriesForSession(ctx, sess.ID)

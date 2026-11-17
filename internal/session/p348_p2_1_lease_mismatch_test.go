@@ -36,6 +36,8 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
@@ -50,7 +52,7 @@ func TestReleaseGate_P2_1_LeaseMismatchDoesNotDeleteWrongEntry(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)) })
 
 	q := db.New(conn)
-	svc := NewService(q, conn)
+	svc := session.NewService(q, conn)
 
 	sess, err := svc.Create(ctx, "p2-1-lease-mismatch-probe")
 	require.NoError(t, err)
@@ -86,7 +88,7 @@ func TestReleaseGate_P2_1_LeaseMismatchDoesNotDeleteWrongEntry(t *testing.T) {
 	// already leased by "other-pump-instance") and call processEntry
 	// directly — deterministically forcing the exact race window instead
 	// of hoping two real pumps collide within a few milliseconds.
-	scannedEntry := &RunQueueEntry{
+	scannedEntry := &session.RunQueueEntry{
 		ID:        "exhausted-entry-id",
 		SessionID: sess.ID,
 		Attempts:  RunQueueMaxAttempts,

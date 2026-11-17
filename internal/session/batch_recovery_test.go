@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
@@ -158,7 +160,7 @@ func TestR9RecoveryPreservesUnannouncedCLIUntilRetention(t *testing.T) {
 	a, _, conn, dir, ctx := r9Stores(t)
 	// A terminal CLI root remains available to its caller until result delivery;
 	// once delivered, recovery is inert and retention can remove the entire tree.
-	hook := NewBatchCommitHook(a, BatchCommitIdentity{Host: "host", Runner: "runner", Owner: "owner"})
+	hook := NewBatchCommitHook(a, session.BatchCommitIdentity{Host: "host", Runner: "runner", Owner: "owner"})
 	runner, executor, runCtx := commitHookRunner(t, hook)
 	batch := commitHookSubmit(t, runCtx, runner, "cli-root", jobbatch.OneItem(jobbatch.TaskSpec{Kind: "retention"}), "batch-cli:retention")
 	attempt := commitHookAccept(t, runCtx, runner, executor, nil)

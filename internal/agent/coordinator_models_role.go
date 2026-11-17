@@ -5,7 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // workerSubAgentActiveForCall combines the per-call role, credentials and depth gates.

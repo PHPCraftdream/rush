@@ -18,7 +18,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -67,14 +67,14 @@ func wireRootDrainFenceWith(t *testing.T, f *attemptFixture, web bool) (bindingI
 	bindingID, err = caps.RegisterProvider(provider)
 	require.NoError(t, err)
 	store := &fakeFenceStore{}
-	require.NoError(t, store.StoreSessionExecutionRequirement(context.Background(), f.sessID, session.SessionExecutionRequirement{
+	require.NoError(t, store.StoreSessionExecutionRequirement(context.Background(), f.sessID, core.SessionExecutionRequirement{
 		BindingID: bindingID,
-		FolderScopeSpec: &session.FolderScopeSpec{
+		FolderScopeSpec: &core.FolderScopeSpec{
 			WorkingDir: f.env.workingDir,
-			Entries:    []session.FolderScopeEntry{{Dir: ".", Ops: []session.FileOp{"read"}}},
+			Entries:    []core.FolderScopeEntry{{Dir: ".", Ops: []core.FileOp{"read"}}},
 		},
-		RunAllowlistSpec: &session.RunAllowlistSpec{Restrict: true, AllowTools: []string{"fs_read"}},
-		CallPolicy:       &session.CallOptionsSpec{Version: session.CallOptionsSpecVersion, DisableSubAgents: true, WebTurnOptIn: web},
+		RunAllowlistSpec: &core.RunAllowlistSpec{Restrict: true, AllowTools: []string{"fs_read"}},
+		CallPolicy:       &core.CallOptionsSpec{Version: core.CallOptionsSpecVersion, DisableSubAgents: true, WebTurnOptIn: web},
 	}))
 	f.coord.execReqs = store
 	f.coord.diskCaps = caps
@@ -177,18 +177,18 @@ func TestDrainCallFor_RestoresFencePolicyBaseline(t *testing.T) {
 
 // fenceFailingGetSessions fails the session load deterministically.
 type fenceFailingGetSessions struct {
-	session.Service
+	core.Service
 }
 
-func (s *fenceFailingGetSessions) Get(context.Context, string) (session.Session, error) {
-	return session.Session{}, errors.New("db down")
+func (s *fenceFailingGetSessions) Get(context.Context, string) (core.Session, error) {
+	return core.Session{}, errors.New("db down")
 }
 
 // failSecondGetSessions serves the FIRST sessions.Get from the real service
 // and fails every later one, so the FIRST resolveSessionModels inside
 // drainCallFor succeeds (building the per-call toolset) and the post-refresh
 // SECOND resolve fails at its first step (coordinator_models.go:103-105)
-// without reaching the tool build again. session.Service.Get:
+// without reaching the tool build again. core.Service.Get:
 // `Get(ctx context.Context, id string) (Session, error)`
 // (internal/session/session.go:168). At the failure moment it snapshots the
 // construction manager's owner diagnostics, so the test can prove the
@@ -197,7 +197,7 @@ func (s *fenceFailingGetSessions) Get(context.Context, string) (session.Session,
 // coordinator_models_call_tools.go:106-120, which closes the call scope by
 // itself — cannot satisfy the assertions below).
 type failSecondGetSessions struct {
-	session.Service
+	core.Service
 	gets atomic.Int64
 	caps *diskCapabilityManager
 
@@ -211,7 +211,7 @@ type failSecondGetSessions struct {
 // coordinator_models.go:103-105), so errors.Is matches.
 var errSecondResolve = errors.New("db down (second resolve)")
 
-func (s *failSecondGetSessions) Get(ctx context.Context, id string) (session.Session, error) {
+func (s *failSecondGetSessions) Get(ctx context.Context, id string) (core.Session, error) {
 	if s.gets.Add(1) == 1 {
 		return s.Service.Get(ctx, id)
 	}
@@ -221,7 +221,7 @@ func (s *failSecondGetSessions) Get(ctx context.Context, id string) (session.Ses
 		s.ownersAtFailure, s.constructionsAtFailure = owners, constrs
 		s.mu.Unlock()
 	}
-	return session.Session{}, errSecondResolve
+	return core.Session{}, errSecondResolve
 }
 
 // snapshotAtFailure returns the owner diagnostics captured when the injected

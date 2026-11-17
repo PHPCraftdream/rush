@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // A `sessions cancel` flag (sessions.cancel_requested) is a ONE-SHOT request

@@ -87,7 +87,7 @@ package session
 // live-root refusal, whole-owner node deletion via BatchResetDeleteOwnerNodes
 // in one tx (batch_control_requests cascades by FK). A live Runner writing
 // after deletion loses its rows and fails Project with
-// ErrBatchProjectionConflict — containment by failure, never a synthesized
+// session.ErrBatchProjectionConflict — containment by failure, never a synthesized
 // settlement. The refusal error below is reserved for RESET only.
 //
 // D-R10c-2 (reset refusal scope): refusal covers ANY nonterminal root of the

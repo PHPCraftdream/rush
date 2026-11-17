@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 const drainPendingMaxAttempts = 3
@@ -40,7 +41,7 @@ func drainPendingBeforeRun(env RunEnv, ctx context.Context, sessionID string) er
 
 		localBusy := env.Coord() != nil && env.Coord().IsSessionBusy(sessionID)
 		if drainErr != nil {
-			contention := errors.Is(drainErr, session.ErrCallQueuedNotExecuted) || errors.Is(drainErr, session.ErrDrainIncomplete)
+			contention := errors.Is(drainErr, core.ErrCallQueuedNotExecuted) || errors.Is(drainErr, session.ErrDrainIncomplete)
 			if !contention {
 				return fmt.Errorf("run: pending durable work drain incomplete (%s): %w", result, drainErr)
 			}

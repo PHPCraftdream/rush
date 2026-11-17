@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,7 +35,7 @@ func TestPromptTokens_IncludesCacheCreation(t *testing.T) {
 		OutputTokens:        4,
 	}
 
-	var sess session.Session
+	var sess core.Session
 	updateSessionTokenCounters(&sess, usage)
 
 	require.Equal(t, int64(22826), sess.PromptTokens,
@@ -53,7 +53,7 @@ func TestPromptTokens_WarmCacheStillSumsAllThree(t *testing.T) {
 		OutputTokens:        157,
 	}
 
-	var sess session.Session
+	var sess core.Session
 	updateSessionTokenCounters(&sess, usage)
 
 	require.Equal(t, int64(23511), sess.PromptTokens)
@@ -63,7 +63,7 @@ func TestPromptTokens_WarmCacheStillSumsAllThree(t *testing.T) {
 // this function exists for: a partial-zero usage chunk must not overwrite
 // accumulated counters with zero.
 func TestPromptTokens_ZeroUsageDoesNotClobber(t *testing.T) {
-	sess := session.Session{PromptTokens: 1000, CompletionTokens: 200}
+	sess := core.Session{PromptTokens: 1000, CompletionTokens: 200}
 
 	updateSessionTokenCounters(&sess, fantasy.Usage{})
 
@@ -82,7 +82,7 @@ func TestPromptTokens_ExclusiveProviderShapeIsUnchanged(t *testing.T) {
 		OutputTokens:    1,
 	}
 
-	var sess session.Session
+	var sess core.Session
 	updateSessionTokenCounters(&sess, usage)
 
 	require.Equal(t, int64(12601), sess.PromptTokens,

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/assert"
@@ -30,7 +31,7 @@ func newRecoveryTestAppWithDataDir(t *testing.T, dataDir string) *App {
 	q := db.New(conn)
 	zero := time.Duration(0)
 	return &App{
-		Sessions:          session.NewService(q, conn),
+		Sessions:          core.NewService(q, conn),
 		Messages:          message.NewService(q),
 		recoveryOrphanAge: &zero,
 		recoveryDataDir:   &dataDir,

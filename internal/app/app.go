@@ -22,6 +22,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/filetracker"
 	"github.com/PHPCraftdream/rush/internal/store/history"
@@ -55,7 +56,7 @@ type coordinatorAdapterImpl struct {
 	app *App
 }
 
-func (a *coordinatorAdapterImpl) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (a *coordinatorAdapterImpl) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	coord := a.app.AgentCoordinator
 	if coord == nil {
 		return nil, fmt.Errorf("app: coordinator not ready yet")
@@ -64,7 +65,7 @@ func (a *coordinatorAdapterImpl) Run(ctx context.Context, callData session.Sessi
 		return result, err
 	}
 
-	// Convert session.SessionAgentCallData to agent.SessionAgentCall
+	// Convert core.SessionAgentCallData to agent.SessionAgentCall
 	// This requires rebuilding the full Model from the serialized ModelCfg,
 	// which only the coordinator can do (it has access to provider configs
 	// and catwalk registry). Delegate to coordinator.RebuildSessionAgentCall.
@@ -84,9 +85,9 @@ func (a *coordinatorAdapterImpl) Run(ctx context.Context, callData session.Sessi
 		// for this case — see tryReserveSession). Report this distinctly
 		// so the pump does not treat it as an ordinary success (which
 		// would Ack/delete a durable row for work that has not actually
-		// run) — see session.ErrCallQueuedNotExecuted's doc for the full
+		// run) — see core.ErrCallQueuedNotExecuted's doc for the full
 		// rationale, found by the third @oh review pass over #337-349.
-		return nil, session.ErrCallQueuedNotExecuted
+		return nil, core.ErrCallQueuedNotExecuted
 	}
 	// Return as any - we only care about error handling, not the result
 	var anyResult any
@@ -97,7 +98,7 @@ func (a *coordinatorAdapterImpl) Run(ctx context.Context, callData session.Sessi
 }
 
 type App struct {
-	Sessions               session.Service
+	Sessions               core.Service
 	Messages               message.Service
 	History                history.Service
 	Permissions            permission.Service
@@ -392,7 +393,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		}
 	}
 
-	sessions := session.NewServiceWithWorkspace(q, conn, qRead, readConn, workspaceRoot, workingDir, home)
+	sessions := core.NewServiceWithWorkspace(q, conn, qRead, readConn, workspaceRoot, workingDir, home)
 	messages := message.NewServiceWithReader(q, qRead)
 	files := history.NewService(q, conn)
 	skipPermissionsRequests := store.Overrides().SkipPermissionRequests

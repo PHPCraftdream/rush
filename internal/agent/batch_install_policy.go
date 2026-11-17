@@ -104,7 +104,7 @@ func batchBridgeInvocationFrom(ctx context.Context) (batchBridgeInvocation, bool
 //     and the surviving fs_* tools hold their compiled scope internally.
 //   - RunAllowlist: the restricted-run allowlist is session/message-keyed
 //     state on permission.SessionRunAllowlistManager (session call data:
-//     session.SessionAgentCallData.RunAllowlistSpec). It resolves inside the
+//     core.SessionAgentCallData.RunAllowlistSpec). It resolves inside the
 //     pinned restricted-run wrappers, which run on the executor's REBUILT
 //     context — batchLeafRunContext stamps the payload's session id and
 //     message id, so the gate resolves the same allowlist entry the

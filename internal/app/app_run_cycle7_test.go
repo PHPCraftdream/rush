@@ -13,6 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -429,7 +430,7 @@ func TestDrainIdentityKeepsAllAssistantRowsForLiveEvents(t *testing.T) {
 	recorder := agent.NewCallResultRecorder()
 	recorder.RecordConfirmed("assistant-tool-step")
 	recorder.RecordConfirmed("assistant-final")
-	loop := &executeRunLoop{sess: session.Session{ID: "session"}, mode: RunModeStream, stopSpinner: func() {}}
+	loop := &executeRunLoop{sess: core.Session{ID: "session"}, mode: RunModeStream, stopSpinner: func() {}}
 	loop.eventOwner = recorder
 	loop.seenToolCalls = make(map[string]bool)
 	loop.toolCallCounts = make(map[string]int)
@@ -459,7 +460,7 @@ func TestDrainIdentityProcessesToolRowBeforeCompletion(t *testing.T) {
 	original.Capture()("original")
 	recorder := agent.NewCallResultRecorder()
 	loop := &executeRunLoop{
-		sess:             session.Session{ID: "session"},
+		sess:             core.Session{ID: "session"},
 		mode:             RunModeStream,
 		stopSpinner:      func() {},
 		stdout:           &bytes.Buffer{},
@@ -518,7 +519,7 @@ func TestDrainIdentityConfirmsTerminalIDAfterFullSet(t *testing.T) {
 }
 
 func TestLiveMessageEventsIgnoreForeignOwner(t *testing.T) {
-	loop := &executeRunLoop{sess: session.Session{ID: "session"}, mode: RunModeStream, stopSpinner: func() {}}
+	loop := &executeRunLoop{sess: core.Session{ID: "session"}, mode: RunModeStream, stopSpinner: func() {}}
 	loop.eventOwner = agent.NewCallResultRecorder()
 	loop.eventOwner.Capture()("owned")
 	loop.seenToolCalls = make(map[string]bool)

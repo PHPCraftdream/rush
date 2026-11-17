@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 func (c *coordinator) refreshRequestedDelegationCall(ctx context.Context, parentID string, call SessionAgentCall) (SessionAgentCall, error) {

@@ -83,6 +83,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -98,7 +99,7 @@ type twoRowFailThenSucceedCoordinator struct {
 	firstFn func() (*any, error)
 }
 
-func (c *twoRowFailThenSucceedCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *twoRowFailThenSucceedCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.calls++
 	if c.calls == 1 {
 		return c.firstFn()
@@ -145,13 +146,13 @@ func TestDrainSessionNow_LocalExecution_TerminalThenSuccess_ReportsFailed(t *tes
 	require.Empty(t, pending, "row A is gone (terminal-failed) and row B is gone (acked) -- nothing left pending for this session")
 }
 
-// ackFailingServiceP592 wraps a real session.Service and fails
+// ackFailingServiceP592 wraps a real core.Service and fails
 // AckRunQueueEntry for exactly the first Ack it sees (row A's), letting
 // every subsequent Ack (row B's) go to the real implementation -- the same
 // pattern as p588's ackFailingServiceP588, duplicated here to keep this
 // file's regression self-contained.
 type ackFailingServiceP592 struct {
-	session.Service
+	core.Service
 	ackErr    error
 	ackedOnce bool
 }
@@ -203,7 +204,7 @@ func TestDrainSessionNow_LocalExecution_AckFailureThenSuccess_ReportsFailed(t *t
 	require.Contains(t, stale[0].CallData, "row-A")
 }
 
-// leaseStealingServiceP592 wraps a real session.Service and makes
+// leaseStealingServiceP592 wraps a real core.Service and makes
 // RenewRunQueueLease fail (reassigned, ok=false, err=nil) for exactly ONE
 // specific row ID -- row A's -- while renewing every other row (row B's)
 // normally through the real implementation. Unlike p575's
@@ -212,7 +213,7 @@ func TestDrainSessionNow_LocalExecution_AckFailureThenSuccess_ReportsFailed(t *t
 // complete normally in the SAME call, which requires row B's lease to
 // renew successfully if its turn runs long enough to need one.
 type leaseStealingServiceP592 struct {
-	session.Service
+	core.Service
 	victimID string
 }
 
@@ -234,7 +235,7 @@ type gatedThenSucceedCoordinator struct {
 	release chan struct{}
 }
 
-func (c *gatedThenSucceedCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *gatedThenSucceedCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.calls++
 	if c.calls == 1 {
 		select {
@@ -367,7 +368,7 @@ func newSequentialGatedCoordinator(n int) *sequentialGatedCoordinator {
 	return c
 }
 
-func (c *sequentialGatedCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *sequentialGatedCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	idx := c.calls
 	c.calls++
 	select {
@@ -469,14 +470,14 @@ func TestDrainSessionNow_ObservedAdmission_TerminalThenSuccess_ReportsFailed(t *
 	require.ErrorIs(t, drainErr, termErr, "row B's observed success must not silently replace row A's specific terminal error")
 }
 
-// ackFailOnceService wraps a real session.Service and fails EXACTLY the
+// ackFailOnceService wraps a real core.Service and fails EXACTLY the
 // first AckRunQueueEntry call it observes, letting every subsequent Ack go
 // to the real implementation -- reused (renamed to keep this file
 // self-contained) for the observed-admission Ack-failure variant, where the
 // SAME service instance must be shared by the pump's background tick
 // executing BOTH row A (fails) and row B (succeeds).
 type ackFailOnceService struct {
-	session.Service
+	core.Service
 	ackErr    error
 	ackedOnce bool
 }
@@ -559,13 +560,13 @@ func TestDrainSessionNow_ObservedAdmission_AckFailureThenSuccess_ReportsFailed(t
 	require.ErrorIs(t, drainErr, session.ErrTurnCommitFailed, "row B's observed success must not silently replace row A's specific Ack-failure sentinel")
 }
 
-// leaseStealingServiceObserved wraps a real session.Service and fails
+// leaseStealingServiceObserved wraps a real core.Service and fails
 // RenewRunQueueLease for exactly ONE specific row ID (row A's, captured
 // before the pump ever leases anything), letting row B's own renewal (if
 // its turn runs long enough to need one) go to the real implementation --
 // the observed-admission counterpart to leaseStealingServiceP592 above.
 type leaseStealingServiceObserved struct {
-	session.Service
+	core.Service
 	victimID string
 }
 

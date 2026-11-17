@@ -23,6 +23,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -49,12 +50,12 @@ func newDurableCallExecutionCounter(idempotencyKey string, busyUntilCall int64) 
 	}
 }
 
-func (c *durableCallExecutionCounter) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *durableCallExecutionCounter) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	n := c.callCount.Add(1)
 	if n <= c.busyUntilCall {
 		// Simulate a genuinely external live owner — the pump sees
-		// session.ErrCallQueuedNotExecuted and backs off locally.
-		return nil, session.ErrCallQueuedNotExecuted
+		// core.ErrCallQueuedNotExecuted and backs off locally.
+		return nil, core.ErrCallQueuedNotExecuted
 	}
 
 	// Count this as an ACTUAL execution of the durable call (not just a
@@ -92,7 +93,7 @@ func (c *durableCallExecutionCounter) Run(ctx context.Context, callData session.
 //
 // IMPORTANT SCOPE NOTE (added after independent verification): this test
 // uses a mocked Coordinator (durableCallExecutionCounter) that simulates
-// "session busy" by directly returning session.ErrCallQueuedNotExecuted —
+// "session busy" by directly returning core.ErrCallQueuedNotExecuted —
 // it never calls the real sessionAgent.Run / mailbox.submit, so it does
 // NOT exercise the actual P0-1 fix (the `if !call.FromDurableQueue` guard
 // in internal/agent/mailbox.go's submit). Verified by hand: this test
@@ -118,7 +119,7 @@ func (c *durableCallExecutionCounter) Run(ctx context.Context, callData session.
 func TestReleaseGate_P0_1_DurableCallExecutesExactlyOnce(t *testing.T) {
 	t.Parallel()
 	sessiontest.LimitParallel(t)
-	runDurableExactlyOnceScenario(t, "test-session-p0-1-no-dup", func(svc session.Service, _ *fakePumpClock) session.Service { return svc })
+	runDurableExactlyOnceScenario(t, "test-session-p0-1-no-dup", func(svc core.Service, _ *fakePumpClock) core.Service { return svc })
 }
 
 // holdUntilClockMovesAfterNack parks the pump between its Nack and its
@@ -126,7 +127,7 @@ func TestReleaseGate_P0_1_DurableCallExecutesExactlyOnce(t *testing.T) {
 // interleaving where the test's Advance lands inside that window (the row is
 // already pending, the backoff deadline is not yet stamped).
 type holdUntilClockMovesAfterNack struct {
-	session.Service
+	core.Service
 	clk *fakePumpClock
 }
 
@@ -153,12 +154,12 @@ func (s *holdUntilClockMovesAfterNack) NackRunQueueEntryNoAttemptPenalty(ctx con
 func TestReleaseGate_P0_1_ExactlyOnceSurvivesAdvanceInsideNackWindow(t *testing.T) {
 	t.Parallel()
 	sessiontest.LimitParallel(t)
-	runDurableExactlyOnceScenario(t, "test-session-p0-1-nack-window", func(svc session.Service, clk *fakePumpClock) session.Service {
+	runDurableExactlyOnceScenario(t, "test-session-p0-1-nack-window", func(svc core.Service, clk *fakePumpClock) core.Service {
 		return &holdUntilClockMovesAfterNack{Service: svc, clk: clk}
 	})
 }
 
-func runDurableExactlyOnceScenario(t *testing.T, sessionName string, wrap func(session.Service, *fakePumpClock) session.Service) {
+func runDurableExactlyOnceScenario(t *testing.T, sessionName string, wrap func(core.Service, *fakePumpClock) core.Service) {
 	t.Helper()
 	sess, svc := setupTestSession(t, sessionName)
 	ctx := t.Context()
@@ -276,7 +277,7 @@ func runDurableExactlyOnceScenario(t *testing.T, sessionName string, wrap func(s
 // the already-advanced clock), after which no further tick would ever fire.
 // Fake time never moves while the row is leased: a cleanup cutoff overtaking a
 // live lease would reap it mid-execution and charge an attempt.
-func advanceUntil(t *testing.T, clk *fakePumpClock, svc session.Service, entryID string, step time.Duration, cond func() bool, msg string) {
+func advanceUntil(t *testing.T, clk *fakePumpClock, svc core.Service, entryID string, step time.Duration, cond func() bool, msg string) {
 	t.Helper()
 	sessiontest.AwaitPump(t, func() bool {
 		if cond() {

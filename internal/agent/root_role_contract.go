@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 func bindRootRoleContract(ctx context.Context, sessions session.Service, call SessionAgentCall) error {

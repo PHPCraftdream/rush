@@ -167,7 +167,7 @@ func (c *coordinator) drainDecision(ctx context.Context, sessionID string, spent
 // 8): ParentSessionID alone is ambiguous -- `sessions fork --child` (the
 // review's "sessions fork --parent" is the same knob under its CLI-flag
 // name) sets the identical field on a session that was never a delegation
-// target at all, for a wholly unrelated purpose (session.ForkOptions.
+// target at all, for a wholly unrelated purpose (core.ForkOptions.
 // ParentID). A forked child was, before this fix, refused Drain turns by
 // the SAME branch a real released delegation child hits.
 //

@@ -20,6 +20,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db/dbconn"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/spf13/cobra"
@@ -150,7 +151,7 @@ func sessionsCompactConversation(cmd *cobra.Command, sessionArg, roleArg string)
 	if err := summarizer.SummarizeWithRole(cmd.Context(), sess.ID, config.SelectedModelType(roleArg)); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "compacted session %s (%s) with %s model\n", sess.ID, short(session.HashID(sess.ID)), roleArg)
+	fmt.Fprintf(cmd.OutOrStdout(), "compacted session %s (%s) with %s model\n", sess.ID, short(core.HashID(sess.ID)), roleArg)
 	return nil
 }
 

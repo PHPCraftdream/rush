@@ -19,7 +19,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	sessionpkg "github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // subAgentParams holds the parameters for running a sub-agent.
@@ -48,8 +48,8 @@ type subAgentParams struct {
 	pctHandoff *pctDelegationHandoff // pct: admission-held child construction refs.
 }
 
-func loadChildRoleContract(ctx context.Context, sessions sessionpkg.Service, childID string) (*sessionpkg.RoleContract, error) {
-	store, ok := sessions.(sessionpkg.SessionRoleContractStore)
+func loadChildRoleContract(ctx context.Context, sessions core.Service, childID string) (*core.RoleContract, error) {
+	store, ok := sessions.(core.SessionRoleContractStore)
 	if !ok {
 		return nil, fmt.Errorf("%w: child role contract store unavailable", ErrAgentRoleUnconfigured)
 	}
@@ -115,15 +115,15 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	if params.ResumeSessionID == "" {
 		childRemaining--
 	}
-	depthStore, depthStoreOK := c.sessions.(sessionpkg.AgentDepthStore)
+	depthStore, depthStoreOK := c.sessions.(core.AgentDepthStore)
 	if !depthStoreOK {
 		return fantasy.ToolResponse{}, errors.New("agent depth persistence unavailable")
 	}
 	cfg, _ := c.cfg.Snapshot()
 	requestedRole := params.RequestedModelRole
 	var explicitRoleModel *delegationRoleModel
-	var childRoleContract *sessionpkg.RoleContract
-	var session sessionpkg.Session
+	var childRoleContract *core.RoleContract
+	var session core.Session
 	resolveRole := func(childID string) error {
 		var err error
 		requestedRole, err = resolveDelegationRequestedRole(ctx, c.sessions, childID, requestedRole)
@@ -525,7 +525,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		callTemplate.Tools = batchChildTools
 		callTemplate.BatchQuestion = batchQuestionState
 	}
-	delegatedFinalization := sessionpkg.CaptureAgentFinalizationContext(ctx)
+	delegatedFinalization := core.CaptureAgentFinalizationContext(ctx)
 	callTemplate.LogicalCallID, err = finalizationLogicalIdentity(delegatedFinalization, session.ID, callTemplate.LogicalCallID)
 	if err != nil {
 		return fantasy.ToolResponse{}, err

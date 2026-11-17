@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 func TestAPIReadGetSessionExactJSON(t *testing.T) {

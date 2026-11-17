@@ -14,6 +14,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // NewBatchCLIBuilderWithQuestionRoute builds like NewBatchCLIBuilder and
@@ -198,7 +199,7 @@ func PsvBatchSupervisionArmingLate(get func() Coordinator) func(context.Context,
 
 // SetCoordinatorSessionCredentialRequirementStore binds the optional durable,
 // secret-free marker store used to preserve credential boundaries across restarts.
-func SetCoordinatorSessionCredentialRequirementStore(c Coordinator, store session.SessionCredentialRequirementStore) error {
+func SetCoordinatorSessionCredentialRequirementStore(c Coordinator, store core.SessionCredentialRequirementStore) error {
 	if c == nil {
 		return errors.New("session credential requirement store: nil coordinator")
 	}
@@ -216,7 +217,7 @@ func SetCoordinatorSessionCredentialRequirementStore(c Coordinator, store sessio
 // SetCoordinatorExecutionRequirementStore wires the durable
 // session-execution-fence store onto a coordinator (internal/app
 // composition root), mirroring the SetBatchDriverClaimer setter pattern.
-func SetCoordinatorExecutionRequirementStore(c Coordinator, store session.SessionExecutionRequirementStore) error {
+func SetCoordinatorExecutionRequirementStore(c Coordinator, store core.SessionExecutionRequirementStore) error {
 	if c == nil {
 		return errors.New("execution requirement store: nil coordinator")
 	}

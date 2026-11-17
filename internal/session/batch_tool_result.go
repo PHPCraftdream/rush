@@ -6,6 +6,8 @@ import (
 	"errors"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -63,9 +65,9 @@ func (s *BatchStore) BatchConsumeToolResult(ctx context.Context, messages messag
 	}
 	// A lost incarnation CAS still persists the result message, so every
 	// call is a productive write and is admitted.
-	release, admission, err := admitFinalizationMutation(ctx, s.writer, owner)
+	release, admission, err := session.AdmitFinalizationMutation(ctx, s.writer, owner)
 	if release != nil {
-		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
+		defer func() { retErr = session.BatchCommitReleaseError(retErr, release()) }()
 	}
 	if err != nil {
 		return message.Message{}, false, err
@@ -75,7 +77,7 @@ func (s *BatchStore) BatchConsumeToolResult(ctx context.Context, messages messag
 		return message.Message{}, false, err
 	}
 	defer tx.Rollback()
-	if err := validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
+	if err := session.ValidateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
 		return message.Message{}, false, err
 	}
 	q := db.PdaBatchTxQueries(ctx, s.writer, tx)
@@ -91,7 +93,7 @@ func (s *BatchStore) BatchConsumeToolResult(ctx context.Context, messages messag
 	if err != nil {
 		return message.Message{}, false, err
 	}
-	if err = validateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
+	if err = session.ValidateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
 		return message.Message{}, false, err
 	}
 	if err = tx.Commit(); err != nil {

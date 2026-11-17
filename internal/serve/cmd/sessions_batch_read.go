@@ -20,6 +20,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -318,7 +319,7 @@ func renderBatchRootsForWhy(f batchSessionFacts, out io.Writer) {
 			awaiting = ", awaiting delivery/answer"
 		}
 		fmt.Fprintf(out, "  root %s tool call %s (owner %s): %s, debt %d, tasks %d pending/%d running/%d done%s\n",
-			short(r.RootID), r.ToolCallID, short(session.HashID(r.Owner)), verdict, r.Debt,
+			short(r.RootID), r.ToolCallID, short(core.HashID(r.Owner)), verdict, r.Debt,
 			r.Tasks.Pending, r.Tasks.Active, r.Tasks.Completed+r.Tasks.Failed+r.Tasks.Cancelled+r.Tasks.TimedOut+r.Tasks.Interrupted+r.Tasks.Skipped, awaiting)
 	}
 	if f.Unknown {
@@ -503,7 +504,7 @@ func renderSessionsJobsBatch(ctx context.Context, a *app.App, dataDir, sessionID
 			awaiting = "answer"
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%t\t%s\t%d\t%d/%d/%d\n",
-			short(session.HashID(r.Owner)), short(r.RootID), r.ToolCallID, state,
+			short(core.HashID(r.Owner)), short(r.RootID), r.ToolCallID, state,
 			r.Held, awaiting, r.Debt, r.Tasks.Pending, r.Tasks.Active,
 			r.Tasks.Completed+r.Tasks.Failed+r.Tasks.Cancelled+r.Tasks.TimedOut+r.Tasks.Interrupted+r.Tasks.Skipped)
 	}

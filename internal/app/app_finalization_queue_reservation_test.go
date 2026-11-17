@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,14 +29,14 @@ func TestFinalizationQueueBusyThenIdleAcceptsOneRealAppTurn(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	identity := session.AgentFinalizationIdentity{SessionID: owner, LogicalCallID: "reservation-call", Generation: 1}
-	authority, err := application.Sessions.(session.AgentFinalizationService).BindAgentFinalization(ctx, identity)
+	identity := core.AgentFinalizationIdentity{SessionID: owner, LogicalCallID: "reservation-call", Generation: 1}
+	authority, err := application.Sessions.(core.AgentFinalizationService).BindAgentFinalization(ctx, identity)
 	require.NoError(t, err)
-	trusted, err := session.WithAgentFinalizationContext(ctx, authority)
+	trusted, err := core.WithAgentFinalizationContext(ctx, authority)
 	require.NoError(t, err)
-	data := session.SessionAgentCallData{
+	data := core.SessionAgentCallData{
 		SessionID: owner, LogicalCallID: identity.LogicalCallID, Prompt: "compose settled results", AutoResumed: true, NonInteractive: true,
-		FinalizationRequirement: session.CaptureAgentFinalizationContext(trusted).Requirement(),
+		FinalizationRequirement: core.CaptureAgentFinalizationContext(trusted).Requirement(),
 	}
 	raw, err := json.Marshal(data)
 	require.NoError(t, err)
@@ -76,7 +77,7 @@ func TestFinalizationQueueBusyThenIdleAcceptsOneRealAppTurn(t *testing.T) {
 	require.NoError(t, application.DB().QueryRowContext(ctx, `SELECT count(*) FROM session_run_queue WHERE id='reserved-queue'`).Scan(&queued))
 	require.Zero(t, queued)
 	require.False(t, application.AgentCoordinator.IsSessionBusy(owner))
-	state, err := session.NewAgentFinalizationStore(application.DB()).Snapshot(ctx, identity)
+	state, err := core.NewAgentFinalizationStore(application.DB()).Snapshot(ctx, identity)
 	require.NoError(t, err)
 	require.Equal(t, "executing", state.Phase, "reservation acceptance is not whole-task finalization")
 }

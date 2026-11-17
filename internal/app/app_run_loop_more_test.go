@@ -18,14 +18,15 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
 
 // cancelFlagSessions answers IsCancelRequested from a fixed value; every
-// other session.Service method is unset (nextStep reads only the flag).
+// other core.Service method is unset (nextStep reads only the flag).
 type cancelFlagSessions struct {
-	session.Service
+	core.Service
 	canceled bool
 }
 

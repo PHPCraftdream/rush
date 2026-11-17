@@ -40,6 +40,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	sqlitedriver "modernc.org/sqlite"
 
@@ -56,7 +58,7 @@ import (
 // isPermanentOrphanOutboxDrainError, pump.cancel, and
 // pump.processOrphanOutboxEntry), which cannot import the session_test
 // package's helper.
-func newTestServiceForCancellationTest(t *testing.T) (*Session, Service) {
+func newTestServiceForCancellationTest(t *testing.T) (*session.Session, session.Service) {
 	t.Helper()
 	dataDir := t.TempDir()
 	ctx := context.Background()
@@ -66,7 +68,7 @@ func newTestServiceForCancellationTest(t *testing.T) (*Session, Service) {
 	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)) })
 
 	q := db.New(conn)
-	svc := NewService(q, conn)
+	svc := session.NewService(q, conn)
 
 	sess, err := svc.Create(ctx, "orphan-cancellation-probe")
 	require.NoError(t, err)
@@ -222,15 +224,15 @@ func TestIsPermanentOrphanOutboxDrainError_UnknownErrorIsNotPermanent(t *testing
 	require.False(t, isPermanentOrphanOutboxDrainError(errors.New("plain failure")))
 }
 
-// fakePumpSessionsForCancellationTest wraps a real session.Service (embedded
-// via the unexported Service interface, reachable here because this file is
+// fakePumpSessionsForCancellationTest wraps a real session.session.Service (embedded
+// via the unexported session.Service interface, reachable here because this file is
 // package session) and forces DrainOrphanOutboxEntry to fail with a
 // caller-supplied error while recording whether RecordOrphanOutboxFailure
 // was ever invoked -- the actual, callsite-level observable this test needs
 // (attempts must stay at 0 / the recorder must never be called), rather than
 // re-deriving the answer from the classifier in isolation.
 type fakePumpSessionsForCancellationTest struct {
-	Service
+	session.Service
 	drainErr           error
 	recordFailureCalls atomic.Int32
 }
@@ -239,7 +241,7 @@ func (f *fakePumpSessionsForCancellationTest) DrainOrphanOutboxEntry(ctx context
 	return false, f.drainErr
 }
 
-func (f *fakePumpSessionsForCancellationTest) RecordOrphanOutboxFailure(ctx context.Context, id, lastError string) (OrphanOutboxFailureOutcome, error) {
+func (f *fakePumpSessionsForCancellationTest) RecordOrphanOutboxFailure(ctx context.Context, id, lastError string) (session.OrphanOutboxFailureOutcome, error) {
 	f.recordFailureCalls.Add(1)
 	return f.Service.RecordOrphanOutboxFailure(ctx, id, lastError)
 }

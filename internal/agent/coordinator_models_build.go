@@ -9,7 +9,7 @@ import (
 	"charm.land/fantasy/providers/openrouter"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // TODO: when we support multiple agents we need to change this so that we pass in the agent specific model config

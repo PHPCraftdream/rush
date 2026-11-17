@@ -7,7 +7,7 @@ import (
 	"errors"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // FinalizationQueueCoordinator keeps marked queue admission on one driver era.

@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -87,7 +88,7 @@ func TestHandleSetSessionModels_BroadcastCarriesExternalOwnership(t *testing.T) 
 	require.NoError(t, err)
 	handleSetSessionModels(ctx, a, client, WSMessage{ID: "req-1", Type: CmdSetSessionModels, Payload: payload})
 
-	var updated *session.Session
+	var updated *core.Session
 	deadline := time.Now().Add(2 * time.Second)
 	for updated == nil && time.Now().Before(deadline) {
 		select {
@@ -97,7 +98,7 @@ func TestHandleSetSessionModels_BroadcastCarriesExternalOwnership(t *testing.T) 
 			if env.Type != EventSessionUpdated {
 				continue
 			}
-			var s session.Session
+			var s core.Session
 			require.NoError(t, json.Unmarshal(env.Payload, &s))
 			updated = &s
 		case <-time.After(50 * time.Millisecond):

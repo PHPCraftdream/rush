@@ -7,14 +7,15 @@ import (
 	"fmt"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/google/uuid"
 )
 
 var (
-	ErrBatchInputMismatch      = errors.New("batch store: live input mismatch")
-	ErrBatchProjectionConflict = errors.New("batch store: projection identity or sequence conflict")
+	ErrBatchInputMismatch = errors.New("batch store: live input mismatch")
 	// R5(b): a live root for the same owner/tool-call belongs to its owning
 	// host's Runner; attaching from another host would resubmit foreign work.
 	ErrBatchForeignLiveHost = errors.New("batch store: live root owned by another host")
@@ -94,7 +95,7 @@ type BatchReservation struct {
 	// Checkpoint is written inside the same transaction when non-nil.
 	Checkpoint *db.UpdateBatchRunnerCheckpointParams
 
-	finalizationAdmission *batchFinalizationAdmission
+	finalizationAdmission *session.BatchFinalizationAdmission
 }
 
 type (
@@ -142,7 +143,7 @@ func (s *BatchStore) ReserveIdentity(ctx context.Context, p BatchReservation) (B
 	}
 	defer tx.Rollback()
 	jobbatch.MarkCommitPhase(ctx, jobbatch.CommitPhaseStatements)
-	if err := validateBatchFinalizationTx(ctx, tx, []string{p.Owner}, p.finalizationAdmission); err != nil {
+	if err := session.ValidateBatchFinalizationTx(ctx, tx, []string{p.Owner}, p.finalizationAdmission); err != nil {
 		return BatchReservationResult{}, err
 	}
 	q := db.PdaBatchTxQueries(ctx, s.writer, tx)
@@ -176,7 +177,7 @@ func (s *BatchStore) ReserveIdentity(ctx context.Context, p BatchReservation) (B
 		return BatchReservationResult{}, err
 	}
 	if p.Checkpoint != nil {
-		if err = batchRequireRow(q.UpdateBatchRunnerCheckpoint(ctx, *p.Checkpoint)); err != nil {
+		if err = session.BatchRequireRow(q.UpdateBatchRunnerCheckpoint(ctx, *p.Checkpoint)); err != nil {
 			return BatchReservationResult{}, err
 		}
 	}
@@ -231,7 +232,7 @@ type (
 		// rootless transitions and Final; optional, applied in the same tx.
 		Checkpoint *db.UpdateBatchRunnerCheckpointParams
 
-		finalizationAdmission *batchFinalizationAdmission
+		finalizationAdmission *session.BatchFinalizationAdmission
 	}
 	BatchRootProjection struct {
 		Owner, Root string
@@ -240,16 +241,6 @@ type (
 		Notices     []db.SelectBatchNodeNoticeParams
 	}
 )
-
-func batchRequireRow(n int64, err error) error {
-	if err != nil {
-		return err
-	}
-	if n != 1 {
-		return ErrBatchProjectionConflict
-	}
-	return nil
-}
 
 // Project commits one accepted transition, including the (host, incarnation)
 // sequence checkpoint. Any missing update rolls everything back.
@@ -271,12 +262,12 @@ func (s *BatchStore) Project(ctx context.Context, p BatchProjection) error {
 	for _, root := range p.Roots {
 		owners = append(owners, root.Owner)
 	}
-	if err := validateBatchFinalizationTx(ctx, tx, owners, p.finalizationAdmission); err != nil {
+	if err := session.ValidateBatchFinalizationTx(ctx, tx, owners, p.finalizationAdmission); err != nil {
 		return err
 	}
 	q := db.PdaBatchTxQueries(ctx, s.writer, tx)
 	if p.Checkpoint != nil {
-		if err = batchRequireRow(q.UpdateBatchRunnerCheckpoint(ctx, *p.Checkpoint)); err != nil {
+		if err = session.BatchRequireRow(q.UpdateBatchRunnerCheckpoint(ctx, *p.Checkpoint)); err != nil {
 			return err
 		}
 	}
@@ -293,7 +284,7 @@ func batchProjectRoot(ctx context.Context, q *db.Queries, host, runner string, p
 	// Reservation inserts carry their sequence already; every other
 	// projection fences the root sequence before touching rows.
 	if advance {
-		if err := batchRequireRow(q.AdvanceBatchRootSequence(ctx, db.AdvanceBatchRootSequenceParams{RootID: p.Root, HostID: host, RunnerID: runner, OwnerSessionID: p.Owner, Sequence: sequence, UpdatedAt: time.Now().Unix()})); err != nil {
+		if err := session.BatchRequireRow(q.AdvanceBatchRootSequence(ctx, db.AdvanceBatchRootSequenceParams{RootID: p.Root, HostID: host, RunnerID: runner, OwnerSessionID: p.Owner, Sequence: sequence, UpdatedAt: time.Now().Unix()})); err != nil {
 			return err
 		}
 	}
@@ -305,7 +296,7 @@ func batchProjectRoot(ctx context.Context, q *db.Queries, host, runner string, p
 			return e
 		}
 		if parent.HostID != host || parent.Kind != "batch" || !batchStateLive(parent.State) {
-			return ErrBatchProjectionConflict
+			return session.ErrBatchProjectionConflict
 		}
 		if err := batchInsertTree(ctx, q, a.Node, p.Owner, host, runner, p.Root, fmt.Sprintf("%s.%d", a.Parent, a.Ordinal), a.Parent, a.Ordinal, sequence, "", "", false); err != nil {
 			return err
@@ -313,7 +304,7 @@ func batchProjectRoot(ctx context.Context, q *db.Queries, host, runner string, p
 	}
 	for _, v := range p.Updates {
 		v.RootID, v.HostID, v.OwnerSessionID, v.Sequence, v.UpdatedAt, v.RunnerID = p.Root, host, p.Owner, sequence, time.Now().Unix(), runner
-		if err := batchRequireRow(q.ProjectBatchNode(ctx, v)); err != nil {
+		if err := session.BatchRequireRow(q.ProjectBatchNode(ctx, v)); err != nil {
 			return err
 		}
 	}
@@ -326,7 +317,7 @@ func batchProjectRoot(ctx context.Context, q *db.Queries, host, runner string, p
 		// delivery='void'), its subtree can never select notices — the
 		// selection is a tolerated no-op. This is the ONLY tolerance: every
 		// other zero-row SelectBatchNodeNotice stays a hard
-		// ErrBatchProjectionConflict.
+		// .
 		root, err := q.GetBatchNode(ctx, db.GetBatchNodeParams{RootID: p.Root, NodeID: p.Root, OwnerSessionID: p.Owner})
 		if err != nil {
 			return err
@@ -347,7 +338,7 @@ func batchProjectRoot(ctx context.Context, q *db.Queries, host, runner string, p
 		// this projection_sequence. 0 rows therefore means notice_selected
 		// was already 1 — a projection identity conflict the commit path
 		// must surface, never silently tolerate.
-		if err := batchRequireRow(q.SelectBatchNodeNotice(ctx, v)); err != nil {
+		if err := session.BatchRequireRow(q.SelectBatchNodeNotice(ctx, v)); err != nil {
 			return err
 		}
 	}
@@ -387,7 +378,7 @@ func (s *BatchStore) PendingControls(ctx context.Context, owner, host, root stri
 }
 
 func (s *BatchStore) AnswerControl(ctx context.Context, p db.AnswerBatchControlRequestParams) error {
-	return batchRequireRow(db.New(s.writer).AnswerBatchControlRequest(ctx, p))
+	return session.BatchRequireRow(db.New(s.writer).AnswerBatchControlRequest(ctx, p))
 }
 
 func (s *BatchStore) DeleteRoot(ctx context.Context, owner, host, root string) error {
@@ -395,7 +386,7 @@ func (s *BatchStore) DeleteRoot(ctx context.Context, owner, host, root string) e
 	if err != nil {
 		return err
 	}
-	return batchRequireRow(q.DeleteBatchSubtree(ctx, db.DeleteBatchSubtreeParams{OwnerSessionID: owner, HostID: host, RootID: root, NodeID: root}))
+	return session.BatchRequireRow(q.DeleteBatchSubtree(ctx, db.DeleteBatchSubtreeParams{OwnerSessionID: owner, HostID: host, RootID: root, NodeID: root}))
 }
 
 // RootOwner resolves the owning session of any projected root; cross-root

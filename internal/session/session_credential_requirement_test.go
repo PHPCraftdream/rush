@@ -7,13 +7,15 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestSessionCredentialRequirementMarkerRoundTripAndQueueVisibility(t *testing.T) {
 	sqlDB, q := newTestDB(t)
-	svc := NewService(q, sqlDB).(*service)
+	svc := session.NewService(q, sqlDB)
 	ctx := t.Context()
 	sess, err := svc.Create(ctx, "credential-marker")
 	require.NoError(t, err)
@@ -27,24 +29,24 @@ func TestSessionCredentialRequirementMarkerRoundTripAndQueueVisibility(t *testin
 	require.NoError(t, err)
 	assert.True(t, has)
 
-	row, err := svc.GetRunQueueEntry(ctx, SessionCredentialMarkerRowID(sess.ID))
+	row, err := svc.GetRunQueueEntry(ctx, session.SessionCredentialMarkerRowID(sess.ID))
 	require.NoError(t, err)
 	require.NotNil(t, row)
 	var markerCount int
-	require.NoError(t, svc.db.QueryRowContext(ctx,
+	require.NoError(t, sqlDB.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM session_run_queue WHERE session_id = ? AND id = ?`,
-		sess.ID, SessionCredentialMarkerRowID(sess.ID)).Scan(&markerCount))
+		sess.ID, session.SessionCredentialMarkerRowID(sess.ID)).Scan(&markerCount))
 	assert.Equal(t, 1, markerCount, "storing the marker twice must remain idempotent")
 	assert.Equal(t, "acked", row.Status)
 	assert.True(t, row.TerminalFailure)
 	assert.Empty(t, row.LeasedBy)
 	assert.Zero(t, row.LeasedAt)
 	assert.Zero(t, row.LeaseExpiresAt)
-	assert.True(t, IsSessionCredentialRequirementCallData(row.CallData))
+	assert.True(t, session.IsSessionCredentialRequirementCallData(row.CallData))
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal([]byte(row.CallData), &payload))
-	assert.Equal(t, SessionCredentialRequirementKind, payload["kind"])
-	assert.Equal(t, float64(SessionCredentialRequirementVersion), payload["version"])
+	assert.Equal(t, session.SessionCredentialRequirementKind, payload["kind"])
+	assert.Equal(t, float64(session.SessionCredentialRequirementVersion), payload["version"])
 	assert.Len(t, payload, 2, "marker must contain no credential data")
 	hasOutstanding, err := svc.HasOutstandingRunQueueEntriesForSession(ctx, sess.ID)
 	require.NoError(t, err)
@@ -64,20 +66,20 @@ func TestSessionCredentialRequirementMarkerRoundTripAndQueueVisibility(t *testin
 }
 
 func TestIsSessionCredentialRequirementCallData(t *testing.T) {
-	if !IsSessionCredentialRequirementCallData(`{"kind":"session_credential_requirement","version":1}`) {
+	if !session.IsSessionCredentialRequirementCallData(`{"kind":"session_credential_requirement","version":1}`) {
 		t.Fatal("credential marker envelope must be recognized by pump guard")
 	}
-	if IsSessionCredentialRequirementCallData(`{"Prompt":"hello"}`) {
+	if session.IsSessionCredentialRequirementCallData(`{"Prompt":"hello"}`) {
 		t.Fatal("ordinary session call must not be recognized as metadata")
 	}
-	if IsSessionCredentialRequirementCallData(`{not json`) {
+	if session.IsSessionCredentialRequirementCallData(`{not json`) {
 		t.Fatal("malformed JSON must not be recognized as credential metadata")
 	}
 }
 
 func TestSessionCredentialRequirementMarkerPurgePreservesMarker(t *testing.T) {
 	sqlDB, q := newTestDB(t)
-	svc := NewService(q, sqlDB).(*service)
+	svc := session.NewService(q, sqlDB)
 	ctx := t.Context()
 	sess, err := svc.Create(ctx, "credential-marker-purge")
 	require.NoError(t, err)
@@ -86,7 +88,7 @@ func TestSessionCredentialRequirementMarkerPurgePreservesMarker(t *testing.T) {
 	purged, err := svc.PurgeQueuedWorkForSession(ctx, sess.ID)
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, purged.RunQueue)
-	row, err := svc.GetRunQueueEntry(ctx, SessionCredentialMarkerRowID(sess.ID))
+	row, err := svc.GetRunQueueEntry(ctx, session.SessionCredentialMarkerRowID(sess.ID))
 	require.NoError(t, err)
 	require.NotNil(t, row)
 	has, err := svc.HasSessionCredentialRequirement(ctx, sess.ID)
@@ -98,7 +100,7 @@ func TestCredentialMarkerRejectedByRealPumpExecutionStep(t *testing.T) {
 	for _, state := range []string{"pending", "leased"} {
 		t.Run(state, func(t *testing.T) {
 			sqlDB, q := newTestDB(t)
-			svc := NewService(q, sqlDB).(*service)
+			svc := session.NewService(q, sqlDB)
 			ctx := t.Context()
 			sess, err := svc.Create(ctx, "forged-marker-"+state)
 			require.NoError(t, err)
@@ -146,7 +148,7 @@ func TestCredentialMarkerRejectedByRealPumpExecutionStep(t *testing.T) {
 
 type credentialMarkerCountingCoordinator struct{ calls *atomic.Int32 }
 
-func (c credentialMarkerCountingCoordinator) Run(context.Context, SessionAgentCallData) (*any, error) {
+func (c credentialMarkerCountingCoordinator) Run(context.Context, session.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
 	return nil, nil
 }
@@ -154,12 +156,12 @@ func (c credentialMarkerCountingCoordinator) Run(context.Context, SessionAgentCa
 func TestForkSessionTx_PropagatesCredentialRequirementMarker(t *testing.T) {
 	t.Run("source marker", func(t *testing.T) {
 		sqlDB, q := newTestDB(t)
-		svc := NewService(q, sqlDB).(*service)
+		svc := session.NewService(q, sqlDB)
 		ctx := t.Context()
 		src, err := svc.Create(ctx, "credential-marker-fork")
 		require.NoError(t, err)
 		require.NoError(t, svc.StoreSessionCredentialRequirement(ctx, src.ID))
-		fork, _, err := svc.ForkSessionTx(ctx, src.ID, ForkOptions{NewID: "fork-with-marker"})
+		fork, _, err := svc.ForkSessionTx(ctx, src.ID, session.ForkOptions{NewID: "fork-with-marker"})
 		require.NoError(t, err)
 		has, err := svc.HasSessionCredentialRequirement(ctx, fork.ID)
 		require.NoError(t, err)
@@ -168,19 +170,19 @@ func TestForkSessionTx_PropagatesCredentialRequirementMarker(t *testing.T) {
 
 	t.Run("marked ancestor", func(t *testing.T) {
 		sqlDB, q := newTestDB(t)
-		svc := NewService(q, sqlDB).(*service)
+		svc := session.NewService(q, sqlDB)
 		ctx := t.Context()
 		root, err := svc.Create(ctx, "credential-root")
 		require.NoError(t, err)
-		child, _, err := svc.ForkSessionTx(ctx, root.ID, ForkOptions{NewID: "credential-child", ParentID: root.ID})
+		child, _, err := svc.ForkSessionTx(ctx, root.ID, session.ForkOptions{NewID: "credential-child", ParentID: root.ID})
 		require.NoError(t, err)
-		grandchild, _, err := svc.ForkSessionTx(ctx, child.ID, ForkOptions{NewID: "credential-grandchild", ParentID: child.ID})
+		grandchild, _, err := svc.ForkSessionTx(ctx, child.ID, session.ForkOptions{NewID: "credential-grandchild", ParentID: child.ID})
 		require.NoError(t, err)
 		// The lineage is deliberately unmarked when both descendants are created.
 		require.NoError(t, svc.StoreSessionCredentialRequirement(ctx, root.ID))
 		for _, sourceID := range []string{root.ID, child.ID, grandchild.ID} {
 			forkID := "credential-descendant-fork-" + sourceID
-			fork, _, err := svc.ForkSessionTx(ctx, sourceID, ForkOptions{NewID: forkID})
+			fork, _, err := svc.ForkSessionTx(ctx, sourceID, session.ForkOptions{NewID: forkID})
 			require.NoError(t, err)
 			has, err := svc.HasSessionCredentialRequirement(ctx, fork.ID)
 			require.NoError(t, err)
@@ -190,13 +192,13 @@ func TestForkSessionTx_PropagatesCredentialRequirementMarker(t *testing.T) {
 
 	t.Run("unmarked lineage", func(t *testing.T) {
 		sqlDB, q := newTestDB(t)
-		svc := NewService(q, sqlDB).(*service)
+		svc := session.NewService(q, sqlDB)
 		ctx := t.Context()
 		root, err := svc.Create(ctx, "clear-root")
 		require.NoError(t, err)
-		child, _, err := svc.ForkSessionTx(ctx, root.ID, ForkOptions{NewID: "clear-child", ParentID: root.ID})
+		child, _, err := svc.ForkSessionTx(ctx, root.ID, session.ForkOptions{NewID: "clear-child", ParentID: root.ID})
 		require.NoError(t, err)
-		fork, _, err := svc.ForkSessionTx(ctx, child.ID, ForkOptions{NewID: "clear-fork"})
+		fork, _, err := svc.ForkSessionTx(ctx, child.ID, session.ForkOptions{NewID: "clear-fork"})
 		require.NoError(t, err)
 		has, err := svc.HasSessionCredentialRequirement(ctx, fork.ID)
 		require.NoError(t, err)
@@ -205,13 +207,13 @@ func TestForkSessionTx_PropagatesCredentialRequirementMarker(t *testing.T) {
 
 	t.Run("marker read error fails closed", func(t *testing.T) {
 		sqlDB, q := newTestDB(t)
-		svc := NewService(q, sqlDB).(*service)
+		svc := session.NewService(q, sqlDB)
 		ctx := t.Context()
 		src, err := svc.Create(ctx, "marker-read-error")
 		require.NoError(t, err)
 		_, err = sqlDB.ExecContext(ctx, `DROP TABLE session_run_queue`)
 		require.NoError(t, err)
-		_, _, err = svc.ForkSessionTx(ctx, src.ID, ForkOptions{NewID: "marker-read-error-fork"})
+		_, _, err = svc.ForkSessionTx(ctx, src.ID, session.ForkOptions{NewID: "marker-read-error-fork"})
 		require.Error(t, err)
 		_, getErr := svc.Get(ctx, "marker-read-error-fork")
 		require.Error(t, getErr, "transaction must roll back the incomplete fork")
@@ -219,13 +221,13 @@ func TestForkSessionTx_PropagatesCredentialRequirementMarker(t *testing.T) {
 
 	t.Run("missing parent fails closed", func(t *testing.T) {
 		sqlDB, q := newTestDB(t)
-		svc := NewService(q, sqlDB).(*service)
+		svc := session.NewService(q, sqlDB)
 		ctx := t.Context()
 		src, err := svc.Create(ctx, "orphan")
 		require.NoError(t, err)
 		_, err = sqlDB.ExecContext(ctx, `UPDATE sessions SET parent_session_id = 'missing-parent' WHERE id = ?`, src.ID)
 		require.NoError(t, err)
-		_, _, err = svc.ForkSessionTx(ctx, src.ID, ForkOptions{NewID: "orphan-fork"})
+		_, _, err = svc.ForkSessionTx(ctx, src.ID, session.ForkOptions{NewID: "orphan-fork"})
 		require.Error(t, err)
 		_, getErr := svc.Get(ctx, "orphan-fork")
 		require.Error(t, getErr, "transaction must roll back the incomplete fork")

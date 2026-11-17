@@ -24,6 +24,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -50,7 +51,7 @@ func wsGitRepo(t *testing.T) string {
 	return repo
 }
 
-// wsSessionService is a session.Service fake whose Get answers the FIRST call
+// wsSessionService is a core.Service fake whose Get answers the FIRST call
 // with row/err -- that call is the guard's -- and blocks every later call (the
 // turn preamble's, reached only once the guard is behind the call) until the
 // test releases it. It is run_lock_test.go's blockingGetSessionService pattern,
@@ -60,8 +61,8 @@ func wsGitRepo(t *testing.T) string {
 // loudly rather than silently succeeding; nothing besides Get is reachable
 // before the guard decides.
 type wsSessionService struct {
-	session.Service
-	row session.Session
+	core.Service
+	row core.Session
 	err error
 	// gets counts the calls, so a test can prove the guard read the row
 	// exactly once and nothing after it ran.
@@ -71,7 +72,7 @@ type wsSessionService struct {
 	release2 chan struct{}
 }
 
-func newWsSessionService(row session.Session, err error) *wsSessionService {
+func newWsSessionService(row core.Session, err error) *wsSessionService {
 	return &wsSessionService{
 		row:      row,
 		err:      err,
@@ -80,21 +81,21 @@ func newWsSessionService(row session.Session, err error) *wsSessionService {
 	}
 }
 
-func (w *wsSessionService) Get(context.Context, string) (session.Session, error) {
+func (w *wsSessionService) Get(context.Context, string) (core.Session, error) {
 	w.gets++
 	if w.gets > 1 {
 		// Past the guard: park here until the test decides what happens next,
 		// so it can prove (without polling) that the guard let the call run.
 		close(w.block2)
 		<-w.release2
-		return session.Session{}, errors.New("wsSessionService: released by the test")
+		return core.Session{}, errors.New("wsSessionService: released by the test")
 	}
 	return w.row, w.err
 }
 
 // newWsGuardAgent is the same minimal agent run_lock_test.go builds, plus a
 // session service for the guard to consult.
-func newWsGuardAgent(dataDir string, sessions session.Service) *sessionAgent {
+func newWsGuardAgent(dataDir string, sessions core.Service) *sessionAgent {
 	a := newLockTestSessionAgent(dataDir, false /* isSubAgent */)
 	a.sessions = sessions
 	return a
@@ -127,7 +128,7 @@ func TestRun_ForeignSessionIsRefusedBeforeAnyTurnAndLeavesNoLock(t *testing.T) {
 	// only make this case exercise the lock-busy rejection ("already in use")
 	// instead of the WS-1 refusal it is about.
 
-	svc := newWsSessionService(session.Session{
+	svc := newWsSessionService(core.Session{
 		ID:            wsForeignSession,
 		WorkspaceRoot: wsForeignRoot,
 		GitBranch:     "feature-x",
@@ -175,7 +176,7 @@ func TestRun_ForeignSessionIsRefusedOnEveryRunEntryPoint(t *testing.T) {
 	t.Parallel()
 
 	dataDir := t.TempDir()
-	svc := newWsSessionService(session.Session{
+	svc := newWsSessionService(core.Session{
 		ID:            wsForeignSession,
 		WorkspaceRoot: wsForeignRoot,
 		GitBranch:     "feature-x",
@@ -235,7 +236,7 @@ func TestRun_LinkedProcessRefusesForeignAndLegacyRows(t *testing.T) {
 	sharedFromLinked := false
 
 	t.Run("foreign row is refused", func(t *testing.T) {
-		svc := newWsSessionService(session.Session{
+		svc := newWsSessionService(core.Session{
 			ID:            wsForeignSession,
 			WorkspaceRoot: wsForeignRoot,
 			GitBranch:     "feature-x",
@@ -251,7 +252,7 @@ func TestRun_LinkedProcessRefusesForeignAndLegacyRows(t *testing.T) {
 	t.Run("legacy row is driven by today's git-checkout process", func(t *testing.T) {
 		// No override: home comes from config.WorkspaceHome() == true, so the
 		// legacy row (every pre-WS-1 row's shape) stays drivable.
-		svc := newWsSessionService(session.Session{ID: wsForeignSession}, nil)
+		svc := newWsSessionService(core.Session{ID: wsForeignSession}, nil)
 		a := newWsGuardAgent(dataDir, svc)
 		a.config = store
 
@@ -283,7 +284,7 @@ func TestRun_LinkedProcessRefusesForeignAndLegacyRows(t *testing.T) {
 	})
 
 	t.Run("legacy row is refused by a shared-from-linked process", func(t *testing.T) {
-		svc := newWsSessionService(session.Session{ID: wsForeignSession}, nil)
+		svc := newWsSessionService(core.Session{ID: wsForeignSession}, nil)
 		a := newWsGuardAgent(dataDir, svc)
 		a.config = store
 		a.wsHomeOverride = &sharedFromLinked
@@ -294,7 +295,7 @@ func TestRun_LinkedProcessRefusesForeignAndLegacyRows(t *testing.T) {
 	})
 
 	t.Run("own row is driven", func(t *testing.T) {
-		svc := newWsSessionService(session.Session{
+		svc := newWsSessionService(core.Session{
 			ID:            wsForeignSession,
 			WorkspaceRoot: ownRoot,
 			GitBranch:     "main",
@@ -347,7 +348,7 @@ func TestRun_LegacySessionIsDrivenPastTheGuard(t *testing.T) {
 	t.Parallel()
 
 	dataDir := t.TempDir()
-	svc := newWsSessionService(session.Session{ID: wsForeignSession}, nil)
+	svc := newWsSessionService(core.Session{ID: wsForeignSession}, nil)
 	a := newWsGuardAgent(dataDir, svc)
 
 	runErrCh := make(chan error, 1)
@@ -397,7 +398,7 @@ func TestRun_UnreadableSessionIsNotAWorkspaceRefusal(t *testing.T) {
 	t.Parallel()
 
 	dataDir := t.TempDir()
-	svc := newWsSessionService(session.Session{}, errors.New("sql: no rows in result set"))
+	svc := newWsSessionService(core.Session{}, errors.New("sql: no rows in result set"))
 	a := newWsGuardAgent(dataDir, svc)
 
 	runErrCh := make(chan error, 1)

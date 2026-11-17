@@ -19,6 +19,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -193,7 +194,7 @@ func TestDrainSessionNow_DeclinesToStartOnceStopping(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_, err = pump.DrainSessionNow(ctx, sess.ID)
-	require.ErrorIs(t, err, session.ErrCallQueuedNotExecuted, "a drain arriving after shutdown must report that it did not execute the call")
+	require.ErrorIs(t, err, core.ErrCallQueuedNotExecuted, "a drain arriving after shutdown must report that it did not execute the call")
 	require.Equal(t, int64(0), coord.calls.Load(), "no execution may start once the admission gate is closed")
 
 	// The lease must have been released without an attempt penalty, so the
@@ -210,7 +211,7 @@ type ctxObservingCoordinatorForDrain struct {
 	sawDone chan struct{}
 }
 
-func (c *ctxObservingCoordinatorForDrain) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *ctxObservingCoordinatorForDrain) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
 	select {
 	case c.started <- struct{}{}:

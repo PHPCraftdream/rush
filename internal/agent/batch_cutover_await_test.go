@@ -25,6 +25,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/google/uuid"
@@ -218,7 +219,7 @@ func newCutoverEnvDeps(t *testing.T, limits jobbatch.Limits, wrapExecutor func(j
 func newCutoverCoordinator(t *testing.T, env *cutoverEnv) *coordinator {
 	t.Helper()
 	coord := newBatchRuntimeCoordinator()
-	coord.sessions = session.NewService(db.New(env.conn), env.conn)
+	coord.sessions = core.NewService(db.New(env.conn), env.conn)
 	coord.noticeStore = session.NewSessionNoticeStore(env.conn)
 	return coord
 }

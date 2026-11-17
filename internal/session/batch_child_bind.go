@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"time"
+
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // Typed bind failures. Every one fails closed: the child session must not
@@ -61,9 +63,9 @@ func (s *BatchStore) BatchBindChildSession(ctx context.Context, owner, host, run
 	if token >= batchCommitInt63 {
 		return ErrBatchValueOverflow
 	}
-	release, admission, err := admitFinalizationMutation(ctx, s.writer, owner, child)
+	release, admission, err := session.AdmitFinalizationMutation(ctx, s.writer, owner, child)
 	if release != nil {
-		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
+		defer func() { retErr = session.BatchCommitReleaseError(retErr, release()) }()
 	}
 	if err != nil {
 		return err
@@ -132,7 +134,7 @@ func (s *BatchStore) BatchBindChildSession(ctx context.Context, owner, host, run
 		return ErrBatchBindChildForeign
 	}
 
-	if err := validateBatchFinalizationTx(ctx, tx, []string{owner, child}, admission); err != nil {
+	if err := session.ValidateBatchFinalizationTx(ctx, tx, []string{owner, child}, admission); err != nil {
 		return err
 	}
 	res, err := tx.ExecContext(ctx, `

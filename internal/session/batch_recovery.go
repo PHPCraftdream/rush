@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
@@ -109,7 +111,7 @@ func (s *BatchStore) batchRecoverRoot(ctx context.Context, listed db.BatchNode) 
 		}
 		// A terminal root keeps its outcome and projection sequence unchanged.
 		if batchStateLive(r.State) {
-			err = batchRequireRow(q.AdvanceBatchRootSequence(ctx, db.AdvanceBatchRootSequenceParams{RootID: r.RootID, OwnerSessionID: r.OwnerSessionID, HostID: r.HostID, RunnerID: r.RunnerID, Sequence: sequence, UpdatedAt: now}))
+			err = session.BatchRequireRow(q.AdvanceBatchRootSequence(ctx, db.AdvanceBatchRootSequenceParams{RootID: r.RootID, OwnerSessionID: r.OwnerSessionID, HostID: r.HostID, RunnerID: r.RunnerID, Sequence: sequence, UpdatedAt: now}))
 			if err != nil {
 				return BatchRecoveryOutcome{}, err
 			}

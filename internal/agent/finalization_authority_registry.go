@@ -3,7 +3,7 @@ package agent
 import (
 	"sync"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // FinalizationAuthorityRegistry maps an owner session id to the in-process

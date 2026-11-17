@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -24,8 +26,8 @@ func newHostHoldsSealEnv(t *testing.T) (candidateEnv, string) {
 	require.NoError(t, seedSession(ctx, db.New(conn), "owner"))
 	conn.SetMaxOpenConns(1)
 	messages := message.NewService(db.New(conn))
-	store := NewAgentFinalizationStore(conn)
-	id := AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "logical", Generation: 1}
+	store := session.NewAgentFinalizationStore(conn)
+	id := session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "logical", Generation: 1}
 	require.NoError(t, store.Bind(ctx, id))
 	writer, ok := messages.(message.FinalizationWriter)
 	require.True(t, ok)
@@ -40,7 +42,7 @@ func newHostHoldsSealEnv(t *testing.T) (candidateEnv, string) {
 // TestTrySealHostDriverHoldsRefusalThenSeal wires the production holds
 // Sum (providers + host-driver facts) into a real TrySeal. Leg 1: a
 // genuinely foreign live host drives the owner session, so the seal must
-// refuse with AgentFinalizationSealPhysicalHolds. Leg 2: the same env, the
+// refuse with session.AgentFinalizationSealPhysicalHolds. Leg 2: the same env, the
 // same presented candidate, the foreign host's lock gone (Close releases
 // the OS lock and removes the file) -- the identical reader now observes
 // zero holds and the seal commits.
@@ -85,7 +87,7 @@ func TestTrySealHostDriverHoldsRefusalThenSeal(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, outcome.Sealed)
 	require.False(t, outcome.Accepted)
-	require.Equal(t, AgentFinalizationSealPhysicalHolds, outcome.Reason)
+	require.Equal(t, session.AgentFinalizationSealPhysicalHolds, outcome.Reason)
 
 	// Leg 2: the foreign host closes, its lock file disappears, the same
 	// marker row now reads dead through the same reader, and the seal
@@ -94,7 +96,7 @@ func TestTrySealHostDriverHoldsRefusalThenSeal(t *testing.T) {
 	outcome, err = e.store.TrySeal(t.Context(), e.id, presented, e.sealWriter(t), reader)
 	require.NoError(t, err)
 	require.True(t, outcome.Sealed)
-	require.Equal(t, AgentFinalizationSealNone, outcome.Reason)
+	require.Equal(t, session.AgentFinalizationSealNone, outcome.Reason)
 	require.Equal(t, "accepted", outcome.Record.Phase)
 	require.True(t, outcome.Message.IsFinished())
 }

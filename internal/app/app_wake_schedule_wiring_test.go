@@ -21,6 +21,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -80,7 +81,7 @@ func TestWakeScheduleWorker_WiredByInitCoderAgentAndStoppedOnRelease(t *testing.
 	// observable fire happens within seconds without any Notify hook.
 	var owner, rowID string
 	application := newWakeWiringApp(t, func(q *db.Queries, conn *sql.DB) error {
-		sessions := session.NewService(q, conn)
+		sessions := core.NewService(q, conn)
 		sess, err := sessions.Create(context.Background(), "wake-wiring-owner")
 		if err != nil {
 			return err

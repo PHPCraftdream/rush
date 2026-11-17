@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,7 +38,7 @@ func TestDescendantSessionIDs_ParallelSubAgents_BothVisible(t *testing.T) {
 	ctx := context.Background()
 
 	conn, q := newTestDB(t)
-	s := session.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 
 	parent, err := s.Create(ctx, "parent with two parallel sub-agents")
 	require.NoError(t, err)
@@ -79,7 +79,7 @@ func TestDescendantSessionIDs_DepthCapPreventsCycleHang(t *testing.T) {
 	ctx := context.Background()
 
 	conn, q := newTestDB(t)
-	s := session.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 
 	root, err := s.Create(ctx, "cycle root")
 	require.NoError(t, err)
@@ -148,7 +148,7 @@ func TestPrintNewMessagesSince_EventDriven_NoRepeatOnUnchangedSession(t *testing
 	ctx := context.Background()
 
 	conn, q := newTestDB(t)
-	s := session.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 
 	parent, err := s.Create(ctx, "parent")
@@ -212,7 +212,7 @@ func TestWatchDescendantUnfinishedAssistantWaitsForCompletion(t *testing.T) {
 	ctx := context.Background()
 
 	conn, q := newTestDB(t)
-	s := session.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 	root, err := s.Create(ctx, "root")
 	require.NoError(t, err)

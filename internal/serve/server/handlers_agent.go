@@ -20,6 +20,7 @@ import (
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/google/uuid"
 )
@@ -487,9 +488,9 @@ func handleInitializeProject(ctx context.Context, a *appPkg.App, c *Client, msg 
 	}
 
 	// Create a dedicated initialization session.
-	var sess session.Session
+	var sess core.Session
 	var createErr error
-	if oc, ok := a.Sessions.(session.OriginCreator); ok {
+	if oc, ok := a.Sessions.(core.OriginCreator); ok {
 		sess, createErr = oc.CreateWithOrigin(ctx, "Project Initialization", message.OriginWeb)
 	} else {
 		// Test fakes without the OriginCreator seam keep the legacy path.

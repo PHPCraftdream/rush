@@ -25,6 +25,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/google/uuid"
@@ -128,7 +129,7 @@ func newBatchInventoryEnvWithExecutor(t *testing.T, tool string, executor jobbat
 		Executor: executor,
 		Profile:  profile, Registries: registries,
 		DiskBindings: NewDiskProviderRegistry(),
-		Store:        session.NewBatchStore(conn), Messages: message.NewService(q), Sessions: session.NewService(q, conn),
+		Store:        session.NewBatchStore(conn), Messages: message.NewService(q), Sessions: core.NewService(q, conn),
 		// Round-2 P1-7 item 6: NewRunner fails closed on zero limits.
 		Limits:        jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64},
 		CommitTimeout: time.Second, ControlTimeout: time.Second, RecordRetention: 64,

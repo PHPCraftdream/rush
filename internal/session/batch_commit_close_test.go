@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -44,7 +46,7 @@ func TestBatchCommitNotifyEachPerChildNotices(t *testing.T) {
 			NoticeOrdinal: sql.NullInt64{Int64: 7, Valid: true}, Wake: 0,
 		}},
 	})
-	require.ErrorIs(t, err, ErrBatchProjectionConflict, "duplicate notice selection refused")
+	require.ErrorIs(t, err, session.ErrBatchProjectionConflict, "duplicate notice selection refused")
 	require.Equal(t, "0", commitHookReadNode(t, env.conn, "r.1").NoticeOrdinal,
 		"latched notice not rewritten by the duplicate selection")
 	commitHookFinish(t, ctx, r, a2, jobbatch.Result{State: jobbatch.StateFailed, Code: "boom"})
@@ -206,7 +208,7 @@ func TestBatchCommitConcurrentHooksSerializePerRoot(t *testing.T) {
 			require.Empty(t, winner, "both concurrent sequences won")
 			winner = res.who
 		} else {
-			require.ErrorIs(t, res.err, ErrBatchProjectionConflict)
+			require.ErrorIs(t, res.err, session.ErrBatchProjectionConflict)
 		}
 	}
 	require.NotEmpty(t, winner, "exactly one writer wins")

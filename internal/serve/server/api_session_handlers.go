@@ -11,28 +11,29 @@ import (
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 type APIWriteStore interface {
-	CreateSession(*http.Request, string, message.Origin) (session.Session, error)
-	ForkSession(*http.Request, string, string) (session.Session, error)
+	CreateSession(*http.Request, string, message.Origin) (core.Session, error)
+	ForkSession(*http.Request, string, string) (core.Session, error)
 	DeleteSession(*http.Request, string) error
-	GetSession(*http.Request, string) (session.Session, error)
+	GetSession(*http.Request, string) (core.Session, error)
 	SessionBusy(string) bool
-	OwnsSession(session.Session) bool
+	OwnsSession(core.Session) bool
 }
 
 type apiAppWriteStore struct{ app *appPkg.App }
 
-func (s apiAppWriteStore) CreateSession(r *http.Request, title string, origin message.Origin) (session.Session, error) {
-	if creator, ok := s.app.Sessions.(session.OriginCreator); ok {
+func (s apiAppWriteStore) CreateSession(r *http.Request, title string, origin message.Origin) (core.Session, error) {
+	if creator, ok := s.app.Sessions.(core.OriginCreator); ok {
 		return creator.CreateWithOrigin(r.Context(), title, origin)
 	}
 	return s.app.Sessions.Create(r.Context(), title)
 }
 
-func (s apiAppWriteStore) ForkSession(r *http.Request, id, title string) (session.Session, error) {
+func (s apiAppWriteStore) ForkSession(r *http.Request, id, title string) (core.Session, error) {
 	return s.app.Sessions.ForkSession(r.Context(), id, title)
 }
 
@@ -49,7 +50,7 @@ func (s apiAppWriteStore) DeleteSession(r *http.Request, id string) error {
 	return s.app.Sessions.Delete(r.Context(), id)
 }
 
-func (s apiAppWriteStore) GetSession(r *http.Request, id string) (session.Session, error) {
+func (s apiAppWriteStore) GetSession(r *http.Request, id string) (core.Session, error) {
 	return hideServiceSession(s.app.Sessions.Get(r.Context(), id))
 }
 
@@ -69,7 +70,7 @@ func (s apiAppWriteStore) SessionBusy(id string) bool {
 	return false
 }
 
-func (s apiAppWriteStore) OwnsSession(item session.Session) bool { return appOwnsSession(s.app, item) }
+func (s apiAppWriteStore) OwnsSession(item core.Session) bool { return appOwnsSession(s.app, item) }
 
 func apiSessionWriteRoutes(store APIWriteStore) []APIRoute {
 	// One store per route set (one per serve listener), not per process.

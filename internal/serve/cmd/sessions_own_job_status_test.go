@@ -19,6 +19,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -142,7 +143,7 @@ func TestExplainSessionStatus_DeadPIDLockWithoutJobIsCrashed(t *testing.T) {
 func TestListStatus_OwnJobShapes(t *testing.T) {
 	a, s, _, _, dataDir := newWhyDescendantTestApp(t)
 	ctx := context.Background()
-	mk := func(title string) session.Session {
+	mk := func(title string) core.Session {
 		sess, err := s.Create(ctx, title)
 		require.NoError(t, err)
 		return sess

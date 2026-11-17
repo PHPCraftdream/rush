@@ -5,7 +5,7 @@ import (
 	"io"
 
 	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // runFinalizationHoldGate wraps the real terminal gate for one `rush run`.

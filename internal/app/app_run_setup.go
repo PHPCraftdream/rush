@@ -20,6 +20,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/text/format"
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/charmbracelet/x/term"
 	"github.com/google/uuid"
@@ -611,7 +612,7 @@ type RunEnv struct {
 	// Sessions, Messages, Coord and Perms are closures: tests swap fakes
 	// onto an App after New, and InitCoderAgent's self-heal replaces the
 	// coordinator (p350), so each read must resolve at its original moment.
-	Sessions func() session.Service
+	Sessions func() core.Service
 	Messages func() message.Service
 	Coord    func() agent.Coordinator
 	Perms    func() permission.Service

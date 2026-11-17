@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -73,7 +73,7 @@ func (c callTreeActivity) Age(now time.Time) (time.Duration, bool) {
 // the earlier BFS implementation that issued one Messages.List (full
 // message history + Parts decode) plus one ListSubSessions per node in the
 // tree. The freshest-timestamp aggregation and the "prefer a descendant on
-// a tied timestamp" rule (see session.Service.GetCallTreeActivity) now both
+// a tied timestamp" rule (see core.Service.GetCallTreeActivity) now both
 // happen inside SQLite via MAX()/ORDER BY, so no message content ever
 // crosses into Go just to answer "what's the newest activity". The
 // recursion depth is capped at 511 inside the query itself as a defensive
@@ -202,6 +202,6 @@ func subAgentActivityNote(ctx context.Context, a *app.App, rootID string, baseli
 	}
 	return fmt.Sprintf(
 		"sub-agent active: %s activity %s (session %s)",
-		role, formatDurationShort(age), short(session.HashID(act.DeepestSessionID)),
+		role, formatDurationShort(age), short(core.HashID(act.DeepestSessionID)),
 	)
 }

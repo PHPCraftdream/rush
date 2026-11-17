@@ -3,7 +3,7 @@ package app
 import (
 	"sync"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // appFinalizationGateEntry caches one App's terminal gate behind a sync.Once

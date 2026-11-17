@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -64,7 +66,7 @@ func TestPendingChildQuestions(t *testing.T) {
 	store.SetReadConn(db.New(conn))
 
 	// session_notices.owner is an FK: real session rows first.
-	svc := NewService(db.New(conn), conn)
+	svc := session.NewService(db.New(conn), conn)
 	root1, err := svc.Create(ctx, "awaiting root")
 	require.NoError(t, err)
 	root2, err := svc.Create(ctx, "other root")

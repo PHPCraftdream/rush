@@ -40,6 +40,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -50,7 +51,7 @@ type retryThenSucceedCoordinator struct {
 	failuresLeft atomic.Int32
 }
 
-func (c *retryThenSucceedCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *retryThenSucceedCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
 	if c.failuresLeft.Add(-1) >= 0 {
 		return nil, errors.New("p578: simulated transient retryable failure")
@@ -88,7 +89,7 @@ func TestDrainSessionNow_SameRowRetrySucceedsClearsErr(t *testing.T) {
 	require.Equal(t, session.DrainComplete, result)
 }
 
-// stealOnNackSessions wraps a real session.Service and, the instant
+// stealOnNackSessions wraps a real core.Service and, the instant
 // NackRunQueueEntry is called (returning a row to pending after a local
 // retryable failure), synchronously leases that same row under a DIFFERENT
 // leasedBy -- deterministically simulating a genuinely different process's
@@ -97,7 +98,7 @@ func TestDrainSessionNow_SameRowRetrySucceedsClearsErr(t *testing.T) {
 // timing dependency: the steal happens inline, in the same call that would
 // otherwise return control to DrainSessionNow's loop.
 type stealOnNackSessions struct {
-	session.Service
+	core.Service
 	sessionID string
 	stolen    atomic.Bool
 }
@@ -117,7 +118,7 @@ type failOnceCoordinator struct {
 	calls atomic.Int64
 }
 
-func (c *failOnceCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *failOnceCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
 	return nil, errors.New("p578: simulated transient failure, row stolen by another process right after nack")
 }
@@ -172,7 +173,7 @@ func TestDrainSessionNow_ExternalProcessStealAfterLocalNackReportsUnknown(t *tes
 	require.ErrorContains(t, drainErr, "lost lease ownership", "an UNKNOWN outcome (someone else holds the row) must be reported through the same 'nothing further can be learned' vocabulary this package already uses for that meaning, not a fabricated success")
 }
 
-// stealAndTerminalFailOnNackSessions wraps a real session.Service and, the
+// stealAndTerminalFailOnNackSessions wraps a real core.Service and, the
 // instant NackRunQueueEntry is called, synchronously leases the same row
 // under a DIFFERENT leasedBy and immediately terminal-fails it --
 // deterministically simulating a genuinely different process's pump
@@ -180,7 +181,7 @@ func TestDrainSessionNow_ExternalProcessStealAfterLocalNackReportsUnknown(t *tes
 // RunQueueMaxAttempts (or hitting an AlreadyAttempted failure) and
 // terminal-failing it before this loop's own next attempt.
 type stealAndTerminalFailOnNackSessions struct {
-	session.Service
+	core.Service
 	sessionID      string
 	terminalFailed atomic.Bool
 }
@@ -290,14 +291,14 @@ func TestDrainSessionNow_ExternalProcessAckAfterLocalNackReportsUnconfirmed(t *t
 	require.ErrorIs(t, drainErr, session.ErrRowOutcomeUnconfirmed)
 }
 
-// stealAndAckOnNackSessions wraps a real session.Service and, the instant
+// stealAndAckOnNackSessions wraps a real core.Service and, the instant
 // NackRunQueueEntry is called, synchronously leases the same row under a
 // DIFFERENT leasedBy and immediately Acks it -- deterministically
 // simulating a genuinely different process's pump instance not merely
 // taking the row over, but running it to a genuine committed success
 // before this loop's own next attempt.
 type stealAndAckOnNackSessions struct {
-	session.Service
+	core.Service
 	sessionID string
 	acked     atomic.Bool
 }

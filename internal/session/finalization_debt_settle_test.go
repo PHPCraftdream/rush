@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -14,7 +16,7 @@ import (
 // finalizationDebtScopeReader builds the composite production scope reader
 // with the debt store wired as the reaction-debt source and zero-value stubs
 // for the other three facts sources (they count 0).
-func finalizationDebtScopeReader(owner string, debt *FinalizationDebtStore) AgentFinalizationScopeReader {
+func finalizationDebtScopeReader(owner string, debt *FinalizationDebtStore) session.AgentFinalizationScopeReader {
 	return NewAgentFinalizationScopeReader(owner,
 		&finalizationSeamScopeStub{}, &finalizationSeamScopeStub{},
 		&finalizationSeamScopeStub{}, debt)
@@ -44,8 +46,8 @@ func finalizationDebtSealEnv(t *testing.T) candidateEnv {
 	// (newReservedScopeEnv's ordering, finalization_seal_test.go).
 	require.NoError(t, NewSessionNoticeStore(conn).InsertSessionNotice(ctx, "owner", NoticeKindWakeOnly, "finalization-debt", true, ""))
 	messages := message.NewService(db.New(conn))
-	store := NewAgentFinalizationStore(conn)
-	id := AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "logical", Generation: 1}
+	store := session.NewAgentFinalizationStore(conn)
+	id := session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "logical", Generation: 1}
 	require.NoError(t, store.Bind(ctx, id))
 	writer, ok := messages.(message.FinalizationWriter)
 	require.True(t, ok)
@@ -58,21 +60,21 @@ func finalizationDebtSealEnv(t *testing.T) candidateEnv {
 // more wake debt while the seal is deciding, through the seal's own
 // transaction; it records the debt counter before and after the injection.
 type finalizationDebtLateReader struct {
-	inner     AgentFinalizationScopeReader
+	inner     session.AgentFinalizationScopeReader
 	owner     string
 	firstRead int
 	lateRead  int
 }
 
-var _ AgentFinalizationScopeReader = (*finalizationDebtLateReader)(nil)
+var _ session.AgentFinalizationScopeReader = (*finalizationDebtLateReader)(nil)
 
 // FinalizationSealScopeFacts reads the wrapped facts, injects one pending
 // wake debt row inside the passed transaction, and re-reads the facts so the
 // seal decides on the late row too.
-func (r *finalizationDebtLateReader) FinalizationSealScopeFacts(ctx context.Context, tx *sql.Tx) (AgentFinalizationScopeFacts, error) {
+func (r *finalizationDebtLateReader) FinalizationSealScopeFacts(ctx context.Context, tx *sql.Tx) (session.AgentFinalizationScopeFacts, error) {
 	facts, err := r.inner.FinalizationSealScopeFacts(ctx, tx)
 	if err != nil {
-		return AgentFinalizationScopeFacts{}, err
+		return session.AgentFinalizationScopeFacts{}, err
 	}
 	r.firstRead = facts.ReactionDebt
 	now := time.Now().Unix()
@@ -80,11 +82,11 @@ func (r *finalizationDebtLateReader) FinalizationSealScopeFacts(ctx context.Cont
 		(owner, kind, text, wake, delivery, created_at, updated_at)
 		VALUES (?, ?, ?, 1, 'pending', ?, ?)`,
 		r.owner, NoticeKindWakeOnly, "late-debt", now, now); err != nil {
-		return AgentFinalizationScopeFacts{}, err
+		return session.AgentFinalizationScopeFacts{}, err
 	}
 	late, err := r.inner.FinalizationSealScopeFacts(ctx, tx)
 	if err != nil {
-		return AgentFinalizationScopeFacts{}, err
+		return session.AgentFinalizationScopeFacts{}, err
 	}
 	r.lateRead = late.ReactionDebt
 	return late, nil
@@ -165,7 +167,7 @@ func TestSettleFinalizationDebtsConvergesAfterPartialApplication(t *testing.T) {
 	require.Equal(t, 0, settled, "the settle converges instead of recounting")
 }
 
-// Revert-check: removing the S1 existence check in validateBatchFinalizationTx
+// Revert-check: removing the S1 existence check in session.ValidateBatchFinalizationTx
 // lets unadmitted producers mutate scope mid-seal, and this fence proof fails.
 func TestFinalizationDebtInsertIsFencedForBoundOwner(t *testing.T) {
 	e := finalizationDebtSealEnv(t)
@@ -174,7 +176,7 @@ func TestFinalizationDebtInsertIsFencedForBoundOwner(t *testing.T) {
 	require.Equal(t, 1, finalizationDebtCountTx(t, e.conn, t.Context(), reader, "owner"))
 	// After the bind, a plain-context producer is refused.
 	err := NewSessionNoticeStore(e.conn).InsertSessionNotice(t.Context(), "owner", NoticeKindWakeOnly, "late", true, "")
-	require.ErrorIs(t, err, ErrAgentFinalizationChanged)
+	require.ErrorIs(t, err, session.ErrAgentFinalizationChanged)
 }
 
 // Revert-check: a reader reading outside the seal's transaction or a settle
@@ -189,7 +191,7 @@ func TestFinalizationSealRefusesReactionDebtUntilSettled(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, outcome.Sealed, "an open reaction debt must refuse the seal")
 	require.False(t, outcome.Accepted)
-	require.Equal(t, AgentFinalizationSealReactionDebt, outcome.Reason)
+	require.Equal(t, session.AgentFinalizationSealReactionDebt, outcome.Reason)
 	settled, err := store.SettleFinalizationDebts(t.Context(), e.id.SessionID)
 	require.NoError(t, err)
 	require.Equal(t, 1, settled)
@@ -214,7 +216,7 @@ func TestFinalizationSealSeesDebtProducedWhileSealing(t *testing.T) {
 	outcome, err := e.store.TrySeal(t.Context(), e.id, presented, e.sealWriter(t), late)
 	require.NoError(t, err)
 	require.False(t, outcome.Sealed, "a debt produced while sealing must refuse the seal")
-	require.Equal(t, AgentFinalizationSealReactionDebt, outcome.Reason)
+	require.Equal(t, session.AgentFinalizationSealReactionDebt, outcome.Reason)
 	require.Equal(t, 1, late.firstRead, "one settled-stage debt before the injection")
 	require.Equal(t, 2, late.lateRead, "the reader must observe the row it injected")
 	// The injected row rolled back with the refused seal: exactly the

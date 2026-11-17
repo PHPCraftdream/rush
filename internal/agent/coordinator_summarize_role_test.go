@@ -19,6 +19,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -41,7 +42,7 @@ func TestStandaloneSummarizer_DefaultWorkerOverrideAndPersistence(t *testing.T) 
 			probe.installFailureDiagnostics(t, ctx)
 			probe.setStage("worker-summary")
 			if tc.override {
-				require.NoError(t, sessions.UpdateWorkerReviewerModels(ctx, sessionID, &session.ModelSlotUpdate{Provider: "probe", Model: "session-worker"}, nil))
+				require.NoError(t, sessions.UpdateWorkerReviewerModels(ctx, sessionID, &core.ModelSlotUpdate{Provider: "probe", Model: "session-worker"}, nil))
 			}
 
 			summarizer := NewStandaloneSummarizer(standaloneSummaryConfig(server.URL, true, dataDir), sessions, messages)
@@ -275,7 +276,7 @@ func (p *standaloneSummaryProbe) recordState(busy, queued, hasSummary bool) {
 	p.summaryState.Store(fmt.Sprintf("summary_id_empty=%t", !hasSummary))
 }
 
-func (p *standaloneSummaryProbe) recordSummaryState(ctx context.Context, sessions session.Service, messages message.Service, sessionID, stage string, success bool) {
+func (p *standaloneSummaryProbe) recordSummaryState(ctx context.Context, sessions core.Service, messages message.Service, sessionID, stage string, success bool) {
 	_, hasDeadline := ctx.Deadline()
 	p.ctxHasDeadline.Store(hasDeadline)
 	p.ctxCanceled.Store(ctx.Err() != nil)
@@ -376,7 +377,7 @@ func (p *standaloneSummaryProbe) requireNoRequest(t *testing.T) {
 	require.Empty(t, p.modelClass())
 }
 
-func newStandaloneSummaryFixture(t *testing.T) (context.Context, session.Service, message.Service, string, []message.Message, string) {
+func newStandaloneSummaryFixture(t *testing.T) (context.Context, core.Service, message.Service, string, []message.Message, string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	t.Cleanup(cancel)
@@ -387,7 +388,7 @@ func newStandaloneSummaryFixture(t *testing.T) (context.Context, session.Service
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Release(dataDir) })
 	q := db.New(conn)
-	sessions, messages := session.NewService(q, conn), message.NewService(q)
+	sessions, messages := core.NewService(q, conn), message.NewService(q)
 	sess, err := sessions.CreateWithID(ctx, "role-session", "role test")
 	require.NoError(t, err)
 	seeded := standaloneSeedHistory(t, ctx, messages, sess.ID)
@@ -415,7 +416,7 @@ func standaloneSeedHistory(t *testing.T, ctx context.Context, messages message.S
 	return seeded
 }
 
-func standaloneRequireHistory(t *testing.T, ctx context.Context, sessions session.Service, messages message.Service, sessionID string, seeded []message.Message) {
+func standaloneRequireHistory(t *testing.T, ctx context.Context, sessions core.Service, messages message.Service, sessionID string, seeded []message.Message) {
 	t.Helper()
 	sess, err := sessions.Get(ctx, sessionID)
 	require.NoError(t, err)

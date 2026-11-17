@@ -3,6 +3,8 @@ package session
 import (
 	"testing"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -183,7 +185,7 @@ func TestFinalizationDescendantsReaderReadsInsideTransaction(t *testing.T) {
 // zero stubs from the test kit.
 type compositeScopeFixture struct {
 	env    candidateEnv
-	reader AgentFinalizationScopeReader
+	reader session.AgentFinalizationScopeReader
 }
 
 // newCompositeScopeFixture binds the reader machinery onto a seam env.
@@ -197,7 +199,7 @@ func newCompositeScopeFixture(t *testing.T, env *finalizationSeamEnv) compositeS
 	candidate := candidateEnv{
 		conn: env.conn, store: env.store, messages: messages,
 		writer: writer, reader: finishReader,
-		id: AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "logical", Generation: 1},
+		id: session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "logical", Generation: 1},
 	}
 	scope := NewAgentFinalizationScopeReader(
 		candidate.id.SessionID,
@@ -227,7 +229,7 @@ func TestTrySealCompositeScopeReaderRefusesLiveDescendant(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, outcome.Sealed)
 	require.False(t, outcome.Accepted)
-	require.Equal(t, AgentFinalizationSealDescendantsActive, outcome.Reason)
+	require.Equal(t, session.AgentFinalizationSealDescendantsActive, outcome.Reason)
 	require.Equal(t, before, sealStateDump(t, busy.conn), "the refusal must not mutate durable state")
 
 	quiet := newFinalizationSeamEnv(t)

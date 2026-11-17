@@ -28,6 +28,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -132,7 +133,7 @@ func TestReleaseGate_7_ShutdownWithNonCooperativeAgent(t *testing.T) {
 	conn, err := db.Connect(context.Background(), dataDir)
 	require.NoError(t, err)
 	q := db.New(conn)
-	sessions := session.NewService(q, conn)
+	sessions := core.NewService(q, conn)
 	messages := message.NewService(q)
 
 	// Create SessionAgent directly (bypasses coordinator which can't inject custom tools)
@@ -413,7 +414,7 @@ func (a *sessionAgentCoordinatorAdapter) ResetAutoResumeCounter(sessionID string
 }
 
 // RebuildSessionAgentCall - minimal implementation for test compatibility (not used by App.Shutdown())
-func (a *sessionAgentCoordinatorAdapter) RebuildSessionAgentCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (agent.SessionAgentCall, error) {
+func (a *sessionAgentCoordinatorAdapter) RebuildSessionAgentCall(ctx context.Context, rowID string, data core.SessionAgentCallData) (agent.SessionAgentCall, error) {
 	// For this test, just return an empty call - not used by App.Shutdown()
 	return agent.SessionAgentCall{}, fmt.Errorf("RebuildSessionAgentCall not implemented in test adapter")
 }

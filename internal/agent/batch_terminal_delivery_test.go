@@ -10,6 +10,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -93,7 +94,7 @@ func TestBatchDoneSourceTerminalWithoutEnvelopeIsHonestError(t *testing.T) {
 
 // Production stores the wrapper {state, code, summary, details}
 // (batch_commit.go:304-317 shape) and the store decodes
-// session.BatchDeliveryEnvelope first, then Details as the executor
+// core.BatchDeliveryEnvelope first, then Details as the executor
 // ToolResponse — the old fixture stored a bare ToolResponse and proved
 // nothing. An accepted-execution envelope is returned unchanged: content,
 // metadata, StopTurn and IsError ride through untouched.
@@ -109,7 +110,7 @@ func TestBatchDoneSourceAcceptedEnvelopeUnchanged(t *testing.T) {
 	want.StopTurn = true
 	raw0, err := json.Marshal(want)
 	require.NoError(t, err)
-	raw, err := json.Marshal(session.BatchDeliveryEnvelope{
+	raw, err := json.Marshal(core.BatchDeliveryEnvelope{
 		State: "completed", Code: "ok", Summary: "done", Details: raw0,
 	})
 	require.NoError(t, err)
