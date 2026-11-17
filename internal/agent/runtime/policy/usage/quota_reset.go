@@ -1,4 +1,4 @@
-package agent
+package usage
 
 import (
 	"errors"
@@ -24,6 +24,15 @@ import (
 // so `rush run`'s quota-exceeded turn failure can reuse the exact same
 // parsing `rush ping` already relied on, instead of reimplementing it.
 func QuotaLimitResetTime(err error, now time.Time) (reset time.Time, ok bool) {
+	return quotaLimitResetTimeWithZone(err, now, func() *time.Location { return time.Local })
+}
+
+// QuotaLimitResetTimeWithZone extracts reset times using a lazy display-zone provider.
+func QuotaLimitResetTimeWithZone(err error, now time.Time, displayZone func() *time.Location) (reset time.Time, ok bool) {
+	return quotaLimitResetTimeWithZone(err, now, displayZone)
+}
+
+func quotaLimitResetTimeWithZone(err error, now time.Time, displayZone func() *time.Location) (reset time.Time, ok bool) {
 	defer func() {
 		if !ok && err != nil {
 			reset, ok = parseCLIResetText(err.Error(), now)
@@ -182,9 +191,21 @@ func zaiResetStamp(text string) (start, end int, t time.Time, qualified, ok bool
 	return start, end, pt, false, true
 }
 
+func ParseZAIResetHint(text string) (time.Time, bool) { return parseZAIResetHint(text) }
+
 func parseZAIResetHint(text string) (time.Time, bool) {
-	_, _, t, _, ok := zaiResetStamp(text)
-	return t, ok
+	return parseZAIResetHintWithZone(text, func() *time.Location { return time.Local })
+}
+
+func parseZAIResetHintWithZone(text string, displayZone func() *time.Location) (time.Time, bool) {
+	start, end, t, qualified, ok := zaiResetStamp(text)
+	if !ok || qualified {
+		return t, ok
+	}
+	localized := t.In(displayZone())
+	_ = start
+	_ = end
+	return localized, true
 }
 
 // LocalizeResetHint rewrites a provider's zone-less "limit will reset at
@@ -193,11 +214,16 @@ func parseZAIResetHint(text string) (time.Time, bool) {
 // without a hint, or whose stamp already carries an offset, is returned
 // unchanged, so applying it twice is a no-op.
 func LocalizeResetHint(text string, now time.Time) string {
+	return LocalizeResetHintWithZone(text, now, func() *time.Location { return time.Local })
+}
+
+// LocalizeResetHintWithZone localizes reset hints using a lazily read zone provider.
+func LocalizeResetHintWithZone(text string, now time.Time, displayZone func() *time.Location) string {
 	start, end, t, qualified, ok := zaiResetStamp(text)
 	if !ok || qualified {
 		return text
 	}
-	local := t.In(resetDisplayZone())
+	local := t.In(displayZone())
 	out := local.Format(localResetLayout)
 	if d := local.Sub(now); d > 0 {
 		out += " (in " + FormatResetDuration(d) + ")"
@@ -218,11 +244,16 @@ func (e *localizedResetError) Unwrap() error { return e.err }
 // LocalizeResetError returns err whose text shows the reset hint in local
 // time (see LocalizeResetHint); err itself when there is nothing to rewrite.
 func LocalizeResetError(err error) error {
+	return LocalizeResetErrorWithZone(err, func() *time.Location { return time.Local })
+}
+
+// LocalizeResetErrorWithZone carries err while lazily reading the display zone.
+func LocalizeResetErrorWithZone(err error, displayZone func() *time.Location) error {
 	if err == nil {
 		return nil
 	}
 	text := err.Error()
-	if loc := LocalizeResetHint(text, time.Now()); loc != text {
+	if loc := LocalizeResetHintWithZone(text, time.Now(), displayZone); loc != text {
 		return &localizedResetError{err: err, text: loc}
 	}
 	return err
@@ -261,6 +292,11 @@ func FormatResetDuration(d time.Duration) string {
 // to tell the operator when a quota wall reopens (turn finish details,
 // stderr) reuses this one function so the two never drift.
 func QuotaLimitGuidance(err error) (guidance string, ok bool) {
+	return QuotaLimitGuidanceWithZone(err, func() *time.Location { return time.Local })
+}
+
+// QuotaLimitGuidanceWithZone computes guidance using a lazily read zone provider.
+func QuotaLimitGuidanceWithZone(err error, displayZone func() *time.Location) (guidance string, ok bool) {
 	var pe *fantasy.ProviderError
 	if !errors.As(err, &pe) || !isQuotaLimit(pe) {
 		return "", false
@@ -269,7 +305,7 @@ func QuotaLimitGuidance(err error) (guidance string, ok bool) {
 	if !found {
 		return "", false
 	}
-	local := resetAt.In(resetDisplayZone())
+	local := resetAt.In(displayZone())
 	line := fmt.Sprintf(
 		"Limit resets: %s (local time, RFC3339: %s)",
 		local.Format("2006-01-02 15:04:05 -07:00"),
@@ -280,7 +316,3 @@ func QuotaLimitGuidance(err error) (guidance string, ok bool) {
 	}
 	return line, true
 }
-
-// resetDisplayZone is the zone reset times are shown in; tests swap it
-// instead of time.Local, which every time.Now call reads.
-var resetDisplayZone = func() *time.Location { return time.Local }

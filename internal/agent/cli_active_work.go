@@ -3,15 +3,15 @@ package agent
 import (
 	"context"
 	"sort"
-	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // IsHardQuotaLimit identifies a provider's hard usage wall, not a retryable 429.
 func IsHardQuotaLimit(err error) bool {
-	return classifyHardProviderLimit(err, "", time.Now()) == providerLimitHard
+	return usage.IsHardQuotaLimit(err)
 }
 
 // CLIActiveWorkSource reads real work without pulling notices or admitting turns.

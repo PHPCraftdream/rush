@@ -12,6 +12,7 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
@@ -115,68 +116,8 @@ func (c *coordinator) checkLivePeakHours(providerID string) error {
 	return checkPeakHours(pc)
 }
 
-// checkPeakHours refuses the request if providerCfg is currently inside its
-// configured peak_hours window while its peak-hours pause (paused_until) is
-// NOT active — the pause suppresses the refusal (Blocked already means
-// InPeak && !Paused). Returns nil (allow) otherwise. The returned error
-// wraps errProviderPeakHours so callers and classifyProviderError can
-// identify it via errors.Is; it is non-retried/terminal — only the wall
-// clock clears it, which the backoff loop cannot accelerate.
 func checkPeakHours(providerCfg config.ProviderConfig) error {
-	ph := providerCfg.PeakHours
-	if ph == nil || ph.IsOff() {
-		return nil
-	}
-	now := time.Now()
-	st := ph.Status(now)
-	if !st.Blocked {
-		return nil
-	}
-	e := &PeakHoursError{
-		ProviderID: providerCfg.ID,
-		Message:    ph.EffectiveMessage(),
-		Timezone:   st.Timezone,
-	}
-	// The moment the block clears (the window end); zero when unknown.
-	e.ReopensAt = st.ReopensAt
-	// Start/End describe the window when the refusal is window-driven.
-	// Legacy form: the configured strings and today's window end. Weekly
-	// form: the band containing now, formatted in the policy timezone.
-	switch {
-	case ph.Legacy != nil:
-		e.Start, e.End = ph.Legacy.Start, ph.Legacy.End
-		if st.InPeak {
-			e.ReopensAt = ph.Legacy.EndTimeToday(now)
-		}
-	case st.InPeak && !st.BandStart.IsZero():
-		loc := time.Local
-		if tz, err := config.ResolvePeakTimezone(st.Timezone); err == nil && tz != nil {
-			loc = tz
-		}
-		e.Start = st.BandStart.In(loc).Format("15:04")
-		if !st.ReopensAt.IsZero() {
-			e.End = st.ReopensAt.In(loc).Format("15:04")
-		}
-	}
-	// The in-window warn names the window; available_again/in are omitted
-	// when ReopensAt is zero (blocked around the clock — no reopen known).
-	msg := "Refusing request: provider is inside its peak-hours window"
-	args := []any{
-		"provider", providerCfg.ID,
-		"window_start", e.Start,
-		"window_end", e.End,
-	}
-	if !e.ReopensAt.IsZero() {
-		args = append(args,
-			"available_again", e.ReopensAt.Format("15:04"),
-			"in", time.Until(e.ReopensAt).Round(time.Minute).String(),
-		)
-	}
-	if st.Timezone != "" {
-		args = append(args, "timezone", st.Timezone)
-	}
-	slog.Warn(msg, args...)
-	return e
+	return usage.CheckPeakHours(providerCfg)
 }
 
 // runWithUnauthorizedRetry executes fn. If fn returns a 401 error, it

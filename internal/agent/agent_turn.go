@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
 
 	"charm.land/fantasy"
 
@@ -130,7 +131,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 
 	slog.Info("SessionAgent.Run: starting", "sessionID", call.SessionID, "model", smartModel.ModelCfg.Model, "promptLen", len(systemPrompt))
 
-	systemPrompt = withTurnMCPInstructions(systemPrompt, call.RecoveryContinuation, a.config, maps.All(mcp.GetStates()))
+	systemPrompt = promptcache.WithTurnMCPInstructions(systemPrompt, call.RecoveryContinuation, a.config, maps.All(mcp.GetStates()))
 	// Add Anthropic caching to the last tool. Via a per-turn wrapper, NOT
 	// SetProviderOptions on the shared tool object: a.tools' ELEMENTS are one
 	// set of pointers shared by every concurrent turn on this agent, and two

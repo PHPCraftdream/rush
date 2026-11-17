@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"strings"
 	"time"
-
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
@@ -203,7 +203,7 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	}
 
 	if slog.Default().Enabled(callContext, slog.LevelDebug) {
-		ts.cacheDiagnostic = preparedCacheDiagnostic(prepared.Messages, prepared.Tools)
+		ts.cacheDiagnostic = promptcache.PreparedCacheDiagnostic(prepared.Messages, prepared.Tools)
 	}
 	ts.cachePreparedAt = time.Now()
 	ts.cachePrepareDuration = ts.cachePreparedAt.Sub(prepareStarted)

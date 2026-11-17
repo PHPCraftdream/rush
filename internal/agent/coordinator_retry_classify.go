@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -110,7 +111,7 @@ func classifyProviderError(err error) retryClass {
 			// truly bad key vs. losing a long agent run on a momentary block.
 			return classTransient
 		case http.StatusTooManyRequests:
-			if isQuotaLimit(providerErr) {
+			if usage.IsQuotaLimit(providerErr) {
 				return classTerminal // multi-hour usage wall — operator accepts a fast fail
 			}
 			return classRateLimit // momentary overload — dedicated wait budget
@@ -119,7 +120,7 @@ func classifyProviderError(err error) retryClass {
 		}
 		if providerErr.StatusCode >= 500 {
 			// A billing wall some providers (MiniMax 1008) serve as a 5xx never clears.
-			if classifyHardProviderLimit(err, "", time.Now()) == providerLimitHard {
+			if usage.ClassifyHardProviderLimit(err, "", time.Now(), resetDisplayZone) == usage.ProviderLimitHard {
 				return classTerminal
 			}
 			return classTransient
@@ -187,7 +188,7 @@ func turnAttemptRefused(err error) bool {
 // the order of hours) rather than a momentary overload. The two share
 // status 429, so we discriminate on the provider's message text.
 func isQuotaLimit(providerErr *fantasy.ProviderError) bool {
-	return classifyHardProviderLimit(providerErr, "", time.Now()) == providerLimitHard
+	return usage.IsQuotaLimit(providerErr)
 }
 
 // turnMadeProgress reports whether the assistant message carries any real

@@ -1,4 +1,4 @@
-package agent
+package usage
 
 import (
 	"encoding/json"
@@ -14,10 +14,17 @@ import (
 
 type providerLimitClass = limitwords.Class
 
+// ProviderLimitClass is the classification returned by provider-limit policy.
+type ProviderLimitClass = providerLimitClass
+
 const (
 	providerLimitUnknown   = limitwords.Unknown
 	providerLimitTransient = limitwords.Transient
 	providerLimitHard      = limitwords.Hard
+
+	ProviderLimitUnknown   = providerLimitUnknown
+	ProviderLimitTransient = providerLimitTransient
+	ProviderLimitHard      = providerLimitHard
 )
 
 func limitErrorObject(body []byte) map[string]any { return limitwords.ErrorObject(string(body)) }
@@ -48,6 +55,10 @@ func limitProvider(pe *fantasy.ProviderError, hint string, obj map[string]any) s
 }
 
 func structuredLimitReset(pe *fantasy.ProviderError, now time.Time) (time.Time, bool) {
+	return structuredLimitResetWithZone(pe, now, func() *time.Location { return time.Local })
+}
+
+func structuredLimitResetWithZone(pe *fantasy.ProviderError, now time.Time, _ func() *time.Location) (time.Time, bool) {
 	obj := limitErrorObject(pe.ResponseBody)
 	if seconds, err := strconv.ParseFloat(limitField(obj, "resets_in_seconds"), 64); err == nil && seconds >= 0 {
 		return now.Add(time.Duration(seconds * float64(time.Second))), true
@@ -59,6 +70,10 @@ func structuredLimitReset(pe *fantasy.ProviderError, now time.Time) (time.Time, 
 }
 
 func hasLongLimitReset(pe *fantasy.ProviderError, now time.Time) bool {
+	return hasLongLimitResetWithZone(pe, now, func() *time.Location { return time.Local })
+}
+
+func hasLongLimitResetWithZone(pe *fantasy.ProviderError, now time.Time, displayZone func() *time.Location) bool {
 	for key, value := range pe.ResponseHeaders {
 		name := strings.ToLower(key)
 		if name == "retry-after" || name == "retry-after-ms" {
@@ -74,11 +89,11 @@ func hasLongLimitReset(pe *fantasy.ProviderError, now time.Time) bool {
 		copyError.ResponseHeaders = map[string]string{key: value}
 		copyError.Message = ""
 		copyError.ResponseBody = nil
-		if reset, ok := QuotaLimitResetTime(&copyError, now); ok && reset.Sub(now) >= 30*time.Minute {
+		if reset, ok := QuotaLimitResetTimeWithZone(&copyError, now, displayZone); ok && reset.Sub(now) >= 30*time.Minute {
 			return true
 		}
 	}
-	if reset, ok := parseZAIResetHint(pe.Message); ok && reset.Sub(now) >= 30*time.Minute {
+	if reset, ok := parseZAIResetHintWithZone(pe.Message, displayZone); ok && reset.Sub(now) >= 30*time.Minute {
 		return true
 	}
 	obj := limitErrorObject(pe.ResponseBody)
@@ -87,17 +102,26 @@ func hasLongLimitReset(pe *fantasy.ProviderError, now time.Time) bool {
 		body, _ := json.Marshal(map[string]any{"error": copyObject})
 		copyError := *pe
 		copyError.ResponseBody = body
-		if reset, ok := structuredLimitReset(&copyError, now); ok && reset.Sub(now) >= 30*time.Minute {
+		if reset, ok := structuredLimitResetWithZone(&copyError, now, displayZone); ok && reset.Sub(now) >= 30*time.Minute {
 			return true
 		}
 	}
-	if reset, ok := parseZAIResetHint(limitField(obj, "message")); ok && reset.Sub(now) >= 30*time.Minute {
+	if reset, ok := parseZAIResetHintWithZone(limitField(obj, "message"), displayZone); ok && reset.Sub(now) >= 30*time.Minute {
 		return true
 	}
 	return false
 }
 
 func classifyHardProviderLimit(err error, hint string, now time.Time) providerLimitClass {
+	return classifyHardProviderLimitWithZone(err, hint, now, func() *time.Location { return time.Local })
+}
+
+// ClassifyHardProviderLimit classifies using an optional lazy display zone.
+func ClassifyHardProviderLimit(err error, hint string, now time.Time, displayZone func() *time.Location) ProviderLimitClass {
+	return classifyHardProviderLimitWithZone(err, hint, now, displayZone)
+}
+
+func classifyHardProviderLimitWithZone(err error, hint string, now time.Time, displayZone func() *time.Location) providerLimitClass {
 	var pe *fantasy.ProviderError
 	if !errors.As(err, &pe) || pe == nil || pe.IsContextTooLarge() {
 		return providerLimitUnknown
@@ -116,7 +140,7 @@ func classifyHardProviderLimit(err error, hint string, now time.Time) providerLi
 	obj := limitErrorObject(pe.ResponseBody)
 	provider := limitProvider(pe, hint, obj)
 	var resetAfter time.Duration
-	if hasLongLimitReset(pe, now) {
+	if hasLongLimitResetWithZone(pe, now, displayZone) {
 		resetAfter = 30 * time.Minute
 	}
 	return limitwords.Classify(limitwords.Input{Status: pe.StatusCode, Title: pe.Title, Message: pe.Message, Body: string(pe.ResponseBody), Provider: provider, ResetAfter: resetAfter})
