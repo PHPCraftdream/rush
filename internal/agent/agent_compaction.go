@@ -18,8 +18,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -184,12 +184,12 @@ func (a *sessionAgent) runSummarize(ctx context.Context, genCtx context.Context,
 	// Manual compaction runs outside any Run() call, so the OS lock is not
 	// already held. Acquiring it here prevents another process from starting
 	// a concurrent Run() that would race with the compaction's DB writes.
-	var lk *session.SessionLock
+	var lk *sessionlock.SessionLock
 	if a.dataDir != "" {
 		var lockErr error
-		lk, lockErr = session.TryAcquireSessionLockWithOptions(a.dataDir, sessionID, a.lockOptions...)
+		lk, lockErr = sessionlock.TryAcquireSessionLockWithOptions(a.dataDir, sessionID, a.lockOptions...)
 		if lockErr != nil {
-			var busyErr *session.SessionLockBusyError
+			var busyErr *sessionlock.SessionLockBusyError
 			if errors.As(lockErr, &busyErr) {
 				slog.Warn(
 					"agent.runSummarize: rejected — session locked by another process",

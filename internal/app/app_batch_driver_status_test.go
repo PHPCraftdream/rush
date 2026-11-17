@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,7 +44,7 @@ func TestBatchDriverStatus_ForeignLockedHostAlive(t *testing.T) {
 	foreignHost := "ph2-foreign-live-host"
 	sess, err := app.Sessions.Create(ctx, "ph2-foreign-alive")
 	require.NoError(t, err)
-	lk, err := session.TryAcquireFileLock(session.HostLockPath(dataDir, foreignHost))
+	lk, err := sessionlock.TryAcquireFileLock(session.HostLockPath(dataDir, foreignHost))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = lk.Release() })
 	_, err = app.DB().ExecContext(ctx,
@@ -72,7 +73,7 @@ func TestBatchDriverStatus_ForeignDeadHostDropped(t *testing.T) {
 	foreignHost := "ph2-foreign-dead-host"
 	sess, err := app.Sessions.Create(ctx, "ph2-foreign-dead")
 	require.NoError(t, err)
-	lk, err := session.TryAcquireFileLock(session.HostLockPath(dataDir, foreignHost))
+	lk, err := sessionlock.TryAcquireFileLock(session.HostLockPath(dataDir, foreignHost))
 	require.NoError(t, err)
 	require.NoError(t, lk.Release())
 	_, err = app.DB().ExecContext(ctx,

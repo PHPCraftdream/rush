@@ -24,7 +24,10 @@ internal/config/discover 27
 internal/kit/sys/shell 46
 internal/serve/cmd 369
 internal/serve/server 173
-internal/session 226
+# MV2 split: lock and child-group source/test files now live in their leaf packages.
+internal/session 205
+internal/session/proc/sessionlock 14
+internal/session/proc/sessioncgroup 7
 # MV1 temporary second-ratchet debt: the service subtree has 61 code files, above the ≤21 target.
 # The design's MV3/EX satellite splits reduce this count per docs/plans/2026-11-15-sprint0-split-session.md §2.2.
 internal/session/service 61
@@ -34,6 +37,7 @@ internal/store/message 26
 # 45 -> 46: +1 sdk/client.go, the Client implementation cut out of sdk.go (D2m lane E-sdk); deliberate, only down from here.
 sdk 46
 web/tests 64
+# The tests spread over their own packages at stage F; deliberate, only down from here.
 # internal/serve/server/apiauth is born over the limit: 6 production files plus 19 moved test files (server lane L2).
 # The tests spread over their own packages at stage F; deliberate, only down from here.
 internal/serve/server/apiauth 25

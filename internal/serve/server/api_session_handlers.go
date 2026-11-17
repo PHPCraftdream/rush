@@ -11,7 +11,7 @@ import (
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/PHPCraftdream/rush/internal/serve/server/ws/wsapi"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -43,7 +43,7 @@ func (s apiAppWriteStore) DeleteSession(r *http.Request, id string) error {
 	if cfg == nil || cfg.Options == nil || cfg.Options.DataDirectory == "" {
 		return errors.New("cannot verify session lock")
 	}
-	probe, err := session.TryHoldSessionLockShared(cfg.Options.DataDirectory, id)
+	probe, err := sessionlock.TryHoldSessionLockShared(cfg.Options.DataDirectory, id)
 	if err != nil {
 		return err
 	}
@@ -63,7 +63,7 @@ func (s apiAppWriteStore) SessionBusy(id string) bool {
 	if cfg == nil || cfg.Options == nil || cfg.Options.DataDirectory == "" {
 		return true
 	}
-	probe, err := session.TryHoldSessionLockShared(cfg.Options.DataDirectory, id)
+	probe, err := sessionlock.TryHoldSessionLockShared(cfg.Options.DataDirectory, id)
 	if err != nil {
 		return true
 	}
@@ -179,7 +179,7 @@ func apiDeleteSessionHandler(store APIWriteStore) http.HandlerFunc {
 			return
 		}
 		if err := store.DeleteSession(r, id); err != nil {
-			var busyErr *session.SessionLockBusyError
+			var busyErr *sessionlock.SessionLockBusyError
 			if errors.As(err, &busyErr) {
 				WriteAPIProblem(w, r, http.StatusConflict, "Conflict", "session is busy", "", nil)
 				return

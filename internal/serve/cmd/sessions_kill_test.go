@@ -15,7 +15,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -51,13 +51,13 @@ func TestReadLockPID_FromCLI(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			path := filepath.Join(dir, c.name+".lock")
 			require.NoError(t, os.WriteFile(path, []byte(c.content), 0o644))
-			assert.Equal(t, c.want, session.ReadLockPID(path))
+			assert.Equal(t, c.want, sessionlock.ReadLockPID(path))
 		})
 	}
 }
 
 func TestReadLockPID_FileMissing(t *testing.T) {
-	assert.Equal(t, 0, session.ReadLockPID(filepath.Join(t.TempDir(), "nope.lock")))
+	assert.Equal(t, 0, sessionlock.ReadLockPID(filepath.Join(t.TempDir(), "nope.lock")))
 }
 
 func TestSanitiseSessionIDForFilename(t *testing.T) {
@@ -246,7 +246,7 @@ func TestHelperKillTestLockHold(t *testing.T) {
 		fmt.Println("FAILED missing-env")
 		os.Exit(2)
 	}
-	lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	if err != nil {
 		fmt.Printf("FAILED %v\n", err)
 		os.Exit(1)
@@ -620,7 +620,7 @@ func TestSessionsKillAndReset_RelativeDataDirResolveConsistently(t *testing.T) {
 // reset re-acquire must ride that out within its wait budget.
 func TestReacquireAfterKill_WaitsOutLingeringOSLock(t *testing.T) {
 	dataDir := t.TempDir()
-	held, err := session.TryAcquireSessionLock(dataDir, "lingering")
+	held, err := sessionlock.TryAcquireSessionLock(dataDir, "lingering")
 	require.NoError(t, err)
 	released := make(chan struct{})
 	go func() {
@@ -639,12 +639,12 @@ func TestReacquireAfterKill_WaitsOutLingeringOSLock(t *testing.T) {
 // runs out is reported busy, never acquired.
 func TestReacquireAfterKill_GivesUpAfterWait(t *testing.T) {
 	dataDir := t.TempDir()
-	held, err := session.TryAcquireSessionLock(dataDir, "still-held")
+	held, err := sessionlock.TryAcquireSessionLock(dataDir, "still-held")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = held.Release() })
 
 	lk, err := reacquireAfterKill(dataDir, "still-held", 200*time.Millisecond)
-	var busy *session.SessionLockBusyError
+	var busy *sessionlock.SessionLockBusyError
 	require.ErrorAs(t, err, &busy)
 	require.Nil(t, lk)
 }

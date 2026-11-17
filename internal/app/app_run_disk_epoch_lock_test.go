@@ -14,7 +14,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
@@ -28,7 +28,7 @@ func TestFenceLockHolderHelper(t *testing.T) {
 		t.Skip("helper process only")
 	}
 	dataDir, sessionID := os.Getenv("RUSH_FENCE_LOCK_DATA"), os.Getenv("RUSH_FENCE_LOCK_SESSION")
-	lock, err := session.TryAcquireSessionLock(dataDir, sessionID)
+	lock, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	if err != nil {
 		t.Fatalf("acquire helper session lock: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestFenceAdmissionLockLoserLeavesPersistentFenceUntouched(t *testing.T) {
 		return runErr
 	}
 	stop := startFenceLockHolder(t, dataDir, sessionID)
-	var busyErr *session.SessionLockBusyError
+	var busyErr *sessionlock.SessionLockBusyError
 	err = request(disk)
 	require.Error(t, err)
 	require.ErrorAs(t, err, &busyErr)

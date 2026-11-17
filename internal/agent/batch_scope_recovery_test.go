@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -24,7 +25,7 @@ import (
 func batchScopeRecoveryFixture(t *testing.T, deadHost string) (*coordinator, *sql.DB, string) {
 	t.Helper()
 	conn, dataDir := batchFixtureConn(t)
-	lk, err := session.TryAcquireFileLock(session.HostLockPath(dataDir, deadHost))
+	lk, err := sessionlock.TryAcquireFileLock(session.HostLockPath(dataDir, deadHost))
 	require.NoError(t, err)
 	require.NoError(t, lk.Release())
 	c := newBatchRuntimeCoordinator()
@@ -164,7 +165,7 @@ func TestBatchScopeRecovery_NegativeVerdictsWriteNothing(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
 		conn, dataDir := batchFixtureConn(t)
-		holder, err := session.TryAcquireFileLock(session.HostLockPath(dataDir, "scope-alive-host"))
+		holder, err := sessionlock.TryAcquireFileLock(session.HostLockPath(dataDir, "scope-alive-host"))
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = holder.Release() })
 		c := newBatchRuntimeCoordinator()
@@ -216,7 +217,7 @@ func TestBatchScopeRecovery_NegativeVerdictsWriteNothing(t *testing.T) {
 		// guarantee is asserted on the store primitive here.
 		ctx := context.Background()
 		_, conn, dataDir := batchScopeRecoveryFixture(t, "scope-err-host")
-		lk, err := session.TryAcquireFileLock(session.HostLockPath(dataDir, "scope-err-host"))
+		lk, err := sessionlock.TryAcquireFileLock(session.HostLockPath(dataDir, "scope-err-host"))
 		require.NoError(t, err)
 		require.NoError(t, lk.Release())
 		root, _ := b1SeedBatchRootOnHost(t, conn, "sess-err", "call-err", "scope-err-host", "running")
@@ -296,7 +297,7 @@ func TestBatchScopeRecovery_PreambleHookRecoversBeforePull(t *testing.T) {
 func TestBatchScopeRecovery_OffModeInert(t *testing.T) {
 	ctx := context.Background()
 	conn, dataDir := batchFixtureConn(t)
-	lk, err := session.TryAcquireFileLock(session.HostLockPath(dataDir, "scope-off-dead"))
+	lk, err := sessionlock.TryAcquireFileLock(session.HostLockPath(dataDir, "scope-off-dead"))
 	require.NoError(t, err)
 	require.NoError(t, lk.Release())
 	// NO facts binding: an unbound coordinator has no node source, so the

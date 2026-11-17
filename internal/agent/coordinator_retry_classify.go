@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -179,7 +179,7 @@ func turnAttemptRefused(err error) bool {
 	if errors.Is(err, ErrSessionBusy) || errors.Is(err, ErrAgentShuttingDown) {
 		return true
 	}
-	var lockBusy *session.SessionLockBusyError
+	var lockBusy *sessionlock.SessionLockBusyError
 	return errors.As(err, &lockBusy)
 }
 

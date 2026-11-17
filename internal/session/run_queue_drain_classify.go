@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
@@ -196,6 +197,6 @@ func classifyBackgroundOutcome(outcome admissionOutcome) (drained bool, rowID st
 // factored out so DrainSessionNow can use it without duplicating the
 // errors.As boilerplate.
 func isSessionLockBusyErr(err error) bool {
-	var busyErr *SessionLockBusyError
+	var busyErr *sessionlock.SessionLockBusyError
 	return errors.As(err, &busyErr)
 }

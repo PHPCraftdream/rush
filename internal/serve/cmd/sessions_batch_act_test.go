@@ -17,6 +17,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -206,7 +207,7 @@ func TestSessionsGc_LockedPingRetainedAndUnlockedPingDeleted(t *testing.T) {
 	require.NoError(t, err)
 	_, err = a.DB().ExecContext(ctx, `UPDATE sessions SET created_at = ? WHERE id IN (?, ?)`, time.Now().Add(-2*time.Hour).Unix(), locked.ID, unlocked.ID)
 	require.NoError(t, err)
-	lock, err := session.TryAcquireSessionLock(a.Config().Options.DataDirectory, locked.ID)
+	lock, err := sessionlock.TryAcquireSessionLock(a.Config().Options.DataDirectory, locked.ID)
 	require.NoError(t, err)
 	defer lock.Release()
 	dataDir := a.Config().Options.DataDirectory

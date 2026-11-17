@@ -15,7 +15,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -134,10 +134,10 @@ func TestP312_ManualCompactionHoldsOSLock_Deterministic(t *testing.T) {
 	<-serverStarted
 
 	// Verify the OS lock is held by trying to acquire it from "another process".
-	externalLock, lockErr := session.TryAcquireSessionLock(dataDir, sess.ID)
+	externalLock, lockErr := sessionlock.TryAcquireSessionLock(dataDir, sess.ID)
 
 	// The lock acquisition MUST fail with SessionLockBusyError.
-	var busyErr *session.SessionLockBusyError
+	var busyErr *sessionlock.SessionLockBusyError
 	require.ErrorAs(t, lockErr, &busyErr,
 		"TryAcquireSessionLock must fail with SessionLockBusyError while manual compaction holds the OS lock")
 	require.Nil(t, externalLock, "no lock should be returned when acquisition fails")
@@ -155,7 +155,7 @@ func TestP312_ManualCompactionHoldsOSLock_Deterministic(t *testing.T) {
 	}
 
 	// After compaction completes, the lock should be free. Verify we can acquire it now.
-	externalLock2, lockErr2 := session.TryAcquireSessionLock(dataDir, sess.ID)
+	externalLock2, lockErr2 := sessionlock.TryAcquireSessionLock(dataDir, sess.ID)
 	require.NoError(t, lockErr2, "after compaction, OS lock should be available")
 	require.NotNil(t, externalLock2, "lock should be returned when acquisition succeeds")
 	_ = externalLock2.Release()
@@ -319,7 +319,7 @@ func TestP312_InlineCompactionDoesNotDeadlock(t *testing.T) {
 	// Must succeed without deadlock and without a lock error.
 	require.NoError(t, runErr, "inline compaction must not deadlock or fail with lock error")
 	require.NoError(t, sessionErr)
-	var busyErr *session.SessionLockBusyError
+	var busyErr *sessionlock.SessionLockBusyError
 	assert.False(t, errors.As(runErr, &busyErr), "must not be a SessionLockBusyError")
 	assert.NotEmpty(t, finalSess.SummaryMessageID, "expected auto-summarize compaction to have created a summary")
 	require.Equal(t, int64(1), mainCalls.Load(), "main turn must execute exactly once")
@@ -404,7 +404,7 @@ func TestP312_ManualCompactionDrainsQueuedWork_WithDataDir(t *testing.T) {
 		"Summarize must release the OS lock before draining the queued call into a fresh a.Run(); "+
 			"holding it across that call makes the process reject itself with SessionLockBusyError")
 
-	var busyErr *session.SessionLockBusyError
+	var busyErr *sessionlock.SessionLockBusyError
 	require.False(t, errors.As(err, &busyErr),
 		"a lock-busy error here means the process locked itself out, not that another process holds the session")
 
@@ -412,7 +412,7 @@ func TestP312_ManualCompactionDrainsQueuedWork_WithDataDir(t *testing.T) {
 		"the queued message must actually reach the provider as its own follow-on turn")
 
 	// The lock must not be leaked once Summarize has returned.
-	lk, lkErr := session.TryAcquireSessionLock(dataDir, sess.ID)
+	lk, lkErr := sessionlock.TryAcquireSessionLock(dataDir, sess.ID)
 	require.NoError(t, lkErr, "the session lock must be free after Summarize returns")
 	require.NotNil(t, lk)
 	_ = lk.Release()
@@ -480,7 +480,7 @@ func TestP312_OSLockReleasedBeforeMailboxReportsIdle(t *testing.T) {
 
 		// The OS lock must already be free: another process (simulated here
 		// by a direct call, exactly like the other P312 tests) must succeed.
-		externalLock, lockErr := session.TryAcquireSessionLock(dataDir, sess.ID)
+		externalLock, lockErr := sessionlock.TryAcquireSessionLock(dataDir, sess.ID)
 		assert.NoError(t, lockErr, "OS lock must already be released by the time this seam fires")
 		if externalLock != nil {
 			_ = externalLock.Release()
@@ -596,7 +596,7 @@ func TestP312_ManualCompactionHeartbeatStaysAlive(t *testing.T) {
 		// testHeartbeatInterval (task #453), not the production 10s
 		// interval — see the sibling package's lock_test.go for the same
 		// constant/rationale.
-		LockOptions: []session.LockOption{session.WithHeartbeatInterval(testHeartbeatInterval)},
+		LockOptions: []sessionlock.LockOption{sessionlock.WithHeartbeatInterval(testHeartbeatInterval)},
 	})
 	sa := a.(*sessionAgent)
 
@@ -622,7 +622,7 @@ func TestP312_ManualCompactionHeartbeatStaysAlive(t *testing.T) {
 	// real baseline is captured below, after `started` fires, i.e. after
 	// runSummarize's own acquisition (and its PID stamp) has already
 	// happened.
-	probe, err := session.TryAcquireSessionLock(dataDir, sess.ID)
+	probe, err := sessionlock.TryAcquireSessionLock(dataDir, sess.ID)
 	require.NoError(t, err)
 	lockPath := probe.Path
 	require.NoError(t, probe.Release())

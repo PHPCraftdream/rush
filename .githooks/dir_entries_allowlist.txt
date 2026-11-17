@@ -36,9 +36,9 @@ internal/session/heartbeat 10
 internal/session/jobbatch 21
 internal/session/jobbatch/lab 24
 internal/serve/server 46
-# 125 -> 126: +1 internal/session/run (run/sessiontest: shared test fixtures, lane SM4 of the session design, S8);
-# run/ holds the run components after lane EX7, the row falls with the session cut (FIN).
-internal/session 89
+internal/session 80
+internal/session/proc/sessionlock 7
+internal/session/proc/sessioncgroup 5
 # MV1 adds the moved service subtree as live temporary debt. MV3/EX splits the batch/run satellites out;
 # per docs/plans/2026-11-15-sprint0-split-session.md §2.2, service drops to 4 elements.
 internal/session/service 40

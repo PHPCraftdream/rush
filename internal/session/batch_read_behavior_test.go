@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -54,7 +55,7 @@ func TestBatchReadRealSharedHostProbeAndTerminalLinks(t *testing.T) {
 	batchReadTestReserve(t, s, ctx, "child", "own", "")
 	dir := t.TempDir()
 	r := NewBatchLiveReader(db.New(conn), dir)
-	holder, err := TryAcquireFileLock(HostLockPath(dir, "host"))
+	holder, err := sessionlock.TryAcquireFileLock(HostLockPath(dir, "host"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = holder.Release() })
 	live := r.BatchLiveForOwner(ctx, "owner")
@@ -66,7 +67,7 @@ func TestBatchReadRealSharedHostProbeAndTerminalLinks(t *testing.T) {
 	require.True(t, live.HasLive())
 	require.Equal(t, HostStatusDead, live.Own[0].HostStatus)
 	// A reader must not hold an exclusive lock after the shared dead-host probe.
-	later, err := TryAcquireFileLock(HostLockPath(dir, "host"))
+	later, err := sessionlock.TryAcquireFileLock(HostLockPath(dir, "host"))
 	require.NoError(t, err)
 	require.NoError(t, later.Release())
 	require.NoError(t, s.Project(ctx, BatchProjection{Host: "host", Sequence: 2, Roots: []BatchRootProjection{{Owner: "owner", Root: snap.Root.RootID, Updates: []db.ProjectBatchNodeParams{batchStoreTestUpdate(snap.Root.RootID, "completed")}}}}))

@@ -1,6 +1,6 @@
 //go:build !windows
 
-package session
+package sessionlock
 
 import (
 	"errors"
@@ -45,4 +45,18 @@ func isLockContentionError(err error) bool {
 	// On Linux/BSD/macOS, EWOULDBLOCK and EAGAIN are the same errno value;
 	// checking both keeps this correct even where they diverge.
 	return errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
+}
+
+// IsErrno reports whether err is one of the raw syscall.Errno values in want.
+func IsErrno(err error, want ...syscall.Errno) bool {
+	errno, ok := err.(syscall.Errno)
+	if !ok {
+		return false
+	}
+	for _, w := range want {
+		if errno == w {
+			return true
+		}
+	}
+	return false
 }

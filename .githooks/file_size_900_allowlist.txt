@@ -39,7 +39,5 @@ internal/config/store_mcp_transaction.go 927
 internal/serve/cmd/migrate.go 929
 internal/serve/cmd/migrate_test.go 954
 internal/serve/cmd/providers_peak_hours.go 958
-internal/session/childgroup_registry_unix.go 976
-internal/session/lock.go 976
-# 985 -> 986: +1 import line (run/sessiontest, lane SM4: the local limitParallel copy moved out); the file is cut by the session lanes MV/EX.
-internal/session/lock_test.go 986
+# MV2 retires the moved lock and childgroup 900-line exemptions. The test-only lock file remains over the ceiling.
+internal/session/proc/sessionlock/lock_test.go 986

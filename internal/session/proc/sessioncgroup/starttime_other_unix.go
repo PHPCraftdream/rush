@@ -1,6 +1,6 @@
 //go:build !windows && !linux
 
-package session
+package sessioncgroup
 
 // startTimeToken has no implementation on this platform (macOS, BSD, ...):
 // there is no /proc filesystem, and reading a process's start time

@@ -34,7 +34,7 @@ import (
 	"time"
 
 	wsapi "github.com/PHPCraftdream/rush/internal/serve/server/ws/wsapi"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
@@ -62,7 +62,7 @@ func TestHandleSetSessionModels_BroadcastCarriesExternalOwnership(t *testing.T) 
 	foreignPID := os.Getppid()
 	require.NotZero(t, foreignPID, "fixture needs a non-zero foreign PID")
 	require.NotEqual(t, os.Getpid(), foreignPID, "fixture needs a PID other than this process")
-	lockPath := session.SessionLockPath(dataDir, sess.ID)
+	lockPath := sessionlock.SessionLockPath(dataDir, sess.ID)
 	require.NoError(t, os.MkdirAll(filepath.Dir(lockPath), 0o755))
 	require.NoError(t, os.WriteFile(lockPath, []byte(strconv.Itoa(foreignPID)+"\n"), 0o644))
 

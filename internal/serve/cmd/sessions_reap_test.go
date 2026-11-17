@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -136,10 +136,10 @@ func TestSessionsReap_ReleaseAfterUnlinkDoesNotTouchReplacement(t *testing.T) {
 	ageLock(t, path, time.Minute)
 
 	oldHook := reapAfterUnlinkHook
-	var replacement *session.SessionLock
+	var replacement *sessionlock.SessionLock
 	reapAfterUnlinkHook = func(string) {
 		var err error
-		replacement, err = session.TryAcquireSessionLock(dataDir, "reap-release-replacement")
+		replacement, err = sessionlock.TryAcquireSessionLock(dataDir, "reap-release-replacement")
 		require.NoError(t, err, "new owner can acquire recreated path after unlink")
 	}
 	t.Cleanup(func() { reapAfterUnlinkHook = oldHook })
@@ -147,8 +147,8 @@ func TestSessionsReap_ReleaseAfterUnlinkDoesNotTouchReplacement(t *testing.T) {
 	require.NotNil(t, replacement)
 	t.Cleanup(func() { _ = replacement.Release() })
 	require.FileExists(t, path)
-	_, err := session.TryAcquireSessionLock(dataDir, "reap-release-replacement")
-	var busyErr *session.SessionLockBusyError
+	_, err := sessionlock.TryAcquireSessionLock(dataDir, "reap-release-replacement")
+	var busyErr *sessionlock.SessionLockBusyError
 	require.ErrorAs(t, err, &busyErr, "replacement's OS lock remains held")
 	replacementPID, err := os.ReadFile(path + ".pid")
 	require.NoError(t, err, "replacement PID sidecar survives stale probe cleanup")
@@ -171,7 +171,7 @@ func TestSessionsReap_UnlinkWhileProbeLockHeld(t *testing.T) {
 	path := writeLockFileAt(t, dataDir, "reap-unlink-race", 999999)
 	ageLock(t, path, time.Minute)
 
-	var owner *session.SessionLock
+	var owner *sessionlock.SessionLock
 	oldHook := reapAfterProbeHook
 	hookCalls := 0
 	reapAfterProbeHook = func(string) {
@@ -183,7 +183,7 @@ func TestSessionsReap_UnlinkWhileProbeLockHeld(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			deadline := time.Now().Add(10 * time.Second)
 			for {
-				owner, err = session.TryAcquireSessionLock(dataDir, "reap-unlink-race")
+				owner, err = sessionlock.TryAcquireSessionLock(dataDir, "reap-unlink-race")
 				if err == nil || time.Now().After(deadline) {
 					break
 				}
@@ -191,8 +191,8 @@ func TestSessionsReap_UnlinkWhileProbeLockHeld(t *testing.T) {
 			}
 			require.NoError(t, err, "owner must acquire after probe release and before fresh probe")
 		} else {
-			owner, err = session.TryAcquireSessionLock(dataDir, "reap-unlink-race")
-			var busyErr *session.SessionLockBusyError
+			owner, err = sessionlock.TryAcquireSessionLock(dataDir, "reap-unlink-race")
+			var busyErr *sessionlock.SessionLockBusyError
 			require.ErrorAs(t, err, &busyErr, "the probe's held flock must prevent a competing owner")
 		}
 	}
@@ -243,7 +243,7 @@ func TestSessionsReap_ReleasedLockIsKeptCrashLockIsReaped(t *testing.T) {
 	ageLock(t, releasedLockPath, 2*time.Minute)
 	crashPath := writeLockFileAt(t, dataDir, "reap-crashed", 999999)
 	ageLock(t, crashPath, 2*time.Minute)
-	held, err := session.TryAcquireSessionLock(dataDir, "reap-held")
+	held, err := sessionlock.TryAcquireSessionLock(dataDir, "reap-held")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = held.Release() })
 	heldPath := filepath.Join(dataDir, "locks", "session-reap-held.lock")
@@ -255,7 +255,7 @@ func TestSessionsReap_ReleasedLockIsKeptCrashLockIsReaped(t *testing.T) {
 
 	crashBefore, err := os.Stat(crashPath)
 	require.NoError(t, err)
-	beforePID := session.ReadLockPID(crashPath)
+	beforePID := sessionlock.ReadLockPID(crashPath)
 
 	require.NoError(t, sessionsReapCmd.Flags().Set("dry-run", "true"))
 	stderr := captureStderr(t, func() { require.NoError(t, sessionsReapCmd.RunE(sessionsReapCmd, nil)) })
@@ -271,7 +271,7 @@ func TestSessionsReap_ReleasedLockIsKeptCrashLockIsReaped(t *testing.T) {
 	afterDryRun, err := os.Stat(crashPath)
 	require.NoError(t, err)
 	require.True(t, crashBefore.ModTime().Equal(afterDryRun.ModTime()), "dry-run must leave lock mtime unchanged")
-	require.Equal(t, beforePID, session.ReadLockPID(crashPath), "dry-run must leave lock PID unchanged")
+	require.Equal(t, beforePID, sessionlock.ReadLockPID(crashPath), "dry-run must leave lock PID unchanged")
 	heldAfterDryRun, err := os.Stat(heldPath)
 	require.NoError(t, err)
 	require.True(t, heldBefore.ModTime().Equal(heldAfterDryRun.ModTime()), "dry-run must not probe a live held lock")

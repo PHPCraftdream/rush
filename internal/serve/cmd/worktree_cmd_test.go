@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -170,7 +170,7 @@ func TestWorktreeRemoveLiveLockInMainDataDir(t *testing.T) {
 	main := makeWorktreeTestRepo(t)
 	wtAddWorktree(t, main, "task-a")
 	dataDir := filepath.Join(main, ".rush")
-	lock, err := session.TryAcquireSessionLock(dataDir, "task-a")
+	lock, err := sessionlock.TryAcquireSessionLock(dataDir, "task-a")
 	require.NoError(t, err)
 	_, err = wtRunRemove(t, main, "task-a", nil)
 	require.Error(t, err)
@@ -194,7 +194,7 @@ func TestWorktreeRemoveLiveLockInLocalStore(t *testing.T) {
 	// lock files would make the worktree dirty and the final removal would refuse.
 	require.NoError(t, os.MkdirAll(dataDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dataDir, ".gitignore"), []byte("*\n"), 0o644))
-	lock, err := session.TryAcquireSessionLock(dataDir, "live-one")
+	lock, err := sessionlock.TryAcquireSessionLock(dataDir, "live-one")
 	require.NoError(t, err)
 	_, err = wtRunRemove(t, main, "task-a", nil)
 	require.Error(t, err)
@@ -266,7 +266,7 @@ func TestWorktreeListLiveSession(t *testing.T) {
 	main := makeWorktreeTestRepo(t)
 	wtAddWorktree(t, main, "task-a")
 	dataDir := filepath.Join(main, ".rush")
-	lock, err := session.TryAcquireSessionLock(dataDir, "task-a")
+	lock, err := sessionlock.TryAcquireSessionLock(dataDir, "task-a")
 	require.NoError(t, err)
 	defer func() { require.NoError(t, lock.Release()) }()
 	wtRegisterCwdFlag(t, worktreeListCmd, main)

@@ -15,6 +15,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -114,7 +115,7 @@ func TestP0_2_RetryExhaustion_QueuesCall(t *testing.T) {
 
 	// Hold the OS lock to force restartOrphanedWithRetry to fail.
 	// This simulates another process holding the lock.
-	lock, err := session.TryAcquireSessionLock(env.workingDir, sessionID)
+	lock, err := sessionlock.TryAcquireSessionLock(env.workingDir, sessionID)
 	require.NoError(t, err, "should acquire OS lock to force retry exhaustion")
 	defer lock.Release()
 

@@ -9,7 +9,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -121,7 +121,7 @@ type SessionAgentOptions struct {
 	// session.TryAcquireSessionLockWithOptions when the agent acquires
 	// inter-process locks. Primarily exposed for regression tests like
 	// TestP0_338_FinalizerReachableDespiteHungCleanup.
-	LockOptions []session.LockOption
+	LockOptions []sessionlock.LockOption
 	// RunAllowlists, when non-nil, lets the turn loop activate each call's
 	// carried restricted-run policy (SessionAgentCall.RunAllowlist) at
 	// turn start and clear it at loop end (R3-4). Nil (tests, bare

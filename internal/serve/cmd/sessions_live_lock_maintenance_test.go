@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -16,7 +16,7 @@ func TestSessionsReset_LockRefusalPreservesMessages(t *testing.T) {
 	require.NoError(t, err)
 	_, err = a.Messages.Create(ctx, sess.ID, message.CreateMessageParams{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "keep me"}}})
 	require.NoError(t, err)
-	lock, err := session.TryAcquireSessionLock(a.Config().Options.DataDirectory, sess.ID)
+	lock, err := sessionlock.TryAcquireSessionLock(a.Config().Options.DataDirectory, sess.ID)
 	require.NoError(t, err)
 	defer lock.Release()
 	a.Shutdown()

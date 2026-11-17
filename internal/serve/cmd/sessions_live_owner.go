@@ -7,7 +7,7 @@ import (
 	"os"
 
 	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
@@ -15,9 +15,9 @@ import (
 // the run-driver marker. Either check fails closed so maintenance cannot
 // remove history underneath a live owner.
 func liveOwnerProtection(ctx context.Context, a *app.App, id string) string {
-	lock, err := session.TryAcquireSessionLock(a.Config().Options.DataDirectory, id)
+	lock, err := sessionlock.TryAcquireSessionLock(a.Config().Options.DataDirectory, id)
 	if err != nil {
-		var busy *session.SessionLockBusyError
+		var busy *sessionlock.SessionLockBusyError
 		if errors.As(err, &busy) {
 			return "a turn holds the session lock"
 		}

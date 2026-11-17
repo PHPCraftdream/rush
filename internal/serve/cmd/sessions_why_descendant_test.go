@@ -27,6 +27,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -50,7 +51,7 @@ func writeLockFileAt(t *testing.T, dataDir, sessionID string, pid int) string {
 // abandoned rather than merely quiet.
 func backDateLock(t *testing.T, path string) {
 	t.Helper()
-	stale := time.Now().Add(-(session.LockStaleDuration + 5*time.Second))
+	stale := time.Now().Add(-(sessionlock.LockStaleDuration + 5*time.Second))
 	require.NoError(t, os.Chtimes(path, stale, stale))
 }
 
@@ -272,7 +273,7 @@ func TestExplainSessionStatus_DeadHolderWithLiveChildIsDelegating(t *testing.T) 
 	// The child's OWN status still comes from its OWN session lock -- that
 	// mechanism is unrelated to (and unchanged by) the batch-root liveness
 	// walk above.
-	childLock, err := session.TryAcquireSessionLock(dataDir, child.ID)
+	childLock, err := sessionlock.TryAcquireSessionLock(dataDir, child.ID)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, childLock.Release()) }()
 

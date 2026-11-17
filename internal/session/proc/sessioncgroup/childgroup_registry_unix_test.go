@@ -1,6 +1,6 @@
 //go:build !windows
 
-package session
+package sessioncgroup
 
 import (
 	"errors"
@@ -16,8 +16,51 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/require"
 )
+
+// spawnGroupChild starts a long-lived child, optionally as its own process
+// group leader, and returns it with a reaper already waiting.
+// (Kept in the Unix registry test file so durability tests can share it.)
+func spawnGroupChild(t *testing.T, ownGroup bool) (*exec.Cmd, <-chan error) {
+	t.Helper()
+	// Deliberately not a round duration: other packages' tests run
+	// concurrently under the pre-push hook and also sleep, and a cleanup
+	// that matches on command line must not catch theirs.
+	// CommandContext, not Command: the linter forbids the context-less form,
+	// and the test context is the right one — if the test ends early the
+	// child dies with it instead of outliving the run for 43 seconds.
+	cmd := platform.Command(t.Context(), "sleep", "43.17")
+	if ownGroup {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	}
+	require.NoError(t, cmd.Start())
+
+	waited := make(chan error, 1)
+	// reaped is closed after Wait returns, whether or not anyone read the
+	// result. Cleanup waits on THAT, not on `waited`: a test whose body
+	// already drained `waited` would otherwise find the channel empty and
+	// sit out the full timeout every time — measured at 2.08s for
+	// TestKillAllTrackedTrees_KillsTheGroupAndForgetsIt against 0.08-0.16s
+	// for its siblings, all of it spent waiting for a process that had
+	// already been reaped.
+	reaped := make(chan struct{})
+	go func() {
+		waited <- cmd.Wait()
+		close(reaped)
+	}()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		select {
+		case <-reaped:
+		case <-time.After(2 * time.Second):
+		}
+	})
+	// Let the exec complete so Getpgid sees the final group.
+	time.Sleep(80 * time.Millisecond)
+	return cmd, waited
+}
 
 // TestChildGroupRegistry_RegisterReadKill_RealLock is the end-to-end happy
 // path against a REAL session lock (not a hand-rolled generation string):
@@ -27,12 +70,12 @@ func TestChildGroupRegistry_RegisterReadKill_RealLock(t *testing.T) {
 	dataDir := t.TempDir()
 	sessionID := "childgroup-register-read-kill"
 
-	lk, err := TryAcquireSessionLock(dataDir, sessionID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, err)
 	defer lk.Release()
 
-	lockPath := SessionLockPath(dataDir, sessionID)
-	generation := ReadLockGeneration(lockPath)
+	lockPath := sessionlock.SessionLockPath(dataDir, sessionID)
+	generation := sessionlock.ReadLockGeneration(lockPath)
 	require.NotEmpty(t, generation)
 
 	leader, waited := spawnGroupChild(t, true)
@@ -137,21 +180,21 @@ func TestChildGroupRegistry_UnrelatedGeneration_KillsNothingAndIsRetained(t *tes
 func TestChildGroupRegistry_NewOwnerReacquired_VictimGenerationReachesOldEntry(t *testing.T) {
 	dataDir := t.TempDir()
 	sessionID := "childgroup-new-owner-reacquired"
-	lockPath := SessionLockPath(dataDir, sessionID)
+	lockPath := sessionlock.SessionLockPath(dataDir, sessionID)
 
-	lk1, err := TryAcquireSessionLock(dataDir, sessionID)
+	lk1, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, err)
-	oldGeneration := ReadLockGeneration(lockPath)
+	oldGeneration := sessionlock.ReadLockGeneration(lockPath)
 	require.NotEmpty(t, oldGeneration)
 
 	oldLeader, oldWaited := spawnGroupChild(t, true)
 	RegisterChildGroup(dataDir, sessionID, oldLeader.Process.Pid, oldGeneration)
 
 	require.NoError(t, lk1.Release())
-	lk2, err := TryAcquireSessionLock(dataDir, sessionID)
+	lk2, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, err)
 	defer lk2.Release()
-	newGeneration := ReadLockGeneration(lockPath)
+	newGeneration := sessionlock.ReadLockGeneration(lockPath)
 	require.NotEmpty(t, newGeneration)
 	require.NotEqual(t, oldGeneration, newGeneration)
 
@@ -199,12 +242,12 @@ func TestChildGroupRegistry_NewOwnerReacquired_VictimGenerationReachesOldEntry(t
 func TestChildGroupRegistry_ImplausibleEntry_NotSignalled(t *testing.T) {
 	dataDir := t.TempDir()
 	sessionID := "childgroup-implausible-entry"
-	lockPath := SessionLockPath(dataDir, sessionID)
+	lockPath := sessionlock.SessionLockPath(dataDir, sessionID)
 
-	lk, err := TryAcquireSessionLock(dataDir, sessionID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, err)
 	defer lk.Release()
-	generation := ReadLockGeneration(lockPath)
+	generation := sessionlock.ReadLockGeneration(lockPath)
 	require.NotEmpty(t, generation)
 
 	const bogusPGID = 999999
@@ -223,10 +266,10 @@ func TestChildGroupRegistry_UnregisterRemovesEmptyFile(t *testing.T) {
 	dataDir := t.TempDir()
 	sessionID := "childgroup-unregister-empties-file"
 
-	lk, err := TryAcquireSessionLock(dataDir, sessionID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, err)
 	defer lk.Release()
-	generation := ReadLockGeneration(SessionLockPath(dataDir, sessionID))
+	generation := sessionlock.ReadLockGeneration(sessionlock.SessionLockPath(dataDir, sessionID))
 	require.NotEmpty(t, generation)
 
 	leader, _ := spawnGroupChild(t, true)
@@ -336,12 +379,12 @@ func TestChildGroupRegistry_LeaderReaped_GroupStillSwept(t *testing.T) {
 	dataDir := t.TempDir()
 	sessionID := "childgroup-leader-reaped-group-swept"
 
-	lk, err := TryAcquireSessionLock(dataDir, sessionID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, err)
 	defer lk.Release()
 
-	lockPath := SessionLockPath(dataDir, sessionID)
-	generation := ReadLockGeneration(lockPath)
+	lockPath := sessionlock.SessionLockPath(dataDir, sessionID)
+	generation := sessionlock.ReadLockGeneration(lockPath)
 	require.NotEmpty(t, generation)
 
 	reader, writer, err := os.Pipe()
@@ -473,12 +516,12 @@ func TestChildGroupRegistry_LeaderGone_WitnessMismatch_IsRetainedNotKilled(t *te
 	dataDir := t.TempDir()
 	sessionID := "childgroup-witness-mismatch-retained"
 
-	lk, err := TryAcquireSessionLock(dataDir, sessionID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, err)
 	defer lk.Release()
 
-	lockPath := SessionLockPath(dataDir, sessionID)
-	generation := ReadLockGeneration(lockPath)
+	lockPath := sessionlock.SessionLockPath(dataDir, sessionID)
+	generation := sessionlock.ReadLockGeneration(lockPath)
 	require.NotEmpty(t, generation)
 
 	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
@@ -565,12 +608,12 @@ func TestChildGroupRegistry_LeaderGone_WitnessHolds_IsKilled(t *testing.T) {
 	dataDir := t.TempDir()
 	sessionID := "childgroup-witness-holds-killed"
 
-	lk, err := TryAcquireSessionLock(dataDir, sessionID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, err)
 	defer lk.Release()
 
-	lockPath := SessionLockPath(dataDir, sessionID)
-	generation := ReadLockGeneration(lockPath)
+	lockPath := sessionlock.SessionLockPath(dataDir, sessionID)
+	generation := sessionlock.ReadLockGeneration(lockPath)
 	require.NotEmpty(t, generation)
 
 	reader, writer, err := os.Pipe()

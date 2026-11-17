@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -73,9 +74,9 @@ func TestRegisterHost_LazyRegistration(t *testing.T) {
 	// The lock is genuinely held: a second attempt to lock the exact same
 	// path (a different open file description, same process -- flock/
 	// LockFileEx both correctly conflict here) must contend.
-	_, err = TryAcquireFileLock(HostLockPath(dataDir, h.ID))
+	_, err = sessionlock.TryAcquireFileLock(HostLockPath(dataDir, h.ID))
 	require.Error(t, err)
-	var contended *ErrLockContended
+	var contended *sessionlock.ErrLockContended
 	assert.True(t, errors.As(err, &contended))
 
 	require.NoError(t, h.Close(ctx, nodeStore(q)))
@@ -93,7 +94,7 @@ func TestRegisterHost_DBFailureReleasesLock(t *testing.T) {
 	require.Len(t, entries, 1, "the lock file is created before the DB insert is attempted")
 
 	lockPath := filepath.Join(HostsDir(dataDir), entries[0].Name())
-	lock, err := TryAcquireFileLock(lockPath)
+	lock, err := sessionlock.TryAcquireFileLock(lockPath)
 	require.NoError(t, err, "a failed registration must release its lock, not leak it")
 	require.NoError(t, lock.Release())
 }
@@ -130,7 +131,7 @@ func TestProbeHostLock_DeadViaWonLock(t *testing.T) {
 	lockPath := HostLockPath(dataDir, "host-a")
 
 	// Create the file, then release -- it exists on disk but nobody holds it.
-	seed, err := TryAcquireFileLock(lockPath)
+	seed, err := sessionlock.TryAcquireFileLock(lockPath)
 	require.NoError(t, err)
 	require.NoError(t, seed.Release())
 
@@ -145,7 +146,7 @@ func TestProbeHostLock_Alive(t *testing.T) {
 	dataDir := t.TempDir()
 	lockPath := HostLockPath(dataDir, "host-b")
 
-	holder, err := TryAcquireFileLock(lockPath)
+	holder, err := sessionlock.TryAcquireFileLock(lockPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = holder.Release() })
 
@@ -186,7 +187,7 @@ func TestProbeHostLock_Unknown(t *testing.T) {
 func TestProbeHostLock_ReadOnlyFilePermissionsStillProbed(t *testing.T) {
 	dataDir := t.TempDir()
 	lockPath := HostLockPath(dataDir, "host-readonly")
-	seed, err := TryAcquireFileLock(lockPath)
+	seed, err := sessionlock.TryAcquireFileLock(lockPath)
 	require.NoError(t, err)
 	require.NoError(t, seed.Release())
 
@@ -280,7 +281,7 @@ func TestRemoveDeadHostFile_DeletesAfterIdentityVerified(t *testing.T) {
 	// Simulate a crashed host: acquire then release without deleting --
 	// same on-disk state a killed process leaves (the lock file exists,
 	// nobody holds it).
-	seed, err := TryAcquireFileLock(lockPath)
+	seed, err := sessionlock.TryAcquireFileLock(lockPath)
 	require.NoError(t, err)
 	require.NoError(t, seed.Release())
 
@@ -311,7 +312,7 @@ func TestRemoveDeadHostFile_LosesIdentityRaceSafely(t *testing.T) {
 	// SameFile comparison RemoveDeadHostFile performs is exercised exactly
 	// the same way either way: held's fd identity vs. a fresh stat of
 	// lockPath.
-	held, err := TryAcquireFileLock(otherPath)
+	held, err := sessionlock.TryAcquireFileLock(otherPath)
 	require.NoError(t, err)
 
 	require.NoError(t, os.WriteFile(lockPath, []byte("new owner"), 0o644))
@@ -327,7 +328,7 @@ func TestProbeHostLockShared_AliveDoesNotDisturbHolder(t *testing.T) {
 	dataDir := t.TempDir()
 	lockPath := HostLockPath(dataDir, "host-shared-alive")
 
-	holder, err := TryAcquireFileLock(lockPath)
+	holder, err := sessionlock.TryAcquireFileLock(lockPath)
 	require.NoError(t, err)
 
 	status, err := ProbeHostLockShared(lockPath)
@@ -337,9 +338,9 @@ func TestProbeHostLockShared_AliveDoesNotDisturbHolder(t *testing.T) {
 	// The probe must not have disturbed the holder: a fresh exclusive
 	// attempt while the holder is still live must still contend exactly as
 	// it would have before the probe ran.
-	_, err = TryAcquireFileLock(lockPath)
+	_, err = sessionlock.TryAcquireFileLock(lockPath)
 	require.Error(t, err)
-	var contended *ErrLockContended
+	var contended *sessionlock.ErrLockContended
 	assert.True(t, errors.As(err, &contended))
 
 	// And the holder itself can still release cleanly afterwards.
@@ -363,7 +364,7 @@ func TestProbeHostLockShared_CoexistsWithAnotherSharedHolder(t *testing.T) {
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = f.Close() })
-	require.NoError(t, tryLockFileShared(f), "hold our OWN shared lock throughout the probe")
+	require.NoError(t, sessionlock.TryLockFileShared(f), "hold our OWN shared lock throughout the probe")
 
 	status, err := ProbeHostLockShared(lockPath)
 	require.NoError(t, err)
@@ -374,7 +375,7 @@ func TestProbeHostLockShared_DeadReleasedLockIsReusable(t *testing.T) {
 	dataDir := t.TempDir()
 	lockPath := HostLockPath(dataDir, "host-shared-dead")
 
-	seed, err := TryAcquireFileLock(lockPath)
+	seed, err := sessionlock.TryAcquireFileLock(lockPath)
 	require.NoError(t, err)
 	require.NoError(t, seed.Release())
 
@@ -385,7 +386,7 @@ func TestProbeHostLockShared_DeadReleasedLockIsReusable(t *testing.T) {
 	// The shared probe must have released its own lock before returning --
 	// an exclusive acquire must succeed immediately, with no lock handed
 	// back from the probe to get in the way.
-	lock, err := TryAcquireFileLock(lockPath)
+	lock, err := sessionlock.TryAcquireFileLock(lockPath)
 	require.NoError(t, err, "ProbeHostLockShared must release the shared lock it won before returning")
 	require.NoError(t, lock.Release())
 }

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,7 +47,7 @@ func TestRegisterHost_ReaperHoldsLockInCreateWindow_RetriesUnderNewID(t *testing
 	dataDir := t.TempDir()
 
 	var firstPath string
-	var held *FileLock
+	var held *sessionlock.FileLock
 	setRegisterSeam(t, dataDir, func(lockPath string) {
 		firstPath = lockPath
 		status, lock, err := ProbeHostLock(lockPath)
@@ -89,7 +90,7 @@ func TestRegisterHost_ReaperUnlinksFreshFile_RegistrantDoesNotKeepUnlinkedInode(
 	dataDir := t.TempDir()
 
 	setRegisterSeam(t, dataDir, func(lockPath string) {
-		held, err := TryAcquireFileLock(lockPath)
+		held, err := sessionlock.TryAcquireFileLock(lockPath)
 		require.NoError(t, err, "the reaper must win the lock on the fresh unlocked file")
 		require.NoError(t, os.Remove(lockPath), "the reaper unlinks only while holding the lock")
 		require.NoError(t, held.Release())

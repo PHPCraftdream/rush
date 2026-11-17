@@ -11,6 +11,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -113,9 +114,9 @@ func BatchCLISession(p BatchCLIParams, ctx context.Context, id string) (coresess
 	// Another process (rush run, web) holds the session's OS lock while it
 	// drives a turn; probe it and release at once: the batch's own leaves
 	// may need the lock.
-	lock, err := session.TryAcquireSessionLock(p.DataDir(), sess.ID)
+	lock, err := sessionlock.TryAcquireSessionLock(p.DataDir(), sess.ID)
 	if err != nil {
-		var busyErr *session.SessionLockBusyError
+		var busyErr *sessionlock.SessionLockBusyError
 		if errors.As(err, &busyErr) {
 			return coresession.Session{}, fmt.Errorf("session %q is already processing another request (held by PID %d): %w", sess.ID, busyErr.HolderPID, agent.ErrSessionBusy)
 		}

@@ -16,7 +16,7 @@ import (
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -242,7 +242,7 @@ func TestCancelFlag_HumanTurnClearsTheFlagAtAdmission(t *testing.T) {
 	coord := f.webCoordinator()
 	require.NoError(t, f.env.sessions.RequestCancel(ctx, f.sessID))
 
-	foreignLock, err := session.TryAcquireSessionLock(f.env.workingDir, f.sessID)
+	foreignLock, err := sessionlock.TryAcquireSessionLock(f.env.workingDir, f.sessID)
 	require.NoError(t, err)
 	_, err = coord.Run(ctx, f.sessID, "blocked by the lock")
 	require.Error(t, err, "the locked-out turn is refused")

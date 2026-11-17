@@ -17,6 +17,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/serve/server/ws/wswork"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -28,7 +29,7 @@ func buildConfigWire(a *appPkg.App) (ConfigWire, bool) {
 	return wsconfig.BuildConfigWire(a)
 }
 
-func holdExternalSilenceProof(a *appPkg.App, sessionID string) (*session.SharedLockProbe, bool, string) {
+func holdExternalSilenceProof(a *appPkg.App, sessionID string) (*sessionlock.SharedLockProbe, bool, string) {
 	return wsapi.HoldExternalSilenceProof(a, sessionID)
 }
 

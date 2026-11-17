@@ -13,6 +13,7 @@ import (
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -176,8 +177,8 @@ func TestP0_338_FinalizerReachableDespiteHungCleanup(t *testing.T) {
 		Messages:      messages,
 		IsYolo:        true,
 		SystemPrompt:  "You are a test assistant.",
-		LockOptions: []session.LockOption{
-			session.WithClearHolderMetadataFn(func(path string, expectedGeneration string) {
+		LockOptions: []sessionlock.LockOption{
+			sessionlock.WithClearHolderMetadataFn(func(path string, expectedGeneration string) {
 				safeLogf("cleanup goroutine started for path: %s", path)
 				cleanupStarted.Store(true)
 				// Hung until the test's defer: a synchronous Release can never return.
@@ -265,7 +266,7 @@ func TestP0_338_FinalizerReachableDespiteHungCleanup(t *testing.T) {
 	//
 	// Release() unlocks and closes the file before spawning the cleanup goroutine,
 	// and the acquire path waits for any pending handoff, so a single TryAcquire is enough.
-	lk2, err := session.TryAcquireSessionLock(tmpDir, sessionID)
+	lk2, err := sessionlock.TryAcquireSessionLock(tmpDir, sessionID)
 	require.NoError(t, err, "OS lock should be acquirable after Run returned: Release unlocks before spawning cleanup (lock.go) and acquire waits for any pending handoff")
 	require.NotNil(t, lk2)
 	_ = lk2.Release()

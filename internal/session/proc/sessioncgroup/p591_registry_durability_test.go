@@ -1,6 +1,6 @@
 //go:build !windows
 
-package session
+package sessioncgroup
 
 // Regression coverage for the 2026-08-19 release-readiness static
 // follow-up review (task #591, part 3): the cross-process child-group
@@ -48,6 +48,7 @@ import (
 	"syscall"
 	"testing"
 
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -61,12 +62,12 @@ import (
 func TestWriteChildGroupFileLocked_NoStrayTempFileAfterSuccess(t *testing.T) {
 	dataDir := t.TempDir()
 	sessionID := "childgroup-atomic-write-no-strays"
-	lockPath := SessionLockPath(dataDir, sessionID)
+	lockPath := sessionlock.SessionLockPath(dataDir, sessionID)
 
-	lk, err := TryAcquireSessionLock(dataDir, sessionID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, err)
 	defer lk.Release()
-	generation := ReadLockGeneration(lockPath)
+	generation := sessionlock.ReadLockGeneration(lockPath)
 	require.NotEmpty(t, generation)
 
 	leader, _ := spawnGroupChild(t, true)
@@ -125,12 +126,12 @@ func TestWriteChildGroupFileLocked_NoStrayTempFileAfterSuccess(t *testing.T) {
 func TestWriteChildGroupFileLocked_NeverObservedTruncated(t *testing.T) {
 	dataDir := t.TempDir()
 	sessionID := "childgroup-atomic-write-no-partial-reads"
-	lockPath := SessionLockPath(dataDir, sessionID)
+	lockPath := sessionlock.SessionLockPath(dataDir, sessionID)
 
-	lk, err := TryAcquireSessionLock(dataDir, sessionID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, err)
 	defer lk.Release()
-	generation := ReadLockGeneration(lockPath)
+	generation := sessionlock.ReadLockGeneration(lockPath)
 	require.NotEmpty(t, generation)
 
 	path := childGroupRegistryPath(dataDir, sessionID)
@@ -310,12 +311,12 @@ func TestVerifyGroupStillPlausibleOutcome_GoneIsConfirmedGone(t *testing.T) {
 func TestKillRegisteredChildGroups_UnresolvedKillIsRetainedNotDiscarded(t *testing.T) {
 	dataDir := t.TempDir()
 	sessionID := "childgroup-retain-on-unresolved-kill"
-	lockPath := SessionLockPath(dataDir, sessionID)
+	lockPath := sessionlock.SessionLockPath(dataDir, sessionID)
 
-	lk, err := TryAcquireSessionLock(dataDir, sessionID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, err)
 	defer lk.Release()
-	generation := ReadLockGeneration(lockPath)
+	generation := sessionlock.ReadLockGeneration(lockPath)
 	require.NotEmpty(t, generation)
 
 	leader, waited := spawnGroupChild(t, true)
@@ -378,12 +379,12 @@ func startTimeTokenOrEmpty(pid int) string {
 func TestKillRegisteredChildGroups_MixedOutcomesRetainOnlyUnresolvedEntries(t *testing.T) {
 	dataDir := t.TempDir()
 	sessionID := "childgroup-mixed-outcomes"
-	lockPath := SessionLockPath(dataDir, sessionID)
+	lockPath := sessionlock.SessionLockPath(dataDir, sessionID)
 
-	lk, err := TryAcquireSessionLock(dataDir, sessionID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, err)
 	defer lk.Release()
-	generation := ReadLockGeneration(lockPath)
+	generation := sessionlock.ReadLockGeneration(lockPath)
 	require.NotEmpty(t, generation)
 
 	killableLeader, killableWaited := spawnGroupChild(t, true)

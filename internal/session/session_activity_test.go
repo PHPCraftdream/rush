@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -318,7 +319,7 @@ func TestInspectSessionLockFact(t *testing.T) {
 	require.Equal(t, LockAbsent, InspectSessionLockFact(dataDir, "none").Kind)
 
 	// A held lock: sidecar names this (alive) process.
-	held := SessionLockPath(dataDir, "held")
+	held := sessionlock.SessionLockPath(dataDir, "held")
 	require.NoError(t, writeFile(held, "content\n"))
 	require.NoError(t, writeFile(held+".pid", itoa2(os.Getpid())+"\n"))
 	f := InspectSessionLockFact(dataDir, "held")
@@ -327,7 +328,7 @@ func TestInspectSessionLockFact(t *testing.T) {
 
 	// A dead holder: a PID that is not alive. The record (primary file and
 	// sidecar) survives a crash -- release is what wipes it.
-	dead := SessionLockPath(dataDir, "dead")
+	dead := sessionlock.SessionLockPath(dataDir, "dead")
 	require.NoError(t, writeFile(dead, "999999\n"))
 	require.NoError(t, writeFile(dead+".pid", "999999\n"))
 	f = InspectSessionLockFact(dataDir, "dead")
@@ -336,7 +337,7 @@ func TestInspectSessionLockFact(t *testing.T) {
 
 	// A clean release: record truncated, sidecar removed -- even when the
 	// mtime is fresh.
-	released := SessionLockPath(dataDir, "released")
+	released := sessionlock.SessionLockPath(dataDir, "released")
 	require.NoError(t, writeFile(released, ""))
 	f = InspectSessionLockFact(dataDir, "released")
 	require.Equal(t, LockReleased, f.Kind)

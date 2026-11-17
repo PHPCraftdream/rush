@@ -18,6 +18,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/spf13/cobra"
 )
@@ -182,8 +183,8 @@ func lockPulseStatus(ageSec int64) string {
 //     tradeoff.
 func lockHolderProvablyDead(dataDir, sessionID string) bool {
 	cleanupDone := make(chan struct{})
-	opts := append([]session.LockOption{session.WithCleanupDone(cleanupDone)}, lockProbeOptions...)
-	lk, err := session.TryAcquireSessionLockWithOptions(dataDir, sessionID, opts...)
+	opts := append([]sessionlock.LockOption{sessionlock.WithCleanupDone(cleanupDone)}, lockProbeOptions...)
+	lk, err := sessionlock.TryAcquireSessionLockWithOptions(dataDir, sessionID, opts...)
 	if err != nil {
 		// Busy (a real holder exists) or an unidentified probe failure —
 		// neither is proof of death. Do not delete.
@@ -208,7 +209,7 @@ const lockProbeCleanupJoinBound = 2 * time.Second
 
 // lockProbeOptions is a test-only seam: extra options for the death probe's
 // acquire (e.g. a slow metadata cleanup). Always nil in production.
-var lockProbeOptions []session.LockOption
+var lockProbeOptions []sessionlock.LockOption
 
 // preAutoDeleteRemoveHook is a test-only seam for sessionsLocksCmdRun's
 // auto-delete branch. When non-nil, it is called synchronously between
@@ -510,7 +511,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		// mandatory LockFileEx range-lock can make the lock file's own
 		// content unreadable to this process — see readLockFile's sidecar
 		// fallback (internal/session/lock.go) and task #231.
-		pid := session.ReadLockPID(lockPath)
+		pid := sessionlock.ReadLockPID(lockPath)
 
 		// Between turns (R6C-1): the lock is held only during a turn and
 		// its file is truncated on release, so a loop waiting on a job
@@ -545,7 +546,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		budgetSec := session.ReadLockTimeoutSec(lockPath)
+		budgetSec := sessionlock.ReadLockTimeoutSec(lockPath)
 
 		// Approximate acquire time: mtime when pulse was fresh.
 		// For alive locks mtime ≈ now, so we use file birthtime via stat

@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"testing"
 
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,7 +36,7 @@ func TestRemoveDeadHostFile_POSIX_UnlinksWhileStillHoldingTheLock(t *testing.T) 
 	}
 	dataDir := t.TempDir()
 	lockPath := HostLockPath(dataDir, "dead-host-order")
-	seed, err := TryAcquireFileLock(lockPath)
+	seed, err := sessionlock.TryAcquireFileLock(lockPath)
 	require.NoError(t, err)
 	require.NoError(t, seed.Release())
 	status, held, err := ProbeHostLock(lockPath)

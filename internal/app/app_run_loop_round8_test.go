@@ -20,7 +20,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -340,7 +340,7 @@ func TestRunLoop_LockBusyRefusalLeavesTheOwnersSessionAlone(t *testing.T) {
 	h := newLoopHarness(t, func(_ *loopHarness, _ http.ResponseWriter, _ []byte, _ bool, _ int) {
 		t.Error("provider must never be called: the lock refusal is caught before any turn runs")
 	})
-	foreign, err := session.TryAcquireSessionLock(h.dataDir, h.sessionID)
+	foreign, err := sessionlock.TryAcquireSessionLock(h.dataDir, h.sessionID)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = foreign.Release() })
 	writes := logEndedReasonWrites(t, h.app)
@@ -350,7 +350,7 @@ func TestRunLoop_LockBusyRefusalLeavesTheOwnersSessionAlone(t *testing.T) {
 
 	_, _, runErr := h.run(loopCtx(t), RunOverrides{})
 
-	var lockBusy *session.SessionLockBusyError
+	var lockBusy *sessionlock.SessionLockBusyError
 	require.ErrorAs(t, runErr, &lockBusy)
 	require.NotContains(t, writes(), "error", "the refusal ends no run of the owner's")
 	canceled, cErr := h.app.Sessions.IsCancelRequested(context.Background(), h.sessionID)

@@ -13,7 +13,7 @@ import (
 	"sync"
 	"text/tabwriter"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/spf13/cobra"
 )
 
@@ -184,9 +184,9 @@ func worktreeLiveSession(ctx context.Context, wtPath, mainRoot string) (string, 
 	if err := probeSessionLock(mainData, probeID); err != nil {
 		return "", err
 	}
-	lock, err := session.TryAcquireSessionLock(mainData, probeID)
+	lock, err := sessionlock.TryAcquireSessionLock(mainData, probeID)
 	if err != nil {
-		var busy *session.SessionLockBusyError
+		var busy *sessionlock.SessionLockBusyError
 		if !errors.As(err, &busy) {
 			return "", fmt.Errorf("could not probe session lock for %s: %w",
 				probeID, err)
@@ -208,9 +208,9 @@ func worktreeLiveSession(ctx context.Context, wtPath, mainRoot string) (string, 
 		if err := probeSessionLock(wtData, stem); err != nil {
 			return "", err
 		}
-		lock, err := session.TryAcquireSessionLock(wtData, stem)
+		lock, err := sessionlock.TryAcquireSessionLock(wtData, stem)
 		if err != nil {
-			var busy *session.SessionLockBusyError
+			var busy *sessionlock.SessionLockBusyError
 			if !errors.As(err, &busy) {
 				return "", fmt.Errorf("could not probe session lock %s: %w",
 					stem, err)
