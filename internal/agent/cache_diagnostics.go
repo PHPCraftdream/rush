@@ -23,6 +23,9 @@ type cachePreparedDiagnostic struct {
 	ToolsBytes        int64  `json:"tools_logical_bytes"`
 	MessageBytes      int64  `json:"message_logical_bytes"`
 	ToolCount         int    `json:"tool_count"`
+	// MessageDigests holds one short digest per message, in order, so the next
+	// request of the session can tell where its history stopped matching this one.
+	MessageDigests []string `json:"-"`
 }
 
 type cacheDigestWriter struct {
@@ -61,10 +64,19 @@ func preparedCacheDiagnostic(messages []fantasy.Message, tools []fantasy.AgentTo
 	}
 	toolHash, toolBytes := cacheLogicalDigest(definitions)
 	_, messageBytes := cacheLogicalDigest(messages)
+	digests := make([]string, len(messages))
+	for i := range messages {
+		d, _ := cacheLogicalDigest(messages[i])
+		if len(d) > 16 {
+			d = d[:16]
+		}
+		digests[i] = d
+	}
 	return cachePreparedDiagnostic{
 		PrefixFingerprint: prefix, ToolsFingerprint: toolHash,
 		PrefixBytes: prefixBytes, ToolsBytes: toolBytes,
 		MessageBytes: messageBytes, ToolCount: len(tools),
+		MessageDigests: digests,
 	}
 }
 
@@ -89,6 +101,7 @@ func observedCacheReadTokens(usage fantasy.Usage, estimated bool, provider strin
 }
 
 func (ts *turnStream) logCacheStepUsage(usage fantasy.Usage, estimated bool, metadata fantasy.ProviderMetadata) {
+	ts.noteCacheRequest(usage, estimated, metadata)
 	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
 		return
 	}
