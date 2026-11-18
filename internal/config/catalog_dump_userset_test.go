@@ -248,3 +248,24 @@ func TestConfigureProviders_KnownProviderCatalogDumpDoesNotCountAsUserSet(t *tes
 	require.EqualValues(t, factsWindow, byID[modelID].ContextWindow,
 		"a dump equal to the shipped catalog's raw window must be lifted to the documented facts value")
 }
+
+// TestConfigureProviders_ServiceTierReachesEffectiveSlots: the speed tier configured on the
+// smart and fast slots survives the effective-model assembly.
+func TestConfigureProviders_ServiceTierReachesEffectiveSlots(t *testing.T) {
+	live := setupCodexCatalogDumpTest(t)
+	cfg := &Config{}
+	setDefaults(cfg, t.TempDir(), "")
+	cfg.Providers.Set("openai-codex", ProviderConfig{
+		ID:         "openai-codex",
+		OAuthToken: &oauth.Token{AccessToken: "rush-access-token", AccountID: "chatgpt-account"},
+	})
+	cfg.Models = map[SelectedModelType]SelectedModel{
+		SelectedModelTypeSmart: {Provider: "openai-codex", Model: live.ID, ReasoningEffort: "high", ServiceTier: "fast"},
+		SelectedModelTypeFast:  {Provider: "openai-codex", Model: live.ID, ReasoningEffort: "low", ServiceTier: "fast"},
+	}
+	runCodexDumpScenario(t, cfg, []catwalk.Provider{codexProvider()})
+	require.Equal(t, "fast", cfg.Models[SelectedModelTypeSmart].ServiceTier)
+	require.Equal(t, "fast", cfg.Models[SelectedModelTypeFast].ServiceTier)
+	require.Equal(t, "high", cfg.Models[SelectedModelTypeSmart].ReasoningEffort)
+	require.Equal(t, "low", cfg.Models[SelectedModelTypeFast].ReasoningEffort)
+}

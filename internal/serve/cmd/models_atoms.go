@@ -432,7 +432,8 @@ func parseAtom(name string) (config.SelectedModel, error) {
 	}
 	if strings.Contains(name, "/") {
 		modelPart, effort := splitModelEffort(name)
-		return config.SelectedModel{Provider: "", Model: modelPart, ReasoningEffort: effort}, fmt.Errorf("raw provider/model not yet resolved: %s", name)
+		effort, tier := splitEffortTier(effort)
+		return config.SelectedModel{Provider: "", Model: modelPart, ReasoningEffort: effort, ServiceTier: tier}, fmt.Errorf("raw provider/model not yet resolved: %s", name)
 	}
 
 	var matchedKey string
@@ -500,6 +501,7 @@ func parseAtom(name string) (config.SelectedModel, error) {
 func parseAtomOrRaw(name string, resolveFunc func(string) (string, string, bool, error)) (config.SelectedModel, bool, error) {
 	if strings.Contains(name, "/") {
 		modelPart, effort := splitModelEffort(name)
+		effort, tier := splitEffortTier(effort)
 		provider, modelID, known, err := resolveFunc(modelPart)
 		if err != nil {
 			return config.SelectedModel{}, false, err
@@ -507,10 +509,14 @@ func parseAtomOrRaw(name string, resolveFunc func(string) (string, string, bool,
 		if err := validateEffortForModel(provider, modelID, effort); err != nil {
 			return config.SelectedModel{}, false, err
 		}
+		if err := validateServiceTier(provider, tier); err != nil {
+			return config.SelectedModel{}, false, err
+		}
 		return config.SelectedModel{
 			Provider:        provider,
 			Model:           modelID,
 			ReasoningEffort: effort,
+			ServiceTier:     tier,
 		}, known, nil
 	}
 
@@ -524,6 +530,7 @@ func parseAtomOrRaw(name string, resolveFunc func(string) (string, string, bool,
 	}
 
 	modelPart, effort := splitModelEffort(name)
+	effort, tier := splitEffortTier(effort)
 	provider, modelID, known, rerr := resolveFunc(modelPart)
 	if rerr != nil {
 		return config.SelectedModel{}, false, fmt.Errorf("%q is not a known atom or provider/model — see `rush models list`", name)
@@ -531,10 +538,14 @@ func parseAtomOrRaw(name string, resolveFunc func(string) (string, string, bool,
 	if err := validateEffortForModel(provider, modelID, effort); err != nil {
 		return config.SelectedModel{}, false, err
 	}
+	if err := validateServiceTier(provider, tier); err != nil {
+		return config.SelectedModel{}, false, err
+	}
 	return config.SelectedModel{
 		Provider:        provider,
 		Model:           modelID,
 		ReasoningEffort: effort,
+		ServiceTier:     tier,
 	}, known, nil
 }
 

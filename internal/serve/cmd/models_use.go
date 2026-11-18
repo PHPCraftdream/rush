@@ -242,19 +242,19 @@ rush models state
 
 		if smartArg != "" {
 			fmt.Fprintf(os.Stderr, "set smart = %s/%s%s in %s scope\n",
-				smartSel.Provider, smartSel.Model, effortSuffix(smartSel.ReasoningEffort), scope)
+				smartSel.Provider, smartSel.Model, effortSuffix(effortWithTier(smartSel.ReasoningEffort, smartSel.ServiceTier)), scope)
 		}
 		if fastArg != "" {
 			fmt.Fprintf(os.Stderr, "set fast = %s/%s%s in %s scope\n",
-				fastSel.Provider, fastSel.Model, effortSuffix(fastSel.ReasoningEffort), scope)
+				fastSel.Provider, fastSel.Model, effortSuffix(effortWithTier(fastSel.ReasoningEffort, fastSel.ServiceTier)), scope)
 		}
 		if workerArg != "" {
 			fmt.Fprintf(os.Stderr, "set worker = %s/%s%s in %s scope\n",
-				workerSel.Provider, workerSel.Model, effortSuffix(workerSel.ReasoningEffort), scope)
+				workerSel.Provider, workerSel.Model, effortSuffix(effortWithTier(workerSel.ReasoningEffort, workerSel.ServiceTier)), scope)
 		}
 		if reviewerArg != "" {
 			fmt.Fprintf(os.Stderr, "set reviewer = %s/%s%s in %s scope\n",
-				reviewerSel.Provider, reviewerSel.Model, effortSuffix(reviewerSel.ReasoningEffort), scope)
+				reviewerSel.Provider, reviewerSel.Model, effortSuffix(effortWithTier(reviewerSel.ReasoningEffort, reviewerSel.ServiceTier)), scope)
 		}
 
 		return nil

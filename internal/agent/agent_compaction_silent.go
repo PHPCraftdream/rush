@@ -166,6 +166,7 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 		streamCtx = context.WithValue(streamCtx, cliprovider.SessionIDContextKey, sessionID)
 		if smartModel.Model.Provider() == codexprovider.Name {
 			streamCtx = context.WithValue(streamCtx, cliprovider.ReasoningEffortContextKey, turnSmartReasoningEffort(smartModel))
+			streamCtx = context.WithValue(streamCtx, cliprovider.ServiceTierContextKey, turnSmartServiceTier(smartModel))
 		} else {
 			streamCtx = context.WithValue(streamCtx, cliprovider.ReasoningEffortContextKey, "")
 		}

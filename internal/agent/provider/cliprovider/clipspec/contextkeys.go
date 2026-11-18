@@ -24,6 +24,11 @@ type reasoningEffortContextKey struct{}
 // Stream so CLI models can inject the --effort flag dynamically.
 var ReasoningEffortContextKey = reasoningEffortContextKey{}
 
+type serviceTierContextKey struct{}
+
+// ServiceTierContextKey carries the configured speed tier ("fast") to providers that offer one.
+var ServiceTierContextKey = serviceTierContextKey{}
+
 // Fork patch: batch 14 — non-interactive context propagation.
 //
 // nonInteractiveContextKey marks the request as coming from `rush run` (a

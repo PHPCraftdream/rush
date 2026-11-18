@@ -179,7 +179,7 @@ func TestModelsState_UnsetRoleScopeLabels(t *testing.T) {
 	require.NoError(t, runErr)
 	smartRow, ok := effectiveRow(text, "smart")
 	require.True(t, ok, "expected a smart row in output:\n%s", text)
-	assert.Equal(t, "default", tableCells(smartRow)[4])
+	assert.Equal(t, "default", tableCells(smartRow)[5], "SCOPE column follows EFFORT and TIER")
 
 	resetModelsStateFlags(t)
 	out, runErr := runModelsCmd(t, modelsStateCmd, "--json")
@@ -286,28 +286,28 @@ func TestRestoreCommands_RawLocalCLIFormExecutes(t *testing.T) {
 // fixture below: the bordered EFFECTIVE and SCOPES tables plus the RESTORE
 // commands.
 const restoreGoldenFull = `EFFECTIVE
-╭──────────┬──────────┬───────────────┬────────┬────────┬─────────────────┬────────────────────────────╮
-│ ROLE     │ PROVIDER │ MODEL         │ EFFORT │ SCOPE  │ ATOM            │ NOTE                       │
-├──────────┼──────────┼───────────────┼────────┼────────┼─────────────────┼────────────────────────────┤
-│ smart    │ zai      │ glm-4.6       │ —      │ global │ glm4_6          │ unset -> thinking on, high │
-│ fast     │ zai      │ glm-4.7-flash │ —      │ local  │ glm4_7_flash    │ unset -> thinking on, high │
-│ worker   │ zai      │ glm-4.7-flash │ on     │ global │ glm4_7_flash-on │                            │
-│ reviewer │ zai      │ glm-5-turbo   │ —      │ global │ glm5_turbo      │ unset -> thinking on, high │
-╰──────────┴──────────┴───────────────┴────────┴────────┴─────────────────┴────────────────────────────╯
+╭──────────┬──────────┬───────────────┬────────┬──────┬────────┬─────────────────┬────────────────────────────╮
+│ ROLE     │ PROVIDER │ MODEL         │ EFFORT │ TIER │ SCOPE  │ ATOM            │ NOTE                       │
+├──────────┼──────────┼───────────────┼────────┼──────┼────────┼─────────────────┼────────────────────────────┤
+│ smart    │ zai      │ glm-4.6       │ —      │ —    │ global │ glm4_6          │ unset -> thinking on, high │
+│ fast     │ zai      │ glm-4.7-flash │ —      │ —    │ local  │ glm4_7_flash    │ unset -> thinking on, high │
+│ worker   │ zai      │ glm-4.7-flash │ on     │ —    │ global │ glm4_7_flash-on │                            │
+│ reviewer │ zai      │ glm-5-turbo   │ —      │ —    │ global │ glm5_turbo      │ unset -> thinking on, high │
+╰──────────┴──────────┴───────────────┴────────┴──────┴────────┴─────────────────┴────────────────────────────╯
 
 SCOPES
-╭────────┬──────────┬──────────┬───────────────┬────────┬─────────────────────┬────────────────────────────╮
-│ SCOPE  │ ROLE     │ PROVIDER │ MODEL         │ EFFORT │ STATUS              │ NOTE                       │
-├────────┼──────────┼──────────┼───────────────┼────────┼─────────────────────┼────────────────────────────┤
-│ global │ smart    │ zai      │ glm-4.6       │ —      │ effective           │ unset -> thinking on, high │
-│ global │ fast     │ zai      │ glm-5-turbo   │ —      │ overridden by local │ unset -> thinking on, high │
-│ global │ worker   │ zai      │ glm-4.7-flash │ on     │ effective           │                            │
-│ global │ reviewer │ zai      │ glm-5-turbo   │ —      │ effective           │ unset -> thinking on, high │
-│ local  │ smart    │ —        │ —             │ —      │ not set             │                            │
-│ local  │ fast     │ zai      │ glm-4.7-flash │ —      │ effective           │ unset -> thinking on, high │
-│ local  │ worker   │ —        │ —             │ —      │ not set             │                            │
-│ local  │ reviewer │ —        │ —             │ —      │ not set             │                            │
-╰────────┴──────────┴──────────┴───────────────┴────────┴─────────────────────┴────────────────────────────╯
+╭────────┬──────────┬──────────┬───────────────┬────────┬──────┬─────────────────────┬────────────────────────────╮
+│ SCOPE  │ ROLE     │ PROVIDER │ MODEL         │ EFFORT │ TIER │ STATUS              │ NOTE                       │
+├────────┼──────────┼──────────┼───────────────┼────────┼──────┼─────────────────────┼────────────────────────────┤
+│ global │ smart    │ zai      │ glm-4.6       │ —      │ —    │ effective           │ unset -> thinking on, high │
+│ global │ fast     │ zai      │ glm-5-turbo   │ —      │ —    │ overridden by local │ unset -> thinking on, high │
+│ global │ worker   │ zai      │ glm-4.7-flash │ on     │ —    │ effective           │                            │
+│ global │ reviewer │ zai      │ glm-5-turbo   │ —      │ —    │ effective           │ unset -> thinking on, high │
+│ local  │ smart    │ —        │ —             │ —      │ —    │ not set             │                            │
+│ local  │ fast     │ zai      │ glm-4.7-flash │ —      │ —    │ effective           │ unset -> thinking on, high │
+│ local  │ worker   │ —        │ —             │ —      │ —    │ not set             │                            │
+│ local  │ reviewer │ —        │ —             │ —      │ —    │ not set             │                            │
+╰────────┴──────────┴──────────┴───────────────┴────────┴──────┴─────────────────────┴────────────────────────────╯
 
 RESTORE (run these to re-create this state)
   rush models use --smart glm4_6
@@ -389,4 +389,34 @@ func TestRestoreCommands_NoSecretLeakage(t *testing.T) {
 	jsonOut, runErr := runModelsCmd(t, modelsStateCmd, "--json")
 	require.NoError(t, runErr)
 	assert.NotContains(t, jsonOut, "sk-FAKE-SECRET-abc123")
+}
+
+// TestModelsStateShowsServiceTierInEveryBlock: the fast tier appears in the EFFECTIVE and
+// SCOPES rows (TIER column), in the JSON blocks and in the RESTORE command.
+func TestModelsStateShowsServiceTierInEveryBlock(t *testing.T) {
+	m := config.SelectedModel{Provider: "openai-codex", Model: "gpt-6.2-sol", ReasoningEffort: "high", ServiceTier: "fast"}
+
+	eff := newStateTable("ROLE", "PROVIDER", "MODEL", "EFFORT", "TIER", "SCOPE", "ATOM", "NOTE")
+	printEffectiveRow(eff, "smart", true, m, "global")
+	require.Len(t, eff.rows, 1)
+	assert.Equal(t, []string{"smart", "openai-codex", "gpt-6.2-sol", "high", "fast", "global"}, eff.rows[0][:6])
+	assert.Equal(t, tableDash, eff.rows[0][6], "the atom cell must not suggest a command that drops the tier")
+
+	scopes := newStateTable("SCOPE", "ROLE", "PROVIDER", "MODEL", "EFFORT", "TIER", "STATUS", "NOTE")
+	printScopeRow(scopes, "global", "smart", &m, nil)
+	assert.Equal(t, []string{"global", "smart", "openai-codex", "gpt-6.2-sol", "high", "fast", "effective"}, scopes.rows[0][:7])
+
+	plain := config.SelectedModel{Provider: "openai-codex", Model: "gpt-6.2-sol", ReasoningEffort: "high"}
+	printScopeRow(scopes, "global", "fast", &plain, nil)
+	assert.Equal(t, tableDash, scopes.rows[1][5], "no tier renders as a dash")
+
+	cmds := restoreCommands(map[config.SelectedModelType]*config.SelectedModel{config.SelectedModelTypeSmart: &m}, nil)
+	require.Equal(t, []string{"rush models use --smart openai-codex/gpt-6.2-sol@high/fast"}, cmds)
+
+	raw, err := json.Marshal(m)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"service_tier":"fast"`)
+	raw, err = json.Marshal(plain)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "service_tier")
 }

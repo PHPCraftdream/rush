@@ -221,8 +221,8 @@ func printCustomRoleViews(cmd *cobra.Command, views []customRoleView, single boo
 			tools = string(encoded)
 		}
 		model := view.Role.Provider + "/" + view.Role.Model
-		if view.Role.ReasoningEffort != "" {
-			model += "@" + view.Role.ReasoningEffort
+		if view.Role.ReasoningEffort != "" || view.Role.ServiceTier != "" {
+			model += "@" + effortWithTier(view.Role.ReasoningEffort, view.Role.ServiceTier)
 		}
 		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", view.Name, view.Source, model, tools); err != nil {
 			return err

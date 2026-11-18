@@ -42,6 +42,7 @@ var (
 	SessionIDContextKey       = clipspec.SessionIDContextKey
 	TitleGenerationContextKey = clipspec.TitleGenerationContextKey
 	ReasoningEffortContextKey = clipspec.ReasoningEffortContextKey
+	ServiceTierContextKey     = clipspec.ServiceTierContextKey
 	NonInteractiveContextKey  = clipspec.NonInteractiveContextKey
 )
 
