@@ -16,7 +16,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/config"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
-	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 type modelsHost interface {
@@ -94,7 +93,7 @@ func (p *modelsComponent) resolveSessionModels(ctx context.Context, sessionID st
 }
 
 func (p *modelsComponent) resolveSessionModelsInternal(ctx context.Context, sessionID string, wantTools bool) (*resolvedOverrides, error) {
-	var sess session.Session
+	var sess coresession.Session
 	var err error
 	if WebModelPolicy(ctx) && callModelRole(ctx) != config.SelectedModelTypeReviewer {
 		sess, err = p.host.sessions().Get(ctx, sessionID)
@@ -113,7 +112,7 @@ func (p *modelsComponent) resolveSessionModelsInternal(ctx context.Context, sess
 		fastOverride = &ModelOverride{Provider: sess.FastModelProvider, Model: sess.FastModelID, ReasoningEffort: sess.FastModelReasoningEffort}
 	}
 	roleSource := ""
-	customContract := (*session.RoleContract)(nil)
+	customContract := (*coresession.RoleContract)(nil)
 	customRequested := false
 	if opts := callOptionsFrom(ctx); opts != nil && opts.RoleContract != nil && opts.RoleContract.Name != "" {
 		customContract = opts.RoleContract
@@ -363,7 +362,7 @@ func (p *modelsComponent) applyModelOverrides(ctx context.Context, sessionID str
 	// The role-slot cascade needs the session's worker/reviewer/fast pins;
 	// a failed load resolves no pins (the caller decides whether that is
 	// fatal — the explicit overrides below still apply).
-	sess := session.Session{}
+	sess := coresession.Session{}
 	if sessionID != "" && WebModelPolicy(ctx) {
 		if loaded, getErr := p.host.sessions().Get(ctx, sessionID); getErr == nil {
 			sess = loaded
@@ -545,7 +544,7 @@ func (p *modelsComponent) buildAgentModelsFromCfg(ctx context.Context, cfg *conf
 	return p.buildModelsFromCfg(ctx, cfg, smartModelCfg, fastModelCfg, isSubAgent)
 }
 
-func (p *modelsComponent) buildRoleContractModels(ctx context.Context, cfg *config.Config, contract *session.RoleContract) (Model, Model, error) {
+func (p *modelsComponent) buildRoleContractModels(ctx context.Context, cfg *config.Config, contract *coresession.RoleContract) (Model, Model, error) {
 	selected, _, err := currentOrSnapshotRoleModel(cfg, contract)
 	if err != nil {
 		return Model{}, Model{}, err
