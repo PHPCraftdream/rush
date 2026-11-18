@@ -284,3 +284,339 @@ func SetCoordinatorFinalizationWiring(c Coordinator, deps FinalizationWiringDeps
 	slog.Info("Finalization wiring installed", "session_poll", w.poll.String())
 	return nil
 }
+
+type batchCutoverGlueHost interface {
+	batchGlueNil() bool
+	batchGlueDriverClaimer() BatchDriverClaimer
+	batchGlueBGArrival() *ctxMutex
+	batchGlueForeignLiveDriver(ctx context.Context, sessionID string) (bool, error)
+	batchGlueSessions() coresession.Service
+	batchGlueDurableChild(ctx context.Context, sessionID string) (bool, error)
+	batchGlueAutonomyConfigured() bool
+	batchGlueAutonomyEnabled() bool
+	batchGlueArbSnapshot(sessionID string) arbiterSnapshot
+	batchGlueDriverHints() *batchDriverHints
+	batchGlueStopTree(sessionID string)
+	batchGlueCutoverFacts() BatchCutoverFacts
+	batchGlueRerunRuntime() (batchRunnerHandle, string, *session.BatchStore)
+}
+
+type coordinatorBatchGlueHost struct{ coordinator *coordinator }
+
+func newBatchCutoverGlueComponent(c *coordinator) *batchCutoverGlueComponent {
+	return &batchCutoverGlueComponent{host: coordinatorBatchGlueHost{coordinator: c}}
+}
+
+func (h coordinatorBatchGlueHost) batchGlueNil() bool { return h.coordinator == nil }
+
+func (h coordinatorBatchGlueHost) batchGlueDriverClaimer() BatchDriverClaimer {
+	return h.coordinator.batchDriverClaimer
+}
+
+func (h coordinatorBatchGlueHost) batchGlueBGArrival() *ctxMutex {
+	return &h.coordinator.bgArrival
+}
+
+func (h coordinatorBatchGlueHost) batchGlueForeignLiveDriver(ctx context.Context, sessionID string) (bool, error) {
+	return h.coordinator.foreignLiveDriver(ctx, sessionID)
+}
+
+func (h coordinatorBatchGlueHost) batchGlueSessions() coresession.Service {
+	return h.coordinator.sessions
+}
+
+func (h coordinatorBatchGlueHost) batchGlueDurableChild(ctx context.Context, sessionID string) (bool, error) {
+	return h.coordinator.isDurableDelegationChild(ctx, sessionID)
+}
+
+func (h coordinatorBatchGlueHost) batchGlueAutonomyConfigured() bool { return h.coordinator.cfg != nil }
+
+func (h coordinatorBatchGlueHost) batchGlueAutonomyEnabled() bool {
+	return h.coordinator.autonomyEnabled()
+}
+
+func (h coordinatorBatchGlueHost) batchGlueArbSnapshot(sessionID string) arbiterSnapshot {
+	return h.coordinator.arb.snapshot(sessionID)
+}
+
+func (h coordinatorBatchGlueHost) batchGlueDriverHints() *batchDriverHints {
+	return h.coordinator.driverHints
+}
+
+func (h coordinatorBatchGlueHost) batchGlueStopTree(sessionID string) {
+	h.coordinator.stopTree(sessionID)
+}
+
+func (h coordinatorBatchGlueHost) batchGlueCutoverFacts() BatchCutoverFacts {
+	return coordinatorBatchCutoverFacts(h.coordinator)
+}
+
+func (h coordinatorBatchGlueHost) batchGlueRerunRuntime() (batchRunnerHandle, string, *session.BatchStore) {
+	return batchRerunRuntime(h.coordinator)
+}
+
+type batchCutoverGlueComponent struct{ host batchCutoverGlueHost }
+
+func (g *batchCutoverGlueComponent) driverMarkerStore() BatchDriverClaimer {
+	if g.host.batchGlueNil() || g.host.batchGlueDriverClaimer() == nil {
+		return nil
+	}
+	return g.host.batchGlueDriverClaimer()
+}
+
+func (g *batchCutoverGlueComponent) readTurnFactsBatch(ctx context.Context, facts BatchCutoverFacts, sessionID string, f TurnFacts) (TurnFacts, error) {
+	h := g.host
+	// Gate order (ASYNC-02/09): the seam fires right
+	// before the arrival gate and the rows read under bgArrival, so the debt
+	// rows and the over-cap set are ONE consistent pair
+	// (persistBGShellCompletion holds the same gate around insert + slot
+	// decision).
+	if seam := readTurnFactsGateSeam.Load(); seam != nil {
+		(*seam)()
+	}
+	if err := h.batchGlueBGArrival().lock(ctx); err != nil {
+		return f, fmt.Errorf("turn facts: bg arrival: %w", err)
+	}
+	defer h.batchGlueBGArrival().unlock()
+	rows, err := facts.PendingInclusiveDebt(ctx, sessionID)
+	if err != nil {
+		return f, fmt.Errorf("turn facts: batch debt rows: %w", err)
+	}
+	f.Debt.BGShellOnly = len(rows.Nodes) == 0 && len(rows.Notices) > 0
+	for _, n := range rows.Notices {
+		if n.Kind != session.NoticeKindBGShellDone {
+			f.Debt.BGShellOnly = false
+		}
+	}
+	f.Debt.BGShellNotices = len(rows.Notices)
+	// CompletionOnly (#1270 rule 4b): notice rows count only as completions
+	// for bg_shell_done and supervision kinds; batch node debt rows are
+	// completion-class unconditionally (a finished node's selected notice
+	// IS a completion), like job debt was on the ledger path.
+	f.Debt.CompletionOnly = true
+	for _, n := range rows.Notices {
+		switch n.Kind {
+		case session.NoticeKindBGShellDone, session.NoticeKindSupervision:
+		default:
+			f.Debt.CompletionOnly = false
+		}
+	}
+	// Reaction-independent held questions: a child question whose answer was
+	// never ACCEPTED stays non-completion debt even after the owner's
+	// reaction flow marked the notice reacted, so rule 4b's armed sleep
+	// cannot hold across a held child (the 45-minute hang). An unreadable
+	// read is conservative: not completion-only.
+	if src, ok := facts.(BatchHeldQuestionSource); ok {
+		if held, herr := src.ActionableHeldQuestions(ctx, sessionID); herr != nil || len(held) > 0 {
+			f.Debt.CompletionOnly = false
+		}
+	}
+	f.Debt.PendingIncl = len(rows.Nodes) > 0 || len(rows.Notices) > 0
+	// The session driver marker is retained host infrastructure
+	// (session_drivers, not batch rows).
+	f.Session.ForeignDriverLive, err = h.batchGlueForeignLiveDriver(ctx, sessionID)
+	if err != nil {
+		return f, fmt.Errorf("turn facts: driver marker: %w", err)
+	}
+	// The child's parent is the composition key: the parent's live tree scan
+	// answers "a live node names this child" (= running delegation).
+	parent := ""
+	if h.batchGlueSessions() != nil {
+		if sess, gerr := h.batchGlueSessions().Get(ctx, sessionID); gerr == nil {
+			parent = sess.ParentSessionID
+		}
+	}
+	if parent != "" {
+		f.Session.RunningDelegation, err = facts.LiveDelegationChildOf(ctx, parent, sessionID)
+		if err != nil {
+			return f, fmt.Errorf("turn facts: delegation state: %w", err)
+		}
+	}
+	if !f.Session.ExternallyDrivenSelf {
+		f.Session.DurableChild, err = h.batchGlueDurableChild(ctx, sessionID)
+		if err != nil {
+			return f, fmt.Errorf("turn facts: delegation identity: %w", err)
+		}
+	}
+	if h.batchGlueAutonomyConfigured() {
+		f.Session.AutonomyEnabled = h.batchGlueAutonomyEnabled()
+	}
+	// ---- in-process half ----
+	s := h.batchGlueArbSnapshot(sessionID)
+	owed := make(map[int64]struct{}, len(rows.Notices))
+	for _, n := range rows.Notices {
+		owed[n.ID] = struct{}{}
+	}
+	if s.AutoResumes >= turnAutoResumeCap { // over-cap rows only count with every slot spent
+		for id := range s.OverCap {
+			if _, ok := owed[id]; ok {
+				f.Debt.OverCapRows++
+			}
+		}
+	}
+	f.Session.AutoResumes = s.AutoResumes
+	f.Session.Held = s.Held
+	f.Session.Suspended = s.Suspended
+	f.Session.SleepAll = s.SleepAll
+	f.Session.ChainLinks = s.ChainLinks
+	f.Session.ChainNoticed = s.ChainNoticed
+	if len(s.ChainBatchRoots) > 0 {
+		f.Session.ChainBatchRoots = make([]string, 0, len(s.ChainBatchRoots))
+		for root := range s.ChainBatchRoots {
+			f.Session.ChainBatchRoots = append(f.Session.ChainBatchRoots, root)
+		}
+	}
+	if s.SleepAll {
+		own, descendants, liveErr := facts.LiveWorkSummary(ctx, sessionID)
+		if liveErr != nil {
+			return f, fmt.Errorf("turn facts: batch live work: %w", liveErr)
+		}
+		// Own roots plus live delegation descendants count (#1270).
+		f.Session.RunningOwnJobs = own + descendants
+	}
+	// Rule 5: the chain guard owns the debt by IDENTITY,
+	// not by shape. Batch launches carry their launched root's tool_call_id
+	// (the started tool response's own identity, recorded per leg by
+	// recordChainEvidence into chainBatchRoots), and every node debt row is
+	// keyed by its root id -- so the ON predicate is ownership: the chain
+	// defers only when EVERY pending node debt row is a completion of a
+	// root the chain itself launched, and no notice row intervenes. An
+	// unrelated completion (a root the chain never launched) is NOT owned,
+	// so it neither defers the chain nor gets deferred by it. Rule 5 defers
+	// WITHOUT pacing: there is no "waits one pace" step anywhere on this
+	// path -- the deferred launch is simply refused until the ownership
+	// predicate changes.
+	if f.Session.ChainLinks >= turnReactionChainLimit && len(rows.Nodes) > 0 && len(rows.Notices) == 0 {
+		if len(f.Session.ChainBatchRoots) > 0 {
+			ids := facts.DebtToolCallIDs(ctx, session.BatchDebtSnapshot{Owner: sessionID, Nodes: rows.Nodes})
+			// No resolvable identity: fail closed (no defer) rather than
+			// pretend ownership over rows we cannot name.
+			owns := len(ids) > 0
+			for _, id := range facts.DebtToolCallIDs(ctx, session.BatchDebtSnapshot{Owner: sessionID, Nodes: rows.Nodes}) {
+				found := false
+				for _, root := range f.Session.ChainBatchRoots {
+					if root == id {
+						found = true
+						break
+					}
+				}
+				if !found {
+					owns = false
+					break
+				}
+			}
+			f.Session.ChainOwnsAllDebt = owns
+		}
+	}
+	f.Gate = s.Gate
+	f.Gate.HintNow = h.batchGlueDriverHints().hintSeqOf(sessionID)
+	f.Session.ExternallyDrivenSelf = h.batchGlueDriverHints().isExternalDriver(sessionID)
+	return f, nil
+}
+
+func (g *batchCutoverGlueComponent) batchRerunStopVoided(ctx context.Context, sessionID string, voided []session.BatchRerunVoidedNode) {
+	h := g.host
+	if h.batchGlueNil() || len(voided) == 0 {
+		return
+	}
+	runner, host, store := h.batchGlueRerunRuntime()
+	if runner == nil || host == "" {
+		slog.Warn("coordinator.BatchRerunStopVoided: batch runtime not bound; voided incarnations retire by delivery fencing only",
+			"session_id", sessionID, "voided", len(voided))
+	}
+	for i := range voided {
+		v := voided[i]
+		// Stop every voided delegation's child tree first, regardless of the
+		// root's own state (the retained transitive-stop shape).
+		if v.ChildSessionID != "" {
+			h.batchGlueStopTree(v.ChildSessionID)
+		}
+		if !batchRerunStopWorthy(v.State) {
+			continue
+		}
+		if runner == nil {
+			continue
+		}
+		if v.HostID != host {
+			slog.Warn("coordinator.BatchRerunStopVoided: voided running incarnation lives on another host; its executor is not stopped, its completion commits void",
+				"session_id", sessionID, "root_id", v.RootID, "tool_call_id", v.ToolCallID, "host_id", v.HostID)
+			continue
+		}
+		// Exact-incarnation guard AND repeated-stop suppression: re-read the
+		// row and stop only while THIS root is still live. The durable void
+		// already took delivery out of the pullable world; once the executor
+		// confirms the stop the root settles terminal, so a second pass over
+		// the same Voided set never cancels again — and a provider-reused
+		// tool_call_id on a NEW live root can never widen this stop onto the
+		// new incarnation.
+		if store != nil {
+			snap, err := store.Read(ctx, sessionID, v.RootID)
+			if err != nil {
+				slog.Warn("coordinator.BatchRerunStopVoided: voided incarnation row unreadable; skipping the stop",
+					"session_id", sessionID, "root_id", v.RootID, "err", err)
+				continue
+			}
+			if !batchRerunStopWorthy(snap.Root.State) {
+				continue
+			}
+		}
+		out := cancelBatchCall(ctx, runner, jobbatch.ID(v.RootID))
+		if out.Err != nil {
+			slog.Warn("coordinator.BatchRerunStopVoided: stop request failed; the completion commits void",
+				"session_id", sessionID, "root_id", v.RootID, "err", out.Err)
+		}
+	}
+}
+
+func (g *batchCutoverGlueComponent) heldQuestionAwaitRefusal(ctx context.Context, owner string) error {
+	src, ok := g.host.batchGlueCutoverFacts().(BatchHeldQuestionSource)
+	if !ok {
+		return nil
+	}
+	routes, err := src.ActionableHeldQuestions(ctx, owner)
+	if err != nil {
+		return batchHeldQuestionAwaitError(routes)
+	}
+	if len(routes) == 0 {
+		return nil
+	}
+	return batchHeldQuestionAwaitError(routes)
+}
+
+func (g *batchCutoverGlueComponent) batchHeldQuestionResumeRefusal(ctx context.Context, owner, child string) string {
+	src, ok := g.host.batchGlueCutoverFacts().(BatchHeldQuestionSource)
+	if !ok {
+		return ""
+	}
+	routes, err := src.ActionableHeldQuestions(ctx, owner)
+	if err != nil {
+		return fmt.Sprintf("resume_session_id %q cannot be resumed while held-question state is unavailable; inspect_agent or inject_agent must address the existing child, not create another delegation", child)
+	}
+	if len(routes) == 0 {
+		return ""
+	}
+	var childRoutes []BatchHeldQuestionRoute
+	for _, route := range routes {
+		if route.ChildSessionID == child {
+			childRoutes = append(childRoutes, route)
+		}
+	}
+	if len(childRoutes) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"resume_session_id %q would queue a NEW run behind this child's HELD batch question; the held ask wakes only on inject_agent, so the queued run could not start. Answer the held question instead: %s",
+		child, batchHeldQuestionHintText(childRoutes))
+}
+
+func (g *batchCutoverGlueComponent) batchHeldQuestionResumeHint(ctx context.Context, owner string) string {
+	src, ok := g.host.batchGlueCutoverFacts().(BatchHeldQuestionSource)
+	if !ok {
+		return ""
+	}
+	routes, err := src.ActionableHeldQuestions(ctx, owner)
+	if err != nil || len(routes) == 0 {
+		return ""
+	}
+	return "\n" + batchHeldQuestionHintText(routes)
+}

@@ -27,11 +27,7 @@ type CLIActiveWorkSource interface {
 // closed with the error (the quota loop retries it under its bounded window,
 // never silently reads "idle").
 func (c *coordinator) CLIActiveWork(ctx context.Context, root string) (bool, error) {
-	facts := coordinatorBatchCutoverFacts(c)
-	if _, unbound := facts.(unknownBatchCutoverFacts); unbound {
-		return false, nil
-	}
-	return c.cliActiveWorkBatch(ctx, facts, root)
+	return (&cliActiveWorkComponent{host: c}).cliActiveWork(ctx, root)
 }
 
 // IsAwaitingAnswerFinish identifies durable question-stop metadata.
@@ -48,17 +44,39 @@ var _ CLIActiveWorkSource = (*coordinator)(nil)
 // active (the OFF branch's exclusion, mirrored through batch facts). A
 // failed read fails closed with the error.
 func (c *coordinator) cliActiveWorkBatch(ctx context.Context, facts BatchCutoverFacts, root string) (bool, error) {
+	return (&cliActiveWorkComponent{host: c}).cliActiveWorkBatch(ctx, facts, root)
+}
+
+type cliActiveWorkHost interface {
+	cliActiveWorkFacts() BatchCutoverFacts
+	recoverBatchScopeDeadCandidates(ctx context.Context, owner string)
+	backgroundOwnsWork(root string) bool
+	cliActiveWorkMessages() message.Service
+	childSessionBusy(child string) bool
+}
+
+type cliActiveWorkComponent struct{ host cliActiveWorkHost }
+
+func (w *cliActiveWorkComponent) cliActiveWork(ctx context.Context, root string) (bool, error) {
+	facts := w.host.cliActiveWorkFacts()
+	if _, unbound := facts.(unknownBatchCutoverFacts); unbound {
+		return false, nil
+	}
+	return w.cliActiveWorkBatch(ctx, facts, root)
+}
+
+func (w *cliActiveWorkComponent) cliActiveWorkBatch(ctx context.Context, facts BatchCutoverFacts, root string) (bool, error) {
 	// Scope-budgeted recovery (one
 	// 500ms budget, one candidate root attempt): recover the dead hosts this
 	// read is about to count as live, then answer from fresh reads below.
 	// Best-effort; exhaustion keeps the conservative active answer.
-	recoverBatchScopeDeadCandidates(ctx, c, root)
+	w.host.recoverBatchScopeDeadCandidates(ctx, root)
 	own, descendants, err := facts.LiveWorkSummary(ctx, root)
 	if err != nil {
 		return false, err
 	}
 	if own+descendants > 0 {
-		active, err := c.batchActiveAfterQuestionPause(ctx, facts, root)
+		active, err := w.batchActiveAfterQuestionPause(ctx, facts, root)
 		if err != nil {
 			return false, err
 		}
@@ -66,7 +84,7 @@ func (c *coordinator) cliActiveWorkBatch(ctx context.Context, facts BatchCutover
 			return true, nil
 		}
 	}
-	if c.background != nil && (c.background.ActiveOwned(root) > 0 || c.background.PendingCompletionsOwned(root) > 0) {
+	if w.host.backgroundOwnsWork(root) {
 		return true, nil
 	}
 	return false, nil
@@ -95,6 +113,10 @@ type batchPausedChild struct {
 // depth order (batch_read_live.go), so a conduit is classified after its
 // nested children.
 func (c *coordinator) batchActiveAfterQuestionPause(ctx context.Context, facts BatchCutoverFacts, root string) (bool, error) {
+	return (&cliActiveWorkComponent{host: c}).batchActiveAfterQuestionPause(ctx, facts, root)
+}
+
+func (w *cliActiveWorkComponent) batchActiveAfterQuestionPause(ctx context.Context, facts BatchCutoverFacts, root string) (bool, error) {
 	tree, err := facts.LiveNodes(ctx, root)
 	if err != nil {
 		return false, err
@@ -103,7 +125,7 @@ func (c *coordinator) batchActiveAfterQuestionPause(ctx context.Context, facts B
 	if err != nil {
 		return false, err
 	}
-	if c.messages == nil {
+	if w.host.cliActiveWorkMessages() == nil {
 		// No history reader: a question-paused child cannot be proven, so
 		// every live node stays active (the fail-closed answer).
 		return true, nil
@@ -139,10 +161,10 @@ func (c *coordinator) batchActiveAfterQuestionPause(ctx context.Context, facts B
 			continue
 		}
 		st := &childState{node: dc.node}
-		if ag := c.agentFor(dc.child); ag != nil && ag.IsSessionBusy(dc.child) {
+		if w.host.childSessionBusy(dc.child) {
 			st.busy = true
 		}
-		msgs, err := c.messages.List(ctx, dc.child)
+		msgs, err := w.host.cliActiveWorkMessages().List(ctx, dc.child)
 		if err != nil {
 			return false, err
 		}
@@ -165,7 +187,7 @@ func (c *coordinator) batchActiveAfterQuestionPause(ctx context.Context, facts B
 			paused[child] = batchPausedChild{toolCallID: st.node.ToolCallID, owner: st.node.SessionID, nodeID: st.node.NodeID, busy: st.busy}
 		}
 	}
-	committed, err := c.batchCommittedQuestionChildren(ctx, facts, paused)
+	committed, err := w.batchCommittedQuestionChildren(ctx, facts, paused)
 	if err != nil {
 		return false, err
 	}
@@ -229,6 +251,10 @@ func (c *coordinator) batchActiveAfterQuestionPause(ctx context.Context, facts B
 // current incarnation (LiveHeldQuestions filters dead node states and token
 // mismatches).
 func (c *coordinator) batchCommittedQuestionChildren(ctx context.Context, facts BatchCutoverFacts, paused map[string]batchPausedChild) (map[string]bool, error) {
+	return (&cliActiveWorkComponent{host: c}).batchCommittedQuestionChildren(ctx, facts, paused)
+}
+
+func (w *cliActiveWorkComponent) batchCommittedQuestionChildren(ctx context.Context, facts BatchCutoverFacts, paused map[string]batchPausedChild) (map[string]bool, error) {
 	committed := make(map[string]bool, len(paused))
 	byOwner := make(map[string][]string)
 	for child, p := range paused {
@@ -249,4 +275,25 @@ func (c *coordinator) batchCommittedQuestionChildren(ctx context.Context, facts 
 		}
 	}
 	return committed, nil
+}
+
+func (c *coordinator) cliActiveWorkFacts() BatchCutoverFacts {
+	return coordinatorBatchCutoverFacts(c)
+}
+
+func (c *coordinator) recoverBatchScopeDeadCandidates(ctx context.Context, owner string) {
+	recoverBatchScopeDeadCandidates(ctx, c, owner)
+}
+
+func (c *coordinator) backgroundOwnsWork(root string) bool {
+	return c.background != nil && (c.background.ActiveOwned(root) > 0 || c.background.PendingCompletionsOwned(root) > 0)
+}
+
+func (c *coordinator) cliActiveWorkMessages() message.Service {
+	return c.messages
+}
+
+func (c *coordinator) childSessionBusy(child string) bool {
+	ag := c.agentFor(child)
+	return ag != nil && ag.IsSessionBusy(child)
 }

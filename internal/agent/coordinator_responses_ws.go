@@ -23,25 +23,44 @@ func responsesWSReplayForbidden(err error) bool {
 // Published generations fence logout/relogin ABA at the next exchange.
 // Unrelated reloads rotate reuse, without revoking an active response.
 func (c *coordinator) codexWebSocketOptions() []codexprovider.WebSocketOptions {
-	if c.responsesWS == nil {
+	return (&codexWebSocketPolicyManager{host: c}).codexWebSocketOptions()
+}
+
+func (c *coordinator) currentCodexWebSocketPolicy() (codexprovider.WebSocketPolicy, config.NetworkConfig, error) {
+	return (&codexWebSocketPolicyManager{host: c}).currentCodexWebSocketPolicy()
+}
+
+type codexWebSocketPolicyHost interface {
+	responsesWSManager() *nettransport.ResponsesWSManager
+	responsesWSSnapshot() (*config.Config, uint64)
+	responsesWSResolveHTTPClient(*config.Config, config.ProviderConfig) (*http.Client, error)
+	responsesWSFallbackOpenaiProvider(baseURL, apiKey string, headers map[string]string, client *http.Client) (fantasy.Provider, error)
+}
+
+type codexWebSocketPolicyManager struct {
+	host codexWebSocketPolicyHost
+}
+
+func (m *codexWebSocketPolicyManager) codexWebSocketOptions() []codexprovider.WebSocketOptions {
+	if m.host.responsesWSManager() == nil {
 		return nil
 	}
-	manager := &codexWebSocketTransport{ResponsesWSManager: c.responsesWS, current: c.currentCodexWebSocketPolicy}
+	manager := &codexWebSocketTransport{ResponsesWSManager: m.host.responsesWSManager(), current: m.currentCodexWebSocketPolicy}
 	return []codexprovider.WebSocketOptions{{Manager: manager, EncodeFrame: nettransport.ResponsesWSCodexFullFrame, HTTPClient: func() (*http.Client, error) {
-		cfg, _ := c.cfg.Snapshot()
+		cfg, _ := m.host.responsesWSSnapshot()
 		pc, ok := cfg.Providers.Get(codexTokenProviderID)
 		if !ok || pc.Disable || pc.OAuthToken == nil {
 			return nil, errors.New("openai-codex credentials unavailable")
 		}
-		return c.resolveProviderHTTPClient(cfg, pc)
+		return m.host.responsesWSResolveHTTPClient(cfg, pc)
 	}, Current: func() (codexprovider.WebSocketPolicy, error) {
-		policy, _, err := c.currentCodexWebSocketPolicy()
+		policy, _, err := m.currentCodexWebSocketPolicy()
 		return policy, err
 	}}}
 }
 
-func (c *coordinator) currentCodexWebSocketPolicy() (codexprovider.WebSocketPolicy, config.NetworkConfig, error) {
-	cfg, revision := c.cfg.Snapshot()
+func (m *codexWebSocketPolicyManager) currentCodexWebSocketPolicy() (codexprovider.WebSocketPolicy, config.NetworkConfig, error) {
+	cfg, revision := m.host.responsesWSSnapshot()
 	pc, ok := cfg.Providers.Get(codexTokenProviderID)
 	if !ok || pc.Disable || pc.OAuthToken == nil {
 		return codexprovider.WebSocketPolicy{}, config.NetworkConfig{}, errors.New("openai-codex credentials unavailable")
@@ -102,12 +121,32 @@ var (
 	_ codexprovider.WebSocketExchangeError = (*nettransport.ResponsesWSError)(nil)
 )
 
+func (c *coordinator) responsesWSManager() *nettransport.ResponsesWSManager {
+	return c.responsesWS
+}
+
+func (c *coordinator) responsesWSSnapshot() (*config.Config, uint64) {
+	return c.cfg.Snapshot()
+}
+
+func (c *coordinator) responsesWSResolveHTTPClient(cfg *config.Config, providerCfg config.ProviderConfig) (*http.Client, error) {
+	return c.resolveProviderHTTPClient(cfg, providerCfg)
+}
+
+func (c *coordinator) responsesWSFallbackOpenaiProvider(baseURL, apiKey string, headers map[string]string, client *http.Client) (fantasy.Provider, error) {
+	return c.buildOpenaiProvider(baseURL, apiKey, headers, client)
+}
+
 func (c *coordinator) buildPublicResponsesProvider(pc config.ProviderConfig, baseURL, apiKey string, headers map[string]string, client *http.Client) (fantasy.Provider, error) {
-	if c.responsesWS == nil || pc.ID != "openai" || apiKey == "" || pc.OAuthToken != nil || (baseURL != "" && baseURL != "https://api.openai.com/v1" && baseURL != "https://api.openai.com/v1/") {
-		return c.buildOpenaiProvider(baseURL, apiKey, headers, client)
+	return (&codexWebSocketPolicyManager{host: c}).buildPublicResponsesProvider(pc, baseURL, apiKey, headers, client)
+}
+
+func (m *codexWebSocketPolicyManager) buildPublicResponsesProvider(pc config.ProviderConfig, baseURL, apiKey string, headers map[string]string, client *http.Client) (fantasy.Provider, error) {
+	if m.host.responsesWSManager() == nil || pc.ID != "openai" || apiKey == "" || pc.OAuthToken != nil || (baseURL != "" && baseURL != "https://api.openai.com/v1" && baseURL != "https://api.openai.com/v1/") {
+		return m.host.responsesWSFallbackOpenaiProvider(baseURL, apiKey, headers, client)
 	}
-	bridge := &publicResponsesClient{manager: c.responsesWS, originalHeaders: headers, current: func(ctx context.Context) (publicResponsesPolicy, error) {
-		snapshot, revision := c.cfg.Snapshot()
+	bridge := &publicResponsesClient{manager: m.host.responsesWSManager(), originalHeaders: headers, current: func(ctx context.Context) (publicResponsesPolicy, error) {
+		snapshot, revision := m.host.responsesWSSnapshot()
 		current, ok := snapshot.Providers.Get(pc.ID)
 		if !ok || current.Disable || current.APIKey == "" || current.Type != pc.Type {
 			return publicResponsesPolicy{}, errors.New("OpenAI credentials unavailable")
@@ -121,7 +160,7 @@ func (c *coordinator) buildPublicResponsesProvider(pc config.ProviderConfig, bas
 			global = snapshot.Options.Network
 			transport = snapshot.Options.ResponsesTransport
 		}
-		httpClient, err := c.resolveProviderHTTPClient(snapshot, current)
+		httpClient, err := m.host.responsesWSResolveHTTPClient(snapshot, current)
 		if err != nil {
 			return publicResponsesPolicy{}, err
 		}
@@ -131,7 +170,7 @@ func (c *coordinator) buildPublicResponsesProvider(pc config.ProviderConfig, bas
 		return publicResponsesPolicy{transport: config.EffectiveResponsesTransport(transport, current.ResponsesTransport), network: nettransport.ResolveNetworkConfig(global, current.Network), apiKey: current.APIKey, headers: current.ExtraHeaders, client: httpClient, revision: revision}, nil
 	}}
 	bridge.valid = func(used publicResponsesPolicy) bool {
-		snapshot, _ := c.cfg.Snapshot()
+		snapshot, _ := m.host.responsesWSSnapshot()
 		current, ok := snapshot.Providers.Get(pc.ID)
 		if !ok || current.Disable || current.Type != pc.Type || current.APIKey != used.apiKey || !maps.Equal(current.ExtraHeaders, used.headers) {
 			return false

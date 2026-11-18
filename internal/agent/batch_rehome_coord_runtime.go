@@ -180,19 +180,46 @@ func (h *batchDriverHints) dropIfIdle(id string) bool {
 // false -- the conservative answer is live/fact-driven, but a fixture has no
 // other process to be foreign.
 func (c *coordinator) foreignLiveDriver(ctx context.Context, owner string) (bool, error) {
-	if c == nil {
-		return false, nil
-	}
-	hs, ok := c.batchDriverClaimer.(*sessionhosts.HostStore)
-	if !ok || hs == nil {
+	return (&batchRehomeCoordRuntimeComponent{host: c}).foreignLiveDriver(ctx, owner)
+}
+
+// sessionNoticeStore returns the bound SessionNoticeStore, or nil.
+func (c *coordinator) sessionNoticeStore() *session.SessionNoticeStore {
+	return (&batchRehomeCoordRuntimeComponent{host: c}).sessionNoticeStore()
+}
+
+type batchRehomeCoordRuntimeHost interface {
+	foreignDriverClaimHostStore() *sessionhosts.HostStore
+	boundSessionNoticeStore() *session.SessionNoticeStore
+}
+
+type batchRehomeCoordRuntimeComponent struct{ host batchRehomeCoordRuntimeHost }
+
+func (w *batchRehomeCoordRuntimeComponent) foreignLiveDriver(ctx context.Context, owner string) (bool, error) {
+	hs := w.host.foreignDriverClaimHostStore()
+	if hs == nil {
 		return false, nil
 	}
 	_, foreign, err := hs.ForeignLiveDriver(ctx, owner)
 	return foreign, err
 }
 
-// sessionNoticeStore returns the bound SessionNoticeStore, or nil.
-func (c *coordinator) sessionNoticeStore() *session.SessionNoticeStore {
+func (w *batchRehomeCoordRuntimeComponent) sessionNoticeStore() *session.SessionNoticeStore {
+	return w.host.boundSessionNoticeStore()
+}
+
+func (c *coordinator) foreignDriverClaimHostStore() *sessionhosts.HostStore {
+	if c == nil {
+		return nil
+	}
+	hs, ok := c.batchDriverClaimer.(*sessionhosts.HostStore)
+	if !ok {
+		return nil
+	}
+	return hs
+}
+
+func (c *coordinator) boundSessionNoticeStore() *session.SessionNoticeStore {
 	if c == nil {
 		return nil
 	}

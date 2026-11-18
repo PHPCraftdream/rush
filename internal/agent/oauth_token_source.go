@@ -83,7 +83,31 @@ func copyOAuthToken(token oauth.Token) oauth.Token {
 
 // withOAuthBearerClient leaves SDK/static credentials alone unless a live OAuth store is available.
 func (c *coordinator) withOAuthBearerClient(pc config.ProviderConfig, client *http.Client) *http.Client {
-	if c == nil || c.cfg == nil || pc.OAuthToken == nil || (pc.ID != string(catwalk.InferenceProviderCopilot) && pc.ID != hyper.Name) {
+	return newOAuthBearerClientComponent(c).withOAuthBearerClient(pc, client)
+}
+
+type oauthBearerClientHost interface {
+	oauthTokenConfigStore() *config.ConfigStore
+	resolveProviderHTTPClient(cfg *config.Config, pc config.ProviderConfig) (*http.Client, error)
+}
+
+func (c *coordinator) oauthTokenConfigStore() *config.ConfigStore {
+	if c == nil {
+		return nil
+	}
+	return c.cfg
+}
+
+type oauthBearerClientComponent struct {
+	host oauthBearerClientHost
+}
+
+func newOAuthBearerClientComponent(c *coordinator) *oauthBearerClientComponent {
+	return &oauthBearerClientComponent{host: c}
+}
+
+func (o *oauthBearerClientComponent) withOAuthBearerClient(pc config.ProviderConfig, client *http.Client) *http.Client {
+	if o.host.oauthTokenConfigStore() == nil || pc.OAuthToken == nil || (pc.ID != string(catwalk.InferenceProviderCopilot) && pc.ID != hyper.Name) {
 		return client
 	}
 	if client == nil {
@@ -94,6 +118,6 @@ func (c *coordinator) withOAuthBearerClient(pc config.ProviderConfig, client *ht
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	copied.Transport = &oauthBearerTransport{base: base, providerID: pc.ID, source: &oauthTokenSource{providerID: pc.ID, store: c.cfg, resolve: c.resolveProviderHTTPClient}}
+	copied.Transport = &oauthBearerTransport{base: base, providerID: pc.ID, source: &oauthTokenSource{providerID: pc.ID, store: o.host.oauthTokenConfigStore(), resolve: o.host.resolveProviderHTTPClient}}
 	return &copied
 }

@@ -15,10 +15,8 @@ package agent
 
 import (
 	"context"
-	"log/slog"
 
 	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
 // BatchRerunStopper is the rerun stop surface (the only one; the legacy
@@ -72,54 +70,5 @@ func batchRerunRuntime(c *coordinator) (runner batchRunnerHandle, host string, s
 // retired) only means the executor's completion commits void instead of
 // being stopped early.
 func (c *coordinator) BatchRerunStopVoided(ctx context.Context, sessionID string, voided []session.BatchRerunVoidedNode) {
-	if c == nil || len(voided) == 0 {
-		return
-	}
-	runner, host, store := batchRerunRuntime(c)
-	if runner == nil || host == "" {
-		slog.Warn("coordinator.BatchRerunStopVoided: batch runtime not bound; voided incarnations retire by delivery fencing only",
-			"session_id", sessionID, "voided", len(voided))
-	}
-	for i := range voided {
-		v := voided[i]
-		// Stop every voided delegation's child tree first, regardless of the
-		// root's own state (the retained transitive-stop shape).
-		if v.ChildSessionID != "" {
-			c.stopTree(v.ChildSessionID)
-		}
-		if !batchRerunStopWorthy(v.State) {
-			continue
-		}
-		if runner == nil {
-			continue
-		}
-		if v.HostID != host {
-			slog.Warn("coordinator.BatchRerunStopVoided: voided running incarnation lives on another host; its executor is not stopped, its completion commits void",
-				"session_id", sessionID, "root_id", v.RootID, "tool_call_id", v.ToolCallID, "host_id", v.HostID)
-			continue
-		}
-		// Exact-incarnation guard AND repeated-stop suppression: re-read the
-		// row and stop only while THIS root is still live. The durable void
-		// already took delivery out of the pullable world; once the executor
-		// confirms the stop the root settles terminal, so a second pass over
-		// the same Voided set never cancels again — and a provider-reused
-		// tool_call_id on a NEW live root can never widen this stop onto the
-		// new incarnation.
-		if store != nil {
-			snap, err := store.Read(ctx, sessionID, v.RootID)
-			if err != nil {
-				slog.Warn("coordinator.BatchRerunStopVoided: voided incarnation row unreadable; skipping the stop",
-					"session_id", sessionID, "root_id", v.RootID, "err", err)
-				continue
-			}
-			if !batchRerunStopWorthy(snap.Root.State) {
-				continue
-			}
-		}
-		out := cancelBatchCall(ctx, runner, jobbatch.ID(v.RootID))
-		if out.Err != nil {
-			slog.Warn("coordinator.BatchRerunStopVoided: stop request failed; the completion commits void",
-				"session_id", sessionID, "root_id", v.RootID, "err", out.Err)
-		}
-	}
+	newBatchCutoverGlueComponent(c).batchRerunStopVoided(ctx, sessionID, voided)
 }

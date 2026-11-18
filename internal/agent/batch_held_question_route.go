@@ -218,59 +218,18 @@ type BatchHeldQuestionSource interface {
 // set (or an unreadable read) refuses the await before any sleep/timer is
 // armed. A coordinator whose facts lack the capability never gates.
 func (c *coordinator) heldQuestionAwaitRefusal(ctx context.Context, owner string) error {
-	src, ok := coordinatorBatchCutoverFacts(c).(BatchHeldQuestionSource)
-	if !ok {
-		return nil
-	}
-	routes, err := src.ActionableHeldQuestions(ctx, owner)
-	if err != nil {
-		return batchHeldQuestionAwaitError(routes)
-	}
-	if len(routes) == 0 {
-		return nil
-	}
-	return batchHeldQuestionAwaitError(routes)
+	return newBatchCutoverGlueComponent(c).heldQuestionAwaitRefusal(ctx, owner)
 }
 
 // batchHeldQuestionResumeRefusal запрещает новый Run при held-вопросе.
 // Ошибка чтения не доказывает отсутствие hold; legacy без capability не меняем.
 func (c *coordinator) batchHeldQuestionResumeRefusal(ctx context.Context, owner, child string) string {
-	src, ok := coordinatorBatchCutoverFacts(c).(BatchHeldQuestionSource)
-	if !ok {
-		return ""
-	}
-	routes, err := src.ActionableHeldQuestions(ctx, owner)
-	if err != nil {
-		return fmt.Sprintf("resume_session_id %q cannot be resumed while held-question state is unavailable; inspect_agent or inject_agent must address the existing child, not create another delegation", child)
-	}
-	if len(routes) == 0 {
-		return ""
-	}
-	var childRoutes []BatchHeldQuestionRoute
-	for _, route := range routes {
-		if route.ChildSessionID == child {
-			childRoutes = append(childRoutes, route)
-		}
-	}
-	if len(childRoutes) == 0 {
-		return ""
-	}
-	return fmt.Sprintf(
-		"resume_session_id %q would queue a NEW run behind this child's HELD batch question; the held ask wakes only on inject_agent, so the queued run could not start. Answer the held question instead: %s",
-		child, batchHeldQuestionHintText(childRoutes))
+	return newBatchCutoverGlueComponent(c).batchHeldQuestionResumeRefusal(ctx, owner, child)
 }
 
 // batchHeldQuestionResumeHint is the resume-error suffix for
 // runSubAgent's refusal branches: "" when the capability is absent, the
 // read fails, or no route exists.
 func (c *coordinator) batchHeldQuestionResumeHint(ctx context.Context, owner string) string {
-	src, ok := coordinatorBatchCutoverFacts(c).(BatchHeldQuestionSource)
-	if !ok {
-		return ""
-	}
-	routes, err := src.ActionableHeldQuestions(ctx, owner)
-	if err != nil || len(routes) == 0 {
-		return ""
-	}
-	return "\n" + batchHeldQuestionHintText(routes)
+	return newBatchCutoverGlueComponent(c).batchHeldQuestionResumeHint(ctx, owner)
 }

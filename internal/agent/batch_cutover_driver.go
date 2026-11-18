@@ -23,8 +23,5 @@ type BatchDriverClaimer interface {
 // when no store is bound -- never a typed nil pointer -- so the caller's
 // nil guard behaves like a concrete-pointer guard.
 func (c *coordinator) driverMarkerStore() BatchDriverClaimer {
-	if c == nil || c.batchDriverClaimer == nil {
-		return nil
-	}
-	return c.batchDriverClaimer
+	return newBatchCutoverGlueComponent(c).driverMarkerStore()
 }
