@@ -1,27 +1,9 @@
-// Per-delegated-child-session driver registry.
-//
-// A delegated sub-agent's turn runs on its own *sessionAgent* -- the task
-// agent runSubAgent's caller builds via coordinator.agentTool/buildAgent --
-// with its own mailbox and in-process session reservation, completely
-// separate from c.currentAgent (the root/interactive coder agent). Two
-// SessionAgent instances trying to acquire the SAME child session's OS-level
-// lock (internal/session.SessionLock) in the same process race each other:
-// the lock only tracks "does THIS process already hold it", not which
-// SessionAgent asked for it. If a wake for the child's own async-job or
-// background-job completion (notifyAsyncCompletion, coordinator_background.go)
-// is dispatched through c.Run -> c.currentAgent.Run while the task agent's
-// own Run for that exact child session is still in flight (mid-stream, still
-// holding the lock), the coder agent's mailbox has no record of the child
-// session at all, treats it as idle, and loses that race outright: "session
-// ... is already in use", holder_pid = this same process. See task #1049.
-//
-// The fix ("one driver per session", design doc
-// docs/plans/2026-09-27-async-structured-concurrency.md §3): every wake for
-// a delegated child session must be dispatched through the SAME SessionAgent
-// that is driving it. That agent's own mailbox either queues the wake behind
-// its live turn (drained by that turn's own end-of-turn loop, agent_run.go's
-// runOwned) or, once idle, starts it directly -- either way there is only
-// ever one claimant for the child's OS lock.
+// Sub-agent delegation drivers: the per-child-session driver snapshot and
+// registry, plus the subagentsComponent driver methods. Bodies moved from
+// coordinator_subagent_drivers.go (the subagentsComponent host pattern:
+// the component never holds the raw *coordinator, only the subAgentHost
+// port); coordinator_subagent_drivers.go keeps the thin coordinator
+// delegates.
 package agent
 
 import (
@@ -91,7 +73,7 @@ func (d subAgentDriver) callFor(prompt string) SessionAgentCall {
 // Phase 1/2 kept every entry for the coordinator's whole lifetime, on the
 // theory that the `agent` tool's resume_session_id path can re-drive the
 // SAME child session arbitrarily far in the future and dropping the entry
-// early would silently fall back to c.currentAgent for that later resume --
+// early would silently fall back to c.host.currentAgent() for that later resume --
 // reproducing task #1049 for old sessions. Phase 3 (§6.2) removes an entry
 // once its child's scope is CONFIRMED closed (releaseDriverIfScopeClosed;
 // in the batch world called from afterReleaseContext's
@@ -189,7 +171,7 @@ func (r *subAgentDriverRegistry) releaseIfCurrent(childSessionID string, g uint6
 // allDriverAgents returns the distinct SessionAgent instances currently
 // registered as delegation drivers (B18 fix, docs/reviews/2026-09-29-async-
 // phase4-round1.md): coordinator.CancelAll used to call ONLY
-// c.currentAgent.CancelAll(), never these -- a delegated child's driver is a
+// c.host.currentAgent().CancelAll(), never these -- a delegated child's driver is a
 // SEPARATE SessionAgent (task #1049), so its own in-flight Drain turn (built
 // on context.Background(), doc sec.3.4) survived process shutdown entirely.
 // Deduped by agent identity: SessionAgent is backed by a *sessionAgent
@@ -228,17 +210,17 @@ func (r *subAgentDriverRegistry) allDriverAgents() []SessionAgent {
 
 // agentFor resolves the SessionAgent that actually owns sessionID's mailbox:
 // the registered delegation driver, if any (a delegated child session runs
-// on its own task SessionAgent, never on c.currentAgent -- task #1049), else
-// c.currentAgent for every non-delegated session. Single choke point for
+// on its own task SessionAgent, never on c.host.currentAgent() -- task #1049), else
+// c.host.currentAgent() for every non-delegated session. Single choke point for
 // every coordinator method that dispatches a call/cancel/inject onto
 // "whichever SessionAgent owns this session id" -- wakeSession, Cancel,
 // InjectMessage (task #1054) all call this instead of each re-implementing
 // the same fallback.
-func (c *coordinator) agentFor(sessionID string) SessionAgent {
-	if driver, ok := c.subAgentDrivers.get(sessionID); ok {
+func (c *subagentsComponent) agentFor(sessionID string) SessionAgent {
+	if driver, ok := c.host.subAgentDrivers().get(sessionID); ok {
 		return driver.agent
 	}
-	return c.currentAgent
+	return c.host.currentAgent()
 }
 
 // releaseDriverIfScopeClosed removes childSessionID's driver record and its
@@ -258,8 +240,8 @@ func (c *coordinator) agentFor(sessionID string) SessionAgent {
 // allowlist entry under the SAME generation closes the matching window
 // there too (orchestrator decision 2026-09-28 item 2: closed by
 // construction, not accepted as residual risk).
-func (c *coordinator) releaseDriverIfScopeClosed(childSessionID string) {
-	driver, ok := c.subAgentDrivers.get(childSessionID)
+func (c *subagentsComponent) releaseDriverIfScopeClosed(childSessionID string) {
+	driver, ok := c.host.subAgentDrivers().get(childSessionID)
 	if !ok {
 		return
 	}
@@ -271,11 +253,11 @@ func (c *coordinator) releaseDriverIfScopeClosed(childSessionID string) {
 // earlier (releaseChildDriverIfScopeClosed) passes the generation it
 // observed, so a registration made after that observation is never removed on
 // the strength of a stale decision.
-func (c *coordinator) releaseDriverGeneration(childSessionID string, generation uint64) {
-	if !c.subAgentDrivers.releaseIfCurrent(childSessionID, generation) {
+func (c *subagentsComponent) releaseDriverGeneration(childSessionID string, generation uint64) {
+	if !c.host.subAgentDrivers().releaseIfCurrent(childSessionID, generation) {
 		return // a concurrent resume_session_id already re-registered -- not ours to release
 	}
-	if mgr, ok := c.permissions.(permission.SessionRunAllowlistManager); ok {
+	if mgr, ok := c.host.permissions().(permission.SessionRunAllowlistManager); ok {
 		mgr.ClearSessionRunAllowlistForGeneration(childSessionID, generation)
 	}
 }

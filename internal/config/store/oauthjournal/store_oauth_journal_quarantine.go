@@ -1,4 +1,4 @@
-package config
+package oauthjournal
 
 import (
 	"fmt"
@@ -13,8 +13,8 @@ import (
 )
 
 var (
-	oauthJournalQuarantineRename = os.Rename
-	oauthJournalQuarantineCopy   = func(source, destination string) error {
+	OAuthJournalQuarantineRename = os.Rename
+	OAuthJournalQuarantineCopy   = func(source, destination string) error {
 		data, err := os.ReadFile(source)
 		if err != nil {
 			return err
@@ -24,11 +24,11 @@ var (
 )
 
 // Caller holds the refresh sidecar; availability wins if preservation fails.
-func quarantineOAuthJournal(path string) {
+func Quarantine(path string) {
 	quarantineOAuthJournalWithLogging(path, false)
 }
 
-func quarantineOwnedOAuthJournal(path string) {
+func QuarantineOwned(path string) {
 	quarantineOAuthJournalWithLogging(path, true)
 }
 
@@ -39,10 +39,10 @@ func quarantineOAuthJournalWithLogging(path string, owned bool) {
 		err = syncOAuthQuarantineFile(path)
 	}
 	if err == nil {
-		err = oauthJournalQuarantineRename(path, name)
+		err = OAuthJournalQuarantineRename(path, name)
 	}
 	if err != nil {
-		err = oauthJournalQuarantineCopy(path, name)
+		err = OAuthJournalQuarantineCopy(path, name)
 		if err == nil {
 			err = os.Remove(path)
 		}
@@ -55,14 +55,14 @@ func quarantineOAuthJournalWithLogging(path string, owned bool) {
 	}
 	if err != nil {
 		if owned {
-			logOAuthJournalFailure(path, "quarantine", "Failed to preserve corrupt OAuth journal")
+			LogOAuthJournalFailure(path, "quarantine", "Failed to preserve corrupt OAuth journal")
 		} else {
 			slog.Error("Failed to preserve corrupt OAuth journal", "file", filepath.Base(path))
 		}
 		return
 	}
 	slog.Error("Quarantined corrupt OAuth journal", "file", filepath.Base(name))
-	pruneOAuthJournalQuarantines(path)
+	PruneQuarantines(path)
 }
 
 func syncOAuthQuarantineFile(path string) error {
@@ -78,7 +78,7 @@ func syncOAuthQuarantineFile(path string) error {
 }
 
 // Only this exact provider journal's numeric quarantine suffixes are eligible.
-func pruneOAuthJournalQuarantines(path string) {
+func PruneQuarantines(path string) {
 	entries, err := os.ReadDir(filepath.Dir(path))
 	if err != nil {
 		return

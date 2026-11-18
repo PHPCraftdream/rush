@@ -25,7 +25,7 @@ func TestSetProviderAPIKeySerializesDiskWriteAndPublication(t *testing.T) {
 	secondAtPublish := make(chan struct{})
 	releaseFirst := make(chan struct{})
 	var hooks atomic.Int32
-	store.credentialSetBeforePublish = func() {
+	store.oauthCredStore().SetCredentialSetBeforePublishForTest(t, func() {
 		switch hooks.Add(1) {
 		case 1:
 			close(firstAtPublish)
@@ -33,7 +33,7 @@ func TestSetProviderAPIKeySerializesDiskWriteAndPublication(t *testing.T) {
 		case 2:
 			close(secondAtPublish)
 		}
-	}
+	})
 
 	firstDone := make(chan error, 1)
 	secondDone := make(chan error, 1)
@@ -45,9 +45,9 @@ func TestSetProviderAPIKeySerializesDiskWriteAndPublication(t *testing.T) {
 	// publication is paused. If it does not, let the second setter reach its
 	// post-disk-write hook before releasing the first; this deterministically
 	// reproduces the stale publication ordering without scheduler delays.
-	unprotected := store.credentialWriteMu.TryLock()
+	unprotected := store.oauthCredStore().TryLockCredentialWriteMuForTest(t)
 	if unprotected {
-		store.credentialWriteMu.Unlock()
+		store.oauthCredStore().UnlockCredentialWriteMuForTest(t)
 	}
 	secondStarted := make(chan struct{})
 	go func() {
@@ -72,7 +72,7 @@ func TestSetProviderAPIKeySerializesDiskWriteAndPublication(t *testing.T) {
 	require.Equal(t, "second", pc.APIKey)
 	require.Equal(t, "second", pc.OAuthToken.AccessToken)
 	require.Equal(t, "second-refresh", pc.OAuthToken.RefreshToken)
-	disk, err := store.loadTokenFromDisk(ScopeGlobal, "p")
+	disk, err := store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "p")
 	require.NoError(t, err)
 	require.Equal(t, "second", disk.AccessToken)
 	require.Equal(t, "second-refresh", disk.RefreshToken)

@@ -86,7 +86,7 @@ func TestTask1296DigestlessRoutes(t *testing.T) {
 				case "recovery_journal", "recovery_outbox":
 					adopted, remaining, err := task1292Recover(t, f)
 					if delta >= 0 {
-						assert.ErrorIs(t, err, errOAuthCredentialCAS)
+						assert.ErrorIs(t, err, f.store.oauthCredStore().ErrCredentialCAS())
 						assert.Nil(t, adopted)
 					} else {
 						assert.NoError(t, err)
@@ -99,7 +99,7 @@ func TestTask1296DigestlessRoutes(t *testing.T) {
 					assert.True(t, settled)
 					assert.Nil(t, f.store.oauthOutboxCurrent(f.path, f.used.ID))
 					f.store.publishMu.Lock()
-					_, pending := f.store.pendingOAuth[f.used.ID]
+					_, pending := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
 					f.store.publishMu.Unlock()
 					assert.False(t, pending)
 				case "worker_journal":
@@ -108,7 +108,7 @@ func TestTask1296DigestlessRoutes(t *testing.T) {
 					done, err := f.store.oauthJournalWorkerAttempt(ctx, ScopeGlobal, f.used.ID, 0)
 					assert.False(t, done)
 					if delta >= 0 {
-						assert.ErrorIs(t, err, errOAuthCredentialCAS)
+						assert.ErrorIs(t, err, f.store.oauthCredStore().ErrCredentialCAS())
 					} else {
 						assert.NoError(t, err)
 						disk, readErr := readOAuthJournalDiskToken(f.path, f.used.ID)
@@ -147,7 +147,7 @@ func TestTask1296DigestlessCallers(t *testing.T) {
 			if caller == "A" {
 				assert.NoError(t, err)
 			} else {
-				assert.ErrorIs(t, err, errOAuthCredentialCAS)
+				assert.ErrorIs(t, err, f.store.oauthCredStore().ErrCredentialCAS())
 			}
 			task1296State(t, f, c, before)
 			persisted, err := readOAuthJournal(oauthJournalPath(f.path, f.used.ID))
@@ -169,7 +169,9 @@ func TestTask1296ErrorBranchEqualLiveHasNoPredecessor(t *testing.T) {
 			pc.OAuthToken, pc.APIKey = f.next, ""
 			f.store.SetProviderRuntimeConfig(pc.ID, pc)
 			f.store.publishMu.Lock()
-			delete(f.store.pendingOAuth, pc.ID)
+			if entry, ok := f.store.oauthCredStore().PendingRotationForTest(t, pc.ID); ok {
+				f.store.oauthCredStore().DeletePendingOAuthIfTokenLocked(pc.ID, &entry.Token)
+			}
 			f.store.publishMu.Unlock()
 			require.NoError(t, os.WriteFile(f.path, []byte("{"), 0o600))
 			require.NoError(t, writeOAuthJournalOnce(oauthJournalPath(f.path, pc.ID), record))
@@ -178,7 +180,7 @@ func TestTask1296ErrorBranchEqualLiveHasNoPredecessor(t *testing.T) {
 			assert.Equal(t, f.next, adopted)
 			assert.Equal(t, record, remaining)
 			f.store.publishMu.Lock()
-			_, pending := f.store.pendingOAuth[pc.ID]
+			_, pending := f.store.oauthCredStore().PendingRotationForTest(t, pc.ID)
 			f.store.publishMu.Unlock()
 			assert.False(t, pending, "equal live B must not become its own predecessor")
 		})

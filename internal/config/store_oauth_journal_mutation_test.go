@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/stretchr/testify/require"
 )
 
@@ -13,10 +14,10 @@ import (
 func TestOAuthJournal_ReturnRetainsPendingBeforeWorker(t *testing.T) {
 	f := newCodexRefreshReloadFixture(t)
 	stubCodexRefresh(t, func(context.Context, *http.Client, string) (*oauth.Token, error) { return f.next, nil })
-	old := oauthJournalBeforeWorker
+	old := oauthjournal.OAuthJournalBeforeWorker
 	entered := make(chan struct{})
-	oauthJournalBeforeWorker = func(ctx context.Context) { close(entered); <-ctx.Done() }
-	t.Cleanup(func() { oauthJournalBeforeWorker = old })
+	oauthjournal.OAuthJournalBeforeWorker = func(ctx context.Context) { close(entered); <-ctx.Done() }
+	t.Cleanup(func() { oauthjournal.OAuthJournalBeforeWorker = old })
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	require.NoError(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil))
 	awaitCodexSignal(t, entered)

@@ -46,7 +46,7 @@ func TestLoadTokenFromDisk_ReturnsNewerToken(t *testing.T) {
 		globalDataPath: configPath,
 	})
 
-	token, err := store.loadTokenFromDisk(ScopeGlobal, "hyper")
+	token, err := store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "hyper")
 	require.NoError(t, err)
 	require.NotNil(t, token)
 	require.Equal(t, "newer-token-from-disk", token.AccessToken)
@@ -81,7 +81,7 @@ func TestLoadTokenFromDisk_ReturnsNilWhenSameToken(t *testing.T) {
 		globalDataPath: configPath,
 	})
 
-	token, err := store.loadTokenFromDisk(ScopeGlobal, "hyper")
+	token, err := store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "hyper")
 	require.NoError(t, err)
 	require.NotNil(t, token)
 	require.Equal(t, "same-token", token.AccessToken)
@@ -98,7 +98,7 @@ func TestLoadTokenFromDisk_ReturnsNilWhenFileMissing(t *testing.T) {
 		globalDataPath: configPath,
 	})
 
-	token, err := store.loadTokenFromDisk(ScopeGlobal, "hyper")
+	token, err := store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "hyper")
 	require.NoError(t, err)
 	require.Nil(t, token)
 }
@@ -118,7 +118,7 @@ func TestLoadTokenFromDisk_ReturnsNilWhenProviderMissing(t *testing.T) {
 		globalDataPath: configPath,
 	})
 
-	token, err := store.loadTokenFromDisk(ScopeGlobal, "hyper")
+	token, err := store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "hyper")
 	require.NoError(t, err)
 	require.Nil(t, token)
 }
@@ -138,7 +138,7 @@ func TestLoadTokenFromDisk_ReturnsNilWhenOAuthMissing(t *testing.T) {
 		globalDataPath: configPath,
 	})
 
-	token, err := store.loadTokenFromDisk(ScopeGlobal, "hyper")
+	token, err := store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "hyper")
 	require.NoError(t, err)
 	require.Nil(t, token)
 }
@@ -455,7 +455,7 @@ func TestRefreshOAuthToken_DiskReplacementWinsConcurrentRefresh(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("refresh did not return")
 	}
-	diskToken, err := store.loadTokenFromDisk(ScopeGlobal, catalog.HyperName)
+	diskToken, err := store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, catalog.HyperName)
 	require.NoError(t, err)
 	require.Equal(t, replacement.AccessToken, diskToken.AccessToken)
 	require.Equal(t, replacement.RefreshToken, diskToken.RefreshToken)
@@ -504,7 +504,7 @@ func TestRefreshOAuthToken_CommittedDurabilityErrorSynchronizesMemory(t *testing
 	require.True(t, ok)
 	require.Equal(t, refreshed.AccessToken, current.APIKey)
 	require.Equal(t, refreshed.RefreshToken, current.OAuthToken.RefreshToken)
-	diskToken, err := store.loadTokenFromDisk(ScopeGlobal, catalog.HyperName)
+	diskToken, err := store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, catalog.HyperName)
 	require.NoError(t, err)
 	require.Equal(t, refreshed.AccessToken, diskToken.AccessToken)
 }

@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -81,11 +83,11 @@ func waitOAuthJournalIdle(t *testing.T, done <-chan struct{}) {
 
 func hookOAuthJournalFastRetry(t *testing.T) {
 	t.Helper()
-	old := oauthJournalWorkerWait
-	oauthJournalWorkerWait = func(ctx context.Context, _ time.Duration) error {
+	old := oauthjournal.OAuthJournalWorkerWait
+	oauthjournal.OAuthJournalWorkerWait = func(ctx context.Context, _ time.Duration) error {
 		return ctx.Err()
 	}
-	t.Cleanup(func() { oauthJournalWorkerWait = old })
+	t.Cleanup(func() { oauthjournal.OAuthJournalWorkerWait = old })
 	joinOAuthJournalTestStoresBeforeRestore(t)
 }
 

@@ -2,6 +2,10 @@ package agent
 
 import "github.com/PHPCraftdream/rush/internal/store/message"
 
+func deferUserMessagesPastToolRound(msgs []message.Message) []message.Message {
+	return (sessionPromptComponent{}).deferUserMessagesPastToolRound(msgs)
+}
+
 // deferUserMessagesPastToolRound reorders history so a user message persisted
 // between an assistant tool_use message and the tool message carrying its
 // results (a web InjectMessage or `rush sessions inject` landing while the
@@ -11,7 +15,7 @@ import "github.com/PHPCraftdream/rush/internal/store/message"
 // A round whose results never arrive is left untouched: the orphan filter
 // supplies a synthetic result right after the assistant message, which is
 // already valid.
-func deferUserMessagesPastToolRound(msgs []message.Message) []message.Message {
+func (sessionPromptComponent) deferUserMessagesPastToolRound(msgs []message.Message) []message.Message {
 	out := make([]message.Message, 0, len(msgs))
 	for i := 0; i < len(msgs); i++ {
 		m := msgs[i]

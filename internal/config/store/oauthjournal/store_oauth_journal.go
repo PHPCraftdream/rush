@@ -1,4 +1,4 @@
-package config
+package oauthjournal
 
 import (
 	"bytes"
@@ -20,31 +20,48 @@ import (
 )
 
 var (
-	errOAuthJournalRead    = errors.New("OAuth journal cannot be read")
-	errOAuthJournalDisk    = errors.New("OAuth config cannot be verified")
-	errOAuthJournalInvalid = docread.ErrOAuthJournalInvalid()
+	ErrOAuthJournalRead    = errors.New("OAuth journal cannot be read")
+	ErrOAuthJournalDisk    = errors.New("OAuth config cannot be verified")
+	ErrOAuthJournalInvalid = docread.ErrOAuthJournalInvalid()
 	// Serial test seams must be restored only after their users have joined.
-	oauthJournalReadWait     = waitCodexRefresh
-	oauthJournalReadBackoffs = []time.Duration{200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond}
-	oauthJournalReadFile     = os.ReadFile
-	oauthJournalAtomicWrite  = cfgcommit.AtomicWriteFile
-	oauthJournalRetryWait    = waitCodexRefresh
+	OAuthJournalReadWait     = defaultWaitCodexRefresh
+	OAuthJournalReadBackoffs = []time.Duration{200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond}
+	OAuthJournalReadFile     = os.ReadFile
+	OAuthJournalAtomicWrite  = cfgcommit.AtomicWriteFile
+	OAuthJournalRetryWait    = defaultWaitCodexRefresh
 	// Serial tests shrink the future synchronous write budget before workers start.
-	oauthJournalWriteBudget = 5 * time.Second
+	OAuthJournalWriteBudget = 5 * time.Second
 )
 
-type oauthJournalDecision uint8
+// defaultWaitCodexRefresh mirrors the root store's waitCodexRefresh: a plain
+// interruptible sleep. Free functions cannot reach the port, so the wait
+// seams default to this; the root wiring assigns its own implementation.
+func defaultWaitCodexRefresh(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return ctx.Err()
+	}
+}
+
+type Decision uint8
 
 const (
-	oauthJournalError oauthJournalDecision = iota
-	oauthJournalEqual
-	oauthJournalPredecessor
-	oauthJournalDiskLaterOrTie
-	oauthJournalLater
-	oauthJournalLogout
+	OAuthJournalError Decision = iota
+	OAuthJournalEqual
+	OAuthJournalPredecessor
+	OAuthJournalDiskLaterOrTie
+	OAuthJournalLater
+	OAuthJournalLogout
 )
 
-func oauthRefreshTokenSHA256(token *oauth.Token) string {
+// Record is the on-disk OAuth journal document.
+type Record = docread.OAuthJournalRecord
+
+func RefreshTokenSHA256(token *oauth.Token) string {
 	if token == nil {
 		return ""
 	}
@@ -52,15 +69,15 @@ func oauthRefreshTokenSHA256(token *oauth.Token) string {
 	return hex.EncodeToString(digest[:])
 }
 
-func oauthRotationDigest(previous, token *oauth.Token) string {
+func RotationDigest(previous, token *oauth.Token) string {
 	if previous == nil || token == nil || previous.RefreshToken == "" || token.RefreshToken == "" || previous.RefreshToken == token.RefreshToken {
 		return ""
 	}
-	return oauthRefreshTokenSHA256(previous)
+	return RefreshTokenSHA256(previous)
 }
 
 // Unchanged credentials establish lineage without claiming a burned token.
-func oauthJournalLivePredecessor(record *oauthJournalRecord, live *oauth.Token) bool {
+func LivePredecessor(record *docread.OAuthJournalRecord, live *oauth.Token) bool {
 	if record == nil || live == nil {
 		return false
 	}
@@ -68,16 +85,16 @@ func oauthJournalLivePredecessor(record *oauthJournalRecord, live *oauth.Token) 
 		// A digest equal to the record token's own refresh digest could only come from an
 		// untagged build between 15ef615e and 9e62125f and is cleared by any later recovery,
 		// so it is not normalized on read.
-		return oauthRefreshTokenSHA256(live) == record.PredecessorRefreshTokenSHA256
+		return RefreshTokenSHA256(live) == record.PredecessorRefreshTokenSHA256
 	}
 	// Same-refresh generations are ordered only by the arbiter's expiry rule.
-	return record.Token != nil && live.RefreshToken != "" && live.RefreshToken == record.Token.RefreshToken && arbitrateOAuthJournal(record, nil, live, nil) == oauthJournalLater
+	return record.Token != nil && live.RefreshToken != "" && live.RefreshToken == record.Token.RefreshToken && Arbitrate(record, nil, live, nil) == OAuthJournalLater
 }
 
 // The legacy primary digest and optional additional digests form one set.
-func oauthJournalWithBurned(record *oauthJournalRecord, digests ...string) oauthJournalRecord {
+func WithBurned(record *docread.OAuthJournalRecord, digests ...string) docread.OAuthJournalRecord {
 	copyRecord := *record
-	successor := oauthRefreshTokenSHA256(record.Token)
+	successor := RefreshTokenSHA256(record.Token)
 	if copyRecord.PredecessorRefreshTokenSHA256 == successor {
 		copyRecord.PredecessorRefreshTokenSHA256 = ""
 	}
@@ -91,38 +108,38 @@ func oauthJournalWithBurned(record *oauthJournalRecord, digests ...string) oauth
 }
 
 // Anchor selection never reads config contents, including malformed JSON.
-func oauthJournalPath(configPath, providerID string) string {
+func JournalPath(configPath, providerID string) string {
 	return docread.NormalizeReloadPath(configPath) + ".oauth-pending-" + docread.OAuthJournalDigest(providerID) + ".json"
 }
 
 // Missing journals are normal; unreadable or corrupt journals are kept.
-func readOAuthJournal(path string) (*oauthJournalRecord, error) {
-	data, err := oauthJournalReadFile(path)
+func ReadJournal(path string) (*docread.OAuthJournalRecord, error) {
+	data, err := OAuthJournalReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		logOAuthJournalFailure(path, "read", "Failed to read OAuth journal")
-		return nil, errOAuthJournalRead
+		LogOAuthJournalFailure(path, "read", "Failed to read OAuth journal")
+		return nil, ErrOAuthJournalRead
 	}
 	return docread.ParseOAuthJournal(path, data)
 }
 
 // Bounded leader retries hand remaining durability work to the store outbox.
-func writeOAuthJournalUntilDurable(parent context.Context, path string, record *oauthJournalRecord) error {
-	ctx, cancel := context.WithTimeout(parent, oauthJournalWriteBudget)
+func WriteJournalUntilDurable(parent context.Context, path string, record *docread.OAuthJournalRecord) error {
+	ctx, cancel := context.WithTimeout(parent, OAuthJournalWriteBudget)
 	defer cancel()
 	delay := 50 * time.Millisecond
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := writeOAuthJournalOnce(path, record); err == nil {
+		if err := WriteJournalOnce(path, record); err == nil {
 			return nil
-		} else if errors.Is(err, errOAuthJournalInvalid) {
+		} else if errors.Is(err, ErrOAuthJournalInvalid) {
 			return err
 		}
-		if err := oauthJournalRetryWait(ctx, delay); err != nil {
+		if err := OAuthJournalRetryWait(ctx, delay); err != nil {
 			return err
 		}
 		delay = min(delay*2, 5*time.Second)
@@ -130,45 +147,45 @@ func writeOAuthJournalUntilDurable(parent context.Context, path string, record *
 }
 
 // A worker attempts one write without waiting under its refresh sidecar.
-func writeOAuthJournalOnce(path string, record *oauthJournalRecord) error {
+func WriteJournalOnce(path string, record *docread.OAuthJournalRecord) error {
 	if !docread.ValidOAuthJournal(record) {
-		return errOAuthJournalInvalid
+		return ErrOAuthJournalInvalid
 	}
 	data, err := json.Marshal(record)
 	if err != nil {
-		return errOAuthJournalInvalid
+		return ErrOAuthJournalInvalid
 	}
 	data, encErr := docread.EncodeSettingsDocument(data, docread.SettingsDocumentFormatOf(path))
 	if encErr != nil {
-		return errOAuthJournalInvalid
+		return ErrOAuthJournalInvalid
 	}
 	err = os.MkdirAll(filepath.Dir(path), 0o700)
 	if err == nil {
-		err = oauthJournalAtomicWrite(path, data, 0o600)
+		err = OAuthJournalAtomicWrite(path, data, 0o600)
 	}
 	if err != nil {
-		return errOAuthJournalDisk
+		return ErrOAuthJournalDisk
 	}
 	return nil
 }
 
 // A successful read of a valid document is required to establish logout.
-func readOAuthJournalDiskToken(path, providerID string) (*oauth.Token, error) {
+func ReadJournalDiskToken(path, providerID string) (*oauth.Token, error) {
 	doc, err := docread.ReadSettingsDocument(path)
 	if err != nil {
-		return nil, errOAuthJournalDisk
+		return nil, ErrOAuthJournalDisk
 	}
-	return decodeOAuthJournalDiskToken(doc.JSONBytes, providerID)
+	return DecodeOAuthJournalDiskToken(doc.JSONBytes, providerID)
 }
 
 // Order: uncertainty, proven logout, equal, burned predecessor, then expiry.
 // Without ownership, live is the reference and no predecessor digest is used.
-func arbitrateOAuthJournal(record *oauthJournalRecord, predecessor, disk *oauth.Token, diskErr error, live ...*oauth.Token) oauthJournalDecision {
+func Arbitrate(record *docread.OAuthJournalRecord, predecessor, disk *oauth.Token, diskErr error, live ...*oauth.Token) Decision {
 	if diskErr != nil {
-		return oauthJournalError
+		return OAuthJournalError
 	}
 	if disk == nil {
-		return oauthJournalLogout
+		return OAuthJournalLogout
 	}
 	var reference *oauth.Token
 	if record != nil {
@@ -177,92 +194,92 @@ func arbitrateOAuthJournal(record *oauthJournalRecord, predecessor, disk *oauth.
 		reference = live[0]
 	}
 	if reference == nil {
-		return oauthJournalError
+		return OAuthJournalError
 	}
 	if reflect.DeepEqual(disk, reference) {
-		return oauthJournalEqual
+		return OAuthJournalEqual
 	}
-	if predecessor != nil && oauthRotationDigest(predecessor, reference) != "" && reflect.DeepEqual(disk, predecessor) ||
-		record != nil && (record.PredecessorRefreshTokenSHA256 != "" && oauthRefreshTokenSHA256(disk) == record.PredecessorRefreshTokenSHA256 || slices.Contains(record.BurnedRefreshTokenSHA256, oauthRefreshTokenSHA256(disk))) {
-		return oauthJournalPredecessor
+	if predecessor != nil && RotationDigest(predecessor, reference) != "" && reflect.DeepEqual(disk, predecessor) ||
+		record != nil && (record.PredecessorRefreshTokenSHA256 != "" && RefreshTokenSHA256(disk) == record.PredecessorRefreshTokenSHA256 || slices.Contains(record.BurnedRefreshTokenSHA256, RefreshTokenSHA256(disk))) {
+		return OAuthJournalPredecessor
 	}
 	if disk.ExpiresAt >= reference.ExpiresAt {
-		return oauthJournalDiskLaterOrTie
+		return OAuthJournalDiskLaterOrTie
 	}
-	return oauthJournalLater
+	return OAuthJournalLater
 }
 
 // Caller holds refresh/config locks; equal bytes alone do not prove durability.
-func verifyOAuthJournalConfigDurable(path, providerID string, token *oauth.Token) error {
+func VerifyConfigDurable(path, providerID string, token *oauth.Token) error {
 	physical := docread.ReadSlotOf(path)
 	file, err := os.OpenFile(physical, os.O_RDWR, 0)
 	if err != nil {
-		return errOAuthJournalDisk
+		return ErrOAuthJournalDisk
 	}
 	defer file.Close()
 	data, err := io.ReadAll(file)
 	if err != nil {
-		return errOAuthJournalDisk
+		return ErrOAuthJournalDisk
 	}
 	jsonBytes, decodeErr := docread.DecodeConfigDocument(physical, data)
 	if decodeErr != nil {
-		return errOAuthJournalDisk
+		return ErrOAuthJournalDisk
 	}
-	disk, err := decodeOAuthJournalDiskToken(jsonBytes, providerID)
+	disk, err := DecodeOAuthJournalDiskToken(jsonBytes, providerID)
 	if err != nil || !reflect.DeepEqual(disk, token) {
-		return errOAuthJournalDisk
+		return ErrOAuthJournalDisk
 	}
 	info, err := file.Stat()
 	if err != nil {
-		return errOAuthJournalDisk
+		return ErrOAuthJournalDisk
 	}
 	if file.Sync() != nil {
-		return errOAuthJournalDisk
+		return ErrOAuthJournalDisk
 	}
 	if err := file.Close(); err != nil {
-		return errOAuthJournalDisk
+		return ErrOAuthJournalDisk
 	}
-	if oauthJournalConfigSyncParent(filepath.Dir(path)) != nil {
-		return errOAuthJournalDisk
+	if OAuthJournalConfigSyncParent(filepath.Dir(path)) != nil {
+		return ErrOAuthJournalDisk
 	}
 	// Detect replacement of the synced inode before authorizing journal removal.
 	current, err := os.Stat(physical)
 	if err != nil || !os.SameFile(info, current) {
-		return errOAuthJournalDisk
+		return ErrOAuthJournalDisk
 	}
 	verified, err := os.ReadFile(physical)
 	if err != nil || !bytes.Equal(data, verified) {
-		return errOAuthJournalDisk
+		return ErrOAuthJournalDisk
 	}
 	return nil
 }
 
 // Only proven completion or explicit stale/logout arbitration permits removal.
-func removeOAuthJournal(path, configPath, providerID string, record *oauthJournalRecord, decision oauthJournalDecision) error {
-	latest, err := readOAuthJournal(path)
+func RemoveJournal(path, configPath, providerID string, record *docread.OAuthJournalRecord, decision Decision) error {
+	latest, err := ReadJournal(path)
 	if err != nil {
 		return err
 	}
 	if !reflect.DeepEqual(latest, record) {
-		return errOAuthJournalDisk
+		return ErrOAuthJournalDisk
 	}
-	disk, diskErr := readOAuthJournalDiskToken(configPath, providerID)
-	if arbitrateOAuthJournal(record, nil, disk, diskErr) != decision {
-		return errOAuthJournalDisk
+	disk, diskErr := ReadJournalDiskToken(configPath, providerID)
+	if Arbitrate(record, nil, disk, diskErr) != decision {
+		return ErrOAuthJournalDisk
 	}
 	switch decision {
-	case oauthJournalEqual, oauthJournalDiskLaterOrTie, oauthJournalLogout:
-		if record == nil || verifyOAuthJournalConfigDurable(configPath, providerID, disk) != nil {
-			return errOAuthJournalDisk
+	case OAuthJournalEqual, OAuthJournalDiskLaterOrTie, OAuthJournalLogout:
+		if record == nil || VerifyConfigDurable(configPath, providerID, disk) != nil {
+			return ErrOAuthJournalDisk
 		}
 	default:
-		return errOAuthJournalDisk
+		return ErrOAuthJournalDisk
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return errOAuthJournalDisk
+		return ErrOAuthJournalDisk
 	}
 	if cfgcommit.SyncConfigParent(filepath.Dir(path)) != nil {
-		return errOAuthJournalDisk
+		return ErrOAuthJournalDisk
 	}
 	return nil
 }

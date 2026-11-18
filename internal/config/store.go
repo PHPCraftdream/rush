@@ -13,6 +13,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/store/mcpstore"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthcred"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/PHPCraftdream/rush/internal/config/store/settings"
 )
 
@@ -152,16 +154,12 @@ type ConfigStore struct {
 	// path that runs under a held publishMu.
 	publishMu sync.Mutex
 
-	pendingOAuth map[string]pendingOAuthRotation      // Guarded by publishMu.
-	oauthOutbox  map[oauthOutboxKey]*oauthOutboxEntry // Guarded by publishMu.
-
-	// OAuth workers belong to this store, independently of refresh callers.
-	oauthWorkerMu        sync.Mutex
-	oauthWorkerCtx       context.Context
-	oauthWorkerCancel    context.CancelFunc
-	oauthWorkers         map[string]*oauthJournalWorker
-	oauthWorkerWG        sync.WaitGroup
-	oauthDiskSyncStarted bool // Guarded by oauthWorkerMu.
+	// OAuth workers and the pending-rotation outbox live in the oauthjournal
+	// component; pending rotations, credential write serialization and the
+	// disk-sync started flag live in the oauthcred component (X4).
+	oauthJournalOnce sync.Once
+	oauthjournal     *oauthjournal.Store
+	oauthCred        *oauthcred.Store
 
 	// Config disk sync worker (role-model hot reload poller). Kept separate
 	// from the OAuth worker block so its lifecycle stays independent.
@@ -176,11 +174,8 @@ type ConfigStore struct {
 	configSyncStopped bool
 	configSyncOpts    ConfigDiskSyncOptions
 
-	// credentialWriteMu serializes credential disk writes through their
-	// in-memory publication. It is separate from publishMu so auto-reload
-	// can acquire publishMu while a credential write is in progress.
-	credentialWriteMu          sync.Mutex
-	credentialSetBeforePublish func() // Test seam; guarded by credentialWriteMu.
+	// Credential write serialization moved to the oauthcred component (X4);
+	// the root keeps no credential-specific mutex.
 
 	// diskWriteMu serialises the on-disk read-modify-write cycle
 	// (os.ReadFile → sjson.Set/Delete → atomicWriteFile) in
@@ -347,6 +342,7 @@ func NewStore(workingDir, globalDataPath string, dataDirSource DataDirSource, sh
 	}
 	s.settings = s.settingsStore()
 	s.mcp = s.mcpStore()
+	s.oauthCred = s.oauthCredStore()
 	if seed != nil {
 		s.snap.Store(&storeSnapshot{
 			config:           seed.Config,
@@ -667,6 +663,7 @@ func NewTestStoreWithResolver(cfg *Config, resolver VariableResolver, loadedPath
 	s := &ConfigStore{}
 	s.settings = s.settingsStore()
 	s.mcp = s.mcpStore()
+	s.oauthCred = s.oauthCredStore()
 	s.snap.Store(&storeSnapshot{
 		config:           cfg,
 		resolver:         resolver,
@@ -693,6 +690,7 @@ func NewLibraryStore(cfg *Config, workingDir string) *ConfigStore {
 	s := &ConfigStore{workingDir: workingDir}
 	s.settings = s.settingsStore()
 	s.mcp = s.mcpStore()
+	s.oauthCred = s.oauthCredStore()
 	s.snap.Store(&storeSnapshot{
 		config:           cfg,
 		resolver:         IdentityResolver(),
@@ -726,6 +724,7 @@ func newTestConfigStore(opts testStoreOpts) *ConfigStore {
 	s := &ConfigStore{globalDataPath: opts.globalDataPath}
 	s.settings = s.settingsStore()
 	s.mcp = s.mcpStore()
+	s.oauthCred = s.oauthCredStore()
 	s.snap.Store(&storeSnapshot{
 		config:           opts.config,
 		workspacePath:    opts.workspacePath,

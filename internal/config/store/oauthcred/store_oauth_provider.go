@@ -1,4 +1,4 @@
-package config
+package oauthcred
 
 import (
 	"context"
@@ -9,63 +9,64 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 )
 
-type oauthProviderDescriptor struct {
+// Descriptor describes one OAuth-capable provider: how to exchange a refresh
+// token and whether the provider rotates (burns) refresh tokens.
+type Descriptor struct {
 	id                string
 	exchange          func(context.Context, *http.Client, string) (*oauth.Token, error)
 	preserveAccountID bool
 	rotating          bool
 }
 
-// Serial tests may replace descriptors; restore only after workers join.
-var oauthProviderDescriptorsOverride func() []oauthProviderDescriptor
-
-func oauthProviderDescriptors() []oauthProviderDescriptor {
-	if oauthProviderDescriptorsOverride != nil {
-		return oauthProviderDescriptorsOverride()
+func (s *Store) oauthProviderDescriptors() []Descriptor {
+	if override := s.descriptorsOverride(); override != nil {
+		return override()
 	}
 	// Copilot reuses its credential; Hyper's rotation contract is unknown.
-	return []oauthProviderDescriptor{
+	return []Descriptor{
 		{
 			id: "openai-codex", rotating: true, preserveAccountID: true,
 			exchange: func(ctx context.Context, client *http.Client, refresh string) (*oauth.Token, error) {
-				return codexRefreshTokenFn(ctx, client, refresh)
+				return s.codexRefreshTokenFn()(ctx, client, refresh)
 			},
 		},
 		{
 			id: string(catwalk.InferenceProviderCopilot),
 			exchange: func(ctx context.Context, client *http.Client, refresh string) (*oauth.Token, error) {
-				return copilotRefreshTokenFn(ctx, client, refresh)
+				return s.copilotRefreshTokenFn()(ctx, client, refresh)
 			},
 		},
 		{
 			id: catalog.HyperName,
 			exchange: func(ctx context.Context, client *http.Client, refresh string) (*oauth.Token, error) {
-				return hyperExchangeTokenFn(ctx, client, refresh)
+				return s.hyperExchangeTokenFn()(ctx, client, refresh)
 			},
 		},
 	}
 }
 
-func oauthProvider(id string) (oauthProviderDescriptor, bool) {
-	for _, descriptor := range oauthProviderDescriptors() {
+func (s *Store) oauthProvider(id string) (Descriptor, bool) {
+	for _, descriptor := range s.oauthProviderDescriptors() {
 		if descriptor.id == id {
 			return descriptor, true
 		}
 	}
-	return oauthProviderDescriptor{}, false
+	return Descriptor{}, false
 }
 
-func rotatingOAuthProvider(id string) bool {
-	descriptor, ok := oauthProvider(id)
+func (s *Store) rotatingOAuthProvider(id string) bool {
+	descriptor, ok := s.oauthProvider(id)
 	return ok && descriptor.rotating
 }
 
 // An unchanged or empty refresh token is success without a digest: the server burned
 // nothing, so a journal record carries a predecessor digest iff the refresh token changed
 // (oauthRotationDigest). Rejecting it would discard a valid access token.
-func normalizeOAuthRefresh(descriptor oauthProviderDescriptor, previous, token *oauth.Token) *oauth.Token {
+func normalizeOAuthRefresh(descriptor Descriptor, previous, token *oauth.Token) *oauth.Token {
 	if token == nil {
 		return nil
 	}
@@ -80,8 +81,8 @@ func normalizeOAuthRefresh(descriptor oauthProviderDescriptor, previous, token *
 }
 
 // Legacy callers serialize before re-entering their unchanged disk preflight.
-func (s *ConfigStore) refreshLegacyOAuthToken(ctx context.Context, scope Scope, pc ProviderConfig, client *http.Client) error {
-	waitCtx, cancel := context.WithTimeout(ctx, codexRefreshLockWait)
+func (s *Store) refreshLegacyOAuthToken(ctx context.Context, scope cfgmodel.Scope, pc cfgmodel.ProviderConfig, client *http.Client) error {
+	waitCtx, cancel := context.WithTimeout(ctx, s.port.CodexRefreshLockWait())
 	defer cancel()
 	key := codexRefreshKey{s, pc.ID}
 	for {
@@ -109,11 +110,11 @@ func (s *ConfigStore) refreshLegacyOAuthToken(ctx context.Context, scope Scope, 
 		}()
 		break
 	}
-	path, err := s.configPath(scope)
+	path, err := s.port.ScopePath(scope)
 	if err != nil {
 		return err
 	}
-	lockPath := oauthRefreshLockPath(path, pc.ID)
+	lockPath := oauthjournal.RefreshLockPath(path, pc.ID)
 	lock, err := cfgcommit.AcquireConfigFileLock(waitCtx, lockPath)
 	if err != nil {
 		return fmt.Errorf("lock OAuth refresh: %w", err)
