@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 )
@@ -40,7 +40,7 @@ func (c *fakePumpClock) Now() time.Time {
 	return c.now
 }
 
-func (c *fakePumpClock) NewTicker(d time.Duration) session.PumpTicker {
+func (c *fakePumpClock) NewTicker(d time.Duration) runq.PumpTicker {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	tk := &fakePumpTicker{clk: c, period: d, next: c.now.Add(d), ch: make(chan time.Time, 1)}

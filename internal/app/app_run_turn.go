@@ -8,7 +8,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -106,11 +106,11 @@ func runAgentTurnRecovered(
 // Task #616/P2-2 (2026-08-20 read-only release review): DrainNoWork now has
 // its OWN case rather than falling into default alongside a genuinely
 // invalid DrainResult. Before this, an unrecognized future DrainResult value
-// (a bug: e.g. a fifth enum member added to session.DrainResult without a
+// (a bug: e.g. a fifth enum member added to runq.DrainResult without a
 // matching case here) would silently inherit DrainNoWork's "return
 // originalErr unchanged" behavior instead of being caught — exactly the
 // kind of contract-drift this file's other two cases already guard against
-// for DrainComplete/DrainPartial/DrainFailed. See session.DrainNoWork's own
+// for DrainComplete/DrainPartial/DrainFailed. See runq.DrainNoWork's own
 // doc for why originalErr (not drainErr) is the right thing to return here:
 // DrainSessionNow's own doc records that a few of its early-exit paths pair
 // DrainNoWork with a non-nil, call-scoped drainErr (this call's own ctx
@@ -122,9 +122,9 @@ func runAgentTurnRecovered(
 // (app_run.go's isCanceled gate below requires runErr != nil before
 // DrainSessionNow is ever invoked), so this is traced, not live-tested, the
 // same way task #607/commit 732155ad already recorded for this exact path.
-func drainOutcomeError(sessID string, result session.DrainResult, drainErr, originalErr error) error {
+func drainOutcomeError(sessID string, result runq.DrainResult, drainErr, originalErr error) error {
 	switch result {
-	case session.DrainComplete:
+	case runq.DrainComplete:
 		// DrainComplete is the ONLY DrainResult DrainSessionNow ever pairs
 		// with a nil error (see its own doc), so drainErr is guaranteed nil
 		// here; asserted defensively rather than trusted blindly.
@@ -133,7 +133,7 @@ func drainOutcomeError(sessID string, result session.DrainResult, drainErr, orig
 			return drainErr
 		}
 		return nil
-	case session.DrainPartial, session.DrainFailed:
+	case runq.DrainPartial, runq.DrainFailed:
 		// At least one row genuinely executed, but the call did not end in a
 		// full, confirmed success -- surface that as the run's outcome. This
 		// guard closes the consumer-side hole where a nil drainErr would be
@@ -141,10 +141,10 @@ func drainOutcomeError(sessID string, result session.DrainResult, drainErr, orig
 		// Partial/Failed result.
 		if drainErr == nil {
 			slog.Error("run: DrainSessionNow reported a partial/failed drain with a nil error -- contract violation, treating as failure", "session_id", sessID, "result", result.String())
-			return fmt.Errorf("%w (session=%s)", session.ErrDrainFailureUnspecified, sessID)
+			return fmt.Errorf("%w (session=%s)", runq.ErrDrainFailureUnspecified, sessID)
 		}
 		return agent.LocalizeResetError(drainErr)
-	case session.DrainNoWork:
+	case runq.DrainNoWork:
 		// Nothing ran here. This case covers BOTH the shapes task
 		// #624/F-5 distinguishes: a call that never observed a same-pump
 		// admission, AND a call that DID observe one — the latter keeps
@@ -154,7 +154,7 @@ func drainOutcomeError(sessID string, result session.DrainResult, drainErr, orig
 		// but a live owner WITHIN THIS PUMP's admission held the session,
 		// or this call stopped for a call-scoped reason
 		// of its own (ctx already done, its own lease attempt failing
-		// at the DB layer, etc -- see session.DrainNoWork's own doc;
+		// at the DB layer, etc -- see runq.DrainNoWork's own doc;
 		// drainErr may be non-nil in that case, but it describes why
 		// DrainSessionNow itself did not run anything, not this run's
 		// outcome). All of those mean the same thing to this command: no
@@ -179,7 +179,7 @@ func drainOutcomeError(sessID string, result session.DrainResult, drainErr, orig
 		return originalErr
 	default:
 		// An unrecognized DrainResult -- a programming error (a new
-		// session.DrainResult value added without a matching case here), not
+		// runq.DrainResult value added without a matching case here), not
 		// a reachable production outcome today. Silently falling through to
 		// originalErr (the pre-fix behavior) would let a future enum
 		// addition inherit DrainNoWork's semantics by accident, hiding a
@@ -188,7 +188,7 @@ func drainOutcomeError(sessID string, result session.DrainResult, drainErr, orig
 		// Log it and return a non-nil sentinel so the run exits non-zero
 		// rather than risking a false success.
 		slog.Error("run: DrainSessionNow reported an unrecognized DrainResult -- contract violation, treating as failure", "session_id", sessID, "result", result.String(), "err", drainErr)
-		return fmt.Errorf("%w (session=%s, result=%s)", session.ErrDrainFailureUnspecified, sessID, result.String())
+		return fmt.Errorf("%w (session=%s, result=%s)", runq.ErrDrainFailureUnspecified, sessID, result.String())
 	}
 }
 

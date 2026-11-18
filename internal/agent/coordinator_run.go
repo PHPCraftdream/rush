@@ -15,7 +15,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/google/uuid"
@@ -201,9 +201,9 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	callResult := callResultRecorderFrom(ctx)
 	callResult.BeginCall()
 	callResultRecord := callResult.Capture()
-	executionIdentityRecord := session.ExecutionAssistantIdentityRecorder(ctx)
+	executionIdentityRecord := runq.1(ctx)
 	ctx = withoutCallResultRecorder(ctx)
-	ctx = session.WithoutExecutionAssistantIdentity(ctx)
+	ctx = runq.1(ctx)
 
 	model := pinned.smart
 
@@ -925,9 +925,9 @@ func (c *coordinator) RunWithReservedOwnership(ctx context.Context, sessionID, p
 	callResult := callResultRecorderFrom(ctx)
 	callResult.BeginCall()
 	callResultRecord := callResult.Capture()
-	executionIdentityRecord := session.ExecutionAssistantIdentityRecorder(ctx)
+	executionIdentityRecord := runq.1(ctx)
 	ctx = withoutCallResultRecorder(ctx)
-	ctx = session.WithoutExecutionAssistantIdentity(ctx)
+	ctx = runq.1(ctx)
 
 	// R12-H2a round 2: resolution builds this call's toolset into the
 	// trusted call state's build-resource scope before the reserved run

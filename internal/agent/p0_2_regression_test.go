@@ -15,6 +15,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/session"
+trunq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -160,7 +161,7 @@ func TestP0_2_RetryExhaustion_QueuesCall(t *testing.T) {
 	}
 
 	// Start a pump to process queued calls.
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.1(runq.1{
 		Sessions:       env.sessions,
 		Coordinator:    mockCoord,
 		PumpInstanceID: "test-pump-p0-2",

@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
@@ -41,7 +41,7 @@ func drainPendingBeforeRun(env RunEnv, ctx context.Context, sessionID string) er
 
 		localBusy := env.Coord() != nil && env.Coord().IsSessionBusy(sessionID)
 		if drainErr != nil {
-			contention := errors.Is(drainErr, coresession.ErrCallQueuedNotExecuted) || errors.Is(drainErr, session.ErrDrainIncomplete)
+			contention := errors.Is(drainErr, coresession.ErrCallQueuedNotExecuted) || errors.Is(drainErr, runq.ErrDrainIncomplete)
 			if !contention {
 				return fmt.Errorf("run: pending durable work drain incomplete (%s): %w", result, drainErr)
 			}

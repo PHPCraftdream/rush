@@ -17,6 +17,7 @@ import (
 	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 	wire "github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/PHPCraftdream/rush/internal/session"
+trunq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -55,7 +56,7 @@ func appOwnsSession(a *appPkg.App, sess coresession.Session) bool {
 
 // foreignSessionRefusal builds the WS-1 refusal error for a session this
 // process does not own. It mirrors agent.ForeignWorkspaceError (which the
-// server package does not import): it wraps session.ErrForeignWorkspace so the
+// server package does not import): it wraps runq.1 so the
 // condition stays classifiable in logs, names the owning root and the branch
 // that checkout was on, says so when that checkout has since been removed, and
 // offers `rush sessions fork <id>` as the one sanctioned way to continue the
@@ -70,7 +71,7 @@ func foreignSessionRefusal(sess coresession.Session) error {
 			msg += " (workspace no longer exists)"
 		}
 	}
-	return fmt.Errorf("%s: %w", msg, session.ErrForeignWorkspace)
+	return fmt.Errorf("%s: %w", msg, runq.1)
 }
 
 func HandleCreateSession(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMessage) {

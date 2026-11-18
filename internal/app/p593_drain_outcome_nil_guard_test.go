@@ -8,12 +8,12 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 )
 
 // TestDrainOutcomeError_NilGuard verifies that drainOutcomeError correctly
 // handles contract violations where DrainPartial or DrainFailed report a nil
-// drainErr. It must wrap the violation in session.ErrDrainFailureUnspecified
+// drainErr. It must wrap the violation in runq.ErrDrainFailureUnspecified
 // rather than returning nil (which would incorrectly signal success).
 func TestDrainOutcomeError_NilGuard(t *testing.T) {
 	t.Parallel()
@@ -24,7 +24,7 @@ func TestDrainOutcomeError_NilGuard(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		result        session.DrainResult
+		result        runq.DrainResult
 		drainErr      error
 		originalErr   error
 		wantErr       error
@@ -34,14 +34,14 @@ func TestDrainOutcomeError_NilGuard(t *testing.T) {
 	}{
 		{
 			name:        "DrainComplete with nil drainErr -> nil",
-			result:      session.DrainComplete,
+			result:      runq.DrainComplete,
 			drainErr:    nil,
 			originalErr: orig,
 			wantErr:     nil,
 		},
 		{
 			name:          "DrainComplete with non-nil drainErr -> drainErr",
-			result:        session.DrainComplete,
+			result:        runq.DrainComplete,
 			drainErr:      someErr,
 			originalErr:   orig,
 			wantErr:       someErr,
@@ -49,7 +49,7 @@ func TestDrainOutcomeError_NilGuard(t *testing.T) {
 		},
 		{
 			name:          "DrainPartial with non-nil drainErr -> drainErr",
-			result:        session.DrainPartial,
+			result:        runq.DrainPartial,
 			drainErr:      someErr,
 			originalErr:   orig,
 			wantErr:       someErr,
@@ -57,7 +57,7 @@ func TestDrainOutcomeError_NilGuard(t *testing.T) {
 		},
 		{
 			name:          "DrainFailed with non-nil drainErr -> drainErr",
-			result:        session.DrainFailed,
+			result:        runq.DrainFailed,
 			drainErr:      someErr,
 			originalErr:   orig,
 			wantErr:       someErr,
@@ -65,23 +65,23 @@ func TestDrainOutcomeError_NilGuard(t *testing.T) {
 		},
 		{
 			name:         "DrainFailed with nil drainErr -> ErrDrainFailureUnspecified",
-			result:       session.DrainFailed,
+			result:       runq.DrainFailed,
 			drainErr:     nil,
 			originalErr:  orig,
-			wantErr:      fmt.Errorf("%w (session=%s)", session.ErrDrainFailureUnspecified, sessID),
+			wantErr:      fmt.Errorf("%w (session=%s)", runq.ErrDrainFailureUnspecified, sessID),
 			wantIsUnspec: true,
 		},
 		{
 			name:         "DrainPartial with nil drainErr -> ErrDrainFailureUnspecified",
-			result:       session.DrainPartial,
+			result:       runq.DrainPartial,
 			drainErr:     nil,
 			originalErr:  orig,
-			wantErr:      fmt.Errorf("%w (session=%s)", session.ErrDrainFailureUnspecified, sessID),
+			wantErr:      fmt.Errorf("%w (session=%s)", runq.ErrDrainFailureUnspecified, sessID),
 			wantIsUnspec: true,
 		},
 		{
 			name:        "DrainNoWork with nil drainErr -> originalErr",
-			result:      session.DrainNoWork,
+			result:      runq.DrainNoWork,
 			drainErr:    nil,
 			originalErr: orig,
 			wantErr:     orig,
@@ -91,14 +91,14 @@ func TestDrainOutcomeError_NilGuard(t *testing.T) {
 			// Task #616/P2-2: DrainSessionNow's own doc records that several
 			// of its early-exit paths pair DrainNoWork with a non-nil,
 			// call-scoped drainErr (this call's own ctx already done, its own
-			// lease attempt failing, etc — see session.DrainNoWork's doc).
+			// lease attempt failing, etc — see runq.DrainNoWork's doc).
 			// drainOutcomeError must still return originalErr unchanged in
 			// that case, exactly as it does when drainErr is nil: drainErr
 			// on a DrainNoWork pairing describes why DrainSessionNow itself
 			// did not run anything, not this run's own outcome, so it must
 			// never leak into the run's returned error.
 			name:        "DrainNoWork with non-nil drainErr -> originalErr, NOT drainErr",
-			result:      session.DrainNoWork,
+			result:      runq.DrainNoWork,
 			drainErr:    someErr,
 			originalErr: orig,
 			wantErr:     orig,
@@ -124,7 +124,7 @@ func TestDrainOutcomeError_NilGuard(t *testing.T) {
 				require.ErrorIs(t, got, someErr, "error should wrap someErr")
 			}
 			if tt.wantIsUnspec {
-				require.ErrorIs(t, got, session.ErrDrainFailureUnspecified, "error should wrap ErrDrainFailureUnspecified")
+				require.ErrorIs(t, got, runq.ErrDrainFailureUnspecified, "error should wrap ErrDrainFailureUnspecified")
 				require.NotErrorIs(t, got, orig, "error should NOT wrap originalErr")
 			}
 			if tt.wantIsOrig {
@@ -139,7 +139,7 @@ func TestDrainOutcomeError_NilGuard(t *testing.T) {
 
 // TestDrainOutcomeError_UnrecognizedResult_FailsClosed is task #616/P2-2's
 // own regression coverage: drainOutcomeError's default branch used to catch
-// BOTH session.DrainNoWork and any genuinely invalid session.DrainResult
+// BOTH runq.DrainNoWork and any genuinely invalid runq.DrainResult
 // value, silently reusing DrainNoWork's "return originalErr unchanged"
 // behavior for both. DrainNoWork now has its own explicit case (see the
 // table above), so this test exercises what remains in default: an
@@ -152,10 +152,10 @@ func TestDrainOutcomeError_UnrecognizedResult_FailsClosed(t *testing.T) {
 
 	sessID := "test-session-456"
 	orig := context.Canceled
-	unrecognized := session.DrainResult(99)
+	unrecognized := runq.DrainResult(99)
 
 	got := drainOutcomeError(sessID, unrecognized, nil, orig)
 	require.Error(t, got, "an unrecognized DrainResult must not silently succeed")
-	require.ErrorIs(t, got, session.ErrDrainFailureUnspecified, "must fail closed via the same sentinel used for other contract violations")
+	require.ErrorIs(t, got, runq.ErrDrainFailureUnspecified, "must fail closed via the same sentinel used for other contract violations")
 	require.NotErrorIs(t, got, orig, "must NOT silently fall back to originalErr the way the old shared default/DrainNoWork case did")
 }

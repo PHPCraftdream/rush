@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
@@ -16,7 +16,7 @@ func runMarkedFinalizationQueue(ctx context.Context, coordinator agent.Coordinat
 	if !ok {
 		return false, nil, nil
 	}
-	result, err := combined.RunFinalizationQueuedCall(ctx, session.RunQueueRowIDFrom(ctx), data)
+	result, err := combined.RunFinalizationQueuedCall(ctx, runq.RunQueueRowIDFrom(ctx), data)
 	if result == nil && err == nil {
 		return true, nil, coresession.ErrCallQueuedNotExecuted
 	}

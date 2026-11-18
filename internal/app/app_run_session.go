@@ -28,7 +28,7 @@ func processHome(app *App) bool {
 // checkout's running agent.
 //
 // The wording (owning root, branch, and the two ways forward) and the typed
-// session.ErrForeignWorkspace wrapper live in agent.ForeignWorkspaceError:
+// runq.ErrForeignWorkspace wrapper live in agent.ForeignWorkspaceError:
 // runOwned's guard refuses with the same sentence for every non-CLI entry
 // point, and one builder keeps those two unable to drift.
 func refuseForeign(sess core.Session) error {

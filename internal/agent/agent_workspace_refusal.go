@@ -17,7 +17,7 @@
 //
 // The text is built here, once, so those three cannot drift into three
 // different stories about the same condition. It wraps
-// session.ErrForeignWorkspace (the typed sentinel the run-queue pump reads
+// runq.ErrForeignWorkspace (the typed sentinel the run-queue pump reads
 // to nack a foreign row without penalising it) and names the owning root, the
 // branch that checkout was on, and the two ways forward.
 //
@@ -31,14 +31,14 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // ForeignWorkspaceError is the typed refusal for a session this process does
 // not own: sess belongs to a workspace other than this process's, so this
 // process must not drive it. The returned error satisfies
-// errors.Is(err, session.ErrForeignWorkspace) and its text is the contract's
+// errors.Is(err, runq.ErrForeignWorkspace) and its text is the contract's
 // sentence from docs/plans/2026-10-01-shared-data-dir.md §1.
 //
 // It deliberately does NOT decide anything: the caller has already established
@@ -61,5 +61,5 @@ func ForeignWorkspaceError(sess coresession.Session) error {
 			msg += " (workspace no longer exists)"
 		}
 	}
-	return fmt.Errorf("%s: %w", msg, session.ErrForeignWorkspace)
+	return fmt.Errorf("%s: %w", msg, runq.ErrForeignWorkspace)
 }

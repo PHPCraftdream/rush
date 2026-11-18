@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -84,12 +84,12 @@ func TestFinalizationReservationOldCancelHandleCancelsNewRun(t *testing.T) {
 		observedDeadline, hasDeadline = ctx.Deadline()
 		return driver.Run(ctx, call)
 	}}
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{Sessions: sessions, Coordinator: probe, PumpInstanceID: "pump"})
+	pump := runq.1(runq.1{Sessions: sessions, Coordinator: probe, PumpInstanceID: "pump"})
 	defer pump.Stop()
 	deadline := time.Now().Add(5 * time.Minute)
 	operation, stop := context.WithDeadline(context.Background(), deadline)
 	finished := make(chan struct{})
-	var outcome session.DrainResult
+	var outcome runq.1
 	go func() {
 		defer close(finished)
 		outcome, _ = pump.DrainSessionNow(operation, data.SessionID)
@@ -151,7 +151,7 @@ func TestFinalizationReservationOldCancelHandleCancelsNewRun(t *testing.T) {
 	case <-wait.Done():
 		t.Fatal("cancelled reserved Run did not release its era")
 	}
-	require.NotEqual(t, session.DrainComplete, outcome)
+	require.NotEqual(t, runq.1, outcome)
 	require.EqualValues(t, 1, requests.Load())
 	require.EqualValues(t, 1, probe.builds.Load())
 	require.EqualValues(t, 1, probe.runs.Load())

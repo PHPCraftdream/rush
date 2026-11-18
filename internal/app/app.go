@@ -22,6 +22,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -30,7 +31,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
-// coordinatorAdapterImpl wraps agent.Coordinator to satisfy session.Coordinator,
+// coordinatorAdapterImpl wraps agent.Coordinator to satisfy runq.Coordinator,
 // avoiding an import cycle (session → agent → session).
 //
 // Reads app.AgentCoordinator lazily, on every Run() call, rather than
@@ -73,7 +74,7 @@ func (a *coordinatorAdapterImpl) Run(ctx context.Context, callData coresession.S
 	// The pump stamps the leased row's durable id onto the context
 	// (R12-H2b §2.4) so the rebuild can release the row-keyed Continuation
 	// holder; callers outside the pump pass "".
-	call, err := coord.RebuildSessionAgentCall(ctx, session.RunQueueRowIDFrom(ctx), callData)
+	call, err := coord.RebuildSessionAgentCall(ctx, runq.RunQueueRowIDFrom(ctx), callData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to rebuild session agent call: %w", err)
 	}
@@ -159,7 +160,7 @@ type App struct {
 
 	// RunQueuePump is the background pump for durable orphaned/detached calls (task #340).
 	// It scans session_run_queue periodically and executes pending work.
-	RunQueuePump *session.RunQueuePump
+	RunQueuePump *runq.RunQueuePump
 
 	config *config.ConfigStore
 
@@ -647,7 +648,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	app.startConfigDiskSync()
 
 	if dataDir != "" {
-		app.RunQueuePump = session.NewRunQueuePump(session.RunQueuePumpConfig{
+		app.RunQueuePump = runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 			Sessions:    app.Sessions,
 			Coordinator: &coordinatorAdapterImpl{app: app},
 		})

@@ -240,7 +240,7 @@ func TestAppNew_RunQueuePump_ExecutesRealEnqueuedCall(t *testing.T) {
 	require.True(t, outstanding || providerCalls.Load() >= 1,
 		"call should be enqueued in the durable run queue (or, if the live pump's immediate initial tick already won the race, already dispatched to the coordinator)")
 
-	// Production tick is 3s (session.RunQueuePumpInterval) — this is
+	// Production tick is 3s (runq.RunQueuePumpInterval) — this is
 	// intentionally NOT sped up (see doc comment above), so give it
 	// several real ticks' worth of headroom.
 	//

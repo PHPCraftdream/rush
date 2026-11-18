@@ -12,7 +12,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -354,7 +354,7 @@ func TestDrainIdentityRequiresExecutedOwnedAttempt(t *testing.T) {
 	noWork := agent.NewCallResultRecorder()
 	noWork.Capture()("unconfirmed")
 	require.False(t, loop.adoptDrainIdentity(drainCompletion{
-		result: session.DrainNoWork, recorder: noWork, originalOwner: original,
+		result: runq.DrainNoWork, recorder: noWork, originalOwner: original,
 		assistantIDs:        map[string]struct{}{"unconfirmed": {}},
 		terminalAssistantID: "unconfirmed",
 	}))
@@ -362,13 +362,13 @@ func TestDrainIdentityRequiresExecutedOwnedAttempt(t *testing.T) {
 	require.Same(t, original, loop.eventOwner)
 	emptyComplete := agent.NewCallResultRecorder()
 	require.False(t, loop.adoptDrainIdentity(drainCompletion{
-		result: session.DrainComplete, recorder: emptyComplete, originalOwner: original,
+		result: runq.DrainComplete, recorder: emptyComplete, originalOwner: original,
 		assistantIDs:        map[string]struct{}{"missing": {}},
 		terminalAssistantID: "missing",
 	}))
 	require.Same(t, original, loop.callResultRec)
 	require.False(t, loop.adoptDrainIdentity(drainCompletion{
-		result: session.DrainPartial, recorder: noWork, originalOwner: original,
+		result: runq.DrainPartial, recorder: noWork, originalOwner: original,
 	}))
 	require.Same(t, original, loop.callResultRec)
 
@@ -380,7 +380,7 @@ func TestDrainIdentityRequiresExecutedOwnedAttempt(t *testing.T) {
 	queued.RecordConfirmed("assistant-tool-step")
 	queued.RecordConfirmed("completed-continuation")
 	require.True(t, loop.adoptDrainIdentity(drainCompletion{
-		result: session.DrainComplete, recorder: queued, originalOwner: original,
+		result: runq.DrainComplete, recorder: queued, originalOwner: original,
 		assistantIDs:        map[string]struct{}{"assistant-tool-step": {}, "completed-continuation": {}},
 		terminalAssistantID: "completed-continuation",
 	}))
@@ -402,13 +402,13 @@ func TestDrainIdentityRejectsForeignAndMismatchedConfirmedRows(t *testing.T) {
 	drained.RecordConfirmed("resolved-elsewhere")
 
 	require.False(t, loop.adoptDrainIdentity(drainCompletion{
-		result: session.DrainComplete, recorder: drained, originalOwner: original,
+		result: runq.DrainComplete, recorder: drained, originalOwner: original,
 		assistantIDs:        map[string]struct{}{"foreign": {}, "resolved-elsewhere": {}},
 		terminalAssistantID: "resolved-elsewhere",
 	}))
 	require.Same(t, original, loop.callResultRec)
 	require.False(t, loop.adoptDrainIdentity(drainCompletion{
-		result: session.DrainComplete, recorder: drained, originalOwner: original,
+		result: runq.DrainComplete, recorder: drained, originalOwner: original,
 		assistantIDs:        map[string]struct{}{"actual": {}},
 		terminalAssistantID: "actual",
 	}))
@@ -419,7 +419,7 @@ func TestDrainIdentityRejectsForeignAndMismatchedConfirmedRows(t *testing.T) {
 	mismatched.RecordConfirmed("actual")
 	mismatched.RecordConfirmed("late-or-foreign")
 	require.False(t, loop.adoptDrainIdentity(drainCompletion{
-		result: session.DrainComplete, recorder: mismatched, originalOwner: original,
+		result: runq.DrainComplete, recorder: mismatched, originalOwner: original,
 		assistantIDs:        map[string]struct{}{"actual": {}},
 		terminalAssistantID: "actual",
 	}))
@@ -483,7 +483,7 @@ func TestDrainIdentityProcessesToolRowBeforeCompletion(t *testing.T) {
 	finalID := "assistant-final"
 	recorder.RecordConfirmed(finalID)
 	require.True(t, loop.adoptDrainIdentity(drainCompletion{
-		result: session.DrainComplete, recorder: recorder, originalOwner: original,
+		result: runq.DrainComplete, recorder: recorder, originalOwner: original,
 		assistantIDs: map[string]struct{}{toolRow: {}, finalID: {}}, terminalAssistantID: finalID,
 	}))
 	require.True(t, loop.eventOwner.Owns(toolRow))
@@ -502,7 +502,7 @@ func TestDrainIdentityConfirmsTerminalIDAfterFullSet(t *testing.T) {
 		require.True(t, recorder.Owns("assistant-terminal"))
 		loop := &executeRunLoop{}
 		require.True(t, loop.adoptDrainIdentity(drainCompletion{
-			result: session.DrainComplete, recorder: recorder,
+			result: runq.DrainComplete, recorder: recorder,
 			assistantIDs: ids, terminalAssistantID: terminal,
 		}))
 	}
@@ -513,7 +513,7 @@ func TestDrainIdentityConfirmsTerminalIDAfterFullSet(t *testing.T) {
 		map[string]struct{}{"assistant-tool-step": {}}, "assistant-terminal")
 	require.Empty(t, terminal)
 	require.False(t, (&executeRunLoop{}).adoptDrainIdentity(drainCompletion{
-		result: session.DrainComplete, recorder: missingTerminal,
+		result: runq.DrainComplete, recorder: missingTerminal,
 		assistantIDs: map[string]struct{}{"assistant-tool-step": {}}, terminalAssistantID: "assistant-terminal",
 	}))
 }

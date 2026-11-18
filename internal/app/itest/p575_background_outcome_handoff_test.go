@@ -28,7 +28,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
@@ -56,9 +56,9 @@ func newGatedCoordinator() *gatedCoordinator {
 
 func (c *gatedCoordinator) Run(ctx context.Context, callData coresession.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
-	session.RecordExecutionAssistantIdentity(ctx, c.identity)
+	runq.RecordExecutionAssistantIdentity(ctx, c.identity)
 	for _, id := range c.identities {
-		session.RecordExecutionAssistantIdentity(ctx, id)
+		runq.RecordExecutionAssistantIdentity(ctx, id)
 	}
 	select {
 	case c.started <- struct{}{}:
@@ -85,12 +85,12 @@ func TestDrainSessionNow_WaitedExecution_CarriesAllAssistantIdentities(t *testin
 
 	var assistantIDs map[string]struct{}
 	var terminalAssistantID string
-	drainCtx := session.WithDrainAssistantIdentity(context.Background(), func(ids map[string]struct{}, terminalID string) {
+	drainCtx := runq.WithDrainAssistantIdentity(context.Background(), func(ids map[string]struct{}, terminalID string) {
 		assistantIDs = ids
 		terminalAssistantID = terminalID
 	})
 	done := make(chan struct{})
-	var result session.DrainResult
+	var result runq.DrainResult
 	var drainErr error
 	go func() {
 		defer close(done)
@@ -113,7 +113,7 @@ func TestDrainSessionNow_WaitedExecution_CarriesAllAssistantIdentities(t *testin
 	case <-time.After(5 * time.Second):
 		t.Fatal("DrainSessionNow did not finish after the background execution")
 	}
-	require.Equal(t, session.DrainComplete, result)
+	require.Equal(t, runq.DrainComplete, result)
 	require.NoError(t, drainErr)
 	require.Equal(t, map[string]struct{}{"assistant-tool-step": {}, "assistant-final": {}}, assistantIDs)
 	require.Equal(t, "assistant-final", terminalAssistantID)
@@ -125,14 +125,14 @@ type sequentialIdentityCoordinator struct {
 
 func (c *sequentialIdentityCoordinator) Run(ctx context.Context, _ coresession.SessionAgentCallData) (*any, error) {
 	call := c.calls.Add(1)
-	session.RecordExecutionAssistantIdentity(ctx, fmt.Sprintf("assistant-row-%d", call))
+	runq.RecordExecutionAssistantIdentity(ctx, fmt.Sprintf("assistant-row-%d", call))
 	return nil, nil
 }
 
 func TestDrainSessionNow_SequentialRowsPreserveAllAssistantIdentities(t *testing.T) {
 	sess, svc := setupTestSession(t, "sequential-identities")
 	coordinator := &sequentialIdentityCoordinator{}
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    coordinator,
 		PumpInstanceID: "test-pump-sequential-identities",
@@ -147,7 +147,7 @@ func TestDrainSessionNow_SequentialRowsPreserveAllAssistantIdentities(t *testing
 
 	var assistantIDs map[string]struct{}
 	var terminalAssistantID string
-	drainCtx := session.WithDrainAssistantIdentity(context.Background(), func(ids map[string]struct{}, terminalID string) {
+	drainCtx := runq.WithDrainAssistantIdentity(context.Background(), func(ids map[string]struct{}, terminalID string) {
 		for id := range ids {
 			if assistantIDs == nil {
 				assistantIDs = make(map[string]struct{})
@@ -158,7 +158,7 @@ func TestDrainSessionNow_SequentialRowsPreserveAllAssistantIdentities(t *testing
 	})
 	result, err := pump.DrainSessionNow(drainCtx, sess.ID)
 	require.NoError(t, err)
-	require.Equal(t, session.DrainComplete, result)
+	require.Equal(t, runq.DrainComplete, result)
 	require.Equal(t, int64(2), coordinator.calls.Load())
 	require.Equal(t, map[string]struct{}{"assistant-row-1": {}, "assistant-row-2": {}}, assistantIDs)
 	require.Equal(t, "assistant-row-2", terminalAssistantID)
@@ -173,11 +173,11 @@ func TestDrainSessionNow_WaitedExecution_PublishesAssistantIDBeforeCompletion(t 
 	liveID := make(chan string, 1)
 	refused := make(chan struct{}, 1)
 	pump.SetTestAfterAdmissionRefusalForTest(func(string) { sessiontest.NotifyAdmissionRefusal(refused) })
-	drainCtx := session.WithDrainAssistantIdentityLive(context.Background(), func(id string) {
+	drainCtx := runq.WithDrainAssistantIdentityLive(context.Background(), func(id string) {
 		sessiontest.NotifyLiveIdentity(liveID, id)
 	})
 	done := make(chan struct{})
-	var result session.DrainResult
+	var result runq.DrainResult
 	var drainErr error
 	go func() {
 		defer close(done)
@@ -206,7 +206,7 @@ func TestDrainSessionNow_WaitedExecution_PublishesAssistantIDBeforeCompletion(t 
 	case <-time.After(5 * time.Second):
 		t.Fatal("DrainSessionNow did not finish after the background execution")
 	}
-	require.Equal(t, session.DrainComplete, result)
+	require.Equal(t, runq.DrainComplete, result)
 	require.NoError(t, drainErr)
 }
 
@@ -222,12 +222,12 @@ func TestDrainSessionNow_WaitedExecution_PublishesAssistantIDBeforeCompletion(t 
 // pending entry would force gatedCoordinator.Run to be entered again after
 // the wait — needing a second value on gate.release that these tests have
 // no reason to send.
-func oneEntrySetup(t *testing.T, name string, gate *gatedCoordinator) (*session.RunQueuePump, string) {
+func oneEntrySetup(t *testing.T, name string, gate *gatedCoordinator) (*runq.RunQueuePump, string) {
 	t.Helper()
 	return oneEntrySetupReported(t, name, gate, sessiontest.NewTestTimeline())
 }
 
-func oneEntrySetupReported(t *testing.T, name string, gate *gatedCoordinator, tl *sessiontest.TestTimeline) (*session.RunQueuePump, string) {
+func oneEntrySetupReported(t *testing.T, name string, gate *gatedCoordinator, tl *sessiontest.TestTimeline) (*runq.RunQueuePump, string) {
 	t.Helper()
 	sessiontest.ReportPumpSetupOnFailure(t, tl)
 	tl.Addf("fixture setup started")
@@ -235,7 +235,7 @@ func oneEntrySetupReported(t *testing.T, name string, gate *gatedCoordinator, tl
 	tl.Addf("fixture ready")
 	sessiontest.RegisterPumpCalls(t, "gated", &gate.calls)
 	registerPumpQueueReport(t, tl, svc, name+"-idem-1")
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    gate,
 		PumpInstanceID: "test-pump-" + name,
@@ -281,7 +281,7 @@ func TestDrainSessionNow_WaitedExecution_BusyIsNotDrained(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	drainDone := make(chan struct{})
-	var result session.DrainResult
+	var result runq.DrainResult
 	var drainErr error
 	go func() {
 		defer close(drainDone)
@@ -300,7 +300,7 @@ func TestDrainSessionNow_WaitedExecution_BusyIsNotDrained(t *testing.T) {
 	}
 
 	require.NoError(t, drainErr, "an externally-owned session is ordinary contention, not a failure of this call")
-	require.Equal(t, session.DrainNoWork, result, "nothing ran for the observed execution — reporting a completed/partial/failed drain here is the exact false success task #575 exists to close")
+	require.Equal(t, runq.DrainNoWork, result, "nothing ran for the observed execution — reporting a completed/partial/failed drain here is the exact false success task #575 exists to close")
 }
 
 // TestDrainSessionNow_WaitedExecution_TerminalFailureIsSurfaced pins outcome
@@ -320,7 +320,7 @@ func TestDrainSessionNow_WaitedExecution_TerminalFailureIsSurfaced(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	drainDone := make(chan struct{})
-	var result session.DrainResult
+	var result runq.DrainResult
 	var drainErr error
 	go func() {
 		defer close(drainDone)
@@ -339,7 +339,7 @@ func TestDrainSessionNow_WaitedExecution_TerminalFailureIsSurfaced(t *testing.T)
 
 	require.Error(t, drainErr, "the observed execution terminal-failed; reporting success would hide a row that will never be retried")
 	require.ErrorIs(t, drainErr, termErr)
-	require.Equal(t, session.DrainFailed, result, "an execution DID happen and reach a resolution in this process, even though it was a terminal failure")
+	require.Equal(t, runq.DrainFailed, result, "an execution DID happen and reach a resolution in this process, even though it was a terminal failure")
 }
 
 // TestDrainSessionNow_WaitedExecution_AckFailureIsSurfaced pins outcome (3):
@@ -351,7 +351,7 @@ func TestDrainSessionNow_WaitedExecution_AckFailureIsSurfaced(t *testing.T) {
 	sess, svc := setupTestSession(t, "wait-ack-failure")
 	failing := &ackFailingServiceP575{Service: svc, ackErr: errors.New("disk on fire")}
 	gate := newGatedCoordinator()
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       failing,
 		Coordinator:    gate,
 		PumpInstanceID: "test-pump-wait-ack-failure",
@@ -377,7 +377,7 @@ func TestDrainSessionNow_WaitedExecution_AckFailureIsSurfaced(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	drainDone := make(chan struct{})
-	var result session.DrainResult
+	var result runq.DrainResult
 	var drainErr error
 	go func() {
 		defer close(drainDone)
@@ -394,8 +394,8 @@ func TestDrainSessionNow_WaitedExecution_AckFailureIsSurfaced(t *testing.T) {
 	}
 
 	require.Error(t, drainErr, "the observed turn ran but its Ack failed — the row was never actually committed")
-	require.ErrorIs(t, drainErr, session.ErrTurnCommitFailed)
-	require.Equal(t, session.DrainFailed, result, "the turn DID execute in this process; it is only the commit that failed")
+	require.ErrorIs(t, drainErr, runq.ErrTurnCommitFailed)
+	require.Equal(t, runq.DrainFailed, result, "the turn DID execute in this process; it is only the commit that failed")
 }
 
 // ackFailingServiceP575 wraps a real coresession.Service and fails
@@ -434,7 +434,7 @@ func TestDrainSessionNow_WaitedExecution_LeaseLossIsSurfaced(t *testing.T) {
 	sess, svc := setupTestSession(t, "wait-lease-loss")
 	stealing := &leaseStealingService{Service: svc}
 	gate := newGatedCoordinator()
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       stealing,
 		Coordinator:    gate,
 		PumpInstanceID: "test-pump-wait-lease-loss",
@@ -461,7 +461,7 @@ func TestDrainSessionNow_WaitedExecution_LeaseLossIsSurfaced(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	drainDone := make(chan struct{})
-	var result session.DrainResult
+	var result runq.DrainResult
 	var drainErr error
 	go func() {
 		defer close(drainDone)
@@ -481,7 +481,7 @@ func TestDrainSessionNow_WaitedExecution_LeaseLossIsSurfaced(t *testing.T) {
 
 	require.Error(t, drainErr, "the observed execution lost its lease mid-run — a new owner holds the row now, and this process learned nothing it can act on")
 	require.ErrorContains(t, drainErr, "lost lease ownership", "the observed execution's lease-loss outcome must be surfaced, not silently treated as success")
-	require.Equal(t, session.DrainFailed, result, "an execution DID happen and reach SOME resolution (lease loss) in this process")
+	require.Equal(t, runq.DrainFailed, result, "an execution DID happen and reach SOME resolution (lease loss) in this process")
 }
 
 // TestDrainSessionNow_WaitedExecution_SuccessIsDrained is the control for
@@ -496,7 +496,7 @@ func TestDrainSessionNow_WaitedExecution_SuccessIsDrained(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	drainDone := make(chan struct{})
-	var result session.DrainResult
+	var result runq.DrainResult
 	var drainErr error
 	go func() {
 		defer close(drainDone)
@@ -513,5 +513,5 @@ func TestDrainSessionNow_WaitedExecution_SuccessIsDrained(t *testing.T) {
 	}
 
 	require.NoError(t, drainErr)
-	require.Equal(t, session.DrainComplete, result, "the observed execution committed cleanly — this is the one outcome that must report a completed drain")
+	require.Equal(t, runq.DrainComplete, result, "the observed execution committed cleanly — this is the one outcome that must report a completed drain")
 }

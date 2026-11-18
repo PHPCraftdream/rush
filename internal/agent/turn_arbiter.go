@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+trunq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 )
 
 // LaunchSite names where a launch decision is asked from. The site is part of
@@ -435,7 +436,7 @@ func decideAccount(f TurnFacts) Verdict {
 func (c *coordinator) readTurnFacts(ctx context.Context, sessionID string, site LaunchSite, runErrs ...error) (TurnFacts, error) {
 	f := TurnFacts{Now: c.arb.now(), Site: site, Snapshot: session.BatchDebtSnapshot{}}
 	for _, err := range runErrs {
-		if errors.Is(err, session.ErrForeignWorkspace) {
+		if errors.Is(err, runq.ErrForeignWorkspace) {
 			f.Session.ForeignWorkspace = true
 		}
 	}

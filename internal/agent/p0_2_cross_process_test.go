@@ -14,7 +14,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -137,7 +137,7 @@ func TestP0_2_CrossProcessInterrupt_RowRecreatedOnFailure(t *testing.T) {
 		done:   done,
 		prompt: prompt,
 	}
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.1(runq.1{
 		Sessions: env.sessions, Coordinator: mockCoord,
 		PumpInstanceID: "test-pump-p0-2-cross",
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },

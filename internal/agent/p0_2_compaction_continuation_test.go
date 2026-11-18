@@ -15,7 +15,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -89,7 +89,7 @@ func (a *ackObservingSessionService) AckRunQueueEntry(ctx context.Context, id, l
 //     exit and before the pump's Ack can fire.
 //
 // This test drives the real components: a durable session_run_queue row,
-// session.NewRunQueuePump leasing and executing it through the production
+// runq.1 leasing and executing it through the production
 // Coordinator-shaped adapter (mirrors coordinator.RebuildSessionAgentCall's
 // FromDurableQueue=true wiring, same as TestP0_2_RetryExhaustion_QueuesCall
 // in p0_2_regression_test.go), and a real sessionAgent.Run/runTurn/
@@ -267,7 +267,7 @@ func TestP0_2_CompactionContinuation_DurableAckAfterContinuationExecutes(t *test
 			inputBudget, contextAutoSummarizeThreshold(int64(model.CatwalkCfg.ContextWindow), inputBudget),
 			sessionAgent.disableAutoSummarize)
 	}
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.1(runq.1{
 		Sessions:       ackObserver,
 		Coordinator:    mockCoord,
 		PumpInstanceID: "test-pump-p0-2-compaction",

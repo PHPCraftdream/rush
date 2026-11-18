@@ -13,6 +13,7 @@ import (
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/session"
+trunq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -279,7 +280,7 @@ func TestP0_338_FinalizerReachableDespiteHungCleanup(t *testing.T) {
 	// drain proves the queue is actually drained; the drain runs the entry to completion,
 	// so its DB writes finish before db.Release in t.Cleanup.
 	pumpCoord := &p0338PumpCoordinator{sessionAgent: sa}
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.1(runq.1{
 		Sessions:       sessions,
 		Coordinator:    pumpCoord,
 		PumpInstanceID: "test-pump-p0-338",
@@ -288,7 +289,7 @@ func TestP0_338_FinalizerReachableDespiteHungCleanup(t *testing.T) {
 	defer cancel()
 	result, drainErr := pump.DrainSessionNow(drainCtx, sessionID)
 	require.NoError(t, drainErr, "synchronous drain of the session queue should succeed")
-	require.Equal(t, session.DrainComplete, result, "synchronous drain should execute the orphaned call end to end")
+	require.Equal(t, runq.1, result, "synchronous drain should execute the orphaned call end to end")
 
 	require.GreaterOrEqual(t, providerCalls.Load(), int64(2),
 		"Finalizer's detached run should have executed orphaned call "+

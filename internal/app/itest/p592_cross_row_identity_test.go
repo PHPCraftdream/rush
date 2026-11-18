@@ -81,7 +81,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
@@ -125,7 +125,7 @@ func TestDrainSessionNow_LocalExecution_TerminalThenSuccess_ReportsFailed(t *tes
 	sess, svc := setupTestSession(t, "p592-local-terminal-then-success")
 	termErr := &agent.ErrCallAlreadyAttempted{Err: errors.New("p592: row A already attempted")}
 	coord := &twoRowFailThenSucceedCoordinator{firstFn: func() (*any, error) { return nil, termErr }}
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    coord,
 		PumpInstanceID: "test-pump-p592-local-terminal",
@@ -137,7 +137,7 @@ func TestDrainSessionNow_LocalExecution_TerminalThenSuccess_ReportsFailed(t *tes
 	result, drainErr := pump.DrainSessionNow(ctx, sess.ID)
 
 	require.Equal(t, 2, coord.calls, "row A (terminal failure) and row B (clean success) must both have been attempted, in the SAME call")
-	require.Equal(t, session.DrainFailed, result, "row A's permanent loss must NOT be masked by row B's unrelated success")
+	require.Equal(t, runq.DrainFailed, result, "row A's permanent loss must NOT be masked by row B's unrelated success")
 	require.Error(t, drainErr)
 	require.ErrorIs(t, drainErr, termErr, "row B's success must not silently replace row A's specific terminal error")
 
@@ -180,7 +180,7 @@ func TestDrainSessionNow_LocalExecution_AckFailureThenSuccess_ReportsFailed(t *t
 	sess, svc := setupTestSession(t, "p592-local-ack-then-success")
 	failing := &ackFailingServiceP592{Service: svc, ackErr: errors.New("p592: disk on fire during row A's ack")}
 	coord := &twoRowFailThenSucceedCoordinator{firstFn: func() (*any, error) { return nil, nil }}
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       failing,
 		Coordinator:    coord,
 		PumpInstanceID: "test-pump-p592-local-ack",
@@ -192,9 +192,9 @@ func TestDrainSessionNow_LocalExecution_AckFailureThenSuccess_ReportsFailed(t *t
 	result, drainErr := pump.DrainSessionNow(ctx, sess.ID)
 
 	require.Equal(t, 2, coord.calls, "row A's turn (Ack fails after) and row B (clean success) must both have been attempted, in the SAME call")
-	require.Equal(t, session.DrainFailed, result, "row A's uncommitted turn must NOT be masked by row B's unrelated success")
+	require.Equal(t, runq.DrainFailed, result, "row A's uncommitted turn must NOT be masked by row B's unrelated success")
 	require.Error(t, drainErr)
-	require.ErrorIs(t, drainErr, session.ErrTurnCommitFailed, "row B's success must not silently replace row A's specific Ack-failure sentinel")
+	require.ErrorIs(t, drainErr, runq.ErrTurnCommitFailed, "row B's success must not silently replace row A's specific Ack-failure sentinel")
 
 	// Row A must still be leased (recoverable via lease expiry, will re-run
 	// -- see ErrTurnCommitFailed's own doc), row B must be gone (acked).
@@ -287,7 +287,7 @@ func TestDrainSessionNow_LocalExecution_LeaseLossThenSuccess_ReportsFailed(t *te
 	clk := newFakePumpClock(fakePumpEpoch)
 	stealing := &leaseStealingServiceP592{Service: newFakeClockService(t, svc, clk), victimID: rowAID}
 	coord := &gatedThenSucceedCoordinator{started: make(chan struct{}, 1), release: make(chan struct{})}
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       stealing,
 		Coordinator:    coord,
 		PumpInstanceID: "test-pump-p592-local-lease",
@@ -303,7 +303,7 @@ func TestDrainSessionNow_LocalExecution_LeaseLossThenSuccess_ReportsFailed(t *te
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	drainDone := make(chan struct{})
-	var result session.DrainResult
+	var result runq.DrainResult
 	var drainErr error
 	go func() {
 		defer close(drainDone)
@@ -340,7 +340,7 @@ func TestDrainSessionNow_LocalExecution_LeaseLossThenSuccess_ReportsFailed(t *te
 	}, "DrainSessionNow must return -- row A's lease loss or row B's execution never resolved")
 
 	require.Equal(t, 2, coord.calls, "row A (lease loss) and row B (clean success) must both have been attempted, in the SAME call")
-	require.Equal(t, session.DrainFailed, result, "row A's lease loss must NOT be masked by row B's unrelated success")
+	require.Equal(t, runq.DrainFailed, result, "row A's lease loss must NOT be masked by row B's unrelated success")
 	require.Error(t, drainErr)
 	require.ErrorContains(t, drainErr, "lost lease ownership", "row B's success must not silently replace row A's specific lease-loss outcome")
 }
@@ -414,7 +414,7 @@ func (c *sequentialGatedCoordinator) Run(ctx context.Context, callData coresessi
 func TestDrainSessionNow_ObservedAdmission_TerminalThenSuccess_ReportsFailed(t *testing.T) {
 	sess, svc := setupTestSession(t, "p592-observed-terminal-then-success")
 	gate := newSequentialGatedCoordinator(1)
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    gate,
 		PumpInstanceID: "test-pump-p592-observed-terminal",
@@ -441,7 +441,7 @@ func TestDrainSessionNow_ObservedAdmission_TerminalThenSuccess_ReportsFailed(t *
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	drainDone := make(chan struct{})
-	var result session.DrainResult
+	var result runq.DrainResult
 	var drainErr error
 	go func() {
 		defer close(drainDone)
@@ -465,7 +465,7 @@ func TestDrainSessionNow_ObservedAdmission_TerminalThenSuccess_ReportsFailed(t *
 
 	require.GreaterOrEqual(t, gate.calls, 2, "both row A (terminal failure) and row B (clean success) must have been attempted by the background tick")
 	require.GreaterOrEqual(t, refusals.Load(), int64(1), "this call must have been refused admission and forced to WAIT for row A's outcome -- otherwise this test exercises the local-execution path for row A instead of the observed-admission path it claims to, proving nothing about the contract under test (row B may resolve via either path -- see this test's doc)")
-	require.Equal(t, session.DrainFailed, result, "row A's observed terminal failure must NOT be masked by row B's unrelated observed success")
+	require.Equal(t, runq.DrainFailed, result, "row A's observed terminal failure must NOT be masked by row B's unrelated observed success")
 	require.Error(t, drainErr)
 	require.ErrorIs(t, drainErr, termErr, "row B's observed success must not silently replace row A's specific terminal error")
 }
@@ -510,7 +510,7 @@ func TestDrainSessionNow_ObservedAdmission_AckFailureThenSuccess_ReportsFailed(t
 	sess, svc := setupTestSession(t, "p592-observed-ack-then-success")
 	failing := &ackFailOnceService{Service: svc, ackErr: errors.New("p592: disk on fire during row A's observed ack")}
 	gate := newSequentialGatedCoordinator(1)
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       failing,
 		Coordinator:    gate,
 		PumpInstanceID: "test-pump-p592-observed-ack",
@@ -537,7 +537,7 @@ func TestDrainSessionNow_ObservedAdmission_AckFailureThenSuccess_ReportsFailed(t
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	drainDone := make(chan struct{})
-	var result session.DrainResult
+	var result runq.DrainResult
 	var drainErr error
 	go func() {
 		defer close(drainDone)
@@ -555,9 +555,9 @@ func TestDrainSessionNow_ObservedAdmission_AckFailureThenSuccess_ReportsFailed(t
 
 	require.GreaterOrEqual(t, gate.calls, 2, "both row A (Ack fails) and row B (clean success) must have been attempted by the background tick")
 	require.GreaterOrEqual(t, refusals.Load(), int64(1), "this call must have been refused admission and forced to WAIT for row A's outcome -- otherwise this test exercises the local-execution path for row A instead of the observed-admission path it claims to")
-	require.Equal(t, session.DrainFailed, result, "row A's observed Ack failure must NOT be masked by row B's unrelated observed success")
+	require.Equal(t, runq.DrainFailed, result, "row A's observed Ack failure must NOT be masked by row B's unrelated observed success")
 	require.Error(t, drainErr)
-	require.ErrorIs(t, drainErr, session.ErrTurnCommitFailed, "row B's observed success must not silently replace row A's specific Ack-failure sentinel")
+	require.ErrorIs(t, drainErr, runq.ErrTurnCommitFailed, "row B's observed success must not silently replace row A's specific Ack-failure sentinel")
 }
 
 // leaseStealingServiceObserved wraps a real coresession.Service and fails
@@ -613,7 +613,7 @@ func TestDrainSessionNow_ObservedAdmission_LeaseLossThenSuccess_ReportsFailed(t 
 
 	stealing := &leaseStealingServiceObserved{Service: svc, victimID: rowAID}
 	gate := newSequentialGatedCoordinator(1)
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       stealing,
 		Coordinator:    gate,
 		PumpInstanceID: "test-pump-p592-observed-lease",
@@ -644,7 +644,7 @@ func TestDrainSessionNow_ObservedAdmission_LeaseLossThenSuccess_ReportsFailed(t 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	drainDone := make(chan struct{})
-	var result session.DrainResult
+	var result runq.DrainResult
 	var drainErr error
 	go func() {
 		defer close(drainDone)
@@ -659,7 +659,7 @@ func TestDrainSessionNow_ObservedAdmission_LeaseLossThenSuccess_ReportsFailed(t 
 
 	require.GreaterOrEqual(t, gate.calls, 2, "both row A (lease loss) and row B (clean success) must have been attempted by the background tick")
 	require.GreaterOrEqual(t, refusals.Load(), int64(1), "this call must have been refused admission and forced to WAIT for row A's outcome -- otherwise this test exercises the local-execution path for row A instead of the observed-admission path it claims to")
-	require.Equal(t, session.DrainFailed, result, "row A's observed lease loss must NOT be masked by row B's unrelated observed success")
+	require.Equal(t, runq.DrainFailed, result, "row A's observed lease loss must NOT be masked by row B's unrelated observed success")
 	require.Error(t, drainErr)
 	require.ErrorContains(t, drainErr, "lost lease ownership", "row B's observed success must not silently replace row A's specific lease-loss outcome")
 }

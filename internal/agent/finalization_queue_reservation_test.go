@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
@@ -91,7 +91,7 @@ func (p *reservationQueueProbe) Run(ctx context.Context, data coresession.Sessio
 		}
 		p.lastErr = err
 	}()
-	_, err = p.coordinator.runFinalizationQueuedCall(ctx, session.RunQueueRowIDFrom(ctx), data, p.rebuild, p.run)
+	_, err = p.coordinator.runFinalizationQueuedCall(ctx, runq.1(ctx), data, p.rebuild, p.run)
 	return nil, err
 }
 
@@ -145,7 +145,7 @@ func TestFinalizationReservationLeaseChangeAndStopBeforeConsume(t *testing.T) {
 			case "shutdown":
 				driver.after = func() { real.CancelAll() }
 			}
-			pump := session.NewRunQueuePump(session.RunQueuePumpConfig{Sessions: sessions, Coordinator: probe, PumpInstanceID: "old-pump"})
+			pump := runq.1(runq.1{Sessions: sessions, Coordinator: probe, PumpInstanceID: "old-pump"})
 			defer pump.Stop()
 			ctx, cancel := context.WithTimeout(fixture.ctx, 15*time.Second)
 			defer cancel()
@@ -156,7 +156,7 @@ func TestFinalizationReservationLeaseChangeAndStopBeforeConsume(t *testing.T) {
 				require.ErrorIs(t, probe.lastErr, context.Canceled)
 			default:
 				require.NoError(t, err)
-				require.Equal(t, session.DrainNoWork, result)
+				require.Equal(t, runq.1, result)
 				require.ErrorIs(t, probe.lastErr, coresession.ErrCallQueuedNotExecuted)
 				require.ErrorIs(t, probe.lastErr, coresession.ErrAgentFinalizationLeaseChanged)
 			}
@@ -199,7 +199,7 @@ func TestFinalizationReservationPostConsumeFailureReleasesEraAndBuildScope(t *te
 					})
 				}
 			}
-			pump := session.NewRunQueuePump(session.RunQueuePumpConfig{Sessions: sessions, Coordinator: probe, PumpInstanceID: "pump"})
+			pump := runq.1(runq.1{Sessions: sessions, Coordinator: probe, PumpInstanceID: "pump"})
 			defer pump.Stop()
 			ctx, cancel := context.WithTimeout(fixture.ctx, 15*time.Second)
 			defer cancel()
@@ -235,7 +235,7 @@ func TestFinalizationReservationMissingChildDriverDoesNotBurnProofOrUseRoot(t *t
 	root := NewSessionAgent(SessionAgentOptions{})
 	coordinator := &coordinator{sessions: sessions, currentAgent: root, subAgentDrivers: newSubAgentDriverRegistry()}
 	probe := &reservationQueueProbe{coordinator: coordinator}
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{Sessions: sessions, Coordinator: probe, PumpInstanceID: "pump"})
+	pump := runq.1(runq.1{Sessions: sessions, Coordinator: probe, PumpInstanceID: "pump"})
 	defer pump.Stop()
 	ctx, cancel := context.WithTimeout(fixture.ctx, 15*time.Second)
 	defer cancel()
