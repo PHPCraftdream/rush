@@ -24,7 +24,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // noticeKindSupervision tags a supervision tick's persisted message
@@ -78,10 +80,10 @@ func DefaultSupervisionConfig() SupervisionConfig {
 // ctx's CallOptions (this run's override, `rush run --no-supervision`/
 // `--supervision-interval`). CallOptions wins when present, matching every
 // other per-call override in this file (AllowPeakHours, DisableSubAgents, …).
-func (c *coordinator) resolveSupervisionConfig(ctx context.Context) SupervisionConfig {
+func (sr *supervisionRegistry) resolveSupervisionConfig(ctx context.Context, host supervisionHost) SupervisionConfig {
 	cfg := DefaultSupervisionConfig()
-	if c.cfg != nil {
-		if opts := c.cfg.Config().Options; opts != nil {
+	if cfgStore := host.configStore(); cfgStore != nil {
+		if opts := cfgStore.Config().Options; opts != nil {
 			if opts.SupervisionEnabled != nil {
 				cfg.Enabled = *opts.SupervisionEnabled
 			}
@@ -140,6 +142,161 @@ func newSupervisionRegistry() *supervisionRegistry {
 	return &supervisionRegistry{byRoot: make(map[string]*supervisionState)}
 }
 
+type supervisionHost interface {
+	configStore() *config.ConfigStore
+	lookupDriver(string) (subAgentDriver, bool)
+	armSupervisionDeadline(time.Time, func())
+	handleSupervisionDeadline(string, uint64)
+	batchCutoverFacts() BatchCutoverFacts
+	agentFor(string) SessionAgent
+	sessionNoticeStore() *session.SessionNoticeStore
+	admitCallback(*sync.WaitGroup) (context.Context, bool)
+	afterReleaseContext(context.Context, string)
+	runReleaseCallbackHook(context.Context)
+	noteSubAgentChildRunEnded(string)
+	sessionService() coresession.Service
+	autoResumeSuspended(string) bool
+	releaseDriverGeneration(string, uint64)
+}
+
+type coordinatorSupervisionHost struct{ coordinator *coordinator }
+
+func (h coordinatorSupervisionHost) configStore() *config.ConfigStore {
+	return h.coordinator.cfg
+}
+
+func (h coordinatorSupervisionHost) lookupDriver(sessionID string) (subAgentDriver, bool) {
+	return h.coordinator.subAgentDrivers.get(sessionID)
+}
+
+func (h coordinatorSupervisionHost) armSupervisionDeadline(deadline time.Time, fire func()) {
+	h.coordinator.timeouts.armFunc(deadline, fire)
+}
+
+func (h coordinatorSupervisionHost) handleSupervisionDeadline(sessionID string, generation uint64) {
+	h.coordinator.handleSupervisionDeadline(sessionID, generation)
+}
+
+func (h coordinatorSupervisionHost) batchCutoverFacts() BatchCutoverFacts {
+	return coordinatorBatchCutoverFacts(h.coordinator)
+}
+
+func (h coordinatorSupervisionHost) agentFor(sessionID string) SessionAgent {
+	return h.coordinator.agentFor(sessionID)
+}
+
+func (h coordinatorSupervisionHost) sessionNoticeStore() *session.SessionNoticeStore {
+	return h.coordinator.sessionNoticeStore()
+}
+
+func (h coordinatorSupervisionHost) admitCallback(wg *sync.WaitGroup) (context.Context, bool) {
+	return h.coordinator.admitCallback(wg)
+}
+
+func (h coordinatorSupervisionHost) afterReleaseContext(ctx context.Context, sessionID string) {
+	h.coordinator.afterReleaseContext(ctx, sessionID)
+}
+
+func (h coordinatorSupervisionHost) runReleaseCallbackHook(ctx context.Context) {
+	c := h.coordinator
+	if c.releaseCallbackHook != nil {
+		c.releaseCallbackHook(ctx)
+	}
+}
+
+func (h coordinatorSupervisionHost) noteSubAgentChildRunEnded(sessionID string) {
+	h.coordinator.noteSubAgentChildRunEnded(sessionID)
+}
+
+func (h coordinatorSupervisionHost) sessionService() coresession.Service {
+	if h.coordinator == nil {
+		return nil
+	}
+	return h.coordinator.sessions
+}
+
+func (h coordinatorSupervisionHost) autoResumeSuspended(sessionID string) bool {
+	return h.coordinator.autoResumeSuspended(sessionID)
+}
+
+func (h coordinatorSupervisionHost) releaseDriverGeneration(sessionID string, generation uint64) {
+	h.coordinator.releaseDriverGeneration(sessionID, generation)
+}
+
+type supervisionCallbackState struct {
+	mu      *sync.Mutex
+	closing *bool
+	ctx     *context.Context
+	cancel  *context.CancelFunc
+}
+
+func (c *coordinator) supervisionCallbackState() supervisionCallbackState {
+	return supervisionCallbackState{&c.callbackMu, &c.callbackClosing, &c.callbackCtx, &c.callbackCancel}
+}
+
+func (c *coordinator) supervisionForCall() *supervisionRegistry {
+	if c == nil {
+		return nil
+	}
+	return c.supervision
+}
+
+func (c *coordinator) resolveSupervisionConfig(ctx context.Context) SupervisionConfig {
+	return c.supervisionForCall().resolveSupervisionConfig(ctx, coordinatorSupervisionHost{c})
+}
+
+func (c *coordinator) noteWorkStarted(ctx context.Context, sessionID string) {
+	c.supervisionForCall().noteWorkStarted(ctx, sessionID, coordinatorSupervisionHost{c})
+}
+
+func (c *coordinator) recordProgress(sessionID string) {
+	c.supervisionForCall().recordProgress(sessionID, coordinatorSupervisionHost{c})
+}
+
+func (c *coordinator) pushDeadlineOnTurnEnd(sessionID string) {
+	c.supervisionForCall().pushDeadlineOnTurnEnd(sessionID, coordinatorSupervisionHost{c})
+}
+
+func (c *coordinator) clearSupervisionIfPresent(sessionID string) {
+	c.supervisionForCall().clearSupervisionIfPresent(sessionID)
+}
+
+func (c *coordinator) supervisionWorkOpen(sessionID string) bool {
+	return c.supervisionForCall().supervisionWorkOpen(sessionID, coordinatorSupervisionHost{c})
+}
+
+func (c *coordinator) handleSupervisionDeadline(rootSessionID string, generation uint64) {
+	c.supervisionForCall().handleSupervisionDeadline(rootSessionID, generation, coordinatorSupervisionHost{c}, c.wakeSession)
+}
+
+func (c *coordinator) buildSupervisionSummaryAt(now time.Time, rootSessionID string, tickNum int, interval time.Duration, paused bool) string {
+	return c.supervisionForCall().buildSupervisionSummaryAt(now, rootSessionID, tickNum, interval, paused, coordinatorSupervisionHost{c})
+}
+
+func (c *coordinator) onSessionIdleHook(sessionID string) {
+	c.supervisionForCall().onSessionIdleHook(sessionID, coordinatorSupervisionHost{c}, &c.releaseWG)
+}
+
+func (c *coordinator) admitCallback(wg *sync.WaitGroup) (context.Context, bool) {
+	return c.supervisionForCall().admitCallback(wg, c.supervisionCallbackState())
+}
+
+func (c *coordinator) callbackContextLocked() context.Context {
+	return c.supervisionForCall().callbackContextLocked(c.supervisionCallbackState())
+}
+
+func (c *coordinator) afterRelease(sessionID string) {
+	c.supervisionForCall().afterRelease(sessionID, coordinatorSupervisionHost{c}, &c.releaseWG)
+}
+
+func (c *coordinator) afterReleaseContext(ctx context.Context, sessionID string) {
+	c.supervisionForCall().afterReleaseContext(ctx, sessionID, coordinatorSupervisionHost{c}, c.wakeSession)
+}
+
+func (c *coordinator) releaseChildDriverIfScopeClosed(ctx context.Context, sessionID string) {
+	c.supervisionForCall().releaseChildDriverIfScopeClosed(ctx, sessionID, coordinatorSupervisionHost{c})
+}
+
 // noteWorkStarted arms (or, if paused, resumes) sessionID's supervision timer
 // when new open work appears. A session that is CURRENTLY a registered
 // delegation driver's child (c.subAgentDrivers) is never supervised here --
@@ -151,18 +308,17 @@ func newSupervisionRegistry() *supervisionRegistry {
 // the arming never holds any other owner lock (the registry's own
 // lock-ordering note: its mutex is always taken sequentially, never nested,
 // with any delivery lock).
-func (c *coordinator) noteWorkStarted(ctx context.Context, sessionID string) {
-	if c == nil || c.supervision == nil || sessionID == "" {
+func (sr *supervisionRegistry) noteWorkStarted(ctx context.Context, sessionID string, host supervisionHost) {
+	if sr == nil || sessionID == "" {
 		return
 	}
-	if _, isDelegatedChild := c.subAgentDrivers.get(sessionID); isDelegatedChild {
+	if _, isDelegatedChild := host.lookupDriver(sessionID); isDelegatedChild {
 		return
 	}
-	cfg := c.resolveSupervisionConfig(ctx)
+	cfg := sr.resolveSupervisionConfig(ctx, host)
 	if !cfg.Enabled {
 		return
 	}
-	sr := c.supervision
 	sr.mu.Lock()
 	st, ok := sr.byRoot[sessionID]
 	switch {
@@ -188,7 +344,7 @@ func (c *coordinator) noteWorkStarted(ctx context.Context, sessionID string) {
 	gen := st.generation
 	deadline := time.Now().Add(st.interval)
 	sr.mu.Unlock()
-	c.timeouts.armFunc(deadline, func() { c.handleSupervisionDeadline(sessionID, gen) })
+	host.armSupervisionDeadline(deadline, func() { host.handleSupervisionDeadline(sessionID, gen) })
 }
 
 // recordProgress resets sessionID's backoff to its base interval and clears
@@ -198,11 +354,10 @@ func (c *coordinator) noteWorkStarted(ctx context.Context, sessionID string) {
 // moves into history, for every notice EXCEPT supervision's own
 // (noticeKindSupervision) -- see that call site's comment for why the tick's
 // own resulting turn must not reset the very backoff it just grew.
-func (c *coordinator) recordProgress(sessionID string) {
-	if c == nil || c.supervision == nil || sessionID == "" {
+func (sr *supervisionRegistry) recordProgress(sessionID string, host supervisionHost) {
+	if sr == nil || sessionID == "" {
 		return
 	}
-	sr := c.supervision
 	sr.mu.Lock()
 	st, ok := sr.byRoot[sessionID]
 	if !ok {
@@ -218,7 +373,7 @@ func (c *coordinator) recordProgress(sessionID string) {
 	gen := st.generation
 	deadline := time.Now().Add(st.interval)
 	sr.mu.Unlock()
-	c.timeouts.armFunc(deadline, func() { c.handleSupervisionDeadline(sessionID, gen) })
+	host.armSupervisionDeadline(deadline, func() { host.handleSupervisionDeadline(sessionID, gen) })
 }
 
 // pushDeadlineOnTurnEnd re-arms sessionID's CURRENT (possibly already grown)
@@ -233,11 +388,10 @@ func (c *coordinator) recordProgress(sessionID string) {
 // backoff it just grew (that would defeat consecutive-no-progress growth
 // entirely, since every tick that wakes an idle root produces exactly such a
 // turn). A no-op while paused: only recordProgress resumes a paused session.
-func (c *coordinator) pushDeadlineOnTurnEnd(sessionID string) {
-	if c == nil || c.supervision == nil || sessionID == "" {
+func (sr *supervisionRegistry) pushDeadlineOnTurnEnd(sessionID string, host supervisionHost) {
+	if sr == nil || sessionID == "" {
 		return
 	}
-	sr := c.supervision
 	sr.mu.Lock()
 	st, ok := sr.byRoot[sessionID]
 	if !ok || st.paused {
@@ -249,7 +403,7 @@ func (c *coordinator) pushDeadlineOnTurnEnd(sessionID string) {
 	gen := st.generation
 	deadline := time.Now().Add(st.interval)
 	sr.mu.Unlock()
-	c.timeouts.armFunc(deadline, func() { c.handleSupervisionDeadline(sessionID, gen) })
+	host.armSupervisionDeadline(deadline, func() { host.handleSupervisionDeadline(sessionID, gen) })
 }
 
 // clearSupervisionIfPresent removes sessionID's supervision state entirely.
@@ -259,11 +413,10 @@ func (c *coordinator) pushDeadlineOnTurnEnd(sessionID string) {
 // see this function's own doc for the known gap around a bare session
 // delete with no prior cancel). A stale heap entry for the removed
 // generation simply finds byRoot[sessionID] absent when it fires and no-ops.
-func (c *coordinator) clearSupervisionIfPresent(sessionID string) {
-	if c == nil || c.supervision == nil {
+func (sr *supervisionRegistry) clearSupervisionIfPresent(sessionID string) {
+	if sr == nil {
 		return
 	}
-	sr := c.supervision
 	sr.mu.Lock()
 	delete(sr.byRoot, sessionID)
 	sr.mu.Unlock()
@@ -281,8 +434,8 @@ func growInterval(cur, max time.Duration) time.Duration {
 // supervisionWorkOpen is the scope-open input of the supervision deadline:
 // batch live work (own roots plus delegation descendants). Unknown reads
 // fail open (work treated as open).
-func (c *coordinator) supervisionWorkOpen(sessionID string) bool {
-	own, desc, err := coordinatorBatchCutoverFacts(c).LiveWorkSummary(context.Background(), sessionID)
+func (sr *supervisionRegistry) supervisionWorkOpen(sessionID string, host supervisionHost) bool {
+	own, desc, err := host.batchCutoverFacts().LiveWorkSummary(context.Background(), sessionID)
 	if err != nil {
 		return true
 	}
@@ -296,11 +449,10 @@ func (c *coordinator) supervisionWorkOpen(sessionID string) bool {
 // work_ledger_timeout.go's handleTimeout already documents for asyncJob
 // deadlines): a generation mismatch, no open work, or a live turn all make
 // this a no-op rather than a wrong tick.
-func (c *coordinator) handleSupervisionDeadline(rootSessionID string, generation uint64) {
-	if c == nil || c.supervision == nil {
+func (sr *supervisionRegistry) handleSupervisionDeadline(rootSessionID string, generation uint64, host supervisionHost, wake func(context.Context, string, bool) error) {
+	if sr == nil {
 		return
 	}
-	sr := c.supervision
 
 	sr.mu.Lock()
 	st, ok := sr.byRoot[rootSessionID]
@@ -316,7 +468,7 @@ func (c *coordinator) handleSupervisionDeadline(rootSessionID string, generation
 	// closed since this deadline was armed; drop the state instead of
 	// waiting for deliverLocked to have caught it first (belt and braces --
 	// the two can race harmlessly, both converge on "state gone").
-	if !c.supervisionWorkOpen(rootSessionID) {
+	if !sr.supervisionWorkOpen(rootSessionID, host) {
 		sr.mu.Lock()
 		if st2, ok := sr.byRoot[rootSessionID]; ok && st2.generation == generation {
 			delete(sr.byRoot, rootSessionID)
@@ -339,7 +491,7 @@ func (c *coordinator) handleSupervisionDeadline(rootSessionID string, generation
 	// agent run died here from a fire armed by an earlier test). Nobody can
 	// answer the busy question, so this fire is a no-op exactly like a
 	// stale generation: the countdown stops until something re-arms it.
-	agent := c.agentFor(rootSessionID)
+	agent := host.agentFor(rootSessionID)
 	if agent == nil {
 		return
 	}
@@ -375,11 +527,11 @@ func (c *coordinator) handleSupervisionDeadline(rootSessionID string, generation
 	}
 	sr.mu.Unlock()
 
-	text := c.buildSupervisionSummaryAt(time.Now(), rootSessionID, tickNum, interval, lastTick)
+	text := sr.buildSupervisionSummaryAt(time.Now(), rootSessionID, tickNum, interval, lastTick, host)
 	if !lastTick {
-		c.timeouts.armFunc(nextDeadline, func() { c.handleSupervisionDeadline(rootSessionID, nextGen) })
+		host.armSupervisionDeadline(nextDeadline, func() { host.handleSupervisionDeadline(rootSessionID, nextGen) })
 	}
-	store := c.sessionNoticeStore()
+	store := host.sessionNoticeStore()
 	if store == nil {
 		slog.Error("supervision: no session notice store bound; check-in not persisted", "session_id", rootSessionID)
 		return
@@ -395,7 +547,7 @@ func (c *coordinator) handleSupervisionDeadline(rootSessionID string, generation
 			slog.Error("supervision: failed to persist check-in notice", "session_id", rootSessionID, "err", err)
 			return
 		}
-		_ = c.wakeSession(context.Background(), rootSessionID, true)
+		_ = wake(context.Background(), rootSessionID, true)
 	}()
 }
 
@@ -407,8 +559,8 @@ func (c *coordinator) handleSupervisionDeadline(rootSessionID string, generation
 // BatchCutoverFacts, so no silence line and no flagged job exists here (the
 // legacy output-buffer silence escalation is gone with the ledger job map;
 // the pause line and the awaiting-question callout are retained).
-func (c *coordinator) buildSupervisionSummaryAt(now time.Time, rootSessionID string, tickNum int, interval time.Duration, paused bool) string {
-	facts := coordinatorBatchCutoverFacts(c)
+func (sr *supervisionRegistry) buildSupervisionSummaryAt(now time.Time, rootSessionID string, tickNum int, interval time.Duration, paused bool, host supervisionHost) string {
+	facts := host.batchCutoverFacts()
 	nodes, err := facts.LiveNodes(context.Background(), rootSessionID)
 	lines := make([]string, 0, len(nodes))
 	for _, node := range nodes {
@@ -487,36 +639,36 @@ func lastNonEmptyLine(s string) string {
 // (coordinator_tools.go): the universal "the mailbox of this session was
 // just released" trigger. Only admission runs on the releasing goroutine;
 // bookkeeping and DB work run in the registered callback.
-func (c *coordinator) onSessionIdleHook(sessionID string) {
-	ctx, ok := c.admitCallback(&c.releaseWG)
+func (sr *supervisionRegistry) onSessionIdleHook(sessionID string, host supervisionHost, wg *sync.WaitGroup) {
+	ctx, ok := host.admitCallback(wg)
 	if !ok {
 		return
 	}
 	go func() {
-		defer c.releaseWG.Done()
-		c.afterReleaseContext(ctx, sessionID)
+		defer wg.Done()
+		host.afterReleaseContext(ctx, sessionID)
 	}()
 }
 
 // admitCallback registers BEFORE spawn, under the same mutex that closes
 // admission. No positive Add can race shutdown's Wait, including a natural
 // ledger completion whose onWebDone invocation was delayed past ledger.close.
-func (c *coordinator) admitCallback(wg *sync.WaitGroup) (context.Context, bool) {
-	c.callbackMu.Lock()
-	defer c.callbackMu.Unlock()
-	if c.callbackClosing {
+func (sr *supervisionRegistry) admitCallback(wg *sync.WaitGroup, state supervisionCallbackState) (context.Context, bool) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if *state.closing {
 		return nil, false
 	}
-	ctx := c.callbackContextLocked()
+	ctx := sr.callbackContextLocked(state)
 	wg.Add(1)
 	return ctx, true
 }
 
-func (c *coordinator) callbackContextLocked() context.Context {
-	if c.callbackCtx == nil {
-		c.callbackCtx, c.callbackCancel = context.WithCancel(context.Background())
+func (sr *supervisionRegistry) callbackContextLocked(state supervisionCallbackState) context.Context {
+	if *state.ctx == nil {
+		*state.ctx, *state.cancel = context.WithCancel(context.Background())
 	}
-	return c.callbackCtx
+	return *state.ctx
 }
 
 // afterRelease is the release-time work: the phase-3 delegation re-check
@@ -527,27 +679,25 @@ func (c *coordinator) callbackContextLocked() context.Context {
 // finished leg's accounting already wrote): a failed, refused or no-turn Drain
 // does not relaunch itself here, and an unreadable debt check goes to the
 // re-check set.
-func (c *coordinator) afterRelease(sessionID string) {
-	ctx, ok := c.admitCallback(&c.releaseWG)
+func (sr *supervisionRegistry) afterRelease(sessionID string, host supervisionHost, wg *sync.WaitGroup) {
+	ctx, ok := host.admitCallback(wg)
 	if !ok {
 		return
 	}
-	defer c.releaseWG.Done()
-	c.afterReleaseContext(ctx, sessionID)
+	defer wg.Done()
+	host.afterReleaseContext(ctx, sessionID)
 }
 
-func (c *coordinator) afterReleaseContext(ctx context.Context, sessionID string) {
-	if c.releaseCallbackHook != nil {
-		c.releaseCallbackHook(ctx)
-	}
+func (sr *supervisionRegistry) afterReleaseContext(ctx context.Context, sessionID string, host supervisionHost, wake func(context.Context, string, bool) error) {
+	host.runReleaseCallbackHook(ctx)
 	if sessionID == "" {
 		return
 	}
 	// A delegated child's turn just ended (its first turn, a Drain turn, a
 	// turn a Stop cut off). #1130: no parent charge — the child paid its own
 	// cost_self as it ran, and readers sum the subtree on demand.
-	c.noteSubAgentChildRunEnded(sessionID)
-	if err := c.wakeSession(ctx, sessionID, false); err != nil {
+	host.noteSubAgentChildRunEnded(sessionID)
+	if err := wake(ctx, sessionID, false); err != nil {
 		slog.Debug("onSessionIdle: release-triggered drain attempt did not complete", "session_id", sessionID, "err", err)
 	}
 	// The wake above routes through agentFor, so it must run BEFORE the
@@ -563,7 +713,7 @@ func (c *coordinator) afterReleaseContext(ctx context.Context, sessionID string)
 	// no-op leaves TestChildRunEnd_ReleaseChargesNothing red at "and its
 	// driver is released" (coordinator_child_cost_test.go) -- the driver
 	// record survives Kill + afterRelease forever.
-	c.releaseChildDriverIfScopeClosed(ctx, sessionID)
+	sr.releaseChildDriverIfScopeClosed(ctx, sessionID, host)
 }
 
 // releaseChildDriverIfScopeClosed is afterReleaseContext's driver-lifecycle
@@ -586,34 +736,34 @@ func (c *coordinator) afterReleaseContext(ctx context.Context, sessionID string)
 // re-derives every later launch through the policy (a released child's Drain
 // is refused there, and a resume_session_id re-registers the driver via
 // runSubAgent before its next turn).
-func (c *coordinator) releaseChildDriverIfScopeClosed(ctx context.Context, sessionID string) {
-	if c == nil || c.sessions == nil || sessionID == "" {
+func (sr *supervisionRegistry) releaseChildDriverIfScopeClosed(ctx context.Context, sessionID string, host supervisionHost) {
+	if host.sessionService() == nil || sessionID == "" {
 		return
 	}
-	observed, registered := c.subAgentDrivers.get(sessionID)
+	observed, registered := host.lookupDriver(sessionID)
 	if !registered {
 		return
 	}
-	if ag := c.agentFor(sessionID); ag != nil && ag.IsSessionBusy(sessionID) {
+	if ag := host.agentFor(sessionID); ag != nil && ag.IsSessionBusy(sessionID) {
 		return
 	}
-	sess, err := c.sessions.Get(ctx, sessionID)
+	sess, err := host.sessionService().Get(ctx, sessionID)
 	if err != nil {
 		return
 	}
 	if sess.ParentSessionID == "" {
 		return
 	}
-	live, err := coordinatorBatchCutoverFacts(c).LiveDelegationChildOf(ctx, sess.ParentSessionID, sessionID)
+	live, err := host.batchCutoverFacts().LiveDelegationChildOf(ctx, sess.ParentSessionID, sessionID)
 	if err != nil {
 		return
 	}
-	if live && !c.autoResumeSuspended(sessionID) {
+	if live && !host.autoResumeSuspended(sessionID) {
 		return
 	}
 	// Release exactly the registration the reads above were made about: a
 	// resume that registered a newer driver meanwhile keeps its record.
-	c.releaseDriverGeneration(sessionID, observed.generation)
+	host.releaseDriverGeneration(sessionID, observed.generation)
 }
 
 // supervisionIntervalNS shrinks the built-in initial interval for tests
