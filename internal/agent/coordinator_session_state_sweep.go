@@ -12,7 +12,53 @@ import (
 	"database/sql"
 	"errors"
 	"time"
+
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 )
+
+type sessionStateHost interface {
+	sweepIdleSessions() int
+	sweepDeletedSessionState(ctx context.Context)
+	sweepArbiterEntries()
+	sweepArbiterEntriesAt(now time.Time)
+	resolveSessionSystemPrompt(ctx context.Context, sessionID string) string
+}
+
+type sessionStateComponent struct {
+	host        sessionStateHost
+	sessions    func() coresession.Service
+	driverHints func() *batchDriverHints
+	arb         func() *arbiter
+}
+
+func newSessionStateComponent(c *coordinator) *sessionStateComponent {
+	return &sessionStateComponent{
+		host:        c,
+		sessions:    func() coresession.Service { return c.sessions },
+		driverHints: func() *batchDriverHints { return c.driverHints },
+		arb:         func() *arbiter { return &c.arb },
+	}
+}
+
+func (c *coordinator) sweepIdleSessions() int {
+	return newSessionStateComponent(c).sweepIdleSessions()
+}
+
+func (c *coordinator) sweepArbiterEntries() {
+	newSessionStateComponent(c).sweepArbiterEntries()
+}
+
+func (c *coordinator) sweepArbiterEntriesAt(now time.Time) {
+	newSessionStateComponent(c).sweepArbiterEntriesAt(now)
+}
+
+func (c *coordinator) sweepDeletedSessionState(ctx context.Context) {
+	newSessionStateComponent(c).sweepDeletedSessionState(ctx)
+}
+
+func (c *coordinator) sweepSessionState(ctx context.Context) {
+	newSessionStateComponent(c).sweepSessionState(ctx)
+}
 
 // sweepIdleSessions drops the rehomed per-session runtime state that holds
 // nothing: no external-driver mirror entry (batch_rehome_coord_runtime.go).
@@ -25,16 +71,16 @@ import (
 // best effort: a pace that records its hint between the gate check and the
 // delete can still lose the counter once (the cost is one extra gate
 // evaluation; the next pace re-records the hint).
-func (c *coordinator) sweepIdleSessions() int {
-	candidates := c.driverHints.idleCandidates()
+func (s *sessionStateComponent) sweepIdleSessions() int {
+	candidates := s.driverHints().idleCandidates()
 	dropped := 0
 	for _, id := range candidates {
-		if c.arb.gateHoldsHint(id) {
+		if s.arb().gateHoldsHint(id) {
 			continue
 		}
 		// Re-check under the lock: a driver may have arrived while the
 		// arbiter was asked.
-		if c.driverHints.dropIfIdle(id) {
+		if s.driverHints().dropIfIdle(id) {
 			dropped++
 		}
 	}
@@ -45,40 +91,40 @@ func (c *coordinator) sweepIdleSessions() int {
 // hold, no suspension, no cap counter, no chain, an expired-or-zero gate):
 // such an entry is an open gate, exactly like a zero one. State that means
 // something until a human message (a suspension, a spent cap) is kept.
-func (c *coordinator) sweepArbiterEntries() {
-	c.sweepArbiterEntriesAt(time.Now())
+func (s *sessionStateComponent) sweepArbiterEntries() {
+	s.host.sweepArbiterEntriesAt(time.Now())
 }
 
-func (c *coordinator) sweepArbiterEntriesAt(now time.Time) {
-	for _, id := range c.arb.sessionsWithState() {
-		c.arb.dropIfIdle(id, now)
+func (s *sessionStateComponent) sweepArbiterEntriesAt(now time.Time) {
+	for _, id := range s.arb().sessionsWithState() {
+		s.arb().dropIfIdle(id, now)
 	}
 }
 
 // sweepDeletedSessionState drops the arbiter state of sessions that no longer
 // exist (deleted): the only moment that state stops meaning anything without
 // a human message.
-func (c *coordinator) sweepDeletedSessionState(ctx context.Context) {
-	if c.sessions == nil {
+func (s *sessionStateComponent) sweepDeletedSessionState(ctx context.Context) {
+	if s.sessions() == nil {
 		return
 	}
-	ids := c.arb.sessionsWithState()
+	ids := s.arb().sessionsWithState()
 	if len(ids) == 0 {
 		return
 	}
 	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	for _, id := range ids {
-		if _, err := c.sessions.Get(readCtx, id); !errors.Is(err, sql.ErrNoRows) {
+		if _, err := s.sessions().Get(readCtx, id); !errors.Is(err, sql.ErrNoRows) {
 			continue // alive, or unreadable right now: keep it
 		}
-		c.arb.dropSession(id)
+		s.arb().dropSession(id)
 	}
 }
 
 // sweepSessionState is the RecheckPass hook: all halves, best effort.
-func (c *coordinator) sweepSessionState(ctx context.Context) {
-	c.sweepIdleSessions()
-	c.sweepArbiterEntries()
-	c.sweepDeletedSessionState(ctx)
+func (s *sessionStateComponent) sweepSessionState(ctx context.Context) {
+	s.host.sweepIdleSessions()
+	s.host.sweepArbiterEntries()
+	s.host.sweepDeletedSessionState(ctx)
 }
