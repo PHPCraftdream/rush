@@ -24,16 +24,17 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
-// noticeKindSupervision tags a supervision tick's persisted message
-// (Message.NoticeKind) -- both the ordinary check-in and the terminal
-// "paused" notice use it, so agent_prompt.go's history filter treats them
-// uniformly (only the newest one is ever shown to the model).
-const noticeKindSupervision = "supervision"
+// noticeKindSupervision aliases the leaf declaration in
+// internal/agent/runtime/exec/sessionprompt (see that file's comment);
+// retained root callers and tests use this identifier directly.
+const noticeKindSupervision = sessionprompt.NoticeKindSupervision
 
 // Defaults for SupervisionConfig. supervisionMaxInterval/
 // supervisionMaxNoProgress are implementation constants, not configurable
@@ -170,7 +171,7 @@ func (h coordinatorSupervisionHost) lookupDriver(sessionID string) (subAgentDriv
 }
 
 func (h coordinatorSupervisionHost) armSupervisionDeadline(deadline time.Time, fire func()) {
-	h.coordinator.timeouts.armFunc(deadline, fire)
+	h.coordinator.timeouts.ArmFunc(deadline, fire)
 }
 
 func (h coordinatorSupervisionHost) handleSupervisionDeadline(sessionID string, generation uint64) {
@@ -422,15 +423,6 @@ func (sr *supervisionRegistry) clearSupervisionIfPresent(sessionID string) {
 	sr.mu.Unlock()
 }
 
-// growInterval doubles cur, capped at max.
-func growInterval(cur, max time.Duration) time.Duration {
-	next := cur * 2
-	if next > max {
-		return max
-	}
-	return next
-}
-
 // supervisionWorkOpen is the scope-open input of the supervision deadline:
 // batch live work (own roots plus delegation descendants). Unknown reads
 // fail open (work treated as open).
@@ -511,7 +503,7 @@ func (sr *supervisionRegistry) handleSupervisionDeadline(rootSessionID string, g
 	if lastTick {
 		st.paused = true
 	} else {
-		st.interval = growInterval(st.interval, st.cfg.MaxInterval)
+		st.interval = watchdog.GrowInterval(st.interval, st.cfg.MaxInterval)
 	}
 	interval := st.interval
 	var nextGen uint64

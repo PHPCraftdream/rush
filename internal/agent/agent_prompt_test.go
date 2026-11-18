@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
-	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
@@ -402,59 +401,4 @@ func TestWorkaroundProviderMediaLimitations_AnthropicProvider(t *testing.T) {
 	media, ok := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentMedia](tr.Output)
 	require.True(t, ok)
 	require.Equal(t, "image/png", media.MediaType)
-}
-
-func TestProviderRetryLogFields(t *testing.T) {
-	t.Run("nil provider error", func(t *testing.T) {
-		fields := providerRetryLogFields(nil, 2*time.Second)
-		require.Equal(t, []any{"retry_delay", "2s"}, fields)
-	})
-
-	t.Run("provider error with title and message", func(t *testing.T) {
-		fields := providerRetryLogFields(&fantasy.ProviderError{
-			StatusCode: 429,
-			Title:      "rate limit",
-			Message:    "too many requests",
-		}, 1500*time.Millisecond)
-		require.Equal(t, []any{
-			"retry_delay", "1.5s",
-			"status_code", 429,
-			"title", "rate limit",
-			"message", "too many requests",
-		}, fields)
-	})
-
-	t.Run("provider error without optional strings", func(t *testing.T) {
-		fields := providerRetryLogFields(&fantasy.ProviderError{
-			StatusCode: 503,
-		}, time.Second)
-		require.Equal(t, []any{
-			"retry_delay", "1s",
-			"status_code", 503,
-		}, fields)
-	})
-}
-
-// TestSanitizeToolInput pins the JSON validation guard that prevents
-// malformed tool call arguments from a provider (e.g. truncated or garbled
-// JSON) from getting persisted verbatim and bricking the session on replay.
-func TestSanitizeToolInput(t *testing.T) {
-	t.Run("valid JSON is returned unchanged", func(t *testing.T) {
-		input := `{"path":"foo.go","limit":10}`
-		out, sanitized := sanitizeToolInput("view", "call_1", input)
-		require.Equal(t, input, out)
-		require.False(t, sanitized)
-	})
-
-	t.Run("malformed JSON is replaced with empty object", func(t *testing.T) {
-		out, sanitized := sanitizeToolInput("view", "call_2", `{"path":"foo.go"`)
-		require.Equal(t, "{}", out)
-		require.True(t, sanitized)
-	})
-
-	t.Run("empty string is sanitized", func(t *testing.T) {
-		out, sanitized := sanitizeToolInput("view", "call_3", "")
-		require.Equal(t, "{}", out)
-		require.True(t, sanitized)
-	})
 }

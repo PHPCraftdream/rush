@@ -12,6 +12,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/responsesws"
 	"github.com/PHPCraftdream/rush/internal/config"
 )
 
@@ -45,7 +46,7 @@ func (m *codexWebSocketPolicyManager) codexWebSocketOptions() []codexprovider.We
 	if m.host.responsesWSManager() == nil {
 		return nil
 	}
-	manager := &codexWebSocketTransport{ResponsesWSManager: m.host.responsesWSManager(), current: m.currentCodexWebSocketPolicy}
+	manager := responsesws.NewCodexTransport(m.host.responsesWSManager(), m.currentCodexWebSocketPolicy)
 	return []codexprovider.WebSocketOptions{{Manager: manager, EncodeFrame: nettransport.ResponsesWSCodexFullFrame, HTTPClient: func() (*http.Client, error) {
 		cfg, _ := m.host.responsesWSSnapshot()
 		pc, ok := cfg.Providers.Get(codexTokenProviderID)
@@ -81,46 +82,6 @@ func (m *codexWebSocketPolicyManager) currentCodexWebSocketPolicy() (codexprovid
 	return policy, network, nil
 }
 
-type codexWebSocketTransport struct {
-	*nettransport.ResponsesWSManager
-	current func() (codexprovider.WebSocketPolicy, config.NetworkConfig, error)
-}
-
-func (t *codexWebSocketTransport) Acquire(ctx context.Context, request codexprovider.WebSocketRequest) (codexprovider.WebSocketLease, error) {
-	policy, network, err := t.current()
-	if err != nil {
-		return nil, err
-	}
-	if policy != request.Policy {
-		return nil, errors.New("openai-codex connection policy changed before handshake")
-	}
-	lease, err := t.ResponsesWSManager.Acquire(ctx, nettransport.ResponsesWSOptions{
-		Protocol: "codex-responses", Endpoint: request.Endpoint, ReadPolicy: nettransport.ResponsesWSReadRequestContext,
-		AuthToken: request.AuthToken, Headers: request.Headers, Network: network, StillCurrent: request.StillCurrent,
-		Owner: nettransport.ResponsesWSOwner{AccountID: request.AccountID, AuthRevision: request.AuthRevision, ConversationID: request.ConversationID},
-	}, nettransport.ResponsesWSPlannedMaxAge)
-	if err != nil {
-		return nil, err
-	}
-	return codexWebSocketLease{lease}, nil
-}
-
-func (*codexWebSocketTransport) UnauthorizedHandshake(err error) bool {
-	var handshake *nettransport.ResponsesWSHandshakeError
-	return errors.As(err, &handshake) && handshake.Status == http.StatusUnauthorized
-}
-
-type codexWebSocketLease struct{ *nettransport.ResponsesWSLease }
-
-func (l codexWebSocketLease) Conn() codexprovider.WebSocketConnection {
-	return l.ResponsesWSLease.Conn()
-}
-
-var (
-	_ codexprovider.WebSocketManager       = (*codexWebSocketTransport)(nil)
-	_ codexprovider.WebSocketExchangeError = (*nettransport.ResponsesWSError)(nil)
-)
-
 func (c *coordinator) responsesWSManager() *nettransport.ResponsesWSManager {
 	return c.responsesWS
 }
@@ -145,14 +106,14 @@ func (m *codexWebSocketPolicyManager) buildPublicResponsesProvider(pc config.Pro
 	if m.host.responsesWSManager() == nil || pc.ID != "openai" || apiKey == "" || pc.OAuthToken != nil || (baseURL != "" && baseURL != "https://api.openai.com/v1" && baseURL != "https://api.openai.com/v1/") {
 		return m.host.responsesWSFallbackOpenaiProvider(baseURL, apiKey, headers, client)
 	}
-	bridge := &publicResponsesClient{manager: m.host.responsesWSManager(), originalHeaders: headers, current: func(ctx context.Context) (publicResponsesPolicy, error) {
+	return responsesws.NewPublicResponsesProvider(baseURL, apiKey, headers, m.host.responsesWSManager(), "", func(ctx context.Context) (responsesws.PublicResponsesPolicy, error) {
 		snapshot, revision := m.host.responsesWSSnapshot()
 		current, ok := snapshot.Providers.Get(pc.ID)
 		if !ok || current.Disable || current.APIKey == "" || current.Type != pc.Type {
-			return publicResponsesPolicy{}, errors.New("OpenAI credentials unavailable")
+			return responsesws.PublicResponsesPolicy{}, errors.New("OpenAI credentials unavailable")
 		}
 		if current.BaseURL != "" && current.BaseURL != "https://api.openai.com/v1" && current.BaseURL != "https://api.openai.com/v1/" {
-			return publicResponsesPolicy{}, errors.New("OpenAI endpoint changed; rebuild provider")
+			return responsesws.PublicResponsesPolicy{}, errors.New("OpenAI endpoint changed; rebuild provider")
 		}
 		var global *config.NetworkConfig
 		var transport config.ResponsesTransport
@@ -162,17 +123,16 @@ func (m *codexWebSocketPolicyManager) buildPublicResponsesProvider(pc config.Pro
 		}
 		httpClient, err := m.host.responsesWSResolveHTTPClient(snapshot, current)
 		if err != nil {
-			return publicResponsesPolicy{}, err
+			return responsesws.PublicResponsesPolicy{}, err
 		}
 		if httpClient == nil {
 			httpClient = http.DefaultClient
 		}
-		return publicResponsesPolicy{transport: config.EffectiveResponsesTransport(transport, current.ResponsesTransport), network: nettransport.ResolveNetworkConfig(global, current.Network), apiKey: current.APIKey, headers: current.ExtraHeaders, client: httpClient, revision: revision}, nil
-	}}
-	bridge.valid = func(used publicResponsesPolicy) bool {
+		return responsesws.PublicResponsesPolicy{Transport: config.EffectiveResponsesTransport(transport, current.ResponsesTransport), Network: nettransport.ResolveNetworkConfig(global, current.Network), APIKey: current.APIKey, Headers: current.ExtraHeaders, Client: httpClient, Revision: revision}, nil
+	}, func(used responsesws.PublicResponsesPolicy) bool {
 		snapshot, _ := m.host.responsesWSSnapshot()
 		current, ok := snapshot.Providers.Get(pc.ID)
-		if !ok || current.Disable || current.Type != pc.Type || current.APIKey != used.apiKey || !maps.Equal(current.ExtraHeaders, used.headers) {
+		if !ok || current.Disable || current.Type != pc.Type || current.APIKey != used.APIKey || !maps.Equal(current.ExtraHeaders, used.Headers) {
 			return false
 		}
 		if current.BaseURL != "" && current.BaseURL != "https://api.openai.com/v1" && current.BaseURL != "https://api.openai.com/v1/" {
@@ -184,11 +144,6 @@ func (m *codexWebSocketPolicyManager) buildPublicResponsesProvider(pc config.Pro
 			global = snapshot.Options.Network
 			transport = snapshot.Options.ResponsesTransport
 		}
-		return config.EffectiveResponsesTransport(transport, current.ResponsesTransport) == used.transport && nettransport.ResolveNetworkConfig(global, current.Network) == used.network
-	}
-	provider, err := newPublicResponsesSDKProvider(baseURL, apiKey, headers, bridge)
-	if err != nil {
-		return nil, err
-	}
-	return &publicResponsesProvider{Provider: provider}, nil
+		return config.EffectiveResponsesTransport(transport, current.ResponsesTransport) == used.Transport && nettransport.ResolveNetworkConfig(global, current.Network) == used.Network
+	})
 }

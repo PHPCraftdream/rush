@@ -1,7 +1,7 @@
-// The single per-process deadline timer (timeoutService): supervision.go's
+// The single per-process deadline timer (TimeoutService): supervision.go's
 // check-in deadlines share this service; it was rehomed off the deleted
 // workLedger onto the coordinator.
-package agent
+package watchdog
 
 import (
 	"container/heap"
@@ -38,32 +38,33 @@ func (h *jobDeadlineHeap) Pop() any {
 	return item
 }
 
-// timeoutService is the single per-process deadline timer (supervision.go's
+// TimeoutService is the single per-process deadline timer (supervision.go's
 // check-ins share it): ONE goroutine sleeping until the nearest deadline,
 // never one goroutine per entry. Lazy deletion: an entry popped from the
 // heap is re-checked by its fire callback against CURRENT state before
 // acting -- a stale generation or a since-closed scope makes the popped
 // entry a silent no-op (the ordinary CAS race, ASYNC-03).
-type timeoutService struct {
+type TimeoutService struct {
 	mu        sync.Mutex
 	heap      jobDeadlineHeap
 	wake      chan struct{} // buffered 1: "recompute the nearest deadline"
 	stop      chan struct{}
-	closeOnce sync.Once // close is not itself guaranteed single-call (e.g. CancelAll during shutdown); close() below must survive a repeat
+	closeOnce sync.Once // Close is not itself guaranteed single-call (e.g. CancelAll during shutdown); Close below must survive a repeat
 }
 
-func newTimeoutService() *timeoutService {
-	s := &timeoutService{wake: make(chan struct{}, 1), stop: make(chan struct{})}
+// NewTimeoutService starts the timer goroutine and returns the service.
+func NewTimeoutService() *TimeoutService {
+	s := &TimeoutService{wake: make(chan struct{}, 1), stop: make(chan struct{})}
 	go s.run()
 	return s
 }
 
-// armFunc adds an arbitrary (deadline, fire) pair to the single per-process
+// ArmFunc adds an arbitrary (deadline, fire) pair to the single per-process
 // heap. The fire callback re-checks its own state (supervision.go's
 // generation guard) before acting: s.mu is taken and released here without
 // calling into any owner lock, so this cannot nest under or deadlock
 // against anything else.
-func (s *timeoutService) armFunc(deadline time.Time, fire func()) {
+func (s *TimeoutService) ArmFunc(deadline time.Time, fire func()) {
 	if s == nil || fire == nil {
 		return
 	}
@@ -76,7 +77,7 @@ func (s *timeoutService) armFunc(deadline time.Time, fire func()) {
 	}
 }
 
-func (s *timeoutService) run() {
+func (s *TimeoutService) run() {
 	timer := time.NewTimer(time.Hour)
 	defer timer.Stop()
 	for {
@@ -107,7 +108,7 @@ func (s *timeoutService) run() {
 	}
 }
 
-func (s *timeoutService) fireDue() {
+func (s *TimeoutService) fireDue() {
 	now := time.Now()
 	for {
 		s.mu.Lock()
@@ -121,8 +122,8 @@ func (s *timeoutService) fireDue() {
 	}
 }
 
-// close stops the timer goroutine. Nil-safe.
-func (s *timeoutService) close() {
+// Close stops the timer goroutine. Nil-safe.
+func (s *TimeoutService) Close() {
 	if s == nil {
 		return
 	}

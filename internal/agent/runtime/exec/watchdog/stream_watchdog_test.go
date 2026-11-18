@@ -1,15 +1,24 @@
-package agent
+package watchdog_test
 
 import (
 	"context"
+	"log/slog"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
+	"github.com/PHPCraftdream/rush/internal/kit/dev/testguard"
+	_ "github.com/joho/godotenv/autoload"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMain(m *testing.M) {
+	slog.SetLogLoggerLevel(slog.LevelError)
+	testguard.Main(m)
+}
 
 // All tests use short timeouts (tens of ms) to keep the suite fast. The
 // real production constants (streamIdleTimeout = 3min, tick = 30s) are not
@@ -25,22 +34,22 @@ func TestStreamWatchdog_BumpKeepsItAlive(t *testing.T) {
 		const tick = 30 * time.Millisecond
 
 		var fired atomic.Int32
-		wd := startStreamWatchdog(ctx, cancel, idle, tick, func(time.Duration, watchdogCause) {
+		wd := watchdog.StartStreamWatchdog(ctx, cancel, idle, tick, func(time.Duration, watchdog.Cause) {
 			fired.Add(1)
 		}, false, 0, 0, 0, nil)
 		// Bump every 60ms for 1.2s, well past idleTimeout.
 		// Watchdog must NOT fire.
 		for i := 0; i < 20; i++ {
 			time.Sleep(60 * time.Millisecond)
-			wd.bump()
+			wd.Bump()
 		}
 
 		assert.Equal(t, int32(0), fired.Load(),
 			"watchdog must not fire while bump() is called more often than idleTimeout")
-		assert.False(t, wd.stalled.Load(), "stalled flag must stay false")
+		assert.False(t, wd.Stalled.Load(), "stalled flag must stay false")
 		assert.NoError(t, ctx.Err(), "ctx must not be cancelled by the watchdog")
 		cancel()
-		<-wd.done
+		<-wd.Done
 	})
 }
 
@@ -55,7 +64,7 @@ func TestStreamWatchdog_FiresOnNoActivity(t *testing.T) {
 	var fired atomic.Int32
 	var firedIdle atomic.Int64
 	var firedCause atomic.Int32
-	wd := startStreamWatchdog(ctx, cancel, idle, tick, func(observedIdle time.Duration, cause watchdogCause) {
+	wd := watchdog.StartStreamWatchdog(ctx, cancel, idle, tick, func(observedIdle time.Duration, cause watchdog.Cause) {
 		fired.Add(1)
 		firedIdle.Store(int64(observedIdle))
 		firedCause.Store(int32(cause))
@@ -63,19 +72,19 @@ func TestStreamWatchdog_FiresOnNoActivity(t *testing.T) {
 
 	// Wait long enough for the watchdog to fire on its own.
 	select {
-	case <-wd.done:
+	case <-wd.Done:
 		// Good — watchdog exited (it fires THEN exits).
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("watchdog never fired after idle period")
 	}
 
 	assert.Equal(t, int32(1), fired.Load(), "onFire should be called exactly once")
-	assert.True(t, wd.stalled.Load(), "stalled flag must be true after fire")
+	assert.True(t, wd.Stalled.Load(), "stalled flag must be true after fire")
 	assert.Error(t, ctx.Err(), "ctx must be cancelled by the watchdog")
 	assert.GreaterOrEqual(t, time.Duration(firedIdle.Load()), idle,
 		"observed idle passed to onFire must be >= idleTimeout")
-	assert.Equal(t, causeIdleStall, watchdogCause(firedCause.Load()),
-		"a genuine provider idle-stall must report causeIdleStall")
+	assert.Equal(t, watchdog.CauseIdleStall, watchdog.Cause(firedCause.Load()),
+		"a genuine provider idle-stall must report watchdog.CauseIdleStall")
 }
 
 func TestStreamWatchdog_ExitsCleanlyOnCtxCancel(t *testing.T) {
@@ -85,7 +94,7 @@ func TestStreamWatchdog_ExitsCleanlyOnCtxCancel(t *testing.T) {
 	const tick = 10 * time.Millisecond
 
 	var fired atomic.Int32
-	wd := startStreamWatchdog(ctx, cancel, idle, tick, func(time.Duration, watchdogCause) {
+	wd := watchdog.StartStreamWatchdog(ctx, cancel, idle, tick, func(time.Duration, watchdog.Cause) {
 		fired.Add(1)
 	}, false, 0, 0, 0, nil)
 
@@ -94,14 +103,14 @@ func TestStreamWatchdog_ExitsCleanlyOnCtxCancel(t *testing.T) {
 	cancel()
 
 	select {
-	case <-wd.done:
+	case <-wd.Done:
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("watchdog did not exit after external ctx cancel")
 	}
 
 	assert.Equal(t, int32(0), fired.Load(),
 		"watchdog must NOT fire when ctx is cancelled externally — that's the user/cooperative path")
-	assert.False(t, wd.stalled.Load(),
+	assert.False(t, wd.Stalled.Load(),
 		"stalled flag stays false because the cancel was NOT the watchdog's doing")
 }
 
@@ -113,17 +122,17 @@ func TestStreamWatchdog_BumpAfterFireIsHarmless(t *testing.T) {
 	const idle = 30 * time.Millisecond
 	const tick = 5 * time.Millisecond
 
-	wd := startStreamWatchdog(ctx, cancel, idle, tick, func(time.Duration, watchdogCause) {}, false, 0, 0, 0, nil)
+	wd := watchdog.StartStreamWatchdog(ctx, cancel, idle, tick, func(time.Duration, watchdog.Cause) {}, false, 0, 0, 0, nil)
 
 	// Let it fire.
-	<-wd.done
-	require.True(t, wd.stalled.Load())
+	<-wd.Done
+	require.True(t, wd.Stalled.Load())
 
 	// Calling bump() after the goroutine has exited is a no-op — it
 	// just stores into an atomic that nobody reads anymore. Must not
 	// panic or deadlock.
 	require.NotPanics(t, func() {
-		wd.bump()
-		wd.bump()
+		wd.Bump()
+		wd.Bump()
 	})
 }

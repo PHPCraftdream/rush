@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,15 +14,18 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"charm.land/fantasy/providers/openai"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
-	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/responsesws"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 )
+
+// publicResponsesPolicy aliases the responsesws boundary type so retained
+// coordinator-facing tests keep their original literals.
+type publicResponsesPolicy = responsesws.PublicResponsesPolicy
 
 type publicResponsesTestTransport func(*http.Request) (*http.Response, error)
 
@@ -52,48 +53,6 @@ func publicResponsesCapture[T any](t *testing.T, ctx context.Context, capture <-
 	return zero
 }
 
-func publicResponsesConnectProxy(t *testing.T, target string) (*httptest.Server, *atomic.Int32) {
-	t.Helper()
-	attempts := &atomic.Int32{}
-	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodConnect || r.Host != target {
-			t.Error("unexpected proxy route")
-			http.Error(w, "unexpected route", http.StatusBadGateway)
-			return
-		}
-		attempts.Add(1)
-		upstream, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(r.Context(), "tcp", target)
-		if err != nil {
-			t.Error(err)
-			http.Error(w, "target unavailable", http.StatusBadGateway)
-			return
-		}
-		defer upstream.Close()
-		downstream, buffered, err := w.(http.Hijacker).Hijack()
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer downstream.Close()
-		if _, err = buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
-			t.Error(err)
-			return
-		}
-		if err = buffered.Flush(); err != nil {
-			t.Error(err)
-			return
-		}
-		done := make(chan struct{})
-		go func() { defer close(done); _, _ = io.Copy(upstream, buffered); _ = upstream.Close() }()
-		_, _ = io.Copy(downstream, upstream)
-		_ = downstream.Close()
-		_ = upstream.Close()
-		<-done
-	}))
-	t.Cleanup(proxy.Close)
-	return proxy, attempts
-}
-
 func publicResponsesTestModel(t *testing.T, server *httptest.Server, current func(context.Context) (publicResponsesPolicy, error), owners ...*coordinator) fantasy.LanguageModel {
 	t.Helper()
 	manager := nettransport.NewResponsesWSManager(t.Context(), 4)
@@ -101,11 +60,9 @@ func publicResponsesTestModel(t *testing.T, server *httptest.Server, current fun
 		owners[0].responsesWS = manager
 	}
 	t.Cleanup(func() { _ = manager.Close() })
-	bridge := &publicResponsesClient{manager: manager, current: current, endpoint: strings.Replace(server.URL, "http://", "ws://", 1)}
-	p, err := newPublicResponsesSDKProvider("https://api.openai.com/v1", "public-test-key", nil, bridge)
+	p, err := responsesws.NewPublicResponsesProvider("https://api.openai.com/v1", "public-test-key", nil, manager, strings.Replace(server.URL, "http://", "ws://", 1), current, nil)
 	require.NoError(t, err)
-	wrapped := &publicResponsesProvider{Provider: p}
-	model, err := wrapped.LanguageModel(t.Context(), "gpt-5.4")
+	model, err := p.LanguageModel(t.Context(), "gpt-5.4")
 	require.NoError(t, err)
 	return model
 }
@@ -144,109 +101,13 @@ var publicResponsesTestEvents = []string{
 	`{"type":"response.completed","response":{"id":"resp-public","status":"completed","output":[],"usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15,"input_tokens_details":{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":1}}}}`,
 }
 
-func TestPublicResponsesWebSocketPinnedSDKParityAndReuse(t *testing.T) {
-	var upgrades, requests, httpRequests atomic.Int32
-	frames, httpFrames, headers := make(chan []byte, 8), make(chan []byte, 4), make(chan http.Header, 8)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !websocket.IsWebSocketUpgrade(r) {
-			httpRequests.Add(1)
-			body, err := io.ReadAll(r.Body)
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			httpFrames <- body
-			w.Header().Set("Content-Type", "text/event-stream")
-			for _, event := range publicResponsesTestEvents {
-				_, _ = fmt.Fprintf(w, "data: %s\n\n", event)
-			}
-			return
-		}
-		upgrades.Add(1)
-		headers <- r.Header.Clone()
-		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer conn.Close()
-		for {
-			_, raw, err := conn.ReadMessage()
-			if err != nil {
-				return
-			}
-			requests.Add(1)
-			frames <- raw
-			for _, event := range publicResponsesTestEvents {
-				if err = conn.WriteMessage(websocket.TextMessage, []byte(event)); err != nil {
-					return
-				}
-			}
-		}
-	}))
-	defer server.Close()
-	client := publicResponsesLocalClient(server)
-	resolvedNetwork := nettransport.ResolveNetworkConfig(nil, &config.NetworkConfig{Proxy: config.ProxyNone})
-	policy := publicResponsesPolicy{apiKey: "public-test-key", headers: map[string]string{"OpenAI-Project": "project-test"}, client: client, network: resolvedNetwork}
-	model := publicResponsesTestModel(t, server, func(context.Context) (publicResponsesPolicy, error) { return policy, nil })
-	p, err := openai.New(openai.WithAPIKey("public-test-key"), openai.WithUseResponsesAPI(), openai.WithHTTPClient(client))
-	require.NoError(t, err)
-	referenceModel, err := p.LanguageModel(t.Context(), "gpt-5.4")
-	require.NoError(t, err)
-	cacheKey, instructions := "cache-test", "precise"
-	call := fantasy.Call{
-		Prompt:          fantasy.Prompt{{Role: fantasy.MessageRoleUser, Content: []fantasy.MessagePart{fantasy.TextPart{Text: "question"}}}},
-		Headers:         map[string]string{"OpenAI-Project": "call-project"},
-		ProviderOptions: fantasy.ProviderOptions{openai.Name: &openai.ResponsesProviderOptions{PromptCacheKey: &cacheKey, Instructions: &instructions}},
-		Tools:           []fantasy.Tool{fantasy.FunctionTool{Name: "lookup", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"n": map[string]any{"type": "integer"}}}}},
-	}
-	ctx, cancel := context.WithTimeout(publicResponsesTestContext(t), 5*time.Second)
-	defer cancel()
-	reference, err := collectPublicResponsesStream(ctx, referenceModel, call)
-	require.NoError(t, err)
-	seenTool, seenReason := false, false
-	for _, part := range reference {
-		if part.Type == fantasy.StreamPartTypeToolCall {
-			seenTool = true
-			require.Equal(t, `{ "n": 9007199254740993 }`, part.ToolCallInput)
-		}
-		if part.Type == fantasy.StreamPartTypeReasoningDelta && part.Delta == "reason" {
-			seenReason = true
-		}
-	}
-	require.True(t, seenTool)
-	require.True(t, seenReason)
-	require.EqualValues(t, 2, reference[len(reference)-1].Usage.CacheReadTokens)
-	expected, err := nettransport.ResponsesWSFullFrame(publicResponsesCapture(t, ctx, httpFrames, "reference HTTP request"))
-	require.NoError(t, err)
-	for step := range 2 {
-		parts, err := collectPublicResponsesStream(ctx, model, call)
-		require.NoError(t, err)
-		require.Equal(t, reference, parts)
-		require.EqualValues(t, 1, httpRequests.Load(), "unexpected HTTP fallback: upgrades=%d websocket_requests=%d", upgrades.Load(), requests.Load())
-		require.EqualValues(t, 1, upgrades.Load(), "expected one reusable WebSocket")
-		require.EqualValues(t, step+1, requests.Load(), "expected a WebSocket request for every parity exchange")
-		raw := publicResponsesCapture(t, ctx, frames, "WebSocket request frame")
-		require.JSONEq(t, string(expected), string(raw))
-		var body map[string]json.RawMessage
-		require.NoError(t, json.Unmarshal(raw, &body))
-		require.NotContains(t, body, "stream")
-		require.NotContains(t, body, "background")
-		require.NotContains(t, body, "previous_response_id")
-		require.JSONEq(t, `"response.create"`, string(body["type"]))
-	}
-	header := publicResponsesCapture(t, ctx, headers, "WebSocket handshake headers")
-	require.Equal(t, "Bearer public-test-key", header.Get("Authorization"))
-	require.Equal(t, "call-project", header.Get("OpenAI-Project"))
-	require.Empty(t, header.Get("chatgpt-account-id"))
-	require.Empty(t, header.Get("OpenAI-Beta"))
-	// Full body parity includes pinned SDK options/tools rather than a rewrite.
-	var expectedBody map[string]json.RawMessage
-	require.NoError(t, json.Unmarshal(expected, &expectedBody))
-	require.JSONEq(t, `false`, string(expectedBody["store"]))
-	require.EqualValues(t, 1, upgrades.Load())
-	require.EqualValues(t, 2, requests.Load())
-	require.EqualValues(t, 1, httpRequests.Load())
+func publicResponsesHistoryDecode(t *testing.T, raw []byte) map[string]any {
+	t.Helper()
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	var value map[string]any
+	require.NoError(t, decoder.Decode(&value))
+	return value
 }
 
 func TestPublicResponsesWebSocketAmbiguousSendBlocksFantasyAndCoordinatorRetries(t *testing.T) {
@@ -269,7 +130,7 @@ func TestPublicResponsesWebSocketAmbiguousSendBlocksFantasyAndCoordinatorRetries
 	}))
 	defer server.Close()
 	model := publicResponsesTestModel(t, server, func(context.Context) (publicResponsesPolicy, error) {
-		return publicResponsesPolicy{apiKey: "public-test-key", client: publicResponsesLocalClient(server)}, nil
+		return publicResponsesPolicy{APIKey: "public-test-key", Client: publicResponsesLocalClient(server)}, nil
 	})
 	retry := fantasy.RetryWithExponentialBackoffRespectingRetryHeaders[[]fantasy.StreamPart](fantasy.RetryOptions{MaxRetries: 3, InitialDelayIn: time.Nanosecond})
 	_, err := retry(publicResponsesTestContext(t), func() ([]fantasy.StreamPart, error) {
@@ -297,32 +158,6 @@ func TestPublicResponsesWebSocketAmbiguousSendBlocksFantasyAndCoordinatorRetries
 			require.False(t, resume)
 		})
 	}
-}
-
-func TestPublicResponsesWebSocketUnsupportedFallbackBeforeSendOnly(t *testing.T) {
-	var upgrades, httpRequests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if websocket.IsWebSocketUpgrade(r) {
-			upgrades.Add(1)
-			w.WriteHeader(http.StatusUpgradeRequired)
-			return
-		}
-		httpRequests.Add(1)
-		w.Header().Set("Content-Type", "text/event-stream")
-		for _, event := range publicResponsesTestEvents {
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", event)
-		}
-	}))
-	defer server.Close()
-	model := publicResponsesTestModel(t, server, func(context.Context) (publicResponsesPolicy, error) {
-		return publicResponsesPolicy{apiKey: "public-test-key", client: publicResponsesLocalClient(server)}, nil
-	})
-	for range 2 {
-		_, err := collectPublicResponsesStream(publicResponsesTestContext(t), model, fantasy.Call{})
-		require.NoError(t, err)
-	}
-	require.EqualValues(t, 1, upgrades.Load())
-	require.EqualValues(t, 2, httpRequests.Load())
 }
 
 type responsesWSCancelAgent struct {
@@ -375,7 +210,7 @@ func TestPublicResponsesWebSocketCancellationAllowsLaterRequest(t *testing.T) {
 	BindCoordinatorBatchCutoverFacts(coord, responsesWSCancelFacts{})
 	t.Cleanup(func() { coordinatorBatchCutoverFactsBindings.Delete(coord) })
 	model := publicResponsesTestModel(t, server, func(context.Context) (publicResponsesPolicy, error) {
-		return publicResponsesPolicy{apiKey: "public-test-key", client: publicResponsesLocalClient(server)}, nil
+		return publicResponsesPolicy{APIKey: "public-test-key", Client: publicResponsesLocalClient(server)}, nil
 	}, coord)
 	done := make(chan error, 1)
 	go func() { _, err := collectPublicResponsesStream(ctx, model, fantasy.Call{}); done <- err }()
@@ -419,112 +254,4 @@ func TestPublicResponsesWebSocketCancellationAllowsLaterRequest(t *testing.T) {
 	require.Error(t, err)
 	require.EqualValues(t, 2, requests.Load())
 	require.Zero(t, httpRequests.Load())
-}
-
-func TestPublicResponsesWebSocketCurrentCredentialsNetworkAndLogout(t *testing.T) {
-	var requests, httpRequests atomic.Int32
-	headers, closed := make(chan http.Header, 8), make(chan struct{}, 8)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !websocket.IsWebSocketUpgrade(r) {
-			httpRequests.Add(1)
-			w.WriteHeader(500)
-			return
-		}
-		headers <- r.Header.Clone()
-		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer func() { _ = conn.Close(); closed <- struct{}{} }()
-		for {
-			if _, _, err = conn.ReadMessage(); err != nil {
-				return
-			}
-			requests.Add(1)
-			for _, event := range publicResponsesTestEvents {
-				if err = conn.WriteMessage(websocket.TextMessage, []byte(event)); err != nil {
-					return
-				}
-			}
-		}
-	}))
-	defer server.Close()
-	endpoint, err := url.Parse(server.URL)
-	require.NoError(t, err)
-	proxy, proxyAttempts := publicResponsesConnectProxy(t, endpoint.Host)
-	ctx, cancel := context.WithTimeout(publicResponsesTestContext(t), 5*time.Second)
-	defer cancel()
-	token := "first-key"
-	network := config.NetworkConfig{}
-	model := publicResponsesTestModel(t, server, func(context.Context) (publicResponsesPolicy, error) {
-		if token == "" {
-			return publicResponsesPolicy{}, errors.New("logged out")
-		}
-		return publicResponsesPolicy{apiKey: token, network: network, client: publicResponsesLocalClient(server)}, nil
-	})
-	for step := 0; step < 3; step++ {
-		if step == 1 {
-			token = "second-key"
-		}
-		if step == 2 {
-			network = nettransport.ResolveNetworkConfig(nil, &config.NetworkConfig{Proxy: proxy.URL})
-		}
-		_, err := collectPublicResponsesStream(ctx, model, fantasy.Call{})
-		require.NoError(t, err)
-		require.Zero(t, httpRequests.Load(), "credential/network checks must not use HTTP fallback")
-		header := publicResponsesCapture(t, ctx, headers, "current-credential WebSocket handshake")
-		require.Equal(t, "Bearer "+token, header.Get("Authorization"))
-	}
-	token = ""
-	_, err = collectPublicResponsesStream(ctx, model, fantasy.Call{})
-	require.Error(t, err)
-	for range 3 {
-		select {
-		case <-closed:
-		case <-time.After(2 * time.Second):
-			t.Fatal("revoked connection remained open")
-		}
-	}
-	require.EqualValues(t, 3, requests.Load())
-	require.EqualValues(t, 1, proxyAttempts.Load(), "the network revision must traverse the real CONNECT proxy")
-	require.Zero(t, httpRequests.Load())
-}
-
-func TestPublicResponsesWebSocketConsumerStopClosesConnection(t *testing.T) {
-	entered, closed := make(chan struct{}), make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer conn.Close()
-		if _, _, err = conn.ReadMessage(); err != nil {
-			return
-		}
-		close(entered)
-		_ = conn.WriteMessage(websocket.TextMessage, []byte(publicResponsesTestEvents[1]))
-		_, _, _ = conn.ReadMessage()
-		close(closed)
-	}))
-	defer server.Close()
-	model := publicResponsesTestModel(t, server, func(context.Context) (publicResponsesPolicy, error) {
-		return publicResponsesPolicy{apiKey: "public-test-key", client: publicResponsesLocalClient(server)}, nil
-	})
-	stream, err := model.Stream(publicResponsesTestContext(t), fantasy.Call{})
-	require.NoError(t, err)
-	for range stream {
-		break
-	}
-	select {
-	case <-entered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("request did not reach peer")
-	}
-	select {
-	case <-closed:
-	case <-time.After(2 * time.Second):
-		t.Fatal("consumer stop did not close peer")
-	}
 }

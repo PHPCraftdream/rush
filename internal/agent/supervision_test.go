@@ -21,7 +21,6 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
-	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
 
@@ -278,7 +277,7 @@ func TestSupervision_DeadlineWithoutAgentIsANoOpNotAPanic(t *testing.T) {
 func TestSupervision_TicksAfterSilenceWithOpenWork(t *testing.T) {
 	coord := newSupervisionTestCoordinator(t)
 	coord.timeouts = newTimeoutService()
-	defer coord.timeouts.close()
+	defer coord.timeouts.Close()
 
 	received := make(chan SessionAgentCall, 1)
 	agent := &mockSessionAgent{runFunc: func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
@@ -295,7 +294,7 @@ func TestSupervision_TicksAfterSilenceWithOpenWork(t *testing.T) {
 		interval:      30 * time.Millisecond,
 		generation:    1,
 	}
-	coord.timeouts.armFunc(time.Now().Add(30*time.Millisecond), func() { coord.handleSupervisionDeadline("tick-root", 1) })
+	coord.timeouts.ArmFunc(time.Now().Add(30*time.Millisecond), func() { coord.handleSupervisionDeadline("tick-root", 1) })
 
 	select {
 	case call := <-received:
@@ -330,7 +329,7 @@ func TestSupervision_RecordProgressPushesDeadlineForward(t *testing.T) {
 	t.Parallel()
 	coord := newSupervisionTestCoordinator(t)
 	coord.timeouts = newTimeoutService()
-	defer coord.timeouts.close()
+	defer coord.timeouts.Close()
 
 	var mu sync.Mutex
 	var calls []time.Time
@@ -366,7 +365,7 @@ func TestSupervision_RecordProgressPushesDeadlineForward(t *testing.T) {
 	// below would pass for the wrong reason.
 	coord.supervision.nextGen = 1
 	coord.supervision.byRoot["reset-root"] = &supervisionState{rootSessionID: "reset-root", cfg: cfg, interval: 1500 * time.Millisecond, generation: 1}
-	coord.timeouts.armFunc(start.Add(1500*time.Millisecond), func() { coord.handleSupervisionDeadline("reset-root", 1) })
+	coord.timeouts.ArmFunc(start.Add(1500*time.Millisecond), func() { coord.handleSupervisionDeadline("reset-root", 1) })
 
 	time.Sleep(20 * time.Millisecond)
 	coord.recordProgress("reset-root") // resets interval to cfg.Interval (50ms) and re-arms from now, invalidating generation 1
@@ -402,7 +401,7 @@ func TestSupervision_PushDeadlineOnTurnEndKeepsBackoffButReschedules(t *testing.
 	t.Parallel()
 	coord := newSupervisionTestCoordinator(t)
 	coord.timeouts = newTimeoutService()
-	defer coord.timeouts.close()
+	defer coord.timeouts.Close()
 
 	var prompts []string
 	done := make(chan struct{}, 1)
@@ -420,7 +419,7 @@ func TestSupervision_PushDeadlineOnTurnEndKeepsBackoffButReschedules(t *testing.
 	coord.supervision.byRoot["turnend-root"] = &supervisionState{
 		rootSessionID: "turnend-root", cfg: cfg, interval: 40 * time.Millisecond, tickCount: 2, generation: 1,
 	}
-	coord.timeouts.armFunc(time.Now().Add(2*time.Second), func() { coord.handleSupervisionDeadline("turnend-root", 1) })
+	coord.timeouts.ArmFunc(time.Now().Add(2*time.Second), func() { coord.handleSupervisionDeadline("turnend-root", 1) })
 
 	time.Sleep(20 * time.Millisecond)
 	coord.pushDeadlineOnTurnEnd("turnend-root") // simulates onSessionIdleHook firing after an unrelated turn ends
@@ -600,7 +599,7 @@ func TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress(t *testing.T) {
 func TestSupervision_SingleGoroutineRegardlessOfSessionCount(t *testing.T) {
 	coord := newSupervisionTestCoordinator(t)
 	coord.timeouts = newTimeoutService()
-	defer coord.timeouts.close()
+	defer coord.timeouts.Close()
 
 	arm := func(i int) {
 		sessionID := fmt.Sprintf("root-%d", i)
@@ -620,44 +619,6 @@ func TestSupervision_SingleGoroutineRegardlessOfSessionCount(t *testing.T) {
 	delta := settledGoroutineDelta(base)
 	require.LessOrEqual(t, delta, 2,
 		"arming supervision for %d sessions must not spawn %d goroutines, got a delta of %d", n, n, delta)
-}
-
-// TestDropSupersededSupervisionNotices: only the newest NoticeKind
-// "supervision" message keeps its text; older ones stay in place (role
-// alternation is preserved) with a short marker; everything else is untouched.
-func TestDropSupersededSupervisionNotices(t *testing.T) {
-	t.Parallel()
-	mk := func(id, noticeKind, text string) message.Message {
-		return message.Message{
-			ID: id, Role: message.User, NoticeKind: noticeKind,
-			Parts: []message.ContentPart{message.TextContent{Text: text}},
-		}
-	}
-	in := []message.Message{
-		mk("1", "", "hello"),
-		mk("2", noticeKindSupervision, "tick 1"),
-		mk("3", "job_stopped", "stopped"),
-		mk("4", noticeKindSupervision, "tick 2"),
-		mk("5", noticeKindSupervision, "tick 3 paused"),
-		mk("6", "", "bye"),
-	}
-	out := dropSupersededSupervisionNotices(in)
-
-	require.Equal(t, []string{"1", "2", "3", "4", "5", "6"}, idsOf(out), "no message is removed")
-	texts := make([]string, len(out))
-	for i, m := range out {
-		texts[i] = m.Content().Text
-	}
-	require.Equal(t, []string{"hello", supersededSupervisionText, "stopped", supersededSupervisionText, "tick 3 paused", "bye"}, texts)
-	require.Equal(t, "tick 1", in[1].Content().Text, "the input slice must not be mutated")
-}
-
-func idsOf(msgs []message.Message) []string {
-	ids := make([]string, len(msgs))
-	for i, m := range msgs {
-		ids[i] = m.ID
-	}
-	return ids
 }
 
 // TestSupervisionSummaryPaused_PutsGuidanceBeforePauseAnnouncement verifies

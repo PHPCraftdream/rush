@@ -1,4 +1,4 @@
-package agent
+package watchdog
 
 import (
 	"context"
@@ -20,7 +20,7 @@ import (
 // waited for.
 //
 // Revert-check: remove the disarmed check from the watchdog's tick handler
-// and this fails -- onFire runs and reports causeHardCap.
+// and this fails -- onFire runs and reports CauseHardCap.
 func TestStreamWatchdog_DisarmSuppressesTheHardCap(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -28,11 +28,11 @@ func TestStreamWatchdog_DisarmSuppressesTheHardCap(t *testing.T) {
 
 	var fires atomic.Int64
 	var lastCause atomic.Int32
-	wd := startStreamWatchdog(
+	wd := StartStreamWatchdog(
 		ctx, cancel,
 		time.Hour,          // idleTimeout: far away, so only the hard cap can fire
 		5*time.Millisecond, // tick
-		func(elapsed time.Duration, cause watchdogCause) {
+		func(elapsed time.Duration, cause Cause) {
 			fires.Add(1)
 			lastCause.Store(int32(cause))
 		},
@@ -43,7 +43,7 @@ func TestStreamWatchdog_DisarmSuppressesTheHardCap(t *testing.T) {
 		func() {},           // recordActivity
 	)
 
-	wd.disarm()
+	wd.Disarm()
 
 	// Well past the hard cap. Nothing may fire.
 	time.Sleep(200 * time.Millisecond)
@@ -52,9 +52,9 @@ func TestStreamWatchdog_DisarmSuppressesTheHardCap(t *testing.T) {
 
 	cancel()
 	select {
-	case <-wd.done:
+	case <-wd.Done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("disarming must not stop the goroutine from exiting on ctx -- runTurn's deferred <-wd.done would hang forever")
+		t.Fatal("disarming must not stop the goroutine from exiting on ctx -- runTurn's deferred <-wd.Done would hang forever")
 	}
 }
 
@@ -67,12 +67,12 @@ func TestStreamWatchdog_ArmedStillFiresTheHardCap(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	fired := make(chan watchdogCause, 1)
-	wd := startStreamWatchdog(
+	fired := make(chan Cause, 1)
+	wd := StartStreamWatchdog(
 		ctx, cancel,
 		time.Hour,
 		5*time.Millisecond,
-		func(elapsed time.Duration, cause watchdogCause) {
+		func(elapsed time.Duration, cause Cause) {
 			select {
 			case fired <- cause:
 			default:
@@ -87,14 +87,14 @@ func TestStreamWatchdog_ArmedStillFiresTheHardCap(t *testing.T) {
 
 	select {
 	case cause := <-fired:
-		require.Equal(t, causeHardCap, cause, "an armed watchdog past its hard cap must fire causeHardCap")
+		require.Equal(t, CauseHardCap, cause, "an armed watchdog past its hard cap must fire CauseHardCap")
 	case <-time.After(3 * time.Second):
 		t.Fatal("an armed watchdog never fired past its hard cap -- the disarm test above would prove nothing")
 	}
 
 	cancel()
 	select {
-	case <-wd.done:
+	case <-wd.Done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("watchdog goroutine did not exit")
 	}

@@ -1,4 +1,4 @@
-package agent
+package responsesws
 
 import (
 	"context"
@@ -170,11 +170,11 @@ func TestPublicResponsesWebSocketHistoryMatchesFantasyHTTPComposition(t *testing
 	ctx, cancel := context.WithTimeout(context.WithValue(publicResponsesTestContext(t), cliprovider.SessionIDContextKey, "public-history-composition-session"), 5*time.Second)
 	defer cancel()
 	network := nettransport.ResolveNetworkConfig(nil, &config.NetworkConfig{Proxy: config.ProxyNone})
-	model := publicResponsesTestModel(t, server, func(context.Context) (publicResponsesPolicy, error) {
-		return publicResponsesPolicy{
-			apiKey:  "public-test-key",
-			network: network,
-			client:  publicResponsesLocalClient(server),
+	model := publicResponsesTestModel(t, server, func(context.Context) (PublicResponsesPolicy, error) {
+		return PublicResponsesPolicy{
+			APIKey:  "public-test-key",
+			Network: network,
+			Client:  publicResponsesLocalClient(server),
 		}, nil
 	})
 
