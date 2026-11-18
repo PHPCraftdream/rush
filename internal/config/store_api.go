@@ -605,13 +605,12 @@ func validatePreparedAdmissionFile(ctx context.Context, path string, file *os.Fi
 // X3 oauthjournal wiring
 // ---------------------------------------------------------------------------
 
-// oauthJournal returns the store's OAuth journal recovery component,
-// constructing an ephemeral one over journalPort on demand for stores whose
-// constructor did not install one (e.g. zero-value test stores).
+// oauthJournal returns the store's shared OAuth journal recovery component,
+// initializing it on first use even for a zero-value ConfigStore.
 func (s *ConfigStore) oauthJournal() *oauthjournal.Store {
-	if s.oauthjournal == nil {
-		return oauthjournal.NewStore(journalPort{store: s})
-	}
+	s.oauthJournalOnce.Do(func() {
+		s.oauthjournal = oauthjournal.NewStore(journalPort{store: s})
+	})
 	return s.oauthjournal
 }
 

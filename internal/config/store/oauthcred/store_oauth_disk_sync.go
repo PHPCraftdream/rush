@@ -5,7 +5,6 @@ import (
 	"math/rand/v2"
 	"os"
 	"reflect"
-	"sync"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
@@ -26,21 +25,14 @@ type DiskSyncState struct {
 	tick    uint64
 }
 
-// oauthDiskSyncMu guards oauthDiskSyncStarted; the worker mutex, context and
-// WaitGroup live in the oauthjournal component.
-var oauthDiskSyncMu sync.Mutex
-
 // StartOAuthDiskSync starts one store-lifetime, read-only credential poller.
 func (s *Store) StartOAuthDiskSync() {
-	oauthDiskSyncMu.Lock()
-	defer oauthDiskSyncMu.Unlock()
+	s.oauthDiskSyncMu.Lock()
+	defer s.oauthDiskSyncMu.Unlock()
 	if s.port.GlobalDataPath() == "" || s.oauthDiskSyncStarted {
 		return
 	}
-	s.port.OAuthJournal().StartDiskSync(func(ctx context.Context) {
-		s.oauthDiskSyncStarted = true
-		go s.runOAuthDiskSync(ctx)
-	})
+	s.oauthDiskSyncStarted = s.port.OAuthJournal().StartDiskSync(s.runOAuthDiskSync)
 }
 
 func oauthDiskSyncDelay() time.Duration {
@@ -183,7 +175,7 @@ func (s *Store) drainOAuthOutboxOnStop() {
 // OAuthDiskSyncRunning reports whether the OAuth disk-sync poller goroutine
 // is running: started, not stopped, and not refused after a stop.
 func (s *Store) OAuthDiskSyncRunning() bool {
-	oauthDiskSyncMu.Lock()
-	defer oauthDiskSyncMu.Unlock()
+	s.oauthDiskSyncMu.Lock()
+	defer s.oauthDiskSyncMu.Unlock()
 	return s.oauthDiskSyncStarted && s.port.OAuthJournal().DiskSyncRunning()
 }

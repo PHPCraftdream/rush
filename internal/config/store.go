@@ -157,8 +157,9 @@ type ConfigStore struct {
 	// OAuth workers and the pending-rotation outbox live in the oauthjournal
 	// component; pending rotations, credential write serialization and the
 	// disk-sync started flag live in the oauthcred component (X4).
-	oauthjournal *oauthjournal.Store
-	oauthCred    *oauthcred.Store
+	oauthJournalOnce sync.Once
+	oauthjournal     *oauthjournal.Store
+	oauthCred        *oauthcred.Store
 
 	// Config disk sync worker (role-model hot reload poller). Kept separate
 	// from the OAuth worker block so its lifecycle stays independent.

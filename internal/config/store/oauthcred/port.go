@@ -128,6 +128,7 @@ type Store struct {
 	// credentialSetBeforePublish is a test seam; guarded by credentialWriteMu.
 	credentialSetBeforePublish func()
 
+	oauthDiskSyncMu sync.Mutex
 	// oauthDiskSyncStarted is guarded by oauthDiskSyncMu.
 	oauthDiskSyncStarted bool
 }

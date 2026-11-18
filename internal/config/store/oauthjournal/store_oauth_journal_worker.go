@@ -431,24 +431,24 @@ func (s *Store) WorkerAttempt(ctx context.Context, scope cfgmodel.Scope, provide
 	return false, nil // Next recovery verifies durability and removes this record.
 }
 
-// StartDiskSync replicates the original disk-sync worker-state dance under
-// the component worker mutex: ensure the shared worker context exists, refuse
-// after a stop, register on the shared WaitGroup, and launch start with the
-// live context. start must launch its goroutine and must not block.
-func (s *Store) StartDiskSync(start func(context.Context)) {
+// StartDiskSync registers and launches run with the shared worker context.
+// run must not return until the poller exits. StartDiskSync returns false if
+// the workers have been stopped and true if run was registered.
+func (s *Store) StartDiskSync(run func(context.Context)) bool {
 	s.oauthWorkerMu.Lock()
 	defer s.oauthWorkerMu.Unlock()
 	if s.oauthWorkerCtx == nil {
 		s.oauthWorkerCtx, s.oauthWorkerCancel = context.WithCancel(context.Background())
 	}
 	if s.oauthWorkerCtx.Err() != nil {
-		return
+		return false
 	}
 	s.oauthWorkerWG.Add(1)
 	go func() {
 		defer s.oauthWorkerWG.Done()
-		start(s.oauthWorkerCtx)
+		run(s.oauthWorkerCtx)
 	}()
+	return true
 }
 
 // DiskSyncRunning reports whether the shared worker context is live.

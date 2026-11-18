@@ -81,8 +81,8 @@ func (st *DiskSyncState) TickForTest() uint64 { return st.tick }
 // OAuthDiskSyncStartedForTest reports the raw started flag for tests only,
 // including after shutdown. It locks the disk sync start mutex.
 func (s *Store) OAuthDiskSyncStartedForTest() bool {
-	oauthDiskSyncMu.Lock()
-	defer oauthDiskSyncMu.Unlock()
+	s.oauthDiskSyncMu.Lock()
+	defer s.oauthDiskSyncMu.Unlock()
 	return s.oauthDiskSyncStarted
 }
 
