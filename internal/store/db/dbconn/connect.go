@@ -343,21 +343,12 @@ func connect(ctx context.Context, dataDir string, o openOptions) (*connEntry, er
 		}
 	}
 
-	conn, err := migrater.OpenDB(dbPath)
+	// OpenWriter serializes all access through a single connection (pooled interleaved
+	// writes/checkpoints have caused WAL/header desync, SQLITE_NOTADB) and retries a
+	// SQLITE_BUSY first open, which busy_timeout does not cover for journal_mode(WAL).
+	conn, err := migrater.OpenWriter(ctx, dbPath)
 	if err != nil {
 		return nil, err
-	}
-
-	// Serialize all access through a single connection. SQLite
-	// serializes writes at the file level anyway, and allowing multiple
-	// pool connections to interleave writes/checkpoints (especially
-	// under concurrent sub-agents) has caused WAL/header desync
-	// resulting in SQLITE_NOTADB (26) on the next open.
-	conn.SetMaxOpenConns(1)
-
-	if err = conn.PingContext(ctx); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
 	// The migration decision is a cross-process critical section: every
