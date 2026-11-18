@@ -227,14 +227,14 @@ func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.E
 				}
 				continue
 			}
-			prepared.BaseURL = discover.CodexBaseURL
+			prepared.BaseURL = discover.ApplyCodexConfig(config.ExtraHeaders)
 			if !prepared.Disable && discoveryEnabled(discoveryScope, prepared.ID) {
 				discoverCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				providerClient, err := cfg.ProviderHTTPClient(prepared)
 				var models []catwalk.Model
 				if err == nil {
 					models, err = cachedProviderModels(discoverCtx, prepared.ID, prepared.BaseURL,
-						cmp.Or(config.OAuthToken.AccountID, config.OAuthToken.AccessToken),
+						discover.CodexCatalogIdentity(config.OAuthToken.AccountID, config.OAuthToken.AccessToken),
 						func(ctx context.Context) ([]catwalk.Model, error) {
 							return discover.DiscoverCodexModels(ctx, providerClient, config.OAuthToken.AccessToken, config.OAuthToken.AccountID)
 						})

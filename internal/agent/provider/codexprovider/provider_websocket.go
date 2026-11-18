@@ -16,6 +16,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/config/discover"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
@@ -339,7 +340,7 @@ func (m *languageModel) webSocketConnectionOptions(options *WebSocketOptions, po
 	headers := http.Header{}
 	headers.Set("OpenAI-Beta", "responses_websockets=2026-02-06")
 	headers.Set("originator", "omp")
-	headers.Set("version", codexVersion)
+	headers.Set("version", discover.CodexClientVersion())
 	headers.Set("User-Agent", userAgent)
 	headers.Set("x-codex-routing-hint", "model="+m.modelID)
 	headers.Set("conversation_id", conversation)

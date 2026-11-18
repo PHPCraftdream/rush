@@ -13,6 +13,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openai"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/config/discover"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
@@ -106,7 +107,7 @@ func (m *languageModel) send(ctx context.Context, payload []byte, userAgent stri
 	request.Header.Set("Accept", "text/event-stream")
 	request.Header.Set("OpenAI-Beta", "responses=experimental")
 	request.Header.Set("originator", "omp")
-	request.Header.Set("version", codexVersion)
+	request.Header.Set("version", discover.CodexClientVersion())
 	if strings.TrimSpace(userAgent) == "" {
 		userAgent = "rush"
 	}

@@ -22,7 +22,6 @@ const (
 	// Name identifies the direct Codex Responses provider.
 	Name            = "openai-codex"
 	responsesURL    = "https://chatgpt.com/backend-api/codex/responses"
-	codexVersion    = "0.159.0"
 	maxErrorBody    = 1 << 20
 	maxSSEEventSize = 4 << 20
 )
