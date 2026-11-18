@@ -223,7 +223,7 @@ func (s *Store) PersistMCPFields(scope Scope, name string, fields map[string]any
 	var committedInputs map[string][32]byte
 	var audit settingsWriteAudit
 	err = s.port.PublishMutation(func(pub MutationScope) error {
-		err = s.withMCPWriteLocks(func(files *LockedFiles) error {
+		lockErr := s.withMCPWriteLocks(func(files *LockedFiles) error {
 			before, evalErr := s.EvaluateMCPFiles(files)
 			if evalErr != nil {
 				return evalErr
@@ -260,13 +260,13 @@ func (s *Store) PersistMCPFields(scope Scope, name string, fields map[string]any
 			}
 			return nil
 		})
-		if err == nil || MCPCommitWasReconciled(err) {
+		if lockErr == nil || MCPCommitWasReconciled(lockErr) {
 			// The selected file may be shadowed, so publish the effective value
 			// only after the exact file mutation has committed. A later reload
 			// remains authoritative for all other fields.
 			s.publishMCPValueAndStalenessLocked(pub, name, effective, effectiveExists, committed, committedInputs)
 		}
-		return nil
+		return lockErr
 	})
 	auditErr := err
 	if MCPCommitWasReconciled(err) {
@@ -301,7 +301,7 @@ func (s *Store) PersistMCPFieldsExact(scope Scope, name string, fields map[strin
 	var committedInputs map[string][32]byte
 	var audit settingsWriteAudit
 	err = s.port.PublishMutation(func(pub MutationScope) error {
-		err = s.withMCPWriteLocks(func(files *LockedFiles) error {
+		lockErr := s.withMCPWriteLocks(func(files *LockedFiles) error {
 			before, evalErr := s.EvaluateMCPFiles(files)
 			if evalErr != nil {
 				return evalErr
@@ -337,10 +337,10 @@ func (s *Store) PersistMCPFieldsExact(scope Scope, name string, fields map[strin
 			}
 			return nil
 		})
-		if err == nil || MCPCommitWasReconciled(err) {
+		if lockErr == nil || MCPCommitWasReconciled(lockErr) {
 			s.publishMCPValueAndStalenessLocked(pub, name, effective, effectiveExists, committed, committedInputs)
 		}
-		return nil
+		return lockErr
 	})
 	auditErr := err
 	if MCPCommitWasReconciled(err) {
