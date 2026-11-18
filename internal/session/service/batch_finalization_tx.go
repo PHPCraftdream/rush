@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"slices"
+
+	finterm "github.com/PHPCraftdream/rush/internal/session/batch/finterm"
 )
 
 // ValidateBatchFinalizationTx runs before every reservation/projection effect.
@@ -27,7 +29,7 @@ func ValidateBatchFinalizationTx(ctx context.Context, tx *sql.Tx, owners []strin
 	if admission != nil {
 		for _, ticket := range admission.tickets {
 			owner := ticket.identity.SessionID
-			if !ticket.identity.valid() || ticket.ticket == "" {
+			if !ticket.identity.Valid() || ticket.ticket == "" {
 				return ErrAgentFinalizationChanged
 			}
 			if _, duplicate := tickets[owner]; duplicate {
@@ -52,14 +54,14 @@ func ValidateBatchFinalizationTx(ctx context.Context, tx *sql.Tx, owners []strin
 			}
 			continue
 		}
-		record, err := readAgentFinalization(ctx, tx, ticket.identity)
+		record, err := finterm.ReadAgentFinalization(ctx, tx, ticket.identity)
 		if err != nil {
 			return err
 		}
 		if record.Cancelled {
 			return context.Canceled
 		}
-		if !record.active() {
+		if !record.Active() {
 			return ErrAgentFinalizationChanged
 		}
 		var valid bool

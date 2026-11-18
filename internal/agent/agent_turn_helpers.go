@@ -40,6 +40,10 @@ func logProviderWarnings(warnings []fantasy.CallWarning) {
 	}
 }
 
+func (a *sessionAgent) drainDueInjects(sessionID string, genID uint64, historyIDs map[string]struct{}) []message.Message {
+	return a.turnBudget.drainDueInjects(a, sessionID, genID, historyIDs)
+}
+
 // drainDueInjects is PrepareStep's mailbox-inject drain (design §5, stage
 // 2.4), pulled out into a named method for the same reason handleWatchdogFire
 // below was (task #243): a test must be able to drive the REAL production
@@ -61,8 +65,8 @@ func logProviderWarnings(warnings []fantasy.CallWarning) {
 //     getSessionMessages already loaded, so a DB write that raced ahead of
 //     the preamble does not appear both in history and in the splice (the
 //     DUPLICATION half).
-func (a *sessionAgent) drainDueInjects(sessionID string, genID uint64, historyIDs map[string]struct{}) []message.Message {
-	due := a.getMailbox(sessionID).drainInjects(genID)
+func (t *turnBudget) drainDueInjects(h contextBudgetHost, sessionID string, genID uint64, historyIDs map[string]struct{}) []message.Message {
+	due := h.getMailbox(sessionID).drainInjects(genID)
 	if len(due) == 0 {
 		return nil
 	}
@@ -74,6 +78,17 @@ func (a *sessionAgent) drainDueInjects(sessionID string, genID uint64, historyID
 		spliced = append(spliced, inj.msg)
 	}
 	return spliced
+}
+
+func (a *sessionAgent) handleWatchdogFire(
+	cause watchdogCause,
+	elapsed time.Duration,
+	sessionID string,
+	watchdogCauseVal *atomic.Int32,
+	toolMaxDuration, idleTimeout time.Duration,
+	smartModel Model,
+) {
+	a.turnBudget.handleWatchdogFire(a, cause, elapsed, sessionID, watchdogCauseVal, toolMaxDuration, idleTimeout, smartModel)
 }
 
 // handleWatchdogFire is runTurn's stream-watchdog onFire callback, pulled out
@@ -114,7 +129,8 @@ func (a *sessionAgent) drainDueInjects(sessionID string, genID uint64, historyID
 // would misreport the cause via a DIFFERENT race than the one #227 fixed
 // (external cancellation racing this callback, rather than this callback
 // racing its own cancel()).
-func (a *sessionAgent) handleWatchdogFire(
+func (t *turnBudget) handleWatchdogFire(
+	h contextBudgetHost,
 	cause watchdogCause,
 	elapsed time.Duration,
 	sessionID string,
@@ -176,7 +192,7 @@ func (a *sessionAgent) handleWatchdogFire(
 			"provider", smartModel.ModelCfg.Provider,
 			"model", smartModel.ModelCfg.Model,
 			"elapsed", elapsed.String(),
-			"hard_cap", a.timeoutHardCap.String(),
+			"hard_cap", h.timeoutHardCapCfg().String(),
 		)
 	default:
 		slog.Warn(

@@ -1,0 +1,399 @@
+// Tests for progress-based deadline extension (extendsOnProgress) and the
+// --timeout-hard-cap ceiling: progress keeps a turn alive past the idle
+// timeout, the cap still fires through it, and the reported cause must
+// distinguish hard-cap fires from genuine idle stalls.
+
+package watchdog_test
+
+import (
+	"context"
+	"sync/atomic"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
+
+	"github.com/stretchr/testify/assert"
+)
+
+// Fork patch: batch 8 — tests for progress-based deadline extension.
+
+// TestStreamWatchdog_ExtendsOnProgress verifies that with extendsOnProgress
+// enabled, continuous progress keeps the watchdog alive beyond the original
+// idle timeout.
+func TestStreamWatchdog_ExtendsOnProgress(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	// This test races the scheduler, not the code: it asserts the watchdog
+	// stays quiet while bumps keep arriving, so any bump delayed by more than
+	// `idle` fails it. It was widened 3x once already for that reason, and
+	// flaked again when this package gained more parallel subtests.
+	//
+	// Widening every constant again would only buy time. What actually
+	// matters is the RATIO between the bump interval and idle, so that is
+	// what grew: bumps every 90ms against a 600ms deadline is 6.6x of
+	// headroom where it used to be 2.6x, and the test still takes the same
+	// 900ms. hardCap moved out to 5s for the same reason from the other
+	// side -- the loop must be able to run long under load without the hard
+	// cap firing and being mistaken for an idle timeout.
+	const idle = 600 * time.Millisecond
+	const tick = 30 * time.Millisecond
+	const hardCap = 5 * time.Second
+
+	var fired atomic.Int32
+	wd := watchdog.StartStreamWatchdog(ctx, cancel, idle, tick, func(time.Duration, watchdog.Cause) {
+		fired.Add(1)
+	}, true, hardCap, 0, 0, nil)
+	defer func() {
+		cancel()
+		<-wd.Done
+	}()
+
+	// Bump every 90ms for 900ms — extends the deadline each time.
+	stop := time.After(900 * time.Millisecond)
+loop:
+	for {
+		select {
+		case <-stop:
+			break loop
+		case <-time.After(90 * time.Millisecond):
+			wd.Bump()
+		}
+	}
+
+	assert.Equal(t, int32(0), fired.Load(),
+		"watchdog must not fire while progress keeps arriving")
+	assert.False(t, wd.Stalled.Load())
+}
+
+// TestStreamWatchdog_ExtendsOnProgress_FiresWhenIdle verifies that with
+// extendsOnProgress, the watchdog still fires when progress stops.
+func TestStreamWatchdog_ExtendsOnProgress_FiresWhenIdle(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+
+	const idle = 60 * time.Millisecond
+	const tick = 10 * time.Millisecond
+	const hardCap = 500 * time.Millisecond
+
+	var fired atomic.Int32
+	var firedCause atomic.Int32
+	wd := watchdog.StartStreamWatchdog(ctx, cancel, idle, tick, func(_ time.Duration, cause watchdog.Cause) {
+		fired.Add(1)
+		firedCause.Store(int32(cause))
+	}, true, hardCap, 0, 0, nil)
+
+	// Bump once to extend, then stop.
+	wd.Bump()
+
+	select {
+	case <-wd.Done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("watchdog should have fired after progress stopped")
+	}
+
+	assert.Equal(t, int32(1), fired.Load(), "watchdog must fire when progress stops")
+	assert.True(t, wd.Stalled.Load())
+	assert.Equal(t, watchdog.CauseIdleStall, watchdog.Cause(firedCause.Load()),
+		"progress stopping (not a hard cap, not a stuck tool) must report watchdog.CauseIdleStall")
+}
+
+// TestStreamWatchdog_HardCapRespected verifies that even with continuous
+// progress, the watchdog fires at the hard cap.
+func TestStreamWatchdog_HardCapRespected(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+
+	// Keep the idle deadline beyond the hard cap so delayed test scheduling
+	// cannot accidentally exercise the idle-stall path first.
+	const idle = 2 * time.Second
+	const tick = 10 * time.Millisecond
+	const hardCap = 400 * time.Millisecond
+
+	var fired atomic.Int32
+	var firedCause atomic.Int32
+	var firedElapsed atomic.Int64
+	wd := watchdog.StartStreamWatchdog(ctx, cancel, idle, tick, func(elapsed time.Duration, cause watchdog.Cause) {
+		fired.Add(1)
+		firedCause.Store(int32(cause))
+		firedElapsed.Store(int64(elapsed))
+	}, true, hardCap, 0, 0, nil)
+
+	start := time.Now()
+
+	// Bump rapidly — but hard cap should still kill it.
+	stop := time.After(2 * time.Second)
+loop:
+	for {
+		select {
+		case <-wd.Done:
+			break loop
+		case <-stop:
+			t.Fatal("watchdog should have fired at hard cap")
+		case <-time.After(10 * time.Millisecond):
+			wd.Bump()
+		}
+	}
+
+	elapsed := time.Since(start)
+	assert.Equal(t, int32(1), fired.Load(), "watchdog must fire at hard cap")
+	assert.True(t, wd.Stalled.Load())
+	assert.Equal(t, watchdog.CauseHardCap, watchdog.Cause(firedCause.Load()),
+		"firing at the hard cap despite continuous progress must report watchdog.CauseHardCap")
+	// The hard cap is 400ms; widened from an earlier 200ms-cap/350ms-ceiling
+	// version (task #320) whose 150ms of upper-bound slack was tight enough
+	// to flake on a loaded CI runner under -race in a full-package parallel
+	// run, where a single delayed tick is enough to blow the margin without
+	// indicating any real bug. 800ms of slack on top of the cap only fails
+	// if the fire is genuinely late, not merely jittered.
+	assert.LessOrEqual(t, elapsed, hardCap+800*time.Millisecond,
+		"watchdog must fire near the hard cap")
+	// Regression for task #276: the value passed to onFire must be the
+	// wall-clock turn length (now.Sub(startTime)), not idle — this loop
+	// bumps every 10ms, so idle sits near-zero for the whole run, and a
+	// misdiagnosed hard-cap fire would report an elapsed close to 0
+	// instead of close to hardCap.
+	gotElapsed := time.Duration(firedElapsed.Load())
+	assert.GreaterOrEqual(t, gotElapsed, hardCap,
+		"elapsed passed to onFire must reflect wall-clock turn length, not near-zero idle time")
+}
+
+// TestStreamWatchdog_HardCapRespectedWithoutExtendsOnProgress is the
+// regression test for a real bug: the hardCap check used to live ONLY
+// inside the `if extendsOnProgress` branch of the idle-path check, so when
+// extendsOnProgress is false (the default — operator did not pass
+// --timeout-extends-on-progress) an explicitly configured --timeout-hard-cap
+// was never enforced as long as the provider kept the stream alive with
+// regular chunks: idle never reached idleTimeout, and the hardCap check was
+// unreachable on that path. This proves the fix: even with extendsOnProgress
+// false and bump() called continuously (idle never approaches idleTimeout),
+// the watchdog must still fire at the hard cap.
+func TestStreamWatchdog_HardCapRespectedWithoutExtendsOnProgress(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+
+		const idle = 200 * time.Millisecond
+		const tick = 10 * time.Millisecond
+		const hardCap = 400 * time.Millisecond
+
+		var fired atomic.Int32
+		var firedCause atomic.Int32
+		var firedElapsed atomic.Int64
+		wd := watchdog.StartStreamWatchdog(ctx, cancel, idle, tick, func(elapsed time.Duration, cause watchdog.Cause) {
+			fired.Add(1)
+			firedCause.Store(int32(cause))
+			firedElapsed.Store(int64(elapsed))
+		}, false, hardCap, 0, 0, nil)
+
+		start := time.Now()
+
+		// Bump rapidly — more often than idleTimeout — so the idle-only check
+		// would NEVER fire on its own. The hard cap must still kill it.
+		stop := time.After(2 * time.Second)
+	loop:
+		for {
+			select {
+			case <-wd.Done:
+				break loop
+			case <-stop:
+				t.Fatal("watchdog should have fired at hard cap despite continuous activity")
+			case <-time.After(10 * time.Millisecond):
+				wd.Bump()
+			}
+		}
+
+		elapsed := time.Since(start)
+		assert.Equal(t, int32(1), fired.Load(), "watchdog must fire at hard cap")
+		assert.True(t, wd.Stalled.Load())
+		assert.Equal(t, watchdog.CauseHardCap, watchdog.Cause(firedCause.Load()),
+			"the hard-cap fire outside tool-in-flight must report watchdog.CauseHardCap, not watchdog.CauseIdleStall or watchdog.CauseToolTimeout")
+		// The hard cap is 400ms; widened from an earlier 200ms-cap/350ms-ceiling
+		// version (task #320) for the same reason as TestStreamWatchdog_HardCapRespected:
+		// 150ms of upper-bound slack was tight enough to flake on a loaded CI
+		// runner under -race in a full-package parallel run.
+		assert.LessOrEqual(t, elapsed, hardCap+800*time.Millisecond,
+			"watchdog must fire near the hard cap")
+		// Regression for task #276: this is exactly the branch that used to
+		// pass idle instead of the wall-clock elapsed to onFire. The bump loop
+		// keeps idle near-zero for the whole run, so a misdiagnosed fire would
+		// report an elapsed close to 0 instead of close to hardCap.
+		gotElapsed := time.Duration(firedElapsed.Load())
+		assert.GreaterOrEqual(t, gotElapsed, hardCap,
+			"elapsed passed to onFire must reflect wall-clock turn length, not near-zero idle time")
+	})
+}
+
+// TestStreamWatchdog_HardCapRespectedWithToolInFlight is the regression test
+// for a real bug: the explicit hardCap check inside the toolsInFlight branch
+// (the one immediately below the never-freeze toolMaxDuration backstop) used
+// to unconditionally report toolTimeout=true to onFire, even though it is
+// the SAME wall-clock --timeout-hard-cap check as the one on the idle path.
+// 77c1104a fixed the immediate boolean misclassification (both paths now
+// agree on toolTimeout=false), but that only made the hard-cap-with-tool
+// case indistinguishable from a genuine provider idle-stall instead of from
+// a stuck tool — either way onFire couldn't tell "the turn hit its
+// configured ceiling" apart from "the provider went silent". This test
+// (task #223) proves the fully-fixed three-way signature: with a small
+// hardCap and a generous toolMaxDuration (so the never-freeze backstop does
+// not fire first), the watchdog must still fire at the hard cap while a
+// tool is in flight, and must report the DISTINCT watchdog.CauseHardCap value — not
+// watchdog.CauseToolTimeout (that would blame the tool) and not watchdog.CauseIdleStall (that
+// would blame the provider for silence it didn't cause).
+func TestStreamWatchdog_HardCapRespectedWithToolInFlight(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	const idle = 5 * time.Second // large — idle path must not be relevant
+	const tick = 10 * time.Millisecond
+	const hardCap = 200 * time.Millisecond
+	const toolMaxDuration = 5 * time.Second // generous — must not fire before hardCap
+
+	var fired atomic.Int32
+	var firedCause atomic.Int32
+	wd := watchdog.StartStreamWatchdog(ctx, cancel, idle, tick, func(_ time.Duration, cause watchdog.Cause) {
+		fired.Add(1)
+		firedCause.Store(int32(cause))
+	}, false, hardCap, toolMaxDuration, 0, nil)
+
+	// A tool starts and stays in flight — never finishes — while the hard
+	// cap elapses. The watchdog must fire purely from hardCap, not from the
+	// toolMaxDuration backstop.
+	wd.ToolStarted()
+
+	select {
+	case <-wd.Done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchdog should have fired at hard cap despite a tool being in flight")
+	}
+
+	assert.Equal(t, int32(1), fired.Load(), "watchdog must fire at hard cap")
+	assert.True(t, wd.Stalled.Load())
+	assert.Equal(t, watchdog.CauseHardCap, watchdog.Cause(firedCause.Load()),
+		"the hard-cap fire while a tool is in flight must report watchdog.CauseHardCap — this is a wall-clock turn limit, not a stuck tool and not provider idle")
+}
+
+// TestStreamWatchdog_HardCapWhileToolInFlightDistinctFromIdleStall proves
+// the two previously-indistinguishable "not a tool timeout" cases — a
+// hard-cap fire that happens to catch a tool in flight, and a genuine
+// provider idle-stall with no tool in flight — now report DIFFERENT
+// watchdog.Cause values from the same onFire callback shape. Before task
+// #223 both cases passed toolTimeout=false and were fully indistinguishable
+// to the caller; this is the direct regression test for that gap.
+func TestStreamWatchdog_HardCapWhileToolInFlightDistinctFromIdleStall(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		const tick = 10 * time.Millisecond
+
+		// Case 1: hard cap fires while a tool is in flight.
+		hardCapCtx, hardCapCancel := context.WithCancel(t.Context())
+		defer hardCapCancel()
+		const hardCap = 150 * time.Millisecond
+		const toolMaxDuration = 5 * time.Second // generous — never-freeze backstop must not preempt hardCap
+		var hardCapCause atomic.Int32
+		hardCapWd := watchdog.StartStreamWatchdog(hardCapCtx, hardCapCancel, 5*time.Second, tick,
+			func(_ time.Duration, cause watchdog.Cause) {
+				hardCapCause.Store(int32(cause))
+			}, false, hardCap, toolMaxDuration, 0, nil)
+		hardCapWd.ToolStarted()
+
+		// Case 2: genuine idle stall, no tool ever in flight, no hard cap
+		// configured.
+		idleCtx, idleCancel := context.WithCancel(t.Context())
+		defer idleCancel()
+		const idleTimeout = 60 * time.Millisecond
+		var idleCause atomic.Int32
+		idleWd := watchdog.StartStreamWatchdog(idleCtx, idleCancel, idleTimeout, tick,
+			func(_ time.Duration, cause watchdog.Cause) {
+				idleCause.Store(int32(cause))
+			}, false, 0, 0, 0, nil)
+
+		select {
+		case <-hardCapWd.Done:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatal("hard-cap watchdog never fired")
+		}
+		select {
+		case <-idleWd.Done:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatal("idle watchdog never fired")
+		}
+
+		gotHardCap := watchdog.Cause(hardCapCause.Load())
+		gotIdle := watchdog.Cause(idleCause.Load())
+
+		assert.Equal(t, watchdog.CauseHardCap, gotHardCap, "hard-cap-with-tool-in-flight must report watchdog.CauseHardCap")
+		assert.Equal(t, watchdog.CauseIdleStall, gotIdle, "genuine provider idle-stall must report watchdog.CauseIdleStall")
+		assert.NotEqual(t, gotHardCap, gotIdle,
+			"a hard-cap fire while a tool is in flight and a genuine idle-stall must be distinguishable, not collapse to the same cause")
+	})
+}
+
+// TestStreamWatchdog_ExtendsOnProgress_ZeroHardCapKeepsExtending is the
+// regression test for R6-2: with extendsOnProgress enabled and hardCap 0
+// (no cap configured), the extended deadline used to be unconditionally
+// clamped back to hardDeadline — which, with cap==0, is just a copy of
+// absoluteDeadline (start+idle) — so "extension" was actually an absolute
+// deadline and a stream producing steady progress was killed the moment
+// the original idle window elapsed. This test runs the report's exact
+// scenario under virtual time: idle 20s, a bump every 1s for 90s. Before
+// the fix the watchdog fired at ~20s; after it, it must stay quiet for
+// the whole bumping window and still fire with watchdog.CauseIdleStall once
+// progress actually stops.
+func TestStreamWatchdog_ExtendsOnProgress_ZeroHardCapKeepsExtending(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		const idle = 20 * time.Second
+		const tick = 500 * time.Millisecond
+
+		var fired atomic.Int32
+		var firedCause atomic.Int32
+		wd := watchdog.StartStreamWatchdog(ctx, cancel, idle, tick, func(_ time.Duration, cause watchdog.Cause) {
+			fired.Add(1)
+			firedCause.Store(int32(cause))
+		}, true, 0, 0, 0, nil)
+		defer func() {
+			cancel()
+			<-wd.Done
+		}()
+
+		// Steady progress every second for 90 virtual seconds — 4.5x the
+		// idle window. Before the R6-2 fix the watchdog fired at ~20s;
+		// it must never fire while progress keeps arriving.
+		for i := 0; i < 90; i++ {
+			time.Sleep(time.Second)
+			if wd.Stalled.Load() {
+				t.Fatalf("watchdog fired despite continuous progress with hardCap=0 (at bump %d)", i+1)
+			}
+			select {
+			case <-wd.Done:
+				t.Fatal("watchdog fired despite continuous progress with hardCap=0")
+			default:
+			}
+			wd.Bump()
+		}
+		assert.Equal(t, int32(0), fired.Load(),
+			"a zero hard cap must not clamp the extended deadline back to start+idle")
+		assert.False(t, wd.Stalled.Load())
+
+		// Progress stops: the (extended) idle window must still elapse and
+		// the watchdog must still fire — proving extension works, not that
+		// the watchdog was disabled. The last bump was at virtual t=90s,
+		// so the extended deadline is ~110s; 40s of waiting covers it.
+		select {
+		case <-wd.Done:
+		case <-time.After(2 * idle):
+			t.Fatal("watchdog never fired after progress stopped")
+		}
+		assert.Equal(t, int32(1), fired.Load())
+		assert.True(t, wd.Stalled.Load())
+		assert.Equal(t, watchdog.CauseIdleStall, watchdog.Cause(firedCause.Load()),
+			"a fire after progress stopped must report watchdog.CauseIdleStall, not watchdog.CauseHardCap")
+	})
+}

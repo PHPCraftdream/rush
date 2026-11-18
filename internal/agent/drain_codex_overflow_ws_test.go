@@ -20,6 +20,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/responsesws"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
@@ -32,13 +33,13 @@ const codexWSOverflowBodyLimit = 60000
 
 // codexWSLocalManager redirects the fixed Codex endpoint to a local peer.
 type codexWSLocalManager struct {
-	*codexWebSocketTransport
+	codexprovider.WebSocketManager
 	endpoint string
 }
 
 func (m codexWSLocalManager) Acquire(ctx context.Context, request codexprovider.WebSocketRequest) (codexprovider.WebSocketLease, error) {
 	request.Endpoint = m.endpoint
-	return m.codexWebSocketTransport.Acquire(ctx, request)
+	return m.WebSocketManager.Acquire(ctx, request)
 }
 
 type codexWSStaticSource struct{}
@@ -119,15 +120,15 @@ func (p *codexWSPeer) model(t *testing.T) fantasy.LanguageModel {
 	t.Cleanup(func() { _ = manager.Close() })
 	policy := codexprovider.WebSocketPolicy{Transport: codexprovider.WebSocketTransportAuto}
 	network := nettransport.ResolveNetworkConfig(nil, &config.NetworkConfig{Proxy: config.ProxyNone})
-	transport := &codexWebSocketTransport{ResponsesWSManager: manager, current: func() (codexprovider.WebSocketPolicy, config.NetworkConfig, error) {
+	transport := responsesws.NewCodexTransport(manager, func() (codexprovider.WebSocketPolicy, config.NetworkConfig, error) {
 		return policy, network, nil
-	}}
+	})
 	failHTTP := roundTripFunc(func(*http.Request) (*http.Response, error) {
 		p.http.Add(1)
 		return nil, fmt.Errorf("unexpected HTTP inference")
 	})
 	provider, err := codexprovider.NewWithSource(&http.Client{Transport: failHTTP}, codexWSStaticSource{}, codexprovider.WebSocketOptions{
-		Manager:     codexWSLocalManager{codexWebSocketTransport: transport, endpoint: strings.Replace(p.server.URL, "http://", "ws://", 1)},
+		Manager:     codexWSLocalManager{WebSocketManager: transport, endpoint: strings.Replace(p.server.URL, "http://", "ws://", 1)},
 		Current:     func() (codexprovider.WebSocketPolicy, error) { return policy, nil },
 		EncodeFrame: nettransport.ResponsesWSCodexFullFrame,
 	})

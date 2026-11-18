@@ -36,7 +36,7 @@ func (s *service) BindAgentFinalization(ctx context.Context, identity AgentFinal
 }
 
 func (a *AgentFinalizationAuthority) revalidate(ctx context.Context) error {
-	if a == nil || a.Service == nil || a.Service.DB == nil || !a.Identity.valid() {
+	if a == nil || a.Service == nil || a.Service.DB == nil || !a.Identity.Valid() {
 		return ErrAgentFinalizationChanged
 	}
 	store := NewAgentFinalizationStore(a.Service.DB)
@@ -44,7 +44,7 @@ func (a *AgentFinalizationAuthority) revalidate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read finalization authority: %w", err)
 	}
-	if !record.active() {
+	if !record.Active() {
 		return ErrAgentFinalizationChanged
 	}
 	if record.Cancelled {
@@ -76,7 +76,7 @@ func (s *service) WithAgentFinalizationAuthorities(identity BatchCommitIdentity,
 	}
 	byOwner := make(map[string]*AgentFinalizationAuthority, len(authorities))
 	for _, authority := range authorities {
-		if authority == nil || authority.Service != s || authority.Service.DB != s.DB || !authority.Identity.valid() {
+		if authority == nil || authority.Service != s || authority.Service.DB != s.DB || !authority.Identity.Valid() {
 			return BatchCommitIdentity{}, errors.New("finalization authority belongs to another service")
 		}
 		owner := authority.Identity.SessionID

@@ -96,13 +96,29 @@ func pinnedBatchRegistryIDs(list []fantasy.AgentTool) []string {
 // and its first batch tool hits the same ErrDiskProviderUnavailable
 // sentinel -- never a silent fallback to shared tools or the OS disk.
 func (a *sessionAgent) armQueuedBuildRetention(call *SessionAgentCall) {
+	newQueuedCallScopeComponent(a).armQueuedBuildRetention(call)
+}
+
+type queuedBuildRetentionHost interface {
+	diskCapsRef() *DiskProviderRegistry
+}
+
+type queuedCallScopeComponent struct {
+	host queuedBuildRetentionHost
+}
+
+func newQueuedCallScopeComponent(a *sessionAgent) *queuedCallScopeComponent {
+	return &queuedCallScopeComponent{host: a}
+}
+
+func (q *queuedCallScopeComponent) armQueuedBuildRetention(call *SessionAgentCall) {
 	if call == nil || call.IsDrain || call.FromDurableQueue || call.FailIfSessionBusy || call.OnQueueResolved != nil || call.CallOptions == nil {
 		return
 	}
 	if call.CallOptions.BuildScopeRetained {
 		return
 	}
-	caps := a.diskCapsRef()
+	caps := q.host.diskCapsRef()
 	if caps == nil {
 		return
 	}

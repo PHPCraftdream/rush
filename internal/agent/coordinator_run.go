@@ -13,6 +13,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
@@ -37,20 +38,10 @@ const (
 	// enough to keep one turn under ~5 min including the prior watchdog
 	// timeout.
 	streamStallRetryBackoffMultiplier = 3.0
-	// streamStalledFinishTitle is the canonical Message field that
-	// agent.Run writes on a watchdog stall. Match against this exact
-	// string when deciding whether to retry.
-	//
-	// CROSS-LANGUAGE SYNC: a fifth copy of this literal lives in the
-	// web UI, since TypeScript can't import this Go constant. See the
-	// `part.Message === "Stream stalled"` check in
-	// web/src/components/Message.tsx — it renders a stalled
-	// turn-after-partial-work as a soft amber StreamPausedBlock
-	// instead of a red failure block. If this literal ever changes,
-	// update that TS check too. The two are intentionally not wired
-	// through the WS/JSON protocol (LOW severity; a comment
-	// cross-reference is the agreed sync mechanism).
-	streamStalledFinishTitle = "Stream stalled"
+	// streamStalledFinishTitle aliases the leaf constant in
+	// internal/agent/runtime/exec/watchdog (stream_titles.go): retries and
+	// cross-layer tests match against it, so the root keeps this name.
+	streamStalledFinishTitle = watchdog.StreamStalledFinishTitle
 )
 
 // streamStallRetryBaseBackoff is the first retry's backoff (10s in

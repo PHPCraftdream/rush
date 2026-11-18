@@ -12,6 +12,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/responsesws"
 	"github.com/PHPCraftdream/rush/internal/config"
 )
 
@@ -23,25 +24,44 @@ func responsesWSReplayForbidden(err error) bool {
 // Published generations fence logout/relogin ABA at the next exchange.
 // Unrelated reloads rotate reuse, without revoking an active response.
 func (c *coordinator) codexWebSocketOptions() []codexprovider.WebSocketOptions {
-	if c.responsesWS == nil {
+	return (&codexWebSocketPolicyManager{host: c}).codexWebSocketOptions()
+}
+
+func (c *coordinator) currentCodexWebSocketPolicy() (codexprovider.WebSocketPolicy, config.NetworkConfig, error) {
+	return (&codexWebSocketPolicyManager{host: c}).currentCodexWebSocketPolicy()
+}
+
+type codexWebSocketPolicyHost interface {
+	responsesWSManager() *nettransport.ResponsesWSManager
+	responsesWSSnapshot() (*config.Config, uint64)
+	responsesWSResolveHTTPClient(*config.Config, config.ProviderConfig) (*http.Client, error)
+	responsesWSFallbackOpenaiProvider(baseURL, apiKey string, headers map[string]string, client *http.Client) (fantasy.Provider, error)
+}
+
+type codexWebSocketPolicyManager struct {
+	host codexWebSocketPolicyHost
+}
+
+func (m *codexWebSocketPolicyManager) codexWebSocketOptions() []codexprovider.WebSocketOptions {
+	if m.host.responsesWSManager() == nil {
 		return nil
 	}
-	manager := &codexWebSocketTransport{ResponsesWSManager: c.responsesWS, current: c.currentCodexWebSocketPolicy}
+	manager := responsesws.NewCodexTransport(m.host.responsesWSManager(), m.currentCodexWebSocketPolicy)
 	return []codexprovider.WebSocketOptions{{Manager: manager, EncodeFrame: nettransport.ResponsesWSCodexFullFrame, HTTPClient: func() (*http.Client, error) {
-		cfg, _ := c.cfg.Snapshot()
+		cfg, _ := m.host.responsesWSSnapshot()
 		pc, ok := cfg.Providers.Get(codexTokenProviderID)
 		if !ok || pc.Disable || pc.OAuthToken == nil {
 			return nil, errors.New("openai-codex credentials unavailable")
 		}
-		return c.resolveProviderHTTPClient(cfg, pc)
+		return m.host.responsesWSResolveHTTPClient(cfg, pc)
 	}, Current: func() (codexprovider.WebSocketPolicy, error) {
-		policy, _, err := c.currentCodexWebSocketPolicy()
+		policy, _, err := m.currentCodexWebSocketPolicy()
 		return policy, err
 	}}}
 }
 
-func (c *coordinator) currentCodexWebSocketPolicy() (codexprovider.WebSocketPolicy, config.NetworkConfig, error) {
-	cfg, revision := c.cfg.Snapshot()
+func (m *codexWebSocketPolicyManager) currentCodexWebSocketPolicy() (codexprovider.WebSocketPolicy, config.NetworkConfig, error) {
+	cfg, revision := m.host.responsesWSSnapshot()
 	pc, ok := cfg.Providers.Get(codexTokenProviderID)
 	if !ok || pc.Disable || pc.OAuthToken == nil {
 		return codexprovider.WebSocketPolicy{}, config.NetworkConfig{}, errors.New("openai-codex credentials unavailable")
@@ -62,58 +82,38 @@ func (c *coordinator) currentCodexWebSocketPolicy() (codexprovider.WebSocketPoli
 	return policy, network, nil
 }
 
-type codexWebSocketTransport struct {
-	*nettransport.ResponsesWSManager
-	current func() (codexprovider.WebSocketPolicy, config.NetworkConfig, error)
+func (c *coordinator) responsesWSManager() *nettransport.ResponsesWSManager {
+	return c.responsesWS
 }
 
-func (t *codexWebSocketTransport) Acquire(ctx context.Context, request codexprovider.WebSocketRequest) (codexprovider.WebSocketLease, error) {
-	policy, network, err := t.current()
-	if err != nil {
-		return nil, err
-	}
-	if policy != request.Policy {
-		return nil, errors.New("openai-codex connection policy changed before handshake")
-	}
-	lease, err := t.ResponsesWSManager.Acquire(ctx, nettransport.ResponsesWSOptions{
-		Protocol: "codex-responses", Endpoint: request.Endpoint, ReadPolicy: nettransport.ResponsesWSReadRequestContext,
-		AuthToken: request.AuthToken, Headers: request.Headers, Network: network, StillCurrent: request.StillCurrent,
-		Owner: nettransport.ResponsesWSOwner{AccountID: request.AccountID, AuthRevision: request.AuthRevision, ConversationID: request.ConversationID},
-	}, nettransport.ResponsesWSPlannedMaxAge)
-	if err != nil {
-		return nil, err
-	}
-	return codexWebSocketLease{lease}, nil
+func (c *coordinator) responsesWSSnapshot() (*config.Config, uint64) {
+	return c.cfg.Snapshot()
 }
 
-func (*codexWebSocketTransport) UnauthorizedHandshake(err error) bool {
-	var handshake *nettransport.ResponsesWSHandshakeError
-	return errors.As(err, &handshake) && handshake.Status == http.StatusUnauthorized
+func (c *coordinator) responsesWSResolveHTTPClient(cfg *config.Config, providerCfg config.ProviderConfig) (*http.Client, error) {
+	return c.resolveProviderHTTPClient(cfg, providerCfg)
 }
 
-type codexWebSocketLease struct{ *nettransport.ResponsesWSLease }
-
-func (l codexWebSocketLease) Conn() codexprovider.WebSocketConnection {
-	return l.ResponsesWSLease.Conn()
+func (c *coordinator) responsesWSFallbackOpenaiProvider(baseURL, apiKey string, headers map[string]string, client *http.Client) (fantasy.Provider, error) {
+	return c.buildOpenaiProvider(baseURL, apiKey, headers, client)
 }
-
-var (
-	_ codexprovider.WebSocketManager       = (*codexWebSocketTransport)(nil)
-	_ codexprovider.WebSocketExchangeError = (*nettransport.ResponsesWSError)(nil)
-)
 
 func (c *coordinator) buildPublicResponsesProvider(pc config.ProviderConfig, baseURL, apiKey string, headers map[string]string, client *http.Client) (fantasy.Provider, error) {
-	if c.responsesWS == nil || pc.ID != "openai" || apiKey == "" || pc.OAuthToken != nil || (baseURL != "" && baseURL != "https://api.openai.com/v1" && baseURL != "https://api.openai.com/v1/") {
-		return c.buildOpenaiProvider(baseURL, apiKey, headers, client)
+	return (&codexWebSocketPolicyManager{host: c}).buildPublicResponsesProvider(pc, baseURL, apiKey, headers, client)
+}
+
+func (m *codexWebSocketPolicyManager) buildPublicResponsesProvider(pc config.ProviderConfig, baseURL, apiKey string, headers map[string]string, client *http.Client) (fantasy.Provider, error) {
+	if m.host.responsesWSManager() == nil || pc.ID != "openai" || apiKey == "" || pc.OAuthToken != nil || (baseURL != "" && baseURL != "https://api.openai.com/v1" && baseURL != "https://api.openai.com/v1/") {
+		return m.host.responsesWSFallbackOpenaiProvider(baseURL, apiKey, headers, client)
 	}
-	bridge := &publicResponsesClient{manager: c.responsesWS, originalHeaders: headers, current: func(ctx context.Context) (publicResponsesPolicy, error) {
-		snapshot, revision := c.cfg.Snapshot()
+	return responsesws.NewPublicResponsesProvider(baseURL, apiKey, headers, m.host.responsesWSManager(), "", func(ctx context.Context) (responsesws.PublicResponsesPolicy, error) {
+		snapshot, revision := m.host.responsesWSSnapshot()
 		current, ok := snapshot.Providers.Get(pc.ID)
 		if !ok || current.Disable || current.APIKey == "" || current.Type != pc.Type {
-			return publicResponsesPolicy{}, errors.New("OpenAI credentials unavailable")
+			return responsesws.PublicResponsesPolicy{}, errors.New("OpenAI credentials unavailable")
 		}
 		if current.BaseURL != "" && current.BaseURL != "https://api.openai.com/v1" && current.BaseURL != "https://api.openai.com/v1/" {
-			return publicResponsesPolicy{}, errors.New("OpenAI endpoint changed; rebuild provider")
+			return responsesws.PublicResponsesPolicy{}, errors.New("OpenAI endpoint changed; rebuild provider")
 		}
 		var global *config.NetworkConfig
 		var transport config.ResponsesTransport
@@ -121,19 +121,18 @@ func (c *coordinator) buildPublicResponsesProvider(pc config.ProviderConfig, bas
 			global = snapshot.Options.Network
 			transport = snapshot.Options.ResponsesTransport
 		}
-		httpClient, err := c.resolveProviderHTTPClient(snapshot, current)
+		httpClient, err := m.host.responsesWSResolveHTTPClient(snapshot, current)
 		if err != nil {
-			return publicResponsesPolicy{}, err
+			return responsesws.PublicResponsesPolicy{}, err
 		}
 		if httpClient == nil {
 			httpClient = http.DefaultClient
 		}
-		return publicResponsesPolicy{transport: config.EffectiveResponsesTransport(transport, current.ResponsesTransport), network: nettransport.ResolveNetworkConfig(global, current.Network), apiKey: current.APIKey, headers: current.ExtraHeaders, client: httpClient, revision: revision}, nil
-	}}
-	bridge.valid = func(used publicResponsesPolicy) bool {
-		snapshot, _ := c.cfg.Snapshot()
+		return responsesws.PublicResponsesPolicy{Transport: config.EffectiveResponsesTransport(transport, current.ResponsesTransport), Network: nettransport.ResolveNetworkConfig(global, current.Network), APIKey: current.APIKey, Headers: current.ExtraHeaders, Client: httpClient, Revision: revision}, nil
+	}, func(used responsesws.PublicResponsesPolicy) bool {
+		snapshot, _ := m.host.responsesWSSnapshot()
 		current, ok := snapshot.Providers.Get(pc.ID)
-		if !ok || current.Disable || current.Type != pc.Type || current.APIKey != used.apiKey || !maps.Equal(current.ExtraHeaders, used.headers) {
+		if !ok || current.Disable || current.Type != pc.Type || current.APIKey != used.APIKey || !maps.Equal(current.ExtraHeaders, used.Headers) {
 			return false
 		}
 		if current.BaseURL != "" && current.BaseURL != "https://api.openai.com/v1" && current.BaseURL != "https://api.openai.com/v1/" {
@@ -145,11 +144,6 @@ func (c *coordinator) buildPublicResponsesProvider(pc config.ProviderConfig, bas
 			global = snapshot.Options.Network
 			transport = snapshot.Options.ResponsesTransport
 		}
-		return config.EffectiveResponsesTransport(transport, current.ResponsesTransport) == used.transport && nettransport.ResolveNetworkConfig(global, current.Network) == used.network
-	}
-	provider, err := newPublicResponsesSDKProvider(baseURL, apiKey, headers, bridge)
-	if err != nil {
-		return nil, err
-	}
-	return &publicResponsesProvider{Provider: provider}, nil
+		return config.EffectiveResponsesTransport(transport, current.ResponsesTransport) == used.Transport && nettransport.ResolveNetworkConfig(global, current.Network) == used.Network
+	})
 }

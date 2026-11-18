@@ -7,6 +7,8 @@ import (
 	"errors"
 	"slices"
 	"time"
+
+	finterm "github.com/PHPCraftdream/rush/internal/session/batch/finterm"
 )
 
 // AgentFinalizationQueueService restores only a trusted, currently leased row.
@@ -120,14 +122,14 @@ func (s *service) restoreFinalizationQueue(ctx context.Context, rowID string, da
 		if _, affected := slices.BinarySearch(ancestry.owners, identity.SessionID); !affected {
 			return AgentFinalizationContext{}, ErrAgentFinalizationChanged
 		}
-		record, err := readAgentFinalization(ctx, tx, identity)
+		record, err := finterm.ReadAgentFinalization(ctx, tx, identity)
 		if err != nil {
 			return AgentFinalizationContext{}, err
 		}
 		if record.Cancelled {
 			return AgentFinalizationContext{}, context.Canceled
 		}
-		if !record.active() {
+		if !record.Active() {
 			return AgentFinalizationContext{}, ErrAgentFinalizationChanged
 		}
 		byOwner[identity.SessionID] = true

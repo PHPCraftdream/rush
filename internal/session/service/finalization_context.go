@@ -84,7 +84,7 @@ func mergeFinalizationAuthorities(first, second []*AgentFinalizationAuthority) (
 	byOwner := make(map[string]*AgentFinalizationAuthority)
 	for _, set := range [][]*AgentFinalizationAuthority{first, second} {
 		for _, authority := range set {
-			if authority == nil || authority.Service == nil || !authority.Identity.valid() {
+			if authority == nil || authority.Service == nil || !authority.Identity.Valid() {
 				return nil, ErrAgentFinalizationChanged
 			}
 			owner := authority.Identity.SessionID

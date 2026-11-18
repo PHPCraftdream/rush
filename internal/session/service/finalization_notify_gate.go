@@ -2,8 +2,6 @@ package session
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"time"
 )
 
@@ -64,22 +62,7 @@ func NewPollingFinalizationTerminalGate(store *AgentFinalizationStore, poll time
 // canceled context, or a read error is an error, not "no record"; an empty
 // owner provably has no record because Bind refuses empty session ids.
 func (g pollingFinalizationTerminalGate) hasActiveFinalization(ctx context.Context, ownerSessionID string) (bool, error) {
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	if g.store == nil || g.store.conn == nil {
-		return false, errors.New("finalization terminal gate store is unavailable")
-	}
-	if ownerSessionID == "" {
-		return false, nil
-	}
-	var active int
-	err := g.store.conn.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM session_agent_finalizations
-		WHERE session_id=? AND phase IN ('executing', 'waiting_work', 'composing'))`, ownerSessionID).Scan(&active)
-	if err != nil {
-		return false, fmt.Errorf("read active finalization record: %w", err)
-	}
-	return active != 0, nil
+	return g.store.HasActiveFinalization(ctx, ownerSessionID)
 }
 
 // AllowTerminal refuses only a readable active record; unreadable state

@@ -41,7 +41,7 @@ func CanonicalFinalizationRequirement(requirement *AgentFinalizationRequirement)
 		return strings.Compare(a.SessionID, b.SessionID)
 	})
 	for i, identity := range copy.Authorities {
-		if !identity.valid() || i > 0 && copy.Authorities[i-1].SessionID == identity.SessionID {
+		if !identity.Valid() || i > 0 && copy.Authorities[i-1].SessionID == identity.SessionID {
 			return "", ErrAgentFinalizationChanged
 		}
 	}

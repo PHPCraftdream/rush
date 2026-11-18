@@ -23,6 +23,22 @@ func (p *peakHoursRequestProvider) LanguageModel(ctx context.Context, id string)
 }
 
 func (c *coordinator) withPeakHoursRequestGate(provider fantasy.Provider, pc config.ProviderConfig) fantasy.Provider {
+	return newPeakHoursRequestGateComponent(c).withPeakHoursRequestGate(provider, pc)
+}
+
+type peakHoursRequestGateHost interface {
+	checkLivePeakHours(providerID string) error
+}
+
+type peakHoursRequestGateComponent struct {
+	host peakHoursRequestGateHost
+}
+
+func newPeakHoursRequestGateComponent(c *coordinator) *peakHoursRequestGateComponent {
+	return &peakHoursRequestGateComponent{host: c}
+}
+
+func (g *peakHoursRequestGateComponent) withPeakHoursRequestGate(provider fantasy.Provider, pc config.ProviderConfig) fantasy.Provider {
 	return &peakHoursRequestProvider{Provider: provider, check: func(ctx context.Context) error {
 		if opts := callOptionsFrom(ctx); opts != nil {
 			if opts.AllowPeakHours {
@@ -34,7 +50,7 @@ func (c *coordinator) withPeakHoursRequestGate(provider fantasy.Provider, pc con
 		if pc.ID == "" {
 			return checkPeakHours(pc)
 		}
-		return c.checkLivePeakHours(pc.ID)
+		return g.host.checkLivePeakHours(pc.ID)
 	}}
 }
 

@@ -19,7 +19,7 @@ internal/agent/batch_cutover_await_test.go 990
 internal/agent/batch_install_adapters.go 959
 internal/agent/coordinator_interrupt.go 958
 # 939 -> removed 2026-11-17: EX-0B pass B1 moved provider bodies to providers_component.go; coordinator_providers.go now 792.
-internal/agent/coordinator_run.go 998
+internal/agent/coordinator_run.go 989
 internal/agent/coordinator_test.go 901
 internal/agent/coordinator_tool_pinning_test.go 995
 internal/agent/tools/mcp/addreplace.go 906

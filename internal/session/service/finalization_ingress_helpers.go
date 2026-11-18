@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	finterm "github.com/PHPCraftdream/rush/internal/session/batch/finterm"
 )
 
 type finalizationIngressPayload struct {
@@ -153,14 +155,14 @@ func validateFinalizationIngressTx(ctx context.Context, tx *sql.Tx, owner, id, r
 		if _, affected := searchFinalizationOwner(ancestry.owners, identity.SessionID); !affected {
 			return false, ErrAgentFinalizationChanged
 		}
-		record, err := readAgentFinalization(ctx, tx, identity)
+		record, err := finterm.ReadAgentFinalization(ctx, tx, identity)
 		if err != nil {
 			return false, err
 		}
 		if record.Cancelled {
 			return false, context.Canceled
 		}
-		if !record.active() {
+		if !record.Active() {
 			return false, ErrAgentFinalizationChanged
 		}
 		var conflicting bool

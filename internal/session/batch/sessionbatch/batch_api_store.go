@@ -1,0 +1,163 @@
+package sessionbatch
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"strconv"
+	"strings"
+
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
+)
+
+// BatchAPIRoot is one root batch of an API service session.
+type BatchAPIRoot struct{ Root, State, Ref string }
+
+// BatchAPIRoots lists the root batches an owner session holds, oldest first.
+// Ref is the submit reference the root was admitted under; the API encodes its
+// Idempotency-Key there, so the listing is the durable idempotency index.
+func (s *BatchStore) BatchAPIRoots(ctx context.Context, owner string) ([]BatchAPIRoot, error) {
+	rows, err := s.writer.QueryContext(ctx, `SELECT root_id,state,COALESCE(tool_call_id,'') FROM batch_nodes WHERE owner_session_id=? AND node_id=root_id ORDER BY created_at,root_id`, owner)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []BatchAPIRoot{}
+	for rows.Next() {
+		var x BatchAPIRoot
+		if err = rows.Scan(&x.Root, &x.State, &x.Ref); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+// BatchAPIRootLive reports whether a root state still occupies a slot of the
+// token's live-root budget (pending, starting, running and cancelling count).
+func BatchAPIRootLive(state string) bool {
+	switch state {
+	case "pending", "starting", "running", "cancelling":
+		return true
+	}
+	return false
+}
+
+// BatchAPIHeldQuestion is one unanswered child question of an owner's batch.
+// Token and Sequence identify one question of one incarnation of the node.
+type BatchAPIHeldQuestion struct {
+	Node, Child, Question string
+	Token, Sequence       int64
+}
+
+// BatchAPIHeldQuestions lists the owner's CURRENT-incarnation unresolved
+// child questions, oldest first: the wake=1 child_question notices of
+// pending-or-delivered delivery, regardless of `reacted` — the owner's
+// reaction flow marks every notice reacted without answering, so reacted
+// must never hide an unanswered question. ANSWERED questions disappear on
+// their own: both resolution paths (the sink close and
+// BatchResolveChildQuestions) set delivery='void', which the pending/done
+// predicate excludes. Per candidate the same incarnation + root fence as
+// the route reader applies: the node must be live with a matching token
+// and its root must not be durably retired. An unreadable fence read
+// returns the parsed prefix plus the error; the display consumer degrades
+// to an empty listing for that call (view.Held), while the ANSWER path
+// (answerHeld → BatchAnswerHeld) never depended on the listing, so no
+// question becomes unanswerable. markAnswered/questionAnswered stay
+// unchanged: their in-memory answered ledger remains the answer-side
+// filter; this listing shows exactly the current-incarnation unresolved
+// questions regardless of reacted.
+func (s *BatchStore) BatchAPIHeldQuestions(ctx context.Context, owner string) ([]BatchAPIHeldQuestion, error) {
+	rows, err := s.writer.QueryContext(ctx,
+		`SELECT text FROM session_notices WHERE owner = ?1 AND kind = ?2 AND delivery IN ('pending','done') AND wake = 1 ORDER BY id`,
+		owner, sessionnotice.NoticeKindChildQuestion)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type questionRow struct {
+		question  BatchAPIHeldQuestion
+		node      string
+		token     int64
+		state     string
+		rowToken  int64
+		rootDeliv string
+	}
+	var pending []questionRow
+	for rows.Next() {
+		var text string
+		if err = rows.Scan(&text); err != nil {
+			return nil, err
+		}
+		if question, ok := parseBatchAPIQuestion(text); ok {
+			pending = append(pending, questionRow{question: question, node: question.Node, token: question.Token})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var out []BatchAPIHeldQuestion
+	var firstErr error
+	for _, r := range pending {
+		// Incarnation + root fence per candidate, root-joined like
+		// BatchPublishQuestion. Fully drained before these reads: the writer
+		// pool has exactly ONE connection.
+		if err := s.writer.QueryRowContext(ctx,
+			`SELECT n.token, n.state, r.delivery FROM batch_nodes n JOIN batch_nodes r ON r.node_id = n.root_id WHERE n.node_id = ?1 AND n.owner_session_id = ?2`,
+			r.node, owner).Scan(&r.rowToken, &r.state, &r.rootDeliv); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue // Root/node уже удалён; это не ошибка чтения.
+			}
+			// Unreadable fence is never proven absence: remember the first
+			// error and keep scanning.
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if !BatchAPIRootLive(r.state) || r.rootDeliv == "void" || r.rowToken != r.token {
+			continue
+		}
+		out = append(out, r.question)
+	}
+	return out, firstErr
+}
+
+// parseBatchAPIQuestion reads the publisher's text:
+// "[batch-question node=N token=T sequence=S depth=D child=C]\nSUB-AGENT QUESTION: Q\nAnswer with ...".
+func parseBatchAPIQuestion(text string) (BatchAPIHeldQuestion, bool) {
+	head, rest, found := strings.Cut(text, "]\n")
+	if !found || !strings.HasPrefix(head, "[batch-question ") {
+		return BatchAPIHeldQuestion{}, false
+	}
+	var question BatchAPIHeldQuestion
+	for _, field := range strings.Fields(strings.TrimPrefix(head, "[batch-question ")) {
+		if value, ok := strings.CutPrefix(field, "node="); ok {
+			question.Node = value
+		}
+		if value, ok := strings.CutPrefix(field, "child="); ok {
+			question.Child = value
+		}
+		if value, ok := strings.CutPrefix(field, "token="); ok {
+			question.Token, _ = strconv.ParseInt(value, 10, 64)
+		}
+		if value, ok := strings.CutPrefix(field, "sequence="); ok {
+			question.Sequence, _ = strconv.ParseInt(value, 10, 64)
+		}
+	}
+	body, _ := strings.CutPrefix(rest, "SUB-AGENT QUESTION: ")
+	question.Question, _, _ = strings.Cut(body, "\nAnswer with inject_agent")
+	return question, question.Node != "" && question.Child != ""
+}
+
+// BatchOwnsRows reports whether the session owns any batch row, live or
+// terminal. Deleting such a session cascades the rows away, so sessions gc keeps
+// it until the batch retention purge removes the rows.
+func (s *BatchStore) BatchOwnsRows(ctx context.Context, owner string) (bool, error) {
+	var one int
+	err := s.writer.QueryRowContext(ctx, `SELECT 1 FROM batch_nodes WHERE owner_session_id=? LIMIT 1`, owner).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}

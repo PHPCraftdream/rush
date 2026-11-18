@@ -93,16 +93,3 @@ func TestPreparePrompt_UnansweredToolRoundIsLeftAlone(t *testing.T) {
 		fantasy.MessageRoleUser,
 	}, orderRoles(history))
 }
-
-// Ordinary ordering is untouched: no injection, no change.
-func TestDeferUserMessagesPastToolRound_NoOpWithoutInjection(t *testing.T) {
-	t.Parallel()
-	msgs := []message.Message{
-		orderMsg(message.User, message.TextContent{Text: "a"}),
-		orderMsg(message.Assistant, orderToolCall("c1")),
-		orderMsg(message.Tool, orderToolResult("c1")),
-		orderMsg(message.Assistant, message.TextContent{Text: "b"}),
-		orderMsg(message.User, message.TextContent{Text: "c"}),
-	}
-	require.Equal(t, msgs, deferUserMessagesPastToolRound(msgs))
-}

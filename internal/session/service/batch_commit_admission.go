@@ -91,7 +91,7 @@ func AdmitBatchCommitOwners(writer *sql.DB, ctx context.Context, id BatchCommitI
 	owners = ancestry.owners
 	authorities := make(map[string]*AgentFinalizationAuthority, len(id.finalizationAuthorities))
 	for _, authority := range id.finalizationAuthorities {
-		if authority == nil || authority.Service != service || authority.Service.DB != service.DB || !authority.Identity.valid() {
+		if authority == nil || authority.Service != service || authority.Service.DB != service.DB || !authority.Identity.Valid() {
 			return nil, nil, errors.New("batch commit admission: conflicting authority binding")
 		}
 		owner := authority.Identity.SessionID
@@ -114,7 +114,7 @@ func AdmitBatchCommitOwners(writer *sql.DB, ctx context.Context, id BatchCommitI
 		authority := authorities[owner]
 		if authority == nil && id.AuthorityFor != nil {
 			authority = id.AuthorityFor(owner)
-			if authority != nil && (authority.Service != service || authority.Service.DB != service.DB || !authority.Identity.valid()) {
+			if authority != nil && (authority.Service != service || authority.Service.DB != service.DB || !authority.Identity.Valid()) {
 				return finalizationTicketRelease(ctx, service, tickets), nil, errors.New("batch commit admission: conflicting authority binding")
 			}
 		}
