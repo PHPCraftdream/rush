@@ -96,11 +96,11 @@ func (a *sessionAgent) dataDirCfg() string                       { return a.data
 func (a *sessionAgent) lockOptionsCfg() []sessionlock.LockOption { return a.lockOptions }
 
 func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, snapshot *SummarizeSnapshot) error {
-	return a.turnBudget.summarizeRequested(a, ctx, sessionID, snapshot)
+	return a.summarizeRequested(a, ctx, sessionID, snapshot)
 }
 
 func (a *sessionAgent) SummarizeNow(ctx context.Context, sessionID string, snapshot *SummarizeSnapshot) error {
-	return a.turnBudget.summarizeNow(a, ctx, sessionID, snapshot)
+	return a.summarizeNow(a, ctx, sessionID, snapshot)
 }
 
 func (a *sessionAgent) summarize(ctx context.Context, sessionID string, snapshot *SummarizeSnapshot, queueWhenBusy bool) error {
@@ -399,7 +399,7 @@ func (a *sessionAgent) requeueSummarizeSnapshot(sessionID string, snapshot *Summ
 }
 
 func (a *sessionAgent) SummarizeQueued(sessionID string) bool {
-	return a.turnBudget.summarizeQueued(sessionID)
+	return a.summarizeQueued(sessionID)
 }
 
 func (t *turnBudget) summarizeQueued(sessionID string) bool {
@@ -424,7 +424,7 @@ func (a *sessionAgent) testBuildSummarizeSnapshot() *SummarizeSnapshot {
 }
 
 func (a *sessionAgent) TakeSummarizeQueue(sessionID string) (*SummarizeSnapshot, bool) {
-	return a.turnBudget.takeSummarizeQueue(sessionID)
+	return a.takeSummarizeQueue(sessionID)
 }
 
 func (t *turnBudget) takeSummarizeQueue(sessionID string) (*SummarizeSnapshot, bool) {
@@ -433,7 +433,7 @@ func (t *turnBudget) takeSummarizeQueue(sessionID string) (*SummarizeSnapshot, b
 }
 
 func (a *sessionAgent) CancelQueuedSummarize(sessionID string) {
-	a.turnBudget.cancelQueuedSummarize(sessionID)
+	a.cancelQueuedSummarize(sessionID)
 }
 
 func (t *turnBudget) cancelQueuedSummarize(sessionID string) {

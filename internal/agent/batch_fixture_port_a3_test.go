@@ -53,7 +53,7 @@ func a3BatchDebtSnapshotForCalls(t *testing.T, ctx context.Context, conn *sql.DB
 	}
 	for _, ref := range rows.Nodes {
 		if _, ok := want[rootCall(ref.RootID)]; ok {
-			snap.Nodes = append(snap.Nodes, session.BatchDebtNodeRef{RootID: ref.RootID, NodeID: ref.NodeID, NoticeMessageID: ref.NoticeMessageID})
+			snap.Nodes = append(snap.Nodes, session.BatchDebtNodeRef(ref))
 		}
 	}
 	return snap
