@@ -693,6 +693,7 @@ func (c *coordinator) buildProviderWithValuesInner(cfg *config.Config, providerC
 	}
 	if providerCfg.ID == "openai-codex" {
 		if c != nil && c.cfg != nil {
+			registerCodexVersionPersister(c.cfg)
 			return newCodexTokenProvider(httpClient, &codexTokenSource{store: c.cfg, resolve: c.resolveProviderHTTPClient}, c.codexWebSocketOptions()...)
 		}
 		return codexprovider.New(httpClient, providerCfg.OAuthToken)
@@ -789,4 +790,17 @@ func isExactoSupported(modelID string) bool {
 		"qwen/qwen3-coder",
 	}
 	return slices.Contains(supportedModels, modelID)
+}
+
+// registerCodexVersionPersister stores a raised Codex client version in the global config
+// (providers.openai-codex.extra_headers.version). The write is guarded like any settings write:
+// under a settings lock it is refused and the raise lasts for this process only.
+func registerCodexVersionPersister(store *config.ConfigStore) {
+	discover.SetCodexClientVersionPersister(func(from, to string) {
+		if err := store.SetConfigField(config.ScopeGlobal, "providers.openai-codex.extra_headers.version", to); err != nil {
+			slog.Info("Codex client version raised for this process only", "from", from, "to", to, "error", err)
+			return
+		}
+		slog.Info("Codex client version raised and saved to the config", "from", from, "to", to)
+	})
 }

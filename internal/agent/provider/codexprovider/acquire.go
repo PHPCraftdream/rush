@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"strings"
@@ -33,6 +34,7 @@ func (m *languageModel) acquireResponse(ctx context.Context, payload []byte, use
 	if !ok || strings.TrimSpace(used.AccessToken) == "" {
 		return nil, errors.New("openai-codex OAuth credentials unavailable: provider removed, logged out, or access token empty")
 	}
+	versionRaised := false
 	for attempt := 0; attempt < 2; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -54,6 +56,18 @@ func (m *languageModel) acquireResponse(ctx context.Context, payload []byte, use
 		original := providerError(response, payload, body)
 		if err := ctx.Err(); err != nil {
 			return nil, err
+		}
+		// An old client version hides newer models and is refused with a 4xx: raise the version
+		// (to the one the backend names, else the latest Codex CLI release) and retry once.
+		if hint, upgrade := discover.CodexNeedsNewerClient(response.StatusCode, body); upgrade && !versionRaised {
+			if version, raised, raiseErr := discover.RaiseCodexClientVersion(ctx, m.provider.client, hint); raised {
+				slog.Info("Codex backend refused the client version; retrying with a newer one", "version", version)
+				versionRaised = true
+				attempt--
+				continue
+			} else if raiseErr != nil {
+				slog.Debug("Codex client version could not be raised", "error", raiseErr)
+			}
 		}
 		if response.StatusCode == http.StatusBadRequest {
 			var providerErr *fantasy.ProviderError

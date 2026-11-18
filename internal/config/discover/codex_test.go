@@ -229,3 +229,86 @@ func TestApplyCodexConfigAndCatalogIdentity(t *testing.T) {
 	ApplyCodexConfig(map[string]string{})
 	require.Equal(t, DefaultCodexClientVersion, CodexClientVersion())
 }
+
+func TestCodexNeedsNewerClient(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   string
+		ok     bool
+	}{
+		{"named min version string", 400, `{"error":{"min_client_version":"0.171.2"}}`, "0.171.2", true},
+		{"named min version array", 426, `{"minimal_version":[0,172,0]}`, "0.172.0", true},
+		{"text with version", 400, `{"detail":"Please update Codex to 0.170.1 or newer client"}`, "0.170.1", true},
+		{"text without version", 400, `{"detail":"a newer client is required"}`, "", true},
+		{"version gated model", 400, `{"error":{"code":"model_not_found","message":"The 'gpt-9' model is not supported when using Codex with a ChatGPT account"}}`, "", true},
+		{"other model_not_found", 400, `{"error":{"code":"model_not_found","message":"The model does not exist"}}`, "", false},
+		{"unauthorized", 401, `{"min_client_version":"9.9.9"}`, "", false},
+		{"rate limited", 429, `{"error":"newer client"}`, "", false},
+		{"usage limit", 400, `{"error":"You have hit your usage limit; update codex plan"}`, "", false},
+		{"server error", 500, `{"error":"newer client"}`, "", false},
+	}
+	for _, tc := range cases {
+		got, ok := CodexNeedsNewerClient(tc.status, []byte(tc.body))
+		require.Equal(t, tc.ok, ok, tc.name)
+		require.Equal(t, tc.want, got, tc.name)
+	}
+}
+
+func TestRaiseCodexClientVersion(t *testing.T) {
+	t.Cleanup(func() {
+		ResetCodexClientVersionLearning()
+		SetCodexClientVersion("")
+		SetCodexClientVersionPersister(nil)
+		codexLatestReleaseURL = "https://api.github.com/repos/openai/codex/releases/latest"
+	})
+	ResetCodexClientVersionLearning()
+	SetCodexClientVersion("")
+
+	var persisted [][2]string
+	SetCodexClientVersionPersister(func(from, to string) { persisted = append(persisted, [2]string{from, to}) })
+
+	// A named version is used as is and only raises.
+	v, raised, err := RaiseCodexClientVersion(context.Background(), nil, "0.1.0")
+	require.NoError(t, err)
+	require.False(t, raised, "a lower version never lowers the current one")
+	require.Equal(t, DefaultCodexClientVersion, v)
+
+	v, raised, err = RaiseCodexClientVersion(context.Background(), nil, "9.1.0")
+	require.NoError(t, err)
+	require.True(t, raised)
+	require.Equal(t, "9.1.0", v)
+	require.Equal(t, "9.1.0", CodexClientVersion())
+	require.Equal(t, [][2]string{{DefaultCodexClientVersion, "9.1.0"}}, persisted)
+
+	// A config reload that still carries the old value cannot lower a learned version.
+	ApplyCodexConfig(map[string]string{"version": "0.1.0"})
+	require.Equal(t, "9.1.0", CodexClientVersion())
+
+	// Without a hint the latest release is looked up, at most once per cooldown.
+	var hits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = w.Write([]byte(`{"tag_name":"rust-v9.2.5"}`))
+	}))
+	defer server.Close()
+	codexLatestReleaseURL = server.URL
+	v, raised, err = RaiseCodexClientVersion(context.Background(), server.Client(), "")
+	require.NoError(t, err)
+	require.True(t, raised)
+	require.Equal(t, "9.2.5", v)
+	_, raised, err = RaiseCodexClientVersion(context.Background(), server.Client(), "")
+	require.ErrorIs(t, err, ErrCodexUpgradeCooldown)
+	require.False(t, raised)
+	require.Equal(t, 1, hits)
+
+	// Nothing newer than the current version: no raise, no persist.
+	ResetCodexClientVersionLearning()
+	SetCodexClientVersion("99.0.0")
+	persisted = nil
+	_, raised, err = RaiseCodexClientVersion(context.Background(), server.Client(), "")
+	require.NoError(t, err)
+	require.False(t, raised)
+	require.Empty(t, persisted)
+}
