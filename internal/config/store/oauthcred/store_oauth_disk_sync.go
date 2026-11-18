@@ -1,4 +1,4 @@
-package config
+package oauthcred
 
 import (
 	"context"
@@ -10,15 +10,15 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 )
 
 var (
 	oauthDiskSyncInterval = 5 * time.Second
-	oauthDiskSyncWait     = waitCodexRefresh
 	oauthDiskSyncStat     = os.Stat
 )
 
-type oauthDiskSyncState struct {
+type DiskSyncState struct {
 	fi      os.FileInfo
 	gen     uint64
 	settled bool
@@ -30,13 +30,13 @@ type oauthDiskSyncState struct {
 var oauthDiskSyncMu sync.Mutex
 
 // StartOAuthDiskSync starts one store-lifetime, read-only credential poller.
-func (s *ConfigStore) StartOAuthDiskSync() {
+func (s *Store) StartOAuthDiskSync() {
 	oauthDiskSyncMu.Lock()
 	defer oauthDiskSyncMu.Unlock()
-	if s.globalDataPath == "" || s.oauthDiskSyncStarted {
+	if s.port.GlobalDataPath() == "" || s.oauthDiskSyncStarted {
 		return
 	}
-	s.oauthJournal().StartDiskSync(func(ctx context.Context) {
+	s.port.OAuthJournal().StartDiskSync(func(ctx context.Context) {
 		s.oauthDiskSyncStarted = true
 		go s.runOAuthDiskSync(ctx)
 	})
@@ -47,10 +47,10 @@ func oauthDiskSyncDelay() time.Duration {
 	return oauthDiskSyncInterval - spread + time.Duration(rand.Int64N(int64(2*spread)+1))
 }
 
-func (s *ConfigStore) runOAuthDiskSync(ctx context.Context) {
-	var st oauthDiskSyncState
+func (s *Store) runOAuthDiskSync(ctx context.Context) {
+	var st DiskSyncState
 	delay := time.Duration(rand.Int64N(int64(oauthDiskSyncInterval)))
-	for oauthDiskSyncWait(ctx, delay) == nil {
+	for s.port.WaitCodexRefresh(ctx, delay) == nil {
 		if ctx.Err() != nil {
 			return
 		}
@@ -59,18 +59,18 @@ func (s *ConfigStore) runOAuthDiskSync(ctx context.Context) {
 	}
 }
 
-func (s *ConfigStore) syncOAuthFromDisk(ctx context.Context, st *oauthDiskSyncState) {
-	if ctx.Err() != nil || s.globalDataPath == "" {
+func (s *Store) syncOAuthFromDisk(ctx context.Context, st *DiskSyncState) {
+	if ctx.Err() != nil || s.port.GlobalDataPath() == "" {
 		return
 	}
-	sn := s.loadSnapshot()
-	if sn.config == nil || sn.config.Providers == nil {
+	sn := s.port.LoadSnapshot()
+	if sn.Config() == nil || sn.Config().Providers == nil {
 		return
 	}
-	providers := sn.config.Providers.Copy()
+	providers := sn.Config().Providers.Copy()
 	eligible := false
 	for id, pc := range providers {
-		if _, known := oauthProvider(id); known && pc.OAuthToken != nil {
+		if _, known := s.oauthProvider(id); known && pc.OAuthToken != nil {
 			eligible = true
 			break
 		}
@@ -79,18 +79,18 @@ func (s *ConfigStore) syncOAuthFromDisk(ctx context.Context, st *oauthDiskSyncSt
 		return
 	}
 	st.tick++
-	selected := docread.ReadSlotOf(s.globalDataPath)
+	selected := docread.ReadSlotOf(s.port.GlobalDataPath())
 	fi, err := oauthDiskSyncStat(selected)
 	if err != nil {
 		st.settled = false
 		return
 	}
-	if st.tick%12 != 0 && st.settled && st.gen == sn.generation && st.fi != nil &&
+	if st.tick%12 != 0 && st.settled && st.gen == sn.Generation() && st.fi != nil &&
 		os.SameFile(st.fi, fi) && st.fi.Size() == fi.Size() && st.fi.ModTime().Equal(fi.ModTime()) {
 		return
 	}
-	st.fi, st.gen, st.settled = fi, sn.generation, false
-	doc, err := docread.ReadSettingsDocument(s.globalDataPath)
+	st.fi, st.gen, st.settled = fi, sn.Generation(), false
+	doc, err := docread.ReadSettingsDocument(s.port.GlobalDataPath())
 	if err != nil {
 		st.settled = false
 		return
@@ -98,11 +98,11 @@ func (s *ConfigStore) syncOAuthFromDisk(ctx context.Context, st *oauthDiskSyncSt
 	data := doc.JSONBytes
 	settled := true
 	for id, pc := range providers {
-		descriptor, known := oauthProvider(id)
+		descriptor, known := s.oauthProvider(id)
 		if !known || pc.OAuthToken == nil {
 			continue
 		}
-		disk, decodeErr := decodeOAuthJournalDiskToken(data, id)
+		disk, decodeErr := oauthjournal.DecodeOAuthJournalDiskToken(data, id)
 		if decodeErr != nil {
 			settled = false
 			continue
@@ -112,22 +112,22 @@ func (s *ConfigStore) syncOAuthFromDisk(ctx context.Context, st *oauthDiskSyncSt
 		}
 		if descriptor.rotating {
 			// Foreign WAL authority is deferred until locked recovery settles it.
-			_, _ = s.adoptCodexDiskAuthority(ctx, s.globalDataPath, id, pc.OAuthToken, pc.OAuthToken, disk, nil, false)
+			_, _ = s.adoptCodexDiskAuthority(ctx, s.port.GlobalDataPath(), id, pc.OAuthToken, pc.OAuthToken, disk, nil, false)
 		} else if legacyDiskTokenAdoptable(id, pc.OAuthToken, disk) {
 			_ = s.applyOAuthToken(id, pc.OAuthToken, disk)
 		}
-		current := s.loadSnapshot()
-		if current.config == nil || current.config.Providers == nil {
+		current := s.port.LoadSnapshot()
+		if current.Config() == nil || current.Config().Providers == nil {
 			settled = false
 			continue
 		}
-		live, ok := current.config.Providers.Get(id)
+		live, ok := current.Config().Providers.Get(id)
 		if !ok || !reflect.DeepEqual(disk, live.OAuthToken) {
 			settled = false
 		}
 	}
 	// Concurrent publications force another check even after successful adoption.
-	st.settled = settled && s.Generation() == sn.generation
+	st.settled = settled && s.port.Generation() == sn.Generation()
 }
 
 // oauthOutboxDrainBudget bounds the synchronous outbox flush StopOAuthDiskSync
@@ -138,8 +138,8 @@ const oauthOutboxDrainBudget = 5 * time.Second
 // StopOAuthDiskSync cancels the poller and joins it together with any OAuth
 // journal workers on the shared worker goroutines. It is idempotent, and a
 // later StartOAuthDiskSync is refused.
-func (s *ConfigStore) StopOAuthDiskSync() {
-	s.stopOAuthJournalWorkers()
+func (s *Store) StopOAuthDiskSync() {
+	s.port.OAuthJournal().StopWorkers()
 	s.drainOAuthOutboxOnStop()
 }
 
@@ -150,8 +150,8 @@ func (s *ConfigStore) StopOAuthDiskSync() {
 // journal WAL at shutdown (review P2-4) while the provider has already
 // burned the old refresh token. Each flush runs after the join, so it cannot
 // race the workers, and is bounded by oauthOutboxDrainBudget.
-func (s *ConfigStore) drainOAuthOutboxOnStop() {
-	keys := s.oauthJournal().OutboxKeysSorted()
+func (s *Store) drainOAuthOutboxOnStop() {
+	keys := s.port.OAuthJournal().OutboxKeysSorted()
 	if len(keys) == 0 {
 		return
 	}
@@ -159,17 +159,17 @@ func (s *ConfigStore) drainOAuthOutboxOnStop() {
 	defer cancel()
 	for _, key := range keys {
 		if ctx.Err() != nil {
-			logOAuthJournalFailure(key.Path, "drain", "OAuth outbox drain exceeded its shutdown budget")
+			oauthjournal.LogOAuthJournalFailure(key.Path, "drain", "OAuth outbox drain exceeded its shutdown budget")
 			return
 		}
-		lockPath := oauthRefreshLockPath(key.Path, key.Provider)
+		lockPath := oauthjournal.RefreshLockPath(key.Path, key.Provider)
 		lock, err := cfgcommit.AcquireConfigFileLock(ctx, lockPath)
 		if err != nil {
-			logOAuthJournalFailure(key.Path, "drain", "OAuth outbox drain could not take the refresh sidecar")
+			oauthjournal.LogOAuthJournalFailure(key.Path, "drain", "OAuth outbox drain could not take the refresh sidecar")
 			continue
 		}
-		if err := s.flushOAuthOutbox(ctx, key.Path, key.Provider); err != nil {
-			logOAuthJournalFailure(key.Path, "drain", "OAuth outbox drain flush failed")
+		if err := s.port.OAuthJournal().FlushOutbox(ctx, key.Path, key.Provider); err != nil {
+			oauthjournal.LogOAuthJournalFailure(key.Path, "drain", "OAuth outbox drain flush failed")
 		}
 		cfgcommit.ReleaseConfigFileLock(lockPath, lock)
 	}
@@ -177,8 +177,8 @@ func (s *ConfigStore) drainOAuthOutboxOnStop() {
 
 // OAuthDiskSyncRunning reports whether the OAuth disk-sync poller goroutine
 // is running: started, not stopped, and not refused after a stop.
-func (s *ConfigStore) OAuthDiskSyncRunning() bool {
+func (s *Store) OAuthDiskSyncRunning() bool {
 	oauthDiskSyncMu.Lock()
 	defer oauthDiskSyncMu.Unlock()
-	return s.oauthDiskSyncStarted && s.oauthJournal().DiskSyncRunning()
+	return s.oauthDiskSyncStarted && s.port.OAuthJournal().DiskSyncRunning()
 }

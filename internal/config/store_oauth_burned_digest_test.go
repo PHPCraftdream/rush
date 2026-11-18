@@ -154,7 +154,7 @@ func runOAuthRound9RecoveredPredecessor(t *testing.T, delta int64, usedB bool) {
 	require.Equal(t, record, pendingRecord)
 	assertCodexRefreshTokens(t, f, &b, &c)
 	f.store.publishMu.Lock()
-	pending, pendingOK := f.store.pendingOAuth[f.used.ID]
+	pending, pendingOK := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
 	f.store.publishMu.Unlock()
 	require.True(t, pendingOK)
 	require.Equal(t, c, pending.predecessor)
@@ -217,7 +217,7 @@ func runOAuthRound9RecoveredPredecessor(t *testing.T, delta int64, usedB bool) {
 			assertCodexRefreshTokens(t, f, want, want)
 			require.Nil(t, f.store.oauthOutboxCurrent(f.path, f.used.ID))
 			f.store.publishMu.Lock()
-			_, pendingOK := f.store.pendingOAuth[f.used.ID]
+			_, pendingOK := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
 			f.store.publishMu.Unlock()
 			require.False(t, pendingOK, "convergence must clear pending ownership")
 			_, err := os.Stat(journal)

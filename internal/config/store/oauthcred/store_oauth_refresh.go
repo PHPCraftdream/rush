@@ -1,4 +1,4 @@
-package config
+package oauthcred
 
 import (
 	"context"
@@ -14,22 +14,22 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/slots"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 )
 
 // These package-private budgets are test seams. Override only in serial tests
 // and restore after all refresh workers have joined.
 var (
-	codexRefreshWaiterHook    func()
-	codexRefreshBeforePersist func(context.Context, int) error
-	codexRefreshPollWait      = waitCodexRefresh
-	codexRefreshLockWait      = 30 * time.Second
-	codexRefreshPollBudget    = 12 * time.Second
-	codexRefreshPollInterval  = 300 * time.Millisecond
+	codexRefreshWaiterHook  func()
+	codexRefreshPollBudget  = 12 * time.Second
+	codexRefreshPollInterval = 300 * time.Millisecond
 )
 
 type codexRefreshKey struct {
-	store    *ConfigStore
+	store    *Store
 	provider string
 }
 
@@ -38,111 +38,100 @@ var codexRefreshActive = struct {
 	calls map[codexRefreshKey]chan struct{}
 }{calls: make(map[codexRefreshKey]chan struct{})}
 
-func waitCodexRefresh(ctx context.Context, delay time.Duration) error {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return ctx.Err()
-	}
-}
-
 func validCodexToken(token *oauth.Token) bool {
 	return token != nil && token.AccessToken != "" && !token.IsExpired()
 }
 
 // A different valid live token releases callers only when ownership permits it.
-func (s *ConfigStore) codexRefreshAlreadyCurrent(ctx context.Context, scope Scope, provider string, used *oauth.Token) bool {
-	sn := s.loadSnapshot()
-	if sn.config == nil || sn.config.Providers == nil {
+func (s *Store) codexRefreshAlreadyCurrent(ctx context.Context, scope cfgmodel.Scope, provider string, used *oauth.Token) bool {
+	sn := s.port.LoadSnapshot()
+	if sn.Config() == nil || sn.Config().Providers == nil {
 		return false
 	}
-	pc, ok := sn.config.Providers.Get(provider)
+	pc, ok := sn.Config().Providers.Get(provider)
 	if !ok || !validCodexToken(pc.OAuthToken) || reflect.DeepEqual(pc.OAuthToken, used) {
 		return false
 	}
-	path, err := s.configPath(scope)
+	path, err := s.port.ScopePath(scope)
 	if err != nil {
 		return true
 	}
 	record, predecessor := s.codexOAuthAuthorityRecord(path, provider)
 	if record == nil {
 		// Equal-live callers leave all WAL retries to locked recovery.
-		record, _ = readOAuthJournalWithRetry(ctx, slots.SelectOAuthJournalPath(path, provider, false))
+		record, _ = oauthjournal.ReadJournalWithRetry(ctx, slots.SelectOAuthJournalPath(path, provider, false))
 	}
 	if ctx.Err() != nil {
 		return false
 	}
-	decision := arbitrateOAuthJournal(record, predecessor, pc.OAuthToken, nil, pc.OAuthToken)
-	return decision == oauthJournalEqual || decision == oauthJournalDiskLaterOrTie
+	decision := oauthjournal.Arbitrate(record, predecessor, pc.OAuthToken, nil, pc.OAuthToken)
+	return decision == oauthjournal.OAuthJournalEqual || decision == oauthjournal.OAuthJournalDiskLaterOrTie
 }
 
 // Snapshot ownership without consuming the recovery reader's retry attempts.
-func (s *ConfigStore) codexOAuthAuthorityRecord(path, provider string) (*docread.OAuthJournalRecord, *oauth.Token) {
-	s.publishMu.Lock()
-	entry := s.oauthJournal().OutboxLookupLocked(path, provider)
+func (s *Store) codexOAuthAuthorityRecord(path, provider string) (*docread.OAuthJournalRecord, *oauth.Token) {
+	s.port.LockPublish()
+	entry := s.port.OAuthJournal().OutboxLookupLocked(path, provider)
 	pending, hasPending := s.pendingOAuth[provider]
 	var record *docread.OAuthJournalRecord
 	if entry != nil {
 		copyRecord := entry.Record
 		record = &copyRecord
 	} else if hasPending {
-		copyRecord := pending.record
-		copyRecord.Token = &pending.token
+		copyRecord := pending.Record
+		copyRecord.Token = &pending.Token
 		record = &copyRecord
 	}
-	s.publishMu.Unlock()
+	s.port.UnlockPublish()
 	var predecessor *oauth.Token
-	if hasPending && record != nil && reflect.DeepEqual(record.Token, &pending.token) {
-		predecessor = &pending.predecessor
+	if hasPending && record != nil && reflect.DeepEqual(record.Token, &pending.Token) {
+		predecessor = &pending.Predecessor
 	}
 	return record, predecessor
 }
 
 // Readable disk authority precedes memory-only release and journal recovery.
-func (s *ConfigStore) preflightCodexDiskAuthority(ctx context.Context, scope Scope, provider string, used *oauth.Token) (bool, error) {
-	path, err := s.configPath(scope)
+func (s *Store) preflightCodexDiskAuthority(ctx context.Context, scope cfgmodel.Scope, provider string, used *oauth.Token) (bool, error) {
+	path, err := s.port.ScopePath(scope)
 	if err != nil {
 		return false, nil
 	}
-	live, ok := s.loadSnapshot().config.Providers.Get(provider)
+	live, ok := s.port.LoadSnapshot().Config().Providers.Get(provider)
 	if !ok || live.OAuthToken == nil {
 		return false, nil
 	}
-	disk, err := readOAuthJournalDiskToken(path, provider)
+	disk, err := oauthjournal.ReadJournalDiskToken(path, provider)
 	return s.adoptCodexDiskAuthority(ctx, path, provider, used, live.OAuthToken, disk, err, true)
 }
 
 // Adopt sampled disk authority without rereading configuration.
-func (s *ConfigStore) adoptCodexDiskAuthority(ctx context.Context, path, provider string, used, expected, disk *oauth.Token, readErr error, logoutAllowed bool) (bool, error) {
+func (s *Store) adoptCodexDiskAuthority(ctx context.Context, path, provider string, used, expected, disk *oauth.Token, readErr error, logoutAllowed bool) (bool, error) {
 	if readErr != nil {
 		// Uncertain disk must not block an available different live token.
 		return false, nil
 	}
 	record, predecessor := s.codexOAuthAuthorityRecord(path, provider)
-	decision := arbitrateOAuthJournal(record, predecessor, disk, nil, expected)
-	if decision == oauthJournalLogout {
+	decision := oauthjournal.Arbitrate(record, predecessor, disk, nil, expected)
+	if decision == oauthjournal.OAuthJournalLogout {
 		if !logoutAllowed {
 			return false, nil
 		}
 		return true, s.applyCodexDiskLogout(provider, expected)
 	}
-	if !validCodexToken(disk) || decision != oauthJournalDiskLaterOrTie {
+	if !validCodexToken(disk) || decision != oauthjournal.OAuthJournalDiskLaterOrTie {
 		return false, nil
 	}
 	if record == nil {
 		// Consult WAL only for a disk publication, preserving bounded read retries.
-		journal, journalErr := readOAuthJournalWithRetry(ctx, slots.SelectOAuthJournalPath(path, provider, false))
+		journal, journalErr := oauthjournal.ReadJournalWithRetry(ctx, slots.SelectOAuthJournalPath(path, provider, false))
 		if err := ctx.Err(); err != nil {
 			return true, err
 		}
 		// Invalid bytes prove no valid owner; unreadable bytes remain uncertain.
-		if journalErr != nil && !errors.Is(journalErr, errOAuthJournalInvalid) {
+		if journalErr != nil && !errors.Is(journalErr, oauthjournal.ErrOAuthJournalInvalid) {
 			return false, nil
 		}
-		if journal != nil && arbitrateOAuthJournal(journal, nil, disk, nil, expected) != oauthJournalDiskLaterOrTie {
+		if journal != nil && oauthjournal.Arbitrate(journal, nil, disk, nil, expected) != oauthjournal.OAuthJournalDiskLaterOrTie {
 			return false, nil
 		}
 	}
@@ -152,7 +141,7 @@ func (s *ConfigStore) adoptCodexDiskAuthority(ctx context.Context, path, provide
 	return !reflect.DeepEqual(disk, used), nil
 }
 
-func (s *ConfigStore) refreshCodexOAuthToken(ctx context.Context, scope Scope, pc ProviderConfig, client *http.Client) error {
+func (s *Store) refreshCodexOAuthToken(ctx context.Context, scope cfgmodel.Scope, pc cfgmodel.ProviderConfig, client *http.Client) error {
 	key := codexRefreshKey{s, pc.ID}
 	for {
 		if err := ctx.Err(); err != nil {
@@ -195,7 +184,7 @@ func (s *ConfigStore) refreshCodexOAuthToken(ctx context.Context, scope Scope, p
 	}
 }
 
-func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, pc ProviderConfig, client *http.Client) error {
+func (s *Store) refreshCodexOAuthLeader(ctx context.Context, scope cfgmodel.Scope, pc cfgmodel.ProviderConfig, client *http.Client) error {
 	used := pc.OAuthToken
 	if done, err := s.preflightCodexDiskAuthority(ctx, scope, pc.ID, used); done || err != nil {
 		return err
@@ -203,14 +192,14 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 	if s.codexRefreshAlreadyCurrent(ctx, scope, pc.ID, pc.OAuthToken) {
 		return nil
 	}
-	path, err := s.configPath(scope)
+	path, err := s.port.ScopePath(scope)
 	if err != nil {
 		return err
 	}
 	// Refresh sidecar protects recovery/journal writes; recovery nests disk/write locks.
 	// Background config edits release the refresh sidecar before taking write locks.
-	lockPath := oauthRefreshLockPath(path, pc.ID)
-	lockCtx, cancel := context.WithTimeout(ctx, codexRefreshLockWait)
+	lockPath := oauthjournal.RefreshLockPath(path, pc.ID)
+	lockCtx, cancel := context.WithTimeout(ctx, s.port.CodexRefreshLockWait())
 	defer cancel()
 	if err := lockCtx.Err(); err != nil {
 		return err
@@ -227,11 +216,11 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	adopted, pending, recoveryErr := s.recoverCodexOAuthJournal(ctx, scope, pc.ID)
+	adopted, pending, recoveryErr := s.port.OAuthJournal().RecoverCodexJournal(ctx, scope, pc.ID)
 	if pending != nil {
-		s.startOAuthJournalWorker(scope, pc.ID)
+		s.port.OAuthJournal().StartWorker(scope, pc.ID)
 	}
-	if recoveryErr != nil && !errors.Is(recoveryErr, errOAuthJournalDisk) {
+	if recoveryErr != nil && !errors.Is(recoveryErr, oauthjournal.ErrOAuthJournalDisk) {
 		return recoveryErr
 	}
 	if adopted != nil {
@@ -240,7 +229,7 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 		}
 		pc.OAuthToken = adopted
 	}
-	if live, ok := s.loadSnapshot().config.Providers.Get(pc.ID); !ok || live.OAuthToken == nil {
+	if live, ok := s.port.LoadSnapshot().Config().Providers.Get(pc.ID); !ok || live.OAuthToken == nil {
 		return errOAuthCredentialCAS
 	}
 	if recoveryErr != nil && adopted == nil {
@@ -250,15 +239,15 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 		return nil
 	}
 	if adopted == nil {
-		disk, diskErr := readOAuthJournalDiskToken(path, pc.ID)
-		live, ok := s.loadSnapshot().config.Providers.Get(pc.ID)
+		disk, diskErr := oauthjournal.ReadJournalDiskToken(path, pc.ID)
+		live, ok := s.port.LoadSnapshot().Config().Providers.Get(pc.ID)
 		if !ok || live.OAuthToken == nil {
 			return errOAuthCredentialCAS
 		}
 		pc.OAuthToken = live.OAuthToken
 		record, predecessor := s.codexOAuthAuthorityRecord(path, pc.ID)
-		decision := arbitrateOAuthJournal(record, predecessor, disk, diskErr, live.OAuthToken)
-		if decision == oauthJournalLogout {
+		decision := oauthjournal.Arbitrate(record, predecessor, disk, diskErr, live.OAuthToken)
+		if decision == oauthjournal.OAuthJournalLogout {
 			return s.applyCodexDiskLogout(pc.ID, live.OAuthToken)
 		}
 		// A disk rotation that supersedes this caller's credential belongs to a
@@ -270,7 +259,7 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 		}
 		// Expired disk rotations still supersede older live credentials.
 		if disk != nil && disk.AccessToken != "" && disk.RefreshToken != "" && disk.ExpiresAt > 0 &&
-			(decision == oauthJournalDiskLaterOrTie || decision == oauthJournalEqual && record == nil) {
+			(decision == oauthjournal.OAuthJournalDiskLaterOrTie || decision == oauthjournal.OAuthJournalEqual && record == nil) {
 			if err := s.applyOAuthToken(pc.ID, live.OAuthToken, disk); err != nil {
 				return err
 			}
@@ -280,7 +269,7 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 			}
 		}
 	}
-	descriptor, ok := oauthProvider(pc.ID)
+	descriptor, ok := s.oauthProvider(pc.ID)
 	if !ok || !descriptor.rotating {
 		return fmt.Errorf("rotating OAuth refresh not supported for provider %s", pc.ID)
 	}
@@ -300,24 +289,24 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 		return err
 	}
 	// Install ownership before publication or I/O; failed CAS cannot lose rotation.
-	record := &docread.OAuthJournalRecord{PredecessorRefreshTokenSHA256: oauthRotationDigest(pc.OAuthToken, refreshed), Token: refreshed}
+	record := &docread.OAuthJournalRecord{PredecessorRefreshTokenSHA256: oauthjournal.RotationDigest(pc.OAuthToken, refreshed), Token: refreshed}
 	known, _ := s.codexOAuthAuthorityRecord(path, pc.ID)
 	if known == nil {
 		known = pending
 	}
 	if known != nil {
-		copyRecord := oauthJournalWithBurned(record, append([]string{known.PredecessorRefreshTokenSHA256}, known.BurnedRefreshTokenSHA256...)...)
+		copyRecord := oauthjournal.WithBurned(record, append([]string{known.PredecessorRefreshTokenSHA256}, known.BurnedRefreshTokenSHA256...)...)
 		record = &copyRecord
 	}
-	entry := s.installOAuthOutbox(path, scope, pc.ID, record)
+	entry := s.port.OAuthJournal().InstallOAuthOutbox(path, scope, pc.ID, record)
 	applyErr := s.applyOAuthTokenWithPending(pc.ID, pc.OAuthToken, entry.Record.Token, true)
 	journalPath := slots.SelectOAuthJournalPath(path, pc.ID, true)
-	if err := writeOAuthJournalUntilDurable(ctx, journalPath, &entry.Record); err == nil {
-		s.clearOAuthOutbox(path, pc.ID, entry)
+	if err := oauthjournal.WriteJournalUntilDurable(ctx, journalPath, &entry.Record); err == nil {
+		s.port.OAuthJournal().ClearOutbox(path, pc.ID, entry)
 	} else {
-		logOAuthJournalFailure(journalPath, "handoff", "OAuth journal write deferred to background persistence")
+		oauthjournal.LogOAuthJournalFailure(journalPath, "handoff", "OAuth journal write deferred to background persistence")
 	}
-	s.startOAuthJournalWorker(scope, pc.ID)
+	s.port.OAuthJournal().StartWorker(scope, pc.ID)
 	if applyErr != nil && !s.codexRefreshAlreadyCurrent(ctx, scope, pc.ID, pc.OAuthToken) {
 		return applyErr
 	}
@@ -325,29 +314,29 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 }
 
 // Publish proven disk logout only if the sampled live credential still matches.
-func (s *ConfigStore) applyCodexDiskLogout(provider string, expected *oauth.Token) error {
-	s.publishMu.Lock()
-	defer s.publishMu.Unlock()
-	cur := s.loadSnapshot()
-	if cur.config == nil || cur.config.Providers == nil {
+func (s *Store) applyCodexDiskLogout(provider string, expected *oauth.Token) error {
+	s.port.LockPublish()
+	defer s.port.UnlockPublish()
+	cur := s.port.LoadSnapshot()
+	if cur.Config() == nil || cur.Config().Providers == nil {
 		return errOAuthCredentialCAS
 	}
-	pc, ok := cur.config.Providers.Get(provider)
+	pc, ok := cur.Config().Providers.Get(provider)
 	if !ok || !reflect.DeepEqual(pc.OAuthToken, expected) {
 		return errOAuthCredentialCAS
 	}
-	next := cur.clone()
-	cfg := *cur.config
-	providers := cur.config.Providers.Copy()
+	next := cur.Clone()
+	cfg := *cur.Config()
+	providers := cur.Config().Providers.Copy()
 	pc.OAuthToken, pc.APIKey = nil, ""
 	providers[provider] = pc
 	cfg.Providers = csync.NewMapFrom(providers)
-	next.config = &cfg
-	s.publishLocked(next)
+	next.SetConfig(&cfg)
+	s.port.PublishSnapshot(next)
 	return nil
 }
 
-func (s *ConfigStore) pollCodexRefreshDisk(ctx context.Context, scope Scope, pc ProviderConfig, exchangeErr error) error {
+func (s *Store) pollCodexRefreshDisk(ctx context.Context, scope cfgmodel.Scope, pc cfgmodel.ProviderConfig, exchangeErr error) error {
 	pollCtx, cancel := context.WithTimeout(ctx, codexRefreshPollBudget)
 	defer cancel()
 	for {
@@ -357,23 +346,23 @@ func (s *ConfigStore) pollCodexRefreshDisk(ctx context.Context, scope Scope, pc 
 		if s.codexRefreshAlreadyCurrent(ctx, scope, pc.ID, pc.OAuthToken) {
 			return nil
 		}
-		path, pathErr := s.configPath(scope)
+		path, pathErr := s.port.ScopePath(scope)
 		if pathErr == nil {
-			disk, diskErr := readOAuthJournalDiskToken(path, pc.ID)
-			live, ok := s.loadSnapshot().config.Providers.Get(pc.ID)
+			disk, diskErr := oauthjournal.ReadJournalDiskToken(path, pc.ID)
+			live, ok := s.port.LoadSnapshot().Config().Providers.Get(pc.ID)
 			if ok && live.OAuthToken != nil {
 				record, predecessor := s.codexOAuthAuthorityRecord(path, pc.ID)
-				decision := arbitrateOAuthJournal(record, predecessor, disk, diskErr, live.OAuthToken)
-				if decision == oauthJournalLogout {
+				decision := oauthjournal.Arbitrate(record, predecessor, disk, diskErr, live.OAuthToken)
+				if decision == oauthjournal.OAuthJournalLogout {
 					return s.applyCodexDiskLogout(pc.ID, live.OAuthToken)
 				}
-				if validCodexToken(disk) && (decision == oauthJournalDiskLaterOrTie ||
-					decision == oauthJournalEqual && !reflect.DeepEqual(disk, pc.OAuthToken)) {
+				if validCodexToken(disk) && (decision == oauthjournal.OAuthJournalDiskLaterOrTie ||
+					decision == oauthjournal.OAuthJournalEqual && !reflect.DeepEqual(disk, pc.OAuthToken)) {
 					return s.applyOAuthToken(pc.ID, live.OAuthToken, disk)
 				}
 			}
 		}
-		if err := codexRefreshPollWait(pollCtx, codexRefreshPollInterval); err != nil {
+		if err := s.port.WaitCodexRefresh(pollCtx, codexRefreshPollInterval); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -384,45 +373,45 @@ func (s *ConfigStore) pollCodexRefreshDisk(ctx context.Context, scope Scope, pc 
 
 // Unlike the legacy write wrapper, the in-process mutex wait is cancelable.
 // Keep the existing stable-target, commit and generation machinery intact.
-func (s *ConfigStore) withCodexConfigWriteLock(ctx context.Context, path string, pinned configWriteTarget, fn func(configWriteTarget) error) error {
-	writeCtx, cancel := context.WithTimeout(ctx, configWriteLockTimeout)
+func (s *Store) withCodexConfigWriteLock(ctx context.Context, path string, pinned WriteTarget, fn func(WriteTarget) error) error {
+	writeCtx, cancel := context.WithTimeout(ctx, s.port.ConfigWriteLockTimeout())
 	defer cancel()
 	for {
 		if err := writeCtx.Err(); err != nil {
 			return err
 		}
-		if s.diskWriteMu.TryLock() {
+		if s.port.TryLockDiskWrite() {
 			break
 		}
-		if err := waitCodexRefresh(writeCtx, 10*time.Millisecond); err != nil {
+		if err := s.port.WaitCodexRefresh(writeCtx, 10*time.Millisecond); err != nil {
 			return err
 		}
 	}
-	defer s.diskWriteMu.Unlock()
-	target, err := s.resolveConfigWriteTarget(path)
+	defer s.port.UnlockDiskWrite()
+	target, err := s.port.ResolveConfigWriteTarget(path)
 	if err != nil {
 		return err
 	}
-	if target.path != pinned.path || target.selectedPath != pinned.selectedPath {
-		return errConfigCommitVerification
+	if target.Path != pinned.Path || target.SelectedPath != pinned.SelectedPath {
+		return fileid.ErrConfigCommitVerification()
 	}
-	if err := verifyConfigWriteTarget(pinned); err != nil {
+	if err := s.port.VerifyWriteTarget(pinned); err != nil {
 		return err
 	}
-	lock, err := cfgcommit.AcquireConfigFileLock(writeCtx, target.lockPath)
+	lock, err := cfgcommit.AcquireConfigFileLock(writeCtx, target.LockPath)
 	if err != nil {
 		return err
 	}
-	defer cfgcommit.ReleaseConfigFileLock(target.lockPath, lock)
+	defer cfgcommit.ReleaseConfigFileLock(target.LockPath, lock)
 	if err := writeCtx.Err(); err != nil {
 		return err
 	}
-	if err := verifyConfigWriteTarget(pinned); err != nil {
+	if err := s.port.VerifyWriteTarget(pinned); err != nil {
 		return err
 	}
 	if err := fn(target); err != nil {
 		return err
 	}
-	s.diskWriteGeneration++
+	s.port.CommitDiskWrite()
 	return nil
 }

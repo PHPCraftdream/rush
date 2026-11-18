@@ -3,7 +3,6 @@ package config
 import (
 	"context"
 	"os"
-	"reflect"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
@@ -11,6 +10,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/io/fsx/casefold"
 	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	"github.com/PHPCraftdream/rush/internal/config/store/mcpstore"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthcred"
 	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/PHPCraftdream/rush/internal/config/store/settings"
 )
@@ -652,6 +652,16 @@ func configWriteTargetOfJournal(t oauthjournal.WriteTarget) configWriteTarget {
 	return configWriteTarget{path: t.Path, selectedPath: t.SelectedPath, lockPath: t.LockPath, expected: t.Expected, owner: t.Owner, enforce: t.Enforce}
 }
 
+// credToJournal/journalToCred convert between the oauthcred and oauthjournal
+// WriteTarget seam types (same field shape).
+func credToJournal(t oauthcred.WriteTarget) oauthjournal.WriteTarget {
+	return oauthjournal.WriteTarget{Path: t.Path, SelectedPath: t.SelectedPath, LockPath: t.LockPath, Expected: t.Expected, Owner: t.Owner, Enforce: t.Enforce}
+}
+
+func journalToCred(t oauthjournal.WriteTarget) oauthcred.WriteTarget {
+	return oauthcred.WriteTarget{Path: t.Path, SelectedPath: t.SelectedPath, LockPath: t.LockPath, Expected: t.Expected, Owner: t.Owner, Enforce: t.Enforce}
+}
+
 func (p journalPort) ViewSnap(fn func(oauthjournal.View) error) error {
 	return fn(snapView{sn: p.store.loadSnapshot()})
 }
@@ -674,20 +684,11 @@ func (m oauthMutationScope) Publish(cfg *cfgmodel.Config) {
 }
 
 func (m oauthMutationScope) PendingOAuthDigests(provider string) []string {
-	var digests []string
-	if pending, ok := m.store.pendingOAuth[provider]; ok {
-		digests = append(digests, pending.record.PredecessorRefreshTokenSHA256)
-		digests = append(digests, pending.record.BurnedRefreshTokenSHA256...)
-	}
-	return digests
+	return m.store.oauthCredStore().PendingDigestsLocked(provider)
 }
 
 func (m oauthMutationScope) DeletePendingOAuthIfToken(provider string, token *oauth.Token) bool {
-	if pending, ok := m.store.pendingOAuth[provider]; ok && reflect.DeepEqual(&pending.token, token) {
-		delete(m.store.pendingOAuth, provider)
-		return true
-	}
-	return false
+	return m.store.oauthCredStore().DeletePendingOAuthIfTokenLocked(provider, token)
 }
 
 func (p journalPort) WithPublishMu(fn func()) {
@@ -733,10 +734,10 @@ func (p journalPort) OAuthJournalWorkerIdle(provider string) {
 }
 
 func (p journalPort) OAuthRotatingProviders() []oauthjournal.OAuthDescriptor {
-	descriptors := oauthProviderDescriptors()
+	descriptors := p.store.oauthCredStore().Descriptors()
 	out := make([]oauthjournal.OAuthDescriptor, 0, len(descriptors))
 	for _, descriptor := range descriptors {
-		out = append(out, oauthjournal.OAuthDescriptor{ID: descriptor.id, Rotating: descriptor.rotating})
+		out = append(out, oauthjournal.OAuthDescriptor{ID: descriptor.ID(), Rotating: descriptor.Rotating()})
 	}
 	return out
 }
@@ -750,24 +751,24 @@ func (p journalPort) ResolveConfigWriteTarget(path string) (oauthjournal.WriteTa
 }
 
 func (p journalPort) WithCodexConfigWriteLock(ctx context.Context, path string, target oauthjournal.WriteTarget, fn func(oauthjournal.WriteTarget) error) error {
-	return p.store.withCodexConfigWriteLock(ctx, path, configWriteTargetOfJournal(target), func(t configWriteTarget) error {
-		return fn(journalWriteTargetOf(t))
+	return p.store.oauthCredStore().WithCodexConfigWriteLock(ctx, path, journalToCred(target), func(t oauthcred.WriteTarget) error {
+		return fn(credWriteTargetToJournal(t))
 	})
 }
 
 func (p journalPort) SetOAuthTokenIfCurrentWithLock(scope cfgmodel.Scope, providerID string, expected, token *oauth.Token, withLock func(string, func(oauthjournal.WriteTarget) error) error) (bool, error) {
-	return p.store.setOAuthTokenIfCurrentWithLock(scope, providerID, expected, token, func(_ string, fn func(configWriteTarget) error) error {
+	return p.store.oauthCredStore().SetOAuthTokenIfCurrentWithLock(scope, providerID, expected, token, func(_ string, fn func(oauthcred.WriteTarget) error) error {
 		return withLock(providerID, func(target oauthjournal.WriteTarget) error {
-			return fn(configWriteTargetOfJournal(target))
+			return fn(journalToCred(target))
 		})
 	})
 }
 
 func (p journalPort) TokenProviderConfig(providerID string, pc cfgmodel.ProviderConfig, token *oauth.Token) cfgmodel.ProviderConfig {
-	return oauthTokenProviderConfig(providerID, pc, token)
+	return p.store.oauthCredStore().TokenProviderConfig(providerID, pc, token)
 }
 
-func (p journalPort) ErrCredentialCAS() error { return errOAuthCredentialCAS }
+func (p journalPort) ErrCredentialCAS() error { return p.store.oauthCredStore().ErrCredentialCAS() }
 
 // DeletePendingOAuthIfToken requires the root publishMu to be held.
 func (p journalPort) DeletePendingOAuthIfToken(provider string, token *oauth.Token) bool {

@@ -125,7 +125,7 @@ func hookCodexPendingPersist(t *testing.T, fn func(context.Context, int) error) 
 func assertCodexPending(t *testing.T, f codexRefreshFixture, exists bool) {
 	t.Helper()
 	f.store.publishMu.Lock()
-	entry, ok := f.store.pendingOAuth[f.used.ID]
+	entry, ok := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
 	f.store.publishMu.Unlock()
 	require.Equal(t, exists, ok)
 	if exists {
