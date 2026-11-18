@@ -11,6 +11,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/dbtest"
+	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
 
@@ -265,4 +267,198 @@ func TestPollingFinalizationTerminalGateAwaitSealedStopsOnCanceledContext(t *tes
 	ctx, cancel := context.WithCancel(env.ctx)
 	cancel()
 	require.ErrorIs(t, gate.AwaitSealed(ctx, "owner"), context.Canceled)
+}
+
+// batchBindFixture reserves one batch root (RunnerID "runner") with two task
+// children under owner "owner", moves the second child's node (the
+// delegation node) to 'starting', and creates one child session row parented
+// to "owner". It returns the store, the raw writer pool, the data dir, the
+// task node id and the root id.
+func batchBindFixture(t *testing.T) (*BatchStore, *sql.DB, string, string, string) {
+	t.Helper()
+	ctx := context.Background()
+	dir := t.TempDir()
+	conn, err := db.Connect(ctx, dir)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(conn)) })
+	require.NoError(t, seedSession(ctx, db.New(conn), "owner"))
+
+	p := batchStoreTestReservation()
+	p.RunnerID = "runner"
+	s := NewBatchStore(conn)
+	r, err := s.Reserve(ctx, p)
+	require.NoError(t, err)
+	taskNode := r.Snapshot.Nodes[1].NodeID
+	_, err = conn.ExecContext(ctx, "UPDATE batch_nodes SET state = 'starting' WHERE node_id = ?", taskNode)
+	require.NoError(t, err)
+
+	require.NoError(t, seedSession(ctx, db.New(conn), "owner-child"))
+	_, err = conn.ExecContext(ctx, "UPDATE sessions SET parent_session_id = 'owner' WHERE id = 'owner-child'")
+	require.NoError(t, err)
+	return s, conn, dir, taskNode, r.Snapshot.Root.RootID
+}
+
+func batchServedTestEnv(t *testing.T) (*BatchStore, *sql.DB, *sql.DB, context.Context, string) {
+	t.Helper()
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	conn, err := db.Connect(ctx, dataDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.ReleaseConn(conn)) })
+	require.NoError(t, seedSession(ctx, db.New(conn), "owner"))
+	require.NoError(t, seedSession(ctx, db.New(conn), "owner2"))
+	// An independent handle: it can commit between the served read's
+	// statements even while the writer connection holds the read transaction.
+	raw, err := sql.Open("sqlite", storepath.DataDirPath(dataDir, storepath.ActiveFilename)+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, raw.Close()) })
+	return NewBatchStore(conn), conn, raw, ctx, dataDir
+}
+
+// pdcToolResultParams is the actual tool-result message a fused consume writes;
+// every consume fixture uses it (Role Tool, the root's own call id "call").
+func pdcToolResultParams(text string) message.CreateMessageParams {
+	return message.CreateMessageParams{
+		Role:  message.Tool,
+		Parts: []message.ContentPart{message.ToolResult{ToolCallID: "call", Name: "bash", Content: text}},
+	}
+}
+
+// pdcConsumeIdentity is the trusted root incarnation of a pdcReserveOneTask
+// root: exactly the identity the production adapter validates and the CAS
+// fences (owner/host/runner/call = owner/host/runner/call).
+func pdcConsumeIdentity(rootID string) BatchToolResultIdentity {
+	return BatchToolResultIdentity{Owner: "owner", RootID: rootID, NodeID: rootID, HostID: "host", RunnerID: "runner", ToolCallID: "call"}
+}
+
+// pdcReserveOneTask reserves a settled-eligible one-task root whose incarnation
+// (host/runner/tool call) is fully populated, as the production runtime does.
+func pdcReserveOneTask(t *testing.T, s *BatchStore, ctx context.Context) BatchSnapshot {
+	t.Helper()
+	p := batchStoreTestReservation()
+	p.RunnerID = "runner"
+	p.Root.Children = p.Root.Children[:1]
+	r, err := s.Reserve(ctx, p)
+	require.NoError(t, err)
+	return r.Snapshot
+}
+
+func batchOutboxReserve(t *testing.T, s *BatchStore, ctx context.Context, children int) BatchSnapshot {
+	t.Helper()
+	p := batchStoreTestReservation()
+	p.Root.Children = nil
+	for i := 0; i < children; i++ {
+		p.Root.Children = append(p.Root.Children, batchStoreTestTask())
+	}
+	r, err := s.Reserve(ctx, p)
+	require.NoError(t, err)
+	return r.Snapshot
+}
+
+func batchOutboxParams(row BatchNoticeRow) message.CreateMessageParams {
+	return batchOutboxText(row.NodeID)
+}
+
+func batchOutboxText(text string) message.CreateMessageParams {
+	return message.CreateMessageParams{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: text}}, BackgroundJobNotice: true}
+}
+
+func batchOutboxSettle(t *testing.T, s *BatchStore, ctx context.Context, snap BatchSnapshot, seq int64, ids ...string) {
+	t.Helper()
+	p := BatchRootProjection{Owner: "owner", Root: snap.Root.RootID}
+	for i, id := range ids {
+		v := batchStoreTestUpdate(id, "completed")
+		v.OutcomeSummary = id
+		p.Updates = append(p.Updates, v)
+		n := batchStoreTestNotice(id)
+		n.NoticeOrdinal = sql.NullInt64{Int64: int64(i), Valid: true}
+		if id == snap.Root.RootID {
+			n.NoticeKind = batchStoreTestString("root")
+		}
+		p.Notices = append(p.Notices, n)
+	}
+	require.NoError(t, s.Project(ctx, BatchProjection{Host: "host", Sequence: seq, Roots: []BatchRootProjection{p}}))
+}
+
+func batchOutboxAck(t *testing.T, s *BatchStore, ctx context.Context, m message.Service, root string) {
+	t.Helper()
+	msg, err := s.BatchAnnounceStarted(ctx, m, "owner", root, batchOutboxText("started"))
+	require.NoError(t, err)
+	persisted, err := s.Read(ctx, "owner", root)
+	require.NoError(t, err)
+	require.Equal(t, msg.ID, persisted.Root.AnnounceMessageID.String, "ack names actual persisted history")
+	history, err := m.Get(ctx, msg.ID)
+	require.NoError(t, err)
+	require.Equal(t, "started", history.FullText())
+}
+
+// pdcSettleOneTaskRoot is the local settle twin of the shared batchOutboxSettle
+// (batch_pull_test.go), differing ONLY in passing the projection's RunnerID:
+// the shared helper projects under BatchProjection{Host: "host"} with the zero
+// RunnerID, but the sequence advance is host+runner fenced
+// (batch_store.go batchProjectRoot -> AdvanceBatchRootSequence), so a fixture
+// reserved under RunnerID "runner" — the SAME incarnation the production
+// identity fence uses — must settle under that same incarnation.
+func pdcSettleOneTaskRoot(t *testing.T, s *BatchStore, ctx context.Context, snap BatchSnapshot) {
+	t.Helper()
+	p := BatchRootProjection{Owner: "owner", Root: snap.Root.RootID}
+	v := batchStoreTestUpdate(snap.Root.RootID, "completed")
+	v.OutcomeSummary = snap.Root.RootID
+	p.Updates = append(p.Updates, v)
+	p.Notices = append(p.Notices, batchStoreTestNotice(snap.Root.RootID))
+	require.NoError(t, s.Project(ctx, BatchProjection{Host: "host", RunnerID: "runner", Sequence: 2, Roots: []BatchRootProjection{p}}))
+}
+
+// batchTerminalTestReserve reserves a ONE-item live root whose task child
+// carries the given group/timeout and returns the root id.
+func batchTerminalTestReserve(t *testing.T, s *BatchStore, ctx context.Context, group string, timeout time.Duration) string {
+	t.Helper()
+	p := batchStoreTestReservation()
+	p.RunnerID = "runner"
+	p.Root.Children = []BatchReservationNode{{Values: db.ReserveBatchNodeParams{
+		Kind: "task", TaskKind: batchStoreTestString("shell"),
+		TaskPayload: batchStoreTestString(`{"k":"v"}`),
+		TaskGroup:   group, TimeoutNs: int64(timeout),
+		State: "pending", ControlState: "none",
+	}}}
+	r, err := s.Reserve(ctx, p)
+	require.NoError(t, err)
+	return r.Snapshot.Root.RootID
+}
+
+// batchTerminalTestProject projects terminal facts (and an optional
+// response envelope) onto the given rows. The runner MUST equal the
+// reservation's runner: batchProjectRoot fences every update and the root
+// sequence advance with the projection-level runner (batch_store.go:207-233).
+func batchTerminalTestProject(t *testing.T, s *BatchStore, ctx context.Context, root, runner string, sequence int64, updates ...db.ProjectBatchNodeParams) {
+	t.Helper()
+	for i := range updates {
+		updates[i].ControlState = "none"
+		updates[i].UpdatedAt = 1
+		updates[i].RootID = root
+		updates[i].HostID = "host"
+		updates[i].OwnerSessionID = "owner"
+		updates[i].RunnerID = runner
+	}
+	require.NoError(t, s.Project(ctx, BatchProjection{Host: "host", RunnerID: runner, Sequence: sequence, Roots: []BatchRootProjection{{Owner: "owner", Root: root, Updates: updates}}}))
+}
+
+// batchTerminalTestSettledRoot leaves the structurally settled ROOT row as
+// the engine does: state failed with NO outcome of its own (settle computes
+// the root state from counts/causes and never copies the task's outcome).
+func batchTerminalTestSettledRoot(node string) db.ProjectBatchNodeParams {
+	return db.ProjectBatchNodeParams{NodeID: node, State: "failed"}
+}
+
+// batchBindReadLink reads child_session_id through an INDEPENDENT sqlite
+// pool on the same database file — proving the link is durable on disk, not
+// just visible through the writer's in-memory page cache.
+func batchBindReadLink(t *testing.T, dir, taskNode string) sql.NullString {
+	t.Helper()
+	raw, err := sql.Open("sqlite", storepath.DataDirPath(dir, storepath.ActiveFilename)+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	require.NoError(t, err)
+	defer raw.Close()
+	var linked sql.NullString
+	require.NoError(t, raw.QueryRowContext(context.Background(), "SELECT child_session_id FROM batch_nodes WHERE node_id = ?", taskNode).Scan(&linked))
+	return linked
 }

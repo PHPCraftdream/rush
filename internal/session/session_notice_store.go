@@ -31,6 +31,8 @@ import (
 
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 
+	sessionbatch "github.com/PHPCraftdream/rush/internal/session/batch/sessionbatch"
+
 	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -385,7 +387,7 @@ func (s *SessionNoticeStore) BatchPendingInclusiveDebtRows(ctx context.Context, 
 	// Go-side predicate: BatchOutboxDebtNodes + the root-void exclusion (see
 	// batchOutboxDebtNodesVoidAware in batch_reaction.go; fold back into
 	// batch_outbox.sql when sqlc regeneration is available).
-	nodes, err := batchOutboxDebtNodesVoidAware(ctx, s.sqlDB, owner)
+	nodes, err := sessionbatch.ReadBatchDebtNodeRefs(ctx, s.sqlDB, owner)
 	if err != nil {
 		return BatchPendingDebt{}, fmt.Errorf("session notice store: pending-inclusive debt rows: batch_nodes: %w", err)
 	}
@@ -393,10 +395,7 @@ func (s *SessionNoticeStore) BatchPendingInclusiveDebtRows(ctx context.Context, 
 	if err != nil {
 		return BatchPendingDebt{}, fmt.Errorf("session notice store: pending-inclusive debt rows: session_notices: %w", err)
 	}
-	out := BatchPendingDebt{}
-	for _, n := range nodes {
-		out.Nodes = append(out.Nodes, n.ref)
-	}
+	out := BatchPendingDebt{Nodes: nodes}
 	for _, n := range noticeRows {
 		out.Notices = append(out.Notices, sessionnotice.PendingNoticeDebt{ID: n.ID, Kind: n.Kind})
 	}
