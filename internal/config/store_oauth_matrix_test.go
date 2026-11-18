@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -295,8 +297,8 @@ func runOAuthMatrixCase(t *testing.T, c oauthMatrixCase) {
 	beforeConfig, err := os.ReadFile(f.path)
 	require.NoError(t, err)
 	beforeWAL, _ := os.ReadFile(journal)
-	oldRead, oldWrite := oauthJournalReadFile, oauthJournalAtomicWrite
-	oldRename, oldCopy := oauthJournalQuarantineRename, oauthJournalQuarantineCopy
+	oldRead, oldWrite := oauthjournal.OAuthJournalReadFile, oauthjournal.OAuthJournalAtomicWrite
+	oldRename, oldCopy := oauthjournal.OAuthJournalQuarantineRename, oauthjournal.OAuthJournalQuarantineCopy
 	restoreSeams := oauthMatrixSeamRestorer()
 	configTestHooks.Lock()
 	oldSync := configTestHooks.syncParent
@@ -304,7 +306,7 @@ func runOAuthMatrixCase(t *testing.T, c oauthMatrixCase) {
 	var repaired atomic.Bool
 	var reads atomic.Int32
 	var writes atomic.Int32
-	oauthJournalReadFile = func(path string) ([]byte, error) {
+	oauthjournal.OAuthJournalReadFile = func(path string) ([]byte, error) {
 		if path == journal && !repaired.Load() {
 			n := reads.Add(1)
 			if c.journal == "persistentIO" || (c.journal == "transientIO" && n <= 2) {
@@ -313,7 +315,7 @@ func runOAuthMatrixCase(t *testing.T, c oauthMatrixCase) {
 		}
 		return oldRead(path)
 	}
-	oauthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
+	oauthjournal.OAuthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
 		if path == journal {
 			writes.Add(1)
 			if c.storage == "failthenrepair" && !repaired.Load() {
@@ -322,20 +324,20 @@ func runOAuthMatrixCase(t *testing.T, c oauthMatrixCase) {
 		}
 		return oldWrite(path, data, mode)
 	}
-	oauthJournalReadWait = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
-	oauthJournalRetryWait = func(ctx context.Context, _ time.Duration) error {
+	oauthjournal.OAuthJournalReadWait = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	oauthjournal.OAuthJournalRetryWait = func(ctx context.Context, _ time.Duration) error {
 		<-ctx.Done()
 		return ctx.Err()
 	}
-	oauthJournalWriteBudget = 5 * time.Millisecond
+	oauthjournal.OAuthJournalWriteBudget = 5 * time.Millisecond
 	if c.journal == "invalidquarantinefail" {
-		oauthJournalQuarantineRename = func(source, target string) error {
+		oauthjournal.OAuthJournalQuarantineRename = func(source, target string) error {
 			if !repaired.Load() {
 				return os.ErrPermission
 			}
 			return oldRename(source, target)
 		}
-		oauthJournalQuarantineCopy = func(source, target string) error {
+		oauthjournal.OAuthJournalQuarantineCopy = func(source, target string) error {
 			if !repaired.Load() {
 				return os.ErrPermission
 			}
@@ -357,8 +359,8 @@ func runOAuthMatrixCase(t *testing.T, c oauthMatrixCase) {
 		case <-ctx.Done():
 		}
 	}
-	oauthJournalBeforeWorker = gate
-	oauthJournalWorkerWait = func(ctx context.Context, _ time.Duration) error {
+	oauthjournal.OAuthJournalBeforeWorker = gate
+	oauthjournal.OAuthJournalWorkerWait = func(ctx context.Context, _ time.Duration) error {
 		select {
 		case attempts <- struct{}{}:
 		case <-ctx.Done():
@@ -547,7 +549,7 @@ func assertOAuthMatrixPreserved(t *testing.T, c oauthMatrixCase, f codexRefreshF
 		return
 	}
 	entry := f.store.oauthOutboxCurrent(f.path, f.used.ID)
-	if entry != nil && reflect.DeepEqual(entry.record.Token, preserve) {
+	if entry != nil && reflect.DeepEqual(entry.Record.Token, preserve) {
 		return
 	}
 	data, err := os.ReadFile(journal)

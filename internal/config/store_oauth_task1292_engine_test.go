@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -58,9 +60,9 @@ func task1292Fixture(t *testing.T, id string) codexRefreshFixture {
 
 func task1292PauseWorkers(t *testing.T) {
 	t.Helper()
-	old := oauthJournalBeforeWorker
-	oauthJournalBeforeWorker = func(ctx context.Context) { <-ctx.Done() }
-	t.Cleanup(func() { oauthJournalBeforeWorker = old })
+	old := oauthjournal.OAuthJournalBeforeWorker
+	oauthjournal.OAuthJournalBeforeWorker = func(ctx context.Context) { <-ctx.Done() }
+	t.Cleanup(func() { oauthjournal.OAuthJournalBeforeWorker = old })
 	joinOAuthJournalTestStoresBeforeRestore(t)
 }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -43,14 +44,14 @@ func runOAuthRound8OwnedEqualDisk(t *testing.T, intermittent bool) {
 	before, err := os.ReadFile(path)
 	require.NoError(t, err)
 
-	oldSync, oldWrite := oauthJournalConfigSyncParent, oauthJournalAtomicWrite
+	oldSync, oldWrite := oauthjournal.OAuthJournalConfigSyncParent, oauthjournal.OAuthJournalAtomicWrite
 	t.Cleanup(func() {
-		oauthJournalConfigSyncParent, oauthJournalAtomicWrite = oldSync, oldWrite
+		oauthjournal.OAuthJournalConfigSyncParent, oauthjournal.OAuthJournalAtomicWrite = oldSync, oldWrite
 	})
 	var events []string
 	verificationCalls, writes := 0, 0
 	repaired := false
-	oauthJournalConfigSyncParent = func(parent string) error {
+	oauthjournal.OAuthJournalConfigSyncParent = func(parent string) error {
 		verificationCalls++
 		events = append(events, "config-verification")
 		if !repaired && (!intermittent || verificationCalls == 1) {
@@ -58,7 +59,7 @@ func runOAuthRound8OwnedEqualDisk(t *testing.T, intermittent bool) {
 		}
 		return oldSync(parent)
 	}
-	oauthJournalAtomicWrite = func(target string, data []byte, mode os.FileMode) error {
+	oauthjournal.OAuthJournalAtomicWrite = func(target string, data []byte, mode os.FileMode) error {
 		if target == journal {
 			writes++
 			events = append(events, "journal-write")

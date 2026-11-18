@@ -82,11 +82,11 @@ func (s *ConfigStore) codexRefreshAlreadyCurrent(ctx context.Context, scope Scop
 // Snapshot ownership without consuming the recovery reader's retry attempts.
 func (s *ConfigStore) codexOAuthAuthorityRecord(path, provider string) (*docread.OAuthJournalRecord, *oauth.Token) {
 	s.publishMu.Lock()
-	entry := s.oauthOutbox[oauthOutboxKey{docread.NormalizeReloadPath(path), provider}]
+	entry := s.oauthJournal().OutboxLookupLocked(path, provider)
 	pending, hasPending := s.pendingOAuth[provider]
 	var record *docread.OAuthJournalRecord
 	if entry != nil {
-		copyRecord := entry.record
+		copyRecord := entry.Record
 		record = &copyRecord
 	} else if hasPending {
 		copyRecord := pending.record
@@ -310,9 +310,9 @@ func (s *ConfigStore) refreshCodexOAuthLeader(ctx context.Context, scope Scope, 
 		record = &copyRecord
 	}
 	entry := s.installOAuthOutbox(path, scope, pc.ID, record)
-	applyErr := s.applyOAuthTokenWithPending(pc.ID, pc.OAuthToken, entry.record.Token, true)
+	applyErr := s.applyOAuthTokenWithPending(pc.ID, pc.OAuthToken, entry.Record.Token, true)
 	journalPath := slots.SelectOAuthJournalPath(path, pc.ID, true)
-	if err := writeOAuthJournalUntilDurable(ctx, journalPath, &entry.record); err == nil {
+	if err := writeOAuthJournalUntilDurable(ctx, journalPath, &entry.Record); err == nil {
 		s.clearOAuthOutbox(path, pc.ID, entry)
 	} else {
 		logOAuthJournalFailure(journalPath, "handoff", "OAuth journal write deferred to background persistence")

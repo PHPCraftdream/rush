@@ -120,6 +120,11 @@ func (s *Store) mutateMCPExact(operation string, scope Scope, oldName, newName s
 	return s.mutateMCPWithMode(operation, scope, oldName, newName, value, disabled, true, SettingsAuthorityGuarded)
 }
 
+// MutateMCPExact is the white-box test seam for mutateMCPExact (root unix identity test).
+func (s *Store) MutateMCPExact(operation string, scope Scope, oldName, newName string, value MCPConfig, disabled *bool) (MCPMutationResult, error) {
+	return s.mutateMCPExact(operation, scope, oldName, newName, value, disabled)
+}
+
 func (s *Store) mutatePendingRemoveMCP(scope Scope, name string) (MCPMutationResult, error) {
 	return s.mutatePendingRemoveMCPWithAuthority(scope, name, SettingsAuthorityGuarded)
 }

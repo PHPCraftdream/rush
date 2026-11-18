@@ -5,8 +5,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"reflect"
-	"slices"
-	"strings"
+	"sync"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
@@ -26,22 +25,21 @@ type oauthDiskSyncState struct {
 	tick    uint64
 }
 
+// oauthDiskSyncMu guards oauthDiskSyncStarted; the worker mutex, context and
+// WaitGroup live in the oauthjournal component.
+var oauthDiskSyncMu sync.Mutex
+
 // StartOAuthDiskSync starts one store-lifetime, read-only credential poller.
 func (s *ConfigStore) StartOAuthDiskSync() {
-	s.oauthWorkerMu.Lock()
-	defer s.oauthWorkerMu.Unlock()
+	oauthDiskSyncMu.Lock()
+	defer oauthDiskSyncMu.Unlock()
 	if s.globalDataPath == "" || s.oauthDiskSyncStarted {
 		return
 	}
-	if s.oauthWorkerCtx == nil {
-		s.oauthWorkerCtx, s.oauthWorkerCancel = context.WithCancel(context.Background())
-	}
-	if s.oauthWorkerCtx.Err() != nil {
-		return
-	}
-	s.oauthDiskSyncStarted = true
-	s.oauthWorkerWG.Add(1)
-	go s.runOAuthDiskSync(s.oauthWorkerCtx)
+	s.oauthJournal().StartDiskSync(func(ctx context.Context) {
+		s.oauthDiskSyncStarted = true
+		go s.runOAuthDiskSync(ctx)
+	})
 }
 
 func oauthDiskSyncDelay() time.Duration {
@@ -50,7 +48,6 @@ func oauthDiskSyncDelay() time.Duration {
 }
 
 func (s *ConfigStore) runOAuthDiskSync(ctx context.Context) {
-	defer s.oauthWorkerWG.Done()
 	var st oauthDiskSyncState
 	delay := time.Duration(rand.Int64N(int64(oauthDiskSyncInterval)))
 	for oauthDiskSyncWait(ctx, delay) == nil {
@@ -154,36 +151,25 @@ func (s *ConfigStore) StopOAuthDiskSync() {
 // burned the old refresh token. Each flush runs after the join, so it cannot
 // race the workers, and is bounded by oauthOutboxDrainBudget.
 func (s *ConfigStore) drainOAuthOutboxOnStop() {
-	s.publishMu.Lock()
-	keys := make([]oauthOutboxKey, 0, len(s.oauthOutbox))
-	for key := range s.oauthOutbox {
-		keys = append(keys, key)
-	}
-	s.publishMu.Unlock()
+	keys := s.oauthJournal().OutboxKeysSorted()
 	if len(keys) == 0 {
 		return
 	}
-	slices.SortFunc(keys, func(a, b oauthOutboxKey) int {
-		if c := strings.Compare(a.path, b.path); c != 0 {
-			return c
-		}
-		return strings.Compare(a.provider, b.provider)
-	})
 	ctx, cancel := context.WithTimeout(context.Background(), oauthOutboxDrainBudget)
 	defer cancel()
 	for _, key := range keys {
 		if ctx.Err() != nil {
-			logOAuthJournalFailure(key.path, "drain", "OAuth outbox drain exceeded its shutdown budget")
+			logOAuthJournalFailure(key.Path, "drain", "OAuth outbox drain exceeded its shutdown budget")
 			return
 		}
-		lockPath := oauthRefreshLockPath(key.path, key.provider)
+		lockPath := oauthRefreshLockPath(key.Path, key.Provider)
 		lock, err := cfgcommit.AcquireConfigFileLock(ctx, lockPath)
 		if err != nil {
-			logOAuthJournalFailure(key.path, "drain", "OAuth outbox drain could not take the refresh sidecar")
+			logOAuthJournalFailure(key.Path, "drain", "OAuth outbox drain could not take the refresh sidecar")
 			continue
 		}
-		if err := s.flushOAuthOutbox(ctx, key.path, key.provider); err != nil {
-			logOAuthJournalFailure(key.path, "drain", "OAuth outbox drain flush failed")
+		if err := s.flushOAuthOutbox(ctx, key.Path, key.Provider); err != nil {
+			logOAuthJournalFailure(key.Path, "drain", "OAuth outbox drain flush failed")
 		}
 		cfgcommit.ReleaseConfigFileLock(lockPath, lock)
 	}
@@ -192,7 +178,7 @@ func (s *ConfigStore) drainOAuthOutboxOnStop() {
 // OAuthDiskSyncRunning reports whether the OAuth disk-sync poller goroutine
 // is running: started, not stopped, and not refused after a stop.
 func (s *ConfigStore) OAuthDiskSyncRunning() bool {
-	s.oauthWorkerMu.Lock()
-	defer s.oauthWorkerMu.Unlock()
-	return s.oauthDiskSyncStarted && s.oauthWorkerCtx != nil && s.oauthWorkerCtx.Err() == nil
+	oauthDiskSyncMu.Lock()
+	defer oauthDiskSyncMu.Unlock()
+	return s.oauthDiskSyncStarted && s.oauthJournal().DiskSyncRunning()
 }

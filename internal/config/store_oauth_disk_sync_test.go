@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/stretchr/testify/require"
 )
@@ -240,12 +241,12 @@ func TestOAuthDiskSync08SampledCAS(t *testing.T) {
 	task1292WriteDisk(t, f.path, task1292Provider, f.next, "")
 	newer := *f.next
 	newer.AccessToken, newer.RefreshToken = "fixture-C-access", "fixture-C-refresh"
-	old := oauthJournalReadFile
-	oauthJournalReadFile = func(path string) ([]byte, error) {
+	old := oauthjournal.OAuthJournalReadFile
+	oauthjournal.OAuthJournalReadFile = func(path string) ([]byte, error) {
 		require.NoError(t, f.store.applyOAuthToken(task1292Provider, f.used.OAuthToken, &newer))
 		return old(path)
 	}
-	t.Cleanup(func() { oauthJournalReadFile = old })
+	t.Cleanup(func() { oauthjournal.OAuthJournalReadFile = old })
 	var st oauthDiskSyncState
 	f.store.syncOAuthFromDisk(context.Background(), &st)
 	require.Equal(t, &newer, diskSyncLive(t, f.store, task1292Provider))
@@ -308,7 +309,7 @@ func TestOAuthDiskSync09LifecycleNoIO(t *testing.T) {
 	require.False(t, stoppedStore.oauthDiskSyncStarted)
 	noPath := newTestConfigStore(testStoreOpts{})
 	noPath.StartOAuthDiskSync()
-	require.Nil(t, noPath.oauthWorkerCtx)
+	require.Nil(t, noPath.oauthJournal().WorkerContext())
 }
 
 func TestOAuthDiskSync10ProviderBoundary(t *testing.T) {
@@ -412,7 +413,7 @@ func TestOAuthDiskSync13StopJoinsPollerAndJournalWorkers(t *testing.T) {
 		releaseOnce.Do(func() { close(releasePollerCh); close(releaseWorkerCh) })
 	}
 	oldWait := oauthDiskSyncWait
-	oldBefore, oldDone := oauthJournalBeforeWorker, oauthJournalWorkerDone
+	oldBefore, oldDone := oauthjournal.OAuthJournalBeforeWorker, oauthJournalWorkerDone
 	oauthDiskSyncWait = func(ctx context.Context, _ time.Duration) error {
 		defer func() { pollerExited <- struct{}{} }()
 		waits.Add(1)
@@ -422,7 +423,7 @@ func TestOAuthDiskSync13StopJoinsPollerAndJournalWorkers(t *testing.T) {
 		<-releasePollerCh
 		return ctx.Err()
 	}
-	oauthJournalBeforeWorker = func(ctx context.Context) {
+	oauthjournal.OAuthJournalBeforeWorker = func(ctx context.Context) {
 		workerEntered <- struct{}{}
 		<-ctx.Done()
 		workerCancelled <- struct{}{}
@@ -439,7 +440,7 @@ func TestOAuthDiskSync13StopJoinsPollerAndJournalWorkers(t *testing.T) {
 		awaitCodexSignal(t, pollerExited)
 		awaitCodexSignal(t, workerExited)
 		oauthDiskSyncWait = oldWait
-		oauthJournalBeforeWorker, oauthJournalWorkerDone = oldBefore, oldDone
+		oauthjournal.OAuthJournalBeforeWorker, oauthJournalWorkerDone = oldBefore, oldDone
 	})
 	s.StartOAuthDiskSync()
 	s.startOAuthJournalWorker(ScopeGlobal, task1292Provider)
@@ -472,9 +473,7 @@ func TestOAuthDiskSync13StopJoinsPollerAndJournalWorkers(t *testing.T) {
 	require.False(t, s.OAuthDiskSyncRunning())
 	s.StartOAuthDiskSync() // Refused after a stop.
 	s.startOAuthJournalWorker(ScopeGlobal, task1292Provider)
-	s.oauthWorkerMu.Lock()
-	workers := len(s.oauthWorkers)
-	s.oauthWorkerMu.Unlock()
+	workers := s.oauthJournal().WorkersCount()
 	require.EqualValues(t, 1, waits.Load(), "start after stop must be refused")
 	require.Zero(t, workers, "journal worker start after stop must be refused")
 	require.False(t, s.OAuthDiskSyncRunning())
@@ -492,7 +491,7 @@ func TestOAuthDiskSync14StopFlushesPendingRotationOutbox(t *testing.T) {
 	flushed, err := readOAuthJournal(oauthJournalPath(f.path, task1292Provider))
 	require.NoError(t, err)
 	require.NotNil(t, flushed, "StopOAuthDiskSync must flush a pending rotation outbox to the journal WAL")
-	require.Equal(t, &entry.record, flushed)
+	require.Equal(t, &entry.Record, flushed)
 }
 
 func TestOAuthDiskSync15StopJoinsBlockedJournalWorker(t *testing.T) {
@@ -503,8 +502,8 @@ func TestOAuthDiskSync15StopJoinsBlockedJournalWorker(t *testing.T) {
 	var releaseOnce sync.Once
 	release := make(chan struct{})
 	releaseWorker := func() { releaseOnce.Do(func() { close(release) }) }
-	oldBefore := oauthJournalBeforeWorker
-	oauthJournalBeforeWorker = func(ctx context.Context) {
+	oldBefore := oauthjournal.OAuthJournalBeforeWorker
+	oauthjournal.OAuthJournalBeforeWorker = func(ctx context.Context) {
 		entered <- struct{}{}
 		<-ctx.Done()
 		cancelled <- struct{}{}
@@ -515,7 +514,7 @@ func TestOAuthDiskSync15StopJoinsBlockedJournalWorker(t *testing.T) {
 	t.Cleanup(func() {
 		releaseWorker()
 		s.stopOAuthJournalWorkers()
-		oauthJournalBeforeWorker = oldBefore
+		oauthjournal.OAuthJournalBeforeWorker = oldBefore
 	})
 	s.startOAuthJournalWorker(ScopeGlobal, task1292Provider)
 	awaitCodexSignal(t, entered)

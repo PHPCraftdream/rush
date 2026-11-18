@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/stretchr/testify/require"
 )
@@ -96,9 +97,9 @@ func TestRefreshOAuthToken_CodexConcurrentDiskRotationWins(t *testing.T) {
 	// The fixed stale expiry exceeds the replacement's fixed disk expiry.
 	// Quiesce the worker through cancellation and join before the memory check.
 	// Persisted-state assertions separately catch unintended disk writes.
-	oldBeforeWorker := oauthJournalBeforeWorker
-	oauthJournalBeforeWorker = func(ctx context.Context) { <-ctx.Done() }
-	t.Cleanup(func() { oauthJournalBeforeWorker = oldBeforeWorker })
+	oldBeforeWorker := oauthjournal.OAuthJournalBeforeWorker
+	oauthjournal.OAuthJournalBeforeWorker = func(ctx context.Context) { <-ctx.Done() }
+	t.Cleanup(func() { oauthjournal.OAuthJournalBeforeWorker = oldBeforeWorker })
 	trackOAuthJournalTestStore(t, store)
 
 	ctx, cancel := context.WithCancel(context.Background())

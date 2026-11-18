@@ -13,6 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/store/mcpstore"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/PHPCraftdream/rush/internal/config/store/settings"
 )
 
@@ -152,16 +153,12 @@ type ConfigStore struct {
 	// path that runs under a held publishMu.
 	publishMu sync.Mutex
 
-	pendingOAuth map[string]pendingOAuthRotation      // Guarded by publishMu.
-	oauthOutbox  map[oauthOutboxKey]*oauthOutboxEntry // Guarded by publishMu.
+	pendingOAuth map[string]pendingOAuthRotation // Guarded by publishMu.
 
-	// OAuth workers belong to this store, independently of refresh callers.
-	oauthWorkerMu        sync.Mutex
-	oauthWorkerCtx       context.Context
-	oauthWorkerCancel    context.CancelFunc
-	oauthWorkers         map[string]*oauthJournalWorker
-	oauthWorkerWG        sync.WaitGroup
-	oauthDiskSyncStarted bool // Guarded by oauthWorkerMu.
+	// OAuth workers and the pending-rotation outbox live in the oauthjournal
+	// component; oauthDiskSyncStarted is the only root-owned remnant.
+	oauthjournal         *oauthjournal.Store
+	oauthDiskSyncStarted bool // Guarded by oauthDiskSyncMu.
 
 	// Config disk sync worker (role-model hot reload poller). Kept separate
 	// from the OAuth worker block so its lifecycle stays independent.

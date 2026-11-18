@@ -40,12 +40,12 @@ func (s *ConfigStore) recordPendingOAuthLocked(providerID string, predecessor, t
 		digests = append(digests, previous.record.PredecessorRefreshTokenSHA256)
 		digests = append(digests, previous.record.BurnedRefreshTokenSHA256...)
 	}
-	for key, owned := range s.oauthOutbox {
-		if key.provider == providerID {
-			digests = append(digests, owned.record.PredecessorRefreshTokenSHA256)
-			digests = append(digests, owned.record.BurnedRefreshTokenSHA256...)
+	s.oauthJournal().OutboxEachLocked(func(key oauthOutboxKey, owned *oauthOutboxEntry) {
+		if key.Provider == providerID {
+			digests = append(digests, owned.Record.PredecessorRefreshTokenSHA256)
+			digests = append(digests, owned.Record.BurnedRefreshTokenSHA256...)
 		}
-	}
+	})
 	digests = append(digests, oauthRotationDigest(predecessor, token))
 	record = oauthJournalWithBurned(&record, digests...)
 	copyToken := *token
@@ -91,11 +91,11 @@ func (s *ConfigStore) overlayPendingOAuthLocked(candidate *storeSnapshot) {
 			decision = arbitrateOAuthJournal(&record, &entry.predecessor, pc.OAuthToken, nil)
 		}
 		if decision != oauthJournalPredecessor && decision != oauthJournalLater && decision != oauthJournalEqual {
-			for key, owned := range s.oauthOutbox {
-				if key.provider == providerID && reflect.DeepEqual(owned.record.Token, &entry.token) {
-					owned.obsolete = true
+			s.oauthJournal().OutboxEachLocked(func(key oauthOutboxKey, owned *oauthOutboxEntry) {
+				if key.Provider == providerID && reflect.DeepEqual(owned.Record.Token, &entry.token) {
+					owned.Obsolete = true
 				}
-			}
+			})
 			delete(s.pendingOAuth, providerID)
 			continue
 		}

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -66,7 +68,7 @@ func TestTask1300AdoptionLineage(t *testing.T) {
 			} else {
 				require.ErrorIs(t, err, errOAuthCredentialCAS)
 				require.Same(t, entry, f.store.oauthOutboxCurrent(f.path, pc.ID))
-				require.False(t, entry.obsolete)
+				require.False(t, entry.Obsolete)
 			}
 			pc, _ = f.store.Config().Providers.Get(pc.ID)
 			f.store.publishMu.Lock()
@@ -115,21 +117,21 @@ func TestTask1300OutboxExternalAdoption(t *testing.T) {
 			require.Less(t, x.ExpiresAt, live.ExpiresAt)
 
 			journal := oauthJournalPath(f.path, f.used.ID)
-			oldWrite, oldWait := oauthJournalAtomicWrite, oauthJournalRetryWait
+			oldWrite, oldWait := oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalRetryWait
 			writes, waits := 0, 0
-			oauthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
+			oauthjournal.OAuthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
 				if path == journal {
 					writes++
 					return os.ErrPermission
 				}
 				return oldWrite(path, data, mode)
 			}
-			oauthJournalRetryWait = func(context.Context, time.Duration) error {
+			oauthjournal.OAuthJournalRetryWait = func(context.Context, time.Duration) error {
 				waits++
 				return context.DeadlineExceeded
 			}
 			t.Cleanup(func() {
-				oauthJournalAtomicWrite, oauthJournalRetryWait = oldWrite, oldWait
+				oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalRetryWait = oldWrite, oldWait
 			})
 			joinOAuthJournalTestStoresBeforeRestore(t)
 
@@ -154,13 +156,13 @@ func TestTask1300OutboxExternalAdoption(t *testing.T) {
 			require.Equal(t, 1, writes)
 			require.Equal(t, 1, waits)
 			f.store.stopOAuthJournalWorkers()
-			oauthJournalAtomicWrite, oauthJournalRetryWait = oldWrite, oldWait
+			oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalRetryWait = oldWrite, oldWait
 
 			entry := f.store.oauthOutboxCurrent(f.path, f.used.ID)
 			require.NotNil(t, entry)
-			require.Equal(t, f.next, entry.record.Token)
-			require.False(t, entry.obsolete)
-			require.Equal(t, predecessor, oauthJournalLivePredecessor(&entry.record, &live))
+			require.Equal(t, f.next, entry.Record.Token)
+			require.False(t, entry.Obsolete)
+			require.Equal(t, predecessor, oauthJournalLivePredecessor(&entry.Record, &live))
 			f.store.publishMu.Lock()
 			_, pending := f.store.pendingOAuth[f.used.ID]
 			f.store.publishMu.Unlock()
@@ -177,7 +179,7 @@ func TestTask1300OutboxExternalAdoption(t *testing.T) {
 			// External writer owns X; disk A still cannot settle owned B.
 			external := &oauthJournalRecord{Token: &x, PredecessorRefreshTokenSHA256: oauthRefreshTokenSHA256(f.used.OAuthToken)}
 			require.NoError(t, writeOAuthJournalOnce(journal, external))
-			require.Equal(t, oauthJournalDiskLaterOrTie, arbitrateOAuthJournal(&entry.record, nil, &x, nil))
+			require.Equal(t, oauthJournalDiskLaterOrTie, arbitrateOAuthJournal(&entry.Record, nil, &x, nil))
 			settled, err := f.store.settleOAuthOutbox(ctx, f.path, f.used.ID, entry)
 			require.NoError(t, err)
 			require.False(t, settled)
@@ -202,7 +204,7 @@ func TestTask1300OutboxExternalAdoption(t *testing.T) {
 				require.NoError(t, err)
 				require.Equal(t, beforeWAL, afterWAL)
 				require.Same(t, entry, f.store.oauthOutboxCurrent(f.path, f.used.ID))
-				require.False(t, entry.obsolete)
+				require.False(t, entry.Obsolete)
 				f.store.publishMu.Lock()
 				_, pending = f.store.pendingOAuth[f.used.ID]
 				f.store.publishMu.Unlock()

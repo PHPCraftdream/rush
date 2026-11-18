@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,27 +36,27 @@ func TestOAuthJournalOutbox_PermanentWriteFailureReturns(t *testing.T) {
 				}
 				return f.next, nil
 			})
-			oldWrite, oldWait, oldBudget := oauthJournalAtomicWrite, oauthJournalRetryWait, oauthJournalWriteBudget
-			oauthJournalWriteBudget = 10 * time.Millisecond
+			oldWrite, oldWait, oldBudget := oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalRetryWait, oauthjournal.OAuthJournalWriteBudget
+			oauthjournal.OAuthJournalWriteBudget = 10 * time.Millisecond
 			var failing atomic.Bool
 			failing.Store(true)
 			failed := make(chan struct{})
 			var once sync.Once
 			journalPath := oauthJournalPath(f.path, f.used.ID)
-			oauthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
+			oauthjournal.OAuthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
 				if path == journalPath && failing.Load() {
 					once.Do(func() { close(failed) })
 					return errors.New("injected permanent journal storage failure")
 				}
 				return oldWrite(path, data, mode)
 			}
-			oauthJournalRetryWait = func(ctx context.Context, _ time.Duration) error { return waitCodexRefresh(ctx, time.Millisecond) }
+			oauthjournal.OAuthJournalRetryWait = func(ctx context.Context, _ time.Duration) error { return waitCodexRefresh(ctx, time.Millisecond) }
 			result, done := make(chan error, 1), make(chan struct{})
 			t.Cleanup(func() {
 				failing.Store(false)
 				<-done
 				f.store.stopOAuthJournalWorkers()
-				oauthJournalAtomicWrite, oauthJournalRetryWait, oauthJournalWriteBudget = oldWrite, oldWait, oldBudget
+				oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalRetryWait, oauthjournal.OAuthJournalWriteBudget = oldWrite, oldWait, oldBudget
 			})
 			go func() {
 				defer close(done)
@@ -102,7 +103,7 @@ func TestOAuthJournalOutbox_PermanentWriteFailureReturns(t *testing.T) {
 			assert.True(t, os.IsNotExist(err))
 			entry := f.store.oauthOutboxCurrent(f.path, f.used.ID)
 			require.NotNil(t, entry)
-			assert.Equal(t, f.next, entry.record.Token)
+			assert.Equal(t, f.next, entry.Record.Token)
 			cancel()
 			assert.Same(t, entry, f.store.oauthOutboxCurrent(f.path, f.used.ID))
 			lock, lockErr := filelock.TryAcquireFileLock(oauthRefreshLockPath(f.path, f.used.ID))
@@ -124,17 +125,19 @@ func TestOAuthJournalOutbox_PermanentWriteFailureReturns(t *testing.T) {
 // Revert-check: worker repair journals first and same-used B can rotate to C.
 func TestOAuthJournalOutbox_WorkerRepairAndSameUsedRotation(t *testing.T) {
 	f := newOAuthJournalRefreshRecoveryFixture(t)
-	oldWrite, oldBudget := oauthJournalAtomicWrite, oauthJournalWriteBudget
-	oauthJournalWriteBudget = time.Millisecond
+	oldWrite, oldBudget := oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget
+	oauthjournal.OAuthJournalWriteBudget = time.Millisecond
 	var failing atomic.Bool
 	failing.Store(true)
-	oauthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
+	oauthjournal.OAuthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
 		if failing.Load() {
 			return errors.New("injected storage failure")
 		}
 		return oldWrite(path, data, mode)
 	}
-	t.Cleanup(func() { oauthJournalAtomicWrite, oauthJournalWriteBudget = oldWrite, oldBudget })
+	t.Cleanup(func() {
+		oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget = oldWrite, oldBudget
+	})
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	calls := 0
 	c := *f.next
@@ -157,7 +160,7 @@ func TestOAuthJournalOutbox_WorkerRepairAndSameUsedRotation(t *testing.T) {
 	assert.Equal(t, 2, calls)
 	entry := f.store.oauthOutboxCurrent(f.path, f.used.ID)
 	require.NotNil(t, entry)
-	assert.Equal(t, &c, entry.record.Token)
+	assert.Equal(t, &c, entry.Record.Token)
 	require.NoError(t, f.store.ReloadFromDisk(context.Background()))
 	pc, ok := f.store.Config().Providers.Get(f.used.ID)
 	require.True(t, ok)
@@ -192,11 +195,11 @@ func TestOAuthJournalOutbox_ActualWorkerRepair(t *testing.T) {
 	f := newCodexRefreshReloadFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	oldWrite, oldBudget, oldWait := oauthJournalAtomicWrite, oauthJournalWriteBudget, oauthJournalWorkerWait
-	oauthJournalWriteBudget = time.Millisecond
+	oldWrite, oldBudget, oldWait := oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget, oauthjournal.OAuthJournalWorkerWait
+	oauthjournal.OAuthJournalWriteBudget = time.Millisecond
 	var failing atomic.Bool
 	failing.Store(true)
-	oauthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
+	oauthjournal.OAuthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
 		if failing.Load() {
 			return errors.New("injected storage failure")
 		}
@@ -204,7 +207,7 @@ func TestOAuthJournalOutbox_ActualWorkerRepair(t *testing.T) {
 	}
 	waiting, resume := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	oauthJournalWorkerWait = func(ctx context.Context, delay time.Duration) error {
+	oauthjournal.OAuthJournalWorkerWait = func(ctx context.Context, delay time.Duration) error {
 		once.Do(func() { close(waiting) })
 		select {
 		case <-resume:
@@ -214,7 +217,7 @@ func TestOAuthJournalOutbox_ActualWorkerRepair(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() {
-		oauthJournalAtomicWrite, oauthJournalWriteBudget, oauthJournalWorkerWait = oldWrite, oldBudget, oldWait
+		oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget, oauthjournal.OAuthJournalWorkerWait = oldWrite, oldBudget, oldWait
 	})
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	oldPersist := codexRefreshBeforePersist
@@ -247,17 +250,19 @@ func TestOAuthJournalOutbox_ExternalConfigArbitration(t *testing.T) {
 	for _, name := range []string{"earlier", "later", "tie", "logout"} {
 		t.Run(name, func(t *testing.T) {
 			f := newOAuthJournalRefreshRecoveryFixture(t)
-			oldWrite, oldBudget := oauthJournalAtomicWrite, oauthJournalWriteBudget
-			oauthJournalWriteBudget = time.Millisecond
+			oldWrite, oldBudget := oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget
+			oauthjournal.OAuthJournalWriteBudget = time.Millisecond
 			var failing atomic.Bool
 			failing.Store(true)
-			oauthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
+			oauthjournal.OAuthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
 				if failing.Load() {
 					return errors.New("injected storage failure")
 				}
 				return oldWrite(path, data, mode)
 			}
-			t.Cleanup(func() { oauthJournalAtomicWrite, oauthJournalWriteBudget = oldWrite, oldBudget })
+			t.Cleanup(func() {
+				oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget = oldWrite, oldBudget
+			})
 			joinOAuthJournalTestStoresBeforeRestore(t)
 			stubCodexRefresh(t, func(context.Context, *http.Client, string) (*oauth.Token, error) { return f.next, nil })
 			require.NoError(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil))
@@ -370,35 +375,35 @@ func TestOAuthJournalOutbox_ExternalJournalArbitration(t *testing.T) {
 // Revert-check: the limiter never evicts live keys at capacity.
 func TestOAuthJournalOutbox_SaturatedFailureLogLimiter(t *testing.T) {
 	logs := captureCodexRefreshLogs(t)
-	oauthJournalLogs.Lock()
-	oldLast, oldAggregate := oauthJournalLogs.last, oauthJournalLogs.aggregate
-	oauthJournalLogs.last = make(map[oauthJournalLogKey]time.Time)
-	oauthJournalLogs.aggregate = time.Time{}
-	oauthJournalLogs.Unlock()
+	oauthjournal.OAuthJournalLogs.Lock()
+	oldLast, oldAggregate := oauthjournal.OAuthJournalLogs.Last, oauthjournal.OAuthJournalLogs.Aggregate
+	oauthjournal.OAuthJournalLogs.Last = make(map[oauthjournal.LogKey]time.Time)
+	oauthjournal.OAuthJournalLogs.Aggregate = time.Time{}
+	oauthjournal.OAuthJournalLogs.Unlock()
 	t.Cleanup(func() {
-		oauthJournalLogs.Lock()
-		oauthJournalLogs.last, oauthJournalLogs.aggregate = oldLast, oldAggregate
-		oauthJournalLogs.Unlock()
+		oauthjournal.OAuthJournalLogs.Lock()
+		oauthjournal.OAuthJournalLogs.Last, oauthjournal.OAuthJournalLogs.Aggregate = oldLast, oldAggregate
+		oauthjournal.OAuthJournalLogs.Unlock()
 	})
 	base := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < 1024; i++ {
-		logOAuthJournalFailureAt(fmt.Sprintf("limiter-fixture-%04d", i), "read", "failure", base)
+		oauthjournal.LogOAuthJournalFailureAt(fmt.Sprintf("limiter-fixture-%04d", i), "read", "failure", base)
 	}
-	logOAuthJournalFailureAt("limiter-fixture-0000", "read", "failure", base.Add(time.Second))
-	logOAuthJournalFailureAt("limiter-new", "read", "failure", base.Add(time.Second))
-	logOAuthJournalFailureAt("limiter-newer", "read", "failure", base.Add(2*time.Second))
-	logOAuthJournalFailureAt("limiter-fixture-0000", "read", "failure", base.Add(3*time.Second))
-	oauthJournalLogs.Lock()
-	assert.Len(t, oauthJournalLogs.last, 1024)
-	assert.Equal(t, base, oauthJournalLogs.last[oauthJournalLogKey{path: normalizeReloadPath("limiter-fixture-0000"), kind: "read"}])
-	oauthJournalLogs.Unlock()
-	logOAuthJournalFailureAt("limiter-expired-window", "read", "failure", base.Add(30*time.Second))
-	oauthJournalLogs.Lock()
-	assert.Len(t, oauthJournalLogs.last, 1)
-	assert.NotContains(t, oauthJournalLogs.last, oauthJournalLogKey{path: normalizeReloadPath("limiter-fixture-0000"), kind: "read"})
-	assert.Equal(t, base.Add(30*time.Second), oauthJournalLogs.last[oauthJournalLogKey{path: normalizeReloadPath("limiter-expired-window"), kind: "read"}])
-	assert.Equal(t, base.Add(time.Second), oauthJournalLogs.aggregate)
-	oauthJournalLogs.Unlock()
+	oauthjournal.LogOAuthJournalFailureAt("limiter-fixture-0000", "read", "failure", base.Add(time.Second))
+	oauthjournal.LogOAuthJournalFailureAt("limiter-new", "read", "failure", base.Add(time.Second))
+	oauthjournal.LogOAuthJournalFailureAt("limiter-newer", "read", "failure", base.Add(2*time.Second))
+	oauthjournal.LogOAuthJournalFailureAt("limiter-fixture-0000", "read", "failure", base.Add(3*time.Second))
+	oauthjournal.OAuthJournalLogs.Lock()
+	assert.Len(t, oauthjournal.OAuthJournalLogs.Last, 1024)
+	assert.Equal(t, base, oauthjournal.OAuthJournalLogs.Last[oauthjournal.LogKey{Path: normalizeReloadPath("limiter-fixture-0000"), Kind: "read"}])
+	oauthjournal.OAuthJournalLogs.Unlock()
+	oauthjournal.LogOAuthJournalFailureAt("limiter-expired-window", "read", "failure", base.Add(30*time.Second))
+	oauthjournal.OAuthJournalLogs.Lock()
+	assert.Len(t, oauthjournal.OAuthJournalLogs.Last, 1)
+	assert.NotContains(t, oauthjournal.OAuthJournalLogs.Last, oauthjournal.LogKey{Path: normalizeReloadPath("limiter-fixture-0000"), Kind: "read"})
+	assert.Equal(t, base.Add(30*time.Second), oauthjournal.OAuthJournalLogs.Last[oauthjournal.LogKey{Path: normalizeReloadPath("limiter-expired-window"), Kind: "read"}])
+	assert.Equal(t, base.Add(time.Second), oauthjournal.OAuthJournalLogs.Aggregate)
+	oauthjournal.OAuthJournalLogs.Unlock()
 	logs.mu.Lock()
 	errorsLogged, aggregates := 0, 0
 	for _, record := range logs.records {
@@ -417,9 +422,9 @@ func TestOAuthJournalOutbox_SaturatedFailureLogLimiter(t *testing.T) {
 // Revert-check: raw reads log only the first error per file and failure kind.
 func TestOAuthJournalOutbox_ReadErrorsLogFirstOnly(t *testing.T) {
 	logs := captureCodexRefreshLogs(t)
-	oldRead := oauthJournalReadFile
-	oauthJournalReadFile = func(string) ([]byte, error) { return nil, os.ErrPermission }
-	t.Cleanup(func() { oauthJournalReadFile = oldRead })
+	oldRead := oauthjournal.OAuthJournalReadFile
+	oauthjournal.OAuthJournalReadFile = func(string) ([]byte, error) { return nil, os.ErrPermission }
+	t.Cleanup(func() { oauthjournal.OAuthJournalReadFile = oldRead })
 	path := filepath.Join(t.TempDir(), "pending.json")
 	for range 4 {
 		_, err := readOAuthJournal(path)

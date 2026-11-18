@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,10 +43,10 @@ func runOAuthRound9BurnedPredecessor(t *testing.T, expiryDelta int64) {
 	d.ExpiresAt = time.Now().Add(3 * time.Hour).Unix()
 
 	journal := oauthJournalPath(f.path, f.used.ID)
-	oldWrite, oldBudget := oauthJournalAtomicWrite, oauthJournalWriteBudget
-	oauthJournalWriteBudget = 10 * time.Millisecond
+	oldWrite, oldBudget := oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget
+	oauthjournal.OAuthJournalWriteBudget = 10 * time.Millisecond
 	writes := 0
-	oauthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
+	oauthjournal.OAuthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
 		if path == journal {
 			writes++
 			return errors.New("injected round9 journal write failure")
@@ -53,7 +55,7 @@ func runOAuthRound9BurnedPredecessor(t *testing.T, expiryDelta int64) {
 	}
 	t.Cleanup(func() {
 		f.store.stopOAuthJournalWorkers()
-		oauthJournalAtomicWrite, oauthJournalWriteBudget = oldWrite, oldBudget
+		oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget = oldWrite, oldBudget
 	})
 	calls := 0
 	client := &http.Client{}
@@ -87,8 +89,8 @@ func runOAuthRound9BurnedPredecessor(t *testing.T, expiryDelta int64) {
 	assert.Empty(t, live.APIKey)
 	owned := f.store.oauthOutboxCurrent(f.path, f.used.ID)
 	if assert.NotNil(t, owned, "failed journal writes must retain D ownership") {
-		assert.Equal(t, &d, owned.record.Token)
-		assert.Equal(t, oauthRefreshTokenSHA256(&b), owned.record.PredecessorRefreshTokenSHA256)
+		assert.Equal(t, &d, owned.Record.Token)
+		assert.Equal(t, oauthRefreshTokenSHA256(&b), owned.Record.PredecessorRefreshTokenSHA256)
 	}
 	f.store.publishMu.Lock()
 	pending, pendingOK := f.store.pendingOAuth[f.used.ID]

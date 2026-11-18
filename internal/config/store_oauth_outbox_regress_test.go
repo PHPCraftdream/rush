@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,14 +22,14 @@ func TestOAuthRound7_P1_1_InvalidWALWorkerRepair(t *testing.T) {
 	journal := oauthJournalPath(f.path, f.used.ID)
 	invalid := []byte("{invalid-active-wal")
 	require.NoError(t, os.WriteFile(journal, invalid, 0o600))
-	oldWrite, oldBudget := oauthJournalAtomicWrite, oauthJournalWriteBudget
-	oldRename, oldCopy := oauthJournalQuarantineRename, oauthJournalQuarantineCopy
-	oldBefore, oldWait := oauthJournalBeforeWorker, oauthJournalWorkerWait
+	oldWrite, oldBudget := oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget
+	oldRename, oldCopy := oauthjournal.OAuthJournalQuarantineRename, oauthjournal.OAuthJournalQuarantineCopy
+	oldBefore, oldWait := oauthjournal.OAuthJournalBeforeWorker, oauthjournal.OAuthJournalWorkerWait
 	var failing atomic.Bool
 	failing.Store(true)
 	var writes, quarantines atomic.Int32
-	oauthJournalWriteBudget = 10 * time.Millisecond
-	oauthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
+	oauthjournal.OAuthJournalWriteBudget = 10 * time.Millisecond
+	oauthjournal.OAuthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
 		if path == journal {
 			writes.Add(1)
 			if failing.Load() {
@@ -36,20 +38,20 @@ func TestOAuthRound7_P1_1_InvalidWALWorkerRepair(t *testing.T) {
 		}
 		return oldWrite(path, data, mode)
 	}
-	oauthJournalQuarantineRename = func(string, string) error {
+	oauthjournal.OAuthJournalQuarantineRename = func(string, string) error {
 		quarantines.Add(1)
 		return os.ErrPermission
 	}
-	oauthJournalQuarantineCopy = func(string, string) error { return os.ErrPermission }
+	oauthjournal.OAuthJournalQuarantineCopy = func(string, string) error { return os.ErrPermission }
 	start, permits := make(chan struct{}), make(chan struct{})
 	attempts := make(chan struct{}, 1)
-	oauthJournalBeforeWorker = func(ctx context.Context) {
+	oauthjournal.OAuthJournalBeforeWorker = func(ctx context.Context) {
 		select {
 		case <-start:
 		case <-ctx.Done():
 		}
 	}
-	oauthJournalWorkerWait = func(ctx context.Context, _ time.Duration) error {
+	oauthjournal.OAuthJournalWorkerWait = func(ctx context.Context, _ time.Duration) error {
 		select {
 		case attempts <- struct{}{}:
 		case <-ctx.Done():
@@ -64,9 +66,9 @@ func TestOAuthRound7_P1_1_InvalidWALWorkerRepair(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		f.store.stopOAuthJournalWorkers()
-		oauthJournalAtomicWrite, oauthJournalWriteBudget = oldWrite, oldBudget
-		oauthJournalQuarantineRename, oauthJournalQuarantineCopy = oldRename, oldCopy
-		oauthJournalBeforeWorker, oauthJournalWorkerWait = oldBefore, oldWait
+		oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget = oldWrite, oldBudget
+		oauthjournal.OAuthJournalQuarantineRename, oauthjournal.OAuthJournalQuarantineCopy = oldRename, oldCopy
+		oauthjournal.OAuthJournalBeforeWorker, oauthjournal.OAuthJournalWorkerWait = oldBefore, oldWait
 	})
 	calls := 0
 	stubCodexRefresh(t, func(_ context.Context, _ *http.Client, token string) (*oauth.Token, error) {
@@ -83,7 +85,7 @@ func TestOAuthRound7_P1_1_InvalidWALWorkerRepair(t *testing.T) {
 	require.Positive(t, quarantines.Load())
 	entry := f.store.oauthOutboxCurrent(f.path, f.used.ID)
 	require.NotNil(t, entry)
-	require.Equal(t, f.next, entry.record.Token)
+	require.Equal(t, f.next, entry.Record.Token)
 	actual, err := os.ReadFile(journal)
 	require.NoError(t, err)
 	require.Equal(t, invalid, actual)
@@ -142,11 +144,11 @@ func TestOAuthRound7_P1_2_EqualConfigOutboxUncertainty(t *testing.T) {
 			oldSync := configTestHooks.syncParent
 			configTestHooks.syncParent = func(string) error { return errors.New("injected parent sync failure") }
 			configTestHooks.Unlock()
-			oldBudget := oauthJournalWriteBudget
-			oauthJournalWriteBudget = 10 * time.Millisecond
+			oldBudget := oauthjournal.OAuthJournalWriteBudget
+			oauthjournal.OAuthJournalWriteBudget = 10 * time.Millisecond
 			t.Cleanup(func() {
 				f.store.stopOAuthJournalWorkers()
-				oauthJournalWriteBudget = oldBudget
+				oauthjournal.OAuthJournalWriteBudget = oldBudget
 				configTestHooks.Lock()
 				configTestHooks.syncParent = oldSync
 				configTestHooks.Unlock()
@@ -180,8 +182,8 @@ func TestOAuthRound7_P1_2_EqualConfigOutboxUncertainty(t *testing.T) {
 			assertCodexRefreshTokens(t, f, &d, &b)
 			owned := f.store.oauthOutboxCurrent(f.path, f.used.ID)
 			if owned != nil {
-				require.Equal(t, &d, owned.record.Token)
-				require.Equal(t, oauthRefreshTokenSHA256(&b), owned.record.PredecessorRefreshTokenSHA256)
+				require.Equal(t, &d, owned.Record.Token)
+				require.Equal(t, oauthRefreshTokenSHA256(&b), owned.Record.PredecessorRefreshTokenSHA256)
 			} else {
 				wal, readErr := readOAuthJournal(oauthJournalPath(f.path, f.used.ID))
 				require.NoError(t, readErr)

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,10 +17,10 @@ import (
 func TestOAuthJournal_ConfigCrashRestartSkipsExchange(t *testing.T) {
 	f := newCodexRefreshReloadFixture(t)
 	stubCodexRefresh(t, func(context.Context, *http.Client, string) (*oauth.Token, error) { return f.next, nil })
-	old := oauthJournalBeforeWorker
+	old := oauthjournal.OAuthJournalBeforeWorker
 	entered := make(chan struct{}, 1)
-	oauthJournalBeforeWorker = func(ctx context.Context) { entered <- struct{}{}; <-ctx.Done() }
-	t.Cleanup(func() { oauthJournalBeforeWorker = old })
+	oauthjournal.OAuthJournalBeforeWorker = func(ctx context.Context) { entered <- struct{}{}; <-ctx.Done() }
+	t.Cleanup(func() { oauthjournal.OAuthJournalBeforeWorker = old })
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	require.NoError(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil))
 	awaitCodexSignal(t, entered)
@@ -75,9 +76,9 @@ func TestOAuthJournal_QuarantineRenameFallbackRefreshes(t *testing.T) {
 	corrupt := []byte("invalid:" + secret)
 	path := oauthJournalPath(f.path, f.used.ID)
 	require.NoError(t, os.WriteFile(path, corrupt, 0o600))
-	old := oauthJournalQuarantineRename
-	oauthJournalQuarantineRename = func(string, string) error { return errors.New(secret) }
-	t.Cleanup(func() { oauthJournalQuarantineRename = old })
+	old := oauthjournal.OAuthJournalQuarantineRename
+	oauthjournal.OAuthJournalQuarantineRename = func(string, string) error { return errors.New(secret) }
+	t.Cleanup(func() { oauthjournal.OAuthJournalQuarantineRename = old })
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	stubCodexRefresh(t, func(context.Context, *http.Client, string) (*oauth.Token, error) { return f.next, nil })
 	entered, release := pauseCodexPendingPersist(t)
