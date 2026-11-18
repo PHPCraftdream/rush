@@ -26,6 +26,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/codex"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthcred"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
@@ -277,14 +278,13 @@ func TestOAuthKtavTwoStoreRefreshRotationOnSingleKtavFile(t *testing.T) {
 	codexRefreshTokenFn = codex.Refresh
 	t.Cleanup(func() { codexRefreshTokenFn = originalRefresh })
 	serialized := make(chan struct{}, 2)
-	oldWaiterHook := codexRefreshWaiterHook
-	codexRefreshWaiterHook = func() {
+	restoreWaiter := oauthcred.SetCodexRefreshWaiterHookForTest(func() {
 		select {
 		case serialized <- struct{}{}:
 		default:
 		}
-	}
-	t.Cleanup(func() { codexRefreshWaiterHook = oldWaiterHook })
+	})
+	t.Cleanup(restoreWaiter)
 	var lockAttempts atomic.Int32
 	hookCodexRefreshLock(t, func(ctx context.Context, path string) (*filelock.FileLock, error) {
 		if strings.Contains(path, ".oauth-refresh-") && lockAttempts.Add(1) > 1 {
@@ -359,7 +359,7 @@ func TestOAuthKtavTwoStoreRefreshRotationOnSingleKtavFile(t *testing.T) {
 		require.False(t, current.OAuthToken.IsExpired())
 		require.Empty(t, current.APIKey)
 	}
-	diskToken, err := stores[0].loadTokenFromDisk(ScopeGlobal, "openai-codex")
+	diskToken, err := stores[0].oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "openai-codex")
 	require.NoError(t, err)
 	require.NotNil(t, diskToken)
 	require.Equal(t, "single-use-new-access", diskToken.AccessToken)
@@ -569,12 +569,12 @@ func TestOAuthKtavCorruptConfigAbortsCASAndDiskReads(t *testing.T) {
 	committed, err := store.setOAuthTokenIfCurrent(ScopeGlobal, "p1", tokenA, tokenC)
 	require.Error(t, err, "an undecodable document must abort the write")
 	require.False(t, committed)
-	require.False(t, errors.Is(err, errOAuthCredentialCAS), "a decode failure is not a CAS refusal")
+	require.False(t, errors.Is(err, store.oauthCredStore().ErrCredentialCAS()), "a decode failure is not a CAS refusal")
 	rawAfter, err := os.ReadFile(configPath)
 	require.NoError(t, err)
 	require.Equal(t, corrupt, rawAfter)
 
-	_, err = store.loadTokenFromDisk(ScopeGlobal, "p1")
+	_, err = store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "p1")
 	require.Error(t, err, "a corrupt document must never read as an empty config")
 	_, err = readOAuthJournalDiskToken(configPath, "p1")
 	require.ErrorIs(t, err, errOAuthJournalDisk)

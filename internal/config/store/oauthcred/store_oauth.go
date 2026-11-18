@@ -1,7 +1,7 @@
 // Provider credential management: setting and removing API keys, runtime
 // (in-memory-only) provider config updates, OAuth token refresh with
 // cross-session disk recovery, and the GitHub Copilot import path.
-package config
+package oauthcred
 
 import (
 	"context"
@@ -18,12 +18,12 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
-	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/codex"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/copilot"
-	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/hyper"
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/slots"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -32,30 +32,30 @@ import (
 // SetProviderAPIKey sets the API key for a provider and persists it. It
 // always writes with the guarded authority: the settings-lock veto applies
 // as before the authority parameter existed.
-func (s *ConfigStore) SetProviderAPIKey(scope Scope, providerID string, apiKey any) error {
-	return s.SetProviderAPIKeyWithAuthority(scope, providerID, apiKey, SettingsAuthorityGuarded)
+func (s *Store) SetProviderAPIKey(scope cfgmodel.Scope, providerID string, apiKey any) error {
+	return s.SetProviderAPIKeyWithAuthority(scope, providerID, apiKey, cfgmodel.SettingsAuthorityGuarded)
 }
 
 // SetProviderAPIKeyWithAuthority is SetProviderAPIKey with an explicit
 // per-call write authority; see SetConfigFieldsWithAuthority for the
 // trusted-UI exception contract. Only the password/settings-lock veto is
 // lifted for the persisted writes in this single call.
-func (s *ConfigStore) SetProviderAPIKeyWithAuthority(scope Scope, providerID string, apiKey any, authority SettingsWriteAuthority) error {
+func (s *Store) SetProviderAPIKeyWithAuthority(scope cfgmodel.Scope, providerID string, apiKey any, authority cfgmodel.SettingsWriteAuthority) error {
 	s.credentialWriteMu.Lock()
 	defer s.credentialWriteMu.Unlock()
 
-	var providerConfig ProviderConfig
+	var providerConfig cfgmodel.ProviderConfig
 	var exists bool
 	var setKeyOrToken func()
 
 	switch v := apiKey.(type) {
 	case string:
-		if err := s.SetConfigFieldWithAuthority(scope, fmt.Sprintf("providers.%s.api_key", providerID), v, authority); err != nil {
+		if err := s.port.SetConfigFieldWithAuthority(scope, fmt.Sprintf("providers.%s.api_key", providerID), v, authority); err != nil {
 			return fmt.Errorf("failed to save api key to config file: %w", err)
 		}
 		setKeyOrToken = func() { providerConfig.APIKey = v }
 	case *oauth.Token:
-		if err := s.SetConfigFieldsWithAuthority(scope, map[string]any{
+		if err := s.port.SetConfigFieldsWithAuthority(scope, map[string]any{
 			fmt.Sprintf("providers.%s.api_key", providerID): v.AccessToken,
 			fmt.Sprintf("providers.%s.oauth", providerID):   v,
 		}, authority); err != nil {
@@ -87,14 +87,14 @@ func (s *ConfigStore) SetProviderAPIKeyWithAuthority(scope Scope, providerID str
 	// hazard Snapshot() exists to prevent. This mirrors the bug fixed in
 	// SetProviderRuntimeConfig (task #341, P1-3) and RemoveProviderAPIKey
 	// (task #437, P1-2); SetProviderAPIKey itself was missed by that pass.
-	s.publishMu.Lock()
-	defer s.publishMu.Unlock()
+	s.port.LockPublish()
+	defer s.port.UnlockPublish()
 
-	sn := s.loadSnapshot()
-	providerConfig, exists = sn.config.Providers.Get(providerID)
+	sn := s.port.LoadSnapshot()
+	providerConfig, exists = sn.Config().Providers.Get(providerID)
 	if !exists {
 		var foundProvider *catwalk.Provider
-		for _, p := range sn.knownProviders {
+		for _, p := range sn.KnownProviders() {
 			if string(p.ID) == providerID {
 				foundProvider = &p
 				break
@@ -103,7 +103,7 @@ func (s *ConfigStore) SetProviderAPIKeyWithAuthority(scope Scope, providerID str
 		if foundProvider == nil {
 			return fmt.Errorf("provider with ID %s not found in known providers", providerID)
 		}
-		providerConfig = ProviderConfig{
+		providerConfig = cfgmodel.ProviderConfig{
 			ID:           providerID,
 			Name:         foundProvider.Name,
 			BaseURL:      foundProvider.APIEndpoint,
@@ -116,23 +116,23 @@ func (s *ConfigStore) SetProviderAPIKeyWithAuthority(scope Scope, providerID str
 	}
 	setKeyOrToken()
 
-	next := sn.clone()
-	var cfgCopy Config
-	if sn.config != nil {
-		cfgCopy = *sn.config
+	next := sn.Clone()
+	var cfgCopy cfgmodel.Config
+	if sn.Config() != nil {
+		cfgCopy = *sn.Config()
 	}
-	var providersCopy map[string]ProviderConfig
-	if sn.config != nil && sn.config.Providers != nil {
-		providersCopy = sn.config.Providers.Copy()
+	var providersCopy map[string]cfgmodel.ProviderConfig
+	if sn.Config() != nil && sn.Config().Providers != nil {
+		providersCopy = sn.Config().Providers.Copy()
 	} else {
-		providersCopy = make(map[string]ProviderConfig)
+		providersCopy = make(map[string]cfgmodel.ProviderConfig)
 	}
 	newProviders := csync.NewMapFrom(providersCopy)
 	newProviders.Set(providerID, providerConfig)
 	cfgCopy.Providers = newProviders
-	next.config = &cfgCopy
+	next.SetConfig(&cfgCopy)
 
-	s.publishLocked(next)
+	s.port.PublishSnapshot(next)
 	return nil
 }
 
@@ -153,11 +153,11 @@ func (s *ConfigStore) SetProviderAPIKeyWithAuthority(scope Scope, providerID str
 // Unlike the old implementation that mutated in-place without incrementing
 // generation, this now publishes a new snapshot with an incremented generation,
 // ensuring the cache key contract is honored (task #341, P1-3).
-func (s *ConfigStore) SetProviderRuntimeConfig(providerID string, pc ProviderConfig) {
-	s.publishMu.Lock()
-	defer s.publishMu.Unlock()
-	cur := s.loadSnapshot()
-	next := cur.clone()
+func (s *Store) SetProviderRuntimeConfig(providerID string, pc cfgmodel.ProviderConfig) {
+	s.port.LockPublish()
+	defer s.port.UnlockPublish()
+	cur := s.port.LoadSnapshot()
+	next := cur.Clone()
 
 	// clone() is a SHALLOW copy of the snapshot struct — next.config is
 	// still the SAME *Config pointer cur.config is, so mutating its
@@ -168,66 +168,54 @@ func (s *ConfigStore) SetProviderRuntimeConfig(providerID string, pc ProviderCon
 	// struct by value, then replace Providers with a fresh csync.Map
 	// seeded from the old one's contents plus this update, so the old
 	// snapshot's Providers map is never touched.
-	var cfgCopy Config
-	if cur.config != nil {
-		cfgCopy = *cur.config
+	var cfgCopy cfgmodel.Config
+	if cur.Config() != nil {
+		cfgCopy = *cur.Config()
 	}
-	var providersCopy map[string]ProviderConfig
-	if cur.config != nil && cur.config.Providers != nil {
-		providersCopy = cur.config.Providers.Copy()
+	var providersCopy map[string]cfgmodel.ProviderConfig
+	if cur.Config() != nil && cur.Config().Providers != nil {
+		providersCopy = cur.Config().Providers.Copy()
 	} else {
-		providersCopy = make(map[string]ProviderConfig)
+		providersCopy = make(map[string]cfgmodel.ProviderConfig)
 	}
 	newProviders := csync.NewMapFrom(providersCopy)
 	newProviders.Set(providerID, pc)
 	cfgCopy.Providers = newProviders
-	next.config = &cfgCopy
+	next.SetConfig(&cfgCopy)
 
-	s.publishLocked(next)
+	s.port.PublishSnapshot(next)
 }
 
 // SetProviderRuntimeAPIKeyIfTemplate updates a resolved key only if neither
 // its source template nor the currently published resolved value changed.
-func (s *ConfigStore) SetProviderRuntimeAPIKeyIfTemplate(providerID, template, expectedAPIKey, apiKey string) bool {
-	s.publishMu.Lock()
-	defer s.publishMu.Unlock()
-	cur := s.loadSnapshot()
-	if cur.config == nil || cur.config.Providers == nil {
+func (s *Store) SetProviderRuntimeAPIKeyIfTemplate(providerID, template, expectedAPIKey, apiKey string) bool {
+	s.port.LockPublish()
+	defer s.port.UnlockPublish()
+	cur := s.port.LoadSnapshot()
+	if cur.Config() == nil || cur.Config().Providers == nil {
 		return false
 	}
-	pc, ok := cur.config.Providers.Get(providerID)
+	pc, ok := cur.Config().Providers.Get(providerID)
 	if !ok || pc.APIKeyTemplate != template || pc.APIKey != expectedAPIKey {
 		return false
 	}
 	pc.APIKey = apiKey
-	next := cur.clone()
-	cfgCopy := *cur.config
-	providersCopy := cur.config.Providers.Copy()
+	next := cur.Clone()
+	cfgCopy := *cur.Config()
+	providersCopy := cur.Config().Providers.Copy()
 	providersCopy[providerID] = pc
 	cfgCopy.Providers = csync.NewMapFrom(providersCopy)
-	next.config = &cfgCopy
-	s.publishLocked(next)
+	next.SetConfig(&cfgCopy)
+	s.port.PublishSnapshot(next)
 	return true
 }
-
-// copilotRefreshTokenFn, codexRefreshTokenFn, and hyperExchangeTokenFn
-// indirect the OAuth refresh calls used by RefreshOAuthTokenWithClient.
-// They default to the real network-calling implementations; tests may
-// override them (package-private, restored via t.Cleanup) to coordinate
-// refresh races without making a real network call. The HTTP client carries
-// the provider's network policy (nil = default route).
-var (
-	copilotRefreshTokenFn = copilot.RefreshTokenWithClient
-	codexRefreshTokenFn   = codex.Refresh
-	hyperExchangeTokenFn  = hyper.ExchangeTokenWithClient
-)
 
 // RefreshOAuthToken refreshes the OAuth token for the given provider on
 // the default network route. The provider entry is read from one atomic
 // snapshot read so the token and the (nil, default-route) client are
 // consistent by construction. See RefreshOAuthTokenWithClient.
-func (s *ConfigStore) RefreshOAuthToken(ctx context.Context, scope Scope, providerID string) error {
-	providerConfig, ok := s.loadSnapshot().config.Providers.Get(providerID)
+func (s *Store) RefreshOAuthToken(ctx context.Context, scope cfgmodel.Scope, providerID string) error {
+	providerConfig, ok := s.port.LoadSnapshot().Config().Providers.Get(providerID)
 	if !ok {
 		return fmt.Errorf("provider %s not found", providerID)
 	}
@@ -269,7 +257,7 @@ func (s *ConfigStore) RefreshOAuthToken(ctx context.Context, scope Scope, provid
 // is polled for a bounded time. A different valid current token skips the exchange.
 // The other providers (copilot, hyper) keep this legacy path, serialized the same
 // way (in-process and across processes) by refreshLegacyOAuthToken.
-func (s *ConfigStore) RefreshOAuthTokenWithClient(ctx context.Context, scope Scope, providerConfig ProviderConfig, client *http.Client) error {
+func (s *Store) RefreshOAuthTokenWithClient(ctx context.Context, scope cfgmodel.Scope, providerConfig cfgmodel.ProviderConfig, client *http.Client) error {
 	if providerConfig.ID == "" {
 		return fmt.Errorf("provider config for OAuth refresh has no ID")
 	}
@@ -278,7 +266,7 @@ func (s *ConfigStore) RefreshOAuthTokenWithClient(ctx context.Context, scope Sco
 	if providerConfig.OAuthToken == nil {
 		return fmt.Errorf("provider %s does not have an OAuth token", providerID)
 	}
-	descriptor, ok := oauthProvider(providerID)
+	descriptor, ok := s.oauthProvider(providerID)
 	if !ok {
 		return fmt.Errorf("OAuth refresh not supported for provider %s", providerID)
 	}
@@ -288,7 +276,7 @@ func (s *ConfigStore) RefreshOAuthTokenWithClient(ctx context.Context, scope Sco
 	return s.refreshLegacyOAuthToken(ctx, scope, providerConfig, client)
 }
 
-func (s *ConfigStore) refreshLegacyOAuthLeader(ctx context.Context, scope Scope, providerConfig ProviderConfig, client *http.Client) error {
+func (s *Store) refreshLegacyOAuthLeader(ctx context.Context, scope cfgmodel.Scope, providerConfig cfgmodel.ProviderConfig, client *http.Client) error {
 	providerID := providerConfig.ID
 	expectedToken := providerConfig.OAuthToken
 
@@ -302,7 +290,7 @@ func (s *ConfigStore) refreshLegacyOAuthLeader(ctx context.Context, scope Scope,
 		return s.applyToken(providerConfig, newToken, providerID)
 	}
 
-	descriptor, _ := oauthProvider(providerID)
+	descriptor, _ := s.oauthProvider(providerID)
 	refreshedToken, refreshErr := descriptor.exchange(ctx, client, expectedToken.RefreshToken)
 	if refreshErr != nil {
 		// The exchange may have failed because another session already
@@ -358,7 +346,7 @@ func (s *ConfigStore) refreshLegacyOAuthLeader(ctx context.Context, scope Scope,
 	if err != nil {
 		return fmt.Errorf("refreshed token committed but durability is uncertain: %w", err)
 	}
-	if err := s.autoReloadAfterWrite(context.Background()); err != nil {
+	if err := s.port.AutoReload(context.Background()); err != nil {
 		slog.Warn("Refreshed OAuth token committed but in-memory reconciliation was incomplete", "provider", providerID, "error", err)
 	}
 
@@ -374,12 +362,12 @@ func legacyDiskTokenAdoptable(provider string, expected, disk *oauth.Token) bool
 var errOAuthCredentialCAS = errors.New("OAuth credentials changed on disk")
 
 // Settings-lock exempt: this CAS writer only touches providers.<id>.oauth/api_key.
-func (s *ConfigStore) setOAuthTokenIfCurrent(scope Scope, providerID string, expected, token *oauth.Token) (bool, error) {
-	return s.setOAuthTokenIfCurrentWithLock(scope, providerID, expected, token, s.withConfigWriteLock)
+func (s *Store) setOAuthTokenIfCurrent(scope cfgmodel.Scope, providerID string, expected, token *oauth.Token) (bool, error) {
+	return s.setOAuthTokenIfCurrentWithLock(scope, providerID, expected, token, s.port.WithFileWriteLock)
 }
 
-func (s *ConfigStore) setOAuthTokenIfCurrentWithLock(scope Scope, providerID string, expected, token *oauth.Token, withLock func(string, func(configWriteTarget) error) error) (bool, error) {
-	path, err := s.configPath(scope)
+func (s *Store) setOAuthTokenIfCurrentWithLock(scope cfgmodel.Scope, providerID string, expected, token *oauth.Token, withLock func(string, func(WriteTarget) error) error) (bool, error) {
+	path, err := s.port.ScopePath(scope)
 	if err != nil {
 		return false, err
 	}
@@ -387,19 +375,19 @@ func (s *ConfigStore) setOAuthTokenIfCurrentWithLock(scope Scope, providerID str
 		return false, err
 	}
 	path = slots.WriteTargetSlot(path)
-	isCodex := rotatingOAuthProvider(providerID)
+	isCodex := s.rotatingOAuthProvider(providerID)
 	keys := []string{fmt.Sprintf("providers.%s.oauth", providerID)}
 	if !isCodex {
 		keys = append(keys, fmt.Sprintf("providers.%s.api_key", providerID))
 	}
 	slices.Sort(keys)
 	var committedErr error
-	err = withLock(path, func(target configWriteTarget) error {
-		raw, fingerprint, readErr := docread.ReadStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+	err = withLock(path, func(target WriteTarget) error {
+		raw, fingerprint, readErr := docread.ReadStableConfigFileOwned(target.SelectedPath, target.Owner, target.Enforce)
 		if readErr != nil {
 			return fmt.Errorf("failed to read config file: %w", readErr)
 		}
-		doc, decodeErr := docread.DecodeSettingsDocument(target.selectedPath, raw, fingerprint)
+		doc, decodeErr := docread.DecodeSettingsDocument(target.SelectedPath, raw, fingerprint)
 		if decodeErr != nil {
 			return decodeErr
 		}
@@ -425,23 +413,23 @@ func (s *ConfigStore) setOAuthTokenIfCurrentWithLock(scope Scope, providerID str
 				return fmt.Errorf("failed to delete stale provider API key: %w", setValueErr)
 			}
 		}
-		if err := os.MkdirAll(filepath.Dir(target.path), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(target.Path), 0o755); err != nil {
 			return fmt.Errorf("failed to create config directory %q: %w", path, err)
 		}
 		written, encErr := docread.EncodeSettingsDocument([]byte(newValue), doc.Format)
 		if encErr != nil {
 			return encErr
 		}
-		_, commitErr := cfgcommit.CommitConfigFile(target.selectedPath, target.path, written, 0o600, doc.RawFingerprint, target.owner, target.enforce)
+		_, commitErr := cfgcommit.CommitConfigFile(target.SelectedPath, target.Path, written, 0o600, doc.RawFingerprint, target.Owner, target.Enforce)
 		if commitErr != nil {
 			if outcome, ok := cfgcommit.CommitOutcomeFromError(commitErr); ok && outcome.Committed {
-				s.noteInitialLoadWriteLocked(path, written)
+				s.port.NoteInitialLoadWrite(path, written)
 				committedErr = commitErr
 				return nil
 			}
 			return fmt.Errorf("failed to write config file: %w", commitErr)
 		}
-		s.noteInitialLoadWriteLocked(path, written)
+		s.port.NoteInitialLoadWrite(path, written)
 		return nil
 	})
 	if errors.Is(err, errOAuthCredentialCAS) {
@@ -458,70 +446,70 @@ func (s *ConfigStore) setOAuthTokenIfCurrentWithLock(scope Scope, providerID str
 
 // applyToken updates the in-memory provider config with the given token
 // and publishes a new snapshot with incremented generation (task #341, P1-3).
-func (s *ConfigStore) applyToken(providerConfig ProviderConfig, token *oauth.Token, providerID string) error {
+func (s *Store) applyToken(providerConfig cfgmodel.ProviderConfig, token *oauth.Token, providerID string) error {
 	return s.applyOAuthToken(providerID, providerConfig.OAuthToken, token)
 }
 
-func (s *ConfigStore) applyOAuthToken(providerID string, expected *oauth.Token, token *oauth.Token) error {
+func (s *Store) applyOAuthToken(providerID string, expected *oauth.Token, token *oauth.Token) error {
 	return s.applyOAuthTokenWithPending(providerID, expected, token, false)
 }
 
-func (s *ConfigStore) applyOAuthTokenWithPending(providerID string, expected, token *oauth.Token, pending bool) error {
+func (s *Store) applyOAuthTokenWithPending(providerID string, expected, token *oauth.Token, pending bool) error {
 	return s.applyOAuthTokenWithPendingPredecessor(providerID, expected, token, expected, pending)
 }
 
 // Memory CAS and pending predecessor selection share one publication lock.
-func (s *ConfigStore) applyOAuthTokenWithPendingPredecessor(providerID string, expected, token, predecessor *oauth.Token, pending bool, records ...*oauthJournalRecord) error {
-	s.publishMu.Lock()
-	defer s.publishMu.Unlock()
-	cur := s.loadSnapshot()
-	if cur.config == nil || cur.config.Providers == nil {
+func (s *Store) applyOAuthTokenWithPendingPredecessor(providerID string, expected, token, predecessor *oauth.Token, pending bool, records ...*docread.OAuthJournalRecord) error {
+	s.port.LockPublish()
+	defer s.port.UnlockPublish()
+	cur := s.port.LoadSnapshot()
+	if cur.Config() == nil || cur.Config().Providers == nil {
 		return fmt.Errorf("provider %s disappeared during OAuth refresh", providerID)
 	}
-	providerConfig, exists := cur.config.Providers.Get(providerID)
+	providerConfig, exists := cur.Config().Providers.Get(providerID)
 	apiKeyMatches := providerConfig.APIKey == token.AccessToken
-	if rotatingOAuthProvider(providerID) {
+	if s.rotatingOAuthProvider(providerID) {
 		apiKeyMatches = true
 	}
 	if exists && providerConfig.OAuthToken != nil && reflect.DeepEqual(providerConfig.OAuthToken, token) && apiKeyMatches {
 		if pending && predecessor != nil {
 			entry, ok := s.pendingOAuth[providerID]
-			if !ok || !reflect.DeepEqual(&entry.token, token) {
+			if !ok || !reflect.DeepEqual(&entry.Token, token) {
 				s.recordPendingOAuthLocked(providerID, predecessor, token, records...)
 			}
 		}
 		return nil
 	}
 	expectedAPIKeyMatches := expected != nil && providerConfig.APIKey == expected.AccessToken
-	if rotatingOAuthProvider(providerID) {
+	if s.rotatingOAuthProvider(providerID) {
 		expectedAPIKeyMatches = true
 	}
 	if !exists || providerConfig.OAuthToken == nil || expected == nil || !expectedAPIKeyMatches || !reflect.DeepEqual(providerConfig.OAuthToken, expected) {
 		return fmt.Errorf("provider %s credentials changed during OAuth refresh", providerID)
 	}
-	providerConfig = oauthTokenProviderConfig(providerID, providerConfig, token)
-	next := cur.clone()
-	cfgCopy := *cur.config
-	providersCopy := cur.config.Providers.Copy()
+	providerConfig = s.oauthTokenProviderConfig(providerID, providerConfig, token)
+	next := cur.Clone()
+	cfgCopy := *cur.Config()
+	providersCopy := cur.Config().Providers.Copy()
 	providersCopy[providerID] = providerConfig
 	cfgCopy.Providers = csync.NewMapFrom(providersCopy)
-	next.config = &cfgCopy
+	next.SetConfig(&cfgCopy)
 	if pending && predecessor != nil {
 		if len(records) > 0 && records[0] != nil {
-			copyRecord := oauthJournalWithBurned(records[0], oauthRotationDigest(expected, token))
-			records = []*oauthJournalRecord{&copyRecord}
+			copyRecord := oauthjournal.WithBurned(records[0], oauthjournal.RotationDigest(expected, token))
+			records = []*docread.OAuthJournalRecord{&copyRecord}
 		}
 		s.recordPendingOAuthLocked(providerID, predecessor, token, records...)
 	}
-	s.publishLocked(next)
+	s.port.PublishSnapshot(next)
 	return nil
 }
 
 // loadTokenFromDisk reads the OAuth token for the given provider from the
 // config file on disk. Returns nil if the token is not found or matches the
 // current in-memory token.
-func (s *ConfigStore) loadTokenFromDisk(scope Scope, providerID string) (*oauth.Token, error) {
-	path, err := s.configPath(scope)
+func (s *Store) loadTokenFromDisk(scope cfgmodel.Scope, providerID string) (*oauth.Token, error) {
+	path, err := s.port.ScopePath(scope)
 	if err != nil {
 		return nil, err
 	}
@@ -553,8 +541,8 @@ func (s *ConfigStore) loadTokenFromDisk(scope Scope, providerID string) (*oauth.
 }
 
 // ImportCopilot attempts to import a GitHub Copilot token from disk.
-func (s *ConfigStore) ImportCopilot() (*oauth.Token, bool) {
-	if s.HasConfigField(ScopeGlobal, "providers.copilot.api_key") || s.HasConfigField(ScopeGlobal, "providers.copilot.oauth") {
+func (s *Store) ImportCopilot() (*oauth.Token, bool) {
+	if s.port.HasConfigField(cfgmodel.ScopeGlobal, "providers.copilot.api_key") || s.port.HasConfigField(cfgmodel.ScopeGlobal, "providers.copilot.oauth") {
 		return nil, false
 	}
 
@@ -572,11 +560,11 @@ func (s *ConfigStore) ImportCopilot() (*oauth.Token, bool) {
 		return nil, false
 	}
 
-	if err := s.SetProviderAPIKey(ScopeGlobal, string(catwalk.InferenceProviderCopilot), token); err != nil {
+	if err := s.SetProviderAPIKey(cfgmodel.ScopeGlobal, string(catwalk.InferenceProviderCopilot), token); err != nil {
 		return token, false
 	}
 
-	if err := s.SetConfigFields(ScopeGlobal, map[string]any{
+	if err := s.port.SetConfigFields(cfgmodel.ScopeGlobal, map[string]any{
 		"providers.copilot.api_key": token.AccessToken,
 		"providers.copilot.oauth":   token,
 	}); err != nil {
@@ -606,42 +594,42 @@ func (s *ConfigStore) ImportCopilot() (*oauth.Token, bool) {
 // SHALLOW copy whose .config still points at the SAME *Config the current
 // snapshot uses) and publish it under publishMu so the old snapshot's
 // Providers map is never touched.
-func (s *ConfigStore) RemoveProviderAPIKey(scope Scope, providerID string) error {
-	return s.RemoveProviderAPIKeyWithAuthority(scope, providerID, SettingsAuthorityGuarded)
+func (s *Store) RemoveProviderAPIKey(scope cfgmodel.Scope, providerID string) error {
+	return s.RemoveProviderAPIKeyWithAuthority(scope, providerID, cfgmodel.SettingsAuthorityGuarded)
 }
 
 // RemoveProviderAPIKeyWithAuthority is RemoveProviderAPIKey with an
 // explicit per-call write authority; see SetConfigFieldsWithAuthority for
 // the trusted-UI exception contract. Only the password/settings-lock veto
 // is lifted for this single removal.
-func (s *ConfigStore) RemoveProviderAPIKeyWithAuthority(scope Scope, providerID string, authority SettingsWriteAuthority) error {
+func (s *Store) RemoveProviderAPIKeyWithAuthority(scope cfgmodel.Scope, providerID string, authority cfgmodel.SettingsWriteAuthority) error {
 	s.credentialWriteMu.Lock()
 	defer s.credentialWriteMu.Unlock()
 
-	if err := s.RemoveConfigFieldWithAuthority(scope, fmt.Sprintf("providers.%s.api_key", providerID), authority); err != nil {
+	if err := s.port.RemoveConfigFieldWithAuthority(scope, fmt.Sprintf("providers.%s.api_key", providerID), authority); err != nil {
 		return fmt.Errorf("failed to remove provider API key: %w", err)
 	}
 
-	s.publishMu.Lock()
-	defer s.publishMu.Unlock()
-	cur := s.loadSnapshot()
-	next := cur.clone()
+	s.port.LockPublish()
+	defer s.port.UnlockPublish()
+	cur := s.port.LoadSnapshot()
+	next := cur.Clone()
 
-	var cfgCopy Config
-	if cur.config != nil {
-		cfgCopy = *cur.config
+	var cfgCopy cfgmodel.Config
+	if cur.Config() != nil {
+		cfgCopy = *cur.Config()
 	}
-	var providersCopy map[string]ProviderConfig
-	if cur.config != nil && cur.config.Providers != nil {
-		providersCopy = cur.config.Providers.Copy()
+	var providersCopy map[string]cfgmodel.ProviderConfig
+	if cur.Config() != nil && cur.Config().Providers != nil {
+		providersCopy = cur.Config().Providers.Copy()
 	} else {
-		providersCopy = make(map[string]ProviderConfig)
+		providersCopy = make(map[string]cfgmodel.ProviderConfig)
 	}
 	newProviders := csync.NewMapFrom(providersCopy)
 	newProviders.Del(providerID)
 	cfgCopy.Providers = newProviders
-	next.config = &cfgCopy
+	next.SetConfig(&cfgCopy)
 
-	s.publishLocked(next)
+	s.port.PublishSnapshot(next)
 	return nil
 }

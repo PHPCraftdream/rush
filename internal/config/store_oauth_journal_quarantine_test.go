@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,9 +40,9 @@ func TestOAuthJournal_CorruptJournalQuarantinedBeforeRefresh(t *testing.T) {
 // Revert-check: rename failure must preserve bytes and bound quarantine retention.
 func TestOAuthJournal_QuarantineCopyFallbackAndCap(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rush.json.oauth-pending-test.json")
-	old := oauthJournalQuarantineRename
-	oauthJournalQuarantineRename = func(string, string) error { return errors.New("injected rename failure") }
-	t.Cleanup(func() { oauthJournalQuarantineRename = old })
+	old := oauthjournal.OAuthJournalQuarantineRename
+	oauthjournal.OAuthJournalQuarantineRename = func(string, string) error { return errors.New("injected rename failure") }
+	t.Cleanup(func() { oauthjournal.OAuthJournalQuarantineRename = old })
 	for i := 0; i < 7; i++ {
 		require.NoError(t, os.WriteFile(path, []byte("corrupt"), 0o600))
 		quarantineOAuthJournal(path)

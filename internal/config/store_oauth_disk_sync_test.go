@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthcred"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/stretchr/testify/require"
 )
@@ -47,7 +49,7 @@ func TestOAuthDiskSync01SiblingRefresh(t *testing.T) {
 			if id == task1292Provider {
 				waitOAuthJournalIdle(t, idle)
 			}
-			var st oauthDiskSyncState
+			var st oauthcred.DiskSyncState
 			f.store.syncOAuthFromDisk(context.Background(), &st)
 			require.Equal(t, diskSyncLive(t, b, id), diskSyncLive(t, f.store, id))
 			gen := f.store.Generation()
@@ -70,10 +72,10 @@ func TestOAuthDiskSync02OwnedPredecessor(t *testing.T) {
 		}
 		require.NoError(t, f.store.applyOAuthTokenWithPendingPredecessor(task1292Provider, f.used.OAuthToken, f.next, f.used.OAuthToken, true, record))
 		task1292WriteDisk(t, f.path, task1292Provider, &burned, "")
-		var st oauthDiskSyncState
+		var st oauthcred.DiskSyncState
 		f.store.syncOAuthFromDisk(context.Background(), &st)
 		require.Equal(t, f.next, diskSyncLive(t, f.store, task1292Provider))
-		require.False(t, st.settled)
+		require.False(t, st.SettledForTest())
 	}
 }
 
@@ -87,12 +89,12 @@ func TestOAuthDiskSync03UncertainNoLogout(t *testing.T) {
 		} else {
 			require.NoError(t, os.WriteFile(f.path, []byte(data), 0o600))
 		}
-		var st oauthDiskSyncState
+		var st oauthcred.DiskSyncState
 		f.store.syncOAuthFromDisk(context.Background(), &st)
 		require.Equal(t, f.used.OAuthToken, diskSyncLive(t, f.store, task1292Provider))
 		require.Zero(t, f.store.Generation())
 		if data == "{}" || data == `{"providers":{"fixture-task1292-rotating":{"oauth":null}}}` {
-			require.True(t, st.settled, "absent disk OAuth must settle the full check")
+			require.True(t, st.SettledForTest(), "absent disk OAuth must settle the full check")
 		}
 	}
 }
@@ -105,9 +107,9 @@ func TestOAuthDiskSync04EqualNoPublish(t *testing.T) {
 	require.NoError(t, f.store.applyOAuthToken("copilot", f.used.OAuthToken, &valid))
 	task1292WriteDisk(t, f.path, "copilot", &valid, valid.AccessToken)
 	base := f.store.Generation()
-	var st oauthDiskSyncState
+	var st oauthcred.DiskSyncState
 	f.store.syncOAuthFromDisk(context.Background(), &st)
-	require.True(t, st.settled)
+	require.True(t, st.SettledForTest())
 	require.Equal(t, base, f.store.Generation())
 	// Change bytes in place while preserving every stat-gate input.
 	before, err := os.Stat(f.path)
@@ -126,21 +128,21 @@ func TestOAuthDiskSync04EqualNoPublish(t *testing.T) {
 	require.True(t, os.SameFile(before, after))
 	require.Equal(t, before.Size(), after.Size())
 	require.True(t, before.ModTime().Equal(after.ModTime()))
-	for st.tick < 11 {
+	for st.TickForTest() < 11 {
 		f.store.syncOAuthFromDisk(context.Background(), &st)
 		require.Equal(t, &valid, diskSyncLive(t, f.store, "copilot"))
 		require.Equal(t, base, f.store.Generation())
 	}
 	f.store.syncOAuthFromDisk(context.Background(), &st)
-	require.EqualValues(t, 12, st.tick)
+	require.EqualValues(t, 12, st.TickForTest())
 	require.Equal(t, &disk, diskSyncLive(t, f.store, "copilot"))
 	require.Equal(t, base+1, f.store.Generation())
 	// Settle the newly published generation, then invalidate only generation.
 	f.store.syncOAuthFromDisk(context.Background(), &st)
-	require.True(t, st.settled)
+	require.True(t, st.SettledForTest())
 	require.NoError(t, f.store.applyOAuthToken("copilot", &disk, &valid))
 	f.store.syncOAuthFromDisk(context.Background(), &st)
-	require.EqualValues(t, 14, st.tick)
+	require.EqualValues(t, 14, st.TickForTest())
 	require.Equal(t, &disk, diskSyncLive(t, f.store, "copilot"))
 	require.Equal(t, base+3, f.store.Generation())
 }
@@ -171,7 +173,7 @@ func TestOAuthDiskSync05ExpiryOrdering(t *testing.T) {
 				require.Less(t, disk.ExpiresAt, live.ExpiresAt)
 			}
 			task1292WriteDisk(t, f.path, id, &disk, disk.AccessToken)
-			var st oauthDiskSyncState
+			var st oauthcred.DiskSyncState
 			f.store.syncOAuthFromDisk(context.Background(), &st)
 			if id == "copilot" && !expired {
 				require.Equal(t, &disk, diskSyncLive(t, f.store, id))
@@ -181,7 +183,7 @@ func TestOAuthDiskSync05ExpiryOrdering(t *testing.T) {
 				require.Equal(t, &live, diskSyncLive(t, f.store, id))
 				require.Equal(t, live.ExpiresAt, diskSyncLive(t, f.store, id).ExpiresAt)
 				require.Equal(t, gen, f.store.Generation())
-				require.False(t, st.settled)
+				require.False(t, st.SettledForTest())
 			}
 		}
 	}
@@ -197,10 +199,10 @@ func TestOAuthDiskSync06ForeignWALRetry(t *testing.T) {
 	require.NoError(t, err)
 	wal := oauthJournalPath(f.path, task1292Provider)
 	require.NoError(t, os.WriteFile(wal, data, 0o600))
-	var st oauthDiskSyncState
+	var st oauthcred.DiskSyncState
 	f.store.syncOAuthFromDisk(context.Background(), &st)
 	require.Equal(t, f.used.OAuthToken, diskSyncLive(t, f.store, task1292Provider))
-	require.False(t, st.settled)
+	require.False(t, st.SettledForTest())
 	require.NoError(t, os.Remove(wal))
 	f.store.syncOAuthFromDisk(context.Background(), &st)
 	require.Equal(t, f.next, diskSyncLive(t, f.store, task1292Provider))
@@ -223,12 +225,16 @@ func TestOAuthDiskSync07InflightBounded(t *testing.T) {
 	result := task1292Start(t, b, f.used)
 	awaitCodexSignal(t, entered)
 	done := make(chan struct{})
-	go func() { defer close(done); var st oauthDiskSyncState; b.syncOAuthFromDisk(context.Background(), &st) }()
+	go func() {
+		defer close(done)
+		var st oauthcred.DiskSyncState
+		b.syncOAuthFromDisk(context.Background(), &st)
+	}()
 	awaitCodexSignal(t, done)
 	close(release)
 	require.NoError(t, <-result)
 	waitOAuthJournalIdle(t, idle)
-	var st oauthDiskSyncState
+	var st oauthcred.DiskSyncState
 	f.store.syncOAuthFromDisk(context.Background(), &st)
 	require.Equal(t, f.next, diskSyncLive(t, f.store, task1292Provider))
 }
@@ -240,16 +246,16 @@ func TestOAuthDiskSync08SampledCAS(t *testing.T) {
 	task1292WriteDisk(t, f.path, task1292Provider, f.next, "")
 	newer := *f.next
 	newer.AccessToken, newer.RefreshToken = "fixture-C-access", "fixture-C-refresh"
-	old := oauthJournalReadFile
-	oauthJournalReadFile = func(path string) ([]byte, error) {
+	old := oauthjournal.OAuthJournalReadFile
+	oauthjournal.OAuthJournalReadFile = func(path string) ([]byte, error) {
 		require.NoError(t, f.store.applyOAuthToken(task1292Provider, f.used.OAuthToken, &newer))
 		return old(path)
 	}
-	t.Cleanup(func() { oauthJournalReadFile = old })
-	var st oauthDiskSyncState
+	t.Cleanup(func() { oauthjournal.OAuthJournalReadFile = old })
+	var st oauthcred.DiskSyncState
 	f.store.syncOAuthFromDisk(context.Background(), &st)
 	require.Equal(t, &newer, diskSyncLive(t, f.store, task1292Provider))
-	require.False(t, st.settled)
+	require.False(t, st.SettledForTest())
 }
 
 func TestOAuthDiskSync09LifecycleNoIO(t *testing.T) {
@@ -261,8 +267,7 @@ func TestOAuthDiskSync09LifecycleNoIO(t *testing.T) {
 	var releaseOnce, stopOnce sync.Once
 	releaseWorker := func() { releaseOnce.Do(func() { close(release) }) }
 	startStop := func() { stopOnce.Do(func() { go func() { s.stopOAuthJournalWorkers(); close(stopped) }() }) }
-	oldWait, oldStat := oauthDiskSyncWait, oauthDiskSyncStat
-	oauthDiskSyncWait = func(ctx context.Context, _ time.Duration) error {
+	restoreWait := oauthcred.SetOAuthDiskSyncWaitForTest(func(ctx context.Context, _ time.Duration) error {
 		defer func() { exited <- struct{}{} }()
 		waits.Add(1)
 		entered <- struct{}{}
@@ -270,8 +275,8 @@ func TestOAuthDiskSync09LifecycleNoIO(t *testing.T) {
 		cancelled <- struct{}{}
 		<-release
 		return ctx.Err()
-	}
-	oauthDiskSyncStat = func(string) (os.FileInfo, error) { stats.Add(1); return nil, os.ErrNotExist }
+	})
+	restoreStat := oauthcred.SetOAuthDiskSyncStatForTest(func(string) (os.FileInfo, error) { stats.Add(1); return nil, os.ErrNotExist })
 	// Register before assertions; even an untracked mutant is released and joined
 	// through the hook-exit signal before global hooks are restored.
 	t.Cleanup(func() {
@@ -279,7 +284,8 @@ func TestOAuthDiskSync09LifecycleNoIO(t *testing.T) {
 		startStop()
 		awaitCodexSignal(t, stopped)
 		awaitCodexSignal(t, exited)
-		oauthDiskSyncWait, oauthDiskSyncStat = oldWait, oldStat
+		restoreWait()
+		restoreStat()
 	})
 	s.StartOAuthDiskSync()
 	s.StartOAuthDiskSync()
@@ -297,7 +303,7 @@ func TestOAuthDiskSync09LifecycleNoIO(t *testing.T) {
 	require.False(t, returnedEarly, "shutdown returned before blocked poller was released")
 	s.StartOAuthDiskSync()
 	require.EqualValues(t, 1, waits.Load())
-	var st oauthDiskSyncState
+	var st oauthcred.DiskSyncState
 	// A separate uncancelled store proves the no-token early exit.
 	empty := newTestConfigStore(testStoreOpts{globalDataPath: s.globalDataPath, config: s.Config()})
 	empty.syncOAuthFromDisk(context.Background(), &st)
@@ -305,10 +311,10 @@ func TestOAuthDiskSync09LifecycleNoIO(t *testing.T) {
 	stoppedStore := newTestConfigStore(testStoreOpts{globalDataPath: s.globalDataPath})
 	stoppedStore.stopOAuthJournalWorkers()
 	stoppedStore.StartOAuthDiskSync()
-	require.False(t, stoppedStore.oauthDiskSyncStarted)
+	require.False(t, stoppedStore.oauthCredStore().OAuthDiskSyncStartedForTest())
 	noPath := newTestConfigStore(testStoreOpts{})
 	noPath.StartOAuthDiskSync()
-	require.Nil(t, noPath.oauthWorkerCtx)
+	require.Nil(t, noPath.oauthJournal().WorkerContext())
 }
 
 func TestOAuthDiskSync10ProviderBoundary(t *testing.T) {
@@ -322,7 +328,7 @@ func TestOAuthDiskSync10ProviderBoundary(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(f.path, data, 0o600))
 	gen := f.store.Generation()
-	var st oauthDiskSyncState
+	var st oauthcred.DiskSyncState
 	f.store.syncOAuthFromDisk(context.Background(), &st)
 	require.Equal(t, gen, f.store.Generation())
 	require.Equal(t, f.used.OAuthToken, diskSyncLive(t, f.store, "unknown"))
@@ -334,9 +340,9 @@ func TestOAuthDiskSync10ProviderBoundary(t *testing.T) {
 
 func TestOAuthDiskSync11Jitter(t *testing.T) {
 	// Revert-check: an incorrect jitter range escapes the four-to-six-second bounds.
-	require.Equal(t, 5*time.Second, oauthDiskSyncInterval)
+	require.Equal(t, 5*time.Second, oauthcred.OAuthDiskSyncIntervalForTest())
 	for range 1000 {
-		delay := oauthDiskSyncDelay()
+		delay := oauthcred.OAuthDiskSyncDelayForTest()
 		require.GreaterOrEqual(t, delay, 4*time.Second)
 		require.LessOrEqual(t, delay, 6*time.Second)
 	}
@@ -360,9 +366,8 @@ func TestOAuthDiskSync12IdleConvergence(t *testing.T) {
 	task1292Descriptor(t, false, func(context.Context, *http.Client, string) (*oauth.Token, error) { calls.Add(1); return f.next, nil })
 	idle := hookOAuthJournalIdle(t, b)
 	first, permit, second := make(chan time.Duration, 1), make(chan struct{}), make(chan time.Duration, 1)
-	old := oauthDiskSyncWait
 	var waits atomic.Int32
-	oauthDiskSyncWait = func(ctx context.Context, delay time.Duration) error {
+	restoreWait := oauthcred.SetOAuthDiskSyncWaitForTest(func(ctx context.Context, delay time.Duration) error {
 		if waits.Add(1) == 1 {
 			first <- delay
 			select {
@@ -375,13 +380,13 @@ func TestOAuthDiskSync12IdleConvergence(t *testing.T) {
 		second <- delay
 		<-ctx.Done()
 		return ctx.Err()
-	}
-	t.Cleanup(func() { oauthDiskSyncWait = old })
+	})
+	t.Cleanup(restoreWait)
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	f.store.StartOAuthDiskSync()
 	initial := diskSyncAwaitDelay(t, first)
 	require.GreaterOrEqual(t, initial, time.Duration(0))
-	require.Less(t, initial, oauthDiskSyncInterval)
+	require.Less(t, initial, oauthcred.OAuthDiskSyncIntervalForTest())
 	require.NoError(t, b.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil))
 	waitOAuthJournalIdle(t, idle)
 	close(permit)
@@ -411,9 +416,8 @@ func TestOAuthDiskSync13StopJoinsPollerAndJournalWorkers(t *testing.T) {
 	releaseBoth := func() {
 		releaseOnce.Do(func() { close(releasePollerCh); close(releaseWorkerCh) })
 	}
-	oldWait := oauthDiskSyncWait
-	oldBefore, oldDone := oauthJournalBeforeWorker, oauthJournalWorkerDone
-	oauthDiskSyncWait = func(ctx context.Context, _ time.Duration) error {
+	oldBefore, oldDone := oauthjournal.OAuthJournalBeforeWorker, oauthJournalWorkerDone
+	restoreWait := oauthcred.SetOAuthDiskSyncWaitForTest(func(ctx context.Context, _ time.Duration) error {
 		defer func() { pollerExited <- struct{}{} }()
 		waits.Add(1)
 		pollerEntered <- struct{}{}
@@ -421,8 +425,8 @@ func TestOAuthDiskSync13StopJoinsPollerAndJournalWorkers(t *testing.T) {
 		pollerCancelled <- struct{}{}
 		<-releasePollerCh
 		return ctx.Err()
-	}
-	oauthJournalBeforeWorker = func(ctx context.Context) {
+	})
+	oauthjournal.OAuthJournalBeforeWorker = func(ctx context.Context) {
 		workerEntered <- struct{}{}
 		<-ctx.Done()
 		workerCancelled <- struct{}{}
@@ -438,8 +442,8 @@ func TestOAuthDiskSync13StopJoinsPollerAndJournalWorkers(t *testing.T) {
 		s.stopOAuthJournalWorkers()
 		awaitCodexSignal(t, pollerExited)
 		awaitCodexSignal(t, workerExited)
-		oauthDiskSyncWait = oldWait
-		oauthJournalBeforeWorker, oauthJournalWorkerDone = oldBefore, oldDone
+		restoreWait()
+		oauthjournal.OAuthJournalBeforeWorker, oauthJournalWorkerDone = oldBefore, oldDone
 	})
 	s.StartOAuthDiskSync()
 	s.startOAuthJournalWorker(ScopeGlobal, task1292Provider)
@@ -472,9 +476,7 @@ func TestOAuthDiskSync13StopJoinsPollerAndJournalWorkers(t *testing.T) {
 	require.False(t, s.OAuthDiskSyncRunning())
 	s.StartOAuthDiskSync() // Refused after a stop.
 	s.startOAuthJournalWorker(ScopeGlobal, task1292Provider)
-	s.oauthWorkerMu.Lock()
-	workers := len(s.oauthWorkers)
-	s.oauthWorkerMu.Unlock()
+	workers := s.oauthJournal().WorkersCount()
 	require.EqualValues(t, 1, waits.Load(), "start after stop must be refused")
 	require.Zero(t, workers, "journal worker start after stop must be refused")
 	require.False(t, s.OAuthDiskSyncRunning())
@@ -492,7 +494,7 @@ func TestOAuthDiskSync14StopFlushesPendingRotationOutbox(t *testing.T) {
 	flushed, err := readOAuthJournal(oauthJournalPath(f.path, task1292Provider))
 	require.NoError(t, err)
 	require.NotNil(t, flushed, "StopOAuthDiskSync must flush a pending rotation outbox to the journal WAL")
-	require.Equal(t, &entry.record, flushed)
+	require.Equal(t, &entry.Record, flushed)
 }
 
 func TestOAuthDiskSync15StopJoinsBlockedJournalWorker(t *testing.T) {
@@ -503,8 +505,8 @@ func TestOAuthDiskSync15StopJoinsBlockedJournalWorker(t *testing.T) {
 	var releaseOnce sync.Once
 	release := make(chan struct{})
 	releaseWorker := func() { releaseOnce.Do(func() { close(release) }) }
-	oldBefore := oauthJournalBeforeWorker
-	oauthJournalBeforeWorker = func(ctx context.Context) {
+	oldBefore := oauthjournal.OAuthJournalBeforeWorker
+	oauthjournal.OAuthJournalBeforeWorker = func(ctx context.Context) {
 		entered <- struct{}{}
 		<-ctx.Done()
 		cancelled <- struct{}{}
@@ -515,7 +517,7 @@ func TestOAuthDiskSync15StopJoinsBlockedJournalWorker(t *testing.T) {
 	t.Cleanup(func() {
 		releaseWorker()
 		s.stopOAuthJournalWorkers()
-		oauthJournalBeforeWorker = oldBefore
+		oauthjournal.OAuthJournalBeforeWorker = oldBefore
 	})
 	s.startOAuthJournalWorker(ScopeGlobal, task1292Provider)
 	awaitCodexSignal(t, entered)
