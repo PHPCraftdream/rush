@@ -359,3 +359,16 @@ func TestNoTripleQuotesInSource(t *testing.T) {
 	assert.NotContains(t, claudeWrushCommandTemplate, `"""`)
 	assert.NotContains(t, claudeWcrushCommandTemplate, `"""`)
 }
+
+// The smart role's standard workflow belongs to rush: every target's /rush body must say so and
+// must keep forbidding callers from prescribing worker use, time boxes or step order.
+func TestRushSkillStatesSmartWorkflowIsRushsForEveryTarget(t *testing.T) {
+	for _, target := range []skillTarget{skillTargetClaude, skillTargetCodex, skillTargetGemini, skillTargetGrok, skillTargetQwen, skillTargetOpenCode, skillTargetOmp} {
+		_, body, err := loadSkillSource("claude_slash_command", target)
+		require.NoError(t, err, string(target))
+		assert.Contains(t, body, "The smart role's standard workflow is rush's, not yours.", string(target))
+		assert.Contains(t, body, `no "do not use workers/sub-agents"`, string(target))
+		assert.Contains(t, body, "no time boxes or report-by-minute deadlines", string(target))
+		assert.Contains(t, body, "rush owns *how* and *getting there*", string(target))
+	}
+}
