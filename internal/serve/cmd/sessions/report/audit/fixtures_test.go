@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
@@ -213,3 +215,6 @@ func waitForSQLiteHandleRelease(t *testing.T, dataDir string) {
 		t.Logf("waitForSQLiteHandleRelease: %s still not removable after budget (%v); proceeding anyway", dataDir, lastErr)
 	}
 }
+
+// TestMain isolates global state for this package's test binary (same as the other cmd packages).
+func TestMain(m *testing.M) { cmdtest.Main(m) }

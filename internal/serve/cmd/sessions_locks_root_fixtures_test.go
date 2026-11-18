@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	locks "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/locks"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -236,3 +238,31 @@ func (h *killTestLockHolder) stop(t *testing.T) {
 // real sessionsKillCmd.RunE. Before the fix this would print "no lock file
 // at <cwd>/.rush/locks/..." (wrong path) and no-op; after the fix it must
 // find the lock at the configured location and remove it.
+
+// TestHelperKillTestLockHold is the re-exec entry point of spawnKillTestLockHolder
+// in this test binary (byte-copy of the sesslocks one: the child is this very
+// binary, so the entry point has to exist here too). A normal `go test` run
+// (sentinel env var unset) does nothing.
+func TestHelperKillTestLockHold(t *testing.T) {
+	if os.Getenv(killTestHelperProcessEnv) != "1" {
+		return
+	}
+	dataDir := os.Getenv("RUSH_SESSIONS_KILL_LOCK_HELPER_DATADIR")
+	sessionID := os.Getenv("RUSH_SESSIONS_KILL_LOCK_HELPER_SESSIONID")
+	if dataDir == "" || sessionID == "" {
+		fmt.Println("FAILED missing-env")
+		os.Exit(2)
+	}
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
+	if err != nil {
+		fmt.Printf("FAILED %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("LOCKED %d\n", lk.HolderPID)
+
+	// Block until killed / stdin closes.
+	buf := make([]byte, 1)
+	_, _ = os.Stdin.Read(buf)
+	_ = lk.Release()
+	os.Exit(0)
+}

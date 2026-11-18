@@ -196,3 +196,14 @@ func acquireSessionLockForReset(dataDir, sessionID string, pid int, wait time.Du
 // sanitiseSessionIDForFilename — byte-copy shim of the root package's
 // one-liner (it calls the exported sesslocks symbol here).
 func sanitiseSessionIDForFilename(id string) string { return SanitiseSessionIDForFilename(id) }
+
+// purgeQueuedWorkAfterStopForTest is the root purgeQueuedWorkAfterStop
+// (sessions_stop_purge.go) as the kill command's purge provider in tests.
+func purgeQueuedWorkAfterStopForTest(cmd *cobra.Command, sessionID string) {
+	a, err := cmdkit.SetupAppLite(cmd)
+	if err != nil {
+		return
+	}
+	defer a.Shutdown()
+	_, _ = a.Sessions.PurgeQueuedWorkForSession(cmd.Context(), sessionID)
+}

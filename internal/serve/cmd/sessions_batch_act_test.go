@@ -23,6 +23,7 @@ import (
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -542,4 +543,22 @@ func countSessions(t *testing.T, dataDir, sessionID string) int {
 	require.NoError(t, conn.QueryRowContext(context.Background(),
 		`SELECT COUNT(*) FROM sessions WHERE id = ?`, sessionID).Scan(&count))
 	return count
+}
+
+// The kill rescue path reads batch metadata through the real batchKillLiveNote;
+// an absent store must neither be created nor reported as unconfirmed.
+func TestKillBatchScopeAbsentStoreDoesNotCreateDatabase(t *testing.T) {
+	dataDir := t.TempDir()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	state := batchKillLiveNote(ctx, dataDir, "absent-session")
+	_, err := os.Stat(storepath.StoreV1Path(dataDir))
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("absent-store scope=%+v stat_error=%v", state, err)
+		}
+	})
+	require.False(t, state.Unconfirmed)
+	require.Empty(t, state.Note)
+	require.ErrorIs(t, err, os.ErrNotExist)
 }

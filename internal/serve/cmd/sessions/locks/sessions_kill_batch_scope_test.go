@@ -13,7 +13,6 @@ import (
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
-	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
@@ -47,7 +46,7 @@ func TestSessionsKillFreeTurnLockPreservesLiveBatchQueue(t *testing.T) {
 				bounded := false
 				var commandErr error
 				stderr := cmdtest.CaptureStderr(t, func() {
-					commandErr = sessionsKillCmdRunWithBatchNote(cmd, []string{sess.ID}, nil, func(ctx context.Context, _ string, id string) BatchKillScopeState {
+					commandErr = sessionsKillCmdRunWithBatchNote(cmd, []string{sess.ID}, purgeQueuedWorkAfterStopForTest, func(ctx context.Context, _ string, id string) BatchKillScopeState {
 						_, bounded = ctx.Deadline()
 						require.Equal(t, sess.ID, id)
 						return scope
@@ -91,18 +90,4 @@ func TestSessionsKillFreeTurnLockPreservesLiveBatchQueue(t *testing.T) {
 			})
 		}
 	}
-}
-
-func TestKillBatchScopeAbsentStoreDoesNotCreateDatabase(t *testing.T) {
-	dataDir := t.TempDir()
-	state := readBoundedBatchKillNote(t.Context(), dataDir, "absent-session", nil)
-	_, err := os.Stat(storepath.StoreV1Path(dataDir))
-	t.Cleanup(func() {
-		if t.Failed() {
-			t.Logf("absent-store scope=%+v stat_error=%v", state, err)
-		}
-	})
-	require.False(t, state.Unconfirmed)
-	require.Empty(t, state.Note)
-	require.ErrorIs(t, err, os.ErrNotExist)
 }
