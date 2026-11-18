@@ -22,8 +22,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
-	"github.com/PHPCraftdream/rush/internal/session"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/spf13/cobra"
@@ -153,8 +153,8 @@ func seedQueuedWorkForStop(t *testing.T, a *app.App, sessionID string) (mergeMsg
 		Parts: []message.ContentPart{message.TextContent{Text: "interrupt me"}},
 	})
 	require.NoError(t, err)
-	require.NoError(t, a.Sessions.CreatePendingInject(ctx, session.PendingInject{SessionID: sessionID, MessageID: mergeMsg.ID}))
-	require.NoError(t, a.Sessions.CreatePendingInject(ctx, session.PendingInject{SessionID: sessionID, MessageID: interruptMsg.ID, Interrupt: true}))
+	require.NoError(t, a.Sessions.CreatePendingInject(ctx, coresession.PendingInject{SessionID: sessionID, MessageID: mergeMsg.ID}))
+	require.NoError(t, a.Sessions.CreatePendingInject(ctx, coresession.PendingInject{SessionID: sessionID, MessageID: interruptMsg.ID, Interrupt: true}))
 	require.NoError(t, a.Sessions.WriteToOrphanOutbox(ctx, "ob-x", sessionID, []byte(`{}`)))
 	return mergeMsg.ID, interruptMsg.ID
 }

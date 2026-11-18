@@ -12,7 +12,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	sesslocks "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/locks"
-	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // liveOwnerProtection is the root wrapper over sesslocks.LiveOwnerProtection;
@@ -29,7 +29,7 @@ func gcDropMaintenanceProtected(ctx context.Context, a *app.App, candidates []gc
 	kept := make([]gcItem, 0, len(candidates))
 	for _, candidate := range candidates {
 		if reason := sesslocks.LiveOwnerProtection(ctx, a, candidate.ID); reason != "" {
-			fmt.Fprintf(os.Stderr, "kept session %s (%s): %s\n", short(session.HashID(candidate.ID)), truncate(candidate.Title, 40), reason)
+			fmt.Fprintf(os.Stderr, "kept session %s (%s): %s\n", short(coresession.HashID(candidate.ID)), truncate(candidate.Title, 40), reason)
 			continue
 		}
 		kept = append(kept, candidate)

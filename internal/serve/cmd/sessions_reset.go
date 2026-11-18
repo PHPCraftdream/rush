@@ -13,9 +13,9 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app"
 	sesslocks "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/locks"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
-	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/spf13/cobra"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	"github.com/spf13/cobra"
 )
 
 var sessionsResetCmd = &cobra.Command{
@@ -142,7 +142,7 @@ func finishSessionReset(cmd *cobra.Command, a *app.App, sessID string, force boo
 	if err := a.Sessions.ResetCostBase(cmd.Context(), sessID); err != nil {
 		return fmt.Errorf("failed to reset session cost for %s: %w", sessID, err)
 	}
-	fmt.Fprintf(os.Stderr, "reset session %s (%s)\n", sessID, short(session.HashID(sessID)))
+	fmt.Fprintf(os.Stderr, "reset session %s (%s)\n", sessID, short(coresession.HashID(sessID)))
 	if summary != "" {
 		fmt.Fprintln(os.Stderr, summary)
 	}
