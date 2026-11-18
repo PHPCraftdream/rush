@@ -16,7 +16,7 @@ type arbiter struct {
 	drainctl.Arbiter
 }
 
-func (a *arbiter) now() time.Time { return a.Arbiter.Now() }
+func (a *arbiter) now() time.Time { return a.Now() }
 
 func (a *arbiter) state(sid string) arbiterStateHandle {
 	return arbiterStateHandle{a: a, sid: sid}
@@ -27,76 +27,76 @@ type arbiterStateHandle struct {
 	sid string
 }
 
-func (h arbiterStateHandle) idle(now time.Time) bool { return h.a.Arbiter.StateIdle(h.sid, now) }
+func (h arbiterStateHandle) idle(now time.Time) bool { return h.a.StateIdle(h.sid, now) }
 
-func (a *arbiter) snapshot(sid string) arbiterSnapshot { return a.Arbiter.Snapshot(sid) }
+func (a *arbiter) snapshot(sid string) arbiterSnapshot { return a.Snapshot(sid) }
 
-func (a *arbiter) hold(sid string) (release func()) { return a.Arbiter.Hold(sid) }
+func (a *arbiter) hold(sid string) (release func()) { return a.Hold(sid) }
 
-func (a *arbiter) held(sid string) bool { return a.Arbiter.Held(sid) }
+func (a *arbiter) held(sid string) bool { return a.Held(sid) }
 
-func (a *arbiter) suspend(sid string) { a.Arbiter.Suspend(sid) }
+func (a *arbiter) suspend(sid string) { a.Suspend(sid) }
 
-func (a *arbiter) suspended(sid string) bool { return a.Arbiter.Suspended(sid) }
+func (a *arbiter) suspended(sid string) bool { return a.Suspended(sid) }
 
-func (a *arbiter) setSleepAll(sid string) { a.Arbiter.SetSleepAll(sid) }
+func (a *arbiter) setSleepAll(sid string) { a.SetSleepAll(sid) }
 
-func (a *arbiter) setMaxWaitWake(sid, wakeID string) { a.Arbiter.SetMaxWaitWake(sid, wakeID) }
+func (a *arbiter) setMaxWaitWake(sid, wakeID string) { a.SetMaxWaitWake(sid, wakeID) }
 
-func (a *arbiter) clearSleepAll(sid string) string { return a.Arbiter.ClearSleepAll(sid) }
+func (a *arbiter) clearSleepAll(sid string) string { return a.ClearSleepAll(sid) }
 
-func (a *arbiter) autoResumesOf(sid string) int { return a.Arbiter.AutoResumesOf(sid) }
+func (a *arbiter) autoResumesOf(sid string) int { return a.AutoResumesOf(sid) }
 
 func (a *arbiter) claimAutoResumeSlot(sid string, rowID int64, eligible bool) bool {
-	return a.Arbiter.ClaimAutoResumeSlot(sid, rowID, eligible)
+	return a.ClaimAutoResumeSlot(sid, rowID, eligible)
 }
 
 func (a *arbiter) pruneOverCap(sid string, notices []sessionnotice.PendingNoticeDebt) {
-	a.Arbiter.PruneOverCap(sid, notices)
+	a.PruneOverCap(sid, notices)
 }
 
 func (a *arbiter) pace(sid string, hintAt uint64, wait time.Duration, hintOpens bool, kind drainPace) (becameDormant bool) {
-	return a.Arbiter.Pace(sid, hintAt, wait, hintOpens, kind)
+	return a.Pace(sid, hintAt, wait, hintOpens, kind)
 }
 
-func (a *arbiter) resetGate(sid string) { a.Arbiter.ResetGate(sid) }
+func (a *arbiter) resetGate(sid string) { a.ResetGate(sid) }
 
-func (a *arbiter) resetForHumanMessage(sid string) string { return a.Arbiter.ResetForHumanMessage(sid) }
+func (a *arbiter) resetForHumanMessage(sid string) string { return a.ResetForHumanMessage(sid) }
 
 func (a *arbiter) chainLink(sid string, att *drainAttempt, snap session.BatchDebtSnapshot) {
-	a.Arbiter.ChainLink(sid, att.chainProgress, att.chainIdleClaims, att.chainBatchRoots, att.batchDebtCallIDs, att.batchSnapshot)
+	a.ChainLink(sid, att.chainProgress, att.chainIdleClaims, att.chainBatchRoots, att.batchDebtCallIDs, att.batchSnapshot)
 }
 
 func (a *arbiter) chainLastLaunch(sid, command string) bool {
-	return a.Arbiter.ChainLastLaunch(sid, command)
+	return a.ChainLastLaunch(sid, command)
 }
 
-func (a *arbiter) resetChain(sid string) { a.Arbiter.ResetChain(sid) }
+func (a *arbiter) resetChain(sid string) { a.ResetChain(sid) }
 
-func (a *arbiter) chainLinksOf(sid string) int { return a.Arbiter.ChainLinksOf(sid) }
+func (a *arbiter) chainLinksOf(sid string) int { return a.ChainLinksOf(sid) }
 
-func (a *arbiter) chainHasClaim(sid, claim string) bool { return a.Arbiter.ChainHasClaim(sid, claim) }
+func (a *arbiter) chainHasClaim(sid, claim string) bool { return a.ChainHasClaim(sid, claim) }
 
-func (a *arbiter) markChainNoticed(sid string) bool { return a.Arbiter.MarkChainNoticed(sid) }
+func (a *arbiter) markChainNoticed(sid string) bool { return a.MarkChainNoticed(sid) }
 
-func (a *arbiter) sessionsWithState() []string { return a.Arbiter.SessionsWithState() }
+func (a *arbiter) sessionsWithState() []string { return a.SessionsWithState() }
 
-func (a *arbiter) dropIfIdle(sid string, now time.Time) { a.Arbiter.DropIfIdle(sid, now) }
+func (a *arbiter) dropIfIdle(sid string, now time.Time) { a.DropIfIdle(sid, now) }
 
-func (a *arbiter) overCapCount(sid string) int { return a.Arbiter.OverCapCount(sid) }
+func (a *arbiter) overCapCount(sid string) int { return a.OverCapCount(sid) }
 
-func (a *arbiter) gateHoldsHint(sid string) bool { return a.Arbiter.GateHoldsHint(sid) }
+func (a *arbiter) gateHoldsHint(sid string) bool { return a.GateHoldsHint(sid) }
 
-func (a *arbiter) dropSession(sid string) { a.Arbiter.DropSession(sid) }
+func (a *arbiter) dropSession(sid string) { a.DropSession(sid) }
 
 func (a *arbiter) beginAwait(sid string, all bool) (*drainctl.AwaitTasksEra, string) {
-	return a.Arbiter.BeginAwait(sid, all)
+	return a.BeginAwait(sid, all)
 }
 
 func (a *arbiter) installAwait(sid string, era *drainctl.AwaitTasksEra, id string) bool {
-	return a.Arbiter.InstallAwait(sid, era, id)
+	return a.InstallAwait(sid, era, id)
 }
 
 func (a *arbiter) abortAwait(sid string, era *drainctl.AwaitTasksEra) {
-	a.Arbiter.AbortAwait(sid, era)
+	a.AbortAwait(sid, era)
 }
