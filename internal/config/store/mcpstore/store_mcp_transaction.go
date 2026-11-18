@@ -142,7 +142,7 @@ func (s *Store) mutatePendingRemoveMCPWithAuthority(scope Scope, name string, au
 	var result MCPMutationResult
 	var audit settingsWriteAudit
 	err = s.port.PublishMutation(func(pub MutationScope) error {
-		err = s.withMCPWriteLocks(func(files *LockedFiles) error {
+		lockErr := s.withMCPWriteLocks(func(files *LockedFiles) error {
 			before, err := s.EvaluateMCPFiles(files)
 			if err != nil {
 				return err
@@ -176,11 +176,11 @@ func (s *Store) mutatePendingRemoveMCPWithAuthority(scope Scope, name string, au
 			result.committedMCPInputs = reconcileMCPInputs(s.currentMCPInputs(), after.MCPInputs, result.OldName, result.NewName)
 			return writeErr
 		})
-		if err == nil || MCPCommitWasReconciled(err) {
+		if lockErr == nil || MCPCommitWasReconciled(lockErr) {
 			result.Generation = s.currentGeneration() + 1
 			s.publishMCPMutationLocked(pub, result)
 		}
-		return nil
+		return lockErr
 	})
 	auditErr := err
 	if MCPCommitWasReconciled(err) {
@@ -209,7 +209,7 @@ func (s *Store) mutateMCPEnableRollbackWithAuthority(scope Scope, name string, t
 	var result MCPMutationResult
 	var audit settingsWriteAudit
 	err = s.port.PublishMutation(func(pub MutationScope) error {
-		err = s.withMCPWriteLocks(func(files *LockedFiles) error {
+		lockErr := s.withMCPWriteLocks(func(files *LockedFiles) error {
 			before, err := s.EvaluateMCPFiles(files)
 			if err != nil {
 				return err
@@ -243,11 +243,11 @@ func (s *Store) mutateMCPEnableRollbackWithAuthority(scope Scope, name string, t
 			result.committedMCPInputs = reconcileMCPInputs(s.currentMCPInputs(), after.MCPInputs, result.OldName, result.NewName)
 			return writeErr
 		})
-		if err == nil || MCPCommitWasReconciled(err) {
+		if lockErr == nil || MCPCommitWasReconciled(lockErr) {
 			result.Generation = s.currentGeneration() + 1
 			s.publishMCPMutationLocked(pub, result)
 		}
-		return nil
+		return lockErr
 	})
 	auditErr := err
 	if MCPCommitWasReconciled(err) {
@@ -314,7 +314,7 @@ func (s *Store) mutateMCPWithMode(operation string, scope Scope, oldName, newNam
 	var result MCPMutationResult
 	var audit settingsWriteAudit
 	err = s.port.PublishMutation(func(pub MutationScope) error {
-		err = s.withMCPWriteLocks(func(files *LockedFiles) error {
+		lockErr := s.withMCPWriteLocks(func(files *LockedFiles) error {
 			before, err := s.EvaluateMCPFiles(files)
 			if err != nil {
 				return err
@@ -380,11 +380,11 @@ func (s *Store) mutateMCPWithMode(operation string, scope Scope, oldName, newNam
 			result.committedMCPInputs = reconcileMCPInputs(s.currentMCPInputs(), after.MCPInputs, result.OldName, result.NewName)
 			return writeErr
 		})
-		if err == nil || MCPCommitWasReconciled(err) {
+		if lockErr == nil || MCPCommitWasReconciled(lockErr) {
 			result.Generation = s.currentGeneration() + 1
 			s.publishMCPMutationLocked(pub, result)
 		}
-		return nil
+		return lockErr
 	})
 	auditErr := err
 	if MCPCommitWasReconciled(err) {
