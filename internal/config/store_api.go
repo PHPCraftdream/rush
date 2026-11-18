@@ -752,7 +752,7 @@ func (p journalPort) ResolveConfigWriteTarget(path string) (oauthjournal.WriteTa
 
 func (p journalPort) WithCodexConfigWriteLock(ctx context.Context, path string, target oauthjournal.WriteTarget, fn func(oauthjournal.WriteTarget) error) error {
 	return p.store.oauthCredStore().WithCodexConfigWriteLock(ctx, path, journalToCred(target), func(t oauthcred.WriteTarget) error {
-		return fn(credWriteTargetToJournal(t))
+		return fn(credToJournal(t))
 	})
 }
 
