@@ -50,3 +50,6 @@ internal/agent/provider/cliprovider/clipstream 22
 # test files (server lane L5). The tests spread over their own packages at stage F; deliberate, only down from here.
 internal/serve/server/ws/wsapi 39
 internal/serve/server/ws/wsconfig 29
+# internal/session/run/sessionrun is born over the limit: 12 production files plus 46 moved test files (lane MV4).
+# The tests spread over their own packages at stage F; deliberate, only down from here.
+internal/session/run/sessionrun 58
