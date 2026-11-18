@@ -312,7 +312,22 @@ func makeRequestBody(ctx context.Context, modelID string, call fantasy.Call) (ma
 		}
 		body["reasoning"] = map[string]any{"effort": normalized, "summary": "auto"}
 	}
+	if tier, ok := ctx.Value(cliprovider.ServiceTierContextKey).(string); ok && strings.TrimSpace(tier) != "" {
+		wire, ok := wireServiceTier(tier)
+		if !ok {
+			return nil, fmt.Errorf("unsupported Codex service tier %q", tier)
+		}
+		body["service_tier"] = wire
+	}
 	return body, nil
+}
+
+// wireServiceTier maps the configured speed tier to the Responses API service_tier value.
+func wireServiceTier(tier string) (string, bool) {
+	if strings.EqualFold(strings.TrimSpace(tier), "fast") {
+		return "priority", true
+	}
+	return "", false
 }
 
 func normalizeEffort(effort string) string {

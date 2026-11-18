@@ -355,6 +355,7 @@ type configDiskModelProfile struct {
 	provider string
 	model    string
 	effort   string
+	tier     string
 	think    bool
 	maxTk    int64
 	// Pointer-valued SelectedModel fields are compared by dereferenced
@@ -426,6 +427,7 @@ func configDiskModelsProfile(cfg *Config) map[SelectedModelType]configDiskModelP
 				provider: sel.Provider,
 				model:    sel.Model,
 				effort:   sel.ReasoningEffort,
+				tier:     sel.ServiceTier,
 				think:    sel.Think,
 				maxTk:    sel.MaxTokens,
 			}

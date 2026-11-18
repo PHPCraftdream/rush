@@ -6,3 +6,8 @@ package agent
 func turnSmartReasoningEffort(smartModel Model) string {
 	return smartModel.ModelCfg.ReasoningEffort
 }
+
+// turnSmartServiceTier is the configured speed tier of the resolved smart model.
+func turnSmartServiceTier(smartModel Model) string {
+	return smartModel.ModelCfg.ServiceTier
+}

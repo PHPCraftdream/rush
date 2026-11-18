@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -137,6 +138,7 @@ func (p *modelsComponent) resolveSessionModelsInternal(ctx context.Context, sess
 		if role != config.SelectedModelTypeSmart && role != "" {
 			if ovr, src, ok := roleSlotOverride(cfg, sess, role, roleReasoningEffortFrom(ctx)); ok {
 				smartOverride = ovr
+				smartCfg.ServiceTier = ""
 				roleSource = src
 			}
 		}
@@ -161,23 +163,27 @@ func (p *modelsComponent) resolveSessionModelsInternal(ctx context.Context, sess
 		if smartCfg.Provider != smartOverride.Provider || smartCfg.Model != smartOverride.Model {
 			smartCfg.Think = false
 			smartCfg.ReasoningEffort = ""
+			smartCfg.ServiceTier = ""
 		}
 		smartCfg.Provider = smartOverride.Provider
 		smartCfg.Model = smartOverride.Model
 		if smartOverride.ReasoningEffort != "" {
 			smartCfg.ReasoningEffort = smartOverride.ReasoningEffort
 		}
+		smartCfg.ServiceTier = cmp.Or(smartOverride.ServiceTier, smartCfg.ServiceTier)
 	}
 	if fastOverride != nil {
 		if fastCfg.Provider != fastOverride.Provider || fastCfg.Model != fastOverride.Model {
 			fastCfg.Think = false
 			fastCfg.ReasoningEffort = ""
+			fastCfg.ServiceTier = ""
 		}
 		fastCfg.Provider = fastOverride.Provider
 		fastCfg.Model = fastOverride.Model
 		if fastOverride.ReasoningEffort != "" {
 			fastCfg.ReasoningEffort = fastOverride.ReasoningEffort
 		}
+		fastCfg.ServiceTier = cmp.Or(fastOverride.ServiceTier, fastCfg.ServiceTier)
 	}
 
 	// Build (or reuse from cache) both models TOGETHER in a single
@@ -209,9 +215,11 @@ func (p *modelsComponent) resolveSessionModelsInternal(ctx context.Context, sess
 		smartProvider:  smartCfg.Provider,
 		smartModel:     smartCfg.Model,
 		smartReasoning: smartCfg.ReasoningEffort,
+		smartTier:      smartCfg.ServiceTier,
 		fastProvider:   fastCfg.Provider,
 		fastModel:      fastCfg.Model,
 		fastReasoning:  fastCfg.ReasoningEffort,
+		fastTier:       fastCfg.ServiceTier,
 	}
 
 	// p.host.modelCache() is nil for any *coordinator built as a struct literal
@@ -407,6 +415,7 @@ func (p *modelsComponent) applyModelOverrides(ctx context.Context, sessionID str
 				}
 				smartCfg.Provider = ovr.Provider
 				smartCfg.Model = ovr.Model
+				smartCfg.ServiceTier = ovr.ServiceTier
 				if ovr.ReasoningEffort != "" {
 					smartCfg.ReasoningEffort = ovr.ReasoningEffort
 				}
@@ -418,12 +427,14 @@ func (p *modelsComponent) applyModelOverrides(ctx context.Context, sessionID str
 		if fastCfg.Provider != fast.Provider || fastCfg.Model != fast.Model {
 			fastCfg.Think = false
 			fastCfg.ReasoningEffort = ""
+			fastCfg.ServiceTier = ""
 		}
 		fastCfg.Provider = fast.Provider
 		fastCfg.Model = fast.Model
 		if fast.ReasoningEffort != "" {
 			fastCfg.ReasoningEffort = fast.ReasoningEffort
 		}
+		fastCfg.ServiceTier = cmp.Or(fast.ServiceTier, fastCfg.ServiceTier)
 	}
 
 	// Build models directly without using the cache — model overrides are

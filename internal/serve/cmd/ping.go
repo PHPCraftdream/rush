@@ -302,6 +302,9 @@ func runPing(cmd *cobra.Command, a *app.App, modelType config.SelectedModelType,
 	if modelCfg.ReasoningEffort != "" {
 		ctx = context.WithValue(ctx, cliprovider.ReasoningEffortContextKey, modelCfg.ReasoningEffort)
 	}
+	if modelCfg.ServiceTier != "" {
+		ctx = context.WithValue(ctx, cliprovider.ServiceTierContextKey, modelCfg.ServiceTier)
+	}
 
 	// Measure request time
 	start := time.Now()

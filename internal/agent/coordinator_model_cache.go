@@ -15,9 +15,11 @@ type modelPairCacheKey struct {
 	smartProvider  string
 	smartModel     string
 	smartReasoning string
+	smartTier      string
 	fastProvider   string
 	fastModel      string
 	fastReasoning  string
+	fastTier       string
 }
 
 type boundedModelPairCacheEntry struct {

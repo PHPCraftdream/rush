@@ -352,3 +352,28 @@ func TestStreamFailureMapsServerSideCodesToRetryableStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestServiceTierFastSendsPriorityAndUnknownTierFails(t *testing.T) {
+	bodies := make(chan map[string]any, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies <- body
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeCodexEvent(w, `{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)
+	}))
+	t.Cleanup(server.Close)
+	model := codexProviderForTest(t, server)
+	call := fantasy.Call{Prompt: fantasy.Prompt{{Role: fantasy.MessageRoleUser, Content: []fantasy.MessagePart{fantasy.TextPart{Text: "hi"}}}}}
+
+	_, err := model.Generate(context.WithValue(t.Context(), cliprovider.ServiceTierContextKey, "fast"), call)
+	require.NoError(t, err)
+	assert.Equal(t, "priority", (<-bodies)["service_tier"])
+
+	_, err = model.Generate(t.Context(), call)
+	require.NoError(t, err)
+	assert.NotContains(t, <-bodies, "service_tier")
+
+	_, err = model.Generate(context.WithValue(t.Context(), cliprovider.ServiceTierContextKey, "turbo"), call)
+	require.ErrorContains(t, err, "unsupported Codex service tier")
+}

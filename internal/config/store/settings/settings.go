@@ -158,6 +158,9 @@ func SelectedModelsAudit(keys []string, values map[string]any) map[string]string
 		if model.ReasoningEffort != "" {
 			value += " effort=" + model.ReasoningEffort
 		}
+		if model.ServiceTier != "" {
+			value += " tier=" + model.ServiceTier
+		}
 		models[key] = value
 	}
 	return models
