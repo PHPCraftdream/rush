@@ -218,3 +218,8 @@ func waitForSQLiteHandleRelease(t *testing.T, dataDir string) {
 
 // TestMain isolates global state for this package's test binary (same as the other cmd packages).
 func TestMain(m *testing.M) { cmdtest.Main(m) }
+
+// The tests drive the package-private template command; its flags are
+// registered by the factory (once), which only the cmd root called before the
+// package move.
+func init() { _ = NewSessionsAuditCmd() }

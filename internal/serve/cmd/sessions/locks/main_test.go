@@ -10,7 +10,11 @@ func TestMain(m *testing.M) {
 	cmdtest.Main(m)
 }
 
-// The reap tests drive the package-private template command directly; its
-// flags are registered by the factory (once), which only the cmd root called
+// The tests drive the package-private template commands directly; their flags
+// are registered by the factories (once), which only the cmd root called
 // before the package move.
-func init() { _ = NewSessionsReapCmd(nil) }
+func init() {
+	_ = NewSessionsReapCmd(nil)
+	_ = NewSessionsLocksCmd(nil)
+	_ = NewSessionsKillCmd(nil, nil, nil)
+}
