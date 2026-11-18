@@ -116,9 +116,9 @@ func TestExactWorkspaceMutationSharesPhysicalSymlinkDocument(t *testing.T) {
 	store.workingDir = root
 	store.captureStalenessSnapshot([]string{project, workspace})
 
-	result, err := store.mutateMCPExact("add", ScopeWorkspace, "new", "new", MCPConfig{
+	result, err := store.mcpStore().PersistMCPConfigExactResult(ScopeWorkspace, "new", MCPConfig{
 		Type: MCPHttp, URL: "http://new.example",
-	}, nil)
+	})
 	require.NoError(t, err)
 	require.True(t, result.NewExists)
 	require.Equal(t, MCPOriginWorkspace, result.NewOrigin.Kind)
