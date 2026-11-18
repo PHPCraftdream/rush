@@ -15,7 +15,6 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
-	"github.com/PHPCraftdream/rush/internal/session"
 	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/assert"

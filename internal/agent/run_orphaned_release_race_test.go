@@ -9,9 +9,8 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
-	"github.com/PHPCraftdream/rush/internal/session"
-	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )

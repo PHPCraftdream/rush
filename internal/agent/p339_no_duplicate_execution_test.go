@@ -15,7 +15,6 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	"github.com/PHPCraftdream/rush/internal/session"
 	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
