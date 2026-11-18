@@ -92,6 +92,7 @@ func (s *standaloneSummarizer) SummarizeWithRole(ctx context.Context, sessionID 
 	if providerCfg.ID == "openai-codex" {
 		summaryCtx = context.WithValue(summaryCtx, cliprovider.SessionIDContextKey, sessionID)
 		summaryCtx = context.WithValue(summaryCtx, cliprovider.ReasoningEffortContextKey, turnSmartReasoningEffort(model))
+		summaryCtx = context.WithValue(summaryCtx, cliprovider.ServiceTierContextKey, turnSmartServiceTier(model))
 	}
 	return agent.(*sessionAgent).SummarizeNow(summaryCtx, sessionID, snapshot)
 }

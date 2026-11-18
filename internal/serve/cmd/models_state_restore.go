@@ -40,10 +40,10 @@ func restoreCommands(global, local map[config.SelectedModelType]*config.Selected
 func restoreSpec(m config.SelectedModel) string {
 	k := lookupAtomForModel(m)
 	a := atomRegistry[k]
-	if k == "" || (a.EffortSource != nil && m.ReasoningEffort == "") {
+	if k == "" || (a.EffortSource != nil && m.ReasoningEffort == "") || m.ServiceTier != "" {
 		spec := m.Provider + "/" + m.Model
-		if m.ReasoningEffort != "" {
-			spec += "@" + m.ReasoningEffort
+		if m.ReasoningEffort != "" || m.ServiceTier != "" {
+			spec += "@" + effortWithTier(m.ReasoningEffort, m.ServiceTier)
 		}
 		return spec
 	}

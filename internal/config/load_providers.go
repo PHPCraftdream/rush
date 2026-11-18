@@ -823,11 +823,8 @@ func ConfigureSelectedModels(cfg *Config, knownProviders []catwalk.Provider) err
 			} else {
 				smart.MaxTokens = model.DefaultMaxTokens
 			}
-			if smartModelSelected.ReasoningEffort != "" {
-				smart.ReasoningEffort = smartModelSelected.ReasoningEffort
-			} else {
-				smart.ReasoningEffort = model.DefaultReasoningEffort
-			}
+			smart.ReasoningEffort = cmp.Or(smartModelSelected.ReasoningEffort, model.DefaultReasoningEffort)
+			smart.ServiceTier = smartModelSelected.ServiceTier
 			smart.Think = smartModelSelected.Think
 			if smartModelSelected.Temperature != nil {
 				smart.Temperature = smartModelSelected.Temperature
@@ -868,11 +865,8 @@ func ConfigureSelectedModels(cfg *Config, knownProviders []catwalk.Provider) err
 			} else {
 				fast.MaxTokens = model.DefaultMaxTokens
 			}
-			if fastModelSelected.ReasoningEffort != "" {
-				fast.ReasoningEffort = fastModelSelected.ReasoningEffort
-			} else {
-				fast.ReasoningEffort = model.DefaultReasoningEffort
-			}
+			fast.ReasoningEffort = cmp.Or(fastModelSelected.ReasoningEffort, model.DefaultReasoningEffort)
+			fast.ServiceTier = fastModelSelected.ServiceTier
 			if fastModelSelected.Temperature != nil {
 				fast.Temperature = fastModelSelected.Temperature
 			}

@@ -52,6 +52,7 @@ func (s *ConfigStore) SetCustomRoleWithAuthority(scope Scope, name string, updat
 		fields[prefix+"."+field] = value
 	}
 	fields[prefix+".reasoning_effort"] = update.Model.ReasoningEffort
+	fields[prefix+".service_tier"] = update.Model.ServiceTier
 	fields[prefix+".think"] = update.Model.Think
 	if update.Tools != nil {
 		patterns := append([]string{}, (*update.Tools)...)

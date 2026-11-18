@@ -140,7 +140,7 @@ rush models show
 		}
 
 		fmt.Println("EFFECTIVE")
-		tw := newStateTable("ROLE", "PROVIDER", "MODEL", "EFFORT", "SCOPE", "ATOM", "NOTE")
+		tw := newStateTable("ROLE", "PROVIDER", "MODEL", "EFFORT", "TIER", "SCOPE", "ATOM", "NOTE")
 		printEffectiveRow(tw, "smart", hasSmart, effSmart, textScope(smartScope, hasSmart))
 		printEffectiveRow(tw, "fast", hasFast, effFast, textScope(fastScope, hasFast))
 		printEffectiveRow(tw, "worker", hasWorker, effWorker, textScope(workerScope, hasWorker))
@@ -148,7 +148,7 @@ rush models show
 		tw.flush()
 		fmt.Println()
 		fmt.Println("SCOPES")
-		tw = newStateTable("SCOPE", "ROLE", "PROVIDER", "MODEL", "EFFORT", "STATUS", "NOTE")
+		tw = newStateTable("SCOPE", "ROLE", "PROVIDER", "MODEL", "EFFORT", "TIER", "STATUS", "NOTE")
 		printScopeRow(tw, "global", "smart", globalSmart, localSmart)
 		printScopeRow(tw, "global", "fast", globalFast, localFast)
 		printScopeRow(tw, "global", "worker", globalWorker, localWorker)
@@ -262,7 +262,7 @@ func cellOr(v string) string {
 // effort, source scope, matching atom and the effort note.
 func printEffectiveRow(tw *stateTable, role string, has bool, m config.SelectedModel, scope string) {
 	if !has {
-		tw.row(role, tableDash, tableDash, tableDash, tableDash, tableDash, "not set in any scope")
+		tw.row(role, tableDash, tableDash, tableDash, tableDash, tableDash, tableDash, "not set in any scope")
 		return
 	}
 	atom := ""
@@ -272,14 +272,14 @@ func printEffectiveRow(tw *stateTable, role string, has bool, m config.SelectedM
 		// staleEffortNote) falls back to the bare atom key so the output
 		// never suggests a command the CLI now rejects.
 		atom = k
-		if m.ReasoningEffort != "" && staleEffortNote(m) == "" {
+		if m.ReasoningEffort != "" && m.ServiceTier == "" && staleEffortNote(m) == "" {
 			atom = k + "-" + m.ReasoningEffort
 		}
 	}
 	if scope == "" {
 		scope = "unknown"
 	}
-	tw.row(role, m.Provider, m.Model, cellOr(m.ReasoningEffort), scope, cellOr(atom), effortNoteText(m))
+	tw.row(role, m.Provider, m.Model, cellOr(m.ReasoningEffort), cellOr(m.ServiceTier), scope, cellOr(atom), effortNoteText(m))
 }
 
 // effortNoteText is effortEffectiveNote without its inline framing, for the
@@ -357,12 +357,12 @@ func staleEffortNote(m config.SelectedModel) string {
 // other scope: a global value with a local one beside it is overridden.
 func printScopeRow(tw *stateTable, scopeName, role string, value, other *config.SelectedModel) {
 	if value == nil {
-		tw.row(scopeName, role, tableDash, tableDash, tableDash, "not set", "")
+		tw.row(scopeName, role, tableDash, tableDash, tableDash, tableDash, "not set", "")
 		return
 	}
 	status := "effective"
 	if scopeName == "global" && other != nil {
 		status = "overridden by local"
 	}
-	tw.row(scopeName, role, value.Provider, value.Model, cellOr(value.ReasoningEffort), status, effortNoteText(*value))
+	tw.row(scopeName, role, value.Provider, value.Model, cellOr(value.ReasoningEffort), cellOr(value.ServiceTier), status, effortNoteText(*value))
 }

@@ -21,6 +21,7 @@ type ModelOverride struct {
 	Provider        string
 	Model           string
 	ReasoningEffort string
+	ServiceTier     string
 }
 
 // ErrAwaitingAnswer classifies AwaitingAnswerError the same way
