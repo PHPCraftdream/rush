@@ -8,7 +8,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -60,12 +60,12 @@ func TestFinalizationQueueBusyAppMappingRetainsConsumedFailure(t *testing.T) {
 	require.NoError(t, sessions.EnqueueRunQueueEntry(trusted, "queued", "owner", raw))
 	probe := &finalizationBusyCoordinator{store: sessions.(coresession.AgentFinalizationQueueService)}
 	adapter := &coordinatorAdapterImpl{app: &App{AgentCoordinator: probe}}
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{Sessions: sessions, Coordinator: adapter, PumpInstanceID: "pump"})
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{Sessions: sessions, Coordinator: adapter, PumpInstanceID: "pump"})
 	defer pump.Stop()
 	result, err := pump.DrainSessionNow(ctx, "owner")
 	// Initial contention is DrainNoWork/nil, never a completed continuation.
 	require.NoError(t, err)
-	require.Equal(t, session.DrainNoWork, result)
+	require.Equal(t, runq.DrainNoWork, result)
 	require.Equal(t, 1, probe.dispatches, "actual nil/nil app mapping does not report execution")
 	var consumed, attempts int64
 	var code, status string
@@ -77,11 +77,11 @@ func TestFinalizationQueueBusyAppMappingRetainsConsumedFailure(t *testing.T) {
 	require.Zero(t, attempts, "existing busy no-penalty release is preserved")
 	// A new pump has no local busy backoff: durable consumption must still
 	// refuse before any second dispatch, then terminally remove the queue row.
-	next := session.NewRunQueuePump(session.RunQueuePumpConfig{Sessions: sessions, Coordinator: adapter, PumpInstanceID: "next-pump"})
+	next := runq.NewRunQueuePump(runq.RunQueuePumpConfig{Sessions: sessions, Coordinator: adapter, PumpInstanceID: "next-pump"})
 	defer next.Stop()
 	result, err = next.DrainSessionNow(ctx, "owner")
 	require.Error(t, err)
-	require.Equal(t, session.DrainFailed, result)
+	require.Equal(t, runq.DrainFailed, result)
 	require.Equal(t, 2, probe.rebuilds)
 	require.Equal(t, 1, probe.dispatches, "consumed refusal cannot dispatch a model/effect retry")
 	var pending int64

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
@@ -50,11 +50,11 @@ func TestFinalizationQueueBusyThenIdleAcceptsOneRealAppTurn(t *testing.T) {
 		}
 	}()
 	adapter := &coordinatorAdapterImpl{app: application}
-	busy := session.NewRunQueuePump(session.RunQueuePumpConfig{Sessions: application.Sessions, Coordinator: adapter, PumpInstanceID: "busy-pump"})
+	busy := runq.NewRunQueuePump(runq.RunQueuePumpConfig{Sessions: application.Sessions, Coordinator: adapter, PumpInstanceID: "busy-pump"})
 	defer busy.Stop()
 	result, err := busy.DrainSessionNow(ctx, owner)
 	require.NoError(t, err)
-	require.Equal(t, session.DrainNoWork, result)
+	require.Equal(t, runq.DrainNoWork, result)
 	require.Zero(t, calls.Load(), "busy admission must precede any model request")
 	var consumed, attempts int64
 	var code string
@@ -65,11 +65,11 @@ func TestFinalizationQueueBusyThenIdleAcceptsOneRealAppTurn(t *testing.T) {
 	require.Zero(t, attempts)
 	application.AgentCoordinator.ReleaseExclusive(owner, epoch, holdCancel)
 	held = false
-	idle := session.NewRunQueuePump(session.RunQueuePumpConfig{Sessions: application.Sessions, Coordinator: adapter, PumpInstanceID: "idle-pump"})
+	idle := runq.NewRunQueuePump(runq.RunQueuePumpConfig{Sessions: application.Sessions, Coordinator: adapter, PumpInstanceID: "idle-pump"})
 	defer idle.Stop()
 	result, err = idle.DrainSessionNow(ctx, owner)
 	require.NoError(t, err)
-	require.Equal(t, session.DrainComplete, result)
+	require.Equal(t, runq.DrainComplete, result)
 	require.EqualValues(t, 1, calls.Load())
 	require.NoError(t, application.DB().QueryRowContext(ctx, `SELECT consumed FROM session_agent_finalization_continuations WHERE row_id='reserved-queue'`).Scan(&consumed))
 	require.EqualValues(t, 1, consumed)

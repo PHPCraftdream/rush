@@ -11,6 +11,7 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -271,5 +272,5 @@ func ForeignWorkspaceError(sess coresession.Session) error {
 			msg += " (workspace no longer exists)"
 		}
 	}
-	return fmt.Errorf("%s: %w", msg, session.ErrForeignWorkspace)
+	return fmt.Errorf("%s: %w", msg, runq.ErrForeignWorkspace)
 }

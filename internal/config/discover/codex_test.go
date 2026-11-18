@@ -15,12 +15,12 @@ import (
 func TestDiscoverCodexModelsUsesAccountAndParsesRawMetadata(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/codex/models" ||
-			r.URL.Query().Get("client_version") != CodexClientVersion ||
+			r.URL.Query().Get("client_version") != CodexClientVersion() ||
 			r.Header.Get("Authorization") != "Bearer rush-access-token" ||
 			r.Header.Get("chatgpt-account-id") != "chatgpt-account" ||
 			r.Header.Get("OpenAI-Beta") != "responses=experimental" ||
 			r.Header.Get("originator") != "omp" ||
-			r.Header.Get("version") != CodexClientVersion {
+			r.Header.Get("version") != CodexClientVersion() {
 			http.Error(w, "invalid Codex account request", http.StatusForbidden)
 			return
 		}
@@ -192,4 +192,40 @@ func TestDiscoverCodexModelsHidesSupersededFamilies(t *testing.T) {
 	require.Equal(t, int64(1_050_000), sol.ContextWindow)
 	require.LessOrEqual(t, sol.DefaultMaxTokens, sol.ContextWindow)
 	require.Equal(t, int64(272000), byRaised["brand-new-family"].ContextWindow)
+}
+
+func TestCodexClientVersionOverrideAndReset(t *testing.T) {
+	t.Cleanup(func() { SetCodexClientVersion("") })
+	require.Equal(t, DefaultCodexClientVersion, CodexClientVersion())
+
+	SetCodexClientVersion(" 9.8.7 ")
+	require.Equal(t, "9.8.7", CodexClientVersion())
+
+	var gotQuery, gotHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery, gotHeader = r.URL.Query().Get("client_version"), r.Header.Get("version")
+		_, _ = w.Write([]byte(`{"models":[{"slug":"m"}]}`))
+	}))
+	defer server.Close()
+	_, err := discoverCodexModels(context.Background(), server.Client(), server.URL, "t", "a")
+	require.NoError(t, err)
+	require.Equal(t, "9.8.7", gotQuery)
+	require.Equal(t, "9.8.7", gotHeader)
+
+	SetCodexClientVersion("  ")
+	require.Equal(t, DefaultCodexClientVersion, CodexClientVersion())
+}
+
+func TestApplyCodexConfigAndCatalogIdentity(t *testing.T) {
+	t.Cleanup(func() { SetCodexClientVersion("") })
+	require.Equal(t, CodexBaseURL, ApplyCodexConfig(nil))
+	require.Equal(t, "acct", CodexCatalogIdentity("acct", "tok"))
+	require.Equal(t, "tok", CodexCatalogIdentity("", "tok"))
+
+	require.Equal(t, CodexBaseURL, ApplyCodexConfig(map[string]string{"version": "0.170.0"}))
+	require.Equal(t, "0.170.0", CodexClientVersion())
+	require.Equal(t, "acct@0.170.0", CodexCatalogIdentity("acct", "tok"))
+
+	ApplyCodexConfig(map[string]string{})
+	require.Equal(t, DefaultCodexClientVersion, CodexClientVersion())
 }

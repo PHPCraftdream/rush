@@ -15,6 +15,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/config/discover"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -113,7 +114,7 @@ func TestGenerateUsesCodexOAuthAndResponsesWire(t *testing.T) {
 	assert.Equal(t, "workspace-account-42", capture.headers.Get("chatgpt-account-id"))
 	assert.Equal(t, "responses=experimental", capture.headers.Get("OpenAI-Beta"))
 	assert.Equal(t, "omp", capture.headers.Get("originator"))
-	assert.Equal(t, codexVersion, capture.headers.Get("version"))
+	assert.Equal(t, discover.CodexClientVersion(), capture.headers.Get("version"))
 	assert.Equal(t, "model=gpt-5-codex", capture.headers.Get("x-codex-routing-hint"))
 	assert.Equal(t, "session-10", capture.headers.Get("conversation_id"))
 	assert.Equal(t, "session-10", capture.headers.Get("session_id"))

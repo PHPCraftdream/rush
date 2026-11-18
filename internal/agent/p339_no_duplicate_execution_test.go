@@ -15,7 +15,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -350,7 +350,7 @@ func TestP339_NoDuplicateExecutionAfterHandoff(t *testing.T) {
 	}
 
 	// Start a pump to process queued calls.
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       env.sessions,
 		Coordinator:    mockCoord,
 		PumpInstanceID: "test-pump-p339",

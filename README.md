@@ -1027,6 +1027,22 @@ discovery is unavailable; retry `rush models list` or `rush providers
 fetch-models openai-codex` after access or connectivity is restored. Rush does
 not invent a default model while the account catalog is unavailable.
 
+The ChatGPT backend lists a model generation only to clients at least as new as
+the Codex CLI release that introduced it, so a new generation (for example
+`gpt-6.2-*`) can answer `model_not_found` until Rush presents a newer version.
+Rush sends a built-in version; override it without a Rush release in the config:
+
+```ktav
+providers: {
+    openai-codex: {
+        extra_headers: { version: 0.170.0 }
+    }
+}
+```
+
+The value feeds both the model-catalog `client_version` and the `version`
+header of requests; remove the key to return to the built-in default.
+
 ### Live model catalogs
 
 Rush reads authenticated model lists from the ChatGPT Codex, StepFun, and

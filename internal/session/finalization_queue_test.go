@@ -8,6 +8,7 @@ import (
 
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 
+	"github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -194,7 +195,7 @@ func TestFinalizationQueueRequiresExactLiveLease(t *testing.T) {
 			rowID := entry.ID
 			switch change {
 			case "missing":
-				ctx = WithRunQueueRowID(fixture.ctx, entry.ID) // Public IDs are not a lease capability.
+				ctx = sessionrun.WithRunQueueRowID(fixture.ctx, entry.ID) // Public IDs are not a lease capability.
 			case "expired":
 				_, err := fixture.env.conn.ExecContext(fixture.ctx, `UPDATE session_run_queue SET lease_expires_at=? WHERE id='queued'`, time.Now().Unix()-1)
 				require.NoError(t, err)
