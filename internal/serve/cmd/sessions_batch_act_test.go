@@ -21,7 +21,9 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -235,11 +237,11 @@ func TestSessionsGc_LiveRunOwnerProtectsSession(t *testing.T) {
 	require.NoError(t, err)
 	_, err = a.DB().ExecContext(ctx, `UPDATE sessions SET created_at = ? WHERE id = ?`, time.Now().Add(-8*24*time.Hour).Unix(), sess.ID)
 	require.NoError(t, err)
-	host := session.NewHostStore(a.DB(), a.Config().Options.DataDirectory, 4321, "gc-live-owner")
+	host := sessionhosts.NewHostStore(a.DB(), a.Config().Options.DataDirectory, 4321, "gc-live-owner")
 	require.NoError(t, host.ClaimSessionDriver(ctx, sess.ID))
 	hostID := host.HostID()
 	host.CloseKeepLock()
-	t.Cleanup(func() { session.ReleaseRetainedHostLocksForTest(hostID) })
+	t.Cleanup(func() { sessionhosts.ReleaseRetainedHostLocksForTest(hostID) })
 	dataDir := a.Config().Options.DataDirectory
 	shutdownSeed()
 
@@ -413,7 +415,7 @@ func seedKillBatchFixture(t *testing.T) (string, string, func()) {
 	ctx := context.Background()
 	conn, err := db.Connect(ctx, dir)
 	require.NoError(t, err)
-	store := session.NewHostStore(conn, dir, os.Getpid(), "kill-batch-fixture")
+	store := sessionhosts.NewHostStore(conn, dir, os.Getpid(), "kill-batch-fixture")
 	_, err = db.New(conn).CreateSession(ctx, db.CreateSessionParams{ID: "kill-batch-sess", Title: "kill batch fixture", Origin: "cli"})
 	require.NoError(t, err)
 	host, err := store.EnsureHost(ctx)
@@ -541,4 +543,22 @@ func countSessions(t *testing.T, dataDir, sessionID string) int {
 	require.NoError(t, conn.QueryRowContext(context.Background(),
 		`SELECT COUNT(*) FROM sessions WHERE id = ?`, sessionID).Scan(&count))
 	return count
+}
+
+// The kill rescue path reads batch metadata through the real batchKillLiveNote;
+// an absent store must neither be created nor reported as unconfirmed.
+func TestKillBatchScopeAbsentStoreDoesNotCreateDatabase(t *testing.T) {
+	dataDir := t.TempDir()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	state := batchKillLiveNote(ctx, dataDir, "absent-session")
+	_, err := os.Stat(storepath.StoreV1Path(dataDir))
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("absent-store scope=%+v stat_error=%v", state, err)
+		}
+	})
+	require.False(t, state.Unconfirmed)
+	require.Empty(t, state.Note)
+	require.ErrorIs(t, err, os.ErrNotExist)
 }

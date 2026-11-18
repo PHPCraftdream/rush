@@ -8,6 +8,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/spf13/cobra"
 )
@@ -157,7 +158,7 @@ func sessionsInjectCmdRun(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func loopPID(d *session.SessionDriver) int {
+func loopPID(d *sessionhosts.SessionDriver) int {
 	if d == nil {
 		return 0
 	}

@@ -27,6 +27,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 	"github.com/spf13/cobra"
 )
 
@@ -176,7 +177,7 @@ func sessionsStatusSnapshot(ctx context.Context, a *app.App, dataDir, sessionID 
 	// driver and live-work facts in one batched pass. A failed read degrades
 	// to "unknown" with a note; it never fails the snapshot.
 	act, actErr := a.SessionActivity(ctx, sessionID)
-	var facts session.ActivityFacts
+	var facts sessionfacts.ActivityFacts
 	lockRead := false
 	if actErr != nil {
 		rep.Phase = "unknown"
@@ -345,7 +346,7 @@ func sessionsStatusSources(f sessionStatusSourceFlags) []string {
 // stays for every other recorded reason, including ones this binary does
 // not know (the reason is visible verbatim in exit_reason). An
 // unrecognized kind (a future verdict) maps to "unknown".
-func sessionsStatusPhase(v session.ActivityVerdict) string {
+func sessionsStatusPhase(v sessionfacts.ActivityVerdict) string {
 	switch v.Kind {
 	case session.ActivityInTurn:
 		return "turn"
@@ -375,7 +376,7 @@ func sessionsStatusPhase(v session.ActivityVerdict) string {
 // released or unreadable lock plus no driver marker proves nothing about
 // physical process exit, and a recorded ended_reason is a database fact,
 // not an exit proof.
-func sessionsStatusProcessBlock(f session.ActivityFacts, notes *[]string) sessionStatusProcess {
+func sessionsStatusProcessBlock(f sessionfacts.ActivityFacts, notes *[]string) sessionStatusProcess {
 	p := sessionStatusProcess{Alive: "unknown"}
 	switch {
 	case f.Driver != nil:

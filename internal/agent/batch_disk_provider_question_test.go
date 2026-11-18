@@ -78,6 +78,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/filetracker"
 	"github.com/PHPCraftdream/rush/internal/store/history"
@@ -558,7 +559,7 @@ func newQuestionInstallWithQuestionResolver(t *testing.T, resolver batchChildQue
 	// overridden because a unit test holds no real cross-process host lock.
 	live := session.NewBatchLiveReader(db.New(conn), t.TempDir())
 	live.IsOwnHost = func(string) bool { return false }
-	live.ProbeHost = func(string, string) (session.HostLockStatus, error) {
+	live.ProbeHost = func(string, string) (sessionhosts.HostLockStatus, error) {
 		return session.HostStatusAlive, nil
 	}
 	deps := installTestDeps(t, store, conn, "unused")

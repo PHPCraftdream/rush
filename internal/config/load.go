@@ -321,7 +321,7 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 			if err := publish(publishSnapshot()); err != nil {
 				return err
 			}
-			store.verifyModelsIntegrityAtLoad()
+			store.settings.VerifyModelsIntegrityAtLoad()
 			return nil
 		}
 
@@ -337,7 +337,7 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 		if err := publish(publishSnapshot()); err != nil {
 			return err
 		}
-		store.verifyModelsIntegrityAtLoad()
+		store.settings.VerifyModelsIntegrityAtLoad()
 		return nil
 	}); err != nil {
 		return nil, err

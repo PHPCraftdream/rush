@@ -11,6 +11,9 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
 )
 
@@ -71,7 +74,7 @@ func TestSessionActivityBatch_MatchesSingle(t *testing.T) {
 	require.NoError(t, writeLockRecord(t, h.dataDir, live, strconv.Itoa(os.Getpid()), 0))
 
 	// deadhost: a marker whose host is provably dead (D5).
-	deadStore := session.NewHostStore(h.app.DB(), h.dataDir, 4242, "dead")
+	deadStore := sessionhosts.NewHostStore(h.app.DB(), h.dataDir, 4242, "dead")
 	require.NoError(t, deadStore.ClaimSessionDriver(ctx, deadHost))
 	require.NoError(t, deadStore.SimulateCrashForTest())
 	// The crashed store keeps no host handle, so Close is a no-op; it is
@@ -92,8 +95,8 @@ func TestSessionActivityBatch_MatchesSingle(t *testing.T) {
 	require.NoError(t, h.app.Sessions.Delete(ctx, deleted))
 
 	// scheduled: an open once wake schedule.
-	_, err := h.app.WakeScheduleStore().CreateSchedule(ctx, session.CreateWakeScheduleParams{
-		Owner: scheduled, Kind: session.WakeKindOnce, Message: "tick",
+	_, err := h.app.WakeScheduleStore().CreateSchedule(ctx, sessionwake.CreateWakeScheduleParams{
+		Owner: scheduled, Kind: sessionwake.WakeKindOnce, Message: "tick",
 		RunAt: time.Now().Add(5 * time.Minute),
 	}, time.Now())
 	require.NoError(t, err)
@@ -111,7 +114,7 @@ func TestSessionActivityBatch_MatchesSingle(t *testing.T) {
 	}
 
 	require.Equal(t, session.ActivityBetweenTurns, batch.ByID[between].Verdict.Kind)
-	require.Contains(t, batch.ByID[between].Verdict.WaitingOn, session.WaitRetry)
+	require.Contains(t, batch.ByID[between].Verdict.WaitingOn, sessionfacts.WaitRetry)
 
 	require.Equal(t, session.ActivityBetweenTurns, batch.ByID[slug].Verdict.Kind,
 		"R7C-2: the slug id is classified through its real id, not its lock stem")
@@ -135,8 +138,8 @@ func TestSessionActivityBatch_MatchesSingle(t *testing.T) {
 	require.False(t, batch.ByID[deleted].Facts.EndUnreadable)
 
 	// D11: the reverse map from lock-file stems to real ids.
-	require.Equal(t, []string{slug}, batch.LockStems[session.SessionLockStem(slug)])
-	require.Equal(t, []string{between}, batch.LockStems[session.SessionLockStem(between)])
+	require.Equal(t, []string{slug}, batch.LockStems[sessionfacts.SessionLockStem(slug)])
+	require.Equal(t, []string{between}, batch.LockStems[sessionfacts.SessionLockStem(between)])
 	require.NotContains(t, batch.LockStems, "locks/driven x",
 		"the map is keyed by the sanitised stem, not the real id")
 }
@@ -168,13 +171,13 @@ func TestSessionActivityBatch_BindingTests(t *testing.T) {
 
 	// Wake schedules: batched vs single-owner read on the same rows.
 	next := time.Now().Add(5 * time.Minute).Truncate(time.Second).UTC()
-	_, err = h.app.WakeScheduleStore().CreateSchedule(ctx, session.CreateWakeScheduleParams{
-		Owner: withDebt, Kind: session.WakeKindOnce, Message: "tick", RunAt: next,
+	_, err = h.app.WakeScheduleStore().CreateSchedule(ctx, sessionwake.CreateWakeScheduleParams{
+		Owner: withDebt, Kind: sessionwake.WakeKindOnce, Message: "tick", RunAt: next,
 	}, time.Now())
 	require.NoError(t, err)
-	batchedWake, err := session.OpenOnceWakeSchedulesForOwners(ctx, h.app.WakeScheduleStore(), []string{withDebt, without})
+	batchedWake, err := sessionwake.OpenOnceWakeSchedulesForOwners(ctx, h.app.WakeScheduleStore(), []string{withDebt, without})
 	require.NoError(t, err)
-	singleWake, err := session.OpenOnceWakeSchedules(ctx, h.app.WakeScheduleStore(), withDebt)
+	singleWake, err := sessionwake.OpenOnceWakeSchedules(ctx, h.app.WakeScheduleStore(), withDebt)
 	require.NoError(t, err)
 	require.Equal(t, singleWake, batchedWake[withDebt])
 	require.Empty(t, batchedWake[without])

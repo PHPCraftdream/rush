@@ -6,7 +6,7 @@
 // (decideDrainTurn: it only transfers notices) -- and parks the session in
 // the 60s recheck set while debt exists. Real SQLite, real session agent.
 //
-// Batch world: the durable marker is session.HostStore (BatchDriverClaimer),
+// Batch world: the durable marker is sessionhosts.HostStore (BatchDriverClaimer),
 // bound onto the coordinator exactly like the app composition root does via
 // SetBatchDriverClaimer; the foreign driver is a second HostStore on the SAME
 // database with a different pid/label. Debt reads go through the bound batch
@@ -19,8 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
+
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // foreignDriverFx is a wakeDebtFixture whose coordinator carries a durable
@@ -29,8 +30,8 @@ import (
 // process.
 type foreignDriverFx struct {
 	*wakeDebtFixture
-	cli        *session.HostStore
-	coordStore *session.HostStore
+	cli        *sessionhosts.HostStore
+	coordStore *sessionhosts.HostStore
 }
 
 func newForeignDriverFx(t *testing.T, title string) *foreignDriverFx {
@@ -42,8 +43,8 @@ func newForeignDriverFx(t *testing.T, title string) *foreignDriverFx {
 	// The coordinator's store is bound exactly like SetBatchDriverClaimer
 	// does in the composition root, so ClaimExternalDriver's durable half
 	// and foreignLiveDriver read the same rows the cli store writes.
-	coordStore := session.NewHostStore(f.env.conn, f.env.workingDir, os.Getpid(), "coord")
-	cli := session.NewHostStore(f.env.conn, f.env.workingDir, os.Getpid()+1, "cli")
+	coordStore := sessionhosts.NewHostStore(f.env.conn, f.env.workingDir, os.Getpid(), "coord")
+	cli := sessionhosts.NewHostStore(f.env.conn, f.env.workingDir, os.Getpid()+1, "cli")
 	t.Cleanup(func() { _ = cli.Close(context.Background()) })
 	f.coord.batchDriverClaimer = coordStore
 	return &foreignDriverFx{wakeDebtFixture: f, cli: cli, coordStore: coordStore}
@@ -185,7 +186,7 @@ func TestClaimExternalDriver_DurableClaimAndRefusal(t *testing.T) {
 
 	require.NoError(t, f.cli.ClaimSessionDriver(ctx, f.sessID))
 	err := f.coord.ClaimExternalDriver(ctx, f.sessID)
-	var elsewhere *session.ErrSessionDrivenElsewhere
+	var elsewhere *sessionhosts.ErrSessionDrivenElsewhere
 	require.ErrorAs(t, err, &elsewhere)
 	require.False(t, f.coord.driverHints.isExternalDriver(f.sessID), "a refused claim must not set the in-memory marker")
 
@@ -205,8 +206,8 @@ func TestClaimExternalDriver_MarkerUnavailableFallsBackToMemory(t *testing.T) {
 	ctx := context.Background()
 	f := newForeignDriverFx(t, "claim-unavailable")
 	// A file where the hosts directory must be: no lock file can be created.
-	require.NoError(t, os.RemoveAll(session.HostsDir(f.env.workingDir)))
-	require.NoError(t, os.WriteFile(session.HostsDir(f.env.workingDir), []byte("x"), 0o644))
+	require.NoError(t, os.RemoveAll(sessionhosts.HostsDir(f.env.workingDir)))
+	require.NoError(t, os.WriteFile(sessionhosts.HostsDir(f.env.workingDir), []byte("x"), 0o644))
 
 	require.NoError(t, f.coord.ClaimExternalDriver(ctx, f.sessID))
 	require.True(t, f.coord.driverHints.isExternalDriver(f.sessID), "the in-memory marker must still be set")

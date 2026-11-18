@@ -14,6 +14,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -65,7 +67,7 @@ func assertResetClean(t *testing.T, a *app.App, msgs message.Service, owner stri
 	require.NoError(t, err)
 	require.Empty(t, debt.Nodes, "old batch debt must not survive the wipe")
 	require.Empty(t, debt.Notices, "old batch debt must not survive the wipe")
-	notices, err := session.NewSessionNoticeStore(a.DB()).PullSessionNotices(ctx, msgs, owner, func(row session.SessionNoticeRow) message.CreateMessageParams {
+	notices, err := session.NewSessionNoticeStore(a.DB()).PullSessionNotices(ctx, msgs, owner, func(row sessionnotice.SessionNoticeRow) message.CreateMessageParams {
 		return message.CreateMessageParams{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: row.Text}}}
 	})
 	require.NoError(t, err)
@@ -113,13 +115,13 @@ func TestSessionsReset_LiveLoopRefusesEvenWithForce(t *testing.T) {
 			sess, err := a.Sessions.CreateWithID(ctx, "reset-live-loop-"+force, "driven")
 			require.NoError(t, err)
 			seedResetDebris(t, a, a.Messages, sess.ID)
-			driverHost := session.NewHostStore(a.DB(), dataDir, 4321, "reset-live-loop")
+			driverHost := sessionhosts.NewHostStore(a.DB(), dataDir, 4321, "reset-live-loop")
 			driverHostID, err := driverHost.EnsureHost(ctx)
 			require.NoError(t, err)
 			require.NoError(t, driverHost.ClaimSessionDriver(ctx, sess.ID))
 			// A12 pattern: pin the host lock and keep the driver marker.
 			driverHost.CloseKeepLock()
-			t.Cleanup(func() { session.ReleaseRetainedHostLocksForTest(driverHostID) })
+			t.Cleanup(func() { sessionhosts.ReleaseRetainedHostLocksForTest(driverHostID) })
 			a.Shutdown()
 
 			require.NoError(t, resetSessionCmdFlags().Flags().Set("force", force))

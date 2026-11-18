@@ -7,15 +7,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"iter"
 	"log/slog"
 	"maps"
-	"slices"
-	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
 
 	"charm.land/fantasy"
 
@@ -23,7 +21,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
@@ -134,7 +131,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 
 	slog.Info("SessionAgent.Run: starting", "sessionID", call.SessionID, "model", smartModel.ModelCfg.Model, "promptLen", len(systemPrompt))
 
-	systemPrompt = withTurnMCPInstructions(systemPrompt, call.RecoveryContinuation, a.config, maps.All(mcp.GetStates()))
+	systemPrompt = promptcache.WithTurnMCPInstructions(systemPrompt, call.RecoveryContinuation, a.config, maps.All(mcp.GetStates()))
 	// Add Anthropic caching to the last tool. Via a per-turn wrapper, NOT
 	// SetProviderOptions on the shared tool object: a.tools' ELEMENTS are one
 	// set of pointers shared by every concurrent turn on this agent, and two
@@ -805,46 +802,4 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// loop's per-iteration OnQueueResolved hook deliver the real result/err
 	// for the call that just completed, instead of a spurious (nil, nil).
 	return result, firstQueuedMessage, true, nil
-}
-
-// withMCPInstructions and withTurnMCPInstructions restored from base
-// (3eb3ba9b6): the promptcache leaf-owner work was reverted.
-func withMCPInstructions(systemPrompt string, cfg *config.ConfigStore, states iter.Seq2[string, mcp.ClientInfo]) string {
-	type namedState struct {
-		name   string
-		server mcp.ClientInfo
-	}
-	var ordered []namedState
-	for name, server := range states {
-		ordered = append(ordered, namedState{name: name, server: server})
-	}
-	slices.SortFunc(ordered, func(a, b namedState) int {
-		return strings.Compare(a.name, b.name)
-	})
-
-	var instructions strings.Builder
-	for _, entry := range ordered {
-		if !mcp.IsConfigured(cfg, entry.name) {
-			continue
-		}
-		if entry.server.State != mcp.StateConnected {
-			continue
-		}
-		if instruction := entry.server.Client.InitializeResult().Instructions; instruction != "" {
-			instructions.WriteString(instruction)
-			instructions.WriteString("\n\n")
-		}
-	}
-
-	if collected := instructions.String(); collected != "" {
-		return systemPrompt + "\n\n<mcp-instructions>\n" + collected + "\n</mcp-instructions>"
-	}
-	return systemPrompt
-}
-
-func withTurnMCPInstructions(systemPrompt string, recoveryContinuation bool, cfg *config.ConfigStore, states iter.Seq2[string, mcp.ClientInfo]) string {
-	if recoveryContinuation {
-		return systemPrompt
-	}
-	return withMCPInstructions(systemPrompt, cfg, states)
 }

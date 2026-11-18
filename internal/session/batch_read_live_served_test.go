@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -199,7 +200,7 @@ func TestBatchHotStatementsPlanWithoutScans(t *testing.T) {
 	batchReserveForOwner(t, s, ctx, "owner", "plan-root")
 	reader := NewBatchLiveReader(db.New(logDB), dataDir)
 	reader.IsOwnHost = func(string) bool { return false }
-	reader.ProbeHost = func(string, string) (HostLockStatus, error) { return HostStatusAlive, nil }
+	reader.ProbeHost = func(string, string) (sessionhosts.HostLockStatus, error) { return HostStatusAlive, nil }
 	reader.TxStarter = logDB
 	live := reader.BatchLiveForOwner(ctx, "owner")
 	require.True(t, live.Complete)

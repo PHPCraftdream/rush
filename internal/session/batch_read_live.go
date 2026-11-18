@@ -8,6 +8,7 @@ import (
 	"sort"
 	"sync/atomic"
 
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
@@ -119,8 +120,8 @@ func (r *BatchLiveReader) batchLiveForSessions(ctx context.Context, sessions []s
 	rowsByOwner := make(map[string][]db.BatchNode)
 	failures := make(map[string]error)
 	fetched := make(map[string]bool)
-	hosts := make(map[string]HostLockStatus)
-	statusOf := func(host string) HostLockStatus {
+	hosts := make(map[string]sessionhosts.HostLockStatus)
+	statusOf := func(host string) sessionhosts.HostLockStatus {
 		if st, ok := hosts[host]; ok {
 			return st
 		}
@@ -165,7 +166,7 @@ func (r *BatchLiveReader) batchLiveForSessions(ctx context.Context, sessions []s
 	return out
 }
 
-func batchLiveReplay(owner string, rows map[string][]db.BatchNode, failures map[string]error, fetched map[string]bool, statusOf func(string) HostLockStatus) BatchLiveResult {
+func batchLiveReplay(owner string, rows map[string][]db.BatchNode, failures map[string]error, fetched map[string]bool, statusOf func(string) sessionhosts.HostLockStatus) BatchLiveResult {
 	v := BatchLiveResult{Complete: true, OwnComplete: true}
 	visited := map[string]bool{owner: true}
 	frontier := []string{owner}
@@ -205,7 +206,7 @@ func batchLiveReplay(owner string, rows map[string][]db.BatchNode, failures map[
 					continue
 				}
 				st := statusOf(n.HostID)
-				if st == HostStatusUnknown {
+				if st == sessionhosts.HostStatusUnknown {
 					v.Complete = false
 					if depth == 0 {
 						v.OwnComplete = false

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/settings"
 	"github.com/stretchr/testify/require"
 )
 
@@ -74,9 +75,7 @@ func TestGlobalDirIsolationNoFallbackImports(t *testing.T) {
 	// settings-lock tests replace it. The decoy carries NO lock, so a
 	// correct implementation may READ it (hash lookup) but must never
 	// write, convert, or import it.
-	previous := canonicalGlobalDataPath
-	canonicalGlobalDataPath = func() string { return decoyDataJSON }
-	t.Cleanup(func() { canonicalGlobalDataPath = previous })
+	settings.SetCanonicalGlobalDataPathForTest(t, decoyDataJSON)
 
 	// No process password → no locks anywhere → writes must be allowed.
 	SetProcessPassword("")

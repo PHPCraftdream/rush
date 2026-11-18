@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 )
 
 var _ tools.WakeControl = (*coordinator)(nil)
@@ -62,10 +62,10 @@ func validateWakeMessage(message string) error {
 	if n == 0 {
 		return errors.New("message is required")
 	}
-	if n > session.MaxWakeMessageLength {
+	if n > sessionwake.MaxWakeMessageLength {
 		return fmt.Errorf(
 			"message exceeds %d characters (%d); shorten it — this becomes part of the next turn's context, not a task payload",
-			session.MaxWakeMessageLength, n,
+			sessionwake.MaxWakeMessageLength, n,
 		)
 	}
 	return nil
@@ -106,11 +106,11 @@ func checkWakeTimestamp(t time.Time, now time.Time, field string) error {
 			field, t.Format(time.RFC3339), now.Format(time.RFC3339),
 		)
 	}
-	if t.Sub(now) > session.MaxWakeHorizon {
+	if t.Sub(now) > sessionwake.MaxWakeHorizon {
 		return fmt.Errorf("%s is implausibly far in the future", field)
 	}
-	if t.Sub(now) < session.MinWakeOnceDelay {
-		return fmt.Errorf("%s is too soon (schedule at least %s ahead); use wakein for a short delay", field, session.MinWakeOnceDelay)
+	if t.Sub(now) < sessionwake.MinWakeOnceDelay {
+		return fmt.Errorf("%s is too soon (schedule at least %s ahead); use wakein for a short delay", field, sessionwake.MinWakeOnceDelay)
 	}
 	return nil
 }

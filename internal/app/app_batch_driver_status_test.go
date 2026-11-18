@@ -7,6 +7,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -14,7 +15,7 @@ import (
 // BatchCutoverHostLiveness: a host id registered as this process's own
 // answers Alive without touching the shared probe.
 //
-// Revert-check: removing the session.IsOwnHostID shortcut makes the probe
+// Revert-check: removing the sessionhosts.IsOwnHostID shortcut makes the probe
 // return Unknown for own hosts, failing the Status==Alive assertion first.
 func TestBatchDriverStatus_OwnHostAlive(t *testing.T) {
 	app := newFullNewApp(t)
@@ -44,7 +45,7 @@ func TestBatchDriverStatus_ForeignLockedHostAlive(t *testing.T) {
 	foreignHost := "ph2-foreign-live-host"
 	sess, err := app.Sessions.Create(ctx, "ph2-foreign-alive")
 	require.NoError(t, err)
-	lk, err := sessionlock.TryAcquireFileLock(session.HostLockPath(dataDir, foreignHost))
+	lk, err := sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(dataDir, foreignHost))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = lk.Release() })
 	_, err = app.DB().ExecContext(ctx,
@@ -73,7 +74,7 @@ func TestBatchDriverStatus_ForeignDeadHostDropped(t *testing.T) {
 	foreignHost := "ph2-foreign-dead-host"
 	sess, err := app.Sessions.Create(ctx, "ph2-foreign-dead")
 	require.NoError(t, err)
-	lk, err := sessionlock.TryAcquireFileLock(session.HostLockPath(dataDir, foreignHost))
+	lk, err := sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(dataDir, foreignHost))
 	require.NoError(t, err)
 	require.NoError(t, lk.Release())
 	_, err = app.DB().ExecContext(ctx,
@@ -100,7 +101,7 @@ func TestBatchDriverStatus_ProbeErrorStaysUnknown(t *testing.T) {
 	foreignHost := "ph2-foreign-error-host"
 	sess, err := app.Sessions.Create(ctx, "ph2-foreign-error")
 	require.NoError(t, err)
-	require.NoError(t, os.MkdirAll(session.HostLockPath(dataDir, foreignHost), 0o755))
+	require.NoError(t, os.MkdirAll(sessionhosts.HostLockPath(dataDir, foreignHost), 0o755))
 	_, err = app.DB().ExecContext(ctx,
 		`INSERT INTO session_drivers (session_id, host_id, pid, claimed_at) VALUES (?, ?, ?, ?)`,
 		sess.ID, foreignHost, 5151, 1)

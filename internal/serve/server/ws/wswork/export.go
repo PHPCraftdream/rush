@@ -13,7 +13,8 @@ import (
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/serve/server/hub"
 	wire "github.com/PHPCraftdream/rush/internal/serve/server/wire"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -117,11 +118,11 @@ func CollectBatchHistoryTerminalRoots(ctx context.Context, src BatchNodeSource, 
 	return collectBatchHistoryTerminalRoots(ctx, src, visited, liveRootIDs)
 }
 
-func BatchRootItem(m BatchRootMeta, titles map[hub.TitleKey]string, questions map[string]session.ChildQuestion) wire.LiveWorkItemWire {
+func BatchRootItem(m BatchRootMeta, titles map[hub.TitleKey]string, questions map[string]sessionnotice.ChildQuestion) wire.LiveWorkItemWire {
 	return batchRootItem(m, titles, questions)
 }
 
-func BatchPendingQuestions(ctx context.Context, a *appPkg.App, visited []string) (map[string]session.ChildQuestion, bool) {
+func BatchPendingQuestions(ctx context.Context, a *appPkg.App, visited []string) (map[string]sessionnotice.ChildQuestion, bool) {
 	return batchPendingQuestions(ctx, a, visited)
 }
 
@@ -135,6 +136,6 @@ func HandleCancelWakeSchedule(ctx context.Context, a *appPkg.App, c *hub.Client,
 	handleCancelWakeSchedule(ctx, a, c, msg)
 }
 
-func BuildSessionWakeSchedules(ctx context.Context, store *session.WakeScheduleStore, sessionID string) (wire.SessionWakeSchedulesPayload, error) {
+func BuildSessionWakeSchedules(ctx context.Context, store *sessionwake.WakeScheduleStore, sessionID string) (wire.SessionWakeSchedulesPayload, error) {
 	return buildSessionWakeSchedules(ctx, store, sessionID)
 }

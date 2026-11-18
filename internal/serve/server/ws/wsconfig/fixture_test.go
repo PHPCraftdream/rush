@@ -9,7 +9,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -143,7 +143,7 @@ func newAttachmentsTestApp(t *testing.T, workingDir, dataDir string) *appPkg.App
 	t.Cleanup(func() { _ = db.ReleaseAll(resolvedDataDir) })
 	// Forced shutdown pins host handles; LIFO must release them after Shutdown
 	// and before DB/TempDir cleanup.
-	t.Cleanup(func() { session.ReleaseRetainedHostLocksForTest() })
+	t.Cleanup(func() { sessionhosts.ReleaseRetainedHostLocksForTest() })
 
 	a, err := appPkg.New(t.Context(), conn, store)
 	require.NoError(t, err)

@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -14,11 +15,11 @@ import (
 // its probe verdict from alive to dead. The host is dropped from the
 // process-wide own-id registry, so every probe of it takes the
 // cross-process shared-probe path exactly as another process's host would.
-func registerForeignLiveHostHandle(t *testing.T, ctx context.Context, q *db.Queries, dataDir string) *HostIdentity {
+func registerForeignLiveHostHandle(t *testing.T, ctx context.Context, q *db.Queries, dataDir string) *sessionhosts.HostIdentity {
 	t.Helper()
-	h, err := RegisterHost(ctx, dataDir, 4321, "foreign", nodeStore(q))
+	h, err := sessionhosts.RegisterHost(ctx, dataDir, 4321, "foreign", nodeStore(q))
 	require.NoError(t, err)
-	unmarkOwnHostID(h.ID)
+	sessionhosts.UnmarkOwnHostIDForTest(h.ID)
 	t.Cleanup(func() { _ = h.Close(ctx, nodeStore(q)) })
 	return h
 }
@@ -27,9 +28,9 @@ func registerForeignLiveHostHandle(t *testing.T, ctx context.Context, q *db.Quer
 // single-connection pool and reads the facts through it, rolling back so
 // the pooled connection is always freed. Transactions on one store are
 // never held concurrently.
-func readHostHoldsInTx(t *testing.T, st *HostStore, facts FinalizationPhysicalHoldsFacts, owner string) (int, error) {
+func readHostHoldsInTx(t *testing.T, st *sessionhosts.HostStore, facts FinalizationPhysicalHoldsFacts, owner string) (int, error) {
 	t.Helper()
-	tx, err := st.sqlDB.BeginTx(t.Context(), nil)
+	tx, err := st.SQLDBForTest().BeginTx(t.Context(), nil)
 	require.NoError(t, err)
 	defer tx.Rollback()
 	return facts.FinalizationPhysicalHoldsTx(t.Context(), tx, owner)
@@ -83,7 +84,7 @@ func TestFinalizationHostDriverHoldsFactsMatrix(t *testing.T) {
 
 	// A directory at the lock path: the probe cannot decide, the facts
 	// must refuse instead of guessing.
-	require.NoError(t, os.MkdirAll(HostLockPath(dataDir, "unknown-host"), 0o755))
+	require.NoError(t, os.MkdirAll(sessionhosts.HostLockPath(dataDir, "unknown-host"), 0o755))
 	_, err = q.InsertSessionDriver(ctx, db.InsertSessionDriverParams{
 		SessionID: "unknown", HostID: "unknown-host", Pid: 4242, ClaimedAt: 1,
 	})
@@ -118,7 +119,7 @@ func TestFinalizationHostDriverHoldsFactsEmptyOwnerIsZero(t *testing.T) {
 	t.Parallel()
 	stores, _, _, dataDir := nStores(t, 1, "owner")
 	reader := NewFinalizationHostDriverHoldsFacts(dataDir)
-	tx, err := stores[0].sqlDB.BeginTx(t.Context(), nil)
+	tx, err := stores[0].SQLDBForTest().BeginTx(t.Context(), nil)
 	require.NoError(t, err)
 	defer tx.Rollback()
 	n, err := reader.FinalizationPhysicalHoldsTx(t.Context(), tx, "")
@@ -135,7 +136,7 @@ func TestFinalizationHostDriverHoldsFactsRespectsCanceledContext(t *testing.T) {
 	t.Parallel()
 	stores, _, _, dataDir := nStores(t, 1, "owner")
 	reader := NewFinalizationHostDriverHoldsFacts(dataDir)
-	tx, err := stores[0].sqlDB.BeginTx(t.Context(), nil)
+	tx, err := stores[0].SQLDBForTest().BeginTx(t.Context(), nil)
 	require.NoError(t, err)
 	defer tx.Rollback()
 	canceled, cancel := context.WithCancel(t.Context())

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
@@ -47,7 +48,7 @@ func (r *BatchLiveReader) batchLevelRows(ref BatchLiveRef, nodeID string, rows [
 	v.Complete = true
 	byID := make(map[string]db.BatchNode)
 	children := make(map[string][]string)
-	hosts := make(map[string]HostLockStatus)
+	hosts := make(map[string]sessionhosts.HostLockStatus)
 	for _, n := range rows {
 		if n.OwnerSessionID != ref.OwnerSessionID || n.RootID != ref.RootID {
 			v.Complete = false
@@ -87,7 +88,7 @@ func (r *BatchLiveReader) batchLevelRows(ref BatchLiveRef, nodeID string, rows [
 			st = r.hostStatus(n.HostID)
 			hosts[n.HostID] = st
 		}
-		if st == HostStatusUnknown {
+		if st == sessionhosts.HostStatusUnknown {
 			v.Complete = false
 		}
 		fact := batchLiveFact(n, root.ToolCallID.String, depth, st)

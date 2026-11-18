@@ -19,6 +19,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -34,13 +35,13 @@ type batchReadFixture struct {
 
 // seedBatchReadRoot reserves a real batch root (kind=batch with tool call and
 // input hash, two task children) for owner on a host registered by this
-// live test process (session.HostStore.EnsureHost), so the live reader
+// live test process (sessionhosts.HostStore.EnsureHost), so the live reader
 // proves liveness via the own-host registry. The host store is closed at
 // cleanup so the host lock cannot block later command runs.
 func seedBatchReadRoot(t *testing.T, a *app.App, owner string) batchReadFixture {
 	t.Helper()
 	ctx := context.Background()
-	store := session.NewHostStore(a.DB(), a.DataDirectory(), os.Getpid(), "batch-read-fixture")
+	store := sessionhosts.NewHostStore(a.DB(), a.DataDirectory(), os.Getpid(), "batch-read-fixture")
 	closeAsync := func() { _ = store.Close(context.Background()) }
 	t.Cleanup(closeAsync)
 	host, err := store.EnsureHost(ctx)

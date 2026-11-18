@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -26,7 +27,7 @@ func budgetReserveRoot(t *testing.T, s *BatchStore, ctx context.Context, toolCal
 
 func budgetDeadHost(t *testing.T, dir, host string) {
 	t.Helper()
-	lock, err := sessionlock.TryAcquireFileLock(HostLockPath(dir, host))
+	lock, err := sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(dir, host))
 	require.NoError(t, err)
 	require.NoError(t, lock.Release())
 }
@@ -84,7 +85,7 @@ func TestBatchRecoveryPassCancelledBetweenRootsStopsCleanly(t *testing.T) {
 	}
 	budgetDeadHost(t, dir, "host")
 	probeCtx, cancel := context.WithCancel(context.Background())
-	probe := func(string) (HostLockStatus, error) {
+	probe := func(string) (sessionhosts.HostLockStatus, error) {
 		cancel()
 		return HostStatusDead, nil
 	}
@@ -118,14 +119,14 @@ func TestBatchRecoveryPassVerdictsAndProbeOnce(t *testing.T) {
 		wantProbeErr bool
 	}
 	cases := []verdictCase{
-		{"alive", func(string) (HostLockStatus, error) { return HostStatusAlive, nil }, false},
-		{"unknown", func(string) (HostLockStatus, error) { return HostStatusUnknown, errors.New("no verdict") }, true},
-		{"dead-with-error", func(string) (HostLockStatus, error) { return HostStatusDead, errors.New("probe boom") }, true},
+		{"alive", func(string) (sessionhosts.HostLockStatus, error) { return HostStatusAlive, nil }, false},
+		{"unknown", func(string) (sessionhosts.HostLockStatus, error) { return HostStatusUnknown, errors.New("no verdict") }, true},
+		{"dead-with-error", func(string) (sessionhosts.HostLockStatus, error) { return HostStatusDead, errors.New("probe boom") }, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			probes := 0
-			counting := func(host string) (HostLockStatus, error) {
+			counting := func(host string) (sessionhosts.HostLockStatus, error) {
 				probes++
 				return tc.probe(host)
 			}
@@ -147,10 +148,10 @@ func TestBatchRecoveryPassVerdictsAndProbeOnce(t *testing.T) {
 		})
 	}
 	t.Run("own-host", func(t *testing.T) {
-		markOwnHostID("host")
-		defer unmarkOwnHostID("host")
+		sessionhosts.MarkOwnHostIDForTest("host")
+		defer sessionhosts.UnmarkOwnHostIDForTest("host")
 		probes := 0
-		out, _, _, err := a.BatchRecoverPass(ctx, func(host string) (HostLockStatus, error) {
+		out, _, _, err := a.BatchRecoverPass(ctx, func(host string) (sessionhosts.HostLockStatus, error) {
 			probes++
 			return HostStatusDead, nil
 		}, BatchRecoveryLimits{MaxRoots: 10}, BatchRecoveryCursorStart)
@@ -170,8 +171,8 @@ func TestRecoverHostsOnceBudgetAndCompletion(t *testing.T) {
 		r9Announce(t, conn, ctx, snap.Root.RootID)
 		budgetDeadHost(t, dir, host)
 	}
-	markOwnHostID("own-host")
-	defer unmarkOwnHostID("own-host")
+	sessionhosts.MarkOwnHostIDForTest("own-host")
+	defer sessionhosts.UnmarkOwnHostIDForTest("own-host")
 	out, more, err := a.RecoverHostsOnce(ctx, BatchSharedHostProbe(dir), hosts, 2)
 	require.NoError(t, err)
 	require.True(t, more, "budget exhaustion must report more remaining")
@@ -220,7 +221,7 @@ func TestBatchRecoverRootExactNamedRoot(t *testing.T) {
 	out, err = a.BatchRecoverRoot(ctx, second.Root.RootID, BatchSharedHostProbe(dir))
 	require.NoError(t, err)
 	require.Equal(t, BatchRecoveryOutcome{}, out, "a second recoverer must produce no second interruption")
-	boom := func(string) (HostLockStatus, error) { return HostStatusDead, errors.New("probe boom") }
+	boom := func(string) (sessionhosts.HostLockStatus, error) { return HostStatusDead, errors.New("probe boom") }
 	out, err = a.BatchRecoverRoot(ctx, first.Root.RootID, boom)
 	require.Error(t, err)
 	require.Equal(t, BatchRecoveryOutcome{}, out, "a (Dead, error) verdict must write nothing")

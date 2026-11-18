@@ -413,7 +413,7 @@ func TestMCPAdmissionDeduplicatesCaseSpellingsWhenFilesystemDoes(t *testing.T) {
 	})
 
 	require.NoError(t, store.withMCPAdmissionLocks(func(files *mcpLockedFiles) error {
-		require.Len(t, files.records, 1)
+		require.Len(t, files.Records, 1)
 		return nil
 	}))
 	require.Equal(t, 1, acquisitions)
@@ -477,7 +477,7 @@ func TestMCPAdmissionUsesInjectedCaseDecisionForMissingAliases(t *testing.T) {
 			require.Len(t, groups, test.expectedGroups)
 			foldCalls = 0
 			err := store.withMCPLocksUsingCaseSensitivity(context.Background(), func(files *mcpLockedFiles) error {
-				require.Len(t, files.records, test.expectedRecords)
+				require.Len(t, files.Records, test.expectedRecords)
 				return nil
 			}, caseSensitivity)
 			require.NoError(t, err)

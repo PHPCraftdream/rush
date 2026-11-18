@@ -13,6 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -155,7 +156,7 @@ func TestSessionLockFact_AgedLockWithLivePIDIsHeld(t *testing.T) {
 	staleTime := time.Now().Add(-(sessionlock.MaxPidFallbackAge + 5*time.Second))
 	require.NoError(t, os.Chtimes(lockPath, staleTime, staleTime))
 
-	require.Equal(t, session.LockHeld, session.InspectSessionLockFact(dataDir, sess.ID).Kind,
+	require.Equal(t, session.LockHeld, sessionfacts.InspectSessionLockFact(dataDir, sess.ID).Kind,
 		"an alive recorded PID is held regardless of the lock's age (D10)")
 }
 

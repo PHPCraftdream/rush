@@ -16,6 +16,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -170,7 +171,7 @@ func TestBatchCLIStopSubprocessRejectsUnknownHostWithoutWriting(t *testing.T) {
 	conn, err := db.Connect(context.Background(), fixture.dir)
 	require.NoError(t, err)
 	defer db.ReleaseConn(conn)
-	lockPath := session.HostLockPath(fixture.dir, fixture.host)
+	lockPath := sessionhosts.HostLockPath(fixture.dir, fixture.host)
 	if err = os.Remove(lockPath); err != nil {
 		t.Skipf("cannot remove host lock: %v", err)
 	}
@@ -208,7 +209,7 @@ func TestBatchCLIStopSubprocessRecoversDeadHostUnannouncedRoot(t *testing.T) {
 type batchCLIAcceptanceFixture struct {
 	dir, root, host string
 	conn            *sql.DB
-	store           *session.HostStore
+	store           *sessionhosts.HostStore
 }
 
 func seedBatchCLIAcceptance(t *testing.T) batchCLIAcceptanceFixture {
@@ -217,7 +218,7 @@ func seedBatchCLIAcceptance(t *testing.T) batchCLIAcceptanceFixture {
 	dir := t.TempDir()
 	conn, err := db.Connect(ctx, dir)
 	require.NoError(t, err)
-	store := session.NewHostStore(conn, dir, os.Getpid(), "batch-cli-acceptance")
+	store := sessionhosts.NewHostStore(conn, dir, os.Getpid(), "batch-cli-acceptance")
 	f := &batchCLIAcceptanceFixture{dir: dir, conn: conn, store: store}
 	t.Cleanup(func() {
 		if f.store != nil {

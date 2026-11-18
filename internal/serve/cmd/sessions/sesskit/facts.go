@@ -8,6 +8,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
@@ -184,7 +185,7 @@ func ReduceBatchSessionFacts(ctx context.Context, reader *session.BatchLiveReade
 							f.HasQuestion = true
 							// The notice text embeds the canonical question frame;
 							// parse it once here so every surface can quote it.
-							if question, ok := session.ParseChildQuestionNotice(n.Text, rf.ToolCallID); ok {
+							if question, ok := sessionnotice.ParseChildQuestionNotice(n.Text, rf.ToolCallID); ok {
 								rf.QuestionChildID = question.ChildSessionID
 								rf.QuestionText = question.Question
 							}
@@ -272,7 +273,7 @@ func FillBatchQuestionFromPending(ctx context.Context, q *db.Queries, owner stri
 		if row.Kind != session.NoticeKindChildQuestion || row.JobToolCallID.Valid {
 			continue
 		}
-		if cq, ok := session.ParseBatchChildQuestionNotice(row.Text); ok {
+		if cq, ok := sessionnotice.ParseBatchChildQuestionNotice(row.Text); ok {
 			f.QuestionChildID = cq.ChildSessionID
 			f.QuestionText = cq.Question
 			return

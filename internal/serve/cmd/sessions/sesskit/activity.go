@@ -10,6 +10,7 @@ import (
 	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 	"github.com/PHPCraftdream/rush/internal/session"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -176,7 +177,7 @@ func CallTreeActivityFresherThan(ctx context.Context, a *app.App, rootID string,
 
 // KindIsLive reports whether a verdict Kind means the session's scope is
 // open -- the one liveness question the locks/reap/prune paths ask.
-func KindIsLive(k session.ActivityKind) bool {
+func KindIsLive(k sessionfacts.ActivityKind) bool {
 	switch k {
 	case session.ActivityInTurn, session.ActivityBetweenTurns, session.ActivityDelegating:
 		return true
@@ -217,3 +218,8 @@ func SubAgentActivityNote(ctx context.Context, a *app.App, rootID string, baseli
 		role, FormatDurationShort(age), cliout.Short(core.HashID(act.DeepestSessionID)),
 	)
 }
+
+// StallPulseThreshold is the heartbeat age past which a live-holder session
+// is reported as STALLED (shared by the root `sessions why` stall header and
+// the sesslocks `sessions locks` STALLED marker).
+const StallPulseThreshold = 10 * time.Minute

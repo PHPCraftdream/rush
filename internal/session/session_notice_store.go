@@ -31,6 +31,7 @@ import (
 
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -140,7 +141,7 @@ func (s *SessionNoticeStore) readQuerier() *db.Queries {
 // is marked void in the same transaction and produces no message. A per-row
 // error is logged and skipped -- the row stays pending, never failing the
 // whole pull.
-func (s *SessionNoticeStore) PullSessionNotices(ctx context.Context, messages message.Service, owner string, build func(SessionNoticeRow) message.CreateMessageParams) ([]PulledNotice, error) {
+func (s *SessionNoticeStore) PullSessionNotices(ctx context.Context, messages message.Service, owner string, build func(sessionnotice.SessionNoticeRow) message.CreateMessageParams) ([]sessionnotice.PulledNotice, error) {
 	// Captured before any transaction opens (R2A-2): nothing a writer
 	// transaction runs may wait on store state.
 	ownHostID := s.HostID()
@@ -148,7 +149,7 @@ func (s *SessionNoticeStore) PullSessionNotices(ctx context.Context, messages me
 	if err != nil {
 		return nil, err
 	}
-	var out []PulledNotice
+	var out []sessionnotice.PulledNotice
 	for _, row := range rows {
 		pulled, ok, err := s.pullOneSessionNotice(ctx, messages, owner, ownHostID, row, build)
 		if err != nil {
@@ -166,7 +167,7 @@ func (s *SessionNoticeStore) PullSessionNotices(ctx context.Context, messages me
 	return out, nil
 }
 
-func (s *SessionNoticeStore) pullOneSessionNotice(ctx context.Context, messages message.Service, owner, ownHostID string, row db.SessionNotice, build func(SessionNoticeRow) message.CreateMessageParams) (pulled PulledNotice, ok bool, retErr error) {
+func (s *SessionNoticeStore) pullOneSessionNotice(ctx context.Context, messages message.Service, owner, ownHostID string, row db.SessionNotice, build func(sessionnotice.SessionNoticeRow) message.CreateMessageParams) (pulled sessionnotice.PulledNotice, ok bool, retErr error) {
 	scoped := session.FinalizationScoped(ctx)
 	var admission *session.BatchFinalizationAdmission
 	if scoped {
@@ -174,17 +175,17 @@ func (s *SessionNoticeStore) pullOneSessionNotice(ctx context.Context, messages 
 		// only a real delivery is admitted (and mints a revision).
 		current, err := s.q.GetSessionNotice(ctx, row.ID)
 		if errors.Is(err, sql.ErrNoRows) {
-			return PulledNotice{}, false, nil
+			return sessionnotice.PulledNotice{}, false, nil
 		}
 		if err != nil {
-			return PulledNotice{}, false, err
+			return sessionnotice.PulledNotice{}, false, err
 		}
 		if current.Owner != owner || current.Delivery != "pending" {
-			return PulledNotice{}, false, nil
+			return sessionnotice.PulledNotice{}, false, nil
 		}
 		void, err := s.sessionNoticeVoidCondition(ctx, s.q, owner, ownHostID, current)
 		if err != nil {
-			return PulledNotice{}, false, err
+			return sessionnotice.PulledNotice{}, false, err
 		}
 		if !void {
 			var release func() error
@@ -193,14 +194,14 @@ func (s *SessionNoticeStore) pullOneSessionNotice(ctx context.Context, messages 
 				defer func() { retErr = session.BatchCommitReleaseError(retErr, release()) }()
 			}
 			if err != nil {
-				return PulledNotice{}, false, err
+				return sessionnotice.PulledNotice{}, false, err
 			}
 		}
 	}
 
 	tx, err := s.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
-		return PulledNotice{}, false, err
+		return sessionnotice.PulledNotice{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	q := db.New(tx)
@@ -209,15 +210,15 @@ func (s *SessionNoticeStore) pullOneSessionNotice(ctx context.Context, messages 
 		UpdatedAt: time.Now().Unix(), ID: row.ID,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
-		return PulledNotice{}, false, nil // another leader already won this row
+		return sessionnotice.PulledNotice{}, false, nil // another leader already won this row
 	}
 	if err != nil {
-		return PulledNotice{}, false, err
+		return sessionnotice.PulledNotice{}, false, err
 	}
 
 	void, err := s.sessionNoticeVoidCondition(ctx, q, owner, ownHostID, pulledRow)
 	if err != nil {
-		return PulledNotice{}, false, err
+		return sessionnotice.PulledNotice{}, false, err
 	}
 	if void {
 		// Same downgrade-with-guard as the legacy pull (notice_pull.go):
@@ -227,42 +228,42 @@ func (s *SessionNoticeStore) pullOneSessionNotice(ctx context.Context, messages 
 			UpdatedAt: time.Now().Unix(), ID: pulledRow.ID,
 		})
 		if err != nil {
-			return PulledNotice{}, false, err
+			return sessionnotice.PulledNotice{}, false, err
 		}
 		if rows == 0 {
-			return PulledNotice{}, false, fmt.Errorf("void: row %d not in expected delivery='done' state within its own transaction", pulledRow.ID)
+			return sessionnotice.PulledNotice{}, false, fmt.Errorf("void: row %d not in expected delivery='done' state within its own transaction", pulledRow.ID)
 		}
 		if err := tx.Commit(); err != nil {
-			return PulledNotice{}, false, err
+			return sessionnotice.PulledNotice{}, false, err
 		}
-		return PulledNotice{}, false, nil
+		return sessionnotice.PulledNotice{}, false, nil
 	}
 
 	if scoped && admission == nil {
 		// The row was a void when sampled but is a delivery now: unadmitted.
-		return PulledNotice{}, false, session.ErrAgentFinalizationChanged
+		return sessionnotice.PulledNotice{}, false, session.ErrAgentFinalizationChanged
 	}
 	if err := session.ValidateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
-		return PulledNotice{}, false, err
+		return sessionnotice.PulledNotice{}, false, err
 	}
-	params := build(SessionNoticeRow{ID: pulledRow.ID, Kind: pulledRow.Kind, Text: pulledRow.Text})
+	params := build(sessionnotice.SessionNoticeRow{ID: pulledRow.ID, Kind: pulledRow.Kind, Text: pulledRow.Text})
 	msg, err := messages.CreateTx(ctx, tx, owner, params)
 	if err != nil {
-		return PulledNotice{}, false, err
+		return sessionnotice.PulledNotice{}, false, err
 	}
 	if _, err := q.SetSessionNoticeMessageID(ctx, db.SetSessionNoticeMessageIDParams{
 		NoticeMessageID: sql.NullString{String: msg.ID, Valid: true}, UpdatedAt: time.Now().Unix(), ID: pulledRow.ID,
 	}); err != nil {
-		return PulledNotice{}, false, err
+		return sessionnotice.PulledNotice{}, false, err
 	}
 	if err := session.ValidateBatchFinalizationTx(ctx, tx, []string{owner}, admission); err != nil {
-		return PulledNotice{}, false, err
+		return sessionnotice.PulledNotice{}, false, err
 	}
 	if err := tx.Commit(); err != nil {
-		return PulledNotice{}, false, err
+		return sessionnotice.PulledNotice{}, false, err
 	}
 	messages.PublishCreated(msg)
-	return PulledNotice{Message: msg, Wake: pulledRow.Wake != 0}, true, nil
+	return sessionnotice.PulledNotice{Message: msg, Wake: pulledRow.Wake != 0}, true, nil
 }
 
 // sessionNoticeVoidCondition is the legacy condition (notice_pull.go) with
@@ -271,12 +272,12 @@ func (s *SessionNoticeStore) pullOneSessionNotice(ctx context.Context, messages 
 // pull (the row stays pending); only "the work is gone" voids.
 func (s *SessionNoticeStore) sessionNoticeVoidCondition(ctx context.Context, q *db.Queries, owner, ownHostID string, row db.SessionNotice) (bool, error) {
 	switch row.Kind {
-	case NoticeKindWakeOnly, NoticeKindChildQuestion:
+	case sessionnotice.NoticeKindWakeOnly, sessionnotice.NoticeKindChildQuestion:
 		if !row.JobToolCallID.Valid {
 			return false, nil
 		}
 		return s.boundNoticeGone(ctx, q, owner, row.JobToolCallID.String)
-	case NoticeKindSupervision:
+	case sessionnotice.NoticeKindSupervision:
 		// Same A15/R2A-9 rule as the legacy arm, over batch root rows: a
 		// live root on a provably dead host is not open scope; a voided
 		// delivery is not open scope either.
@@ -356,14 +357,14 @@ func (s *SessionNoticeStore) insertSessionNotice(ctx context.Context, owner, kin
 
 // ListSessionNotices is the legacy reader (notice_pull.go), unchanged:
 // every row for owner, oldest first, regardless of delivery state.
-func (s *SessionNoticeStore) ListSessionNotices(ctx context.Context, owner string) ([]SessionNoticeRow, error) {
+func (s *SessionNoticeStore) ListSessionNotices(ctx context.Context, owner string) ([]sessionnotice.SessionNoticeRow, error) {
 	rows, err := s.q.ListSessionNoticesForOwner(ctx, owner)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]SessionNoticeRow, 0, len(rows))
+	out := make([]sessionnotice.SessionNoticeRow, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, SessionNoticeRow{ID: row.ID, Kind: row.Kind, Text: row.Text})
+		out = append(out, sessionnotice.SessionNoticeRow{ID: row.ID, Kind: row.Kind, Text: row.Text})
 	}
 	return out, nil
 }
@@ -397,7 +398,7 @@ func (s *SessionNoticeStore) BatchPendingInclusiveDebtRows(ctx context.Context, 
 		out.Nodes = append(out.Nodes, n.ref)
 	}
 	for _, n := range noticeRows {
-		out.Notices = append(out.Notices, PendingNoticeDebt{ID: n.ID, Kind: n.Kind})
+		out.Notices = append(out.Notices, sessionnotice.PendingNoticeDebt{ID: n.ID, Kind: n.Kind})
 	}
 	return out, nil
 }
@@ -410,18 +411,18 @@ func (s *SessionNoticeStore) BatchPendingInclusiveDebtRows(ctx context.Context, 
 // batch frame parser and never run the void rule, mirroring the pull path's
 // !row.JobToolCallID short-circuit; bound rows keep the legacy parser and
 // the bound-notice void check.
-func (s *SessionNoticeStore) PendingChildQuestions(ctx context.Context, owner string) ([]ChildQuestion, error) {
+func (s *SessionNoticeStore) PendingChildQuestions(ctx context.Context, owner string) ([]sessionnotice.ChildQuestion, error) {
 	rq := s.readQuerier()
 	rows, err := rq.ListPendingSessionNoticesForOwner(ctx, owner)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]ChildQuestion, 0, len(rows))
+	out := make([]sessionnotice.ChildQuestion, 0, len(rows))
 	for _, row := range rows {
-		if row.Kind != NoticeKindChildQuestion {
+		if row.Kind != sessionnotice.NoticeKindChildQuestion {
 			continue
 		}
-		var q ChildQuestion
+		var q sessionnotice.ChildQuestion
 		if row.JobToolCallID.Valid {
 			// The pull path's own void rule; an unread job fact keeps the
 			// notice (fail-open).
@@ -429,14 +430,14 @@ func (s *SessionNoticeStore) PendingChildQuestions(ctx context.Context, owner st
 				continue
 			}
 			var ok bool
-			if q, ok = ParseChildQuestionNotice(row.Text, row.JobToolCallID.String); !ok {
+			if q, ok = sessionnotice.ParseChildQuestionNotice(row.Text, row.JobToolCallID.String); !ok {
 				continue
 			}
 		} else {
 			// Batch-published: unbound by design, so the bound-notice void
 			// rule never applies (same as the pull path).
 			var ok bool
-			if q, ok = ParseBatchChildQuestionNotice(row.Text); !ok {
+			if q, ok = sessionnotice.ParseBatchChildQuestionNotice(row.Text); !ok {
 				continue
 			}
 		}

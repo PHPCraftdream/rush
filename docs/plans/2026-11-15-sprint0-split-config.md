@@ -331,7 +331,7 @@ provider.go, load_paths.go, load_worktree.go, load_files.go, store_oauth_journal
 4. `settings` владеет полями `WriteTarget`, которые читает lock writer; `configWriteTarget` корня остаётся private и конвертируется при переходе.
 5. Audit/event helpers образуют узкий exported API `settings`; источник и тайминг trusted-UI сохраняются идентично.
 6. Чистые `modelsIntegrityOf`, `cacheRevKey`-related revision logic и `applyModelsIntegrity` переходят в `cfgmodel`.
-7. `canonicalGlobalDataPath` — unexported settings var; тесты, меняющие её, мигрируют/расщепляются.
+7. `canonicalGlobalDataPath` — unexported settings var. `TestGlobalDirIsolationNoFallbackImports` remains a joined root integration test and calls `settings.SetCanonicalGlobalDataPathForTest(t testing.TB, path string)`, defined in settings `*_testsupport.go`; the helper saves/restores the unexported var via `t.Cleanup`. Other white tests that mutate `canonicalGlobalDataPath` migrate to settings.
 8. Password-iteration state принадлежит `settings`; KDF init переезжает с ним, как и тесты.
 9. Для путей и `AppName` используются прямые импорты `datadir`/`model`.
 10. Телá — оракул, кроме вызовов по receiver/port; в отчёте перечисляются внешние места использования экспортированных имён.

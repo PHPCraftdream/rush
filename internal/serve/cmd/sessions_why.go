@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/spf13/cobra"
 )
@@ -123,7 +123,7 @@ func explainSessionStatus(ctx context.Context, a *app.App, dataDir, sessionID st
 // that drives a session, e.g.
 //
 //	"a `rush run` loop (PID 1234, host 8a3f0c2b alive) drives this session; a reaction is owed and it retries at its next opportunity"
-func describeRunDriver(d session.SessionDriver, reactionOwed bool) string {
+func describeRunDriver(d sessionhosts.SessionDriver, reactionOwed bool) string {
 	clause := fmt.Sprintf("a `rush run` loop (PID %d, host %s %s) drives this session", d.PID, short(d.HostID), strings.ToLower(d.Status.String()))
 	if reactionOwed {
 		return clause + "; a reaction is owed and it retries at its next opportunity"

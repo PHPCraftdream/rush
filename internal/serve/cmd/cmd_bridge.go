@@ -24,8 +24,8 @@ import (
 	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 	proc "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
-	"github.com/PHPCraftdream/rush/internal/session"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/spf13/cobra"
 )
@@ -232,4 +232,4 @@ func subAgentActivityNote(ctx context.Context, a *app.App, rootID string, baseli
 	return sesskit.SubAgentActivityNote(ctx, a, rootID, baselineUnix, now)
 }
 
-func kindIsLive(k session.ActivityKind) bool { return sesskit.KindIsLive(k) }
+func kindIsLive(k sessionfacts.ActivityKind) bool { return sesskit.KindIsLive(k) }

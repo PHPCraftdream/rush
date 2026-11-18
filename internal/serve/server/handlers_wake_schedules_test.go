@@ -21,6 +21,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -71,9 +72,9 @@ func readWakeSchedulesReply(t *testing.T, client *Client) (*SessionWakeSchedules
 
 func createSchedule(t *testing.T, a *app.App, owner, kind, message string, runAt time.Time, every time.Duration, maxRuns int) string {
 	t.Helper()
-	store := session.NewWakeScheduleStore(a.DB())
-	row, err := store.CreateSchedule(t.Context(), session.CreateWakeScheduleParams{
-		Owner: owner, Kind: session.WakeKind(kind), Message: message,
+	store := sessionwake.NewWakeScheduleStore(a.DB())
+	row, err := store.CreateSchedule(t.Context(), sessionwake.CreateWakeScheduleParams{
+		Owner: owner, Kind: sessionwake.WakeKind(kind), Message: message,
 		RunAt: runAt, Every: every, MaxRuns: maxRuns,
 	}, time.Now())
 	require.NoError(t, err)
@@ -108,7 +109,7 @@ func TestHandleGetSessionWakeSchedules_OnceAndLoopWithStates(t *testing.T) {
 	loopID := createSchedule(t, a, sess.ID, "loop", "poll the deploy", now.Add(time.Hour), 30*time.Minute, 3)
 	// History rows: a cancelled once stays visible to the panel.
 	doneID := createSchedule(t, a, sess.ID, "once", "cancelled wake", now.Add(time.Minute), 0, 0)
-	store := session.NewWakeScheduleStore(a.DB())
+	store := sessionwake.NewWakeScheduleStore(a.DB())
 	require.NoError(t, store.CancelSchedule(t.Context(), sess.ID, doneID, now))
 
 	snap, errText, ok := requestWakeSchedules(t, a, client, sess.ID)
@@ -157,7 +158,7 @@ func TestHandleGetSessionWakeSchedules_DoneStatesViaClaimAndFire(t *testing.T) {
 	// done WITHOUT another advance).
 	loopID := createSchedule(t, a, sess.ID, "loop", "loop till max", due, time.Hour, 2)
 
-	store := session.NewWakeScheduleStore(a.DB())
+	store := sessionwake.NewWakeScheduleStore(a.DB())
 	// ONE claim sweep leases every due row (the worker's real behavior);
 	// firing then goes row by row off that same claim.
 	claimed, err := store.ClaimDue(t.Context(), "worker-1", due, 10, session.WakeLeaseTTL)

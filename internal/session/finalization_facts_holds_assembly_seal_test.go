@@ -6,6 +6,7 @@ import (
 
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -67,16 +68,16 @@ func TestTrySealHostDriverHoldsRefusalThenSeal(t *testing.T) {
 	// A genuinely foreign live host drives the owner session: its lock is
 	// really held by this test process, but the host is not marked as this
 	// process's own, so the facts must take the shared-probe path.
-	h, err := RegisterHost(ctx, dataDir, 4321, "foreign", nodeStore(q))
+	h, err := sessionhosts.RegisterHost(ctx, dataDir, 4321, "foreign", nodeStore(q))
 	require.NoError(t, err)
-	unmarkOwnHostID(h.ID)
+	sessionhosts.UnmarkOwnHostIDForTest(h.ID)
 	t.Cleanup(func() { _ = h.Close(ctx, nodeStore(q)) })
 	n, err := q.InsertSessionDriver(ctx, db.InsertSessionDriverParams{
 		SessionID: e.id.SessionID, HostID: h.ID, Pid: 4321, ClaimedAt: 1,
 	})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n)
-	require.False(t, IsOwnHostID(h.ID),
+	require.False(t, sessionhosts.IsOwnHostID(h.ID),
 		"precondition: the own-host exemption must not answer for this host")
 
 	_, presented := sealStoredCandidate(t, e, 0, 1)

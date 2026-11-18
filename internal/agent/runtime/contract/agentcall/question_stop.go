@@ -8,6 +8,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -17,8 +18,8 @@ import (
 // read back from history (SubAgentQuestionFromFinish).
 const (
 	awaitingAnswerStoppedTitle = session.AwaitingAnswerStoppedTitle
-	awaitingQuestionPrefix     = session.AwaitingQuestionPrefix
-	awaitingGuidanceMarker     = session.AwaitingGuidanceMarker
+	awaitingQuestionPrefix     = sessionnotice.AwaitingQuestionPrefix
+	awaitingGuidanceMarker     = sessionnotice.AwaitingGuidanceMarker
 )
 
 // AwaitingAnswerStoppedTitle is the exported alias of awaitingAnswerStoppedTitle: staying

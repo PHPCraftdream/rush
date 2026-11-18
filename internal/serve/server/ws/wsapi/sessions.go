@@ -17,6 +17,7 @@ import (
 	wire "github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -315,7 +316,7 @@ func annotateSessionActivity(ctx context.Context, a *appPkg.App, sessions []core
 // session pubsub bridge in events.go and by every handler that broadcasts a
 // fresh Session payload over WS. Exported so events.go can reach it without
 // duplicating the ownership rule. It reads only the lock fact -- the same
-// single lock reader the classifier uses (session.InspectSessionLockFact) --
+// single lock reader the classifier uses (sessionfacts.InspectSessionLockFact) --
 // because it runs on every broadcast session event, where the classifier's
 // DB fact queries are not paid. Rule: HELD by a live PID that is not ours.
 func AnnotateSessionExternalOwnership(a *appPkg.App, s *coresession.Session) {
@@ -328,7 +329,7 @@ func AnnotateSessionExternalOwnership(a *appPkg.App, s *coresession.Session) {
 	if dataDir == "" {
 		return
 	}
-	lock := session.InspectSessionLockFact(dataDir, s.ID)
+	lock := sessionfacts.InspectSessionLockFact(dataDir, s.ID)
 	if lock.Kind != session.LockHeld || lock.PID == 0 || lock.PID == os.Getpid() {
 		return
 	}

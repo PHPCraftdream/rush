@@ -1,0 +1,161 @@
+package mcpstore
+
+import (
+	"context"
+	"fmt"
+	"maps"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
+	"golang.org/x/sync/singleflight"
+)
+
+// SetDockerMCPVersionRunnerForTest replaces the docker mcp version runner
+// for one test and restores it via t.Cleanup (X1 precedent:
+// settings.SetSettingsPasswordIterationsForTest). Test-only seam.
+func SetDockerMCPVersionRunnerForTest(t testing.TB, runner func(ctx context.Context) error) {
+	previous := dockerMCPVersionRunner
+	dockerMCPVersionRunner = runner
+	t.Cleanup(func() { dockerMCPVersionRunner = previous })
+}
+
+var dockerMCPVersionRunner = func(ctx context.Context) error {
+	cmd := platform.Command(ctx, "docker", "mcp", "version")
+	return cmd.Run()
+}
+
+const dockerMCPAvailabilityTTL = 10 * time.Second
+
+var dockerMCPAvailabilityCache struct {
+	mu        sync.Mutex
+	available bool
+	checkedAt time.Time
+	known     bool
+}
+
+// dockerMCPRefreshGroup single-flights concurrent RefreshDockerMCPAvailability
+// calls so that N goroutines racing to refresh (e.g. several callers all
+// observing a stale/unknown cache at once) share a single 'docker mcp
+// version' subprocess invocation instead of each spawning their own —
+// spawning a process is comparatively expensive and there is no benefit to
+// running it more than once for callers that overlap in time.
+var dockerMCPRefreshGroup singleflight.Group
+
+// IsDockerMCPAvailable checks if Docker MCP is available by running
+// 'docker mcp version'.
+func IsDockerMCPAvailable() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := dockerMCPVersionRunner(ctx)
+	return err == nil
+}
+
+// DockerMCPAvailabilityCached returns the cached Docker MCP availability and
+// whether the cached value is still fresh.
+func DockerMCPAvailabilityCached() (available bool, known bool) {
+	dockerMCPAvailabilityCache.mu.Lock()
+	defer dockerMCPAvailabilityCache.mu.Unlock()
+
+	if !dockerMCPAvailabilityCache.known {
+		return false, false
+	}
+	if time.Since(dockerMCPAvailabilityCache.checkedAt) > dockerMCPAvailabilityTTL {
+		return dockerMCPAvailabilityCache.available, false
+	}
+	return dockerMCPAvailabilityCache.available, true
+}
+
+// RefreshDockerMCPAvailability refreshes and caches Docker MCP availability.
+// Concurrent calls are single-flighted (see dockerMCPRefreshGroup): only one
+// 'docker mcp version' subprocess actually runs at a time, and every caller
+// that arrived while it was in flight receives its result.
+func RefreshDockerMCPAvailability() bool {
+	v, _, _ := dockerMCPRefreshGroup.Do("refresh", func() (any, error) {
+		available := IsDockerMCPAvailable()
+		dockerMCPAvailabilityCache.mu.Lock()
+		dockerMCPAvailabilityCache.available = available
+		dockerMCPAvailabilityCache.checkedAt = time.Now()
+		dockerMCPAvailabilityCache.known = true
+		dockerMCPAvailabilityCache.mu.Unlock()
+		return available, nil
+	})
+	available, _ := v.(bool)
+	return available
+}
+
+// DockerMCPConfig returns the default Docker MCP stdio configuration.
+func DockerMCPConfig() MCPConfig {
+	return MCPConfig{
+		Type:     MCPStdio,
+		Command:  "docker",
+		Args:     []string{"mcp", "gateway", "run"},
+		Disabled: false,
+	}
+}
+
+// PrepareDockerMCPConfig validates Docker MCP availability and stages the
+// Docker MCP configuration in memory.
+func (s *Store) PrepareDockerMCPConfig() (MCPConfig, error) {
+	if !IsDockerMCPAvailable() {
+		return MCPConfig{}, fmt.Errorf("docker mcp is not available, please ensure docker is installed and 'docker mcp version' succeeds")
+	}
+
+	mcpConfig := DockerMCPConfig()
+	s.port.MutateConfig(func(cfgCopy *Config) {
+		cfgCopy.MCP = maps.Clone(cfgCopy.MCP)
+		if cfgCopy.MCP == nil {
+			cfgCopy.MCP = make(map[string]MCPConfig)
+		}
+		cfgCopy.MCP[DockerMCPName] = mcpConfig
+	})
+	return mcpConfig, nil
+}
+
+// PersistDockerMCPConfig persists a previously prepared Docker MCP
+// configuration to the global config file.
+func (s *Store) PersistDockerMCPConfig(mcpConfig MCPConfig) error {
+	if err := s.PersistMCPConfig(ScopeGlobal, DockerMCPName, mcpConfig); err != nil {
+		return fmt.Errorf("failed to persist docker mcp configuration: %w", err)
+	}
+	return nil
+}
+
+// EnableDockerMCP adds Docker MCP configuration and persists it.
+func (s *Store) EnableDockerMCP() error {
+	mcpConfig, err := s.PrepareDockerMCPConfig()
+	if err != nil {
+		return err
+	}
+	if err := s.PersistDockerMCPConfig(mcpConfig); err != nil {
+		return err
+	}
+	return nil
+}
+
+// DisableDockerMCP removes Docker MCP configuration and persists the change.
+func (s *Store) DisableDockerMCP() error {
+	config := s.viewConfig()
+	if config == nil || config.MCP == nil {
+		return nil
+	}
+
+	if err := s.PersistRemoveMCPConfig(ScopeGlobal, DockerMCPName); err != nil {
+		return fmt.Errorf("failed to persist docker mcp removal: %w", err)
+	}
+	_, _ = s.RemoveMCP(DockerMCPName)
+
+	return nil
+}
+
+// viewConfig reads the published config snapshot.
+func (s *Store) viewConfig() *Config {
+	var config *Config
+	_ = s.port.ViewSnap(func(view MCPView) error {
+		config = view.Config()
+		return nil
+	})
+	return config
+}

@@ -16,8 +16,9 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
-	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/spf13/cobra"
 )
 
@@ -83,7 +84,7 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		ids := idsOf(sessions)
 		batchFacts := batchRuntimeFacts(cmd.Context(), a, a.Config().Options.DataDirectory, ids)
 		var statusByID map[string]string
-		var awaitingByID map[string]session.ChildQuestion
+		var awaitingByID map[string]sessionnotice.ChildQuestion
 		activities, actErr := a.SessionActivityBatch(cmd.Context(), ids)
 		if actErr != nil {
 			return fmt.Errorf("failed to classify sessions: %w", actErr)
@@ -173,7 +174,7 @@ func sessionQuestionReaderForApp(a *app.App) pendingChildQuestionReader {
 	return sesskit.SessionQuestionReaderForApp(a)
 }
 
-func listStatusesWithAwaiting(ctx context.Context, store pendingChildQuestionReader, activities app.SessionActivityBatchResult, ids []string) (map[string]string, map[string]session.ChildQuestion) {
+func listStatusesWithAwaiting(ctx context.Context, store pendingChildQuestionReader, activities app.SessionActivityBatchResult, ids []string) (map[string]string, map[string]sessionnotice.ChildQuestion) {
 	return sesskit.ListStatusesWithAwaiting(ctx, store, activities, ids)
 }
 
@@ -193,7 +194,7 @@ func idsOf(sessions []coresession.Session) []string {
 // from. The verdict-only shape carries no recorded end: callers holding the
 // facts call sessionStatusLabel directly, so a live session's recorded exit
 // is annotated instead of hidden (FIX-STATUS (a)).
-func listStatus(v session.ActivityVerdict) string {
+func listStatus(v sessionfacts.ActivityVerdict) string {
 	return sessionStatusLabel(v, "")
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -80,7 +81,7 @@ func TestSessionsJobsCmdRun_TableAndForeignLiveHost(t *testing.T) {
 	require.NoError(t, err)
 
 	foreignID := "foreign-live-host"
-	foreignLock, err := filelock.TryAcquireFileLock(session.HostLockPath(dataDir, foreignID))
+	foreignLock, err := filelock.TryAcquireFileLock(sessionhosts.HostLockPath(dataDir, foreignID))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = foreignLock.Release() })
 	q := db.New(a.DB())
@@ -154,7 +155,7 @@ func TestSessionsJobsCmdRun_JSONDeadHostDeletesUnannouncedSubtree(t *testing.T) 
 	// the probe must then read the host DEAD, like a crashed rush process.
 	f.closeAsync()
 	a.Shutdown()
-	status, probeErr := session.ProbeHostShared(dataDir, f.host)
+	status, probeErr := sessionhosts.ProbeHostShared(dataDir, f.host)
 	require.Equal(t, session.HostStatusDead, status)
 	require.NoError(t, probeErr)
 	require.NoError(t, sessionsJobsCmd.Flags().Set("json", "true"))

@@ -17,6 +17,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 )
 
 var _ tools.AwaitControl = (*coordinator)(nil)
@@ -107,7 +108,7 @@ func (c *coordinator) AwaitTasks(ctx context.Context, sessionID, mode string, ma
 	if maxWaitSeconds > 0 {
 		create = func() (string, error) {
 			view, err := c.ScheduleWakeOnceDelay(ctx, sessionID, int64(maxWaitSeconds),
-				fmt.Sprintf(session.AwaitTasksMaxWaitPrefix+" %d task(s) may still be running: %s",
+				fmt.Sprintf(sessionwake.AwaitTasksMaxWaitPrefix+" %d task(s) may still be running: %s",
 					len(waiting), awaitTaskSummary(waiting)))
 			return view.ScheduleID, err
 		}

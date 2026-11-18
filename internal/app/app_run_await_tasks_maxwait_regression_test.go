@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -69,8 +69,8 @@ func TestRunLoop_AwaitTasksMaxWaitRestart_OrphanScheduleCancelled(t *testing.T) 
 	ctx, cancel := context.WithTimeout(loopCtx(t), 10*time.Second)
 	defer cancel()
 	now := time.Now()
-	row, err := h.app.WakeScheduleStore().CreateSchedule(ctx, session.CreateWakeScheduleParams{
-		Owner: h.sessionID, Kind: session.WakeKindOnce,
+	row, err := h.app.WakeScheduleStore().CreateSchedule(ctx, sessionwake.CreateWakeScheduleParams{
+		Owner: h.sessionID, Kind: sessionwake.WakeKindOnce,
 		Message: "await_tasks max_wait elapsed: 1 task(s) may still be running: agent/deleg-old",
 		RunAt:   now.Add(2 * time.Hour),
 	}, now)
@@ -103,8 +103,8 @@ func TestRunLoop_AwaitTasksMaxWaitModelOnceStillHolds(t *testing.T) {
 		loopText(w, "f", "final", 11, 3)
 	})
 	now := time.Now()
-	row, err := h.app.WakeScheduleStore().CreateSchedule(t.Context(), session.CreateWakeScheduleParams{
-		Owner: h.sessionID, Kind: session.WakeKindOnce, Message: "model-owned reminder",
+	row, err := h.app.WakeScheduleStore().CreateSchedule(t.Context(), sessionwake.CreateWakeScheduleParams{
+		Owner: h.sessionID, Kind: sessionwake.WakeKindOnce, Message: "model-owned reminder",
 		RunAt: now.Add(2 * time.Hour),
 	}, now)
 	require.NoError(t, err)
@@ -129,8 +129,8 @@ func TestRunLoop_AwaitTasksMaxWaitStartSessionResolution(t *testing.T) {
 				loopText(w, "f", "final", 11, 3)
 			})
 			now := time.Now()
-			row, err := h.app.WakeScheduleStore().CreateSchedule(t.Context(), session.CreateWakeScheduleParams{
-				Owner: h.sessionID, Kind: session.WakeKindOnce, Message: session.AwaitTasksMaxWaitPrefix + " old",
+			row, err := h.app.WakeScheduleStore().CreateSchedule(t.Context(), sessionwake.CreateWakeScheduleParams{
+				Owner: h.sessionID, Kind: sessionwake.WakeKindOnce, Message: sessionwake.AwaitTasksMaxWaitPrefix + " old",
 				RunAt: now.Add(2 * time.Hour),
 			}, now)
 			require.NoError(t, err)

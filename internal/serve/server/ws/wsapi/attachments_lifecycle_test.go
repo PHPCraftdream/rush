@@ -11,7 +11,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,7 +31,7 @@ func (c *attachmentsLifecycleCoordinator) CancelAll() bool {
 	return false
 }
 
-func (c *attachmentsLifecycleCoordinator) SetWakeScheduleStore(*session.WakeScheduleStore) {}
+func (c *attachmentsLifecycleCoordinator) SetWakeScheduleStore(*sessionwake.WakeScheduleStore) {}
 
 func (c *attachmentsLifecycleCoordinator) StopWakeScheduler() {
 	c.stopOnce.Do(func() { close(c.stop) })

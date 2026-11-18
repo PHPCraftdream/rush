@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	sesslocks "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/locks"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
@@ -83,10 +84,10 @@ rush sessions reset pr-42 --force
 			// data_directory) instead of recomputing a cwd-based guess —
 			// see task #219.
 			dataDir := a.Config().Options.DataDirectory
-			lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
+			lockPath := filepath.Join(dataDir, "locks", "session-"+sesslocks.SanitiseSessionIDForFilename(sess.ID)+".lock")
 			fmt.Fprintf(os.Stderr, "reset --force: acquiring session lock at %s\n", lockPath)
 			pid := sessionlock.ReadLockPID(lockPath)
-			lk, kr, acquireErr := acquireSessionLockForReset(dataDir, sess.ID, pid, 5*time.Second)
+			lk, kr, acquireErr := sesslocks.AcquireSessionLockForReset(dataDir, sess.ID, pid, 5*time.Second)
 			if acquireErr != nil {
 				fmt.Fprint(os.Stderr, kr.Report)
 				return fmt.Errorf("reset --force: %w", acquireErr)
@@ -107,7 +108,7 @@ rush sessions reset pr-42 --force
 		// The lock probe is released immediately; the batch reset handles
 		// batch ownership atomically.
 		if !force {
-			if reason := liveOwnerProtection(cmd.Context(), a, sess.ID); reason != "" {
+			if reason := sesslocks.LiveOwnerProtection(cmd.Context(), a, sess.ID); reason != "" {
 				return resetRefusedError(sess.ID, reason)
 			}
 		} else if err := resetLiveLoopRefusal(cmd.Context(), a, sess.ID); err != nil {

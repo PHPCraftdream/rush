@@ -19,6 +19,9 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -148,14 +151,14 @@ func wsworkSeams() wswork.Seams {
 		DataDir: func() func(*appPkg.App) string {
 			return func(a *appPkg.App) string { return batchDataDir(a) }
 		},
-		ProbeHost: func() func(string, string) session.HostLockStatus {
-			return func(dataDir, host string) session.HostLockStatus { return batchProbeHost(dataDir, host) }
+		ProbeHost: func() func(string, string) sessionhosts.HostLockStatus {
+			return func(dataDir, host string) sessionhosts.HostLockStatus { return batchProbeHost(dataDir, host) }
 		},
 		IsOwnHost: func() func(string) bool {
 			return func(host string) bool { return batchIsOwnHost(host) }
 		},
-		PendingQuestions: func() func(context.Context, *appPkg.App, []string) (map[string]session.ChildQuestion, bool) {
-			return func(ctx context.Context, a *appPkg.App, visited []string) (map[string]session.ChildQuestion, bool) {
+		PendingQuestions: func() func(context.Context, *appPkg.App, []string) (map[string]sessionnotice.ChildQuestion, bool) {
+			return func(ctx context.Context, a *appPkg.App, visited []string) (map[string]sessionnotice.ChildQuestion, bool) {
 				return batchPendingQuestionsFor(ctx, a, visited)
 			}
 		},
@@ -215,17 +218,17 @@ var (
 		}
 		return a.Config().Options.DataDirectory
 	}
-	batchProbeHost = func(dataDir, host string) session.HostLockStatus {
+	batchProbeHost = func(dataDir, host string) sessionhosts.HostLockStatus {
 		if dataDir == "" || host == "" {
 			return session.HostStatusUnknown
 		}
-		st, err := session.ProbeHostShared(dataDir, host)
+		st, err := sessionhosts.ProbeHostShared(dataDir, host)
 		if err != nil || (st != session.HostStatusAlive && st != session.HostStatusDead) {
 			return session.HostStatusUnknown
 		}
 		return st
 	}
-	batchIsOwnHost = session.IsOwnHostID
+	batchIsOwnHost = sessionhosts.IsOwnHostID
 	// batchAddForWeb preserves the public App boundary while allowing focused
 	// validation/argument tests; production always delegates to App.BatchAdd.
 	batchAddForWeb = func(ctx context.Context, a *appPkg.App, root, node string, items []jobbatch.Spec) error {
@@ -276,11 +279,11 @@ func (p *liveWorkPusher) mark(sessionID string) { p.inner.Mark(sessionID) }
 
 // batchPendingQuestionsFor keeps the HEAD seam indirection: it reads the
 // session_notices fallback for awaiting-answer badges.
-var batchPendingQuestionsFor = func(ctx context.Context, a *appPkg.App, visited []string) (map[string]session.ChildQuestion, bool) {
+var batchPendingQuestionsFor = func(ctx context.Context, a *appPkg.App, visited []string) (map[string]sessionnotice.ChildQuestion, bool) {
 	return batchPendingQuestions(ctx, a, visited)
 }
 
-func batchPendingQuestions(ctx context.Context, a *appPkg.App, visited []string) (map[string]session.ChildQuestion, bool) {
+func batchPendingQuestions(ctx context.Context, a *appPkg.App, visited []string) (map[string]sessionnotice.ChildQuestion, bool) {
 	return wswork.BatchPendingQuestions(ctx, a, visited)
 }
 
@@ -316,7 +319,7 @@ func collectBatchHistoryTerminalRoots(ctx context.Context, src batchNodeSource, 
 	return out, ok
 }
 
-func batchRootItem(m batchRootMeta, titles map[hub.TitleKey]string, questions map[string]session.ChildQuestion) LiveWorkItemWire {
+func batchRootItem(m batchRootMeta, titles map[hub.TitleKey]string, questions map[string]sessionnotice.ChildQuestion) LiveWorkItemWire {
 	return wswork.BatchRootItem(wswork.NewBatchRootMeta(m.root, m.taskKind, m.child, m.askNodeID, m.taskChildren, m.taskPayload), titles, questions)
 }
 
@@ -330,6 +333,6 @@ func handleCancelWakeSchedule(ctx context.Context, a *appPkg.App, c *Client, msg
 	wswork.HandleCancelWakeSchedule(ctx, a, c, msg)
 }
 
-func buildSessionWakeSchedules(ctx context.Context, store *session.WakeScheduleStore, sessionID string) (SessionWakeSchedulesPayload, error) {
+func buildSessionWakeSchedules(ctx context.Context, store *sessionwake.WakeScheduleStore, sessionID string) (SessionWakeSchedulesPayload, error) {
 	return wswork.BuildSessionWakeSchedules(ctx, store, sessionID)
 }
