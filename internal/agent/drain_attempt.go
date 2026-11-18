@@ -20,24 +20,12 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 	newDrainComponent(c).accountDrainAttempt(ctx, att, turnErr)
 }
 
-func (c *coordinator) executeAccountVerdict(ctx context.Context, sid string, att *drainAttempt, turnErr error, v Verdict, openRows int) {
-	newDrainComponent(c).executeAccountVerdict(ctx, sid, att, turnErr, v, openRows)
-}
-
-func (c *coordinator) drainAttemptTerminal(ctx context.Context, att *drainAttempt, turnErr error, turnCtxDone bool) bool {
-	return newDrainComponent(c).drainAttemptTerminal(ctx, att, turnErr, turnCtxDone)
-}
-
 func (c *coordinator) noteDrainRefused(sessionID string, cause error) {
 	newDrainComponent(c).noteDrainRefused(sessionID, cause)
 }
 
 func (c *coordinator) noteTurnFailed(sessionID string) {
 	newDrainComponent(c).noteTurnFailed(sessionID)
-}
-
-func (c *coordinator) paceUnreacted(sessionID string, hintAt uint64, hintOpens bool, kind drainPace) {
-	newDrainComponent(c).paceUnreacted(sessionID, hintAt, hintOpens, kind)
 }
 
 func (c *coordinator) drainRefused(ctx context.Context, sessionID string, err error) error {

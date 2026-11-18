@@ -1,72 +1,38 @@
 package agent
 
 import (
-	"encoding/json"
-	"math"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
-	"github.com/PHPCraftdream/rush/internal/agent/tools"
 )
 
-// stepCallClass is what one tool call of one step WAS, judged from the call's
-// own input plus structured result metadata, never inferred from error text.
-// Untagged errors remain potentially effectful. It is the single
-// verdict the in-turn progress guard and the reaction chain guard (#1113)
-// both read.
-type stepCallClass int
+// stepCallClass and its constants alias the leaf classifier's verdict type
+// (runtime/exec/turnstep) for the root guard, reaction chain and their tests.
+type stepCallClass = turnstep.StepCallClass
 
 const (
-	// stepCallAct may change the world: edit/write/fs_*, bash/run_command with
-	// a real command, agent/fetch, a stop control, wake*, unknown MCP tools.
-	// An error in the result does not downgrade it.
-	stepCallAct stepCallClass = iota
-	// stepCallRead reads at least one line not covered yet in this turn.
-	stepCallRead
-	// stepCallReread is a view/fs_read whose every window is already covered:
-	// the step observes without learning anything new.
-	stepCallReread
-	// stepCallWait is an ASYNC launch of a pure wait command (bash
-	// sleep/echo, run_command sleep/timeout). A synchronous SDK sleep blocks
-	// for real and stays act, exactly as #1113 always counted it.
-	stepCallWait
-	// stepCallRefused is the in-turn guard's own refusal: the tool never ran.
-	stepCallRefused
-	// stepCallNeutral neither advances nor launches: batch_output/todos, or
-	// an unknown tool name (nothing was in the set to run).
-	stepCallNeutral
-	// stepCallNoWrite is a native edit proven to have made no file write.
-	stepCallNoWrite
+	stepCallAct     = turnstep.StepCallAct
+	stepCallRead    = turnstep.StepCallRead
+	stepCallReread  = turnstep.StepCallReread
+	stepCallWait    = turnstep.StepCallWait
+	stepCallRefused = turnstep.StepCallRefused
+	stepCallNeutral = turnstep.StepCallNeutral
+	stepCallNoWrite = turnstep.StepCallNoWrite
 )
-
-func (c stepCallClass) String() string {
-	switch c {
-	case stepCallAct:
-		return "act"
-	case stepCallRead:
-		return "read"
-	case stepCallReread:
-		return "reread"
-	case stepCallWait:
-		return "wait"
-	case stepCallRefused:
-		return "refused"
-	case stepCallNeutral:
-		return "neutral"
-	case stepCallNoWrite:
-		return "no_write"
-	}
-	return "unknown"
-}
 
 // readSpan is a half-open line window [start, end); end == math.MaxInt means
 // "to the end of the file". Bounds come from the call's own request, so the
 // tail past EOF is an acceptable over-estimate.
 type readSpan struct{ start, end int }
+
+func toLeafSpan(sp readSpan) turnstep.ReadSpan {
+	return turnstep.ReadSpan{Start: sp.start, End: sp.end}
+}
+
+func fromLeafSpan(sp turnstep.ReadSpan) readSpan { return readSpan{start: sp.Start, end: sp.End} }
 
 // readCoverage maps a cleaned file path to the line windows already read in
 // this turn. A nil map means "coverage is not tracked at all", which makes
@@ -161,87 +127,15 @@ type namedSpan struct {
 // readSpans extracts the line windows a view/fs_read call asked for, one per
 // item for fs_read's batch form. Any other tool, an unparsable input, or a
 // fs_read item the real tool itself would reject yields no window for it --
-// the guard does not punish input it cannot read.
+// the guard does not punish input it cannot read. The parse itself lives in
+// the leaf package (turnstep.ReadSpans).
 func readSpans(call fantasy.ToolCallContent) []namedSpan {
-	switch call.ToolName {
-	case tools.ViewToolName:
-		var params struct {
-			FilePath string `json:"file_path"`
-			Offset   int    `json:"offset"`
-			Limit    int    `json:"limit"`
-		}
-		if json.Unmarshal([]byte(call.Input), &params) != nil {
-			return nil
-		}
-		limit := params.Limit
-		if limit <= 0 {
-			limit = tools.DefaultReadLimit // view.go's own default
-		}
-		return []namedSpan{{path: params.FilePath, span: readSpan{start: params.Offset, end: params.Offset + limit}}}
-	case tools.FSReadToolName:
-		var params struct {
-			Items []struct {
-				Path      string `json:"path"`
-				StartLine int    `json:"start_line"`
-				EndLine   int    `json:"end_line"`
-				Line      int    `json:"line"`
-				Radius    int    `json:"radius"`
-			} `json:"items"`
-		}
-		if json.Unmarshal([]byte(call.Input), &params) != nil {
-			return nil
-		}
-		out := make([]namedSpan, 0, len(params.Items))
-		for _, item := range params.Items {
-			if span, ok := fsReadItemSpan(item.Path, item.StartLine, item.EndLine, item.Line, item.Radius); ok {
-				out = append(out, namedSpan{path: item.Path, span: span})
-			}
-		}
-		return out
-	default:
-		return nil
+	leaf := turnstep.ReadSpans(call)
+	out := make([]namedSpan, 0, len(leaf))
+	for _, named := range leaf {
+		out = append(out, namedSpan{path: named.Path, span: fromLeafSpan(named.Span)})
 	}
-}
-
-// fsReadItemSpan mirrors fs_read.go's fsReadWindowOf addressing modes: a
-// 1-based inclusive start_line/end_line range (end_line 0 reads to EOF), a
-// center line with a radius, or the whole file when no bound is given. An
-// item that mixes both modes, or carries a bound the tool rejects, has no
-// span -- that call fails before it reads anything.
-func fsReadItemSpan(path string, startLine, endLine, line, radius int) (readSpan, bool) {
-	if strings.TrimSpace(path) == "" {
-		return readSpan{}, false
-	}
-	switch {
-	case startLine != 0 || endLine != 0:
-		if startLine < 1 || (endLine != 0 && endLine < startLine) {
-			return readSpan{}, false
-		}
-		end := endLine
-		if end == 0 {
-			end = math.MaxInt
-		}
-		return readSpan{start: startLine - 1, end: end}, true
-	case line != 0 || radius != 0:
-		if line < 1 || radius < 0 {
-			return readSpan{}, false
-		}
-		start := line - 1 - radius
-		if start < 0 {
-			start = 0
-		}
-		return readSpan{start: start, end: line + radius}, true
-	default:
-		return readSpan{start: 0, end: math.MaxInt}, true
-	}
-}
-
-func guardRefused(result fantasy.ToolResultContent) bool {
-	return turnstep.GuardRefused(result)
-}
-
-func unknownToolResult(result fantasy.ToolResultContent) bool {
-	return turnstep.UnknownToolResult(result)
+	return out
 }
 
 func asyncCapRefused(result fantasy.ToolResultContent) bool {
@@ -255,55 +149,30 @@ type stepClassifyCtx struct {
 	seen readCoverage // nil: reread detection impossible; view/fs_read classify as read
 }
 
-// classifyStepCall is the ONE place that decides what a call was. The order
-// matters: a refusal outranks everything (the tool never ran) -- the guard's
-// own tag first, then the async-cap tag, which is a different seam of the same
-// "nothing executed" verdict and is never masked by the guard's -- then the
-// always-neutral tools, then the unknown-tool error, then the wait-only
-// launch gated on async metadata, then the windowed reads against coverage,
-// then the restricted-action table, and everything else is act.
-func classifyStepCall(call fantasy.ToolCallContent, result fantasy.ToolResultContent, cx stepClassifyCtx) stepCallClass {
-	if guardRefused(result) {
-		return stepCallRefused
-	}
-	if asyncCapRefused(result) {
-		return stepCallRefused
-	}
-	if _, neutral := chainNeutralTools[call.ToolName]; neutral {
-		return stepCallNeutral
-	}
-	if unknownToolResult(result) {
-		return stepCallNeutral
-	}
-	if editMadeNoWrite(call, result) {
-		return stepCallNoWrite
-	}
-	if isWaitOnlyCall(call) {
-		var meta asyncToolMetadata
-		_ = json.Unmarshal([]byte(result.ClientMetadata), &meta)
-		if meta.Async || meta.Inline {
-			return stepCallWait
-		}
-		// no async metadata: a synchronous sleep really blocks (SDK) -- act
-	}
-	switch call.ToolName {
-	case tools.ViewToolName, tools.FSReadToolName:
-		spans := readSpans(call)
-		if len(spans) == 0 {
-			return stepCallRead // unreadable input: do not punish the model
-		}
-		if cx.seen == nil {
-			return stepCallRead
-		}
-		for _, named := range spans {
-			if !cx.seen.covered(named.path, named.span) {
-				return stepCallRead
+// seam hands the coverage and the restricted-action table to the leaf
+// classifier through its use-point seams; the coverage callback runs at the
+// classifier's original readSpans parse site and reads an untracked map
+// (nil seen) as fresh windows.
+func (cx stepClassifyCtx) seam() turnstep.StepClassifyCtx {
+	return turnstep.StepClassifyCtx{
+		RestrictedAction: func(toolName string) string { return restrictedToolActions[toolName] },
+		CoveredWindows: func(call fantasy.ToolCallContent) (int, bool) {
+			spans := turnstep.ReadSpans(call)
+			if len(spans) == 0 {
+				return 0, false
 			}
-		}
-		return stepCallReread
+			for _, named := range spans {
+				if cx.seen == nil || !cx.seen.covered(named.Path, fromLeafSpan(named.Span)) {
+					return len(spans), false
+				}
+			}
+			return len(spans), true
+		},
 	}
-	if action := restrictedToolActions[call.ToolName]; action == "read" || action == "list" {
-		return stepCallRead
-	}
-	return stepCallAct
+}
+
+// classifyStepCall delegates the verdict to the leaf classifier
+// (runtime/exec/turnstep.ClassifyStepCall) against this root ctx's seams.
+func classifyStepCall(call fantasy.ToolCallContent, result fantasy.ToolResultContent, cx stepClassifyCtx) stepCallClass {
+	return turnstep.ClassifyStepCall(call, result, cx.seam())
 }

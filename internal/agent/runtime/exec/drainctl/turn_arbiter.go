@@ -4,6 +4,7 @@
 package drainctl
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -205,6 +206,70 @@ type Verdict struct {
 	Marker string
 	// BatchRows is the batch-node twin of Rows on the flag-on path.
 	BatchRows session.BatchDebtSnapshot
+}
+
+// DrainVerdictKind is the outcome of a mapped launch decision (the leaf
+// outcome the drain callers speak, distinct from the arbiter's VerdictKind).
+type DrainVerdictKind uint8
+
+const (
+	DrainAllow DrainVerdictKind = iota
+	// DrainDeferred: the policy refuses a turn for this debt (foreign driver,
+	// Stop suspension, released child, bg-shell with auto-resume off or over
+	// its cap for a re-check, ...).
+	DrainDeferred
+	// DrainPaced: the launch gate is shut until RetryAt, or a rerun holds the
+	// session (a temporary hold: RetryAt is zero and the tick retries it).
+	DrainPaced
+	// DrainStuck: the gate is dormant -- a failing pull is reopened by a newer
+	// fact, paid attempts whose close kept failing only by a human message.
+	DrainStuck
+)
+
+// DrainVerdict is one launch decision. Recheck: deferred, but worth a tick
+// (foreign driver, unreadable policy input).
+type DrainVerdict struct {
+	Kind    DrainVerdictKind
+	RetryAt time.Time
+	Recheck bool
+	Reason  string
+	// Err is set when the refusal is an unreadable policy input (fail closed).
+	Err error
+}
+
+// DrainVerdictOf maps an arbiter verdict onto the DrainVerdict kinds the
+// drain callers (wakeSession's switch, the CLI loop, decideDrainTurn) speak.
+// Texts and recheck-ness mirror today's policy exactly:
+//   - rerun hold and a gate pause read paced and are worth a tick (recheck);
+//   - a dormant gate reads stuck;
+//   - a foreign live driver is deferred but worth a tick;
+//   - every other policy refusal (suspension, chain guard, released child,
+//     cap, auto-resume off) is deferred without a tick.
+func DrainVerdictOf(v Verdict) DrainVerdict {
+	switch v.Kind {
+	case VRun, VNone:
+		return DrainVerdict{Kind: DrainAllow}
+	}
+	switch v.Reason {
+	case "rerun in progress":
+		return DrainVerdict{Kind: DrainPaced, Recheck: true, Reason: v.Reason}
+	case "retry pause after an unreacted attempt":
+		return DrainVerdict{Kind: DrainPaced, RetryAt: v.RecheckAt, Recheck: true, Reason: v.Reason}
+	case "repeated unreacted attempts":
+		return DrainVerdict{Kind: DrainStuck, RetryAt: v.RecheckAt, Reason: v.Reason}
+	}
+	recheck := v.Reason == "another process drives the session"
+	return DrainVerdict{Kind: DrainDeferred, Recheck: recheck, Reason: v.Reason}
+}
+
+// UnreadablePolicyInput wraps a read error as a fail-closed deferred verdict
+// (worth a tick), as the old policy's per-input handler did.
+func UnreadablePolicyInput(what string, sessionID string, err error) DrainVerdict {
+	slog.Warn("drain policy: input unreadable; refusing the turn for now",
+		"session_id", sessionID, "input", what, "err", err)
+	v := DrainVerdict{Kind: DrainDeferred, Recheck: true, Reason: what + " unreadable"}
+	v.Err = err
+	return v
 }
 
 // GateShut reports the launch-gate half of the table (rules 8-10): the gate

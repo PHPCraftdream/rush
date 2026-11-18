@@ -8,16 +8,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
+	"github.com/PHPCraftdream/rush/internal/session"
 	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 )
@@ -117,8 +120,8 @@ func isContextOverflow(err error) bool {
 	return providerErr.StatusCode == http.StatusBadRequest && contextOverflowMessage.MatchString(providerErr.Message)
 }
 
-// SettleTailFor picks the marker tail for the failure that closed the debt.
-func SettleTailFor(err error) string {
+// settleTailFor picks the marker tail for the failure that closed the debt.
+func settleTailFor(err error) string {
 	if isContextOverflow(err) {
 		return settleTailContextTooLarge
 	}
@@ -288,4 +291,366 @@ func ForeignWorkspaceError(sess coresession.Session) error {
 		}
 	}
 	return fmt.Errorf("%s: %w", msg, runq.ErrForeignWorkspace)
+}
+
+// Drain attempt accounting (moved verbatim from package agent's
+// drainComponent, drain_component.go): the root package keeps the private
+// drainAttempt record and the thin coordinator delegates; this file owns the
+// title-level accounting itself, written against the narrow seams below --
+// no root types appear here.
+
+// AttemptPort is the narrow subset of the root BatchCutoverFacts surface the
+// accounting reads and writes, at use time (the port is fetched per use, so
+// the source is selected where the original code called batchCutoverFacts).
+type AttemptPort interface {
+	// DebtToolCallIDs resolves each snapshot ref's root-row tool_call_id
+	// (the chain identity vocabulary / the settle marker text).
+	DebtToolCallIDs(ctx context.Context, snap session.BatchDebtSnapshot) []string
+	// IncrementWakeAttempts counts one unreacted attempt on every row of
+	// the acted-on snapshot.
+	IncrementWakeAttempts(ctx context.Context, owner string, snap session.BatchDebtSnapshot) error
+	// AttemptRows rereads the GIVEN acted-on snapshot after an attempt was
+	// counted (per-row wake attempts against the atK threshold).
+	AttemptRows(ctx context.Context, owner string, snap session.BatchDebtSnapshot, atK int) (AttemptRows, error)
+	// SettleReactedFailedWithMarker closes EXACTLY the snapshot's rows by
+	// failure and writes the wake_failed marker; returns the settled count.
+	SettleReactedFailedWithMarker(ctx context.Context, owner string, snap session.BatchDebtSnapshot, text string) (int64, error)
+}
+
+// AttemptRows is the post-attempt per-row picture of the visible debt (the
+// A5/A6 inputs); the root's BatchAttemptRows projects onto it.
+type AttemptRows struct {
+	Open        int
+	Max         int
+	AtK         session.BatchDebtSnapshot
+	UnmappedAtK int
+}
+
+// AttemptGovernor is the gate/chain/auth surface the accounting acts on
+// (the arbiter state's writers, R-ARB-2, plus the 401 predicates).
+type AttemptGovernor interface {
+	// AccountFacts is the accounting port, fetched at use time (the original
+	// code constructed batchCutoverFacts at each use site).
+	AccountFacts() AttemptPort
+	// Now is the arbiter's clock.
+	Now() time.Time
+	// Pace writes the launch gate (arbiter pace); it reports whether the
+	// write turned the gate dormant.
+	Pace(sid string, hintAt uint64, wait time.Duration, hintOpens bool, kind Pace) (becameDormant bool)
+	// ChainLink records the reaction-chain link of the attempt's leg; the
+	// governor side reads the attempt record itself.
+	ChainLink(sid string, snap session.BatchDebtSnapshot)
+	// ResetGate opens the launch gate.
+	ResetGate(sid string)
+	// AddToRecheckSet queues the session for a re-check tick.
+	AddToRecheckSet(sid string)
+	// IsExternalDriver reports whether the session's drain launches are
+	// driven by this process's own `rush run` loop.
+	IsExternalDriver(sid string) bool
+	// HintSeqOf reads the current driver-hint counter.
+	HintSeqOf(sid string) uint64
+	// IsUnauthorized reports a 401-shaped provider error.
+	IsUnauthorized(err error) bool
+	// RefreshAfterUnauthorized refreshes providerID's credentials.
+	RefreshAfterUnauthorized(ctx context.Context, providerID string) bool
+	// PublishReauthenticate asks the operator to re-authenticate.
+	PublishReauthenticate(providerID string)
+	// RedactURLs rewrites URL-looking tokens in an error text (R2-5).
+	RedactURLs(s string) string
+}
+
+// AttemptRecord is the explicit projection of the root drainAttempt record
+// the accounting reads and writes. The atomic flags are read through
+// function values AT USE TIME, in the original evaluation order; the
+// setters write back exactly what the original assigned on the record.
+type AttemptRecord struct {
+	SessionID   string
+	HintAt      uint64
+	Outcome     DrainOutcome
+	PendingLeft bool
+	// CommitNoRecheck is the no-turn commit verdict's recheck question
+	// (att.commitNo.recheck).
+	CommitNoRecheck bool
+	// StreamErr is the error agent.Stream returned (read once, up front,
+	// as the leg's failure when the turn loop reported none).
+	StreamErr error
+	// Stalled / CapAbort / TurnCtxDone read the record's atomics at use time.
+	Stalled      func() bool
+	CapAbort     func() bool
+	TurnCtxDone  func() bool
+	Provider     string
+	Credentialed bool
+	// BatchSnapshot is the acted-on set captured at the turn-start pull.
+	BatchSnapshot session.BatchDebtSnapshot
+	BatchCaptured bool
+	// SetBatchDebtCallIDs assigns the root-call-id vocabulary onto the
+	// record BEFORE the reaction chain guard is invoked (order is law).
+	SetBatchDebtCallIDs func(ids []string)
+}
+
+// attemptFailure is the error the leg ended with: the turn loop's own error,
+// else the one agent.Stream returned (a cancelled leg handed to the next
+// queued call reports nil).
+func attemptFailure(rec AttemptRecord, turnErr error) error {
+	if turnErr != nil {
+		return turnErr
+	}
+	return rec.StreamErr
+}
+
+// attemptExempt: the attempt ended for a reason that is not evidence about
+// the debt (operatorStop). A watchdog stall and a cap abort surface as
+// a cancellation too but ARE real, paid attempts.
+func attemptExempt(rec AttemptRecord, err error) bool {
+	if rec.Stalled() || rec.CapAbort() {
+		return false
+	}
+	return OperatorStop(err, rec.TurnCtxDone())
+}
+
+// AccountAttempt is THE accounting function of a Drain leg. The DECISION is
+// DecideAccount (the accounting rows A1-A7 of the arbiter table); this
+// function gathers the attempt's facts, asks the arbiter, and executes the
+// verdict -- the gate/streak/chain writes themselves are the governor's
+// (R-ARB-2). The DB failure paths (a failed count, a failed snapshot read, a
+// failed settle) keep today's behavior: pace the gate like an unreacted paid
+// attempt and stay in the recheck set. failureTerminal is the root's
+// use-time failure-classification callback (drainFailureTerminal): the
+// peak-hours sentinel and the provider-error predicates are read only when
+// the classification actually runs, not before the DB callbacks.
+func AccountAttempt(ctx context.Context, gov AttemptGovernor, rec AttemptRecord, turnErr error, failureTerminal func(error, bool) bool) {
+	if rec.SessionID == "" {
+		return
+	}
+	sid := rec.SessionID
+	turnErr = attemptFailure(rec, turnErr)
+	turnCtxDone := rec.TurnCtxDone()
+	facts := TurnFacts{Now: gov.Now(), Site: SiteAccount}
+	facts.Session.ExternallyDrivenSelf = gov.IsExternalDriver(sid)
+	// WS-1 (#1142 step C, docs/plans/2026-10-01-shared-data-dir.md §1
+	// "drain/reaction"): the leg's error is the ONLY place the run-queue/
+	// runOwned ownership refusal is visible from here -- the DB half of the
+	// facts holds no workspace column. Stamping it here is what makes
+	// DecideAccount defer that leg without pacing or settling anything.
+	facts.Session.ForeignWorkspace = errors.Is(turnErr, runq.ErrForeignWorkspace)
+	switch rec.Outcome {
+	case DrainNotAttempted:
+		if turnErr == nil || OperatorStop(turnErr, turnCtxDone) {
+			return // a cancelled preamble: nothing was refused, nothing was tried
+		}
+		facts.Attempt = AttemptFacts{NotAttempted: true, Refused: true}
+		executeAccountVerdict(ctx, gov, rec, turnErr, DecideAccount(facts, RetryAfter, RefusalPause), 0)
+		return
+	case DrainNoTurn:
+		// R12-E fix: with the batch runtime on, the pull-time capture fills
+		// the record's batch snapshot and leaves the legacy snapshot zero
+		// (agent_turn.go), so visible batch debt is exactly a nonempty batch
+		// snapshot. Without this term a flag-ON policy refusal reported
+		// CommitRefused=false and fell through to "no debt: gate reset",
+		// clearing a gate the attempt produced no evidence about. A failed
+		// capture cannot reach the no-turn path: the ON capture either fails
+		// the turn (error return) or runs uncounted committed (the !commit
+		// branch is skipped for DrainTurnCommitted), so batchCaptured true
+		// here means the capture succeeded.
+		batchRefused := rec.BatchCaptured && !rec.BatchSnapshot.Empty()
+		facts.Attempt = AttemptFacts{NoTurn: true, PendingLeft: rec.PendingLeft, CommitRefused: batchRefused}
+		executeAccountVerdict(ctx, gov, rec, turnErr, DecideAccount(facts, RetryAfter, RefusalPause), 0)
+		return
+	}
+	if attemptExempt(rec, turnErr) {
+		return
+	}
+	pace := func() { paceUnreacted(gov, sid, rec.HintAt, false, PacePaidUnreacted) }
+	if turnErr == nil {
+		// Reaction chain guard (#1113): account the leg's link BEFORE the
+		// debt's post-attempt state is read -- a successful reaction (rows.
+		// open == 0 below) must not reset the count. On the batch path a leg
+		// whose pull-time capture failed is as undocumented as a failed
+		// legacy snapshot read: skip the link too (same conservatism as the
+		// accounting below, which will not count it). The batch guard
+		// compares ROOT tool_call_ids, so the acted-on rows are resolved
+		// into the identity vocabulary first.
+		bfacts := gov.AccountFacts()
+		if !rec.BatchCaptured {
+			slog.Warn("drain attempt: pull-time batch debt capture missing; link unaccounted",
+				"session_id", sid)
+			pace()
+			return
+		}
+		rec.SetBatchDebtCallIDs(bfacts.DebtToolCallIDs(ctx, rec.BatchSnapshot))
+		gov.ChainLink(sid, rec.BatchSnapshot)
+	}
+	// Count and reread through the ACTED-ON snapshot captured at
+	// the turn-start pull (the record's batch snapshot). A leg without that
+	// capture is not counted and settles nothing -- a late recapture would
+	// widen the acted-on set with rows that arrived after the pull.
+	{
+		bfacts := gov.AccountFacts()
+		if !rec.BatchCaptured {
+			slog.Warn("drain attempt: no pull-time batch debt snapshot; attempt uncounted",
+				"session_id", sid)
+			pace()
+			return
+		}
+		snap := rec.BatchSnapshot
+		if err := bfacts.IncrementWakeAttempts(ctx, sid, snap); err != nil {
+			slog.Error("drain attempt: increment wake attempts failed", "session_id", sid, "err", err)
+			pace()
+			return
+		}
+		batchRows, err := bfacts.AttemptRows(ctx, sid, snap, FailureSettleThreshold)
+		if err != nil {
+			slog.Error("drain attempt: read wake attempts failed", "session_id", sid, "err", err)
+			pace()
+			return
+		}
+		facts.Attempt = AttemptFacts{
+			MaxWakeAttempts: batchRows.Max,
+			OpenRows:        batchRows.Open,
+			AtKBatch:        batchRows.AtK,
+			UnmappedAtK:     batchRows.UnmappedAtK,
+			Terminal:        attemptTerminal(ctx, gov, rec, turnErr, turnCtxDone, failureTerminal),
+		}
+		facts.BatchSnapshot = snap
+		executeAccountVerdict(ctx, gov, rec, turnErr, DecideAccount(facts, RetryAfter, RefusalPause), batchRows.Open)
+	}
+}
+
+// executeAccountVerdict executes DecideAccount's verdict on the real state:
+// pacing, resets and the settle-by-failure. openRows is the post-attempt
+// count of still-open snapshot rows (the VClose executor keeps the retry
+// pace for the rows it did not close).
+func executeAccountVerdict(ctx context.Context, gov AttemptGovernor, rec AttemptRecord, turnErr error, v Verdict, openRows int) {
+	sid := rec.SessionID
+	pacePaid := func() { paceUnreacted(gov, sid, rec.HintAt, false, PacePaidUnreacted) }
+	switch {
+	case v.Kind == VDefer && v.Reason == "launch refused":
+		// A1: the admission refusal handler paces uncounted and rechecks.
+		NoteDrainRefused(gov, sid, turnErr)
+	case v.Kind == VDefer && v.Reason == "pending debt left behind":
+		// A2: a no-turn Drain over a pull that keeps failing (free streak).
+		paceUnreacted(gov, sid, rec.HintAt, true, PaceFreeNoTurn)
+	case v.Kind == VClose:
+		// A6: settle exactly the named rows by failure, with the visible
+		// marker; rows with fewer attempts keep the retry pace.
+		cause := "the assistant responded, but its reaction to this event was not recorded"
+		if turnErr != nil {
+			cause = gov.RedactURLs(turnErr.Error())
+		}
+		if bfacts := gov.AccountFacts(); !v.BatchRows.Empty() {
+			// The settle closes EXACTLY the verdict's rows. The marker names
+			// the acted-on tool-call ids.
+			ids := bfacts.DebtToolCallIDs(ctx, v.BatchRows)
+			trimmed := make([]string, 0, len(ids))
+			for _, id := range ids {
+				id, _, _ := strings.Cut(id, "#reused#")
+				trimmed = append(trimmed, id)
+			}
+			var text string
+			if len(trimmed) > 0 {
+				text = fmt.Sprintf(
+					"Не удалось продолжить работу после события %s: %s. %s",
+					strings.Join(trimmed, ", "), cause, settleTailFor(turnErr))
+			} else {
+				text = fmt.Sprintf(
+					"Не удалось продолжить работу после ошибки провайдера: %s. %s",
+					cause, settleTailFor(turnErr))
+			}
+			if _, err := bfacts.SettleReactedFailedWithMarker(ctx, sid, v.BatchRows, text); err != nil {
+				pacePaid()
+				return
+			}
+			gov.ResetGate(sid)
+			closed := len(v.BatchRows.Nodes) + len(v.BatchRows.Notices)
+			if closed < openRows {
+				pacePaid()
+			}
+			return
+		}
+	case v.Kind == VDefer && v.Reason == ForeignWorkspaceReason:
+		// WS-1 (#1142 step C, docs/plans/2026-10-01-shared-data-dir.md §1
+		// "drain/reaction"): the leg was refused because the session belongs
+		// to another workspace, so NOTHING here is this process's to write.
+		// The gate keeps its state (a refusal that says nothing about our own
+		// launch cadence must not pace it), nothing is settled (the debt is
+		// the owner's to answer), and no recheck is queued (the reason is
+		// permanent, not transient). Falling through to A7's generic VDefer
+		// would shut our gate over a session we have no claim on.
+	case v.Kind == VDefer:
+		// A7: a counted, unreacted attempt: the gate paces at R and a newer
+		// fact does not open it early (R3B-4).
+		pacePaid()
+	case v.Reason == "commit refused: gate untouched":
+		// A3': the launch verdict refused the commit while visible debt
+		// stays; the gate is the launch side's state, not this attempt's
+		// evidence -- it is neither opened nor closed. Only the recheck
+		// question survives (the old default branch).
+		if rec.CommitNoRecheck {
+			gov.AddToRecheckSet(sid)
+		}
+	case v.Reason == "no debt: gate reset" || v.Reason == "all rows reacted: gate reset":
+		// A3/A5: nothing owed (or every visible row reacted): the gate opens.
+		gov.ResetGate(sid)
+	}
+}
+
+// attemptTerminal reports whether the attempt's failure closes every row
+// it saw at once: a provider classification no retry can fix. A 401 is
+// terminal only when the credentials cannot be refreshed: a refresh that
+// works (an OAuth token that expired during a long job) makes it a counted,
+// paced transient, because the next attempt runs on the new credentials. A
+// 401 that stays terminal asks the operator to re-authenticate (hyper).
+func attemptTerminal(ctx context.Context, gov AttemptGovernor, rec AttemptRecord, turnErr error, turnCtxDone bool, failureTerminal func(error, bool) bool) bool {
+	if !failureTerminal(turnErr, turnCtxDone) {
+		return false
+	}
+	if !gov.IsUnauthorized(turnErr) {
+		return true
+	}
+	if !rec.Credentialed && gov.RefreshAfterUnauthorized(ctx, rec.Provider) {
+		return false
+	}
+	gov.PublishReauthenticate(rec.Provider)
+	return true
+}
+
+// NoteDrainRefused is the one handler of an admission refusal (lock busy or
+// unwritable, model persist failure, provider not configured, peak hours,
+// shutdown, an unreadable pre-turn DB read). A refusal is neither counted nor
+// settled: the debt stays and the launch is retried -- at once (every 0.5s)
+// by a `rush run` loop that drives the session itself, at the next re-check
+// tick otherwise. A newer fact opens the gate early.
+func NoteDrainRefused(gov AttemptGovernor, sessionID string, cause error) {
+	if sessionID == "" {
+		return
+	}
+	external := gov.IsExternalDriver(sessionID)
+	wait := RetryAfter()
+	if external {
+		wait = RefusalPause()
+	}
+	gov.Pace(sessionID, gov.HintSeqOf(sessionID), wait, true, PaceUncounted)
+	if !external {
+		gov.AddToRecheckSet(sessionID)
+	}
+	slog.Debug("drain launch refused; the debt stays", "session_id", sessionID, "err", cause)
+}
+
+// paceUnreacted shuts the gate after an unreacted outcome and queues the
+// session for a re-check tick. The moment a streak turns the gate dormant it
+// says so once, naming what reopens it: the debt stays visible (`sessions
+// why`). A pull that keeps failing (free) is reopened by a newer event or a
+// human message; paid attempts whose close kept failing only by a human
+// message or a restart.
+func paceUnreacted(gov AttemptGovernor, sessionID string, hintAt uint64, hintOpens bool, kind Pace) {
+	if gov.Pace(sessionID, hintAt, RetryAfter(), hintOpens, kind) {
+		if kind == PaceFreeNoTurn {
+			slog.Warn("drain launches for this session are paused: the notice pull keeps failing; a new event or a human message resumes them",
+				"session_id", sessionID)
+		} else {
+			slog.Warn("drain launches for this session are paused: repeated attempts could not be closed or counted; only a human message (or a restart) resumes them",
+				"session_id", sessionID)
+		}
+	}
+	gov.AddToRecheckSet(sessionID)
 }

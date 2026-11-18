@@ -4,8 +4,10 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -68,17 +70,10 @@ func (a *sessionAgent) drainDueInjects(sessionID string, genID uint64, historyID
 //     DUPLICATION half).
 func (t *turnBudget) drainDueInjects(h contextBudgetHost, sessionID string, genID uint64, historyIDs map[string]struct{}) []message.Message {
 	due := h.getMailbox(sessionID).drainInjects(genID)
-	if len(due) == 0 {
-		return nil
-	}
-	spliced := make([]message.Message, 0, len(due))
-	for _, inj := range due {
-		if _, ok := historyIDs[inj.msg.ID]; ok {
-			continue
-		}
-		spliced = append(spliced, inj.msg)
-	}
-	return spliced
+	return turnstep.DedupInjects(due, historyIDs,
+		func(inj pendingInject) string { return inj.msg.ID },
+		func(inj pendingInject) message.Message { return inj.msg },
+	)
 }
 
 func (a *sessionAgent) handleWatchdogFire(
@@ -148,4 +143,25 @@ func normalizeTurnError(err error) error {
 		}
 	}
 	return err
+}
+
+func asyncLaunchCommand(call fantasy.ToolCallContent) (string, bool) {
+	var command string
+	switch call.ToolName {
+	case tools.BashToolName:
+		var params tools.BashParams
+		if json.Unmarshal([]byte(call.Input), &params) != nil {
+			return "", false
+		}
+		command = params.Command
+	case tools.RunCommandToolName:
+		var params tools.RunCommandParams
+		if json.Unmarshal([]byte(call.Input), &params) != nil {
+			return "", false
+		}
+		command = (tools.RunCommandPermissionsParams{Program: params.Program, Args: params.Args}).RunAllowlistCommand()
+	default:
+		return "", false
+	}
+	return strings.TrimSpace(command), true
 }

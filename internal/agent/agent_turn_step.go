@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"charm.land/fantasy"
@@ -411,19 +410,6 @@ func (ts *turnStream) recordStepProgress(stepResult fantasy.StepResult) {
 	}
 }
 
-// chainNeutralTools are tool calls that neither advance the session's work
-// nor launch anything: reading a background job's buffered output and
-// managing the todo list. Every other tool (edit/write/view/grep and
-// friends, a bash/run_command call with substance, a delegation, a stop
-// control) is progress for the reaction chain guard (#1113).
-// batch_status/batch_output are the detached-output polling reads -- neutral
-// the same way the deleted job_output polling tool was.
-var chainNeutralTools = map[string]struct{}{
-	tools.TodosToolName: {},
-	"batch_status":      {},
-	"batch_output":      {},
-}
-
 // recordChainEvidence feeds the reaction chain guard (#1113) from this
 // step's tool activity, classified by classifyStepCall: every async launch
 // that is a pure wait command (bash sleep/echo, run_command sleep/timeout) has
@@ -523,27 +509,6 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 			ts.att.chainProgress = true
 		}
 	}
-}
-
-func asyncLaunchCommand(call fantasy.ToolCallContent) (string, bool) {
-	var command string
-	switch call.ToolName {
-	case tools.BashToolName:
-		var params tools.BashParams
-		if json.Unmarshal([]byte(call.Input), &params) != nil {
-			return "", false
-		}
-		command = params.Command
-	case tools.RunCommandToolName:
-		var params tools.RunCommandParams
-		if json.Unmarshal([]byte(call.Input), &params) != nil {
-			return "", false
-		}
-		command = (tools.RunCommandPermissionsParams{Program: params.Program, Args: params.Args}).RunAllowlistCommand()
-	default:
-		return "", false
-	}
-	return strings.TrimSpace(command), true
 }
 
 // chainIdleClaim reports whether call is an async launch of a pure wait

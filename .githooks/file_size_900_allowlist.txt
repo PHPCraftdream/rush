@@ -14,7 +14,6 @@
 # Counts taken from docs/plans/2026-11-15-sprint0-plan.md stage A1b
 # (gate V7).
 internal/agent/agent_run.go 919
-internal/agent/agent_turn_step.go 932
 internal/agent/batch_cutover_await_test.go 990
 internal/agent/batch_install_adapters.go 959
 internal/agent/coordinator_interrupt.go 958

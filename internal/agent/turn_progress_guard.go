@@ -2,94 +2,69 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"math"
-	"strings"
 
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
-	"github.com/PHPCraftdream/rush/internal/agent/tools"
 )
 
 // The in-turn progress guard (§2 of docs/plans/2026-10-01-in-turn-progress-guard.md).
-// #1113 counts a reaction CHAIN across turns; nothing watched what happens
-// INSIDE one turn, where the model burned 56–520 steps polling sleeps and
-// re-reading the same windows (A22/A23). This guard is a second, independent
-// law: a per-turn streak of steps that made no progress, a soft refusal at S
-// and a hard stop at H.
+// The POLICY — thresholds, streak folding, refusal verdicts, refusal/finish
+// texts and the read-window math — lives in the leaf package
+// (runtime/exec/turnstep). This file keeps the guard's original private root
+// state (turnProgress, stepGuard) and the test seams the root tests and
+// turnStream require; every shim below delegates to the leaf.
 const (
 	// inTurnRefuseAfter (S): from this many consecutive no-progress steps a
 	// wait launch or an already-covered re-read is refused instead of run.
-	inTurnRefuseAfter = 2
+	inTurnRefuseAfter = turnstep.InTurnRefuseAfter
 	// inTurnStopAfter (H): the turn is finished by the guard once the streak
 	// reaches this length.
-	inTurnStopAfter = 5
+	inTurnStopAfter = turnstep.InTurnStopAfter
 )
 
 // InTurnGuardStopTitle opens the assistant finish message of a turn the guard
 // stopped. UI/CLI recognize it through IsInTurnGuardStop, exactly as the run
 // loop recognizes a coordinator continuation prompt.
-const InTurnGuardStopTitle = "Stopped: no progress in this turn"
+const InTurnGuardStopTitle = turnstep.InTurnGuardStopTitle
 
 // IsInTurnGuardStop reports whether title was written by the in-turn progress
 // guard (see InTurnGuardStopTitle).
 func IsInTurnGuardStop(title string) bool {
-	return strings.HasPrefix(title, InTurnGuardStopTitle)
+	return turnstep.IsInTurnGuardStop(title)
 }
 
-// refuseWait is the wait-leg verdict (§3's table): only an ASYNC launch waits
-// (a synchronous SDK sleep really blocks, so it stays act), and it is refused
-// either because the session has its own undelivered work — whose completion
-// already wakes it — or because the streak is past S.
+// refuseWait delegates the wait-leg verdict to the leaf policy
+// (turnstep.RefuseWait).
 func refuseWait(streak int, ownWork, async bool) bool {
-	return async && (ownWork || streak >= inTurnRefuseAfter)
+	return turnstep.RefuseWait(streak, ownWork, async)
 }
 
-// refuseReread is the re-read leg verdict: every window already returned in
-// this turn is in the model's context, so asking for it again learns nothing.
+// refuseReread delegates the re-read leg verdict to the leaf policy
+// (turnstep.RefuseReread).
 func refuseReread(streak int) bool {
-	return streak >= inTurnRefuseAfter
+	return turnstep.RefuseReread(streak)
 }
 
-// nextStreak folds one step's class into the streak (§1.1): progress resets it,
-// a wait/re-read/refusal/no-write extends it, a neutral step (`todos`, `batch_output`,
-// an unknown tool) leaves it alone.
+// nextStreak delegates the streak fold to the leaf policy (turnstep.NextStreak).
 func nextStreak(streak int, class stepCallClass) int {
-	switch class {
-	case stepCallAct, stepCallRead:
-		return 0
-	case stepCallReread, stepCallWait, stepCallRefused, stepCallNoWrite:
-		return streak + 1
-	default:
-		return streak
-	}
+	return turnstep.NextStreak(streak, class)
 }
 
-// stopAfter reports whether the streak is long enough for the guard to end the
-// turn (§2.3).
+// stopAfter delegates the hard-stop threshold to the leaf policy
+// (turnstep.StopAfter).
 func stopAfter(streak int) bool {
-	return streak >= inTurnStopAfter
+	return turnstep.StopAfter(streak)
 }
 
-// classOfStep ranks one step's calls into the single class the streak is
-// computed from: act/read (progress) outrank any no-progress call, which
-// outranks neutral. A step that mixes a refusal with a real read still
-// progressed (§1.4 line 13).
+// classOfStep delegates the per-step ranking to the leaf policy
+// (turnstep.ClassOfStep).
 func classOfStep(classes []stepCallClass) stepCallClass {
-	acc := stepCallNeutral
-	for _, class := range classes {
-		switch class {
-		case stepCallAct, stepCallRead:
-			return stepCallAct
-		case stepCallReread, stepCallWait, stepCallRefused, stepCallNoWrite:
-			if acc == stepCallNeutral {
-				acc = class
-			}
-		}
-	}
-	return acc
+	return turnstep.ClassOfStep(classes)
+}
+
+func hasClass(classes []stepCallClass, want stepCallClass) bool {
+	return turnstep.HasClass(classes, want)
 }
 
 // turnProgress is the guard's per-turn state (§1.3). One turn only; a new turn
@@ -104,6 +79,31 @@ type turnProgress struct {
 	noWrites int          // native edit/multiedit calls proven not to write
 	stopped  bool
 	guard    stepGuard
+}
+
+// leafGuard lifts the root snapshot into the leaf's value type for the leaf
+// text builders (they read only the streak/mode fields).
+func leafGuard(g stepGuard) turnstep.StepGuard {
+	return turnstep.StepGuard{
+		Streak:      g.streak,
+		OwnWork:     g.ownWork,
+		Async:       g.async,
+		CanEdit:     g.canEdit,
+		CanDelegate: g.canDelegate,
+	}
+}
+
+// leafTurnProgress lifts the root turn state into the leaf's value type for
+// the finish text (which reads no coverage).
+func leafTurnProgress(p turnProgress) turnstep.TurnProgress {
+	return turnstep.TurnProgress{
+		Streak:   p.streak,
+		Waits:    p.waits,
+		Rereads:  p.rereads,
+		NoWrites: p.noWrites,
+		Stopped:  p.stopped,
+		Guard:    leafGuard(p.guard),
+	}
 }
 
 // stepGuard is the immutable snapshot of one step's worth of guard state,
@@ -131,20 +131,22 @@ func stepGuardFor(p *turnProgress, ownWork, async bool) stepGuard {
 	}
 }
 
-// refuseWaitCall reports whether this step refuses an async wait-only launch.
+// refuseWaitCall reports whether this step refuses an async wait-only launch
+// (leaf verdict turnstep.RefuseWait).
 func (g stepGuard) refuseWaitCall() bool {
-	return refuseWait(g.streak, g.ownWork, g.async)
+	return turnstep.RefuseWait(g.streak, g.ownWork, g.async)
 }
 
 // refuseRereadCall reports whether this step refuses a windowed read whose
-// every window is already covered.
+// every window is already covered (leaf verdict turnstep.RefuseReread plus the
+// per-path coverage check).
 func (g stepGuard) refuseRereadCall(spans []namedSpan) bool {
 	return refuseReread(g.streak) && coveredAll(g.seen, spans)
 }
 
-// coveredAll reports whether every window lies inside cov. A nil map (no
-// snapshot taken) never covers anything, so no call is ever accused of
-// re-reading.
+// coveredAll reports whether every window lies inside cov, short-circuiting on
+// the first uncovered span. A nil map (no snapshot taken) never covers
+// anything, so no call is ever accused of re-reading.
 func coveredAll(cov readCoverage, spans []namedSpan) bool {
 	if cov == nil || len(spans) == 0 {
 		return false
@@ -193,26 +195,12 @@ func (p *turnProgress) applyStep(classes []stepCallClass, spans [][]namedSpan) (
 	return refused
 }
 
-func hasClass(classes []stepCallClass, want stepCallClass) bool {
-	for _, class := range classes {
-		if class == want {
-			return true
-		}
-	}
-	return false
-}
-
 // progressGuardMetadataJSON marshals the ClientMetadata tag stamped on a
 // refusal; the classifier reads it to mark the call as refused (the tool never
-// ran, so it neither progressed nor launched anything).
+// ran, so it neither progressed nor launched anything). The encode itself
+// lives in the leaf package (runtime/exec/turnstep.ProgressGuardMetadataJSON).
 func progressGuardMetadataJSON(refused string) string {
-	var meta turnstep.ProgressGuardMetadata
-	meta.ProgressGuard.Refused = refused
-	data, err := json.Marshal(meta)
-	if err != nil {
-		return ""
-	}
-	return string(data)
+	return turnstep.ProgressGuardMetadataJSON(refused)
 }
 
 // progressGuardTool wraps one fantasy.AgentTool of one step and refuses, on
@@ -220,9 +208,10 @@ func progressGuardMetadataJSON(refused string) string {
 // launch while the session has its own work (or past the threshold), and a
 // windowed read whose windows were all already returned in this turn. Nothing
 // runs on a refusal — no batch launch, no hook, no permission prompt — the
-// model sees an ordinary error result carrying the guard's tag. Info and every
-// provider-facing seam are delegated, so the request, the cache prefix and
-// R3-1 are unchanged.
+// model sees an ordinary error result carrying the guard's tag. The refusal
+// VERDICTS and TEXTS come from the leaf policy; the wrapper itself stays in
+// the root so policy_leaf.go's leaf-execution assertion can unwrap it and the
+// test seams keep their concrete type.
 type progressGuardTool struct {
 	inner fantasy.AgentTool
 	guard stepGuard
@@ -281,94 +270,20 @@ func (t *progressGuardTool) refuse(refused, text string) (fantasy.ToolResponse, 
 	return resp, nil
 }
 
-// guardStopHint warns, on the last free step, that the next no-progress step
-// ends the turn (§2.2). It closes the refusal text: the model reads it after
-// the instruction it must follow, not before.
-func guardStopHint(streak int) string {
-	if streak == inTurnStopAfter-1 {
-		return " If this step makes no progress, rush ends the turn now."
-	}
-	return ""
-}
-
-// waitCommandLabel names the refused command as the model wrote it.
-func waitCommandLabel(call fantasy.ToolCall) string {
-	switch call.Name {
-	case tools.BashToolName:
-		var params struct {
-			Command string `json:"command"`
-		}
-		if json.Unmarshal([]byte(call.Input), &params) == nil && strings.TrimSpace(params.Command) != "" {
-			return "`" + strings.TrimSpace(params.Command) + "`"
-		}
-	case tools.RunCommandToolName:
-		var params struct {
-			Program string `json:"program"`
-		}
-		if json.Unmarshal([]byte(call.Input), &params) == nil && strings.TrimSpace(params.Program) != "" {
-			return "`run_command " + strings.TrimSpace(params.Program) + "`"
-		}
-	}
-	return "`" + call.Name + "`"
-}
-
-// refuseWaitText is §2.2's wait refusal: the command never waits (it starts as
-// a background job and returns at once), so the model must end its turn
-// WITHOUT a tool call — a no-op tool call is what keeps the turn going.
+// refuseWaitText delegates the wait refusal text to the leaf
+// (turnstep.RefuseWaitText).
 func refuseWaitText(g stepGuard, call fantasy.ToolCall) string {
-	text := fmt.Sprintf("Refused: %s does not wait — commands here start as background jobs and return at once. "+
-		"Your running job/delegation reports by itself as a session message and starts your next turn. "+
-		"End your turn now: reply with a short status and NO tool call — "+
-		"a no-op tool call keeps the turn going.", waitCommandLabel(call))
-	if !g.ownWork {
-		text += fmt.Sprintf(" ...and your last %d steps made no progress. To wait for time, call `wakein` and end your turn; "+
-			"otherwise continue the task or end your turn with no tool call.", g.streak)
-	}
-	return text + guardStopHint(g.streak)
+	return turnstep.RefuseWaitText(leafGuard(g), call)
 }
 
-// refuseRereadText is §2.2's re-read refusal, naming the lines so the model
-// can see what it already holds. In orchestrator mode (a set without the edit
-// tools but with `agent`) it says how to get the change made instead.
+// refuseRereadText delegates the re-read refusal text to the leaf
+// (turnstep.RefuseRereadText).
 func refuseRereadText(g stepGuard, first namedSpan) string {
-	text := fmt.Sprintf("Refused: lines %s of %s were already returned in this turn and are in your context. "+
-		"Act on them or end your turn. "+
-		"If you are waiting for a running job to write this file, end your turn — its completion wakes you.",
-		spanLines(first.span), "`"+first.path+"`")
-	if !g.canEdit && g.canDelegate {
-		text += " This session cannot edit files (orchestrator mode): delegate the change with the `agent` tool — " +
-			"file path, the exact change, how to verify it."
-	}
-	return text + guardStopHint(g.streak)
+	return turnstep.RefuseRereadText(leafGuard(g), turnstep.NamedSpan{Path: first.path, Span: toLeafSpan(first.span)})
 }
 
-// spanLines renders a read window as the 1-based inclusive lines it covers.
-func spanLines(sp readSpan) string {
-	if sp.end <= sp.start {
-		return "the whole file"
-	}
-	if sp.end == math.MaxInt {
-		return fmt.Sprintf("%d–the end of the file", sp.start+1)
-	}
-	return fmt.Sprintf("%d–%d", sp.start+1, sp.end)
-}
-
-// guardStopDetails is the assistant finish details of a guard-stopped turn
-// (§2.3): what it counted, whether the session had its own work, and what the
-// next turn should do.
+// guardStopDetails delegates the finish details to the leaf
+// (turnstep.GuardStopDetails).
 func guardStopDetails(p turnProgress) string {
-	details := fmt.Sprintf("The in-turn progress guard stopped this turn: %d consecutive steps with no progress, "+
-		"%d wait call(s) and %d already-read window(s). ", p.streak, p.waits, p.rereads)
-	if p.noWrites > 0 {
-		details += fmt.Sprintf("%d native edit/multiedit call(s) made no file content write. ", p.noWrites)
-	}
-	if p.guard.ownWork {
-		details += "Your own job/delegation was running; its completion reports by itself and starts your next turn. "
-	} else {
-		details += "No job of this session was running. "
-	}
-	if p.guard.canDelegate && !p.guard.canEdit {
-		details += "This session cannot edit files (orchestrator mode): delegate the remaining change with the `agent` tool. "
-	}
-	return details + "End the turn with a short status and NO tool call."
+	return turnstep.GuardStopDetails(leafTurnProgress(p))
 }
