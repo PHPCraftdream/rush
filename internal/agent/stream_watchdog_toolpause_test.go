@@ -270,11 +270,16 @@ func TestStreamWatchdog_ToolCleanupGraceDelaysFire(t *testing.T) {
 	// Wait until just past toolMaxDuration alone (well before the grace
 	// window closes) — the watchdog must NOT have fired yet.
 	time.Sleep(toolMaxDuration + 20*time.Millisecond)
-	assert.Equal(t, int32(0), fired.Load(),
-		"watchdog must not fire at bare toolMaxDuration when toolCleanupGrace > 0 — "+
-			"the grace exists precisely so a nested child watchdog gets a chance to fire first")
-	assert.False(t, wd.stalled.Load())
-	assert.NoError(t, ctx.Err())
+	// A loaded machine can oversleep past the whole grace window; the watchdog then
+	// legitimately fired and "not fired yet" no longer holds. The watchdog cannot fire
+	// before start+max+grace, so the assertion is valid only while that moment is ahead.
+	if time.Since(start)+20*time.Millisecond < toolMaxDuration+toolCleanupGrace {
+		assert.Equal(t, int32(0), fired.Load(),
+			"watchdog must not fire at bare toolMaxDuration when toolCleanupGrace > 0 — "+
+				"the grace exists precisely so a nested child watchdog gets a chance to fire first")
+		assert.False(t, wd.stalled.Load())
+		assert.NoError(t, ctx.Err())
+	}
 
 	// Now wait for the fire past toolMaxDuration+toolCleanupGrace.
 	select {
