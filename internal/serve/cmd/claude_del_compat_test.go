@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -94,7 +96,7 @@ func TestClaudeDel_RemovesLegacyPrerenameInstall(t *testing.T) {
 	require.NoError(t, os.WriteFile(foreignCrushPath, []byte(foreignContent), 0o644))
 
 	// Run claude-del
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		require.NoError(t, runClaudeDel(dir))
 	})
 
@@ -138,7 +140,7 @@ func TestClaudeDel_PreservesForeignFileAtLegacyPath(t *testing.T) {
 	require.NoError(t, os.WriteFile(foreignCrushPath, []byte(foreignContent), 0o644))
 
 	// Run claude-del
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		require.NoError(t, runClaudeDel(dir))
 	})
 
@@ -161,7 +163,7 @@ func TestClaudeDel_RemovesWcrushCommandWithSentinel(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(wcrushPath), 0o755))
 	require.NoError(t, os.WriteFile(wcrushPath, []byte("<!-- rush-slash-command:v1 -->\nwcrush command\n"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		require.NoError(t, runClaudeDel(dir))
 	})
 
@@ -181,7 +183,7 @@ func TestClaudeDel_PreservesForeignFileAtWcrushPath(t *testing.T) {
 	foreignContent := "This is a foreign file without our sentinel\n"
 	require.NoError(t, os.WriteFile(wcrushPath, []byte(foreignContent), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		require.NoError(t, runClaudeDel(dir))
 	})
 

@@ -1,71 +1,106 @@
 {
-  "version": "0.17.0",
+  "version": "0.19.1",
   "claude": [
     {
       "name": "fl",
-      "model": "claude-fable-5-1",
+      "model": "claude-fable-5-2",
       "effort": "low",
       "display": "Fable (top, 1M) – low",
       "contextWindow": 1000000
     },
     {
       "name": "fm",
-      "model": "claude-fable-5-1",
+      "model": "claude-fable-5-2",
       "effort": "medium",
       "display": "Fable (top, 1M) – medium",
       "contextWindow": 1000000
     },
     {
       "name": "fh",
-      "model": "claude-fable-5-1",
+      "model": "claude-fable-5-2",
       "effort": "high",
       "display": "Fable (top, 1M) – high",
       "contextWindow": 1000000
     },
     {
       "name": "fx",
-      "model": "claude-fable-5-1",
+      "model": "claude-fable-5-2",
       "effort": "xhigh",
       "display": "Fable (top, 1M) – xhigh",
       "contextWindow": 1000000
     },
     {
       "name": "fxx",
-      "model": "claude-fable-5-1",
+      "model": "claude-fable-5-2",
       "effort": "max",
       "display": "Fable (top, 1M) – max",
       "contextWindow": 1000000
     },
     {
       "name": "f1l",
+      "model": "claude-fable-5-1",
+      "effort": "low",
+      "display": "Fable 5.1 (1M) – low",
+      "contextWindow": 1000000
+    },
+    {
+      "name": "f1m",
+      "model": "claude-fable-5-1",
+      "effort": "medium",
+      "display": "Fable 5.1 (1M) – medium",
+      "contextWindow": 1000000
+    },
+    {
+      "name": "f1h",
+      "model": "claude-fable-5-1",
+      "effort": "high",
+      "display": "Fable 5.1 (1M) – high",
+      "contextWindow": 1000000
+    },
+    {
+      "name": "f1x",
+      "model": "claude-fable-5-1",
+      "effort": "xhigh",
+      "display": "Fable 5.1 (1M) – xhigh",
+      "contextWindow": 1000000
+    },
+    {
+      "name": "f1xx",
+      "model": "claude-fable-5-1",
+      "effort": "max",
+      "display": "Fable 5.1 (1M) – max",
+      "contextWindow": 1000000
+    },
+    {
+      "name": "f2l",
       "model": "claude-fable-5",
       "effort": "low",
       "display": "Fable 5 (1M) – low",
       "contextWindow": 1000000
     },
     {
-      "name": "f1m",
+      "name": "f2m",
       "model": "claude-fable-5",
       "effort": "medium",
       "display": "Fable 5 (1M) – medium",
       "contextWindow": 1000000
     },
     {
-      "name": "f1h",
+      "name": "f2h",
       "model": "claude-fable-5",
       "effort": "high",
       "display": "Fable 5 (1M) – high",
       "contextWindow": 1000000
     },
     {
-      "name": "f1x",
+      "name": "f2x",
       "model": "claude-fable-5",
       "effort": "xhigh",
       "display": "Fable 5 (1M) – xhigh",
       "contextWindow": 1000000
     },
     {
-      "name": "f1xx",
+      "name": "f2xx",
       "model": "claude-fable-5",
       "effort": "max",
       "display": "Fable 5 (1M) – max",
@@ -439,54 +474,102 @@
   "codex": [
     {
       "name": "ls",
-      "model": "gpt-6.1-sol",
+      "model": "gpt-6.2-sol",
       "effort": "low",
-      "display": "Sol 6.1 - low",
-      "contextWindow": 500000,
-      "maxContextWindow": 872000
+      "display": "Sol 6.2 - low",
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "ms",
-      "model": "gpt-6.1-sol",
+      "model": "gpt-6.2-sol",
       "effort": "medium",
-      "display": "Sol 6.1 - medium",
-      "contextWindow": 500000,
-      "maxContextWindow": 872000
+      "display": "Sol 6.2 - medium",
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "hs",
-      "model": "gpt-6.1-sol",
+      "model": "gpt-6.2-sol",
       "effort": "high",
-      "display": "Sol 6.1 - high",
-      "contextWindow": 500000,
-      "maxContextWindow": 872000
+      "display": "Sol 6.2 - high",
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "xs",
-      "model": "gpt-6.1-sol",
+      "model": "gpt-6.2-sol",
       "effort": "xhigh",
-      "display": "Sol 6.1 - Extra High",
-      "contextWindow": 500000,
-      "maxContextWindow": 872000
+      "display": "Sol 6.2 - Extra High",
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "xxs",
-      "model": "gpt-6.1-sol",
+      "model": "gpt-6.2-sol",
       "effort": "max",
-      "display": "Sol 6.1 - max",
-      "contextWindow": 500000,
-      "maxContextWindow": 872000
+      "display": "Sol 6.2 - max",
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "us",
-      "model": "gpt-6.1-sol",
+      "model": "gpt-6.2-sol",
       "effort": "ultra",
-      "display": "Sol 6.1 - ultra",
-      "contextWindow": 500000,
-      "maxContextWindow": 872000
+      "display": "Sol 6.2 - ultra",
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "ls1",
+      "model": "gpt-6.1-sol",
+      "effort": "low",
+      "display": "Sol 6.1 - low",
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
+    },
+    {
+      "name": "ms1",
+      "model": "gpt-6.1-sol",
+      "effort": "medium",
+      "display": "Sol 6.1 - medium",
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
+    },
+    {
+      "name": "hs1",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "display": "Sol 6.1 - high",
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
+    },
+    {
+      "name": "xs1",
+      "model": "gpt-6.1-sol",
+      "effort": "xhigh",
+      "display": "Sol 6.1 - Extra High",
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
+    },
+    {
+      "name": "xxs1",
+      "model": "gpt-6.1-sol",
+      "effort": "max",
+      "display": "Sol 6.1 - max",
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
+    },
+    {
+      "name": "us1",
+      "model": "gpt-6.1-sol",
+      "effort": "ultra",
+      "display": "Sol 6.1 - ultra",
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
+    },
+    {
+      "name": "ls2",
       "model": "gpt-6-sol",
       "effort": "low",
       "display": "Sol 6 - low",
@@ -494,7 +577,7 @@
       "maxContextWindow": 872000
     },
     {
-      "name": "ms1",
+      "name": "ms2",
       "model": "gpt-6-sol",
       "effort": "medium",
       "display": "Sol 6 - medium",
@@ -502,7 +585,7 @@
       "maxContextWindow": 872000
     },
     {
-      "name": "hs1",
+      "name": "hs2",
       "model": "gpt-6-sol",
       "effort": "high",
       "display": "Sol 6 - high",
@@ -510,7 +593,7 @@
       "maxContextWindow": 872000
     },
     {
-      "name": "xs1",
+      "name": "xs2",
       "model": "gpt-6-sol",
       "effort": "xhigh",
       "display": "Sol 6 - Extra High",
@@ -518,7 +601,7 @@
       "maxContextWindow": 872000
     },
     {
-      "name": "xxs1",
+      "name": "xxs2",
       "model": "gpt-6-sol",
       "effort": "max",
       "display": "Sol 6 - max",
@@ -526,7 +609,7 @@
       "maxContextWindow": 872000
     },
     {
-      "name": "us1",
+      "name": "us2",
       "model": "gpt-6-sol",
       "effort": "ultra",
       "display": "Sol 6 - ultra",
@@ -534,7 +617,7 @@
       "maxContextWindow": 872000
     },
     {
-      "name": "ls2",
+      "name": "ls3",
       "model": "gpt-5.6-sol",
       "effort": "low",
       "display": "Sol 5.6 - low",
@@ -542,7 +625,7 @@
       "maxContextWindow": 872000
     },
     {
-      "name": "ms2",
+      "name": "ms3",
       "model": "gpt-5.6-sol",
       "effort": "medium",
       "display": "Sol 5.6 - medium",
@@ -550,7 +633,7 @@
       "maxContextWindow": 872000
     },
     {
-      "name": "hs2",
+      "name": "hs3",
       "model": "gpt-5.6-sol",
       "effort": "high",
       "display": "Sol 5.6 - high",
@@ -558,7 +641,7 @@
       "maxContextWindow": 872000
     },
     {
-      "name": "xs2",
+      "name": "xs3",
       "model": "gpt-5.6-sol",
       "effort": "xhigh",
       "display": "Sol 5.6 - Extra High",
@@ -566,7 +649,7 @@
       "maxContextWindow": 872000
     },
     {
-      "name": "xxs2",
+      "name": "xxs3",
       "model": "gpt-5.6-sol",
       "effort": "max",
       "display": "Sol 5.6 - max",
@@ -574,7 +657,7 @@
       "maxContextWindow": 872000
     },
     {
-      "name": "us2",
+      "name": "us3",
       "model": "gpt-5.6-sol",
       "effort": "ultra",
       "display": "Sol 5.6 - ultra",
@@ -586,88 +669,88 @@
       "model": "gpt-6-luna",
       "effort": "low",
       "display": "Luna - low",
-      "contextWindow": 272000,
-      "maxContextWindow": 872000
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "ml",
       "model": "gpt-6-luna",
       "effort": "medium",
       "display": "Luna - medium",
-      "contextWindow": 272000,
-      "maxContextWindow": 872000
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "hl",
       "model": "gpt-6-luna",
       "effort": "high",
       "display": "Luna - high",
-      "contextWindow": 272000,
-      "maxContextWindow": 872000
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "xl",
       "model": "gpt-6-luna",
       "effort": "xhigh",
       "display": "Luna - Extra High",
-      "contextWindow": 272000,
-      "maxContextWindow": 872000
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "xxl",
       "model": "gpt-6-luna",
       "effort": "max",
       "display": "Luna - max",
-      "contextWindow": 272000,
-      "maxContextWindow": 872000
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "lt",
       "model": "gpt-6.1-terra",
       "effort": "low",
       "display": "Terra 6.1 - low",
-      "contextWindow": 500000,
-      "maxContextWindow": 872000
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "mt",
       "model": "gpt-6.1-terra",
       "effort": "medium",
       "display": "Terra 6.1 - medium",
-      "contextWindow": 500000,
-      "maxContextWindow": 872000
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "ht",
       "model": "gpt-6.1-terra",
       "effort": "high",
       "display": "Terra 6.1 - high",
-      "contextWindow": 500000,
-      "maxContextWindow": 872000
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "xt",
       "model": "gpt-6.1-terra",
       "effort": "xhigh",
       "display": "Terra 6.1 - Extra High",
-      "contextWindow": 500000,
-      "maxContextWindow": 872000
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "xxt",
       "model": "gpt-6.1-terra",
       "effort": "max",
       "display": "Terra 6.1 - max",
-      "contextWindow": 500000,
-      "maxContextWindow": 872000
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "ut",
       "model": "gpt-6.1-terra",
       "effort": "ultra",
       "display": "Terra 6.1 - ultra",
-      "contextWindow": 500000,
-      "maxContextWindow": 872000
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "lt1",
@@ -759,49 +842,97 @@
     },
     {
       "name": "la",
-      "model": "gpt-6-astra",
+      "model": "gpt-6.2-astra",
       "effort": "low",
-      "display": "Astra - low",
-      "contextWindow": 272000,
-      "maxContextWindow": 872000
+      "display": "Astra 6.2 - low",
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "ma",
-      "model": "gpt-6-astra",
+      "model": "gpt-6.2-astra",
       "effort": "medium",
-      "display": "Astra - medium",
-      "contextWindow": 272000,
-      "maxContextWindow": 872000
+      "display": "Astra 6.2 - medium",
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "ha",
-      "model": "gpt-6-astra",
+      "model": "gpt-6.2-astra",
       "effort": "high",
-      "display": "Astra - high",
-      "contextWindow": 272000,
-      "maxContextWindow": 872000
+      "display": "Astra 6.2 - high",
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "xa",
-      "model": "gpt-6-astra",
+      "model": "gpt-6.2-astra",
       "effort": "xhigh",
-      "display": "Astra - Extra High",
-      "contextWindow": 272000,
-      "maxContextWindow": 872000
+      "display": "Astra 6.2 - Extra High",
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
     },
     {
       "name": "xxa",
-      "model": "gpt-6-astra",
+      "model": "gpt-6.2-astra",
       "effort": "max",
-      "display": "Astra - max",
+      "display": "Astra 6.2 - max",
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
+    },
+    {
+      "name": "ua",
+      "model": "gpt-6.2-astra",
+      "effort": "ultra",
+      "display": "Astra 6.2 - ultra",
+      "contextWindow": 922000,
+      "maxContextWindow": 922000
+    },
+    {
+      "name": "la1",
+      "model": "gpt-6-astra",
+      "effort": "low",
+      "display": "Astra 6 - low",
       "contextWindow": 272000,
       "maxContextWindow": 872000
     },
     {
-      "name": "ua",
+      "name": "ma1",
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "display": "Astra 6 - medium",
+      "contextWindow": 272000,
+      "maxContextWindow": 872000
+    },
+    {
+      "name": "ha1",
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "display": "Astra 6 - high",
+      "contextWindow": 272000,
+      "maxContextWindow": 872000
+    },
+    {
+      "name": "xa1",
+      "model": "gpt-6-astra",
+      "effort": "xhigh",
+      "display": "Astra 6 - Extra High",
+      "contextWindow": 272000,
+      "maxContextWindow": 872000
+    },
+    {
+      "name": "xxa1",
+      "model": "gpt-6-astra",
+      "effort": "max",
+      "display": "Astra 6 - max",
+      "contextWindow": 272000,
+      "maxContextWindow": 872000
+    },
+    {
+      "name": "ua1",
       "model": "gpt-6-astra",
       "effort": "ultra",
-      "display": "Astra - ultra",
+      "display": "Astra 6 - ultra",
       "contextWindow": 272000,
       "maxContextWindow": 872000
     }
@@ -862,6 +993,22 @@
       "ultra"
     ],
     "gpt-6.1-terra": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra"
+    ],
+    "gpt-6.2-astra": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra"
+    ],
+    "gpt-6.2-sol": [
       "low",
       "medium",
       "high",

@@ -2,7 +2,8 @@ package agent
 
 import (
 	"context"
-	"log/slog"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -10,30 +11,7 @@ import (
 
 // workerSubAgentActiveForCall combines the per-call role, credentials and depth gates.
 func (c *coordinator) workerSubAgentActiveForCall(ctx context.Context, cfg *config.Config) bool {
-	if opts := callOptionsFrom(ctx); opts != nil && opts.RoleContract != nil && opts.RoleContract.Name != "" && !RequestedModelRole(opts.RoleContract.Name).Builtin() {
-		return false
-	}
-	if remaining, err := MaxAgentDepthFrom(ctx); err != nil || remaining == 0 {
-		return false
-	}
-	if creds := callCredentialsFrom(ctx); creds != nil {
-		if opts := callOptionsFrom(ctx); opts != nil && opts.ModelRole != "" && opts.ModelRole != config.SelectedModelTypeSmart {
-			return false
-		}
-		if _, covered := creds.Models[RoleWorker]; covered {
-			return true
-		}
-		workerModelCfg, ok := cfg.Models[config.SelectedModelTypeWorker]
-		return ok && workerModelCfg.Model != ""
-	}
-	if opts := callOptionsFrom(ctx); opts != nil && opts.ModelRole != "" {
-		if opts.ModelRole != config.SelectedModelTypeSmart {
-			return false
-		}
-		workerModelCfg, ok := cfg.Models[config.SelectedModelTypeWorker]
-		return ok && workerModelCfg.Model != ""
-	}
-	return c.workerSubAgentActive(cfg)
+	return newModelsComponent(c).workerSubAgentActiveForCall(ctx, cfg)
 }
 
 // workerSubAgentActive reports whether a sub-agent being built right now is
@@ -66,16 +44,7 @@ func (c *coordinator) workerSubAgentActiveForCall(ctx context.Context, cfg *conf
 // whole run — we don't second-guess that choice by force-upgrading/
 // downgrading sub-agents. Fork patch (reviewer/worker roles).
 func (c *coordinator) workerSubAgentActive(cfg *config.Config) bool {
-	c.activeModelRoleMu.Lock()
-	activeRole := c.activeModelRole
-	c.activeModelRoleMu.Unlock()
-
-	if activeRole != "" && activeRole != config.SelectedModelTypeSmart {
-		return false
-	}
-
-	workerModelCfg, ok := cfg.Models[config.SelectedModelTypeWorker]
-	return ok && workerModelCfg.Model != ""
+	return newModelsComponent(c).workerSubAgentActive(cfg)
 }
 
 // callModelRole returns the model role this call was started with (--role),
@@ -116,17 +85,17 @@ func roleSlotOverride(cfg *config.Config, sess session.Session, role config.Sele
 		return nil, "", false
 	}
 	var sel config.SelectedModel
-	source := hbSourceSlotStart
+	source := callbeat.HbSourceSlotStart
 	switch {
 	case role == config.SelectedModelTypeFast && sess.FastModelID != "":
 		sel = config.SelectedModel{Provider: sess.FastModelProvider, Model: sess.FastModelID, ReasoningEffort: sess.FastModelReasoningEffort}
-		source = hbSourceSessionOverride
+		source = callbeat.HbSourceSessionOverride
 	case role == config.SelectedModelTypeWorker && sess.WorkerModelID != "":
 		sel = config.SelectedModel{Provider: sess.WorkerModelProvider, Model: sess.WorkerModelID, ReasoningEffort: sess.WorkerModelReasoningEffort}
-		source = hbSourceSessionOverride
+		source = callbeat.HbSourceSessionOverride
 	case role == config.SelectedModelTypeReviewer && sess.ReviewerModelID != "":
 		sel = config.SelectedModel{Provider: sess.ReviewerModelProvider, Model: sess.ReviewerModelID, ReasoningEffort: sess.ReviewerModelReasoningEffort}
-		source = hbSourceSessionOverride
+		source = callbeat.HbSourceSessionOverride
 	default:
 		slot, ok := roleSlotConfigModel(cfg, role)
 		if !ok {
@@ -141,35 +110,12 @@ func roleSlotOverride(cfg *config.Config, sess session.Session, role config.Sele
 }
 
 func (c *coordinator) refreshDrainModel(ctx context.Context, role config.SelectedModelType) (Model, config.ProviderConfig, bool) {
-	cfg, _ := c.cfg.Snapshot()
-	slot, ok := cfg.Models[role]
-	if !ok || slot.Model == "" {
-		return Model{}, config.ProviderConfig{}, false
-	}
-	providerCfg, ok := cfg.Providers.Get(slot.Provider)
-	if !ok {
-		return Model{}, config.ProviderConfig{}, false
-	}
-	rebuilt, _, err := c.buildModelsFromCfg(ctx, cfg, slot, slot, true)
-	if err != nil {
-		slog.Warn("Drain: keeping the model built at the delegation's start; the live slot rebuild failed", "err", err)
-		return Model{}, config.ProviderConfig{}, false
-	}
-	return rebuilt, providerCfg, true
+	return newModelsComponent(c).refreshDrainModel(ctx, role)
 }
 
 // refreshSubAgentSlotModel re-resolves the slot-built sub-agent model from
 // the live config snapshot at dispatch time. It always rebuilds effective
 // settings even when provider and model identifiers are unchanged.
 func (c *coordinator) refreshSubAgentSlotModel(ctx context.Context, cfg *config.Config, role config.SelectedModelType, model Model) (Model, bool) {
-	slot, ok := cfg.Models[role]
-	if !ok || slot.Model == "" {
-		return model, false
-	}
-	rebuilt, _, err := c.buildModelsFromCfg(ctx, cfg, slot, slot, true)
-	if err != nil {
-		slog.Warn("runSubAgent: keeping the model built at the parent turn's start; the live slot rebuild failed", "err", err)
-		return model, false
-	}
-	return rebuilt, true
+	return newModelsComponent(c).refreshSubAgentSlotModel(ctx, cfg, role, model)
 }

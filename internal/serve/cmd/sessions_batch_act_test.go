@@ -15,12 +15,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -77,7 +80,7 @@ func runBatchReset(t *testing.T, sessID string) string {
 	t.Helper()
 	require.NoError(t, resetSessionCmdFlags().Flags().Set("force", "false"))
 	var runErr error
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runErr = sessionsResetCmd.RunE(sessionsResetCmd, []string{sessID})
 	})
 	require.NoError(t, runErr)
@@ -89,7 +92,7 @@ func runBatchResetErr(t *testing.T, sessID string, fragments ...string) {
 	t.Helper()
 	require.NoError(t, resetSessionCmdFlags().Flags().Set("force", "false"))
 	var runErr error
-	captureStderr(t, func() {
+	cmdtest.CaptureStderr(t, func() {
 		runErr = sessionsResetCmd.RunE(sessionsResetCmd, []string{sessID})
 	})
 	for _, want := range fragments {
@@ -166,7 +169,7 @@ func runBatchGc(t *testing.T, dryRun bool) (string, string) {
 	require.NoError(t, sessionsGcCmd.Flags().Set("jobs-older-than", ""))
 	require.NoError(t, sessionsGcCmd.Flags().Set("json", "false"))
 	var err error
-	stdout, stderr := captureStdoutAndStderr(t, func() {
+	stdout, stderr := cmdtest.CaptureStdoutAndStderr(t, func() {
 		err = sessionsGcCmd.RunE(sessionsGcCmd, nil)
 	})
 	require.NoError(t, err)
@@ -263,7 +266,7 @@ func TestSessionsGc_BatchRetentionSummary(t *testing.T) {
 	require.NoError(t, sessionsGcCmd.Flags().Set("dry-run", "false"))
 	require.NoError(t, sessionsGcCmd.Flags().Set("jobs-older-than", "1d"))
 	require.NoError(t, sessionsGcCmd.Flags().Set("json", "true"))
-	stdout, _ := captureStdoutAndStderr(t, func() {
+	stdout, _ := cmdtest.CaptureStdoutAndStderr(t, func() {
 		require.NoError(t, sessionsGcCmd.RunE(sessionsGcCmd, nil))
 	})
 	lines := splitNonEmpty(stdout)
@@ -307,7 +310,7 @@ func TestSessionsGc_BatchRetentionHonoursAge(t *testing.T) {
 	require.NoError(t, sessionsGcCmd.Flags().Set("dry-run", "false"))
 	require.NoError(t, sessionsGcCmd.Flags().Set("jobs-older-than", "30d"))
 	require.NoError(t, sessionsGcCmd.Flags().Set("json", "true"))
-	stdout, _ := captureStdoutAndStderr(t, func() {
+	stdout, _ := cmdtest.CaptureStdoutAndStderr(t, func() {
 		require.NoError(t, sessionsGcCmd.RunE(sessionsGcCmd, nil))
 	})
 	lines := splitNonEmpty(stdout)
@@ -318,7 +321,7 @@ func TestSessionsGc_BatchRetentionHonoursAge(t *testing.T) {
 
 	// 1d cutoff: the same rows are now expired; the real run purges the root.
 	require.NoError(t, sessionsGcCmd.Flags().Set("jobs-older-than", "1d"))
-	stdout, _ = captureStdoutAndStderr(t, func() {
+	stdout, _ = cmdtest.CaptureStdoutAndStderr(t, func() {
 		require.NoError(t, sessionsGcCmd.RunE(sessionsGcCmd, nil))
 	})
 	require.Contains(t, stdout, `"batch_nodes":1`, "the root count is purged at the 1d cutoff")
@@ -373,7 +376,7 @@ func TestSessionsKill_BatchHeldRootNote(t *testing.T) {
 	defer closeFixture()
 	isolateKillCmdEnv(t, dataDir)
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		err := sessionsKillCmd.RunE(sessionsKillCmd, []string{sessID})
 		require.ErrorIs(t, err, errBatchKillScopeUnconfirmed)
 		require.ErrorContains(t, err, "queued work is preserved")
@@ -540,4 +543,22 @@ func countSessions(t *testing.T, dataDir, sessionID string) int {
 	require.NoError(t, conn.QueryRowContext(context.Background(),
 		`SELECT COUNT(*) FROM sessions WHERE id = ?`, sessionID).Scan(&count))
 	return count
+}
+
+// The kill rescue path reads batch metadata through the real batchKillLiveNote;
+// an absent store must neither be created nor reported as unconfirmed.
+func TestKillBatchScopeAbsentStoreDoesNotCreateDatabase(t *testing.T) {
+	dataDir := t.TempDir()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	state := batchKillLiveNote(ctx, dataDir, "absent-session")
+	_, err := os.Stat(storepath.StoreV1Path(dataDir))
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("absent-store scope=%+v stat_error=%v", state, err)
+		}
+	})
+	require.False(t, state.Unconfirmed)
+	require.Empty(t, state.Note)
+	require.ErrorIs(t, err, os.ErrNotExist)
 }

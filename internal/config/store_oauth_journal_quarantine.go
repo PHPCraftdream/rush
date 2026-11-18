@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 )
 
 var (
@@ -17,7 +19,7 @@ var (
 		if err != nil {
 			return err
 		}
-		return atomicWriteFile(destination, data, 0o600)
+		return cfgcommit.AtomicWriteFile(destination, data, 0o600)
 	}
 )
 
@@ -49,7 +51,7 @@ func quarantineOAuthJournalWithLogging(path string, owned bool) {
 		err = syncOAuthQuarantineFile(name)
 	}
 	if err == nil {
-		err = syncConfigParent(filepath.Dir(path))
+		err = cfgcommit.SyncConfigParent(filepath.Dir(path))
 	}
 	if err != nil {
 		if owned {
@@ -108,7 +110,7 @@ func pruneOAuthJournalQuarantines(path string) {
 			slog.Error("Failed to prune corrupt OAuth journal", "file", name)
 		}
 	}
-	if syncConfigParent(filepath.Dir(path)) != nil {
+	if cfgcommit.SyncConfigParent(filepath.Dir(path)) != nil {
 		slog.Error("Failed to sync OAuth journal quarantine directory", "file", filepath.Base(path))
 	}
 }

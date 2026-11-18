@@ -16,14 +16,22 @@ package config
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/domains/apiremote"
+	"github.com/PHPCraftdream/rush/internal/config/domains/apitoken"
 	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
+	"github.com/PHPCraftdream/rush/internal/config/domains/listeners"
 	"github.com/PHPCraftdream/rush/internal/config/domains/peak"
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/casefold"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	envresolve "github.com/PHPCraftdream/rush/internal/config/model/envresolve"
 	cfgmerge "github.com/PHPCraftdream/rush/internal/config/model/merge"
+	"github.com/PHPCraftdream/rush/internal/config/store/settings"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
 
@@ -372,3 +380,209 @@ func SharedWorkspaceMarkerPath(mainDataDir, wsRoot string) string {
 func globalSkillsDirs(homeDir string) []string { return datadir.GlobalSkillsDirsForHome(homeDir) }
 
 func projectSkillSubdirsLen() int { return datadir.ProjectSkillSubdirsLen() }
+
+// Case-sensitivity re-exports from io/casefold.
+type configCaseSensitivity = casefold.ConfigCaseSensitivity
+
+const configCaseSensitivityUnknown = casefold.ConfigCaseSensitivityUnknown
+
+func configPlatformCaseFoldLeaf(dir, leaf string) (string, bool) {
+	return casefold.ConfigPlatformCaseFoldLeaf(dir, leaf)
+}
+
+func configPlatformCaseSensitivity(dir string) configCaseSensitivity {
+	return casefold.ConfigPlatformCaseSensitivity(dir)
+}
+
+func configFoldCaseLeaf(leaf string, sensitivity configCaseSensitivity) (string, bool) {
+	return casefold.ConfigFoldCaseLeaf(leaf, sensitivity)
+}
+
+// File-identity re-exports from io/fileid (vars preserve single error identity).
+type configFileIdentity = fileid.FileIdentity
+
+var (
+	ErrConfigReloadUnstable = docread.ErrConfigReloadUnstable
+	ErrConfigNonRegular     = fileid.ErrConfigNonRegular
+	ErrConfigHardLink       = fileid.ErrConfigHardLink
+	errConfigOwnerMismatch  = fileid.ErrConfigOwnerMismatch()
+	errStableReadUnstable   = fileid.ErrStableReadUnstable()
+)
+
+func configFilePathIdentityMatches(path string, opened *os.File, openedInfo os.FileInfo) (bool, error) {
+	return fileid.ConfigFilePathIdentityMatches(path, opened, openedInfo)
+}
+
+func configParentIdentity(path string) configFileIdentity {
+	return fileid.ConfigParentIdentity(path)
+}
+
+func homeConfigOwner() int { return fileid.HomeConfigOwner() }
+
+func systemConfigOwner() int { return fileid.SystemConfigOwner() }
+
+func readOpenedConfigBytes(file *os.File) ([]byte, error) {
+	return fileid.ReadOpenedConfigBytes(file)
+}
+
+func openStableConfigFile(path string) (*os.File, error) {
+	return fileid.OpenStableConfigFile(path)
+}
+
+// Hook forwarding lives in io_forwarders.go (io/cfgcommit-backed).
+
+// D2-4 API token, remote, and listener facade.
+type (
+	APITokenStore        = apitoken.APITokenStore
+	APIToken             = apitoken.APIToken
+	APITokenBinding      = apitoken.APITokenBinding
+	APITokenPinBinding   = apitoken.APITokenPinBinding
+	APITokenBatchBinding = apitoken.APITokenBatchBinding
+	APIRemote            = apiremote.APIRemote
+	ServerListener       = listeners.ServerListener
+	ServerListenerTLS    = listeners.ServerListenerTLS
+	ServerListenerLimits = listeners.ServerListenerLimits
+	ServerListenerFlags  = listeners.ServerListenerFlags
+)
+
+var (
+	ErrInvalidAPIToken      = apitoken.ErrInvalidAPIToken
+	ErrAPITokenNotFound     = apitoken.ErrAPITokenNotFound
+	ErrListenerConfigRead   = listeners.ErrListenerConfigRead
+	ErrListenerConfigDecode = listeners.ErrListenerConfigDecode
+)
+
+func GlobalAPITokenStore() *APITokenStore { return apitoken.GlobalAPITokenStore() }
+
+func APITokenScopeAllows(have []string, need string) bool {
+	return apitoken.APITokenScopeAllows(have, need)
+}
+
+func ConsumeServeBootstrapToken(store *APITokenStore, getenv func(string) string, unsetenv func(string) error, now time.Time) (APIToken, bool, error) {
+	return apitoken.ConsumeServeBootstrapToken(store, getenv, unsetenv, now)
+}
+
+func ConsumeServeBootstrapTokenFromEnv(store *APITokenStore, now time.Time) (APIToken, bool, error) {
+	return apitoken.ConsumeServeBootstrapTokenFromEnv(store, now)
+}
+
+func CanonicalAPIWorkspace(path string) (string, error) {
+	return apitoken.CanonicalAPIWorkspace(path)
+}
+
+func APITokenHash(token string) string { return apitoken.APITokenHash(token) }
+
+func LooksLikeAPIToken(value string) bool { return apiremote.LooksLikeAPIToken(value) }
+
+func ValidateAPIRemote(remote APIRemote) error { return apiremote.ValidateAPIRemote(remote) }
+
+func ListAPIRemotes() (map[string]APIRemote, string, error) { return apiremote.ListAPIRemotes() }
+
+func GetAPIRemote(name string) (APIRemote, error) { return apiremote.GetAPIRemote(name) }
+
+func SetAPIRemote(name string, remote APIRemote, replace bool) error {
+	return apiremote.SetAPIRemote(name, remote, replace)
+}
+
+func RemoveAPIRemote(name string) error { return apiremote.RemoveAPIRemote(name) }
+
+func SetDefaultAPIRemote(name string) error { return apiremote.SetDefaultAPIRemote(name) }
+
+func ResolveAPIRemote(selected string, getenv func(string) string) (string, APIRemote, error) {
+	return apiremote.ResolveAPIRemote(selected, getenv)
+}
+
+func ReadAPIRemoteToken(remote APIRemote, getenv func(string) string) (string, error) {
+	return apiremote.ReadAPIRemoteToken(remote, getenv)
+}
+
+func WriteAPIRemoteTokenFile(name string, token []byte) (string, error) {
+	return apiremote.WriteAPIRemoteTokenFile(name, token)
+}
+
+func GlobalServerListeners(flags ServerListenerFlags) ([]ServerListener, error) {
+	return listeners.GlobalServerListeners(flags)
+}
+
+func GlobalServerListenersWithSources(flags ServerListenerFlags) ([]ServerListener, []map[string]string, error) {
+	return listeners.GlobalServerListenersWithSources(flags)
+}
+
+func init() {
+	apiremote.SetGlobalConfigWriterFactory(func() (apiremote.GlobalConfigWriter, error) {
+		return Load("", "", false)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// X1 chunk 9a: settings lock component (store/settings)
+//
+// The root settings-lock implementation (settings_lock.go,
+// settings_lock_sources.go and the per-platform
+// settings_lock_sources_{windows,other}.go) moved to
+// internal/config/store/settings. Everything below re-exports its API and
+// forwards the unexported names that staying-root code and tests still
+// call. settings_lock_hashes.go remains in the root temporarily (deleted
+// next chunk) and is kept compiling by the freshSettingsHash forward.
+// ---------------------------------------------------------------------------
+
+// Sentinel errors re-exported from the settings package (vars preserve
+// single error identity).
+var (
+	ErrSettingsLocked = settings.ErrSettingsLocked
+	ErrWrongPassword  = settings.ErrWrongPassword
+	ErrNotLocked      = settings.ErrNotLocked
+)
+
+// Types re-exported from the settings package.
+type (
+	SettingsEvent               = settings.SettingsEvent
+	LockState                   = settings.LockState
+	ErrSettingsLockUnrecognized = settings.ErrSettingsLockUnrecognized
+)
+
+// errSettingsLockKeyReserved: the settings component owns the reserved-key
+// sentinel (settings.ErrSettingsLockKeyReserved()); root tests still assert
+// against the unexported name.
+var errSettingsLockKeyReserved = settings.ErrSettingsLockKeyReserved()
+
+// syncRevKey is the settings component's semantic reserved key ("sync_rev");
+// the root keeps a local literal copy (cfgmodel_locals precedent) for the
+// remaining root tests.
+const syncRevKey = "sync_rev"
+
+// settingsWriteAudit: relocated from the deleted root settings_lock.go;
+// store_mcp.go, store_mcp_transaction.go and store_write.go still use the
+// unqualified name.
+type settingsWriteAudit struct {
+	event     *SettingsEvent
+	refusedBy string
+}
+
+func HashPassword(password string) string { return settings.HashPassword(password) }
+
+func VerifyPassword(password, stored string) bool { return settings.VerifyPassword(password, stored) }
+
+func SetProcessPassword(password string) { settings.SetProcessPassword(password) }
+
+func CheckPasswordAgainstDisk(password string) error {
+	return settings.CheckPasswordAgainstDisk(password)
+}
+
+func SettingsWriteAllowed(workspaceDir string) error {
+	return settings.SettingsWriteAllowed(workspaceDir)
+}
+
+// SetSettingsAuditSink forwards the sink registration; with the SettingsEvent
+// alias, func(SettingsEvent) IS func(settings.SettingsEvent).
+func SetSettingsAuditSink(f func(SettingsEvent)) { settings.SetSettingsAuditSink(f) }
+
+func SetSettingsPasswordIterationsForTest(n int) (restore func()) {
+	return settings.SetSettingsPasswordIterationsForTest(n)
+}
+
+// freshSettingsHash forward: the retained root settings_lock_hashes.go
+// (dead after this chunk, deleted next chunk) still calls it unqualified.
+func freshSettingsHash(path string) (string, error) {
+	return settings.FreshSettingsHash(path)
+}

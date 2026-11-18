@@ -28,6 +28,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -35,15 +36,39 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	clijournal "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/journal"
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/diag/audit"
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
+	runfinish "github.com/PHPCraftdream/rush/internal/serve/cmd/run/finish"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestTokensExitCodeHonorsExitCoder verifies the generic exit-coder hook in
+// tokensExitCode. Revert-check: only explicitly typed errors get custom
+// codes; widening the interface check to plain errors would change every
+// subcommand's exit code.
+func TestTokensExitCodeHonorsExitCoder(t *testing.T) {
+	t.Parallel()
+
+	code, ok := tokensExitCode([]string{"run"}, &runfinish.ReviewFailError{Verdict: "fail"})
+	assert.Equal(t, 3, code)
+	assert.True(t, ok)
+
+	code, ok = tokensExitCode([]string{"run"}, errors.New("boom"))
+	assert.Equal(t, 0, code)
+	assert.False(t, ok)
+
+	code, ok = tokensExitCode([]string{"run"}, nil)
+	assert.Equal(t, 0, code)
+	assert.False(t, ok)
+}
 
 // journalTestEnv isolates the global config/data dirs, points the audit
 // resolver at them and resets the per-process journal state.
@@ -52,7 +77,7 @@ func journalTestEnv(t *testing.T) string {
 	// Pre-pin rushlog to no file (io.Discard writer) so no test's temp
 	// data dir holds the process-lifetime rush.log handle at cleanup.
 	rushlog.Setup("", false)
-	dataDir := seedAuditDir(t)
+	dataDir := cmdtest.SeedAuditDir(t)
 	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 	ensureAuditDirFunc()
 	resetCommandJournalForTests()
@@ -267,16 +292,16 @@ func TestJournalNonDispatchPaths(t *testing.T) {
 
 func TestExitWithAudit(t *testing.T) {
 	journalTestEnv(t)
-	recorder := newExitRecorder()
+	recorder := cmdtest.NewExitRecorder()
 	oldExit := clijournal.ExitFunc()
-	clijournal.SetExitFunc(recorder.exit)
+	clijournal.SetExitFunc(recorder.Exit)
 	t.Cleanup(func() { clijournal.SetExitFunc(oldExit) })
 
 	journalCommandStart(logsPathCmd, nil)
 	exitWithAudit(7)
-	awaitClosed(t, recorder.first, "first exitWithAudit")
+	cmdtest.AwaitClosed(t, recorder.First, "first exitWithAudit")
 	exitWithAudit(9)
-	require.Equal(t, []int{7, 9}, recorder.calls())
+	require.Equal(t, []int{7, 9}, recorder.Calls())
 
 	recs := journalRecords(t)
 	require.Len(t, recs, 2, "two exits must write exactly one end record")
@@ -308,38 +333,8 @@ func TestJournalCompletionSilent(t *testing.T) {
 	require.Empty(t, journalRecords(t), "completion invocations must write nothing")
 }
 
-// journalSnapshotRestore snapshots value+Changed of every flag in the sets
+// cmdtest.JournalSnapshotRestore snapshots value+Changed of every flag in the sets
 // and returns a restore func.
-func journalSnapshotRestore(t *testing.T, sets ...*pflag.FlagSet) func() {
-	t.Helper()
-	type savedFlag struct {
-		f       *pflag.Flag
-		value   string
-		slice   []string
-		changed bool
-	}
-	var saved []savedFlag
-	for _, fs := range sets {
-		fs.VisitAll(func(f *pflag.Flag) {
-			entry := savedFlag{f: f, value: f.Value.String(), changed: f.Changed}
-			if sv, ok := f.Value.(pflag.SliceValue); ok {
-				entry.slice = append([]string(nil), sv.GetSlice()...)
-			}
-			saved = append(saved, entry)
-		})
-	}
-	return func() {
-		for _, s := range saved {
-			// Set("[]") on a slice flag would append the literal "[]"; Replace restores the list.
-			if sv, ok := s.f.Value.(pflag.SliceValue); ok {
-				_ = sv.Replace(s.slice)
-			} else {
-				_ = s.f.Value.Set(s.value)
-			}
-			s.f.Changed = s.changed
-		}
-	}
-}
 
 // journalCanaryValue returns a parseable per-flag probe value; string-typed
 // flags carry the CANARY marker.
@@ -385,7 +380,7 @@ func journalCanaryOneCommand(t *testing.T, c *cobra.Command) (expected, got map[
 	t.Helper()
 	path := c.CommandPath()
 	resetCommandJournalForTests()
-	restore := journalSnapshotRestore(t, c.Flags(), rootCmd.PersistentFlags())
+	restore := cmdtest.JournalSnapshotRestore(t, c.Flags(), rootCmd.PersistentFlags())
 	defer restore()
 
 	expected = map[string]bool{}
@@ -498,9 +493,9 @@ func TestJournalRecordCapsAndWriteErrors(t *testing.T) {
 	before := len(journalRecords(t))
 	blockedParent := filepath.Join(dir, "blocked-parent")
 	require.NoError(t, os.WriteFile(blockedParent, []byte("file"), 0o600))
-	recorder := newExitRecorder()
+	recorder := cmdtest.NewExitRecorder()
 	oldExit := clijournal.ExitFunc()
-	clijournal.SetExitFunc(recorder.exit)
+	clijournal.SetExitFunc(recorder.Exit)
 	t.Cleanup(func() {
 		clijournal.SetExitFunc(oldExit)
 		audit.SetDirFunc(clijournal.JournalAuditDir)
@@ -512,8 +507,8 @@ func TestJournalRecordCapsAndWriteErrors(t *testing.T) {
 		finalizeCommandJournal(nil, nil)
 		exitWithAudit(3)
 	})
-	awaitClosed(t, recorder.first, "exitWithAudit under an unwritable audit dir")
-	require.Equal(t, []int{3}, recorder.calls())
+	cmdtest.AwaitClosed(t, recorder.First, "exitWithAudit under an unwritable audit dir")
+	require.Equal(t, []int{3}, recorder.Calls())
 	audit.SetDirFunc(clijournal.JournalAuditDir)
 	require.Len(t, journalRecords(t), before, "a failed audit write must leave no record")
 }

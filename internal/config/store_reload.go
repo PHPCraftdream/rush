@@ -9,8 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash"
-	"io"
 	"log/slog"
 	"maps"
 	"os"
@@ -18,38 +16,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/slotmigrate"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
 
 const reloadMaxAttempts = 4
-
-const stableReadMaxAttempts = 4
-
-// configFingerprintPath folds the leaf spelling when the containing directory
-// is case-insensitive. Case-only aliases are one filesystem object there and
-// must not produce different staleness fingerprints.
-func configFingerprintPath(path string) string {
-	abs := normalizeDiscoveryPath(path)
-	dir, leaf := filepath.Dir(abs), filepath.Base(abs)
-	if folded, ok := configPlatformCaseFoldLeaf(dir, leaf); ok {
-		return filepath.Join(dir, folded)
-	}
-	return abs
-}
-
-func writeConfigDiscoveryInfo(h hash.Hash, info os.FileInfo) {
-	_, _ = io.WriteString(h, info.Mode().String())
-	// Directory mtimes change for unrelated files created beside a candidate;
-	// their physical identity is the part relevant to parent replacement.
-	// Regular-file metadata remains part of the exact file fingerprint below.
-	if info.IsDir() {
-		_, _ = io.WriteString(h, fmt.Sprintf("|dir|%d|", info.Mode()))
-	} else {
-		_, _ = io.WriteString(h, fmt.Sprintf("|%d|%d|%d|", info.Size(), info.ModTime().UnixNano(), info.Mode()))
-	}
-	identity := configFileIdentityOf(info)
-	_, _ = io.WriteString(h, fmt.Sprintf("%t|%d|%d", identity.valid, identity.device, identity.inode))
-}
 
 // ReloadFromDisk re-runs the config load/merge flow and updates the
 // in-memory config atomically.
@@ -73,7 +45,7 @@ func (s *ConfigStore) ReloadFromDisk(ctx context.Context) error {
 	}
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, ktavMigrationBudget)
+		ctx, cancel = context.WithTimeout(ctx, slotmigrate.KtavMigrationBudget())
 		defer cancel()
 	}
 	return s.reloadFromDiskUnlocked(ctx)
@@ -113,10 +85,10 @@ func (s *ConfigStore) reloadFromDiskUnlocked(ctx context.Context) error {
 func (s *ConfigStore) runReloadLocked(ctx context.Context) error {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, ktavMigrationBudget)
+		ctx, cancel = context.WithTimeout(ctx, slotmigrate.KtavMigrationBudget())
 		defer cancel()
 	}
-	if err := ktavMigrateStartupSlots(ctx, s.workingDir); err != nil {
+	if err := slotmigrate.KtavMigrateStartupSlots(ctx, s.workingDir); err != nil {
 		s.releaseReloadLock()
 		return err
 	}
@@ -126,7 +98,7 @@ func (s *ConfigStore) runReloadLocked(ctx context.Context) error {
 		dataDir = prev.config.Options.DataDirectory
 	}
 	if dataDir != "" {
-		if err := ktavMigrateWorkspaceIfNeeded(ctx, s.workingDir, dataDir); err != nil {
+		if err := slotmigrate.KtavMigrateWorkspaceIfNeeded(ctx, s.workingDir, dataDir); err != nil {
 			s.releaseReloadLock()
 			return err
 		}
@@ -188,13 +160,13 @@ func (s *ConfigStore) releaseReloadLock() {
 // autoReload can call it directly after its own TryLock(reloadMu) without
 // double-locking reloadMu (sync.Mutex is not reentrant).
 func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncertainty map[string]uint64) error {
-	configPaths := lookupConfigCandidates(s.workingDir)
+	configPaths := docread.LookupConfigCandidates(s.workingDir)
 	// Mirror the initial-load fail-closed rule: an authoritative slot that
 	// holds only a backup must never reload into an unlocked, empty config.
-	if err := checkAuthoritativeBackupOnly(s.workingDir); err != nil {
+	if err := docread.CheckAuthoritativeBackupOnly(s.workingDir); err != nil {
 		return err
 	}
-	externalPaths := mcpJSONCandidatePaths(s.workingDir)
+	externalPaths := docread.McpJSONCandidatePaths(s.workingDir)
 	cfg, loadedPaths, fingerprints, configDocuments, err := loadConfigCandidateStableForWorkingDir(configPaths, s.workingDir)
 	if err != nil {
 		return fmt.Errorf("failed to reload config: %w", err)
@@ -212,20 +184,20 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	}
 	setDefaults(cfg, s.workingDir, dataDir)
 
-	workspaceDiscoveryPath := normalizeDiscoveryPath(workspaceConfigPath(cfg.Options.DataDirectory))
-	workspacePath := normalizeReloadPath(workspaceDiscoveryPath)
-	if err := checkBackupOnlySlot(filepath.Join(cfg.Options.DataDirectory, appName+".json")); err != nil {
+	workspaceDiscoveryPath := docread.NormalizeDiscoveryPath(docread.WorkspaceConfigPath(cfg.Options.DataDirectory))
+	workspacePath := docread.NormalizeReloadPath(workspaceDiscoveryPath)
+	if err := docread.CheckBackupOnlySlot(filepath.Join(cfg.Options.DataDirectory, appName+".json")); err != nil {
 		return err
 	}
-	if !pathAlreadyLoaded(loadedPaths, workspacePath) && s.workingDir != "" {
-		expectedOwner, enforceOwner, ownerErr := configOwnerForWorkingDir(s.workingDir)
+	if !docread.PathAlreadyLoaded(loadedPaths, workspacePath) && s.workingDir != "" {
+		expectedOwner, enforceOwner, ownerErr := docread.ConfigOwnerForWorkingDir(s.workingDir)
 		if ownerErr != nil {
 			return fmt.Errorf("failed to determine workspace config owner: %w", ownerErr)
 		}
-		wsData, fingerprint, readErr := readStableConfigFileOwned(workspaceDiscoveryPath, expectedOwner, enforceOwner)
+		wsData, fingerprint, readErr := docread.ReadStableConfigFileOwned(workspaceDiscoveryPath, expectedOwner, enforceOwner)
 		if readErr == nil {
 			var decodeErr error
-			wsData, decodeErr = decodeConfigDocument(workspaceDiscoveryPath, wsData)
+			wsData, decodeErr = docread.DecodeConfigDocument(workspaceDiscoveryPath, wsData)
 			if decodeErr != nil {
 				return fmt.Errorf("failed to decode workspace config %s: %w", workspacePath, decodeErr)
 			}
@@ -233,9 +205,9 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 		if readErr == nil {
 			fingerprints[workspaceDiscoveryPath] = fingerprint
 			configDocuments = append(configDocuments, stableConfigDocument{
-				path: workspaceDiscoveryPath, data: wsData,
-				fingerprint: fingerprint, present: fingerprint.exists,
-				aliases: []stableConfigAlias{{path: workspaceDiscoveryPath, fingerprint: fingerprint}},
+				Path: workspaceDiscoveryPath, Data: wsData,
+				Fingerprint: fingerprint, Present: fingerprint.Exists,
+				Aliases: []stableConfigAlias{{Path: workspaceDiscoveryPath, Fingerprint: fingerprint}},
 			})
 		} else if !os.IsNotExist(readErr) {
 			return fmt.Errorf("failed to read workspace config for reload: %w", readErr)
@@ -243,8 +215,8 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 		if readErr != nil {
 			fingerprints[workspaceDiscoveryPath] = fingerprint
 			configDocuments = append(configDocuments, stableConfigDocument{
-				path:    workspaceDiscoveryPath,
-				aliases: []stableConfigAlias{{path: workspaceDiscoveryPath, fingerprint: fingerprint}},
+				Path:    workspaceDiscoveryPath,
+				Aliases: []stableConfigAlias{{Path: workspaceDiscoveryPath, Fingerprint: fingerprint}},
 			})
 		}
 		if readErr == nil && len(wsData) > 0 {
@@ -258,7 +230,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 			dataDir := cfg.Options.DataDirectory
 			*cfg = *merged
 			setDefaults(cfg, s.workingDir, dataDir)
-			loadedPaths = append(loadedPaths, normalizeReloadPath(workspacePath))
+			loadedPaths = append(loadedPaths, docread.NormalizeReloadPath(workspacePath))
 		}
 	}
 	if hook := s.reloadAfterDiskRead; hook != nil {
@@ -277,11 +249,11 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	// Keep .mcp.json discovery and the literal disabled-override merge
 	// consistent with the initial Load path. A reload after the external file
 	// appears must not silently drop those servers from the new snapshot.
-	externalDocuments, _, err := loadExternalMCPDocumentsStableForWorkingDir(externalPaths, fingerprints, s.workingDir)
+	externalDocuments, _, err := docread.LoadExternalMCPDocumentsStableForWorkingDir(externalPaths, fingerprints, s.workingDir)
 	if err != nil {
 		return fmt.Errorf("failed to load external MCP config during reload: %w", err)
 	}
-	mergeExternalMCPServersFromDocuments(cfg, configDocuments, externalDocuments)
+	docread.MergeExternalMCPServersFromDocuments(cfg, configDocuments, externalDocuments)
 	if hook := s.reloadAfterExternalRead; hook != nil {
 		hook()
 	}
@@ -359,9 +331,9 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 		workspacePath:       workspacePath,
 		overrides:           prev.overrides,
 	}
-	stalenessPaths := configAndMCPStalenessPaths(lookupConfigCandidates(s.workingDir), s.workingDir)
+	stalenessPaths := docread.ConfigAndMCPStalenessPaths(docread.LookupConfigCandidates(s.workingDir), s.workingDir)
 	stalenessPaths = append(stalenessPaths, workspacePath, s.globalDataPath)
-	candidate.trackedConfigPaths, candidate.snapshots = reloadStalenessState(stalenessPaths, fingerprints)
+	candidate.trackedConfigPaths, candidate.snapshots = docread.ReloadStalenessState(stalenessPaths, fingerprints)
 
 	s.diskWriteMu.Lock()
 	diskWriteGeneration := s.diskWriteGeneration
@@ -400,7 +372,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	}(); publishErr != nil {
 		return publishErr
 	}
-	s.clearMCPUncertainty(expectedUncertainty)
+	s.mcpStore().ClearUncertainty(expectedUncertainty)
 
 	return nil
 }
@@ -418,33 +390,29 @@ func prevModelsSelections(prev *storeSnapshot) map[SelectedModelType]SelectedMod
 // the candidate's stable bytes for the global-data and workspace paths.
 // A warning is logged once per distinct offending fingerprint.
 func reloadModelsIntegrityMismatch(s *ConfigStore, docs []stableConfigDocument) bool {
-	lockExists := s.anySettingsLockExists()
+	lockExists := s.settings.AnyLockExists()
 	mismatch := false
 	for _, path := range []string{s.globalDataPath, s.loadSnapshot().workspacePath} {
 		if path == "" {
 			continue
 		}
-		doc := stableConfigDocumentForPath(docs, path)
-		if doc == nil || !doc.present {
+		canonical := docread.NormalizeReloadPath(path)
+		var doc *stableConfigDocument
+		for i := range docs {
+			if docread.NormalizeReloadPath(docs[i].Path) == canonical || docread.MatchesLogicalSlot(docs[i].Path, canonical) {
+				doc = &docs[i]
+				break
+			}
+		}
+		if doc == nil || !doc.Present {
 			continue
 		}
-		if modelsIntegrityOf(doc.data, lockExists) != nil {
+		if modelsIntegrityOf(doc.Data, lockExists) != nil {
 			mismatch = true
-			warnModelsIntegrityFingerprintOnce(path, doc.fingerprint.digest)
+			warnModelsIntegrityFingerprintOnce(path, doc.Fingerprint.Digest)
 		}
 	}
 	return mismatch
-}
-
-// stableConfigDocumentForPath finds the candidate document for path.
-func stableConfigDocumentForPath(docs []stableConfigDocument, path string) *stableConfigDocument {
-	canonical := normalizeReloadPath(path)
-	for i := range docs {
-		if normalizeReloadPath(docs[i].path) == canonical || matchesLogicalSlot(docs[i].path, canonical) {
-			return &docs[i]
-		}
-	}
-	return nil
 }
 
 var (
@@ -544,125 +512,4 @@ func (s *ConfigStore) autoReloadAfterWrite(ctx context.Context) error {
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-}
-
-func captureReloadFingerprints(paths []string) (map[string]reloadFileFingerprint, error) {
-	fingerprints := make(map[string]reloadFileFingerprint, len(paths))
-	for _, path := range paths {
-		if err := addReloadFingerprint(fingerprints, path); err != nil {
-			return nil, err
-		}
-	}
-	return fingerprints, nil
-}
-
-func addReloadFingerprint(fingerprints map[string]reloadFileFingerprint, path string) error {
-	if path == "" {
-		return nil
-	}
-	path = normalizeReloadPath(path)
-	if _, exists := fingerprints[path]; exists {
-		return nil
-	}
-	fingerprint, err := readReloadFingerprint(path)
-	if err != nil {
-		return err
-	}
-	fingerprints[path] = fingerprint
-	return nil
-}
-
-func readReloadFingerprint(path string) (reloadFileFingerprint, error) {
-	_, fingerprint, err := readStableConfigFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return reloadFileFingerprint{}, err
-	}
-	return fingerprint, nil
-}
-
-func reloadFingerprintsChanged(before map[string]reloadFileFingerprint) bool {
-	return reloadFingerprintsChangedWithOwner(before, nil)
-}
-
-func reloadFingerprintsChangedWithOwner(before map[string]reloadFileFingerprint, owner func(string) (int, bool, error)) bool {
-	for path, expected := range before {
-		expectedOwner, enforceOwner := 0, false
-		var ownerErr error
-		if owner != nil {
-			expectedOwner, enforceOwner, ownerErr = owner(path)
-			if ownerErr != nil {
-				return true
-			}
-		}
-		_, actual, err := readStableConfigFileOwned(path, expectedOwner, enforceOwner)
-		if err != nil || actual != expected {
-			if os.IsNotExist(err) {
-				// readStableConfigFileOwned returns the discovery fingerprint along
-				// with a not-exist error, so this remains an exact comparison.
-				if actual == expected {
-					continue
-				}
-			}
-			return true
-		}
-	}
-	return false
-}
-
-func sameReloadPathSet(left, right []string) bool {
-	leftSet := make(map[string]struct{}, len(left))
-	for _, path := range left {
-		leftSet[normalizeReloadPath(path)] = struct{}{}
-	}
-	rightSet := make(map[string]struct{}, len(right))
-	for _, path := range right {
-		rightSet[normalizeReloadPath(path)] = struct{}{}
-	}
-	if len(leftSet) != len(rightSet) {
-		return false
-	}
-	for path := range rightSet {
-		if _, ok := leftSet[path]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
-// trackedSlotFingerprint is the single disk-fingerprint accessor for
-// tracked slot paths: it returns the captured reload fingerprint when one
-// exists for the path (selected documents, plus canonical/normalized
-// aliases via reloadFingerprintForPath), and falls back to a REAL on-disk
-// fingerprint (raw bytes: existence plus identity/digest, no decoding,
-// never applied to the config) for tracked paths the selected set does not
-// cover — an unselected slot sibling that exists must not look absent.
-func trackedSlotFingerprint(path string, fingerprints map[string]reloadFileFingerprint) (reloadFileFingerprint, error) {
-	if fingerprint := reloadFingerprintForPath(fingerprints, path); fingerprint != (reloadFileFingerprint{}) {
-		return fingerprint, nil
-	}
-	return readReloadFingerprint(path)
-}
-
-func reloadFingerprintForPath(fingerprints map[string]reloadFileFingerprint, path string) reloadFileFingerprint {
-	if fingerprint, ok := fingerprints[path]; ok {
-		return rebindReloadFingerprintPath(path, fingerprint)
-	}
-	canonical := normalizeReloadPath(path)
-	if fingerprint, ok := fingerprints[canonical]; ok {
-		return rebindReloadFingerprintPath(path, fingerprint)
-	}
-	for candidate, fingerprint := range fingerprints {
-		if normalizeReloadPath(candidate) == canonical {
-			return rebindReloadFingerprintPath(path, fingerprint)
-		}
-	}
-	return reloadFileFingerprint{}
-}
-
-func rebindReloadFingerprintPath(path string, fingerprint reloadFileFingerprint) reloadFileFingerprint {
-	fingerprint.discovery = configDiscoveryFingerprint(path)
-	fingerprint.parentDiscovery = configDiscoveryFingerprint(filepath.Dir(path))
-	fingerprint.parentIdentity = configParentIdentity(path)
-	fingerprint.aliasChain = configAliasChainFingerprint(path)
-	return fingerprint
 }

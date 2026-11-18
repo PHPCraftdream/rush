@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -42,16 +44,8 @@ func runLogsPrune(t *testing.T, args ...string) (string, error) {
 	return string(bts), runErr
 }
 
-// seedAuditDir points RUSH_GLOBAL_DATA and RUSH_GLOBAL_CONFIG at
+// cmdtest.SeedAuditDir points RUSH_GLOBAL_DATA and RUSH_GLOBAL_CONFIG at
 // throwaway directories so no test touches the real global config.
-func seedAuditDir(t *testing.T) string {
-	t.Helper()
-
-	dataDir := t.TempDir()
-	t.Setenv("RUSH_GLOBAL_DATA", dataDir)
-	t.Setenv("RUSH_GLOBAL_CONFIG", t.TempDir())
-	return dataDir
-}
 
 func writeAuditFile(t *testing.T, dir, name string) string {
 	t.Helper()
@@ -62,7 +56,7 @@ func writeAuditFile(t *testing.T, dir, name string) string {
 }
 
 func TestLogsPruneAuditDefaultRetention(t *testing.T) {
-	dataDir := seedAuditDir(t)
+	dataDir := cmdtest.SeedAuditDir(t)
 	oldFile := writeAuditFile(t, dataDir, "audit-2020-01-01.jsonl")
 	todayFile := writeAuditFile(t, dataDir, "audit-"+time.Now().Format("2006-01-02")+".jsonl")
 	other := writeAuditFile(t, dataDir, "other.txt")
@@ -88,7 +82,7 @@ func TestLogsPruneAuditDefaultRetention(t *testing.T) {
 }
 
 func TestLogsPruneAuditDaysZeroDeletesAll(t *testing.T) {
-	dataDir := seedAuditDir(t)
+	dataDir := cmdtest.SeedAuditDir(t)
 	a := writeAuditFile(t, dataDir, "audit-2020-01-01.jsonl")
 	b := writeAuditFile(t, dataDir, "audit-2021-01-01.jsonl")
 	today := writeAuditFile(t, dataDir, "audit-"+time.Now().Format("2006-01-02")+".jsonl")
@@ -140,7 +134,7 @@ func TestLogsPruneAuditDirUnreadable(t *testing.T) {
 }
 
 func TestLogsPruneAuditDaysNegative(t *testing.T) {
-	dataDir := seedAuditDir(t)
+	dataDir := cmdtest.SeedAuditDir(t)
 	p := writeAuditFile(t, dataDir, "audit-2020-01-01.jsonl")
 
 	_, err := runLogsPrune(t, "--audit-days", "-1", "--data-dir", t.TempDir())

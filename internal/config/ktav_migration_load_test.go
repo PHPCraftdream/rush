@@ -24,9 +24,8 @@ func ktavSetupLoadMigrationTest(t *testing.T, migrateJSON bool) {
 	for _, path := range []string{globalConfig, globalData} {
 		require.NoError(t, os.MkdirAll(path, 0o700))
 	}
-	savedGate := ktavAutoMigrate
-	ktavAutoMigrate = migrateJSON
-	t.Cleanup(func() { ktavAutoMigrate = savedGate })
+	restore := SetKtavAutoMigrateForTest(migrateJSON)
+	t.Cleanup(restore)
 }
 
 func ktavLoadMigrationTestConfig(t *testing.T, dir string, migrateJSON bool) *ConfigStore {

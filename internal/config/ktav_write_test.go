@@ -31,6 +31,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/config/store/settings"
+
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -271,7 +273,7 @@ func TestKtavLockUnlockSyncRevRoundTrip(t *testing.T) {
 	s := lockStore(t, ktavPath)
 
 	// Fresh hash behavior against a .ktav file.
-	hash, err := freshSettingsHash(ktavPath)
+	hash, err := settings.FreshSettingsHash(ktavPath)
 	require.NoError(t, err)
 	require.Equal(t, "", hash)
 
@@ -279,7 +281,7 @@ func TestKtavLockUnlockSyncRevRoundTrip(t *testing.T) {
 	lockedDoc := string(ktavDecodedJSON(t, ktavPath))
 	require.True(t, VerifyPassword("secret", gjson.Get(lockedDoc, "sync_rev").String()))
 	require.True(t, gjson.Get(lockedDoc, "mcp.srv").Exists(), "locking must preserve MCP records")
-	hash, err = freshSettingsHash(ktavPath)
+	hash, err = settings.FreshSettingsHash(ktavPath)
 	require.NoError(t, err)
 	require.True(t, VerifyPassword("secret", hash))
 	state, err := s.LockState()
@@ -296,7 +298,7 @@ func TestKtavLockUnlockSyncRevRoundTrip(t *testing.T) {
 	unlockedDoc := string(ktavDecodedJSON(t, ktavPath))
 	require.False(t, gjson.Get(unlockedDoc, "sync_rev").Exists())
 	require.True(t, gjson.Get(unlockedDoc, "mcp.srv").Exists())
-	hash, err = freshSettingsHash(ktavPath)
+	hash, err = settings.FreshSettingsHash(ktavPath)
 	require.NoError(t, err)
 	require.Equal(t, "", hash)
 
@@ -329,9 +331,8 @@ func TestKtavCreationRespectsAutoMigrateGate(t *testing.T) {
 
 	// Gate off (explicitly): the legacy JSON slot is created instead, and no
 	// Ktav file appears. NOT parallel: mutates the shared gate global.
-	prev := ktavAutoMigrate
-	ktavAutoMigrate = false
-	t.Cleanup(func() { ktavAutoMigrate = prev })
+	restore := SetKtavAutoMigrateForTest(false)
+	t.Cleanup(restore)
 	jsonPathOff := filepath.Join(t.TempDir(), "rush.json")
 	ktavPathOff := filepath.Join(filepath.Dir(jsonPathOff), "rush.ktav")
 	storeOff := ktavWriteStore(t, jsonPathOff)

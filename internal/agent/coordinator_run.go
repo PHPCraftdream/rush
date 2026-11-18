@@ -13,6 +13,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
@@ -208,7 +209,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	model := pinned.smart
 
 	// The heartbeat source labels are decided at resolve time, not here.
-	ctx = withModelSource(ctx, pinned.smartSource, pinned.fastSource)
+	ctx = callbeat.WithModelSource(ctx, pinned.smartSource, pinned.fastSource)
 
 	// creds is non-nil for RunWithCredentials calls (see
 	// resolvedOverrides.credentials): the 401 rebuild below must
@@ -267,7 +268,6 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		})
 	}
 	slog.Debug("Coordinator: running with model", "sessionID", sessionID, "model", model.ModelCfg.Model)
-
 	maxOutputTokens := model.CatwalkCfg.DefaultMaxTokens
 	if model.ModelCfg.MaxTokens != 0 {
 		maxOutputTokens = model.ModelCfg.MaxTokens

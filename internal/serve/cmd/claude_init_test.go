@@ -1,10 +1,11 @@
 package cmd
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -15,27 +16,7 @@ import (
 // helpers
 // ---------------------------------------------------------------------------
 
-// captureStderr runs f while capturing os.Stderr output.
-func captureStderr(t *testing.T, f func()) string {
-	t.Helper()
-	old := os.Stderr
-	r, w, err := os.Pipe()
-	require.NoError(t, err)
-	os.Stderr = w
-	defer func() { os.Stderr = old }()
-
-	var buf bytes.Buffer
-	done := make(chan struct{})
-	go func() {
-		_, _ = buf.ReadFrom(r)
-		close(done)
-	}()
-
-	f()
-	_ = w.Close()
-	<-done
-	return buf.String()
-}
+// cmdtest.CaptureStderr runs f while capturing os.Stderr output.
 
 func runClaudeInitInDir(t *testing.T, dir string) {
 	t.Helper()
@@ -117,7 +98,7 @@ func TestClaudeInit_StripsLegacyBlock_KeepsRestOfFile(t *testing.T) {
 		"## Other notes\n\nlive content\n"
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runClaudeInitInDir(t, dir)
 	})
 
@@ -140,7 +121,7 @@ func TestClaudeInit_StripsLegacyBlock_DeletesEmptyFile(t *testing.T) {
 	content := "<!-- crush-claude-init:v8 -->\nold delegation block\n<!-- /crush-claude-init -->\n"
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runClaudeInitInDir(t, dir)
 	})
 
@@ -174,7 +155,7 @@ func TestClaudeInit_StripsMultipleLegacyVersions(t *testing.T) {
 		"tail text\n"
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runClaudeInitInDir(t, dir)
 	})
 
@@ -240,7 +221,7 @@ func TestClaudeInit_SlashCommandSkipsWithoutSentinel(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(slashPath), 0o755))
 	require.NoError(t, os.WriteFile(slashPath, []byte("someone else's file"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runClaudeInitInDir(t, dir)
 	})
 
@@ -282,7 +263,7 @@ func TestClaudeDel_RemovesEmptyFile(t *testing.T) {
 	content := "<!-- crush-claude-init:v8 -->\nsome block content\n<!-- /crush-claude-init -->\n"
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runClaudeDelInDir(t, dir)
 	})
 
@@ -327,7 +308,7 @@ func TestClaudeInit_FallbackCommandSkipsWithoutSentinel(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(fallbackPath), 0o755))
 	require.NoError(t, os.WriteFile(fallbackPath, []byte("someone else's file"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runClaudeInitInDir(t, dir)
 	})
 
@@ -372,7 +353,7 @@ func TestClaudeInit_WrushCommandSkipsWithoutSentinel(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(wrushPath), 0o755))
 	require.NoError(t, os.WriteFile(wrushPath, []byte("someone else's file"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runClaudeInitInDir(t, dir)
 	})
 
@@ -426,7 +407,7 @@ func TestClaudeInit_WcrushCommandSkipsWithoutSentinel(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(wcrushPath), 0o755))
 	require.NoError(t, os.WriteFile(wcrushPath, []byte("someone else's file"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runClaudeInitInDir(t, dir)
 	})
 
@@ -478,7 +459,7 @@ func TestClaudeDel_RefusesSlashCommandWithoutSentinel(t *testing.T) {
 	claudeMdPath := filepath.Join(dir, claudeMdFile)
 	require.NoError(t, os.WriteFile(claudeMdPath, []byte("# Notes\n"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runClaudeDelInDir(t, dir)
 	})
 
@@ -514,7 +495,7 @@ func TestClaudeDel_RefusesFallbackCommandWithoutSentinel(t *testing.T) {
 	claudeMdPath := filepath.Join(dir, claudeMdFile)
 	require.NoError(t, os.WriteFile(claudeMdPath, []byte("# Notes\n"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runClaudeDelInDir(t, dir)
 	})
 
@@ -550,7 +531,7 @@ func TestClaudeDel_RefusesWrushCommandWithoutSentinel(t *testing.T) {
 	claudeMdPath := filepath.Join(dir, claudeMdFile)
 	require.NoError(t, os.WriteFile(claudeMdPath, []byte("# Notes\n"), 0o644))
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runClaudeDelInDir(t, dir)
 	})
 
@@ -565,7 +546,7 @@ func TestClaudeDel_RefusesWrushCommandWithoutSentinel(t *testing.T) {
 func TestClaudeDel_NoOpWhenNothingPresent(t *testing.T) {
 	dir := t.TempDir()
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runClaudeDelInDir(t, dir)
 	})
 
@@ -584,7 +565,7 @@ func TestClaudeDel_IdempotentOnSecondRun(t *testing.T) {
 	first, err := os.ReadFile(path)
 	require.NoError(t, err)
 
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		runClaudeDelInDir(t, dir)
 	})
 

@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	openai "github.com/charmbracelet/openai-go"
 	"github.com/charmbracelet/openai-go/packages/ssestream"
 	"github.com/spf13/pflag"
@@ -499,7 +501,7 @@ func executeTopLevelRun(t *testing.T, cwd, dataDir, role string, traces ...*runC
 	// stay on runCmd and fail the next top-level run at its database connect.
 	resetRunCmdContext()
 
-	restore := journalSnapshotRestore(t, runCmd.Flags(), rootCmd.PersistentFlags())
+	restore := cmdtest.JournalSnapshotRestore(t, runCmd.Flags(), rootCmd.PersistentFlags())
 	t.Cleanup(restore)
 	for _, flags := range []*pflag.FlagSet{runCmd.Flags(), rootCmd.PersistentFlags()} {
 		flags.VisitAll(func(flag *pflag.Flag) {

@@ -10,9 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
-
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+
+	"github.com/stretchr/testify/require"
 )
 
 func runCancel(t *testing.T, dataDir string, all bool, args ...string) (stderr string, err error) {
@@ -24,7 +25,7 @@ func runCancel(t *testing.T, dataDir string, all bool, args ...string) (stderr s
 	require.NoError(t, sessionsCancelCmd.Flags().Set("cwd", ""))
 	require.NoError(t, sessionsCancelCmd.Flags().Set("all", boolFlag(all)))
 	sessionsCancelCmd.SetContext(context.Background())
-	stderr = captureStderr(t, func() { err = sessionsCancelCmd.RunE(sessionsCancelCmd, args) })
+	stderr = cmdtest.CaptureStderr(t, func() { err = sessionsCancelCmd.RunE(sessionsCancelCmd, args) })
 	return stderr, err
 }
 

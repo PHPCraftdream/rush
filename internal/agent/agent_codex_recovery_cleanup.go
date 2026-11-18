@@ -7,6 +7,8 @@ import (
 	"math"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/fantasy"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -107,7 +109,7 @@ func (a *sessionAgent) accountRecoverySummary(ctx context.Context, sessionID, me
 			errs = append(errs, err)
 		}
 	}
-	addHeartbeatUsage(ctx, model.Model.Provider(), model.Model.Model(), usage, cost)
+	callbeat.AddHeartbeatUsage(ctx, model.Model.Provider(), model.Model.Model(), usage, cost)
 	a.recordMessageUsage(ctx, messageID, model, usage, cost, false)
 	return errors.Join(errs...)
 }

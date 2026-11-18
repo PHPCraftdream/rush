@@ -323,6 +323,19 @@ provider.go, load_paths.go, load_worktree.go, load_files.go, store_oauth_journal
 ### X1 «settings» (S6.1)
 Скоуп: создание `store/settings/` (6 файлов), тип Store, порт (8), делегаторы (5) в новый store_api.go, обратные вызовы GuardWrite/ScopeForPath/AnyLockExists в store_write.go/store_reload.go, `SettingsWriteAuthority` → cfgmodel (0б-3.1 уже перенёс). Пререквизиты: 0б-3.1–3.3. Приёмка: build+vet+gofumpt; оракул — изменения объявлений только из списка полосы (16 методов: приёмник меняется, тело не меняется; +5 делегаторов; +1 поле-компонент; −3 переменные из ядра); серийно: 10 settings-тестов + store_write_test.go/store_test.go (interplay guard); grep «settings не импортирует cfgstore», «store_write.go не содержит guardSettingsWrite».
 
+#### X1 amendment
+Десять binding corrections для выполнения X1:
+1. `NoteInitialLoadWrite(path, data)` требует `diskWriteMu` только внутри callback `WithFileWriteLock`; никогда не вызывается через `PublishMutation` и не допускает re-entry.
+2. Порт `settings` получает `ModelsIntegrity() error` для чтения рядом с `SetModelsIntegrity`.
+3. `SettingsLocked` становится шестым root delegator.
+4. `settings` владеет полями `WriteTarget`, которые читает lock writer; `configWriteTarget` корня остаётся private и конвертируется при переходе.
+5. Audit/event helpers образуют узкий exported API `settings`; источник и тайминг trusted-UI сохраняются идентично.
+6. Чистые `modelsIntegrityOf`, `cacheRevKey`-related revision logic и `applyModelsIntegrity` переходят в `cfgmodel`.
+7. `canonicalGlobalDataPath` — unexported settings var. `TestGlobalDirIsolationNoFallbackImports` remains a joined root integration test and calls `settings.SetCanonicalGlobalDataPathForTest(t testing.TB, path string)`, defined in settings `*_testsupport.go`; the helper saves/restores the unexported var via `t.Cleanup`. Other white tests that mutate `canonicalGlobalDataPath` migrate to settings.
+8. Password-iteration state принадлежит `settings`; KDF init переезжает с ним, как и тесты.
+9. Для путей и `AppName` используются прямые импорты `datadir`/`model`.
+10. Телá — оракул, кроме вызовов по receiver/port; в отчёте перечисляются внешние места использования экспортированных имён.
+
 ### X2 «mcpstore» (S6.2)
 Скоуп: `store/mcpstore/` (7 файлов, сплит transaction), 76 методов, поле mcpUncertainty, порт (11), делегаторы (33), обратные (3), docker-переменные. Пререквизиты: X1 (SettingsGuard). Приёмка: build+vet+gofumpt; оракул по списку; серийно: 10 mcp-тестов + store_reload_round13_test.go, store_snapshot_race_test.go (uncertainty interplay); grep «mcpstore не импортирует cfgstore», «store.go не содержит AddMCP/UpdateMCP».
 

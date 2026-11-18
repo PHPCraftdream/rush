@@ -13,9 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
-
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+
+	"github.com/stretchr/testify/require"
 )
 
 // runInject runs the real `sessions inject` RunE against dataDir.
@@ -31,7 +32,7 @@ func runInject(t *testing.T, dataDir, sessionID string, interrupt, asJSON bool) 
 	require.NoError(t, sessionsInjectCmd.Flags().Set("interrupt", boolFlag(interrupt)))
 	require.NoError(t, sessionsInjectCmd.Flags().Set("json", boolFlag(asJSON)))
 	sessionsInjectCmd.SetContext(context.Background())
-	return captureStdoutAndStderr(t, func() {
+	return cmdtest.CaptureStdoutAndStderr(t, func() {
 		require.NoError(t, sessionsInjectCmd.RunE(sessionsInjectCmd, []string{sessionID}))
 	})
 }

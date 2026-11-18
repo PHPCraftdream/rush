@@ -10,6 +10,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
@@ -86,7 +88,7 @@ func TestSessionsReset_VoidsBatchDebtAndNotices(t *testing.T) {
 	a.Shutdown()
 
 	require.NoError(t, resetSessionCmdFlags().Flags().Set("force", "false"))
-	captureStderr(t, func() {
+	cmdtest.CaptureStderr(t, func() {
 		require.NoError(t, sessionsResetCmd.RunE(sessionsResetCmd, []string{sess.ID}))
 	})
 
@@ -124,7 +126,7 @@ func TestSessionsReset_LiveLoopRefusesEvenWithForce(t *testing.T) {
 
 			require.NoError(t, resetSessionCmdFlags().Flags().Set("force", force))
 			var runErr error
-			captureStderr(t, func() {
+			cmdtest.CaptureStderr(t, func() {
 				runErr = sessionsResetCmd.RunE(sessionsResetCmd, []string{sess.ID})
 			})
 			require.ErrorContains(t, runErr, "still being worked on")

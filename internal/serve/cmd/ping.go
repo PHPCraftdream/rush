@@ -24,8 +24,10 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
+	modeluse "github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/models/use"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	openaisdk "github.com/charmbracelet/openai-go/option"
 	"github.com/spf13/cobra"
@@ -459,7 +461,7 @@ func buildPingProvider(ctx context.Context, store *config.ConfigStore, providerC
 	if err != nil {
 		return nil, err
 	}
-	return rushagent.NewHeartbeatProvider(p), nil
+	return callbeat.NewHeartbeatProvider(p), nil
 }
 
 // buildPingProviderRaw constructs a provider for the ping request.
@@ -708,35 +710,11 @@ func resolvePingRole(role string) (config.SelectedModelType, error) {
 	return resolveModelRole(role)
 }
 
-// resolveModelRole maps a --role value (as accepted by `rush run` and
-// `rush ping`) to the model slot it selects. The empty string is rejected
-// here; callers that want to default it (e.g. `rush ping`) must handle ""
-// before calling. Keeping the vocabulary and error text in one place stops
-// the two commands' role parsing from drifting apart.
-//
-// This used to translate: "smart"/"fast" were friendly CLI aliases for the
-// slots, which were really called smart/fast everywhere below this line.
-// The slots are now named smart/fast themselves, so there is nothing left
-// to translate and the function is a plain validating parse. That collapse
-// was the point of the rename — one name per slot, not two.
-//
-// "reviewer" is the strongest model slot and is never selected
-// automatically — it must be requested explicitly via --role reviewer by
-// an operator or a senior agent. "worker" is a cheap slot intended for
-// manual sub-task delegation.
+// resolveModelRole is a thin bridge to the modeluse seam (lane M2); the
+// ping tests and pingResolveRole keep calling it in package cmd until the
+// M3 band moves them.
 func resolveModelRole(role string) (config.SelectedModelType, error) {
-	switch role {
-	case string(config.SelectedModelTypeSmart):
-		return config.SelectedModelTypeSmart, nil
-	case string(config.SelectedModelTypeFast):
-		return config.SelectedModelTypeFast, nil
-	case string(config.SelectedModelTypeWorker):
-		return config.SelectedModelTypeWorker, nil
-	case string(config.SelectedModelTypeReviewer):
-		return config.SelectedModelTypeReviewer, nil
-	default:
-		return "", fmt.Errorf("--role: invalid value %q (allowed: smart, fast, worker, reviewer)", role)
-	}
+	return modeluse.ResolveModelRole(role)
 }
 
 const pingSystemPrompt = "You are a network liveness probe. Reply with exactly the word OK and nothing else."

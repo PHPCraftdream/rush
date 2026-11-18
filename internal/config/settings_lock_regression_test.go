@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/PHPCraftdream/rush/internal/config/store/settings"
 )
 
 func TestSettingsLockRegression_F2RedirectedGlobalPath(t *testing.T) {
@@ -19,9 +21,7 @@ func TestSettingsLockRegression_F2RedirectedGlobalPath(t *testing.T) {
 	workspace := filepath.Join(root, "workspace.json")
 	require.NoError(t, os.MkdirAll(filepath.Dir(canonical), 0o700))
 	require.NoError(t, os.WriteFile(canonical, []byte(`{"sync_rev":"`+HashPassword("canonical-lock")+`"}`), 0o600))
-	previousCanonical := canonicalGlobalDataPath
-	canonicalGlobalDataPath = func() string { return canonical }
-	t.Cleanup(func() { canonicalGlobalDataPath = previousCanonical })
+	settings.SetCanonicalGlobalDataPathForTest(t, canonical)
 
 	store := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: global, workspacePath: workspace})
 	store.workingDir = root
@@ -31,7 +31,7 @@ func TestSettingsLockRegression_F2RedirectedGlobalPath(t *testing.T) {
 	SetProcessPassword("canonical-lock")
 	require.NoError(t, store.SetConfigField(ScopeWorkspace, "value", "allowed"))
 	SetProcessPassword("")
-	canonicalGlobalDataPath = func() string { return "" }
+	settings.SetCanonicalGlobalDataPathForTest(t, "")
 	require.NoError(t, store.SetConfigField(ScopeWorkspace, "value", "unlocked"))
 }
 

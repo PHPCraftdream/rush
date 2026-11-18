@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -86,7 +88,7 @@ func TestCustomRoleChildResumeRefreshesModelAndPreservesDurableTools(t *testing.
 	require.Equal(t, "refreshed-analyst-model", resumed.SmartModel.ModelCfg.Model)
 	require.Equal(t, "low", resumed.SmartModel.ModelCfg.ReasoningEffort)
 	require.EqualValues(t, 91, resumed.SmartModel.ModelCfg.MaxTokens)
-	require.Equal(t, hbSourceSlotLive, resumed.RequestedModelSource)
+	require.Equal(t, callbeat.HbSourceSlotLive, resumed.RequestedModelSource)
 	require.NotNil(t, resumed.CallOptions.RoleContract)
 	require.True(t, contract.Equal(resumed.CallOptions.RoleContract))
 	require.True(t, RoleContractAllowsTool(resumed.CallOptions.RoleContract, "view"))

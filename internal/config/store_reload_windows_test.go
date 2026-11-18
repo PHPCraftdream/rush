@@ -59,11 +59,11 @@ func TestReadStableConfigFileRejectsReplacedLeafWithStableMetadata(t *testing.T)
 			data, fingerprint, err := readStableConfigFile(path)
 			require.NoError(t, err)
 			require.Equal(t, newData, data)
-			require.Equal(t, sha256.Sum256(newData), fingerprint.digest)
+			require.Equal(t, sha256.Sum256(newData), fingerprint.Digest)
 			newIdentity, err := configFileIdentityAtPath(target)
 			require.NoError(t, err)
 			require.NotEqual(t, oldIdentity, newIdentity)
-			require.Equal(t, newIdentity, fingerprint.identity)
+			require.Equal(t, newIdentity, fingerprint.Identity)
 		})
 	}
 }

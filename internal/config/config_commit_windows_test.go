@@ -77,7 +77,7 @@ func TestWindowsCommitHandleRenameRetriesEightTransientAccessDenied(t *testing.T
 				current, fingerprint, readErr := readStableConfigFile(path)
 				require.NoError(t, readErr)
 				require.Equal(t, oldData, current)
-				require.Equal(t, expected.identity, fingerprint.identity)
+				require.Equal(t, expected.Identity, fingerprint.Identity)
 				return windows.ERROR_ACCESS_DENIED
 			}
 			return renameWithNativeLegacyInfo(fd, buffer, length)
@@ -231,7 +231,7 @@ func TestWindowsGenericConfigMutationRejectsHardLink(t *testing.T) {
 	}
 	_, fingerprint, readErr := readStableConfigFile(path)
 	require.NoError(t, readErr)
-	require.Greater(t, fingerprint.nlink, uint64(1))
+	require.Greater(t, fingerprint.Nlink, uint64(1))
 
 	store := newTestConfigStore(testStoreOpts{globalDataPath: path, config: &Config{Options: &Options{}}})
 	store.workingDir = root

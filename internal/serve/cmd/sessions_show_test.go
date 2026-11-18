@@ -5,11 +5,9 @@ import (
 	"database/sql"
 	"testing"
 
-	_ "modernc.org/sqlite"
-
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
-	"github.com/PHPCraftdream/rush/internal/store/db/dbtest"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -77,123 +75,7 @@ func TestSessionsShow_NotFound(t *testing.T) {
 
 func newTestDB(t *testing.T) (*sql.DB, *db.Queries) {
 	t.Helper()
-	sqlDB, err := sql.Open("sqlite", ":memory:")
-	require.NoError(t, err)
-	// With modernc's SQLite driver, each pooled connection to ":memory:" is
-	// a SEPARATE, independently-empty database — there is no shared backing
-	// store across connections the way file-backed SQLite has. Without
-	// capping the pool to a single connection, database/sql is free to open
-	// a second connection under concurrent use (e.g. a caller holding a
-	// transaction open across multiple statements, as sessions_fork_test.go
-	// does), and that second connection sees none of the tables created
-	// below, failing with "no such table". See the identical fix/comment in
-	// internal/session/session_test.go's newTestDB.
-	sqlDB.SetMaxOpenConns(1)
-	t.Cleanup(func() { sqlDB.Close() })
-
-	// Run migrations
-	_, err = sqlDB.ExecContext(context.Background(), `
-		CREATE TABLE sessions (
-			id TEXT PRIMARY KEY,
-			parent_session_id TEXT,
-			title TEXT NOT NULL,
-			message_count INTEGER NOT NULL DEFAULT 0,
-			prompt_tokens INTEGER NOT NULL DEFAULT 0,
-			completion_tokens INTEGER NOT NULL DEFAULT 0,
-			cost REAL NOT NULL DEFAULT 0.0,
-			updated_at INTEGER NOT NULL,
-			created_at INTEGER NOT NULL,
-			summary_message_id TEXT,
-			todos TEXT,
-			deleted_todos TEXT NOT NULL DEFAULT '[]',
-			smart_model_provider TEXT,
-			smart_model_id TEXT,
-			smart_model_reasoning_effort TEXT DEFAULT 'medium',
-			fast_model_provider TEXT,
-			fast_model_id TEXT,
-			fast_model_reasoning_effort TEXT DEFAULT 'medium',
-			worker_model_provider TEXT,
-			worker_model_id TEXT,
-			worker_model_reasoning_effort TEXT,
-			reviewer_model_provider TEXT,
-			reviewer_model_id TEXT,
-			reviewer_model_reasoning_effort TEXT,
-			system_prompt TEXT DEFAULT '',
-			yolo_enabled INTEGER NOT NULL DEFAULT 0,
-			cancel_requested INTEGER NOT NULL DEFAULT 0,
-			ended_reason TEXT NOT NULL DEFAULT '',
-			budget_max_cost REAL NOT NULL DEFAULT 0,
-			budget_max_tokens INTEGER NOT NULL DEFAULT 0,
-			budget_timeout_sec INTEGER NOT NULL DEFAULT 0,
-			parent_cost_accounted REAL NOT NULL DEFAULT 0,
-			origin TEXT DEFAULT '' NOT NULL,
-			cost_self REAL NOT NULL DEFAULT 0,
-			cost_base REAL NOT NULL DEFAULT 0,
-			cost_parent_id TEXT NOT NULL DEFAULT '',
-			workspace_root TEXT NOT NULL DEFAULT '',
-			git_branch TEXT NOT NULL DEFAULT ''
-		);
-
-		CREATE TABLE messages (
-			id TEXT PRIMARY KEY,
-			session_id TEXT NOT NULL,
-			role TEXT NOT NULL,
-			parts TEXT NOT NULL DEFAULT '[]',
-			model TEXT,
-			provider TEXT,
-			reasoning_effort TEXT DEFAULT 'medium',
-			created_at INTEGER NOT NULL,
-			updated_at INTEGER NOT NULL,
-			finished_at INTEGER,
-			is_summary_message INTEGER NOT NULL DEFAULT 0,
-			pinned INTEGER NOT NULL DEFAULT 0,
-			hidden INTEGER NOT NULL DEFAULT 0,
-			auto_resumed INTEGER NOT NULL DEFAULT 0,
-			background_job_notice INTEGER NOT NULL DEFAULT 0,
-			input_tokens INTEGER,
-			output_tokens INTEGER,
-			reasoning_tokens INTEGER,
-			cache_creation_tokens INTEGER,
-			cache_read_tokens INTEGER,
-			total_tokens INTEGER,
-			cost_usd REAL,
-			usage_provider TEXT,
-			usage_model TEXT,
-			cache_support TEXT,
-			usage_estimated INTEGER,
-			origin TEXT DEFAULT '' NOT NULL,
-			checkpoint_generation INTEGER NOT NULL DEFAULT 0,
-			notice_kind TEXT NOT NULL DEFAULT ''
-		);
-
-		CREATE INDEX idx_messages_session_id ON messages(session_id);
-
-		CREATE TABLE pending_injects (
-			id TEXT PRIMARY KEY,
-			session_id TEXT NOT NULL,
-			message_id TEXT NOT NULL,
-			content TEXT NOT NULL DEFAULT '',
-			interrupt INTEGER NOT NULL DEFAULT 0,
-			created_at INTEGER NOT NULL
-		);
-
-		-- Forking reads the durable credential marker row from the run queue.
-		CREATE TABLE session_run_queue (
-			id TEXT PRIMARY KEY,
-			session_id TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
-			call_data TEXT NOT NULL,
-			status TEXT NOT NULL CHECK (status IN ('pending','leased','acked')),
-			leased_by TEXT, leased_at INTEGER, lease_expires_at INTEGER,
-			attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
-			terminal_failure INTEGER NOT NULL DEFAULT 0,
-			created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-		);
-	`)
-	require.NoError(t, err)
-
-	require.NoError(t, dbtest.ApplyFinalizationFencingSchema(context.Background(), sqlDB))
-
-	return sqlDB, db.New(sqlDB)
+	return cmdtest.NewTestDB(t)
 }
 
 // NOTE (R-ACT-2): the three TestReclassifyCrashedAsDone_* tests were deleted

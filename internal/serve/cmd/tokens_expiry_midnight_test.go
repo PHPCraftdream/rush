@@ -3,11 +3,13 @@ package cmd
 import (
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
 )
 
 func TestParseTokenExpiryMidnightBoundary(t *testing.T) {
 	tokenTestEnv(t, t.TempDir())
-	now := mustParseTime(t, "2026-11-01T00:00:00Z")
+	now := cmdtest.MustParseTime(t, "2026-11-01T00:00:00Z")
 	for _, tc := range []struct {
 		name    string
 		expires string

@@ -55,7 +55,7 @@ func TestSetConfigFieldsParentSyncFailureReconcilesAndReturnsUncertainty(t *test
 	require.False(t, store.ConfigStaleness().Dirty)
 	_, fingerprint, readErr := readStableConfigFile(path)
 	require.NoError(t, readErr)
-	require.Equal(t, fingerprint, store.loadSnapshot().snapshots[normalizeDiscoveryPath(path)].fingerprint)
+	require.Equal(t, fingerprint, store.loadSnapshot().snapshots[normalizeDiscoveryPath(path)].Fingerprint())
 }
 
 func TestRemoveConfigFieldParentSyncFailureReconcilesAndReturnsUncertainty(t *testing.T) {
@@ -85,5 +85,5 @@ func TestRemoveConfigFieldParentSyncFailureReconcilesAndReturnsUncertainty(t *te
 	require.False(t, store.ConfigStaleness().Dirty)
 	_, fingerprint, readErr := readStableConfigFile(path)
 	require.NoError(t, readErr)
-	require.Equal(t, fingerprint, store.loadSnapshot().snapshots[normalizeDiscoveryPath(path)].fingerprint)
+	require.Equal(t, fingerprint, store.loadSnapshot().snapshots[normalizeDiscoveryPath(path)].Fingerprint())
 }

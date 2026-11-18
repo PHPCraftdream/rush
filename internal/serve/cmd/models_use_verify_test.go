@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -91,7 +93,7 @@ func TestModelsUse_UnknownModelVerificationMessages(t *testing.T) {
 
 			resetModelsUseFlags(t)
 			var commandErr error
-			stderr := captureStderr(t, func() { _, commandErr = runModelsCmd(t, modelsUseCmd, "--fast", "custom/model-x") })
+			stderr := cmdtest.CaptureStderr(t, func() { _, commandErr = runModelsCmd(t, modelsUseCmd, "--fast", "custom/model-x") })
 			require.NoError(t, commandErr)
 			assert.Contains(t, stderr, tc.want)
 			if tc.note {
@@ -179,7 +181,7 @@ func TestModelsUse_UnknownUnverifiableWithoutKeyStillSets(t *testing.T) {
 	seedCommandVerificationProvider(t, globalPath, server.URL, false)
 	resetModelsUseFlags(t)
 	var commandErr error
-	stderr := captureStderr(t, func() { _, commandErr = runModelsCmd(t, modelsUseCmd, "--fast", "custom/model-x") })
+	stderr := cmdtest.CaptureStderr(t, func() { _, commandErr = runModelsCmd(t, modelsUseCmd, "--fast", "custom/model-x") })
 	require.NoError(t, commandErr)
 	assert.Contains(t, stderr, "could not be verified")
 	assert.Contains(t, stderr, "warning:")
@@ -199,7 +201,7 @@ func TestModelsUseUnknownModelCacheOnlySkipsRequest(t *testing.T) {
 	seedCommandVerificationProvider(t, globalPath, server.URL, true)
 	resetModelsUseFlags(t)
 	var commandErr error
-	stderr := captureStderr(t, func() { _, commandErr = runModelsCmd(t, modelsUseCmd, "--fast", "custom/model-x") })
+	stderr := cmdtest.CaptureStderr(t, func() { _, commandErr = runModelsCmd(t, modelsUseCmd, "--fast", "custom/model-x") })
 	require.NoError(t, commandErr)
 	require.Zero(t, requests)
 	require.Contains(t, stderr, "could not be verified")
@@ -228,7 +230,7 @@ func TestModelsUseAnthropicRosterIsKnownOnFreshLoad(t *testing.T) {
 
 	resetModelsUseFlags(t)
 	var commandErr error
-	stderr := captureStderr(t, func() { _, commandErr = runModelsCmd(t, modelsUseCmd, "--fast", "anthropic/claude-future-9") })
+	stderr := cmdtest.CaptureStderr(t, func() { _, commandErr = runModelsCmd(t, modelsUseCmd, "--fast", "anthropic/claude-future-9") })
 	require.NoError(t, commandErr)
 	require.Equal(t, 1, requests)
 	require.Equal(t, "anthropic-test-key", gotKey)
@@ -251,7 +253,7 @@ func TestModelsUseAnthropicRosterIsKnownOnFreshLoad(t *testing.T) {
 	require.True(t, found, "the next load knows the model without a warning")
 
 	resetModelsUseFlags(t)
-	stderr = captureStderr(t, func() { _, commandErr = runModelsCmd(t, modelsUseCmd, "--fast", "anthropic/claude-future-9") })
+	stderr = cmdtest.CaptureStderr(t, func() { _, commandErr = runModelsCmd(t, modelsUseCmd, "--fast", "anthropic/claude-future-9") })
 	require.NoError(t, commandErr)
 	require.Equal(t, 1, requests, "a known model needs no request")
 	require.NotContains(t, stderr, "warning:")

@@ -116,14 +116,13 @@ func TestSetConfigFieldsRecoversAfterPublishMigrationBeforeWrite(t *testing.T) {
 		}
 	})
 
-	previousStep := ktavMigrationStepHook
-	ktavMigrationStepHook = func(step string) error {
+	_, restoreStep := setKtavMigrationStepHookForTest(func(step string) error {
 		if step == "after-publish" {
 			return errKtavMigrationCrashInjected
 		}
 		return nil
-	}
-	t.Cleanup(func() { ktavMigrationStepHook = previousStep })
+	})
+	t.Cleanup(restoreStep)
 
 	writeDone := make(chan error, 1)
 	go func() { writeDone <- store.SetConfigFields(ScopeGlobal, map[string]any{"options.debug": true}) }()
@@ -161,14 +160,12 @@ func TestSetConfigFieldsRefusesInvalidPendingMigrationWithoutChangingBytes(t *te
 	dir := t.TempDir()
 	legacy := filepath.Join(dir, "rush.json")
 	require.NoError(t, os.WriteFile(legacy, []byte(`{"options":{"debug":false}}`), 0o600))
-	previousStep := ktavMigrationStepHook
-	t.Cleanup(func() { ktavMigrationStepHook = previousStep })
-	ktavMigrationStepHook = func(step string) error {
+	setKtavMigrationStepHookForTest(func(step string) error {
 		if step == "after-publish" {
 			return errKtavMigrationCrashInjected
 		}
 		return nil
-	}
+	})
 	require.ErrorIs(t, runKtavMigrationState(context.Background(), legacy, dir), errKtavMigrationCrashInjected)
 
 	recordPath := migrationRecordPathFor(legacy)

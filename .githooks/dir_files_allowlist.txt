@@ -11,7 +11,11 @@
 #
 # When you split a directory: delete its line here. A count may never
 # go up.
-internal/agent 816
+# 816 -> 817: +1 EX-0A adds wake_component.go (wakeComponent retarget, D1 §3.5).
+# 817 -> 818: +1 providers_component.go (EX-0B pass B1, providerComponent retarget, D1 §3.5).
+# 818 -> 820: +2 EX-0B pass B2 adds models_component.go, tools_component.go (models/tools retarget).
+# The count falls when the DM coordination phase consolidates (D1 §2.4, entries deleted at consolidation). Only down from here.
+internal/agent 806
 internal/agent/provider/nettransport 22
 internal/agent/tools 163
 internal/agent/tools/mcp 63
@@ -19,10 +23,10 @@ internal/agent/tools/mcp 63
 internal/app 272
 # 303 -> 304: +1 internal/config/models_integrity.go from the 0b-3.1 seam lane (deliberate, temporary; only down from here).
 # 304 -> 309: the same +7/-2 files of the 0b-3.2 seam lane (deliberate, temporary; only down from here).
-internal/config 278
+internal/config 222
 internal/config/discover 27
 internal/kit/sys/shell 46
-internal/serve/cmd 369
+internal/serve/cmd 299
 internal/serve/server 173
 # MV2 split: lock and child-group source/test files now live in their leaf packages.
 internal/session 179

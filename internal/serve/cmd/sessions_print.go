@@ -10,36 +10,13 @@ import (
 	"io"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
-// formatAgo returns a human-friendly "X ago" string for the given duration.
-func formatAgo(d time.Duration) string {
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds ago", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm %ds ago", int(d.Minutes()), int(d.Seconds())%60)
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh %dm ago", int(d.Hours()), int(d.Minutes())%60)
-	default:
-		days := int(d.Hours()) / 24
-		hours := int(d.Hours()) % 24
-		return fmt.Sprintf("%dd %dh ago", days, hours)
-	}
-}
+func formatAgo(d time.Duration) string { return sesskit.FormatAgo(d) }
 
-// formatDurationShort returns a compact "Xm Ys" or "Xh Ym" string.
-func formatDurationShort(d time.Duration) string {
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
-	default:
-		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
-	}
-}
+func formatDurationShort(d time.Duration) string { return sesskit.FormatDurationShort(d) }
 
 // toolCallOrigin captures the (name, raw JSON input) of an assistant
 // ToolCall, indexed by its ToolCallID so that the subsequent

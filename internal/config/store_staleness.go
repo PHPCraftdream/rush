@@ -6,6 +6,8 @@ package config
 import (
 	"maps"
 	"slices"
+
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 )
 
 // StalenessResult contains the result of a staleness check.
@@ -30,18 +32,18 @@ func (s *ConfigStore) ConfigStaleness() StalenessResult {
 		// Same accessor the snapshot builder uses: when the captured set
 		// has no entry for this tracked path (unselected slot sibling),
 		// both take a real on-disk fingerprint, so builder and check agree.
-		fingerprint, err := trackedSlotFingerprint(path, nil)
+		fingerprint, err := docread.TrackedSlotFingerprint(path, nil)
 		if err != nil {
 			result.Errors[path] = err
 			result.Dirty = true
 		}
-		exists := fingerprint.exists
+		exists := fingerprint.Exists
 
 		if !exists {
 			if hadSnapshot && snapshot.Exists {
 				result.Missing = append(result.Missing, path)
 				result.Dirty = true
-			} else if hadSnapshot && snapshot.fingerprint != (reloadFileFingerprint{}) && snapshot.fingerprint != fingerprint {
+			} else if hadSnapshot && snapshot.Fingerprint() != (docread.Fingerprint{}) && snapshot.Fingerprint() != fingerprint {
 				result.Changed = append(result.Changed, path)
 				result.Dirty = true
 			}
@@ -54,15 +56,15 @@ func (s *ConfigStore) ConfigStaleness() StalenessResult {
 			continue
 		}
 
-		if snapshot.fingerprint != (reloadFileFingerprint{}) && snapshot.fingerprint != fingerprint {
+		if snapshot.Fingerprint() != (docread.Fingerprint{}) && snapshot.Fingerprint() != fingerprint {
 			result.Changed = append(result.Changed, path)
 			result.Dirty = true
 			continue
 		}
 		// Keep compatibility with snapshots created by older callers that only
 		// populated the public metadata fields.
-		if snapshot.Size != fingerprint.size || snapshot.ModTime != fingerprint.modTime ||
-			snapshot.ContentHash != ([32]byte{}) && snapshot.ContentHash != fingerprint.digest {
+		if snapshot.Size != fingerprint.Size || snapshot.ModTime != fingerprint.ModTime ||
+			snapshot.ContentHash != ([32]byte{}) && snapshot.ContentHash != fingerprint.Digest {
 			result.Changed = append(result.Changed, path)
 			result.Dirty = true
 		}
@@ -92,18 +94,14 @@ func (s *ConfigStore) refreshStalenessSnapshotLocked() {
 	cur := s.loadSnapshot()
 	next := cur.clone()
 	if next.snapshots == nil {
-		next.snapshots = make(map[string]fileSnapshot)
+		next.snapshots = make(map[string]docread.FileSnapshot)
 	} else {
 		next.snapshots = maps.Clone(next.snapshots)
 	}
 
 	for _, path := range next.trackedConfigPaths {
-		fingerprint, _ := readReloadFingerprint(path)
-		snapshot := fileSnapshot{
-			Path: path, Exists: fingerprint.exists, Size: fingerprint.size,
-			ModTime: fingerprint.modTime, ContentHash: fingerprint.digest,
-			fingerprint: fingerprint,
-		}
+		fingerprint, _ := docread.ReadReloadFingerprint(path)
+		snapshot := docread.NewFileSnapshot(path, fingerprint)
 
 		next.snapshots[path] = snapshot
 	}
@@ -129,24 +127,24 @@ func (s *ConfigStore) captureStalenessSnapshotLocked(paths []string) {
 		if p == "" {
 			continue
 		}
-		abs := normalizeDiscoveryPath(p)
+		abs := docread.NormalizeDiscoveryPath(p)
 		seen[abs] = struct{}{}
 	}
 
 	cur := s.loadSnapshot()
 	workspacePath := cur.workspacePath
 	if workspacePath != "" {
-		seen[normalizeDiscoveryPath(workspacePath)] = struct{}{}
+		seen[docread.NormalizeDiscoveryPath(workspacePath)] = struct{}{}
 	}
 	if s.globalDataPath != "" {
-		seen[normalizeDiscoveryPath(s.globalDataPath)] = struct{}{}
+		seen[docread.NormalizeDiscoveryPath(s.globalDataPath)] = struct{}{}
 	}
 
 	tracked := make([]string, 0, len(seen))
 	for p := range seen {
 		tracked = append(tracked, p)
 	}
-	tracked = expandConfigSlotSiblings(tracked)
+	tracked = docread.ExpandConfigSlotSiblings(tracked)
 	slices.Sort(tracked)
 
 	next := cur.clone()

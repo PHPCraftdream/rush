@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/fantasy"
 	"github.com/stretchr/testify/require"
 )
@@ -33,7 +35,7 @@ func TestExplicitDelegationRolesUseOnlyTheirTenantSlot(t *testing.T) {
 		require.Equal(t, "tenant-role", observed.SmartModel.ModelCfg.Provider)
 		require.Equal(t, "tenant-"+string(role), observed.SmartModel.ModelCfg.Model)
 		require.EqualValues(t, 77, observed.MaxOutputTokens)
-		require.Equal(t, hbSourcePerCall, observed.RequestedModelSource)
+		require.Equal(t, callbeat.HbSourcePerCall, observed.RequestedModelSource)
 		require.Same(t, creds, observed.Credentials)
 	}
 }
@@ -63,7 +65,7 @@ func TestExplicitTenantRoleRequiresTrustedConfiguredFallbackFlag(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "role-fixture", observed.SmartModel.ModelCfg.Provider)
 	require.Equal(t, "reviewer-model", observed.SmartModel.ModelCfg.Model)
-	require.Equal(t, hbSourceSlotLive, observed.RequestedModelSource)
+	require.Equal(t, callbeat.HbSourceSlotLive, observed.RequestedModelSource)
 	require.False(t, creds.AllowConfiguredRoleFallback, "the original credential contract stays immutable")
 }
 
