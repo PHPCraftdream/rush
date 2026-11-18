@@ -12,9 +12,9 @@ import (
 
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/serve/server/hub"
+	wire "github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
-	wire "github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
