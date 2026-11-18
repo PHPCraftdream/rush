@@ -181,7 +181,7 @@ func (files *LockedFiles) validateMutableTopology() error {
 // Both writable files are locked even when only one is mutated; this makes
 // origin/existence/target checks one cross-process linearization point.
 func (s *Store) withMCPWriteLocks(fn func(*LockedFiles) error) error {
-	ctx, cancel := context.WithTimeout(context.Background(), configWriteLockTimeout)
+	ctx, cancel := cfgcommit.ConfigContextWithTimeout(context.Background(), configWriteLockTimeout)
 	defer cancel()
 	return s.withMCPLocks(ctx, fn)
 }
@@ -189,7 +189,7 @@ func (s *Store) withMCPWriteLocks(fn func(*LockedFiles) error) error {
 // WithMCPAdmissionLocks is the admission-side lock boundary (root white-box
 // tests call it through the root forwarder withMCPAdmissionLocks).
 func (s *Store) WithMCPAdmissionLocks(fn func(*LockedFiles) error) error {
-	ctx, cancel := context.WithTimeout(context.Background(), configWriteLockTimeout)
+	ctx, cancel := cfgcommit.ConfigContextWithTimeout(context.Background(), configWriteLockTimeout)
 	defer cancel()
 	return s.withMCPLocks(ctx, fn)
 }
