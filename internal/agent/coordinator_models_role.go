@@ -106,7 +106,7 @@ func roleSlotOverride(cfg *config.Config, sess session.Session, role config.Sele
 	if roleEffort != "" {
 		sel.ReasoningEffort = roleEffort
 	}
-	return &ModelOverride{Provider: sel.Provider, Model: sel.Model, ReasoningEffort: sel.ReasoningEffort}, source, true
+	return &ModelOverride{Provider: sel.Provider, Model: sel.Model, ReasoningEffort: sel.ReasoningEffort, ServiceTier: sel.ServiceTier}, source, true
 }
 
 func (c *coordinator) refreshDrainModel(ctx context.Context, role config.SelectedModelType) (Model, config.ProviderConfig, bool) {

@@ -104,6 +104,9 @@ type SelectedModel struct {
 	// Only used by models that use the openai provider and need this set.
 	ReasoningEffort string `json:"reasoning_effort,omitempty" jsonschema:"description=Reasoning effort level for OpenAI models that support it,enum=low,enum=medium,enum=high"`
 
+	// ServiceTier selects a provider speed tier; only "fast" (Codex priority processing) exists.
+	ServiceTier string `json:"service_tier,omitempty" jsonschema:"description=Provider speed tier for models that offer one (openai-codex: fast = priority processing),enum=fast"`
+
 	// Used by anthropic models that can reason to indicate if the model should think.
 	Think bool `json:"think,omitempty" jsonschema:"description=Enable thinking mode for Anthropic models that support reasoning"`
 

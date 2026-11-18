@@ -118,7 +118,7 @@ func apiRunBackendSelection(cfg *config.Config, role, model string, selection *a
 	}
 	if role != "" {
 		selected := cfg.Models[roleType]
-		return roleType, &agent.ModelOverride{Provider: selected.Provider, Model: selected.Model, ReasoningEffort: selected.ReasoningEffort}, nil, nil
+		return roleType, &agent.ModelOverride{Provider: selected.Provider, Model: selected.Model, ReasoningEffort: selected.ReasoningEffort, ServiceTier: selected.ServiceTier}, nil, nil
 	}
 	selected, exists := cfg.Models[config.SelectedModelTypeSmart]
 	if !exists {
@@ -130,7 +130,7 @@ func apiRunBackendSelection(cfg *config.Config, role, model string, selection *a
 	if selected.Provider == "" {
 		return roleType, nil, nil, nil
 	}
-	return roleType, &agent.ModelOverride{Provider: selected.Provider, Model: selected.Model, ReasoningEffort: selected.ReasoningEffort}, nil, nil
+	return roleType, &agent.ModelOverride{Provider: selected.Provider, Model: selected.Model, ReasoningEffort: selected.ReasoningEffort, ServiceTier: selected.ServiceTier}, nil, nil
 }
 
 func (b *appAPIRunBackend) StartWithSelection(ctx context.Context, runID, sessionID, prompt, role, model string, maxAgentDepth int, selection *apiRunSelection) (<-chan RunOutcome, error) {

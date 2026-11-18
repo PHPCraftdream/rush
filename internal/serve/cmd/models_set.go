@@ -8,6 +8,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -42,4 +43,32 @@ func splitModelEffort(s string) (model, effort string) {
 		return s, ""
 	}
 	return s[:at], s[at+1:]
+}
+
+// splitEffortTier splits the part after "@" ("high/fast") into the effort and the
+// speed tier ("fast"); "/fast" alone sets only the tier.
+func splitEffortTier(s string) (effort, tier string) {
+	effort, tier, _ = strings.Cut(s, "/")
+	return effort, tier
+}
+
+// effortWithTier is the inverse of splitEffortTier, for display and restore specs.
+func effortWithTier(effort, tier string) string {
+	if tier == "" {
+		return effort
+	}
+	return effort + "/" + tier
+}
+
+// validateServiceTier accepts "" or "fast" on openai-codex models; other providers have no tier.
+func validateServiceTier(provider, tier string) error {
+	switch {
+	case tier == "":
+		return nil
+	case tier != "fast":
+		return fmt.Errorf("unknown service tier %q (valid: fast)", tier)
+	case provider != "openai-codex":
+		return fmt.Errorf("service tier %q is only supported on openai-codex models, not %s", tier, provider)
+	}
+	return nil
 }
