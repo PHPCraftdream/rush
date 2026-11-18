@@ -1,4 +1,4 @@
-package agent
+package turnstep
 
 import (
 	"context"
@@ -16,8 +16,8 @@ import (
 // things it shares with the rest of runTurn -- sessionLock and the current
 // assistant message -- never owns them.
 type turnUINotifier struct {
-	a      *sessionAgent
-	genCtx context.Context
+	notifyMsg func(msg message.Message)
+	genCtx    context.Context
 
 	sessionLock *sync.Mutex
 	assistant   **message.Message
@@ -28,9 +28,9 @@ type turnUINotifier struct {
 	pubMu sync.Mutex
 }
 
-func newTurnUINotifier(a *sessionAgent, genCtx context.Context, sessionLock *sync.Mutex, assistant **message.Message) *turnUINotifier {
+func NewTurnUINotifier(genCtx context.Context, sessionLock *sync.Mutex, assistant **message.Message, notifyMsg func(msg message.Message)) *turnUINotifier {
 	return &turnUINotifier{
-		a:           a,
+		notifyMsg:   notifyMsg,
 		genCtx:      genCtx,
 		sessionLock: sessionLock,
 		assistant:   assistant,
@@ -38,11 +38,11 @@ func newTurnUINotifier(a *sessionAgent, genCtx context.Context, sessionLock *syn
 	}
 }
 
-// start launches the draining ticker goroutine. Unlike turnCheckpointWriter
+// Start launches the draining ticker goroutine. Unlike turnCheckpointWriter
 // and peakHoursWatcher this has no configuration to be absent under -- a
 // turn always wants its streaming visible -- so there is no nil-check fast
 // path, and the goroutine exits only when genCtx is done.
-func (n *turnUINotifier) start() {
+func (n *turnUINotifier) Start() {
 	go func() {
 		ticker := time.NewTicker(50 * time.Millisecond)
 		defer ticker.Stop()
@@ -67,15 +67,15 @@ func (n *turnUINotifier) publishPending() {
 	defer n.pubMu.Unlock()
 	select {
 	case msg := <-n.latestMsgCh:
-		n.a.messages.Notify(msg)
+		n.notifyMsg(msg)
 	default:
 	}
 }
 
-// notify enqueues the latest assistant snapshot for the ticker goroutine.
+// Notify enqueues the latest assistant snapshot for the ticker goroutine.
 // It never blocks: if the channel already has a pending snapshot, the old
 // one is discarded and replaced with the newest state.
-func (n *turnUINotifier) notify() error {
+func (n *turnUINotifier) Notify() error {
 	n.sessionLock.Lock()
 	if *n.assistant == nil {
 		n.sessionLock.Unlock()
@@ -99,12 +99,12 @@ func (n *turnUINotifier) notify() error {
 	return nil
 }
 
-// drainPending discards any snapshot still queued for the ticker goroutine.
+// DrainPending discards any snapshot still queued for the ticker goroutine.
 // runTurn calls this right before persisting the assistant message's final
 // state, so the ticker cannot publish a stale snapshot racing behind the
 // authoritative write. It also waits for a snapshot the ticker already took
 // and is publishing, so nothing stale lands after it returns.
-func (n *turnUINotifier) drainPending() {
+func (n *turnUINotifier) DrainPending() {
 	n.pubMu.Lock()
 	defer n.pubMu.Unlock()
 	select {

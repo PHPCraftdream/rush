@@ -1,4 +1,4 @@
-package agent
+package turnstep
 
 import "context"
 
@@ -17,7 +17,7 @@ func WithAdmissionSetup(ctx context.Context, fn func(context.Context) error) con
 	return context.WithValue(ctx, admissionSetupKey{}, fn)
 }
 
-func admissionSetupFrom(ctx context.Context) func(context.Context) error {
+func AdmissionSetupFrom(ctx context.Context) func(context.Context) error {
 	fn, _ := ctx.Value(admissionSetupKey{}).(func(context.Context) error)
 	return fn
 }

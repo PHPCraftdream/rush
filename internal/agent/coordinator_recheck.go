@@ -17,14 +17,25 @@ import (
 	"log/slog"
 	"sync/atomic"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 )
 
-// recheckPassIntervalNS is the ticker period in nanoseconds, atomic so a test
-// can drive the real ticker at test timescale while a never-stopped ticker of
-// an earlier test exists; production never changes it.
-var recheckPassIntervalNS atomic.Int64
+// drainctlPacingVar adapts one pacing knob that now lives as a private
+// atomic in runtime/exec/drainctl: a small Load/Swap/Store-only wrapper so
+// root tests keep touching the same knob by its historical names, without
+// duplicate state or exported atomics.
+type drainctlPacingVar struct {
+	load  func() int64
+	swap  func(int64) int64
+	store func(int64)
+}
 
-func init() { recheckPassIntervalNS.Store(int64(60 * time.Second)) }
+func (v drainctlPacingVar) Load() int64        { return v.load() }
+func (v drainctlPacingVar) Swap(x int64) int64 { return v.swap(x) }
+func (v drainctlPacingVar) Store(x int64)      { v.store(x) }
+
+var recheckPassIntervalNS = drainctlPacingVar{drainctl.LoadRecheckPassIntervalNS, drainctl.SwapRecheckPassIntervalNS, drainctl.StoreRecheckPassIntervalNS}
 
 // maxConcurrentRecheckWakes bounds how many detached recheck-pass wakes run
 // at once. A wake that finds the bound full is put back in the recheck set

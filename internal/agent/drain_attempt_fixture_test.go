@@ -103,9 +103,9 @@ func newAttemptFixture(t *testing.T, title string, o attemptFixtureOpts) *attemp
 	f.env = testEnv(t)
 	f.coord = newBatchRuntimeCoordinator()
 	if f.manualClock {
-		f.coord.arb.clock = func() time.Time {
+		f.coord.setArbiterClockForTest(func() time.Time {
 			return time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(f.clockOffset.Load()))
-		}
+		})
 	}
 	f.coord.sessions, f.coord.messages = f.env.sessions, f.env.messages
 	f.coord.permissions = f.env.permissions

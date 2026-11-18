@@ -15,6 +15,7 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -63,7 +64,9 @@ const (
 	// case so far without letting truly hung streams sit forever.
 	// Operators who want the old behaviour can set the value back via
 	// Options.StreamIdleTimeoutSeconds.
-	streamIdleTimeoutDefault = 10 * time.Minute
+	// Aliased to the Phase-3 drainctl canonical constant; the value and
+	// rationale history stay here for reference.
+	streamIdleTimeoutDefault = drainctl.StreamIdleTimeoutDefault
 	// streamWatchdogTick is how often the watchdog re-checks the
 	// last-activity timestamp. Keep small enough that a stall is detected
 	// promptly (well under streamIdleTimeout) but large enough not to

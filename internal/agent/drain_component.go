@@ -13,15 +13,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
-	"regexp"
 	"strings"
 	"sync/atomic"
-	"testing"
 	"time"
 
-	"charm.land/fantasy"
-
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/session"
 	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
@@ -122,49 +118,38 @@ func (h coordinatorDrainHost) publishReauthenticate(providerID string) {
 	h.coordinator.publishReauthenticate(providerID)
 }
 
-// drainOutcome says how far a Drain leg got.
-type drainOutcome uint8
+type drainOutcome = drainctl.DrainOutcome
 
 const (
-	// drainNotAttempted: refused or failed in the preamble, before the provider.
-	drainNotAttempted drainOutcome = iota
-	// drainNoTurn: admitted, the commit decision said no.
-	drainNoTurn
-	// drainAttempted: agent.Stream was called.
-	drainAttempted
+	drainNotAttempted = drainctl.DrainNotAttempted
+	drainNoTurn       = drainctl.DrainNoTurn
+	drainAttempted    = drainctl.DrainAttempted
 )
 
 // drainFailureSettleThreshold is K: a row whose OWN counter reaches this many
 // counted, unreacted attempts is closed by failure (other rows keep theirs).
-const drainFailureSettleThreshold = 3
+const drainFailureSettleThreshold = drainctl.FailureSettleThreshold
 
 // drainDormantStreak is the length of either dormancy streak (the arbiter gate):
 // consecutive no-turn Drains over a failing pull (a newer fact reopens the
 // gate) or consecutive paid attempts whose close kept failing (only a human
 // message or a restart reopens it).
-const drainDormantStreak = 3
+const drainDormantStreak = drainctl.DormantStreak
 
-// drainRetryAfterNS paces the next launch after an unreacted attempt;
-// drainRefusalPauseNS paces a refused launch for a session this process's own
-// `rush run` loop drives (external driver) only. drainAccountBudgetNS bounds a
-// whole accounting (its DB reads, the credential refresh and the settle);
-// drainRefreshBudgetNS bounds the 401 credential refresh inside it, detached
-// from the accounting's context so a black-holed auth endpoint cannot eat the
-// settle's budget (R4B-3). Atomic so a test can shrink them at test timescale
-// while a lingering goroutine of an earlier test reads.
-var drainRetryAfterNS, drainRefusalPauseNS, drainAccountBudgetNS, drainRefreshBudgetNS atomic.Int64
+// The pacing atomics live in runtime/exec/drainctl/drain_attempt.go
+// (drainRetryAfterNS etc.); these root adapters keep the historical names for
+// the lazy reads and the tests below.
+var (
+	drainRetryAfterNS    = drainctlPacingVar{drainctl.LoadDrainRetryAfterNS, drainctl.SwapDrainRetryAfterNS, drainctl.StoreDrainRetryAfterNS}
+	drainRefusalPauseNS  = drainctlPacingVar{drainctl.LoadDrainRefusalPauseNS, drainctl.SwapDrainRefusalPauseNS, drainctl.StoreDrainRefusalPauseNS}
+	drainAccountBudgetNS = drainctlPacingVar{drainctl.LoadDrainAccountBudgetNS, drainctl.SwapDrainAccountBudgetNS, drainctl.StoreDrainAccountBudgetNS}
+	drainRefreshBudgetNS = drainctlPacingVar{drainctl.LoadDrainRefreshBudgetNS, drainctl.SwapDrainRefreshBudgetNS, drainctl.StoreDrainRefreshBudgetNS}
+)
 
-func init() {
-	drainRetryAfterNS.Store(int64(60 * time.Second))
-	drainRefusalPauseNS.Store(int64(500 * time.Millisecond))
-	drainAccountBudgetNS.Store(int64(30 * time.Second))
-	drainRefreshBudgetNS.Store(int64(10 * time.Second))
-}
-
-func drainRetryAfterFailure() time.Duration { return time.Duration(drainRetryAfterNS.Load()) }
-func drainRefusalPauseLoop() time.Duration  { return time.Duration(drainRefusalPauseNS.Load()) }
-func drainAccountBudget() time.Duration     { return time.Duration(drainAccountBudgetNS.Load()) }
-func drainRefreshBudget() time.Duration     { return time.Duration(drainRefreshBudgetNS.Load()) }
+func drainRetryAfterFailure() time.Duration { return drainctl.RetryAfter() }
+func drainRefusalPauseLoop() time.Duration  { return drainctl.RefusalPause() }
+func drainAccountBudget() time.Duration     { return drainctl.AccountBudget() }
+func drainRefreshBudget() time.Duration     { return drainctl.RefreshBudget() }
 
 // ErrDrainNotAttempted marks a Drain that never reached the provider
 // (refusal or a preamble failure); see DrainNotAttemptedError.
@@ -301,14 +286,8 @@ func (att *drainAttempt) failure(turnErr error) error {
 	return att.streamErr
 }
 
-// operatorStop reports whether err is the turn's context ending under an
-// operator (Stop, shutdown, Ctrl-C, --timeout, interrupt/replace, `sessions
-// cancel`), not a provider failure. A cancellation always is (only a
-// cancelled context produces it); a deadline only when the TURN's own context
-// hit it: a net/http timeout satisfies errors.Is(err, context.DeadlineExceeded)
-// with a live turn context and is a transient provider failure.
 func operatorStop(err error, turnCtxDone bool) bool {
-	return errors.Is(err, context.Canceled) || (turnCtxDone && errors.Is(err, context.DeadlineExceeded))
+	return drainctl.OperatorStop(err, turnCtxDone)
 }
 
 // drainAttemptExempt: the attempt ended for a reason that is not evidence
@@ -321,22 +300,10 @@ func drainAttemptExempt(att *drainAttempt, err error) bool {
 	return operatorStop(err, att.turnCtxDone.Load())
 }
 
-// drainFailureTerminal reports whether err is a provider failure no retry
-// can fix (401/402/quota/other 4xx/context too large). Peak hours is a
-// window, not a terminal failure, and neither is a transport timeout of a
-// live turn (turnCtxDone false).
 func drainFailureTerminal(err error, turnCtxDone bool) bool {
-	if err == nil || errors.Is(err, errProviderPeakHours) {
-		return false
-	}
-	if errors.Is(err, context.DeadlineExceeded) && !turnCtxDone {
-		return false
-	}
-	var providerErr *fantasy.ProviderError
-	if !errors.As(err, &providerErr) {
-		return false
-	}
-	return classifyProviderError(err) == classTerminal
+	return drainctl.DrainFailureTerminal(err, turnCtxDone, errProviderPeakHours, func(e error) bool {
+		return classifyProviderError(e) == classTerminal
+	})
 }
 
 // accountDrainAttempt is THE accounting function of a Drain leg. The
@@ -477,11 +444,11 @@ func (w *drainComponent) executeAccountVerdict(ctx context.Context, sid string, 
 			if len(trimmed) > 0 {
 				text = fmt.Sprintf(
 					"Не удалось продолжить работу после события %s: %s. %s",
-					strings.Join(trimmed, ", "), cause, settleTailFor(turnErr))
+					strings.Join(trimmed, ", "), cause, drainctl.SettleTailFor(turnErr))
 			} else {
 				text = fmt.Sprintf(
 					"Не удалось продолжить работу после ошибки провайдера: %s. %s",
-					cause, settleTailFor(turnErr))
+					cause, drainctl.SettleTailFor(turnErr))
 			}
 			if _, err := bfacts.SettleReactedFailedWithMarker(ctx, sid, v.BatchRows, text); err != nil {
 				pacePaid()
@@ -613,14 +580,8 @@ func (a *sessionAgent) afterTurn(call SessionAgentCall, att *drainAttempt, err e
 	return err
 }
 
-// providerTurnFailed reports whether err is a real provider failure of an
-// ordinary turn (not an operator stop, not the peak-hours window). Same rule
-// as the Drain accounting: a transport timeout of a live turn is a failure.
 func providerTurnFailed(err error, turnCtxDone bool) bool {
-	if operatorStop(err, turnCtxDone) || errors.Is(err, errProviderPeakHours) {
-		return false
-	}
-	return isProviderClassifiable(err)
+	return drainctl.ProviderTurnFailed(err, turnCtxDone, errProviderPeakHours, isProviderClassifiable)
 }
 
 // paceUnreacted shuts the gate after an unreacted outcome and queues the
@@ -683,58 +644,6 @@ func (a *sessionAgent) decideDrainTurn(ctx context.Context, sessionID string, ha
 	return dv.kind == drainAllow, dv
 }
 
-const (
-	// settleTailNextTurn: the events are in history and a later turn may react.
-	settleTailNextTurn = "Событие сохранено; продолжение — при следующем ходе."
-	// settleTailContextTooLarge: the events are in history and the history no
-	// longer fits, so every next request of the session fails the same way until
-	// it is shrunk (R8B-5).
-	settleTailContextTooLarge = "Событие сохранено в истории, но она уже не помещается в окно контекста модели: следующие запросы этой сессии тоже будут отклонены. Сожмите историю (summarize) или начните новую сессию."
-)
-
-// contextOverflowMessage matches the providers that report an oversized prompt
-// as a plain 400 (fantasy flags only the Anthropic and Google shapes).
-var contextOverflowMessage = regexp.MustCompile(`(?i)prompt is too long|input is too long|context[_ ]length|maximum context|context window|too many tokens|reduce the length`)
-
-// isContextOverflow reports whether err says the request did not fit the
-// model's context window: a flagged fantasy error, a 413, or a 400 whose
-// message names the overflow.
-func isContextOverflow(err error) bool {
-	var providerErr *fantasy.ProviderError
-	if !errors.As(err, &providerErr) {
-		return false
-	}
-	if providerErr.IsContextTooLarge() || providerErr.StatusCode == http.StatusRequestEntityTooLarge {
-		return true
-	}
-	return providerErr.StatusCode == http.StatusBadRequest && contextOverflowMessage.MatchString(providerErr.Message)
-}
-
-// settleTailFor picks the marker tail for the failure that closed the debt.
-func settleTailFor(err error) string {
-	if isContextOverflow(err) {
-		return settleTailContextTooLarge
-	}
-	return settleTailNextTurn
-}
-
 func SetDrainPacingForTest(retryAfter, refusalPause, recheckInterval time.Duration) (restore func()) {
-	if !testing.Testing() {
-		panic("agent.SetDrainPacingForTest called outside a test binary")
-	}
-	oldRetry, oldRefusal, oldRecheck := drainRetryAfterNS.Load(), drainRefusalPauseNS.Load(), recheckPassIntervalNS.Load()
-	if retryAfter > 0 {
-		drainRetryAfterNS.Store(int64(retryAfter))
-	}
-	if refusalPause > 0 {
-		drainRefusalPauseNS.Store(int64(refusalPause))
-	}
-	if recheckInterval > 0 {
-		recheckPassIntervalNS.Store(int64(recheckInterval))
-	}
-	return func() {
-		drainRetryAfterNS.Store(oldRetry)
-		drainRefusalPauseNS.Store(oldRefusal)
-		recheckPassIntervalNS.Store(oldRecheck)
-	}
+	return drainctl.DrainPacingForTest(retryAfter, refusalPause, recheckInterval)
 }

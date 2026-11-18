@@ -15,6 +15,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
 	"charm.land/fantasy/providers/openaicompat"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -229,7 +230,7 @@ func (*openAICompatStallRetryModel) Provider() string { return openaicompat.Name
 
 func TestRunTurnStallRetryKeepsEmptyReasoningToolCall(t *testing.T) {
 	env := testEnv(t)
-	t.Cleanup(stallDumpWrites.Wait)
+	t.Cleanup(drainctl.StallWaitDumps)
 	baseModel := &stallRetryToolModel{second: make(chan struct{}), third: make(chan struct{})}
 	model := &openAICompatStallRetryModel{stallRetryToolModel: baseModel}
 	tool := fantasy.NewAgentTool("side_effect", "count side effect", func(context.Context, struct{}, fantasy.ToolCall) (fantasy.ToolResponse, error) {
@@ -244,7 +245,7 @@ func TestRunTurnStallRetryKeepsEmptyReasoningToolCall(t *testing.T) {
 
 	// The fake clock and channels drive the retry; the test uses no sleep.
 	t0 := time.Now()
-	setNow := installFakeStallNow(t)
+	setNow := drainctl.InstallFakeStallNow(t)
 	setNow(t0)
 	done := make(chan error, 1)
 	go func() {
@@ -256,10 +257,10 @@ func TestRunTurnStallRetryKeepsEmptyReasoningToolCall(t *testing.T) {
 	}()
 
 	<-baseModel.second
-	clockValue, ok := armedStallClocks.Load(session.ID)
-	require.True(t, ok)
+	clock, ok := drainctl.StallClockForTest(session.ID)
+	require.True(t, ok, "runTurn must arm the lower stall clock for the session")
 	setNow(t0.Add(11 * time.Minute))
-	stallSamplerCheck(session.ID, clockValue.(*stallClock), stallNow())
+	drainctl.StallSamplerCheck(session.ID, clock)
 	<-baseModel.third
 	require.NoError(t, <-done)
 

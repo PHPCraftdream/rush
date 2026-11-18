@@ -8,12 +8,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-	"net/http"
 	"strings"
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -65,106 +64,34 @@ func IsContinuationPrompt(text string) bool {
 
 // retryClass partitions a turn-terminating failure into "surface it" vs
 // "transparently re-run it". See shouldRetryTurn for the policy.
-type retryClass int
+type retryClass = drainctl.RetryClass
 
 const (
 	// classTerminal is an operator-actionable failure (quota wall, auth,
 	// context overflow, bad request, user cancel) that must surface.
-	classTerminal retryClass = iota
+	classTerminal = drainctl.ClassTerminal
 	// classTransient is a provider/network hiccup worth a re-run.
-	classTransient
+	classTransient = drainctl.ClassTransient
 	// classRateLimit is a 429 non-quota overload: retryable with its own
 	// dedicated wait budget.
-	classRateLimit
+	classRateLimit = drainctl.ClassRateLimit
 )
 
-// classifyProviderError classifies a NON-NIL turn-terminating error.
-// context cancellation is terminal here — watchdog stalls are matched
-// separately by their persisted finish title in shouldRetryTurn, because
-// a stall surfaces only as context.Canceled.
+// classifyProviderError delegates to the drainctl classifier. The seams
+// carry the agent-package predicates: the WS-replay refusal and the hard
+// provider-limit check, whose body is the original usage call shape
+// (time.Now() and resetDisplayZone read at the original point).
 func classifyProviderError(err error) retryClass {
-	if responsesWSReplayForbidden(err) {
-		return classTerminal
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return classTerminal
-	}
-	// Peak-hours refusal is operator policy, not a transient hiccup: the
-	// condition only clears when the wall clock leaves the window, so a
-	// backoff retry would just burn the backoff and fail identically.
-	if errors.Is(err, errProviderPeakHours) {
-		return classTerminal
-	}
-	var providerErr *fantasy.ProviderError
-	if errors.As(err, &providerErr) {
-		if providerErr.IsContextTooLarge() {
-			return classTerminal // the auto-summarize path owns this
-		}
-		switch providerErr.StatusCode {
-		case http.StatusUnauthorized, http.StatusPaymentRequired:
-			return classTerminal
-		case http.StatusForbidden:
-			// 403 is ambiguous: it can be a real auth/geo wall (retry pointless)
-			// or a CDN/anti-abuse banner from a fronting balancer that clears in
-			// tens of seconds (z.ai "Forbidden ZS", Cloudflare-fronted providers).
-			// Treat as transient: the worst case is ~40s of bounded backoff on a
-			// truly bad key vs. losing a long agent run on a momentary block.
-			return classTransient
-		case http.StatusTooManyRequests:
-			if usage.IsQuotaLimit(providerErr) {
-				return classTerminal // multi-hour usage wall — operator accepts a fast fail
-			}
-			return classRateLimit // momentary overload — dedicated wait budget
-		case http.StatusRequestTimeout, http.StatusConflict:
-			return classTransient
-		}
-		if providerErr.StatusCode >= 500 {
-			// A billing wall some providers (MiniMax 1008) serve as a 5xx never clears.
-			if usage.ClassifyHardProviderLimit(err, "", time.Now(), resetDisplayZone) == usage.ProviderLimitHard {
-				return classTerminal
-			}
-			return classTransient
-		}
-		if providerErr.StatusCode >= 400 {
-			return classTerminal // genuine client error (400, 404, ...)
-		}
-		// No HTTP status (status 0): EOF / network wrapped as ProviderError.
-		if providerErr.IsRetryable() {
-			return classTransient
-		}
-		return classTerminal
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) {
-		return classTransient
-	}
-	return classTerminal
+	return drainctl.ClassifyProviderError(err, errProviderPeakHours, drainctl.Seams{
+		ReplayForbidden: responsesWSReplayForbidden,
+		HardProviderLimit: func(err error) bool {
+			return usage.ClassifyHardProviderLimit(err, "", time.Now(), resetDisplayZone) == usage.ProviderLimitHard
+		},
+	})
 }
 
-// isProviderClassifiable reports whether err is a shape classifyProviderError
-// can reason about as an ACTUAL provider-turn outcome (a provider error, a
-// network error, or the peak-hours refusal) -- as opposed to some other
-// error a Drain's turn can return before ever reaching the provider (e.g. a
-// DB read failure in the turn-start preamble). Used by
-// settleOrRetryDrainFailure (coordinator_drain_policy.go) as its fallback
-// classifier when no per-attempt assistant-message evidence is available
-// (docs/reviews/2026-09-29-async-phase4-round1.md B5/C3, W-DRAIN item 1):
-// treating every unrecognized error as classifyProviderError's terminal
-// default would close debt and write a visible marker for a failure that
-// never touched the provider at all.
 func isProviderClassifiable(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, errProviderPeakHours) {
-		return true
-	}
-	var providerErr *fantasy.ProviderError
-	if errors.As(err, &providerErr) {
-		return true
-	}
-	var netErr net.Error
-	return errors.As(err, &netErr)
+	return drainctl.IsProviderClassifiable(err, errProviderPeakHours)
 }
 
 // turnAttemptRefused reports whether err is an admission-shaped refusal:

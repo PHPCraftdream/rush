@@ -31,6 +31,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
@@ -62,7 +63,7 @@ type PeakHoursError = usage.PeakHoursError
 // maxConsecutiveAutoResumes bounds Phase 4 autonomous idle-resumes per session
 // without human involvement (reset by any human message). Anti-runaway: an
 // agent that keeps backgrounding self-completing jobs cannot loop forever.
-const maxConsecutiveAutoResumes = 5
+const maxConsecutiveAutoResumes = drainctl.AutoResumeCap
 
 type coordinator struct {
 	cfg         *config.ConfigStore

@@ -9,8 +9,8 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 )
 
 // stepCallClass is what one tool call of one step WAS, judged from the call's
@@ -148,32 +148,8 @@ func mergeSpans(spans []readSpan) []readSpan {
 	return merged
 }
 
-// isWaitOnlyCall reports whether call is a pure wait: a bash command whose
-// every invocation is a literal sleep/echo/printf/true/: with no redirects,
-// pipes or substitutions, or a run_command whose program is sleep/timeout.
-// Whether that wait is an ASYNC launch (wait) or a blocking sync call (act)
-// is the metadata's business, decided in classifyStepCall.
 func isWaitOnlyCall(call fantasy.ToolCallContent) bool {
-	switch call.ToolName {
-	case tools.BashToolName:
-		var params struct {
-			Command string `json:"command"`
-		}
-		if json.Unmarshal([]byte(call.Input), &params) != nil {
-			return false
-		}
-		return shell.IsNoOpCommand(params.Command)
-	case tools.RunCommandToolName:
-		var params struct {
-			Program string `json:"program"`
-		}
-		if json.Unmarshal([]byte(call.Input), &params) != nil {
-			return false
-		}
-		return params.Program == "sleep" || params.Program == "timeout"
-	default:
-		return false
-	}
+	return turnstep.IsWaitOnlyCall(call)
 }
 
 // namedSpan is one read window of one file, taken from a call's own input.
@@ -260,50 +236,16 @@ func fsReadItemSpan(path string, startLine, endLine, line, radius int) (readSpan
 	}
 }
 
-// progressGuardMetadata is the ClientMetadata tag the in-turn guard stamps on
-// a result it refused (step 2 of the plan writes it): the tool never ran, so
-// the step neither progressed nor launched anything.
-type progressGuardMetadata struct {
-	ProgressGuard struct {
-		Refused string `json:"refused"`
-	} `json:"progress_guard"`
-}
-
-// guardRefused reports whether result carries the guard's refusal tag.
 func guardRefused(result fantasy.ToolResultContent) bool {
-	var guard progressGuardMetadata
-	if json.Unmarshal([]byte(result.ClientMetadata), &guard) != nil {
-		return false
-	}
-	return guard.ProgressGuard.Refused != ""
+	return turnstep.GuardRefused(result)
 }
 
-// asyncCapRefused reports whether result carries the async-cap tag of
-// the deleted async-tool cap branch: admission refused the launch, so the tool
-// never ran and took no claim -- the tool's own refusal, not the guard's.
-func asyncCapRefused(result fantasy.ToolResultContent) bool {
-	var meta asyncCapMetadata
-	if json.Unmarshal([]byte(result.ClientMetadata), &meta) != nil {
-		return false
-	}
-	return meta.AsyncCap.Running > 0 || meta.AsyncCap.Limit > 0
-}
-
-// unknownToolResultPrefix is fantasy's bare answer to a call whose tool name
-// is not in the step's set: nothing executed, so the call is neutral.
-const unknownToolResultPrefix = "tool not found:"
-
-// unknownToolResult reports whether result is that bare unknown-tool error.
 func unknownToolResult(result fantasy.ToolResultContent) bool {
-	if result.Result == nil ||
-		result.Result.GetType() != fantasy.ToolResultContentTypeError {
-		return false
-	}
-	errResult, ok := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentError](result.Result)
-	if !ok || errResult.Error == nil {
-		return false
-	}
-	return strings.Contains(errResult.Error.Error(), unknownToolResultPrefix)
+	return turnstep.UnknownToolResult(result)
+}
+
+func asyncCapRefused(result fantasy.ToolResultContent) bool {
+	return turnstep.AsyncCapRefused(result)
 }
 
 // stepClassifyCtx carries the turn-scoped state a classification may consult.

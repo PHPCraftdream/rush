@@ -9,6 +9,7 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 )
 
@@ -205,7 +206,7 @@ func hasClass(classes []stepCallClass, want stepCallClass) bool {
 // refusal; the classifier reads it to mark the call as refused (the tool never
 // ran, so it neither progressed nor launched anything).
 func progressGuardMetadataJSON(refused string) string {
-	var meta progressGuardMetadata
+	var meta turnstep.ProgressGuardMetadata
 	meta.ProgressGuard.Refused = refused
 	data, err := json.Marshal(meta)
 	if err != nil {

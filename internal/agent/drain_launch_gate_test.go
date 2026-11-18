@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
@@ -45,6 +46,8 @@ func shrinkDrainRetry(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { drainRetryAfterNS.Store(old) })
 }
 
+func gateShut(f TurnFacts) (Verdict, bool) { return drainctl.GateShut(f) }
+
 // elapseDrainPause checks both sides of the exact recorded pacing boundary
 // with the arbiter's input clock, then expires only RetryAt for the real pass.
 // Streaks and hint state survive; resetting the gate would erase the budget.
@@ -60,9 +63,7 @@ func (f *attemptFixture) elapseDrainPause(ctx context.Context) {
 	facts.Now = facts.Gate.RetryAt
 	_, shut = gateShut(facts)
 	require.False(f.t, shut, "the pause ends at RetryAt, not later")
-	f.coord.arb.mu.Lock()
-	f.coord.arb.stateLocked(f.sessID).gate.RetryAt = time.Unix(1, 0)
-	f.coord.arb.mu.Unlock()
+	f.coord.seedArbiterState(f.sessID, func(s *arbiterState) { s.gate.RetryAt = time.Unix(1, 0) })
 }
 
 // countingAgent counts the Run calls (Drain launches) a session's driver gets.

@@ -19,6 +19,7 @@ import (
 	"charm.land/fantasy/providers/anthropic"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
@@ -389,9 +390,7 @@ func (t *turnBudget) runSummarize(h contextBudgetHost, ctx context.Context, genC
 // GetOrSet (not Set) never clobbers a newer queued request, and no compaction
 // is spawned here, so a long-held lock cannot cause a busy retry loop.
 func (t *turnBudget) requeueSummarizeSnapshot(sessionID string, snapshot *SummarizeSnapshot) {
-	t.summarizeQueue.GetOrSet(sessionID, func() *SummarizeSnapshot { return snapshot })
-	slog.Info("agent.runSummarize: re-queued compaction after session lock failure",
-		"session_id", sessionID)
+	turnstep.RequeueSummarizeSnapshot(t.summarizeQueue, sessionID, snapshot)
 }
 
 func (a *sessionAgent) requeueSummarizeSnapshot(sessionID string, snapshot *SummarizeSnapshot) {
@@ -403,8 +402,7 @@ func (a *sessionAgent) SummarizeQueued(sessionID string) bool {
 }
 
 func (t *turnBudget) summarizeQueued(sessionID string) bool {
-	_, ok := t.summarizeQueue.Get(sessionID)
-	return ok
+	return turnstep.SummarizeQueued(t.summarizeQueue, sessionID)
 }
 
 // testBuildSummarizeSnapshot is a test helper that creates a SummarizeSnapshot
@@ -428,8 +426,7 @@ func (a *sessionAgent) TakeSummarizeQueue(sessionID string) (*SummarizeSnapshot,
 }
 
 func (t *turnBudget) takeSummarizeQueue(sessionID string) (*SummarizeSnapshot, bool) {
-	snapshot, ok := t.summarizeQueue.Take(sessionID)
-	return snapshot, ok
+	return turnstep.TakeSummarizeQueue(t.summarizeQueue, sessionID)
 }
 
 func (a *sessionAgent) CancelQueuedSummarize(sessionID string) {
@@ -437,7 +434,7 @@ func (a *sessionAgent) CancelQueuedSummarize(sessionID string) {
 }
 
 func (t *turnBudget) cancelQueuedSummarize(sessionID string) {
-	t.summarizeQueue.Del(sessionID)
+	turnstep.CancelQueuedSummarize(t.summarizeQueue, sessionID)
 }
 
 func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, smartModel Model, systemPromptPrefix string) error {

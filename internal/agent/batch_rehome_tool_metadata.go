@@ -24,13 +24,5 @@ type asyncToolMetadata struct {
 	ClaimID string `json:"claim_id,omitempty"`
 }
 
-// asyncCapMetadata is the JSON shape the async-cap refusal emits as its
-// metadata: the step classifier's asyncCapRefused keys off exactly these
-// names.
-type asyncCapMetadata struct {
-	AsyncCap struct {
-		Running    int `json:"running"`
-		Limit      int `json:"limit"`
-		WaitTimers int `json:"wait_timers"`
-	} `json:"async_cap"`
-}
+// asyncCapMetadata moved to the turnstep package (AsyncCapMetadata) together
+// with its sole reader, the step classifier's async-cap branch.

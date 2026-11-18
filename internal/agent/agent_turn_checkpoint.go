@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -71,7 +72,7 @@ type turnCheckpointWriter struct {
 
 	// stall is the turn's stall clock; each successful changed checkpoint
 	// persist is a durable progress point.
-	stall *stallClock
+	stall *drainctl.StallClock
 
 	mu          sync.Mutex
 	generation  int64
@@ -80,7 +81,7 @@ type turnCheckpointWriter struct {
 	writeCancel context.CancelFunc
 }
 
-func newTurnCheckpointWriter(a *sessionAgent, sessionID string, genCtx context.Context, sessionLock *sync.Mutex, assistant **message.Message, stall *stallClock) *turnCheckpointWriter {
+func newTurnCheckpointWriter(a *sessionAgent, sessionID string, genCtx context.Context, sessionLock *sync.Mutex, assistant **message.Message, stall *drainctl.StallClock) *turnCheckpointWriter {
 	return &turnCheckpointWriter{
 		a:           a,
 		sessionID:   sessionID,
@@ -208,7 +209,7 @@ func (cp *turnCheckpointWriter) start() {
 						// after the changed snapshot has been durably written.
 						lastPartsLen = currentPartsLen
 						lastContentBytes = currentContentBytes
-						cp.stall.markProgress()
+						cp.stall.MarkProgress()
 					}
 				}
 			}
