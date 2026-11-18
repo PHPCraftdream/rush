@@ -11,6 +11,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -140,13 +141,13 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 		if cw > 0 {
 			// Window minus output reserve (legacy: whole window when no
 			// reserve is known), capped by the documented max input.
-			inputBudget := modelInputBudget(ts.smartModel, ts.call.MaxOutputTokens)
+			inputBudget := provauth.ModelInputBudget(ts.smartModel, ts.call.MaxOutputTokens)
 			if inputBudget > 0 {
 				usedTokens := ts.currentSession.CompletionTokens + ts.currentSession.PromptTokens
 				// Usage reflects the previous request only; add what this step's
 				// prompt appended since (e.g. large tool results).
-				remaining := inputBudget - usedTokens - unreportedTailTokens(prepared.Messages)
-				threshold := contextAutoSummarizeThreshold(cw, inputBudget)
+				remaining := inputBudget - usedTokens - provauth.UnreportedTailTokens(prepared.Messages, estimateMsgChars)
+				threshold := provauth.ContextAutoSummarizeThreshold(cw, inputBudget)
 				if remaining <= threshold {
 					targetTokens := min(int64(float64(inputBudget)*contextSlideRatio), inputBudget)
 					prepared.Messages = trimMessagesToWindow(prepared.Messages, targetTokens)
@@ -233,7 +234,7 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 		Parts:           []message.ContentPart{},
 		Model:           ts.smartModel.Model.Model(),
 		Provider:        ts.smartModel.Model.Provider(),
-		ReasoningEffort: turnSmartReasoningEffort(ts.smartModel),
+		ReasoningEffort: provauth.TurnSmartReasoningEffort(ts.smartModel),
 	})
 	if err != nil {
 		return callContext, prepared, err
@@ -651,11 +652,11 @@ func (ts *turnStream) applyStepUsage(stepResult fantasy.StepResult) (session.Ses
 	// Normalize once, upstream of both updateSessionUsage and
 	// recordMessageUsage, so InputTokens is exclusive-of-cache for
 	// every provider before either consumer sees it.
-	usage = normalizeProviderUsage(ts.smartModel.Model.Provider(), usage)
+	usage = provauth.NormalizeProviderUsage(ts.smartModel.Model.Provider(), usage)
 	ts.logCacheStepUsage(usage, estimated, stepResult.ProviderMetadata)
-	ts.runTotalTokens = addStepUsageTokens(ts.runTotalTokens, usage)
+	ts.runTotalTokens = provauth.AddStepUsageTokens(ts.runTotalTokens, usage)
 	if ts.recovery != nil {
-		ts.recovery.Spent.Add(addStepUsageTokens(0, usage))
+		ts.recovery.Spent.Add(provauth.AddStepUsageTokens(0, usage))
 	}
 	costDelta := ts.a.updateSessionUsage(ts.smartModel, &updatedSession, usage, ts.a.openrouterCost(stepResult.ProviderMetadata))
 	// Heartbeat usage: one add per accounted step, executing model identity (design pt. 4).
@@ -833,8 +834,8 @@ func (ts *turnStream) stopConditions() []fantasy.StopCondition {
 				return false
 			}
 			tokens := ts.currentSession.CompletionTokens + ts.currentSession.PromptTokens
-			budget := modelInputBudget(ts.smartModel, ts.call.MaxOutputTokens)
-			threshold := contextAutoSummarizeThreshold(cw, budget)
+			budget := provauth.ModelInputBudget(ts.smartModel, ts.call.MaxOutputTokens)
+			threshold := provauth.ContextAutoSummarizeThreshold(cw, budget)
 			if budget > 0 && budget-tokens <= threshold && !ts.a.disableAutoSummarize {
 				ts.shouldSummarize = true
 				return true

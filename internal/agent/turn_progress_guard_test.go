@@ -10,6 +10,7 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/stretchr/testify/require"
 )
@@ -834,8 +835,8 @@ func TestPrepareStepTrimClearsReadCoverage(t *testing.T) {
 		const outputReserve int64 = 10
 		narrow.CatwalkCfg.DefaultMaxTokens = outputReserve
 		const recordedUsage int64 = 90
-		effectiveOutput := effectiveMaxOutputTokens(narrow, 0)
-		inputBudget := contextInputBudget(int64(narrow.CatwalkCfg.ContextWindow), effectiveOutput)
+		effectiveOutput := provauth.EffectiveMaxOutputTokens(narrow, 0)
+		inputBudget := provauth.ModelInputBudget(narrow, 0)
 		require.Equal(t, outputReserve, effectiveOutput, "fixture's effective output reserve")
 		require.Equal(t, int64(90), inputBudget, "fixture must retain a positive input budget")
 		ts := guardPrepareStream(t, f, narrow, recordedUsage)
@@ -847,7 +848,7 @@ func TestPrepareStepTrimClearsReadCoverage(t *testing.T) {
 		require.NoError(t, err)
 
 		if !ts.silentCompactNeeded {
-			threshold := contextAutoSummarizeThreshold(int64(narrow.CatwalkCfg.ContextWindow), inputBudget)
+			threshold := provauth.ContextAutoSummarizeThreshold(int64(narrow.CatwalkCfg.ContextWindow), inputBudget)
 			t.Logf("trim fixture metadata: context_window=%d default_max_tokens=%d call_max_output_tokens=%d effective_output_reserve=%d input_budget=%d recorded_usage=%d remaining=%d threshold=%d auto_summarize_disabled=%t",
 				narrow.CatwalkCfg.ContextWindow, narrow.CatwalkCfg.DefaultMaxTokens, ts.call.MaxOutputTokens,
 				effectiveOutput, inputBudget, recordedUsage, inputBudget-recordedUsage, threshold, f.sa.disableAutoSummarize)

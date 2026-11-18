@@ -5,6 +5,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
@@ -12,7 +13,7 @@ import (
 
 func newContextCapacityRuntimeStream(model Model, call SessionAgentCall, usage fantasy.Usage) *turnStream {
 	var currentSession session.Session
-	updateSessionTokenCounters(&currentSession, usage)
+	provauth.UpdateSessionTokenCounters(&currentSession, usage)
 	return &turnStream{
 		a:              &sessionAgent{},
 		smartModel:     model,
@@ -37,7 +38,7 @@ func TestTurnStreamStopConditionsIncludesDefaultOutputReserve(t *testing.T) {
 	// The legacy 20k-only window threshold would not fire here.
 	require.Equal(t, int64(921_485), ts.currentSession.PromptTokens)
 	require.Equal(t, int64(117), ts.currentSession.CompletionTokens)
-	budget := contextInputBudget(contextWindow, outputReserve)
+	budget := provauth.ModelInputBudget(model, 0)
 	require.Equal(t, int64(398), budget-ts.currentSession.PromptTokens-ts.currentSession.CompletionTokens)
 
 	conditions := ts.stopConditions()
@@ -63,8 +64,8 @@ func TestTurnStreamStopConditionsUsesConfiguredOutputOverride(t *testing.T) {
 	// The configured 300k maximum leaves exactly the summarize threshold
 	// (budget 750k, headroom 750k/20 = 37.5k); using the catalog's 128k
 	// default instead would leave 210k.
-	budget := contextInputBudget(contextWindow, effectiveMaxOutputTokens(model, 0))
-	require.Equal(t, int64(37_500), contextAutoSummarizeThreshold(contextWindow, budget))
+	budget := provauth.ModelInputBudget(model, 0)
+	require.Equal(t, int64(37_500), provauth.ContextAutoSummarizeThreshold(contextWindow, budget))
 	require.Equal(t, int64(37_500), budget-ts.currentSession.PromptTokens-ts.currentSession.CompletionTokens)
 	conditions := ts.stopConditions()
 	require.True(t, conditions[0](nil))

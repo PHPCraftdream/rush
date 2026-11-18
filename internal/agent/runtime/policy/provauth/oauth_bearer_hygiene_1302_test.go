@@ -1,4 +1,4 @@
-package agent
+package provauth
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/stretchr/testify/require"
 )
@@ -167,38 +166,4 @@ func TestOAuthBearerGetBodyErrorOwnership1302(t *testing.T) {
 			require.EqualValues(t, 1, s.refreshes.Load())
 		})
 	}
-}
-
-func TestOAuthBearerBuilderLoggedOut1302(t *testing.T) {
-	store := oauthBearerStore(t, "copilot", &oauth.Token{AccessToken: "synthetic"})
-	coord := &coordinator{cfg: store}
-	pc, ok := store.Config().Providers.Get("copilot")
-	require.True(t, ok)
-	sends := 0
-	client := &http.Client{Transport: oauthBearerRT(func(*http.Request) (*http.Response, error) {
-		sends++
-		return nil, errors.New("unexpected outbound send")
-	})}
-	wrapped := coord.withOAuthBearerClient(pc, client)
-	require.NotSame(t, client, wrapped)
-	source := oauthBearerSource()
-	wrapped.Transport.(*oauthBearerTransport).source = source
-	provider, err := coord.buildOpenaiCompatProvider(store.Config(), "http://local.invalid", "synthetic", nil, nil, pc.ID, true, wrapped)
-	require.NoError(t, err)
-	ctx, cancel := context.WithTimeout(t.Context(), 1500*time.Millisecond)
-	defer cancel()
-	model, err := provider.LanguageModel(ctx, "test-model")
-	require.NoError(t, err)
-	source.set(oauth.Token{}, false)
-	start := time.Now()
-	_, err = model.Generate(ctx, fantasy.Call{})
-	elapsed := time.Since(start)
-	require.ErrorContains(t, err, "copilot OAuth credentials unavailable")
-	var providerErr *fantasy.ProviderError
-	require.True(t, errors.As(err, &providerErr))
-	require.Equal(t, http.StatusUnauthorized, providerErr.StatusCode)
-	require.EqualValues(t, 1, source.lookups.Load())
-	require.Zero(t, source.refreshes.Load())
-	require.Zero(t, sends)
-	require.Less(t, elapsed, 2*time.Second)
 }

@@ -5,36 +5,19 @@ package agent
 
 import (
 	"context"
-	_ "embed"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
-
-// summaryCommitMaxDuration bounds the silent compaction's COMMIT phase — the
-// SetSummaryAndUsage write plus the deletion of the messages it replaces
-// (P0-4 review follow-up).
-//
-// That phase deliberately runs on context.WithoutCancel: interrupting it
-// between "summary pointer written" and "old messages deleted" is how a
-// session's history gets unrecoverably holed, so cancellation must not be
-// able to land in the middle. Detaching from cancellation without a deadline
-// would recreate the unbounded-operation-holds-Run shape P1-B removed, hence
-// this bound. The provider stream is already finished by then; what remains
-// is local single-writer DB work, so 30s is generous rather than tight.
-const summaryCommitMaxDuration = 30 * time.Second
-
-//go:embed templates/summary.md
-var summaryPrompt []byte
 
 // ErrSummarizeQueued is returned by Summarize when the session is busy and
 // the request has been queued for execution after the current task finishes.
@@ -300,41 +283,14 @@ func (t *turnBudget) runSummarizeBody(h contextBudgetHost, ctx context.Context, 
 		NotifyWatchdog:     notifyWatchdog,
 		PreparePrompt:      h.preparePrompt,
 		GetSessionMessages: h.getSessionMessages,
-		SummaryPrompt:      func() string { return string(summaryPrompt) },
-		CommitMaxDuration:  summaryCommitMaxDuration,
-		BuildSummaryPrompt: buildSummaryPrompt,
-		CompletionTokens:   summaryCompletionTokens,
+		SummaryPrompt:      provauth.SummaryPromptText,
+		CommitMaxDuration:  provauth.SummaryCommitMaxDuration,
+		BuildSummaryPrompt: provauth.BuildSummaryPrompt,
+		CompletionTokens:   provauth.SummaryCompletionTokens,
 		SessionHeaders:     sessionHeaders,
-		NormalizeUsage:     normalizeProviderUsage,
+		NormalizeUsage:     provauth.NormalizeProviderUsage,
 		OpenrouterCost:     h.openrouterCost,
 		UpdateSessionUsage: h.updateSessionUsage,
 		RecordMessageUsage: h.recordMessageUsage,
 	}, ctx, sessionID, opts, smartModel, systemPromptPrefix)
-}
-
-// summaryCompletionTokens returns OutputTokens when the provider reported
-// them, otherwise falls back to an approximate count from the rendered
-// summary message. Fork merge note: from origin/main 6ed8852b
-// "fix(agent): estimate missing streamed usage" — used in Summarize when
-// the provider omits final usage on the summary stream.
-func summaryCompletionTokens(usage fantasy.Usage, summaryMessage message.Message) int64 {
-	if usage.OutputTokens != 0 {
-		return usage.OutputTokens
-	}
-	return approxTokenCount(summaryMessage.Content().Text) + approxTokenCount(summaryMessage.FullReasoningText())
-}
-
-// buildSummaryPrompt constructs the prompt text for session summarization.
-func buildSummaryPrompt(todos []coresession.Todo) string {
-	var sb strings.Builder
-	sb.WriteString("Provide a detailed summary of our conversation above.")
-	if len(todos) > 0 {
-		sb.WriteString("\n\n## Current Todo List\n\n")
-		for _, t := range todos {
-			fmt.Fprintf(&sb, "- [%s] %s\n", t.Status, t.Content)
-		}
-		sb.WriteString("\nInclude these tasks and their statuses in your summary. ")
-		sb.WriteString("Instruct the resuming assistant to use the `todos` tool to continue tracking progress on these tasks.")
-	}
-	return sb.String()
 }

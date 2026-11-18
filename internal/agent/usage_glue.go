@@ -5,6 +5,7 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 )
 
@@ -32,7 +33,7 @@ const (
 // classifyHardProviderLimit classifies a provider error, reading the lazy
 // display zone.
 func classifyHardProviderLimit(err error, hint string, now time.Time) providerLimitClass {
-	return usage.ClassifyHardProviderLimit(err, hint, now, resetDisplayZone)
+	return usage.ClassifyHardProviderLimit(err, hint, now, quotaResetDisplayZone)
 }
 
 // parseCLIResetText parses CLI-shaped quota reset text (delegates to usage).
@@ -52,10 +53,10 @@ func usageIsZero(u fantasy.Usage) bool {
 }
 
 // fallbackStepUsage estimates a step's usage from messages when the provider
-// reported nothing, passing the root's approxTokenCount as the tokenizer
-// seam (delegates to the usage package).
+// reported nothing, passing the provauth.ApproxTokenCount estimator as the
+// tokenizer seam (delegates to the usage package).
 func fallbackStepUsage(messages []fantasy.Message, step fantasy.StepResult) (fantasy.Usage, bool) {
-	return usage.FallbackStepUsage(messages, step, approxTokenCount)
+	return usage.FallbackStepUsage(messages, step, provauth.ApproxTokenCount)
 }
 
 // cloneFantasyMessages deep-copies a fantasy message slice (delegates to the
@@ -64,32 +65,34 @@ func cloneFantasyMessages(messages []fantasy.Message) []fantasy.Message {
 	return usage.CloneFantasyMessages(messages)
 }
 
-// resetDisplayZone is the zone reset times are shown in; tests swap it
-// instead of time.Local, which every time.Now call reads.
-var resetDisplayZone = func() *time.Location { return time.Local }
+// quotaResetDisplayZone is the zone callback the quota reset display paths use;
+// it defaults to the usage package's lazy read-only accessor. Tests swap
+// this callback (see setTestLocal) instead of time.Local, which
+// every time.Now call reads.
+var quotaResetDisplayZone = usage.DisplayZone
 
 // LocalizeResetHint rewrites a provider's zone-less reset hint in the
 // display zone, read lazily at call time.
 func LocalizeResetHint(text string, now time.Time) string {
-	return usage.LocalizeResetHintWithZone(text, now, resetDisplayZone)
+	return usage.LocalizeResetHintWithZone(text, now, quotaResetDisplayZone)
 }
 
 // QuotaLimitGuidance returns a local-time reset line for a quota-classified
 // error, using the lazily read display zone.
 func QuotaLimitGuidance(err error) (string, bool) {
-	return usage.QuotaLimitGuidanceWithZone(err, resetDisplayZone)
+	return usage.QuotaLimitGuidanceWithZone(err, quotaResetDisplayZone)
 }
 
 // QuotaLimitResetTime returns the reset time of a quota-classified error in
 // the display zone, read lazily at call time.
 func QuotaLimitResetTime(err error, now time.Time) (time.Time, bool) {
-	return usage.QuotaLimitResetTimeWithZone(err, now, resetDisplayZone)
+	return usage.QuotaLimitResetTimeWithZone(err, now, quotaResetDisplayZone)
 }
 
 // LocalizeResetError rewrites err's reset hint in the display zone, read
 // lazily at call time.
 func LocalizeResetError(err error) error {
-	return usage.LocalizeResetErrorWithZone(err, resetDisplayZone)
+	return usage.LocalizeResetErrorWithZone(err, quotaResetDisplayZone)
 }
 
 // FormatResetDuration renders a duration until a limit reset, zoned-free.

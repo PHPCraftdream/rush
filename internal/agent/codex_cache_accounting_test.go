@@ -11,6 +11,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -52,11 +53,15 @@ func TestCodexCacheAccountingWireToStoredUsage(t *testing.T) {
 				lm, err := provider.LanguageModel(t.Context(), "cache-fixture")
 				require.NoError(t, err)
 				require.Equal(t, codexprovider.Name, lm.Provider())
-				profile := cacheProfileFor(lm.Provider())
-				require.False(t, profile.inputIncludesCache)
-				require.False(t, profile.explicitMarkers)
-				require.False(t, profile.keepAliveEligible)
-				require.Zero(t, profile.ttl)
+				// Codex input is already exclusive of cache reads: the
+				// cache profile must not subtract anything (its
+				// cacheProfile facet is covered by provauth's own test).
+				require.False(t, provauth.KeepAliveEligible(lm.Provider()))
+				require.Zero(t, provauth.PromptCacheTTL(lm.Provider()))
+				require.Equal(t,
+					fantasy.Usage{InputTokens: 100, CacheReadTokens: 90, OutputTokens: 20},
+					provauth.NormalizeProviderUsage(lm.Provider(),
+						fantasy.Usage{InputTokens: 100, CacheReadTokens: 90, OutputTokens: 20}))
 				call := fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("fixture input")}}
 				if method == "generate" {
 					response, err := lm.Generate(t.Context(), call)
@@ -79,9 +84,9 @@ func TestCodexCacheAccountingWireToStoredUsage(t *testing.T) {
 				}
 				require.EqualValues(t, 1, transport.calls.Load())
 				require.Equal(t, fantasy.Usage{InputTokens: 100 - cached, CacheReadTokens: cached, OutputTokens: 20, TotalTokens: 120}, decoded)
-				normalized = normalizeProviderUsage(lm.Provider(), decoded)
+				normalized = provauth.NormalizeProviderUsage(lm.Provider(), decoded)
 				require.Equal(t, decoded, normalized, "agent accounting must not subtract cached input a second time")
-				require.EqualValues(t, 120, addStepUsageTokens(0, normalized))
+				require.EqualValues(t, 120, provauth.AddStepUsageTokens(0, normalized))
 
 				env := testEnv(t)
 				sess, err := env.sessions.Create(t.Context(), "Codex cache accounting")

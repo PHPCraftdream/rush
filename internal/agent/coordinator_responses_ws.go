@@ -9,6 +9,8 @@ import (
 	"maps"
 	"net/http"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
@@ -49,7 +51,7 @@ func (m *codexWebSocketPolicyManager) codexWebSocketOptions() []codexprovider.We
 	manager := responsesws.NewCodexTransport(m.host.responsesWSManager(), m.currentCodexWebSocketPolicy)
 	return []codexprovider.WebSocketOptions{{Manager: manager, EncodeFrame: nettransport.ResponsesWSCodexFullFrame, HTTPClient: func() (*http.Client, error) {
 		cfg, _ := m.host.responsesWSSnapshot()
-		pc, ok := cfg.Providers.Get(codexTokenProviderID)
+		pc, ok := cfg.Providers.Get(provauth.CodexTokenProviderID)
 		if !ok || pc.Disable || pc.OAuthToken == nil {
 			return nil, errors.New("openai-codex credentials unavailable")
 		}
@@ -62,7 +64,7 @@ func (m *codexWebSocketPolicyManager) codexWebSocketOptions() []codexprovider.We
 
 func (m *codexWebSocketPolicyManager) currentCodexWebSocketPolicy() (codexprovider.WebSocketPolicy, config.NetworkConfig, error) {
 	cfg, revision := m.host.responsesWSSnapshot()
-	pc, ok := cfg.Providers.Get(codexTokenProviderID)
+	pc, ok := cfg.Providers.Get(provauth.CodexTokenProviderID)
 	if !ok || pc.Disable || pc.OAuthToken == nil {
 		return codexprovider.WebSocketPolicy{}, config.NetworkConfig{}, errors.New("openai-codex credentials unavailable")
 	}

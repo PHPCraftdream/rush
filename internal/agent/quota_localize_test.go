@@ -17,10 +17,10 @@ import (
 // writer reads it through time.Now, so mutating it is a data race.
 func setTestLocal(t *testing.T) {
 	t.Helper()
-	old := resetDisplayZone
+	old := quotaResetDisplayZone
 	zone := time.FixedZone("TEST", 2*3600)
-	resetDisplayZone = func() *time.Location { return zone }
-	t.Cleanup(func() { resetDisplayZone = old })
+	quotaResetDisplayZone = func() *time.Location { return zone }
+	t.Cleanup(func() { quotaResetDisplayZone = old })
 }
 
 func TestLocalizeResetHint(t *testing.T) {

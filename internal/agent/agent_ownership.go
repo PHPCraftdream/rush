@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
@@ -758,70 +759,29 @@ func promptHash(prompt string) string {
 	return hex.EncodeToString(hash[:])[:16] // First 16 chars of hex hash (enough for collision resistance in logs)
 }
 
-// activityNotifyContextKey is the context key under which runTurn stores a
-// composed "activity happened" callback (see withActivityNotify). It is
-// unexported and local to this package: unlike tools.SessionIDContextKey,
-// nothing outside package agent needs to read or set it directly — sub-agent
-// delegation (the "agent" tool, agentic_fetch_tool) just forwards ctx
-// unmodified, which is enough for the value to keep flowing.
-type activityNotifyContextKey struct{}
+// The activity-notify and watchdog-bump context plumbing now lives in
+// internal/agent/runtime/policy/provauth/notify.go (target_owner=provauth).
+// These thin delegates preserve the previous package-agent call sites.
 
-// watchdogBumpContextKey is the context key for storing the stream watchdog's
-// bump function. Used by runSummarizeBody and runSummarizeSilent to report
-// LLM streaming progress to the watchdog so healthy long-running compaction
-// doesn't get falsely killed as "no provider activity" (task #310).
-type watchdogBumpContextKey struct{}
+// activityNotifyContextKey and watchdogBumpContextKey are unexported in
+// provauth; package agent reaches the plumbing only through the delegates
+// below.
 
-// withActivityNotify returns a child of ctx carrying a composed
-// activity-notify callback: calling the returned callback records activity
-// on lk (nil-receiver-safe, see SessionLock.RecordActivity) AND forwards to
-// any ancestor notify callback already present on ctx.
-//
-// The "read the ancestor before overwriting" composition is what makes
-// multi-level delegation chains (grandparent -> parent -> child) work: each
-// level's runTurn calls withActivityNotify once on its own ctx before
-// deriving genCtx from it, so a grandchild session's activity notify walks
-// all the way back up through every ancestor session's lock, not just its
-// immediate parent's. This is how a parent session's heartbeat stays alive
-// purely from a delegated sub-agent's progress while the parent itself is
-// blocked inside the "agent"/agentic_fetch tool call, producing no stream
-// callbacks of its own.
+// withActivityNotify delegates to provauth.WithActivityNotify.
 func withActivityNotify(ctx context.Context, lk *sessionlock.SessionLock) context.Context {
-	ancestor, _ := ctx.Value(activityNotifyContextKey{}).(func())
-	self := func() {
-		lk.RecordActivity() // nil-receiver-safe: no-op when lk is nil (a.dataDir == "")
-		if ancestor != nil {
-			ancestor()
-		}
-	}
-	return context.WithValue(ctx, activityNotifyContextKey{}, self)
+	return provauth.WithActivityNotify(ctx, lk)
 }
 
-// notifyActivity invokes the composed activity-notify callback stored on ctx
-// by withActivityNotify, if any. Safe to call on a ctx that never had
-// withActivityNotify applied (e.g. in tests, or any ctx not descended from a
-// runTurn call) — it is then a harmless no-op.
-func notifyActivity(ctx context.Context) {
-	if notify, ok := ctx.Value(activityNotifyContextKey{}).(func()); ok && notify != nil {
-		notify()
-	}
-}
+// notifyActivity delegates to provauth.NotifyActivity.
+func notifyActivity(ctx context.Context) { provauth.NotifyActivity(ctx) }
 
-// withWatchdogBump stores the stream watchdog's bump function in ctx.
-// Used by runSummarizeBody and runSummarizeSilent to report LLM streaming
-// progress during compaction (task #310).
+// withWatchdogBump delegates to provauth.WithWatchdogBump.
 func withWatchdogBump(ctx context.Context, bump func()) context.Context {
-	return context.WithValue(ctx, watchdogBumpContextKey{}, bump)
+	return provauth.WithWatchdogBump(ctx, bump)
 }
 
-// notifyWatchdog invokes the watchdog bump function stored on ctx by
-// withWatchdogBump, if any. Safe to call on a ctx that never had
-// withWatchdogBump applied — it is then a harmless no-op.
-func notifyWatchdog(ctx context.Context) {
-	if bump, ok := ctx.Value(watchdogBumpContextKey{}).(func()); ok && bump != nil {
-		bump()
-	}
-}
+// notifyWatchdog delegates to provauth.NotifyWatchdog.
+func notifyWatchdog(ctx context.Context) { provauth.NotifyWatchdog(ctx) }
 
 // reservedOwnershipContextKey is the context key under which ExecuteRun
 // (internal/app) publishes an already-held mailbox ownership era for

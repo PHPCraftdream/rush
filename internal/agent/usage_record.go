@@ -6,6 +6,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -32,7 +33,7 @@ func providerCacheSupport(provider, providerID string, usage fantasy.Usage) mess
 	if usage.CacheReadTokens > 0 || usage.CacheCreationTokens > 0 {
 		return message.CacheSupportNative
 	}
-	if cacheProfileFor(provider).knownCacheReporter || promptcache.IsCacheReporterProviderID(providerID) {
+	if provauth.KnownCacheReporter(provider) || promptcache.IsCacheReporterProviderID(providerID) {
 		return message.CacheSupportNative
 	}
 	return message.CacheSupportNone

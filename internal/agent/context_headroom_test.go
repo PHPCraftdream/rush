@@ -7,6 +7,8 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/discover"
 	"github.com/stretchr/testify/require"
@@ -55,27 +57,27 @@ func solModel(t *testing.T) Model {
 func TestModelInputBudgetNeverExceedsDocumentedMaxInput(t *testing.T) {
 	t.Parallel()
 	sol := solModel(t)
-	require.Equal(t, solInputBudget, modelInputBudget(sol, 0), "default reserve 128,000")
-	require.Equal(t, solInputBudget, modelInputBudget(sol, 32_000), "call override below default: 1,050,000-32,000 capped")
-	require.Equal(t, int64(750_000), modelInputBudget(sol, 300_000), "larger reserve shrinks the budget below the cap")
+	require.Equal(t, solInputBudget, provauth.ModelInputBudget(sol, 0), "default reserve 128,000")
+	require.Equal(t, solInputBudget, provauth.ModelInputBudget(sol, 32_000), "call override below default: 1,050,000-32,000 capped")
+	require.Equal(t, int64(750_000), provauth.ModelInputBudget(sol, 300_000), "larger reserve shrinks the budget below the cap")
 
 	cfgOverride := sol
 	cfgOverride.ModelCfg.MaxTokens = 32_000
-	require.Equal(t, solInputBudget, modelInputBudget(cfgOverride, 0), "configured max_tokens below default")
+	require.Equal(t, solInputBudget, provauth.ModelInputBudget(cfgOverride, 0), "configured max_tokens below default")
 
 	noReserve := sol
 	noReserve.CatwalkCfg.DefaultMaxTokens = 0
-	require.Equal(t, solInputBudget, modelInputBudget(noReserve, 0), "unknown reserve: whole window capped")
+	require.Equal(t, solInputBudget, provauth.ModelInputBudget(noReserve, 0), "unknown reserve: whole window capped")
 
 	userWindow := sol
 	userWindow.CatwalkCfg.ContextWindow = 500_000
-	require.Equal(t, int64(372_000), modelInputBudget(userWindow, 0), "a user-lowered window still wins")
+	require.Equal(t, int64(372_000), provauth.ModelInputBudget(userWindow, 0), "a user-lowered window still wins")
 
 	// Control: a model with no documented max input keeps window-minus-reserve.
 	other := sol
 	other.ModelCfg = config.SelectedModel{Provider: "openai-codex", Model: "codex-model"}
 	other.CatwalkCfg.ID = "codex-model"
-	require.Equal(t, int64(1_018_000), modelInputBudget(other, 32_000))
+	require.Equal(t, int64(1_018_000), provauth.ModelInputBudget(other, 32_000))
 }
 
 // The gate uses the capped budget: with a 32,000 output override the boundary
@@ -110,7 +112,7 @@ func TestContextAutoSummarizeThresholdProportionalHeadroom(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			require.Equal(t, tt.want, contextAutoSummarizeThreshold(tt.window, tt.input))
+			require.Equal(t, tt.want, provauth.ContextAutoSummarizeThreshold(tt.window, tt.input))
 		})
 	}
 }
@@ -118,8 +120,8 @@ func TestContextAutoSummarizeThresholdProportionalHeadroom(t *testing.T) {
 func TestStopConditionsGPT61SolHeadroomBoundary(t *testing.T) {
 	t.Parallel()
 	model := solModel(t)
-	require.Equal(t, solInputBudget, contextInputBudget(solContextWindow, effectiveMaxOutputTokens(model, 0)))
-	require.Equal(t, solHeadroom, contextAutoSummarizeThreshold(solContextWindow, solInputBudget))
+	require.Equal(t, solInputBudget, solContextWindow-provauth.EffectiveMaxOutputTokens(model, 0))
+	require.Equal(t, solHeadroom, provauth.ContextAutoSummarizeThreshold(solContextWindow, solInputBudget))
 
 	fires := func(usage int64) bool {
 		ts := newContextCapacityRuntimeStream(model, SessionAgentCall{}, fantasy.Usage{InputTokens: usage})
@@ -227,8 +229,8 @@ func TestPrepareStepIgnoresToolOutputBeforeLastAssistant(t *testing.T) {
 
 func TestUnreportedTailTokens(t *testing.T) {
 	t.Parallel()
-	require.Equal(t, int64(0), unreportedTailTokens(nil))
-	require.Equal(t, int64(0), unreportedTailTokens(headroomToolTail(900, true)))
-	require.Equal(t, int64(300), unreportedTailTokens(headroomToolTail(900, false)))
-	require.Equal(t, int64(301), unreportedTailTokens(headroomToolTail(901, false)))
+	require.Equal(t, int64(0), provauth.UnreportedTailTokens(nil, sessionprompt.EstimateMsgChars))
+	require.Equal(t, int64(0), provauth.UnreportedTailTokens(headroomToolTail(900, true), sessionprompt.EstimateMsgChars))
+	require.Equal(t, int64(300), provauth.UnreportedTailTokens(headroomToolTail(900, false), sessionprompt.EstimateMsgChars))
+	require.Equal(t, int64(301), provauth.UnreportedTailTokens(headroomToolTail(901, false), sessionprompt.EstimateMsgChars))
 }

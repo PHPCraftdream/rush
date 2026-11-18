@@ -19,6 +19,7 @@ import (
 	"charm.land/fantasy/providers/anthropic"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/kit/text/stringext"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -51,14 +52,10 @@ func (a *sessionAgent) workaroundProviderMediaLimitations(messages []fantasy.Mes
 // sessionHeaders returns the HTTP headers we use for cache affinity on
 // every LLM request for a given session.
 //
-// We use the session hash instead of the raw UUID so the header value
-// is deterministic and opaque.
+// Thin delegate: implementation lives in
+// internal/agent/runtime/policy/provauth.SessionHeaders.
 func sessionHeaders(sessionID string) map[string]string {
-	hash := core.HashID(sessionID)
-	return map[string]string{
-		"x-session-id":       hash,
-		"x-session-affinity": hash,
-	}
+	return provauth.SessionHeaders(sessionID)
 }
 
 // WithBackgroundJobNotice marks a completion turn as an agent-visible notice.
@@ -133,10 +130,7 @@ func (sessionPromptComponent) getCacheControlOptions() fantasy.ProviderOptions {
 		return fantasy.ProviderOptions{}
 	}
 	opts := fantasy.ProviderOptions{}
-	for provider, profile := range cacheProfiles {
-		if !profile.explicitMarkers {
-			continue
-		}
+	for _, provider := range provauth.ExplicitCacheControlProviders() {
 		opts[provider] = &anthropic.ProviderCacheControlOptions{
 			CacheControl: anthropic.CacheControl{Type: "ephemeral"},
 		}

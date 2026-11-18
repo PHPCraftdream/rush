@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 
@@ -48,7 +49,7 @@ func cacheKeepAliveIntervalFor(provider string) time.Duration {
 	if cacheKeepAliveInterval != 0 {
 		return cacheKeepAliveInterval
 	}
-	ttl := cacheProfileFor(provider).ttl
+	ttl := provauth.PromptCacheTTL(provider)
 	if ttl == 0 {
 		return cacheKeepAliveDefaultInterval
 	}
@@ -150,7 +151,7 @@ type cacheKeepAliveComponent struct {
 // that switch exactly — an implicit-cache provider gets zero benefit from a
 // replay, so scheduling one would just be a wasted paid request.
 func cacheKeepAliveExplicitCacheProvider(provider string) bool {
-	return cacheProfileFor(provider).keepAliveEligible
+	return provauth.KeepAliveEligible(provider)
 }
 
 // scheduleCacheKeepAlive arms (or re-arms) a keep-alive timer for sessionID
@@ -488,7 +489,7 @@ func (k *cacheKeepAliveComponent) recordCacheKeepAliveCost(h cacheKeepAliveHost,
 	if result == nil {
 		return true
 	}
-	usage := normalizeProviderUsage(model.Model.Provider(), result.TotalUsage)
+	usage := provauth.NormalizeProviderUsage(model.Model.Provider(), result.TotalUsage)
 
 	var openrouterCost *float64
 	for _, step := range result.Steps {

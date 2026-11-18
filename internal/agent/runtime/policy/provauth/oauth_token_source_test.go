@@ -1,4 +1,4 @@
-package agent
+package provauth
 
 import (
 	"context"
@@ -172,4 +172,22 @@ func TestOAuthTokenSourceRefreshCancellation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOAuthTokenSourceNestedSnapshot(t *testing.T) {
+	// Revert-check: token snapshots and used-token forwarding copy nested client metadata rather than caller pointers.
+	token := oauth.Token{AccessToken: "access", Client: &oauth.OAuthClient{ClientID: "original"}}
+	store := &fakeOAuthTokenStore{cfg: oauthAdapterConfig(&token)}
+	source := &oauthTokenSource{providerID: "copilot", store: store, resolve: func(*config.Config, config.ProviderConfig) (*http.Client, error) { return nil, nil }}
+	snapshot, ok := source.Current()
+	require.True(t, ok)
+	snapshot.Client.ClientID = "snapshot"
+	require.Equal(t, "original", token.Client.ClientID)
+	store.refresh = func(_ context.Context, _ config.Scope, pc config.ProviderConfig, _ *http.Client) error {
+		require.Equal(t, "snapshot", pc.OAuthToken.Client.ClientID)
+		pc.OAuthToken.Client.ClientID = "store"
+		return nil
+	}
+	require.NoError(t, source.Refresh(t.Context(), snapshot))
+	require.Equal(t, "snapshot", snapshot.Client.ClientID)
 }

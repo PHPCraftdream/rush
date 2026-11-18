@@ -80,12 +80,12 @@ const (
 // classifyProviderError delegates to the drainctl classifier. The seams
 // carry the agent-package predicates: the WS-replay refusal and the hard
 // provider-limit check, whose body is the original usage call shape
-// (time.Now() and resetDisplayZone read at the original point).
+// (time.Now() and quotaResetDisplayZone read at the original point).
 func classifyProviderError(err error) retryClass {
 	return drainctl.ClassifyProviderError(err, errProviderPeakHours, drainctl.Seams{
 		ReplayForbidden: responsesWSReplayForbidden,
 		HardProviderLimit: func(err error) bool {
-			return usage.ClassifyHardProviderLimit(err, "", time.Now(), resetDisplayZone) == usage.ProviderLimitHard
+			return usage.ClassifyHardProviderLimit(err, "", time.Now(), quotaResetDisplayZone) == usage.ProviderLimitHard
 		},
 	})
 }

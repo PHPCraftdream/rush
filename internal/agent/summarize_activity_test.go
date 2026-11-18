@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,6 +16,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testActivityContext is a test-only Context wrapper: provauth's
+// activityNotifyContextKey is unexported in the leaf package, so tests can't
+// reference it directly. It matches the key structurally (PkgPath+Name) and
+// returns the stored callback; all other lookups fall through.
+type testActivityContext struct {
+	context.Context
+	notify func()
+}
+
+func (c *testActivityContext) Value(key any) any {
+	kt := reflect.TypeOf(key)
+	if kt != nil && kt.PkgPath() == "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth" && kt.Name() == "activityNotifyContextKey" {
+		return c.notify
+	}
+	return c.Context.Value(key)
+}
+
 // TestRunSummarizeSilent_CallsActivityNotify verifies that runSummarizeSilent
 // calls notifyActivity on its stream callbacks, keeping the session's heartbeat
 // alive during long-running compaction (task #310).
@@ -24,10 +42,9 @@ func TestRunSummarizeSilent_CallsActivityNotify(t *testing.T) {
 	// Track whether notifyActivity was called.
 	var activityCalled atomic.Bool
 	// Create a context with a mocked notifyActivity callback.
-	ctx := context.Background()
-	ctx = context.WithValue(ctx, activityNotifyContextKey{}, func() {
+	ctx := &testActivityContext{Context: context.Background(), notify: func() {
 		activityCalled.Store(true)
-	})
+	}}
 
 	// Build a test agent using the existing pattern.
 	env := testEnv(t)
@@ -92,7 +109,7 @@ func TestRunSummarizeSilent_CallsWatchdogBump(t *testing.T) {
 	var bumpCount atomic.Int32
 	// Create a context with a mocked watchdog bump callback.
 	ctx := context.Background()
-	ctx = context.WithValue(ctx, watchdogBumpContextKey{}, func() {
+	ctx = withWatchdogBump(context.Background(), func() {
 		bumpCount.Add(1)
 	})
 
@@ -184,10 +201,9 @@ func TestRunSummarizeBody_CallsActivityNotify(t *testing.T) {
 	// Track whether notifyActivity was called.
 	var activityCalled atomic.Bool
 	// Create a context with a mocked notifyActivity callback.
-	ctx := context.Background()
-	ctx = context.WithValue(ctx, activityNotifyContextKey{}, func() {
+	ctx := &testActivityContext{Context: context.Background(), notify: func() {
 		activityCalled.Store(true)
-	})
+	}}
 
 	// Build a test agent using the existing pattern.
 	env := testEnv(t)
@@ -252,7 +268,7 @@ func TestRunSummarizeBody_CallsWatchdogBump(t *testing.T) {
 	var bumpCount atomic.Int32
 	// Create a context with a mocked watchdog bump callback.
 	ctx := context.Background()
-	ctx = context.WithValue(ctx, watchdogBumpContextKey{}, func() {
+	ctx = withWatchdogBump(context.Background(), func() {
 		bumpCount.Add(1)
 	})
 

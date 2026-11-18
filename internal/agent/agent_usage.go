@@ -10,6 +10,8 @@ import (
 	"charm.land/fantasy/providers/openrouter"
 
 	core "github.com/PHPCraftdream/rush/internal/session/service"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 )
 
 // unpricedModels holds the models already warned about: one warning per
@@ -102,43 +104,6 @@ func (a *sessionAgent) updateSessionUsage(model Model, session *core.Session, us
 	// in-memory snapshot; the persisted truth is written by the caller's
 	// IncrementCost. Cap decisions read the subtree budget instead.
 	session.OwnCost += cost
-	updateSessionTokenCounters(session, usage)
+	provauth.UpdateSessionTokenCounters(session, usage)
 	return cost
-}
-
-func addStepUsageTokens(total int64, usage fantasy.Usage) int64 {
-	partsTotal := usage.InputTokens + usage.CacheReadTokens + usage.CacheCreationTokens + usage.OutputTokens
-	if usage.TotalTokens > partsTotal {
-		partsTotal = usage.TotalTokens
-	}
-	return total + partsTotal
-}
-
-// updateSessionTokenCounters writes a new usage snapshot into the session
-// without overwriting accumulated counters with zero. Fork merge note: from
-// origin/main 74e6e378 "fix(agent): harden fallback usage accounting".
-//
-// PromptTokens must be the FULL prompt: InputTokens, CacheReadTokens and
-// CacheCreationTokens are three disjoint classes (see
-// internal/agent/cliprovider/usage.go), so all three belong in the sum.
-//
-// This used to add only InputTokens + CacheReadTokens, silently dropping
-// cache-WRITE tokens. That understated the prompt for every provider that
-// reports the three separately — the Anthropic HTTP provider always did
-// (fantasy anthropic.go maps input_tokens exclusive of both cache counters),
-// and claude-cli joined it once its parser stopped folding cache into input.
-// A real measured turn had input=5842 / cache_creation=16984 / cache_read=0:
-// the prompt is 22826 tokens but was recorded as 5842, a 74% understatement.
-//
-// PromptTokens drives the auto-summarization trigger (the remaining-context
-// checks against CatwalkCfg.ContextWindow), so understating it delays
-// compaction and risks running the context window over instead of sliding it.
-func updateSessionTokenCounters(session *core.Session, usage fantasy.Usage) {
-	if usage.OutputTokens != 0 {
-		session.CompletionTokens = usage.OutputTokens
-	}
-	promptTokens := usage.InputTokens + usage.CacheReadTokens + usage.CacheCreationTokens
-	if promptTokens != 0 {
-		session.PromptTokens = promptTokens
-	}
 }

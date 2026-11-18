@@ -1,4 +1,6 @@
-package agent
+// Package provauth holds the provider auth transports and OAuth token
+// sources split out of package agent (chunk B: auth only).
+package provauth
 
 import (
 	"context"
@@ -9,6 +11,52 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 )
+
+// dropEmptyAuthTransport removes Authorization / X-Api-Key headers whose value
+// is empty. configureAnthropicAuthHeaders blanks the unused one to keep the
+// process environment out of the request; the SDK then puts the blank header
+// on the wire, which no endpoint should have to tolerate.
+type dropEmptyAuthTransport struct{ base http.RoundTripper }
+
+func (t dropEmptyAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	var empty []string
+	for _, name := range []string{"Authorization", "X-Api-Key"} {
+		if vals, ok := req.Header[name]; ok && allBlank(vals) {
+			empty = append(empty, name)
+		}
+	}
+	if len(empty) > 0 {
+		req = req.Clone(req.Context())
+		for _, name := range empty {
+			req.Header.Del(name)
+		}
+	}
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(req)
+}
+
+func allBlank(vals []string) bool {
+	for _, v := range vals {
+		if v != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// WithoutEmptyAuthHeaders returns a copy of client (nil = the default client)
+// whose transport drops blank auth headers; the shared client is not mutated.
+func WithoutEmptyAuthHeaders(client *http.Client) *http.Client {
+	if client == nil {
+		return &http.Client{Transport: dropEmptyAuthTransport{}}
+	}
+	clone := *client
+	clone.Transport = dropEmptyAuthTransport{base: client.Transport}
+	return &clone
+}
 
 const oauthBearerDrainLimit = 4 << 10
 
@@ -146,3 +194,17 @@ func (t *oauthBearerTransport) CloseIdleConnections() {
 		closer.CloseIdleConnections()
 	}
 }
+
+// BearerTransport aliases the package-private bearer transport so callers in
+// package agent can type-assert wrapped clients; fields stay private and the
+// constructor below is the only way to build one from outside the package.
+type BearerTransport = oauthBearerTransport
+
+// NewBearerTransport builds the OAuth bearer transport; base and source are
+// snapshotted exactly as the previous composite literal did.
+func NewBearerTransport(base http.RoundTripper, source codexprovider.TokenSource, providerID string) *oauthBearerTransport {
+	return &oauthBearerTransport{base: base, source: source, providerID: providerID}
+}
+
+// Base exposes the wrapped base transport read-only for wiring assertions.
+func (t *oauthBearerTransport) Base() http.RoundTripper { return t.base }

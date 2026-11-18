@@ -8,6 +8,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
 	"charm.land/fantasy/providers/openai"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -310,9 +311,9 @@ func TestSummaryCompletionTokens(t *testing.T) {
 		},
 	}
 
-	require.Equal(t, int64(42), summaryCompletionTokens(fantasy.Usage{OutputTokens: 42}, summaryMessage))
-	require.Equal(t, approxTokenCount("summary text")+approxTokenCount("reasoning text"), summaryCompletionTokens(fantasy.Usage{}, summaryMessage))
-	require.Zero(t, summaryCompletionTokens(fantasy.Usage{}, message.Message{}))
+	require.Equal(t, int64(42), provauth.SummaryCompletionTokens(fantasy.Usage{OutputTokens: 42}, summaryMessage))
+	require.Equal(t, provauth.ApproxTokenCount("summary text")+provauth.ApproxTokenCount("reasoning text"), provauth.SummaryCompletionTokens(fantasy.Usage{}, summaryMessage))
+	require.Zero(t, provauth.SummaryCompletionTokens(fantasy.Usage{}, message.Message{}))
 }
 
 func TestUpdateSessionUsageAddsProviderCost(t *testing.T) {

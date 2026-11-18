@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
@@ -174,11 +175,11 @@ func TestTask1314OAuthDiskReactiveChild(t *testing.T) {
 				coord := &coordinator{cfg: store}
 				var provider fantasy.Provider
 				if id == "openai-codex" {
-					provider, err = newCodexTokenProvider(client, &codexTokenSource{store: counted, resolve: resolve})
+					provider, err = provauth.NewCodexTokenProvider(client, provauth.NewCodexTokenSource(counted, resolve))
 				} else {
 					wrapped := coord.withOAuthBearerClient(pc, client)
-					source := wrapped.Transport.(*oauthBearerTransport).source.(*oauthTokenSource)
-					source.store, source.resolve = counted, resolve
+					tr := wrapped.Transport.(*provauth.BearerTransport)
+					wrapped.Transport = provauth.NewBearerTransport(tr.Base(), provauth.NewOAuthTokenSource(pc.ID, counted, resolve), pc.ID)
 					provider, err = coord.buildOpenaiCompatProvider(store.Config(), server.URL+"/v1", old.AccessToken, nil, nil, id, false, wrapped)
 				}
 				require.NoError(t, err)
