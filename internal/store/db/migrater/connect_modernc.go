@@ -14,8 +14,8 @@ func OpenDB(dbPath string) (*sql.DB, error) {
 	// Set pragmas for better performance via _pragma query params.
 	// Format: _pragma=name(value)
 	params := url.Values{}
-	for name, value := range pragmas {
-		params.Add("_pragma", fmt.Sprintf("%s(%s)", name, value))
+	for _, p := range pragmaList {
+		params.Add("_pragma", fmt.Sprintf("%s(%s)", p.name, p.value))
 	}
 	// Use BEGIN IMMEDIATE so writers acquire the reserved lock up front,
 	// preventing deferred-to-writer upgrade deadlocks.
@@ -40,15 +40,15 @@ func OpenDB(dbPath string) (*sql.DB, error) {
 // blocking the single writer connection or each other.
 func OpenReadDB(dbPath string) (*sql.DB, error) {
 	params := url.Values{}
-	for name, value := range pragmas {
-		if name == "journal_mode" {
+	for _, p := range pragmaList {
+		if p.name == "journal_mode" {
 			// journal_mode is a file-wide property already set by the
 			// writer; modernc's sqlite driver rejects _pragma=journal_mode
 			// on a mode=ro connection (it would require a write), so skip
 			// it here rather than fail every read-only connection open.
 			continue
 		}
-		params.Add("_pragma", fmt.Sprintf("%s(%s)", name, value))
+		params.Add("_pragma", fmt.Sprintf("%s(%s)", p.name, p.value))
 	}
 	params.Set("_txlock", "deferred")
 	params.Set("mode", "ro")

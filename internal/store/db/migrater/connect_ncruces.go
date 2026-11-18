@@ -18,9 +18,9 @@ func OpenDB(dbPath string) (*sql.DB, error) {
 	db, err := driver.Open(dsn, func(c *sqlite3.Conn) error {
 		// Set pragmas for better performance via _pragma query params.
 		// Format: PRAGMA name = value;
-		for name, value := range pragmas {
-			if err := c.Exec(fmt.Sprintf("PRAGMA %s = %s;", name, value)); err != nil {
-				return fmt.Errorf("failed to set pragma %q: %w", name, err)
+		for _, p := range pragmaList {
+			if err := c.Exec(fmt.Sprintf("PRAGMA %s = %s;", p.name, p.value)); err != nil {
+				return fmt.Errorf("failed to set pragma %q: %w", p.name, err)
 			}
 		}
 		return nil
@@ -43,15 +43,15 @@ func OpenDB(dbPath string) (*sql.DB, error) {
 func OpenReadDB(dbPath string) (*sql.DB, error) {
 	dsn := fmt.Sprintf("file:%s?_txlock=deferred&mode=ro", dbPath)
 	db, err := driver.Open(dsn, func(c *sqlite3.Conn) error {
-		for name, value := range pragmas {
-			if name == "journal_mode" {
+		for _, p := range pragmaList {
+			if p.name == "journal_mode" {
 				// journal_mode is a file-wide property already set by the
 				// writer; setting it again on a read-only connection would
 				// require a write the mode=ro connection can't perform.
 				continue
 			}
-			if err := c.Exec(fmt.Sprintf("PRAGMA %s = %s;", name, value)); err != nil {
-				return fmt.Errorf("failed to set pragma %q: %w", name, err)
+			if err := c.Exec(fmt.Sprintf("PRAGMA %s = %s;", p.name, p.value)); err != nil {
+				return fmt.Errorf("failed to set pragma %q: %w", p.name, err)
 			}
 		}
 		return nil
